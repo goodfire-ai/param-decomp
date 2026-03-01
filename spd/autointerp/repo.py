@@ -41,7 +41,7 @@ class InterpRepo:
 
     @classmethod
     def open(cls, run_id: str) -> "InterpRepo | None":
-        """Open autointerp data for a run. Returns None if no autointerp data exists."""
+        """Open autointerp data for a run (read-only). Returns None if no data exists."""
         subrun_dir = cls._find_latest_subrun_dir(run_id)
         if subrun_dir is None:
             return None
@@ -50,6 +50,27 @@ class InterpRepo:
             return None
         return cls(
             db=InterpDB(db_path, readonly=True),
+            subrun_dir=subrun_dir,
+            run_id=run_id,
+        )
+
+    @classmethod
+    def open_or_create(cls, run_id: str) -> "InterpRepo":
+        """Open or create a writable autointerp repo for a run."""
+        from datetime import datetime
+
+        subrun_dir = cls._find_latest_subrun_dir(run_id)
+        if subrun_dir is not None and (subrun_dir / "interp.db").exists():
+            return cls(
+                db=InterpDB(subrun_dir / "interp.db"),
+                subrun_dir=subrun_dir,
+                run_id=run_id,
+            )
+        autointerp_dir = get_autointerp_dir(run_id)
+        subrun_dir = autointerp_dir / f"a-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        subrun_dir.mkdir(parents=True, exist_ok=True)
+        return cls(
+            db=InterpDB(subrun_dir / "interp.db"),
             subrun_dir=subrun_dir,
             run_id=run_id,
         )
