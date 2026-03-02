@@ -22,8 +22,12 @@ const DEFAULT_ENTITY_PROJECT = "goodfire/spd";
  */
 export const CANONICAL_RUNS: RegistryEntry[] = [
     {
+        wandbRunId: "goodfire/spd/runs/s-82ffb969",
+        notes: "Thomas - pile_llama_simple_mlp-4L",
+    },
+    {
         wandbRunId: "goodfire/spd/s-55ea3f9b",
-        notes: "Jose. pile_llama_simple_mlp-4L",
+        notes: "Jose - pile_llama_simple_mlp-4L",
         clusterMappings: [
             {
                 path: "/mnt/polished-lake/artifacts/mechanisms/spd/clustering/runs/c-70b28465/cluster_mapping.json",
@@ -46,28 +50,6 @@ export const CANONICAL_RUNS: RegistryEntry[] = [
     {
         wandbRunId: "goodfire/spd/s-7884efcc",
         notes: "Lucius' new run, Jan 8",
-    },
-    {
-        wandbRunId: "goodfire/spd/vjbol27n",
-        notes: "Lucius' run, Dec 8",
-        clusterMappings: [],
-    },
-    {
-        wandbRunId: "goodfire/spd/278we8gk",
-        notes: "Dan's initial run, Dec 6",
-    },
-    {
-        wandbRunId: "goodfire/spd/jyo9duz5",
-    },
-    {
-        wandbRunId: "goodfire/spd/5cr21lbs",
-        clusterMappings: [],
-    },
-    {
-        wandbRunId: "goodfire/spd/itmexlj0",
-    },
-    {
-        wandbRunId: "goodfire/spd/33n6xjjt",
     },
 ];
 
