@@ -175,7 +175,9 @@ async def run_intruder_scoring(
     jobs: list[LLMJob] = []
     ground_truth: dict[str, _TrialGroundTruth] = {}
 
-    for component in remaining:
+    for i, component in enumerate(remaining):
+        if i > 0 and i % 1000 == 0:
+            logger.info(f"Building trials: {i}/{len(remaining)} components")
         for trial_idx in range(n_trials):
             real_examples = rng.sample(component.activation_examples, n_real)
             intruder = _sample_intruder(component, density_index, rng, density_tolerance)
@@ -194,6 +196,7 @@ async def run_intruder_scoring(
                 component_key=component.component_key,
                 correct_answer=correct_answer,
             )
+    logger.info(f"Built {len(jobs)} trials")
 
     component_trials: defaultdict[str, list[IntruderTrial]] = defaultdict(list)
     component_errors: defaultdict[str, int] = defaultdict(int)

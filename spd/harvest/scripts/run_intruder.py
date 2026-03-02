@@ -9,6 +9,7 @@ from spd.harvest.config import IntruderEvalConfig
 from spd.harvest.db import HarvestDB
 from spd.harvest.intruder import run_intruder_scoring
 from spd.harvest.repo import HarvestRepo
+from spd.log import logger
 
 
 def main(
@@ -28,7 +29,9 @@ def main(
     harvest = HarvestRepo(decomposition_id, subrun_id=harvest_subrun_id, readonly=True)
     score_db = HarvestDB(harvest._dir / "harvest.db")
 
+    logger.info("Loading components from harvest DB...")
     components = harvest.get_all_components()
+    logger.info(f"Loaded {len(components)} components")
 
     asyncio.run(
         run_intruder_scoring(

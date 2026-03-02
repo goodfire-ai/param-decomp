@@ -5,6 +5,8 @@ from pathlib import Path
 
 from spd.graph_interp.schemas import LabelResult, PromptEdge
 
+DONE_MARKER = ".done"
+
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS output_labels (
     component_key TEXT PRIMARY KEY,
@@ -60,7 +62,11 @@ class GraphInterpDB:
             self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.executescript(_SCHEMA)
+        self._db_path = db_path
         self._conn.row_factory = sqlite3.Row
+
+    def mark_done(self) -> None:
+        (self._db_path.parent / DONE_MARKER).touch()
 
     # -- Output labels ---------------------------------------------------------
 

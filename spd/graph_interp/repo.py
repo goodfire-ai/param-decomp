@@ -11,7 +11,7 @@ from typing import Any
 
 import yaml
 
-from spd.graph_interp.db import GraphInterpDB
+from spd.graph_interp.db import DONE_MARKER, GraphInterpDB
 from spd.graph_interp.schemas import LabelResult, PromptEdge, get_graph_interp_dir
 
 
@@ -31,7 +31,11 @@ class GraphInterpRepo:
         if not base_dir.exists():
             return None
         candidates = sorted(
-            [d for d in base_dir.iterdir() if d.is_dir() and d.name.startswith("ti-")],
+            [
+                d
+                for d in base_dir.iterdir()
+                if d.is_dir() and d.name.startswith("ti-") and (d / DONE_MARKER).exists()
+            ],
             key=lambda d: d.name,
         )
         if not candidates:

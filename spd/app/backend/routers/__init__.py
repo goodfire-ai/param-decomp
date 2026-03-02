@@ -14,6 +14,7 @@ from spd.app.backend.routers.investigations import router as investigations_rout
 from spd.app.backend.routers.mcp import router as mcp_router
 from spd.app.backend.routers.pretrain_info import router as pretrain_info_router
 from spd.app.backend.routers.prompts import router as prompts_router
+from spd.app.backend.routers.run_registry import router as run_registry_router
 from spd.app.backend.routers.runs import router as runs_router
 
 __all__ = [
@@ -31,5 +32,6 @@ __all__ = [
     "mcp_router",
     "pretrain_info_router",
     "prompts_router",
+    "run_registry_router",
     "runs_router",
 ]

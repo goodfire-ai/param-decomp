@@ -17,7 +17,14 @@
     );
 
     let activeTab = $state<
-        "prompts" | "components" | "dataset-search" | "model-graph" | "data-sources" | "investigations" | "clusters" | null
+        | "prompts"
+        | "components"
+        | "dataset-search"
+        | "model-graph"
+        | "data-sources"
+        | "investigations"
+        | "clusters"
+        | null
     >(null);
 
     $effect(() => {

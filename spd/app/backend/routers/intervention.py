@@ -4,7 +4,7 @@ import torch
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from spd.app.backend.compute import compute_intervention_forward
+from spd.app.backend.compute import compute_intervention_forward, compute_masked_predictions
 from spd.app.backend.dependencies import DepDB, DepLoadedRun, DepStateManager
 from spd.app.backend.utils import log_errors
 from spd.topology import TransformerTopology
@@ -55,7 +55,9 @@ class RunInterventionRequest(BaseModel):
     graph_id: int
     text: str
     selected_nodes: list[str]  # node keys (layer:seq:cIdx)
-    top_k: int = 10
+    top_k: int
+    adv_pgd_n_steps: int
+    adv_pgd_step_size: float
 
 
 class ForkedInterventionRunSummary(BaseModel):
@@ -67,12 +69,24 @@ class ForkedInterventionRunSummary(BaseModel):
     created_at: str
 
 
+class TokenPred(BaseModel):
+    token: str
+    prob: float
+
+
+class MaskedPredictionsResponse(BaseModel):
+    ci: list[list[TokenPred]]
+    stochastic: list[list[TokenPred]]
+    adversarial: list[list[TokenPred]]
+
+
 class InterventionRunSummary(BaseModel):
     """Summary of a saved intervention run."""
 
     id: int
     selected_nodes: list[str]
     result: InterventionResponse
+    masked_predictions: MaskedPredictionsResponse
     created_at: str
     forked_runs: list[ForkedInterventionRunSummary]
 
@@ -211,8 +225,12 @@ def run_and_save_intervention(
     db: DepDB,
     manager: DepStateManager,
 ) -> InterventionRunSummary:
-    """Run an intervention and save the result."""
+    """Run an intervention and save the result, including masked predictions."""
     with manager.gpu_lock():
+        token_ids = loaded.tokenizer.encode(request.text)
+        tokens = torch.tensor([token_ids], dtype=torch.long, device=DEVICE)
+        active_nodes = [_parse_node_key(key, loaded.topology) for key in request.selected_nodes]
+
         response = _run_intervention_forward(
             text=request.text,
             selected_nodes=request.selected_nodes,
@@ -220,10 +238,29 @@ def run_and_save_intervention(
             loaded=loaded,
         )
 
+        masked_result = compute_masked_predictions(
+            model=loaded.model,
+            tokens=tokens,
+            active_nodes=active_nodes,
+            tokenizer=loaded.tokenizer,
+            adv_n_steps=request.adv_pgd_n_steps,
+            adv_step_size=request.adv_pgd_step_size,
+        )
+
+    def _to_token_preds(preds: list[list[tuple[str, float]]]) -> list[list[TokenPred]]:
+        return [[TokenPred(token=t, prob=p) for t, p in pos] for pos in preds]
+
+    masked_response = MaskedPredictionsResponse(
+        ci=_to_token_preds(masked_result.ci),
+        stochastic=_to_token_preds(masked_result.stochastic),
+        adversarial=_to_token_preds(masked_result.adversarial),
+    )
+
     run_id = db.save_intervention_run(
         graph_id=request.graph_id,
         selected_nodes=request.selected_nodes,
         result_json=response.model_dump_json(),
+        masked_predictions_json=masked_response.model_dump_json(),
     )
 
     record = db.get_intervention_runs(request.graph_id)
@@ -234,6 +271,7 @@ def run_and_save_intervention(
         id=run_id,
         selected_nodes=request.selected_nodes,
         result=response,
+        masked_predictions=masked_response,
         created_at=saved_run.created_at,
         forked_runs=[],
     )
@@ -263,6 +301,9 @@ def get_intervention_runs(graph_id: int, db: DepDB) -> list[InterventionRunSumma
                 id=r.id,
                 selected_nodes=r.selected_nodes,
                 result=InterventionResponse.model_validate_json(r.result_json),
+                masked_predictions=MaskedPredictionsResponse.model_validate_json(
+                    r.masked_predictions_json
+                ),
                 created_at=r.created_at,
                 forked_runs=forked_runs,
             )

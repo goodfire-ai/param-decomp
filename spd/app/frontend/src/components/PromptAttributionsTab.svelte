@@ -1,12 +1,7 @@
 <script lang="ts">
     import * as api from "../lib/api";
     import ProbColoredTokens from "./ProbColoredTokens.svelte";
-    import {
-        filterInterventableNodes,
-        type GraphData,
-        type PinnedNode,
-        type PromptPreview,
-    } from "../lib/promptAttributionsTypes";
+    import { type GraphData, type PinnedNode, type PromptPreview } from "../lib/promptAttributionsTypes";
     import ComputeProgressOverlay from "./prompt-attr/ComputeProgressOverlay.svelte";
     import GraphTabs from "./prompt-attr/GraphTabs.svelte";
     import InterventionsView from "./prompt-attr/InterventionsView.svelte";
@@ -19,7 +14,6 @@
         defaultOptimizeConfig,
         isOptimizeConfigValid,
         validateOptimizeConfig,
-        type ComposerState,
         type DraftState,
         type GraphComputeState,
         type OptimizeConfigDraft,
@@ -28,6 +22,14 @@
         type TabViewState,
         type ViewSettings,
     } from "./prompt-attr/types";
+    import {
+        buildInterventionState,
+        getInterventableNodes,
+        getRunSelection,
+        type BakedRun,
+        type InterventionState,
+    } from "../lib/interventionTypes";
+    import { SvelteSet } from "svelte/reactivity";
     import ViewControls from "./prompt-attr/ViewControls.svelte";
     import ViewTabs from "./prompt-attr/ViewTabs.svelte";
     import PromptAttributionsGraph from "./PromptAttributionsGraph.svelte";
@@ -69,24 +71,21 @@
     // Refetching state (for CI threshold/normalize changes) - tracks which graph is being refetched
     let refetchingGraphId = $state<number | null>(null);
 
-    // Composer state - transient UI state for interventions, keyed by graph ID
-    let composerStates = $state<Record<number, ComposerState>>({});
+    // Intervention state - transient UI state for intervention versions, keyed by graph ID
+    let interventionStates = $state<Record<number, InterventionState>>({});
 
-    // Helper to get or create composer state for a graph
-    function getComposerState(graphId: number, nodeKeys?: Iterable<string>): ComposerState {
-        if (!composerStates[graphId]) {
-            composerStates[graphId] = {
-                selection: nodeKeys ? new Set(filterInterventableNodes(nodeKeys)) : new Set(),
-                activeRunId: null,
-            };
+    // Helper to get or create intervention state for a graph
+    function getInterventionState(graphId: number, graph: StoredGraph): InterventionState {
+        if (!interventionStates[graphId]) {
+            interventionStates[graphId] = buildInterventionState(graph.interventionRuns);
         }
-        return composerStates[graphId];
+        return interventionStates[graphId];
     }
 
-    // Derived: composer state for the active graph
-    const activeComposerState = $derived.by(() => {
+    // Derived: intervention state for the active graph
+    const activeInterventionState = $derived.by(() => {
         if (!activeGraph) return null;
-        return composerStates[activeGraph.id] ?? null;
+        return interventionStates[activeGraph.id] ?? null;
     });
 
     // Default view settings for new graphs
@@ -176,16 +175,18 @@
                 // Load intervention runs for this graph
                 const runs = await api.getInterventionRuns(data.id);
 
-                // Initialize composer state for this graph
-                getComposerState(data.id, Object.keys(data.nodeCiVals));
-
-                return {
+                const sg: StoredGraph = {
                     id: data.id,
                     label: getGraphLabel(data),
                     data,
                     viewSettings: { ...defaultViewSettings },
                     interventionRuns: runs,
                 };
+
+                // Initialize intervention state for this graph
+                getInterventionState(data.id, sg);
+
+                return sg;
             }),
         );
 
@@ -350,34 +351,105 @@
     function handleViewChange(view: "graph" | "interventions") {
         if (!activeCard) return;
         promptCards = promptCards.map((card) => (card.id === activeCard.id ? { ...card, activeView: view } : card));
+
+        // Auto-bake the base run when switching to interventions view
+        if (view === "interventions" && activeGraph) {
+            const state = getInterventionState(activeGraph.id, activeGraph);
+            const firstRun = state.runs[0];
+            if (firstRun.kind === "base") {
+                autoBakeBaseRun(activeCard, activeGraph, state);
+            }
+        }
     }
 
-    // Update composer selection for the active graph
-    function handleComposerSelectionChange(selection: Set<string>) {
+    async function autoBakeBaseRun(card: PromptCard, graph: StoredGraph, state: InterventionState) {
+        const allInterventable = getInterventableNodes(graph.data.nodeCiVals);
+        const text = card.tokens.join("");
+        const selectedNodes = Array.from(allInterventable);
+
+        runningIntervention = true;
+        try {
+            const run = await api.runAndSaveIntervention({
+                graph_id: graph.id,
+                text,
+                selected_nodes: selectedNodes,
+                top_k: 10,
+                adv_pgd_n_steps: 4,
+                adv_pgd_step_size: 1.0,
+            });
+
+            const baked: BakedRun = {
+                kind: "baked",
+                id: run.id,
+                selectedNodes: new Set(run.selected_nodes),
+                result: run.result,
+                maskedPredictions: run.masked_predictions,
+                createdAt: run.created_at,
+            };
+            state.runs[0] = baked;
+            state.activeIndex = 0;
+
+            promptCards = promptCards.map((c) => {
+                if (c.id !== card.id) return c;
+                return {
+                    ...c,
+                    graphs: c.graphs.map((g) =>
+                        g.id === graph.id ? { ...g, interventionRuns: [...g.interventionRuns, run] } : g,
+                    ),
+                };
+            });
+
+            interventionStates = { ...interventionStates };
+        } finally {
+            runningIntervention = false;
+        }
+    }
+
+    // Update draft selection for the active graph
+    function handleDraftSelectionChange(selection: Set<string>) {
         if (!activeGraph) return;
-        composerStates[activeGraph.id] = {
-            selection,
-            activeRunId: null, // Clear active run when selection changes manually
-        };
+        const state = interventionStates[activeGraph.id];
+        if (!state) throw new Error("No intervention state for active graph");
+        const activeRun = state.runs[state.activeIndex];
+        if (activeRun.kind !== "draft") throw new Error("Can only change selection on draft runs");
+        activeRun.selectedNodes = new SvelteSet(selection);
+        interventionStates = { ...interventionStates };
     }
 
-    // Run intervention and save to DB
-    async function handleRunIntervention() {
-        const composerState = activeComposerState;
-        if (!activeCard || !activeGraph || !composerState) return;
+    // Forward a draft run: call API, replace draft with baked
+    async function handleForwardDraft(advNSteps: number, advStepSize: number) {
+        if (!activeCard || !activeGraph) return;
+        const state = interventionStates[activeGraph.id];
+        if (!state) throw new Error("No intervention state for active graph");
+        const activeRun = state.runs[state.activeIndex];
+        if (activeRun.kind !== "draft") throw new Error("Can only forward draft runs");
 
         runningIntervention = true;
         try {
             const text = activeCard.tokens.join("");
-            const selectedNodes = Array.from(composerState.selection);
+            const selectedNodes = Array.from(activeRun.selectedNodes);
 
             const run = await api.runAndSaveIntervention({
                 graph_id: activeGraph.id,
                 text,
                 selected_nodes: selectedNodes,
+                top_k: 10,
+                adv_pgd_n_steps: advNSteps,
+                adv_pgd_step_size: advStepSize,
             });
 
-            // Add run to local state
+            // Replace the draft with a baked run
+            const baked: BakedRun = {
+                kind: "baked",
+                id: run.id,
+                selectedNodes: new Set(run.selected_nodes),
+                result: run.result,
+                maskedPredictions: run.masked_predictions,
+                createdAt: run.created_at,
+            };
+            state.runs[state.activeIndex] = baked;
+
+            // Also update the persisted list on StoredGraph
             promptCards = promptCards.map((card) => {
                 if (card.id !== activeCard.id) return card;
                 return {
@@ -388,28 +460,43 @@
                 };
             });
 
-            // Select the new run
-            composerStates[activeGraph.id] = { ...composerState, activeRunId: run.id };
+            interventionStates = { ...interventionStates };
         } finally {
             runningIntervention = false;
         }
     }
 
-    // Select a run and restore its selection state
-    function handleSelectRun(runId: number) {
+    // Select a version by index
+    function handleSelectVersion(index: number) {
         if (!activeGraph) return;
-
-        const run = activeGraph.interventionRuns.find((r) => r.id === runId);
-        if (!run) return;
-
-        // Restore selection from the run
-        composerStates[activeGraph.id] = {
-            selection: new Set(filterInterventableNodes(run.selected_nodes)),
-            activeRunId: runId,
-        };
+        const state = interventionStates[activeGraph.id];
+        if (!state) throw new Error("No intervention state for active graph");
+        if (index < 0 || index >= state.runs.length) throw new Error(`Invalid version index: ${index}`);
+        state.activeIndex = index;
+        interventionStates = { ...interventionStates };
     }
 
-    // Delete an intervention run
+    // Clone the active run into a new draft
+    function handleCloneRun() {
+        if (!activeGraph) return;
+        const state = interventionStates[activeGraph.id];
+        if (!state) throw new Error("No intervention state for active graph");
+
+        const activeRun = state.runs[state.activeIndex];
+        const allInterventable = getInterventableNodes(activeGraph.data.nodeCiVals);
+        const parentSelection = getRunSelection(activeRun, allInterventable);
+
+        const draft = {
+            kind: "draft" as const,
+            parentId: activeRun.kind === "baked" ? activeRun.id : ("base" as const),
+            selectedNodes: new SvelteSet(parentSelection),
+        };
+        state.runs.push(draft);
+        state.activeIndex = state.runs.length - 1;
+        interventionStates = { ...interventionStates };
+    }
+
+    // Delete a baked intervention run
     async function handleDeleteRun(runId: number) {
         if (!activeCard || !activeGraph) return;
 
@@ -427,82 +514,40 @@
             };
         });
 
-        // Clear activeRunId if we deleted the active run
-        const composerState = composerStates[activeGraph.id];
-        if (composerState?.activeRunId === runId) {
-            composerStates[activeGraph.id] = { ...composerState, activeRunId: null };
+        // Remove from intervention state and fix activeIndex
+        const state = interventionStates[activeGraph.id];
+        if (state) {
+            const idx = state.runs.findIndex((r) => r.kind === "baked" && r.id === runId);
+            if (idx >= 0) {
+                state.runs.splice(idx, 1);
+                if (state.activeIndex >= state.runs.length) {
+                    state.activeIndex = 0;
+                } else if (state.activeIndex === idx) {
+                    state.activeIndex = 0;
+                } else if (state.activeIndex > idx) {
+                    state.activeIndex--;
+                }
+            }
+            interventionStates = { ...interventionStates };
         }
     }
 
-    // Fork an intervention run with modified tokens
-    async function handleForkRun(runId: number, tokenReplacements: [number, number][]) {
-        if (!activeCard || !activeGraph) throw new Error("No active card or graph");
-
-        const forkedRun = await api.forkInterventionRun(runId, tokenReplacements);
-
-        // Add forked run to the parent run's forked_runs list
-        promptCards = promptCards.map((card) => {
-            if (card.id !== activeCard.id) return card;
-            return {
-                ...card,
-                graphs: card.graphs.map((g) => {
-                    if (g.id !== activeGraph.id) return g;
-                    return {
-                        ...g,
-                        interventionRuns: g.interventionRuns.map((r) => {
-                            if (r.id !== runId) return r;
-                            return {
-                                ...r,
-                                forked_runs: [...(r.forked_runs || []), forkedRun],
-                            };
-                        }),
-                    };
-                }),
-            };
-        });
-
-        return forkedRun;
-    }
-
-    // Delete a forked intervention run
-    async function handleDeleteFork(forkId: number) {
-        if (!activeCard || !activeGraph) return;
-
-        await api.deleteForkedInterventionRun(forkId);
-
-        // Remove the forked run from state
-        promptCards = promptCards.map((card) => {
-            if (card.id !== activeCard.id) return card;
-            return {
-                ...card,
-                graphs: card.graphs.map((g) => {
-                    if (g.id !== activeGraph.id) return g;
-                    return {
-                        ...g,
-                        interventionRuns: g.interventionRuns.map((r) => ({
-                            ...r,
-                            forked_runs: (r.forked_runs || []).filter((f) => f.id !== forkId),
-                        })),
-                    };
-                }),
-            };
-        });
-    }
+    // Fork handlers commented out — functionality disabled for now
+    // async function handleForkRun(runId: number, tokenReplacements: [number, number][]) { ... }
+    // async function handleDeleteFork(forkId: number) { ... }
 
     async function handleGenerateGraphFromSelection() {
-        const composerState = activeComposerState;
-        if (!activeCard || !activeGraph || !composerState) {
-            return;
-        }
+        if (!activeCard || !activeGraph) return;
+        const state = interventionStates[activeGraph.id];
+        if (!state) throw new Error("No intervention state");
+        const activeRun = state.runs[state.activeIndex];
+        const allInterventable = getInterventableNodes(activeGraph.data.nodeCiVals);
+        const selection = getRunSelection(activeRun, allInterventable);
 
-        // Validate selection is not empty (defense in depth - button should be disabled)
-        if (composerState.selection.size === 0) {
-            console.warn("handleGenerateGraphFromSelection called with empty selection");
-            return;
-        }
+        if (selection.size === 0) throw new Error("handleGenerateGraphFromSelection called with empty selection");
 
         const cardId = activeCard.id;
-        const includedNodes = Array.from(composerState.selection);
+        const includedNodes = Array.from(selection);
 
         generatingSubgraph = true;
         graphCompute = {
@@ -530,8 +575,14 @@
                 },
             );
 
-            // Initialize composer state for the new graph
-            getComposerState(data.id, Object.keys(data.nodeCiVals));
+            const newGraph: StoredGraph = {
+                id: data.id,
+                label: getGraphLabel(data),
+                data,
+                viewSettings: { ...activeGraph.viewSettings },
+                interventionRuns: [],
+            };
+            getInterventionState(data.id, newGraph);
 
             promptCards = promptCards.map((card) => {
                 if (card.id !== cardId) return card;
@@ -550,16 +601,7 @@
                 // Add new graph
                 return {
                     ...card,
-                    graphs: [
-                        ...card.graphs,
-                        {
-                            id: data.id,
-                            label: getGraphLabel(data),
-                            data,
-                            viewSettings: { ...activeGraph.viewSettings },
-                            interventionRuns: [],
-                        },
-                    ],
+                    graphs: [...card.graphs, newGraph],
                     activeGraphId: data.id,
                     activeView: "graph",
                 };
@@ -661,8 +703,14 @@
                 });
             }
 
-            // Initialize composer state for the new graph
-            getComposerState(data.id, Object.keys(data.nodeCiVals));
+            const newGraph: StoredGraph = {
+                id: data.id,
+                label: getGraphLabel(data),
+                data,
+                viewSettings: { ...defaultViewSettings },
+                interventionRuns: [],
+            };
+            getInterventionState(data.id, newGraph);
 
             promptCards = promptCards.map((card) => {
                 if (card.id !== cardId) return card;
@@ -675,16 +723,7 @@
 
                 return {
                     ...card,
-                    graphs: [
-                        ...card.graphs,
-                        {
-                            id: data.id,
-                            label: getGraphLabel(data),
-                            data,
-                            viewSettings: { ...defaultViewSettings },
-                            interventionRuns: [],
-                        },
-                    ],
+                    graphs: [...card.graphs, newGraph],
                     activeGraphId: data.id,
                 };
             });
@@ -718,12 +757,7 @@
                 };
             });
 
-            // Update composer selection with new node keys
-            const composerState = composerStates[activeGraph.id];
-            composerStates[activeGraph.id] = {
-                selection: new Set(filterInterventableNodes(Object.keys(matchingData.nodeCiVals))),
-                activeRunId: composerState?.activeRunId ?? null,
-            };
+            // Intervention state stays as-is — base run auto-reflects new node keys via getRunSelection
         } finally {
             refetchingGraphId = null;
         }
@@ -863,7 +897,7 @@
                         <div>
                             <ViewTabs
                                 activeView={activeCard.activeView}
-                                interventionRunCount={activeGraph.interventionRuns.length}
+                                versionCount={activeInterventionState?.runs.length ?? 0}
                                 onViewChange={handleViewChange}
                             />
 
@@ -923,13 +957,11 @@
                                     edgesByTarget={activeGraph.data.edgesByTarget}
                                     onStagedNodesChange={handlePinnedNodesChange}
                                 />
-                            {:else if activeComposerState}
+                            {:else if activeInterventionState}
                                 <InterventionsView
                                     graph={activeGraph}
-                                    composerSelection={activeComposerState.selection}
-                                    activeRunId={activeComposerState.activeRunId}
+                                    interventionState={activeInterventionState}
                                     tokens={activeCard.tokens}
-                                    tokenIds={activeCard.tokenIds}
                                     topK={activeGraph.viewSettings.topK}
                                     componentGap={activeGraph.viewSettings.componentGap}
                                     layerGap={activeGraph.viewSettings.layerGap}
@@ -948,12 +980,11 @@
                                     onHideNodeCardChange={(v) => (hideNodeCard = v)}
                                     {runningIntervention}
                                     {generatingSubgraph}
-                                    onSelectionChange={handleComposerSelectionChange}
-                                    onRunIntervention={handleRunIntervention}
-                                    onSelectRun={handleSelectRun}
+                                    onSelectionChange={handleDraftSelectionChange}
+                                    onForwardDraft={handleForwardDraft}
+                                    onCloneRun={handleCloneRun}
+                                    onSelectVersion={handleSelectVersion}
                                     onDeleteRun={handleDeleteRun}
-                                    onForkRun={handleForkRun}
-                                    onDeleteFork={handleDeleteFork}
                                     onGenerateGraphFromSelection={handleGenerateGraphFromSelection}
                                 />
                             {/if}

@@ -108,6 +108,7 @@ class InterventionRunRecord(BaseModel):
     graph_id: int
     selected_nodes: list[str]  # node keys that were selected
     result_json: str  # JSON-encoded InterventionResponse
+    masked_predictions_json: str  # JSON-encoded MaskedPredictionsResponse
     created_at: str
 
 
@@ -244,6 +245,7 @@ class PromptAttrDB:
                 graph_id INTEGER NOT NULL REFERENCES graphs(id),
                 selected_nodes TEXT NOT NULL,  -- JSON array of node keys
                 result TEXT NOT NULL,  -- JSON InterventionResponse
+                masked_predictions TEXT NOT NULL,  -- JSON MaskedPredictionsResponse
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -668,6 +670,7 @@ class PromptAttrDB:
         graph_id: int,
         selected_nodes: list[str],
         result_json: str,
+        masked_predictions_json: str,
     ) -> int:
         """Save an intervention run.
 
@@ -675,15 +678,16 @@ class PromptAttrDB:
             graph_id: The graph ID this run belongs to.
             selected_nodes: List of node keys that were selected.
             result_json: JSON-encoded InterventionResponse.
+            masked_predictions_json: JSON-encoded MaskedPredictionsResponse.
 
         Returns:
             The intervention run ID.
         """
         conn = self._get_conn()
         cursor = conn.execute(
-            """INSERT INTO intervention_runs (graph_id, selected_nodes, result)
-               VALUES (?, ?, ?)""",
-            (graph_id, json.dumps(selected_nodes), result_json),
+            """INSERT INTO intervention_runs (graph_id, selected_nodes, result, masked_predictions)
+               VALUES (?, ?, ?, ?)""",
+            (graph_id, json.dumps(selected_nodes), result_json, masked_predictions_json),
         )
         conn.commit()
         run_id = cursor.lastrowid
@@ -701,7 +705,7 @@ class PromptAttrDB:
         """
         conn = self._get_conn()
         rows = conn.execute(
-            """SELECT id, graph_id, selected_nodes, result, created_at
+            """SELECT id, graph_id, selected_nodes, result, masked_predictions, created_at
                FROM intervention_runs
                WHERE graph_id = ?
                ORDER BY created_at""",
@@ -714,6 +718,7 @@ class PromptAttrDB:
                 graph_id=row["graph_id"],
                 selected_nodes=json.loads(row["selected_nodes"]),
                 result_json=row["result"],
+                masked_predictions_json=row["masked_predictions"],
                 created_at=row["created_at"],
             )
             for row in rows
@@ -798,7 +803,7 @@ class PromptAttrDB:
         """Get a single intervention run by ID."""
         conn = self._get_conn()
         row = conn.execute(
-            """SELECT id, graph_id, selected_nodes, result, created_at
+            """SELECT id, graph_id, selected_nodes, result, masked_predictions, created_at
                FROM intervention_runs
                WHERE id = ?""",
             (run_id,),
@@ -812,6 +817,7 @@ class PromptAttrDB:
             graph_id=row["graph_id"],
             selected_nodes=json.loads(row["selected_nodes"]),
             result_json=row["result"],
+            masked_predictions_json=row["masked_predictions"],
             created_at=row["created_at"],
         )
 

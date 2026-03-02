@@ -23,12 +23,6 @@ export type StoredGraph = {
     interventionRuns: InterventionRunSummary[];
 };
 
-/** Transient UI state for the intervention composer, keyed by graph ID */
-export type ComposerState = {
-    selection: Set<string>; // currently selected node keys
-    activeRunId: number | null; // which run is selected (for restoring selection)
-};
-
 export type PromptCard = {
     id: number; // database prompt ID
     tokens: string[];

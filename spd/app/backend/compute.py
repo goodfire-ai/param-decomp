@@ -17,8 +17,11 @@ from torch import Tensor, nn
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.app.backend.optim_cis import (
     CISnapshotCallback,
+    KLLossConfig,
     OptimCIConfig,
     OptimizationMetrics,
+    _compute_recon_loss,
+    _interpolate_masks,
     optimize_ci_values,
 )
 from spd.configs import SamplingType
@@ -671,6 +674,121 @@ def extract_node_subcomp_acts(
             node_subcomp_acts[key] = float(subcomp_acts[0, seq_pos, c_idx].item())
 
     return node_subcomp_acts
+
+
+TopKPreds = list[list[tuple[str, float]]]  # [seq_pos][(token_str, prob)]
+
+MASKED_PRED_TOP_K = 3
+
+
+@dataclass
+class MaskedPredictionsResult:
+    """Top-k predictions under CI, stochastic, and adversarial masking."""
+
+    ci: TopKPreds
+    stochastic: TopKPreds
+    adversarial: TopKPreds
+
+
+def _extract_topk(
+    logits: Float[Tensor, "1 seq vocab"],
+    tokenizer: AppTokenizer,
+) -> TopKPreds:
+    """Extract top-k token predictions per position from logits."""
+    probs = torch.softmax(logits, dim=-1)
+    result: TopKPreds = []
+    for pos in range(probs.shape[1]):
+        top_probs, top_ids = torch.topk(probs[0, pos], MASKED_PRED_TOP_K)
+        result.append(
+            [
+                (tokenizer.get_tok_display(int(tid.item())), float(p.item()))
+                for p, tid in zip(top_probs, top_ids, strict=True)
+            ]
+        )
+    return result
+
+
+def compute_masked_predictions(
+    model: ComponentModel,
+    tokens: Float[Tensor, "1 seq"],
+    active_nodes: list[tuple[str, int, int]],  # [(layer, seq_pos, component_idx)]
+    tokenizer: AppTokenizer,
+    adv_n_steps: int,
+    adv_step_size: float,
+) -> MaskedPredictionsResult:
+    """Compute top-k predictions under CI, stochastic, and adversarial masking.
+
+    Given a set of active nodes (mask=1, rest=0):
+    - CI: mask = selection (binary)
+    - Stochastic: mask = selection + (1-selection) * rand
+    - Adversarial: mask = selection + (1-selection) * PGD-optimized source
+    """
+    seq_len = tokens.shape[1]
+    device = tokens.device
+
+    # Build binary CI masks from active nodes
+    ci_masks: dict[str, Float[Tensor, "1 seq C"]] = {}
+    for layer_name, C in model.module_to_c.items():
+        ci_masks[layer_name] = torch.zeros(1, seq_len, C, device=device)
+    for layer, seq_pos, c_idx in active_nodes:
+        ci_masks[layer][0, seq_pos, c_idx] = 1.0
+
+    with torch.no_grad(), bf16_autocast():
+        # CI-masked forward
+        ci_mask_infos = make_mask_infos(ci_masks, routing_masks="all")
+        ci_logits: Float[Tensor, "1 seq vocab"] = model(tokens, mask_infos=ci_mask_infos)
+        ci_preds = _extract_topk(ci_logits, tokenizer)
+
+        # Stochastic forward: mask = ci + (1-ci) * rand
+        stoch_sources = {
+            layer: torch.randint(0, 2, ci.shape, device=device).float()
+            for layer, ci in ci_masks.items()
+        }
+        stoch_masks = {
+            layer: ci_masks[layer] + (1 - ci_masks[layer]) * stoch_sources[layer]
+            for layer in ci_masks
+        }
+        stoch_mask_infos = make_mask_infos(stoch_masks, routing_masks="all")
+        stoch_logits: Float[Tensor, "1 seq vocab"] = model(tokens, mask_infos=stoch_mask_infos)
+        stoch_preds = _extract_topk(stoch_logits, tokenizer)
+
+    # Adversarial forward (needs gradients for PGD)
+    loss_config = KLLossConfig(coeff=1.0, position=seq_len - 1)
+
+    with torch.no_grad(), bf16_autocast():
+        target_out = model(tokens)
+
+    adv_sources: dict[str, Tensor] = {}
+    for layer_name, ci in ci_masks.items():
+        source = torch.zeros_like(ci)
+        source.requires_grad_(True)
+        adv_sources[layer_name] = source
+
+    source_list = list(adv_sources.values())
+    ci_detached = {k: v.detach() for k, v in ci_masks.items()}
+
+    for _ in range(adv_n_steps):
+        adv_mask_infos = make_mask_infos(
+            _interpolate_masks(ci_detached, adv_sources), routing_masks="all"
+        )
+        with bf16_autocast():
+            out = model(tokens, mask_infos=adv_mask_infos)
+        loss = _compute_recon_loss(out, loss_config, target_out, str(device))
+        grads = torch.autograd.grad(loss, source_list)
+        with torch.no_grad():
+            for (_layer_name, source), grad in zip(adv_sources.items(), grads, strict=True):
+                source.add_(adv_step_size * grad.sign())
+                source.clamp_(0.0, 1.0)
+
+    with torch.no_grad(), bf16_autocast():
+        final_adv_masks = _interpolate_masks(
+            ci_detached, {k: v.detach() for k, v in adv_sources.items()}
+        )
+        adv_mask_infos = make_mask_infos(final_adv_masks, routing_masks="all")
+        adv_logits: Float[Tensor, "1 seq vocab"] = model(tokens, mask_infos=adv_mask_infos)
+        adv_preds = _extract_topk(adv_logits, tokenizer)
+
+    return MaskedPredictionsResult(ci=ci_preds, stochastic=stoch_preds, adversarial=adv_preds)
 
 
 @dataclass

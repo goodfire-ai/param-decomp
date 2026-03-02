@@ -35,7 +35,7 @@
         {#if tokenAtPos !== null}
             (<span class="token">{tokenAtPos}</span>)
         {/if}
-        </span>
+    </span>
     {#if optimization.loss.type === "ce"}
         <span class="param">
             <span class="key">label</span>(<span class="token">{optimization.loss.label_str}</span>)

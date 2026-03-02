@@ -301,6 +301,7 @@ def run_graph_interp(
             f"{db.get_label_count('input_labels')} input, "
             f"{db.get_label_count('unified_labels')} unified labels -> {db_path}"
         )
+        db.mark_done()
 
     try:
         asyncio.run(_run())
