@@ -614,7 +614,8 @@ class PromptAttrDB:
         rows = conn.execute(
             """SELECT id, graph_type, edges_data, output_logits, node_ci_vals,
                       node_subcomp_acts, imp_min_coeff, steps, pnorm, beta, mask_type,
-                      loss_config, adv_pgd_n_steps, adv_pgd_step_size, included_nodes
+                      loss_config, adv_pgd_n_steps, adv_pgd_step_size, included_nodes,
+                      ci_masked_label_prob, stoch_masked_label_prob, adv_pgd_label_prob
                FROM graphs
                WHERE prompt_id = ?
                ORDER BY
@@ -630,7 +631,8 @@ class PromptAttrDB:
         row = conn.execute(
             """SELECT id, prompt_id, graph_type, edges_data, output_logits, node_ci_vals,
                       node_subcomp_acts, imp_min_coeff, steps, pnorm, beta, mask_type,
-                      loss_config, adv_pgd_n_steps, adv_pgd_step_size, included_nodes
+                      loss_config, adv_pgd_n_steps, adv_pgd_step_size, included_nodes,
+                      ci_masked_label_prob, stoch_masked_label_prob, adv_pgd_label_prob
                FROM graphs
                WHERE id = ?""",
             (graph_id,),
