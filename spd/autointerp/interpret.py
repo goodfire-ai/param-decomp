@@ -187,6 +187,7 @@ def run_interpret(
                     )
 
         finally:
+            db.mark_done()
             db.close()
 
         logger.info(f"Completed {len(results)} interpretations -> {db_path}")
