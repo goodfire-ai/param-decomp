@@ -14,6 +14,7 @@ import yaml
 
 from spd.autointerp.db import InterpDB
 from spd.autointerp.schemas import InterpretationResult, get_autointerp_dir
+from spd.log import logger
 
 
 class InterpRepo:
@@ -48,6 +49,7 @@ class InterpRepo:
         db_path = subrun_dir / "interp.db"
         if not db_path.exists():
             return None
+        logger.info(f"Opening autointerp data for {run_id} from {subrun_dir}")
         return cls(
             db=InterpDB(db_path, readonly=True),
             subrun_dir=subrun_dir,

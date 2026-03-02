@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Literal
 
 from spd.app.backend.app_tokenizer import AppTokenizer
-from spd.autointerp.llm_api import LLMError, LLMJob, LLMResult, map_llm_calls
+from spd.autointerp.llm_api import CostTracker, LLMError, LLMJob, LLMResult, map_llm_calls
 from spd.autointerp.schemas import ModelMetadata
 from spd.dataset_attributions.storage import (
     AttrMetric,
@@ -72,6 +72,8 @@ def run_graph_interp(
 
     # -- Injected behaviours ---------------------------------------------------
 
+    shared_cost = CostTracker(limit_usd=config.cost_limit_usd)
+
     async def llm_map(
         jobs: Iterable[LLMJob], n_total: int | None = None
     ) -> AsyncGenerator[LLMResult | LLMError]:
@@ -83,9 +85,10 @@ def run_graph_interp(
             max_tokens=8000,
             max_concurrent=config.max_concurrent,
             max_requests_per_minute=config.max_requests_per_minute,
-            cost_limit_usd=config.cost_limit_usd,
+            cost_limit_usd=None,
             response_schema=LABEL_SCHEMA,
             n_total=n_total,
+            cost_tracker=shared_cost,
         ):
             yield result
 

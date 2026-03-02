@@ -270,6 +270,9 @@ export function useRun() {
         get graphInterpAvailable() {
             return run.status === "loaded" && run.data.graph_interp_available;
         },
+        get autoInterpAvailable() {
+            return run.status === "loaded" && run.data.autointerp_available;
+        },
         loadRun,
         clearRun,
         syncStatus,

@@ -45,6 +45,7 @@ class LoadedRun(BaseModel):
     dataset_attributions_available: bool
     dataset_search_enabled: bool
     graph_interp_available: bool
+    autointerp_available: bool
 
 
 router = APIRouter(prefix="/api", tags=["runs"])
@@ -172,6 +173,7 @@ def get_status(manager: DepStateManager) -> LoadedRun | None:
         # TODO(oli): Remove MOCK_MODE import after real data available
         graph_interp_available=manager.run_state.graph_interp is not None
         or _GRAPH_INTERP_MOCK_MODE,
+        autointerp_available=manager.run_state.interp is not None,
     )
 
 

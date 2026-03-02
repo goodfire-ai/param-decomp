@@ -4,9 +4,9 @@
      * Includes tooltips using the same NodeTooltip as the main graph.
      */
 
-    import { getContext, onMount } from "svelte";
+    import { getContext } from "svelte";
     import type { NodePosition, EdgeData, OutputProbability, HoveredNode } from "../../lib/promptAttributionsTypes";
-    import { buildEdgeIndexes, isInterventableNode, nodeKeyToComponentKey } from "../../lib/promptAttributionsTypes";
+    import { buildEdgeIndexes } from "../../lib/promptAttributionsTypes";
     import type { ArtifactGraphData } from "../../lib/api/investigations";
     import { getRowKey, sortRows, getRowLabel } from "../../lib/graphLayout";
     import { colors, getEdgeColor, rgbToCss } from "../../lib/colors";
@@ -25,19 +25,7 @@
     // Get run context for tooltips and prefetching
     const runState = getContext<RunContext>(RUN_KEY);
 
-    // Prefetch component data on mount so tooltips can show full detail
-    onMount(() => {
-        // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local variable, not reactive state
-        const componentKeys = new Set<string>();
-        for (const nodeKey of Object.keys(data.nodeCiVals)) {
-            if (isInterventableNode(nodeKey)) {
-                componentKeys.add(nodeKeyToComponentKey(nodeKey));
-            }
-        }
-        if (componentKeys.size > 0) {
-            runState.prefetchComponentData(Array.from(componentKeys));
-        }
-    });
+    // Component details are fetched lazily on hover via getActivationContextDetail
 
     // Constants
     const COMPONENT_SIZE = 8;

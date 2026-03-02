@@ -43,3 +43,10 @@ class PostprocessConfig(BaseConfig):
             raise ValueError("Attributions only work for SPD decompositions")
         if self.graph_interp is not None and self.attributions is None:
             raise ValueError("Graph interp requires attributions")
+
+
+if __name__ == "__main__":
+    import json
+
+    with open("spd/postprocess/postprocess.schema.json", "w") as f:
+        json.dump(PostprocessConfig.model_json_schema(), f, indent=2)
