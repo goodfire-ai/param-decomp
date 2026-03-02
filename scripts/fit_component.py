@@ -222,6 +222,23 @@ def main() -> None:
     sparse_str = f", sparsity={sparsity_coeff} p={sparsity_p}" if use_sparsity else ""
     mode_str = mlp_str + lr_str + sparse_str
     logger.info(f"Training {mode_str} fit for {n_steps} steps...")
+
+    # Log metrics at initialisation (before any training)
+    with torch.no_grad():
+        init_batch = extract_batch_data(next(train_iter)).to(device, non_blocking=True)
+        with bf16_autocast(enabled=spd_config.autocast_bf16):
+            init_source, init_target = collect_component_acts(
+                model, init_batch, source_path, target_path, target_component_idx
+            )
+        init_pred = predict(init_source)
+        init_mse = ((init_pred - init_target) ** 2).mean().item()
+        init_r2 = compute_variance_explained(init_pred, init_target)
+        init_parts = [f"Init: MSE={init_mse:.6f}", f"R²={init_r2:.4f}"]
+        if use_sparsity:
+            init_parts.append(f"sparse={calc_sparsity_loss().item():.6f}")
+            init_parts.append(f"L0={calc_mlp_l0()}")
+        logger.info(" ".join(init_parts))
+
     last_train_mse = 0.0
     last_train_var_explained = 0.0
     last_train_sparsity = 0.0
