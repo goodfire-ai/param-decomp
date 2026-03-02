@@ -1,0 +1,14 @@
+wandb_path: "goodfire/spd/s-55ea3f9b"
+layer_idx: 3
+target_component_idx: 170
+batch_size: 8
+n_steps: 10000
+lr: 0.0003
+lr_decay_factor: 0.1
+mlp_width: 5
+act_fn: gelu
+sparsity_coeff: 0.01
+sparsity_p: 1.0
+l0_threshold: 0.0001
+n_eval_batches: 10
+device: cuda
