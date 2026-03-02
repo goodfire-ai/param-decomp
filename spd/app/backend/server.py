@@ -39,6 +39,7 @@ from spd.app.backend.routers import (
     mcp_router,
     pretrain_info_router,
     prompts_router,
+    run_registry_router,
     runs_router,
 )
 from spd.app.backend.state import StateManager
@@ -189,6 +190,7 @@ app.include_router(mcp_router)
 app.include_router(data_sources_router)
 app.include_router(graph_interp_router)
 app.include_router(pretrain_info_router)
+app.include_router(run_registry_router)
 
 
 def cli(port: int = 8000) -> None:

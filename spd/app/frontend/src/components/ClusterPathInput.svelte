@@ -2,7 +2,17 @@
     import { getContext } from "svelte";
     import { loadClusterMapping } from "../lib/api";
     import { RUN_KEY, type RunContext } from "../lib/useRun.svelte";
-    import { CANONICAL_RUNS } from "../lib/registry";
+
+    type ClusterMappingEntry = { path: string; notes: string };
+
+    const CLUSTER_MAPPINGS_BY_RUN: Record<string, ClusterMappingEntry[]> = {
+        "goodfire/spd/s-55ea3f9b": [
+            {
+                path: "/mnt/polished-lake/artifacts/mechanisms/spd/clustering/runs/c-70b28465/cluster_mapping.json",
+                notes: "All layers, 9100 iterations",
+            },
+        ],
+    };
 
     const runState = getContext<RunContext>(RUN_KEY);
 
@@ -20,11 +30,8 @@
     let showDropdown = $state(false);
     let showLoadedTooltip = $state(false);
 
-    // Get cluster mappings for the current run from the registry
     const availableClusterMappings = $derived.by(() => {
-        const canonicalEntry = CANONICAL_RUNS.find((r) => r.wandbRunId === loadedRun.wandb_path);
-        // failover is ok cos we use runs other than canonical ones sometimes
-        return canonicalEntry?.clusterMappings ?? [];
+        return CLUSTER_MAPPINGS_BY_RUN[loadedRun.wandb_path] ?? [];
     });
 
     // Lookup notes for the currently loaded cluster (if it's from the registry)

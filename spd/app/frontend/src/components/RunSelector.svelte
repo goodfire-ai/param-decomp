@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
-    import { CANONICAL_RUNS, formatRunIdForDisplay, type RegistryEntry } from "../lib/registry";
-    import { fetchPretrainInfo, type PretrainInfoResponse } from "../lib/api/pretrainInfo";
+    import { formatRunIdForDisplay } from "../lib/registry";
+    import { fetchRunRegistry, type RegistryRunInfo } from "../lib/api/runRegistry";
 
     type Props = {
         onSelect: (wandbPath: string, contextLength: number) => void;
@@ -13,40 +13,22 @@
 
     let customPath = $state("");
     let contextLength = $state(512);
-
-    // Architecture info fetched in real-time for each canonical run
-    let archInfo = $state<Record<string, PretrainInfoResponse | "loading" | "error">>({});
-
-    function formatArchLabel(info: PretrainInfoResponse): string {
-        const cfg = info.target_model_config;
-        const parts: string[] = [];
-        if (info.dataset_short) parts.push(info.dataset_short);
-        parts.push(info.model_type);
-        if (cfg) {
-            const nLayer = cfg.n_layer as number | undefined;
-            const nEmbd = cfg.n_embd as number | undefined;
-            if (nLayer != null) parts.push(`${nLayer}L`);
-            if (nEmbd != null) parts.push(`d${nEmbd}`);
-        }
-        return parts.join(" ");
-    }
+    let registryRuns = $state<RegistryRunInfo[] | null>(null);
+    let registryError = $state<string | null>(null);
 
     onMount(() => {
-        for (const entry of CANONICAL_RUNS) {
-            archInfo[entry.wandbRunId] = "loading";
-            fetchPretrainInfo(entry.wandbRunId).then(
-                (info) => {
-                    archInfo[entry.wandbRunId] = info;
-                },
-                () => {
-                    archInfo[entry.wandbRunId] = "error";
-                },
-            );
-        }
+        fetchRunRegistry().then(
+            (runs) => {
+                registryRuns = runs;
+            },
+            (err) => {
+                registryError = String(err);
+            },
+        );
     });
 
-    function handleRegistrySelect(entry: RegistryEntry) {
-        onSelect(entry.wandbRunId, contextLength);
+    function handleRowClick(entry: RegistryRunInfo) {
+        onSelect(entry.wandb_run_id, contextLength);
     }
 
     function handleCustomSubmit(event: Event) {
@@ -73,27 +55,81 @@
             {/if}
         </h1>
 
-        <div class="runs-grid">
-            {#each CANONICAL_RUNS as entry (entry.wandbRunId)}
-                {@const info = archInfo[entry.wandbRunId]}
-                <button class="run-card" onclick={() => handleRegistrySelect(entry)} disabled={isLoading}>
-                    {#if info && info !== "loading" && info !== "error"}
-                        <span class="run-model">{formatArchLabel(info)}</span>
-                    {:else if info === "loading"}
-                        <span class="run-model loading">loading...</span>
-                    {:else}
-                        <span class="run-model">{formatRunIdForDisplay(entry.wandbRunId)}</span>
-                    {/if}
-                    <span class="run-id">{formatRunIdForDisplay(entry.wandbRunId)}</span>
-                    {#if entry.notes}
-                        <span class="run-notes">{entry.notes}</span>
-                    {/if}
-                    {#if entry.clusterMappings}
-                        <span class="run-cluster-mappings">{entry.clusterMappings.length} clustering runs</span>
-                    {/if}
-                </button>
-            {/each}
-        </div>
+        {#if registryError}
+            <p class="error-text">Failed to load registry: {registryError}</p>
+        {:else if registryRuns === null}
+            <p class="loading-registry">Loading runs...</p>
+        {:else}
+            <div class="table-wrapper">
+                <table class="runs-table">
+                    <thead>
+                        <tr>
+                            <th>Run</th>
+                            <th>Architecture</th>
+                            <th>Notes</th>
+                            <th class="avail-col" title="Harvest">H</th>
+                            <th class="avail-col" title="Autointerp">AI</th>
+                            <th class="avail-col" title="Dataset Attributions">DA</th>
+                            <th class="avail-col" title="Graph Interp">GI</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {#each registryRuns as entry (entry.wandb_run_id)}
+                            <tr
+                                class="run-row"
+                                onclick={() => handleRowClick(entry)}
+                                role="button"
+                                tabindex="0"
+                                onkeydown={(e) => {
+                                    if (e.key === "Enter") handleRowClick(entry);
+                                }}
+                            >
+                                <td class="cell-run">
+                                    {#if entry.name}
+                                        <span class="run-name">{entry.name}</span>
+                                    {/if}
+                                    <span class="run-id">{formatRunIdForDisplay(entry.wandb_run_id)}</span>
+                                </td>
+                                <td class="cell-arch">
+                                    {#if entry.architecture}
+                                        {entry.architecture}
+                                    {:else}
+                                        <span class="muted">-</span>
+                                    {/if}
+                                </td>
+                                <td class="cell-notes">
+                                    {#if entry.notes}
+                                        {entry.notes}
+                                    {/if}
+                                </td>
+                                <td class="cell-avail">
+                                    <span class="dot" class:available={entry.availability.harvest} title="Harvest"
+                                    ></span>
+                                </td>
+                                <td class="cell-avail">
+                                    <span class="dot" class:available={entry.availability.autointerp} title="Autointerp"
+                                    ></span>
+                                </td>
+                                <td class="cell-avail">
+                                    <span
+                                        class="dot"
+                                        class:available={entry.availability.attributions}
+                                        title="Dataset Attributions"
+                                    ></span>
+                                </td>
+                                <td class="cell-avail">
+                                    <span
+                                        class="dot"
+                                        class:available={entry.availability.graph_interp}
+                                        title="Graph Interp"
+                                    ></span>
+                                </td>
+                            </tr>
+                        {/each}
+                    </tbody>
+                </table>
+            </div>
+        {/if}
 
         <div class="divider">
             <span>or enter a custom path</span>
@@ -159,7 +195,7 @@
     }
 
     .selector-content {
-        max-width: 720px;
+        max-width: 860px;
         width: 100%;
         transition: opacity var(--transition-slow);
     }
@@ -173,72 +209,123 @@
         font-size: var(--text-3xl);
         font-weight: 600;
         color: var(--text-primary);
-        margin: 0 0 var(--space-2) 0;
+        margin: 0 0 var(--space-4) 0;
         text-align: center;
         font-family: var(--font-sans);
     }
 
-    .runs-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-        gap: var(--space-3);
-        margin-bottom: var(--space-6);
+    .error-text {
+        color: var(--status-error, #ef4444);
+        font-family: var(--font-sans);
+        font-size: var(--text-sm);
+        text-align: center;
     }
 
-    .run-card {
-        display: flex;
-        flex-direction: column;
-        align-items: flex-start;
-        gap: var(--space-1);
-        padding: var(--space-3);
-        background: var(--bg-surface);
+    .loading-registry {
+        color: var(--text-muted);
+        font-family: var(--font-sans);
+        font-size: var(--text-sm);
+        text-align: center;
+    }
+
+    .table-wrapper {
+        margin-bottom: var(--space-6);
         border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
-        cursor: pointer;
-        text-align: left;
-        transition:
-            border-color var(--transition-normal),
-            background var(--transition-normal);
+        overflow: hidden;
     }
 
-    .run-card:hover:not(:disabled) {
-        border-color: var(--accent-primary);
+    .runs-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-family: var(--font-sans);
+        font-size: var(--text-sm);
+    }
+
+    .runs-table thead {
+        background: var(--bg-surface);
+    }
+
+    .runs-table th {
+        padding: var(--space-2) var(--space-3);
+        text-align: left;
+        font-weight: 500;
+        color: var(--text-muted);
+        font-size: var(--text-xs);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        border-bottom: 1px solid var(--border-default);
+    }
+
+    .avail-col {
+        width: 36px;
+        text-align: center !important;
+    }
+
+    .runs-table td {
+        padding: var(--space-2) var(--space-3);
+        border-bottom: 1px solid var(--border-default);
+    }
+
+    .runs-table tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    .run-row {
+        cursor: pointer;
+        transition: background var(--transition-normal);
+    }
+
+    .run-row:hover {
         background: var(--bg-elevated);
     }
 
-    .run-card:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
+    .cell-run {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
     }
 
-    .run-model {
-        font-size: var(--text-sm);
+    .run-name {
         font-weight: 600;
         color: var(--text-primary);
-        font-family: var(--font-mono);
-    }
-
-    .run-model.loading {
-        opacity: 0.5;
-        font-style: italic;
     }
 
     .run-id {
-        font-size: var(--text-xs);
         font-family: var(--font-mono);
+        font-size: var(--text-xs);
         color: var(--accent-primary);
     }
 
-    .run-notes {
+    .cell-arch {
+        font-family: var(--font-mono);
         font-size: var(--text-xs);
-        color: var(--text-muted);
-        font-family: var(--font-sans);
+        color: var(--text-secondary);
     }
 
-    .run-cluster-mappings {
-        font-size: var(--text-xs);
+    .cell-notes {
         color: var(--text-muted);
-        font-family: var(--font-sans);
+        font-size: var(--text-xs);
+    }
+
+    .cell-avail {
+        text-align: center;
+    }
+
+    .muted {
+        color: var(--text-muted);
+    }
+
+    .dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--border-default);
+    }
+
+    .dot.available {
+        background: var(--status-success, #22c55e);
     }
 
     .divider {
