@@ -1,0 +1,5 @@
+{
+  "enabledPlugins": {
+    "plotting-goodfire-style@goodfire-plugins": true
+  }
+}
