@@ -3,7 +3,7 @@
  */
 
 import type { SubcomponentCorrelationsResponse, TokenStatsResponse } from "../promptAttributionsTypes";
-import { apiUrl, fetchJson } from "./index";
+import { ApiError, apiUrl, fetchJson } from "./index";
 
 export async function getComponentCorrelations(
     layer: string,

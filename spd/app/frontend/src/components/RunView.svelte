@@ -5,7 +5,6 @@
     import DatasetExplorerTab from "./DatasetExplorerTab.svelte";
     import InvestigationsTab from "./InvestigationsTab.svelte";
     import DataSourcesTab from "./DataSourcesTab.svelte";
-    import ModelGraphTab from "./ModelGraphTab.svelte";
     import PromptAttributionsTab from "./PromptAttributionsTab.svelte";
     import DisplaySettingsDropdown from "./ui/DisplaySettingsDropdown.svelte";
     import ActivationContextsTab from "./ActivationContextsTab.svelte";
@@ -16,10 +15,8 @@
         runState.run?.status === "loaded" && runState.run.data.dataset_search_enabled,
     );
 
-    const graphInterpAvailable = $derived(runState.graphInterpAvailable);
-
     let activeTab = $state<
-        "prompts" | "components" | "dataset-search" | "model-graph" | "data-sources" | "investigations" | null
+        "prompts" | "components" | "dataset-search" | "data-sources" | "investigations" | null
     >(null);
 
     $effect(() => {
@@ -54,14 +51,6 @@
             >
                 Investigations
             </button>
-            <button
-                type="button"
-                class="tab-button"
-                class:active={activeTab === "dataset-search"}
-                onclick={() => (activeTab = "dataset-search")}
-            >
-                Dataset Explorer
-            </button>
             {#if runState.run.status === "loaded" && runState.run.data}
                 <button
                     type="button"
@@ -86,17 +75,7 @@
                         class:active={activeTab === "dataset-search"}
                         onclick={() => (activeTab = "dataset-search")}
                     >
-                        Dataset Search
-                    </button>
-                {/if}
-                {#if graphInterpAvailable}
-                    <button
-                        type="button"
-                        class="tab-button"
-                        class:active={activeTab === "model-graph"}
-                        onclick={() => (activeTab = "model-graph")}
-                    >
-                        Model Graph
+                        Dataset Explorer
                     </button>
                 {/if}
                 <button
@@ -140,11 +119,6 @@
             {#if datasetSearchEnabled}
                 <div class="tab-content" class:hidden={activeTab !== "dataset-search"}>
                     <DatasetExplorerTab />
-                </div>
-            {/if}
-            {#if graphInterpAvailable}
-                <div class="tab-content" class:hidden={activeTab !== "model-graph"}>
-                    <ModelGraphTab />
                 </div>
             {/if}
             <div class="tab-content" class:hidden={activeTab !== "data-sources"}>

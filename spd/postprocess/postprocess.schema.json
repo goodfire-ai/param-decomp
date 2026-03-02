@@ -1,0 +1,914 @@
+{
+  "$defs": {
+    "AttributionsSlurmConfig": {
+      "additionalProperties": false,
+      "description": "Config for dataset attributions SLURM submission.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/DatasetAttributionConfig"
+        },
+        "n_gpus": {
+          "default": 8,
+          "exclusiveMinimum": 0,
+          "title": "N Gpus",
+          "type": "integer"
+        },
+        "partition": {
+          "default": "h200-reserved",
+          "title": "Partition",
+          "type": "string"
+        },
+        "time": {
+          "default": "48:00:00",
+          "title": "Time",
+          "type": "string"
+        },
+        "merge_time": {
+          "default": "01:00:00",
+          "title": "Merge Time",
+          "type": "string"
+        },
+        "merge_mem": {
+          "default": "200G",
+          "title": "Merge Mem",
+          "type": "string"
+        }
+      },
+      "required": [
+        "config"
+      ],
+      "title": "AttributionsSlurmConfig",
+      "type": "object"
+    },
+    "AutointerpConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "default": "google/gemini-3-flash-preview",
+          "title": "Model",
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "low",
+          "title": "Reasoning Effort"
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit"
+        },
+        "cost_limit_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Limit Usd"
+        },
+        "max_requests_per_minute": {
+          "default": 500,
+          "title": "Max Requests Per Minute",
+          "type": "integer"
+        },
+        "max_concurrent": {
+          "default": 50,
+          "title": "Max Concurrent",
+          "type": "integer"
+        },
+        "template_strategy": {
+          "discriminator": {
+            "mapping": {
+              "compact_skeptical": "#/$defs/CompactSkepticalConfig",
+              "dual_view": "#/$defs/DualViewConfig"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/CompactSkepticalConfig"
+            },
+            {
+              "$ref": "#/$defs/DualViewConfig"
+            }
+          ],
+          "title": "Template Strategy"
+        }
+      },
+      "required": [
+        "template_strategy"
+      ],
+      "title": "AutointerpConfig",
+      "type": "object"
+    },
+    "AutointerpEvalConfig": {
+      "additionalProperties": false,
+      "description": "Config for label-based autointerp evals (detection, fuzzing).",
+      "properties": {
+        "model": {
+          "default": "google/gemini-3-flash-preview",
+          "title": "Model",
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "none",
+          "title": "Reasoning Effort"
+        },
+        "detection_config": {
+          "$ref": "#/$defs/DetectionEvalConfig"
+        },
+        "fuzzing_config": {
+          "$ref": "#/$defs/FuzzingEvalConfig"
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit"
+        },
+        "cost_limit_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Limit Usd"
+        },
+        "max_requests_per_minute": {
+          "default": 500,
+          "title": "Max Requests Per Minute",
+          "type": "integer"
+        },
+        "max_concurrent": {
+          "default": 50,
+          "title": "Max Concurrent",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "detection_config",
+        "fuzzing_config"
+      ],
+      "title": "AutointerpEvalConfig",
+      "type": "object"
+    },
+    "AutointerpSlurmConfig": {
+      "additionalProperties": false,
+      "description": "Config for the autointerp functional unit (interpret + evals).\n\nDependency graph within autointerp:\n    interpret         (depends on harvest merge)\n    \u251c\u2500\u2500 detection     (depends on interpret)\n    \u2514\u2500\u2500 fuzzing       (depends on interpret)",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/AutointerpConfig"
+        },
+        "partition": {
+          "default": "h200-reserved",
+          "title": "Partition",
+          "type": "string"
+        },
+        "time": {
+          "default": "12:00:00",
+          "title": "Time",
+          "type": "string"
+        },
+        "evals": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AutointerpEvalConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evals_time": {
+          "default": "12:00:00",
+          "title": "Evals Time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "config",
+        "evals"
+      ],
+      "title": "AutointerpSlurmConfig",
+      "type": "object"
+    },
+    "CLTHarvestConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "CLTHarvestConfig",
+          "default": "CLTHarvestConfig",
+          "title": "Type",
+          "type": "string"
+        },
+        "wandb_path": {
+          "title": "Wandb Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "wandb_path"
+      ],
+      "title": "CLTHarvestConfig",
+      "type": "object"
+    },
+    "CompactSkepticalConfig": {
+      "additionalProperties": false,
+      "description": "Current default strategy: compact prompt, skeptical tone, structured JSON output.",
+      "properties": {
+        "type": {
+          "const": "compact_skeptical",
+          "default": "compact_skeptical",
+          "title": "Type",
+          "type": "string"
+        },
+        "max_examples": {
+          "default": 30,
+          "title": "Max Examples",
+          "type": "integer"
+        },
+        "include_pmi": {
+          "default": true,
+          "title": "Include Pmi",
+          "type": "boolean"
+        },
+        "include_spd_context": {
+          "default": true,
+          "title": "Include Spd Context",
+          "type": "boolean"
+        },
+        "include_dataset_description": {
+          "default": true,
+          "title": "Include Dataset Description",
+          "type": "boolean"
+        },
+        "label_max_words": {
+          "default": 8,
+          "title": "Label Max Words",
+          "type": "integer"
+        },
+        "forbidden_words": {
+          "default": [
+            "narrative",
+            "story",
+            "character",
+            "theme",
+            "descriptive",
+            "content",
+            "transition",
+            "scene"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Words",
+          "type": "array"
+        }
+      },
+      "title": "CompactSkepticalConfig",
+      "type": "object"
+    },
+    "DatasetAttributionConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "spd_run_wandb_path": {
+          "title": "Spd Run Wandb Path",
+          "type": "string"
+        },
+        "harvest_subrun_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Harvest Subrun Id"
+        },
+        "n_batches": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "const": "whole_dataset",
+              "type": "string"
+            }
+          ],
+          "default": 10000,
+          "title": "N Batches"
+        },
+        "batch_size": {
+          "default": 32,
+          "title": "Batch Size",
+          "type": "integer"
+        },
+        "ci_threshold": {
+          "default": 0.0,
+          "title": "Ci Threshold",
+          "type": "number"
+        }
+      },
+      "required": [
+        "spd_run_wandb_path"
+      ],
+      "title": "DatasetAttributionConfig",
+      "type": "object"
+    },
+    "DetectionEvalConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "detection",
+          "default": "detection",
+          "title": "Type",
+          "type": "string"
+        },
+        "n_activating": {
+          "default": 5,
+          "title": "N Activating",
+          "type": "integer"
+        },
+        "n_non_activating": {
+          "default": 5,
+          "title": "N Non Activating",
+          "type": "integer"
+        },
+        "n_trials": {
+          "default": 5,
+          "title": "N Trials",
+          "type": "integer"
+        }
+      },
+      "title": "DetectionEvalConfig",
+      "type": "object"
+    },
+    "DualViewConfig": {
+      "additionalProperties": false,
+      "description": "Dual-view strategy: presents both input and output evidence with dual example views.\n\nKey differences from compact_skeptical:\n- Output data presented first\n- Two example sections: \"fires on\" (current token) and \"produces\" (next token)\n- Task asks for functional description, not detection label",
+      "properties": {
+        "type": {
+          "const": "dual_view",
+          "default": "dual_view",
+          "title": "Type",
+          "type": "string"
+        },
+        "max_examples": {
+          "default": 30,
+          "title": "Max Examples",
+          "type": "integer"
+        },
+        "include_pmi": {
+          "default": true,
+          "title": "Include Pmi",
+          "type": "boolean"
+        },
+        "include_dataset_description": {
+          "default": true,
+          "title": "Include Dataset Description",
+          "type": "boolean"
+        },
+        "label_max_words": {
+          "default": 8,
+          "title": "Label Max Words",
+          "type": "integer"
+        },
+        "forbidden_words": {
+          "default": [
+            "narrative",
+            "story",
+            "character",
+            "theme",
+            "descriptive",
+            "content",
+            "transition",
+            "scene"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden Words",
+          "type": "array"
+        }
+      },
+      "title": "DualViewConfig",
+      "type": "object"
+    },
+    "FuzzingEvalConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "fuzzing",
+          "default": "fuzzing",
+          "title": "Type",
+          "type": "string"
+        },
+        "n_correct": {
+          "default": 5,
+          "title": "N Correct",
+          "type": "integer"
+        },
+        "n_incorrect": {
+          "default": 2,
+          "title": "N Incorrect",
+          "type": "integer"
+        },
+        "n_trials": {
+          "default": 5,
+          "title": "N Trials",
+          "type": "integer"
+        }
+      },
+      "title": "FuzzingEvalConfig",
+      "type": "object"
+    },
+    "GraphInterpConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "default": "google/gemini-3-flash-preview",
+          "title": "Model",
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "low",
+          "title": "Reasoning Effort"
+        },
+        "attr_metric": {
+          "default": "attr_abs",
+          "enum": [
+            "attr",
+            "attr_abs"
+          ],
+          "title": "Attr Metric",
+          "type": "string"
+        },
+        "top_k_attributed": {
+          "default": 8,
+          "title": "Top K Attributed",
+          "type": "integer"
+        },
+        "max_examples": {
+          "default": 20,
+          "title": "Max Examples",
+          "type": "integer"
+        },
+        "label_max_words": {
+          "default": 8,
+          "title": "Label Max Words",
+          "type": "integer"
+        },
+        "cost_limit_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Limit Usd"
+        },
+        "max_requests_per_minute": {
+          "default": 500,
+          "title": "Max Requests Per Minute",
+          "type": "integer"
+        },
+        "max_concurrent": {
+          "default": 50,
+          "title": "Max Concurrent",
+          "type": "integer"
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit"
+        }
+      },
+      "title": "GraphInterpConfig",
+      "type": "object"
+    },
+    "GraphInterpSlurmConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/GraphInterpConfig"
+        },
+        "partition": {
+          "default": "h200-reserved",
+          "title": "Partition",
+          "type": "string"
+        },
+        "time": {
+          "default": "24:00:00",
+          "title": "Time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "config"
+      ],
+      "title": "GraphInterpSlurmConfig",
+      "type": "object"
+    },
+    "HarvestConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "method_config": {
+          "discriminator": {
+            "mapping": {
+              "CLTHarvestConfig": "#/$defs/CLTHarvestConfig",
+              "MOLTHarvestConfig": "#/$defs/MOLTHarvestConfig",
+              "SPDHarvestConfig": "#/$defs/SPDHarvestConfig"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/SPDHarvestConfig"
+            },
+            {
+              "$ref": "#/$defs/CLTHarvestConfig"
+            },
+            {
+              "$ref": "#/$defs/MOLTHarvestConfig"
+            }
+          ],
+          "title": "Method Config"
+        },
+        "n_batches": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "const": "whole_dataset",
+              "type": "string"
+            }
+          ],
+          "default": 20000,
+          "title": "N Batches"
+        },
+        "batch_size": {
+          "default": 32,
+          "title": "Batch Size",
+          "type": "integer"
+        },
+        "activation_examples_per_component": {
+          "default": 400,
+          "title": "Activation Examples Per Component",
+          "type": "integer"
+        },
+        "activation_context_tokens_per_side": {
+          "default": 20,
+          "title": "Activation Context Tokens Per Side",
+          "type": "integer"
+        },
+        "pmi_token_top_k": {
+          "default": 40,
+          "title": "Pmi Token Top K",
+          "type": "integer"
+        },
+        "max_examples_per_batch_per_component": {
+          "default": 5,
+          "title": "Max Examples Per Batch Per Component",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "method_config"
+      ],
+      "title": "HarvestConfig",
+      "type": "object"
+    },
+    "HarvestSlurmConfig": {
+      "additionalProperties": false,
+      "description": "Config for harvest SLURM submission.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/HarvestConfig"
+        },
+        "n_gpus": {
+          "default": 8,
+          "exclusiveMinimum": 0,
+          "title": "N Gpus",
+          "type": "integer"
+        },
+        "partition": {
+          "default": "h200-reserved",
+          "title": "Partition",
+          "type": "string"
+        },
+        "time": {
+          "default": "12:00:00",
+          "title": "Time",
+          "type": "string"
+        },
+        "merge_time": {
+          "default": "04:00:00",
+          "title": "Merge Time",
+          "type": "string"
+        },
+        "merge_mem": {
+          "default": "200G",
+          "title": "Merge Mem",
+          "type": "string"
+        }
+      },
+      "required": [
+        "config"
+      ],
+      "title": "HarvestSlurmConfig",
+      "type": "object"
+    },
+    "IntruderEvalConfig": {
+      "additionalProperties": false,
+      "description": "Config for intruder detection eval (decomposition quality, not label quality).",
+      "properties": {
+        "model": {
+          "default": "google/gemini-3-flash-preview",
+          "title": "Model",
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "minimal",
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "none",
+          "title": "Reasoning Effort"
+        },
+        "n_real": {
+          "default": 4,
+          "title": "N Real",
+          "type": "integer"
+        },
+        "n_trials": {
+          "default": 10,
+          "title": "N Trials",
+          "type": "integer"
+        },
+        "density_tolerance": {
+          "default": 0.05,
+          "title": "Density Tolerance",
+          "type": "number"
+        },
+        "max_concurrent": {
+          "default": 50,
+          "title": "Max Concurrent",
+          "type": "integer"
+        },
+        "limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit"
+        },
+        "cost_limit_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Limit Usd"
+        },
+        "max_requests_per_minute": {
+          "default": 200,
+          "title": "Max Requests Per Minute",
+          "type": "integer"
+        }
+      },
+      "title": "IntruderEvalConfig",
+      "type": "object"
+    },
+    "IntruderSlurmConfig": {
+      "additionalProperties": false,
+      "description": "Config for intruder eval SLURM submission.",
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/IntruderEvalConfig",
+          "default": {
+            "model": "google/gemini-3-flash-preview",
+            "reasoning_effort": "none",
+            "n_real": 4,
+            "n_trials": 10,
+            "density_tolerance": 0.05,
+            "max_concurrent": 50,
+            "limit": null,
+            "cost_limit_usd": null,
+            "max_requests_per_minute": 200
+          }
+        },
+        "partition": {
+          "default": "h200-reserved",
+          "title": "Partition",
+          "type": "string"
+        },
+        "time": {
+          "default": "4:00:00",
+          "title": "Time",
+          "type": "string"
+        }
+      },
+      "title": "IntruderSlurmConfig",
+      "type": "object"
+    },
+    "MOLTHarvestConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "MOLTHarvestConfig",
+          "default": "MOLTHarvestConfig",
+          "title": "Type",
+          "type": "string"
+        },
+        "wandb_path": {
+          "title": "Wandb Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "wandb_path"
+      ],
+      "title": "MOLTHarvestConfig",
+      "type": "object"
+    },
+    "SPDHarvestConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "SPDHarvestConfig",
+          "default": "SPDHarvestConfig",
+          "title": "Type",
+          "type": "string"
+        },
+        "wandb_path": {
+          "title": "Wandb Path",
+          "type": "string"
+        },
+        "activation_threshold": {
+          "default": 0.0,
+          "title": "Activation Threshold",
+          "type": "number"
+        }
+      },
+      "required": [
+        "wandb_path"
+      ],
+      "title": "SPDHarvestConfig",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Top-level config for the unified postprocessing pipeline.\n\nComposes sub-configs for each pipeline stage. Set a section to null\nto skip that stage entirely.\n\nDependency graph:\n    harvest (GPU array -> merge)\n    \u251c\u2500\u2500 intruder eval    (CPU, depends on harvest merge, label-free)\n    \u2514\u2500\u2500 autointerp       (depends on harvest merge)\n        \u251c\u2500\u2500 interpret\n        \u2502   \u251c\u2500\u2500 detection\n        \u2502   \u2514\u2500\u2500 fuzzing\n    attributions (GPU array -> merge, depends on harvest merge)",
+  "properties": {
+    "harvest": {
+      "$ref": "#/$defs/HarvestSlurmConfig"
+    },
+    "autointerp": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AutointerpSlurmConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "intruder": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/IntruderSlurmConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "attributions": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AttributionsSlurmConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "graph_interp": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GraphInterpSlurmConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "harvest",
+    "autointerp",
+    "intruder",
+    "attributions",
+    "graph_interp"
+  ],
+  "title": "PostprocessConfig",
+  "type": "object"
+}

@@ -33,8 +33,8 @@ class CompactSkepticalConfig(BaseConfig):
     include_pmi: bool = True
     include_spd_context: bool = True
     include_dataset_description: bool = True
-    label_max_words: int = 5
-    forbidden_words: list[str] = FORBIDDEN_WORDS_DEFAULT
+    label_max_words: int = 8
+    forbidden_words: list[str] | None = None
 
 
 class DualViewConfig(BaseConfig):
@@ -51,7 +51,7 @@ class DualViewConfig(BaseConfig):
     include_pmi: bool = True
     include_dataset_description: bool = True
     label_max_words: int = 8
-    forbidden_words: list[str] = FORBIDDEN_WORDS_DEFAULT
+    forbidden_words: list[str] | None = None
 
 
 StrategyConfig = CompactSkepticalConfig | DualViewConfig
