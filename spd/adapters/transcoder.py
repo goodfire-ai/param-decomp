@@ -118,18 +118,10 @@ class TranscoderAdapter(DecompositionAdapter):
     @override
     def dataloader(self, batch_size: int) -> DataLoader[torch.Tensor]:
         ds_cfg = self._run_info.config_dict["train_dataset_config"]
-        dataset_config = DatasetConfig(
-            name=ds_cfg["name"],
-            is_tokenized=ds_cfg["is_tokenized"],
-            hf_tokenizer_path=ds_cfg["hf_tokenizer_path"],
-            streaming=True,
-            split=ds_cfg["split"],
-            n_ctx=self.base_model.config.block_size,
-            column_name=ds_cfg["column_name"],
+        dataset_config = DatasetConfig.model_validate(
+            {**ds_cfg, "streaming": True, "n_ctx": self.base_model.config.block_size}
         )
         loader, _ = create_data_loader(
-            dataset_config=dataset_config,
-            batch_size=batch_size,
-            buffer_size=1000,
+            dataset_config=dataset_config, batch_size=batch_size, buffer_size=1000
         )
         return loader
