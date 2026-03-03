@@ -1,6 +1,6 @@
 """Encoder configuration for transcoder architectures.
 
-Vendored from https://github.com/bartbussmann/nn_decompositions (MIT license).
+Originally by Bart Bussmann, vendored from https://github.com/bartbussmann/nn_decompositions (MIT license).
 Only EncoderConfig is used; CLTConfig and SAEConfig are omitted.
 """
 

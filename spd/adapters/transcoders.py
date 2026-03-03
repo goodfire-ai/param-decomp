@@ -1,6 +1,6 @@
 """Transcoder nn.Module implementations (Vanilla, TopK, BatchTopK, JumpReLU).
 
-Vendored from https://github.com/bartbussmann/nn_decompositions (MIT license).
+Originally by Bart Bussmann, vendored from https://github.com/bartbussmann/nn_decompositions (MIT license).
 """
 
 from typing import Any, override
@@ -72,13 +72,13 @@ class SharedTranscoder(nn.Module):
             return out * std + mean
         return out
 
-    @torch.no_grad()  # pyright: ignore[reportUntypedFunctionDecorator]
     def make_decoder_weights_and_grad_unit_norm(self) -> None:
-        W_dec_normed = self.W_dec / self.W_dec.norm(dim=-1, keepdim=True)
-        assert self.W_dec.grad is not None
-        W_dec_grad_proj = (self.W_dec.grad * W_dec_normed).sum(-1, keepdim=True) * W_dec_normed
-        self.W_dec.grad -= W_dec_grad_proj
-        self.W_dec.data = W_dec_normed
+        with torch.no_grad():
+            W_dec_normed = self.W_dec / self.W_dec.norm(dim=-1, keepdim=True)
+            assert self.W_dec.grad is not None
+            W_dec_grad_proj = (self.W_dec.grad * W_dec_normed).sum(-1, keepdim=True) * W_dec_normed
+            self.W_dec.grad -= W_dec_grad_proj
+            self.W_dec.data = W_dec_normed
 
     def update_inactive_features(self, acts: Tensor) -> None:
         self.num_batches_not_active += (acts.sum(0) == 0).float()
@@ -267,7 +267,8 @@ class RectangleFunction(autograd.Function):
 
     @staticmethod
     @override
-    def backward(ctx: Any, grad_output: Tensor) -> Tensor:  # pyright: ignore[reportIncompatibleMethodOverride]
+    def backward(ctx: Any, *grad_outputs: Tensor) -> Tensor:
+        (grad_output,) = grad_outputs
         (x,) = ctx.saved_tensors
         grad_input = grad_output.clone()
         grad_input[(x <= -0.5) | (x >= 0.5)] = 0
@@ -284,7 +285,8 @@ class JumpReLUFunction(autograd.Function):
 
     @staticmethod
     @override
-    def backward(ctx: Any, grad_output: Tensor) -> tuple[Tensor, Tensor, None]:  # pyright: ignore[reportIncompatibleMethodOverride]
+    def backward(ctx: Any, *grad_outputs: Tensor) -> tuple[Tensor, Tensor, None]:
+        (grad_output,) = grad_outputs
         x, log_threshold, bandwidth_tensor = ctx.saved_tensors
         bandwidth = bandwidth_tensor.item()
         threshold = torch.exp(log_threshold)
@@ -320,7 +322,8 @@ class StepFunction(autograd.Function):
 
     @staticmethod
     @override
-    def backward(ctx: Any, grad_output: Tensor) -> tuple[Tensor, Tensor, None]:  # pyright: ignore[reportIncompatibleMethodOverride]
+    def backward(ctx: Any, *grad_outputs: Tensor) -> tuple[Tensor, Tensor, None]:
+        (grad_output,) = grad_outputs
         x, log_threshold, bandwidth_tensor = ctx.saved_tensors
         bandwidth = bandwidth_tensor.item()
         threshold = torch.exp(log_threshold)
