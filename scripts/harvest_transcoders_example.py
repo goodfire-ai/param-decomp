@@ -8,7 +8,7 @@ Usage:
     python scripts/harvest_transcoders_example.py
 
 Prerequisites:
-    pip install -e ".[transcoder]"
+    pip install -e ".[nn_decompositions]"
 """
 
 from datetime import datetime

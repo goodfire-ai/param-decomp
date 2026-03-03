@@ -2086,7 +2086,7 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-transcoder = [
+nn-decompositions = [
     { name = "nn-decompositions" },
 ]
 
@@ -2112,7 +2112,7 @@ requires-dist = [
     { name = "ipykernel" },
     { name = "jaxtyping" },
     { name = "matplotlib" },
-    { name = "nn-decompositions", marker = "extra == 'transcoder'", git = "https://github.com/bartbussmann/nn_decompositions.git" },
+    { name = "nn-decompositions", marker = "extra == 'nn-decompositions'", git = "https://github.com/bartbussmann/nn_decompositions.git" },
     { name = "numpy" },
     { name = "openrouter", specifier = ">=0.1.1" },
     { name = "orjson" },
@@ -2131,7 +2131,7 @@ requires-dist = [
     { name = "wandb-workspaces", specifier = "==0.1.12" },
     { name = "zstandard" },
 ]
-provides-extras = ["transcoder"]
+provides-extras = ["nn-decompositions"]
 
 [package.metadata.requires-dev]
 dev = [

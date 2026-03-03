@@ -59,7 +59,7 @@ spd-attributions = "spd.dataset_attributions.scripts.run_slurm_cli:cli"
 spd-postprocess = "spd.postprocess.cli:cli"
 
 [project.optional-dependencies]
-transcoder = [
+nn_decompositions = [
     "nn-decompositions @ git+https://github.com/bartbussmann/nn_decompositions.git",
 ]
 
