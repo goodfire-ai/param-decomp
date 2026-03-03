@@ -131,15 +131,16 @@
         return null;
     });
 
-    // Prediction rows for rendering: [{label, preds}] ordered top-to-bottom (Adv, Stoch, CI)
-    type PredRow = { label: string; preds: TokenPrediction[][] };
+    // Prediction rows for rendering: [{label, preds, labelPred}] ordered top-to-bottom (Adv, Stoch, CI)
+    type PredRow = { label: string; preds: TokenPrediction[][]; labelPred: TokenPrediction | null };
     const predRows = $derived.by((): PredRow[] | null => {
         if (!interventionResult) return null;
+        const lbl = interventionResult.label;
         const rows: PredRow[] = [];
-        if (interventionResult.adversarial.length > 0) rows.push({ label: "Adv", preds: interventionResult.adversarial });
-        if (interventionResult.stochastic.length > 0) rows.push({ label: "Stoch", preds: interventionResult.stochastic });
-        rows.push({ label: "CI", preds: interventionResult.ci });
-        if (interventionResult.target_sans.length > 0) rows.push({ label: "T\\S", preds: interventionResult.target_sans });
+        if (interventionResult.adversarial.length > 0) rows.push({ label: "Adv", preds: interventionResult.adversarial, labelPred: lbl?.adversarial ?? null });
+        if (interventionResult.stochastic.length > 0) rows.push({ label: "Stoch", preds: interventionResult.stochastic, labelPred: lbl?.stochastic ?? null });
+        rows.push({ label: "CI", preds: interventionResult.ci, labelPred: lbl?.ci ?? null });
+        if (interventionResult.target_sans.length > 0) rows.push({ label: "T\\S", preds: interventionResult.target_sans, labelPred: lbl?.target_sans ?? null });
         return rows;
     });
 
@@ -747,9 +748,13 @@
                                         {@const chipW = 48}
                                         {@const chipH = PRED_ROW_HEIGHT}
                                         {@const chipGap = 1}
+                                        {@const isLabelPos = interventionResult?.label != null && seqIdx === interventionResult.label.position}
+                                        {@const labelTokenId = isLabelPos ? row.labelPred?.token_id ?? null : null}
+                                        {@const labelInTopk = labelTokenId != null && preds.some((p) => p.token_id === labelTokenId)}
                                         {@const maxChips = Math.min(preds.length, Math.max(1, Math.floor((colW - 2 + chipGap) / (chipW + chipGap))))}
                                         {#each preds.slice(0, maxChips) as pred, rank (rank)}
                                             {@const cx = colX + rank * (chipW + chipGap)}
+                                            {@const isLabel = labelTokenId != null && pred.token_id === labelTokenId}
                                             <!-- svelte-ignore a11y_no_static_element_interactions -->
                                             <g
                                                 onmouseenter={(e) => handlePredMouseEnter(e, pred, row.label, seqIdx)}
@@ -762,8 +767,8 @@
                                                     height={chipH}
                                                     rx="2"
                                                     fill={getNextTokenProbBgColor(pred.prob)}
-                                                    stroke="#ddd"
-                                                    stroke-width="0.5"
+                                                    stroke={isLabel ? "#f59e0b" : "#ddd"}
+                                                    stroke-width={isLabel ? "1.5" : "0.5"}
                                                 />
                                                 <text
                                                     x={cx + chipW / 2}
@@ -775,6 +780,35 @@
                                                 >
                                             </g>
                                         {/each}
+                                        <!-- Label token chip (when not in topk) -->
+                                        {#if isLabelPos && !labelInTopk && row.labelPred}
+                                            {@const cx = colX + maxChips * (chipW + chipGap) + chipGap}
+                                            <!-- svelte-ignore a11y_no_static_element_interactions -->
+                                            <g
+                                                onmouseenter={(e) => handlePredMouseEnter(e, row.labelPred!, row.label, seqIdx)}
+                                                onmouseleave={handlePredMouseLeave}
+                                            >
+                                                <rect
+                                                    x={cx}
+                                                    y={rowY}
+                                                    width={chipW}
+                                                    height={chipH}
+                                                    rx="2"
+                                                    fill={getNextTokenProbBgColor(row.labelPred.prob)}
+                                                    stroke="#f59e0b"
+                                                    stroke-width="1.5"
+                                                    stroke-dasharray="3,2"
+                                                />
+                                                <text
+                                                    x={cx + chipW / 2}
+                                                    y={rowY + chipH / 2 + 3}
+                                                    text-anchor="middle"
+                                                    font-size="7"
+                                                    font-family="'Berkeley Mono', 'SF Mono', monospace"
+                                                    fill={row.labelPred.prob > 0.5 ? "white" : colors.textPrimary}>{row.labelPred.token}</text
+                                                >
+                                            </g>
+                                        {/if}
                                     {/each}
                                 {/each}
                             </g>

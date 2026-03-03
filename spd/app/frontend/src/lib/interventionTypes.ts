@@ -13,6 +13,14 @@ export type TokenPrediction = {
     target_logit: number;
 };
 
+export type LabelPredictions = {
+    position: number;
+    ci: TokenPrediction;
+    stochastic: TokenPrediction;
+    adversarial: TokenPrediction;
+    target_sans: TokenPrediction;
+};
+
 export type InterventionResult = {
     input_tokens: string[];
     ci: TokenPrediction[][];
@@ -23,6 +31,7 @@ export type InterventionResult = {
     stochastic_loss: number;
     adversarial_loss: number;
     target_sans_loss: number;
+    label: LabelPredictions | null;
 };
 
 /** Persisted intervention run from the server */

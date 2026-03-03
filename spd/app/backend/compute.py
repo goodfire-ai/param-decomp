@@ -18,6 +18,7 @@ from torch import Tensor, nn
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.app.backend.optim_cis import (
     AdvPGDConfig,
+    CELossConfig,
     CISnapshotCallback,
     LossConfig,
     OptimCIConfig,
@@ -683,6 +684,16 @@ class TokenPrediction(BaseModel):
     target_logit: float
 
 
+class LabelPredictions(BaseModel):
+    """Prediction stats for the CE label token at the optimized position, per masking regime."""
+
+    position: int
+    ci: TokenPrediction
+    stochastic: TokenPrediction
+    adversarial: TokenPrediction
+    target_sans: TokenPrediction
+
+
 class InterventionResult(BaseModel):
     """Unified result of an intervention evaluation under multiple masking regimes."""
 
@@ -695,6 +706,7 @@ class InterventionResult(BaseModel):
     stochastic_loss: float
     adversarial_loss: float
     target_sans_loss: float
+    label: LabelPredictions | None
 
 
 # Default eval PGD settings (distinct from optimization PGD which is a training regularizer)
@@ -756,6 +768,26 @@ def _extract_topk_predictions(
             )
         result.append(pos_preds)
     return result
+
+
+def _extract_label_prediction(
+    logits: Float[Tensor, "1 seq vocab"],
+    target_logits: Float[Tensor, "1 seq vocab"],
+    tokenizer: AppTokenizer,
+    position: int,
+    label_token: int,
+) -> TokenPrediction:
+    """Extract the prediction for a specific token at a specific position."""
+    probs = torch.softmax(logits[0, position], dim=-1)
+    target_probs = torch.softmax(target_logits[0, position], dim=-1)
+    return TokenPrediction(
+        token=tokenizer.get_tok_display(label_token),
+        token_id=label_token,
+        prob=float(probs[label_token].item()),
+        logit=float(logits[0, position, label_token].item()),
+        target_prob=float(target_probs[label_token].item()),
+        target_logit=float(target_logits[0, position, label_token].item()),
+    )
 
 
 def compute_intervention(
@@ -868,6 +900,17 @@ def compute_intervention(
             compute_recon_loss(ts_logits, loss_config, target_logits, device_str).item()
         )
 
+    label: LabelPredictions | None = None
+    if isinstance(loss_config, CELossConfig):
+        pos, tid = loss_config.position, loss_config.label_token
+        label = LabelPredictions(
+            position=pos,
+            ci=_extract_label_prediction(ci_logits, target_logits, tokenizer, pos, tid),
+            stochastic=_extract_label_prediction(stoch_logits, target_logits, tokenizer, pos, tid),
+            adversarial=_extract_label_prediction(adv_logits, target_logits, tokenizer, pos, tid),
+            target_sans=_extract_label_prediction(ts_logits, target_logits, tokenizer, pos, tid),
+        )
+
     input_tokens = tokenizer.get_spans([int(t.item()) for t in tokens[0]])
 
     return InterventionResult(
@@ -880,4 +923,5 @@ def compute_intervention(
         stochastic_loss=stoch_loss,
         adversarial_loss=adv_loss,
         target_sans_loss=ts_loss,
+        label=label,
     )
