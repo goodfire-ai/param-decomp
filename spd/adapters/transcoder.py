@@ -71,12 +71,6 @@ class TranscoderAdapter(DecompositionAdapter):
         return TransformerTopology(self.base_model)
 
     @cached_property
-    def _train_dataset_config(self) -> dict[str, Any]:
-        cfg = self._run_info.config_dict.get("train_dataset_config")
-        assert isinstance(cfg, dict), "base model run missing train_dataset_config"
-        return cfg
-
-    @cached_property
     def transcoders(self) -> dict[str, SharedTranscoder]:
         result: dict[str, SharedTranscoder] = {}
         for module_path, artifact_path in self._config.artifact_paths.items():
@@ -111,10 +105,11 @@ class TranscoderAdapter(DecompositionAdapter):
     @property
     @override
     def model_metadata(self) -> ModelMetadata:
+        ds_cfg = self._run_info.config_dict.get("train_dataset_config", {})
         return ModelMetadata(
             n_blocks=self._topology.n_blocks,
             model_class="spd.pretrain.models.llama_simple_mlp.LlamaSimpleMLP",
-            dataset_name=self._train_dataset_config["name"],
+            dataset_name=ds_cfg.get("name", "unknown"),
             layer_descriptions={
                 path: self._topology.target_to_canon(path) for path in self.transcoders
             },
@@ -122,15 +117,15 @@ class TranscoderAdapter(DecompositionAdapter):
 
     @override
     def dataloader(self, batch_size: int) -> DataLoader[torch.Tensor]:
-        ds_cfg = self._train_dataset_config
+        ds_cfg = self._run_info.config_dict["train_dataset_config"]
         dataset_config = DatasetConfig(
             name=ds_cfg["name"],
-            is_tokenized=ds_cfg.get("is_tokenized", True),
-            hf_tokenizer_path=self.tokenizer_name,
+            is_tokenized=ds_cfg["is_tokenized"],
+            hf_tokenizer_path=ds_cfg["hf_tokenizer_path"],
             streaming=True,
-            split="train",
+            split=ds_cfg["split"],
             n_ctx=self.base_model.config.block_size,
-            column_name=ds_cfg.get("column_name", "input_ids"),
+            column_name=ds_cfg["column_name"],
         )
         loader, _ = create_data_loader(
             dataset_config=dataset_config,
