@@ -897,21 +897,15 @@ def _tool_run_ablation(params: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"Cannot intervene on {layer!r} nodes - only internal layers allowed")
         active_nodes.append((layer, int(seq_str), int(cidx_str)))
 
-    # Build trivial alive masks (all nodes alive — no graph context here)
-    alive_masks = {
-        layer_name: torch.ones(1, len(token_ids), C, device=DEVICE, dtype=torch.bool)
-        for layer_name, C in loaded.model.module_to_c.items()
-    }
-
     with manager.gpu_lock():
         result = compute_intervention(
             model=loaded.model,
             tokens=tokens,
             active_nodes=active_nodes,
-            graph_alive_masks=alive_masks,
             tokenizer=loaded.tokenizer,
             adv_pgd_config=DEFAULT_EVAL_PGD_CONFIG,
             loss_config=MeanKLLossConfig(),
+            sampling=loaded.config.sampling,
             top_k=top_k,
         )
 

@@ -235,7 +235,7 @@ Returns `InterventionResult` with top-k `TokenPrediction`s per position for each
 
 This loss is used for two things: (1) what PGD maximizes during adversarial evaluation, and (2) the `ci_loss`/`stochastic_loss`/`adversarial_loss` metrics reported in `InterventionResult`.
 
-**Alive masks**: `build_graph_alive_masks()` constructs boolean masks from the graph's `node_ci_vals` (CI > 0). These define the PGD degrees of freedom — PGD can only manipulate alive-but-unselected components.
+**Alive masks**: `compute_intervention` recomputes the model's natural CI (one forward pass + `calc_causal_importances`) and binarizes at 0 to get alive masks. This ensures the alive set is always the full model's CI — not the graph's potentially sparse optimized CI. PGD can only manipulate alive-but-unselected components.
 
 **Training PGD vs Eval PGD**: The PGD settings in the graph optimization config (`adv_pgd_n_steps`, `adv_pgd_step_size`) are a *training* regularizer — they make CI optimization robust. The PGD in `compute_intervention` is an *eval* metric — it measures worst-case leakage for a given node selection. Eval PGD defaults are in `compute.py` (`DEFAULT_EVAL_PGD_CONFIG`).
 

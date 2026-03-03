@@ -6,7 +6,6 @@ from pydantic import BaseModel
 
 from spd.app.backend.compute import (
     InterventionResult,
-    build_graph_alive_masks,
     compute_intervention,
 )
 from spd.app.backend.dependencies import DepDB, DepLoadedRun, DepStateManager
@@ -99,11 +98,6 @@ def run_and_save_intervention(
         )
         tokens = torch.tensor([token_ids], dtype=torch.long, device=DEVICE)
 
-        # Build alive masks from graph's CI values
-        graph_alive_masks = build_graph_alive_masks(
-            graph.node_ci_vals, loaded.model, loaded.topology, len(token_ids), str(DEVICE)
-        )
-
         # Use graph's loss config if optimized, else mean KL
         loss_config: LossConfig = (
             graph.optimization_params.loss
@@ -115,7 +109,6 @@ def run_and_save_intervention(
             model=loaded.model,
             tokens=tokens,
             active_nodes=active_nodes,
-            graph_alive_masks=graph_alive_masks,
             tokenizer=loaded.tokenizer,
             adv_pgd_config=AdvPGDConfig(
                 n_steps=request.adv_pgd.n_steps,
@@ -123,6 +116,7 @@ def run_and_save_intervention(
                 init="random",
             ),
             loss_config=loss_config,
+            sampling=loaded.config.sampling,
             top_k=request.top_k,
         )
 

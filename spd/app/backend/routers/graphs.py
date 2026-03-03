@@ -21,7 +21,6 @@ from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.app.backend.compute import (
     DEFAULT_EVAL_PGD_CONFIG,
     Edge,
-    build_graph_alive_masks,
     compute_intervention,
     compute_prompt_attributions,
     compute_prompt_attributions_optimized,
@@ -46,7 +45,7 @@ from spd.app.backend.optim_cis import (
 )
 from spd.app.backend.schemas import OutputProbability
 from spd.app.backend.utils import log_errors
-from spd.configs import ImportanceMinimalityLossConfig
+from spd.configs import ImportanceMinimalityLossConfig, SamplingType
 from spd.log import logger
 from spd.models.component_model import ComponentModel
 from spd.topology import TransformerTopology
@@ -63,6 +62,7 @@ def _save_base_intervention_run(
     tokenizer: AppTokenizer,
     topology: TransformerTopology,
     db: PromptAttrDB,
+    sampling: SamplingType,
     loss_config: LossConfig | None = None,
 ) -> None:
     """Compute intervention for all interventable nodes and save as an intervention run."""
@@ -79,10 +79,6 @@ def _save_base_intervention_run(
         concrete_path = topology.canon_to_target(canon_layer)
         active_nodes.append((concrete_path, int(seq_str), int(cidx_str)))
 
-    device = str(tokens.device)
-    seq_len = tokens.shape[1]
-    graph_alive_masks = build_graph_alive_masks(node_ci_vals, model, topology, seq_len, device)
-
     effective_loss_config: LossConfig = (
         loss_config if loss_config is not None else MeanKLLossConfig()
     )
@@ -91,10 +87,10 @@ def _save_base_intervention_run(
         model=model,
         tokens=tokens,
         active_nodes=active_nodes,
-        graph_alive_masks=graph_alive_masks,
         tokenizer=tokenizer,
         adv_pgd_config=DEFAULT_EVAL_PGD_CONFIG,
         loss_config=effective_loss_config,
+        sampling=sampling,
         top_k=10,
     )
 
@@ -569,6 +565,7 @@ def compute_graph_stream(
             tokenizer=loaded.tokenizer,
             topology=loaded.topology,
             db=db,
+            sampling=loaded.config.sampling,
         )
         logger.info(f"[perf] base intervention run: {time.perf_counter() - t0:.2f}s")
 
@@ -783,6 +780,7 @@ def compute_graph_optimized_stream(
             tokenizer=loaded.tokenizer,
             topology=loaded.topology,
             db=db,
+            sampling=loaded.config.sampling,
             loss_config=loss_config,
         )
 

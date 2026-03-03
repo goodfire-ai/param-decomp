@@ -713,34 +713,6 @@ class InterventionResult(BaseModel):
 DEFAULT_EVAL_PGD_CONFIG = AdvPGDConfig(n_steps=4, step_size=1.0, init="random")
 
 
-def build_graph_alive_masks(
-    node_ci_vals: dict[str, float],
-    model: ComponentModel,
-    topology: TransformerTopology,
-    seq_len: int,
-    device: str | torch.device,
-) -> dict[str, Bool[Tensor, "1 seq C"]]:
-    """Build alive masks from graph's node_ci_vals (CI > 0), excluding embed/output."""
-    alive_masks: dict[str, Bool[Tensor, "1 seq C"]] = {}
-    for layer_name, C in model.module_to_c.items():
-        alive_masks[layer_name] = torch.zeros(1, seq_len, C, device=device, dtype=torch.bool)
-
-    for key, ci in node_ci_vals.items():
-        if ci <= 0:
-            continue
-        canon_layer, seq_str, cidx_str = key.split(":")
-        if canon_layer in ("embed", "output"):
-            continue
-        concrete_path = topology.canon_to_target(canon_layer)
-        assert concrete_path in alive_masks, (
-            f"node_ci_vals has layer {canon_layer!r} (concrete: {concrete_path!r}) "
-            f"not in model.module_to_c"
-        )
-        alive_masks[concrete_path][0, int(seq_str), int(cidx_str)] = True
-
-    return alive_masks
-
-
 def _extract_topk_predictions(
     logits: Float[Tensor, "1 seq vocab"],
     target_logits: Float[Tensor, "1 seq vocab"],
@@ -794,23 +766,38 @@ def compute_intervention(
     model: ComponentModel,
     tokens: Float[Tensor, "1 seq"],
     active_nodes: list[tuple[str, int, int]],
-    graph_alive_masks: dict[str, Bool[Tensor, "1 seq C"]],
     tokenizer: AppTokenizer,
     adv_pgd_config: AdvPGDConfig,
     loss_config: LossConfig,
+    sampling: SamplingType,
     top_k: int,
 ) -> InterventionResult:
-    """Unified intervention evaluation: CI, stochastic, and adversarial masking.
+    """Unified intervention evaluation: CI, stochastic, adversarial, and target-sans masking.
+
+    Computes the model's natural CI to determine alive masks (CI > 0). PGD optimizes
+    alive-but-unselected components; non-alive get uniform random. Target-sans ablates
+    only the unselected alive nodes from the full target model.
 
     Args:
         active_nodes: (concrete_path, seq_pos, component_idx) tuples for selected nodes.
-        graph_alive_masks: The graph's CI > 0 mask (all alive components). PGD optimizes
-            alive-but-unselected components; non-alive get uniform random.
-        loss_config: Loss for PGD adversary to maximize.
+        loss_config: Loss for PGD adversary to maximize and for reporting metrics.
+        sampling: Sampling type for CI computation.
         top_k: Number of top predictions to return per position.
     """
     seq_len = tokens.shape[1]
     device = tokens.device
+
+    # Compute natural CI alive masks (the model's own binarized CI, independent of graph)
+    with torch.no_grad(), bf16_autocast():
+        output_with_cache: OutputWithCache = model(tokens, cache_type="input")
+        ci_outputs = model.calc_causal_importances(
+            pre_weight_acts=output_with_cache.cache,
+            sampling=sampling,
+            detach_inputs=False,
+        )
+    alive_masks: dict[str, Bool[Tensor, "1 seq C"]] = {
+        k: v > 0 for k, v in ci_outputs.lower_leaky.items()
+    }
 
     # Build binary CI masks from active nodes (selected = 1, rest = 0)
     ci_masks: dict[str, Float[Tensor, "1 seq C"]] = {}
@@ -818,8 +805,8 @@ def compute_intervention(
         ci_masks[layer_name] = torch.zeros(1, seq_len, C, device=device)
     for layer, seq_pos, c_idx in active_nodes:
         ci_masks[layer][0, seq_pos, c_idx] = 1.0
-        assert graph_alive_masks[layer][0, seq_pos, c_idx], (
-            f"Selected node {layer}:{seq_pos}:{c_idx} is not alive in the graph"
+        assert alive_masks[layer][0, seq_pos, c_idx], (
+            f"Selected node {layer}:{seq_pos}:{c_idx} is not alive (CI=0)"
         )
 
     # Target-sans: full target model with alive-but-unselected components zeroed out.
@@ -827,7 +814,7 @@ def compute_intervention(
     target_sans_masks: dict[str, Float[Tensor, "1 seq C"]] = {}
     for layer_name in ci_masks:
         mask = torch.ones_like(ci_masks[layer_name])
-        alive_unselected = graph_alive_masks[layer_name] & (ci_masks[layer_name] == 0)
+        alive_unselected = alive_masks[layer_name] & (ci_masks[layer_name] == 0)
         mask[alive_unselected] = 0.0
         target_sans_masks[layer_name] = mask
     weight_deltas = model.calc_weight_deltas()
@@ -864,7 +851,7 @@ def compute_intervention(
         model=model,
         tokens=tokens,
         ci=ci_masks,
-        alive_masks=graph_alive_masks,
+        alive_masks=alive_masks,
         adv_config=adv_pgd_config,
         target_out=target_logits,
         loss_config=loss_config,
@@ -873,7 +860,7 @@ def compute_intervention(
     adv_masks = interpolate_pgd_mask(ci_masks, adv_sources)
     with torch.no_grad():
         for layer in adv_masks:
-            non_alive = ~graph_alive_masks[layer]
+            non_alive = ~alive_masks[layer]
             adv_masks[layer][non_alive] = torch.rand(int(non_alive.sum().item()), device=device)
     with torch.no_grad(), bf16_autocast():
         adv_mask_infos = make_mask_infos(adv_masks, routing_masks="all")
