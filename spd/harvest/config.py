@@ -56,6 +56,8 @@ class TranscoderHarvestConfig(BaseConfig):
     base_model_path: str
     artifact_paths: dict[str, str]
     """Maps module paths (e.g. "h.0.mlp") to wandb artifact paths."""
+    tokenizer_name: str
+    dataset_name: str
     activation_threshold: float = 0.0
 
     @property

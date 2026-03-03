@@ -93,7 +93,7 @@ class TranscoderAdapter(DecompositionAdapter):
     @property
     @override
     def tokenizer_name(self) -> str:
-        return "gpt2"
+        return self._config.tokenizer_name
 
     @property
     @override
@@ -101,7 +101,7 @@ class TranscoderAdapter(DecompositionAdapter):
         return ModelMetadata(
             n_blocks=self._topology.n_blocks,
             model_class="spd.pretrain.models.llama_simple_mlp.LlamaSimpleMLP",
-            dataset_name="danbraunai/pile-uncopyrighted-tok",
+            dataset_name=self._config.dataset_name,
             layer_descriptions={
                 path: self._topology.target_to_canon(path) for path in self.transcoders
             },
@@ -110,9 +110,9 @@ class TranscoderAdapter(DecompositionAdapter):
     @override
     def dataloader(self, batch_size: int) -> DataLoader[torch.Tensor]:
         dataset_config = DatasetConfig(
-            name="danbraunai/pile-uncopyrighted-tok",
+            name=self._config.dataset_name,
             is_tokenized=True,
-            hf_tokenizer_path="gpt2",
+            hf_tokenizer_path=self._config.tokenizer_name,
             streaming=True,
             split="train",
             n_ctx=512,
