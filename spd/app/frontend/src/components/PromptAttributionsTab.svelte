@@ -376,7 +376,7 @@
             const run = await api.runAndSaveIntervention({
                 graph_id: activeGraph.id,
                 selected_nodes: selectedNodes,
-                sans_nodes: sansNodes,
+                sans_nodes: sansNodes.length > 0 ? sansNodes : undefined,
                 top_k: 10,
                 adv_pgd: advPgd,
             });

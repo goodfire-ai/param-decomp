@@ -691,7 +691,7 @@ class LabelPredictions(BaseModel):
     ci: TokenPrediction
     stochastic: TokenPrediction
     adversarial: TokenPrediction
-    target_sans: TokenPrediction
+    target_sans: TokenPrediction | None
 
 
 class InterventionResult(BaseModel):
@@ -701,11 +701,11 @@ class InterventionResult(BaseModel):
     ci: list[list[TokenPrediction]]
     stochastic: list[list[TokenPrediction]]
     adversarial: list[list[TokenPrediction]]
-    target_sans: list[list[TokenPrediction]]
+    target_sans: list[list[TokenPrediction]] | None
     ci_loss: float
     stochastic_loss: float
     adversarial_loss: float
-    target_sans_loss: float
+    target_sans_loss: float | None
     label: LabelPredictions | None
 
 
@@ -766,20 +766,21 @@ def compute_intervention(
     model: ComponentModel,
     tokens: Float[Tensor, "1 seq"],
     active_nodes: list[tuple[str, int, int]],
-    sans_nodes: list[tuple[str, int, int]],
+    sans_nodes: list[tuple[str, int, int]] | None,
     tokenizer: AppTokenizer,
     adv_pgd_config: AdvPGDConfig,
     loss_config: LossConfig,
     sampling: SamplingType,
     top_k: int,
 ) -> InterventionResult:
-    """Unified intervention evaluation: CI, stochastic, adversarial, and target-sans masking.
+    """Unified intervention evaluation: CI, stochastic, adversarial, and optionally target-sans.
 
     Args:
         active_nodes: (concrete_path, seq_pos, component_idx) tuples for selected nodes.
             Used for CI, stochastic, and adversarial masking.
-        sans_nodes: (concrete_path, seq_pos, component_idx) tuples for nodes to ablate
-            in target-sans. The frontend computes this as all_graph_nodes - selected_nodes.
+        sans_nodes: If provided, nodes to ablate in target-sans (full target model minus these).
+            The frontend computes this as all_graph_nodes - selected_nodes.
+            If None, target-sans is skipped.
         loss_config: Loss for PGD adversary to maximize and for reporting metrics.
         sampling: Sampling type for CI computation.
         top_k: Number of top predictions to return per position.
@@ -809,18 +810,6 @@ def compute_intervention(
             f"Selected node {layer}:{seq_pos}:{c_idx} is not alive (CI=0)"
         )
 
-    # Target-sans: full target model with sans_nodes ablated.
-    # Includes weight deltas so components + delta = exact target reconstruction.
-    target_sans_masks: dict[str, Float[Tensor, "1 seq C"]] = {}
-    for layer_name in ci_masks:
-        target_sans_masks[layer_name] = torch.ones_like(ci_masks[layer_name])
-    for layer, seq_pos, c_idx in sans_nodes:
-        target_sans_masks[layer][0, seq_pos, c_idx] = 0.0
-    weight_deltas = model.calc_weight_deltas()
-    ts_weight_deltas_and_masks = {
-        k: (v, torch.ones(tokens.shape, device=device)) for k, v in weight_deltas.items()
-    }
-
     with torch.no_grad(), bf16_autocast():
         # Target forward (unmasked)
         target_logits: Float[Tensor, "1 seq vocab"] = model(tokens)
@@ -837,13 +826,22 @@ def compute_intervention(
         stoch_mask_infos = make_mask_infos(stoch_masks, routing_masks="all")
         stoch_logits: Float[Tensor, "1 seq vocab"] = model(tokens, mask_infos=stoch_mask_infos)
 
-        # Target-sans forward: target model with unselected alive nodes ablated
-        ts_mask_infos = make_mask_infos(
-            target_sans_masks,
-            routing_masks="all",
-            weight_deltas_and_masks=ts_weight_deltas_and_masks,
-        )
-        ts_logits: Float[Tensor, "1 seq vocab"] = model(tokens, mask_infos=ts_mask_infos)
+        # Target-sans forward (only if sans_nodes provided)
+        ts_logits: Float[Tensor, "1 seq vocab"] | None = None
+        if sans_nodes is not None:
+            ts_masks: dict[str, Float[Tensor, "1 seq C"]] = {}
+            for layer_name in ci_masks:
+                ts_masks[layer_name] = torch.ones_like(ci_masks[layer_name])
+            for layer, seq_pos, c_idx in sans_nodes:
+                ts_masks[layer][0, seq_pos, c_idx] = 0.0
+            weight_deltas = model.calc_weight_deltas()
+            ts_wd = {
+                k: (v, torch.ones(tokens.shape, device=device)) for k, v in weight_deltas.items()
+            }
+            ts_mask_infos = make_mask_infos(
+                ts_masks, routing_masks="all", weight_deltas_and_masks=ts_wd
+            )
+            ts_logits = model(tokens, mask_infos=ts_mask_infos)
 
     # Adversarial: PGD optimizes alive-but-unselected components
     adv_sources = run_adv_pgd(
@@ -871,7 +869,6 @@ def compute_intervention(
         ci_preds = _extract_topk_predictions(ci_logits, target_logits, tokenizer, top_k)
         stoch_preds = _extract_topk_predictions(stoch_logits, target_logits, tokenizer, top_k)
         adv_preds = _extract_topk_predictions(adv_logits, target_logits, tokenizer, top_k)
-        ts_preds = _extract_topk_predictions(ts_logits, target_logits, tokenizer, top_k)
 
         ci_loss = float(
             compute_recon_loss(ci_logits, loss_config, target_logits, device_str).item()
@@ -882,19 +879,29 @@ def compute_intervention(
         adv_loss = float(
             compute_recon_loss(adv_logits, loss_config, target_logits, device_str).item()
         )
-        ts_loss = float(
-            compute_recon_loss(ts_logits, loss_config, target_logits, device_str).item()
-        )
+
+        ts_preds: list[list[TokenPrediction]] | None = None
+        ts_loss: float | None = None
+        if ts_logits is not None:
+            ts_preds = _extract_topk_predictions(ts_logits, target_logits, tokenizer, top_k)
+            ts_loss = float(
+                compute_recon_loss(ts_logits, loss_config, target_logits, device_str).item()
+            )
 
     label: LabelPredictions | None = None
     if isinstance(loss_config, CELossConfig):
         pos, tid = loss_config.position, loss_config.label_token
+        ts_label = (
+            _extract_label_prediction(ts_logits, target_logits, tokenizer, pos, tid)
+            if ts_logits is not None
+            else None
+        )
         label = LabelPredictions(
             position=pos,
             ci=_extract_label_prediction(ci_logits, target_logits, tokenizer, pos, tid),
             stochastic=_extract_label_prediction(stoch_logits, target_logits, tokenizer, pos, tid),
             adversarial=_extract_label_prediction(adv_logits, target_logits, tokenizer, pos, tid),
-            target_sans=_extract_label_prediction(ts_logits, target_logits, tokenizer, pos, tid),
+            target_sans=ts_label,
         )
 
     input_tokens = tokenizer.get_spans([int(t.item()) for t in tokens[0]])

@@ -18,7 +18,7 @@ export type LabelPredictions = {
     ci: TokenPrediction;
     stochastic: TokenPrediction;
     adversarial: TokenPrediction;
-    target_sans: TokenPrediction;
+    target_sans: TokenPrediction | null;
 };
 
 export type InterventionResult = {
@@ -26,11 +26,11 @@ export type InterventionResult = {
     ci: TokenPrediction[][];
     stochastic: TokenPrediction[][];
     adversarial: TokenPrediction[][];
-    target_sans: TokenPrediction[][];
+    target_sans: TokenPrediction[][] | null;
     ci_loss: number;
     stochastic_loss: number;
     adversarial_loss: number;
-    target_sans_loss: number;
+    target_sans_loss: number | null;
     label: LabelPredictions | null;
 };
 
@@ -46,7 +46,7 @@ export type InterventionRunSummary = {
 export type RunInterventionRequest = {
     graph_id: number;
     selected_nodes: string[];
-    sans_nodes: string[];
+    sans_nodes?: string[];
     top_k: number;
     adv_pgd: { n_steps: number; step_size: number };
 };

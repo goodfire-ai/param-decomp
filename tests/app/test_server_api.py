@@ -255,12 +255,9 @@ def test_run_and_save_intervention_without_text(app_with_prompt: tuple[TestClien
     ]
     assert len(selected_nodes) > 0
 
-    subset = selected_nodes[: min(5, len(selected_nodes))]
-    sans = [n for n in selected_nodes if n not in subset]
     request = {
         "graph_id": graph_id,
-        "selected_nodes": subset,
-        "sans_nodes": sans,
+        "selected_nodes": selected_nodes[: min(5, len(selected_nodes))],
         "top_k": 5,
         "adv_pgd": {"n_steps": 1, "step_size": 1.0},
     }
@@ -273,11 +270,11 @@ def test_run_and_save_intervention_without_text(app_with_prompt: tuple[TestClien
     assert len(result["ci"]) > 0
     assert len(result["stochastic"]) > 0
     assert len(result["adversarial"]) > 0
-    assert len(result["target_sans"]) > 0
+    assert result["target_sans"] is None
     assert "ci_loss" in result
     assert "stochastic_loss" in result
     assert "adversarial_loss" in result
-    assert "target_sans_loss" in result
+    assert result["target_sans_loss"] is None
 
 
 # -----------------------------------------------------------------------------

@@ -140,7 +140,7 @@
         if (interventionResult.adversarial.length > 0) rows.push({ label: "Adv", preds: interventionResult.adversarial, labelPred: lbl?.adversarial ?? null });
         if (interventionResult.stochastic.length > 0) rows.push({ label: "Stoch", preds: interventionResult.stochastic, labelPred: lbl?.stochastic ?? null });
         rows.push({ label: "CI", preds: interventionResult.ci, labelPred: lbl?.ci ?? null });
-        if (interventionResult.target_sans.length > 0) rows.push({ label: "T\\S", preds: interventionResult.target_sans, labelPred: lbl?.target_sans ?? null });
+        if (interventionResult.target_sans && interventionResult.target_sans.length > 0) rows.push({ label: "T\\S", preds: interventionResult.target_sans, labelPred: lbl?.target_sans ?? null });
         return rows;
     });
 
@@ -1054,10 +1054,12 @@
                                     <span class="opt-key">adv</span>
                                     <span>{run.result.adversarial_loss.toFixed(3)}</span>
                                 </div>
-                                <div class="opt-row">
-                                    <span class="opt-key">T\S</span>
-                                    <span>{run.result.target_sans_loss.toFixed(3)}</span>
-                                </div>
+                                {#if run.result.target_sans_loss != null}
+                                    <div class="opt-row">
+                                        <span class="opt-key">T\S</span>
+                                        <span>{run.result.target_sans_loss.toFixed(3)}</span>
+                                    </div>
+                                {/if}
                                 <div class="opt-row">
                                     <span class="opt-key">metric</span>
                                     <span>{lossLabel}</span>
