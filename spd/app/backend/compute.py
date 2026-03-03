@@ -819,7 +819,8 @@ def compute_intervention(
         stoch_mask_infos = make_mask_infos(stoch_masks, routing_masks="all")
         stoch_logits: Float[Tensor, "1 seq vocab"] = model(tokens, mask_infos=stoch_mask_infos)
 
-        # Target-sans forward: target model with unselected alive nodes ablated
+    # Target-sans forward: no bf16 autocast — exact target reconstruction matters here
+    with torch.no_grad():
         ts_mask_infos = make_mask_infos(
             target_sans_masks,
             routing_masks="all",
