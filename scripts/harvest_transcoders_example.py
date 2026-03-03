@@ -35,8 +35,6 @@ TRANSCODER_CONFIG = TranscoderHarvestConfig(
         "h.2.mlp": "mats-sprint/pile_transcoder_sweep3/4096_batchtopk_k32_0.0003_L2_4f6e37_checkpoint_final:v0",
         "h.3.mlp": "mats-sprint/pile_transcoder_sweep3/4096_batchtopk_k32_0.0003_L3_e76468_checkpoint_final:v0",
     },
-    tokenizer_name="EleutherAI/gpt-neox-20b",
-    dataset_name="danbraunai/pile-uncopyrighted-tok",
 )
 
 HARVEST_CONFIG = HarvestConfig(

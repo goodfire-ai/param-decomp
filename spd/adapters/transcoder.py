@@ -22,6 +22,7 @@ from spd.autointerp.schemas import ModelMetadata
 from spd.data import DatasetConfig, create_data_loader
 from spd.harvest.config import TranscoderHarvestConfig
 from spd.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
+from spd.pretrain.run_info import PretrainRunInfo
 from spd.topology import TransformerTopology
 
 _ENCODER_CLASSES: dict[str, type[SharedTranscoder]] = {
@@ -58,12 +59,22 @@ class TranscoderAdapter(DecompositionAdapter):
         self._config = config
 
     @cached_property
+    def _run_info(self) -> PretrainRunInfo:
+        return PretrainRunInfo.from_path(self._config.base_model_path)
+
+    @cached_property
     def base_model(self) -> LlamaSimpleMLP:
-        return LlamaSimpleMLP.from_pretrained(self._config.base_model_path)
+        return LlamaSimpleMLP.from_run_info(self._run_info)
 
     @cached_property
     def _topology(self) -> TransformerTopology:
         return TransformerTopology(self.base_model)
+
+    @cached_property
+    def _train_dataset_config(self) -> dict[str, Any]:
+        cfg = self._run_info.config_dict.get("train_dataset_config")
+        assert isinstance(cfg, dict), "base model run missing train_dataset_config"
+        return cfg
 
     @cached_property
     def transcoders(self) -> dict[str, SharedTranscoder]:
@@ -93,7 +104,9 @@ class TranscoderAdapter(DecompositionAdapter):
     @property
     @override
     def tokenizer_name(self) -> str:
-        return self._config.tokenizer_name
+        tok = self._run_info.hf_tokenizer_path
+        assert tok is not None, "base model run missing hf_tokenizer_path"
+        return tok
 
     @property
     @override
@@ -101,7 +114,7 @@ class TranscoderAdapter(DecompositionAdapter):
         return ModelMetadata(
             n_blocks=self._topology.n_blocks,
             model_class="spd.pretrain.models.llama_simple_mlp.LlamaSimpleMLP",
-            dataset_name=self._config.dataset_name,
+            dataset_name=self._train_dataset_config["name"],
             layer_descriptions={
                 path: self._topology.target_to_canon(path) for path in self.transcoders
             },
@@ -109,14 +122,15 @@ class TranscoderAdapter(DecompositionAdapter):
 
     @override
     def dataloader(self, batch_size: int) -> DataLoader[torch.Tensor]:
+        ds_cfg = self._train_dataset_config
         dataset_config = DatasetConfig(
-            name=self._config.dataset_name,
-            is_tokenized=True,
-            hf_tokenizer_path=self._config.tokenizer_name,
+            name=ds_cfg["name"],
+            is_tokenized=ds_cfg.get("is_tokenized", True),
+            hf_tokenizer_path=self.tokenizer_name,
             streaming=True,
             split="train",
-            n_ctx=512,
-            column_name="input_ids",
+            n_ctx=self.base_model.config.block_size,
+            column_name=ds_cfg.get("column_name", "input_ids"),
         )
         loader, _ = create_data_loader(
             dataset_config=dataset_config,
