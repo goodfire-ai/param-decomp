@@ -790,13 +790,18 @@ def compute_intervention(
             f"Selected node {layer}:{seq_pos}:{c_idx} is not alive in the graph"
         )
 
-    # Target-sans masks: everything=1 except alive-but-unselected=0
+    # Target-sans: full target model with alive-but-unselected components zeroed out.
+    # Includes weight deltas so components + delta = exact target reconstruction.
     target_sans_masks: dict[str, Float[Tensor, "1 seq C"]] = {}
     for layer_name in ci_masks:
         mask = torch.ones_like(ci_masks[layer_name])
         alive_unselected = graph_alive_masks[layer_name] & (ci_masks[layer_name] == 0)
         mask[alive_unselected] = 0.0
         target_sans_masks[layer_name] = mask
+    weight_deltas = model.calc_weight_deltas()
+    ts_weight_deltas_and_masks = {
+        k: (v, torch.ones(tokens.shape, device=device)) for k, v in weight_deltas.items()
+    }
 
     with torch.no_grad(), bf16_autocast():
         # Target forward (unmasked)
@@ -814,8 +819,12 @@ def compute_intervention(
         stoch_mask_infos = make_mask_infos(stoch_masks, routing_masks="all")
         stoch_logits: Float[Tensor, "1 seq vocab"] = model(tokens, mask_infos=stoch_mask_infos)
 
-        # Target-sans forward: full model minus unselected alive nodes
-        ts_mask_infos = make_mask_infos(target_sans_masks, routing_masks="all")
+        # Target-sans forward: target model with unselected alive nodes ablated
+        ts_mask_infos = make_mask_infos(
+            target_sans_masks,
+            routing_masks="all",
+            weight_deltas_and_masks=ts_weight_deltas_and_masks,
+        )
         ts_logits: Float[Tensor, "1 seq vocab"] = model(tokens, mask_infos=ts_mask_infos)
 
     # Adversarial: PGD optimizes alive-but-unselected components
