@@ -17,10 +17,12 @@ import math
 from pathlib import Path
 from typing import Any, Literal
 
+import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
 import yaml
 from torch import Tensor, nn
+from transformers import AutoTokenizer
 
 from spd.configs import LMTaskConfig
 from spd.data import DatasetConfig, create_data_loader, loop_dataloader
@@ -372,6 +374,65 @@ def main() -> None:
             top_k = col.abs().argsort(descending=True)[:10]
             entries = [f"{idx.item()}:{col[idx].item():+.4f}" for idx in top_k]
             print(f"  neuron {i} (out={W_out[i].item():+.6f}): {', '.join(entries)}")
+
+    # --- Test prompt visualization --- #
+    test_prompt: str | None = cfg.get("test_prompt")
+    if test_prompt is not None:
+        assert spd_config.tokenizer_name is not None
+        tokenizer = AutoTokenizer.from_pretrained(spd_config.tokenizer_name)
+        token_ids = torch.tensor(
+            [tokenizer.encode(test_prompt)],
+            device=device,
+        )
+        tokens: list[str] = [
+            tokenizer.decode(t)  # pyright: ignore[reportAttributeAccessIssue]
+            for t in token_ids[0].tolist()
+        ]
+        seq_len = token_ids.shape[1]
+
+        with torch.no_grad(), bf16_autocast(enabled=spd_config.autocast_bf16):
+            source_acts, target_scalar = collect_component_acts(
+                model, token_ids, source_path, target_path, target_component_idx
+            )
+        with torch.no_grad():
+            pred_scalar = predict(source_acts)
+
+        target_vals = target_scalar[0].cpu().tolist()
+        pred_vals = pred_scalar[0].cpu().tolist()
+
+        print("\n" + "=" * 80)
+        print("TEST PROMPT VISUALIZATION")
+        print("=" * 80)
+        print(f"Prompt: {test_prompt!r}")
+        print(f"{'Pos':>4}  {'Token':<20}  {'Target':>12}  {'Predicted':>12}  {'Error':>12}")
+        print("-" * 66)
+        for pos in range(seq_len):
+            target_v = target_vals[pos]
+            pred_v = pred_vals[pos]
+            err = pred_v - target_v
+            print(f"{pos:>4}  {tokens[pos]:<20}  {target_v:>12.6f}  {pred_v:>12.6f}  {err:>+12.6f}")
+
+        # Plot
+        fig, ax = plt.subplots(figsize=(max(12, seq_len * 0.5), 5))
+        positions = list(range(seq_len))
+        ax.plot(positions, target_vals, "o-", label="Target", markersize=5)
+        ax.plot(positions, pred_vals, "s--", label="Predicted", markersize=5)
+        ax.set_xticks(positions)
+        ax.set_xticklabels(tokens, rotation=60, ha="right", fontsize=8)
+        ax.set_xlabel("Token position")
+        ax.set_ylabel("Component activation")
+        ax.set_title(
+            f"Component {target_component_idx} ({target_path}): "
+            f"target vs predicted (R²={eval_var_explained:.4f})"
+        )
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+
+        plot_path = Path(f"fit_component_{target_component_idx}_test_prompt.png")
+        fig.savefig(plot_path, dpi=150)
+        print(f"\nPlot saved to {plot_path}")
+        plt.close(fig)
 
 
 if __name__ == "__main__":
