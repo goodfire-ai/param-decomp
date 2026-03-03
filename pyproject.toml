@@ -58,6 +58,11 @@ spd-autointerp = "spd.autointerp.scripts.run_slurm_cli:cli"
 spd-attributions = "spd.dataset_attributions.scripts.run_slurm_cli:cli"
 spd-postprocess = "spd.postprocess.cli:cli"
 
+[project.optional-dependencies]
+transcoder = [
+    "nn-decompositions @ git+https://github.com/bartbussmann/nn_decompositions.git",
+]
+
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"

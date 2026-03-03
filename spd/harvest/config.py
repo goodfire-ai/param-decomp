@@ -51,7 +51,21 @@ class MOLTHarvestConfig(BaseConfig):
         return "molt"
 
 
-DecompositionMethodHarvestConfig = SPDHarvestConfig | CLTHarvestConfig | MOLTHarvestConfig
+class TranscoderHarvestConfig(BaseConfig):
+    type: Literal["TranscoderHarvestConfig"] = "TranscoderHarvestConfig"
+    base_model_path: str
+    artifact_paths: dict[str, str]
+    """Maps module paths (e.g. "h.0.mlp") to wandb artifact paths."""
+    activation_threshold: float = 0.0
+
+    @property
+    def id(self) -> str:
+        return "tc-" + str(abs(hash(frozenset(self.artifact_paths.items()))))[:8]
+
+
+DecompositionMethodHarvestConfig = (
+    SPDHarvestConfig | CLTHarvestConfig | MOLTHarvestConfig | TranscoderHarvestConfig
+)
 
 
 # -- Pipeline configs ----------------------------------------------------------
