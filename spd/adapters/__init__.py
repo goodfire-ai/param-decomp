@@ -35,18 +35,32 @@ def adapter_from_config(method_config: DecompositionMethodHarvestConfig) -> Deco
             raise NotImplementedError("MOLT adapter not implemented yet")
 
 
-def adapter_from_id(id: str) -> DecompositionAdapter:
-    """Construct an adapter from just a decomposition ID (e.g. "s-abc123").
+def adapter_from_id(decomposition_id: str) -> DecompositionAdapter:
+    """Construct an adapter from a decomposition ID (e.g. "s-abc123", "tc-1a2b3c4d").
 
-    Only works for methods whose adapter can be constructed from an ID alone (SPD).
-    For transcoders, use adapter_from_config() with the full method config.
+    For SPD runs, the ID is sufficient. For other methods, recovers the full
+    method config from the harvest DB (which is always populated before downstream
+    steps like autointerp run).
     """
-    from spd.adapters.spd import SPDAdapter
+    if decomposition_id.startswith("s-"):
+        from spd.adapters.spd import SPDAdapter
 
-    if id.startswith("s-"):
-        return SPDAdapter(id)
+        return SPDAdapter(decomposition_id)
 
-    raise ValueError(
-        f"Cannot construct adapter from ID alone: {id!r}. "
-        f"Use adapter_from_config() with the full method config."
+    return adapter_from_config(_load_method_config(decomposition_id))
+
+
+def _load_method_config(decomposition_id: str) -> DecompositionMethodHarvestConfig:
+    from pydantic import TypeAdapter
+
+    from spd.harvest.repo import HarvestRepo
+
+    repo = HarvestRepo.open_most_recent(decomposition_id)
+    assert repo is not None, (
+        f"No harvest data found for {decomposition_id!r}. "
+        f"Run spd-harvest first to populate the method config."
     )
+    config_dict = repo.get_config()
+    method_config_raw = config_dict["method_config"]
+    ta = TypeAdapter(DecompositionMethodHarvestConfig)
+    return ta.validate_python(method_config_raw)
