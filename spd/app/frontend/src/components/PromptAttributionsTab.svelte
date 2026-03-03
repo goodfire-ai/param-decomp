@@ -369,10 +369,14 @@
         runningIntervention = true;
         try {
             const selectedNodes = Array.from(activeRun.selectedNodes);
+            const baseRun = state.runs[0];
+            if (baseRun.kind !== "baked") throw new Error("First run must be baked base run");
+            const sansNodes = Array.from(baseRun.selectedNodes).filter((n) => !activeRun.selectedNodes.has(n));
 
             const run = await api.runAndSaveIntervention({
                 graph_id: activeGraph.id,
                 selected_nodes: selectedNodes,
+                sans_nodes: sansNodes,
                 top_k: 10,
                 adv_pgd: advPgd,
             });

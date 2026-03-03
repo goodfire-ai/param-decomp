@@ -255,9 +255,12 @@ def test_run_and_save_intervention_without_text(app_with_prompt: tuple[TestClien
     ]
     assert len(selected_nodes) > 0
 
+    subset = selected_nodes[: min(5, len(selected_nodes))]
+    sans = [n for n in selected_nodes if n not in subset]
     request = {
         "graph_id": graph_id,
-        "selected_nodes": selected_nodes[: min(5, len(selected_nodes))],
+        "selected_nodes": subset,
+        "sans_nodes": sans,
         "top_k": 5,
         "adv_pgd": {"n_steps": 1, "step_size": 1.0},
     }

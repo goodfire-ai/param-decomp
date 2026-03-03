@@ -902,6 +902,7 @@ def _tool_run_ablation(params: dict[str, Any]) -> dict[str, Any]:
             model=loaded.model,
             tokens=tokens,
             active_nodes=active_nodes,
+            sans_nodes=[],
             tokenizer=loaded.tokenizer,
             adv_pgd_config=DEFAULT_EVAL_PGD_CONFIG,
             loss_config=MeanKLLossConfig(),

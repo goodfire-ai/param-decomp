@@ -766,6 +766,7 @@ def compute_intervention(
     model: ComponentModel,
     tokens: Float[Tensor, "1 seq"],
     active_nodes: list[tuple[str, int, int]],
+    sans_nodes: list[tuple[str, int, int]],
     tokenizer: AppTokenizer,
     adv_pgd_config: AdvPGDConfig,
     loss_config: LossConfig,
@@ -774,12 +775,11 @@ def compute_intervention(
 ) -> InterventionResult:
     """Unified intervention evaluation: CI, stochastic, adversarial, and target-sans masking.
 
-    Computes the model's natural CI to determine alive masks (CI > 0). PGD optimizes
-    alive-but-unselected components; non-alive get uniform random. Target-sans ablates
-    only the unselected alive nodes from the full target model.
-
     Args:
         active_nodes: (concrete_path, seq_pos, component_idx) tuples for selected nodes.
+            Used for CI, stochastic, and adversarial masking.
+        sans_nodes: (concrete_path, seq_pos, component_idx) tuples for nodes to ablate
+            in target-sans. The frontend computes this as all_graph_nodes - selected_nodes.
         loss_config: Loss for PGD adversary to maximize and for reporting metrics.
         sampling: Sampling type for CI computation.
         top_k: Number of top predictions to return per position.
@@ -809,14 +809,13 @@ def compute_intervention(
             f"Selected node {layer}:{seq_pos}:{c_idx} is not alive (CI=0)"
         )
 
-    # Target-sans: full target model with alive-but-unselected components zeroed out.
+    # Target-sans: full target model with sans_nodes ablated.
     # Includes weight deltas so components + delta = exact target reconstruction.
     target_sans_masks: dict[str, Float[Tensor, "1 seq C"]] = {}
     for layer_name in ci_masks:
-        mask = torch.ones_like(ci_masks[layer_name])
-        alive_unselected = alive_masks[layer_name] & (ci_masks[layer_name] == 0)
-        mask[alive_unselected] = 0.0
-        target_sans_masks[layer_name] = mask
+        target_sans_masks[layer_name] = torch.ones_like(ci_masks[layer_name])
+    for layer, seq_pos, c_idx in sans_nodes:
+        target_sans_masks[layer][0, seq_pos, c_idx] = 0.0
     weight_deltas = model.calc_weight_deltas()
     ts_weight_deltas_and_masks = {
         k: (v, torch.ones(tokens.shape, device=device)) for k, v in weight_deltas.items()

@@ -29,6 +29,7 @@ class RunInterventionRequest(BaseModel):
 
     graph_id: int
     selected_nodes: list[str]  # node keys (layer:seq:cIdx)
+    sans_nodes: list[str]  # node keys to ablate in target-sans
     top_k: int
     adv_pgd: AdvPgdParams
 
@@ -96,6 +97,9 @@ def run_and_save_intervention(
         active_nodes = _parse_and_validate_active_nodes(
             request.selected_nodes, loaded.topology, len(token_ids)
         )
+        sans_nodes = _parse_and_validate_active_nodes(
+            request.sans_nodes, loaded.topology, len(token_ids)
+        )
         tokens = torch.tensor([token_ids], dtype=torch.long, device=DEVICE)
 
         # Use graph's loss config if optimized, else mean KL
@@ -109,6 +113,7 @@ def run_and_save_intervention(
             model=loaded.model,
             tokens=tokens,
             active_nodes=active_nodes,
+            sans_nodes=sans_nodes,
             tokenizer=loaded.tokenizer,
             adv_pgd_config=AdvPGDConfig(
                 n_steps=request.adv_pgd.n_steps,

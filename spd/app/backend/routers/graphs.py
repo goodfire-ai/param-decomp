@@ -87,6 +87,7 @@ def _save_base_intervention_run(
         model=model,
         tokens=tokens,
         active_nodes=active_nodes,
+        sans_nodes=[],
         tokenizer=tokenizer,
         adv_pgd_config=DEFAULT_EVAL_PGD_CONFIG,
         loss_config=effective_loss_config,

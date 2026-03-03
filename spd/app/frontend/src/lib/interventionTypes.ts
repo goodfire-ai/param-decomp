@@ -46,6 +46,7 @@ export type InterventionRunSummary = {
 export type RunInterventionRequest = {
     graph_id: number;
     selected_nodes: string[];
+    sans_nodes: string[];
     top_k: number;
     adv_pgd: { n_steps: number; step_size: number };
 };
