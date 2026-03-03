@@ -6,9 +6,6 @@
 #
 # Usage:
 #   spd-harvest scripts/harvest_transcoders_example.yaml
-#
-# Prerequisites:
-#   pip install -e ".[nn_decompositions]"
 
 config:
   method_config:

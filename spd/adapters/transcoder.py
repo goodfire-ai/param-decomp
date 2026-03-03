@@ -1,7 +1,4 @@
-"""Transcoder adapter: loads trained transcoders from wandb artifacts.
-
-Requires the optional `nn_decompositions` dependency: pip install -e ".[nn_decompositions]"
-"""
+"""Transcoder adapter: loads trained transcoders from wandb artifacts."""
 
 import json
 from functools import cached_property
@@ -10,17 +7,17 @@ from typing import Any, override
 
 import torch
 import wandb
-from nn_decompositions.config import EncoderConfig
-from nn_decompositions.transcoder import (
+from torch.utils.data import DataLoader
+
+from spd.adapters.base import DecompositionAdapter
+from spd.adapters.encoder_config import EncoderConfig
+from spd.adapters.transcoders import (
     BatchTopKTranscoder,
     JumpReLUTranscoder,
     SharedTranscoder,
     TopKTranscoder,
     VanillaTranscoder,
 )
-from torch.utils.data import DataLoader
-
-from spd.adapters.base import DecompositionAdapter
 from spd.autointerp.schemas import ModelMetadata
 from spd.data import DatasetConfig, create_data_loader
 from spd.harvest.config import TranscoderHarvestConfig
