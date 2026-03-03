@@ -106,7 +106,7 @@ known-third-party = ["wandb"]
 
 [tool.pyright]
 include = ["spd", "tests"]
-exclude = ["**/wandb/**", "spd/utils/linear_sum_assignment.py", "spd/app/frontend"]
+exclude = ["**/wandb/**", "spd/utils/linear_sum_assignment.py", "spd/app/frontend", "spd/adapters/transcoder.py", "spd/harvest/harvest_fn/transcoder.py"]
 stubPath = "typings" # Having type stubs for transformers shaves 10 seconds off basedpyright calls
 
 strictListInference = true

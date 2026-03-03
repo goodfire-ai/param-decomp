@@ -11,7 +11,7 @@ from typing import Any
 import fire
 import torch
 
-from spd.adapters import adapter_from_id
+from spd.adapters import adapter_from_config
 from spd.harvest.config import HarvestConfig
 from spd.harvest.harvest import harvest
 from spd.harvest.harvest_fn import make_harvest_fn
@@ -35,7 +35,7 @@ def main(
 
     config = HarvestConfig.model_validate(config_json)
 
-    adapter = adapter_from_id(config.method_config.id)
+    adapter = adapter_from_config(config.method_config)
 
     output_dir = get_harvest_subrun_dir(adapter.decomposition_id, subrun_id)
 

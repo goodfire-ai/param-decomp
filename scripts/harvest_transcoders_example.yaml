@@ -1,0 +1,28 @@
+# Example: Harvest transcoder activations using spd-harvest.
+#
+# Loads trained BatchTopK transcoders from wandb artifacts and runs the generic
+# harvest pipeline to collect activation statistics (firing densities, token PMI,
+# activation examples).
+#
+# Usage:
+#   spd-harvest scripts/harvest_transcoders_example.yaml
+#
+# Prerequisites:
+#   pip install -e ".[nn_decompositions]"
+
+config:
+  method_config:
+    type: TranscoderHarvestConfig
+    base_model_path: "wandb:goodfire/spd/t-32d1bb3b"
+    artifact_paths:
+      "h.0.mlp": "mats-sprint/pile_transcoder_sweep3/4096_batchtopk_k32_0.0003_L0_5d5b1f_checkpoint_final:v0"
+      "h.1.mlp": "mats-sprint/pile_transcoder_sweep3/4096_batchtopk_k32_0.0003_L1_c208d7_checkpoint_final:v0"
+      "h.2.mlp": "mats-sprint/pile_transcoder_sweep3/4096_batchtopk_k32_0.0003_L2_4f6e37_checkpoint_final:v0"
+      "h.3.mlp": "mats-sprint/pile_transcoder_sweep3/4096_batchtopk_k32_0.0003_L3_e76468_checkpoint_final:v0"
+  n_batches: 20
+  batch_size: 8
+  activation_examples_per_component: 20
+  activation_context_tokens_per_side: 10
+  pmi_token_top_k: 10
+
+n_gpus: 1

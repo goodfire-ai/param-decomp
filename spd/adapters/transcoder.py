@@ -1,4 +1,7 @@
-"""Transcoder adapter: loads trained transcoders from wandb artifacts."""
+"""Transcoder adapter: loads trained transcoders from wandb artifacts.
+
+Requires the optional `nn_decompositions` dependency: pip install -e ".[nn_decompositions]"
+"""
 
 import json
 from functools import cached_property

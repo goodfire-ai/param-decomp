@@ -9,21 +9,44 @@ Construct via adapter_from_config(method_config).
 """
 
 from spd.adapters.base import DecompositionAdapter
+from spd.harvest.config import DecompositionMethodHarvestConfig
+
+
+def adapter_from_config(method_config: DecompositionMethodHarvestConfig) -> DecompositionAdapter:
+    from spd.harvest.config import (
+        CLTHarvestConfig,
+        MOLTHarvestConfig,
+        SPDHarvestConfig,
+        TranscoderHarvestConfig,
+    )
+
+    match method_config:
+        case SPDHarvestConfig():
+            from spd.adapters.spd import SPDAdapter
+
+            return SPDAdapter(method_config.id)
+        case TranscoderHarvestConfig():
+            from spd.adapters.transcoder import TranscoderAdapter
+
+            return TranscoderAdapter(method_config)
+        case CLTHarvestConfig():
+            raise NotImplementedError("CLT adapter not implemented yet")
+        case MOLTHarvestConfig():
+            raise NotImplementedError("MOLT adapter not implemented yet")
 
 
 def adapter_from_id(id: str) -> DecompositionAdapter:
+    """Construct an adapter from just a decomposition ID (e.g. "s-abc123").
+
+    Only works for methods whose adapter can be constructed from an ID alone (SPD).
+    For transcoders, use adapter_from_config() with the full method config.
+    """
     from spd.adapters.spd import SPDAdapter
 
     if id.startswith("s-"):
         return SPDAdapter(id)
-    elif id.startswith("tc-"):
-        raise NotImplementedError(
-            "TranscoderAdapter requires a TranscoderHarvestConfig. "
-            "Use TranscoderAdapter(config) directly."
-        )
-    elif id.startswith("clt-"):
-        raise NotImplementedError("CLT adapter not implemented yet")
-    elif id.startswith("molt-"):
-        raise NotImplementedError("MOLT adapter not implemented yet")
 
-    raise ValueError(f"Unsupported decomposition ID: {id}")
+    raise ValueError(
+        f"Cannot construct adapter from ID alone: {id!r}. "
+        f"Use adapter_from_config() with the full method config."
+    )
