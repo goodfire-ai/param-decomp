@@ -25,56 +25,19 @@ ci_config:
 sampling: continuous
 sigmoid_type: leaky_hard
 module_info:
-- module_pattern: h.3.mlp.c_fc
-  C: 1536
-- module_pattern: h.2.mlp.c_fc
+- module_pattern: h.*.mlp.c_fc
+  C: 3072
+- module_pattern: h.*.mlp.down_proj
+  C: 3584
+- module_pattern: h.*.attn.q_proj
   C: 512
-- module_pattern: h.1.mlp.c_fc
+- module_pattern: h.*.attn.k_proj
   C: 512
-- module_pattern: h.0.mlp.c_fc
-  C: 1536
-- module_pattern: h.3.mlp.down_proj
-  C: 2560
-- module_pattern: h.2.mlp.down_proj
-  C: 512
-- module_pattern: h.1.mlp.down_proj
-  C: 512
-- module_pattern: h.0.mlp.down_proj
-  C: 1536
-- module_pattern: h.3.attn.q_proj
-  C: 128
-- module_pattern: h.2.attn.q_proj
-  C: 128
-- module_pattern: h.1.attn.q_proj
-  C: 128
-- module_pattern: h.0.attn.q_proj
-  C: 256
-- module_pattern: h.3.attn.k_proj
-  C: 128
-- module_pattern: h.2.attn.k_proj
-  C: 256
-- module_pattern: h.1.attn.k_proj
-  C: 128
-- module_pattern: h.0.attn.k_proj
-  C: 256
-- module_pattern: h.3.attn.v_proj
-  C: 512
-- module_pattern: h.2.attn.v_proj
-  C: 640
-- module_pattern: h.1.attn.v_proj
-  C: 256
-- module_pattern: h.0.attn.v_proj
-  C: 512
-- module_pattern: h.3.attn.o_proj
-  C: 512
-- module_pattern: h.2.attn.o_proj
-  C: 640
-- module_pattern: h.1.attn.o_proj
-  C: 256
-- module_pattern: h.0.attn.o_proj
-  C: 512
+- module_pattern: h.*.attn.v_proj
+  C: 1024
+- module_pattern: h.*.attn.o_proj
+  C: 1024
 identity_module_info: null
-init_spd_checkpoint: null
 use_delta_component: true
 loss_metric_configs:
 - coeff: 0.0002
@@ -90,21 +53,18 @@ loss_metric_configs:
   routing:
     type: uniform_k_subset
 - coeff: 0.5
+  classname: PersistentPGDReconSubsetLoss
   optimizer:
     type: adam
-    beta1: 0.5
+    lr: 0.01
+    beta1: 0.8
     beta2: 0.99
     eps: 1.0e-08
-    lr_schedule:
-      start_val: 0.01
-      warmup_pct: 0.025
-      final_val_frac: 0.1
-      fn_type: cosine
   scope:
     type: per_batch_per_position
   use_sigmoid_parameterization: false
-  n_warmup_steps: 2
-  classname: PersistentPGDReconLoss
+  routing:
+    type: uniform_k_subset
 - coeff: 10000000.0
   classname: FaithfulnessLoss
 output_loss_type: kl
@@ -115,6 +75,7 @@ lr_schedule:
   fn_type: cosine
 steps: 400000
 batch_size: 64
+gradient_accumulation_steps: 1
 grad_clip_norm_components: 0.01
 grad_clip_norm_ci_fns: null
 faithfulness_warmup_steps: 400
@@ -148,7 +109,6 @@ eval_metric_configs:
 - classname: CIMeanPerComponent
 - coeff: null
   classname: StochasticHiddenActsReconLoss
-- classname: CIHiddenActsReconLoss
 - coeff: null
   init: random
   step_size: 0.1
@@ -158,7 +118,7 @@ eval_metric_configs:
 ci_alive_threshold: 0.0
 pretrained_model_class: spd.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
 pretrained_model_path: null
-pretrained_model_name: goodfire/spd/runs/t-9d2b8f02
+pretrained_model_name: wandb:goodfire/spd/t-32d1bb3b
 pretrained_model_output_attr: idx_0
 tokenizer_name: EleutherAI/gpt-neox-20b
 task_config:
@@ -172,4 +132,3 @@ task_config:
   shuffle_each_epoch: true
   is_tokenized: true
   streaming: true
-  dataset_seed: null
