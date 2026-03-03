@@ -368,12 +368,10 @@
 
         runningIntervention = true;
         try {
-            const text = activeCard.tokens.join("");
             const selectedNodes = Array.from(activeRun.selectedNodes);
 
             const run = await api.runAndSaveIntervention({
                 graph_id: activeGraph.id,
-                text,
                 selected_nodes: selectedNodes,
                 top_k: 10,
                 adv_pgd: advPgd,
@@ -385,7 +383,6 @@
                 id: run.id,
                 selectedNodes: new Set(run.selected_nodes),
                 result: run.result,
-                maskedPredictions: run.masked_predictions,
                 createdAt: run.created_at,
             };
             state.runs[state.activeIndex] = baked;

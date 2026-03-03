@@ -19,8 +19,6 @@ class OutputProbability(BaseModel):
     logit: float  # CI-masked (SPD model) raw logit
     target_prob: float  # Target model probability
     target_logit: float  # Target model raw logit
-    adv_pgd_prob: float | None = None  # Adversarial PGD probability
-    adv_pgd_logit: float | None = None  # Adversarial PGD raw logit
     token: str
 
 

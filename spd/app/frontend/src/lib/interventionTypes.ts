@@ -4,65 +4,39 @@
 export const EVAL_PGD_N_STEPS = 4;
 export const EVAL_PGD_STEP_SIZE = 1.0;
 
-export type InterventionNode = {
-    layer: string;
-    seq_pos: number;
-    component_idx: number;
-};
-
 export type TokenPrediction = {
     token: string;
     token_id: number;
-    spd_prob: number;
-    target_prob: number;
+    prob: number;
     logit: number;
+    target_prob: number;
     target_logit: number;
 };
 
-export type InterventionResponse = {
+export type InterventionResult = {
     input_tokens: string[];
-    predictions_per_position: TokenPrediction[][];
-};
-
-/** A forked intervention run with modified tokens */
-export type ForkedInterventionRunSummary = {
-    id: number;
-    token_replacements: [number, number][]; // [(seq_pos, new_token_id), ...]
-    result: InterventionResponse;
-    created_at: string;
+    ci: TokenPrediction[][];
+    stochastic: TokenPrediction[][];
+    adversarial: TokenPrediction[][];
+    ci_loss: number;
+    stochastic_loss: number;
+    adversarial_loss: number;
 };
 
 /** Persisted intervention run from the server */
 export type InterventionRunSummary = {
     id: number;
     selected_nodes: string[]; // node keys (layer:seq:cIdx)
-    result: InterventionResponse;
-    masked_predictions: MaskedPredictions;
+    result: InterventionResult;
     created_at: string;
-    forked_runs?: ForkedInterventionRunSummary[]; // child runs with modified tokens
 };
 
 /** Request to run and save an intervention */
 export type RunInterventionRequest = {
     graph_id: number;
-    text: string;
     selected_nodes: string[];
     top_k: number;
     adv_pgd: { n_steps: number; step_size: number };
-};
-
-export type TokenPred = {
-    token: string;
-    prob: number;
-};
-
-export type MaskedPredictions = {
-    ci: TokenPred[][];
-    stochastic: TokenPred[][];
-    adversarial: TokenPred[][];
-    ci_kl: number;
-    stochastic_kl: number;
-    adversarial_kl: number;
 };
 
 // --- Frontend-only run lifecycle types ---
@@ -82,8 +56,7 @@ export type BakedRun = {
     kind: "baked";
     id: number;
     selectedNodes: Set<string>;
-    result: InterventionResponse;
-    maskedPredictions: MaskedPredictions;
+    result: InterventionResult;
     createdAt: string;
 };
 
@@ -109,7 +82,6 @@ export function buildInterventionState(persistedRuns: InterventionRunSummary[]):
             id: r.id,
             selectedNodes: new Set(r.selected_nodes),
             result: r.result,
-            maskedPredictions: r.masked_predictions,
             createdAt: r.created_at,
         }),
     );

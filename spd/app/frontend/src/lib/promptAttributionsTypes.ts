@@ -28,8 +28,6 @@ export type OutputProbability = {
     logit: number; // CI-masked (SPD model) raw logit
     target_prob: number; // Target model probability
     target_logit: number; // Target model raw logit
-    adv_pgd_prob: number | null; // Adversarial PGD probability
-    adv_pgd_logit: number | null; // Adversarial PGD raw logit
     token: string;
 };
 

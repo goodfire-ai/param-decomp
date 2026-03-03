@@ -19,11 +19,10 @@ from pydantic import BaseModel
 
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.app.backend.compute import (
-    EVAL_PGD_N_STEPS,
-    EVAL_PGD_STEP_SIZE,
+    DEFAULT_EVAL_PGD_CONFIG,
     Edge,
-    compute_intervention_forward,
-    compute_masked_predictions,
+    build_graph_alive_masks,
+    compute_intervention,
     compute_prompt_attributions,
     compute_prompt_attributions_optimized,
 )
@@ -42,13 +41,8 @@ from spd.app.backend.optim_cis import (
     KLLossConfig,
     LossConfig,
     MaskType,
+    MeanKLLossConfig,
     OptimCIConfig,
-)
-from spd.app.backend.routers.intervention import (
-    InterventionResponse,
-    MaskedPredictionsResponse,
-    TokenPred,
-    TokenPrediction,
 )
 from spd.app.backend.schemas import OutputProbability
 from spd.app.backend.utils import log_errors
@@ -69,79 +63,45 @@ def _save_base_intervention_run(
     tokenizer: AppTokenizer,
     topology: TransformerTopology,
     db: PromptAttrDB,
-    pgd_loss_config: LossConfig | None = None,
+    loss_config: LossConfig | None = None,
 ) -> None:
-    """Compute masked predictions for all interventable nodes and save as an intervention run."""
-    # Get all interventable node keys with CI > 0
+    """Compute intervention for all interventable nodes and save as an intervention run."""
     interventable_keys = [
         k
         for k, ci in node_ci_vals.items()
         if k.split(":")[0] not in NON_INTERVENTABLE_LAYERS and ci > 0
     ]
-    if not interventable_keys:
-        return
+    assert len(interventable_keys) > 0, "No interventable nodes with CI > 0"
 
-    # Parse to (concrete_path, seq, c_idx) tuples
     active_nodes: list[tuple[str, int, int]] = []
     for key in interventable_keys:
         canon_layer, seq_str, cidx_str = key.split(":")
         concrete_path = topology.canon_to_target(canon_layer)
         active_nodes.append((concrete_path, int(seq_str), int(cidx_str)))
 
-    # Compute intervention forward pass
-    intervention_result = compute_intervention_forward(
+    device = str(tokens.device)
+    seq_len = tokens.shape[1]
+    graph_alive_masks = build_graph_alive_masks(node_ci_vals, model, topology, seq_len, device)
+
+    effective_loss_config: LossConfig = (
+        loss_config if loss_config is not None else MeanKLLossConfig()
+    )
+
+    result = compute_intervention(
         model=model,
         tokens=tokens,
         active_nodes=active_nodes,
+        graph_alive_masks=graph_alive_masks,
+        tokenizer=tokenizer,
+        adv_pgd_config=DEFAULT_EVAL_PGD_CONFIG,
+        loss_config=effective_loss_config,
         top_k=10,
-        tokenizer=tokenizer,
-    )
-
-    intervention_response = InterventionResponse(
-        input_tokens=intervention_result.input_tokens,
-        predictions_per_position=[
-            [
-                TokenPrediction(
-                    token=token,
-                    token_id=token_id,
-                    spd_prob=spd_prob,
-                    target_prob=target_prob,
-                    logit=logit,
-                    target_logit=target_logit,
-                )
-                for token, token_id, spd_prob, logit, target_prob, target_logit in pos_preds
-            ]
-            for pos_preds in intervention_result.predictions_per_position
-        ],
-    )
-
-    masked_result = compute_masked_predictions(
-        model=model,
-        tokens=tokens,
-        active_nodes=active_nodes,
-        tokenizer=tokenizer,
-        pgd_n_steps=EVAL_PGD_N_STEPS,
-        pgd_step_size=EVAL_PGD_STEP_SIZE,
-        pgd_loss_config=pgd_loss_config,
-    )
-
-    def to_preds(preds: list[list[tuple[str, float]]]) -> list[list[TokenPred]]:
-        return [[TokenPred(token=t, prob=p) for t, p in pos] for pos in preds]
-
-    masked_response = MaskedPredictionsResponse(
-        ci=to_preds(masked_result.ci),
-        stochastic=to_preds(masked_result.stochastic),
-        adversarial=to_preds(masked_result.adversarial),
-        ci_kl=masked_result.ci_kl,
-        stochastic_kl=masked_result.stochastic_kl,
-        adversarial_kl=masked_result.adversarial_kl,
     )
 
     db.save_intervention_run(
         graph_id=graph_id,
         selected_nodes=interventable_keys,
-        result_json=intervention_response.model_dump_json(),
-        masked_predictions_json=masked_response.model_dump_json(),
+        result_json=result.model_dump_json(),
     )
 
 
@@ -322,7 +282,6 @@ def _build_out_probs(
     ci_masked_out_logits: torch.Tensor,
     target_out_logits: torch.Tensor,
     tok_display: Callable[[int], str],
-    adv_pgd_out_logits: torch.Tensor | None = None,
 ) -> dict[str, OutputProbability]:
     """Build output probs dict from logit tensors.
 
@@ -330,9 +289,6 @@ def _build_out_probs(
     """
     ci_masked_out_probs = torch.softmax(ci_masked_out_logits, dim=-1)
     target_out_probs = torch.softmax(target_out_logits, dim=-1)
-    adv_pgd_out_probs = (
-        torch.softmax(adv_pgd_out_logits, dim=-1) if adv_pgd_out_logits is not None else None
-    )
 
     out_probs: dict[str, OutputProbability] = {}
     for s in range(ci_masked_out_probs.shape[0]):
@@ -347,20 +303,12 @@ def _build_out_probs(
             target_prob = float(target_out_probs[s, c_idx].item())
             target_logit = float(target_out_logits[s, c_idx].item())
 
-            adv_pgd_prob: float | None = None
-            adv_pgd_logit: float | None = None
-            if adv_pgd_out_probs is not None and adv_pgd_out_logits is not None:
-                adv_pgd_prob = round(float(adv_pgd_out_probs[s, c_idx].item()), 6)
-                adv_pgd_logit = round(float(adv_pgd_out_logits[s, c_idx].item()), 4)
-
             key = f"{s}:{c_idx}"
             out_probs[key] = OutputProbability(
                 prob=round(prob, 6),
                 logit=round(logit, 4),
                 target_prob=round(target_prob, 6),
                 target_logit=round(target_logit, 4),
-                adv_pgd_prob=adv_pgd_prob,
-                adv_pgd_logit=adv_pgd_logit,
                 token=tok_display(c_idx),
             )
     return out_probs
@@ -809,9 +757,6 @@ def compute_graph_optimized_stream(
 
         ci_masked_out_logits = result.ci_masked_out_logits.cpu()
         target_out_logits = result.target_out_logits.cpu()
-        adv_pgd_out_logits = (
-            result.adv_pgd_out_logits.cpu() if result.adv_pgd_out_logits is not None else None
-        )
 
         opt_params.ci_masked_label_prob = result.metrics.ci_masked_label_prob
         opt_params.stoch_masked_label_prob = result.metrics.stoch_masked_label_prob
@@ -824,7 +769,6 @@ def compute_graph_optimized_stream(
                 edges=result.edges,
                 ci_masked_out_logits=ci_masked_out_logits,
                 target_out_logits=target_out_logits,
-                adv_pgd_out_logits=adv_pgd_out_logits,
                 node_ci_vals=result.node_ci_vals,
                 node_subcomp_acts=result.node_subcomp_acts,
                 optimization_params=opt_params,
@@ -839,7 +783,7 @@ def compute_graph_optimized_stream(
             tokenizer=loaded.tokenizer,
             topology=loaded.topology,
             db=db,
-            pgd_loss_config=loss_config,
+            loss_config=loss_config,
         )
 
         fg = filter_graph_for_display(
@@ -852,7 +796,6 @@ def compute_graph_optimized_stream(
             num_tokens=num_tokens,
             ci_threshold=ci_threshold,
             normalize=normalize,
-            adv_pgd_out_logits=adv_pgd_out_logits,
         )
 
         # Build loss result based on config type
@@ -925,7 +868,6 @@ def filter_graph_for_display(
     ci_threshold: float,
     normalize: NormalizeType,
     edge_limit: int = GLOBAL_EDGE_LIMIT,
-    adv_pgd_out_logits: torch.Tensor | None = None,
 ) -> FilteredGraph:
     """Filter and transform a raw attribution graph for display.
 
@@ -936,9 +878,7 @@ def filter_graph_for_display(
     5. Normalize edge strengths (if requested)
     6. Cap edges at edge_limit
     """
-    out_probs = _build_out_probs(
-        ci_masked_out_logits, target_out_logits, tok_display, adv_pgd_out_logits
-    )
+    out_probs = _build_out_probs(ci_masked_out_logits, target_out_logits, tok_display)
 
     filtered_node_ci_vals = {k: v for k, v in node_ci_vals.items() if v > ci_threshold}
 
@@ -1001,7 +941,6 @@ def stored_graph_to_response(
         num_tokens=num_tokens,
         ci_threshold=ci_threshold,
         normalize=normalize,
-        adv_pgd_out_logits=graph.adv_pgd_out_logits,
     )
 
     if not is_optimized:

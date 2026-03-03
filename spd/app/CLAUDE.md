@@ -35,14 +35,14 @@ This launches both backend (FastAPI/uvicorn) and frontend (Vite) dev servers.
 backend/
 ├── server.py              # FastAPI app, CORS, routers
 ├── state.py               # Singleton StateManager + HarvestRepo (lazy-loaded harvest data)
-├── compute.py             # Core attribution computation
+├── compute.py             # Core attribution computation + intervention evaluation
 ├── app_tokenizer.py       # AppTokenizer: wraps HF tokenizers for display/encoding
 ├── (topology lives at spd/topology.py — TransformerTopology)
 ├── schemas.py             # Pydantic API models
 ├── dependencies.py        # FastAPI dependency injection
 ├── utils.py               # Logging/timing utilities
 ├── database.py            # SQLite interface
-├── optim_cis.py           # Sparse CI optimization
+├── optim_cis.py           # Sparse CI optimization, loss configs, PGD
 └── routers/
     ├── runs.py            # Load W&B runs + GET /api/model_info
     ├── graphs.py          # Compute attribution graphs
@@ -158,8 +158,13 @@ Edge(source: Node, target: Node, strength: float, is_cross_seq: bool)
 # strength = gradient * activation
 # is_cross_seq = True for k/v → o_proj (attention pattern)
 
-PromptAttributionResult(edges: list[Edge], output_probs: Tensor[seq, vocab], node_ci_vals: dict[str, float])
-# node_ci_vals maps "layer:seq:c_idx" → CI value
+PromptAttributionResult(edges, ci_masked_out_logits, target_out_logits, node_ci_vals, node_subcomp_acts)
+
+TokenPrediction(token, token_id, prob, logit, target_prob, target_logit)
+
+InterventionResult(input_tokens, ci, stochastic, adversarial, ci_loss, stochastic_loss, adversarial_loss)
+# ci/stochastic/adversarial are list[list[TokenPrediction]] (per-position top-k)
+# losses are evaluated using the graph's implied loss context
 ```
 
 ### Frontend Types (`promptAttributionsTypes.ts`)
@@ -215,18 +220,26 @@ Finds sparse CI mask that:
 - Minimizes L0 (active component count)
 - Uses importance minimality + CE loss (or KL loss)
 
-### Intervention Forward & Masked Predictions
+### Interventions (`compute.py → compute_intervention`)
 
-`compute_intervention_forward()`: Forward pass with binary masks (selected=1, rest=0) → top-k predictions.
-
-`compute_masked_predictions()`: Three forward passes for a node selection:
+A single unified function evaluates a node selection under three masking regimes:
 - **CI**: mask = selection (binary on/off)
-- **Stochastic**: mask = selection + (1-selection) × rand (binomial leakage)
-- **Adversarial** (optimized graphs only): mask = selection + (1-selection) × PGD source
+- **Stochastic**: mask = selection + (1-selection) × Uniform(0,1)
+- **Adversarial**: PGD optimizes alive-but-unselected components to maximize loss; non-alive get Uniform(0,1)
 
-**Training PGD vs Eval PGD**: The PGD settings in the graph optimization config (`adv_pgd_n_steps`, `adv_pgd_step_size`) are a *training* regularizer — they make CI optimization robust. The PGD in masked predictions is an *eval* metric — it measures worst-case leakage for a given node selection. Eval PGD defaults are in `compute.py` (`EVAL_PGD_N_STEPS`, `EVAL_PGD_STEP_SIZE`). Adversarial eval requires a loss target (CE or KL at a position), which only exists on optimized graphs.
+Returns `InterventionResult` with top-k `TokenPrediction`s per position for each regime, plus per-regime loss values.
 
-**Base intervention run**: Created automatically during graph computation. Uses all nodes with CI > 0 (the graph's rounded CI mask). Persisted as an `intervention_run` so predictions are available synchronously — no lazy fetching.
+**Loss context**: Every graph has an implied loss that interventions evaluate against:
+- **Standard/manual graphs** → `MeanKLLossConfig` (mean KL divergence from target across all positions)
+- **Optimized graphs** → the graph's optimization loss (CE for a specific token at a position, or KL at a position)
+
+This loss is used for two things: (1) what PGD maximizes during adversarial evaluation, and (2) the `ci_loss`/`stochastic_loss`/`adversarial_loss` metrics reported in `InterventionResult`.
+
+**Alive masks**: `build_graph_alive_masks()` constructs boolean masks from the graph's `node_ci_vals` (CI > 0). These define the PGD degrees of freedom — PGD can only manipulate alive-but-unselected components.
+
+**Training PGD vs Eval PGD**: The PGD settings in the graph optimization config (`adv_pgd_n_steps`, `adv_pgd_step_size`) are a *training* regularizer — they make CI optimization robust. The PGD in `compute_intervention` is an *eval* metric — it measures worst-case leakage for a given node selection. Eval PGD defaults are in `compute.py` (`DEFAULT_EVAL_PGD_CONFIG`).
+
+**Base intervention run**: Created automatically during graph computation. Uses all interventable nodes with CI > 0. Persisted as an `intervention_run` so predictions are available synchronously.
 
 ---
 
@@ -254,9 +267,14 @@ POST /api/graphs
 ### Intervention
 
 ```
-POST /api/intervention {text, nodes: ["h.0.attn.q_proj:3:5", ...]}
-  → compute_intervention_forward()
-  ← InterventionResponse with top-k predictions
+POST /api/intervention/run {graph_id, selected_nodes, top_k, adv_pgd}
+  → compute_intervention(active_nodes, graph_alive_masks, loss_config)
+  ← InterventionRunSummary {id, selected_nodes, result: InterventionResult}
+
+InterventionResult = {
+  input_tokens, ci, stochastic, adversarial,  // TokenPrediction[][] per regime
+  ci_loss, stochastic_loss, adversarial_loss   // loss under each regime
+}
 ```
 
 ### Component Correlations & Interpretations
@@ -296,8 +314,8 @@ Located at `.data/app/prompt_attr.db`. Delete this file if schema changes cause 
 | ------------------ | ---------------------------------- | ------------------------------------------------- |
 | `runs`             | `wandb_path`                       | W&B run references                                |
 | `prompts`          | `(run_id, context_length)`         | Token sequences                                   |
-| `graphs`           | `(prompt_id, optimization_params)` | Attribution edges + output probs + node CI values |
-| `intervention_runs`| `graph_id`                         | Saved intervention results                        |
+| `graphs`           | `(prompt_id, optimization_params)` | Attribution edges + CI/target logits + node CI values |
+| `intervention_runs`| `graph_id`                         | Saved `InterventionResult` JSON (single `result` column) |
 
 Note: Activation contexts, correlations, token stats, and interpretations are loaded from pre-harvested data at `SPD_OUT_DIR/{harvest,autointerp}/` (see `spd/harvest/` and `spd/autointerp/`).
 

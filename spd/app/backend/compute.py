@@ -12,20 +12,23 @@ from typing import Any, override
 
 import torch
 from jaxtyping import Bool, Float
+from pydantic import BaseModel
 from torch import Tensor, nn
 
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.app.backend.optim_cis import (
+    AdvPGDConfig,
     CISnapshotCallback,
     LossConfig,
     OptimCIConfig,
     OptimizationMetrics,
-    _compute_recon_loss,
-    _interpolate_masks,
+    compute_recon_loss,
     optimize_ci_values,
+    run_adv_pgd,
 )
 from spd.configs import SamplingType
 from spd.log import logger
+from spd.metrics.pgd_utils import interpolate_pgd_mask
 from spd.models.component_model import ComponentModel, OutputWithCache
 from spd.models.components import make_mask_infos
 from spd.topology import TransformerTopology
@@ -143,7 +146,6 @@ class OptimizedPromptAttributionResult:
     node_ci_vals: dict[str, float]  # layer:seq:c_idx -> ci_val
     node_subcomp_acts: dict[str, float]  # layer:seq:c_idx -> subcomponent activation (v_i^T @ a)
     metrics: OptimizationMetrics  # Final loss metrics from optimization
-    adv_pgd_out_logits: Float[Tensor, "seq vocab"] | None  # Adversarial PGD output logits
 
 
 ProgressCallback = Callable[[int, int, str], None]  # (current, total, stage)
@@ -567,11 +569,6 @@ def compute_prompt_attributions_optimized(
         loss_seq_pos=loss_seq_pos,
     )
 
-    # Slice adversarial logits to match the loss_seq_pos range
-    adv_pgd_out_logits: Float[Tensor, "seq vocab"] | None = None
-    if optim_result.adv_pgd_out_logits is not None:
-        adv_pgd_out_logits = optim_result.adv_pgd_out_logits[: loss_seq_pos + 1]
-
     return OptimizedPromptAttributionResult(
         edges=result.edges,
         ci_masked_out_probs=result.ci_masked_out_probs,
@@ -581,7 +578,6 @@ def compute_prompt_attributions_optimized(
         node_ci_vals=result.node_ci_vals,
         node_subcomp_acts=result.node_subcomp_acts,
         metrics=optim_result.metrics,
-        adv_pgd_out_logits=adv_pgd_out_logits,
     )
 
 
@@ -676,269 +672,183 @@ def extract_node_subcomp_acts(
     return node_subcomp_acts
 
 
-TopKPreds = list[list[tuple[str, float]]]  # [seq_pos][(token_str, prob)]
+class TokenPrediction(BaseModel):
+    """A single token prediction with probability."""
 
-MASKED_PRED_TOP_K = 3
+    token: str
+    token_id: int
+    prob: float
+    logit: float
+    target_prob: float
+    target_logit: float
+
+
+class InterventionResult(BaseModel):
+    """Unified result of an intervention evaluation (CI, stochastic, adversarial masking)."""
+
+    input_tokens: list[str]
+    ci: list[list[TokenPrediction]]
+    stochastic: list[list[TokenPrediction]]
+    adversarial: list[list[TokenPrediction]]
+    ci_loss: float
+    stochastic_loss: float
+    adversarial_loss: float
 
 
 # Default eval PGD settings (distinct from optimization PGD which is a training regularizer)
-EVAL_PGD_N_STEPS = 4
-EVAL_PGD_STEP_SIZE = 1.0
+DEFAULT_EVAL_PGD_CONFIG = AdvPGDConfig(n_steps=4, step_size=1.0, init="random")
 
 
-@dataclass
-class MaskedPredictionsResult:
-    """Top-k predictions under CI, stochastic, and adversarial masking."""
+def build_graph_alive_masks(
+    node_ci_vals: dict[str, float],
+    model: ComponentModel,
+    topology: TransformerTopology,
+    seq_len: int,
+    device: str | torch.device,
+) -> dict[str, Bool[Tensor, "1 seq C"]]:
+    """Build alive masks from graph's node_ci_vals (CI > 0), excluding embed/output."""
+    alive_masks: dict[str, Bool[Tensor, "1 seq C"]] = {}
+    for layer_name, C in model.module_to_c.items():
+        alive_masks[layer_name] = torch.zeros(1, seq_len, C, device=device, dtype=torch.bool)
 
-    ci: TopKPreds
-    stochastic: TopKPreds
-    adversarial: TopKPreds
-    ci_kl: float  # KL(target || ci_masked), mean over positions
-    stochastic_kl: float
-    adversarial_kl: float
-
-
-def _extract_topk(
-    logits: Float[Tensor, "1 seq vocab"],
-    tokenizer: AppTokenizer,
-) -> TopKPreds:
-    """Extract top-k token predictions per position from logits."""
-    probs = torch.softmax(logits, dim=-1)
-    result: TopKPreds = []
-    for pos in range(probs.shape[1]):
-        top_probs, top_ids = torch.topk(probs[0, pos], MASKED_PRED_TOP_K)
-        result.append(
-            [
-                (tokenizer.get_tok_display(int(tid.item())), float(p.item()))
-                for p, tid in zip(top_probs, top_ids, strict=True)
-            ]
+    for key, ci in node_ci_vals.items():
+        if ci <= 0:
+            continue
+        canon_layer, seq_str, cidx_str = key.split(":")
+        if canon_layer in ("embed", "output"):
+            continue
+        concrete_path = topology.canon_to_target(canon_layer)
+        assert concrete_path in alive_masks, (
+            f"node_ci_vals has layer {canon_layer!r} (concrete: {concrete_path!r}) "
+            f"not in model.module_to_c"
         )
+        alive_masks[concrete_path][0, int(seq_str), int(cidx_str)] = True
+
+    return alive_masks
+
+
+def _extract_topk_predictions(
+    logits: Float[Tensor, "1 seq vocab"],
+    target_logits: Float[Tensor, "1 seq vocab"],
+    tokenizer: AppTokenizer,
+    top_k: int,
+) -> list[list[TokenPrediction]]:
+    """Extract top-k token predictions per position, paired with target probs."""
+    probs = torch.softmax(logits, dim=-1)
+    target_probs = torch.softmax(target_logits, dim=-1)
+    result: list[list[TokenPrediction]] = []
+    for pos in range(probs.shape[1]):
+        top_vals, top_ids = torch.topk(probs[0, pos], top_k)
+        pos_preds: list[TokenPrediction] = []
+        for p, tid_t in zip(top_vals, top_ids, strict=True):
+            tid = int(tid_t.item())
+            pos_preds.append(
+                TokenPrediction(
+                    token=tokenizer.get_tok_display(tid),
+                    token_id=tid,
+                    prob=float(p.item()),
+                    logit=float(logits[0, pos, tid].item()),
+                    target_prob=float(target_probs[0, pos, tid].item()),
+                    target_logit=float(target_logits[0, pos, tid].item()),
+                )
+            )
+        result.append(pos_preds)
     return result
 
 
-def _mean_kl_from_target(
-    masked_logits: Float[Tensor, "1 seq vocab"],
-    target_logits: Float[Tensor, "1 seq vocab"],
-) -> float:
-    """Mean KL divergence from target across all positions."""
-    target_probs = torch.softmax(target_logits, dim=-1)
-    pred_log_probs = torch.log_softmax(masked_logits, dim=-1)
-    # KL per position, then mean
-    kl_per_pos = torch.nn.functional.kl_div(pred_log_probs, target_probs, reduction="none").sum(
-        dim=-1
-    )  # [1, seq]
-    return float(kl_per_pos.mean().item())
-
-
-def _run_eval_pgd(
+def compute_intervention(
     model: ComponentModel,
     tokens: Float[Tensor, "1 seq"],
-    ci_masks: dict[str, Float[Tensor, "1 seq C"]],
-    target_logits: Float[Tensor, "1 seq vocab"],
-    n_steps: int,
-    step_size: float,
-    pgd_loss_config: LossConfig | None,
-) -> Float[Tensor, "1 seq vocab"]:
-    """Run PGD to find adversarial sources maximizing loss, return final logits.
-
-    If pgd_loss_config is provided (optimized graph), ascends that specific loss.
-    Otherwise, ascends mean KL divergence from target over all positions.
-    """
-    adv_sources: dict[str, Tensor] = {}
-    for layer_name, ci in ci_masks.items():
-        source = torch.zeros_like(ci)
-        source.requires_grad_(True)
-        adv_sources[layer_name] = source
-
-    source_list = list(adv_sources.values())
-    ci_detached = {k: v.detach() for k, v in ci_masks.items()}
-
-    for _ in range(n_steps):
-        adv_mask_infos = make_mask_infos(
-            _interpolate_masks(ci_detached, adv_sources), routing_masks="all"
-        )
-        with bf16_autocast():
-            out = model(tokens, mask_infos=adv_mask_infos)
-
-        if pgd_loss_config is not None:
-            loss = _compute_recon_loss(out, pgd_loss_config, target_logits, str(tokens.device))
-        else:
-            target_probs = torch.softmax(target_logits, dim=-1)
-            pred_log_probs = torch.log_softmax(out, dim=-1)
-            loss = torch.nn.functional.kl_div(pred_log_probs, target_probs, reduction="batchmean")
-
-        grads = torch.autograd.grad(loss, source_list)
-        with torch.no_grad():
-            for (_layer_name, source), grad in zip(adv_sources.items(), grads, strict=True):
-                source.add_(step_size * grad.sign())
-                source.clamp_(0.0, 1.0)
-
-    with torch.no_grad(), bf16_autocast():
-        final_adv_masks = _interpolate_masks(
-            ci_detached, {k: v.detach() for k, v in adv_sources.items()}
-        )
-        adv_mask_infos = make_mask_infos(final_adv_masks, routing_masks="all")
-        return model(tokens, mask_infos=adv_mask_infos)
-
-
-def compute_masked_predictions(
-    model: ComponentModel,
-    tokens: Float[Tensor, "1 seq"],
-    active_nodes: list[tuple[str, int, int]],  # [(layer, seq_pos, component_idx)]
+    active_nodes: list[tuple[str, int, int]],
+    graph_alive_masks: dict[str, Bool[Tensor, "1 seq C"]],
     tokenizer: AppTokenizer,
-    pgd_n_steps: int,
-    pgd_step_size: float,
-    pgd_loss_config: LossConfig | None = None,
-) -> MaskedPredictionsResult:
-    """Compute top-k predictions + KL under CI, stochastic, and adversarial masking.
+    adv_pgd_config: AdvPGDConfig,
+    loss_config: LossConfig,
+    top_k: int,
+) -> InterventionResult:
+    """Unified intervention evaluation: CI, stochastic, and adversarial masking.
 
-    PGD always runs. If pgd_loss_config is provided (optimized graph), PGD ascends that
-    specific loss. Otherwise, PGD ascends mean KL divergence from target.
+    Args:
+        active_nodes: (concrete_path, seq_pos, component_idx) tuples for selected nodes.
+        graph_alive_masks: The graph's CI > 0 mask (all alive components). PGD optimizes
+            alive-but-unselected components; non-alive get uniform random.
+        loss_config: Loss for PGD adversary to maximize.
+        top_k: Number of top predictions to return per position.
     """
     seq_len = tokens.shape[1]
     device = tokens.device
 
-    # Build binary CI masks from active nodes
+    # Build binary CI masks from active nodes (selected = 1, rest = 0)
     ci_masks: dict[str, Float[Tensor, "1 seq C"]] = {}
     for layer_name, C in model.module_to_c.items():
         ci_masks[layer_name] = torch.zeros(1, seq_len, C, device=device)
     for layer, seq_pos, c_idx in active_nodes:
         ci_masks[layer][0, seq_pos, c_idx] = 1.0
+        assert graph_alive_masks[layer][0, seq_pos, c_idx], (
+            f"Selected node {layer}:{seq_pos}:{c_idx} is not alive in the graph"
+        )
 
     with torch.no_grad(), bf16_autocast():
+        # Target forward (unmasked)
         target_logits: Float[Tensor, "1 seq vocab"] = model(tokens)
 
-        # CI-masked forward
+        # CI forward (binary mask)
         ci_mask_infos = make_mask_infos(ci_masks, routing_masks="all")
         ci_logits: Float[Tensor, "1 seq vocab"] = model(tokens, mask_infos=ci_mask_infos)
 
-        # Stochastic forward: mask = ci + (1-ci) * rand
-        stoch_sources = {
-            layer: torch.randint(0, 2, ci.shape, device=device).float()
-            for layer, ci in ci_masks.items()
-        }
+        # Stochastic forward: ci + (1-ci) * uniform
         stoch_masks = {
-            layer: ci_masks[layer] + (1 - ci_masks[layer]) * stoch_sources[layer]
+            layer: ci_masks[layer] + (1 - ci_masks[layer]) * torch.rand_like(ci_masks[layer])
             for layer in ci_masks
         }
         stoch_mask_infos = make_mask_infos(stoch_masks, routing_masks="all")
         stoch_logits: Float[Tensor, "1 seq vocab"] = model(tokens, mask_infos=stoch_mask_infos)
 
-    # Adversarial forward (PGD always runs)
-    adv_logits = _run_eval_pgd(
+    # Adversarial: PGD optimizes alive-but-unselected components
+    adv_sources = run_adv_pgd(
         model=model,
         tokens=tokens,
-        ci_masks=ci_masks,
-        target_logits=target_logits,
-        n_steps=pgd_n_steps,
-        step_size=pgd_step_size,
-        pgd_loss_config=pgd_loss_config,
+        ci=ci_masks,
+        alive_masks=graph_alive_masks,
+        adv_config=adv_pgd_config,
+        target_out=target_logits,
+        loss_config=loss_config,
     )
-
-    # Extract top-k predictions and KL metrics
+    # Non-alive positions get uniform random fill
+    adv_masks = interpolate_pgd_mask(ci_masks, adv_sources)
     with torch.no_grad():
-        ci_kl = _mean_kl_from_target(ci_logits, target_logits)
-        stoch_kl = _mean_kl_from_target(stoch_logits, target_logits)
-        adv_kl = _mean_kl_from_target(adv_logits, target_logits)
-
-    return MaskedPredictionsResult(
-        ci=_extract_topk(ci_logits, tokenizer),
-        stochastic=_extract_topk(stoch_logits, tokenizer),
-        adversarial=_extract_topk(adv_logits, tokenizer),
-        ci_kl=ci_kl,
-        stochastic_kl=stoch_kl,
-        adversarial_kl=adv_kl,
-    )
-
-
-@dataclass
-class InterventionResult:
-    """Result of intervention forward pass."""
-
-    input_tokens: list[str]
-    predictions_per_position: list[
-        list[tuple[str, int, float, float, float, float]]
-    ]  # [(token, id, spd_prob, logit, target_prob, target_logit)]
-
-
-def compute_intervention_forward(
-    model: ComponentModel,
-    tokens: Float[Tensor, "1 seq"],
-    active_nodes: list[tuple[str, int, int]],  # [(layer, seq_pos, component_idx)]
-    top_k: int,
-    tokenizer: AppTokenizer,
-) -> InterventionResult:
-    """Forward pass with only specified nodes active.
-
-    Args:
-        model: ComponentModel to run intervention on.
-        tokens: Input tokens of shape [1, seq].
-        active_nodes: List of (layer, seq_pos, component_idx) tuples specifying which nodes to activate.
-        top_k: Number of top predictions to return per position.
-        tokenizer: Tokenizer for decoding tokens.
-
-    Returns:
-        InterventionResult with input tokens and top-k predictions per position.
-    """
-
-    seq_len = tokens.shape[1]
-    device = tokens.device
-
-    # Build component masks: all zeros, then set 1s for active nodes
-    component_masks: dict[str, Float[Tensor, "1 seq C"]] = {}
-    for layer_name, C in model.module_to_c.items():
-        component_masks[layer_name] = torch.zeros(1, seq_len, C, device=device)
-
-    for layer, seq_pos, c_idx in active_nodes:
-        assert layer in component_masks, f"Layer {layer} not in model"
-        assert 0 <= seq_pos < seq_len, f"seq_pos {seq_pos} out of bounds [0, {seq_len})"
-        assert 0 <= c_idx < model.module_to_c[layer], (
-            f"component_idx {c_idx} out of bounds [0, {model.module_to_c[layer]})"
-        )
-        component_masks[layer][0, seq_pos, c_idx] = 1.0
-
-    mask_infos = make_mask_infos(component_masks, routing_masks="all")
-
+        for layer in adv_masks:
+            non_alive = ~graph_alive_masks[layer]
+            adv_masks[layer][non_alive] = torch.rand(int(non_alive.sum().item()), device=device)
     with torch.no_grad(), bf16_autocast():
-        # SPD model forward pass (with component masks)
-        spd_logits: Float[Tensor, "1 seq vocab"] = model(tokens, mask_infos=mask_infos)
-        spd_probs: Float[Tensor, "1 seq vocab"] = torch.softmax(spd_logits, dim=-1)
+        adv_mask_infos = make_mask_infos(adv_masks, routing_masks="all")
+        adv_logits: Float[Tensor, "1 seq vocab"] = model(tokens, mask_infos=adv_mask_infos)
 
-        # Target model forward pass (no masks)
-        target_logits: Float[Tensor, "1 seq vocab"] = model(tokens)
-        target_out_probs: Float[Tensor, "1 seq vocab"] = torch.softmax(target_logits, dim=-1)
+    # Extract predictions and loss metrics
+    device_str = str(device)
+    with torch.no_grad():
+        ci_preds = _extract_topk_predictions(ci_logits, target_logits, tokenizer, top_k)
+        stoch_preds = _extract_topk_predictions(stoch_logits, target_logits, tokenizer, top_k)
+        adv_preds = _extract_topk_predictions(adv_logits, target_logits, tokenizer, top_k)
 
-    # Get top-k predictions per position (based on SPD model's top-k)
-    predictions_per_position: list[list[tuple[str, int, float, float, float, float]]] = []
-    for pos in range(seq_len):
-        pos_spd_probs = spd_probs[0, pos]
-        pos_spd_logits = spd_logits[0, pos]
-        pos_target_out_probs = target_out_probs[0, pos]
-        pos_target_logits = target_logits[0, pos]
-        top_probs, top_ids = torch.topk(pos_spd_probs, top_k)
+        ci_loss = float(
+            compute_recon_loss(ci_logits, loss_config, target_logits, device_str).item()
+        )
+        stoch_loss = float(
+            compute_recon_loss(stoch_logits, loss_config, target_logits, device_str).item()
+        )
+        adv_loss = float(
+            compute_recon_loss(adv_logits, loss_config, target_logits, device_str).item()
+        )
 
-        pos_predictions: list[tuple[str, int, float, float, float, float]] = []
-        for spd_prob, token_id in zip(top_probs, top_ids, strict=True):
-            tid = int(token_id.item())
-            token_str = tokenizer.get_tok_display(tid)
-            target_prob = float(pos_target_out_probs[tid].item())
-            target_logit = float(pos_target_logits[tid].item())
-            pos_predictions.append(
-                (
-                    token_str,
-                    tid,
-                    float(spd_prob.item()),
-                    float(pos_spd_logits[tid].item()),
-                    target_prob,
-                    target_logit,
-                )
-            )
-        predictions_per_position.append(pos_predictions)
-
-    # Decode input tokens
     input_tokens = tokenizer.get_spans([int(t.item()) for t in tokens[0]])
 
     return InterventionResult(
         input_tokens=input_tokens,
-        predictions_per_position=predictions_per_position,
+        ci=ci_preds,
+        stochastic=stoch_preds,
+        adversarial=adv_preds,
+        ci_loss=ci_loss,
+        stochastic_loss=stoch_loss,
+        adversarial_loss=adv_loss,
     )

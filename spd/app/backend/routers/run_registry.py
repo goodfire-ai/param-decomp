@@ -4,6 +4,7 @@ Returns architecture and data availability for requested SPD runs.
 The canonical run list lives in the frontend; the backend just hydrates it.
 """
 
+import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -76,18 +77,19 @@ def _get_architecture_summary(wandb_path: str) -> str | None:
         return None
 
 
+def _build_run_info(wandb_run_id: str) -> RunInfoResponse:
+    _, _, run_id = parse_wandb_run_path(wandb_run_id)
+    return RunInfoResponse(
+        wandb_run_id=wandb_run_id,
+        architecture=_get_architecture_summary(wandb_run_id),
+        availability=_check_availability(run_id),
+    )
+
+
 @router.post("")
 @log_errors
-def get_run_info(wandb_run_ids: list[str]) -> list[RunInfoResponse]:
+async def get_run_info(wandb_run_ids: list[str]) -> list[RunInfoResponse]:
     """Return architecture and availability for the requested runs."""
-    results: list[RunInfoResponse] = []
-    for wandb_run_id in wandb_run_ids:
-        _, _, run_id = parse_wandb_run_path(wandb_run_id)
-        results.append(
-            RunInfoResponse(
-                wandb_run_id=wandb_run_id,
-                architecture=_get_architecture_summary(wandb_run_id),
-                availability=_check_availability(run_id),
-            )
-        )
-    return results
+    loop = asyncio.get_running_loop()
+    tasks = [loop.run_in_executor(None, _build_run_info, wid) for wid in wandb_run_ids]
+    return list(await asyncio.gather(*tasks))

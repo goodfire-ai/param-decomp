@@ -49,8 +49,8 @@
         EVAL_PGD_STEP_SIZE,
         type InterventionState,
         type InterventionRun,
-        type MaskedPredictions,
-        type TokenPred,
+        type InterventionResult,
+        type TokenPrediction,
     } from "../../lib/interventionTypes";
 
     type Props = {
@@ -125,20 +125,20 @@
     let advPgdNSteps = $state(EVAL_PGD_N_STEPS);
     let advPgdStepSize = $state(EVAL_PGD_STEP_SIZE);
 
-    // Masked predictions — from baked run data, null for draft/base (base auto-bakes on mount)
-    const maskedPreds = $derived.by((): MaskedPredictions | null => {
-        if (activeRun.kind === "baked") return activeRun.maskedPredictions;
+    // Intervention result from baked run, null for draft
+    const interventionResult = $derived.by((): InterventionResult | null => {
+        if (activeRun.kind === "baked") return activeRun.result;
         return null;
     });
 
     // Prediction rows for rendering: [{label, preds}] ordered top-to-bottom (Adv, Stoch, CI)
-    type PredRow = { label: string; preds: TokenPred[][] };
+    type PredRow = { label: string; preds: TokenPrediction[][] };
     const predRows = $derived.by((): PredRow[] | null => {
-        if (!maskedPreds) return null;
+        if (!interventionResult) return null;
         const rows: PredRow[] = [];
-        if (maskedPreds.adversarial.length > 0) rows.push({ label: "Adv", preds: maskedPreds.adversarial });
-        if (maskedPreds.stochastic.length > 0) rows.push({ label: "Stoch", preds: maskedPreds.stochastic });
-        rows.push({ label: "CI", preds: maskedPreds.ci });
+        if (interventionResult.adversarial.length > 0) rows.push({ label: "Adv", preds: interventionResult.adversarial });
+        if (interventionResult.stochastic.length > 0) rows.push({ label: "Stoch", preds: interventionResult.stochastic });
+        rows.push({ label: "CI", preds: interventionResult.ci });
         return rows;
     });
 
@@ -180,6 +180,20 @@
     let isHoveringTooltip = $state(false);
     let tooltipPos = $state<TooltipPos>({ left: 0, top: 0 });
     let hoverTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    // Hover state for prediction chips
+    type HoveredPred = { pred: TokenPrediction; rowLabel: string; seqIdx: number };
+    let hoveredPred = $state<HoveredPred | null>(null);
+    let predTooltipPos = $state<TooltipPos>({ left: 0, top: 0 });
+
+    function handlePredMouseEnter(e: MouseEvent, pred: TokenPrediction, rowLabel: string, seqIdx: number) {
+        hoveredPred = { pred, rowLabel, seqIdx };
+        predTooltipPos = calcTooltipPos(e.clientX, e.clientY, "small");
+    }
+
+    function handlePredMouseLeave() {
+        hoveredPred = null;
+    }
 
     // Refs
     let graphContainer: HTMLDivElement;
@@ -729,29 +743,36 @@
                                     {#each row.preds as preds, seqIdx (seqIdx)}
                                         {@const colX = layout.seqXStarts[seqIdx]}
                                         {@const colW = layout.seqWidths[seqIdx]}
-                                        {@const chipW = Math.min(Math.floor((colW - 2) / 3), 48)}
+                                        {@const chipW = Math.min(48, Math.floor((colW - 2) / Math.max(preds.length, 1)))}
                                         {@const chipH = PRED_ROW_HEIGHT}
                                         {@const chipGap = 1}
-                                        {#each preds as pred, rank (rank)}
+                                        {@const maxChips = Math.max(1, Math.floor((colW - 2 + chipGap) / (chipW + chipGap)))}
+                                        {#each preds.slice(0, maxChips) as pred, rank (rank)}
                                             {@const cx = colX + rank * (chipW + chipGap)}
-                                            <rect
-                                                x={cx}
-                                                y={rowY}
-                                                width={chipW}
-                                                height={chipH}
-                                                rx="2"
-                                                fill={getNextTokenProbBgColor(pred.prob)}
-                                                stroke="#ddd"
-                                                stroke-width="0.5"
-                                            />
-                                            <text
-                                                x={cx + chipW / 2}
-                                                y={rowY + chipH / 2 + 3}
-                                                text-anchor="middle"
-                                                font-size="7"
-                                                font-family="'Berkeley Mono', 'SF Mono', monospace"
-                                                fill={pred.prob > 0.5 ? "white" : colors.textPrimary}>{pred.token}</text
+                                            <!-- svelte-ignore a11y_no_static_element_interactions -->
+                                            <g
+                                                onmouseenter={(e) => handlePredMouseEnter(e, pred, row.label, seqIdx)}
+                                                onmouseleave={handlePredMouseLeave}
                                             >
+                                                <rect
+                                                    x={cx}
+                                                    y={rowY}
+                                                    width={chipW}
+                                                    height={chipH}
+                                                    rx="2"
+                                                    fill={getNextTokenProbBgColor(pred.prob)}
+                                                    stroke="#ddd"
+                                                    stroke-width="0.5"
+                                                />
+                                                <text
+                                                    x={cx + chipW / 2}
+                                                    y={rowY + chipH / 2 + 3}
+                                                    text-anchor="middle"
+                                                    font-size="7"
+                                                    font-family="'Berkeley Mono', 'SF Mono', monospace"
+                                                    fill={pred.prob > 0.5 ? "white" : colors.textPrimary}>{pred.token}</text
+                                                >
+                                            </g>
                                         {/each}
                                     {/each}
                                 {/each}
@@ -979,29 +1000,30 @@
                             {/if}
                         </div>
                         {#if isActive}
+                            {@const opt = graph.data.optimization}
+                            {@const lossLabel = opt
+                                ? opt.loss.type === "ce"
+                                    ? `CE "${opt.loss.label_str}" @ ${opt.loss.position}`
+                                    : `KL @ ${opt.loss.position}`
+                                : "mean KL"}
                             <div class="opt-info">
                                 <div class="opt-row">
-                                    <span class="opt-key">CI KL</span>
-                                    <span>{run.maskedPredictions.ci_kl.toFixed(3)}</span>
+                                    <span class="opt-key">CI</span>
+                                    <span>{run.result.ci_loss.toFixed(3)}</span>
                                 </div>
                                 <div class="opt-row">
-                                    <span class="opt-key">stoch KL</span>
-                                    <span>{run.maskedPredictions.stochastic_kl.toFixed(3)}</span>
+                                    <span class="opt-key">stoch</span>
+                                    <span>{run.result.stochastic_loss.toFixed(3)}</span>
                                 </div>
                                 <div class="opt-row">
-                                    <span class="opt-key">adv KL</span>
-                                    <span>{run.maskedPredictions.adversarial_kl.toFixed(3)}</span>
+                                    <span class="opt-key">adv</span>
+                                    <span>{run.result.adversarial_loss.toFixed(3)}</span>
                                 </div>
-                                {#if graph.data.optimization}
-                                    {@const opt = graph.data.optimization}
-                                    <div class="opt-row">
-                                        <span class="opt-key">loss</span>
-                                        <span
-                                            >{opt.loss.type === "ce"
-                                                ? `CE "${opt.loss.label_str}" @ ${opt.loss.position}`
-                                                : `KL @ ${opt.loss.position}`}</span
-                                        >
-                                    </div>
+                                <div class="opt-row">
+                                    <span class="opt-key">metric</span>
+                                    <span>{lossLabel}</span>
+                                </div>
+                                {#if opt}
                                     <div class="opt-row">
                                         <span class="opt-key">L0</span>
                                         <span>{opt.metrics.l0_total.toFixed(1)}</span>
@@ -1037,6 +1059,29 @@
                 handleNodeMouseLeave();
             }}
         />
+    {/if}
+
+    <!-- Prediction chip tooltip -->
+    {#if hoveredPred}
+        {@const p = hoveredPred.pred}
+        {@const pos = predTooltipPos}
+        <div
+            class="pred-tooltip"
+            style:left={pos.left != null ? `${pos.left}px` : undefined}
+            style:right={pos.right != null ? `${pos.right}px` : undefined}
+            style:top={pos.top != null ? `${pos.top}px` : undefined}
+            style:bottom={pos.bottom != null ? `${pos.bottom}px` : undefined}
+        >
+            <div class="pred-tooltip-token">{p.token}</div>
+            <table class="pred-tooltip-table">
+                <tbody>
+                    <tr><td>prob</td><td class="val">{(p.prob * 100).toFixed(1)}%</td></tr>
+                    <tr><td>logit</td><td class="val">{p.logit.toFixed(2)}</td></tr>
+                    <tr class="sep"><td>target prob</td><td class="val">{(p.target_prob * 100).toFixed(1)}%</td></tr>
+                    <tr><td>target logit</td><td class="val">{p.target_logit.toFixed(2)}</td></tr>
+                </tbody>
+            </table>
+        </div>
     {/if}
 
     <!-- Fork Modal (disabled — functionality commented out) -->
@@ -1415,5 +1460,48 @@
     .clone-btn:hover {
         background: var(--bg-inset);
         border-color: var(--border-strong);
+    }
+
+    .pred-tooltip {
+        position: fixed;
+        z-index: 1000;
+        background: var(--bg-elevated);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius-sm);
+        box-shadow: var(--shadow-md);
+        padding: var(--space-2) var(--space-3);
+        pointer-events: none;
+        font-family: var(--font-mono);
+        font-size: var(--text-xs);
+        min-width: 140px;
+    }
+
+    .pred-tooltip-token {
+        font-weight: 600;
+        font-size: var(--text-sm);
+        color: var(--text-primary);
+        margin-bottom: var(--space-1);
+        border-bottom: 1px solid var(--border-default);
+        padding-bottom: var(--space-1);
+    }
+
+    .pred-tooltip-table {
+        border-spacing: 0;
+    }
+
+    .pred-tooltip-table td {
+        padding: 1px 0;
+        color: var(--text-muted);
+    }
+
+    .pred-tooltip-table td.val {
+        padding-left: var(--space-2);
+        text-align: right;
+        color: var(--text-secondary);
+        font-variant-numeric: tabular-nums;
+    }
+
+    .pred-tooltip-table tr.sep td {
+        padding-top: var(--space-1);
     }
 </style>

@@ -24,7 +24,6 @@ from pydantic import BaseModel
 
 from spd.app.backend.compute import (
     compute_ci_only,
-    compute_intervention_forward,
     compute_prompt_attributions_optimized,
 )
 from spd.app.backend.database import StoredGraph
@@ -867,6 +866,12 @@ def _tool_get_component_info(params: dict[str, Any]) -> dict[str, Any]:
 
 def _tool_run_ablation(params: dict[str, Any]) -> dict[str, Any]:
     """Run ablation with selected components."""
+    from spd.app.backend.compute import (
+        DEFAULT_EVAL_PGD_CONFIG,
+        compute_intervention,
+    )
+    from spd.app.backend.optim_cis import MeanKLLossConfig
+
     manager, loaded = _get_state()
 
     text = params["text"]
@@ -882,7 +887,6 @@ def _tool_run_ablation(params: dict[str, Any]) -> dict[str, Any]:
     token_ids = loaded.tokenizer.encode(text)
     tokens = torch.tensor([token_ids], dtype=torch.long, device=DEVICE)
 
-    # Parse node keys
     active_nodes = []
     for key in selected_nodes:
         parts = key.split(":")
@@ -893,25 +897,34 @@ def _tool_run_ablation(params: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"Cannot intervene on {layer!r} nodes - only internal layers allowed")
         active_nodes.append((layer, int(seq_str), int(cidx_str)))
 
+    # Build trivial alive masks (all nodes alive — no graph context here)
+    alive_masks = {
+        layer_name: torch.ones(1, len(token_ids), C, device=DEVICE, dtype=torch.bool)
+        for layer_name, C in loaded.model.module_to_c.items()
+    }
+
     with manager.gpu_lock():
-        result = compute_intervention_forward(
+        result = compute_intervention(
             model=loaded.model,
             tokens=tokens,
             active_nodes=active_nodes,
-            top_k=top_k,
+            graph_alive_masks=alive_masks,
             tokenizer=loaded.tokenizer,
+            adv_pgd_config=DEFAULT_EVAL_PGD_CONFIG,
+            loss_config=MeanKLLossConfig(),
+            top_k=top_k,
         )
 
     predictions = []
-    for pos_predictions in result.predictions_per_position:
+    for pos_predictions in result.ci:
         pos_result = []
-        for token, token_id, spd_prob, _logit, target_prob, _target_logit in pos_predictions:
+        for pred in pos_predictions:
             pos_result.append(
                 {
-                    "token": token,
-                    "token_id": token_id,
-                    "circuit_prob": round(spd_prob, 6),
-                    "full_model_prob": round(target_prob, 6),
+                    "token": pred.token,
+                    "token_id": pred.token_id,
+                    "circuit_prob": round(pred.prob, 6),
+                    "full_model_prob": round(pred.target_prob, 6),
                 }
             )
         predictions.append(pos_result)

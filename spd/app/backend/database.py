@@ -18,7 +18,7 @@ import torch
 from pydantic import BaseModel
 
 from spd.app.backend.compute import Edge, Node
-from spd.app.backend.optim_cis import CELossConfig, KLLossConfig, LossConfig, MaskType
+from spd.app.backend.optim_cis import CELossConfig, KLLossConfig, MaskType, PositionalLossConfig
 from spd.settings import REPO_ROOT
 
 GraphType = Literal["standard", "optimized", "manual"]
@@ -74,7 +74,7 @@ class OptimizationParams(BaseModel):
     pnorm: float
     beta: float
     mask_type: MaskType
-    loss: LossConfig
+    loss: PositionalLossConfig
     pgd: PgdConfig | None = None
     # Computed metrics (persisted for display on reload)
     ci_masked_label_prob: float | None = None
@@ -94,7 +94,6 @@ class StoredGraph(BaseModel):
     edges: list[Edge]
     ci_masked_out_logits: torch.Tensor  # [seq, vocab]
     target_out_logits: torch.Tensor  # [seq, vocab]
-    adv_pgd_out_logits: torch.Tensor | None = None  # [seq, vocab] adversarial PGD logits
     node_ci_vals: dict[str, float]  # layer:seq:c_idx -> ci_val (required for all graphs)
     node_subcomp_acts: dict[str, float] = {}  # layer:seq:c_idx -> subcomp act (v_i^T @ a)
 
@@ -111,18 +110,17 @@ class InterventionRunRecord(BaseModel):
     id: int
     graph_id: int
     selected_nodes: list[str]  # node keys that were selected
-    result_json: str  # JSON-encoded InterventionResponse
-    masked_predictions_json: str  # JSON-encoded MaskedPredictionsResponse
+    result_json: str  # JSON-encoded InterventionResult
     created_at: str
 
 
 class ForkedInterventionRunRecord(BaseModel):
-    """A forked intervention run with modified tokens."""
+    """A forked intervention run with modified tokens (currently unused)."""
 
     id: int
     intervention_run_id: int
     token_replacements: list[tuple[int, int]]  # [(seq_pos, new_token_id), ...]
-    result_json: str  # JSON-encoded InterventionResponse
+    result_json: str
     created_at: str
 
 
@@ -248,8 +246,7 @@ class PromptAttrDB:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 graph_id INTEGER NOT NULL REFERENCES graphs(id),
                 selected_nodes TEXT NOT NULL,  -- JSON array of node keys
-                result TEXT NOT NULL,  -- JSON InterventionResponse
-                masked_predictions TEXT NOT NULL,  -- JSON MaskedPredictionsResponse
+                result TEXT NOT NULL,  -- JSON InterventionResult
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -433,8 +430,6 @@ class PromptAttrDB:
             "ci_masked": graph.ci_masked_out_logits,
             "target": graph.target_out_logits,
         }
-        if graph.adv_pgd_out_logits is not None:
-            logits_dict["adv_pgd"] = graph.adv_pgd_out_logits
         torch.save(logits_dict, buf)
         output_logits_blob = buf.getvalue()
         node_ci_vals_json = json.dumps(graph.node_ci_vals)
@@ -565,7 +560,6 @@ class PromptAttrDB:
         logits_data = torch.load(io.BytesIO(row["output_logits"]), weights_only=True)
         ci_masked_out_logits: torch.Tensor = logits_data["ci_masked"]
         target_out_logits: torch.Tensor = logits_data["target"]
-        adv_pgd_out_logits: torch.Tensor | None = logits_data.get("adv_pgd")
         node_ci_vals: dict[str, float] = json.loads(row["node_ci_vals"])
         node_subcomp_acts: dict[str, float] = json.loads(row["node_subcomp_acts"] or "{}")
 
@@ -574,7 +568,7 @@ class PromptAttrDB:
             loss_config_data = json.loads(row["loss_config"])
             loss_type = loss_config_data["type"]
             assert loss_type in ("ce", "kl"), f"Unknown loss type: {loss_type}"
-            loss_config: LossConfig
+            loss_config: PositionalLossConfig
             if loss_type == "ce":
                 loss_config = CELossConfig(**loss_config_data)
             else:
@@ -606,7 +600,6 @@ class PromptAttrDB:
             edges=edges,
             ci_masked_out_logits=ci_masked_out_logits,
             target_out_logits=target_out_logits,
-            adv_pgd_out_logits=adv_pgd_out_logits,
             node_ci_vals=node_ci_vals,
             node_subcomp_acts=node_subcomp_acts,
             optimization_params=opt_params,
@@ -680,24 +673,22 @@ class PromptAttrDB:
         graph_id: int,
         selected_nodes: list[str],
         result_json: str,
-        masked_predictions_json: str,
     ) -> int:
         """Save an intervention run.
 
         Args:
             graph_id: The graph ID this run belongs to.
             selected_nodes: List of node keys that were selected.
-            result_json: JSON-encoded InterventionResponse.
-            masked_predictions_json: JSON-encoded MaskedPredictionsResponse.
+            result_json: JSON-encoded InterventionResult.
 
         Returns:
             The intervention run ID.
         """
         conn = self._get_conn()
         cursor = conn.execute(
-            """INSERT INTO intervention_runs (graph_id, selected_nodes, result, masked_predictions)
-               VALUES (?, ?, ?, ?)""",
-            (graph_id, json.dumps(selected_nodes), result_json, masked_predictions_json),
+            """INSERT INTO intervention_runs (graph_id, selected_nodes, result)
+               VALUES (?, ?, ?)""",
+            (graph_id, json.dumps(selected_nodes), result_json),
         )
         conn.commit()
         run_id = cursor.lastrowid
@@ -715,7 +706,7 @@ class PromptAttrDB:
         """
         conn = self._get_conn()
         rows = conn.execute(
-            """SELECT id, graph_id, selected_nodes, result, masked_predictions, created_at
+            """SELECT id, graph_id, selected_nodes, result, created_at
                FROM intervention_runs
                WHERE graph_id = ?
                ORDER BY created_at""",
@@ -728,7 +719,6 @@ class PromptAttrDB:
                 graph_id=row["graph_id"],
                 selected_nodes=json.loads(row["selected_nodes"]),
                 result_json=row["result"],
-                masked_predictions_json=row["masked_predictions"],
                 created_at=row["created_at"],
             )
             for row in rows
@@ -813,7 +803,7 @@ class PromptAttrDB:
         """Get a single intervention run by ID."""
         conn = self._get_conn()
         row = conn.execute(
-            """SELECT id, graph_id, selected_nodes, result, masked_predictions, created_at
+            """SELECT id, graph_id, selected_nodes, result, created_at
                FROM intervention_runs
                WHERE id = ?""",
             (run_id,),
@@ -827,7 +817,6 @@ class PromptAttrDB:
             graph_id=row["graph_id"],
             selected_nodes=json.loads(row["selected_nodes"]),
             result_json=row["result"],
-            masked_predictions_json=row["masked_predictions"],
             created_at=row["created_at"],
         )
 
