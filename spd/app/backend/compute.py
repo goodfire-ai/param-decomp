@@ -684,15 +684,17 @@ class TokenPrediction(BaseModel):
 
 
 class InterventionResult(BaseModel):
-    """Unified result of an intervention evaluation (CI, stochastic, adversarial masking)."""
+    """Unified result of an intervention evaluation under multiple masking regimes."""
 
     input_tokens: list[str]
     ci: list[list[TokenPrediction]]
     stochastic: list[list[TokenPrediction]]
     adversarial: list[list[TokenPrediction]]
+    target_sans: list[list[TokenPrediction]]
     ci_loss: float
     stochastic_loss: float
     adversarial_loss: float
+    target_sans_loss: float
 
 
 # Default eval PGD settings (distinct from optimization PGD which is a training regularizer)
@@ -788,6 +790,14 @@ def compute_intervention(
             f"Selected node {layer}:{seq_pos}:{c_idx} is not alive in the graph"
         )
 
+    # Target-sans masks: everything=1 except alive-but-unselected=0
+    target_sans_masks: dict[str, Float[Tensor, "1 seq C"]] = {}
+    for layer_name in ci_masks:
+        mask = torch.ones_like(ci_masks[layer_name])
+        alive_unselected = graph_alive_masks[layer_name] & (ci_masks[layer_name] == 0)
+        mask[alive_unselected] = 0.0
+        target_sans_masks[layer_name] = mask
+
     with torch.no_grad(), bf16_autocast():
         # Target forward (unmasked)
         target_logits: Float[Tensor, "1 seq vocab"] = model(tokens)
@@ -803,6 +813,10 @@ def compute_intervention(
         }
         stoch_mask_infos = make_mask_infos(stoch_masks, routing_masks="all")
         stoch_logits: Float[Tensor, "1 seq vocab"] = model(tokens, mask_infos=stoch_mask_infos)
+
+        # Target-sans forward: full model minus unselected alive nodes
+        ts_mask_infos = make_mask_infos(target_sans_masks, routing_masks="all")
+        ts_logits: Float[Tensor, "1 seq vocab"] = model(tokens, mask_infos=ts_mask_infos)
 
     # Adversarial: PGD optimizes alive-but-unselected components
     adv_sources = run_adv_pgd(
@@ -830,6 +844,7 @@ def compute_intervention(
         ci_preds = _extract_topk_predictions(ci_logits, target_logits, tokenizer, top_k)
         stoch_preds = _extract_topk_predictions(stoch_logits, target_logits, tokenizer, top_k)
         adv_preds = _extract_topk_predictions(adv_logits, target_logits, tokenizer, top_k)
+        ts_preds = _extract_topk_predictions(ts_logits, target_logits, tokenizer, top_k)
 
         ci_loss = float(
             compute_recon_loss(ci_logits, loss_config, target_logits, device_str).item()
@@ -840,6 +855,9 @@ def compute_intervention(
         adv_loss = float(
             compute_recon_loss(adv_logits, loss_config, target_logits, device_str).item()
         )
+        ts_loss = float(
+            compute_recon_loss(ts_logits, loss_config, target_logits, device_str).item()
+        )
 
     input_tokens = tokenizer.get_spans([int(t.item()) for t in tokens[0]])
 
@@ -848,7 +866,9 @@ def compute_intervention(
         ci=ci_preds,
         stochastic=stoch_preds,
         adversarial=adv_preds,
+        target_sans=ts_preds,
         ci_loss=ci_loss,
         stochastic_loss=stoch_loss,
         adversarial_loss=adv_loss,
+        target_sans_loss=ts_loss,
     )

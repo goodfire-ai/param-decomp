@@ -139,6 +139,7 @@
         if (interventionResult.adversarial.length > 0) rows.push({ label: "Adv", preds: interventionResult.adversarial });
         if (interventionResult.stochastic.length > 0) rows.push({ label: "Stoch", preds: interventionResult.stochastic });
         rows.push({ label: "CI", preds: interventionResult.ci });
+        if (interventionResult.target_sans.length > 0) rows.push({ label: "T\\S", preds: interventionResult.target_sans });
         return rows;
     });
 
@@ -663,21 +664,21 @@
                     >
                         {runningIntervention ? "Forwarding..." : "Forward"}
                     </button>
+                    <span class="pgd-inputs">
+                        <label>PGD steps <input type="number" min="0" max="50" bind:value={advPgdNSteps} /></label>
+                        <label
+                            >step size <input
+                                type="number"
+                                min="0"
+                                max="10"
+                                step="0.1"
+                                bind:value={advPgdStepSize}
+                            /></label
+                        >
+                    </span>
                 {:else}
                     <button class="run-btn" onclick={onCloneRun}>Clone</button>
                 {/if}
-                <span class="pgd-inputs">
-                    <label>PGD steps <input type="number" min="0" max="50" bind:value={advPgdNSteps} /></label>
-                    <label
-                        >step size <input
-                            type="number"
-                            min="0"
-                            max="10"
-                            step="0.1"
-                            bind:value={advPgdStepSize}
-                        /></label
-                    >
-                </span>
             </div>
         </div>
 
@@ -743,10 +744,10 @@
                                     {#each row.preds as preds, seqIdx (seqIdx)}
                                         {@const colX = layout.seqXStarts[seqIdx]}
                                         {@const colW = layout.seqWidths[seqIdx]}
-                                        {@const chipW = Math.min(48, Math.floor((colW - 2) / Math.max(preds.length, 1)))}
+                                        {@const chipW = 48}
                                         {@const chipH = PRED_ROW_HEIGHT}
                                         {@const chipGap = 1}
-                                        {@const maxChips = Math.max(1, Math.floor((colW - 2 + chipGap) / (chipW + chipGap)))}
+                                        {@const maxChips = Math.min(preds.length, Math.max(1, Math.floor((colW - 2 + chipGap) / (chipW + chipGap))))}
                                         {#each preds.slice(0, maxChips) as pred, rank (rank)}
                                             {@const cx = colX + rank * (chipW + chipGap)}
                                             <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1018,6 +1019,10 @@
                                 <div class="opt-row">
                                     <span class="opt-key">adv</span>
                                     <span>{run.result.adversarial_loss.toFixed(3)}</span>
+                                </div>
+                                <div class="opt-row">
+                                    <span class="opt-key">T\S</span>
+                                    <span>{run.result.target_sans_loss.toFixed(3)}</span>
                                 </div>
                                 <div class="opt-row">
                                     <span class="opt-key">metric</span>

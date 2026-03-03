@@ -18,9 +18,11 @@ export type InterventionResult = {
     ci: TokenPrediction[][];
     stochastic: TokenPrediction[][];
     adversarial: TokenPrediction[][];
+    target_sans: TokenPrediction[][];
     ci_loss: number;
     stochastic_loss: number;
     adversarial_loss: number;
+    target_sans_loss: number;
 };
 
 /** Persisted intervention run from the server */
