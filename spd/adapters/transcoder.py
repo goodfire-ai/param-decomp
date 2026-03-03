@@ -106,9 +106,10 @@ class TranscoderAdapter(DecompositionAdapter):
     @override
     def model_metadata(self) -> ModelMetadata:
         ds_cfg = self._run_info.config_dict.get("train_dataset_config", {})
+        model_cls = type(self.base_model)
         return ModelMetadata(
             n_blocks=self._topology.n_blocks,
-            model_class="spd.pretrain.models.llama_simple_mlp.LlamaSimpleMLP",
+            model_class=f"{model_cls.__module__}.{model_cls.__qualname__}",
             dataset_name=ds_cfg.get("name", "unknown"),
             layer_descriptions={
                 path: self._topology.target_to_canon(path) for path in self.transcoders
