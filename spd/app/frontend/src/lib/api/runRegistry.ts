@@ -11,14 +11,16 @@ export type DataAvailability = {
     graph_interp: boolean;
 };
 
-export type RegistryRunInfo = {
+export type RunInfoResponse = {
     wandb_run_id: string;
-    name: string | null;
-    notes: string | null;
     architecture: string | null;
     availability: DataAvailability;
 };
 
-export async function fetchRunRegistry(): Promise<RegistryRunInfo[]> {
-    return fetchJson<RegistryRunInfo[]>("/api/run_registry");
+export async function fetchRunInfo(wandbRunIds: string[]): Promise<RunInfoResponse[]> {
+    return fetchJson<RunInfoResponse[]>("/api/run_registry", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(wandbRunIds),
+    });
 }

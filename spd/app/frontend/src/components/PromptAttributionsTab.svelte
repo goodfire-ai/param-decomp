@@ -22,13 +22,7 @@
         type TabViewState,
         type ViewSettings,
     } from "./prompt-attr/types";
-    import {
-        buildInterventionState,
-        getInterventableNodes,
-        getRunSelection,
-        type BakedRun,
-        type InterventionState,
-    } from "../lib/interventionTypes";
+    import { buildInterventionState, type BakedRun, type InterventionState } from "../lib/interventionTypes";
     import { SvelteSet } from "svelte/reactivity";
     import ViewControls from "./prompt-attr/ViewControls.svelte";
     import ViewTabs from "./prompt-attr/ViewTabs.svelte";
@@ -351,58 +345,6 @@
     function handleViewChange(view: "graph" | "interventions") {
         if (!activeCard) return;
         promptCards = promptCards.map((card) => (card.id === activeCard.id ? { ...card, activeView: view } : card));
-
-        // Auto-bake the base run when switching to interventions view
-        if (view === "interventions" && activeGraph) {
-            const state = getInterventionState(activeGraph.id, activeGraph);
-            const firstRun = state.runs[0];
-            if (firstRun.kind === "base") {
-                autoBakeBaseRun(activeCard, activeGraph, state);
-            }
-        }
-    }
-
-    async function autoBakeBaseRun(card: PromptCard, graph: StoredGraph, state: InterventionState) {
-        const allInterventable = getInterventableNodes(graph.data.nodeCiVals);
-        const text = card.tokens.join("");
-        const selectedNodes = Array.from(allInterventable);
-
-        runningIntervention = true;
-        try {
-            const run = await api.runAndSaveIntervention({
-                graph_id: graph.id,
-                text,
-                selected_nodes: selectedNodes,
-                top_k: 10,
-                adv_pgd_n_steps: 4,
-                adv_pgd_step_size: 1.0,
-            });
-
-            const baked: BakedRun = {
-                kind: "baked",
-                id: run.id,
-                selectedNodes: new Set(run.selected_nodes),
-                result: run.result,
-                maskedPredictions: run.masked_predictions,
-                createdAt: run.created_at,
-            };
-            state.runs[0] = baked;
-            state.activeIndex = 0;
-
-            promptCards = promptCards.map((c) => {
-                if (c.id !== card.id) return c;
-                return {
-                    ...c,
-                    graphs: c.graphs.map((g) =>
-                        g.id === graph.id ? { ...g, interventionRuns: [...g.interventionRuns, run] } : g,
-                    ),
-                };
-            });
-
-            interventionStates = { ...interventionStates };
-        } finally {
-            runningIntervention = false;
-        }
     }
 
     // Update draft selection for the active graph
@@ -417,7 +359,7 @@
     }
 
     // Forward a draft run: call API, replace draft with baked
-    async function handleForwardDraft(advNSteps: number, advStepSize: number) {
+    async function handleForwardDraft(advPgd: { n_steps: number; step_size: number }) {
         if (!activeCard || !activeGraph) return;
         const state = interventionStates[activeGraph.id];
         if (!state) throw new Error("No intervention state for active graph");
@@ -434,8 +376,7 @@
                 text,
                 selected_nodes: selectedNodes,
                 top_k: 10,
-                adv_pgd_n_steps: advNSteps,
-                adv_pgd_step_size: advStepSize,
+                adv_pgd: advPgd,
             });
 
             // Replace the draft with a baked run
@@ -483,13 +424,12 @@
         if (!state) throw new Error("No intervention state for active graph");
 
         const activeRun = state.runs[state.activeIndex];
-        const allInterventable = getInterventableNodes(activeGraph.data.nodeCiVals);
-        const parentSelection = getRunSelection(activeRun, allInterventable);
+        if (activeRun.kind !== "baked") throw new Error("Can only clone baked runs");
 
         const draft = {
             kind: "draft" as const,
-            parentId: activeRun.kind === "baked" ? activeRun.id : ("base" as const),
-            selectedNodes: new SvelteSet(parentSelection),
+            parentId: activeRun.id,
+            selectedNodes: new SvelteSet(activeRun.selectedNodes),
         };
         state.runs.push(draft);
         state.activeIndex = state.runs.length - 1;
@@ -541,8 +481,9 @@
         const state = interventionStates[activeGraph.id];
         if (!state) throw new Error("No intervention state");
         const activeRun = state.runs[state.activeIndex];
-        const allInterventable = getInterventableNodes(activeGraph.data.nodeCiVals);
-        const selection = getRunSelection(activeRun, allInterventable);
+        if (activeRun.kind !== "baked" && activeRun.kind !== "draft")
+            throw new Error("Can only generate subgraph from baked or draft runs");
+        const selection = activeRun.selectedNodes;
 
         if (selection.size === 0) throw new Error("handleGenerateGraphFromSelection called with empty selection");
 
@@ -703,12 +644,13 @@
                 });
             }
 
+            const runs = await api.getInterventionRuns(data.id);
             const newGraph: StoredGraph = {
                 id: data.id,
                 label: getGraphLabel(data),
                 data,
                 viewSettings: { ...defaultViewSettings },
-                interventionRuns: [],
+                interventionRuns: runs,
             };
             getInterventionState(data.id, newGraph);
 
@@ -757,7 +699,7 @@
                 };
             });
 
-            // Intervention state stays as-is — base run auto-reflects new node keys via getRunSelection
+            // Intervention state stays as-is — base run's selectedNodes are from the persisted run
         } finally {
             refetchingGraphId = null;
         }

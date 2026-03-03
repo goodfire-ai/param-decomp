@@ -1,5 +1,9 @@
 /** Types for the intervention forward pass feature */
 
+/** Default eval PGD settings (distinct from training PGD which is an optimization regularizer) */
+export const EVAL_PGD_N_STEPS = 4;
+export const EVAL_PGD_STEP_SIZE = 1.0;
+
 export type InterventionNode = {
     layer: string;
     seq_pos: number;
@@ -44,8 +48,7 @@ export type RunInterventionRequest = {
     text: string;
     selected_nodes: string[];
     top_k: number;
-    adv_pgd_n_steps: number;
-    adv_pgd_step_size: number;
+    adv_pgd: { n_steps: number; step_size: number };
 };
 
 export type TokenPred = {
@@ -57,6 +60,9 @@ export type MaskedPredictions = {
     ci: TokenPred[][];
     stochastic: TokenPred[][];
     adversarial: TokenPred[][];
+    ci_kl: number;
+    stochastic_kl: number;
+    adversarial_kl: number;
 };
 
 // --- Frontend-only run lifecycle types ---
@@ -64,15 +70,10 @@ export type MaskedPredictions = {
 import { SvelteSet } from "svelte/reactivity";
 import { isInterventableNode } from "./promptAttributionsTypes";
 
-/** Base run: synthesized from the graph's own data. All interventable nodes selected. Not editable. */
-export type BaseRun = {
-    kind: "base";
-};
-
 /** Draft run: cloned from a parent, editable node selection. No forwarded results yet. */
 export type DraftRun = {
     kind: "draft";
-    parentId: "base" | number;
+    parentId: number;
     selectedNodes: SvelteSet<string>;
 };
 
@@ -86,53 +87,40 @@ export type BakedRun = {
     createdAt: string;
 };
 
-export type InterventionRun = BaseRun | DraftRun | BakedRun;
+export type InterventionRun = DraftRun | BakedRun;
 
 export type InterventionState = {
     runs: InterventionRun[];
     activeIndex: number;
 };
 
-/** Get the effective node selection for a run */
-export function getRunSelection(run: InterventionRun, allInterventableNodes: Set<string>): Set<string> {
-    switch (run.kind) {
-        case "base":
-            return allInterventableNodes;
-        case "draft":
-            return run.selectedNodes;
-        case "baked":
-            return run.selectedNodes;
-    }
-}
-
 /** Whether a run's selection is editable */
 export function isRunEditable(run: InterventionRun): run is DraftRun {
     return run.kind === "draft";
 }
 
-/** Build initial InterventionState from persisted runs */
+/** Build initial InterventionState from persisted runs.
+ * The first persisted run is the base run (all CI > 0 nodes), auto-created during graph computation. */
 export function buildInterventionState(persistedRuns: InterventionRunSummary[]): InterventionState {
-    const runs: InterventionRun[] = [
-        { kind: "base" },
-        ...persistedRuns.map(
-            (r): BakedRun => ({
-                kind: "baked",
-                id: r.id,
-                selectedNodes: new Set(r.selected_nodes),
-                result: r.result,
-                maskedPredictions: r.masked_predictions,
-                createdAt: r.created_at,
-            }),
-        ),
-    ];
+    if (persistedRuns.length === 0) throw new Error("Graph must have at least one intervention run (the base run)");
+    const runs: InterventionRun[] = persistedRuns.map(
+        (r): BakedRun => ({
+            kind: "baked",
+            id: r.id,
+            selectedNodes: new Set(r.selected_nodes),
+            result: r.result,
+            maskedPredictions: r.masked_predictions,
+            createdAt: r.created_at,
+        }),
+    );
     return { runs, activeIndex: 0 };
 }
 
-/** Get all interventable node keys from a nodeCiVals record */
+/** Get all interventable node keys with CI > 0 from a nodeCiVals record */
 export function getInterventableNodes(nodeCiVals: Record<string, number>): Set<string> {
     const nodes = new Set<string>();
-    for (const nodeKey of Object.keys(nodeCiVals)) {
-        if (isInterventableNode(nodeKey)) nodes.add(nodeKey);
+    for (const [nodeKey, ci] of Object.entries(nodeCiVals)) {
+        if (isInterventableNode(nodeKey) && ci > 0) nodes.add(nodeKey);
     }
     return nodes;
 }

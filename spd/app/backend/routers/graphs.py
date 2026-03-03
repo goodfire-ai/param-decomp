@@ -19,11 +19,21 @@ from pydantic import BaseModel
 
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.app.backend.compute import (
+    EVAL_PGD_N_STEPS,
+    EVAL_PGD_STEP_SIZE,
     Edge,
+    compute_intervention_forward,
+    compute_masked_predictions,
     compute_prompt_attributions,
     compute_prompt_attributions_optimized,
 )
-from spd.app.backend.database import GraphType, OptimizationParams, StoredGraph
+from spd.app.backend.database import (
+    GraphType,
+    OptimizationParams,
+    PgdConfig,
+    PromptAttrDB,
+    StoredGraph,
+)
 from spd.app.backend.dependencies import DepLoadedRun, DepStateManager
 from spd.app.backend.optim_cis import (
     AdvPGDConfig,
@@ -34,11 +44,105 @@ from spd.app.backend.optim_cis import (
     MaskType,
     OptimCIConfig,
 )
+from spd.app.backend.routers.intervention import (
+    InterventionResponse,
+    MaskedPredictionsResponse,
+    TokenPred,
+    TokenPrediction,
+)
 from spd.app.backend.schemas import OutputProbability
 from spd.app.backend.utils import log_errors
 from spd.configs import ImportanceMinimalityLossConfig
 from spd.log import logger
+from spd.models.component_model import ComponentModel
+from spd.topology import TransformerTopology
 from spd.utils.distributed_utils import get_device
+
+NON_INTERVENTABLE_LAYERS = {"embed", "output"}
+
+
+def _save_base_intervention_run(
+    graph_id: int,
+    model: ComponentModel,
+    tokens: torch.Tensor,
+    node_ci_vals: dict[str, float],
+    tokenizer: AppTokenizer,
+    topology: TransformerTopology,
+    db: PromptAttrDB,
+    pgd_loss_config: LossConfig | None = None,
+) -> None:
+    """Compute masked predictions for all interventable nodes and save as an intervention run."""
+    # Get all interventable node keys with CI > 0
+    interventable_keys = [
+        k
+        for k, ci in node_ci_vals.items()
+        if k.split(":")[0] not in NON_INTERVENTABLE_LAYERS and ci > 0
+    ]
+    if not interventable_keys:
+        return
+
+    # Parse to (concrete_path, seq, c_idx) tuples
+    active_nodes: list[tuple[str, int, int]] = []
+    for key in interventable_keys:
+        canon_layer, seq_str, cidx_str = key.split(":")
+        concrete_path = topology.canon_to_target(canon_layer)
+        active_nodes.append((concrete_path, int(seq_str), int(cidx_str)))
+
+    # Compute intervention forward pass
+    intervention_result = compute_intervention_forward(
+        model=model,
+        tokens=tokens,
+        active_nodes=active_nodes,
+        top_k=10,
+        tokenizer=tokenizer,
+    )
+
+    intervention_response = InterventionResponse(
+        input_tokens=intervention_result.input_tokens,
+        predictions_per_position=[
+            [
+                TokenPrediction(
+                    token=token,
+                    token_id=token_id,
+                    spd_prob=spd_prob,
+                    target_prob=target_prob,
+                    logit=logit,
+                    target_logit=target_logit,
+                )
+                for token, token_id, spd_prob, logit, target_prob, target_logit in pos_preds
+            ]
+            for pos_preds in intervention_result.predictions_per_position
+        ],
+    )
+
+    masked_result = compute_masked_predictions(
+        model=model,
+        tokens=tokens,
+        active_nodes=active_nodes,
+        tokenizer=tokenizer,
+        pgd_n_steps=EVAL_PGD_N_STEPS,
+        pgd_step_size=EVAL_PGD_STEP_SIZE,
+        pgd_loss_config=pgd_loss_config,
+    )
+
+    def to_preds(preds: list[list[tuple[str, float]]]) -> list[list[TokenPred]]:
+        return [[TokenPred(token=t, prob=p) for t, p in pos] for pos in preds]
+
+    masked_response = MaskedPredictionsResponse(
+        ci=to_preds(masked_result.ci),
+        stochastic=to_preds(masked_result.stochastic),
+        adversarial=to_preds(masked_result.adversarial),
+        ci_kl=masked_result.ci_kl,
+        stochastic_kl=masked_result.stochastic_kl,
+        adversarial_kl=masked_result.adversarial_kl,
+    )
+
+    db.save_intervention_run(
+        graph_id=graph_id,
+        selected_nodes=interventable_keys,
+        result_json=intervention_response.model_dump_json(),
+        masked_predictions_json=masked_response.model_dump_json(),
+    )
 
 
 class EdgeData(BaseModel):
@@ -115,8 +219,7 @@ class OptimizationResult(BaseModel):
     mask_type: MaskType
     loss: CELossResult | KLLossResult
     metrics: OptimizationMetricsResult
-    adv_pgd_n_steps: int | None = None
-    adv_pgd_step_size: float | None = None
+    pgd: PgdConfig | None = None
 
 
 class GraphDataWithOptimization(GraphData):
@@ -510,6 +613,18 @@ def compute_graph_stream(
         logger.info(f"[perf] save_graph: {time.perf_counter() - t0:.2f}s")
 
         t0 = time.perf_counter()
+        _save_base_intervention_run(
+            graph_id=graph_id,
+            model=loaded.model,
+            tokens=tokens_tensor,
+            node_ci_vals=result.node_ci_vals,
+            tokenizer=loaded.tokenizer,
+            topology=loaded.topology,
+            db=db,
+        )
+        logger.info(f"[perf] base intervention run: {time.perf_counter() - t0:.2f}s")
+
+        t0 = time.perf_counter()
         fg = filter_graph_for_display(
             raw_edges=result.edges,
             node_ci_vals=result.node_ci_vals,
@@ -653,8 +768,9 @@ def compute_graph_optimized_stream(
         beta=beta,
         mask_type=mask_type,
         loss=loss_config,
-        adv_pgd_n_steps=adv_pgd_n_steps,
-        adv_pgd_step_size=adv_pgd_step_size,
+        pgd=PgdConfig(n_steps=adv_pgd_n_steps, step_size=adv_pgd_step_size)
+        if adv_pgd_n_steps is not None and adv_pgd_step_size is not None
+        else None,
     )
 
     optim_config = OptimCIConfig(
@@ -715,6 +831,17 @@ def compute_graph_optimized_stream(
             ),
         )
 
+        _save_base_intervention_run(
+            graph_id=graph_id,
+            model=loaded.model,
+            tokens=tokens_tensor,
+            node_ci_vals=result.node_ci_vals,
+            tokenizer=loaded.tokenizer,
+            topology=loaded.topology,
+            db=db,
+            pgd_loss_config=loss_config,
+        )
+
         fg = filter_graph_for_display(
             raw_edges=result.edges,
             node_ci_vals=result.node_ci_vals,
@@ -766,8 +893,9 @@ def compute_graph_optimized_stream(
                     adv_pgd_label_prob=result.metrics.adv_pgd_label_prob,
                     l0_total=result.metrics.l0_total,
                 ),
-                adv_pgd_n_steps=adv_pgd_n_steps,
-                adv_pgd_step_size=adv_pgd_step_size,
+                pgd=PgdConfig(n_steps=adv_pgd_n_steps, step_size=adv_pgd_step_size)
+                if adv_pgd_n_steps is not None and adv_pgd_step_size is not None
+                else None,
             ),
         )
 
@@ -931,8 +1059,9 @@ def stored_graph_to_response(
                 stoch_masked_label_prob=opt.stoch_masked_label_prob,
                 adv_pgd_label_prob=opt.adv_pgd_label_prob,
             ),
-            adv_pgd_n_steps=opt.adv_pgd_n_steps,
-            adv_pgd_step_size=opt.adv_pgd_step_size,
+            pgd=PgdConfig(n_steps=opt.pgd.n_steps, step_size=opt.pgd.step_size)
+            if opt.pgd is not None
+            else None,
         ),
     )
 

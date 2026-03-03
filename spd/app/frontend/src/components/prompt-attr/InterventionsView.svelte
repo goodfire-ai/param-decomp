@@ -1,7 +1,7 @@
 <script lang="ts">
     import { getContext } from "svelte";
     import { SvelteSet } from "svelte/reactivity";
-    import { colors, getEdgeColor, getNextTokenProbBgColor, getOutputHeaderColor, rgbaToCss } from "../../lib/colors";
+    import { colors, getEdgeColor, getNextTokenProbBgColor, rgbaToCss } from "../../lib/colors";
     import type { Loadable } from "../../lib/index";
     import type { NormalizeType } from "../../lib/api";
     import { isInterventableNode, type NodePosition } from "../../lib/promptAttributionsTypes";
@@ -44,12 +44,9 @@
     const CLUSTER_BAR_GAP = 2;
     const LAYER_X_OFFSET = 3; // Horizontal offset per layer to avoid edge overlap
 
-    // Logits display constants
-    const MAX_PREDICTIONS = 5;
-
     import {
-        getRunSelection,
-        getInterventableNodes,
+        EVAL_PGD_N_STEPS,
+        EVAL_PGD_STEP_SIZE,
         type InterventionState,
         type InterventionRun,
         type MaskedPredictions,
@@ -79,7 +76,7 @@
         runningIntervention: boolean;
         generatingSubgraph: boolean;
         onSelectionChange: (selection: Set<string>) => void;
-        onForwardDraft: (advNSteps: number, advStepSize: number) => void;
+        onForwardDraft: (advPgd: { n_steps: number; step_size: number }) => void;
         onCloneRun: () => void;
         onSelectVersion: (index: number) => void;
         onDeleteRun: (runId: number) => void;
@@ -117,12 +114,16 @@
     // Derived: active run and editability
     const activeRun = $derived(interventionState.runs[interventionState.activeIndex]);
     const isEditable = $derived(activeRun.kind === "draft");
-    const allInterventableNodes = $derived(getInterventableNodes(graph.data.nodeCiVals));
-    const effectiveSelection = $derived(getRunSelection(activeRun, allInterventableNodes));
+    // All interventable nodes = the base baked run's selection (single source of truth)
+    const allInterventableNodes = $derived.by(() => {
+        const baseRun = interventionState.runs[0];
+        if (baseRun.kind !== "baked") throw new Error("First intervention run must be a baked base run");
+        return baseRun.selectedNodes;
+    });
+    const effectiveSelection = $derived(activeRun.selectedNodes);
 
-    // Eval PGD settings for adversarial masking row
-    let advPgdNSteps = $state(4);
-    let advPgdStepSize = $state(1.0);
+    let advPgdNSteps = $state(EVAL_PGD_N_STEPS);
+    let advPgdStepSize = $state(EVAL_PGD_STEP_SIZE);
 
     // Masked predictions — from baked run data, null for draft/base (base auto-bakes on mount)
     const maskedPreds = $derived.by((): MaskedPredictions | null => {
@@ -142,7 +143,9 @@
     });
 
     const predRowCount = $derived(predRows ? predRows.length : 0);
-    const PRED_AREA_HEIGHT = $derived(predRowCount > 0 ? predRowCount * (PRED_ROW_HEIGHT + PRED_ROW_GAP) + PRED_ROW_GAP : 0);
+    const PRED_AREA_HEIGHT = $derived(
+        predRowCount > 0 ? predRowCount * (PRED_ROW_HEIGHT + PRED_ROW_GAP) + PRED_ROW_GAP : 0,
+    );
 
     const MARGIN = $derived({
         top: BASE_MARGIN_TOP,
@@ -161,12 +164,9 @@
         };
     });
 
-
     // Version list identity key
     function runIdentityKey(run: InterventionRun, index: number): string {
         switch (run.kind) {
-            case "base":
-                return "base";
             case "draft":
                 return `draft-${index}`;
             case "baked":
@@ -589,15 +589,6 @@
         return new Date(timestamp).toLocaleTimeString();
     }
 
-    function formatProb(prob: number): string {
-        if (prob >= 0.01) return (prob * 100).toFixed(1) + "%";
-        return (prob * 100).toExponential(1) + "%";
-    }
-
-    function formatLogit(logit: number): string {
-        return logit.toFixed(2);
-    }
-
     function getRowLabel(layer: string): string {
         return _getRowLabel(layer);
     }
@@ -651,24 +642,28 @@
                     >
                         {generatingSubgraph ? "Generating..." : "Generate subgraph"}
                     </button>
-                    <span class="pgd-inputs">
-                        <label>PGD steps <input type="number" min="0" max="50" bind:value={advPgdNSteps} /></label>
-                        <label>step size <input type="number" min="0" max="10" step="0.1" bind:value={advPgdStepSize} /></label>
-                    </span>
                     <button
                         class="run-btn"
-                        onclick={() => onForwardDraft(advPgdNSteps, advPgdStepSize)}
+                        onclick={() => onForwardDraft({ n_steps: advPgdNSteps, step_size: advPgdStepSize })}
                         disabled={runningIntervention || selectedCount === 0}
                     >
                         {runningIntervention ? "Forwarding..." : "Forward"}
                     </button>
                 {:else}
-                    <span class="pgd-inputs">
-                        <label>PGD steps <input type="number" min="0" max="50" bind:value={advPgdNSteps} /></label>
-                        <label>step size <input type="number" min="0" max="10" step="0.1" bind:value={advPgdStepSize} /></label>
-                    </span>
                     <button class="run-btn" onclick={onCloneRun}>Clone</button>
                 {/if}
+                <span class="pgd-inputs">
+                    <label>PGD steps <input type="number" min="0" max="50" bind:value={advPgdNSteps} /></label>
+                    <label
+                        >step size <input
+                            type="number"
+                            min="0"
+                            max="10"
+                            step="0.1"
+                            bind:value={advPgdStepSize}
+                        /></label
+                    >
+                </span>
             </div>
         </div>
 
@@ -734,13 +729,11 @@
                                     {#each row.preds as preds, seqIdx (seqIdx)}
                                         {@const colX = layout.seqXStarts[seqIdx]}
                                         {@const colW = layout.seqWidths[seqIdx]}
-                                        {@const chipW = Math.min(Math.floor((colW - 4) / 3), 28)}
+                                        {@const chipW = Math.min(Math.floor((colW - 2) / 3), 48)}
                                         {@const chipH = PRED_ROW_HEIGHT}
                                         {@const chipGap = 1}
-                                        {@const totalChipsW = preds.length * chipW + (preds.length - 1) * chipGap}
-                                        {@const startX = colX + (colW - totalChipsW) / 2}
                                         {#each preds as pred, rank (rank)}
-                                            {@const cx = startX + rank * (chipW + chipGap)}
+                                            {@const cx = colX + rank * (chipW + chipGap)}
                                             <rect
                                                 x={cx}
                                                 y={rowY}
@@ -898,7 +891,6 @@
                                 stroke-dasharray="4 2"
                             />
                         {/if}
-
                     </g>
                 </svg>
 
@@ -911,11 +903,11 @@
                     >
                         <g transform="translate({zoom.translateX}, 0) scale({zoom.scale}, 1)">
                             {#each tokens as token, i (i)}
-                                {@const colCenter = layout.seqXStarts[i] + layout.seqWidths[i] / 2}
+                                {@const colX = layout.seqXStarts[i]}
                                 <text
-                                    x={colCenter}
+                                    x={colX}
                                     y="20"
-                                    text-anchor="middle"
+                                    text-anchor="start"
                                     font-size="11"
                                     font-family="'Berkeley Mono', 'SF Mono', monospace"
                                     font-weight="500"
@@ -925,15 +917,15 @@
                                     {token}
                                 </text>
                                 <text
-                                    x={colCenter}
+                                    x={colX}
                                     y="36"
-                                    text-anchor="middle"
+                                    text-anchor="start"
                                     font-size="9"
                                     font-family="'Berkeley Mono', 'SF Mono', monospace"
                                     fill={colors.textMuted}>[{i}]</text
                                 >
                                 {#if optimizationTarget && i === optimizationTarget.position}
-                                    <rect x={colCenter - 20} y="42" width="40" height="3" fill={colors.accent} rx="1" />
+                                    <rect x={colX} y="42" width="40" height="3" fill={colors.accent} rx="1" />
                                 {/if}
                             {/each}
                         </g>
@@ -943,12 +935,7 @@
 
             <!-- Zoom controls in the bottom-left corner -->
             <div class="zoom-corner">
-                <ZoomControls
-                    scale={zoom.scale}
-                    onZoomIn={zoom.zoomIn}
-                    onZoomOut={zoom.zoomOut}
-                    onReset={zoom.reset}
-                />
+                <ZoomControls scale={zoom.scale} onZoomIn={zoom.zoomIn} onZoomOut={zoom.zoomOut} onReset={zoom.reset} />
             </div>
         </div>
     </div>
@@ -971,12 +958,7 @@
                     onclick={() => onSelectVersion(index)}
                     onkeydown={(e) => e.key === "Enter" && onSelectVersion(index)}
                 >
-                    {#if run.kind === "base"}
-                        <div class="run-header">
-                            <span class="run-time">Base</span>
-                            <span class="run-nodes">all {interventableCount} nodes</span>
-                        </div>
-                    {:else if run.kind === "draft"}
+                    {#if run.kind === "draft"}
                         <div class="run-header">
                             <span class="run-time draft-label">Draft</span>
                             <span class="run-nodes">{run.selectedNodes.size} nodes</span>
@@ -984,64 +966,49 @@
                         </div>
                     {:else}
                         <div class="run-header">
-                            <span class="run-time">{formatTime(run.createdAt)}</span>
+                            <span class="run-time">{index === 0 ? "Base" : formatTime(run.createdAt)}</span>
                             <span class="run-nodes">{run.selectedNodes.size} nodes</span>
-                            <button
-                                class="delete-btn"
-                                onclick={(e) => {
-                                    e.stopPropagation();
-                                    onDeleteRun(run.id);
-                                }}>✕</button
-                            >
+                            {#if index > 0}
+                                <button
+                                    class="delete-btn"
+                                    onclick={(e) => {
+                                        e.stopPropagation();
+                                        onDeleteRun(run.id);
+                                    }}>✕</button
+                                >
+                            {/if}
                         </div>
-
-                        <!-- Mini logits table -->
-                        <div class="logits-mini">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th class="rank-header">Input</th>
-                                        {#each run.result.input_tokens as token, idx (idx)}
-                                            <th title={token}>
-                                                <span class="token-text">"{token}"</span>
-                                            </th>
-                                        {/each}
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {#each Array(Math.min(3, MAX_PREDICTIONS)) as _, rank (rank)}
-                                        <tr>
-                                            <td class="rank-label">rank {rank + 1}</td>
-                                            {#each run.result.predictions_per_position as preds, idx (idx)}
-                                                {@const pred = preds[rank]}
-                                                <td
-                                                    class:has-pred={!!pred}
-                                                    style={pred
-                                                        ? `background: ${getOutputHeaderColor(pred.spd_prob)}`
-                                                        : ""}
-                                                >
-                                                    {#if pred}
-                                                        <span class="pred-token">"{pred.token}"</span>
-                                                        <span class="pred-prob spd"
-                                                            >SPD: {formatProb(pred.spd_prob)} (logit: {formatLogit(
-                                                                pred.logit,
-                                                            )})</span
-                                                        >
-                                                        <span class="pred-prob targ"
-                                                            >Targ: {formatProb(pred.target_prob)} (logit: {formatLogit(
-                                                                pred.target_logit,
-                                                            )})</span
-                                                        >
-                                                    {:else}
-                                                        -
-                                                    {/if}
-                                                </td>
-                                            {/each}
-                                        </tr>
-                                    {/each}
-                                </tbody>
-                            </table>
-                        </div>
+                        {#if isActive}
+                            <div class="opt-info">
+                                <div class="opt-row">
+                                    <span class="opt-key">CI KL</span>
+                                    <span>{run.maskedPredictions.ci_kl.toFixed(3)}</span>
+                                </div>
+                                <div class="opt-row">
+                                    <span class="opt-key">stoch KL</span>
+                                    <span>{run.maskedPredictions.stochastic_kl.toFixed(3)}</span>
+                                </div>
+                                <div class="opt-row">
+                                    <span class="opt-key">adv KL</span>
+                                    <span>{run.maskedPredictions.adversarial_kl.toFixed(3)}</span>
+                                </div>
+                                {#if graph.data.optimization}
+                                    {@const opt = graph.data.optimization}
+                                    <div class="opt-row">
+                                        <span class="opt-key">loss</span>
+                                        <span
+                                            >{opt.loss.type === "ce"
+                                                ? `CE "${opt.loss.label_str}" @ ${opt.loss.position}`
+                                                : `KL @ ${opt.loss.position}`}</span
+                                        >
+                                    </div>
+                                    <div class="opt-row">
+                                        <span class="opt-key">L0</span>
+                                        <span>{opt.metrics.l0_total.toFixed(1)}</span>
+                                    </div>
+                                {/if}
+                            </div>
+                        {/if}
                     {/if}
                 </div>
             {/each}
@@ -1399,6 +1366,34 @@
         font-style: italic;
     }
 
+    .opt-info {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-1);
+        padding: var(--space-2);
+        margin-top: var(--space-2);
+        background: var(--bg-inset);
+        border-radius: var(--radius-sm);
+        font-size: var(--text-xs);
+        font-family: var(--font-mono);
+        color: var(--text-secondary);
+    }
+
+    .opt-row {
+        display: flex;
+        gap: var(--space-2);
+    }
+
+    .opt-key {
+        color: var(--text-muted);
+        min-width: 60px;
+        flex-shrink: 0;
+    }
+
+    .opt-key::after {
+        content: ":";
+    }
+
     .version-actions {
         display: flex;
         gap: var(--space-2);
@@ -1420,79 +1415,5 @@
     .clone-btn:hover {
         background: var(--bg-inset);
         border-color: var(--border-strong);
-    }
-
-    /* Mini logits table */
-    .logits-mini {
-        overflow-x: auto;
-    }
-
-    .logits-mini table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: var(--text-xs);
-        font-family: var(--font-mono);
-    }
-
-    .logits-mini th,
-    .logits-mini td {
-        padding: 2px 4px;
-        text-align: center;
-        border: 1px solid var(--border-subtle);
-        max-width: 60px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-
-    .logits-mini th {
-        background: var(--bg-surface);
-        color: var(--text-secondary);
-    }
-
-    .logits-mini th.rank-header {
-        font-weight: 600;
-        color: var(--text-primary);
-    }
-
-    .logits-mini .token-text {
-        font-size: 9px;
-    }
-
-    .logits-mini td.rank-label {
-        background: var(--bg-surface);
-        color: var(--text-secondary);
-        font-weight: 500;
-        font-size: 9px;
-        text-align: left;
-        padding-left: 6px;
-    }
-
-    .logits-mini td {
-        background: var(--bg-inset);
-        color: var(--text-muted);
-    }
-
-    .logits-mini td.has-pred {
-        background: var(--bg-surface);
-    }
-
-    .pred-token {
-        display: block;
-        color: var(--text-primary);
-    }
-
-    .pred-prob {
-        display: block;
-        font-size: 8px;
-        color: var(--text-muted);
-    }
-
-    .pred-prob.spd {
-        color: var(--text-secondary);
-    }
-
-    .pred-prob.targ {
-        color: var(--text-secondary);
     }
 </style>

@@ -1,8 +1,8 @@
 /**
- * Registry of canonical SPD runs for quick access in the app.
+ * Canonical SPD runs for the run picker.
  *
- * Static data renders instantly; availability + architecture are hydrated
- * lazily from the backend via /api/run_registry.
+ * Static data (name, notes) renders instantly in the UI.
+ * Dynamic data (architecture, availability) is hydrated from the backend.
  */
 
 export type RegistryEntry = {
@@ -40,6 +40,10 @@ export const CANONICAL_RUNS: RegistryEntry[] = [
     {
         wandbRunId: "goodfire/spd/s-892f140b",
         notes: "Lucius run, Jan 22",
+    },
+    {
+        wandbRunId: "goodfire/spd/s-7884efcc",
+        notes: "Lucius' new run, Jan 8",
     },
 ];
 

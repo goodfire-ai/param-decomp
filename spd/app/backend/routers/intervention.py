@@ -49,6 +49,11 @@ class InterventionResponse(BaseModel):
     predictions_per_position: list[list[TokenPrediction]]
 
 
+class AdvPgdParams(BaseModel):
+    n_steps: int
+    step_size: float
+
+
 class RunInterventionRequest(BaseModel):
     """Request to run and save an intervention."""
 
@@ -56,8 +61,7 @@ class RunInterventionRequest(BaseModel):
     text: str
     selected_nodes: list[str]  # node keys (layer:seq:cIdx)
     top_k: int
-    adv_pgd_n_steps: int
-    adv_pgd_step_size: float
+    adv_pgd: AdvPgdParams
 
 
 class ForkedInterventionRunSummary(BaseModel):
@@ -78,6 +82,9 @@ class MaskedPredictionsResponse(BaseModel):
     ci: list[list[TokenPred]]
     stochastic: list[list[TokenPred]]
     adversarial: list[list[TokenPred]]
+    ci_kl: float
+    stochastic_kl: float
+    adversarial_kl: float
 
 
 class InterventionRunSummary(BaseModel):
@@ -238,13 +245,19 @@ def run_and_save_intervention(
             loaded=loaded,
         )
 
+        pgd_loss_config = None
+        graph_record = db.get_graph(request.graph_id)
+        if graph_record is not None and graph_record[0].optimization_params is not None:
+            pgd_loss_config = graph_record[0].optimization_params.loss
+
         masked_result = compute_masked_predictions(
             model=loaded.model,
             tokens=tokens,
             active_nodes=active_nodes,
             tokenizer=loaded.tokenizer,
-            adv_n_steps=request.adv_pgd_n_steps,
-            adv_step_size=request.adv_pgd_step_size,
+            pgd_n_steps=request.adv_pgd.n_steps,
+            pgd_step_size=request.adv_pgd.step_size,
+            pgd_loss_config=pgd_loss_config,
         )
 
     def _to_token_preds(preds: list[list[tuple[str, float]]]) -> list[list[TokenPred]]:
@@ -254,6 +267,9 @@ def run_and_save_intervention(
         ci=_to_token_preds(masked_result.ci),
         stochastic=_to_token_preds(masked_result.stochastic),
         adversarial=_to_token_preds(masked_result.adversarial),
+        ci_kl=masked_result.ci_kl,
+        stochastic_kl=masked_result.stochastic_kl,
+        adversarial_kl=masked_result.adversarial_kl,
     )
 
     run_id = db.save_intervention_run(

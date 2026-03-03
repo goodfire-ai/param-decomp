@@ -61,6 +61,11 @@ class PromptRecord(BaseModel):
     is_custom: bool = False
 
 
+class PgdConfig(BaseModel):
+    n_steps: int
+    step_size: float
+
+
 class OptimizationParams(BaseModel):
     """Optimization parameters that affect graph computation."""
 
@@ -70,8 +75,7 @@ class OptimizationParams(BaseModel):
     beta: float
     mask_type: MaskType
     loss: LossConfig
-    adv_pgd_n_steps: int | None = None
-    adv_pgd_step_size: float | None = None
+    pgd: PgdConfig | None = None
     # Computed metrics (persisted for display on reload)
     ci_masked_label_prob: float | None = None
     stoch_masked_label_prob: float | None = None
@@ -458,8 +462,12 @@ class PromptAttrDB:
             mask_type = graph.optimization_params.mask_type
             loss_config_json = graph.optimization_params.loss.model_dump_json()
             loss_config_hash = hashlib.sha256(loss_config_json.encode()).hexdigest()
-            adv_pgd_n_steps = graph.optimization_params.adv_pgd_n_steps
-            adv_pgd_step_size = graph.optimization_params.adv_pgd_step_size
+            adv_pgd_n_steps = (
+                graph.optimization_params.pgd.n_steps if graph.optimization_params.pgd else None
+            )
+            adv_pgd_step_size = (
+                graph.optimization_params.pgd.step_size if graph.optimization_params.pgd else None
+            )
             ci_masked_label_prob = graph.optimization_params.ci_masked_label_prob
             stoch_masked_label_prob = graph.optimization_params.stoch_masked_label_prob
             adv_pgd_label_prob = graph.optimization_params.adv_pgd_label_prob
@@ -571,6 +579,9 @@ class PromptAttrDB:
                 loss_config = CELossConfig(**loss_config_data)
             else:
                 loss_config = KLLossConfig(**loss_config_data)
+            pgd = None
+            if row["adv_pgd_n_steps"] is not None:
+                pgd = PgdConfig(n_steps=row["adv_pgd_n_steps"], step_size=row["adv_pgd_step_size"])
             opt_params = OptimizationParams(
                 imp_min_coeff=row["imp_min_coeff"],
                 steps=row["steps"],
@@ -578,8 +589,7 @@ class PromptAttrDB:
                 beta=row["beta"],
                 mask_type=row["mask_type"],
                 loss=loss_config,
-                adv_pgd_n_steps=row["adv_pgd_n_steps"],
-                adv_pgd_step_size=row["adv_pgd_step_size"],
+                pgd=pgd,
                 ci_masked_label_prob=row["ci_masked_label_prob"],
                 stoch_masked_label_prob=row["stoch_masked_label_prob"],
                 adv_pgd_label_prob=row["adv_pgd_label_prob"],

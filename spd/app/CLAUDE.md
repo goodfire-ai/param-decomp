@@ -215,13 +215,18 @@ Finds sparse CI mask that:
 - Minimizes L0 (active component count)
 - Uses importance minimality + CE loss (or KL loss)
 
-### Intervention Forward
+### Intervention Forward & Masked Predictions
 
-`compute_intervention_forward()`:
+`compute_intervention_forward()`: Forward pass with binary masks (selected=1, rest=0) → top-k predictions.
 
-1. Build component masks (all zeros)
-2. Set mask=1.0 for selected nodes
-3. Forward pass → top-k predictions per position
+`compute_masked_predictions()`: Three forward passes for a node selection:
+- **CI**: mask = selection (binary on/off)
+- **Stochastic**: mask = selection + (1-selection) × rand (binomial leakage)
+- **Adversarial** (optimized graphs only): mask = selection + (1-selection) × PGD source
+
+**Training PGD vs Eval PGD**: The PGD settings in the graph optimization config (`adv_pgd_n_steps`, `adv_pgd_step_size`) are a *training* regularizer — they make CI optimization robust. The PGD in masked predictions is an *eval* metric — it measures worst-case leakage for a given node selection. Eval PGD defaults are in `compute.py` (`EVAL_PGD_N_STEPS`, `EVAL_PGD_STEP_SIZE`). Adversarial eval requires a loss target (CE or KL at a position), which only exists on optimized graphs.
+
+**Base intervention run**: Created automatically during graph computation. Uses all nodes with CI > 0 (the graph's rounded CI mask). Persisted as an `intervention_run` so predictions are available synchronously — no lazy fetching.
 
 ---
 

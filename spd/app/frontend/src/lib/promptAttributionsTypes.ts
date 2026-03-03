@@ -114,6 +114,11 @@ export type OptimizationMetrics = {
     l0_total: number; // Total L0 (active components)
 };
 
+export type PgdConfig = {
+    n_steps: number;
+    step_size: number;
+};
+
 export type OptimizationResult = {
     imp_min_coeff: number;
     steps: number;
@@ -122,8 +127,7 @@ export type OptimizationResult = {
     mask_type: MaskType;
     loss: LossResult;
     metrics: OptimizationMetrics;
-    adv_pgd_n_steps: number | null;
-    adv_pgd_step_size: number | null;
+    pgd: PgdConfig | null;
 };
 
 export type SubcomponentMetadata = {

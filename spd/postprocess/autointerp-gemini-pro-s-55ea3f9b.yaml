@@ -1,0 +1,12 @@
+config:
+  model: "google/gemini-3.1-pro-preview"
+  reasoning_effort: "high"
+  template_strategy:
+    type: dual_view
+    label_max_words: 8
+  cost_limit_usd: 2000
+  max_concurrent: 20
+  max_requests_per_minute: 150
+partition: "h200-reserved"
+time: "24:00:00"
+evals: null

@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import { CANONICAL_RUNS, formatRunIdForDisplay } from "../lib/registry";
-    import { fetchRunRegistry, type RegistryRunInfo } from "../lib/api/runRegistry";
+    import { fetchRunInfo, type RunInfoResponse } from "../lib/api/runRegistry";
 
     type Props = {
         onSelect: (wandbPath: string, contextLength: number) => void;
@@ -14,14 +14,13 @@
     let customPath = $state("");
     let contextLength = $state(512);
 
-    // Backend data keyed by wandb_run_id, lazily hydrated
-    let backendData = $state<Record<string, RegistryRunInfo>>({});
+    let backendData = $state<Record<string, RunInfoResponse>>({});
     let backendLoaded = $state(false);
 
     onMount(() => {
-        fetchRunRegistry().then(
+        fetchRunInfo(CANONICAL_RUNS.map((r) => r.wandbRunId)).then(
             (runs) => {
-                const map: Record<string, RegistryRunInfo> = {};
+                const map: Record<string, RunInfoResponse> = {};
                 for (const run of runs) {
                     map[run.wandb_run_id] = run;
                 }

@@ -41,12 +41,12 @@
             <span class="key">label</span>(<span class="token">{optimization.loss.label_str}</span>)
         </span>
     {/if}
-    {#if optimization.adv_pgd_n_steps !== null}
+    {#if optimization.pgd}
         <span class="param">
-            <span class="key">adv_steps</span>{optimization.adv_pgd_n_steps}
+            <span class="key">pgd_steps</span>{optimization.pgd.n_steps}
         </span>
         <span class="param">
-            <span class="key">adv_lr</span>{optimization.adv_pgd_step_size}
+            <span class="key">pgd_lr</span>{optimization.pgd.step_size}
         </span>
     {/if}
     <span class="divider"></span>
