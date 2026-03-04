@@ -97,6 +97,14 @@
                     <label class="checkbox-item single-row">
                         <input
                             type="checkbox"
+                            checked={displaySettings.curvedEdges}
+                            onchange={() => (displaySettings.curvedEdges = !displaySettings.curvedEdges)}
+                        />
+                        <span class="stat-label">Curved edges</span>
+                    </label>
+                    <label class="checkbox-item single-row">
+                        <input
+                            type="checkbox"
                             checked={displaySettings.showAutoInterpPromptButton}
                             onchange={() =>
                                 (displaySettings.showAutoInterpPromptButton =

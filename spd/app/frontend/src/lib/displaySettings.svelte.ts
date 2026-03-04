@@ -48,6 +48,7 @@ export const displaySettings = $state({
     meanCiCutoff: 1e-7,
     centerOnPeak: false,
     showAutoInterpPromptButton: false,
+    curvedEdges: true,
 });
 
 export function anyCorrelationStatsEnabled() {

@@ -24,6 +24,7 @@ def main(
     decomposition_id: str,
     config_json: dict[str, Any],
     harvest_subrun_id: str | None = None,
+    subrun_id: str | None = None,
 ) -> None:
     assert isinstance(config_json, dict), f"Expected dict from fire, got {type(config_json)}"
     config = GraphInterpConfig.model_validate(config_json)
@@ -32,7 +33,8 @@ def main(
     openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
     assert openrouter_api_key, "OPENROUTER_API_KEY not set"
 
-    subrun_id = "ti-" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    if subrun_id is None:
+        subrun_id = "ti-" + datetime.now().strftime("%Y%m%d_%H%M%S")
     subrun_dir = get_graph_interp_subrun_dir(decomposition_id, subrun_id)
     subrun_dir.mkdir(parents=True, exist_ok=True)
     config.to_file(subrun_dir / "config.yaml")

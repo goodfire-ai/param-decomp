@@ -113,11 +113,6 @@ def build_input_section(
         for tok, pmi in input_pmi[:6]:
             section += f"- {repr(tok)}: {pmi:.2f}\n"
 
-    if input_stats.top_recall:
-        section += "\n**Input recall — most common tokens when the component fires:**\n"
-        for tok, recall in input_stats.top_recall[:8]:
-            section += f"- {repr(tok)}: {recall * 100:.0f}%\n"
-
     if input_stats.top_precision:
         section += "\n**Input precision — probability the component fires given the current token is X:**\n"
         for tok, prec in input_stats.top_precision[:8]:

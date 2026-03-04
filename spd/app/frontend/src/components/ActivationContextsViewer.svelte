@@ -1,12 +1,13 @@
 <script lang="ts">
     import { getContext, onMount } from "svelte";
     import { computeMaxAbsComponentAct } from "../lib/colors";
+    import { mapLoadable } from "../lib/index";
     import { COMPONENT_CARD_CONSTANTS } from "../lib/componentCardConstants";
     import { anyCorrelationStatsEnabled, displaySettings } from "../lib/displaySettings.svelte";
     import type { ActivationContextsSummary, SubcomponentMetadata } from "../lib/promptAttributionsTypes";
     import { useComponentData } from "../lib/useComponentData.svelte";
     import { RUN_KEY, type RunContext } from "../lib/useRun.svelte";
-    import ActivationContextsPagedTable from "./ActivationContextsPagedTable.svelte";
+    import ActivationContextsPagedTable, { type ActivationExamplesData } from "./ActivationContextsPagedTable.svelte";
     import ComponentProbeInput from "./ComponentProbeInput.svelte";
     import ComponentCorrelationMetrics from "./ui/ComponentCorrelationMetrics.svelte";
     import GraphInterpBadge from "./ui/GraphInterpBadge.svelte";
@@ -283,6 +284,18 @@
         if (componentData.componentDetail.status !== "loaded") return 1;
         return computeMaxAbsComponentAct(componentData.componentDetail.data.example_component_acts);
     });
+
+    const activationExamples = $derived(
+        mapLoadable(
+            componentData.componentDetail,
+            (d): ActivationExamplesData => ({
+                tokens: d.example_tokens,
+                ci: d.example_ci,
+                componentActs: d.example_component_acts,
+                maxAbsComponentAct: computeMaxAbsComponentAct(d.example_component_acts),
+            }),
+        ),
+    );
 </script>
 
 <div class="viewer-content">
@@ -427,19 +440,10 @@
         </div>
 
         <!-- Activation examples -->
-        {#if componentData.componentDetail.status === "loading"}
-            <div class="loading">Loading component data...</div>
-        {:else if componentData.componentDetail.status === "loaded"}
-            <ActivationContextsPagedTable
-                exampleTokens={componentData.componentDetail.data.example_tokens}
-                exampleCi={componentData.componentDetail.data.example_ci}
-                exampleComponentActs={componentData.componentDetail.data.example_component_acts}
-                {maxAbsComponentAct}
-            />
-        {:else if componentData.componentDetail.status === "error"}
-            <StatusText>Error loading component data: {String(componentData.componentDetail.error)}</StatusText>
+        {#if activationExamples.status === "error"}
+            <StatusText>Error loading component data: {String(activationExamples.error)}</StatusText>
         {:else}
-            <StatusText>Something went wrong loading component data.</StatusText>
+            <ActivationContextsPagedTable data={activationExamples} />
         {/if}
 
         <ComponentProbeInput

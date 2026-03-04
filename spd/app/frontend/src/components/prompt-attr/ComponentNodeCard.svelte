@@ -1,6 +1,7 @@
 <script lang="ts">
     import { getContext, onMount } from "svelte";
     import { computeMaxAbsComponentAct } from "../../lib/colors";
+    import type { ActivationExamplesData } from "../ActivationContextsPagedTable.svelte";
     import { COMPONENT_CARD_CONSTANTS } from "../../lib/componentCardConstants";
     import { anyCorrelationStatsEnabled, displaySettings } from "../../lib/displaySettings.svelte";
     import type { EdgeAttribution, EdgeData, OutputProbability } from "../../lib/promptAttributionsTypes";
@@ -172,6 +173,20 @@
         if (componentData.componentDetail.status !== "loaded") return 1;
         return computeMaxAbsComponentAct(componentData.componentDetail.data.example_component_acts);
     });
+
+    import { mapLoadable } from "../../lib/index";
+
+    const activationExamples = $derived(
+        mapLoadable(
+            componentData.componentDetail,
+            (d): ActivationExamplesData => ({
+                tokens: d.example_tokens,
+                ci: d.example_ci,
+                componentActs: d.example_component_acts,
+                maxAbsComponentAct: computeMaxAbsComponentAct(d.example_component_acts),
+            }),
+        ),
+    );
 </script>
 
 <div class="component-node-card">
@@ -211,21 +226,12 @@
     <!-- Activating examples (from harvest data) -->
     <div class="activating-examples-section">
         <SectionHeader title="Activating Examples" />
-        {#if componentData.componentDetail.status === "uninitialized"}
-            <StatusText>uninitialized</StatusText>
-        {:else if componentData.componentDetail.status === "loading"}
-            <StatusText>Loading details...</StatusText>
-        {:else if componentData.componentDetail.status === "loaded"}
-            {#if componentData.componentDetail.data.example_tokens.length > 0}
-                <ActivationContextsPagedTable
-                    exampleTokens={componentData.componentDetail.data.example_tokens}
-                    exampleCi={componentData.componentDetail.data.example_ci}
-                    exampleComponentActs={componentData.componentDetail.data.example_component_acts}
-                    {maxAbsComponentAct}
-                />
-            {/if}
-        {:else if componentData.componentDetail.status === "error"}
-            <StatusText>Error loading details: {String(componentData.componentDetail.error)}</StatusText>
+        {#if activationExamples.status === "error"}
+            <StatusText>Error loading details: {String(activationExamples.error)}</StatusText>
+        {:else if activationExamples.status === "loaded" && activationExamples.data.tokens.length === 0}
+            <!-- no examples -->
+        {:else}
+            <ActivationContextsPagedTable data={activationExamples} />
         {/if}
     </div>
 
@@ -245,22 +251,21 @@
     {/if}
 
     <!-- Dataset attributions  -->
-    {#if componentData.datasetAttributions.status === "uninitialized"}
-        <StatusText>uninitialized</StatusText>
+    {#if componentData.datasetAttributions.status === "loading" || componentData.datasetAttributions.status === "uninitialized"}
+        <div class="dataset-attributions-loading">
+            <SectionHeader title="Dataset Attributions" />
+            <div class="skeleton-group">
+                <div class="skeleton skeleton-line wide"></div>
+                <div class="skeleton skeleton-line medium"></div>
+            </div>
+        </div>
     {:else if componentData.datasetAttributions.status === "loaded"}
         {#if componentData.datasetAttributions.data !== null}
             <DatasetAttributionsSection
                 attributions={componentData.datasetAttributions.data}
                 onComponentClick={handleCorrelationClick}
             />
-        {:else}
-            <StatusText>No dataset attributions available.</StatusText>
         {/if}
-    {:else if componentData.datasetAttributions.status === "loading"}
-        <div class="dataset-attributions-loading">
-            <SectionHeader title="Dataset Attributions" />
-            <StatusText>Loading...</StatusText>
-        </div>
     {:else if componentData.datasetAttributions.status === "error"}
         <div class="dataset-attributions-loading">
             <SectionHeader title="Dataset Attributions" />
@@ -272,7 +277,12 @@
         <SectionHeader title="Token Statistics" />
         <div class="token-stats-row">
             {#if componentData.tokenStats === null || componentData.tokenStats.status === "loading"}
-                <StatusText>Loading token stats...</StatusText>
+                <div class="skeleton-group">
+                    <div class="skeleton skeleton-line medium"></div>
+                    <div class="skeleton skeleton-line short"></div>
+                    <div class="skeleton skeleton-line medium"></div>
+                    <div class="skeleton skeleton-line short"></div>
+                </div>
             {:else if componentData.tokenStats.status === "error"}
                 <StatusText>Error: {String(componentData.tokenStats.error)}</StatusText>
             {:else}
@@ -296,7 +306,10 @@
         <div class="correlations-section">
             <SectionHeader title="Correlated Components" />
             {#if componentData.correlations.status === "loading"}
-                <StatusText>Loading...</StatusText>
+                <div class="skeleton-group">
+                    <div class="skeleton skeleton-line wide"></div>
+                    <div class="skeleton skeleton-line medium"></div>
+                </div>
             {:else if componentData.correlations.status === "loaded" && componentData.correlations.data}
                 <ComponentCorrelationMetrics
                     correlations={componentData.correlations.data}
@@ -388,5 +401,41 @@
         display: flex;
         flex-direction: column;
         gap: var(--space-2);
+    }
+
+    .skeleton-group {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-2);
+    }
+
+    .skeleton-line {
+        height: 12px;
+        border-radius: var(--radius-sm);
+        background: var(--border-default);
+        opacity: 0.4;
+        animation: skeleton-pulse 1.2s ease-in-out infinite;
+    }
+
+    .skeleton-line.wide {
+        width: 100%;
+    }
+
+    .skeleton-line.medium {
+        width: 65%;
+    }
+
+    .skeleton-line.short {
+        width: 40%;
+    }
+
+    @keyframes skeleton-pulse {
+        0%,
+        100% {
+            opacity: 0.4;
+        }
+        50% {
+            opacity: 0.15;
+        }
     }
 </style>

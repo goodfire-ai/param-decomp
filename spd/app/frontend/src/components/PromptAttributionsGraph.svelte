@@ -514,11 +514,15 @@
                 const p1 = positions[edge.src];
                 const p2 = positions[edge.tgt];
                 if (!p1 || !p2) continue;
-                const dy = Math.abs(p2.y - p1.y);
-                const curveOffset = Math.max(20, dy * 0.4);
                 const path = new Path2D();
                 path.moveTo(p1.x, p1.y);
-                path.bezierCurveTo(p1.x, p1.y - curveOffset, p2.x, p2.y + curveOffset, p2.x, p2.y);
+                if (displaySettings.curvedEdges) {
+                    const dy = Math.abs(p2.y - p1.y);
+                    const curveOffset = Math.max(20, dy * 0.4);
+                    path.bezierCurveTo(p1.x, p1.y - curveOffset, p2.x, p2.y + curveOffset, p2.x, p2.y);
+                } else {
+                    path.lineTo(p2.x, p2.y);
+                }
                 items.push({
                     edge,
                     path,

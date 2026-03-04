@@ -25,6 +25,15 @@
         return tokenNextProbs[i - 1];
     }
 
+    function sanitizeToken(tok: string): string {
+        return tok
+            .replaceAll("\n", "↵")
+            .replaceAll("\r", "⏎")
+            .replaceAll("\t", "⇥")
+            .replaceAll("\v", "⇣")
+            .replaceAll("\f", "⇟");
+    }
+
     function getBgColor(ci: number): string {
         return getTokenHighlightBg(ci);
     }
@@ -41,14 +50,14 @@
             style="background-color:{getBgColor(tokenCi[i])};--underline-color:{getUnderlineColor(
                 tokenComponentActs[i],
             )}"
-            data-tooltip={getTooltipText(tokenCi[i], tokenComponentActs[i], getProbAtPosition(i))}>{tok}</span
+            data-tooltip={getTooltipText(tokenCi[i], tokenComponentActs[i], getProbAtPosition(i))}>{sanitizeToken(tok)}</span
         >{/each}</span
 >
 
 <style>
     .token-highlights {
         display: inline;
-        white-space: pre-wrap;
+        white-space: pre;
         font-family: var(--font-mono);
     }
 
