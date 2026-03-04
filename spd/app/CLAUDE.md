@@ -94,7 +94,7 @@ frontend/src/
     ├── ActivationContextsPagedTable.svelte
     ├── DatasetSearchTab.svelte       # Dataset search UI
     ├── DatasetSearchResults.svelte
-    ├── ClusterPathInput.svelte       # Cluster path selector
+    ├── ClusterPathInput.svelte       # Cluster path selector (dropdown populated from registry.ts)
     ├── ComponentProbeInput.svelte    # Component probe UI
     ├── TokenHighlights.svelte        # Token highlighting
     ├── prompt-attr/
