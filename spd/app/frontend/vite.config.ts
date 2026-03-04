@@ -9,7 +9,7 @@ const backendUrl = process.env.BACKEND_URL || "http://localhost:8000";
 export default defineConfig({
     plugins: [svelte()],
     server: {
-        hmr: false,
+        hmr: true,
         proxy: {
             "/api": {
                 target: backendUrl,

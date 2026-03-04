@@ -140,7 +140,7 @@
         if (interventionResult.adversarial.length > 0) rows.push({ label: "Adv", preds: interventionResult.adversarial, labelPred: lbl?.adversarial ?? null });
         if (interventionResult.stochastic.length > 0) rows.push({ label: "Stoch", preds: interventionResult.stochastic, labelPred: lbl?.stochastic ?? null });
         rows.push({ label: "CI", preds: interventionResult.ci, labelPred: lbl?.ci ?? null });
-        if (interventionResult.target_sans && interventionResult.target_sans.length > 0) rows.push({ label: "T\\S", preds: interventionResult.target_sans, labelPred: lbl?.target_sans ?? null });
+        if (interventionResult.ablated && interventionResult.ablated.length > 0) rows.push({ label: "T\\S", preds: interventionResult.ablated, labelPred: lbl?.ablated ?? null });
         return rows;
     });
 
@@ -1042,30 +1042,30 @@
                                     : `KL @ ${opt.loss.position}`
                                 : "mean KL"}
                             <div class="opt-info">
-                                <div class="opt-row">
+                                <div class="opt-row" title="Loss with binarised CI masking">
                                     <span class="opt-key">CI</span>
                                     <span>{run.result.ci_loss.toFixed(3)}</span>
                                 </div>
-                                <div class="opt-row">
+                                <div class="opt-row" title="Loss with stochastic sources on 0-CI nodes">
                                     <span class="opt-key">stoch</span>
                                     <span>{run.result.stochastic_loss.toFixed(3)}</span>
                                 </div>
-                                <div class="opt-row">
+                                <div class="opt-row" title="Loss using adversarially optimized sources on deselected-but-alive nodes, and stochastic sources on 0-CI nodes">
                                     <span class="opt-key">adv</span>
                                     <span>{run.result.adversarial_loss.toFixed(3)}</span>
                                 </div>
-                                {#if run.result.target_sans_loss != null}
-                                    <div class="opt-row">
+                                {#if run.result.ablated_loss != null}
+                                    <div class="opt-row" title="Loss with unselected nodes ablated from target model weights — measures sufficiency (lower = selected nodes are more sufficient)">
                                         <span class="opt-key">T\S</span>
-                                        <span>{run.result.target_sans_loss.toFixed(3)}</span>
+                                        <span>{run.result.ablated_loss.toFixed(3)}</span>
                                     </div>
                                 {/if}
-                                <div class="opt-row">
+                                <div class="opt-row" title="The loss function used: mean KL (standard graphs) or the specific loss from optimization">
                                     <span class="opt-key">metric</span>
                                     <span>{lossLabel}</span>
                                 </div>
                                 {#if opt}
-                                    <div class="opt-row">
+                                    <div class="opt-row" title="Total active components in the optimized circuit">
                                         <span class="opt-key">L0</span>
                                         <span>{opt.metrics.l0_total.toFixed(1)}</span>
                                     </div>
@@ -1478,6 +1478,36 @@
 
     .opt-key::after {
         content: ":";
+    }
+
+    .top-logits {
+        margin-top: var(--space-1);
+        padding-top: var(--space-1);
+        border-top: 1px solid var(--border-subtle);
+    }
+
+    .top-logits-header {
+        color: var(--text-muted);
+        font-size: var(--text-xs);
+    }
+
+    .top-logit-row {
+        display: flex;
+        justify-content: space-between;
+        gap: var(--space-2);
+    }
+
+    .top-logit-token {
+        white-space: pre;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 100px;
+    }
+
+    .top-logit-prob {
+        flex-shrink: 0;
+        text-align: right;
+        color: var(--text-primary);
     }
 
     .version-actions {

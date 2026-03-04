@@ -29,7 +29,7 @@ class RunInterventionRequest(BaseModel):
 
     graph_id: int
     selected_nodes: list[str]  # node keys (layer:seq:cIdx)
-    sans_nodes: list[str] | None = None  # node keys to ablate in target-sans (omit to skip)
+    nodes_to_ablate: list[str] | None = None  # node keys to ablate in ablated (omit to skip)
     top_k: int
     adv_pgd: AdvPgdParams
 
@@ -97,9 +97,11 @@ def run_and_save_intervention(
         active_nodes = _parse_and_validate_active_nodes(
             request.selected_nodes, loaded.topology, len(token_ids)
         )
-        sans_nodes = (
-            _parse_and_validate_active_nodes(request.sans_nodes, loaded.topology, len(token_ids))
-            if request.sans_nodes is not None
+        nodes_to_ablate = (
+            _parse_and_validate_active_nodes(
+                request.nodes_to_ablate, loaded.topology, len(token_ids)
+            )
+            if request.nodes_to_ablate is not None
             else None
         )
         tokens = torch.tensor([token_ids], dtype=torch.long, device=DEVICE)
@@ -115,7 +117,7 @@ def run_and_save_intervention(
             model=loaded.model,
             tokens=tokens,
             active_nodes=active_nodes,
-            sans_nodes=sans_nodes,
+            nodes_to_ablate=nodes_to_ablate,
             tokenizer=loaded.tokenizer,
             adv_pgd_config=AdvPGDConfig(
                 n_steps=request.adv_pgd.n_steps,

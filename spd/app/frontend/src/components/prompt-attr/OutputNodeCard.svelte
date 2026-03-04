@@ -1,14 +1,38 @@
 <script lang="ts">
-    import type { OutputProbability } from "../../lib/promptAttributionsTypes";
+    import type { EdgeAttribution, EdgeData, OutputProbability } from "../../lib/promptAttributionsTypes";
     import { getOutputHeaderColor } from "../../lib/colors";
+    import { displaySettings } from "../../lib/displaySettings.svelte";
+    import { COMPONENT_CARD_CONSTANTS } from "../../lib/componentCardConstants";
+    import EdgeAttributionGrid from "../ui/EdgeAttributionGrid.svelte";
 
     type Props = {
         cIdx: number;
         outputProbs: Record<string, OutputProbability>;
         seqIdx?: number; // When present: show single position. When absent: show all positions for this vocab id
+        edgesByTarget?: Map<string, EdgeData[]>;
     };
 
-    let { cIdx, outputProbs, seqIdx }: Props = $props();
+    let { cIdx, outputProbs, seqIdx, edgesByTarget }: Props = $props();
+
+    const N_EDGES_TO_DISPLAY = 20;
+
+    function getTopEdgeAttributions(edges: EdgeData[], getKey: (e: EdgeData) => string): EdgeAttribution[] {
+        const sorted = [...edges].sort((a, b) => Math.abs(b.val) - Math.abs(a.val)).slice(0, N_EDGES_TO_DISPLAY);
+        const maxAbsVal = Math.abs(sorted[0]?.val || 1);
+        return sorted.map((e) => ({
+            key: getKey(e),
+            value: e.val,
+            normalizedMagnitude: Math.abs(e.val) / maxAbsVal,
+            tokenStr: null,
+        }));
+    }
+
+    const outputNodeKey = $derived(seqIdx !== undefined ? `output:${seqIdx}:${cIdx}` : null);
+    const outputIncoming = $derived(
+        outputNodeKey && edgesByTarget
+            ? getTopEdgeAttributions(edgesByTarget.get(outputNodeKey) ?? [], (e) => e.src)
+            : [],
+    );
 
     function escapeHtml(text: string): string {
         return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -82,6 +106,17 @@
                 {/each}
             </tbody>
         </table>
+    {/if}
+    {#if displaySettings.showEdgeAttributions && outputIncoming.length > 0}
+        <EdgeAttributionGrid
+            title="Prompt Attributions"
+            incomingLabel="Incoming"
+            outgoingLabel="Outgoing"
+            incoming={outputIncoming}
+            outgoing={[]}
+            pageSize={COMPONENT_CARD_CONSTANTS.PROMPT_ATTRIBUTIONS_PAGE_SIZE}
+            onClick={() => {}}
+        />
     {/if}
 </div>
 

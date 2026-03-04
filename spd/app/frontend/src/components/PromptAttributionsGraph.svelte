@@ -1,6 +1,6 @@
 <script lang="ts">
     import { getContext, untrack } from "svelte";
-    import { SvelteSet } from "svelte/reactivity";
+    import { SvelteSet, SvelteMap } from "svelte/reactivity";
     import type {
         GraphData,
         EdgeData,
@@ -368,6 +368,92 @@
         return nodeClusterId === hoveredClusterId;
     }
 
+    // -- Node interaction state machine --
+    // Global mode computed once; each node looks up its role via O(1) set/map membership.
+
+    type SpotlightConnected = {
+        role: "spotlight_connected";
+        color: string;
+        opacity: number;
+    };
+
+    type NodeRole =
+        | "default"
+        | "highlighted"
+        | "cluster_hovered"
+        | "dimmed"
+        | "hidden"
+        | "spotlight_source"
+        | SpotlightConnected;
+
+    type InteractionMode =
+        | { mode: "spotlight"; connected: Map<string, SpotlightConnected>; hoveredKey: string }
+        | { mode: "focusing"; accentKeys: Set<string>; clusterKeys: Set<string> }
+        | { mode: "resting"; accentKeys: Set<string> };
+
+    const interactionMode = $derived.by((): InteractionMode => {
+        const isHovering = hoveredNode !== null || hoveredBarClusterId !== null;
+        const hasPinned = pinnedNodeKeys.size > 0;
+
+        // Spotlight: hideUnpinned + hovering a node + no pinned nodes
+        if (effectiveHideUnpinned && hoveredNode && !hasPinned) {
+            const nodeKey = `${hoveredNode.layer}:${hoveredNode.seqIdx}:${hoveredNode.cIdx}`;
+            const maxAttr = maxAbsAttr;
+            const connected = new SvelteMap<string, SpotlightConnected>();
+
+            const addEdge = (edge: EdgeData, connectedKey: string) => {
+                const absVal = Math.abs(edge.val);
+                const existing = connected.get(connectedKey);
+                if (!existing || absVal > existing.opacity) {
+                    const val = edge.val;
+                    connected.set(connectedKey, {
+                        role: "spotlight_connected",
+                        color: getEdgeColor(val),
+                        opacity: lerp(0, 0.5, absVal / maxAttr),
+                    });
+                }
+            };
+
+            for (const edge of data.edgesBySource.get(nodeKey) ?? []) addEdge(edge, edge.tgt);
+            for (const edge of data.edgesByTarget.get(nodeKey) ?? []) addEdge(edge, edge.src);
+
+            return { mode: "spotlight", connected, hoveredKey: nodeKey };
+        }
+
+        // Focusing: something is being hovered — accented nodes highlighted, rest dimmed
+        if (isHovering) {
+            const accentKeys = new SvelteSet<string>();
+            const clusterKeys = new SvelteSet<string>();
+            for (const key of Object.keys(nodePositions)) {
+                if (pinnedNodeKeys.has(key) || nodeMatchesHoveredComponent(key)) {
+                    accentKeys.add(key);
+                } else if (isNodeInSameCluster(key)) {
+                    clusterKeys.add(key);
+                }
+            }
+            return { mode: "focusing", accentKeys, clusterKeys };
+        }
+
+        // Resting: nothing hovered — pinned nodes accented, everything else default
+        return { mode: "resting", accentKeys: pinnedNodeKeys };
+    });
+
+    function getNodeRole(key: string, mode: InteractionMode): NodeRole {
+        switch (mode.mode) {
+            case "spotlight": {
+                if (key === mode.hoveredKey) return "spotlight_source";
+                return mode.connected.get(key) ?? "hidden";
+            }
+            case "focusing":
+                if (mode.accentKeys.has(key)) return "highlighted";
+                if (mode.clusterKeys.has(key)) return "cluster_hovered";
+                return "dimmed";
+            case "resting":
+                if (mode.accentKeys.has(key)) return "highlighted";
+                return "default";
+        }
+    }
+
     type EdgeState = "normal" | "highlighted" | "hidden";
 
     // Hover acts as a "promotion": hidden → normal → highlighted
@@ -377,8 +463,10 @@
         const connectedToHoveredNode = nodeMatchesHoveredComponent(src) || nodeMatchesHoveredComponent(tgt);
         const isThisEdgeHovered = hoveredEdge?.src === src && hoveredEdge?.tgt === tgt;
 
-        // No pinned nodes - just node hover behavior
+        // No pinned nodes
         if (!hasPinned) {
+            // Spotlight mode: hide all edges, nodes carry the color instead
+            if (effectiveHideUnpinned && hoveredNode) return "hidden";
             return connectedToHoveredNode ? "highlighted" : "normal";
         }
 
@@ -461,6 +549,7 @@
         void hoveredEdge;
         void effectiveHideUnpinned;
         void hoveredComponentKey;
+        void interactionMode;
 
         const dpr = window.devicePixelRatio || 1;
 
@@ -494,11 +583,6 @@
             ctx.globalAlpha = 1;
         });
     });
-
-    // Check if a node key should be highlighted (pinned or hovered component)
-    function isNodeHighlighted(nodeKey: string): boolean {
-        return pinnedNodeKeys.has(nodeKey) || nodeMatchesHoveredComponent(nodeKey);
-    }
 
     // Pre-compute node styles (fill, opacity) - only recomputes when data/layout changes, not on hover
     const nodeStyles = $derived.by(() => {
@@ -708,45 +792,40 @@
                         {@const [layer, seqIdxStr, cIdxStr] = key.split(":")}
                         {@const seqIdx = parseInt(seqIdxStr)}
                         {@const cIdx = parseInt(cIdxStr)}
-                        {@const isHighlighted = isNodeHighlighted(key)}
-                        {@const isPinned = pinnedNodeKeys.has(key)}
-                        {@const inSameCluster = isNodeInSameCluster(key)}
-                        {@const isHoveredComponent = nodeMatchesHoveredComponent(key)}
-                        {@const isDimmed =
-                            (hoveredNode !== null || hoveredBarClusterId !== null) &&
-                            !isHoveredComponent &&
-                            !inSameCluster &&
-                            !isPinned}
+                        {@const role = getNodeRole(key, interactionMode)}
                         {@const style = nodeStyles[key]}
-                        <g
-                            class="node-group"
-                            onmouseenter={(e) => handleNodeMouseEnter(e, layer, seqIdx, cIdx)}
-                            onmouseleave={handleNodeMouseLeave}
-                            onclick={() => handleNodeClick(layer, seqIdx, cIdx)}
-                        >
-                            <!-- Invisible hit area for easier hovering -->
-                            <rect
-                                x={pos.x - COMPONENT_SIZE / 2 - HIT_AREA_PADDING}
-                                y={pos.y - COMPONENT_SIZE / 2 - HIT_AREA_PADDING}
-                                width={COMPONENT_SIZE + HIT_AREA_PADDING * 2}
-                                height={COMPONENT_SIZE + HIT_AREA_PADDING * 2}
-                                fill="transparent"
-                            />
-                            <!-- Visible node -->
-                            <rect
-                                class="node"
-                                class:highlighted={isHighlighted}
-                                class:cluster-hovered={inSameCluster}
-                                class:dimmed={isDimmed}
-                                x={pos.x - COMPONENT_SIZE / 2}
-                                y={pos.y - COMPONENT_SIZE / 2}
-                                width={COMPONENT_SIZE}
-                                height={COMPONENT_SIZE}
-                                fill={style.fill}
-                                rx="1"
-                                opacity={style.opacity}
-                            />
-                        </g>
+                        {@const isSpotlight = typeof role === "object"}
+                        {#if role !== "hidden"}
+                            <g
+                                class="node-group"
+                                onmouseenter={(e) => handleNodeMouseEnter(e, layer, seqIdx, cIdx)}
+                                onmouseleave={handleNodeMouseLeave}
+                                onclick={() => handleNodeClick(layer, seqIdx, cIdx)}
+                            >
+                                <rect
+                                    x={pos.x - COMPONENT_SIZE / 2 - HIT_AREA_PADDING}
+                                    y={pos.y - COMPONENT_SIZE / 2 - HIT_AREA_PADDING}
+                                    width={COMPONENT_SIZE + HIT_AREA_PADDING * 2}
+                                    height={COMPONENT_SIZE + HIT_AREA_PADDING * 2}
+                                    fill="transparent"
+                                />
+                                <rect
+                                    class="node"
+                                    class:highlighted={role === "highlighted"}
+                                    class:cluster-hovered={role === "cluster_hovered"}
+                                    class:dimmed={role === "dimmed"}
+                                    x={pos.x - COMPONENT_SIZE / 2}
+                                    y={pos.y - COMPONENT_SIZE / 2}
+                                    width={COMPONENT_SIZE}
+                                    height={COMPONENT_SIZE}
+                                    fill={isSpotlight ? role.color : style.fill}
+                                    rx="1"
+                                    fill-opacity={isSpotlight ? role.opacity : style.opacity}
+                                    stroke={isSpotlight ? colors.textSecondary : "none"}
+                                    stroke-width={isSpotlight ? 1.5 : 0}
+                                />
+                            </g>
+                        {/if}
                     {/each}
                 </g>
             </g>

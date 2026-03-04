@@ -6,11 +6,13 @@ SPD_OUT_DIR/harvest/<run_id>/.
 Interpretations are stored separately at SPD_OUT_DIR/autointerp/<run_id>/.
 """
 
+import fcntl
 import hashlib
 import io
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -19,13 +21,11 @@ from pydantic import BaseModel
 
 from spd.app.backend.compute import Edge, Node
 from spd.app.backend.optim_cis import CELossConfig, KLLossConfig, MaskType, PositionalLossConfig
-from spd.settings import REPO_ROOT
+from spd.settings import SPD_OUT_DIR
 
 GraphType = Literal["standard", "optimized", "manual"]
 
-# Persistent data directories
-_APP_DATA_DIR = REPO_ROOT / ".data" / "app"
-_DEFAULT_DB_PATH = _APP_DATA_DIR / "prompt_attr.db"
+_DEFAULT_DB_PATH = SPD_OUT_DIR / "app" / "prompt_attr.db"
 
 
 def get_default_db_path() -> Path:
@@ -34,7 +34,7 @@ def get_default_db_path() -> Path:
     Checks env vars in order:
     1. SPD_INVESTIGATION_DIR - investigation mode, db at dir/app.db
     2. SPD_APP_DB_PATH - explicit override
-    3. Default: .data/app/prompt_attr.db
+    3. Default: SPD_OUT_DIR/app/prompt_attr.db
     """
     investigation_dir = os.environ.get("SPD_INVESTIGATION_DIR")
     if investigation_dir:
@@ -137,6 +137,7 @@ class PromptAttrDB:
 
     def __init__(self, db_path: Path | None = None, check_same_thread: bool = True):
         self.db_path = db_path or get_default_db_path()
+        self._lock_path = self.db_path.with_suffix(".db.lock")
         self._check_same_thread = check_same_thread
         self._conn: sqlite3.Connection | None = None
 
@@ -160,6 +161,16 @@ class PromptAttrDB:
     def __exit__(self, *args: object) -> None:
         self.close()
 
+    @contextmanager
+    def _write_lock(self):
+        """Acquire an exclusive file lock for write operations (NFS-safe)."""
+        with open(self._lock_path, "w") as lock_fd:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                yield
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+
     # -------------------------------------------------------------------------
     # Schema initialization
     # -------------------------------------------------------------------------
@@ -167,7 +178,7 @@ class PromptAttrDB:
     def init_schema(self) -> None:
         """Initialize the database schema. Safe to call multiple times."""
         conn = self._get_conn()
-        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA journal_mode=DELETE")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS runs (
@@ -272,15 +283,16 @@ class PromptAttrDB:
 
     def create_run(self, wandb_path: str) -> int:
         """Create a new run. Returns the run ID."""
-        conn = self._get_conn()
-        cursor = conn.execute(
-            "INSERT INTO runs (wandb_path) VALUES (?)",
-            (wandb_path,),
-        )
-        conn.commit()
-        run_id = cursor.lastrowid
-        assert run_id is not None
-        return run_id
+        with self._write_lock():
+            conn = self._get_conn()
+            cursor = conn.execute(
+                "INSERT INTO runs (wandb_path) VALUES (?)",
+                (wandb_path,),
+            )
+            conn.commit()
+            run_id = cursor.lastrowid
+            assert run_id is not None
+            return run_id
 
     def get_run_by_wandb_path(self, wandb_path: str) -> Run | None:
         """Get a run by its wandb path."""
@@ -338,19 +350,20 @@ class PromptAttrDB:
         Returns:
             The prompt ID (existing or newly created).
         """
-        existing_id = self.find_prompt_by_token_ids(run_id, token_ids, context_length)
-        if existing_id is not None:
-            return existing_id
+        with self._write_lock():
+            existing_id = self.find_prompt_by_token_ids(run_id, token_ids, context_length)
+            if existing_id is not None:
+                return existing_id
 
-        conn = self._get_conn()
-        cursor = conn.execute(
-            "INSERT INTO prompts (run_id, token_ids, context_length, is_custom) VALUES (?, ?, ?, 1)",
-            (run_id, json.dumps(token_ids), context_length),
-        )
-        prompt_id = cursor.lastrowid
-        assert prompt_id is not None
-        conn.commit()
-        return prompt_id
+            conn = self._get_conn()
+            cursor = conn.execute(
+                "INSERT INTO prompts (run_id, token_ids, context_length, is_custom) VALUES (?, ?, ?, 1)",
+                (run_id, json.dumps(token_ids), context_length),
+            )
+            prompt_id = cursor.lastrowid
+            assert prompt_id is not None
+            conn.commit()
+            return prompt_id
 
     def get_prompt(self, prompt_id: int) -> PromptRecord | None:
         """Get a prompt by ID."""
@@ -475,68 +488,69 @@ class PromptAttrDB:
             included_nodes_json = json.dumps(sorted(graph.included_nodes))
             included_nodes_hash = hashlib.sha256(included_nodes_json.encode()).hexdigest()
 
-        try:
-            cursor = conn.execute(
-                """INSERT INTO graphs
-                   (prompt_id, graph_type,
-                    imp_min_coeff, steps, pnorm, beta, mask_type,
-                    loss_config, loss_config_hash,
-                    adv_pgd_n_steps, adv_pgd_step_size,
-                    ci_masked_label_prob, stoch_masked_label_prob, adv_pgd_label_prob,
-                    included_nodes, included_nodes_hash,
-                    edges_data, output_logits, node_ci_vals, node_subcomp_acts)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    prompt_id,
-                    graph.graph_type,
-                    imp_min_coeff,
-                    steps,
-                    pnorm,
-                    beta,
-                    mask_type,
-                    loss_config_json,
-                    loss_config_hash,
-                    adv_pgd_n_steps,
-                    adv_pgd_step_size,
-                    ci_masked_label_prob,
-                    stoch_masked_label_prob,
-                    adv_pgd_label_prob,
-                    included_nodes_json,
-                    included_nodes_hash,
-                    edges_json,
-                    output_logits_blob,
-                    node_ci_vals_json,
-                    node_subcomp_acts_json,
-                ),
-            )
-            conn.commit()
-            graph_id = cursor.lastrowid
-            assert graph_id is not None
-            return graph_id
-        except sqlite3.IntegrityError as e:
-            match graph.graph_type:
-                case "standard":
-                    raise ValueError(
-                        f"Standard graph already exists for prompt_id={prompt_id}. "
-                        "Use get_graphs() to retrieve existing graph or delete it first."
-                    ) from e
-                case "optimized":
-                    raise ValueError(
-                        f"Optimized graph with same parameters already exists for prompt_id={prompt_id}."
-                    ) from e
-                case "manual":
-                    # Get-or-create semantics: return existing graph ID
-                    conn.rollback()
-                    row = conn.execute(
-                        """SELECT id FROM graphs
-                           WHERE prompt_id = ? AND graph_type = 'manual'
-                           AND included_nodes_hash = ?""",
-                        (prompt_id, included_nodes_hash),
-                    ).fetchone()
-                    if row:
-                        return row["id"]
-                    # Should not happen if constraint triggered
-                    raise ValueError("A manual graph with the same nodes already exists.") from e
+        with self._write_lock():
+            try:
+                cursor = conn.execute(
+                    """INSERT INTO graphs
+                       (prompt_id, graph_type,
+                        imp_min_coeff, steps, pnorm, beta, mask_type,
+                        loss_config, loss_config_hash,
+                        adv_pgd_n_steps, adv_pgd_step_size,
+                        ci_masked_label_prob, stoch_masked_label_prob, adv_pgd_label_prob,
+                        included_nodes, included_nodes_hash,
+                        edges_data, output_logits, node_ci_vals, node_subcomp_acts)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        prompt_id,
+                        graph.graph_type,
+                        imp_min_coeff,
+                        steps,
+                        pnorm,
+                        beta,
+                        mask_type,
+                        loss_config_json,
+                        loss_config_hash,
+                        adv_pgd_n_steps,
+                        adv_pgd_step_size,
+                        ci_masked_label_prob,
+                        stoch_masked_label_prob,
+                        adv_pgd_label_prob,
+                        included_nodes_json,
+                        included_nodes_hash,
+                        edges_json,
+                        output_logits_blob,
+                        node_ci_vals_json,
+                        node_subcomp_acts_json,
+                    ),
+                )
+                conn.commit()
+                graph_id = cursor.lastrowid
+                assert graph_id is not None
+                return graph_id
+            except sqlite3.IntegrityError as e:
+                match graph.graph_type:
+                    case "standard":
+                        raise ValueError(
+                            f"Standard graph already exists for prompt_id={prompt_id}. "
+                            "Use get_graphs() to retrieve existing graph or delete it first."
+                        ) from e
+                    case "optimized":
+                        raise ValueError(
+                            f"Optimized graph with same parameters already exists for prompt_id={prompt_id}."
+                        ) from e
+                    case "manual":
+                        conn.rollback()
+                        row = conn.execute(
+                            """SELECT id FROM graphs
+                               WHERE prompt_id = ? AND graph_type = 'manual'
+                               AND included_nodes_hash = ?""",
+                            (prompt_id, included_nodes_hash),
+                        ).fetchone()
+                        if row:
+                            return row["id"]
+                        raise ValueError(
+                            "A manual graph with the same nodes already exists."
+                        ) from e
 
     def _row_to_stored_graph(self, row: sqlite3.Row) -> StoredGraph:
         """Convert a database row to a StoredGraph."""
@@ -648,21 +662,23 @@ class PromptAttrDB:
 
     def delete_graphs_for_prompt(self, prompt_id: int) -> int:
         """Delete all graphs for a prompt. Returns the number of deleted rows."""
-        conn = self._get_conn()
-        cursor = conn.execute("DELETE FROM graphs WHERE prompt_id = ?", (prompt_id,))
-        conn.commit()
-        return cursor.rowcount
+        with self._write_lock():
+            conn = self._get_conn()
+            cursor = conn.execute("DELETE FROM graphs WHERE prompt_id = ?", (prompt_id,))
+            conn.commit()
+            return cursor.rowcount
 
     def delete_graphs_for_run(self, run_id: int) -> int:
         """Delete all graphs for all prompts in a run. Returns the number of deleted rows."""
-        conn = self._get_conn()
-        cursor = conn.execute(
-            """DELETE FROM graphs
-               WHERE prompt_id IN (SELECT id FROM prompts WHERE run_id = ?)""",
-            (run_id,),
-        )
-        conn.commit()
-        return cursor.rowcount
+        with self._write_lock():
+            conn = self._get_conn()
+            cursor = conn.execute(
+                """DELETE FROM graphs
+                   WHERE prompt_id IN (SELECT id FROM prompts WHERE run_id = ?)""",
+                (run_id,),
+            )
+            conn.commit()
+            return cursor.rowcount
 
     # -------------------------------------------------------------------------
     # Intervention run operations
@@ -684,16 +700,17 @@ class PromptAttrDB:
         Returns:
             The intervention run ID.
         """
-        conn = self._get_conn()
-        cursor = conn.execute(
-            """INSERT INTO intervention_runs (graph_id, selected_nodes, result)
-               VALUES (?, ?, ?)""",
-            (graph_id, json.dumps(selected_nodes), result_json),
-        )
-        conn.commit()
-        run_id = cursor.lastrowid
-        assert run_id is not None
-        return run_id
+        with self._write_lock():
+            conn = self._get_conn()
+            cursor = conn.execute(
+                """INSERT INTO intervention_runs (graph_id, selected_nodes, result)
+                   VALUES (?, ?, ?)""",
+                (graph_id, json.dumps(selected_nodes), result_json),
+            )
+            conn.commit()
+            run_id = cursor.lastrowid
+            assert run_id is not None
+            return run_id
 
     def get_intervention_runs(self, graph_id: int) -> list[InterventionRunRecord]:
         """Get all intervention runs for a graph.
@@ -726,16 +743,18 @@ class PromptAttrDB:
 
     def delete_intervention_run(self, run_id: int) -> None:
         """Delete an intervention run."""
-        conn = self._get_conn()
-        conn.execute("DELETE FROM intervention_runs WHERE id = ?", (run_id,))
-        conn.commit()
+        with self._write_lock():
+            conn = self._get_conn()
+            conn.execute("DELETE FROM intervention_runs WHERE id = ?", (run_id,))
+            conn.commit()
 
     def delete_intervention_runs_for_graph(self, graph_id: int) -> int:
         """Delete all intervention runs for a graph. Returns count deleted."""
-        conn = self._get_conn()
-        cursor = conn.execute("DELETE FROM intervention_runs WHERE graph_id = ?", (graph_id,))
-        conn.commit()
-        return cursor.rowcount
+        with self._write_lock():
+            conn = self._get_conn()
+            cursor = conn.execute("DELETE FROM intervention_runs WHERE graph_id = ?", (graph_id,))
+            conn.commit()
+            return cursor.rowcount
 
     # -------------------------------------------------------------------------
     # Forked intervention run operations
@@ -757,16 +776,17 @@ class PromptAttrDB:
         Returns:
             The forked intervention run ID.
         """
-        conn = self._get_conn()
-        cursor = conn.execute(
-            """INSERT INTO forked_intervention_runs (intervention_run_id, token_replacements, result)
-               VALUES (?, ?, ?)""",
-            (intervention_run_id, json.dumps(token_replacements), result_json),
-        )
-        conn.commit()
-        fork_id = cursor.lastrowid
-        assert fork_id is not None
-        return fork_id
+        with self._write_lock():
+            conn = self._get_conn()
+            cursor = conn.execute(
+                """INSERT INTO forked_intervention_runs (intervention_run_id, token_replacements, result)
+                   VALUES (?, ?, ?)""",
+                (intervention_run_id, json.dumps(token_replacements), result_json),
+            )
+            conn.commit()
+            fork_id = cursor.lastrowid
+            assert fork_id is not None
+            return fork_id
 
     def get_forked_intervention_runs(
         self, intervention_run_id: int
@@ -822,6 +842,7 @@ class PromptAttrDB:
 
     def delete_forked_intervention_run(self, fork_id: int) -> None:
         """Delete a forked intervention run."""
-        conn = self._get_conn()
-        conn.execute("DELETE FROM forked_intervention_runs WHERE id = ?", (fork_id,))
-        conn.commit()
+        with self._write_lock():
+            conn = self._get_conn()
+            conn.execute("DELETE FROM forked_intervention_runs WHERE id = ?", (fork_id,))
+            conn.commit()

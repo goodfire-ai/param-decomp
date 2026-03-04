@@ -691,7 +691,7 @@ class LabelPredictions(BaseModel):
     ci: TokenPrediction
     stochastic: TokenPrediction
     adversarial: TokenPrediction
-    target_sans: TokenPrediction | None
+    ablated: TokenPrediction | None
 
 
 class InterventionResult(BaseModel):
@@ -701,11 +701,11 @@ class InterventionResult(BaseModel):
     ci: list[list[TokenPrediction]]
     stochastic: list[list[TokenPrediction]]
     adversarial: list[list[TokenPrediction]]
-    target_sans: list[list[TokenPrediction]] | None
+    ablated: list[list[TokenPrediction]] | None
     ci_loss: float
     stochastic_loss: float
     adversarial_loss: float
-    target_sans_loss: float | None
+    ablated_loss: float | None
     label: LabelPredictions | None
 
 
@@ -766,21 +766,21 @@ def compute_intervention(
     model: ComponentModel,
     tokens: Float[Tensor, "1 seq"],
     active_nodes: list[tuple[str, int, int]],
-    sans_nodes: list[tuple[str, int, int]] | None,
+    nodes_to_ablate: list[tuple[str, int, int]] | None,
     tokenizer: AppTokenizer,
     adv_pgd_config: AdvPGDConfig,
     loss_config: LossConfig,
     sampling: SamplingType,
     top_k: int,
 ) -> InterventionResult:
-    """Unified intervention evaluation: CI, stochastic, adversarial, and optionally target-sans.
+    """Unified intervention evaluation: CI, stochastic, adversarial, and optionally ablated.
 
     Args:
         active_nodes: (concrete_path, seq_pos, component_idx) tuples for selected nodes.
             Used for CI, stochastic, and adversarial masking.
-        sans_nodes: If provided, nodes to ablate in target-sans (full target model minus these).
+        nodes_to_ablate: If provided, nodes to ablate in ablated (full target model minus these).
             The frontend computes this as all_graph_nodes - selected_nodes.
-            If None, target-sans is skipped.
+            If None, ablated is skipped.
         loss_config: Loss for PGD adversary to maximize and for reporting metrics.
         sampling: Sampling type for CI computation.
         top_k: Number of top predictions to return per position.
@@ -826,13 +826,13 @@ def compute_intervention(
         stoch_mask_infos = make_mask_infos(stoch_masks, routing_masks="all")
         stoch_logits: Float[Tensor, "1 seq vocab"] = model(tokens, mask_infos=stoch_mask_infos)
 
-        # Target-sans forward (only if sans_nodes provided)
+        # Target-sans forward (only if nodes_to_ablate provided)
         ts_logits: Float[Tensor, "1 seq vocab"] | None = None
-        if sans_nodes is not None:
+        if nodes_to_ablate is not None:
             ts_masks: dict[str, Float[Tensor, "1 seq C"]] = {}
             for layer_name in ci_masks:
                 ts_masks[layer_name] = torch.ones_like(ci_masks[layer_name])
-            for layer, seq_pos, c_idx in sans_nodes:
+            for layer, seq_pos, c_idx in nodes_to_ablate:
                 ts_masks[layer][0, seq_pos, c_idx] = 0.0
             weight_deltas = model.calc_weight_deltas()
             ts_wd = {
@@ -901,7 +901,7 @@ def compute_intervention(
             ci=_extract_label_prediction(ci_logits, target_logits, tokenizer, pos, tid),
             stochastic=_extract_label_prediction(stoch_logits, target_logits, tokenizer, pos, tid),
             adversarial=_extract_label_prediction(adv_logits, target_logits, tokenizer, pos, tid),
-            target_sans=ts_label,
+            ablated=ts_label,
         )
 
     input_tokens = tokenizer.get_spans([int(t.item()) for t in tokens[0]])
@@ -911,10 +911,10 @@ def compute_intervention(
         ci=ci_preds,
         stochastic=stoch_preds,
         adversarial=adv_preds,
-        target_sans=ts_preds,
+        ablated=ts_preds,
         ci_loss=ci_loss,
         stochastic_loss=stoch_loss,
         adversarial_loss=adv_loss,
-        target_sans_loss=ts_loss,
+        ablated_loss=ts_loss,
         label=label,
     )
