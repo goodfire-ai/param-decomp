@@ -56,6 +56,7 @@
         stagedNodes: PinnedNode[];
         onStagedNodesChange: (nodes: PinnedNode[]) => void;
         onEdgeCountChange?: (count: number) => void;
+        onHoveredNodeChange?: (node: HoveredNode | null) => void;
     };
 
     let {
@@ -69,6 +70,7 @@
         stagedNodes,
         onStagedNodesChange,
         onEdgeCountChange,
+        onHoveredNodeChange,
     }: Props = $props();
 
     // Compute masked prediction probability of self given previous position.
@@ -97,6 +99,10 @@
     let isHoveringTooltip = $state(false);
     let tooltipPos = $state<TooltipPos>({ left: 0, top: 0 });
     let edgeTooltipPos = $state({ x: 0, y: 0 });
+
+    $effect(() => {
+        onHoveredNodeChange?.(hoveredNode);
+    });
 
     // Alt/Option key temporarily toggles hide unpinned edges
     let altHeld = $state(false);

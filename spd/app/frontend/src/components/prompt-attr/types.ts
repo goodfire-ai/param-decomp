@@ -4,7 +4,7 @@ import type { InterventionRunSummary } from "../../lib/interventionTypes";
 import type { NormalizeType } from "../../lib/api";
 
 export type MaskType = "stochastic" | "ci";
-export type LossType = "ce" | "kl";
+export type LossType = "ce" | "kl" | "logit";
 
 export type ViewSettings = {
     topK: number;
@@ -52,7 +52,15 @@ export type KLLossConfig = {
     position: number;
 };
 
-export type LossConfigDraft = CELossConfigDraft | KLLossConfig;
+export type LogitLossConfigDraft = {
+    type: "logit";
+    coeff: number;
+    position: number;
+    labelTokenId: number | null;
+    labelTokenText: string;
+};
+
+export type LossConfigDraft = CELossConfigDraft | KLLossConfig | LogitLossConfigDraft;
 
 export type OptimizeConfigDraft = {
     loss: LossConfigDraft;
@@ -74,7 +82,15 @@ export type CELossConfigValid = {
     labelTokenText: string;
 };
 
-export type LossConfigValid = CELossConfigValid | KLLossConfig;
+export type LogitLossConfigValid = {
+    type: "logit";
+    coeff: number;
+    position: number;
+    labelTokenId: number;
+    labelTokenText: string;
+};
+
+export type LossConfigValid = CELossConfigValid | KLLossConfig | LogitLossConfigValid;
 
 export type OptimizeConfigValid = {
     loss: LossConfigValid;
@@ -89,7 +105,7 @@ export type OptimizeConfigValid = {
 
 /** Validate draft config, returning valid config or null if incomplete */
 export function validateOptimizeConfig(draft: OptimizeConfigDraft): OptimizeConfigValid | null {
-    if (draft.loss.type === "ce" && draft.loss.labelTokenId === null) {
+    if ((draft.loss.type === "ce" || draft.loss.type === "logit") && draft.loss.labelTokenId === null) {
         return null;
     }
     return draft as OptimizeConfigValid;

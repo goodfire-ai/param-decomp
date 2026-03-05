@@ -103,7 +103,15 @@ export type KLLossResult = {
     position: number;
 };
 
-export type LossResult = CELossResult | KLLossResult;
+export type LogitLossResult = {
+    type: "logit";
+    coeff: number;
+    position: number;
+    label_token: number;
+    label_str: string;
+};
+
+export type LossResult = CELossResult | KLLossResult | LogitLossResult;
 
 export type OptimizationMetrics = {
     ci_masked_label_prob: number | null; // Probability of label under CI mask (CE loss only)
@@ -183,9 +191,10 @@ export type TokenizeResponse = {
     next_token_probs: (number | null)[]; // Probability of next token (last is null)
 };
 
-export type TokenInfo = {
+export type TokenSearchResult = {
     id: number;
     string: string;
+    prob: number;
 };
 
 // Client-side computed types

@@ -20,7 +20,13 @@ import torch
 from pydantic import BaseModel
 
 from spd.app.backend.compute import Edge, Node
-from spd.app.backend.optim_cis import CELossConfig, KLLossConfig, MaskType, PositionalLossConfig
+from spd.app.backend.optim_cis import (
+    CELossConfig,
+    KLLossConfig,
+    LogitLossConfig,
+    MaskType,
+    PositionalLossConfig,
+)
 from spd.settings import SPD_OUT_DIR
 
 GraphType = Literal["standard", "optimized", "manual"]
@@ -581,12 +587,15 @@ class PromptAttrDB:
         if row["graph_type"] == "optimized":
             loss_config_data = json.loads(row["loss_config"])
             loss_type = loss_config_data["type"]
-            assert loss_type in ("ce", "kl"), f"Unknown loss type: {loss_type}"
+            assert loss_type in ("ce", "kl", "logit"), f"Unknown loss type: {loss_type}"
             loss_config: PositionalLossConfig
-            if loss_type == "ce":
-                loss_config = CELossConfig(**loss_config_data)
-            else:
-                loss_config = KLLossConfig(**loss_config_data)
+            match loss_type:
+                case "ce":
+                    loss_config = CELossConfig(**loss_config_data)
+                case "kl":
+                    loss_config = KLLossConfig(**loss_config_data)
+                case "logit":
+                    loss_config = LogitLossConfig(**loss_config_data)
             pgd = None
             if row["adv_pgd_n_steps"] is not None:
                 pgd = PgdConfig(n_steps=row["adv_pgd_n_steps"], step_size=row["adv_pgd_step_size"])

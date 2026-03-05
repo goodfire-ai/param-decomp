@@ -81,6 +81,7 @@
         onSelectVersion: (index: number) => void;
         onDeleteRun: (runId: number) => void;
         onGenerateGraphFromSelection: () => void;
+        onHoveredNodeChange?: (node: { layer: string; seqIdx: number; cIdx: number } | null) => void;
     };
 
     let {
@@ -109,6 +110,7 @@
         onSelectVersion,
         onDeleteRun,
         onGenerateGraphFromSelection,
+        onHoveredNodeChange,
     }: Props = $props();
 
     // Derived: active run and editability
@@ -137,10 +139,13 @@
         if (!interventionResult) return null;
         const lbl = interventionResult.label;
         const rows: PredRow[] = [];
-        if (interventionResult.adversarial.length > 0) rows.push({ label: "Adv", preds: interventionResult.adversarial, labelPred: lbl?.adversarial ?? null });
-        if (interventionResult.stochastic.length > 0) rows.push({ label: "Stoch", preds: interventionResult.stochastic, labelPred: lbl?.stochastic ?? null });
+        if (interventionResult.adversarial.length > 0)
+            rows.push({ label: "Adv", preds: interventionResult.adversarial, labelPred: lbl?.adversarial ?? null });
+        if (interventionResult.stochastic.length > 0)
+            rows.push({ label: "Stoch", preds: interventionResult.stochastic, labelPred: lbl?.stochastic ?? null });
         rows.push({ label: "CI", preds: interventionResult.ci, labelPred: lbl?.ci ?? null });
-        if (interventionResult.ablated && interventionResult.ablated.length > 0) rows.push({ label: "T\\S", preds: interventionResult.ablated, labelPred: lbl?.ablated ?? null });
+        if (interventionResult.ablated && interventionResult.ablated.length > 0)
+            rows.push({ label: "T\\S", preds: interventionResult.ablated, labelPred: lbl?.ablated ?? null });
         return rows;
     });
 
@@ -182,6 +187,10 @@
     let isHoveringTooltip = $state(false);
     let tooltipPos = $state<TooltipPos>({ left: 0, top: 0 });
     let hoverTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    $effect(() => {
+        onHoveredNodeChange?.(hoveredNode);
+    });
 
     // Hover state for prediction chips
     type HoveredPred = { pred: TokenPrediction; rowLabel: string; seqIdx: number };
@@ -443,6 +452,18 @@
         onSelectionChange(new SvelteSet(allInterventableNodes));
     }
 
+    function selectAllKV() {
+        if (!isEditable) return;
+        const kvNodes = new SvelteSet<string>();
+        for (const nodeKey of allInterventableNodes) {
+            const layer = nodeKey.split(":")[0];
+            if (layer.endsWith("k_proj") || layer.endsWith("v_proj")) {
+                kvNodes.add(nodeKey);
+            }
+        }
+        onSelectionChange(kvNodes);
+    }
+
     function clearSelection() {
         if (!isEditable) return;
         onSelectionChange(new SvelteSet());
@@ -645,6 +666,7 @@
             <div class="button-group">
                 {#if isEditable}
                     <button onclick={selectAll}>Select All</button>
+                    <button onclick={selectAllKV}>Select All K/V</button>
                     <button onclick={clearSelection}>Clear</button>
                     <button
                         class="generate-btn"
@@ -748,10 +770,16 @@
                                         {@const chipW = 48}
                                         {@const chipH = PRED_ROW_HEIGHT}
                                         {@const chipGap = 1}
-                                        {@const isLabelPos = interventionResult?.label != null && seqIdx === interventionResult.label.position}
-                                        {@const labelTokenId = isLabelPos ? row.labelPred?.token_id ?? null : null}
-                                        {@const labelInTopk = labelTokenId != null && preds.some((p) => p.token_id === labelTokenId)}
-                                        {@const maxChips = Math.min(preds.length, Math.max(1, Math.floor((colW - 2 + chipGap) / (chipW + chipGap))))}
+                                        {@const isLabelPos =
+                                            interventionResult?.label != null &&
+                                            seqIdx === interventionResult.label.position}
+                                        {@const labelTokenId = isLabelPos ? (row.labelPred?.token_id ?? null) : null}
+                                        {@const labelInTopk =
+                                            labelTokenId != null && preds.some((p) => p.token_id === labelTokenId)}
+                                        {@const maxChips = Math.min(
+                                            preds.length,
+                                            Math.max(1, Math.floor((colW - 2 + chipGap) / (chipW + chipGap))),
+                                        )}
                                         {#each preds.slice(0, maxChips) as pred, rank (rank)}
                                             {@const cx = colX + rank * (chipW + chipGap)}
                                             {@const isLabel = labelTokenId != null && pred.token_id === labelTokenId}
@@ -776,7 +804,8 @@
                                                     text-anchor="middle"
                                                     font-size="7"
                                                     font-family="'Berkeley Mono', 'SF Mono', monospace"
-                                                    fill={pred.prob > 0.5 ? "white" : colors.textPrimary}>{pred.token}</text
+                                                    fill={pred.prob > 0.5 ? "white" : colors.textPrimary}
+                                                    >{pred.token}</text
                                                 >
                                             </g>
                                         {/each}
@@ -785,7 +814,8 @@
                                             {@const cx = colX + maxChips * (chipW + chipGap) + chipGap}
                                             <!-- svelte-ignore a11y_no_static_element_interactions -->
                                             <g
-                                                onmouseenter={(e) => handlePredMouseEnter(e, row.labelPred!, row.label, seqIdx)}
+                                                onmouseenter={(e) =>
+                                                    handlePredMouseEnter(e, row.labelPred!, row.label, seqIdx)}
                                                 onmouseleave={handlePredMouseLeave}
                                             >
                                                 <rect
@@ -805,7 +835,8 @@
                                                     text-anchor="middle"
                                                     font-size="7"
                                                     font-family="'Berkeley Mono', 'SF Mono', monospace"
-                                                    fill={row.labelPred.prob > 0.5 ? "white" : colors.textPrimary}>{row.labelPred.token}</text
+                                                    fill={row.labelPred.prob > 0.5 ? "white" : colors.textPrimary}
+                                                    >{row.labelPred.token}</text
                                                 >
                                             </g>
                                         {/if}
@@ -1050,17 +1081,26 @@
                                     <span class="opt-key">stoch</span>
                                     <span>{run.result.stochastic_loss.toFixed(3)}</span>
                                 </div>
-                                <div class="opt-row" title="Loss using adversarially optimized sources on deselected-but-alive nodes, and stochastic sources on 0-CI nodes">
+                                <div
+                                    class="opt-row"
+                                    title="Loss using adversarially optimized sources on deselected-but-alive nodes, and stochastic sources on 0-CI nodes"
+                                >
                                     <span class="opt-key">adv</span>
                                     <span>{run.result.adversarial_loss.toFixed(3)}</span>
                                 </div>
                                 {#if run.result.ablated_loss != null}
-                                    <div class="opt-row" title="Loss with unselected nodes ablated from target model weights — measures sufficiency (lower = selected nodes are more sufficient)">
+                                    <div
+                                        class="opt-row"
+                                        title="Loss with unselected nodes ablated from target model weights — measures sufficiency (lower = selected nodes are more sufficient)"
+                                    >
                                         <span class="opt-key">T\S</span>
                                         <span>{run.result.ablated_loss.toFixed(3)}</span>
                                     </div>
                                 {/if}
-                                <div class="opt-row" title="The loss function used: mean KL (standard graphs) or the specific loss from optimization">
+                                <div
+                                    class="opt-row"
+                                    title="The loss function used: mean KL (standard graphs) or the specific loss from optimization"
+                                >
                                     <span class="opt-key">metric</span>
                                     <span>{lossLabel}</span>
                                 </div>

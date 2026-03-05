@@ -1,7 +1,8 @@
 <script lang="ts">
     import * as api from "../lib/api";
     import ProbColoredTokens from "./ProbColoredTokens.svelte";
-    import { type GraphData, type PinnedNode, type PromptPreview } from "../lib/promptAttributionsTypes";
+    import { type GraphData, type HoveredNode, type PinnedNode, type PromptPreview } from "../lib/promptAttributionsTypes";
+    import ComponentNodeCard from "./prompt-attr/ComponentNodeCard.svelte";
     import ComputeProgressOverlay from "./prompt-attr/ComputeProgressOverlay.svelte";
     import GraphTabs from "./prompt-attr/GraphTabs.svelte";
     import InterventionsView from "./prompt-attr/InterventionsView.svelte";
@@ -95,6 +96,48 @@
     let filteredEdgeCount = $state<number | null>(null);
     let hideUnpinnedEdges = $state(false);
     let hideNodeCard = $state(false);
+
+    // Hovered node from graph (lifted up for side panel rendering)
+    let hoveredNode = $state<HoveredNode | null>(null);
+
+    // Resizable split for node detail panel
+    let detailPanelWidth = $state(500);
+
+    function handleResizeStart(e: MouseEvent) {
+        e.preventDefault();
+        const startX = e.clientX;
+        const startWidth = detailPanelWidth;
+
+        function onMouseMove(e: MouseEvent) {
+            detailPanelWidth = Math.max(250, Math.min(900, startWidth + (startX - e.clientX)));
+        }
+
+        function onMouseUp() {
+            window.removeEventListener("mousemove", onMouseMove);
+            window.removeEventListener("mouseup", onMouseUp);
+        }
+
+        window.addEventListener("mousemove", onMouseMove);
+        window.addEventListener("mouseup", onMouseUp);
+    }
+
+    // Sticky: last hovered component persists in the side panel
+    type ComponentNodeInfo = { layer: string; cIdx: number; seqIdx: number; ciVal: number | null; subcompAct: number | null; token: string };
+    let stickyComponentNode = $state<ComponentNodeInfo | null>(null);
+
+    $effect(() => {
+        if (!hoveredNode || !activeGraph) return;
+        if (hoveredNode.layer === "embed" || hoveredNode.layer === "output") return;
+        const key = `${hoveredNode.layer}:${hoveredNode.seqIdx}:${hoveredNode.cIdx}`;
+        stickyComponentNode = {
+            layer: hoveredNode.layer,
+            cIdx: hoveredNode.cIdx,
+            seqIdx: hoveredNode.seqIdx,
+            ciVal: activeGraph.data.nodeCiVals[key] ?? null,
+            subcompAct: activeGraph.data.nodeSubcompActs[key] ?? null,
+            token: activeCard!.tokens[hoveredNode.seqIdx],
+        };
+    });
 
     // Pinned nodes for attributions graph
     let pinnedNodes = $state<PinnedNode[]>([]);
@@ -517,12 +560,13 @@
                 },
             );
 
+            const runs = await api.getInterventionRuns(data.id);
             const newGraph: StoredGraph = {
                 id: data.id,
                 label: getGraphLabel(data),
                 data,
                 viewSettings: { ...activeGraph.viewSettings },
-                interventionRuns: [],
+                interventionRuns: runs,
             };
             getInterventionState(data.id, newGraph);
 
@@ -606,7 +650,10 @@
                     lossType: optConfig.loss.type,
                     lossCoeff: optConfig.loss.coeff,
                     lossPosition: optConfig.loss.position,
-                    labelToken: optConfig.loss.type === "ce" ? optConfig.loss.labelTokenId : undefined,
+                    labelToken:
+                        optConfig.loss.type === "ce" || optConfig.loss.type === "logit"
+                            ? optConfig.loss.labelTokenId
+                            : undefined,
                     advPgdNSteps:
                         optConfig.advPgdNSteps !== null && optConfig.advPgdStepSize !== null
                             ? optConfig.advPgdNSteps
@@ -668,6 +715,107 @@
                     ...card,
                     graphs: [...card.graphs, newGraph],
                     activeGraphId: data.id,
+                };
+            });
+
+            graphCompute = { status: "idle" };
+        } catch (error) {
+            graphCompute = { status: "error", error: String(error) };
+        }
+    }
+
+    async function computeBatchGraphsForCard(impMinCoeffs: number[]) {
+        if (!activeCard || !activeCard.tokenIds || graphCompute.status === "computing") return;
+
+        const draftConfig = activeCard.newGraphConfig;
+        const cardId = activeCard.id;
+
+        const validConfig = validateOptimizeConfig(draftConfig);
+        if (!validConfig) {
+            throw new Error("Invalid config: CE loss requires a target token");
+        }
+
+        graphCompute = {
+            status: "computing",
+            cardId,
+            ciSnapshot: null,
+            progress: {
+                stages: [
+                    { name: `Optimizing (${impMinCoeffs.length} coefficients)`, progress: 0 },
+                    { name: "Computing attribution graphs", progress: 0 },
+                ],
+                currentStage: 0,
+            },
+        };
+
+        try {
+            const params: api.ComputeGraphOptimizedBatchParams = {
+                promptId: cardId,
+                normalize: defaultViewSettings.normalizeEdges,
+                impMinCoeffs,
+                steps: validConfig.steps,
+                pnorm: validConfig.pnorm,
+                beta: validConfig.beta,
+                ciThreshold: defaultViewSettings.ciThreshold,
+                maskType: validConfig.maskType,
+                lossType: validConfig.loss.type,
+                lossCoeff: validConfig.loss.coeff,
+                lossPosition: validConfig.loss.position,
+                labelToken:
+                    validConfig.loss.type === "ce" || validConfig.loss.type === "logit"
+                        ? validConfig.loss.labelTokenId
+                        : undefined,
+                advPgdNSteps:
+                    validConfig.advPgdNSteps !== null && validConfig.advPgdStepSize !== null
+                        ? validConfig.advPgdNSteps
+                        : undefined,
+                advPgdStepSize:
+                    validConfig.advPgdNSteps !== null && validConfig.advPgdStepSize !== null
+                        ? validConfig.advPgdStepSize
+                        : undefined,
+            };
+
+            const graphDataList = await api.computeGraphOptimizedBatchStream(
+                params,
+                (progress) => {
+                    if (graphCompute.status !== "computing") return;
+                    if (progress.stage === "graph") {
+                        graphCompute.progress.currentStage = 1;
+                        graphCompute.progress.stages[1].progress = progress.current / progress.total;
+                    } else {
+                        graphCompute.progress.stages[0].progress = progress.current / progress.total;
+                    }
+                },
+                (snapshot) => {
+                    if (graphCompute.status !== "computing") return;
+                    graphCompute.ciSnapshot = snapshot;
+                },
+            );
+
+            const newGraphs: StoredGraph[] = [];
+            for (const data of graphDataList) {
+                const runs = await api.getInterventionRuns(data.id);
+                const newGraph: StoredGraph = {
+                    id: data.id,
+                    label: getGraphLabel(data),
+                    data,
+                    viewSettings: { ...defaultViewSettings },
+                    interventionRuns: runs,
+                };
+                getInterventionState(data.id, newGraph);
+                newGraphs.push(newGraph);
+            }
+
+            if (newGraphs.length !== 5) throw new Error(`Expected 5 batch graphs, got ${newGraphs.length}`);
+
+            promptCards = promptCards.map((card) => {
+                if (card.id !== cardId) return card;
+                const existingIds = new Set(card.graphs.map((g) => g.id));
+                const toAdd = newGraphs.filter((g) => !existingIds.has(g.id));
+                return {
+                    ...card,
+                    graphs: [...card.graphs, ...toAdd],
+                    activeGraphId: newGraphs[2].id,
                 };
             });
 
@@ -762,6 +910,7 @@
             </div>
 
             <div class="card-content">
+                <div class="card-content-main">
                 {#if tabView.view === "draft"}
                     {@const draft = tabView.draft}
                     <!-- New prompt staging area -->
@@ -883,10 +1032,11 @@
                                             componentGap={activeGraph.viewSettings.componentGap}
                                             layerGap={activeGraph.viewSettings.layerGap}
                                             {hideUnpinnedEdges}
-                                            {hideNodeCard}
+                                            hideNodeCard={true}
                                             stagedNodes={pinnedNodes}
                                             onStagedNodesChange={handlePinnedNodesChange}
                                             onEdgeCountChange={(count) => (filteredEdgeCount = count)}
+                                            onHoveredNodeChange={(node) => (hoveredNode = node)}
                                         />
                                     {/key}
                                 </div>
@@ -913,7 +1063,7 @@
                                         ? { status: "loading" }
                                         : { status: "loaded", data: activeGraph.viewSettings.ciThreshold }}
                                     {hideUnpinnedEdges}
-                                    {hideNodeCard}
+                                    hideNodeCard={true}
                                     onTopKChange={handleTopKChange}
                                     onComponentGapChange={handleComponentGapChange}
                                     onLayerGapChange={handleLayerGapChange}
@@ -929,6 +1079,7 @@
                                     onSelectVersion={handleSelectVersion}
                                     onDeleteRun={handleDeleteRun}
                                     onGenerateGraphFromSelection={handleGenerateGraphFromSelection}
+                                    onHoveredNodeChange={(node) => (hoveredNode = node)}
                                 />
                             {/if}
                         </div>
@@ -968,17 +1119,40 @@
                                             <OptimizationSettings
                                                 config={activeCard.newGraphConfig}
                                                 tokens={activeCard.tokens}
+                                                nextTokenProbs={activeCard.nextTokenProbs}
                                                 onChange={handleOptimizeConfigChange}
                                                 cardId={activeCard.id}
                                             />
                                         {/if}
-                                        <button
-                                            class="btn-compute-center"
-                                            onclick={() => computeGraphForCard()}
-                                            disabled={!canCompute}
-                                        >
-                                            Compute
-                                        </button>
+                                        <div class="compute-buttons">
+                                            <button
+                                                class="btn-compute-center"
+                                                onclick={() => computeGraphForCard()}
+                                                disabled={!canCompute}
+                                            >
+                                                Compute
+                                            </button>
+                                            {#if hasStandardGraph || activeCard.useOptimized}
+                                                <button
+                                                    class="btn-compute-batch"
+                                                    onclick={() => {
+                                                        const base = activeCard.newGraphConfig.impMinCoeff;
+                                                        const coeffs = [
+                                                            base * 0.1,
+                                                            base * 0.3,
+                                                            base,
+                                                            base * 3,
+                                                            base * 10,
+                                                        ];
+                                                        computeBatchGraphsForCard(coeffs);
+                                                    }}
+                                                    disabled={!canCompute}
+                                                    title="Compute 5 graphs at 0.1x, 0.3x, 1x, 3x, 10x of current sparsity coefficient"
+                                                >
+                                                    Batch (5x)
+                                                </button>
+                                            {/if}
+                                        </div>
                                     </div>
                                 </div>
                             {/if}
@@ -992,6 +1166,33 @@
                     <div class="empty-state">
                         <p class="error-text">Error loading prompt: {tabView.error}</p>
                         <button onclick={handleDismissError}>Dismiss</button>
+                    </div>
+                {/if}
+                </div>
+
+                {#if !hideNodeCard && stickyComponentNode && activeGraph}
+                    <!-- svelte-ignore a11y_no_static_element_interactions -->
+                    <div class="resize-handle" onmousedown={handleResizeStart}></div>
+                    <div class="node-detail-panel" style:width="{detailPanelWidth}px">
+                        {#key `${stickyComponentNode.layer}:${stickyComponentNode.cIdx}`}
+                            <ComponentNodeCard
+                                layer={stickyComponentNode.layer}
+                                cIdx={stickyComponentNode.cIdx}
+                                seqIdx={stickyComponentNode.seqIdx}
+                                ciVal={stickyComponentNode.ciVal}
+                                subcompAct={stickyComponentNode.subcompAct}
+                                token={stickyComponentNode.token}
+                                edgesBySource={activeGraph.data.edgesBySource}
+                                edgesByTarget={activeGraph.data.edgesByTarget}
+                                tokens={activeCard?.tokens ?? []}
+                                outputProbs={activeGraph.data.outputProbs}
+                                onPinComponent={(layer, cIdx, seqIdx) => {
+                                    handlePinnedNodesChange([...pinnedNodes.filter(
+                                        (p) => !(p.layer === layer && p.seqIdx === seqIdx && p.cIdx === cIdx)
+                                    ), { layer, seqIdx, cIdx }]);
+                                }}
+                            />
+                        {/key}
                     </div>
                 {/if}
             </div>
@@ -1034,12 +1235,42 @@
     .card-content {
         flex: 1;
         display: flex;
-        flex-direction: column;
-        gap: var(--space-2);
         min-height: 0;
+        min-width: 0;
         padding: var(--space-4);
         border: 1px solid var(--border-default);
         background: var(--bg-inset);
+    }
+
+    .card-content-main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-2);
+        min-height: 0;
+        min-width: 0;
+        overflow: auto;
+    }
+
+    .resize-handle {
+        width: 6px;
+        cursor: col-resize;
+        background: transparent;
+        flex-shrink: 0;
+        position: relative;
+    }
+
+    .resize-handle:hover,
+    .resize-handle:active {
+        background: var(--accent-primary-dim);
+    }
+
+    .node-detail-panel {
+        flex-shrink: 0;
+        overflow-y: auto;
+        border: 1px solid var(--border-default);
+        background: var(--bg-elevated);
+        padding: var(--space-3);
     }
 
     .prompt-tokens {
@@ -1120,6 +1351,29 @@
         background: var(--bg-inset);
         border-style: solid;
         border-color: var(--accent-primary);
+    }
+
+    .compute-buttons {
+        display: flex;
+        gap: var(--space-2);
+        justify-content: center;
+    }
+
+    .btn-compute-batch {
+        padding: var(--space-2) var(--space-3);
+        background: var(--bg-elevated);
+        border: 1px dashed var(--border-default);
+        font-size: var(--text-sm);
+        font-family: var(--font-mono);
+        color: var(--text-secondary);
+        cursor: pointer;
+    }
+
+    .btn-compute-batch:hover {
+        background: var(--bg-inset);
+        border-style: solid;
+        border-color: var(--accent-primary-dim);
+        color: var(--accent-primary);
     }
 
     .compute-controls {

@@ -8,12 +8,7 @@
 import type { Loadable } from ".";
 import * as api from "./api";
 import type { LoadedRun as RunData, InterpretationHeadline, GraphInterpHeadline } from "./api";
-import type {
-    PromptPreview,
-    SubcomponentActivationContexts,
-    TokenInfo,
-    SubcomponentMetadata,
-} from "./promptAttributionsTypes";
+import type { PromptPreview, SubcomponentActivationContexts, SubcomponentMetadata } from "./promptAttributionsTypes";
 
 /** Maps component keys to cluster IDs. Singletons (unclustered components) have null values. */
 export type ClusterMappingData = Record<string, number | null>;
@@ -55,11 +50,6 @@ export function useRun() {
     /** Available prompts for the current run */
     let prompts = $state<Loadable<PromptPreview[]>>({ status: "uninitialized" });
 
-    /** All tokens in the tokenizer for the current run */
-    let allTokens = $state<Loadable<TokenInfo[]>>({ status: "uninitialized" });
-
-    /** Model topology info for frontend layout */
-
     /** Activation contexts summary (null = harvest not available) */
     let activationContextsSummary = $state<Loadable<Record<string, SubcomponentMetadata[]> | null>>({
         status: "uninitialized",
@@ -71,7 +61,6 @@ export function useRun() {
     /** Reset all run-scoped state */
     function resetRunScopedState() {
         prompts = { status: "uninitialized" };
-        allTokens = { status: "uninitialized" };
         interpretations = { status: "uninitialized" };
         intruderScores = { status: "uninitialized" };
         graphInterpLabels = { status: "uninitialized" };
@@ -113,14 +102,6 @@ export function useRun() {
             .catch((error) => (interpretations = { status: "error", error }));
     }
 
-    /** Fetch tokens - must complete before run is considered loaded */
-    async function fetchTokens(): Promise<TokenInfo[]> {
-        allTokens = { status: "loading" };
-        const tokens = await api.getAllTokens();
-        allTokens = { status: "loaded", data: tokens };
-        return tokens;
-    }
-
     async function loadRun(wandbPath: string, contextLength: number) {
         run = { status: "loading" };
         try {
@@ -129,8 +110,6 @@ export function useRun() {
             if (status) {
                 run = { status: "loaded", data: status };
                 fetchRunScopedData();
-                // Fetch tokens in background (no longer blocks UI - used only by token search)
-                fetchTokens();
             } else {
                 run = { status: "error", error: "Failed to load run" };
             }
@@ -149,10 +128,6 @@ export function useRun() {
         try {
             const status = await api.getStatus();
             if (status) {
-                // Fetch tokens and model info if we don't have them (e.g., page refresh)
-                if (allTokens.status === "uninitialized") {
-                    await fetchTokens();
-                }
                 run = { status: "loaded", data: status };
                 // Fetch other run-scoped data if we don't have it
                 if (interpretations.status === "uninitialized") {
@@ -257,9 +232,6 @@ export function useRun() {
         },
         get prompts() {
             return prompts;
-        },
-        get allTokens() {
-            return allTokens;
         },
         get activationContextsSummary() {
             return activationContextsSummary;

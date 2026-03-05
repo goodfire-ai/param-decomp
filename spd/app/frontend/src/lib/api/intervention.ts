@@ -2,10 +2,7 @@
  * API client for /api/intervention endpoints.
  */
 
-import type {
-    InterventionRunSummary,
-    RunInterventionRequest,
-} from "../interventionTypes";
+import type { InterventionRunSummary, RunInterventionRequest } from "../interventionTypes";
 
 export async function runAndSaveIntervention(request: RunInterventionRequest): Promise<InterventionRunSummary> {
     const response = await fetch("/api/intervention/run", {

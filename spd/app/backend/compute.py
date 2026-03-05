@@ -20,11 +20,13 @@ from spd.app.backend.optim_cis import (
     AdvPGDConfig,
     CELossConfig,
     CISnapshotCallback,
+    LogitLossConfig,
     LossConfig,
     OptimCIConfig,
     OptimizationMetrics,
     compute_recon_loss,
     optimize_ci_values,
+    optimize_ci_values_batched,
     run_adv_pgd,
 )
 from spd.configs import SamplingType
@@ -582,6 +584,77 @@ def compute_prompt_attributions_optimized(
     )
 
 
+def compute_prompt_attributions_optimized_batched(
+    model: ComponentModel,
+    topology: TransformerTopology,
+    tokens: Float[Tensor, "1 seq"],
+    sources_by_target: dict[str, list[str]],
+    configs: list[OptimCIConfig],
+    output_prob_threshold: float,
+    device: str,
+    on_progress: ProgressCallback | None = None,
+    on_ci_snapshot: CISnapshotCallback | None = None,
+) -> list[OptimizedPromptAttributionResult]:
+    """Compute prompt attributions for multiple sparsity coefficients in one batched optimization."""
+    with torch.no_grad(), bf16_autocast():
+        target_logits = model(tokens)
+        target_out_probs = torch.softmax(target_logits, dim=-1)
+
+    optim_results = optimize_ci_values_batched(
+        model=model,
+        tokens=tokens,
+        configs=configs,
+        device=device,
+        on_progress=on_progress,
+        on_ci_snapshot=on_ci_snapshot,
+    )
+
+    if on_progress is not None:
+        on_progress(0, len(optim_results), "graph")
+
+    with torch.no_grad(), bf16_autocast():
+        pre_weight_acts = model(tokens, cache_type="input").cache
+
+    loss_seq_pos = configs[0].loss_config.position
+
+    results: list[OptimizedPromptAttributionResult] = []
+    for i, optim_result in enumerate(optim_results):
+        ci_outputs = optim_result.params.create_ci_outputs(model, device)
+
+        result = compute_edges_from_ci(
+            model=model,
+            topology=topology,
+            tokens=tokens,
+            ci_lower_leaky=ci_outputs.lower_leaky,
+            pre_weight_acts=pre_weight_acts,
+            sources_by_target=sources_by_target,
+            target_out_probs=target_out_probs,
+            target_out_logits=target_logits,
+            output_prob_threshold=output_prob_threshold,
+            device=device,
+            on_progress=on_progress,
+            loss_seq_pos=loss_seq_pos,
+        )
+
+        results.append(
+            OptimizedPromptAttributionResult(
+                edges=result.edges,
+                ci_masked_out_probs=result.ci_masked_out_probs,
+                ci_masked_out_logits=result.ci_masked_out_logits,
+                target_out_probs=result.target_out_probs,
+                target_out_logits=result.target_out_logits,
+                node_ci_vals=result.node_ci_vals,
+                node_subcomp_acts=result.node_subcomp_acts,
+                metrics=optim_result.metrics,
+            )
+        )
+
+        if on_progress is not None:
+            on_progress(i + 1, len(optim_results), "graph")
+
+    return results
+
+
 @dataclass
 class CIOnlyResult:
     """Result of computing CI values only (no attribution graph)."""
@@ -889,7 +962,7 @@ def compute_intervention(
             )
 
     label: LabelPredictions | None = None
-    if isinstance(loss_config, CELossConfig):
+    if isinstance(loss_config, CELossConfig | LogitLossConfig):
         pos, tid = loss_config.position, loss_config.label_token
         ts_label = (
             _extract_label_prediction(ts_logits, target_logits, tokenizer, pos, tid)
