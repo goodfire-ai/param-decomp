@@ -737,6 +737,7 @@ def _tool_optimize_graph(params: dict[str, Any]) -> Generator[dict[str, Any]]:
         graph=StoredGraph(
             graph_type="optimized",
             edges=result.edges,
+            edges_abs=result.edges_abs,
             ci_masked_out_logits=ci_masked_out_logits,
             target_out_logits=target_out_logits,
             node_ci_vals=result.node_ci_vals,

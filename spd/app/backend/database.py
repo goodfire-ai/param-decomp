@@ -98,6 +98,9 @@ class StoredGraph(BaseModel):
 
     # Core graph data (all types)
     edges: list[Edge]
+    edges_abs: list[Edge] | None = (
+        None  # absolute-target variant (∂|y|/∂x · x), None for old graphs
+    )
     ci_masked_out_logits: torch.Tensor  # [seq, vocab]
     target_out_logits: torch.Tensor  # [seq, vocab]
     node_ci_vals: dict[str, float]  # layer:seq:c_idx -> ci_val (required for all graphs)
@@ -231,6 +234,8 @@ class PromptAttrDB:
 
                 -- The actual graph data (JSON)
                 edges_data TEXT NOT NULL,
+                -- Absolute-target edges (∂|y|/∂x · x), NULL for old graphs
+                edges_data_abs TEXT,
                 -- Node CI values: "layer:seq:c_idx" -> ci_val (required for all graphs)
                 node_ci_vals TEXT NOT NULL,
                 -- Node subcomponent activations: "layer:seq:c_idx" -> v_i^T @ a
@@ -281,6 +286,12 @@ class PromptAttrDB:
             CREATE INDEX IF NOT EXISTS idx_forked_intervention_runs_parent
                 ON forked_intervention_runs(intervention_run_id);
         """)
+
+        # Migration: add edges_data_abs column if missing (backwards compat with existing DBs)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(graphs)").fetchall()}
+        if "edges_data_abs" not in columns:
+            conn.execute("ALTER TABLE graphs ADD COLUMN edges_data_abs TEXT")
+
         conn.commit()
 
     # -------------------------------------------------------------------------
@@ -433,17 +444,21 @@ class PromptAttrDB:
                 "component_idx": n.component_idx,
             }
 
-        edges_json = json.dumps(
-            [
-                {
-                    "source": _node_to_dict(e.source),
-                    "target": _node_to_dict(e.target),
-                    "strength": e.strength,
-                    "is_cross_seq": e.is_cross_seq,
-                }
-                for e in graph.edges
-            ]
-        )
+        def _edges_to_json(edges: list[Edge]) -> str:
+            return json.dumps(
+                [
+                    {
+                        "source": _node_to_dict(e.source),
+                        "target": _node_to_dict(e.target),
+                        "strength": e.strength,
+                        "is_cross_seq": e.is_cross_seq,
+                    }
+                    for e in edges
+                ]
+            )
+
+        edges_json = _edges_to_json(graph.edges)
+        edges_abs_json = _edges_to_json(graph.edges_abs) if graph.edges_abs is not None else None
         buf = io.BytesIO()
         logits_dict: dict[str, torch.Tensor] = {
             "ci_masked": graph.ci_masked_out_logits,
@@ -504,8 +519,8 @@ class PromptAttrDB:
                         adv_pgd_n_steps, adv_pgd_step_size,
                         ci_masked_label_prob, stoch_masked_label_prob, adv_pgd_label_prob,
                         included_nodes, included_nodes_hash,
-                        edges_data, output_logits, node_ci_vals, node_subcomp_acts)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        edges_data, edges_data_abs, output_logits, node_ci_vals, node_subcomp_acts)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         prompt_id,
                         graph.graph_type,
@@ -524,6 +539,7 @@ class PromptAttrDB:
                         included_nodes_json,
                         included_nodes_hash,
                         edges_json,
+                        edges_abs_json,
                         output_logits_blob,
                         node_ci_vals_json,
                         node_subcomp_acts_json,
@@ -568,15 +584,19 @@ class PromptAttrDB:
                 component_idx=int(d["component_idx"]),
             )
 
-        edges = [
-            Edge(
-                source=_node_from_dict(e["source"]),
-                target=_node_from_dict(e["target"]),
-                strength=float(e["strength"]),
-                is_cross_seq=bool(e["is_cross_seq"]),
-            )
-            for e in json.loads(row["edges_data"])
-        ]
+        def _parse_edges(data: str) -> list[Edge]:
+            return [
+                Edge(
+                    source=_node_from_dict(e["source"]),
+                    target=_node_from_dict(e["target"]),
+                    strength=float(e["strength"]),
+                    is_cross_seq=bool(e["is_cross_seq"]),
+                )
+                for e in json.loads(data)
+            ]
+
+        edges = _parse_edges(row["edges_data"])
+        edges_abs = _parse_edges(row["edges_data_abs"]) if row["edges_data_abs"] else None
         logits_data = torch.load(io.BytesIO(row["output_logits"]), weights_only=True)
         ci_masked_out_logits: torch.Tensor = logits_data["ci_masked"]
         target_out_logits: torch.Tensor = logits_data["target"]
@@ -621,6 +641,7 @@ class PromptAttrDB:
             id=row["id"],
             graph_type=row["graph_type"],
             edges=edges,
+            edges_abs=edges_abs,
             ci_masked_out_logits=ci_masked_out_logits,
             target_out_logits=target_out_logits,
             node_ci_vals=node_ci_vals,
@@ -640,7 +661,7 @@ class PromptAttrDB:
         """
         conn = self._get_conn()
         rows = conn.execute(
-            """SELECT id, graph_type, edges_data, output_logits, node_ci_vals,
+            """SELECT id, graph_type, edges_data, edges_data_abs, output_logits, node_ci_vals,
                       node_subcomp_acts, imp_min_coeff, steps, pnorm, beta, mask_type,
                       loss_config, adv_pgd_n_steps, adv_pgd_step_size, included_nodes,
                       ci_masked_label_prob, stoch_masked_label_prob, adv_pgd_label_prob
@@ -657,10 +678,11 @@ class PromptAttrDB:
         """Retrieve a single graph by its ID. Returns (graph, prompt_id) or None."""
         conn = self._get_conn()
         row = conn.execute(
-            """SELECT id, prompt_id, graph_type, edges_data, output_logits, node_ci_vals,
-                      node_subcomp_acts, imp_min_coeff, steps, pnorm, beta, mask_type,
-                      loss_config, adv_pgd_n_steps, adv_pgd_step_size, included_nodes,
-                      ci_masked_label_prob, stoch_masked_label_prob, adv_pgd_label_prob
+            """SELECT id, prompt_id, graph_type, edges_data, edges_data_abs, output_logits,
+                      node_ci_vals, node_subcomp_acts, imp_min_coeff, steps, pnorm, beta,
+                      mask_type, loss_config, adv_pgd_n_steps, adv_pgd_step_size,
+                      included_nodes, ci_masked_label_prob, stoch_masked_label_prob,
+                      adv_pgd_label_prob
                FROM graphs
                WHERE id = ?""",
             (graph_id,),

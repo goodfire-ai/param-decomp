@@ -129,12 +129,14 @@ class GraphData(BaseModel):
     graphType: GraphType
     tokens: list[str]
     edges: list[EdgeData]
+    edgesAbs: list[EdgeData] | None = None  # absolute-target variant, None for old graphs
     outputProbs: dict[str, OutputProbability]
     nodeCiVals: dict[
         str, float
     ]  # node key -> CI value (or output prob for output nodes or 1 for embed node)
     nodeSubcompActs: dict[str, float]  # node key -> subcomponent activation (v_i^T @ a)
     maxAbsAttr: float  # max absolute edge value
+    maxAbsAttrAbs: float | None = None  # max absolute edge value for abs-target variant
     maxAbsSubcompAct: float  # max absolute subcomponent activation for normalization
     l0_total: int  # total active components at current CI threshold
 
@@ -447,7 +449,10 @@ def search_tokens(
     if prompt is None:
         raise HTTPException(status_code=404, detail=f"prompt {prompt_id} not found")
     if not (0 <= position < len(prompt.token_ids)):
-        raise HTTPException(status_code=422, detail=f"position {position} out of range for prompt with {len(prompt.token_ids)} tokens")
+        raise HTTPException(
+            status_code=422,
+            detail=f"position {position} out of range for prompt with {len(prompt.token_ids)} tokens",
+        )
 
     device = next(loaded.model.parameters()).device
     tokens_tensor = torch.tensor([prompt.token_ids], device=device)
@@ -563,6 +568,7 @@ def compute_graph_stream(
             graph=StoredGraph(
                 graph_type=graph_type,
                 edges=result.edges,
+                edges_abs=result.edges_abs,
                 ci_masked_out_logits=ci_masked_out_logits,
                 target_out_logits=target_out_logits,
                 node_ci_vals=result.node_ci_vals,
@@ -596,6 +602,7 @@ def compute_graph_stream(
             num_tokens=len(token_ids),
             ci_threshold=ci_threshold,
             normalize=normalize,
+            raw_edges_abs=result.edges_abs,
         )
         logger.info(
             f"[perf] filter_graph: {time.perf_counter() - t0:.2f}s ({len(fg.edges)} edges after filter)"
@@ -607,10 +614,12 @@ def compute_graph_stream(
             graphType=graph_type,
             tokens=spans,
             edges=fg.edges,
+            edgesAbs=fg.edges_abs,
             outputProbs=fg.out_probs,
             nodeCiVals=fg.node_ci_vals,
             nodeSubcompActs=result.node_subcomp_acts,
             maxAbsAttr=fg.max_abs_attr,
+            maxAbsAttrAbs=fg.max_abs_attr_abs,
             maxAbsSubcompAct=fg.max_abs_subcomp_act,
             l0_total=fg.l0_total,
         )
@@ -701,7 +710,9 @@ def compute_graph_optimized_stream(
             loss_config = KLLossConfig(coeff=loss_coeff, position=loss_position)
         case "logit":
             if label_token is None:
-                raise HTTPException(status_code=400, detail="label_token is required for logit loss")
+                raise HTTPException(
+                    status_code=400, detail="label_token is required for logit loss"
+                )
             loss_config = LogitLossConfig(
                 coeff=loss_coeff, position=loss_position, label_token=label_token
             )
@@ -786,6 +797,7 @@ def compute_graph_optimized_stream(
             graph=StoredGraph(
                 graph_type="optimized",
                 edges=result.edges,
+                edges_abs=result.edges_abs,
                 ci_masked_out_logits=ci_masked_out_logits,
                 target_out_logits=target_out_logits,
                 node_ci_vals=result.node_ci_vals,
@@ -816,6 +828,7 @@ def compute_graph_optimized_stream(
             num_tokens=num_tokens,
             ci_threshold=ci_threshold,
             normalize=normalize,
+            raw_edges_abs=result.edges_abs,
         )
 
         # Build loss result based on config type
@@ -845,10 +858,12 @@ def compute_graph_optimized_stream(
             graphType="optimized",
             tokens=spans_sliced,
             edges=fg.edges,
+            edgesAbs=fg.edges_abs,
             outputProbs=fg.out_probs,
             nodeCiVals=fg.node_ci_vals,
             nodeSubcompActs=result.node_subcomp_acts,
             maxAbsAttr=fg.max_abs_attr,
+            maxAbsAttrAbs=fg.max_abs_attr_abs,
             maxAbsSubcompAct=fg.max_abs_subcomp_act,
             l0_total=fg.l0_total,
             optimization=OptimizationResult(
@@ -943,9 +958,7 @@ def compute_graph_optimized_batch_stream(
     spans_sliced = spans[:num_tokens]
 
     adv_pgd = (
-        AdvPGDConfig(
-            n_steps=body.adv_pgd_n_steps, step_size=body.adv_pgd_step_size, init="random"
-        )
+        AdvPGDConfig(n_steps=body.adv_pgd_n_steps, step_size=body.adv_pgd_step_size, init="random")
         if body.adv_pgd_n_steps is not None and body.adv_pgd_step_size is not None
         else None
     )
@@ -1012,6 +1025,7 @@ def compute_graph_optimized_batch_stream(
                 graph=StoredGraph(
                     graph_type="optimized",
                     edges=result.edges,
+                    edges_abs=result.edges_abs,
                     ci_masked_out_logits=ci_masked_out_logits,
                     target_out_logits=target_out_logits,
                     node_ci_vals=result.node_ci_vals,
@@ -1042,6 +1056,7 @@ def compute_graph_optimized_batch_stream(
                 num_tokens=num_tokens,
                 ci_threshold=body.ci_threshold,
                 normalize=body.normalize,
+                raw_edges_abs=result.edges_abs,
             )
 
             loss_result: CELossResult | KLLossResult | LogitLossResult
@@ -1065,10 +1080,12 @@ def compute_graph_optimized_batch_stream(
                     graphType="optimized",
                     tokens=spans_sliced,
                     edges=fg.edges,
+                    edgesAbs=fg.edges_abs,
                     outputProbs=fg.out_probs,
                     nodeCiVals=fg.node_ci_vals,
                     nodeSubcompActs=result.node_subcomp_acts,
                     maxAbsAttr=fg.max_abs_attr,
+                    maxAbsAttrAbs=fg.max_abs_attr_abs,
                     maxAbsSubcompAct=fg.max_abs_subcomp_act,
                     l0_total=fg.l0_total,
                     optimization=OptimizationResult(
@@ -1103,9 +1120,11 @@ class FilteredGraph:
     """Result of filtering a raw graph for display."""
 
     edges: list[EdgeData]
+    edges_abs: list[EdgeData] | None  # absolute-target variant, None for old graphs
     node_ci_vals: dict[str, float]  # with pseudo nodes
     out_probs: dict[str, OutputProbability]
     max_abs_attr: float
+    max_abs_attr_abs: float | None  # max abs for absolute-target edges
     max_abs_subcomp_act: float
     l0_total: int
 
@@ -1120,6 +1139,7 @@ def filter_graph_for_display(
     num_tokens: int,
     ci_threshold: float,
     normalize: NormalizeType,
+    raw_edges_abs: list[Edge] | None = None,
     edge_limit: int = GLOBAL_EDGE_LIMIT,
 ) -> FilteredGraph:
     """Filter and transform a raw attribution graph for display.
@@ -1143,25 +1163,33 @@ def filter_graph_for_display(
         seq_pos, token_id = key.split(":")
         node_ci_vals_with_pseudo[f"output:{seq_pos}:{token_id}"] = out_prob.prob
 
-    # Filter edges to only those connecting surviving nodes
+    # Filter, normalize, sort, and truncate an edge list to the surviving node set.
     node_keys = set(node_ci_vals_with_pseudo.keys())
-    edges = [e for e in raw_edges if str(e.source) in node_keys and str(e.target) in node_keys]
 
-    edges = _normalize_edges(edges=edges, normalize=normalize)
-    max_abs_attr = compute_max_abs_attr(edges=edges)
+    def _filter_edges(raw: list[Edge]) -> tuple[list[EdgeData], float]:
+        filtered = [e for e in raw if str(e.source) in node_keys and str(e.target) in node_keys]
+        filtered = _normalize_edges(edges=filtered, normalize=normalize)
+        max_abs = compute_max_abs_attr(edges=filtered)
+        filtered = sorted(filtered, key=lambda e: abs(e.strength), reverse=True)
+        if len(filtered) > edge_limit:
+            logger.warning(f"Edge limit {edge_limit} exceeded ({len(filtered)} edges), truncating")
+            filtered = filtered[:edge_limit]
+        return [_edge_to_edge_data(e) for e in filtered], max_abs
 
-    # Always sort by abs(strength) desc so frontend can just slice(0, topK) without re-sorting
-    edges = sorted(edges, key=lambda e: abs(e.strength), reverse=True)
+    edges_out, max_abs_attr = _filter_edges(raw_edges)
 
-    if len(edges) > edge_limit:
-        logger.warning(f"Edge limit {edge_limit} exceeded ({len(edges)} edges), truncating")
-        edges = edges[:edge_limit]
+    edges_abs_out: list[EdgeData] | None = None
+    max_abs_attr_abs: float | None = None
+    if raw_edges_abs is not None:
+        edges_abs_out, max_abs_attr_abs = _filter_edges(raw_edges_abs)
 
     return FilteredGraph(
-        edges=[_edge_to_edge_data(e) for e in edges],
+        edges=edges_out,
+        edges_abs=edges_abs_out,
         node_ci_vals=node_ci_vals_with_pseudo,
         out_probs=out_probs,
         max_abs_attr=max_abs_attr,
+        max_abs_attr_abs=max_abs_attr_abs,
         max_abs_subcomp_act=compute_max_abs_subcomp_act(node_subcomp_acts),
         l0_total=len(filtered_node_ci_vals),
     )
@@ -1194,6 +1222,7 @@ def stored_graph_to_response(
         num_tokens=num_tokens,
         ci_threshold=ci_threshold,
         normalize=normalize,
+        raw_edges_abs=graph.edges_abs,
     )
 
     if not is_optimized:
@@ -1202,10 +1231,12 @@ def stored_graph_to_response(
             graphType=graph.graph_type,
             tokens=spans,
             edges=fg.edges,
+            edgesAbs=fg.edges_abs,
             outputProbs=fg.out_probs,
             nodeCiVals=fg.node_ci_vals,
             nodeSubcompActs=graph.node_subcomp_acts,
             maxAbsAttr=fg.max_abs_attr,
+            maxAbsAttrAbs=fg.max_abs_attr_abs,
             maxAbsSubcompAct=fg.max_abs_subcomp_act,
             l0_total=fg.l0_total,
         )
@@ -1240,10 +1271,12 @@ def stored_graph_to_response(
         graphType=graph.graph_type,
         tokens=spans,
         edges=fg.edges,
+        edgesAbs=fg.edges_abs,
         outputProbs=fg.out_probs,
         nodeCiVals=fg.node_ci_vals,
         nodeSubcompActs=graph.node_subcomp_acts,
         maxAbsAttr=fg.max_abs_attr,
+        maxAbsAttrAbs=fg.max_abs_attr_abs,
         maxAbsSubcompAct=fg.max_abs_subcomp_act,
         l0_total=fg.l0_total,
         optimization=OptimizationResult(

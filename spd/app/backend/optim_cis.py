@@ -618,9 +618,7 @@ def optimize_ci_values_batched(
     assert N > 0
 
     config = configs[0]
-    imp_min_coeffs = torch.tensor(
-        [c.imp_min_config.coeff for c in configs], device=device
-    )
+    imp_min_coeffs = torch.tensor([c.imp_min_config.coeff for c in configs], device=device)
     for c in configs:
         assert c.imp_min_config.coeff is not None
 

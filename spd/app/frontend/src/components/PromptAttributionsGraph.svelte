@@ -9,6 +9,7 @@
         HoveredEdge,
         NodePosition,
     } from "../lib/promptAttributionsTypes";
+    import { getActiveEdges } from "../lib/promptAttributionsTypes";
     import { colors, getEdgeColor, getSubcompActColor, rgbToCss, getNextTokenProbBgColor } from "../lib/colors";
     import { displaySettings } from "../lib/displaySettings.svelte";
     import {
@@ -155,8 +156,14 @@
         return _getRowLabel(layer);
     }
 
+    // Select active edge variant based on display setting
+    const active = $derived(getActiveEdges(data, displaySettings.edgeVariant));
+    const activeEdges = $derived(active.edges);
+    const activeEdgesBySource = $derived(active.bySource);
+    const activeEdgesByTarget = $derived(active.byTarget);
+
     // Use pre-computed values from backend, derive max CI
-    const maxAbsAttr = $derived(data.maxAbsAttr || 1);
+    const maxAbsAttr = $derived(active.maxAbsAttr);
     const maxCi = $derived.by(() => {
         let max = 0;
         for (const ci of Object.values(data.nodeCiVals)) {
@@ -185,7 +192,7 @@
     });
 
     // Filter edges by topK (for rendering). Edges arrive pre-sorted by abs(val) desc from backend.
-    const filteredEdges = $derived(data.edges.slice(0, topK));
+    const filteredEdges = $derived(activeEdges.slice(0, topK));
 
     // Build layout
     const { nodePositions, layerYPositions, seqXStarts, width, height, clusterSpans } = $derived.by(() => {
@@ -420,8 +427,8 @@
                 }
             };
 
-            for (const edge of data.edgesBySource.get(nodeKey) ?? []) addEdge(edge, edge.tgt);
-            for (const edge of data.edgesByTarget.get(nodeKey) ?? []) addEdge(edge, edge.src);
+            for (const edge of activeEdgesBySource.get(nodeKey) ?? []) addEdge(edge, edge.tgt);
+            for (const edge of activeEdgesByTarget.get(nodeKey) ?? []) addEdge(edge, edge.src);
 
             return { mode: "spotlight", connected, hoveredKey: nodeKey };
         }
@@ -921,8 +928,8 @@
             nodeCiVals={data.nodeCiVals}
             nodeSubcompActs={data.nodeSubcompActs}
             tokens={data.tokens}
-            edgesBySource={data.edgesBySource}
-            edgesByTarget={data.edgesByTarget}
+            edgesBySource={activeEdgesBySource}
+            edgesByTarget={activeEdgesByTarget}
             onMouseEnter={() => (isHoveringTooltip = true)}
             onMouseLeave={() => {
                 isHoveringTooltip = false;

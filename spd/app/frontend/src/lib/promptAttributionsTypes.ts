@@ -51,10 +51,15 @@ export type GraphData = {
     edges: EdgeData[];
     edgesBySource: Map<string, EdgeData[]>; // nodeKey -> edges where this node is source
     edgesByTarget: Map<string, EdgeData[]>; // nodeKey -> edges where this node is target
+    // Absolute-target variant (∂|y|/∂x · x), null for old graphs
+    edgesAbs: EdgeData[] | null;
+    edgesAbsBySource: Map<string, EdgeData[]> | null;
+    edgesAbsByTarget: Map<string, EdgeData[]> | null;
     outputProbs: Record<string, OutputProbability>; // key is "seq:cIdx"
     nodeCiVals: Record<string, number>; // node key -> CI value (or output prob for output nodes or 1 for wte node)
     nodeSubcompActs: Record<string, number>; // node key -> subcomponent activation (v_i^T @ a)
     maxAbsAttr: number; // max absolute edge value
+    maxAbsAttrAbs: number | null; // max absolute edge value for abs-target variant
     maxAbsSubcompAct: number; // max absolute subcomponent activation for normalization
     l0_total: number; // total active components at current CI threshold
     optimization?: OptimizationResult;
@@ -196,6 +201,27 @@ export type TokenSearchResult = {
     string: string;
     prob: number;
 };
+
+/** Select active edge set based on variant preference. Falls back to signed if abs unavailable. */
+export function getActiveEdges(
+    data: GraphData,
+    variant: "signed" | "abs_target",
+): { edges: EdgeData[]; bySource: Map<string, EdgeData[]>; byTarget: Map<string, EdgeData[]>; maxAbsAttr: number } {
+    if (variant === "abs_target" && data.edgesAbs) {
+        return {
+            edges: data.edgesAbs,
+            bySource: data.edgesAbsBySource!,
+            byTarget: data.edgesAbsByTarget!,
+            maxAbsAttr: data.maxAbsAttrAbs || 1,
+        };
+    }
+    return {
+        edges: data.edges,
+        bySource: data.edgesBySource,
+        byTarget: data.edgesByTarget,
+        maxAbsAttr: data.maxAbsAttr || 1,
+    };
+}
 
 // Client-side computed types
 

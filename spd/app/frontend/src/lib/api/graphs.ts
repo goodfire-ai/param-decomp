@@ -2,9 +2,24 @@
  * API client for /api/graphs endpoints.
  */
 
-import type { GraphData, TokenizeResponse, TokenSearchResult, CISnapshot } from "../promptAttributionsTypes";
+import type { GraphData, EdgeData, TokenizeResponse, TokenSearchResult, CISnapshot } from "../promptAttributionsTypes";
 import { buildEdgeIndexes } from "../promptAttributionsTypes";
 import { apiUrl, ApiError, fetchJson } from "./index";
+
+/** Hydrate a raw API graph response into a full GraphData with edge indexes. */
+function hydrateGraph(raw: Record<string, unknown>): GraphData {
+    const g = raw as Omit<GraphData, "edgesBySource" | "edgesByTarget" | "edgesAbsBySource" | "edgesAbsByTarget">;
+    const { edgesBySource, edgesByTarget } = buildEdgeIndexes(g.edges);
+    const edgesAbs = (g.edgesAbs as EdgeData[] | null) ?? null;
+    let edgesAbsBySource: Map<string, EdgeData[]> | null = null;
+    let edgesAbsByTarget: Map<string, EdgeData[]> | null = null;
+    if (edgesAbs) {
+        const absIndexes = buildEdgeIndexes(edgesAbs);
+        edgesAbsBySource = absIndexes.edgesBySource;
+        edgesAbsByTarget = absIndexes.edgesByTarget;
+    }
+    return { ...g, edgesBySource, edgesByTarget, edgesAbs, edgesAbsBySource, edgesAbsByTarget } as GraphData;
+}
 
 export type NormalizeType = "none" | "target" | "layer";
 
@@ -61,8 +76,7 @@ async function parseGraphSSEStream(
             } else if (data.type === "error") {
                 throw new ApiError(data.error, 500);
             } else if (data.type === "complete") {
-                const { edgesBySource, edgesByTarget } = buildEdgeIndexes(data.data.edges);
-                result = { ...data.data, edgesBySource, edgesByTarget };
+                result = hydrateGraph(data.data);
                 await reader.cancel();
                 break;
             }
@@ -244,12 +258,7 @@ async function parseBatchGraphSSEStream(
             } else if (data.type === "error") {
                 throw new ApiError(data.error, 500);
             } else if (data.type === "complete") {
-                const graphs: GraphData[] = data.data.graphs.map(
-                    (g: Omit<GraphData, "edgesBySource" | "edgesByTarget">) => {
-                        const { edgesBySource, edgesByTarget } = buildEdgeIndexes(g.edges);
-                        return { ...g, edgesBySource, edgesByTarget };
-                    },
-                );
+                const graphs: GraphData[] = data.data.graphs.map((g: Record<string, unknown>) => hydrateGraph(g));
                 result = graphs;
                 await reader.cancel();
                 break;
@@ -270,11 +279,8 @@ export async function getGraphs(promptId: number, normalize: NormalizeType, ciTh
     const url = apiUrl(`/api/graphs/${promptId}`);
     url.searchParams.set("normalize", normalize);
     url.searchParams.set("ci_threshold", String(ciThreshold));
-    const graphs = await fetchJson<Omit<GraphData, "edgesBySource" | "edgesByTarget">[]>(url.toString());
-    return graphs.map((g) => {
-        const { edgesBySource, edgesByTarget } = buildEdgeIndexes(g.edges);
-        return { ...g, edgesBySource, edgesByTarget };
-    });
+    const graphs = await fetchJson<Record<string, unknown>[]>(url.toString());
+    return graphs.map((g) => hydrateGraph(g));
 }
 
 export async function tokenizeText(text: string): Promise<TokenizeResponse> {

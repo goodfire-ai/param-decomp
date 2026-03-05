@@ -13,6 +13,14 @@ export const NODE_COLOR_MODE_LABELS: Record<NodeColorMode, string> = {
     subcomp_act: "Subcomp Act",
 };
 
+// Edge variant for attribution graphs
+export type EdgeVariant = "signed" | "abs_target";
+
+export const EDGE_VARIANT_LABELS: Record<EdgeVariant, string> = {
+    signed: "Signed",
+    abs_target: "Abs Target",
+};
+
 // Example color mode for activation contexts viewer
 export type ExampleColorMode = "ci" | "component_act" | "both";
 
@@ -49,6 +57,7 @@ export const displaySettings = $state({
     centerOnPeak: false,
     showAutoInterpPromptButton: false,
     curvedEdges: true,
+    edgeVariant: "signed" as EdgeVariant,
 });
 
 export function anyCorrelationStatsEnabled() {

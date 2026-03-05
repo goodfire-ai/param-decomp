@@ -4,7 +4,8 @@
     import { colors, getEdgeColor, getNextTokenProbBgColor, rgbaToCss } from "../../lib/colors";
     import type { Loadable } from "../../lib/index";
     import type { NormalizeType } from "../../lib/api";
-    import { isInterventableNode, type NodePosition } from "../../lib/promptAttributionsTypes";
+    import { isInterventableNode, getActiveEdges, type NodePosition } from "../../lib/promptAttributionsTypes";
+    import { displaySettings } from "../../lib/displaySettings.svelte";
     import { RUN_KEY, type RunContext } from "../../lib/useRun.svelte";
     import {
         parseLayer,
@@ -250,10 +251,16 @@
     // All nodes from the graph (for rendering)
     const allNodes = $derived(new SvelteSet(Object.keys(graph.data.nodeCiVals)));
 
+    // Select active edge variant
+    const active = $derived(getActiveEdges(graph.data, displaySettings.edgeVariant));
+    const activeEdges = $derived(active.edges);
+    const activeEdgesBySource = $derived(active.bySource);
+    const activeEdgesByTarget = $derived(active.byTarget);
+
     // Filter edges for rendering (topK by magnitude, optionally hide edges not connected to selected nodes).
     // Edges arrive pre-sorted by abs(val) desc from backend, so filter preserves order and we just slice.
     const filteredEdges = $derived.by(() => {
-        let edges = graph.data.edges;
+        let edges = activeEdges;
         if (hideUnpinnedEdges && effectiveSelection.size > 0) {
             edges = edges.filter((e) => effectiveSelection.has(e.src) || effectiveSelection.has(e.tgt));
         }
@@ -426,7 +433,7 @@
     });
 
     // Derived values
-    const maxAbsAttr = $derived(graph.data.maxAbsAttr || 1);
+    const maxAbsAttr = $derived(active.maxAbsAttr);
     const selectedCount = $derived(effectiveSelection.size);
     const interventableCount = $derived(allInterventableNodes.size);
 
@@ -1132,8 +1139,8 @@
             nodeCiVals={graph.data.nodeCiVals}
             nodeSubcompActs={graph.data.nodeSubcompActs}
             {tokens}
-            edgesBySource={graph.data.edgesBySource}
-            edgesByTarget={graph.data.edgesByTarget}
+            edgesBySource={activeEdgesBySource}
+            edgesByTarget={activeEdgesByTarget}
             onMouseEnter={() => (isHoveringTooltip = true)}
             onMouseLeave={() => {
                 isHoveringTooltip = false;

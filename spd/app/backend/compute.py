@@ -129,6 +129,7 @@ class PromptAttributionResult:
     """Result of computing prompt attributions for a prompt."""
 
     edges: list[Edge]
+    edges_abs: list[Edge]  # absolute-target variant: ∂|y|/∂x · x
     ci_masked_out_probs: Float[Tensor, "seq vocab"]  # CI-masked (SPD model) softmax probabilities
     ci_masked_out_logits: Float[Tensor, "seq vocab"]  # CI-masked (SPD model) raw logits
     target_out_probs: Float[Tensor, "seq vocab"]  # Target model softmax probabilities
@@ -142,6 +143,7 @@ class OptimizedPromptAttributionResult:
     """Result of computing prompt attributions with optimized CI values."""
 
     edges: list[Edge]
+    edges_abs: list[Edge]  # absolute-target variant: ∂|y|/∂x · x
     ci_masked_out_probs: Float[Tensor, "seq vocab"]  # CI-masked (SPD model) softmax probabilities
     ci_masked_out_logits: Float[Tensor, "seq vocab"]  # CI-masked (SPD model) raw logits
     target_out_probs: Float[Tensor, "seq vocab"]  # Target model softmax probabilities
@@ -181,17 +183,22 @@ def _compute_edges_for_target(
     cache: dict[str, Tensor],
     loss_seq_pos: int,
     topology: TransformerTopology,
-) -> list[Edge]:
+) -> tuple[list[Edge], list[Edge]]:
     """Compute all edges flowing into a single target layer.
 
     For each alive (s_out, c_out) in the target layer, computes gradient-based
-    attribution strengths from all alive source components.
+    attribution strengths from all alive source components. Computes both signed
+    (∂y/∂x · x) and absolute-target (∂|y|/∂x · x) variants.
 
     Args:
         loss_seq_pos: Maximum sequence position to include (inclusive).
                       Only compute edges for target positions <= loss_seq_pos.
+
+    Returns:
+        (edges, edges_abs): Signed and absolute-target edge lists.
     """
     edges: list[Edge] = []
+    edges_abs: list[Edge] = []
     out_pre_detach: Float[Tensor, "1 s C"] = cache[f"{target}_pre_detach"]
     in_post_detaches: list[Float[Tensor, "1 s C"]] = [
         cache[f"{source}_post_detach"] for source in sources
@@ -203,11 +210,19 @@ def _compute_edges_for_target(
             continue
 
         for c_out in s_out_alive_c:
+            target_val = out_pre_detach[0, s_out, c_out]
             grads = torch.autograd.grad(
-                outputs=out_pre_detach[0, s_out, c_out],
+                outputs=target_val,
                 inputs=in_post_detaches,
                 retain_graph=True,
             )
+            # ∂|y|/∂x = sign(y) · ∂y/∂x — avoids a second backward pass.
+            # This works because target_val is a single scalar. In dataset_attributions/
+            # harvester.py, the target is sum(|y_i|) over batch+seq — there each y_i has a
+            # different sign, so you can't factor out one scalar. The issue isn't the chain
+            # rule (sign·grad is always valid per-element), it's that abs breaks the
+            # grad(sum)=sum(grad) trick that makes the batch reduction a single backward pass.
+            target_sign = target_val.sign()
             with torch.no_grad():
                 canonical_target = topology.target_to_canon(target)
                 for source, source_info, grad, in_post_detach in zip(
@@ -216,27 +231,35 @@ def _compute_edges_for_target(
                     canonical_source = topology.target_to_canon(source)
                     is_cross_seq = topology.is_cross_seq_pair(canonical_source, canonical_target)
                     weighted: Float[Tensor, "s C"] = (grad * in_post_detach)[0]
+                    weighted_abs: Float[Tensor, "s C"] = weighted * target_sign
                     if canonical_source == "embed":
                         weighted = weighted.sum(dim=1, keepdim=True)
+                        weighted_abs = weighted_abs.sum(dim=1, keepdim=True)
 
                     s_in_range = range(s_out + 1) if is_cross_seq else [s_out]
                     for s_in in s_in_range:
                         for c_in in source_info.alive_c_idxs:
                             if not source_info.alive_mask[s_in, c_in]:
                                 continue
+                            src = Node(layer=canonical_source, seq_pos=s_in, component_idx=c_in)
+                            tgt = Node(layer=canonical_target, seq_pos=s_out, component_idx=c_out)
                             edges.append(
                                 Edge(
-                                    source=Node(
-                                        layer=canonical_source, seq_pos=s_in, component_idx=c_in
-                                    ),
-                                    target=Node(
-                                        layer=canonical_target, seq_pos=s_out, component_idx=c_out
-                                    ),
+                                    source=src,
+                                    target=tgt,
                                     strength=weighted[s_in, c_in].item(),
                                     is_cross_seq=is_cross_seq,
                                 )
                             )
-    return edges
+                            edges_abs.append(
+                                Edge(
+                                    source=src,
+                                    target=tgt,
+                                    strength=weighted_abs[s_in, c_in].item(),
+                                    is_cross_seq=is_cross_seq,
+                                )
+                            )
+    return edges, edges_abs
 
 
 def compute_edges_from_ci(
@@ -343,12 +366,13 @@ def compute_edges_from_ci(
     # Compute edges for each target layer
     t0 = time.perf_counter()
     edges: list[Edge] = []
+    edges_abs: list[Edge] = []
     total_source_layers = sum(len(sources) for sources in sources_by_target.values())
     progress_count = 0
 
     for target, sources in sources_by_target.items():
         t_target = time.perf_counter()
-        target_edges = _compute_edges_for_target(
+        target_edges, target_edges_abs = _compute_edges_for_target(
             target=target,
             sources=sources,
             target_info=alive_info[target],
@@ -358,6 +382,7 @@ def compute_edges_from_ci(
             topology=topology,
         )
         edges.extend(target_edges)
+        edges_abs.extend(target_edges_abs)
         canonical_target = topology.target_to_canon(target)
         logger.info(
             f"[perf]   {canonical_target}: {time.perf_counter() - t_target:.2f}s, "
@@ -388,6 +413,7 @@ def compute_edges_from_ci(
 
     return PromptAttributionResult(
         edges=edges,
+        edges_abs=edges_abs,
         ci_masked_out_probs=ci_masked_out_probs[0, : loss_seq_pos + 1],
         ci_masked_out_logits=ci_masked_logits[0, : loss_seq_pos + 1],
         target_out_probs=target_out_probs[0, : loss_seq_pos + 1],
@@ -574,6 +600,7 @@ def compute_prompt_attributions_optimized(
 
     return OptimizedPromptAttributionResult(
         edges=result.edges,
+        edges_abs=result.edges_abs,
         ci_masked_out_probs=result.ci_masked_out_probs,
         ci_masked_out_logits=result.ci_masked_out_logits,
         target_out_probs=result.target_out_probs,
@@ -639,6 +666,7 @@ def compute_prompt_attributions_optimized_batched(
         results.append(
             OptimizedPromptAttributionResult(
                 edges=result.edges,
+                edges_abs=result.edges_abs,
                 ci_masked_out_probs=result.ci_masked_out_probs,
                 ci_masked_out_logits=result.ci_masked_out_logits,
                 target_out_probs=result.target_out_probs,

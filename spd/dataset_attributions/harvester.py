@@ -251,6 +251,10 @@ class AttributionHarvester:
         target_acts_raw = cache[f"{target_layer}_pre_detach"]
 
         target_acts = target_acts_raw.sum(dim=(0, 1))
+        # abs() before sum — needs its own backward pass because each element has a different
+        # sign, so sign·grad can't be factored out of the sum. (In the app backend's per-prompt
+        # computation the target is a single scalar, so sign·grad works as an analytical shortcut
+        # and avoids a second backward. See app/backend/compute.py::_compute_edges_for_target.)
         target_acts_abs = target_acts_raw.abs().sum(dim=(0, 1))
 
         source_layers = self.sources_by_target[target_layer]
