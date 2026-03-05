@@ -1,15 +1,12 @@
 wandb_path: "goodfire/spd/s-82ffb969"
 layer_idx: 3
 target_component_idx: 3379
-batch_size: 32
-n_steps: 10000
-lr: 0.0002
+batch_size: 8
+n_steps: 200000
+lr: 0.00005
 lr_decay_factor: 0.1
-mlp_width: 2
-act_fn: gelu
-sparsity_coeff: 0.001
-sparsity_p: 1.0
-l0_threshold: 0.0005
+hidden_width: 10
+interact_width: 8
 n_eval_batches: 10
 device: cuda
 test_prompt: 'Then the king broke silence and said: "Who did the murder?'

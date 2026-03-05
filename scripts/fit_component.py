@@ -1,12 +1,12 @@
 """Fit a target component's activations as a function of source component activations.
 
 Loads a trained SPD model, runs forward passes to collect component activations,
-and fits a linear + nonlinear MLP model predicting a specific mlp.down_proj component
+and fits a GeLU-gated linear model predicting a specific mlp.down_proj component
 from the preceding mlp.c_fc components in the same layer.
 
-The prediction is: linear_term + mlp_term + bias
-  linear_term = source_acts @ W_linear
-  mlp_term = act_fn(source_acts @ W_hidden + b_hidden) @ W_out
+The prediction is: sum over h of GeLU(source_acts * W_gelu[:, h] + b_gelu[:, h]) @ W_gelu_out[:, h]
+  Each source component i has hidden_width GeLU neurons (default 1), each with its own
+  weight W_gelu[i, h] and bias b_gelu[i, h]. The GeLU outputs are linearly combined.
 
 Usage:
     python scripts/fit_component.py --config scripts/fit_component_config.yaml
@@ -15,8 +15,9 @@ Usage:
 import argparse
 import math
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
+import einops
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
@@ -28,6 +29,7 @@ from spd.configs import LMTaskConfig
 from spd.data import DatasetConfig, create_data_loader, loop_dataloader
 from spd.log import logger
 from spd.models.component_model import ComponentModel, OutputWithCache, SPDRunInfo
+from spd.models.components import LinearComponents
 from spd.utils.general_utils import bf16_autocast, extract_batch_data
 
 
@@ -47,21 +49,39 @@ def collect_component_acts(
     source_path: str,
     target_path: str,
     target_component_idx: int,
-) -> tuple[Tensor, Tensor]:
+) -> tuple[Tensor, Tensor, Tensor]:
     """Run a forward pass and extract component activations.
 
+    Computes the target using only the component weights (no delta):
+        target = GeLU(source_acts @ U_c_fc + bias) @ V_down[:, target_component_idx]
+    Also returns the actual target from the full forward pass for comparison.
+
     Returns:
-        (source_acts, target_scalar): source_acts is (B, S, C_source),
-        target_scalar is (B, S).
+        (source_acts, target_scalar, actual_target): all float tensors.
+        source_acts is (B, S, C_source), target_scalar and actual_target are (B, S).
     """
     out: OutputWithCache = model(batch, cache_type="input")
     all_acts = model.get_all_component_acts(out.cache)
 
     source_acts = all_acts[source_path]  # (B, S, C_source)
-    target_acts = all_acts[target_path]  # (B, S, C_target)
-    target_scalar = target_acts[..., target_component_idx]  # (B, S)
 
-    return source_acts.float(), target_scalar.float()
+    # Actual target from full forward pass (includes delta)
+    target_acts = all_acts[target_path]  # (B, S, C_target)
+    actual_target = target_acts[..., target_component_idx]  # (B, S)
+
+    # Compute target from component weights only (excluding delta)
+    source_comp = model.components[source_path]
+    target_comp = model.components[target_path]
+    assert isinstance(source_comp, LinearComponents) and isinstance(target_comp, LinearComponents)
+    c_fc_out = einops.einsum(source_acts, source_comp.U, "... C, C d_out -> ... d_out")
+    if source_comp.bias is not None:
+        c_fc_out = c_fc_out + source_comp.bias
+    gelu_out = F.gelu(c_fc_out)
+    target_scalar = einops.einsum(
+        gelu_out, target_comp.V[:, target_component_idx], "... d, d -> ..."
+    )
+
+    return source_acts.float(), target_scalar.float(), actual_target.float()
 
 
 def compute_variance_explained(predictions: Tensor, targets: Tensor) -> float:
@@ -82,13 +102,10 @@ def main() -> None:
     target_component_idx: int = cfg["target_component_idx"]
     batch_size: int = cfg["batch_size"]
     n_steps: int = cfg["n_steps"]
-    lr: float = cfg.get("lr", 1e-3)
-    lr_decay_factor: float = cfg.get("lr_decay_factor", 1.0)
-    mlp_width: int = cfg.get("mlp_width", 0)
-    act_fn_name: Literal["relu", "gelu"] = cfg.get("act_fn", "relu")
-    sparsity_coeff: float = cfg.get("sparsity_coeff", 0.0)
-    sparsity_p: float = cfg.get("sparsity_p", 1.0)
-    l0_threshold: float = cfg.get("l0_threshold", 1e-4)
+    lr = float(cfg.get("lr", 1e-3))
+    lr_decay_factor = float(cfg.get("lr_decay_factor", 1.0))
+    hidden_width: int = cfg.get("hidden_width", 1)
+    interact_width: int = cfg.get("interact_width", 8)
     n_eval_batches: int = cfg.get("n_eval_batches", 10)
     device = cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
 
@@ -163,20 +180,34 @@ def main() -> None:
     eval_iter = loop_dataloader(eval_loader)
 
     # --- Set up fit parameters --- #
-    act_fn = F.gelu if act_fn_name == "gelu" else F.relu
-
-    # Linear term: source_acts @ W_linear
-    W_linear = nn.Parameter(torch.zeros(c_source, device=device))
+    # Kaiming normal: std = sqrt(2 / fan_in)
+    W_skip = nn.Parameter(torch.randn(c_source, device=device) * math.sqrt(2.0 / c_source))
     bias = nn.Parameter(torch.zeros(1, device=device))
-    params: list[nn.Parameter] = [W_linear, bias]
-
-    # MLP term: act_fn(source_acts @ W_hidden + b_hidden) @ W_out
-    has_mlp = mlp_width > 0
-    W_hidden = nn.Parameter(torch.randn(c_source, mlp_width, device=device) * 0.01)
-    b_hidden = nn.Parameter(torch.randn(mlp_width, device=device) * 0.01)
-    W_out = nn.Parameter(torch.randn(mlp_width, device=device) * 0.01)
-    if has_mlp:
-        params.extend([W_hidden, b_hidden, W_out])
+    params: list[nn.Parameter] = [bias, W_skip]
+    if hidden_width > 0:
+        # GeLU-gated linear: sum_h GeLU(source_acts * W_gelu[:, h] + b_gelu[:, h]) @ W_gelu_out[:, h]
+        # W_gelu is a stack of c_source matrices each with fan_in=1
+        W_gelu = nn.Parameter(torch.randn(c_source, hidden_width, device=device))
+        b_gelu = nn.Parameter(torch.randn(c_source, hidden_width, device=device))
+        # W_gelu_out is effectively one matrix with fan_in=c_source*hidden_width
+        W_gelu_out = nn.Parameter(
+            torch.randn(c_source, hidden_width, device=device)
+            * math.sqrt(2.0 / (c_source * hidden_width))
+        )
+        params.extend([W_gelu, b_gelu, W_gelu_out])
+    else:
+        W_gelu = W_gelu_out = b_gelu = None
+    if interact_width > 0:
+        W_interact = nn.Parameter(
+            torch.randn(c_source, interact_width, device=device) * math.sqrt(2.0 / c_source)
+        )
+        W_interact_out = nn.Parameter(
+            torch.randn(interact_width, device=device) * math.sqrt(2.0 / interact_width)
+        )
+        b_interact = nn.Parameter(torch.zeros(interact_width, device=device))
+        params.extend([W_interact, W_interact_out, b_interact])
+    else:
+        W_interact = W_interact_out = b_interact = None
 
     optimizer = torch.optim.AdamW(params, lr=lr)
 
@@ -192,58 +223,39 @@ def main() -> None:
         return lr_final + 0.5 * (lr - lr_final) * (1.0 + math.cos(math.pi * progress))
 
     def predict(source_acts: Tensor) -> Tensor:
-        pred = source_acts @ W_linear + bias
-        if has_mlp:
-            hidden = act_fn(source_acts @ W_hidden + b_hidden)  # (B, S, mlp_width)
-            pred = pred + hidden @ W_out  # (B, S)
-        return pred
-
-    use_sparsity = has_mlp and sparsity_coeff > 0.0
-
-    def calc_sparsity_loss() -> Tensor:
-        """Penalise effective magnitude of each MLP weight/bias scaled by its W_out."""
-        # W_hidden: (C_source, mlp_width), W_out: (mlp_width,)
-        w_penalty = (W_hidden.abs() * W_out.abs().unsqueeze(0)).pow(sparsity_p).sum()
-        b_penalty = (b_hidden.abs() * W_out.abs()).pow(sparsity_p).sum()
-        return w_penalty + b_penalty
-
-    def calc_mlp_l0() -> int:
-        """Count weights whose effective magnitude |W_hidden[i,j] * W_out[j]| exceeds threshold.
-
-        Also counts biases: |b_hidden[j] * W_out[j]|.
-        """
-        w_effective = W_hidden.detach().abs() * W_out.detach().abs().unsqueeze(0)
-        b_effective = b_hidden.detach().abs() * W_out.detach().abs()
-        return int(
-            (w_effective > l0_threshold).sum().item() + (b_effective > l0_threshold).sum().item()
-        )
+        out = einops.einsum(source_acts, W_skip, "B S C, C -> B S") + bias  # (B, S)
+        if W_gelu is not None:
+            assert W_gelu_out is not None and b_gelu is not None
+            expanded = source_acts.unsqueeze(-1) * W_gelu + b_gelu  # (B, S, C, H)
+            gelu_out = F.gelu(expanded)  # (B, S, C, H)
+            out = out + (gelu_out * W_gelu_out).sum(dim=(-2, -1))
+        if W_interact is not None:
+            assert W_interact_out is not None and b_interact is not None
+            interact_out = F.gelu(
+                einops.einsum(source_acts, W_interact, "B S C, C I -> B S I") + b_interact
+            )  # (B, S, I)
+            out = out + einops.einsum(interact_out, W_interact_out, "B S I, I -> B S")
+        return out
 
     # --- Training loop --- #
-    mlp_str = f"linear + {act_fn_name.upper()} MLP (width={mlp_width})" if has_mlp else "linear"
     lr_str = f", cosine LR {lr} -> {lr_final}" if use_lr_schedule else ""
-    sparse_str = f", sparsity={sparsity_coeff} p={sparsity_p}" if use_sparsity else ""
-    mode_str = mlp_str + lr_str + sparse_str
+    mode_str = f"GeLU-gated linear (H={hidden_width})" + lr_str
     logger.info(f"Training {mode_str} fit for {n_steps} steps...")
 
     # Log metrics at initialisation (before any training)
     with torch.no_grad():
         init_batch = extract_batch_data(next(train_iter)).to(device, non_blocking=True)
         with bf16_autocast(enabled=spd_config.autocast_bf16):
-            init_source, init_target = collect_component_acts(
+            init_source, init_target, _ = collect_component_acts(
                 model, init_batch, source_path, target_path, target_component_idx
             )
         init_pred = predict(init_source)
         init_mse = ((init_pred - init_target) ** 2).mean().item()
         init_r2 = compute_variance_explained(init_pred, init_target)
-        init_parts = [f"Init: MSE={init_mse:.6f}", f"R²={init_r2:.4f}"]
-        if use_sparsity:
-            init_parts.append(f"sparse={calc_sparsity_loss().item():.6f}")
-            init_parts.append(f"L0={calc_mlp_l0()}")
-        logger.info(" ".join(init_parts))
+        logger.info(f"Init: MSE={init_mse:.6f} R²={init_r2:.4f}")
 
     last_train_mse = 0.0
     last_train_var_explained = 0.0
-    last_train_sparsity = 0.0
 
     # Accumulate SS_res and SS_tot over a window for smoothed R²
     window_ss_res = 0.0
@@ -260,20 +272,15 @@ def main() -> None:
         batch = extract_batch_data(next(train_iter)).to(device, non_blocking=True)
 
         with bf16_autocast(enabled=spd_config.autocast_bf16):
-            source_acts, target_scalar = collect_component_acts(
+            source_acts, target_scalar, _ = collect_component_acts(
                 model, batch, source_path, target_path, target_component_idx
             )
 
         prediction = predict(source_acts)
         mse_loss = ((prediction - target_scalar) ** 2).mean()
 
-        loss = mse_loss
-        if use_sparsity:
-            s_loss = calc_sparsity_loss()
-            loss = loss + sparsity_coeff * s_loss
-
         optimizer.zero_grad()
-        loss.backward()
+        mse_loss.backward()
         optimizer.step()
 
         with torch.no_grad():
@@ -286,21 +293,10 @@ def main() -> None:
         if step % 1000 == 0 or step == n_steps - 1:
             window_r2 = 1.0 - window_ss_res / window_ss_tot if window_ss_tot > 0 else 0.0
             window_mse = window_mse_sum / window_count
-            log_parts = [
-                f"Step {step:>6d}/{n_steps}:",
-                f"MSE={window_mse:.6f}",
-                f"R²={window_r2:.4f}",
-            ]
-            if use_sparsity:
-                log_parts.append(f"sparse={s_loss.item():.6f}")  # pyright: ignore[reportPossiblyUnboundVariable]
-                log_parts.append(f"L0={calc_mlp_l0()}")
-            logger.info(" ".join(log_parts))
+            logger.info(f"Step {step:>6d}/{n_steps}: MSE={window_mse:.6f} R²={window_r2:.4f}")
 
-            # Save last window stats before resetting
             last_train_mse = window_mse
             last_train_var_explained = window_r2
-            if use_sparsity:
-                last_train_sparsity = s_loss.item()  # pyright: ignore[reportPossiblyUnboundVariable]
 
             # Reset window
             window_ss_res = 0.0
@@ -313,6 +309,10 @@ def main() -> None:
     eval_mse_sum = 0.0
     eval_ss_res = 0.0
     eval_ss_tot = 0.0
+    # Metrics vs actual target (includes delta)
+    eval_actual_mse_sum = 0.0
+    eval_actual_ss_res = 0.0
+    eval_actual_ss_tot = 0.0
     eval_count = 0
 
     with torch.no_grad():
@@ -320,7 +320,7 @@ def main() -> None:
             batch = extract_batch_data(next(eval_iter)).to(device, non_blocking=True)
 
             with bf16_autocast(enabled=spd_config.autocast_bf16):
-                source_acts, target_scalar = collect_component_acts(
+                source_acts, target_scalar, actual_target = collect_component_acts(
                     model, batch, source_path, target_path, target_component_idx
                 )
 
@@ -330,10 +330,20 @@ def main() -> None:
 
             eval_ss_res += ((target_scalar - prediction) ** 2).sum().item()
             eval_ss_tot += ((target_scalar - target_scalar.mean()) ** 2).sum().item()
+
+            # Vs actual target
+            eval_actual_mse_sum += ((prediction - actual_target) ** 2).mean().item()
+            eval_actual_ss_res += ((actual_target - prediction) ** 2).sum().item()
+            eval_actual_ss_tot += ((actual_target - actual_target.mean()) ** 2).sum().item()
+
             eval_count += 1
 
     eval_mse = eval_mse_sum / eval_count
     eval_var_explained = 1.0 - eval_ss_res / eval_ss_tot if eval_ss_tot > 0 else 0.0
+    eval_actual_mse = eval_actual_mse_sum / eval_count
+    eval_actual_var_explained = (
+        1.0 - eval_actual_ss_res / eval_actual_ss_tot if eval_actual_ss_tot > 0 else 0.0
+    )
 
     # --- Results --- #
     print("\n" + "=" * 60)
@@ -345,35 +355,10 @@ def main() -> None:
     print()
     print(f"Last training step:  MSE={last_train_mse:.6f}, R²={last_train_var_explained:.4f}")
     print(f"Evaluation ({eval_count} batches): MSE={eval_mse:.6f}, R²={eval_var_explained:.4f}")
-    if use_sparsity:
-        print(f"\nSparsity loss (train): {last_train_sparsity:.6f}")
-        print(f"Sparsity loss (eval):  {calc_sparsity_loss().item():.6f}")
-        total_mlp_params = c_source * mlp_width + mlp_width  # W_hidden + b_hidden
-        print(f"MLP weight L0: {calc_mlp_l0()} / {total_mlp_params} (threshold={l0_threshold})")
+    print(
+        f"Eval vs actual target:       MSE={eval_actual_mse:.6f}, R²={eval_actual_var_explained:.4f}"
+    )
     print(f"\nBias: {bias.item():.6f}")
-
-    # Top 50 linear weights by magnitude
-    magnitudes = W_linear.detach().abs()
-    top_indices = magnitudes.argsort(descending=True)[:50]
-
-    print(f"\nTop 50 linear weights (of {c_source} total):")
-    print(f"{'Rank':>4}  {'Component':>10}  {'Weight':>12}  {'|Weight|':>12}")
-    print("-" * 44)
-    for rank, idx in enumerate(top_indices):
-        w = W_linear[idx].item()
-        print(f"{rank + 1:>4}  {idx.item():>10}  {w:>12.6f}  {abs(w):>12.6f}")
-
-    if has_mlp:
-        print(f"\n{act_fn_name.upper()} MLP hidden biases (width={mlp_width}):")
-        for i in range(mlp_width):
-            print(f"  neuron {i}: bias={b_hidden[i].item():.6f}, W_out={W_out[i].item():.6f}")
-
-        print(f"\nTop 10 input weights per {act_fn_name.upper()} neuron:")
-        for i in range(mlp_width):
-            col = W_hidden[:, i].detach()
-            top_k = col.abs().argsort(descending=True)[:10]
-            entries = [f"{idx.item()}:{col[idx].item():+.4f}" for idx in top_k]
-            print(f"  neuron {i} (out={W_out[i].item():+.6f}): {', '.join(entries)}")
 
     # --- Test prompt visualization --- #
     test_prompt: str | None = cfg.get("test_prompt")
@@ -391,31 +376,39 @@ def main() -> None:
         seq_len = token_ids.shape[1]
 
         with torch.no_grad(), bf16_autocast(enabled=spd_config.autocast_bf16):
-            source_acts, target_scalar = collect_component_acts(
+            source_acts, target_scalar, actual_scalar = collect_component_acts(
                 model, token_ids, source_path, target_path, target_component_idx
             )
         with torch.no_grad():
             pred_scalar = predict(source_acts)
 
         target_vals = target_scalar[0].cpu().tolist()
+        actual_vals = actual_scalar[0].cpu().tolist()
         pred_vals = pred_scalar[0].cpu().tolist()
 
         print("\n" + "=" * 80)
         print("TEST PROMPT VISUALIZATION")
         print("=" * 80)
         print(f"Prompt: {test_prompt!r}")
-        print(f"{'Pos':>4}  {'Token':<20}  {'Target':>12}  {'Predicted':>12}  {'Error':>12}")
-        print("-" * 66)
+        print(
+            f"{'Pos':>4}  {'Token':<20}  {'Target':>12}  {'Actual':>12}  {'Predicted':>12}  {'Error':>12}"
+        )
+        print("-" * 80)
         for pos in range(seq_len):
             target_v = target_vals[pos]
+            actual_v = actual_vals[pos]
             pred_v = pred_vals[pos]
             err = pred_v - target_v
-            print(f"{pos:>4}  {tokens[pos]:<20}  {target_v:>12.6f}  {pred_v:>12.6f}  {err:>+12.6f}")
+            print(
+                f"{pos:>4}  {tokens[pos]:<20}  {target_v:>12.6f}  {actual_v:>12.6f}"
+                f"  {pred_v:>12.6f}  {err:>+12.6f}"
+            )
 
         # Plot
         fig, ax = plt.subplots(figsize=(max(12, seq_len * 0.5), 5))
         positions = list(range(seq_len))
-        ax.plot(positions, target_vals, "o-", label="Target", markersize=5)
+        ax.plot(positions, target_vals, "o-", label="Target (no delta)", markersize=5)
+        ax.plot(positions, actual_vals, "^:", label="Actual (with delta)", markersize=5)
         ax.plot(positions, pred_vals, "s--", label="Predicted", markersize=5)
         ax.set_xticks(positions)
         ax.set_xticklabels(tokens, rotation=60, ha="right", fontsize=8)
