@@ -56,16 +56,14 @@ def _component_header(
 
     context_notes = " ".join(filter(None, [position_note, dens_note]))
 
-    return (
-        Md()
-        .h2("Context")
-        .bullet(
-            f"Component: {layer_desc} (component {component.component_idx}),"
-            f" {model_metadata.n_blocks}-block model"
-        )
-        .bullet(f"Firing rate: {component.firing_density * 100:.2f}% ({rate_str})")
-        .text(context_notes)
-    )
+    md = Md().h2("Context").bullets([
+        f"Component: {layer_desc} (component {component.component_idx}),"
+        f" {model_metadata.n_blocks}-block model",
+        f"Firing rate: {component.firing_density * 100:.2f}% ({rate_str})",
+    ])
+    if context_notes:
+        md.p(context_notes)
+    return md
 
 
 def _token_pmi_pairs(
@@ -97,9 +95,7 @@ def format_output_prompt(
             "You are analyzing a component in a neural network to understand its"
             " OUTPUT FUNCTION -- what it does when it fires."
         )
-        .blank()
         .extend(_component_header(component, model_metadata))
-        .blank()
         .h2("Output tokens (what the model produces when this component fires)")
         .text(output_section)
         .h2("Activation examples -- what the model produces")
@@ -115,9 +111,7 @@ def format_output_prompt(
             f"Give a {label_max_words}-word-or-fewer label describing this component's"
             " OUTPUT FUNCTION -- what it does when it fires."
         )
-        .blank()
         .p(UNCLEAR_NOTE)
-        .blank()
         .p(JSON_INSTRUCTION)
         .build()
     )
@@ -143,9 +137,7 @@ def format_input_prompt(
             "You are analyzing a component in a neural network to understand its"
             " INPUT FUNCTION -- what triggers it to fire."
         )
-        .blank()
         .extend(_component_header(component, model_metadata))
-        .blank()
         .h2("Input tokens (what causes this component to fire)")
         .text(input_section)
         .h2("Activation examples -- where the component fires")
@@ -158,9 +150,7 @@ def format_input_prompt(
             f"Give a {label_max_words}-word-or-fewer label describing this component's"
             " INPUT FUNCTION -- what conditions trigger it to fire."
         )
-        .blank()
         .p(UNCLEAR_NOTE)
-        .blank()
         .p(JSON_INSTRUCTION)
         .build()
     )
@@ -181,21 +171,16 @@ def format_unification_prompt(
     return (
         Md()
         .p("A neural network component has been analyzed from two perspectives.")
-        .blank()
         .extend(_component_header(component, model_metadata))
-        .blank()
         .h2("Activation examples -- where the component fires")
         .text(fires_on)
         .h2("Activation examples -- what the model produces")
         .text(says)
         .h2("Two-perspective analysis")
-        .blank()
         .p(f'OUTPUT FUNCTION: "{output_label.label}" (confidence: {output_label.confidence})')
         .p(f"  Reasoning: {output_label.reasoning}")
-        .blank()
         .p(f'INPUT FUNCTION: "{input_label.label}" (confidence: {input_label.confidence})')
         .p(f"  Reasoning: {input_label.reasoning}")
-        .blank()
         .h2("Task")
         .p(
             f"Synthesize these into a single unified label (max {label_max_words} words)"
@@ -203,7 +188,6 @@ def format_unification_prompt(
             " same concept, unify them. If they describe genuinely different aspects"
             " (e.g. fires on X, produces Y), combine both."
         )
-        .blank()
         .p(JSON_INSTRUCTION)
         .build()
     )
