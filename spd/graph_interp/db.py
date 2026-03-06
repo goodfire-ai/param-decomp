@@ -1,9 +1,10 @@
-"""SQLite database for graph interpretation data."""
+"""SQLite database for graph interpretation data. NFS-hosted, single writer then read-only."""
 
 import sqlite3
 from pathlib import Path
 
 from spd.graph_interp.schemas import LabelResult, PromptEdge
+from spd.utils.sqlite import open_nfs_sqlite
 
 DONE_MARKER = ".done"
 
@@ -53,17 +54,13 @@ CREATE TABLE IF NOT EXISTS config (
 
 
 class GraphInterpDB:
+    """NFS-hosted. Uses open_nfs_sqlite (no WAL). Single writer, then read-only."""
+
     def __init__(self, db_path: Path, readonly: bool = False) -> None:
-        if readonly:
-            self._conn = sqlite3.connect(
-                f"file:{db_path}?immutable=1", uri=True, check_same_thread=False
-            )
-        else:
-            self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
-            self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn = open_nfs_sqlite(db_path, readonly)
+        if not readonly:
             self._conn.executescript(_SCHEMA)
         self._db_path = db_path
-        self._conn.row_factory = sqlite3.Row
 
     def mark_done(self) -> None:
         (self._db_path.parent / DONE_MARKER).touch()

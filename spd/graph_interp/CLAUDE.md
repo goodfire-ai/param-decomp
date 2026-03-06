@@ -47,7 +47,7 @@ SPD_OUT_DIR/graph_interp/<decomposition_id>/
 |------|---------|
 | `config.py` | `GraphInterpConfig`, `GraphInterpSlurmConfig` |
 | `schemas.py` | `LabelResult`, `PromptEdge`, path helpers |
-| `db.py` | `GraphInterpDB` — SQLite with WAL mode |
+| `db.py` | `GraphInterpDB` — SQLite via `open_nfs_sqlite` (NFS-safe, no WAL) |
 | `ordering.py` | Topological sort via `CanonicalWeight` from topology module |
 | `graph_context.py` | `RelatedComponent`, gather attributed + co-firing components |
 | `prompts.py` | Three prompt formatters (output, input, unification) |
