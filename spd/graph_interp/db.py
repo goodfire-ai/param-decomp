@@ -45,10 +45,6 @@ CREATE TABLE IF NOT EXISTS prompt_edges (
     PRIMARY KEY (component_key, related_key, pass)
 );
 
-CREATE TABLE IF NOT EXISTS config (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
 """
 
 
@@ -92,10 +88,6 @@ class GraphInterpDB:
         rows = self._conn.execute("SELECT * FROM output_labels").fetchall()
         return {row["component_key"]: _row_to_label_result(row) for row in rows}
 
-    def get_completed_output_keys(self) -> set[str]:
-        rows = self._conn.execute("SELECT component_key FROM output_labels").fetchall()
-        return {row["component_key"] for row in rows}
-
     # -- Input labels ----------------------------------------------------------
 
     def save_input_label(self, result: LabelResult) -> None:
@@ -123,10 +115,6 @@ class GraphInterpDB:
     def get_all_input_labels(self) -> dict[str, LabelResult]:
         rows = self._conn.execute("SELECT * FROM input_labels").fetchall()
         return {row["component_key"]: _row_to_label_result(row) for row in rows}
-
-    def get_completed_input_keys(self) -> set[str]:
-        rows = self._conn.execute("SELECT component_key FROM input_labels").fetchall()
-        return {row["component_key"] for row in rows}
 
     # -- Unified labels --------------------------------------------------------
 
@@ -191,10 +179,6 @@ class GraphInterpDB:
         return [_row_to_prompt_edge(row) for row in rows]
 
     # -- Config ----------------------------------------------------------------
-
-    def save_config(self, key: str, value: str) -> None:
-        self._conn.execute("INSERT OR REPLACE INTO config VALUES (?, ?)", (key, value))
-        self._conn.commit()
 
     # -- Stats -----------------------------------------------------------------
 

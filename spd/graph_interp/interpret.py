@@ -250,21 +250,16 @@ def run_graph_interp(
         if completed:
             logger.info(f"Unification: resuming, {len(completed)} already completed")
 
-        n_skipped = 0
+        unifiable_keys = [k for k in keys if k in output_labels and k in input_labels]
+        n_skipped = len(keys) - len(unifiable_keys)
 
         def jobs() -> Iterable[LLMJob]:
-            nonlocal n_skipped
-            for key in keys:
-                out = output_labels.get(key)
-                inp = input_labels.get(key)
-                if out is None or inp is None:
-                    n_skipped += 1
-                    continue
+            for key in unifiable_keys:
                 component = harvest.get_component(key)
                 assert component is not None, f"Component {key} not found in harvest DB"
                 prompt = format_unification_prompt(
-                    output_label=out,
-                    input_label=inp,
+                    output_label=output_labels[key],
+                    input_label=input_labels[key],
                     component=component,
                     model_metadata=model_metadata,
                     app_tok=app_tok,
@@ -273,11 +268,12 @@ def run_graph_interp(
                 )
                 yield LLMJob(prompt=prompt, schema=LABEL_SCHEMA, key=key)
 
-        logger.info(f"Unifying {len(keys)} components")
-        new_labels = await _collect_labels(llm_map, jobs(), len(keys), db.save_unified_label)
-
         if n_skipped:
-            logger.warning(f"Skipped {n_skipped} components missing output or input labels")
+            logger.warning(f"Skipping {n_skipped} components missing output or input labels")
+        logger.info(f"Unifying {len(unifiable_keys)} components")
+        new_labels = await _collect_labels(
+            llm_map, jobs(), len(unifiable_keys), db.save_unified_label
+        )
         logger.info(f"Unification: completed {len(new_labels)}/{len(keys)}")
 
     # -- Run -------------------------------------------------------------------

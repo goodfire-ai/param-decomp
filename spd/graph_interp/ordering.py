@@ -79,10 +79,3 @@ def group_and_sort_by_layer(
         keys = sorted(by_layer[layer], key=lambda k: parse_component_key(k)[1])
         result.append((layer, keys))
     return result
-
-
-def is_later_layer(earlier: str, later: str, layer_descriptions: dict[str, str]) -> bool:
-    """Check if `later` is topologically after `earlier`."""
-    return canonical_sort_key(layer_descriptions[earlier]) < canonical_sort_key(
-        layer_descriptions[later]
-    )
