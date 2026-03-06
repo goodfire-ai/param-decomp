@@ -48,26 +48,22 @@ class AttributionHarvester:
     def __init__(
         self,
         model: ComponentModel,
+        topology: TransformerTopology,
         sources_by_target: dict[str, list[str]],
-        vocab_size: int,
         component_alive: dict[str, Bool[Tensor, " n_components"]],
         sampling: SamplingType,
-        embed_path: str,
-        embedding_module: nn.Embedding,
-        unembed_path: str,
-        unembed_module: nn.Linear,
-        device: torch.device,
     ):
         self.model = model
+        self.topology = topology
         self.sources_by_target = sources_by_target
         self.component_alive = component_alive
         self.sampling = sampling
-        self.embed_path = embed_path
-        self.embedding_module = embedding_module
-        self.unembed_path = unembed_path
-        self.unembed_module = unembed_module
-        self.output_d_model = unembed_module.in_features
-        self.device = device
+        self.embed_path = topology.path_schema.embedding_path
+        self.embedding_module = topology.embedding_module
+        self.unembed_path = topology.path_schema.unembed_path
+        self.unembed_module = topology.unembed_module
+        self.output_d_model = self.unembed_module.in_features
+        self.device = next(model.parameters()).device
 
         # attribution accumulators
         self._straight_through_attr_acc = torch.zeros(
@@ -294,13 +290,11 @@ class AttributionHarvester:
                 regular_acc=self._regular_layers_acc_abs,
             )
 
-    def finalize(
-        self, topology: TransformerTopology, ci_threshold: float
-    ) -> DatasetAttributionStorage:
+    def finalize(self, ci_threshold: float) -> DatasetAttributionStorage:
         """Package raw accumulators into storage. No normalization — that happens at query time."""
         assert self.n_tokens > 0, "No batches processed"
 
-        to_canon = topology.target_to_canon
+        to_canon = self.topology.target_to_canon
 
         def _canon_nested(acc: dict[str, dict[str, Tensor]]) -> dict[str, dict[str, Tensor]]:
             return {
@@ -317,7 +311,7 @@ class AttributionHarvester:
             embed_attr_abs=_canon(self._embed_tgts_acc_abs),
             unembed_attr=_canon(self._unembed_srcs_acc),
             embed_unembed_attr=self._straight_through_attr_acc,
-            w_unembed=topology.get_unembed_weight(),
+            w_unembed=self.topology.get_unembed_weight(),
             ci_sum=_canon(self._ci_sum_accumulator),
             component_act_sq_sum=_canon(self._square_component_act_accumulator),
             logit_sq_sum=self._logit_sq_sum,

@@ -73,7 +73,6 @@ def harvest_attributions(
     rank: int | None = None,
     world_size: int | None = None,
 ) -> None:
-
     assert (rank is None) == (world_size is None), "rank and world_size must both be set or unset"
 
     device = torch.device(get_device())
@@ -93,8 +92,6 @@ def harvest_attributions(
     topology = TransformerTopology(model.target_model)
     embed_path = topology.path_schema.embedding_path
     unembed_path = topology.path_schema.unembed_path
-    vocab_size = topology.embedding_module.num_embeddings
-    logger.info(f"Vocab size: {vocab_size}")
     sources_by_target_raw = get_sources_by_target(model, topology, str(device), spd_config.sampling)
 
     # Filter to valid source/target pairs:
@@ -116,18 +113,12 @@ def harvest_attributions(
     # Build alive masks
     component_alive = _build_alive_masks(model, run_id, config.harvest_subrun_id)
 
-    # Create harvester (all concrete paths internally)
     harvester = AttributionHarvester(
         model=model,
+        topology=topology,
         sources_by_target=sources_by_target,
-        vocab_size=vocab_size,
         component_alive=component_alive,
         sampling=spd_config.sampling,
-        embed_path=embed_path,
-        embedding_module=topology.embedding_module,
-        unembed_path=unembed_path,
-        unembed_module=topology.unembed_module,
-        device=device,
     )
 
     # Process batches
@@ -154,7 +145,7 @@ def harvest_attributions(
 
     logger.info(f"Processing complete. Tokens: {harvester.n_tokens:,}")
 
-    storage = harvester.finalize(topology, config.ci_threshold)
+    storage = harvester.finalize(config.ci_threshold)
 
     if rank is not None:
         worker_dir = output_dir / "worker_states"
