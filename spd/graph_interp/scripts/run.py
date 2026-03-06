@@ -5,7 +5,6 @@ Called by SLURM or directly:
 """
 
 import os
-from datetime import datetime
 from typing import Any
 
 from dotenv import load_dotenv
@@ -23,8 +22,8 @@ from spd.log import logger
 def main(
     decomposition_id: str,
     config_json: dict[str, Any],
+    subrun_id: str,
     harvest_subrun_id: str | None = None,
-    subrun_id: str | None = None,
 ) -> None:
     assert isinstance(config_json, dict), f"Expected dict from fire, got {type(config_json)}"
     config = GraphInterpConfig.model_validate(config_json)
@@ -32,9 +31,6 @@ def main(
     load_dotenv()
     openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
     assert openrouter_api_key, "OPENROUTER_API_KEY not set"
-
-    if subrun_id is None:
-        subrun_id = "ti-" + datetime.now().strftime("%Y%m%d_%H%M%S")
     subrun_dir = get_graph_interp_subrun_dir(decomposition_id, subrun_id)
     subrun_dir.mkdir(parents=True, exist_ok=True)
     config.to_file(subrun_dir / "config.yaml")
@@ -85,6 +81,7 @@ def main(
 def get_command(
     decomposition_id: str,
     config: GraphInterpConfig,
+    subrun_id: str,
     harvest_subrun_id: str | None = None,
 ) -> str:
     config_json = config.model_dump_json(exclude_none=True)
@@ -92,6 +89,7 @@ def get_command(
         "python -m spd.graph_interp.scripts.run "
         f"--decomposition_id {decomposition_id} "
         f"--config_json '{config_json}' "
+        f"--subrun_id {subrun_id} "
     )
     if harvest_subrun_id is not None:
         cmd += f"--harvest_subrun_id {harvest_subrun_id} "

@@ -5,6 +5,7 @@ Depends on both harvest merge and attribution merge jobs.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from spd.graph_interp.config import GraphInterpSlurmConfig
 from spd.graph_interp.scripts import run
@@ -33,9 +34,11 @@ def submit_graph_interp(
         snapshot_branch: Git snapshot branch to use.
         harvest_subrun_id: Specific harvest subrun to use.
     """
+    subrun_id = "ti-" + datetime.now().strftime("%Y%m%d_%H%M%S")
     cmd = run.get_command(
         decomposition_id=decomposition_id,
         config=config.config,
+        subrun_id=subrun_id,
         harvest_subrun_id=harvest_subrun_id,
     )
 
