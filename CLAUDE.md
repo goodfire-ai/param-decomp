@@ -510,6 +510,13 @@ value = config.key
 ```
 
 
+### Fire CLI Gotchas
+
+This codebase uses `python-fire` for CLI entry points in SLURM worker scripts. Two known gotchas:
+
+- **JSON args become dicts.** Fire auto-parses JSON strings into Python dicts. So `--config_json '{"n_batches": 500}'` arrives as `dict`, not `str`. Use `model_validate()` (not `model_validate_json()`), and type the param as `dict[str, Any]`.
+- **Numeric-looking strings become ints/floats.** Fire parses `1234_1` (SLURM array job ID format) as an integer. This is partly why we use string-prefixed IDs everywhere (`s-`, `h-`, `da-`, `a-`) — the prefix prevents Fire from coercing them.
+
 ### Other Important Software Development Practices
 - Don't add legacy fallbacks or migration code - just change it and let old data be manually migrated if needed.
 - Delete unused code. 
