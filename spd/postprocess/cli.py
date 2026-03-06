@@ -2,6 +2,9 @@
 
 Thin wrapper for fast --help. Heavy imports deferred to postprocess.py.
 
+Uses argparse instead of Fire because SLURM job IDs like "311644_1" get
+parsed by Fire as integers (underscore is a numeric separator in Python).
+
 Usage:
     spd-postprocess config.yaml
     spd-postprocess config.yaml --dependency 311644_1
