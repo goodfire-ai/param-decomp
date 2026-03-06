@@ -194,6 +194,10 @@ async def map_llm_calls(
     if n_total is None and isinstance(jobs, Sized):
         n_total = len(jobs)
 
+    assert not (cost_tracker is not None and cost_limit_usd is not None), (
+        "Pass cost_limit_usd or cost_tracker, not both"
+    )
+
     async with OpenRouter(api_key=openrouter_api_key) as api:
         input_price, output_price = await _get_model_pricing(api, model)
         if cost_tracker is not None:

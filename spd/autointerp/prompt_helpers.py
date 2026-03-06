@@ -15,6 +15,10 @@ DATASET_DESCRIPTIONS: dict[str, str] = {
         "SimpleStories: 2M+ short stories (200-350 words), grade 1-8 reading level. "
         "Simple vocabulary, common narrative elements."
     ),
+    "danbraunai/pile-uncopyrighted-tok-shuffled": (
+        "The Pile (uncopyrighted subset): diverse text from books, "
+        "academic papers, code, web pages, and other sources."
+    ),
 }
 
 WEIGHT_NAMES: dict[str, str] = {

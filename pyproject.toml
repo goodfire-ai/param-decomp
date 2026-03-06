@@ -33,8 +33,8 @@ dependencies = [
     "orjson",
     "aiolimiter>=1.2",
     "openrouter>=0.1.1",
-    "httpx>=0.28.0", # For streaming datasets
-    "zstandard",
+    "httpx>=0.28.0",
+    "zstandard",  # For streaming datasets
     "kaleido==0.2.1",
 ]
 

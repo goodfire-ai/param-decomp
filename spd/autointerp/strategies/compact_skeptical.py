@@ -7,20 +7,10 @@ Extracted from the original prompt_template.py.
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.app.backend.utils import delimit_tokens
 from spd.autointerp.config import CompactSkepticalConfig
+from spd.autointerp.prompt_helpers import DATASET_DESCRIPTIONS
 from spd.autointerp.schemas import ModelMetadata
 from spd.harvest.analysis import TokenPRLift
 from spd.harvest.schemas import ComponentData
-
-DATASET_DESCRIPTIONS: dict[str, str] = {
-    "SimpleStories/SimpleStories": (
-        "SimpleStories: 2M+ short stories (200-350 words), grade 1-8 reading level. "
-        "Simple vocabulary, common narrative elements."
-    ),
-    "danbraunai/pile-uncopyrighted-tok-shuffled": (
-        "The Pile (uncopyrighted subset): diverse English text from books, "
-        "academic papers, code, web pages, and other sources."
-    ),
-}
 
 SPD_CONTEXT = (
     "Each component has a causal importance (CI) value per token position. "
