@@ -25,11 +25,13 @@ import yaml
 from torch import Tensor, nn
 from transformers import AutoTokenizer
 
-from spd.configs import LMTaskConfig
+from spd.configs import LMTaskConfig, SamplingType
 from spd.data import DatasetConfig, create_data_loader, loop_dataloader
 from spd.log import logger
 from spd.models.component_model import ComponentModel, OutputWithCache, SPDRunInfo
 from spd.models.components import LinearComponents
+from spd.routing import AllLayersRouter
+from spd.utils.component_utils import calc_stochastic_component_mask_info
 from spd.utils.general_utils import bf16_autocast, extract_batch_data
 
 
@@ -84,6 +86,211 @@ def collect_component_acts(
     return source_acts.float(), target_scalar.float(), actual_target.float()
 
 
+@torch.no_grad()
+def collect_ci_masked_component_acts(
+    model: ComponentModel,
+    batch: Tensor,
+    source_path: str,
+    target_path: str,
+    target_component_idx: int,
+    sampling: SamplingType = "continuous",
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Run a CI-masked forward pass and extract component activations.
+
+    Returns:
+        (source_acts, ci_masked_source_acts, ci_masked_target_scalar): all float tensors.
+        source_acts is (B, S, C_source), ci_masked_source_acts is (B, S, C_source),
+        ci_masked_target_scalar is (B, S).
+    """
+    # Step 1: forward pass to get pre-weight activations
+    out: OutputWithCache = model(batch, cache_type="input")
+    pre_weight_acts = out.cache
+
+    # Step 2: compute causal importances
+    ci_outputs = model.calc_causal_importances(pre_weight_acts, sampling=sampling)
+    ci = ci_outputs.lower_leaky
+
+    # Get unmasked component acts for source
+    all_acts = model.get_all_component_acts(pre_weight_acts)
+    source_acts = all_acts[source_path]  # (B, S, C_source)
+
+    # CI-masked source acts
+    ci_masked_source_acts = source_acts * ci[source_path]  # (B, S, C_source)
+
+    # Compute CI-masked target through model weights (excluding delta)
+    source_comp = model.components[source_path]
+    target_comp = model.components[target_path]
+    assert isinstance(source_comp, LinearComponents) and isinstance(target_comp, LinearComponents)
+    c_fc_out = einops.einsum(ci_masked_source_acts, source_comp.U, "... C, C d_out -> ... d_out")
+    if source_comp.bias is not None:
+        c_fc_out = c_fc_out + source_comp.bias
+    gelu_out = F.gelu(c_fc_out)
+    # Apply CI mask to the target component acts before summing through V
+    # The target component's CI-masked activation is: ci_target * (gelu_out @ V[:, idx])
+    target_scalar = einops.einsum(
+        gelu_out, target_comp.V[:, target_component_idx], "... d, d -> ..."
+    )
+    ci_masked_target_scalar = target_scalar * ci[target_path][..., target_component_idx]
+
+    return source_acts.float(), ci_masked_source_acts.float(), ci_masked_target_scalar.float()
+
+
+@torch.no_grad()
+def collect_stochastic_masked_bounds(
+    model: ComponentModel,
+    batch: Tensor,
+    source_path: str,
+    target_path: str,
+    target_component_idx: int,
+    n_samples: int,
+    extra_values: list[Tensor] | None = None,
+    sampling: SamplingType = "continuous",
+) -> tuple[Tensor, Tensor]:
+    """Run stochastic masked forward passes and return min/max target component activations.
+
+    Runs n_samples full-model forward passes (stochastic masks at every layer) and n_samples
+    local-only passes (stochastic masks on source/target layers only, applied to unmasked
+    pre-weight activations). The min/max is taken over all 2*n_samples results plus any
+    extra_values tensors (e.g. CI-target, target, actual).
+
+    Returns:
+        (target_min, target_max): both (B, S) float tensors.
+    """
+    # Get CI values and unmasked component acts (one forward pass)
+    out: OutputWithCache = model(batch, cache_type="input")
+    pre_weight_acts = out.cache
+    ci_outputs = model.calc_causal_importances(pre_weight_acts, sampling=sampling)
+    ci = ci_outputs.lower_leaky
+
+    all_acts = model.get_all_component_acts(pre_weight_acts)
+    source_acts = all_acts[source_path]
+
+    source_comp = model.components[source_path]
+    target_comp = model.components[target_path]
+    assert isinstance(source_comp, LinearComponents) and isinstance(target_comp, LinearComponents)
+
+    ci_source = ci[source_path]
+
+    # Initialize min/max from extra_values
+    target_min: Tensor | None = None
+    target_max: Tensor | None = None
+    for ev in extra_values or []:
+        if target_min is None:
+            target_min = ev
+            target_max = ev
+        else:
+            assert target_max is not None
+            target_min = torch.minimum(target_min, ev)
+            target_max = torch.maximum(target_max, ev)
+
+    def update_bounds(value: Tensor) -> None:
+        nonlocal target_min, target_max
+        if target_min is None:
+            target_min = value
+            target_max = value
+        else:
+            assert target_max is not None
+            target_min = torch.minimum(target_min, value)
+            target_max = torch.maximum(target_max, value)
+
+    for _ in range(n_samples):
+        # --- Full-model stochastic forward pass ---
+        stoch_mask_infos = calc_stochastic_component_mask_info(
+            causal_importances=ci,
+            component_mask_sampling=sampling,
+            weight_deltas=None,
+            router=AllLayersRouter(),
+        )
+        stoch_out: OutputWithCache = model(batch, mask_infos=stoch_mask_infos, cache_type="input")
+        target_pre_weight = stoch_out.cache[target_path]
+        target_acts_global = target_comp.get_component_acts(target_pre_weight)
+        stoch_global = target_acts_global[..., target_component_idx]
+        update_bounds(stoch_global)
+
+        # --- Local-only stochastic pass (source + target layers only) ---
+        source_mask = ci_source + (1 - ci_source) * torch.rand_like(ci_source)
+        masked_source = source_acts * source_mask
+        c_fc_out = einops.einsum(masked_source, source_comp.U, "... C, C d_out -> ... d_out")
+        if source_comp.bias is not None:
+            c_fc_out = c_fc_out + source_comp.bias
+        gelu_out = F.gelu(c_fc_out)
+        target_scalar = einops.einsum(
+            gelu_out, target_comp.V[:, target_component_idx], "... d, d -> ..."
+        )
+        stoch_local = target_scalar
+        update_bounds(stoch_local)
+
+    assert target_min is not None and target_max is not None
+    return target_min.float(), target_max.float()
+
+
+def print_and_plot_activations(
+    tokens: list[str],
+    target_vals: list[float],
+    actual_vals: list[float],
+    pred_vals: list[float],
+    ci_masked_vals: list[float],
+    stoch_min_vals: list[float],
+    stoch_max_vals: list[float],
+    title: str,
+    plot_path: Path,
+    eval_r2: float,
+    target_component_idx: int,
+    target_path: str,
+) -> None:
+    seq_len = len(tokens)
+    print("\n" + "=" * 80)
+    print(title)
+    print("=" * 80)
+    print(
+        f"{'Pos':>4}  {'Token':<20}  {'Target':>12}  {'Actual':>12}"
+        f"  {'Predicted':>12}  {'Error':>12}  {'CI-Target':>12}"
+        f"  {'Stoch Min':>12}  {'Stoch Max':>12}"
+    )
+    print("-" * 122)
+    for pos in range(seq_len):
+        target_v = target_vals[pos]
+        actual_v = actual_vals[pos]
+        pred_v = pred_vals[pos]
+        err = pred_v - target_v
+        ci_v = ci_masked_vals[pos]
+        s_min = stoch_min_vals[pos]
+        s_max = stoch_max_vals[pos]
+        print(
+            f"{pos:>4}  {tokens[pos]:<20}  {target_v:>12.6f}  {actual_v:>12.6f}"
+            f"  {pred_v:>12.6f}  {err:>+12.6f}  {ci_v:>12.6f}"
+            f"  {s_min:>12.6f}  {s_max:>12.6f}"
+        )
+
+    fig, ax = plt.subplots(figsize=(max(12, seq_len * 0.5), 5))
+    positions = list(range(seq_len))
+    ax.fill_between(
+        positions,
+        stoch_min_vals,
+        stoch_max_vals,
+        alpha=0.2,
+        color="gray",
+        label="Stochastic range",
+    )
+    ax.plot(positions, target_vals, "o-", label="Target (no delta)", markersize=5)
+    ax.plot(positions, actual_vals, "^:", label="Actual (with delta)", markersize=5)
+    ax.plot(positions, pred_vals, "s--", label="Predicted", markersize=5)
+    ax.plot(positions, ci_masked_vals, "d-.", label="CI-masked target", markersize=5)
+    ax.set_xticks(positions)
+    ax.set_xticklabels(tokens, rotation=60, ha="right", fontsize=8)
+    ax.set_xlabel("Token position")
+    ax.set_ylabel("Component activation")
+    ax.set_title(
+        f"Component {target_component_idx} ({target_path}): target vs predicted (R²={eval_r2:.4f})"
+    )
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(plot_path, dpi=150)
+    print(f"\nPlot saved to {plot_path}")
+    plt.close(fig)
+
+
 def compute_variance_explained(predictions: Tensor, targets: Tensor) -> float:
     ss_res = ((targets - predictions) ** 2).sum().item()
     ss_tot = ((targets - targets.mean()) ** 2).sum().item()
@@ -107,6 +314,8 @@ def main() -> None:
     hidden_width: int = cfg.get("hidden_width", 1)
     interact_width: int = cfg.get("interact_width", 8)
     n_eval_batches: int = cfg.get("n_eval_batches", 10)
+    ci_mask_threshold: float = float(cfg.get("ci_mask_threshold", 0.01))
+    n_stochastic_samples: int = cfg.get("n_stochastic_samples", 16)
     device = cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
 
     source_path = build_module_path(layer_idx, "c_fc")
@@ -314,10 +523,12 @@ def main() -> None:
     eval_actual_ss_res = 0.0
     eval_actual_ss_tot = 0.0
     eval_count = 0
+    last_eval_batch: Tensor = torch.empty(0)
 
     with torch.no_grad():
         for _ in range(n_eval_batches):
             batch = extract_batch_data(next(eval_iter)).to(device, non_blocking=True)
+            last_eval_batch = batch
 
             with bf16_autocast(enabled=spd_config.autocast_bf16):
                 source_acts, target_scalar, actual_target = collect_component_acts(
@@ -345,6 +556,118 @@ def main() -> None:
         1.0 - eval_actual_ss_res / eval_actual_ss_tot if eval_actual_ss_tot > 0 else 0.0
     )
 
+    # --- CI-masked evaluation --- #
+    # Compare predictions (from unmasked source) and actual target against CI-masked target,
+    # excluding elements where |CI-masked target| < ci_mask_threshold.
+    logger.info(
+        f"Evaluating with CI masking on {n_eval_batches} val batches "
+        f"(threshold={ci_mask_threshold})..."
+    )
+    # Pred vs CI-masked target
+    ci_pred_ss_res = 0.0
+    ci_pred_ss_tot = 0.0
+    ci_pred_mse_sum = 0.0
+    # Actual vs CI-masked target
+    ci_actual_ss_res = 0.0
+    ci_actual_ss_tot = 0.0
+    ci_actual_mse_sum = 0.0
+    ci_n_elements = 0
+    # Fraction of elements where prediction lies in [min(actual, ci_target), max(actual, ci_target)]
+    frac_in_interval_count = 0
+    frac_in_interval_total = 0
+
+    eval_iter_ci = loop_dataloader(eval_loader)
+    with torch.no_grad():
+        for _ in range(n_eval_batches):
+            batch = extract_batch_data(next(eval_iter_ci)).to(device, non_blocking=True)
+
+            with bf16_autocast(enabled=spd_config.autocast_bf16):
+                source_acts_ci, _, actual_target_ci = collect_component_acts(
+                    model, batch, source_path, target_path, target_component_idx
+                )
+                _, _, ci_masked_target = collect_ci_masked_component_acts(
+                    model, batch, source_path, target_path, target_component_idx
+                )
+
+            prediction = predict(source_acts_ci)
+
+            # fraction_in_interval: pred in [min(actual, ci_target), max(actual, ci_target)]
+            interval_lo = torch.minimum(actual_target_ci, ci_masked_target)
+            interval_hi = torch.maximum(actual_target_ci, ci_masked_target)
+            in_interval = (prediction >= interval_lo) & (prediction <= interval_hi)
+            frac_in_interval_count += in_interval.sum().item()
+            frac_in_interval_total += in_interval.numel()
+
+            mask = ci_masked_target.abs() >= ci_mask_threshold
+            n_active = mask.sum().item()
+            if n_active == 0:
+                continue
+            ci_n_elements += n_active
+
+            # Pred vs CI-masked target (filtered)
+            pred_err = (prediction[mask] - ci_masked_target[mask]) ** 2
+            ci_pred_mse_sum += pred_err.sum().item()
+            ci_pred_ss_res += pred_err.sum().item()
+            ci_pred_ss_tot += (
+                ((ci_masked_target[mask] - ci_masked_target[mask].mean()) ** 2).sum().item()
+            )
+
+            # Actual vs CI-masked target (filtered)
+            actual_err = (actual_target_ci[mask] - ci_masked_target[mask]) ** 2
+            ci_actual_mse_sum += actual_err.sum().item()
+            ci_actual_ss_res += actual_err.sum().item()
+            ci_actual_ss_tot += (
+                ((ci_masked_target[mask] - ci_masked_target[mask].mean()) ** 2).sum().item()
+            )
+
+    ci_pred_mse = ci_pred_mse_sum / ci_n_elements if ci_n_elements > 0 else float("nan")
+    ci_pred_r2 = 1.0 - ci_pred_ss_res / ci_pred_ss_tot if ci_pred_ss_tot > 0 else 0.0
+    ci_actual_mse = ci_actual_mse_sum / ci_n_elements if ci_n_elements > 0 else float("nan")
+    ci_actual_r2 = 1.0 - ci_actual_ss_res / ci_actual_ss_tot if ci_actual_ss_tot > 0 else 0.0
+    frac_in_interval = (
+        frac_in_interval_count / frac_in_interval_total if frac_in_interval_total > 0 else 0.0
+    )
+
+    # --- Stochastic mask interval evaluation --- #
+    logger.info(
+        f"Evaluating stochastic mask interval on {n_eval_batches} val batches "
+        f"({n_stochastic_samples} samples)..."
+    )
+    stoch_in_interval_count = 0
+    stoch_in_interval_total = 0
+
+    eval_iter_stoch = loop_dataloader(eval_loader)
+    with torch.no_grad():
+        for _ in range(n_eval_batches):
+            batch = extract_batch_data(next(eval_iter_stoch)).to(device, non_blocking=True)
+
+            with bf16_autocast(enabled=spd_config.autocast_bf16):
+                source_acts_s, target_s, actual_s = collect_component_acts(
+                    model, batch, source_path, target_path, target_component_idx
+                )
+                _, _, ci_target_s = collect_ci_masked_component_acts(
+                    model, batch, source_path, target_path, target_component_idx
+                )
+                stoch_min, stoch_max = collect_stochastic_masked_bounds(
+                    model,
+                    batch,
+                    source_path,
+                    target_path,
+                    target_component_idx,
+                    n_samples=n_stochastic_samples,
+                    extra_values=[ci_target_s, target_s, actual_s],
+                )
+
+            prediction = predict(source_acts_s)
+            in_interval = (prediction >= stoch_min) & (prediction <= stoch_max)
+            # in_interval = (dummy >= stoch_min) & (dummy <= stoch_max)
+            stoch_in_interval_count += in_interval.sum().item()
+            stoch_in_interval_total += in_interval.numel()
+
+    frac_in_stoch_interval = (
+        stoch_in_interval_count / stoch_in_interval_total if stoch_in_interval_total > 0 else 0.0
+    )
+
     # --- Results --- #
     print("\n" + "=" * 60)
     print("RESULTS")
@@ -358,74 +681,88 @@ def main() -> None:
     print(
         f"Eval vs actual target:       MSE={eval_actual_mse:.6f}, R²={eval_actual_var_explained:.4f}"
     )
+    print(
+        f"Eval pred vs CI-masked:      MSE={ci_pred_mse:.6f}, R²={ci_pred_r2:.4f}"
+        f"  ({ci_n_elements} elements, threshold={ci_mask_threshold})"
+    )
+    print(f"Eval actual vs CI-masked:    MSE={ci_actual_mse:.6f}, R²={ci_actual_r2:.4f}")
+    print(f"Fraction in interval:        {frac_in_interval:.4f}")
+    print(
+        f"Fraction in stoch interval:  {frac_in_stoch_interval:.4f}"
+        f"  ({n_stochastic_samples} samples)"
+    )
     print(f"\nBias: {bias.item():.6f}")
 
-    # --- Test prompt visualization --- #
-    test_prompt: str | None = cfg.get("test_prompt")
-    if test_prompt is not None:
-        assert spd_config.tokenizer_name is not None
-        tokenizer = AutoTokenizer.from_pretrained(spd_config.tokenizer_name)
-        token_ids = torch.tensor(
-            [tokenizer.encode(test_prompt)],
-            device=device,
-        )
+    # --- Visualizations --- #
+    assert spd_config.tokenizer_name is not None
+    tokenizer = AutoTokenizer.from_pretrained(spd_config.tokenizer_name)
+
+    def visualize_tokens(
+        token_ids: Tensor, title: str, plot_path: Path, subtitle: str | None = None
+    ) -> None:
+        """Visualize activations for a single sequence (first in batch)."""
         tokens: list[str] = [
             tokenizer.decode(t)  # pyright: ignore[reportAttributeAccessIssue]
             for t in token_ids[0].tolist()
         ]
-        seq_len = token_ids.shape[1]
-
         with torch.no_grad(), bf16_autocast(enabled=spd_config.autocast_bf16):
             source_acts, target_scalar, actual_scalar = collect_component_acts(
                 model, token_ids, source_path, target_path, target_component_idx
             )
+            _, _, ci_masked_target_scalar = collect_ci_masked_component_acts(
+                model, token_ids, source_path, target_path, target_component_idx
+            )
+            s_min, s_max = collect_stochastic_masked_bounds(
+                model,
+                token_ids,
+                source_path,
+                target_path,
+                target_component_idx,
+                n_samples=n_stochastic_samples,
+                extra_values=[ci_masked_target_scalar, target_scalar, actual_scalar],
+            )
         with torch.no_grad():
             pred_scalar = predict(source_acts)
 
-        target_vals = target_scalar[0].cpu().tolist()
-        actual_vals = actual_scalar[0].cpu().tolist()
-        pred_vals = pred_scalar[0].cpu().tolist()
+        if subtitle:
+            print(f"\n{subtitle}")
 
-        print("\n" + "=" * 80)
-        print("TEST PROMPT VISUALIZATION")
-        print("=" * 80)
-        print(f"Prompt: {test_prompt!r}")
-        print(
-            f"{'Pos':>4}  {'Token':<20}  {'Target':>12}  {'Actual':>12}  {'Predicted':>12}  {'Error':>12}"
+        print_and_plot_activations(
+            tokens=tokens,
+            target_vals=target_scalar[0].cpu().tolist(),
+            actual_vals=actual_scalar[0].cpu().tolist(),
+            pred_vals=pred_scalar[0].cpu().tolist(),
+            ci_masked_vals=ci_masked_target_scalar[0].cpu().tolist(),
+            stoch_min_vals=s_min[0].cpu().tolist(),
+            stoch_max_vals=s_max[0].cpu().tolist(),
+            title=title,
+            plot_path=plot_path,
+            eval_r2=eval_var_explained,
+            target_component_idx=target_component_idx,
+            target_path=target_path,
         )
-        print("-" * 80)
-        for pos in range(seq_len):
-            target_v = target_vals[pos]
-            actual_v = actual_vals[pos]
-            pred_v = pred_vals[pos]
-            err = pred_v - target_v
-            print(
-                f"{pos:>4}  {tokens[pos]:<20}  {target_v:>12.6f}  {actual_v:>12.6f}"
-                f"  {pred_v:>12.6f}  {err:>+12.6f}"
-            )
 
-        # Plot
-        fig, ax = plt.subplots(figsize=(max(12, seq_len * 0.5), 5))
-        positions = list(range(seq_len))
-        ax.plot(positions, target_vals, "o-", label="Target (no delta)", markersize=5)
-        ax.plot(positions, actual_vals, "^:", label="Actual (with delta)", markersize=5)
-        ax.plot(positions, pred_vals, "s--", label="Predicted", markersize=5)
-        ax.set_xticks(positions)
-        ax.set_xticklabels(tokens, rotation=60, ha="right", fontsize=8)
-        ax.set_xlabel("Token position")
-        ax.set_ylabel("Component activation")
-        ax.set_title(
-            f"Component {target_component_idx} ({target_path}): "
-            f"target vs predicted (R²={eval_var_explained:.4f})"
+    # Last eval batch (last sequence)
+    last_seq = last_eval_batch[-1:].to(device)
+    visualize_tokens(
+        last_seq,
+        title="EVAL BATCH VISUALIZATION (last sequence)",
+        plot_path=Path(f"fit_component_{target_component_idx}_eval_prompt.png"),
+    )
+
+    # Test prompt
+    test_prompt: str | None = cfg.get("test_prompt")
+    if test_prompt is not None:
+        test_token_ids = torch.tensor(
+            [tokenizer.encode(test_prompt)],
+            device=device,
         )
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        fig.tight_layout()
-
-        plot_path = Path(f"fit_component_{target_component_idx}_test_prompt.png")
-        fig.savefig(plot_path, dpi=150)
-        print(f"\nPlot saved to {plot_path}")
-        plt.close(fig)
+        visualize_tokens(
+            test_token_ids,
+            title="TEST PROMPT VISUALIZATION",
+            plot_path=Path(f"fit_component_{target_component_idx}_test_prompt.png"),
+            subtitle=f"Prompt: {test_prompt!r}",
+        )
 
 
 if __name__ == "__main__":
