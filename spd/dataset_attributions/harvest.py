@@ -178,10 +178,3 @@ def merge_attributions(output_dir: Path) -> None:
     output_path = output_dir / "dataset_attributions.pt"
     merged.save(output_path)
     logger.info(f"Total: {merged.n_tokens_processed:,} tokens")
-
-    # TODO(oli): reenable this
-    # disabled deletion for testing, posterity and retries
-    # for rank_file in rank_files:
-    #     rank_file.unlink()
-    # worker_dir.rmdir()
-    # logger.info(f"Deleted {len(rank_files)} per-rank files and worker_states/")
