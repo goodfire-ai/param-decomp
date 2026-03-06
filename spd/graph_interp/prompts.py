@@ -98,7 +98,7 @@ def format_output_prompt(
             " OUTPUT FUNCTION -- what it does when it fires."
         )
         .blank()
-        .text(_component_header(component, model_metadata).build())
+        .extend(_component_header(component, model_metadata))
         .blank()
         .h2("Output tokens (what the model produces when this component fires)")
         .text(output_section)
@@ -144,7 +144,7 @@ def format_input_prompt(
             " INPUT FUNCTION -- what triggers it to fire."
         )
         .blank()
-        .text(_component_header(component, model_metadata).build())
+        .extend(_component_header(component, model_metadata))
         .blank()
         .h2("Input tokens (what causes this component to fire)")
         .text(input_section)
@@ -182,7 +182,7 @@ def format_unification_prompt(
         Md()
         .p("A neural network component has been analyzed from two perspectives.")
         .blank()
-        .text(_component_header(component, model_metadata).build())
+        .extend(_component_header(component, model_metadata))
         .blank()
         .h2("Activation examples -- where the component fires")
         .text(fires_on)

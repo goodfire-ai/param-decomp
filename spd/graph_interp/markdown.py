@@ -40,5 +40,9 @@ class Md:
         self._parts.append(raw)
         return self
 
+    def extend(self, other: "Md") -> "Md":
+        self._parts.extend(other._parts)
+        return self
+
     def build(self) -> str:
         return "\n".join(self._parts)
