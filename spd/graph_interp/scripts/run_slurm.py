@@ -22,18 +22,10 @@ def submit_graph_interp(
     decomposition_id: str,
     config: GraphInterpSlurmConfig,
     dependency_job_ids: list[str],
+    harvest_subrun_id: str,
     snapshot_branch: str | None = None,
-    harvest_subrun_id: str | None = None,
 ) -> GraphInterpSubmitResult:
-    """Submit graph interpretation to SLURM.
-
-    Args:
-        decomposition_id: ID of the target decomposition.
-        config: Graph interp SLURM configuration.
-        dependency_job_ids: Jobs to wait for (harvest merge + attribution merge).
-        snapshot_branch: Git snapshot branch to use.
-        harvest_subrun_id: Specific harvest subrun to use.
-    """
+    """Submit graph interpretation to SLURM."""
     subrun_id = "ti-" + datetime.now().strftime("%Y%m%d_%H%M%S")
     cmd = run.get_command(
         decomposition_id=decomposition_id,
