@@ -215,7 +215,7 @@ class AttributionHarvester:
         out_residual_sum = out_residual.sum(dim=(0, 1))
 
         source_layers = self.sources_by_target[self.unembed_path]
-        assert self.embed_path in source_layers, "remove me when passed"
+        assert self.embed_path in source_layers
 
         source_acts = [cache[f"{s}_post_detach"] for s in source_layers]
 
