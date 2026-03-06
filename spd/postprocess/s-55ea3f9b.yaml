@@ -1,0 +1,32 @@
+harvest:
+  n_gpus: 16
+  time: "24:00:00"
+  merge_time: "24:00:00"
+  config:
+    method_config:
+      type: SPDHarvestConfig
+      wandb_path: "wandb:goodfire/spd/s-55ea3f9b"
+
+autointerp:
+  time: "24:00:00"
+  config:
+    template_strategy:
+      type: compact_skeptical
+      forbidden_words: []
+    cost_limit_usd: 400
+  evals: null
+
+intruder: null
+
+attributions:
+  n_gpus: 16
+  time: "24:00:00"
+  merge_time: "24:00:00"
+  config:
+    spd_run_wandb_path: "wandb:goodfire/spd/s-55ea3f9b"
+    n_batches: 640
+
+graph_interp:
+  time: "24:00:00"
+  config:
+    cost_limit_usd: 400
