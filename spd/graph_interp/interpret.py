@@ -154,7 +154,14 @@ def run_graph_interp(
                 assert o_stats is not None, f"No output token stats for {key}"
 
                 related = get_related(key, labels_so_far)
-                _save_edges(db, key, related, "output")
+                db.save_prompt_edges([
+                    PromptEdge(
+                        component_key=key, related_key=r.component_key,
+                        pass_name="output", attribution=r.attribution,
+                        related_label=r.label, related_confidence=r.confidence,
+                    )
+                    for r in related
+                ])
                 prompt = format_output_prompt(
                     component=component,
                     model_metadata=model_metadata,
@@ -182,7 +189,14 @@ def run_graph_interp(
                 assert i_stats is not None, f"No input token stats for {key}"
 
                 related = get_related(key, labels_so_far)
-                _save_edges(db, key, related, "input")
+                db.save_prompt_edges([
+                    PromptEdge(
+                        component_key=key, related_key=r.component_key,
+                        pass_name="input", attribution=r.attribution,
+                        related_label=r.label, related_confidence=r.confidence,
+                    )
+                    for r in related
+                ])
                 prompt = format_input_prompt(
                     component=component,
                     model_metadata=model_metadata,
@@ -360,22 +374,3 @@ def _check_error_rate(n_errors: int, n_done: int) -> None:
         )
 
 
-def _save_edges(
-    db: GraphInterpDB,
-    component_key: str,
-    related: list[RelatedComponent],
-    pass_name: Literal["output", "input"],
-) -> None:
-    edges = [
-        PromptEdge(
-            component_key=component_key,
-            related_key=r.component_key,
-            pass_name=pass_name,
-            attribution=r.attribution,
-            related_label=r.label,
-            related_confidence=r.confidence,
-        )
-        for r in related
-    ]
-    if edges:
-        db.save_prompt_edges(edges)
