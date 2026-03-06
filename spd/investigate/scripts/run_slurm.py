@@ -62,13 +62,7 @@ def launch_investigation(
     }
     (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
 
-    cmd = (
-        f"{sys.executable} -m spd.investigate.scripts.run_agent "
-        f'"{wandb_path}" '
-        f"--inv_id {inv_id} "
-        f"--context_length {context_length} "
-        f"--max_turns {max_turns}"
-    )
+    cmd = f"{sys.executable} -m spd.investigate.scripts.run_agent {inv_id}"
 
     slurm_config = SlurmConfig(
         job_name=job_name,

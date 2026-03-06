@@ -161,28 +161,20 @@ Document what you learn, even if it's "this was more complicated than expected."
 
 def _format_model_info(model_info: dict[str, Any]) -> str:
     """Format model architecture info for inclusion in the agent prompt."""
-    parts = [f"- **Architecture**: {model_info.get('summary', 'Unknown')}"]
+    target_config = model_info["target_model_config"]
+    topology = model_info["topology"]
+    block = topology["block_structure"][0]
 
-    target_config = model_info.get("target_model_config")
-    if target_config:
-        if "n_layer" in target_config:
-            parts.append(f"- **Layers**: {target_config['n_layer']}")
-        if "n_embd" in target_config:
-            parts.append(f"- **Hidden dim**: {target_config['n_embd']}")
-        if "vocab_size" in target_config:
-            parts.append(f"- **Vocab size**: {target_config['vocab_size']}")
-        if "n_ctx" in target_config:
-            parts.append(f"- **Context length**: {target_config['n_ctx']}")
-
-    topology = model_info.get("topology")
-    if topology and topology.get("block_structure"):
-        block = topology["block_structure"][0]
-        attn = ", ".join(block.get("attn_projections", []))
-        ffn = ", ".join(block.get("ffn_projections", []))
-        parts.append(f"- **Attention projections**: {attn}")
-        parts.append(f"- **FFN projections**: {ffn}")
-
-    return "\n".join(parts)
+    return "\n".join(
+        [
+            f"- **Architecture**: {model_info['summary']}",
+            f"- **Layers**: {target_config['n_layer']}",
+            f"- **Hidden dim**: {target_config['n_embd']}",
+            f"- **Vocab size**: {target_config['vocab_size']}",
+            f"- **Attention projections**: {', '.join(block['attn_projections'])}",
+            f"- **FFN projections**: {', '.join(block['ffn_projections'])}",
+        ]
+    )
 
 
 def get_agent_prompt(
