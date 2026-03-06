@@ -3,10 +3,9 @@
 import sqlite3
 from pathlib import Path
 
+from spd.autointerp.db import DONE_MARKER
 from spd.graph_interp.schemas import LabelResult, PromptEdge
 from spd.utils.sqlite import open_nfs_sqlite
-
-DONE_MARKER = ".done"
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS output_labels (
