@@ -109,8 +109,8 @@ def log_event(events_path: Path, event: InvestigationEvent) -> None:
 def run_agent(
     wandb_path: str,
     inv_id: str,
-    context_length: int = 128,
-    max_turns: int = 50,
+    context_length: int,
+    max_turns: int,
 ) -> None:
     """Run a single investigation agent.
 
