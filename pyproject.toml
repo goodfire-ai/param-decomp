@@ -72,7 +72,7 @@ include = ["spd*"]
 [tool.ruff]
 line-length = 100
 fix = true
-extend-exclude = ["spd/app/frontend", ".circuits-ref"]
+extend-exclude = ["spd/app/frontend"]
 
 [tool.ruff.lint]
 ignore = [
