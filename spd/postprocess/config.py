@@ -9,6 +9,7 @@ from typing import Any, override
 from spd.autointerp.config import AutointerpSlurmConfig
 from spd.base_config import BaseConfig
 from spd.dataset_attributions.config import AttributionsSlurmConfig
+from spd.graph_interp.config import GraphInterpSlurmConfig
 from spd.harvest.config import HarvestSlurmConfig, IntruderSlurmConfig, SPDHarvestConfig
 
 
@@ -32,6 +33,7 @@ class PostprocessConfig(BaseConfig):
     autointerp: AutointerpSlurmConfig | None
     intruder: IntruderSlurmConfig | None
     attributions: AttributionsSlurmConfig | None
+    graph_interp: GraphInterpSlurmConfig | None
 
     @override
     def model_post_init(self, __context: Any) -> None:
@@ -39,3 +41,12 @@ class PostprocessConfig(BaseConfig):
         is_not_spd = not isinstance(self.harvest.config.method_config, SPDHarvestConfig)
         if expects_attributions and is_not_spd:
             raise ValueError("Attributions only work for SPD decompositions")
+        if self.graph_interp is not None and self.attributions is None:
+            raise ValueError("Graph interp requires attributions")
+
+
+if __name__ == "__main__":
+    import json
+
+    with open("spd/postprocess/postprocess.schema.json", "w") as f:
+        json.dump(PostprocessConfig.model_json_schema(), f, indent=2)
