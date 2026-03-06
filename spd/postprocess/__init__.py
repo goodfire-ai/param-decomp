@@ -20,6 +20,7 @@ import yaml
 
 from spd.autointerp.scripts.run_slurm import AutointerpSubmitResult, submit_autointerp
 from spd.dataset_attributions.scripts.run_slurm import submit_attributions
+from spd.graph_interp.scripts.run_slurm import GraphInterpSubmitResult, submit_graph_interp
 from spd.harvest.config import SPDHarvestConfig
 from spd.harvest.scripts import run_intruder
 from spd.harvest.scripts.run_slurm import submit_harvest
@@ -30,8 +31,13 @@ from spd.utils.git_utils import create_git_snapshot
 from spd.utils.slurm import SlurmConfig, SubmitResult, generate_script, submit_slurm_job
 
 
-def postprocess(config: PostprocessConfig) -> Path:
+def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None) -> Path:
     """Submit all postprocessing jobs with SLURM dependency chaining.
+
+    Args:
+        config: Postprocessing configuration.
+        dependency_job_id: SLURM job to wait for before starting harvest
+            (e.g. a training job that must complete first).
 
     Returns:
         Path to the manifest YAML file.
@@ -43,7 +49,11 @@ def postprocess(config: PostprocessConfig) -> Path:
     decomp_cfg = config.harvest.config.method_config
 
     # === 1. Harvest (always runs, upserts into harvest.db) ===
-    harvest_result = submit_harvest(config.harvest, snapshot_branch=snapshot_branch)
+    harvest_result = submit_harvest(
+        config.harvest,
+        snapshot_branch=snapshot_branch,
+        dependency_job_id=dependency_job_id,
+    )
 
     # === 2. Autointerp (depends on harvest, resumes via completed keys) ===
     autointerp_result: AutointerpSubmitResult | None = None
@@ -97,6 +107,21 @@ def postprocess(config: PostprocessConfig) -> Path:
             harvest_subrun_id=harvest_result.subrun_id,
         )
 
+    # === 5. Graph interp (depends on harvest merge + attribution merge) ===
+    graph_interp_result: GraphInterpSubmitResult | None = None
+    if config.graph_interp is not None:
+        assert attr_result is not None
+        graph_interp_result = submit_graph_interp(
+            decomposition_id=decomp_cfg.id,
+            config=config.graph_interp,
+            dependency_job_ids=[
+                harvest_result.merge_result.job_id,
+                attr_result.merge_result.job_id,
+            ],
+            snapshot_branch=snapshot_branch,
+            harvest_subrun_id=harvest_result.subrun_id,
+        )
+
     # === Write manifest ===
     manifest_id = "pp-" + datetime.now().strftime("%Y%m%d_%H%M%S")
     manifest_dir = SPD_OUT_DIR / "postprocess" / manifest_id
@@ -120,6 +145,8 @@ def postprocess(config: PostprocessConfig) -> Path:
             jobs["detection"] = autointerp_result.detection_result.job_id
         if autointerp_result.fuzzing_result is not None:
             jobs["fuzzing"] = autointerp_result.fuzzing_result.job_id
+    if graph_interp_result is not None:
+        jobs["graph_interp"] = graph_interp_result.result.job_id
 
     manifest = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
