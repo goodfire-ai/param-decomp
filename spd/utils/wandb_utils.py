@@ -15,7 +15,7 @@ from wandb.apis.public import File, Run
 from spd.base_config import BaseConfig
 from spd.log import logger
 from spd.registry import EXPERIMENT_REGISTRY
-from spd.settings import REPO_ROOT
+from spd.settings import DEFAULT_PROJECT_NAME, REPO_ROOT
 from spd.utils.general_utils import fetch_latest_checkpoint_name
 
 WORKSPACE_TEMPLATES = {
@@ -32,7 +32,7 @@ WORKSPACE_TEMPLATES = {
 # Regex patterns for parsing W&B run references
 # Run IDs can be 8 chars (e.g., "d2ec3bfe") or prefixed with char-dash (e.g., "s-d2ec3bfe")
 DEFAULT_WANDB_ENTITY = "goodfire"
-DEFAULT_WANDB_PROJECT = "spd"
+DEFAULT_WANDB_PROJECT = DEFAULT_PROJECT_NAME
 
 _RUN_ID_PATTERN = r"(?:[a-z0-9]-)?[a-z0-9]{8}"
 _BARE_RUN_ID_RE = re.compile(r"^(s-[a-z0-9]{8})$")
