@@ -10,6 +10,7 @@ from spd.app.backend.state import StateManager
 from spd.app.backend.utils import log_errors
 from spd.base_config import BaseConfig
 from spd.settings import SPD_OUT_DIR
+from spd.topology import TransformerTopology
 
 router = APIRouter(prefix="/api/clusters", tags=["clusters"])
 
@@ -86,4 +87,17 @@ def load_cluster_mapping(file_path: str) -> ClusterMapping:
             f"but loaded run is '{run_state.run.wandb_path}'",
         )
 
-    return ClusterMapping(mapping=parsed.clusters)
+    canonical_clusters = _to_canonical_keys(parsed.clusters, run_state.topology)
+    return ClusterMapping(mapping=canonical_clusters)
+
+
+def _to_canonical_keys(
+    clusters: dict[str, int | None], topology: TransformerTopology
+) -> dict[str, int | None]:
+    """Convert concrete component keys (e.g. 'h.3.mlp.down_proj:5') to canonical (e.g. '3.mlp.down:5')."""
+    result: dict[str, int | None] = {}
+    for key, cluster_id in clusters.items():
+        layer, idx = key.rsplit(":", 1)
+        canonical_layer = topology.target_to_canon(layer)
+        result[f"{canonical_layer}:{idx}"] = cluster_id
+    return result

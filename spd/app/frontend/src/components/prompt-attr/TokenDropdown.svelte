@@ -1,22 +1,25 @@
 <script lang="ts">
-    import type { TokenInfo } from "../../lib/promptAttributionsTypes";
+    import type { TokenSearchResult } from "../../lib/promptAttributionsTypes";
     import * as api from "../../lib/api";
+    import { sanitizeToken } from "../../lib/tokenUtils";
 
     type Props = {
         value: string;
         selectedTokenId: number | null;
         onSelect: (tokenId: number | null, tokenString: string) => void;
+        promptId: number;
+        position: number;
         placeholder?: string;
     };
 
-    let { value, onSelect, placeholder = "Search tokens..." }: Props = $props();
+    let { value, onSelect, promptId, position, placeholder = "Search tokens..." }: Props = $props();
 
     let inputValue = $derived(value);
     let isOpen = $state(false);
     let highlightedIndex = $state(0);
     let inputElement: HTMLInputElement | null = $state(null);
     let dropdownPos = $state({ top: 0, left: 0 });
-    let searchResults = $state<TokenInfo[]>([]);
+    let searchResults = $state<TokenSearchResult[]>([]);
     let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
     function doSearch(query: string) {
@@ -27,11 +30,11 @@
         }
         searchTimer = setTimeout(async () => {
             try {
-                searchResults = await api.searchTokens(query, 10);
+                searchResults = await api.searchTokens(query, promptId, position);
             } catch {
                 searchResults = [];
             }
-        }, 100);
+        }, 150);
     }
 
     function updateDropdownPosition() {
@@ -40,7 +43,7 @@
         dropdownPos = { top: rect.bottom + 2, left: rect.left };
     }
 
-    function handleSelect(token: TokenInfo) {
+    function handleSelect(token: TokenSearchResult) {
         onSelect(token.id, token.string);
         isOpen = false;
     }
@@ -95,10 +98,13 @@
     }
 
     function handleBlur() {
-        // Small delay to allow click events on dropdown items to fire first
         setTimeout(() => {
             isOpen = false;
         }, 150);
+    }
+
+    function formatProb(prob: number): string {
+        return `${(prob * 100).toFixed(1)}%`;
     }
 </script>
 
@@ -126,8 +132,11 @@
                         onmousedown={() => handleSelect(token)}
                         onmouseenter={() => (highlightedIndex = i)}
                     >
-                        <span class="token-string">{token.string}</span>
-                        <span class="token-id">#{token.id}</span>
+                        <span class="token-string">{sanitizeToken(token.string)}</span>
+                        <span class="token-meta">
+                            <span class="token-prob">{formatProb(token.prob)}</span>
+                            <span class="token-id">#{token.id}</span>
+                        </span>
                     </button>
                 </li>
             {/each}
@@ -146,7 +155,7 @@
     }
 
     .dropdown-input {
-        width: 100px;
+        width: 120px;
         padding: var(--space-1);
         border: 1px solid var(--border-default);
         background: var(--bg-elevated);
@@ -166,7 +175,7 @@
 
     .dropdown-list {
         position: fixed;
-        min-width: 200px;
+        min-width: 250px;
         max-height: 300px;
         overflow-y: auto;
         margin: 0;
@@ -192,21 +201,38 @@
         color: var(--text-primary);
         font-family: var(--font-mono);
         font-size: var(--text-sm);
+        gap: var(--space-3);
     }
 
     .dropdown-item:hover,
     .dropdown-item.highlighted {
-        background: var(--bg-inset);
+        background: var(--bg-surface);
     }
 
     .token-string {
         white-space: pre;
+        background: var(--bg-base);
+        padding: 1px 3px;
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-sm);
+    }
+
+    .token-meta {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        flex-shrink: 0;
+    }
+
+    .token-prob {
+        font-size: var(--text-xs);
+        color: var(--text-secondary);
+        font-variant-numeric: tabular-nums;
     }
 
     .token-id {
         font-size: var(--text-xs);
         color: var(--text-muted);
-        margin-left: var(--space-2);
     }
 
     .dropdown-empty {

@@ -1,12 +1,14 @@
 <script lang="ts">
     import { getContext } from "svelte";
     import { RUN_KEY, type RunContext } from "../lib/useRun.svelte";
+    import ActivationContextsTab from "./ActivationContextsTab.svelte";
     import ClusterPathInput from "./ClusterPathInput.svelte";
+    import ClustersTab from "./ClustersTab.svelte";
     import DatasetExplorerTab from "./DatasetExplorerTab.svelte";
+    import InvestigationsTab from "./InvestigationsTab.svelte";
     import DataSourcesTab from "./DataSourcesTab.svelte";
     import PromptAttributionsTab from "./PromptAttributionsTab.svelte";
     import DisplaySettingsDropdown from "./ui/DisplaySettingsDropdown.svelte";
-    import ActivationContextsTab from "./ActivationContextsTab.svelte";
 
     const runState = getContext<RunContext>(RUN_KEY);
 
@@ -14,10 +16,25 @@
         runState.run?.status === "loaded" && runState.run.data.dataset_search_enabled,
     );
 
-    let activeTab = $state<"prompts" | "components" | "dataset-search" | "data-sources" | null>(null);
+    let activeTab = $state<
+        | "prompts"
+        | "components"
+        | "dataset-search"
+        | "model-graph"
+        | "data-sources"
+        | "investigations"
+        | "clusters"
+        | null
+    >(null);
 
     $effect(() => {
         if (runState.prompts.status === "loaded" && activeTab === null) {
+            activeTab = "prompts";
+        }
+    });
+
+    $effect(() => {
+        if (activeTab === "clusters" && !runState.clusterMapping) {
             activeTab = "prompts";
         }
     });
@@ -40,7 +57,15 @@
         {/if}
 
         <nav class="nav-group">
-            {#if runState.run?.status === "loaded" && runState.run.data}
+            <button
+                type="button"
+                class="tab-button"
+                class:active={activeTab === "investigations"}
+                onclick={() => (activeTab = "investigations")}
+            >
+                Investigations
+            </button>
+            {#if runState.run.status === "loaded" && runState.run.data}
                 <button
                     type="button"
                     class="tab-button"
@@ -64,7 +89,7 @@
                         class:active={activeTab === "dataset-search"}
                         onclick={() => (activeTab = "dataset-search")}
                     >
-                        Dataset Search
+                        Dataset Explorer
                     </button>
                 {/if}
                 <button
@@ -75,6 +100,16 @@
                 >
                     Data Sources
                 </button>
+                {#if runState.clusterMapping}
+                    <button
+                        type="button"
+                        class="tab-button"
+                        class:active={activeTab === "clusters"}
+                        onclick={() => (activeTab = "clusters")}
+                    >
+                        Clusters
+                    </button>
+                {/if}
             {/if}
         </nav>
 
@@ -93,6 +128,10 @@
                 {runState.run.error}
             </div>
         {/if}
+        <!-- Investigations tab - always available, doesn't require loaded run -->
+        <div class="tab-content" class:hidden={activeTab !== "investigations"}>
+            <InvestigationsTab />
+        </div>
         {#if runState.prompts.status === "loaded"}
             <!-- Use hidden class instead of conditional rendering to preserve state -->
             <div class="tab-content" class:hidden={activeTab !== "prompts"}>
@@ -109,6 +148,11 @@
             <div class="tab-content" class:hidden={activeTab !== "data-sources"}>
                 <DataSourcesTab />
             </div>
+            {#if runState.clusterMapping}
+                <div class="tab-content" class:hidden={activeTab !== "clusters"}>
+                    <ClustersTab />
+                </div>
+            {/if}
         {:else if runState.run.status === "loading" || runState.prompts.status === "loading"}
             <div class="empty-state">
                 <p>Loading run...</p>

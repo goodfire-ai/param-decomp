@@ -108,6 +108,18 @@ DistancesArray            # Float[np.ndarray, "n_iters n_ens n_ens"]
 - `matching_dist.py` - Optimal matching distance via Hungarian algorithm
 - `merge_pair_samplers.py` - Strategies for selecting which pair to merge
 
+## Utility Scripts
+
+**`get_cluster_mapping.py`**: Extracts cluster assignments at a specific iteration from a clustering run, outputs JSON mapping component labels to cluster indices (singletons mapped to `null`).
+
+```bash
+python -m spd.clustering.scripts.get_cluster_mapping /path/to/clustering_run --iteration 299
+```
+
+## App Integration
+
+To make a cluster mapping available in the app's dropdown for a run, add its path to `CANONICAL_RUNS` in `spd/app/frontend/src/lib/registry.ts` under the corresponding run's `clusterMappings` array.
+
 ## Config Files
 
 Configs live in `spd/clustering/configs/`:

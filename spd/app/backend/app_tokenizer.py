@@ -53,6 +53,12 @@ class AppTokenizer:
         assert isinstance(size, int)
         return size
 
+    @property
+    def eos_token_id(self) -> int:
+        eos = self._tok.eos_token_id
+        assert isinstance(eos, int)
+        return eos
+
     def encode(self, text: str) -> list[int]:
         return self._tok.encode(text, add_special_tokens=False)
 

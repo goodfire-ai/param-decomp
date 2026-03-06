@@ -38,6 +38,7 @@ class TopologyInfo(BaseModel):
 class PretrainInfoResponse(BaseModel):
     model_type: str
     summary: str
+    dataset_short: str | None
     target_model_config: dict[str, Any] | None
     pretrain_config: dict[str, Any] | None
     pretrain_wandb_path: str | None
@@ -161,6 +162,27 @@ def _build_summary(model_type: str, target_model_config: dict[str, Any] | None) 
     return " · ".join(parts)
 
 
+_DATASET_SHORT_NAMES: dict[str, str] = {
+    "simplestories": "SS",
+    "pile": "Pile",
+    "tinystories": "TS",
+}
+
+
+def _get_dataset_short(pretrain_config: dict[str, Any] | None) -> str | None:
+    """Extract a short dataset label from the pretrain config."""
+    if pretrain_config is None:
+        return None
+    dataset_name: str = (
+        pretrain_config.get("train_dataset_config", {}).get("name", "")
+        or pretrain_config.get("dataset", "")
+    ).lower()
+    for key, short in _DATASET_SHORT_NAMES.items():
+        if key in dataset_name:
+            return short
+    return None
+
+
 def _get_pretrain_info(spd_config: Config) -> PretrainInfoResponse:
     """Extract pretrain info from an SPD config."""
     model_class_name = spd_config.pretrained_model_class
@@ -190,10 +212,12 @@ def _get_pretrain_info(spd_config: Config) -> PretrainInfoResponse:
     n_blocks = target_model_config.get("n_layer", 0) if target_model_config else 0
     topology = _build_topology(model_type, n_blocks)
     summary = _build_summary(model_type, target_model_config)
+    dataset_short = _get_dataset_short(pretrain_config)
 
     return PretrainInfoResponse(
         model_type=model_type,
         summary=summary,
+        dataset_short=dataset_short,
         target_model_config=target_model_config,
         pretrain_config=pretrain_config,
         pretrain_wandb_path=pretrain_wandb_path,

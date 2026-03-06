@@ -20,6 +20,7 @@ export type EdgeAttribution = {
     key: string; // "layer:seq:cIdx" for prompt or "layer:cIdx" for dataset
     value: number; // raw attribution value (positive or negative)
     normalizedMagnitude: number; // |value| / maxAbsValue, for color intensity (0-1)
+    tokenStr: string | null; // resolved token string for embed/output layers
 };
 
 export type OutputProbability = {
@@ -27,9 +28,18 @@ export type OutputProbability = {
     logit: number; // CI-masked (SPD model) raw logit
     target_prob: number; // Target model probability
     target_logit: number; // Target model raw logit
-    adv_pgd_prob: number | null; // Adversarial PGD probability
-    adv_pgd_logit: number | null; // Adversarial PGD raw logit
     token: string;
+};
+
+export type CISnapshot = {
+    step: number;
+    total_steps: number;
+    layers: string[];
+    seq_len: number;
+    initial_alive: number[][];
+    current_alive: number[][];
+    l0_total: number;
+    loss: number;
 };
 
 export type GraphType = "standard" | "optimized" | "manual";
@@ -41,10 +51,15 @@ export type GraphData = {
     edges: EdgeData[];
     edgesBySource: Map<string, EdgeData[]>; // nodeKey -> edges where this node is source
     edgesByTarget: Map<string, EdgeData[]>; // nodeKey -> edges where this node is target
+    // Absolute-target variant (∂|y|/∂x · x), null for old graphs
+    edgesAbs: EdgeData[] | null;
+    edgesAbsBySource: Map<string, EdgeData[]> | null;
+    edgesAbsByTarget: Map<string, EdgeData[]> | null;
     outputProbs: Record<string, OutputProbability>; // key is "seq:cIdx"
     nodeCiVals: Record<string, number>; // node key -> CI value (or output prob for output nodes or 1 for wte node)
     nodeSubcompActs: Record<string, number>; // node key -> subcomponent activation (v_i^T @ a)
     maxAbsAttr: number; // max absolute edge value
+    maxAbsAttrAbs: number | null; // max absolute edge value for abs-target variant
     maxAbsSubcompAct: number; // max absolute subcomponent activation for normalization
     l0_total: number; // total active components at current CI threshold
     optimization?: OptimizationResult;
@@ -93,13 +108,26 @@ export type KLLossResult = {
     position: number;
 };
 
-export type LossResult = CELossResult | KLLossResult;
+export type LogitLossResult = {
+    type: "logit";
+    coeff: number;
+    position: number;
+    label_token: number;
+    label_str: string;
+};
+
+export type LossResult = CELossResult | KLLossResult | LogitLossResult;
 
 export type OptimizationMetrics = {
     ci_masked_label_prob: number | null; // Probability of label under CI mask (CE loss only)
     stoch_masked_label_prob: number | null; // Probability of label under stochastic mask (CE loss only)
     adv_pgd_label_prob: number | null; // Probability of label under adversarial mask (CE loss only)
     l0_total: number; // Total L0 (active components)
+};
+
+export type PgdConfig = {
+    n_steps: number;
+    step_size: number;
 };
 
 export type OptimizationResult = {
@@ -110,8 +138,7 @@ export type OptimizationResult = {
     mask_type: MaskType;
     loss: LossResult;
     metrics: OptimizationMetrics;
-    adv_pgd_n_steps: number | null;
-    adv_pgd_step_size: number | null;
+    pgd: PgdConfig | null;
 };
 
 export type SubcomponentMetadata = {
@@ -169,10 +196,32 @@ export type TokenizeResponse = {
     next_token_probs: (number | null)[]; // Probability of next token (last is null)
 };
 
-export type TokenInfo = {
+export type TokenSearchResult = {
     id: number;
     string: string;
+    prob: number;
 };
+
+/** Select active edge set based on variant preference. Falls back to signed if abs unavailable. */
+export function getActiveEdges(
+    data: GraphData,
+    variant: "signed" | "abs_target",
+): { edges: EdgeData[]; bySource: Map<string, EdgeData[]>; byTarget: Map<string, EdgeData[]>; maxAbsAttr: number } {
+    if (variant === "abs_target" && data.edgesAbs) {
+        return {
+            edges: data.edgesAbs,
+            bySource: data.edgesAbsBySource!,
+            byTarget: data.edgesAbsByTarget!,
+            maxAbsAttr: data.maxAbsAttrAbs || 1,
+        };
+    }
+    return {
+        edges: data.edges,
+        bySource: data.edgesBySource,
+        byTarget: data.edgesByTarget,
+        maxAbsAttr: data.maxAbsAttr || 1,
+    };
+}
 
 // Client-side computed types
 
@@ -233,7 +282,7 @@ export function formatNodeKeyForDisplay(nodeKey: string, displayNames: Record<st
 // "embed" and "output" are pseudo-layers used for visualization but are not part of the
 // decomposed model. They cannot be intervened on - only the internal layers (attn/mlp)
 // can have their components selectively activated.
-const NON_INTERVENTABLE_LAYERS = new Set(["embed", "output"]);
+const NON_INTERVENTABLE_LAYERS = new Set(["embed", "wte", "output"]);
 
 export function isInterventableNode(nodeKey: string): boolean {
     const layer = nodeKey.split(":")[0];

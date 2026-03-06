@@ -5,14 +5,20 @@ Contains:
 - StateManager: Singleton managing app-wide state with proper lifecycle
 """
 
+import threading
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
+
+from fastapi import HTTPException
 
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.app.backend.database import PromptAttrDB, Run
 from spd.autointerp.repo import InterpRepo
 from spd.configs import Config
 from spd.dataset_attributions.repo import AttributionRepo
+from spd.graph_interp.repo import GraphInterpRepo
 from spd.harvest.repo import HarvestRepo
 from spd.models.component_model import ComponentModel
 from spd.topology import TransformerTopology
@@ -32,6 +38,7 @@ class RunState:
     harvest: HarvestRepo | None
     interp: InterpRepo | None
     attributions: AttributionRepo | None
+    graph_interp: GraphInterpRepo | None
 
 
 @dataclass
@@ -62,6 +69,7 @@ class StateManager:
 
     def __init__(self) -> None:
         self._state: AppState | None = None
+        self._gpu_lock = threading.Lock()
 
     @classmethod
     def get(cls) -> "StateManager":
@@ -104,3 +112,21 @@ class StateManager:
         """Clean up resources."""
         if self._state is not None:
             self._state.db.close()
+
+    @contextmanager
+    def gpu_lock(self) -> Generator[None]:
+        """Acquire GPU lock or fail with 503 if another GPU operation is in progress.
+
+        Use this for GPU-intensive endpoints to prevent concurrent operations
+        that would cause the server to hang.
+        """
+        acquired = self._gpu_lock.acquire(blocking=False)
+        if not acquired:
+            raise HTTPException(
+                status_code=503,
+                detail="GPU operation already in progress. Please wait and retry.",
+            )
+        try:
+            yield
+        finally:
+            self._gpu_lock.release()

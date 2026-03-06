@@ -1,8 +1,8 @@
 <script lang="ts">
     import { getContext } from "svelte";
     import { loadClusterMapping } from "../lib/api";
-    import { RUN_KEY, type RunContext } from "../lib/useRun.svelte";
     import { CANONICAL_RUNS } from "../lib/registry";
+    import { RUN_KEY, type RunContext } from "../lib/useRun.svelte";
 
     const runState = getContext<RunContext>(RUN_KEY);
 
@@ -20,17 +20,13 @@
     let showDropdown = $state(false);
     let showLoadedTooltip = $state(false);
 
-    // Get cluster mappings for the current run from the registry
-    const availableClusterMappings = $derived.by(() => {
-        const canonicalEntry = CANONICAL_RUNS.find((r) => r.wandbRunId === loadedRun.wandb_path);
-        // failover is ok cos we use runs other than canonical ones sometimes
-        return canonicalEntry?.clusterMappings ?? [];
-    });
+    const availableClusterMappings = $derived(
+        CANONICAL_RUNS.find((r) => r.wandbRunId === loadedRun.wandb_path)?.clusterMappings ?? [],
+    );
 
-    // Lookup notes for the currently loaded cluster (if it's from the registry)
-    const loadedClusterNotes = $derived.by(() => {
-        return availableClusterMappings.find((m) => m.path === runState.clusterMapping?.filePath)?.notes ?? null;
-    });
+    const loadedClusterNotes = $derived(
+        availableClusterMappings.find((m) => m.path === runState.clusterMapping?.filePath)?.notes ?? null,
+    );
 
     async function handleLoad() {
         const path = inputPath.trim();
@@ -60,6 +56,10 @@
         }
     }
 
+    function clusterRunId(path: string): string {
+        return path.split("/").at(-2) ?? path;
+    }
+
     async function selectClusterMapping(path: string) {
         showDropdown = false;
         inputPath = path;
@@ -77,7 +77,7 @@
         >
             <span class="cluster-label">Clusters:</span>
             <span class="cluster-path">
-                {runState.clusterMapping.filePath.split("/").at(-2) ?? runState.clusterMapping.filePath}
+                {clusterRunId(runState.clusterMapping.filePath)}
             </span>
             <button type="button" class="clear-button" onclick={handleClear} title="Clear cluster mapping"> x </button>
             {#if showLoadedTooltip}
@@ -120,7 +120,7 @@
                                         title={mapping.path}
                                     >
                                         <span class="entry-id">
-                                            {mapping.path.split("/").at(-2) ?? mapping.path}
+                                            {clusterRunId(mapping.path)}
                                         </span>
                                         <span class="entry-notes">{mapping.notes}</span>
                                     </button>

@@ -20,6 +20,7 @@ export type TopologyInfo = {
 export type PretrainInfoResponse = {
     model_type: string;
     summary: string;
+    dataset_short: string | null;
     target_model_config: Record<string, unknown> | null;
     pretrain_config: Record<string, unknown> | null;
     pretrain_wandb_path: string | null;

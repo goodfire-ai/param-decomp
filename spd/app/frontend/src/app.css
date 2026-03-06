@@ -1,22 +1,22 @@
 :root {
-    /* Punchy Research - crisp whites, bold contrasts */
+    /* Goodfire-inspired - warm whites, navy text, vibrant blue accent */
     --bg-base: #ffffff;
     --bg-surface: #ffffff;
     --bg-elevated: #ffffff;
-    --bg-inset: #f8f9fa;
-    --bg-hover: #f3f4f6;
+    --bg-inset: #f7f6f2;
+    --bg-hover: #f0efeb;
 
-    --border-subtle: #e0e0e0;
-    --border-default: #c0c0c0;
-    --border-strong: #888888;
+    --border-subtle: #e5e3dc;
+    --border-default: #c8c5bc;
+    --border-strong: #8a8780;
 
-    --text-primary: #111111;
-    --text-secondary: #555555;
-    --text-muted: #999999;
+    --text-primary: #1d272a;
+    --text-secondary: #646464;
+    --text-muted: #b4b4b4;
 
-    --accent-primary: #2563eb;
-    --accent-primary-bright: #3b82f6;
-    --accent-primary-dim: #1d4ed8;
+    --accent-primary: #7c4d33;
+    --accent-primary-bright: #96613f;
+    --accent-primary-dim: #5e3a27;
 
     --status-positive: #16a34a;
     --status-positive-bright: #22c55e;
@@ -24,8 +24,10 @@
     --status-negative-bright: #ef4444;
     --status-warning: #eab308;
     --status-warning-bright: #facc15;
-    --status-info: #2563eb;
-    --status-info-bright: #3b82f6;
+    --status-info: #4d65ff;
+    --status-info-bright: #6b7fff;
+
+    --focus-ring: #4d65ff;
 
     /* Typography - Clean system fonts with mono for code */
     --font-mono: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;

@@ -32,14 +32,19 @@ from spd.app.backend.routers import (
     data_sources_router,
     dataset_attributions_router,
     dataset_search_router,
+    graph_interp_router,
     graphs_router,
     intervention_router,
+    investigations_router,
+    mcp_router,
     pretrain_info_router,
     prompts_router,
+    run_registry_router,
     runs_router,
 )
 from spd.app.backend.state import StateManager
 from spd.log import logger
+from spd.settings import SPD_APP_DEFAULT_RUN
 from spd.utils.distributed_utils import get_device
 
 DEVICE = get_device()
@@ -48,6 +53,11 @@ DEVICE = get_device()
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # pyright: ignore[reportUnusedParameter]
     """Initialize DB connection at startup. Model loaded on-demand via /api/runs/load."""
+    import os
+    from pathlib import Path
+
+    from spd.app.backend.routers.mcp import InvestigationConfig, set_investigation_config
+
     manager = StateManager.get()
 
     db = PromptAttrDB(check_same_thread=False)
@@ -57,6 +67,24 @@ async def lifespan(app: FastAPI):  # pyright: ignore[reportUnusedParameter]
     logger.info(f"[STARTUP] DB initialized: {db.db_path}")
     logger.info(f"[STARTUP] Device: {DEVICE}")
     logger.info(f"[STARTUP] CUDA available: {torch.cuda.is_available()}")
+
+    # Configure MCP for investigation mode (derives paths from investigation dir)
+    investigation_dir = os.environ.get("SPD_INVESTIGATION_DIR")
+    if investigation_dir:
+        inv_dir = Path(investigation_dir)
+        set_investigation_config(
+            InvestigationConfig(
+                events_log_path=inv_dir / "events.jsonl",
+                investigation_dir=inv_dir,
+            )
+        )
+        logger.info(f"[STARTUP] Investigation mode enabled: dir={investigation_dir}")
+
+    if SPD_APP_DEFAULT_RUN is not None:
+        from spd.app.backend.routers.runs import load_run
+
+        logger.info(f"[STARTUP] Auto-loading default run: {SPD_APP_DEFAULT_RUN}")
+        load_run(SPD_APP_DEFAULT_RUN, context_length=512, manager=manager)
 
     yield
 
@@ -157,8 +185,12 @@ app.include_router(intervention_router)
 app.include_router(dataset_search_router)
 app.include_router(dataset_attributions_router)
 app.include_router(agents_router)
+app.include_router(investigations_router)
+app.include_router(mcp_router)
 app.include_router(data_sources_router)
+app.include_router(graph_interp_router)
 app.include_router(pretrain_info_router)
+app.include_router(run_registry_router)
 
 
 def cli(port: int = 8000) -> None:
