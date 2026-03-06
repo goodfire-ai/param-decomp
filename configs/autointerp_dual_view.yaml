@@ -1,6 +1,0 @@
-config:
-  model: google/gemini-3-flash-preview
-  reasoning_effort: low
-  template_strategy:
-    type: dual_view
-evals: null
