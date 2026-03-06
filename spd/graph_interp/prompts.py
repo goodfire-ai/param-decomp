@@ -197,8 +197,8 @@ def _format_related_table(
         rel_attr = n.attribution / norm
 
         parts = [f"  {display} (relative attribution: {rel_attr:+.2f}"]
-        if n.jaccard is not None:
-            parts.append(f", co-firing Jaccard: {n.jaccard:.3f}")
+        if n.pmi is not None:
+            parts.append(f", co-firing PMI: {n.pmi:.2f}")
         parts.append(")")
 
         line = "".join(parts)

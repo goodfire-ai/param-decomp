@@ -106,6 +106,25 @@ def get_correlated_components(
     return output
 
 
+def get_pmi(storage: CorrelationStorage, key_a: str, key_b: str) -> float | None:
+    """Point-wise mutual information between two components. None if either is missing or they never co-fire."""
+    if key_a not in storage.key_to_idx or key_b not in storage.key_to_idx:
+        return None
+    i = storage.key_to_idx[key_a]
+    j = storage.key_to_idx[key_b]
+    count_ij = storage.count_ij[i][j].item()
+    if count_ij == 0:
+        return None
+    count_i = storage.count_i[i].item()
+    count_j = storage.count_i[j].item()
+    if count_i == 0 or count_j == 0:
+        return None
+    p_ij = count_ij / storage.count_total
+    p_i = count_i / storage.count_total
+    p_j = count_j / storage.count_total
+    return math.log(p_ij / (p_i * p_j))
+
+
 def has_component(storage: CorrelationStorage, component_key: str) -> bool:
     """Check if a component exists in the storage."""
     return component_key in storage.key_to_idx
