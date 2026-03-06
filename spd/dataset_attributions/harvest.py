@@ -37,24 +37,15 @@ def _build_alive_masks(
     model: ComponentModel,
     run_id: str,
     harvest_subrun_id: str | None,
-    embed_path: str,
-    vocab_size: int,
 ) -> dict[str, Bool[Tensor, " n_components"]]:
-    """Build masks of alive components (mean_activation > threshold) for sources and targets.
+    """Build masks of alive components (firing_density > 0) per target layer.
 
-    Falls back to all-alive if harvest summary not available.
-
-    Index structure:
-    - Sources: [0, vocab_size) = wte tokens, [vocab_size, vocab_size + n_components) = component layers
-    - Targets: [0, n_components) = component layers (output handled via out_residual)
+    Only covers component layers — embed is always a valid source (not filtered).
     """
 
     component_alive = {
-        embed_path: torch.ones(vocab_size, dtype=torch.bool),  # TODO(oli): maybe remove this
-        **{
-            layer: torch.zeros(model.module_to_c[layer], dtype=torch.bool)
-            for layer in model.target_module_paths
-        },
+        layer: torch.zeros(model.module_to_c[layer], dtype=torch.bool)
+        for layer in model.target_module_paths
     }
 
     if harvest_subrun_id is not None:
@@ -79,21 +70,9 @@ def _build_alive_masks(
 def harvest_attributions(
     config: DatasetAttributionConfig,
     output_dir: Path,
-    harvest_subrun_id: str | None = None,
     rank: int | None = None,
     world_size: int | None = None,
 ) -> None:
-    """Compute dataset attributions over the training dataset.
-
-    Args:
-        wandb_path: WandB run path for the target decomposition run.
-        config: Configuration for attribution harvesting.
-        output_dir: Directory to write results into.
-        harvest_subrun_id: Harvest subrun to use for alive masks. If None, uses most recent.
-        rank: Worker rank for parallel execution (0 to world_size-1).
-        world_size: Total number of workers. If specified with rank, only processes
-            batches where batch_idx % world_size == rank.
-    """
 
     assert (rank is None) == (world_size is None), "rank and world_size must both be set or unset"
 
@@ -135,7 +114,7 @@ def harvest_attributions(
     logger.info(f"Found {len(sources_by_target)} target layers with gradient connections")
 
     # Build alive masks
-    component_alive = _build_alive_masks(model, run_id, harvest_subrun_id, embed_path, vocab_size)
+    component_alive = _build_alive_masks(model, run_id, config.harvest_subrun_id)
 
     # Create harvester (all concrete paths internally)
     harvester = AttributionHarvester(
