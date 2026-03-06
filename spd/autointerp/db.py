@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS config (
 );
 """
 
+DONE_MARKER = ".done"
+
 
 class InterpDB:
     def __init__(self, db_path: Path, readonly: bool = False) -> None:
@@ -41,7 +43,11 @@ class InterpDB:
         else:
             self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
             self._conn.executescript(_SCHEMA)
+        self._db_path = db_path
         self._conn.row_factory = sqlite3.Row
+
+    def mark_done(self) -> None:
+        (self._db_path.parent / DONE_MARKER).touch()
 
     def save_interpretation(self, result: InterpretationResult) -> None:
         self._conn.execute(

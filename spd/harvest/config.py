@@ -68,7 +68,7 @@ class IntruderEvalConfig(BaseConfig):
     max_concurrent: int = 50
     limit: int | None = None
     cost_limit_usd: float | None = None
-    max_requests_per_minute: int = 200
+    max_requests_per_minute: int = 500
 
 
 class IntruderSlurmConfig(BaseConfig):
@@ -83,7 +83,7 @@ class HarvestConfig(BaseConfig):
     method_config: Annotated[DecompositionMethodHarvestConfig, Field(discriminator="type")]
     n_batches: int | Literal["whole_dataset"] = 20_000
     batch_size: int = 32
-    activation_examples_per_component: int = 1000
+    activation_examples_per_component: int = 400
     activation_context_tokens_per_side: int = 20
     pmi_token_top_k: int = 40
     max_examples_per_batch_per_component: int = 5

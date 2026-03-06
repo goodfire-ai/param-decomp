@@ -1,21 +1,36 @@
 """Storage classes for dataset attributions.
 
-Uses a residual-based storage approach for scalability:
-- Component targets: stored directly in source_to_component matrix
-- Output targets: stored as attributions to residual stream, computed on-the-fly via w_unembed
+Stores raw (unnormalized) attribution sums. Normalization happens at query time using
+stored metadata (CI sums, activation RMS, logit RMS).
+
+Four edge types, each with its own shape:
+- regular:        component → component  [tgt_c, src_c]  (signed + abs)
+- embed:          embed → component      [tgt_c, vocab]  (signed + abs)
+- unembed:        component → unembed    [d_model, src_c] (signed only, residual space)
+- embed_unembed:  embed → unembed        [d_model, vocab] (signed only, residual space)
+
+Abs variants are unavailable for unembed edges because abs is a nonlinear operation
+incompatible with the residual-space storage trick.
+
+Normalization formula:
+    normed[t, s] = raw[t, s] / source_denom[s] / target_rms[t]
+- source_denom is ci_sum[s] for component sources, embed_token_count[s] for embed sources
+- target_rms is component activation RMS for component targets, logit RMS for output targets
 """
 
-import dataclasses
-from collections.abc import Callable
+import bisect
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import torch
-from jaxtyping import Float
 from torch import Tensor
 
 from spd.log import logger
+
+AttrMetric = Literal["attr", "attr_abs"]
+
+EPS = 1e-10
 
 
 @dataclass
@@ -28,162 +43,265 @@ class DatasetAttributionEntry:
     value: float
 
 
-@dataclass
 class DatasetAttributionStorage:
     """Dataset-aggregated attribution strengths between components.
 
-    Uses residual-based storage for scalability with large vocabularies:
-    - source_to_component: direct attributions to component targets
-    - source_to_out_residual: attributions to output residual stream (for computing output attributions)
+    All layer names use canonical addressing (e.g., "embed", "0.glu.up", "output").
 
-    Output attributions are computed on-the-fly: attr[src, output_token] = out_residual[src] @ w_unembed[:, token]
-
-    Source indexing (rows):
-        - [0, vocab_size): wte tokens
-        - [vocab_size, vocab_size + n_components): component layers
-
-    Target indexing:
-        - Component targets: [0, n_components) in source_to_component
-        - Output targets: computed via source_to_out_residual @ w_unembed
+    Internally stores raw sums — normalization applied at query time.
+    Public interface: get_top_sources(), get_top_targets(), save/load/merge.
 
     Key formats:
-        - wte tokens: "wte:{token_id}"
-        - component layers: "layer:c_idx" (e.g., "h.0.attn.q_proj:5")
+        - embed tokens: "embed:{token_id}"
+        - component layers: "canonical_layer:c_idx" (e.g., "0.glu.up:5")
         - output tokens: "output:{token_id}"
     """
 
-    component_layer_keys: list[str]
-    """Component layer keys in order: ["h.0.attn.q_proj:0", "h.0.attn.q_proj:1", ...]"""
+    def __init__(
+        self,
+        regular_attr: dict[str, dict[str, Tensor]],
+        regular_attr_abs: dict[str, dict[str, Tensor]],
+        embed_attr: dict[str, Tensor],
+        embed_attr_abs: dict[str, Tensor],
+        unembed_attr: dict[str, Tensor],
+        embed_unembed_attr: Tensor,
+        w_unembed: Tensor,
+        ci_sum: dict[str, Tensor],
+        component_act_sq_sum: dict[str, Tensor],
+        logit_sq_sum: Tensor,
+        embed_token_count: Tensor,
+        ci_threshold: float,
+        n_tokens_processed: int,
+    ):
+        self._regular_attr = regular_attr
+        self._regular_attr_abs = regular_attr_abs
+        self._embed_attr = embed_attr
+        self._embed_attr_abs = embed_attr_abs
+        self._unembed_attr = unembed_attr
+        self._embed_unembed_attr = embed_unembed_attr
+        self._w_unembed = w_unembed
+        self._ci_sum = ci_sum
+        self._component_act_sq_sum = component_act_sq_sum
+        self._logit_sq_sum = logit_sq_sum
+        self._embed_token_count = embed_token_count
+        self.ci_threshold = ci_threshold
+        self.n_tokens_processed = n_tokens_processed
 
-    vocab_size: int
-    """Vocabulary size (number of wte and output tokens)"""
+    @property
+    def target_layers(self) -> set[str]:
+        return self._regular_attr.keys() | self._embed_attr.keys()
 
-    d_model: int
-    """Model hidden dimension (residual stream size)"""
-
-    source_to_component: Float[Tensor, "n_sources n_components"]
-    """Attributions from sources to component targets. Shape: (vocab_size + n_components, n_components)"""
-
-    source_to_out_residual: Float[Tensor, "n_sources d_model"]
-    """Attributions from sources to output residual dimensions. Shape: (vocab_size + n_components, d_model)"""
-
-    n_batches_processed: int
-    n_tokens_processed: int
-    ci_threshold: float
-
-    _component_key_to_idx: dict[str, int] = dataclasses.field(
-        default_factory=dict, repr=False, init=False
-    )
-
-    def __post_init__(self) -> None:
-        self._component_key_to_idx = {k: i for i, k in enumerate(self.component_layer_keys)}
-
-        n_components = len(self.component_layer_keys)
-        n_sources = self.vocab_size + n_components
-
-        expected_comp_shape = (n_sources, n_components)
-        assert self.source_to_component.shape == expected_comp_shape, (
-            f"source_to_component shape {self.source_to_component.shape} "
-            f"doesn't match expected {expected_comp_shape}"
-        )
-
-        expected_resid_shape = (n_sources, self.d_model)
-        assert self.source_to_out_residual.shape == expected_resid_shape, (
-            f"source_to_out_residual shape {self.source_to_out_residual.shape} "
-            f"doesn't match expected {expected_resid_shape}"
-        )
+    def _target_n_components(self, layer: str) -> int | None:
+        if layer in self._embed_attr:
+            return self._embed_attr[layer].shape[0]
+        if layer in self._regular_attr:
+            first_source = next(iter(self._regular_attr[layer].values()))
+            return first_source.shape[0]
+        return None
 
     @property
     def n_components(self) -> int:
-        return len(self.component_layer_keys)
+        total = 0
+        for layer in self.target_layers:
+            n = self._target_n_components(layer)
+            assert n is not None
+            total += n
+        return total
 
-    @property
-    def n_sources(self) -> int:
-        return self.vocab_size + self.n_components
-
-    def _parse_key(self, key: str) -> tuple[str, int]:
-        """Parse a key into (layer, idx)."""
+    @staticmethod
+    def _parse_key(key: str) -> tuple[str, int]:
         layer, idx_str = key.rsplit(":", 1)
         return layer, int(idx_str)
 
-    def _source_idx(self, key: str) -> int:
-        """Get source (row) index for a key. Raises KeyError if not a valid source."""
-        layer, idx = self._parse_key(key)
-        match layer:
-            case "wte":
-                assert 0 <= idx < self.vocab_size, (
-                    f"wte index {idx} out of range [0, {self.vocab_size})"
+    def _select_metric(
+        self, metric: AttrMetric
+    ) -> tuple[dict[str, dict[str, Tensor]], dict[str, Tensor]]:
+        match metric:
+            case "attr":
+                return self._regular_attr, self._embed_attr
+            case "attr_abs":
+                return self._regular_attr_abs, self._embed_attr_abs
+
+    def _component_activation_rms(self, layer: str) -> Tensor:
+        """RMS activation for a component layer. Shape (n_components,)."""
+        return (self._component_act_sq_sum[layer] / self.n_tokens_processed).sqrt().clamp(min=EPS)
+
+    def _logit_activation_rms(self) -> Tensor:
+        """RMS logit per token. Shape (vocab,)."""
+        return (self._logit_sq_sum / self.n_tokens_processed).sqrt().clamp(min=EPS)
+
+    def _layer_ci_sum(self, layer: str) -> Tensor:
+        """CI sum for a source layer, clamped. Shape (n_components,)."""
+        return self._ci_sum[layer].clamp(min=EPS)
+
+    def _embed_count(self) -> Tensor:
+        """Per-token occurrence count, clamped. Shape (vocab,)."""
+        return self._embed_token_count.float().clamp(min=EPS)
+
+    def get_top_sources(
+        self,
+        target_key: str,
+        k: int,
+        sign: Literal["positive", "negative"],
+        metric: AttrMetric,
+    ) -> list[DatasetAttributionEntry]:
+        target_layer, target_idx = self._parse_key(target_key)
+
+        value_segments: list[Tensor] = []
+        layer_names: list[str] = []
+        if target_layer == "embed":
+            return []
+
+        if target_layer == "output":
+            if metric == "attr_abs":
+                return []
+            w = self._w_unembed[:, target_idx].to(self._embed_unembed_attr.device)
+            target_act_rms = self._logit_activation_rms()[target_idx]
+
+            for source_layer, attr_matrix in self._unembed_attr.items():
+                raw = w @ attr_matrix  # (src_c,)
+                value_segments.append(raw / self._layer_ci_sum(source_layer) / target_act_rms)
+                layer_names.append(source_layer)
+
+            raw = w @ self._embed_unembed_attr  # (vocab,)
+            value_segments.append(raw / self._embed_count() / target_act_rms)
+            layer_names.append("embed")
+        else:
+            regular_attr, embed_target_attr = self._select_metric(metric)
+            target_act_rms = self._component_activation_rms(target_layer)[target_idx]
+
+            if target_layer in regular_attr:
+                for source_layer, attr_matrix in regular_attr[target_layer].items():
+                    raw = attr_matrix[target_idx, :]  # (src_c,)
+                    value_segments.append(raw / self._layer_ci_sum(source_layer) / target_act_rms)
+                    layer_names.append(source_layer)
+
+            if target_layer in embed_target_attr:
+                raw = embed_target_attr[target_layer][target_idx, :]  # (vocab,)
+                value_segments.append(raw / self._embed_count() / target_act_rms)
+                layer_names.append("embed")
+
+        return self._top_k_from_segments(value_segments, layer_names, k, sign)
+
+    def get_top_targets(
+        self,
+        source_key: str,
+        k: int,
+        sign: Literal["positive", "negative"],
+        metric: AttrMetric,
+        include_outputs: bool = True,
+    ) -> list[DatasetAttributionEntry]:
+        source_layer, source_idx = self._parse_key(source_key)
+
+        value_segments: list[Tensor] = []
+        layer_names: list[str] = []
+
+        if source_layer == "output":
+            return []
+        elif source_layer == "embed":
+            regular, embed = self._select_metric(metric)
+            embed_count = self._embed_count()[source_idx]
+
+            for target_layer, attr_matrix in embed.items():
+                raw = attr_matrix[:, source_idx]  # (tgt_c,)
+                value_segments.append(
+                    raw / embed_count / self._component_activation_rms(target_layer)
                 )
-                return idx
-            case "output":
-                raise KeyError(f"output tokens cannot be sources: {key}")
-            case _:
-                return self.vocab_size + self._component_key_to_idx[key]
+                layer_names.append(target_layer)
 
-    def _component_target_idx(self, key: str) -> int:
-        """Get target index for a component key. Raises KeyError if output or invalid."""
-        if key.startswith(("wte:", "output:")):
-            raise KeyError(f"Not a component target: {key}")
-        return self._component_key_to_idx[key]
+            if include_outputs and metric == "attr":
+                residual = self._embed_unembed_attr[:, source_idx]  # (d_model,)
+                raw = residual @ self._w_unembed  # (vocab,)
+                value_segments.append(raw / embed_count / self._logit_activation_rms())
+                layer_names.append("output")
+        else:
+            regular, embed = self._select_metric(metric)
+            ci = self._layer_ci_sum(source_layer)[source_idx]
 
-    def _source_idx_to_key(self, idx: int) -> str:
-        """Convert source (row) index to key."""
-        if idx < self.vocab_size:
-            return f"wte:{idx}"
-        return self.component_layer_keys[idx - self.vocab_size]
+            for target_layer, sources in regular.items():
+                if source_layer not in sources:
+                    continue
+                raw = sources[source_layer][:, source_idx]  # (tgt_c,)
+                value_segments.append(raw / ci / self._component_activation_rms(target_layer))
+                layer_names.append(target_layer)
 
-    def _component_target_idx_to_key(self, idx: int) -> str:
-        """Convert component target index to key."""
-        return self.component_layer_keys[idx]
+            if include_outputs and metric == "attr" and source_layer in self._unembed_attr:
+                residual = self._unembed_attr[source_layer][:, source_idx]  # (d_model,)
+                raw = residual @ self._w_unembed  # (vocab,)
+                value_segments.append(raw / ci / self._logit_activation_rms())
+                layer_names.append("output")
 
-    def _output_target_idx_to_key(self, idx: int) -> str:
-        """Convert output token index to key."""
-        return f"output:{idx}"
+        return self._top_k_from_segments(value_segments, layer_names, k, sign)
 
-    def _is_output_target(self, key: str) -> bool:
-        """Check if key is an output target."""
-        return key.startswith("output:")
+    def _top_k_from_segments(
+        self,
+        value_segments: list[Tensor],
+        layer_names: list[str],
+        k: int,
+        sign: Literal["positive", "negative"],
+    ) -> list[DatasetAttributionEntry]:
+        if not value_segments:
+            return []
 
-    def _output_token_id(self, key: str) -> int:
-        """Extract token_id from an output key like 'output:123'. Asserts valid range."""
-        _, token_id = self._parse_key(key)
-        assert 0 <= token_id < self.vocab_size, f"output index {token_id} out of range"
-        return token_id
+        all_values = torch.cat(value_segments)
+        offsets = [0]
+        for seg in value_segments:
+            offsets.append(offsets[-1] + len(seg))
 
-    def has_source(self, key: str) -> bool:
-        """Check if a key can be a source (wte token or component layer)."""
-        layer, idx = self._parse_key(key)
-        match layer:
-            case "wte":
-                return 0 <= idx < self.vocab_size
-            case "output":
-                return False
-            case _:
-                return key in self._component_key_to_idx
+        is_positive = sign == "positive"
+        top_vals, top_idxs = torch.topk(all_values, min(k, len(all_values)), largest=is_positive)
 
-    def has_target(self, key: str) -> bool:
-        """Check if a key can be a target (component layer or output token)."""
-        layer, idx = self._parse_key(key)
-        match layer:
-            case "wte":
-                return False
-            case "output":
-                return 0 <= idx < self.vocab_size
-            case _:
-                return key in self._component_key_to_idx
+        mask = top_vals > 0 if is_positive else top_vals < 0
+        top_vals, top_idxs = top_vals[mask], top_idxs[mask]
+
+        results = []
+        for flat_idx, val in zip(top_idxs.tolist(), top_vals.tolist(), strict=True):
+            seg_idx = bisect.bisect_right(offsets, flat_idx) - 1
+            local_idx = flat_idx - offsets[seg_idx]
+            layer = layer_names[seg_idx]
+            results.append(
+                DatasetAttributionEntry(
+                    component_key=f"{layer}:{local_idx}",
+                    layer=layer,
+                    component_idx=local_idx,
+                    value=val,
+                )
+            )
+        return results
+
+    def get_attribution(self, source_key: str, target_key: str) -> float:
+        source_layer, source_idx = self._parse_key(source_key)
+        target_layer, target_idx = self._parse_key(target_key)
+
+        if target_layer == "output" and source_layer == "embed":
+            return (self._embed_unembed_attr[:, source_idx] @ self._w_unembed[:, target_idx]).item()
+        elif target_layer == "output" and source_layer != "embed":
+            return (
+                self._unembed_attr[source_layer][:, source_idx] @ self._w_unembed[:, target_idx]
+            ).item()
+        elif target_layer != "output" and source_layer == "embed":
+            return (self._embed_attr[target_layer][target_idx, source_idx]).item()
+        else:
+            assert target_layer != "output" and source_layer != "embed"
+            return (self._regular_attr[target_layer][source_layer][target_idx, source_idx]).item()
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
-                "component_layer_keys": self.component_layer_keys,
-                "vocab_size": self.vocab_size,
-                "d_model": self.d_model,
-                "source_to_component": self.source_to_component.cpu(),
-                "source_to_out_residual": self.source_to_out_residual.cpu(),
-                "n_batches_processed": self.n_batches_processed,
-                "n_tokens_processed": self.n_tokens_processed,
+                "regular_attr": _to_cpu_nested(self._regular_attr),
+                "regular_attr_abs": _to_cpu_nested(self._regular_attr_abs),
+                "embed_attr": _to_cpu(self._embed_attr),
+                "embed_attr_abs": _to_cpu(self._embed_attr_abs),
+                "unembed_attr": _to_cpu(self._unembed_attr),
+                "embed_unembed_attr": self._embed_unembed_attr.detach().cpu(),
+                "w_unembed": self._w_unembed.detach().cpu(),
+                "ci_sum": _to_cpu(self._ci_sum),
+                "component_act_sq_sum": _to_cpu(self._component_act_sq_sum),
+                "logit_sq_sum": self._logit_sq_sum.detach().cpu(),
+                "embed_token_count": self._embed_token_count.detach().cpu(),
                 "ci_threshold": self.ci_threshold,
+                "n_tokens_processed": self.n_tokens_processed,
             },
             path,
         )
@@ -192,154 +310,72 @@ class DatasetAttributionStorage:
 
     @classmethod
     def load(cls, path: Path) -> "DatasetAttributionStorage":
-        data = torch.load(path, weights_only=True, mmap=True)
+        data = torch.load(path, weights_only=True)
         return cls(
-            component_layer_keys=data["component_layer_keys"],
-            vocab_size=data["vocab_size"],
-            d_model=data["d_model"],
-            source_to_component=data["source_to_component"],
-            source_to_out_residual=data["source_to_out_residual"],
-            n_batches_processed=data["n_batches_processed"],
-            n_tokens_processed=data["n_tokens_processed"],
+            regular_attr=data["regular_attr"],
+            regular_attr_abs=data["regular_attr_abs"],
+            embed_attr=data["embed_attr"],
+            embed_attr_abs=data["embed_attr_abs"],
+            unembed_attr=data["unembed_attr"],
+            embed_unembed_attr=data["embed_unembed_attr"],
+            w_unembed=data["w_unembed"],
+            ci_sum=data["ci_sum"],
+            component_act_sq_sum=data["component_act_sq_sum"],
+            logit_sq_sum=data["logit_sq_sum"],
+            embed_token_count=data["embed_token_count"],
             ci_threshold=data["ci_threshold"],
+            n_tokens_processed=data["n_tokens_processed"],
         )
 
-    def get_attribution(
-        self,
-        source_key: str,
-        target_key: str,
-        w_unembed: Float[Tensor, "d_model vocab"] | None = None,
-    ) -> float:
-        """Get attribution strength from source to target.
+    @classmethod
+    def merge(cls, paths: list[Path]) -> "DatasetAttributionStorage":
+        """Merge partial attribution files from parallel workers.
 
-        Args:
-            source_key: Source component key (wte or component layer)
-            target_key: Target component key (component layer or output token)
-            w_unembed: Unembedding matrix, required if target is an output token
+        All stored values are raw sums — merge is element-wise addition.
         """
-        src_idx = self._source_idx(source_key)
+        assert paths, "No files to merge"
 
-        if self._is_output_target(target_key):
-            assert w_unembed is not None, "w_unembed required for output target queries"
-            token_id = self._output_token_id(target_key)
-            w_unembed = w_unembed.to(self.source_to_out_residual.device)
-            return (self.source_to_out_residual[src_idx] @ w_unembed[:, token_id]).item()
+        merged = cls.load(paths[0])
 
-        tgt_idx = self._component_target_idx(target_key)
-        return self.source_to_component[src_idx, tgt_idx].item()
+        for path in paths[1:]:
+            other = cls.load(path)
+            assert other.ci_threshold == merged.ci_threshold, "CI threshold mismatch"
 
-    def _get_top_k(
-        self,
-        values: Tensor,
-        k: int,
-        sign: Literal["positive", "negative"],
-        idx_to_key: Callable[[int], str],
-    ) -> list[DatasetAttributionEntry]:
-        """Get top-k entries from a 1D tensor of attribution values."""
-        is_positive = sign == "positive"
-        top_vals, top_idxs = torch.topk(values, min(k, len(values)), largest=is_positive)
+            for target, sources in other._regular_attr.items():
+                for source, tensor in sources.items():
+                    merged._regular_attr[target][source] += tensor
+                    merged._regular_attr_abs[target][source] += other._regular_attr_abs[target][
+                        source
+                    ]
 
-        # Filter to only values matching the requested sign
-        mask = top_vals > 0 if is_positive else top_vals < 0
-        top_vals, top_idxs = top_vals[mask], top_idxs[mask]
+            for target, tensor in other._embed_attr.items():
+                merged._embed_attr[target] += tensor
+                merged._embed_attr_abs[target] += other._embed_attr_abs[target]
 
-        results = []
-        for idx, val in zip(top_idxs.tolist(), top_vals.tolist(), strict=True):
-            key = idx_to_key(idx)
-            layer, c_idx = self._parse_key(key)
-            results.append(
-                DatasetAttributionEntry(
-                    component_key=key,
-                    layer=layer,
-                    component_idx=c_idx,
-                    value=val,
-                )
-            )
-        return results
+            for source, tensor in other._unembed_attr.items():
+                merged._unembed_attr[source] += tensor
 
-    def get_top_sources(
-        self,
-        target_key: str,
-        k: int,
-        sign: Literal["positive", "negative"],
-        w_unembed: Float[Tensor, "d_model vocab"] | None = None,
-    ) -> list[DatasetAttributionEntry]:
-        """Get top-k source components that attribute TO this target.
+            merged._embed_unembed_attr += other._embed_unembed_attr
 
-        Args:
-            target_key: Target component key (component layer or output token)
-            k: Number of top sources to return
-            sign: "positive" for strongest positive, "negative" for strongest negative
-            w_unembed: Unembedding matrix, required if target is an output token
-        """
-        if self._is_output_target(target_key):
-            assert w_unembed is not None, "w_unembed required for output target queries"
-            token_id = self._output_token_id(target_key)
-            w_unembed = w_unembed.to(self.source_to_out_residual.device)
-            values = self.source_to_out_residual @ w_unembed[:, token_id]  # (n_sources,)
-        else:
-            tgt_idx = self._component_target_idx(target_key)
-            values = self.source_to_component[:, tgt_idx]
+            for layer in other._ci_sum:
+                merged._ci_sum[layer] += other._ci_sum[layer]
 
-        return self._get_top_k(values, k, sign, self._source_idx_to_key)
+            for layer in other._component_act_sq_sum:
+                merged._component_act_sq_sum[layer] += other._component_act_sq_sum[layer]
 
-    def get_top_targets(
-        self,
-        source_key: str,
-        k: int,
-        sign: Literal["positive", "negative"],
-        w_unembed: Float[Tensor, "d_model vocab"] | None = None,
-        include_outputs: bool = True,
-    ) -> list[DatasetAttributionEntry]:
-        """Get top-k target components this source attributes TO.
+            merged._logit_sq_sum += other._logit_sq_sum
+            merged._embed_token_count += other._embed_token_count
+            merged.n_tokens_processed += other.n_tokens_processed
 
-        Args:
-            source_key: Source component key (wte or component layer)
-            k: Number of top targets to return
-            sign: "positive" for strongest positive, "negative" for strongest negative
-            w_unembed: Unembedding matrix, required if include_outputs=True
-            include_outputs: Whether to include output tokens in results
-        """
-        src_idx = self._source_idx(source_key)
-        comp_values = self.source_to_component[src_idx, :]  # (n_components,)
+        return merged
 
-        if include_outputs:
-            assert w_unembed is not None, "w_unembed required when include_outputs=True"
-            # Compute attributions to all output tokens
-            w_unembed = w_unembed.to(self.source_to_out_residual.device)
-            output_values = self.source_to_out_residual[src_idx, :] @ w_unembed  # (vocab,)
-            all_values = torch.cat([comp_values, output_values])
 
-            def combined_idx_to_key(idx: int) -> str:
-                if idx < self.n_components:
-                    return self._component_target_idx_to_key(idx)
-                return self._output_target_idx_to_key(idx - self.n_components)
+def _to_cpu_nested(d: dict[str, dict[str, Tensor]]) -> dict[str, dict[str, Tensor]]:
+    return {
+        target: {source: v.detach().cpu() for source, v in sources.items()}
+        for target, sources in d.items()
+    }
 
-            return self._get_top_k(all_values, k, sign, combined_idx_to_key)
 
-        return self._get_top_k(comp_values, k, sign, self._component_target_idx_to_key)
-
-    def get_top_component_targets(
-        self,
-        source_key: str,
-        k: int,
-        sign: Literal["positive", "negative"],
-    ) -> list[DatasetAttributionEntry]:
-        """Get top-k component targets (excluding outputs) this source attributes TO.
-
-        Convenience method that doesn't require w_unembed.
-        """
-        return self.get_top_targets(source_key, k, sign, w_unembed=None, include_outputs=False)
-
-    def get_top_output_targets(
-        self,
-        source_key: str,
-        k: int,
-        sign: Literal["positive", "negative"],
-        w_unembed: Float[Tensor, "d_model vocab"],
-    ) -> list[DatasetAttributionEntry]:
-        """Get top-k output token targets this source attributes TO."""
-        src_idx = self._source_idx(source_key)
-        w_unembed = w_unembed.to(self.source_to_out_residual.device)
-        output_values = self.source_to_out_residual[src_idx, :] @ w_unembed  # (vocab,)
-        return self._get_top_k(output_values, k, sign, self._output_target_idx_to_key)
+def _to_cpu(d: dict[str, Tensor]) -> dict[str, Tensor]:
+    return {k: v.detach().cpu() for k, v in d.items()}

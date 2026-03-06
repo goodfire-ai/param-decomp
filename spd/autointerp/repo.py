@@ -12,8 +12,9 @@ from typing import Any
 
 import yaml
 
-from spd.autointerp.db import InterpDB
+from spd.autointerp.db import DONE_MARKER, InterpDB
 from spd.autointerp.schemas import InterpretationResult, get_autointerp_dir
+from spd.log import logger
 
 
 class InterpRepo:
@@ -29,25 +30,30 @@ class InterpRepo:
         self.run_id = run_id
 
     @classmethod
-    def _find_latest_subrun_dir(cls, run_id: str) -> Path | None:
+    def _find_latest_done_subrun_dir(cls, run_id: str) -> Path | None:
         autointerp_dir = get_autointerp_dir(run_id)
         if not autointerp_dir.exists():
             return None
         candidates = sorted(
-            [d for d in autointerp_dir.iterdir() if d.is_dir() and d.name.startswith("a-")],
+            [
+                d
+                for d in autointerp_dir.iterdir()
+                if d.is_dir() and d.name.startswith("a-") and (d / DONE_MARKER).exists()
+            ],
             key=lambda d: d.name,
         )
         return candidates[-1] if candidates else None
 
     @classmethod
     def open(cls, run_id: str) -> "InterpRepo | None":
-        """Open autointerp data for a run. Returns None if no autointerp data exists."""
-        subrun_dir = cls._find_latest_subrun_dir(run_id)
+        """Open autointerp data for a run. Returns None if no completed autointerp data exists."""
+        subrun_dir = cls._find_latest_done_subrun_dir(run_id)
         if subrun_dir is None:
             return None
         db_path = subrun_dir / "interp.db"
         if not db_path.exists():
             return None
+        logger.info(f"Opening autointerp data for {run_id} from {subrun_dir}")
         return cls(
             db=InterpDB(db_path, readonly=True),
             subrun_dir=subrun_dir,

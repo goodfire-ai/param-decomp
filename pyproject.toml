@@ -33,8 +33,9 @@ dependencies = [
     "orjson",
     "aiolimiter>=1.2",
     "openrouter>=0.1.1",
-    "httpx>=0.28.0",
-    "zstandard" # For streaming datasets
+    "httpx>=0.28.0", # For streaming datasets
+    "zstandard",
+    "kaleido==0.2.1",
 ]
 
 [dependency-groups]
@@ -56,7 +57,9 @@ spd-clustering = "spd.clustering.scripts.run_pipeline:cli"
 spd-harvest = "spd.harvest.scripts.run_slurm_cli:cli"
 spd-autointerp = "spd.autointerp.scripts.run_slurm_cli:cli"
 spd-attributions = "spd.dataset_attributions.scripts.run_slurm_cli:cli"
+spd-investigate = "spd.investigate.scripts.run_slurm_cli:cli"
 spd-postprocess = "spd.postprocess.cli:cli"
+spd-graph-interp = "spd.graph_interp.scripts.run_slurm_cli:cli"
 
 [build-system]
 requires = ["setuptools", "wheel"]
@@ -69,7 +72,7 @@ include = ["spd*"]
 [tool.ruff]
 line-length = 100
 fix = true
-extend-exclude = ["spd/app/frontend"]
+extend-exclude = ["spd/app/frontend", ".circuits-ref"]
 
 [tool.ruff.lint]
 ignore = [

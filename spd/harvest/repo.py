@@ -55,8 +55,10 @@ class HarvestRepo:
 
         db_path = subrun_dir / "harvest.db"
         if not db_path.exists():
+            logger.info(f"No harvest data found for {decomposition_id}")
             return None
 
+        logger.info(f"Opening harvest data for {decomposition_id} from {subrun_dir}")
         subrun_id = subrun_dir.name
 
         return cls(decomposition_id=decomposition_id, subrun_id=subrun_id, readonly=readonly)

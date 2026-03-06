@@ -31,7 +31,11 @@ WORKSPACE_TEMPLATES = {
 
 # Regex patterns for parsing W&B run references
 # Run IDs can be 8 chars (e.g., "d2ec3bfe") or prefixed with char-dash (e.g., "s-d2ec3bfe")
+DEFAULT_WANDB_ENTITY = "goodfire"
+DEFAULT_WANDB_PROJECT = "spd"
+
 _RUN_ID_PATTERN = r"(?:[a-z0-9]-)?[a-z0-9]{8}"
+_BARE_RUN_ID_RE = re.compile(r"^(s-[a-z0-9]{8})$")
 _WANDB_PATH_RE = re.compile(rf"^([^/\s]+)/([^/\s]+)/({_RUN_ID_PATTERN})$")
 _WANDB_PATH_WITH_RUNS_RE = re.compile(rf"^([^/\s]+)/([^/\s]+)/runs/({_RUN_ID_PATTERN})$")
 _WANDB_URL_RE = re.compile(
@@ -174,6 +178,7 @@ def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
     """Parse various W&B run reference formats into (entity, project, run_id).
 
     Accepts:
+    - "s-xxxxxxxx" (bare SPD run ID, assumes goodfire/spd)
     - "entity/project/runId" (compact form)
     - "entity/project/runs/runId" (with /runs/)
     - "wandb:entity/project/runId" (with wandb: prefix)
@@ -192,6 +197,10 @@ def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
     if s.startswith("wandb:"):
         s = s[6:]
 
+    # Bare run ID (e.g. "s-17805b61") → default entity/project
+    if m := _BARE_RUN_ID_RE.match(s):
+        return DEFAULT_WANDB_ENTITY, DEFAULT_WANDB_PROJECT, m.group(1)
+
     # Try compact form: entity/project/runid
     if m := _WANDB_PATH_RE.match(s):
         return m.group(1), m.group(2), m.group(3)
@@ -206,6 +215,7 @@ def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
 
     raise ValueError(
         f"Invalid W&B run reference. Expected one of:\n"
+        f' - "s-xxxxxxxx" (bare run ID)\n'
         f' - "entity/project/xxxxxxxx"\n'
         f' - "entity/project/runs/xxxxxxxx"\n'
         f' - "wandb:entity/project/runs/xxxxxxxx"\n'

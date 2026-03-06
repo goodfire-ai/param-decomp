@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from spd.adapters import adapter_from_id
 from spd.autointerp.config import AutointerpConfig
 from spd.autointerp.interpret import run_interpret
-from spd.autointerp.schemas import get_autointerp_subrun_dir
+from spd.autointerp.schemas import get_autointerp_dir, get_autointerp_subrun_dir
 from spd.harvest.repo import HarvestRepo
 from spd.log import logger
 
@@ -23,6 +23,7 @@ def main(
     decomposition_id: str,
     config_json: dict[str, Any],
     harvest_subrun_id: str | None = None,
+    autointerp_subrun_id: str | None = None,
 ) -> None:
     assert isinstance(config_json, dict), f"Expected dict from fire, got {type(config_json)}"
     interp_config = AutointerpConfig.model_validate(config_json)
@@ -38,10 +39,14 @@ def main(
         if harvest is None:
             raise ValueError(f"No harvest data found for {decomposition_id}")
 
-    autointerp_run_id = "a-" + datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    subrun_dir = get_autointerp_subrun_dir(decomposition_id, autointerp_run_id)
-    subrun_dir.mkdir(parents=True, exist_ok=True)
+    if autointerp_subrun_id is not None:
+        subrun_dir = get_autointerp_dir(decomposition_id) / autointerp_subrun_id
+        assert subrun_dir.exists(), f"Subrun dir not found: {subrun_dir}"
+        logger.info(f"Resuming existing subrun: {autointerp_subrun_id}")
+    else:
+        autointerp_subrun_id = "a-" + datetime.now().strftime("%Y%m%d_%H%M%S")
+        subrun_dir = get_autointerp_subrun_dir(decomposition_id, autointerp_subrun_id)
+        subrun_dir.mkdir(parents=True, exist_ok=True)
 
     # Save config for reproducibility
     interp_config.to_file(subrun_dir / "config.yaml")
@@ -72,6 +77,7 @@ def get_command(
     decomposition_id: str,
     config: AutointerpConfig,
     harvest_subrun_id: str | None = None,
+    autointerp_subrun_id: str | None = None,
 ) -> str:
     config_json = config.model_dump_json(exclude_none=True)
     cmd = (
@@ -81,6 +87,8 @@ def get_command(
     )
     if harvest_subrun_id is not None:
         cmd += f"--harvest_subrun_id {harvest_subrun_id} "
+    if autointerp_subrun_id is not None:
+        cmd += f"--autointerp_subrun_id {autointerp_subrun_id} "
     return cmd
 
 
