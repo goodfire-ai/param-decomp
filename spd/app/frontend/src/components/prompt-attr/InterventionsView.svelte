@@ -1,10 +1,11 @@
 <script lang="ts">
     import { getContext } from "svelte";
     import { SvelteSet } from "svelte/reactivity";
-    import { colors, getEdgeColor, getOutputHeaderColor, rgbaToCss } from "../../lib/colors";
+    import { colors, getEdgeColor, getNextTokenProbBgColor, rgbaToCss } from "../../lib/colors";
     import type { Loadable } from "../../lib/index";
     import type { NormalizeType } from "../../lib/api";
-    import { isInterventableNode, type NodePosition } from "../../lib/promptAttributionsTypes";
+    import { isInterventableNode, getActiveEdges, type NodePosition } from "../../lib/promptAttributionsTypes";
+    import { displaySettings } from "../../lib/displaySettings.svelte";
     import { RUN_KEY, type RunContext } from "../../lib/useRun.svelte";
     import {
         parseLayer,
@@ -27,7 +28,7 @@
         type TooltipPos,
     } from "./graphUtils";
     import NodeTooltip from "./NodeTooltip.svelte";
-    import TokenDropdown from "./TokenDropdown.svelte";
+    // TokenDropdown import removed — fork modal disabled
     import type { StoredGraph } from "./types";
     import ViewControls from "./ViewControls.svelte";
     import { useZoomPan } from "../../lib/useZoomPan.svelte";
@@ -36,23 +37,27 @@
     // Layout constants
     const COMPONENT_SIZE = 6;
     const HIT_AREA_PADDING = 4;
-    const MARGIN = { top: 60, right: 40, bottom: 20, left: 20 };
+    const PRED_ROW_HEIGHT = 36;
+    const PRED_ROW_GAP = 6;
+    const BASE_MARGIN_TOP = 60;
     const LABEL_WIDTH = 100;
     const CLUSTER_BAR_HEIGHT = 3;
     const CLUSTER_BAR_GAP = 2;
     const LAYER_X_OFFSET = 3; // Horizontal offset per layer to avoid edge overlap
 
-    // Logits display constants
-    const MAX_PREDICTIONS = 5;
-
-    import type { ForkedInterventionRunSummary } from "../../lib/interventionTypes";
+    import {
+        EVAL_PGD_N_STEPS,
+        EVAL_PGD_STEP_SIZE,
+        type InterventionState,
+        type InterventionRun,
+        type InterventionResult,
+        type TokenPrediction,
+    } from "../../lib/interventionTypes";
 
     type Props = {
         graph: StoredGraph;
-        composerSelection: Set<string>;
-        activeRunId: number | null;
+        interventionState: InterventionState;
         tokens: string[];
-        tokenIds: number[];
         // View settings (shared with main graph)
         topK: number;
         componentGap: number;
@@ -68,24 +73,22 @@
         onCiThresholdChange: (value: number) => void;
         onHideUnpinnedEdgesChange: (value: boolean) => void;
         onHideNodeCardChange: (value: boolean) => void;
-        // Other props
+        // Actions
         runningIntervention: boolean;
         generatingSubgraph: boolean;
         onSelectionChange: (selection: Set<string>) => void;
-        onRunIntervention: () => void;
-        onSelectRun: (runId: number) => void;
+        onForwardDraft: (advPgd: { n_steps: number; step_size: number }) => void;
+        onCloneRun: () => void;
+        onSelectVersion: (index: number) => void;
         onDeleteRun: (runId: number) => void;
-        onForkRun: (runId: number, tokenReplacements: [number, number][]) => Promise<ForkedInterventionRunSummary>;
-        onDeleteFork: (forkId: number) => void;
         onGenerateGraphFromSelection: () => void;
+        onHoveredNodeChange?: (node: { layer: string; seqIdx: number; cIdx: number } | null) => void;
     };
 
     let {
         graph,
-        composerSelection,
-        activeRunId,
+        interventionState,
         tokens,
-        tokenIds,
         topK,
         componentGap,
         layerGap,
@@ -103,65 +106,79 @@
         runningIntervention,
         generatingSubgraph,
         onSelectionChange,
-        onRunIntervention,
-        onSelectRun,
+        onForwardDraft,
+        onCloneRun,
+        onSelectVersion,
         onDeleteRun,
-        onForkRun,
-        onDeleteFork,
         onGenerateGraphFromSelection,
+        onHoveredNodeChange,
     }: Props = $props();
 
-    // Fork modal state
-    // Per-position state: { value: display string, tokenId: selected token ID or null }
-    type ForkSlotState = { value: string; tokenId: number | null };
-    let forkingRunId = $state<number | null>(null);
-    let forkSlotStates = $state<ForkSlotState[]>([]);
-    let forkingInProgress = $state(false);
+    // Derived: active run and editability
+    const activeRun = $derived(interventionState.runs[interventionState.activeIndex]);
+    const isEditable = $derived(activeRun.kind === "draft");
+    // All interventable nodes = the base baked run's selection (single source of truth)
+    const allInterventableNodes = $derived.by(() => {
+        const baseRun = interventionState.runs[0];
+        if (baseRun.kind !== "baked") throw new Error("First intervention run must be a baked base run");
+        return baseRun.selectedNodes;
+    });
+    const effectiveSelection = $derived(activeRun.selectedNodes);
 
-    function openForkModal(runId: number) {
-        forkingRunId = runId;
-        // Initialize each slot with the original token
-        forkSlotStates = tokens.map((tok, idx) => ({
-            value: tok,
-            tokenId: tokenIds[idx],
-        }));
-    }
+    let advPgdNSteps = $state(EVAL_PGD_N_STEPS);
+    let advPgdStepSize = $state(EVAL_PGD_STEP_SIZE);
 
-    function closeForkModal() {
-        forkingRunId = null;
-        forkSlotStates = [];
-    }
-
-    function handleForkSlotSelect(seqPos: number, tokenId: number | null, tokenString: string) {
-        forkSlotStates = forkSlotStates.map((slot, idx) => (idx === seqPos ? { value: tokenString, tokenId } : slot));
-    }
-
-    function resetForkSlot(seqPos: number) {
-        forkSlotStates = forkSlotStates.map((slot, idx) =>
-            idx === seqPos ? { value: tokens[idx], tokenId: tokenIds[idx] } : slot,
-        );
-    }
-
-    // Computed: which positions have valid replacements (different from original)
-    const forkReplacements = $derived.by(() => {
-        const replacements: [number, number][] = [];
-        for (let i = 0; i < forkSlotStates.length; i++) {
-            const slot = forkSlotStates[i];
-            if (slot.tokenId !== null && slot.tokenId !== tokenIds[i]) {
-                replacements.push([i, slot.tokenId]);
-            }
-        }
-        return replacements;
+    // Intervention result from baked run, null for draft
+    const interventionResult = $derived.by((): InterventionResult | null => {
+        if (activeRun.kind === "baked") return activeRun.result;
+        return null;
     });
 
-    async function submitFork() {
-        if (forkingRunId === null || forkReplacements.length === 0) return;
-        forkingInProgress = true;
-        try {
-            await onForkRun(forkingRunId, forkReplacements);
-            closeForkModal();
-        } finally {
-            forkingInProgress = false;
+    // Prediction rows for rendering: [{label, preds, labelPred}] ordered top-to-bottom (Adv, Stoch, CI)
+    type PredRow = { label: string; preds: TokenPrediction[][]; labelPred: TokenPrediction | null };
+    const predRows = $derived.by((): PredRow[] | null => {
+        if (!interventionResult) return null;
+        const lbl = interventionResult.label;
+        const rows: PredRow[] = [];
+        if (interventionResult.adversarial.length > 0)
+            rows.push({ label: "Adv", preds: interventionResult.adversarial, labelPred: lbl?.adversarial ?? null });
+        if (interventionResult.stochastic.length > 0)
+            rows.push({ label: "Stoch", preds: interventionResult.stochastic, labelPred: lbl?.stochastic ?? null });
+        rows.push({ label: "CI", preds: interventionResult.ci, labelPred: lbl?.ci ?? null });
+        if (interventionResult.ablated && interventionResult.ablated.length > 0)
+            rows.push({ label: "T\\S", preds: interventionResult.ablated, labelPred: lbl?.ablated ?? null });
+        return rows;
+    });
+
+    const predRowCount = $derived(predRows ? predRows.length : 0);
+    const PRED_AREA_HEIGHT = $derived(
+        predRowCount > 0 ? predRowCount * (PRED_ROW_HEIGHT + PRED_ROW_GAP) + PRED_ROW_GAP : 0,
+    );
+
+    const MARGIN = $derived({
+        top: BASE_MARGIN_TOP,
+        right: 40,
+        bottom: 20,
+        left: 20,
+    });
+
+    // Optimization target highlight
+    const optimizationTarget = $derived.by(() => {
+        const opt = graph.data.optimization;
+        if (!opt) return null;
+        return {
+            position: opt.loss.position,
+            label: opt.loss.type === "ce" ? opt.loss.label_str : null,
+        };
+    });
+
+    // Version list identity key
+    function runIdentityKey(run: InterventionRun, index: number): string {
+        switch (run.kind) {
+            case "draft":
+                return `draft-${index}`;
+            case "baked":
+                return `baked-${run.id}`;
         }
     }
 
@@ -171,6 +188,24 @@
     let isHoveringTooltip = $state(false);
     let tooltipPos = $state<TooltipPos>({ left: 0, top: 0 });
     let hoverTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    $effect(() => {
+        onHoveredNodeChange?.(hoveredNode);
+    });
+
+    // Hover state for prediction chips
+    type HoveredPred = { pred: TokenPrediction; rowLabel: string; seqIdx: number };
+    let hoveredPred = $state<HoveredPred | null>(null);
+    let predTooltipPos = $state<TooltipPos>({ left: 0, top: 0 });
+
+    function handlePredMouseEnter(e: MouseEvent, pred: TokenPrediction, rowLabel: string, seqIdx: number) {
+        hoveredPred = { pred, rowLabel, seqIdx };
+        predTooltipPos = calcTooltipPos(e.clientX, e.clientY, "small");
+    }
+
+    function handlePredMouseLeave() {
+        hoveredPred = null;
+    }
 
     // Refs
     let graphContainer: HTMLDivElement;
@@ -216,21 +251,18 @@
     // All nodes from the graph (for rendering)
     const allNodes = $derived(new SvelteSet(Object.keys(graph.data.nodeCiVals)));
 
-    // Interventable nodes only (for selection)
-    const interventableNodes = $derived.by(() => {
-        const nodes = new SvelteSet<string>();
-        for (const nodeKey of allNodes) {
-            if (isInterventableNode(nodeKey)) nodes.add(nodeKey);
-        }
-        return nodes;
-    });
+    // Select active edge variant
+    const active = $derived(getActiveEdges(graph.data, displaySettings.edgeVariant));
+    const activeEdges = $derived(active.edges);
+    const activeEdgesBySource = $derived(active.bySource);
+    const activeEdgesByTarget = $derived(active.byTarget);
 
     // Filter edges for rendering (topK by magnitude, optionally hide edges not connected to selected nodes).
     // Edges arrive pre-sorted by abs(val) desc from backend, so filter preserves order and we just slice.
     const filteredEdges = $derived.by(() => {
-        let edges = graph.data.edges;
-        if (hideUnpinnedEdges && composerSelection.size > 0) {
-            edges = edges.filter((e) => composerSelection.has(e.src) || composerSelection.has(e.tgt));
+        let edges = activeEdges;
+        if (hideUnpinnedEdges && effectiveSelection.size > 0) {
+            edges = edges.filter((e) => effectiveSelection.has(e.src) || effectiveSelection.has(e.tgt));
         }
         return edges.slice(0, topK);
     });
@@ -401,18 +433,19 @@
     });
 
     // Derived values
-    const maxAbsAttr = $derived(graph.data.maxAbsAttr || 1);
-    const selectedCount = $derived(composerSelection.size);
-    const interventableCount = $derived(interventableNodes.size);
+    const maxAbsAttr = $derived(active.maxAbsAttr);
+    const selectedCount = $derived(effectiveSelection.size);
+    const interventableCount = $derived(allInterventableNodes.size);
 
     // Selection helpers
     function isNodeSelected(nodeKey: string): boolean {
-        return composerSelection.has(nodeKey);
+        return effectiveSelection.has(nodeKey);
     }
 
     function toggleNode(nodeKey: string) {
-        if (!isInterventableNode(nodeKey)) return; // Can't toggle non-interventable nodes
-        const newSelection = new SvelteSet(composerSelection);
+        if (!isEditable) return;
+        if (!isInterventableNode(nodeKey)) return;
+        const newSelection = new SvelteSet(effectiveSelection);
         if (newSelection.has(nodeKey)) {
             newSelection.delete(nodeKey);
         } else {
@@ -422,10 +455,24 @@
     }
 
     function selectAll() {
-        onSelectionChange(new SvelteSet(interventableNodes));
+        if (!isEditable) return;
+        onSelectionChange(new SvelteSet(allInterventableNodes));
+    }
+
+    function selectAllKV() {
+        if (!isEditable) return;
+        const kvNodes = new SvelteSet<string>();
+        for (const nodeKey of allInterventableNodes) {
+            const layer = nodeKey.split(":")[0];
+            if (layer.endsWith("k_proj") || layer.endsWith("v_proj")) {
+                kvNodes.add(nodeKey);
+            }
+        }
+        onSelectionChange(kvNodes);
     }
 
     function clearSelection() {
+        if (!isEditable) return;
         onSelectionChange(new SvelteSet());
     }
 
@@ -483,6 +530,7 @@
     }
 
     function handleSvgMouseDown(event: MouseEvent) {
+        if (!isEditable) return;
         const target = event.target as Element;
         if (target.closest(".node-group")) return;
 
@@ -520,7 +568,7 @@
         if (dragDistance > 5) {
             // Find nodes within the selection rectangle
             const nodesToToggle: string[] = [];
-            for (const nodeKey of interventableNodes) {
+            for (const nodeKey of allInterventableNodes) {
                 const pos = layout.nodePositions[nodeKey];
                 if (!pos) continue;
 
@@ -532,7 +580,7 @@
 
             // Toggle selection for nodes in rect
             if (nodesToToggle.length > 0) {
-                const newSelection = new SvelteSet(composerSelection);
+                const newSelection = new SvelteSet(effectiveSelection);
                 for (const nodeKey of nodesToToggle) {
                     if (newSelection.has(nodeKey)) {
                         newSelection.delete(nodeKey);
@@ -585,15 +633,6 @@
         return new Date(timestamp).toLocaleTimeString();
     }
 
-    function formatProb(prob: number): string {
-        if (prob >= 0.01) return (prob * 100).toFixed(1) + "%";
-        return (prob * 100).toExponential(1) + "%";
-    }
-
-    function formatLogit(logit: number): string {
-        return logit.toFixed(2);
-    }
-
     function getRowLabel(layer: string): string {
         return _getRowLabel(layer);
     }
@@ -623,30 +662,53 @@
 
         <!-- Intervention controls -->
         <div class="intervention-controls">
-            <span class="node-count">{selectedCount} / {interventableCount} selected</span>
+            <span class="node-count"
+                >{selectedCount} / {interventableCount} nodes{#if !isEditable}&nbsp;(read-only){/if}</span
+            >
             <span
                 class="info-icon"
                 data-tooltip="NOTE: Biases in each layer that have them are always active, regardless of which components are selected"
                 >?</span
             >
             <div class="button-group">
-                <button onclick={selectAll}>Select All</button>
-                <button onclick={clearSelection}>Clear</button>
-                <button
-                    class="generate-btn"
-                    onclick={onGenerateGraphFromSelection}
-                    disabled={generatingSubgraph ||
-                        selectedCount === 0 ||
-                        (interventableCount > 0 && selectedCount === interventableCount)}
-                    title={selectedCount === 0
-                        ? "Select components to include in subgraph"
-                        : "Generate a subgraph showing only attributions between selected components"}
-                >
-                    {generatingSubgraph ? "Generating..." : "Generate subgraph"}
-                </button>
-                <button class="run-btn" onclick={onRunIntervention} disabled={runningIntervention}>
-                    {runningIntervention ? "Running..." : "Run forward pass"}
-                </button>
+                {#if isEditable}
+                    <button onclick={selectAll}>Select All</button>
+                    <button onclick={selectAllKV}>Select All K/V</button>
+                    <button onclick={clearSelection}>Clear</button>
+                    <button
+                        class="generate-btn"
+                        onclick={onGenerateGraphFromSelection}
+                        disabled={generatingSubgraph ||
+                            selectedCount === 0 ||
+                            (interventableCount > 0 && selectedCount === interventableCount)}
+                        title={selectedCount === 0
+                            ? "Select components to include in subgraph"
+                            : "Generate a subgraph showing only attributions between selected components"}
+                    >
+                        {generatingSubgraph ? "Generating..." : "Generate subgraph"}
+                    </button>
+                    <button
+                        class="run-btn"
+                        onclick={() => onForwardDraft({ n_steps: advPgdNSteps, step_size: advPgdStepSize })}
+                        disabled={runningIntervention || selectedCount === 0}
+                    >
+                        {runningIntervention ? "Forwarding..." : "Forward"}
+                    </button>
+                    <span class="pgd-inputs">
+                        <label>PGD steps <input type="number" min="0" max="50" bind:value={advPgdNSteps} /></label>
+                        <label
+                            >step size <input
+                                type="number"
+                                min="0"
+                                max="10"
+                                step="0.1"
+                                bind:value={advPgdStepSize}
+                            /></label
+                        >
+                    </span>
+                {:else}
+                    <button class="run-btn" onclick={onCloneRun}>Clone</button>
+                {/if}
             </div>
         </div>
 
@@ -660,16 +722,8 @@
             onmouseup={zoom.endPan}
             onmouseleave={zoom.endPan}
         >
-            <ZoomControls
-                scale={zoom.scale}
-                onZoomIn={zoom.zoomIn}
-                onZoomOut={zoom.zoomOut}
-                onReset={zoom.reset}
-                hint="Shift+drag to pan, Shift+scroll to zoom"
-            />
-
             <!-- Sticky layer labels (left) -->
-            <div class="layer-labels-container" style="width: {LABEL_WIDTH}px;">
+            <div class="layer-labels-container" style="width: {LABEL_WIDTH}px; padding-top: {PRED_AREA_HEIGHT}px;">
                 <svg
                     width={LABEL_WIDTH}
                     height={layout.height * zoom.scale + Math.max(zoom.translateY, 0)}
@@ -695,8 +749,114 @@
 
             <!-- Scrollable graph area -->
             <div class="graph-container" bind:this={graphContainer}>
+                <!-- Sticky prediction rows (top) -->
+                {#if predRows && PRED_AREA_HEIGHT > 0}
+                    <div class="pred-rows-container" style="height: {PRED_AREA_HEIGHT}px;">
+                        <svg
+                            width={layout.width * zoom.scale + Math.max(zoom.translateX, 0)}
+                            height={PRED_AREA_HEIGHT}
+                            style="display: block;"
+                        >
+                            <g transform="translate({zoom.translateX}, 0) scale({zoom.scale}, 1)">
+                                {#each predRows as row, rowIdx (`pred-${row.label}`)}
+                                    {@const rowY = rowIdx * (PRED_ROW_HEIGHT + PRED_ROW_GAP) + PRED_ROW_GAP}
+                                    <!-- Row label -->
+                                    <text
+                                        x={layout.seqXStarts[0] - 4}
+                                        y={rowY + PRED_ROW_HEIGHT / 2 + 3}
+                                        text-anchor="end"
+                                        font-size="9"
+                                        font-weight="500"
+                                        font-family="'Berkeley Mono', 'SF Mono', monospace"
+                                        fill={colors.textMuted}>{row.label}</text
+                                    >
+                                    <!-- Predictions per position -->
+                                    {#each row.preds as preds, seqIdx (seqIdx)}
+                                        {@const colX = layout.seqXStarts[seqIdx]}
+                                        {@const colW = layout.seqWidths[seqIdx]}
+                                        {@const chipW = 48}
+                                        {@const chipH = PRED_ROW_HEIGHT}
+                                        {@const chipGap = 1}
+                                        {@const isLabelPos =
+                                            interventionResult?.label != null &&
+                                            seqIdx === interventionResult.label.position}
+                                        {@const labelTokenId = isLabelPos ? (row.labelPred?.token_id ?? null) : null}
+                                        {@const labelInTopk =
+                                            labelTokenId != null && preds.some((p) => p.token_id === labelTokenId)}
+                                        {@const maxChips = Math.min(
+                                            preds.length,
+                                            Math.max(1, Math.floor((colW - 2 + chipGap) / (chipW + chipGap))),
+                                        )}
+                                        {#each preds.slice(0, maxChips) as pred, rank (rank)}
+                                            {@const cx = colX + rank * (chipW + chipGap)}
+                                            {@const isLabel = labelTokenId != null && pred.token_id === labelTokenId}
+                                            <!-- svelte-ignore a11y_no_static_element_interactions -->
+                                            <g
+                                                onmouseenter={(e) => handlePredMouseEnter(e, pred, row.label, seqIdx)}
+                                                onmouseleave={handlePredMouseLeave}
+                                            >
+                                                <rect
+                                                    x={cx}
+                                                    y={rowY}
+                                                    width={chipW}
+                                                    height={chipH}
+                                                    rx="2"
+                                                    fill={getNextTokenProbBgColor(pred.prob)}
+                                                    stroke={isLabel ? "#f59e0b" : "#ddd"}
+                                                    stroke-width={isLabel ? "1.5" : "0.5"}
+                                                />
+                                                <text
+                                                    x={cx + chipW / 2}
+                                                    y={rowY + chipH / 2 + 3}
+                                                    text-anchor="middle"
+                                                    font-size="7"
+                                                    font-family="'Berkeley Mono', 'SF Mono', monospace"
+                                                    fill={pred.prob > 0.5 ? "white" : colors.textPrimary}
+                                                    >{pred.token}</text
+                                                >
+                                            </g>
+                                        {/each}
+                                        <!-- Label token chip (when not in topk) -->
+                                        {#if isLabelPos && !labelInTopk && row.labelPred}
+                                            {@const cx = colX + maxChips * (chipW + chipGap) + chipGap}
+                                            <!-- svelte-ignore a11y_no_static_element_interactions -->
+                                            <g
+                                                onmouseenter={(e) =>
+                                                    handlePredMouseEnter(e, row.labelPred!, row.label, seqIdx)}
+                                                onmouseleave={handlePredMouseLeave}
+                                            >
+                                                <rect
+                                                    x={cx}
+                                                    y={rowY}
+                                                    width={chipW}
+                                                    height={chipH}
+                                                    rx="2"
+                                                    fill={getNextTokenProbBgColor(row.labelPred.prob)}
+                                                    stroke="#f59e0b"
+                                                    stroke-width="1.5"
+                                                    stroke-dasharray="3,2"
+                                                />
+                                                <text
+                                                    x={cx + chipW / 2}
+                                                    y={rowY + chipH / 2 + 3}
+                                                    text-anchor="middle"
+                                                    font-size="7"
+                                                    font-family="'Berkeley Mono', 'SF Mono', monospace"
+                                                    fill={row.labelPred.prob > 0.5 ? "white" : colors.textPrimary}
+                                                    >{row.labelPred.token}</text
+                                                >
+                                            </g>
+                                        {/if}
+                                    {/each}
+                                {/each}
+                            </g>
+                        </svg>
+                    </div>
+                {/if}
+
                 <svg
                     bind:this={svgElement}
+                    class:readonly={!isEditable}
                     width={layout.width * zoom.scale + Math.max(zoom.translateX, 0)}
                     height={layout.height * zoom.scale + Math.max(zoom.translateY, 0)}
                     style="display: block;"
@@ -720,6 +880,24 @@
                                 {/if}
                             {/each}
                         </g>
+
+                        <!-- Optimization target highlight -->
+                        {#if optimizationTarget}
+                            {@const pos = optimizationTarget.position}
+                            {@const xStart = layout.seqXStarts[pos]}
+                            {@const width = layout.seqWidths[pos]}
+                            <rect
+                                x={xStart}
+                                y={MARGIN.top - 10}
+                                {width}
+                                height={layout.height - MARGIN.top - MARGIN.bottom + 20}
+                                fill="none"
+                                stroke={colors.accent}
+                                stroke-width="1.5"
+                                stroke-dasharray="6 3"
+                                opacity="0.4"
+                            />
+                        {/if}
 
                         <!-- Cluster bars (below nodes) -->
                         <g class="cluster-bars-layer">
@@ -819,11 +997,11 @@
                     >
                         <g transform="translate({zoom.translateX}, 0) scale({zoom.scale}, 1)">
                             {#each tokens as token, i (i)}
-                                {@const colCenter = layout.seqXStarts[i] + layout.seqWidths[i] / 2}
+                                {@const colX = layout.seqXStarts[i]}
                                 <text
-                                    x={colCenter}
+                                    x={colX}
                                     y="20"
-                                    text-anchor="middle"
+                                    text-anchor="start"
                                     font-size="11"
                                     font-family="'Berkeley Mono', 'SF Mono', monospace"
                                     font-weight="500"
@@ -833,195 +1011,122 @@
                                     {token}
                                 </text>
                                 <text
-                                    x={colCenter}
+                                    x={colX}
                                     y="36"
-                                    text-anchor="middle"
+                                    text-anchor="start"
                                     font-size="9"
                                     font-family="'Berkeley Mono', 'SF Mono', monospace"
                                     fill={colors.textMuted}>[{i}]</text
                                 >
+                                {#if optimizationTarget && i === optimizationTarget.position}
+                                    <rect x={colX} y="42" width="40" height="3" fill={colors.accent} rx="1" />
+                                {/if}
                             {/each}
                         </g>
                     </svg>
                 </div>
             </div>
+
+            <!-- Zoom controls in the bottom-left corner -->
+            <div class="zoom-corner">
+                <ZoomControls scale={zoom.scale} onZoomIn={zoom.zoomIn} onZoomOut={zoom.zoomOut} onReset={zoom.reset} />
+            </div>
         </div>
     </div>
 
-    <!-- Run History Panel (Right) -->
+    <!-- Version List Panel (Right) -->
     <div class="history-panel">
         <div class="history-header">
-            <span class="title">Run History</span>
-            <span class="run-count">{graph.interventionRuns.length} runs</span>
+            <span class="title">Versions</span>
+            <span class="run-count">{interventionState.runs.length}</span>
         </div>
 
-        {#if graph.interventionRuns.length === 0}
-            <div class="empty-history">
-                <p>No runs yet</p>
-                <p class="hint">Select nodes and click Run</p>
-            </div>
-        {:else}
-            <div class="runs-list">
-                {#each graph.interventionRuns.slice().reverse() as run (run.id)}
-                    {@const isActive = activeRunId === run.id}
-                    <div
-                        class="run-card"
-                        class:active={isActive}
-                        role="button"
-                        tabindex="0"
-                        onclick={() => onSelectRun(run.id)}
-                        onkeydown={(e) => e.key === "Enter" && onSelectRun(run.id)}
-                    >
+        <div class="runs-list">
+            {#each interventionState.runs as run, index (runIdentityKey(run, index))}
+                {@const isActive = index === interventionState.activeIndex}
+                <div
+                    class="run-card"
+                    class:active={isActive}
+                    role="button"
+                    tabindex="0"
+                    onclick={() => onSelectVersion(index)}
+                    onkeydown={(e) => e.key === "Enter" && onSelectVersion(index)}
+                >
+                    {#if run.kind === "draft"}
                         <div class="run-header">
-                            <span class="run-time">{formatTime(run.created_at)}</span>
-                            <span class="run-nodes">{run.selected_nodes.length} components</span>
-                            <button
-                                class="fork-btn"
-                                title="Fork with modified tokens"
-                                onclick={(e) => {
-                                    e.stopPropagation();
-                                    openForkModal(run.id);
-                                }}>⑂</button
-                            >
-                            <button
-                                class="delete-btn"
-                                onclick={(e) => {
-                                    e.stopPropagation();
-                                    onDeleteRun(run.id);
-                                }}>✕</button
-                            >
+                            <span class="run-time draft-label">Draft</span>
+                            <span class="run-nodes">{run.selectedNodes.size} nodes</span>
+                            <span class="draft-hint">(not forwarded)</span>
                         </div>
-
-                        <!-- Mini logits table -->
-                        <div class="logits-mini">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th class="rank-header">Input</th>
-                                        {#each run.result.input_tokens as token, idx (idx)}
-                                            <th title={token}>
-                                                <span class="token-text">"{token}"</span>
-                                            </th>
-                                        {/each}
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {#each Array(Math.min(3, MAX_PREDICTIONS)) as _, rank (rank)}
-                                        <tr>
-                                            <td class="rank-label">rank {rank + 1}</td>
-                                            {#each run.result.predictions_per_position as preds, idx (idx)}
-                                                {@const pred = preds[rank]}
-                                                <td
-                                                    class:has-pred={!!pred}
-                                                    style={pred
-                                                        ? `background: ${getOutputHeaderColor(pred.spd_prob)}`
-                                                        : ""}
-                                                >
-                                                    {#if pred}
-                                                        <span class="pred-token">"{pred.token}"</span>
-                                                        <span class="pred-prob spd"
-                                                            >SPD: {formatProb(pred.spd_prob)} (logit: {formatLogit(
-                                                                pred.logit,
-                                                            )})</span
-                                                        >
-                                                        <span class="pred-prob targ"
-                                                            >Targ: {formatProb(pred.target_prob)} (logit: {formatLogit(
-                                                                pred.target_logit,
-                                                            )})</span
-                                                        >
-                                                    {:else}
-                                                        -
-                                                    {/if}
-                                                </td>
-                                            {/each}
-                                        </tr>
-                                    {/each}
-                                </tbody>
-                            </table>
+                    {:else}
+                        <div class="run-header">
+                            <span class="run-time">{index === 0 ? "Base" : formatTime(run.createdAt)}</span>
+                            <span class="run-nodes">{run.selectedNodes.size} nodes</span>
+                            {#if index > 0}
+                                <button
+                                    class="delete-btn"
+                                    onclick={(e) => {
+                                        e.stopPropagation();
+                                        onDeleteRun(run.id);
+                                    }}>✕</button
+                                >
+                            {/if}
                         </div>
-
-                        <!-- Forked runs -->
-                        {#if run.forked_runs && run.forked_runs.length > 0}
-                            <div class="forked-runs">
-                                <div class="forked-runs-header">
-                                    <span class="fork-icon">⑂</span>
-                                    <span>{run.forked_runs.length} fork{run.forked_runs.length > 1 ? "s" : ""}</span>
+                        {#if isActive}
+                            {@const opt = graph.data.optimization}
+                            {@const lossLabel = opt
+                                ? opt.loss.type === "ce"
+                                    ? `CE "${opt.loss.label_str}" @ ${opt.loss.position}`
+                                    : `KL @ ${opt.loss.position}`
+                                : "mean KL"}
+                            <div class="opt-info">
+                                <div class="opt-row" title="Loss with binarised CI masking">
+                                    <span class="opt-key">CI</span>
+                                    <span>{run.result.ci_loss.toFixed(3)}</span>
                                 </div>
-                                {#each run.forked_runs as fork (fork.id)}
-                                    <div class="forked-run-card">
-                                        <div class="fork-header">
-                                            <span class="fork-time">{formatTime(fork.created_at)}</span>
-                                            <span class="fork-changes"
-                                                >{fork.token_replacements.length} change{fork.token_replacements
-                                                    .length > 1
-                                                    ? "s"
-                                                    : ""}</span
-                                            >
-                                            <button
-                                                class="delete-btn"
-                                                onclick={(e) => {
-                                                    e.stopPropagation();
-                                                    onDeleteFork(fork.id);
-                                                }}>✕</button
-                                            >
-                                        </div>
-                                        <!-- Mini logits for fork -->
-                                        <div class="logits-mini">
-                                            <table>
-                                                <thead>
-                                                    <tr>
-                                                        <th class="rank-header">Input</th>
-                                                        {#each fork.result.input_tokens as token, idx (idx)}
-                                                            {@const isChanged = fork.token_replacements.some(
-                                                                (r) => r[0] === idx,
-                                                            )}
-                                                            <th title={token} class:changed={isChanged}>
-                                                                <span class="token-text">"{token}"</span>
-                                                            </th>
-                                                        {/each}
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {#each Array(Math.min(3, MAX_PREDICTIONS)) as _, rank (rank)}
-                                                        <tr>
-                                                            <td class="rank-label">rank {rank + 1}</td>
-                                                            {#each fork.result.predictions_per_position as preds, idx (idx)}
-                                                                {@const pred = preds[rank]}
-                                                                <td
-                                                                    class:has-pred={!!pred}
-                                                                    style={pred
-                                                                        ? `background: ${getOutputHeaderColor(pred.spd_prob)}`
-                                                                        : ""}
-                                                                >
-                                                                    {#if pred}
-                                                                        <span class="pred-token">"{pred.token}"</span>
-                                                                        <span class="pred-prob spd"
-                                                                            >SPD: {formatProb(pred.spd_prob)} (logit: {formatLogit(
-                                                                                pred.logit,
-                                                                            )})</span
-                                                                        >
-                                                                        <span class="pred-prob targ"
-                                                                            >Targ: {formatProb(pred.target_prob)} (logit:
-                                                                            {formatLogit(pred.target_logit)})</span
-                                                                        >
-                                                                    {:else}
-                                                                        -
-                                                                    {/if}
-                                                                </td>
-                                                            {/each}
-                                                        </tr>
-                                                    {/each}
-                                                </tbody>
-                                            </table>
-                                        </div>
+                                <div class="opt-row" title="Loss with stochastic sources on 0-CI nodes">
+                                    <span class="opt-key">stoch</span>
+                                    <span>{run.result.stochastic_loss.toFixed(3)}</span>
+                                </div>
+                                <div
+                                    class="opt-row"
+                                    title="Loss using adversarially optimized sources on deselected-but-alive nodes, and stochastic sources on 0-CI nodes"
+                                >
+                                    <span class="opt-key">adv</span>
+                                    <span>{run.result.adversarial_loss.toFixed(3)}</span>
+                                </div>
+                                {#if run.result.ablated_loss != null}
+                                    <div
+                                        class="opt-row"
+                                        title="Loss with unselected nodes ablated from target model weights — measures sufficiency (lower = selected nodes are more sufficient)"
+                                    >
+                                        <span class="opt-key">T\S</span>
+                                        <span>{run.result.ablated_loss.toFixed(3)}</span>
                                     </div>
-                                {/each}
+                                {/if}
+                                <div
+                                    class="opt-row"
+                                    title="The loss function used: mean KL (standard graphs) or the specific loss from optimization"
+                                >
+                                    <span class="opt-key">metric</span>
+                                    <span>{lossLabel}</span>
+                                </div>
+                                {#if opt}
+                                    <div class="opt-row" title="Total active components in the optimized circuit">
+                                        <span class="opt-key">L0</span>
+                                        <span>{opt.metrics.l0_total.toFixed(1)}</span>
+                                    </div>
+                                {/if}
                             </div>
                         {/if}
-                    </div>
-                {/each}
-            </div>
-        {/if}
+                    {/if}
+                </div>
+            {/each}
+        </div>
+
+        <div class="version-actions">
+            <button class="clone-btn" onclick={onCloneRun}>Clone</button>
+        </div>
     </div>
 
     <!-- Node tooltip -->
@@ -1034,8 +1139,8 @@
             nodeCiVals={graph.data.nodeCiVals}
             nodeSubcompActs={graph.data.nodeSubcompActs}
             {tokens}
-            edgesBySource={graph.data.edgesBySource}
-            edgesByTarget={graph.data.edgesByTarget}
+            edgesBySource={activeEdgesBySource}
+            edgesByTarget={activeEdgesByTarget}
             onMouseEnter={() => (isHoveringTooltip = true)}
             onMouseLeave={() => {
                 isHoveringTooltip = false;
@@ -1044,56 +1149,30 @@
         />
     {/if}
 
-    <!-- Fork Modal -->
-    {#if forkingRunId !== null}
+    <!-- Prediction chip tooltip -->
+    {#if hoveredPred}
+        {@const p = hoveredPred.pred}
+        {@const pos = predTooltipPos}
         <div
-            class="modal-overlay"
-            onclick={closeForkModal}
-            onkeydown={(e) => e.key === "Escape" && closeForkModal()}
-            role="dialog"
-            aria-modal="true"
-            tabindex="-1"
+            class="pred-tooltip"
+            style:left={pos.left != null ? `${pos.left}px` : undefined}
+            style:right={pos.right != null ? `${pos.right}px` : undefined}
+            style:top={pos.top != null ? `${pos.top}px` : undefined}
+            style:bottom={pos.bottom != null ? `${pos.bottom}px` : undefined}
         >
-            <div class="fork-modal" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
-                <div class="modal-header">
-                    <h3>Fork Run</h3>
-                    <button class="close-btn" onclick={closeForkModal}>✕</button>
-                </div>
-                <div class="modal-body">
-                    <p class="modal-description">
-                        Replace tokens and run the same subnetwork. Changes: {forkReplacements.length}
-                    </p>
-                    <div class="token-editor">
-                        {#each forkSlotStates as slot, idx (idx)}
-                            {@const isReplaced = slot.tokenId !== null && slot.tokenId !== tokenIds[idx]}
-                            <div class="token-slot" class:replaced={isReplaced}>
-                                <span class="token-label">pos {idx}: "{tokens[idx]}"</span>
-                                <TokenDropdown
-                                    value={slot.value}
-                                    selectedTokenId={slot.tokenId}
-                                    onSelect={(tokenId, tokenString) => handleForkSlotSelect(idx, tokenId, tokenString)}
-                                    placeholder="Search..."
-                                />
-                                {#if isReplaced}
-                                    <button class="reset-btn" onclick={() => resetForkSlot(idx)}>↩</button>
-                                {/if}
-                            </div>
-                        {/each}
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button class="cancel-btn" onclick={closeForkModal}>Cancel</button>
-                    <button
-                        class="submit-btn"
-                        disabled={forkReplacements.length === 0 || forkingInProgress}
-                        onclick={submitFork}
-                    >
-                        {forkingInProgress ? "Running..." : "Fork & Run"}
-                    </button>
-                </div>
-            </div>
+            <div class="pred-tooltip-token">{p.token}</div>
+            <table class="pred-tooltip-table">
+                <tbody>
+                    <tr><td>prob</td><td class="val">{(p.prob * 100).toFixed(1)}%</td></tr>
+                    <tr><td>logit</td><td class="val">{p.logit.toFixed(2)}</td></tr>
+                    <tr class="sep"><td>target prob</td><td class="val">{(p.target_prob * 100).toFixed(1)}%</td></tr>
+                    <tr><td>target logit</td><td class="val">{p.target_logit.toFixed(2)}</td></tr>
+                </tbody>
+            </table>
         </div>
     {/if}
+
+    <!-- Fork Modal (disabled — functionality commented out) -->
 </div>
 
 <style>
@@ -1148,6 +1227,32 @@
         border-color: var(--border-strong);
     }
 
+    .pgd-inputs {
+        display: flex;
+        align-items: center;
+        gap: var(--space-3);
+        font-size: 11px;
+        color: var(--text-secondary);
+    }
+
+    .pgd-inputs label {
+        display: flex;
+        align-items: center;
+        gap: var(--space-1);
+        white-space: nowrap;
+    }
+
+    .pgd-inputs input {
+        width: 42px;
+        padding: 1px 4px;
+        font-size: 11px;
+        font-family: "Berkeley Mono", "SF Mono", monospace;
+        background: var(--bg-elevated);
+        border: 1px solid var(--border-default);
+        border-radius: 3px;
+        color: var(--text-primary);
+    }
+
     .generate-btn {
         background: var(--status-info) !important;
         color: white !important;
@@ -1184,6 +1289,23 @@
         position: relative;
     }
 
+    .zoom-corner {
+        position: sticky;
+        bottom: 0;
+        left: 0;
+        width: 0;
+        height: 0;
+        z-index: 12;
+    }
+
+    .zoom-corner :global(.zoom-controls) {
+        position: absolute;
+        bottom: var(--space-2);
+        left: var(--space-2);
+        top: auto;
+        right: auto;
+    }
+
     .graph-wrapper.panning {
         cursor: grabbing;
     }
@@ -1204,6 +1326,14 @@
         background: var(--bg-inset);
     }
 
+    .pred-rows-container {
+        position: sticky;
+        top: 0;
+        background: var(--bg-surface);
+        border-bottom: 1px solid var(--border-default);
+        z-index: 10;
+    }
+
     .token-labels-container {
         position: sticky;
         bottom: 0;
@@ -1214,6 +1344,10 @@
 
     .graph-container svg {
         cursor: crosshair;
+    }
+
+    .graph-container svg.readonly {
+        cursor: default;
     }
 
     .node-group {
@@ -1298,25 +1432,6 @@
         color: var(--text-muted);
     }
 
-    .empty-history {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        color: var(--text-muted);
-        text-align: center;
-    }
-
-    .empty-history p {
-        margin: var(--space-1) 0;
-    }
-
-    .empty-history .hint {
-        font-size: var(--text-sm);
-        font-family: var(--font-mono);
-    }
-
     .runs-list {
         flex: 1;
         overflow-y: auto;
@@ -1360,7 +1475,6 @@
         margin-left: auto;
     }
 
-    .fork-btn,
     .delete-btn {
         padding: 2px 6px;
         background: transparent;
@@ -1370,275 +1484,142 @@
         cursor: pointer;
     }
 
-    .fork-btn:hover {
-        color: var(--text-primary);
-    }
-
     .delete-btn:hover {
         color: var(--status-negative);
     }
 
-    /* Mini logits table */
-    .logits-mini {
-        overflow-x: auto;
-    }
-
-    .logits-mini table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: var(--text-xs);
-        font-family: var(--font-mono);
-    }
-
-    .logits-mini th,
-    .logits-mini td {
-        padding: 2px 4px;
-        text-align: center;
-        border: 1px solid var(--border-subtle);
-        max-width: 60px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-
-    .logits-mini th {
-        background: var(--bg-surface);
-        color: var(--text-secondary);
-    }
-
-    .logits-mini th.rank-header {
-        font-weight: 600;
-        color: var(--text-primary);
-    }
-
-    .logits-mini .token-text {
-        font-size: 9px;
-    }
-
-    .logits-mini td.rank-label {
-        background: var(--bg-surface);
-        color: var(--text-secondary);
-        font-weight: 500;
-        font-size: 9px;
-        text-align: left;
-        padding-left: 6px;
-    }
-
-    .logits-mini td {
-        background: var(--bg-inset);
-        color: var(--text-muted);
-    }
-
-    .logits-mini td.has-pred {
-        background: var(--bg-surface);
-    }
-
-    .pred-token {
-        display: block;
-        color: var(--text-primary);
-    }
-
-    .pred-prob {
-        display: block;
-        font-size: 8px;
-        color: var(--text-muted);
-    }
-
-    .pred-prob.spd {
-        color: var(--text-secondary);
-    }
-
-    .pred-prob.targ {
-        color: var(--text-secondary);
-    }
-
-    /* Forked runs */
-    .forked-runs {
-        margin-top: var(--space-2);
-        padding-top: var(--space-2);
-        border-top: 1px dashed var(--border-subtle);
-    }
-
-    .forked-runs-header {
-        display: flex;
-        align-items: center;
-        gap: var(--space-1);
-        font-size: var(--text-xs);
-        color: var(--text-muted);
-        margin-bottom: var(--space-1);
-    }
-
-    .fork-icon {
-        font-size: var(--text-sm);
-    }
-
-    .forked-run-card {
-        background: var(--bg-inset);
-        border: 1px solid var(--border-subtle);
-        border-radius: var(--radius-sm);
-        padding: var(--space-1);
-        margin-bottom: var(--space-1);
-    }
-
-    .fork-header {
-        display: flex;
-        align-items: center;
-        gap: var(--space-2);
-        font-size: var(--text-xs);
-        margin-bottom: var(--space-1);
-    }
-
-    .fork-time {
-        color: var(--text-muted);
-    }
-
-    .fork-changes {
+    .draft-label {
         color: var(--status-info);
-        margin-left: auto;
-    }
-
-    .logits-mini th.changed {
-        background: rgba(var(--status-info-rgb, 59, 130, 246), 0.2);
-    }
-
-    /* Fork Modal */
-    .modal-overlay {
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.5);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 1000;
-    }
-
-    .fork-modal {
-        background: var(--bg-surface);
-        border: 1px solid var(--border-default);
-        border-radius: var(--radius-md);
-        min-width: 400px;
-        max-width: 90vw;
-        max-height: 90vh;
-        display: flex;
-        flex-direction: column;
-    }
-
-    .modal-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: var(--space-3);
-        border-bottom: 1px solid var(--border-subtle);
-    }
-
-    .modal-header h3 {
-        margin: 0;
-        font-size: var(--text-base);
         font-weight: 600;
     }
 
-    .close-btn {
-        background: transparent;
-        border: none;
+    .draft-hint {
+        font-size: var(--text-xs);
         color: var(--text-muted);
-        cursor: pointer;
-        font-size: var(--text-base);
+        font-style: italic;
     }
 
-    .close-btn:hover {
-        color: var(--text-primary);
-    }
-
-    .modal-body {
-        padding: var(--space-3);
-        overflow-y: auto;
-    }
-
-    .modal-description {
-        margin: 0 0 var(--space-3) 0;
-        color: var(--text-secondary);
-        font-size: var(--text-sm);
-    }
-
-    .token-editor {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--space-2);
-    }
-
-    .token-slot {
+    .opt-info {
         display: flex;
         flex-direction: column;
-        gap: 2px;
-        padding: var(--space-1);
+        gap: var(--space-1);
+        padding: var(--space-2);
+        margin-top: var(--space-2);
         background: var(--bg-inset);
-        border: 1px solid var(--border-subtle);
         border-radius: var(--radius-sm);
-    }
-
-    .token-slot.replaced {
-        border-color: var(--status-info);
-        background: rgba(var(--status-info-rgb), 0.1);
-    }
-
-    .token-label {
-        font-size: 9px;
-        color: var(--text-muted);
+        font-size: var(--text-xs);
         font-family: var(--font-mono);
-        white-space: pre;
+        color: var(--text-secondary);
     }
 
-    .reset-btn {
-        background: transparent;
-        border: none;
-        color: var(--text-muted);
-        cursor: pointer;
-        font-size: 10px;
-        padding: 0;
-    }
-
-    .reset-btn:hover {
-        color: var(--text-primary);
-    }
-
-    .modal-footer {
+    .opt-row {
         display: flex;
-        justify-content: flex-end;
         gap: var(--space-2);
-        padding: var(--space-3);
+    }
+
+    .opt-key {
+        color: var(--text-muted);
+        min-width: 60px;
+        flex-shrink: 0;
+    }
+
+    .opt-key::after {
+        content: ":";
+    }
+
+    .top-logits {
+        margin-top: var(--space-1);
+        padding-top: var(--space-1);
         border-top: 1px solid var(--border-subtle);
     }
 
-    .cancel-btn,
-    .submit-btn {
-        padding: var(--space-1) var(--space-3);
-        border-radius: var(--radius-sm);
+    .top-logits-header {
+        color: var(--text-muted);
+        font-size: var(--text-xs);
+    }
+
+    .top-logit-row {
+        display: flex;
+        justify-content: space-between;
+        gap: var(--space-2);
+    }
+
+    .top-logit-token {
+        white-space: pre;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 100px;
+    }
+
+    .top-logit-prob {
+        flex-shrink: 0;
+        text-align: right;
+        color: var(--text-primary);
+    }
+
+    .version-actions {
+        display: flex;
+        gap: var(--space-2);
+        padding-top: var(--space-2);
+        border-top: 1px solid var(--border-subtle);
+        margin-top: var(--space-2);
+    }
+
+    .clone-btn {
+        flex: 1;
+        padding: var(--space-1) var(--space-2);
+        background: var(--bg-elevated);
+        border: 1px solid var(--border-default);
+        color: var(--text-secondary);
         font-size: var(--text-sm);
         cursor: pointer;
     }
 
-    .cancel-btn {
-        background: transparent;
-        border: 1px solid var(--border-default);
+    .clone-btn:hover {
+        background: var(--bg-inset);
+        border-color: var(--border-strong);
+    }
+
+    .pred-tooltip {
+        position: fixed;
+        z-index: 1000;
+        background: var(--bg-elevated);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius-sm);
+        box-shadow: var(--shadow-md);
+        padding: var(--space-2) var(--space-3);
+        pointer-events: none;
+        font-family: var(--font-mono);
+        font-size: var(--text-xs);
+        min-width: 140px;
+    }
+
+    .pred-tooltip-token {
+        font-weight: 600;
+        font-size: var(--text-sm);
+        color: var(--text-primary);
+        margin-bottom: var(--space-1);
+        border-bottom: 1px solid var(--border-default);
+        padding-bottom: var(--space-1);
+    }
+
+    .pred-tooltip-table {
+        border-spacing: 0;
+    }
+
+    .pred-tooltip-table td {
+        padding: 1px 0;
+        color: var(--text-muted);
+    }
+
+    .pred-tooltip-table td.val {
+        padding-left: var(--space-2);
+        text-align: right;
         color: var(--text-secondary);
+        font-variant-numeric: tabular-nums;
     }
 
-    .cancel-btn:hover {
-        background: var(--bg-hover);
-    }
-
-    .submit-btn {
-        background: var(--status-info);
-        border: none;
-        color: white;
-    }
-
-    .submit-btn:hover:not(:disabled) {
-        filter: brightness(1.1);
-    }
-
-    .submit-btn:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
+    .pred-tooltip-table tr.sep td {
+        padding-top: var(--space-1);
     }
 </style>

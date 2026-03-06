@@ -10,11 +10,13 @@ from pydantic import BaseModel
 
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.app.backend.dependencies import DepStateManager
+from spd.app.backend.routers.graph_interp import MOCK_MODE as _GRAPH_INTERP_MOCK_MODE
 from spd.app.backend.state import RunState
 from spd.app.backend.utils import log_errors
 from spd.autointerp.repo import InterpRepo
 from spd.configs import LMTaskConfig
 from spd.dataset_attributions.repo import AttributionRepo
+from spd.graph_interp.repo import GraphInterpRepo
 from spd.harvest.repo import HarvestRepo
 from spd.log import logger
 from spd.models.component_model import ComponentModel, SPDRunInfo
@@ -42,6 +44,8 @@ class LoadedRun(BaseModel):
     backend_user: str
     dataset_attributions_available: bool
     dataset_search_enabled: bool
+    graph_interp_available: bool
+    autointerp_available: bool
 
 
 router = APIRouter(prefix="/api", tags=["runs"])
@@ -128,6 +132,7 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
         harvest=HarvestRepo.open_most_recent(run_id),
         interp=InterpRepo.open(run_id),
         attributions=AttributionRepo.open(run_id),
+        graph_interp=GraphInterpRepo.open(run_id),
     )
 
     logger.info(f"[API] Run {run.id} loaded on {DEVICE}")
@@ -165,6 +170,10 @@ def get_status(manager: DepStateManager) -> LoadedRun | None:
         backend_user=getpass.getuser(),
         dataset_attributions_available=manager.run_state.attributions is not None,
         dataset_search_enabled=dataset_search_enabled,
+        # TODO(oli): Remove MOCK_MODE import after real data available
+        graph_interp_available=manager.run_state.graph_interp is not None
+        or _GRAPH_INTERP_MOCK_MODE,
+        autointerp_available=manager.run_state.interp is not None,
     )
 
 

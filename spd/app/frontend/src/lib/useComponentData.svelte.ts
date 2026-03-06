@@ -1,14 +1,15 @@
-import { getContext } from "svelte";
+import { getContext, untrack } from "svelte";
 import type { Loadable } from ".";
 import {
     ApiError,
     getComponentAttributions,
     getComponentCorrelations,
     getComponentTokenStats,
+    getGraphInterpComponentDetail,
     getInterpretationDetail,
     requestComponentInterpretation,
 } from "./api";
-import type { ComponentAttributions, InterpretationDetail } from "./api";
+import type { AllMetricAttributions, GraphInterpComponentDetail, InterpretationDetail } from "./api";
 import type {
     SubcomponentCorrelationsResponse,
     SubcomponentActivationContexts,
@@ -23,7 +24,7 @@ const TOKEN_STATS_TOP_K = 200;
 /** Dataset attributions top-k */
 const DATASET_ATTRIBUTIONS_TOP_K = 20;
 
-export type { ComponentAttributions as DatasetAttributions };
+export type { AllMetricAttributions as DatasetAttributions };
 
 export type ComponentCoords = { layer: string; cIdx: number };
 
@@ -43,9 +44,10 @@ export function useComponentData() {
     // null inside Loadable means "no data for this component" (404)
     let correlations = $state<Loadable<SubcomponentCorrelationsResponse | null>>({ status: "uninitialized" });
     let tokenStats = $state<Loadable<TokenStatsResponse | null>>({ status: "uninitialized" });
-    let datasetAttributions = $state<Loadable<ComponentAttributions | null>>({ status: "uninitialized" });
+    let datasetAttributions = $state<Loadable<AllMetricAttributions | null>>({ status: "uninitialized" });
 
     let interpretationDetail = $state<Loadable<InterpretationDetail | null>>({ status: "uninitialized" });
+    let graphInterpDetail = $state<Loadable<GraphInterpComponentDetail | null>>({ status: "uninitialized" });
 
     // Current coords being loaded/displayed (for interpretation lookup)
     let currentCoords = $state<ComponentCoords | null>(null);
@@ -132,20 +134,40 @@ export function useComponentData() {
             datasetAttributions = { status: "loaded", data: null };
         }
 
-        // Fetch interpretation detail (404 = no interpretation for this component)
-        getInterpretationDetail(layer, cIdx)
-            .then((data) => {
-                if (isStale()) return;
-                interpretationDetail = { status: "loaded", data };
-            })
-            .catch((error) => {
-                if (isStale()) return;
-                if (error instanceof ApiError && error.status === 404) {
-                    interpretationDetail = { status: "loaded", data: null };
-                } else {
+        const interpState = untrack(() => runState.getInterpretation(`${layer}:${cIdx}`));
+        if (interpState.status === "loaded" && interpState.data.status !== "none") {
+            getInterpretationDetail(layer, cIdx)
+                .then((data) => {
+                    if (isStale()) return;
+                    interpretationDetail = { status: "loaded", data };
+                })
+                .catch((error) => {
+                    if (isStale()) return;
                     interpretationDetail = { status: "error", error };
-                }
-            });
+                });
+        } else {
+            interpretationDetail = { status: "loaded", data: null };
+        }
+
+        // Fetch graph interp detail (skip if not available for this run)
+        if (runState.graphInterpAvailable) {
+            graphInterpDetail = { status: "loading" };
+            getGraphInterpComponentDetail(layer, cIdx)
+                .then((data) => {
+                    if (isStale()) return;
+                    graphInterpDetail = { status: "loaded", data };
+                })
+                .catch((error) => {
+                    if (isStale()) return;
+                    if (error instanceof ApiError && error.status === 404) {
+                        graphInterpDetail = { status: "loaded", data: null };
+                    } else {
+                        graphInterpDetail = { status: "error", error };
+                    }
+                });
+        } else {
+            graphInterpDetail = { status: "loaded", data: null };
+        }
     }
 
     /**
@@ -159,6 +181,7 @@ export function useComponentData() {
         tokenStats = { status: "uninitialized" };
         datasetAttributions = { status: "uninitialized" };
         interpretationDetail = { status: "uninitialized" };
+        graphInterpDetail = { status: "uninitialized" };
     }
 
     // Interpretation is derived from the global cache - reactive to both coords and cache
@@ -211,6 +234,9 @@ export function useComponentData() {
         },
         get interpretationDetail() {
             return interpretationDetail;
+        },
+        get graphInterpDetail() {
+            return graphInterpDetail;
         },
         load,
         reset,

@@ -9,13 +9,21 @@ export type DatasetAttributionEntry = {
     layer: string;
     component_idx: number;
     value: number;
+    token_str: string | null;
 };
 
-export type ComponentAttributions = {
+export type SignedAttributions = {
     positive_sources: DatasetAttributionEntry[];
     negative_sources: DatasetAttributionEntry[];
     positive_targets: DatasetAttributionEntry[];
     negative_targets: DatasetAttributionEntry[];
+};
+
+export type AttrMetric = "attr" | "attr_abs";
+
+export type AllMetricAttributions = {
+    attr: SignedAttributions;
+    attr_abs: SignedAttributions;
 };
 
 export type DatasetAttributionsMetadata = {
@@ -30,8 +38,8 @@ export async function getComponentAttributions(
     layer: string,
     componentIdx: number,
     k: number = 10,
-): Promise<ComponentAttributions> {
+): Promise<AllMetricAttributions> {
     const url = apiUrl(`/api/dataset_attributions/${encodeURIComponent(layer)}/${componentIdx}`);
     url.searchParams.set("k", String(k));
-    return fetchJson<ComponentAttributions>(url.toString());
+    return fetchJson<AllMetricAttributions>(url.toString());
 }

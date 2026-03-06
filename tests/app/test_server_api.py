@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.app.backend.database import PromptAttrDB
 from spd.app.backend.routers import graphs as graphs_router
+from spd.app.backend.routers import intervention as intervention_router
 from spd.app.backend.routers import runs as runs_router
 from spd.app.backend.server import app
 from spd.app.backend.state import RunState, StateManager
@@ -54,6 +55,7 @@ def app_with_state():
     # Patch DEVICE in all router modules to use CPU for tests
     with (
         mock.patch.object(graphs_router, "DEVICE", DEVICE),
+        mock.patch.object(intervention_router, "DEVICE", DEVICE),
         mock.patch.object(runs_router, "DEVICE", DEVICE),
     ):
         db = PromptAttrDB(db_path=Path(":memory:"), check_same_thread=False)
@@ -147,6 +149,7 @@ def app_with_state():
             harvest=None,
             interp=None,
             attributions=None,
+            graph_interp=None,
         )
 
         manager = StateManager.get()
@@ -229,6 +232,49 @@ def test_compute_graph(app_with_prompt: tuple[TestClient, int]):
     assert "edges" in data
     assert "tokens" in data
     assert "outputProbs" in data
+
+
+def test_run_and_save_intervention_without_text(app_with_prompt: tuple[TestClient, int]):
+    """Run-and-save intervention should use graph-linked prompt tokens (no text in request)."""
+    client, prompt_id = app_with_prompt
+
+    graph_response = client.post(
+        "/api/graphs",
+        params={"prompt_id": prompt_id, "normalize": "none", "ci_threshold": 0.0},
+    )
+    assert graph_response.status_code == 200
+    events = [line for line in graph_response.text.strip().split("\n") if line.startswith("data:")]
+    final_data = json.loads(events[-1].replace("data: ", ""))
+    graph_data = final_data["data"]
+    graph_id = graph_data["id"]
+
+    selected_nodes = [
+        key
+        for key, ci in graph_data["nodeCiVals"].items()
+        if not key.startswith("embed:") and not key.startswith("output:") and ci > 0
+    ]
+    assert len(selected_nodes) > 0
+
+    request = {
+        "graph_id": graph_id,
+        "selected_nodes": selected_nodes[: min(5, len(selected_nodes))],
+        "top_k": 5,
+        "adv_pgd": {"n_steps": 1, "step_size": 1.0},
+    }
+    response = client.post("/api/intervention/run", json=request)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["selected_nodes"] == request["selected_nodes"]
+    result = body["result"]
+    assert len(result["input_tokens"]) > 0
+    assert len(result["ci"]) > 0
+    assert len(result["stochastic"]) > 0
+    assert len(result["adversarial"]) > 0
+    assert result["target_sans"] is None
+    assert "ci_loss" in result
+    assert "stochastic_loss" in result
+    assert "adversarial_loss" in result
+    assert result["target_sans_loss"] is None
 
 
 # -----------------------------------------------------------------------------

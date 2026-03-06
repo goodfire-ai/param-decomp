@@ -51,5 +51,8 @@ export * from "./datasetAttributions";
 export * from "./intervention";
 export * from "./dataset";
 export * from "./clusters";
+export * from "./investigations";
 export * from "./dataSources";
+export * from "./graphInterp";
 export * from "./pretrainInfo";
+export * from "./runRegistry";

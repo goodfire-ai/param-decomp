@@ -7,17 +7,17 @@
  */
 
 export const colors = {
-    // Text - punchy contrast (matches --text-*)
-    textPrimary: "#111111",
-    textSecondary: "#555555",
-    textMuted: "#999999",
+    // Text - warm navy contrast (matches --text-*)
+    textPrimary: "#1d272a",
+    textSecondary: "#646464",
+    textMuted: "#b4b4b4",
 
     // Status colors for edges/data (matches --accent-primary, --status-negative)
-    positive: "#2563eb",
+    positive: "#4d65ff",
     negative: "#dc2626",
 
     // RGB components for dynamic opacity
-    positiveRgb: { r: 37, g: 99, b: 235 }, // blue - matches --accent-primary
+    positiveRgb: { r: 77, g: 101, b: 255 }, // vibrant blue - matches --accent-primary
     negativeRgb: { r: 220, g: 38, b: 38 }, // red - matches --status-negative
 
     // Output node gradient (green) - matches --status-positive
@@ -28,10 +28,10 @@ export const colors = {
     tokenHighlightOpacity: 0.4,
 
     // Node default
-    nodeDefault: "#6b7280",
+    nodeDefault: "#8a8780",
 
     // Accent (for active states) - matches --accent-primary
-    accent: "#2563eb",
+    accent: "#7C4D33",
 
     // Set overlap visualization (A/B/intersection)
     setOverlap: {

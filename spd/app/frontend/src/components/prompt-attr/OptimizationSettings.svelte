@@ -1,15 +1,19 @@
 <script lang="ts">
     import type { OptimizeConfigDraft, MaskType, LossType, LossConfigDraft } from "./types";
     import TokenDropdown from "./TokenDropdown.svelte";
+    import TokenSpan from "../ui/TokenSpan.svelte";
+    import { getNextTokenProbBgColor } from "../../lib/colors";
+    import { getProbAtPosition, formatProb } from "../../lib/tokenUtils";
 
     type Props = {
         config: OptimizeConfigDraft;
         tokens: string[];
+        nextTokenProbs: (number | null)[];
         onChange: (newConfig: OptimizeConfigDraft) => void;
         cardId: number;
     };
 
-    let { config, tokens, onChange, cardId }: Props = $props();
+    let { config, tokens, nextTokenProbs, onChange, cardId }: Props = $props();
     let showAdvanced = $state(false);
 
     // Slider value 0-100 controls impMinCoeff on log scale from 1e-5 to 10
@@ -30,21 +34,17 @@
         let newLoss: LossConfigDraft;
         if (newType === "kl") {
             newLoss = { type: "kl", coeff, position };
+        } else if (newType === "logit") {
+            newLoss = { type: "logit", coeff, position, labelTokenId: null, labelTokenText: "" };
         } else {
-            newLoss = {
-                type: "ce",
-                coeff,
-                position,
-                labelTokenId: null,
-                labelTokenText: "",
-            };
+            newLoss = { type: "ce", coeff, position, labelTokenId: null, labelTokenText: "" };
         }
         onChange({ ...config, loss: newLoss });
     }
 
-    const tokenAtSeqPos = $derived(
-        config.loss.position >= 0 && config.loss.position < tokens.length ? tokens[config.loss.position] : null,
-    );
+    function handlePositionClick(pos: number) {
+        onChange({ ...config, loss: { ...config.loss, position: pos } });
+    }
 </script>
 
 <div class="opt-settings">
@@ -68,48 +68,57 @@
             />
             <span class="option-name">Cross-Entropy</span>
         </label>
+        <label class="loss-type-option" class:selected={config.loss.type === "logit"}>
+            <input
+                type="radio"
+                name="loss-type-{cardId}"
+                checked={config.loss.type === "logit"}
+                onchange={() => handleLossTypeChange("logit")}
+            />
+            <span class="option-name">Logit</span>
+        </label>
     </div>
 
-    <!-- Target position and token -->
-    <div class="target-section">
-        <span class="target-label">At position</span>
-        <input
-            type="number"
-            class="pos-input"
-            value={config.loss.position}
-            oninput={(e) => {
-                if (e.currentTarget.value === "") return;
-                const position = parseInt(e.currentTarget.value);
-                onChange({ ...config, loss: { ...config.loss, position } });
-            }}
-            min={0}
-            max={tokens.length - 1}
-            step={1}
-        />
-        {#if tokenAtSeqPos !== null}
-            (<span class="token">{tokenAtSeqPos}</span>)
-        {/if}
-        {#if config.loss.type === "ce"}
-            <span class="target-label">, predict</span>
-            <TokenDropdown
-                value={config.loss.labelTokenText}
-                selectedTokenId={config.loss.labelTokenId}
-                onSelect={(tokenId, tokenString) => {
-                    if (config.loss.type !== "ce")
-                        throw new Error(
-                            "inconsistent state: Token dropdown rendered but loss not type CE but no label token",
-                        );
+    <!-- Token position selector strip -->
+    <div class="position-section">
+        <span class="section-label">Position</span>
+        <div class="token-strip">
+            {#each tokens as tok, i (i)}
+                {@const prob = getProbAtPosition(nextTokenProbs, i)}
+                <button
+                    type="button"
+                    class="strip-token"
+                    class:selected={config.loss.position === i}
+                    onclick={() => handlePositionClick(i)}
+                    title="pos {i}{prob !== null ? ` | P: ${formatProb(prob)}` : ''}"
+                    ><TokenSpan token={tok} backgroundColor={getNextTokenProbBgColor(prob)} /></button
+                >
+            {/each}
+        </div>
+        <div class="position-info">
+            <span class="pos-label">pos {config.loss.position}</span>
+            {#if config.loss.type === "ce" || config.loss.type === "logit"}
+                <span class="predict-label">{config.loss.type === "logit" ? "maximize" : "predict"}</span>
+                <TokenDropdown
+                    value={config.loss.labelTokenText}
+                    selectedTokenId={config.loss.labelTokenId}
+                    promptId={cardId}
+                    position={config.loss.position}
+                    onSelect={(tokenId, tokenString) => {
+                        if (config.loss.type !== "ce" && config.loss.type !== "logit")
+                            throw new Error("inconsistent state: Token dropdown rendered but loss type has no label");
 
-                    if (tokenId !== null) {
-                        onChange({
-                            ...config,
-                            loss: { ...config.loss, labelTokenId: tokenId, labelTokenText: tokenString },
-                        });
-                    }
-                }}
-                placeholder="token..."
-            />
-        {/if}
+                        if (tokenId !== null) {
+                            onChange({
+                                ...config,
+                                loss: { ...config.loss, labelTokenId: tokenId, labelTokenText: tokenString },
+                            });
+                        }
+                    }}
+                    placeholder="token..."
+                />
+            {/if}
+        </div>
     </div>
 
     <!-- Sparsity slider -->
@@ -256,7 +265,7 @@
         display: flex;
         flex-direction: column;
         gap: var(--space-3);
-        max-width: 400px;
+        max-width: 500px;
     }
 
     .loss-type-options {
@@ -296,42 +305,97 @@
         color: var(--text-primary);
     }
 
-    .target-section {
+    .position-section {
         display: flex;
-        align-items: center;
+        flex-direction: column;
         gap: var(--space-2);
-        flex-wrap: wrap;
-        padding: var(--space-2);
-        background: var(--bg-surface);
-        border: 1px solid var(--border-default);
     }
 
-    .target-label {
+    .section-label {
         font-size: var(--text-xs);
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
         color: var(--text-muted);
     }
 
-    .pos-input {
-        width: 50px;
-        padding: var(--space-1) var(--space-2);
-        border: 1px solid var(--border-default);
-        background: var(--bg-base);
-        color: var(--text-primary);
-        font-size: var(--text-sm);
-        font-family: var(--font-mono);
-    }
-
-    .pos-input:focus {
-        outline: none;
-        border-color: var(--accent-primary-dim);
-    }
-
-    .token {
-        white-space: pre;
-        font-family: var(--font-mono);
+    .token-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 2px;
+        padding: var(--space-2);
         background: var(--bg-inset);
-        padding: 0 var(--space-1);
+        border: 1px solid var(--border-default);
+        font-family: var(--font-mono);
+        font-size: var(--text-sm);
+    }
+
+    .strip-token {
+        padding: 2px 2px;
+        border: 1px solid var(--border-subtle);
+        border-radius: 2px;
+        cursor: pointer;
+        white-space: pre;
+        font-family: inherit;
+        font-size: inherit;
+        color: var(--text-primary);
+        background: transparent;
+        position: relative;
+        transition:
+            border-color var(--transition-fast),
+            box-shadow var(--transition-fast);
+    }
+
+    .strip-token:hover {
+        border-color: var(--border-strong);
+    }
+
+    .strip-token.selected {
+        border-color: var(--accent-primary);
+        box-shadow: 0 0 0 1px var(--accent-primary);
+        z-index: 1;
+    }
+
+    .strip-token::after {
+        content: attr(title);
+        position: absolute;
+        bottom: calc(100% + 4px);
+        left: 50%;
+        transform: translateX(-50%);
+        background: var(--bg-elevated);
+        border: 1px solid var(--border-strong);
+        color: var(--text-primary);
+        padding: var(--space-1) var(--space-2);
+        font-size: var(--text-xs);
+        white-space: nowrap;
+        opacity: 0;
+        pointer-events: none;
+        z-index: 100;
         border-radius: var(--radius-sm);
+    }
+
+    .strip-token:hover::after {
+        opacity: 1;
+    }
+
+    .position-info {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+    }
+
+    .pos-label {
+        font-size: var(--text-xs);
+        font-family: var(--font-mono);
+        color: var(--text-muted);
+        background: var(--bg-inset);
+        padding: var(--space-1) var(--space-2);
+        border-radius: var(--radius-sm);
+    }
+
+    .predict-label {
+        font-size: var(--text-xs);
+        color: var(--text-muted);
     }
 
     .slider-section {
@@ -344,14 +408,6 @@
         display: flex;
         justify-content: space-between;
         align-items: center;
-    }
-
-    .section-label {
-        font-size: var(--text-xs);
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: var(--text-muted);
     }
 
     .imp-min-input {

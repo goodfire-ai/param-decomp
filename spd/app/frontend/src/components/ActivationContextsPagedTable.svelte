@@ -1,23 +1,29 @@
 <script lang="ts">
+    import type { Loadable } from "../lib/index";
     import { displaySettings } from "../lib/displaySettings.svelte";
     import TokenHighlights from "./TokenHighlights.svelte";
 
-    interface Props {
-        // Columnar data
-        exampleTokens: string[][]; // [n_examples, window_size]
-        exampleCi: number[][]; // [n_examples, window_size]
-        exampleComponentActs: number[][]; // [n_examples, window_size]
-        // Global max for normalization
+    export type ActivationExamplesData = {
+        tokens: string[][]; // [n_examples, window_size]
+        ci: number[][]; // [n_examples, window_size]
+        componentActs: number[][]; // [n_examples, window_size]
         maxAbsComponentAct: number;
+    };
+
+    interface Props {
+        data: Loadable<ActivationExamplesData>;
     }
 
-    let { exampleTokens, exampleCi, exampleComponentActs, maxAbsComponentAct }: Props = $props();
+    let { data }: Props = $props();
+
+    const loading = $derived(data.status !== "loaded");
+    const loaded = $derived(data.status === "loaded" ? data.data : null);
 
     let examplesEl = $state<HTMLDivElement | undefined>(undefined);
     let currentPage = $state(0);
     let pageSize = $state(10);
 
-    let nExamples = $derived(exampleTokens.length);
+    let nExamples = $derived(loaded?.tokens.length ?? 0);
 
     function argmax(arr: number[]): number {
         let maxIdx = 0;
@@ -27,7 +33,7 @@
         return maxIdx;
     }
 
-    let firingPositions = $derived(exampleCi.map(argmax));
+    let firingPositions = $derived(loaded?.ci.map(argmax) ?? []);
 
     // Minimum container width (in ch) so that per-row flex centering works without clipping.
     // Each row needs: 2 * max(leftWidth, rightWidth) + centerWidth.
@@ -35,11 +41,11 @@
     const TOKEN_OVERHEAD_CH = 0.3;
 
     let minWidthCh = $derived.by(() => {
-        if (!displaySettings.centerOnPeak) return 0;
+        if (!displaySettings.centerOnPeak || !loaded) return 0;
         let max = 0;
-        for (let i = 0; i < exampleTokens.length; i++) {
+        for (let i = 0; i < loaded.tokens.length; i++) {
             const fp = firingPositions[i];
-            const tokens = exampleTokens[i];
+            const tokens = loaded.tokens[i];
 
             let leftWidth = 0;
             for (let j = 0; j < fp; j++) leftWidth += tokens[j].length + TOKEN_OVERHEAD_CH;
@@ -86,8 +92,8 @@
 
     // Reset to page 0 when data or page size changes
     $effect(() => {
-        exampleTokens; // eslint-disable-line @typescript-eslint/no-unused-expressions
-        pageSize; // eslint-disable-line @typescript-eslint/no-unused-expressions
+        void loaded;
+        void pageSize;
         currentPage = 0;
     });
 
@@ -98,7 +104,7 @@
 
     $effect(() => {
         if (!displaySettings.centerOnPeak) return;
-        paginatedIndices; // eslint-disable-line @typescript-eslint/no-unused-expressions
+        void paginatedIndices;
         requestAnimationFrame(centerScroll);
     });
 </script>
@@ -106,21 +112,22 @@
 <div class="container">
     <div class="controls">
         <div class="pagination">
-            <button onclick={previousPage} disabled={currentPage === 0}>&lt;</button>
+            <button disabled={loading || currentPage === 0} onclick={previousPage}>&lt;</button>
             <input
                 type="number"
                 min="1"
                 max={totalPages}
-                value={currentPage + 1}
+                value={loading ? "" : currentPage + 1}
                 oninput={handlePageInput}
                 class="page-input"
+                disabled={loading}
             />
-            <span>of {totalPages}</span>
-            <button onclick={nextPage} disabled={currentPage === totalPages - 1}>&gt;</button>
+            <span>of {loading ? "-" : totalPages}</span>
+            <button disabled={loading || currentPage === totalPages - 1} onclick={nextPage}>&gt;</button>
         </div>
         <div class="page-size-control">
             <label for="page-size">Per page:</label>
-            <select id="page-size" bind:value={pageSize}>
+            <select id="page-size" bind:value={pageSize} disabled={loading}>
                 <option value={5}>5</option>
                 <option value={10}>10</option>
                 <option value={20}>20</option>
@@ -129,58 +136,69 @@
             </select>
         </div>
         <label class="center-toggle">
-            <input type="checkbox" bind:checked={displaySettings.centerOnPeak} />
+            <input type="checkbox" bind:checked={displaySettings.centerOnPeak} disabled={loading} />
             Center on peak
         </label>
     </div>
-    <div class="examples" bind:this={examplesEl}>
-        {#if displaySettings.centerOnPeak}
-            <div class="examples-inner" style="min-width: {minWidthCh}ch">
-                {#each paginatedIndices as idx (idx)}
-                    {@const fp = firingPositions[idx]}
-                    <div class="example-row">
-                        <div class="left-tokens">
-                            <TokenHighlights
-                                tokenStrings={exampleTokens[idx].slice(0, fp)}
-                                tokenCi={exampleCi[idx].slice(0, fp)}
-                                tokenComponentActs={exampleComponentActs[idx].slice(0, fp)}
-                                {maxAbsComponentAct}
-                            />
-                        </div>
-                        <div class="center-token">
-                            <TokenHighlights
-                                tokenStrings={[exampleTokens[idx][fp]]}
-                                tokenCi={[exampleCi[idx][fp]]}
-                                tokenComponentActs={[exampleComponentActs[idx][fp]]}
-                                {maxAbsComponentAct}
-                            />
-                        </div>
-                        <div class="right-tokens">
-                            <TokenHighlights
-                                tokenStrings={exampleTokens[idx].slice(fp + 1)}
-                                tokenCi={exampleCi[idx].slice(fp + 1)}
-                                tokenComponentActs={exampleComponentActs[idx].slice(fp + 1)}
-                                {maxAbsComponentAct}
-                            />
-                        </div>
-                    </div>
-                {/each}
-            </div>
-        {:else}
+    {#if loading}
+        <div class="examples">
             <div class="examples-inner">
-                {#each paginatedIndices as idx (idx)}
-                    <div class="example-item">
-                        <TokenHighlights
-                            tokenStrings={exampleTokens[idx]}
-                            tokenCi={exampleCi[idx]}
-                            tokenComponentActs={exampleComponentActs[idx]}
-                            {maxAbsComponentAct}
-                        />
-                    </div>
+                {#each Array(pageSize) as _, i (i)}
+                    <div class="skeleton-row"></div>
                 {/each}
             </div>
-        {/if}
-    </div>
+        </div>
+    {:else}
+        {@const d = loaded!}
+        <div class="examples" bind:this={examplesEl}>
+            {#if displaySettings.centerOnPeak}
+                <div class="examples-inner" style="min-width: {minWidthCh}ch">
+                    {#each paginatedIndices as idx (idx)}
+                        {@const fp = firingPositions[idx]}
+                        <div class="example-row">
+                            <div class="left-tokens">
+                                <TokenHighlights
+                                    tokenStrings={d.tokens[idx].slice(0, fp)}
+                                    tokenCi={d.ci[idx].slice(0, fp)}
+                                    tokenComponentActs={d.componentActs[idx].slice(0, fp)}
+                                    maxAbsComponentAct={d.maxAbsComponentAct}
+                                />
+                            </div>
+                            <div class="center-token">
+                                <TokenHighlights
+                                    tokenStrings={[d.tokens[idx][fp]]}
+                                    tokenCi={[d.ci[idx][fp]]}
+                                    tokenComponentActs={[d.componentActs[idx][fp]]}
+                                    maxAbsComponentAct={d.maxAbsComponentAct}
+                                />
+                            </div>
+                            <div class="right-tokens">
+                                <TokenHighlights
+                                    tokenStrings={d.tokens[idx].slice(fp + 1)}
+                                    tokenCi={d.ci[idx].slice(fp + 1)}
+                                    tokenComponentActs={d.componentActs[idx].slice(fp + 1)}
+                                    maxAbsComponentAct={d.maxAbsComponentAct}
+                                />
+                            </div>
+                        </div>
+                    {/each}
+                </div>
+            {:else}
+                <div class="examples-inner">
+                    {#each paginatedIndices as idx (idx)}
+                        <div class="example-item">
+                            <TokenHighlights
+                                tokenStrings={d.tokens[idx]}
+                                tokenCi={d.ci[idx]}
+                                tokenComponentActs={d.componentActs[idx]}
+                                maxAbsComponentAct={d.maxAbsComponentAct}
+                            />
+                        </div>
+                    {/each}
+                </div>
+            {/if}
+        </div>
+    {/if}
 </div>
 
 <style>
@@ -346,5 +364,23 @@
     .page-input::-webkit-outer-spin-button {
         appearance: none;
         margin: 0;
+    }
+
+    .skeleton-row {
+        height: calc(var(--text-sm) * 1.8);
+        border-radius: var(--radius-sm);
+        background: var(--border-default);
+        opacity: 0.3;
+        animation: skeleton-pulse 1.2s ease-in-out infinite;
+    }
+
+    @keyframes skeleton-pulse {
+        0%,
+        100% {
+            opacity: 0.3;
+        }
+        50% {
+            opacity: 0.1;
+        }
     }
 </style>
