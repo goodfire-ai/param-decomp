@@ -70,10 +70,9 @@ def _build_alive_masks(
 def harvest_attributions(
     config: DatasetAttributionConfig,
     output_dir: Path,
-    rank: int | None = None,
-    world_size: int | None = None,
+    rank: int,
+    world_size: int,
 ) -> None:
-    assert (rank is None) == (world_size is None), "rank and world_size must both be set or unset"
 
     device = torch.device(get_device())
     logger.info(f"Loading model on {device}")
@@ -136,8 +135,7 @@ def harvest_attributions(
             logger.info(f"Dataset exhausted at batch {batch_idx}. Processing complete.")
             break
 
-        # Skip batches not assigned to this rank
-        if world_size is not None and batch_idx % world_size != rank:
+        if batch_idx % world_size != rank:
             continue
 
         batch = extract_batch_data(batch_data).to(device)
@@ -147,13 +145,9 @@ def harvest_attributions(
 
     storage = harvester.finalize(config.ci_threshold)
 
-    if rank is not None:
-        worker_dir = output_dir / "worker_states"
-        worker_dir.mkdir(parents=True, exist_ok=True)
-        output_path = worker_dir / f"dataset_attributions_rank_{rank}.pt"
-    else:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / "dataset_attributions.pt"
+    worker_dir = output_dir / "worker_states"
+    worker_dir.mkdir(parents=True, exist_ok=True)
+    output_path = worker_dir / f"dataset_attributions_rank_{rank}.pt"
     storage.save(output_path)
 
 
