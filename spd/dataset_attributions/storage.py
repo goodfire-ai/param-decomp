@@ -269,21 +269,38 @@ class DatasetAttributionStorage:
             )
         return results
 
-    def get_attribution(self, source_key: str, target_key: str) -> float:
+    def get_attribution(
+        self, source_key: str, target_key: str, metric: AttrMetric = "attr"
+    ) -> float:
         source_layer, source_idx = self._parse_key(source_key)
         target_layer, target_idx = self._parse_key(target_key)
+        regular, embed = self._select_metric(metric)
+
+        def _source_denom() -> float:
+            if source_layer == "embed":
+                return self._embed_count()[source_idx].item()
+            return self._layer_ci_sum(source_layer)[source_idx].item()
+
+        def _target_rms() -> float:
+            if target_layer == "output":
+                return self._logit_activation_rms()[target_idx].item()
+            return self._component_activation_rms(target_layer)[target_idx].item()
+
+        if target_layer == "output" and metric == "attr_abs":
+            return 0.0
 
         if target_layer == "output" and source_layer == "embed":
-            return (self._embed_unembed_attr[:, source_idx] @ self._w_unembed[:, target_idx]).item()
-        elif target_layer == "output" and source_layer != "embed":
-            return (
+            raw = (self._embed_unembed_attr[:, source_idx] @ self._w_unembed[:, target_idx]).item()
+        elif target_layer == "output":
+            raw = (
                 self._unembed_attr[source_layer][:, source_idx] @ self._w_unembed[:, target_idx]
             ).item()
-        elif target_layer != "output" and source_layer == "embed":
-            return (self._embed_attr[target_layer][target_idx, source_idx]).item()
+        elif source_layer == "embed":
+            raw = embed[target_layer][target_idx, source_idx].item()
         else:
-            assert target_layer != "output" and source_layer != "embed"
-            return (self._regular_attr[target_layer][source_layer][target_idx, source_idx]).item()
+            raw = regular[target_layer][source_layer][target_idx, source_idx].item()
+
+        return raw / _source_denom() / _target_rms()
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
