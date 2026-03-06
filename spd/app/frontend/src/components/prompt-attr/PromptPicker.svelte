@@ -56,7 +56,7 @@
     }
 
     function onCustomInput(e: Event) {
-        const target = e.target as HTMLInputElement;
+        const target = e.target as HTMLTextAreaElement;
         customText = target.value;
         if (debounceTimer) clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => runTokenize(customText), 150);
@@ -84,14 +84,13 @@
         <div class="picker-header">
             <div class="custom-input-section">
                 <div class="input-row">
-                    <input
-                        type="text"
+                    <textarea
                         value={customText}
                         oninput={onCustomInput}
                         placeholder="Enter custom text..."
-                        onkeydown={(e) => e.key === "Enter" && handleAddCustom()}
                         class="picker-input"
-                    />
+                        rows={3}
+                    ></textarea>
                     <button
                         onclick={handleAddCustom}
                         disabled={!customText.trim() || isAddingCustomPrompt}
@@ -206,6 +205,7 @@
         color: var(--text-primary);
         font-size: var(--text-sm);
         font-family: var(--font-mono);
+        resize: vertical;
     }
 
     .token-preview {

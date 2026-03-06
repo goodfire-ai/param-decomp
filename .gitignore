@@ -9,8 +9,6 @@ scripts/outputs/
 **/out/
 neuronpedia_outputs/
 .env
-.mcp.json
-.cursor/
 .vscode/settings.json
 
 notebooks/
@@ -180,3 +178,6 @@ cython_debug/
 
 **/*.db
 **/*.db*
+*.schema.json
+
+.claude/worktrees

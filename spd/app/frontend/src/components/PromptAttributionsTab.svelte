@@ -2,11 +2,15 @@
     import * as api from "../lib/api";
     import ProbColoredTokens from "./ProbColoredTokens.svelte";
     import {
-        filterInterventableNodes,
         type GraphData,
+        type HoveredNode,
         type PinnedNode,
         type PromptPreview,
+        type EdgeData,
+        getActiveEdges,
     } from "../lib/promptAttributionsTypes";
+    import { displaySettings } from "../lib/displaySettings.svelte";
+    import ComponentNodeCard from "./prompt-attr/ComponentNodeCard.svelte";
     import ComputeProgressOverlay from "./prompt-attr/ComputeProgressOverlay.svelte";
     import GraphTabs from "./prompt-attr/GraphTabs.svelte";
     import InterventionsView from "./prompt-attr/InterventionsView.svelte";
@@ -19,7 +23,6 @@
         defaultOptimizeConfig,
         isOptimizeConfigValid,
         validateOptimizeConfig,
-        type ComposerState,
         type DraftState,
         type GraphComputeState,
         type OptimizeConfigDraft,
@@ -28,6 +31,8 @@
         type TabViewState,
         type ViewSettings,
     } from "./prompt-attr/types";
+    import { buildInterventionState, type BakedRun, type InterventionState } from "../lib/interventionTypes";
+    import { SvelteSet } from "svelte/reactivity";
     import ViewControls from "./prompt-attr/ViewControls.svelte";
     import ViewTabs from "./prompt-attr/ViewTabs.svelte";
     import PromptAttributionsGraph from "./PromptAttributionsGraph.svelte";
@@ -48,10 +53,16 @@
         prompts: PromptPreview[];
     };
 
-    let { prompts }: Props = $props();
+    let { prompts: initialPrompts }: Props = $props();
+
+    // Local copy of prompts that can be modified (e.g. after deletion)
+    let prompts = $state(initialPrompts);
 
     // Prompt cards state
     let promptCards = $state<PromptCard[]>([]);
+
+    // Prompt deletion confirmation
+    let confirmingDeleteId = $state<number | null>(null);
 
     // Tab view state - discriminated union makes invalid states unrepresentable
     let tabView = $state<TabViewState>({ view: "draft", draft: defaultDraftState() });
@@ -69,24 +80,21 @@
     // Refetching state (for CI threshold/normalize changes) - tracks which graph is being refetched
     let refetchingGraphId = $state<number | null>(null);
 
-    // Composer state - transient UI state for interventions, keyed by graph ID
-    let composerStates = $state<Record<number, ComposerState>>({});
+    // Intervention state - transient UI state for intervention versions, keyed by graph ID
+    let interventionStates = $state<Record<number, InterventionState>>({});
 
-    // Helper to get or create composer state for a graph
-    function getComposerState(graphId: number, nodeKeys?: Iterable<string>): ComposerState {
-        if (!composerStates[graphId]) {
-            composerStates[graphId] = {
-                selection: nodeKeys ? new Set(filterInterventableNodes(nodeKeys)) : new Set(),
-                activeRunId: null,
-            };
+    // Helper to get or create intervention state for a graph
+    function getInterventionState(graphId: number, graph: StoredGraph): InterventionState {
+        if (!interventionStates[graphId]) {
+            interventionStates[graphId] = buildInterventionState(graph.interventionRuns);
         }
-        return composerStates[graphId];
+        return interventionStates[graphId];
     }
 
-    // Derived: composer state for the active graph
-    const activeComposerState = $derived.by(() => {
+    // Derived: intervention state for the active graph
+    const activeInterventionState = $derived.by(() => {
         if (!activeGraph) return null;
-        return composerStates[activeGraph.id] ?? null;
+        return interventionStates[activeGraph.id] ?? null;
     });
 
     // Default view settings for new graphs
@@ -102,6 +110,55 @@
     let filteredEdgeCount = $state<number | null>(null);
     let hideUnpinnedEdges = $state(false);
     let hideNodeCard = $state(false);
+
+    // Hovered node from graph (lifted up for side panel rendering)
+    let hoveredNode = $state<HoveredNode | null>(null);
+
+    // Resizable split for node detail panel
+    let detailPanelWidth = $state(500);
+
+    function handleResizeStart(e: MouseEvent) {
+        e.preventDefault();
+        const startX = e.clientX;
+        const startWidth = detailPanelWidth;
+
+        function onMouseMove(e: MouseEvent) {
+            detailPanelWidth = Math.max(250, Math.min(900, startWidth + (startX - e.clientX)));
+        }
+
+        function onMouseUp() {
+            window.removeEventListener("mousemove", onMouseMove);
+            window.removeEventListener("mouseup", onMouseUp);
+        }
+
+        window.addEventListener("mousemove", onMouseMove);
+        window.addEventListener("mouseup", onMouseUp);
+    }
+
+    // Sticky: last hovered component persists in the side panel
+    type ComponentNodeInfo = {
+        layer: string;
+        cIdx: number;
+        seqIdx: number;
+        ciVal: number | null;
+        subcompAct: number | null;
+        token: string;
+    };
+    let stickyComponentNode = $state<ComponentNodeInfo | null>(null);
+
+    $effect(() => {
+        if (!hoveredNode || !activeGraph) return;
+        if (hoveredNode.layer === "embed" || hoveredNode.layer === "output") return;
+        const key = `${hoveredNode.layer}:${hoveredNode.seqIdx}:${hoveredNode.cIdx}`;
+        stickyComponentNode = {
+            layer: hoveredNode.layer,
+            cIdx: hoveredNode.cIdx,
+            seqIdx: hoveredNode.seqIdx,
+            ciVal: activeGraph.data.nodeCiVals[key] ?? null,
+            subcompAct: activeGraph.data.nodeSubcompActs[key] ?? null,
+            token: activeCard!.tokens[hoveredNode.seqIdx],
+        };
+    });
 
     // Pinned nodes for attributions graph
     let pinnedNodes = $state<PinnedNode[]>([]);
@@ -124,6 +181,11 @@
         if (!activeCard) return null;
         return activeCard.graphs.find((g) => g.id === activeCard.activeGraphId) ?? null;
     });
+
+    // Active edge variant (derived from display settings and graph data availability)
+    const activeEdgeSet = $derived(activeGraph ? getActiveEdges(activeGraph.data, displaySettings.edgeVariant) : null);
+    const activeEdgesBySource = $derived(activeEdgeSet?.bySource ?? new Map<string, EdgeData[]>());
+    const activeEdgesByTarget = $derived(activeEdgeSet?.byTarget ?? new Map<string, EdgeData[]>());
 
     // Check if a standard graph already exists for the active card
     const hasStandardGraph = $derived(activeCard?.graphs.some((g) => g.data.graphType === "standard") ?? false);
@@ -176,16 +238,18 @@
                 // Load intervention runs for this graph
                 const runs = await api.getInterventionRuns(data.id);
 
-                // Initialize composer state for this graph
-                getComposerState(data.id, Object.keys(data.nodeCiVals));
-
-                return {
+                const sg: StoredGraph = {
                     id: data.id,
                     label: getGraphLabel(data),
                     data,
                     viewSettings: { ...defaultViewSettings },
                     interventionRuns: runs,
                 };
+
+                // Initialize intervention state for this graph
+                getInterventionState(data.id, sg);
+
+                return sg;
             }),
         );
 
@@ -202,6 +266,21 @@
             useOptimized: false,
         };
         promptCards = [...promptCards, newCard];
+    }
+
+    async function handleDeletePrompt(promptId: number) {
+        await api.deletePrompt(promptId);
+        prompts = prompts.filter((p) => p.id !== promptId);
+        promptCards = promptCards.filter((c) => c.id !== promptId);
+        confirmingDeleteId = null;
+        // If we were viewing the deleted prompt, go back to draft
+        if (activeCardId === promptId) {
+            if (promptCards.length > 0) {
+                tabView = { view: "card", cardId: promptCards[promptCards.length - 1].id };
+            } else {
+                tabView = { view: "draft", draft: defaultDraftState() };
+            }
+        }
     }
 
     function handleSelectPrompt(prompt: PromptPreview) {
@@ -277,8 +356,7 @@
     }
 
     function handleDraftKeydown(e: KeyboardEvent) {
-        // Enter without shift = add prompt, Shift+Enter = newline
-        if (e.key === "Enter" && !e.shiftKey) {
+        if (e.key === "Enter" && e.metaKey) {
             e.preventDefault();
             handleAddFromDraft();
         }
@@ -353,32 +431,51 @@
         promptCards = promptCards.map((card) => (card.id === activeCard.id ? { ...card, activeView: view } : card));
     }
 
-    // Update composer selection for the active graph
-    function handleComposerSelectionChange(selection: Set<string>) {
+    // Update draft selection for the active graph
+    function handleDraftSelectionChange(selection: Set<string>) {
         if (!activeGraph) return;
-        composerStates[activeGraph.id] = {
-            selection,
-            activeRunId: null, // Clear active run when selection changes manually
-        };
+        const state = interventionStates[activeGraph.id];
+        if (!state) throw new Error("No intervention state for active graph");
+        const activeRun = state.runs[state.activeIndex];
+        if (activeRun.kind !== "draft") throw new Error("Can only change selection on draft runs");
+        activeRun.selectedNodes = new SvelteSet(selection);
+        interventionStates = { ...interventionStates };
     }
 
-    // Run intervention and save to DB
-    async function handleRunIntervention() {
-        const composerState = activeComposerState;
-        if (!activeCard || !activeGraph || !composerState) return;
+    // Forward a draft run: call API, replace draft with baked
+    async function handleForwardDraft(advPgd: { n_steps: number; step_size: number }) {
+        if (!activeCard || !activeGraph) return;
+        const state = interventionStates[activeGraph.id];
+        if (!state) throw new Error("No intervention state for active graph");
+        const activeRun = state.runs[state.activeIndex];
+        if (activeRun.kind !== "draft") throw new Error("Can only forward draft runs");
 
         runningIntervention = true;
         try {
-            const text = activeCard.tokens.join("");
-            const selectedNodes = Array.from(composerState.selection);
+            const selectedNodes = Array.from(activeRun.selectedNodes);
+            const baseRun = state.runs[0];
+            if (baseRun.kind !== "baked") throw new Error("First run must be baked base run");
+            const nodesToAblate = Array.from(baseRun.selectedNodes).filter((n) => !activeRun.selectedNodes.has(n));
 
             const run = await api.runAndSaveIntervention({
                 graph_id: activeGraph.id,
-                text,
                 selected_nodes: selectedNodes,
+                nodes_to_ablate: nodesToAblate.length > 0 ? nodesToAblate : undefined,
+                top_k: 10,
+                adv_pgd: advPgd,
             });
 
-            // Add run to local state
+            // Replace the draft with a baked run
+            const baked: BakedRun = {
+                kind: "baked",
+                id: run.id,
+                selectedNodes: new Set(run.selected_nodes),
+                result: run.result,
+                createdAt: run.created_at,
+            };
+            state.runs[state.activeIndex] = baked;
+
+            // Also update the persisted list on StoredGraph
             promptCards = promptCards.map((card) => {
                 if (card.id !== activeCard.id) return card;
                 return {
@@ -389,28 +486,42 @@
                 };
             });
 
-            // Select the new run
-            composerStates[activeGraph.id] = { ...composerState, activeRunId: run.id };
+            interventionStates = { ...interventionStates };
         } finally {
             runningIntervention = false;
         }
     }
 
-    // Select a run and restore its selection state
-    function handleSelectRun(runId: number) {
+    // Select a version by index
+    function handleSelectVersion(index: number) {
         if (!activeGraph) return;
-
-        const run = activeGraph.interventionRuns.find((r) => r.id === runId);
-        if (!run) return;
-
-        // Restore selection from the run
-        composerStates[activeGraph.id] = {
-            selection: new Set(filterInterventableNodes(run.selected_nodes)),
-            activeRunId: runId,
-        };
+        const state = interventionStates[activeGraph.id];
+        if (!state) throw new Error("No intervention state for active graph");
+        if (index < 0 || index >= state.runs.length) throw new Error(`Invalid version index: ${index}`);
+        state.activeIndex = index;
+        interventionStates = { ...interventionStates };
     }
 
-    // Delete an intervention run
+    // Clone the active run into a new draft
+    function handleCloneRun() {
+        if (!activeGraph) return;
+        const state = interventionStates[activeGraph.id];
+        if (!state) throw new Error("No intervention state for active graph");
+
+        const activeRun = state.runs[state.activeIndex];
+        if (activeRun.kind !== "baked") throw new Error("Can only clone baked runs");
+
+        const draft = {
+            kind: "draft" as const,
+            parentId: activeRun.id,
+            selectedNodes: new SvelteSet(activeRun.selectedNodes),
+        };
+        state.runs.push(draft);
+        state.activeIndex = state.runs.length - 1;
+        interventionStates = { ...interventionStates };
+    }
+
+    // Delete a baked intervention run
     async function handleDeleteRun(runId: number) {
         if (!activeCard || !activeGraph) return;
 
@@ -428,87 +539,47 @@
             };
         });
 
-        // Clear activeRunId if we deleted the active run
-        const composerState = composerStates[activeGraph.id];
-        if (composerState?.activeRunId === runId) {
-            composerStates[activeGraph.id] = { ...composerState, activeRunId: null };
+        // Remove from intervention state and fix activeIndex
+        const state = interventionStates[activeGraph.id];
+        if (state) {
+            const idx = state.runs.findIndex((r) => r.kind === "baked" && r.id === runId);
+            if (idx >= 0) {
+                state.runs.splice(idx, 1);
+                if (state.activeIndex >= state.runs.length) {
+                    state.activeIndex = 0;
+                } else if (state.activeIndex === idx) {
+                    state.activeIndex = 0;
+                } else if (state.activeIndex > idx) {
+                    state.activeIndex--;
+                }
+            }
+            interventionStates = { ...interventionStates };
         }
     }
 
-    // Fork an intervention run with modified tokens
-    async function handleForkRun(runId: number, tokenReplacements: [number, number][]) {
-        if (!activeCard || !activeGraph) throw new Error("No active card or graph");
-
-        const forkedRun = await api.forkInterventionRun(runId, tokenReplacements);
-
-        // Add forked run to the parent run's forked_runs list
-        promptCards = promptCards.map((card) => {
-            if (card.id !== activeCard.id) return card;
-            return {
-                ...card,
-                graphs: card.graphs.map((g) => {
-                    if (g.id !== activeGraph.id) return g;
-                    return {
-                        ...g,
-                        interventionRuns: g.interventionRuns.map((r) => {
-                            if (r.id !== runId) return r;
-                            return {
-                                ...r,
-                                forked_runs: [...(r.forked_runs || []), forkedRun],
-                            };
-                        }),
-                    };
-                }),
-            };
-        });
-
-        return forkedRun;
-    }
-
-    // Delete a forked intervention run
-    async function handleDeleteFork(forkId: number) {
-        if (!activeCard || !activeGraph) return;
-
-        await api.deleteForkedInterventionRun(forkId);
-
-        // Remove the forked run from state
-        promptCards = promptCards.map((card) => {
-            if (card.id !== activeCard.id) return card;
-            return {
-                ...card,
-                graphs: card.graphs.map((g) => {
-                    if (g.id !== activeGraph.id) return g;
-                    return {
-                        ...g,
-                        interventionRuns: g.interventionRuns.map((r) => ({
-                            ...r,
-                            forked_runs: (r.forked_runs || []).filter((f) => f.id !== forkId),
-                        })),
-                    };
-                }),
-            };
-        });
-    }
+    // Fork handlers commented out — functionality disabled for now
+    // async function handleForkRun(runId: number, tokenReplacements: [number, number][]) { ... }
+    // async function handleDeleteFork(forkId: number) { ... }
 
     async function handleGenerateGraphFromSelection() {
-        const composerState = activeComposerState;
-        if (!activeCard || !activeGraph || !composerState) {
-            return;
-        }
+        if (!activeCard || !activeGraph) return;
+        const state = interventionStates[activeGraph.id];
+        if (!state) throw new Error("No intervention state");
+        const activeRun = state.runs[state.activeIndex];
+        if (activeRun.kind !== "baked" && activeRun.kind !== "draft")
+            throw new Error("Can only generate subgraph from baked or draft runs");
+        const selection = activeRun.selectedNodes;
 
-        // Validate selection is not empty (defense in depth - button should be disabled)
-        if (composerState.selection.size === 0) {
-            console.warn("handleGenerateGraphFromSelection called with empty selection");
-            return;
-        }
+        if (selection.size === 0) throw new Error("handleGenerateGraphFromSelection called with empty selection");
 
         const cardId = activeCard.id;
-        const includedNodes = Array.from(composerState.selection);
+        const includedNodes = Array.from(selection);
 
         generatingSubgraph = true;
         graphCompute = {
             status: "computing",
             cardId,
+            ciSnapshot: null,
             progress: {
                 stages: [{ name: "Computing attribution graph from selection", progress: 0 }],
                 currentStage: 0,
@@ -530,8 +601,15 @@
                 },
             );
 
-            // Initialize composer state for the new graph
-            getComposerState(data.id, Object.keys(data.nodeCiVals));
+            const runs = await api.getInterventionRuns(data.id);
+            const newGraph: StoredGraph = {
+                id: data.id,
+                label: getGraphLabel(data),
+                data,
+                viewSettings: { ...activeGraph.viewSettings },
+                interventionRuns: runs,
+            };
+            getInterventionState(data.id, newGraph);
 
             promptCards = promptCards.map((card) => {
                 if (card.id !== cardId) return card;
@@ -550,16 +628,7 @@
                 // Add new graph
                 return {
                     ...card,
-                    graphs: [
-                        ...card.graphs,
-                        {
-                            id: data.id,
-                            label: getGraphLabel(data),
-                            data,
-                            viewSettings: { ...activeGraph.viewSettings },
-                            interventionRuns: [],
-                        },
-                    ],
+                    graphs: [...card.graphs, newGraph],
                     activeGraphId: data.id,
                     activeView: "graph",
                 };
@@ -601,7 +670,7 @@
                   currentStage: 0,
               };
 
-        graphCompute = { status: "computing", cardId, progress: initialProgress };
+        graphCompute = { status: "computing", cardId, ciSnapshot: null, progress: initialProgress };
 
         try {
             let data: GraphData;
@@ -622,7 +691,10 @@
                     lossType: optConfig.loss.type,
                     lossCoeff: optConfig.loss.coeff,
                     lossPosition: optConfig.loss.position,
-                    labelToken: optConfig.loss.type === "ce" ? optConfig.loss.labelTokenId : undefined,
+                    labelToken:
+                        optConfig.loss.type === "ce" || optConfig.loss.type === "logit"
+                            ? optConfig.loss.labelTokenId
+                            : undefined,
                     advPgdNSteps:
                         optConfig.advPgdNSteps !== null && optConfig.advPgdStepSize !== null
                             ? optConfig.advPgdNSteps
@@ -633,15 +705,22 @@
                             : undefined,
                 };
 
-                data = await api.computeGraphOptimizedStream(params, (progress) => {
-                    if (graphCompute.status !== "computing") return;
-                    if (progress.stage === "graph") {
-                        graphCompute.progress.currentStage = 1;
-                        graphCompute.progress.stages[1].progress = progress.current / progress.total;
-                    } else {
-                        graphCompute.progress.stages[0].progress = progress.current / progress.total;
-                    }
-                });
+                data = await api.computeGraphOptimizedStream(
+                    params,
+                    (progress) => {
+                        if (graphCompute.status !== "computing") return;
+                        if (progress.stage === "graph") {
+                            graphCompute.progress.currentStage = 1;
+                            graphCompute.progress.stages[1].progress = progress.current / progress.total;
+                        } else {
+                            graphCompute.progress.stages[0].progress = progress.current / progress.total;
+                        }
+                    },
+                    (snapshot) => {
+                        if (graphCompute.status !== "computing") return;
+                        graphCompute.ciSnapshot = snapshot;
+                    },
+                );
             } else {
                 const params: api.ComputeGraphParams = {
                     promptId: cardId,
@@ -654,8 +733,15 @@
                 });
             }
 
-            // Initialize composer state for the new graph
-            getComposerState(data.id, Object.keys(data.nodeCiVals));
+            const runs = await api.getInterventionRuns(data.id);
+            const newGraph: StoredGraph = {
+                id: data.id,
+                label: getGraphLabel(data),
+                data,
+                viewSettings: { ...defaultViewSettings },
+                interventionRuns: runs,
+            };
+            getInterventionState(data.id, newGraph);
 
             promptCards = promptCards.map((card) => {
                 if (card.id !== cardId) return card;
@@ -668,17 +754,109 @@
 
                 return {
                     ...card,
-                    graphs: [
-                        ...card.graphs,
-                        {
-                            id: data.id,
-                            label: getGraphLabel(data),
-                            data,
-                            viewSettings: { ...defaultViewSettings },
-                            interventionRuns: [],
-                        },
-                    ],
+                    graphs: [...card.graphs, newGraph],
                     activeGraphId: data.id,
+                };
+            });
+
+            graphCompute = { status: "idle" };
+        } catch (error) {
+            graphCompute = { status: "error", error: String(error) };
+        }
+    }
+
+    async function computeBatchGraphsForCard(impMinCoeffs: number[]) {
+        if (!activeCard || !activeCard.tokenIds || graphCompute.status === "computing") return;
+
+        const draftConfig = activeCard.newGraphConfig;
+        const cardId = activeCard.id;
+
+        const validConfig = validateOptimizeConfig(draftConfig);
+        if (!validConfig) {
+            throw new Error("Invalid config: CE loss requires a target token");
+        }
+
+        graphCompute = {
+            status: "computing",
+            cardId,
+            ciSnapshot: null,
+            progress: {
+                stages: [
+                    { name: `Optimizing (${impMinCoeffs.length} coefficients)`, progress: 0 },
+                    { name: "Computing attribution graphs", progress: 0 },
+                ],
+                currentStage: 0,
+            },
+        };
+
+        try {
+            const params: api.ComputeGraphOptimizedBatchParams = {
+                promptId: cardId,
+                normalize: defaultViewSettings.normalizeEdges,
+                impMinCoeffs,
+                steps: validConfig.steps,
+                pnorm: validConfig.pnorm,
+                beta: validConfig.beta,
+                ciThreshold: defaultViewSettings.ciThreshold,
+                maskType: validConfig.maskType,
+                lossType: validConfig.loss.type,
+                lossCoeff: validConfig.loss.coeff,
+                lossPosition: validConfig.loss.position,
+                labelToken:
+                    validConfig.loss.type === "ce" || validConfig.loss.type === "logit"
+                        ? validConfig.loss.labelTokenId
+                        : undefined,
+                advPgdNSteps:
+                    validConfig.advPgdNSteps !== null && validConfig.advPgdStepSize !== null
+                        ? validConfig.advPgdNSteps
+                        : undefined,
+                advPgdStepSize:
+                    validConfig.advPgdNSteps !== null && validConfig.advPgdStepSize !== null
+                        ? validConfig.advPgdStepSize
+                        : undefined,
+            };
+
+            const graphDataList = await api.computeGraphOptimizedBatchStream(
+                params,
+                (progress) => {
+                    if (graphCompute.status !== "computing") return;
+                    if (progress.stage === "graph") {
+                        graphCompute.progress.currentStage = 1;
+                        graphCompute.progress.stages[1].progress = progress.current / progress.total;
+                    } else {
+                        graphCompute.progress.stages[0].progress = progress.current / progress.total;
+                    }
+                },
+                (snapshot) => {
+                    if (graphCompute.status !== "computing") return;
+                    graphCompute.ciSnapshot = snapshot;
+                },
+            );
+
+            const newGraphs: StoredGraph[] = [];
+            for (const data of graphDataList) {
+                const runs = await api.getInterventionRuns(data.id);
+                const newGraph: StoredGraph = {
+                    id: data.id,
+                    label: getGraphLabel(data),
+                    data,
+                    viewSettings: { ...defaultViewSettings },
+                    interventionRuns: runs,
+                };
+                getInterventionState(data.id, newGraph);
+                newGraphs.push(newGraph);
+            }
+
+            if (newGraphs.length !== 5) throw new Error(`Expected 5 batch graphs, got ${newGraphs.length}`);
+
+            promptCards = promptCards.map((card) => {
+                if (card.id !== cardId) return card;
+                const existingIds = new Set(card.graphs.map((g) => g.id));
+                const toAdd = newGraphs.filter((g) => !existingIds.has(g.id));
+                return {
+                    ...card,
+                    graphs: [...card.graphs, ...toAdd],
+                    activeGraphId: newGraphs[2].id,
                 };
             });
 
@@ -711,12 +889,7 @@
                 };
             });
 
-            // Update composer selection with new node keys
-            const composerState = composerStates[activeGraph.id];
-            composerStates[activeGraph.id] = {
-                selection: new Set(filterInterventableNodes(Object.keys(matchingData.nodeCiVals))),
-                activeRunId: composerState?.activeRunId ?? null,
-            };
+            // Intervention state stays as-is — base run's selectedNodes are from the persisted run
         } finally {
             refetchingGraphId = null;
         }
@@ -778,101 +951,185 @@
             </div>
 
             <div class="card-content">
-                {#if tabView.view === "draft"}
-                    {@const draft = tabView.draft}
-                    <!-- New prompt staging area -->
-                    <div class="draft-staging">
-                        <div class="draft-main">
-                            <div class="draft-input-section">
-                                <label class="draft-label">Enter prompt text</label>
-                                <textarea
-                                    class="draft-textarea"
-                                    placeholder="Type your prompt here... (Enter to add)"
-                                    value={draft.text}
-                                    oninput={(e) => handleDraftTextChange(e.currentTarget.value)}
-                                    onkeydown={handleDraftKeydown}
-                                    rows={2}
-                                ></textarea>
-                                {#if draft.tokenPreview.status === "loading"}
-                                    <div class="token-preview-row loading">Tokenizing...</div>
-                                {:else if draft.tokenPreview.status === "error"}
-                                    <div class="token-preview-row error">{draft.tokenPreview.error}</div>
-                                {:else if draft.tokenPreview.status === "loaded" && draft.tokenPreview.data.tokens.length > 0}
-                                    {@const { tokens, next_token_probs } = draft.tokenPreview.data}
-                                    <div class="token-preview-row">
-                                        <ProbColoredTokens {tokens} nextTokenProbs={next_token_probs} />
-                                        <span class="token-count">{tokens.length} tokens</span>
+                <div class="card-content-main">
+                    {#if tabView.view === "draft"}
+                        {@const draft = tabView.draft}
+                        <!-- New prompt staging area -->
+                        <div class="draft-staging">
+                            <div class="draft-main">
+                                <div class="draft-input-section">
+                                    <label class="draft-label">Enter prompt text</label>
+                                    <textarea
+                                        class="draft-textarea"
+                                        placeholder="Type your prompt here... (Cmd+Enter to add)"
+                                        value={draft.text}
+                                        oninput={(e) => handleDraftTextChange(e.currentTarget.value)}
+                                        onkeydown={handleDraftKeydown}
+                                        rows={2}
+                                    ></textarea>
+                                    {#if draft.tokenPreview.status === "loading"}
+                                        <div class="token-preview-row loading">Tokenizing...</div>
+                                    {:else if draft.tokenPreview.status === "error"}
+                                        <div class="token-preview-row error">{draft.tokenPreview.error}</div>
+                                    {:else if draft.tokenPreview.status === "loaded" && draft.tokenPreview.data.tokens.length > 0}
+                                        {@const { tokens, next_token_probs } = draft.tokenPreview.data}
+                                        <div class="token-preview-row">
+                                            <ProbColoredTokens {tokens} nextTokenProbs={next_token_probs} />
+                                            <span class="token-count">{tokens.length} tokens</span>
+                                        </div>
+                                    {/if}
+                                    <button
+                                        class="btn-add-prompt"
+                                        onclick={handleAddFromDraft}
+                                        disabled={!draft.text.trim() || draft.isAdding}
+                                    >
+                                        {draft.isAdding ? "Adding..." : "Add Prompt"}
+                                    </button>
+                                </div>
+
+                                {#if prompts.length > 0}
+                                    <div class="existing-prompts-section">
+                                        <label class="draft-label">Or select existing ({prompts.length})</label>
+                                        <div class="prompt-list">
+                                            {#each prompts as prompt (prompt.id)}
+                                                {#if confirmingDeleteId === prompt.id}
+                                                    <div class="prompt-item confirm-delete">
+                                                        <span class="confirm-text">Delete prompt #{prompt.id}?</span>
+                                                        <button
+                                                            class="confirm-yes"
+                                                            onclick={() => handleDeletePrompt(prompt.id)}>Yes</button
+                                                        >
+                                                        <button
+                                                            class="confirm-no"
+                                                            onclick={() => (confirmingDeleteId = null)}>No</button
+                                                        >
+                                                    </div>
+                                                {:else}
+                                                    <div class="prompt-item-row">
+                                                        <button
+                                                            class="prompt-item"
+                                                            onclick={() => handleSelectPrompt(prompt)}
+                                                        >
+                                                            <span class="prompt-id">#{prompt.id}</span>
+                                                            <span class="prompt-text">{prompt.preview}</span>
+                                                        </button>
+                                                        <button
+                                                            class="btn-delete-prompt"
+                                                            title="Delete prompt"
+                                                            onclick={() => (confirmingDeleteId = prompt.id)}
+                                                            >&times;</button
+                                                        >
+                                                    </div>
+                                                {/if}
+                                            {/each}
+                                        </div>
                                     </div>
                                 {/if}
-                                <button
-                                    class="btn-add-prompt"
-                                    onclick={handleAddFromDraft}
-                                    disabled={!draft.text.trim() || draft.isAdding}
-                                >
-                                    {draft.isAdding ? "Adding..." : "Add Prompt"}
-                                </button>
                             </div>
-
-                            {#if prompts.length > 0}
-                                <div class="existing-prompts-section">
-                                    <label class="draft-label">Or select existing ({prompts.length})</label>
-                                    <div class="prompt-list">
-                                        {#each prompts as prompt (prompt.id)}
-                                            <button class="prompt-item" onclick={() => handleSelectPrompt(prompt)}>
-                                                <span class="prompt-id">#{prompt.id}</span>
-                                                <span class="prompt-text">{prompt.preview}</span>
-                                            </button>
-                                        {/each}
-                                    </div>
-                                </div>
-                            {/if}
                         </div>
-                    </div>
-                {:else if activeCard}
-                    <!-- Level 1: Tokens -->
-                    <div class="prompt-tokens">
-                        <ProbColoredTokens tokens={activeCard.tokens} nextTokenProbs={activeCard.nextTokenProbs} />
-                    </div>
+                    {:else if activeCard}
+                        <!-- Level 1: Tokens -->
+                        <div class="prompt-tokens">
+                            <ProbColoredTokens tokens={activeCard.tokens} nextTokenProbs={activeCard.nextTokenProbs} />
+                        </div>
 
-                    <!-- Level 2: Graph tabs -->
-                    <GraphTabs
-                        graphs={activeCard.graphs}
-                        activeGraphId={activeCard.activeGraphId}
-                        onSelectGraph={handleSelectGraph}
-                        onCloseGraph={handleCloseGraph}
-                        onNewGraph={handleEnterNewGraphMode}
-                    />
+                        <!-- Level 2: Graph tabs -->
+                        <GraphTabs
+                            graphs={activeCard.graphs}
+                            activeGraphId={activeCard.activeGraphId}
+                            onSelectGraph={handleSelectGraph}
+                            onCloseGraph={handleCloseGraph}
+                            onNewGraph={handleEnterNewGraphMode}
+                        />
 
-                    {#if activeGraph}
-                        <!-- Optimization params (if optimized graph) -->
-                        {#if activeGraph.data.optimization}
-                            <OptimizationParams
-                                optimization={activeGraph.data.optimization}
-                                tokens={activeCard.tokens}
-                            />
-                        {/if}
+                        {#if activeGraph}
+                            <!-- Optimization params (if optimized graph) -->
+                            {#if activeGraph.data.optimization}
+                                <OptimizationParams
+                                    optimization={activeGraph.data.optimization}
+                                    tokens={activeCard.tokens}
+                                />
+                            {/if}
 
-                        <!-- Level 3: View tabs -->
-                        <div>
-                            <ViewTabs
-                                activeView={activeCard.activeView}
-                                interventionRunCount={activeGraph.interventionRuns.length}
-                                onViewChange={handleViewChange}
-                            />
+                            <!-- Level 3: View tabs -->
+                            <div>
+                                <ViewTabs
+                                    activeView={activeCard.activeView}
+                                    versionCount={activeInterventionState?.runs.length ?? 0}
+                                    onViewChange={handleViewChange}
+                                />
 
-                            {#if activeCard.activeView === "graph"}
-                                <div class="graph-area">
-                                    <ViewControls
+                                {#if activeCard.activeView === "graph"}
+                                    <div class="graph-area">
+                                        <ViewControls
+                                            topK={activeGraph.viewSettings.topK}
+                                            componentGap={activeGraph.viewSettings.componentGap}
+                                            layerGap={activeGraph.viewSettings.layerGap}
+                                            {filteredEdgeCount}
+                                            normalizeEdges={activeGraph.viewSettings.normalizeEdges}
+                                            ciThreshold={refetchingGraphId === activeGraph.id
+                                                ? { status: "loading" }
+                                                : { status: "loaded", data: activeGraph.viewSettings.ciThreshold }}
+                                            {hideUnpinnedEdges}
+                                            {hideNodeCard}
+                                            onTopKChange={handleTopKChange}
+                                            onComponentGapChange={handleComponentGapChange}
+                                            onLayerGapChange={handleLayerGapChange}
+                                            onNormalizeChange={handleNormalizeChange}
+                                            onCiThresholdChange={handleCiThresholdChange}
+                                            onHideUnpinnedEdgesChange={(v) => (hideUnpinnedEdges = v)}
+                                            onHideNodeCardChange={(v) => (hideNodeCard = v)}
+                                        />
+                                        <div class="graph-info">
+                                            <span class="l0-info"
+                                                ><strong>L0:</strong>
+                                                {activeGraph.data.l0_total.toFixed(0)} active at ci threshold {activeGraph
+                                                    .viewSettings.ciThreshold}</span
+                                            >
+                                            {#if pinnedNodes.length > 0}
+                                                <span class="pinned-count">{pinnedNodes.length} pinned</span>
+                                            {/if}
+                                        </div>
+                                        {#key activeGraph.id}
+                                            <PromptAttributionsGraph
+                                                data={activeGraph.data}
+                                                tokenIds={activeCard.tokenIds}
+                                                topK={activeGraph.viewSettings.topK}
+                                                componentGap={activeGraph.viewSettings.componentGap}
+                                                layerGap={activeGraph.viewSettings.layerGap}
+                                                {hideUnpinnedEdges}
+                                                hideNodeCard={true}
+                                                stagedNodes={pinnedNodes}
+                                                onStagedNodesChange={handlePinnedNodesChange}
+                                                onEdgeCountChange={(count) => (filteredEdgeCount = count)}
+                                                onHoveredNodeChange={(node) => (hoveredNode = node)}
+                                            />
+                                        {/key}
+                                    </div>
+                                    <StagedNodesPanel
+                                        stagedNodes={pinnedNodes}
+                                        outputProbs={activeGraph.data.outputProbs}
+                                        nodeCiVals={activeGraph.data.nodeCiVals}
+                                        nodeSubcompActs={activeGraph.data.nodeSubcompActs}
+                                        tokens={activeCard.tokens}
+                                        edgesBySource={activeEdgesBySource}
+                                        edgesByTarget={activeEdgesByTarget}
+                                        onStagedNodesChange={handlePinnedNodesChange}
+                                    />
+                                {:else if activeInterventionState}
+                                    <InterventionsView
+                                        graph={activeGraph}
+                                        interventionState={activeInterventionState}
+                                        tokens={activeCard.tokens}
                                         topK={activeGraph.viewSettings.topK}
                                         componentGap={activeGraph.viewSettings.componentGap}
                                         layerGap={activeGraph.viewSettings.layerGap}
-                                        {filteredEdgeCount}
                                         normalizeEdges={activeGraph.viewSettings.normalizeEdges}
                                         ciThreshold={refetchingGraphId === activeGraph.id
                                             ? { status: "loading" }
                                             : { status: "loaded", data: activeGraph.viewSettings.ciThreshold }}
                                         {hideUnpinnedEdges}
-                                        {hideNodeCard}
+                                        hideNodeCard={true}
                                         onTopKChange={handleTopKChange}
                                         onComponentGapChange={handleComponentGapChange}
                                         onLayerGapChange={handleLayerGapChange}
@@ -880,134 +1137,133 @@
                                         onCiThresholdChange={handleCiThresholdChange}
                                         onHideUnpinnedEdgesChange={(v) => (hideUnpinnedEdges = v)}
                                         onHideNodeCardChange={(v) => (hideNodeCard = v)}
+                                        {runningIntervention}
+                                        {generatingSubgraph}
+                                        onSelectionChange={handleDraftSelectionChange}
+                                        onForwardDraft={handleForwardDraft}
+                                        onCloneRun={handleCloneRun}
+                                        onSelectVersion={handleSelectVersion}
+                                        onDeleteRun={handleDeleteRun}
+                                        onGenerateGraphFromSelection={handleGenerateGraphFromSelection}
+                                        onHoveredNodeChange={(node) => (hoveredNode = node)}
                                     />
-                                    <div class="graph-info">
-                                        <span class="l0-info"
-                                            ><strong>L0:</strong>
-                                            {activeGraph.data.l0_total.toFixed(0)} active at ci threshold {activeGraph
-                                                .viewSettings.ciThreshold}</span
-                                        >
-                                        {#if pinnedNodes.length > 0}
-                                            <span class="pinned-count">{pinnedNodes.length} pinned</span>
-                                        {/if}
-                                    </div>
-                                    {#key activeGraph.id}
-                                        <PromptAttributionsGraph
-                                            data={activeGraph.data}
-                                            tokenIds={activeCard.tokenIds}
-                                            topK={activeGraph.viewSettings.topK}
-                                            componentGap={activeGraph.viewSettings.componentGap}
-                                            layerGap={activeGraph.viewSettings.layerGap}
-                                            {hideUnpinnedEdges}
-                                            {hideNodeCard}
-                                            stagedNodes={pinnedNodes}
-                                            onStagedNodesChange={handlePinnedNodesChange}
-                                            onEdgeCountChange={(count) => (filteredEdgeCount = count)}
-                                        />
-                                    {/key}
+                                {/if}
+                            </div>
+                        {:else}
+                            <!-- No graph yet -->
+                            {#if graphCompute.status === "error"}
+                                <div class="error-banner">
+                                    {graphCompute.error}
+                                    <button onclick={() => (graphCompute = { status: "idle" })}>Dismiss</button>
+                                    <button onclick={() => computeGraphForCard()} disabled={!canCompute}>Retry</button>
                                 </div>
-                                <StagedNodesPanel
-                                    stagedNodes={pinnedNodes}
-                                    outputProbs={activeGraph.data.outputProbs}
-                                    nodeCiVals={activeGraph.data.nodeCiVals}
-                                    nodeSubcompActs={activeGraph.data.nodeSubcompActs}
-                                    tokens={activeCard.tokens}
-                                    edgesBySource={activeGraph.data.edgesBySource}
-                                    edgesByTarget={activeGraph.data.edgesByTarget}
-                                    onStagedNodesChange={handlePinnedNodesChange}
-                                />
-                            {:else if activeComposerState}
-                                <InterventionsView
-                                    graph={activeGraph}
-                                    composerSelection={activeComposerState.selection}
-                                    activeRunId={activeComposerState.activeRunId}
-                                    tokens={activeCard.tokens}
-                                    tokenIds={activeCard.tokenIds}
-                                    topK={activeGraph.viewSettings.topK}
-                                    componentGap={activeGraph.viewSettings.componentGap}
-                                    layerGap={activeGraph.viewSettings.layerGap}
-                                    normalizeEdges={activeGraph.viewSettings.normalizeEdges}
-                                    ciThreshold={refetchingGraphId === activeGraph.id
-                                        ? { status: "loading" }
-                                        : { status: "loaded", data: activeGraph.viewSettings.ciThreshold }}
-                                    {hideUnpinnedEdges}
-                                    {hideNodeCard}
-                                    onTopKChange={handleTopKChange}
-                                    onComponentGapChange={handleComponentGapChange}
-                                    onLayerGapChange={handleLayerGapChange}
-                                    onNormalizeChange={handleNormalizeChange}
-                                    onCiThresholdChange={handleCiThresholdChange}
-                                    onHideUnpinnedEdgesChange={(v) => (hideUnpinnedEdges = v)}
-                                    onHideNodeCardChange={(v) => (hideNodeCard = v)}
-                                    {runningIntervention}
-                                    {generatingSubgraph}
-                                    onSelectionChange={handleComposerSelectionChange}
-                                    onRunIntervention={handleRunIntervention}
-                                    onSelectRun={handleSelectRun}
-                                    onDeleteRun={handleDeleteRun}
-                                    onForkRun={handleForkRun}
-                                    onDeleteFork={handleDeleteFork}
-                                    onGenerateGraphFromSelection={handleGenerateGraphFromSelection}
-                                />
                             {/if}
-                        </div>
-                    {:else}
-                        <!-- No graph yet -->
-                        {#if graphCompute.status === "error"}
-                            <div class="error-banner">
-                                {graphCompute.error}
-                                <button onclick={() => (graphCompute = { status: "idle" })}>Dismiss</button>
-                                <button onclick={() => computeGraphForCard()} disabled={!canCompute}>Retry</button>
+
+                            <div
+                                class="graph-area"
+                                class:loading={graphCompute.status === "computing" &&
+                                    graphCompute.cardId === activeCard.id}
+                            >
+                                {#if graphCompute.status === "computing" && graphCompute.cardId === activeCard.id}
+                                    <ComputeProgressOverlay
+                                        state={graphCompute.progress}
+                                        ciSnapshot={graphCompute.ciSnapshot}
+                                    />
+                                {:else}
+                                    <div class="empty-state">
+                                        <div class="compute-controls">
+                                            {#if !hasStandardGraph}
+                                                <label class="optimize-checkbox">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={activeCard.useOptimized}
+                                                        onchange={(e) =>
+                                                            handleUseOptimizedChange(e.currentTarget.checked)}
+                                                    />
+                                                    <span>Optimize</span>
+                                                </label>
+                                            {/if}
+                                            {#if hasStandardGraph || activeCard.useOptimized}
+                                                <OptimizationSettings
+                                                    config={activeCard.newGraphConfig}
+                                                    tokens={activeCard.tokens}
+                                                    nextTokenProbs={activeCard.nextTokenProbs}
+                                                    onChange={handleOptimizeConfigChange}
+                                                    cardId={activeCard.id}
+                                                />
+                                            {/if}
+                                            <div class="compute-buttons">
+                                                <button
+                                                    class="btn-compute-center"
+                                                    onclick={() => computeGraphForCard()}
+                                                    disabled={!canCompute}
+                                                >
+                                                    Compute
+                                                </button>
+                                                {#if hasStandardGraph || activeCard.useOptimized}
+                                                    <button
+                                                        class="btn-compute-batch"
+                                                        onclick={() => {
+                                                            const base = activeCard.newGraphConfig.impMinCoeff;
+                                                            const coeffs = [
+                                                                base * 0.1,
+                                                                base * 0.3,
+                                                                base,
+                                                                base * 3,
+                                                                base * 10,
+                                                            ];
+                                                            computeBatchGraphsForCard(coeffs);
+                                                        }}
+                                                        disabled={!canCompute}
+                                                        title="Compute 5 graphs at 0.1x, 0.3x, 1x, 3x, 10x of current sparsity coefficient"
+                                                    >
+                                                        Batch (5x)
+                                                    </button>
+                                                {/if}
+                                            </div>
+                                        </div>
+                                    </div>
+                                {/if}
                             </div>
                         {/if}
-
-                        <div
-                            class="graph-area"
-                            class:loading={graphCompute.status === "computing" && graphCompute.cardId === activeCard.id}
-                        >
-                            {#if graphCompute.status === "computing" && graphCompute.cardId === activeCard.id}
-                                <ComputeProgressOverlay state={graphCompute.progress} />
-                            {:else}
-                                <div class="empty-state">
-                                    <div class="compute-controls">
-                                        {#if !hasStandardGraph}
-                                            <label class="optimize-checkbox">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={activeCard.useOptimized}
-                                                    onchange={(e) => handleUseOptimizedChange(e.currentTarget.checked)}
-                                                />
-                                                <span>Optimize</span>
-                                            </label>
-                                        {/if}
-                                        {#if hasStandardGraph || activeCard.useOptimized}
-                                            <OptimizationSettings
-                                                config={activeCard.newGraphConfig}
-                                                tokens={activeCard.tokens}
-                                                onChange={handleOptimizeConfigChange}
-                                                cardId={activeCard.id}
-                                            />
-                                        {/if}
-                                        <button
-                                            class="btn-compute-center"
-                                            onclick={() => computeGraphForCard()}
-                                            disabled={!canCompute}
-                                        >
-                                            Compute
-                                        </button>
-                                    </div>
-                                </div>
-                            {/if}
+                    {:else if tabView.view === "loading"}
+                        <div class="empty-state">
+                            <p>Loading prompt...</p>
+                        </div>
+                    {:else if tabView.view === "error"}
+                        <div class="empty-state">
+                            <p class="error-text">Error loading prompt: {tabView.error}</p>
+                            <button onclick={handleDismissError}>Dismiss</button>
                         </div>
                     {/if}
-                {:else if tabView.view === "loading"}
-                    <div class="empty-state">
-                        <p>Loading prompt...</p>
-                    </div>
-                {:else if tabView.view === "error"}
-                    <div class="empty-state">
-                        <p class="error-text">Error loading prompt: {tabView.error}</p>
-                        <button onclick={handleDismissError}>Dismiss</button>
+                </div>
+
+                {#if !hideNodeCard && stickyComponentNode && activeGraph}
+                    <!-- svelte-ignore a11y_no_static_element_interactions -->
+                    <div class="resize-handle" onmousedown={handleResizeStart}></div>
+                    <div class="node-detail-panel" style:width="{detailPanelWidth}px">
+                        {#key `${stickyComponentNode.layer}:${stickyComponentNode.cIdx}`}
+                            <ComponentNodeCard
+                                layer={stickyComponentNode.layer}
+                                cIdx={stickyComponentNode.cIdx}
+                                seqIdx={stickyComponentNode.seqIdx}
+                                ciVal={stickyComponentNode.ciVal}
+                                subcompAct={stickyComponentNode.subcompAct}
+                                token={stickyComponentNode.token}
+                                edgesBySource={activeEdgesBySource}
+                                edgesByTarget={activeEdgesByTarget}
+                                tokens={activeCard?.tokens ?? []}
+                                outputProbs={activeGraph.data.outputProbs}
+                                onPinComponent={(layer, cIdx, seqIdx) => {
+                                    handlePinnedNodesChange([
+                                        ...pinnedNodes.filter(
+                                            (p) => !(p.layer === layer && p.seqIdx === seqIdx && p.cIdx === cIdx),
+                                        ),
+                                        { layer, seqIdx, cIdx },
+                                    ]);
+                                }}
+                            />
+                        {/key}
                     </div>
                 {/if}
             </div>
@@ -1050,12 +1306,42 @@
     .card-content {
         flex: 1;
         display: flex;
-        flex-direction: column;
-        gap: var(--space-2);
         min-height: 0;
+        min-width: 0;
         padding: var(--space-4);
         border: 1px solid var(--border-default);
         background: var(--bg-inset);
+    }
+
+    .card-content-main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-2);
+        min-height: 0;
+        min-width: 0;
+        overflow: auto;
+    }
+
+    .resize-handle {
+        width: 6px;
+        cursor: col-resize;
+        background: transparent;
+        flex-shrink: 0;
+        position: relative;
+    }
+
+    .resize-handle:hover,
+    .resize-handle:active {
+        background: var(--accent-primary-dim);
+    }
+
+    .node-detail-panel {
+        flex-shrink: 0;
+        overflow-y: auto;
+        border: 1px solid var(--border-default);
+        background: var(--bg-elevated);
+        padding: var(--space-3);
     }
 
     .prompt-tokens {
@@ -1136,6 +1422,29 @@
         background: var(--bg-inset);
         border-style: solid;
         border-color: var(--accent-primary);
+    }
+
+    .compute-buttons {
+        display: flex;
+        gap: var(--space-2);
+        justify-content: center;
+    }
+
+    .btn-compute-batch {
+        padding: var(--space-2) var(--space-3);
+        background: var(--bg-elevated);
+        border: 1px dashed var(--border-default);
+        font-size: var(--text-sm);
+        font-family: var(--font-mono);
+        color: var(--text-secondary);
+        cursor: pointer;
+    }
+
+    .btn-compute-batch:hover {
+        background: var(--bg-inset);
+        border-style: solid;
+        border-color: var(--accent-primary-dim);
+        color: var(--accent-primary);
     }
 
     .compute-controls {
@@ -1301,25 +1610,93 @@
         border: 1px solid var(--border-default);
     }
 
+    .prompt-item-row {
+        display: flex;
+        align-items: stretch;
+        border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .prompt-item-row:last-child {
+        border-bottom: none;
+    }
+
     .prompt-item {
-        width: 100%;
+        flex: 1;
         padding: var(--space-2) var(--space-3);
         background: transparent;
         border: none;
-        border-bottom: 1px solid var(--border-subtle);
         cursor: pointer;
         text-align: left;
         display: flex;
         gap: var(--space-2);
         align-items: baseline;
         color: var(--text-primary);
-    }
-
-    .prompt-item:last-child {
-        border-bottom: none;
+        min-width: 0;
     }
 
     .prompt-item:hover {
+        background: var(--bg-surface);
+    }
+
+    .btn-delete-prompt {
+        padding: 0 var(--space-2);
+        background: transparent;
+        border: none;
+        color: var(--text-muted);
+        font-size: var(--text-base);
+        cursor: pointer;
+        flex-shrink: 0;
+    }
+
+    .btn-delete-prompt:hover {
+        color: var(--status-negative-bright);
+        background: var(--bg-surface);
+    }
+
+    .confirm-delete {
+        border-bottom: 1px solid var(--border-subtle);
+        padding: var(--space-2) var(--space-3);
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+    }
+
+    .confirm-delete:last-child {
+        border-bottom: none;
+    }
+
+    .confirm-text {
+        font-size: var(--text-sm);
+        font-family: var(--font-mono);
+        color: var(--text-secondary);
+        flex: 1;
+    }
+
+    .confirm-yes,
+    .confirm-no {
+        padding: var(--space-1) var(--space-2);
+        border: none;
+        font-size: var(--text-xs);
+        font-family: var(--font-mono);
+        cursor: pointer;
+    }
+
+    .confirm-yes {
+        background: var(--status-negative);
+        color: white;
+    }
+
+    .confirm-yes:hover {
+        background: var(--status-negative-bright);
+    }
+
+    .confirm-no {
+        background: var(--bg-elevated);
+        color: var(--text-secondary);
+        border: 1px solid var(--border-default);
+    }
+
+    .confirm-no:hover {
         background: var(--bg-surface);
     }
 

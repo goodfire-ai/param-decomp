@@ -6,4 +6,4 @@ slurm_partition: null
 wandb_project: "spd"
 wandb_entity: "goodfire"
 create_git_snapshot: false
-clustering_run_config_path: "spd/clustering/configs/crc/simplestories_dev.json"
+clustering_run_config_path: "spd/clustering/configs/crc/ss_llama_simple_mlp.json"

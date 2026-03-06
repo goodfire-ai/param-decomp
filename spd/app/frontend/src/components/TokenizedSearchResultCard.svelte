@@ -2,6 +2,8 @@
     import { SvelteSet } from "svelte/reactivity";
     import type { TokenizedSearchResult } from "../lib/api/dataset";
     import { getNextTokenProbBgColor } from "../lib/colors";
+    import { getProbAtPosition, formatProb } from "../lib/tokenUtils";
+    import TokenSpan from "./ui/TokenSpan.svelte";
 
     interface Props {
         result: TokenizedSearchResult;
@@ -11,25 +13,12 @@
 
     let { result, index, query }: Props = $props();
 
-    // Shift by 1: position i shows probability that token i-1 predicted token i
-    function getProbAtPosition(i: number): number | null {
-        if (i === 0) return null;
-        return result.next_token_probs[i - 1];
-    }
-
-    function formatProb(prob: number | null): string {
-        if (prob === null) return "";
-        return `P(token): ${(prob * 100).toFixed(1)}%`;
-    }
-
-    // Check if a token is part of a query match by building the string and checking positions
     const matchPositions = $derived.by(() => {
         if (!query) return new SvelteSet<number>();
 
         const positions = new SvelteSet<number>();
         const lowerQuery = query.toLowerCase();
 
-        // Rebuild the text and track character positions for each token
         let text = "";
         const tokenStarts: number[] = [];
         const tokenEnds: number[] = [];
@@ -42,14 +31,12 @@
 
         const lowerText = text.toLowerCase();
 
-        // Find all occurrences of query in text
         let searchStart = 0;
         while (true) {
             const matchStart = lowerText.indexOf(lowerQuery, searchStart);
             if (matchStart === -1) break;
             const matchEnd = matchStart + lowerQuery.length;
 
-            // Mark all tokens that overlap with this match
             for (let i = 0; i < result.tokens.length; i++) {
                 if (tokenStarts[i] < matchEnd && tokenEnds[i] > matchStart) {
                     positions.add(i);
@@ -77,11 +64,14 @@
     </div>
     <div class="tokens-container">
         <span class="prob-tokens"
-            >{#each result.tokens as tok, i (i)}<span
-                    class="prob-token"
+            >{#each result.tokens as tok, i (i)}{@const prob = getProbAtPosition(result.next_token_probs, i)}<span
+                    class="prob-token-wrapper"
                     class:match={matchPositions.has(i)}
-                    style="background-color: {getNextTokenProbBgColor(getProbAtPosition(i))}"
-                    data-tooltip={formatProb(getProbAtPosition(i))}>{tok}</span
+                    ><TokenSpan
+                        token={tok}
+                        backgroundColor={getNextTokenProbBgColor(prob)}
+                        tooltip={prob !== null ? `P: ${formatProb(prob)}` : ""}
+                    /></span
                 >{/each}</span
         >
     </div>
@@ -138,39 +128,15 @@
         display: inline-flex;
         flex-wrap: wrap;
         gap: 1px;
-        font-family: var(--font-mono);
     }
 
-    .prob-token {
-        padding: 1px 2px;
+    .prob-token-wrapper {
         border: 1px solid transparent;
-        position: relative;
-        white-space: pre;
+        padding: 1px 0;
     }
 
-    .prob-token.match {
+    .prob-token-wrapper.match {
         border-color: var(--accent-primary);
         border-radius: 2px;
-    }
-
-    .prob-token::after {
-        content: attr(data-tooltip);
-        position: absolute;
-        top: calc(100% + 4px);
-        left: 0;
-        background: var(--bg-elevated);
-        border: 1px solid var(--border-strong);
-        color: var(--text-primary);
-        padding: var(--space-1) var(--space-2);
-        font-size: var(--text-xs);
-        font-family: var(--font-mono);
-        white-space: nowrap;
-        opacity: 0;
-        pointer-events: none;
-        z-index: 1000;
-    }
-
-    .prob-token:hover::after {
-        opacity: 1;
     }
 </style>

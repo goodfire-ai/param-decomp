@@ -6,10 +6,15 @@ Extracted from the original prompt_template.py.
 
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.autointerp.config import CompactSkepticalConfig
-from spd.autointerp.prompt_helpers import DATASET_DESCRIPTIONS, build_fires_on_examples
+from spd.autointerp.prompt_helpers import (
+    DATASET_DESCRIPTIONS,
+    build_fires_on_examples,
+    token_pmi_pairs,
+)
 from spd.autointerp.schemas import ModelMetadata
 from spd.harvest.analysis import TokenPRLift
 from spd.harvest.schemas import ComponentData
+from spd.utils.markdown import Md
 
 SPD_CONTEXT = (
     "Each component has a causal importance (CI) value per token position. "
@@ -29,29 +34,18 @@ def format_prompt(
     output_pmi: list[tuple[str, float]] | None = None
 
     if config.include_pmi:
-        input_pmi = (
-            [(app_tok.get_tok_display(tid), pmi) for tid, pmi in component.input_token_pmi.top]
-            if component.input_token_pmi.top
-            else None
-        )
-        output_pmi = (
-            [(app_tok.get_tok_display(tid), pmi) for tid, pmi in component.output_token_pmi.top]
-            if component.output_token_pmi.top
-            else None
-        )
+        input_pmi = token_pmi_pairs(app_tok, component.input_token_pmi.top)
+        output_pmi = token_pmi_pairs(app_tok, component.output_token_pmi.top)
 
     input_section = _build_input_section(input_token_stats, input_pmi)
     output_section = _build_output_section(output_token_stats, output_pmi)
-    examples_section = build_fires_on_examples(
-        component,
-        app_tok,
-        config.max_examples,
-    )
+    examples_section = build_fires_on_examples(component, app_tok, config.max_examples)
 
-    if component.firing_density > 0.0:
-        rate_str = f"~1 in {int(1 / component.firing_density)} tokens"
-    else:
-        rate_str = "extremely rare"  # TODO(oli) make this string better. does this even happen?
+    rate_str = (
+        f"~1 in {int(1 / component.firing_density)} tokens"
+        if component.firing_density > 0.0
+        else "extremely rare"
+    )
 
     layer_desc = model_metadata.layer_descriptions.get(component.layer, component.layer)
 
@@ -60,83 +54,89 @@ def format_prompt(
         dataset_desc = DATASET_DESCRIPTIONS[model_metadata.dataset_name]
         dataset_line = f", dataset: {dataset_desc}"
 
-    spd_context_block = f"\n{SPD_CONTEXT}\n" if config.include_spd_context else ""
-
     forbidden = ", ".join(config.forbidden_words) if config.forbidden_words else "(none)"
 
-    return f"""\
-Label this neural network component.
-{spd_context_block}
-## Context
-- Model: {model_metadata.model_class} ({model_metadata.n_blocks} blocks){dataset_line}
-- Component location: {layer_desc}
-- Component firing rate: {component.firing_density * 100:.2f}% ({rate_str})
+    md = Md()
+    md.p("Label this neural network component.")
 
-## Token correlations
+    if config.include_spd_context:
+        md.p(SPD_CONTEXT)
 
-{input_section}
-{output_section}
+    md.h(2, "Context").bullets(
+        [
+            f"Model: {model_metadata.model_class} ({model_metadata.n_blocks} blocks){dataset_line}",
+            f"Component location: {layer_desc}",
+            f"Component firing rate: {component.firing_density * 100:.2f}% ({rate_str})",
+        ]
+    )
 
-## Activation examples (active tokens in <<delimiters>>)
+    md.h(2, "Token correlations")
+    md.extend(input_section).extend(output_section)
 
-{examples_section}
+    md.h(2, "Activation examples (active tokens in <<delimiters>>)")
+    md.extend(examples_section)
 
-## Task
+    md.h(2, "Task")
+    md.p(f"Give a 2-{config.label_max_words} word label for what this component detects.")
+    md.p(
+        "Be SKEPTICAL. If you can't identify specific tokens or a tight grammatical "
+        'pattern, say "unclear".'
+    )
+    md.p("Rules:")
+    md.numbered(
+        [
+            'Good labels name SPECIFIC tokens: "\'the\'", "##ing suffix", "she/her pronouns"',
+            'Say "unclear" if: tokens are too varied, pattern is abstract, or evidence is weak',
+            f"FORBIDDEN words (too vague): {forbidden}",
+            "Lowercase only",
+            'Confidence: "high" = clear, specific pattern with strong evidence; '
+            '"medium" = plausible but noisy; "low" = speculative',
+        ]
+    )
+    md.p(
+        'GOOD: "##ed suffix", "\'and\' conjunction", "she/her/hers", "period then capital", "unclear"\n'
+        'BAD: "various words and punctuation", "verbs and adjectives", "tokens near commas"'
+    )
 
-Give a 2-{config.label_max_words} word label for what this component detects.
-
-Be SKEPTICAL. If you can't identify specific tokens or a tight grammatical pattern, say "unclear".
-
-Rules:
-1. Good labels name SPECIFIC tokens: "'the'", "##ing suffix", "she/her pronouns"
-2. Say "unclear" if: tokens are too varied, pattern is abstract, or evidence is weak
-3. FORBIDDEN words (too vague): {forbidden}
-4. Lowercase only
-5. Confidence: "high" = clear, specific pattern with strong evidence; "medium" = plausible but noisy; "low" = speculative
-
-GOOD: "##ed suffix", "'and' conjunction", "she/her/hers", "period then capital", "unclear"
-BAD: "various words and punctuation", "verbs and adjectives", "tokens near commas"
-"""
+    return md.build()
 
 
 def _build_input_section(
     input_stats: TokenPRLift,
     input_pmi: list[tuple[str, float]] | None,
-) -> str:
-    section = ""
-
+) -> Md:
+    md = Md()
     if input_stats.top_recall:
-        section += "**Input tokens with highest recall (most common current tokens when the component is firing)**\n"
-        for tok, recall in input_stats.top_recall[:8]:
-            section += f"- {repr(tok)}: {recall * 100:.0f}%\n"
-
+        md.labeled_list(
+            "**Input tokens with highest recall (most common current tokens when the component is firing)**",
+            [f"{repr(tok)}: {recall * 100:.0f}%" for tok, recall in input_stats.top_recall[:8]],
+        )
     if input_stats.top_precision:
-        section += "\n**Input tokens with highest precision (probability the component fires given the current token is X)**\n"
-        for tok, prec in input_stats.top_precision[:8]:
-            section += f"- {repr(tok)}: {prec * 100:.0f}%\n"
-
+        md.labeled_list(
+            "**Input tokens with highest precision (probability the component fires given the current token is X)**",
+            [f"{repr(tok)}: {prec * 100:.0f}%" for tok, prec in input_stats.top_precision[:8]],
+        )
     if input_pmi:
-        section += "\n**Input tokens with highest PMI (pointwise mutual information. Tokens with higher-than-base-rate likelihood of co-occurrence with the component firing)**\n"
-        for tok, pmi in input_pmi[:6]:
-            section += f"- {repr(tok)}: {pmi:.2f}\n"
-
-    return section
+        md.labeled_list(
+            "**Input tokens with highest PMI (pointwise mutual information. Tokens with higher-than-base-rate likelihood of co-occurrence with the component firing)**",
+            [f"{repr(tok)}: {pmi:.2f}" for tok, pmi in input_pmi[:6]],
+        )
+    return md
 
 
 def _build_output_section(
     output_stats: TokenPRLift,
     output_pmi: list[tuple[str, float]] | None,
-) -> str:
-    section = ""
-
+) -> Md:
+    md = Md()
     if output_stats.top_precision:
-        section += "**Output precision — of all predicted probability for token X, what fraction is at positions where this component fires?**\n"
-        for tok, prec in output_stats.top_precision[:10]:
-            section += f"- {repr(tok)}: {prec * 100:.0f}%\n"
-
+        md.labeled_list(
+            "**Output precision — of all predicted probability for token X, what fraction is at positions where this component fires?**",
+            [f"{repr(tok)}: {prec * 100:.0f}%" for tok, prec in output_stats.top_precision[:10]],
+        )
     if output_pmi:
-        section += "\n**Output PMI — tokens the model predicts at higher-than-base-rate when this component fires:**\n"
-        for tok, pmi in output_pmi[:6]:
-            section += f"- {repr(tok)}: {pmi:.2f}\n"
-
-    return section
+        md.labeled_list(
+            "**Output PMI — tokens the model predicts at higher-than-base-rate when this component fires:**",
+            [f"{repr(tok)}: {pmi:.2f}" for tok, pmi in output_pmi[:6]],
+        )
+    return md

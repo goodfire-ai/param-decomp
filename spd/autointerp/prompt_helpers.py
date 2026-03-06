@@ -9,6 +9,17 @@ from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.app.backend.utils import delimit_tokens
 from spd.harvest.analysis import TokenPRLift
 from spd.harvest.schemas import ComponentData
+from spd.utils.markdown import Md
+
+
+def token_pmi_pairs(
+    app_tok: AppTokenizer,
+    token_pmi_top: list[tuple[int, float]] | None,
+) -> list[tuple[str, float]] | None:
+    if not token_pmi_top:
+        return None
+    return [(app_tok.get_tok_display(tid), pmi) for tid, pmi in token_pmi_top]
+
 
 DATASET_DESCRIPTIONS: dict[str, str] = {
     "SimpleStories/SimpleStories": (
@@ -43,11 +54,7 @@ def ordinal(n: int) -> str:
 
 
 def human_layer_desc(canonical: str, n_blocks: int) -> str:
-    """Convert canonical layer string to human-readable description.
-
-    '0.mlp.up' -> 'MLP up-projection in the 1st of 4 blocks'
-    '1.attn.q' -> 'attention query projection in the 2nd of 4 blocks'
-    """
+    """'0.mlp.up' -> 'MLP up-projection in the 1st of 4 blocks'"""
     m = re.match(r"(\d+)\.(.*)", canonical)
     if not m:
         return canonical
@@ -58,7 +65,6 @@ def human_layer_desc(canonical: str, n_blocks: int) -> str:
 
 
 def layer_position_note(canonical: str, n_blocks: int) -> str:
-    """Brief note about what layer position means for interpretation."""
     m = re.match(r"(\d+)\.", canonical)
     if not m:
         return ""
@@ -86,75 +92,72 @@ def density_note(firing_density: float) -> str:
 def build_output_section(
     output_stats: TokenPRLift,
     output_pmi: list[tuple[str, float]] | None,
-) -> str:
-    section = ""
-
+) -> Md:
+    md = Md()
     if output_pmi:
-        section += (
+        md.labeled_list(
             "**Output PMI (pointwise mutual information, in nats: how much more likely "
             "a token is to be produced when this component fires, vs its base rate. "
-            "0 = no association, 1 = ~3x more likely, 2 = ~7x, 3 = ~20x):**\n"
+            "0 = no association, 1 = ~3x more likely, 2 = ~7x, 3 = ~20x):**",
+            [f"{repr(tok)}: {pmi:.2f}" for tok, pmi in output_pmi[:10]],
         )
-        for tok, pmi in output_pmi[:10]:
-            section += f"- {repr(tok)}: {pmi:.2f}\n"
-
     if output_stats.top_precision:
-        section += "\n**Output precision — of all probability mass for token X, what fraction is at positions where this component fires?**\n"
-        for tok, prec in output_stats.top_precision[:10]:
-            section += f"- {repr(tok)}: {prec * 100:.0f}%\n"
-
-    return section
+        md.labeled_list(
+            "**Output precision — of all probability mass for token X, what fraction "
+            "is at positions where this component fires?**",
+            [f"{repr(tok)}: {prec * 100:.0f}%" for tok, prec in output_stats.top_precision[:10]],
+        )
+    return md
 
 
 def build_input_section(
     input_stats: TokenPRLift,
     input_pmi: list[tuple[str, float]] | None,
-) -> str:
-    section = ""
-
+) -> Md:
+    md = Md()
     if input_pmi:
-        section += "**Input PMI (same metric as above, for input tokens):**\n"
-        for tok, pmi in input_pmi[:6]:
-            section += f"- {repr(tok)}: {pmi:.2f}\n"
-
+        md.labeled_list(
+            "**Input PMI (same metric as above, for input tokens):**",
+            [f"{repr(tok)}: {pmi:.2f}" for tok, pmi in input_pmi[:6]],
+        )
     if input_stats.top_precision:
-        section += "\n**Input precision — probability the component fires given the current token is X:**\n"
-        for tok, prec in input_stats.top_precision[:8]:
-            section += f"- {repr(tok)}: {prec * 100:.0f}%\n"
-
-    return section
+        md.labeled_list(
+            "**Input precision — probability the component fires given the current token is X:**",
+            [f"{repr(tok)}: {prec * 100:.0f}%" for tok, prec in input_stats.top_precision[:8]],
+        )
+    return md
 
 
 def build_fires_on_examples(
     component: ComponentData,
     app_tok: AppTokenizer,
     max_examples: int,
-) -> str:
-    section = ""
-    examples = component.activation_examples[:max_examples]
-
-    for i, ex in enumerate(examples):
+) -> Md:
+    lines: list[str] = []
+    for i, ex in enumerate(component.activation_examples[:max_examples]):
         if any(ex.firings):
             spans = app_tok.get_spans(ex.token_ids)
             tokens = list(zip(spans, ex.firings, strict=True))
-            section += f"{i + 1}. {delimit_tokens(tokens)}\n"
-
-    return section
+            lines.append(f"{i + 1}. {delimit_tokens(tokens)}")
+    md = Md()
+    if lines:
+        md.p("\n".join(lines))
+    return md
 
 
 def build_says_examples(
     component: ComponentData,
     app_tok: AppTokenizer,
     max_examples: int,
-) -> str:
-    section = ""
-    examples = component.activation_examples[:max_examples]
-
-    for i, ex in enumerate(examples):
+) -> Md:
+    lines: list[str] = []
+    for i, ex in enumerate(component.activation_examples[:max_examples]):
         if any(ex.firings):
             spans = app_tok.get_spans(ex.token_ids)
             shifted_firings = [False] + ex.firings[:-1]
             tokens = list(zip(spans, shifted_firings, strict=True))
-            section += f"{i + 1}. {delimit_tokens(tokens)}\n"
-
-    return section
+            lines.append(f"{i + 1}. {delimit_tokens(tokens)}")
+    md = Md()
+    if lines:
+        md.p("\n".join(lines))
+    return md

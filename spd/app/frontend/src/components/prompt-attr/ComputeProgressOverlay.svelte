@@ -1,46 +1,54 @@
 <script lang="ts">
+    import type { CISnapshot } from "../../lib/promptAttributionsTypes";
     import type { LoadingState } from "./types";
     import { bgBaseRgb } from "../../lib/colors";
+    import OptimizationGrid from "./OptimizationGrid.svelte";
 
     type Props = {
         state: LoadingState;
+        ciSnapshot?: CISnapshot | null;
     };
 
-    let { state }: Props = $props();
+    let { state, ciSnapshot = null }: Props = $props();
 
     const overlayBg = `rgba(${bgBaseRgb.r}, ${bgBaseRgb.g}, ${bgBaseRgb.b}, 0.95)`;
 </script>
 
 <div class="loading-overlay" style="background: {overlayBg};">
-    <div class="stages">
-        {#each state.stages as stage, i (i)}
-            {@const isCurrent = i === state.currentStage}
-            {@const isComplete = i < state.currentStage}
-            <div class="stage" class:current={isCurrent} class:complete={isComplete}>
-                <div class="stage-header">
-                    <span class="stage-number">{i + 1}</span>
-                    <span class="stage-name">{stage.name}</span>
-                    {#if isComplete}
-                        <span class="stage-check">✓</span>
-                    {/if}
-                </div>
-                {#if isCurrent}
-                    <div class="progress-bar">
-                        {#if stage.progress !== null}
-                            <div class="progress-fill" style="width: {stage.progress * 100}%"></div>
-                        {:else}
-                            <div class="progress-fill indeterminate"></div>
+    <div class="content">
+        {#if ciSnapshot}
+            <OptimizationGrid snapshot={ciSnapshot} />
+        {/if}
+        <div class="stages">
+            {#each state.stages as stage, i (i)}
+                {@const isCurrent = i === state.currentStage}
+                {@const isComplete = i < state.currentStage}
+                <div class="stage" class:current={isCurrent} class:complete={isComplete}>
+                    <div class="stage-header">
+                        <span class="stage-number">{i + 1}</span>
+                        <span class="stage-name">{stage.name}</span>
+                        {#if isComplete}
+                            <span class="stage-check">✓</span>
                         {/if}
                     </div>
-                {:else if isComplete}
-                    <div class="progress-bar">
-                        <div class="progress-fill" style="width: 100%"></div>
-                    </div>
-                {:else}
-                    <div class="progress-bar empty"></div>
-                {/if}
-            </div>
-        {/each}
+                    {#if isCurrent}
+                        <div class="progress-bar">
+                            {#if stage.progress !== null}
+                                <div class="progress-fill" style="width: {stage.progress * 100}%"></div>
+                            {:else}
+                                <div class="progress-fill indeterminate"></div>
+                            {/if}
+                        </div>
+                    {:else if isComplete}
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width: 100%"></div>
+                        </div>
+                    {:else}
+                        <div class="progress-bar empty"></div>
+                    {/if}
+                </div>
+            {/each}
+        </div>
     </div>
 </div>
 
@@ -52,6 +60,13 @@
         align-items: center;
         justify-content: center;
         z-index: 100;
+    }
+
+    .content {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: var(--space-6);
     }
 
     .stages {

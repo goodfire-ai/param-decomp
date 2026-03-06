@@ -18,10 +18,12 @@ from spd.autointerp.prompt_helpers import (
     density_note,
     human_layer_desc,
     layer_position_note,
+    token_pmi_pairs,
 )
 from spd.autointerp.schemas import ModelMetadata
 from spd.harvest.analysis import TokenPRLift
 from spd.harvest.schemas import ComponentData
+from spd.utils.markdown import Md
 
 
 def format_prompt(
@@ -36,26 +38,19 @@ def format_prompt(
     output_pmi: list[tuple[str, float]] | None = None
 
     if config.include_pmi:
-        input_pmi = (
-            [(app_tok.get_tok_display(tid), pmi) for tid, pmi in component.input_token_pmi.top]
-            if component.input_token_pmi.top
-            else None
-        )
-        output_pmi = (
-            [(app_tok.get_tok_display(tid), pmi) for tid, pmi in component.output_token_pmi.top]
-            if component.output_token_pmi.top
-            else None
-        )
+        input_pmi = token_pmi_pairs(app_tok, component.input_token_pmi.top)
+        output_pmi = token_pmi_pairs(app_tok, component.output_token_pmi.top)
 
     output_section = build_output_section(output_token_stats, output_pmi)
     input_section = build_input_section(input_token_stats, input_pmi)
     fires_on_examples = build_fires_on_examples(component, app_tok, config.max_examples)
     says_examples = build_says_examples(component, app_tok, config.max_examples)
 
-    if component.firing_density > 0.0:
-        rate_str = f"~1 in {int(1 / component.firing_density)} tokens"
-    else:
-        rate_str = "extremely rare"
+    rate_str = (
+        f"~1 in {int(1 / component.firing_density)} tokens"
+        if component.firing_density > 0.0
+        else "extremely rare"
+    )
 
     canonical = model_metadata.layer_descriptions.get(component.layer, component.layer)
     layer_desc = human_layer_desc(canonical, model_metadata.n_blocks)
@@ -77,48 +72,64 @@ def format_prompt(
         else ""
     )
 
-    return f"""\
-Describe what this neural network component does.
+    md = Md()
+    md.p(
+        "Describe what this neural network component does.\n\n"
+        "Each component is a learned linear transformation inside a weight matrix. "
+        "It has an input function (what causes it to fire) and an output function "
+        "(what tokens it causes the model to produce). These are often different — "
+        "a component might fire on periods but produce sentence-opening words, or "
+        "fire on prepositions but produce abstract nouns.\n\n"
+        "Consider all of the evidence below critically. Token statistics can be noisy, "
+        "especially for high-density components. The activation examples are sampled "
+        "and may not be representative. Look for patterns that are consistent across "
+        "multiple sources of evidence."
+    )
 
-Each component is a learned linear transformation inside a weight matrix. It has an input function (what causes it to fire) and an output function (what tokens it causes the model to produce). These are often different — a component might fire on periods but produce sentence-opening words, or fire on prepositions but produce abstract nouns.
+    md.h(2, "Context").bullets(
+        [
+            f"Model: {model_metadata.model_class} ({model_metadata.n_blocks} blocks){dataset_line}",
+            f"Component location: {layer_desc}",
+            f"Component firing rate: {component.firing_density * 100:.2f}% ({rate_str})",
+        ]
+    )
+    if context_notes:
+        md.p(context_notes)
 
-Consider all of the evidence below critically. Token statistics can be noisy, especially for high-density components. The activation examples are sampled and may not be representative. Look for patterns that are consistent across multiple sources of evidence.
+    md.h(2, "Output tokens (what the model produces when this component fires)")
+    md.extend(output_section)
 
-## Context
-- Model: {model_metadata.model_class} ({model_metadata.n_blocks} blocks){dataset_line}
-- Component location: {layer_desc}
-- Component firing rate: {component.firing_density * 100:.2f}% ({rate_str})
+    md.h(2, "Input tokens (what causes this component to fire)")
+    md.extend(input_section)
 
-{context_notes}
+    md.h(2, "Activation examples — where the component fires")
+    md.p("<<delimiters>> mark tokens where this component is active.")
+    md.extend(fires_on_examples)
 
-## Output tokens (what the model produces when this component fires)
+    md.h(2, "Activation examples — what the model produces")
+    md.p(
+        "Same examples with <<delimiters>> shifted right by one — "
+        "showing the token that follows each firing position."
+    )
+    md.extend(says_examples)
 
-{output_section}
-## Input tokens (what causes this component to fire)
+    md.h(2, "Task")
+    md.p(
+        f"Give a {config.label_max_words}-word-or-fewer label describing this component's "
+        "function. The label should read like a short description of the job this component "
+        "does in the network. Use both the input and output evidence."
+    )
+    md.p(
+        "Examples of good labels across different component types:\n"
+        '- "word stem completion (stems → suffixes)"\n'
+        '- "closes dialogue with quotation marks"\n'
+        '- "object pronouns after verbs"\n'
+        '- "story-ending moral resolution vocabulary"\n'
+        '- "aquatic scene vocabulary (frog, river, pond)"\n'
+        "- \"'of course' and abstract nouns after prepositions\""
+    )
+    md.p(
+        f'Say "unclear" if the evidence is too weak or diffuse. {forbidden_sentence}Lowercase only.'
+    )
 
-{input_section}
-## Activation examples — where the component fires
-
-<<delimiters>> mark tokens where this component is active.
-
-{fires_on_examples}
-## Activation examples — what the model produces
-
-Same examples with <<delimiters>> shifted right by one — showing the token that follows each firing position.
-
-{says_examples}
-
-## Task
-
-Give a {config.label_max_words}-word-or-fewer label describing this component's function. The label should read like a short description of the job this component does in the network. Use both the input and output evidence.
-
-Examples of good labels across different component types:
-- "word stem completion (stems → suffixes)"
-- "closes dialogue with quotation marks"
-- "object pronouns after verbs"
-- "story-ending moral resolution vocabulary"
-- "aquatic scene vocabulary (frog, river, pond)"
-- "'of course' and abstract nouns after prepositions"
-
-Say "unclear" if the evidence is too weak or diffuse. {forbidden_sentence}Lowercase only.
-"""
+    return md.build()

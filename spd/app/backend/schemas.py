@@ -19,25 +19,12 @@ class OutputProbability(BaseModel):
     logit: float  # CI-masked (SPD model) raw logit
     target_prob: float  # Target model probability
     target_logit: float  # Target model raw logit
-    adv_pgd_prob: float | None = None  # Adversarial PGD probability
-    adv_pgd_logit: float | None = None  # Adversarial PGD raw logit
     token: str
 
 
 # =============================================================================
 # Configuration Models
 # =============================================================================
-
-
-class ActivationContextsGenerationConfig(BaseModel):
-    """Configuration for generating activation contexts."""
-
-    importance_threshold: float = 0.01
-    n_batches: int = 100
-    batch_size: int = 32
-    n_tokens_either_side: int = 5
-    topk_examples: int = 20
-    separation_tokens: int = 0
 
 
 class SubcomponentMetadata(BaseModel):

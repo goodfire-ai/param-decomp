@@ -4,6 +4,7 @@ These are simple data containers with save/load methods.
 For query functionality, see harvest/analysis.py.
 """
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,6 +35,23 @@ class CorrelationStorage:
         if self._key_to_idx is None:
             self._key_to_idx = {k: i for i, k in enumerate(self.component_keys)}
         return self._key_to_idx
+
+    def pmi(self, key_a: str, key_b: str) -> float | None:
+        """Point-wise mutual information between two components.
+
+        Returns None if either component is missing or they never co-fire.
+        """
+        if key_a not in self.key_to_idx or key_b not in self.key_to_idx:
+            return None
+        i, j = self.key_to_idx[key_a], self.key_to_idx[key_b]
+        count_ij = self.count_ij[i][j].item()
+        if count_ij == 0:
+            return None
+        count_i = self.count_i[i].item()
+        count_j = self.count_i[j].item()
+        if count_i == 0 or count_j == 0:
+            return None
+        return math.log(count_ij * self.count_total / (count_i * count_j))
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

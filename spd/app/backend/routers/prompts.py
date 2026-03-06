@@ -6,16 +6,6 @@ from pydantic import BaseModel
 
 from spd.app.backend.dependencies import DepLoadedRun, DepStateManager
 from spd.app.backend.utils import log_errors
-from spd.utils.distributed_utils import get_device
-
-# TODO: Re-enable these endpoints when dependencies are available:
-# - extract_active_from_ci from database
-# - PromptSearchQuery, PromptSearchResponse from schemas
-# - DatasetConfig, LMTaskConfig from configs
-# - create_data_loader, extract_batch_data from data
-# - logger from utils
-
-DEVICE = get_device()
 
 # =============================================================================
 # Schemas

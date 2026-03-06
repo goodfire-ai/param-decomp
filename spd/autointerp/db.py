@@ -1,6 +1,5 @@
 """SQLite database for autointerp data (interpretations and scores). NFS-hosted, single writer then read-only."""
 
-import sqlite3
 from pathlib import Path
 
 import orjson

@@ -45,25 +45,8 @@ def submit_attributions(
     job_suffix: str | None = None,
     snapshot_branch: str | None = None,
     dependency_job_id: str | None = None,
-    harvest_subrun_id: str | None = None,
 ) -> AttributionsSubmitResult:
-    """Submit multi-GPU attribution harvesting job to SLURM.
-
-    Submits a job array where each task processes a subset of batches, then
-    submits a merge job that depends on all workers completing. Creates a git
-    snapshot to ensure consistent code across all workers.
-
-    Args:
-        wandb_path: WandB run path for the target decomposition run.
-        config: Attribution SLURM configuration.
-        job_suffix: Optional suffix for SLURM job names (e.g., "1h" -> "spd-attr-1h").
-        snapshot_branch: Git snapshot branch to use. If None, creates a new snapshot.
-        dependency_job_id: SLURM job to wait for before starting (e.g. harvest merge).
-        harvest_subrun_id: Harvest subrun for alive masks. If None, uses most recent.
-
-    Returns:
-        AttributionsSubmitResult with array, merge results and subrun ID.
-    """
+    """Submit multi-GPU attribution harvesting job to SLURM."""
     n_gpus = config.n_gpus
     partition = config.partition
     time = config.time
@@ -80,10 +63,7 @@ def submit_attributions(
     suffix = f"-{job_suffix}" if job_suffix else ""
     array_job_name = f"spd-attr{suffix}"
 
-    inner_config = config.config
-    if harvest_subrun_id is not None and inner_config.harvest_subrun_id is None:
-        inner_config = inner_config.model_copy(update={"harvest_subrun_id": harvest_subrun_id})
-    config_json = inner_config.model_dump_json(exclude_none=True)
+    config_json = config.config.model_dump_json(exclude_none=True)
 
     # SLURM arrays are 1-indexed, so task ID 1 -> rank 0, etc.
     worker_commands = []

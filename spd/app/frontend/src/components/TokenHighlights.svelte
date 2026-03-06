@@ -1,5 +1,6 @@
 <script lang="ts">
     import { getTokenHighlightBg, getComponentActivationColor } from "../lib/colors";
+    import { sanitizeToken, getProbAtPosition as getProbAt, formatProb } from "../lib/tokenUtils";
 
     interface Props {
         tokenStrings: string[];
@@ -11,18 +12,17 @@
 
     let { tokenStrings, tokenCi, tokenComponentActs, maxAbsComponentAct, tokenNextProbs }: Props = $props();
 
-    function getTooltipText(ci: number, componentAct: number, prob: number | null | undefined): string {
+    function getTooltipText(ci: number, componentAct: number, prob: number | null): string {
         let text = `CI: ${ci.toFixed(3)} | Act: ${componentAct.toFixed(3)}`;
-        if (prob != null) {
-            text += ` | P(token): ${(prob * 100).toFixed(1)}%`;
+        if (prob !== null) {
+            text += ` | P: ${formatProb(prob)}`;
         }
         return text;
     }
 
-    // Shift by 1: position i shows probability that token i-1 predicted token i
-    function getProbAtPosition(i: number): number | null | undefined {
-        if (!tokenNextProbs || i === 0) return null;
-        return tokenNextProbs[i - 1];
+    function getProbAtPosition(i: number): number | null {
+        if (!tokenNextProbs) return null;
+        return getProbAt(tokenNextProbs, i);
     }
 
     function getBgColor(ci: number): string {
@@ -41,14 +41,15 @@
             style="background-color:{getBgColor(tokenCi[i])};--underline-color:{getUnderlineColor(
                 tokenComponentActs[i],
             )}"
-            data-tooltip={getTooltipText(tokenCi[i], tokenComponentActs[i], getProbAtPosition(i))}>{tok}</span
+            data-tooltip={getTooltipText(tokenCi[i], tokenComponentActs[i], getProbAtPosition(i))}
+            >{sanitizeToken(tok)}</span
         >{/each}</span
 >
 
 <style>
     .token-highlights {
         display: inline;
-        white-space: pre-wrap;
+        white-space: pre;
         font-family: var(--font-mono);
     }
 

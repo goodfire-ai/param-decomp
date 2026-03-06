@@ -36,7 +36,7 @@ from spd.utils.wandb_utils import parse_wandb_run_path
 def _build_alive_masks(
     model: ComponentModel,
     run_id: str,
-    harvest_subrun_id: str | None,
+    harvest_subrun_id: str,
 ) -> dict[str, Bool[Tensor, " n_components"]]:
     """Build masks of alive components (firing_density > 0) per target layer.
 
@@ -48,11 +48,7 @@ def _build_alive_masks(
         for layer in model.target_module_paths
     }
 
-    if harvest_subrun_id is not None:
-        harvest = HarvestRepo(decomposition_id=run_id, subrun_id=harvest_subrun_id, readonly=True)
-    else:
-        harvest = HarvestRepo.open_most_recent(run_id, readonly=True)
-        assert harvest is not None, f"No harvest data for {run_id}"
+    harvest = HarvestRepo(decomposition_id=run_id, subrun_id=harvest_subrun_id, readonly=True)
 
     summary = harvest.get_summary()
     assert summary is not None, "Harvest summary not available"
@@ -73,7 +69,6 @@ def harvest_attributions(
     rank: int,
     world_size: int,
 ) -> None:
-
     device = torch.device(get_device())
     logger.info(f"Loading model on {device}")
 

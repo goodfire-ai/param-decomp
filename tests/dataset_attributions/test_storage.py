@@ -195,7 +195,7 @@ _N_TOKENS = 100
 
 
 def _deterministic_storage(
-    regular_val: float = 10.0,
+    _regular_val: float = 10.0,
     embed_val: float = 6.0,
     ci_sum_val: float = 50.0,
     act_sq_sum_val: float = 400.0,
@@ -316,10 +316,12 @@ class TestMergeNumericCorrectness:
 
     def test_merge_equals_sum_of_parts(self, tmp_path: Path):
         """Two workers with known values; merged queries should equal manual computation."""
-        s1 = _deterministic_storage(embed_val=4.0, ci_sum_val=20.0, act_sq_sum_val=100.0,
-                                     embed_count_val=80, n_tokens=40)
-        s2 = _deterministic_storage(embed_val=8.0, ci_sum_val=30.0, act_sq_sum_val=500.0,
-                                     embed_count_val=120, n_tokens=60)
+        s1 = _deterministic_storage(
+            embed_val=4.0, ci_sum_val=20.0, act_sq_sum_val=100.0, embed_count_val=80, n_tokens=40
+        )
+        s2 = _deterministic_storage(
+            embed_val=8.0, ci_sum_val=30.0, act_sq_sum_val=500.0, embed_count_val=120, n_tokens=60
+        )
 
         p1, p2 = tmp_path / "r0.pt", tmp_path / "r1.pt"
         s1.save(p1)

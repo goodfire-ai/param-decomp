@@ -26,9 +26,7 @@ def open_nfs_sqlite(path: Path, readonly: bool) -> sqlite3.Connection:
     Write: default DELETE journal (WAL breaks on NFS).
     """
     if readonly:
-        conn = sqlite3.connect(
-            f"file:{path}?immutable=1", uri=True, check_same_thread=False
-        )
+        conn = sqlite3.connect(f"file:{path}?immutable=1", uri=True, check_same_thread=False)
     else:
         conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
