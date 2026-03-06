@@ -691,6 +691,26 @@ class PromptAttrDB:
             return None
         return (self._row_to_stored_graph(row), row["prompt_id"])
 
+    def delete_prompt(self, prompt_id: int) -> None:
+        """Delete a prompt and all its graphs, intervention runs, and forked runs."""
+        with self._write_lock():
+            conn = self._get_conn()
+            graph_ids_query = "SELECT id FROM graphs WHERE prompt_id = ?"
+            intervention_ids_query = (
+                f"SELECT id FROM intervention_runs WHERE graph_id IN ({graph_ids_query})"
+            )
+            conn.execute(
+                f"DELETE FROM forked_intervention_runs WHERE intervention_run_id IN ({intervention_ids_query})",
+                (prompt_id,),
+            )
+            conn.execute(
+                f"DELETE FROM intervention_runs WHERE graph_id IN ({graph_ids_query})",
+                (prompt_id,),
+            )
+            conn.execute("DELETE FROM graphs WHERE prompt_id = ?", (prompt_id,))
+            conn.execute("DELETE FROM prompts WHERE id = ?", (prompt_id,))
+            conn.commit()
+
     def delete_graphs_for_prompt(self, prompt_id: int) -> int:
         """Delete all graphs for a prompt. Returns the number of deleted rows."""
         with self._write_lock():

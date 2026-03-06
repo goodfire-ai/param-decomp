@@ -91,6 +91,14 @@ def list_prompts(manager: DepStateManager, loaded: DepLoadedRun) -> list[PromptP
     return results
 
 
+@router.delete("/{prompt_id}")
+@log_errors
+def delete_prompt(prompt_id: int, manager: DepStateManager) -> dict[str, bool]:
+    """Delete a prompt and all its graphs and intervention runs."""
+    manager.db.delete_prompt(prompt_id)
+    return {"success": True}
+
+
 @router.post("/custom")
 @log_errors
 def add_custom_prompt(text: str, manager: DepStateManager, loaded: DepLoadedRun) -> PromptPreview:

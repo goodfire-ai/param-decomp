@@ -53,10 +53,16 @@
         prompts: PromptPreview[];
     };
 
-    let { prompts }: Props = $props();
+    let { prompts: initialPrompts }: Props = $props();
+
+    // Local copy of prompts that can be modified (e.g. after deletion)
+    let prompts = $state(initialPrompts);
 
     // Prompt cards state
     let promptCards = $state<PromptCard[]>([]);
+
+    // Prompt deletion confirmation
+    let confirmingDeleteId = $state<number | null>(null);
 
     // Tab view state - discriminated union makes invalid states unrepresentable
     let tabView = $state<TabViewState>({ view: "draft", draft: defaultDraftState() });
@@ -177,9 +183,7 @@
     });
 
     // Active edge variant (derived from display settings and graph data availability)
-    const activeEdgeSet = $derived(
-        activeGraph ? getActiveEdges(activeGraph.data, displaySettings.edgeVariant) : null,
-    );
+    const activeEdgeSet = $derived(activeGraph ? getActiveEdges(activeGraph.data, displaySettings.edgeVariant) : null);
     const activeEdgesBySource = $derived(activeEdgeSet?.bySource ?? new Map<string, EdgeData[]>());
     const activeEdgesByTarget = $derived(activeEdgeSet?.byTarget ?? new Map<string, EdgeData[]>());
 
@@ -262,6 +266,21 @@
             useOptimized: false,
         };
         promptCards = [...promptCards, newCard];
+    }
+
+    async function handleDeletePrompt(promptId: number) {
+        await api.deletePrompt(promptId);
+        prompts = prompts.filter((p) => p.id !== promptId);
+        promptCards = promptCards.filter((c) => c.id !== promptId);
+        confirmingDeleteId = null;
+        // If we were viewing the deleted prompt, go back to draft
+        if (activeCardId === promptId) {
+            if (promptCards.length > 0) {
+                tabView = { view: "card", cardId: promptCards[promptCards.length - 1].id };
+            } else {
+                tabView = { view: "draft", draft: defaultDraftState() };
+            }
+        }
     }
 
     function handleSelectPrompt(prompt: PromptPreview) {
@@ -973,10 +992,35 @@
                                         <label class="draft-label">Or select existing ({prompts.length})</label>
                                         <div class="prompt-list">
                                             {#each prompts as prompt (prompt.id)}
-                                                <button class="prompt-item" onclick={() => handleSelectPrompt(prompt)}>
-                                                    <span class="prompt-id">#{prompt.id}</span>
-                                                    <span class="prompt-text">{prompt.preview}</span>
-                                                </button>
+                                                {#if confirmingDeleteId === prompt.id}
+                                                    <div class="prompt-item confirm-delete">
+                                                        <span class="confirm-text">Delete prompt #{prompt.id}?</span>
+                                                        <button
+                                                            class="confirm-yes"
+                                                            onclick={() => handleDeletePrompt(prompt.id)}>Yes</button
+                                                        >
+                                                        <button
+                                                            class="confirm-no"
+                                                            onclick={() => (confirmingDeleteId = null)}>No</button
+                                                        >
+                                                    </div>
+                                                {:else}
+                                                    <div class="prompt-item-row">
+                                                        <button
+                                                            class="prompt-item"
+                                                            onclick={() => handleSelectPrompt(prompt)}
+                                                        >
+                                                            <span class="prompt-id">#{prompt.id}</span>
+                                                            <span class="prompt-text">{prompt.preview}</span>
+                                                        </button>
+                                                        <button
+                                                            class="btn-delete-prompt"
+                                                            title="Delete prompt"
+                                                            onclick={() => (confirmingDeleteId = prompt.id)}
+                                                            >&times;</button
+                                                        >
+                                                    </div>
+                                                {/if}
                                             {/each}
                                         </div>
                                     </div>
@@ -1566,25 +1610,93 @@
         border: 1px solid var(--border-default);
     }
 
+    .prompt-item-row {
+        display: flex;
+        align-items: stretch;
+        border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .prompt-item-row:last-child {
+        border-bottom: none;
+    }
+
     .prompt-item {
-        width: 100%;
+        flex: 1;
         padding: var(--space-2) var(--space-3);
         background: transparent;
         border: none;
-        border-bottom: 1px solid var(--border-subtle);
         cursor: pointer;
         text-align: left;
         display: flex;
         gap: var(--space-2);
         align-items: baseline;
         color: var(--text-primary);
-    }
-
-    .prompt-item:last-child {
-        border-bottom: none;
+        min-width: 0;
     }
 
     .prompt-item:hover {
+        background: var(--bg-surface);
+    }
+
+    .btn-delete-prompt {
+        padding: 0 var(--space-2);
+        background: transparent;
+        border: none;
+        color: var(--text-muted);
+        font-size: var(--text-base);
+        cursor: pointer;
+        flex-shrink: 0;
+    }
+
+    .btn-delete-prompt:hover {
+        color: var(--status-negative-bright);
+        background: var(--bg-surface);
+    }
+
+    .confirm-delete {
+        border-bottom: 1px solid var(--border-subtle);
+        padding: var(--space-2) var(--space-3);
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+    }
+
+    .confirm-delete:last-child {
+        border-bottom: none;
+    }
+
+    .confirm-text {
+        font-size: var(--text-sm);
+        font-family: var(--font-mono);
+        color: var(--text-secondary);
+        flex: 1;
+    }
+
+    .confirm-yes,
+    .confirm-no {
+        padding: var(--space-1) var(--space-2);
+        border: none;
+        font-size: var(--text-xs);
+        font-family: var(--font-mono);
+        cursor: pointer;
+    }
+
+    .confirm-yes {
+        background: var(--status-negative);
+        color: white;
+    }
+
+    .confirm-yes:hover {
+        background: var(--status-negative-bright);
+    }
+
+    .confirm-no {
+        background: var(--bg-elevated);
+        color: var(--text-secondary);
+        border: 1px solid var(--border-default);
+    }
+
+    .confirm-no:hover {
         background: var(--bg-surface);
     }
 
