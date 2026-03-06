@@ -80,7 +80,10 @@ def submit_attributions(
     suffix = f"-{job_suffix}" if job_suffix else ""
     array_job_name = f"spd-attr{suffix}"
 
-    config_json = config.config.model_dump_json(exclude_none=True)
+    inner_config = config.config
+    if harvest_subrun_id is not None and inner_config.harvest_subrun_id is None:
+        inner_config = inner_config.model_copy(update={"harvest_subrun_id": harvest_subrun_id})
+    config_json = inner_config.model_dump_json(exclude_none=True)
 
     # SLURM arrays are 1-indexed, so task ID 1 -> rank 0, etc.
     worker_commands = []
@@ -91,7 +94,6 @@ def submit_attributions(
             rank=rank,
             world_size=n_gpus,
             subrun_id=subrun_id,
-            harvest_subrun_id=harvest_subrun_id,
         )
         worker_commands.append(cmd)
 
