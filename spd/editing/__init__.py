@@ -1,8 +1,5 @@
 """Component-level model editing for VPD decompositions."""
 
-# Re-export everything from the main module so `from spd.editing import ...` still works
-from spd.app.backend.app_tokenizer import AppTokenizer
-from spd.app.backend.compute import OptimizedPromptAttributionResult
 from spd.editing._editing import (
     AblationEffect,
     AlignmentResult,
@@ -21,14 +18,10 @@ from spd.editing._editing import (
     search_by_token_pmi,
     search_interpretations,
 )
-from spd.editing.component_trainer import ComponentTrainer
 
 __all__ = [
     "AblationEffect",
     "AlignmentResult",
-    "AppTokenizer",
-    "ComponentTrainer",
-    "OptimizedPromptAttributionResult",
     "ComponentMatch",
     "ComponentVectors",
     "EditableModel",
