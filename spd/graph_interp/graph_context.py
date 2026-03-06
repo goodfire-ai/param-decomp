@@ -7,7 +7,6 @@ from typing import Literal
 from spd.dataset_attributions.storage import DatasetAttributionEntry
 from spd.graph_interp.ordering import parse_component_key
 from spd.graph_interp.schemas import LabelResult
-from spd.harvest.analysis import get_pmi
 from spd.harvest.storage import CorrelationStorage
 
 
@@ -52,7 +51,7 @@ def get_related_components(
             RelatedComponent(
                 component_key=e.component_key,
                 attribution=e.value,
-                pmi=get_pmi(correlation_storage, component_key, e.component_key),
+                pmi=correlation_storage.pmi(component_key, e.component_key),
                 label=label.label if label else None,
                 confidence=label.confidence if label else None,
             )
