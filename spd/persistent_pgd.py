@@ -219,10 +219,13 @@ class PersistentPGDState:
         Each step computes the recon loss, extracts gradients, and updates sources in-place.
         When n_warmup_steps=0 (default), this is a no-op.
         """
+        original_router = self._router
+        self._router = AllLayersRouter()
         for _ in range(self._n_warmup_steps):
             loss = self.compute_recon_loss(model, batch, target_out, ci, weight_deltas)
             grads = self.get_grads(loss, retain_graph=False)
             self.step(grads)
+        self._router = original_router
 
     def compute_recon_loss(
         self,

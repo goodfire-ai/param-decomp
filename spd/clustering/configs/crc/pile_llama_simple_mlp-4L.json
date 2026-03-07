@@ -8,7 +8,7 @@
       "filter_dead_threshold": 0.1,
       "module_name_filter": null
     },
-    "model_path": "wandb:goodfire/spd/runs/s-55ea3f9b",
+    "model_path": "wandb:goodfire/spd/runs/s-82ffb969",
     "batch_size": 128,
     "n_tokens": 500000,
     "n_tokens_per_seq": 5,
