@@ -98,8 +98,8 @@ loss_metric_configs:
     lr_schedule:
       start_val: 0.01
       warmup_pct: 0.025
-      final_val_frac: 1.0
-      fn_type: constant
+      final_val_frac: 0.1
+      fn_type: cosine
   scope:
     type: per_batch_per_position
   use_sigmoid_parameterization: false

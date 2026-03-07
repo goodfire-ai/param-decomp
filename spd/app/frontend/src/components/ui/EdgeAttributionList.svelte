@@ -1,7 +1,8 @@
 <script lang="ts">
     import { getContext } from "svelte";
     import { colors } from "../../lib/colors";
-    import type { EdgeAttribution, OutputProbability } from "../../lib/promptAttributionsTypes";
+    import { isTokenNode } from "../../lib/componentKeys";
+    import type { EdgeAttribution } from "../../lib/promptAttributionsTypes";
     import { RUN_KEY, type InterpretationBackendState, type RunContext } from "../../lib/useRun.svelte";
     import { lerp } from "../prompt-attr/graphUtils";
 
@@ -11,28 +12,22 @@
         items: EdgeAttribution[];
         onClick: (key: string) => void;
         pageSize: number;
-        direction: "positive" | "negative";
+        direction?: "positive" | "negative";
         title?: string;
-        // Optional: only needed for prompt-level attributions with embed/output pseudo-layers
-        tokens?: string[];
-        outputProbs?: Record<string, OutputProbability>;
     };
 
-    let { items, onClick, pageSize, direction, title, tokens, outputProbs }: Props = $props();
+    let { items, onClick, pageSize, direction, title }: Props = $props();
 
-    // Extract component key (layer:cIdx) from either format
     function getComponentKey(key: string): string {
         const parts = key.split(":");
         if (parts.length === 3) {
-            return `${parts[0]}:${parts[2]}`; // layer:cIdx from layer:seq:cIdx
+            return `${parts[0]}:${parts[2]}`;
         }
-        return key; // already layer:cIdx
+        return key;
     }
 
-    // Extract just the aliased layer name from a key (e.g., "L0.attn.q" from "h.0.attn.q_proj:2:5")
     function getLayerLabel(key: string): string {
-        const layer = key.split(":")[0];
-        return layer;
+        return key.split(":")[0];
     }
 
     function getInterpretation(key: string): InterpretationBackendState {
@@ -42,64 +37,6 @@
         return { status: "none" };
     }
 
-    // Check if a key refers to a pseudo-layer token node (embed/output)
-    function isTokenNode(key: string): boolean {
-        const layer = key.split(":")[0];
-        return layer === "embed" || layer === "output";
-    }
-
-    // Get the raw token text for a token node (used in tooltips)
-    function getTokenText(key: string): string {
-        const parts = key.split(":");
-
-        // Prompt attributions: 3-part keys (layer:seq:cIdx)
-        if (tokens && outputProbs && parts.length === 3) {
-            const [layer, seqStr, cIdx] = parts;
-            const seqIdx = parseInt(seqStr);
-
-            if (layer === "embed") {
-                if (seqIdx < 0 || seqIdx >= tokens.length) {
-                    throw new Error(
-                        `EdgeAttributionList: seqIdx ${seqIdx} out of bounds for tokens length ${tokens.length}`,
-                    );
-                }
-                return tokens[seqIdx];
-            }
-
-            if (layer === "output") {
-                const entry = outputProbs[`${seqIdx}:${cIdx}`];
-                if (!entry) {
-                    throw new Error(`EdgeAttributionList: output node ${key} not found in outputProbs`);
-                }
-                return entry.token;
-            }
-        }
-
-        // Dataset attributions: 2-part keys (layer:cIdx) - cIdx is vocab ID
-        if (parts.length === 2) {
-            const [layer, cIdx] = parts;
-
-            if (layer === "embed" || layer === "output") {
-                const vocabIdx = parseInt(cIdx);
-                // Tokens are guaranteed loaded when run is loaded (see useRun.svelte.ts)
-                if (runState.allTokens.status !== "loaded") {
-                    throw new Error(`allTokens not loaded (status: ${runState.allTokens.status})`);
-                }
-                const tokenInfo = runState.allTokens.data.find((t) => t.id === vocabIdx);
-                if (!tokenInfo) throw new Error(`Token not found for vocab index ${vocabIdx}`);
-                return tokenInfo.string;
-            }
-        }
-
-        throw new Error(`getTokenText called on non-token node: ${key}`);
-    }
-
-    // Get the quoted token string for display (e.g., "'hello'")
-    function getQuotedTokenLabel(key: string): string {
-        return `'${getTokenText(key)}'`;
-    }
-
-    // Get the token type label for the right side (e.g., "Input token" or "Output token")
     function getTokenTypeLabel(key: string): string {
         const layer = key.split(":")[0];
         return layer === "embed" ? "Input token" : "Output token";
@@ -109,7 +46,6 @@
     const totalPages = $derived(Math.ceil(items.length / pageSize));
     const paginatedItems = $derived(items.slice(currentPage * pageSize, (currentPage + 1) * pageSize));
 
-    // Track which pill is being hovered and its position
     let hoveredKey = $state<string | null>(null);
     let tooltipPosition = $state<{ top: number; left: number } | null>(null);
 
@@ -125,7 +61,6 @@
         tooltipPosition = null;
     }
 
-    // Reset page when items change
     $effect(() => {
         items; // eslint-disable-line @typescript-eslint/no-unused-expressions
         currentPage = 0;
@@ -133,8 +68,8 @@
 
     function getBgColor(normalizedMagnitude: number): string {
         const intensity = lerp(0, 0.8, normalizedMagnitude);
-        const { r, g, b } = direction === "negative" ? colors.negativeRgb : colors.positiveRgb;
-        return `rgba(${r}, ${g}, ${b}, ${intensity})`;
+        const rgb = direction === "negative" ? colors.negativeRgb : colors.positiveRgb;
+        return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${intensity})`;
     }
 
     async function copyToClipboard(text: string) {
@@ -156,23 +91,27 @@
         {/if}
     </div>
     <div class="items">
-        {#each paginatedItems as { key, value, normalizedMagnitude } (key)}
+        {#each paginatedItems as { key, value, normalizedMagnitude, tokenStr } (key)}
             {@const bgColor = getBgColor(normalizedMagnitude)}
             {@const textColor = normalizedMagnitude > 0.8 ? "white" : "var(--text-primary)"}
             {@const formattedKey = key}
             {@const isToken = isTokenNode(key)}
             {@const interp = isToken ? undefined : getInterpretation(key)}
             {@const hasInterpretation = interp?.status === "generated"}
+            {@const polarity = value >= 0 ? "+" : "\u2212"}
             <div class="pill-container" onmouseenter={(e) => handleMouseEnter(key, e)} onmouseleave={handleMouseLeave}>
                 <button class="edge-pill" style="background: {bgColor};" onclick={() => onClick(key)}>
+                    {#if !direction}
+                        <span class="polarity" style="color: {textColor};">{polarity}</span>
+                    {/if}
                     {#if hasInterpretation}
                         <span class="pill-content">
                             <span class="interp-label" style="color: {textColor};">{interp.data.label}</span>
                             <span class="layer-label" style="color: {textColor};">{getLayerLabel(key)}</span>
                         </span>
-                    {:else if isToken}
+                    {:else if isToken && tokenStr}
                         <span class="pill-content">
-                            <span class="interp-label" style="color: {textColor};">{getQuotedTokenLabel(key)}</span>
+                            <span class="interp-label" style="color: {textColor};">'{tokenStr}'</span>
                             <span class="layer-label" style="color: {textColor};">{getTokenTypeLabel(key)}</span>
                         </span>
                     {:else}
@@ -206,8 +145,8 @@
                                 </svg>
                             </button>
                             <div class="tooltip-confidence">Confidence: {interp.data.confidence}</div>
-                        {:else if isToken}
-                            <div class="tooltip-token">Token: '{getTokenText(key)}'</div>
+                        {:else if isToken && tokenStr}
+                            <div class="tooltip-token">Token: '{tokenStr}'</div>
                         {/if}
                     </div>
                 {/if}
@@ -227,7 +166,7 @@
         display: flex;
         align-items: center;
         gap: var(--space-2);
-        min-height: 1.25rem; /* Ensure consistent height even when empty */
+        min-height: 1.25rem;
     }
 
     .list-title {
@@ -285,7 +224,7 @@
     .edge-pill {
         display: inline-flex;
         align-items: flex-start;
-        gap: var(--space-2);
+        gap: var(--space-1);
         padding: var(--space-1) var(--space-1);
         border-radius: var(--radius-sm);
         cursor: default;
@@ -293,6 +232,14 @@
         font-family: inherit;
         font-size: inherit;
         max-width: 100%;
+    }
+
+    .polarity {
+        font-weight: 700;
+        font-size: 10px;
+        line-height: 1;
+        flex-shrink: 0;
+        opacity: 0.7;
     }
 
     .node-key {

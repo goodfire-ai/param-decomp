@@ -14,3 +14,7 @@ export async function createCustomPrompt(text: string): Promise<PromptPreview> {
     url.searchParams.set("text", text);
     return fetchJson<PromptPreview>(url.toString(), { method: "POST" });
 }
+
+export async function deletePrompt(promptId: number): Promise<void> {
+    await fetchJson<void>(`/api/prompts/${promptId}`, { method: "DELETE" });
+}

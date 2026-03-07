@@ -1,11 +1,11 @@
-"""SQLite database for autointerp data (interpretations and scores)."""
+"""SQLite database for autointerp data (interpretations and scores). NFS-hosted, single writer then read-only."""
 
-import sqlite3
 from pathlib import Path
 
 import orjson
 
 from spd.autointerp.schemas import InterpretationResult
+from spd.utils.sqlite import open_nfs_sqlite
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS interpretations (
@@ -31,17 +31,18 @@ CREATE TABLE IF NOT EXISTS config (
 );
 """
 
+DONE_MARKER = ".done"
+
 
 class InterpDB:
     def __init__(self, db_path: Path, readonly: bool = False) -> None:
-        if readonly:
-            self._conn = sqlite3.connect(
-                f"file:{db_path}?immutable=1", uri=True, check_same_thread=False
-            )
-        else:
-            self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        self._conn = open_nfs_sqlite(db_path, readonly)
+        if not readonly:
             self._conn.executescript(_SCHEMA)
-        self._conn.row_factory = sqlite3.Row
+        self._db_path = db_path
+
+    def mark_done(self) -> None:
+        (self._db_path.parent / DONE_MARKER).touch()
 
     def save_interpretation(self, result: InterpretationResult) -> None:
         self._conn.execute(

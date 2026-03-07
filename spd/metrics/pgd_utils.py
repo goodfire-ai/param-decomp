@@ -30,11 +30,11 @@ def _init_adv_sources(
         match pgd_config.mask_scope:
             case "unique_per_datapoint":
                 shape = torch.Size([*batch_dims, mask_c])
-                source = _get_pgd_init_tensor(pgd_config.init, shape, device)
+                source = get_pgd_init_tensor(pgd_config.init, shape, device)
             case "shared_across_batch":
                 singleton_batch_dims = [1 for _ in batch_dims]
                 shape = torch.Size([*singleton_batch_dims, mask_c])
-                source = broadcast_tensor(_get_pgd_init_tensor(pgd_config.init, shape, device))
+                source = broadcast_tensor(get_pgd_init_tensor(pgd_config.init, shape, device))
         adv_sources[module_name] = source.requires_grad_(True)
     return adv_sources
 
@@ -86,7 +86,7 @@ def _construct_mask_infos_from_adv_sources(
             adv_sources_components = {k: v[..., :-1] for k, v in expanded_adv_sources.items()}
 
     return make_mask_infos(
-        component_masks=_interpolate_component_mask(ci, adv_sources_components),
+        component_masks=interpolate_pgd_mask(ci, adv_sources_components),
         weight_deltas_and_masks=weight_deltas_and_masks,
         routing_masks=routing_masks,
     )
@@ -171,7 +171,7 @@ def calc_multibatch_pgd_masked_recon_loss(
         mask_c = module_c if not use_delta_component else module_c + 1
         shape = torch.Size([*singleton_batch_dims, mask_c])
         adv_sources[module_name] = broadcast_tensor(
-            _get_pgd_init_tensor(pgd_config.init, shape, device)
+            get_pgd_init_tensor(pgd_config.init, shape, device)
         ).requires_grad_(True)
 
     fwd_bwd_fn = partial(
@@ -301,11 +301,12 @@ def _multibatch_pgd_fwd_bwd(
     return pgd_step_accum_sum_loss, pgd_step_accum_n_examples, pgd_step_accum_grads
 
 
-def _get_pgd_init_tensor(
+def get_pgd_init_tensor(
     init: PGDInitStrategy,
     shape: tuple[int, ...],
     device: torch.device | str,
 ) -> Float[Tensor, "... shape"]:
+    """Create initial PGD source tensor (random, ones, or zeroes). Shared by training PGD and app eval PGD."""
     match init:
         case "random":
             return torch.rand(shape, device=device)
@@ -315,7 +316,7 @@ def _get_pgd_init_tensor(
             return torch.zeros(shape, device=device)
 
 
-def _interpolate_component_mask(
+def interpolate_pgd_mask(
     ci: dict[str, Float[Tensor, "*batch_dims C"]],
     adv_sources_components: dict[str, Float[Tensor, "*batch_dims C"]],
 ) -> dict[str, Float[Tensor, "*batch_dims C"]]:

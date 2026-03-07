@@ -42,14 +42,13 @@ class AttributionRepo:
         candidates = sorted(
             [d for d in base_dir.iterdir() if d.is_dir() and d.name.startswith("da-")],
             key=lambda d: d.name,
+            reverse=True,
         )
-        if not candidates:
-            return None
-        subrun_dir = candidates[-1]
-        path = subrun_dir / "dataset_attributions.pt"
-        if not path.exists():
-            return None
-        return cls(DatasetAttributionStorage.load(path), subrun_id=subrun_dir.name)
+        for subrun_dir in candidates:
+            path = subrun_dir / "dataset_attributions.pt"
+            if path.exists():
+                return cls(DatasetAttributionStorage.load(path), subrun_id=subrun_dir.name)
+        return None
 
     def get_attributions(self) -> DatasetAttributionStorage:
         return self._storage

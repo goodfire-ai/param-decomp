@@ -1,14 +1,25 @@
 <script lang="ts">
-    import type { OutputProbability } from "../../lib/promptAttributionsTypes";
+    import { topEdgeAttributions, type EdgeData, type OutputProbability } from "../../lib/promptAttributionsTypes";
     import { getOutputHeaderColor } from "../../lib/colors";
+    import { displaySettings } from "../../lib/displaySettings.svelte";
+    import { COMPONENT_CARD_CONSTANTS } from "../../lib/componentCardConstants";
+    import EdgeAttributionGrid from "../ui/EdgeAttributionGrid.svelte";
 
     type Props = {
         cIdx: number;
         outputProbs: Record<string, OutputProbability>;
         seqIdx?: number; // When present: show single position. When absent: show all positions for this vocab id
+        edgesByTarget?: Map<string, EdgeData[]>;
     };
 
-    let { cIdx, outputProbs, seqIdx }: Props = $props();
+    let { cIdx, outputProbs, seqIdx, edgesByTarget }: Props = $props();
+
+    const outputNodeKey = $derived(seqIdx !== undefined ? `output:${seqIdx}:${cIdx}` : null);
+    const outputIncoming = $derived(
+        outputNodeKey && edgesByTarget
+            ? topEdgeAttributions(edgesByTarget.get(outputNodeKey) ?? [], (e) => e.src, 20)
+            : [],
+    );
 
     function escapeHtml(text: string): string {
         return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -33,19 +44,11 @@
                 logit: entry.logit,
                 target_prob: entry.target_prob,
                 target_logit: entry.target_logit,
-                adv_pgd_prob: entry.adv_pgd_prob,
-                adv_pgd_logit: entry.adv_pgd_logit,
                 token: entry.token,
             }))
             .sort((a, b) => b.prob - a.prob);
         if (positions.length === 0) throw new Error(`OutputNodeCard: no positions for cIdx ${cIdx}`);
         return positions;
-    });
-
-    const hasAdvPgd = $derived.by(() => {
-        if (singlePosEntry) return singlePosEntry.adv_pgd_prob !== null;
-        if (allPositions) return allPositions.some((p) => p.adv_pgd_prob !== null);
-        return false;
     });
 </script>
 
@@ -61,13 +64,6 @@
                     2,
                 )})
             </div>
-            {#if singlePosEntry.adv_pgd_prob !== null && singlePosEntry.adv_pgd_logit !== null}
-                <div class="output-prob">
-                    Adversarial: {(singlePosEntry.adv_pgd_prob * 100).toFixed(1)}% (logit: {singlePosEntry.adv_pgd_logit.toFixed(
-                        2,
-                    )})
-                </div>
-            {/if}
         </div>
         <p class="stats">
             <strong>Position:</strong>
@@ -83,10 +79,6 @@
                     <th>Logit</th>
                     <th>Target</th>
                     <th>Logit</th>
-                    {#if hasAdvPgd}
-                        <th>Adv</th>
-                        <th>Logit</th>
-                    {/if}
                 </tr>
             </thead>
             <tbody>
@@ -97,14 +89,21 @@
                         <td>{pos.logit.toFixed(2)}</td>
                         <td>{(pos.target_prob * 100).toFixed(2)}%</td>
                         <td>{pos.target_logit.toFixed(2)}</td>
-                        {#if hasAdvPgd}
-                            <td>{pos.adv_pgd_prob !== null ? (pos.adv_pgd_prob * 100).toFixed(2) + "%" : "—"}</td>
-                            <td>{pos.adv_pgd_logit !== null ? pos.adv_pgd_logit.toFixed(2) : "—"}</td>
-                        {/if}
                     </tr>
                 {/each}
             </tbody>
         </table>
+    {/if}
+    {#if displaySettings.showEdgeAttributions && outputIncoming.length > 0}
+        <EdgeAttributionGrid
+            title="Prompt Attributions"
+            incomingLabel="Incoming"
+            outgoingLabel="Outgoing"
+            incoming={outputIncoming}
+            outgoing={[]}
+            pageSize={COMPONENT_CARD_CONSTANTS.PROMPT_ATTRIBUTIONS_PAGE_SIZE}
+            onClick={() => {}}
+        />
     {/if}
 </div>
 
@@ -133,7 +132,6 @@
         color: var(--text-secondary);
         font-family: var(--font-mono);
     }
-
 
     .stats {
         margin: var(--space-1) 0;

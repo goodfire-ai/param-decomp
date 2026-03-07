@@ -19,25 +19,95 @@ from pydantic import BaseModel
 
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.app.backend.compute import (
+    DEFAULT_EVAL_PGD_CONFIG,
+    MAX_OUTPUT_NODES_PER_POS,
     Edge,
+    compute_intervention,
     compute_prompt_attributions,
     compute_prompt_attributions_optimized,
+    compute_prompt_attributions_optimized_batched,
 )
-from spd.app.backend.database import GraphType, OptimizationParams, StoredGraph
+from spd.app.backend.database import (
+    GraphType,
+    OptimizationParams,
+    PgdConfig,
+    PromptAttrDB,
+    StoredGraph,
+)
 from spd.app.backend.dependencies import DepLoadedRun, DepStateManager
 from spd.app.backend.optim_cis import (
     AdvPGDConfig,
     CELossConfig,
+    CISnapshot,
     KLLossConfig,
+    LogitLossConfig,
     LossConfig,
     MaskType,
+    MeanKLLossConfig,
     OptimCIConfig,
+    PositionalLossConfig,
 )
 from spd.app.backend.schemas import OutputProbability
 from spd.app.backend.utils import log_errors
-from spd.configs import ImportanceMinimalityLossConfig
+from spd.configs import ImportanceMinimalityLossConfig, SamplingType
 from spd.log import logger
+from spd.models.component_model import ComponentModel
+from spd.topology import TransformerTopology
 from spd.utils.distributed_utils import get_device
+
+NON_INTERVENTABLE_LAYERS = {"embed", "output"}
+
+
+def _save_base_intervention_run(
+    graph_id: int,
+    model: ComponentModel,
+    tokens: torch.Tensor,
+    node_ci_vals: dict[str, float],
+    tokenizer: AppTokenizer,
+    topology: TransformerTopology,
+    db: PromptAttrDB,
+    sampling: SamplingType,
+    loss_config: LossConfig | None = None,
+) -> None:
+    """Compute intervention for all interventable nodes and save as an intervention run."""
+    interventable_keys = [
+        k
+        for k, ci in node_ci_vals.items()
+        if k.split(":")[0] not in NON_INTERVENTABLE_LAYERS and ci > 0
+    ]
+    if not interventable_keys:
+        logger.warning(
+            f"Graph {graph_id}: no interventable nodes with CI > 0, skipping base intervention run"
+        )
+        return
+
+    active_nodes: list[tuple[str, int, int]] = []
+    for key in interventable_keys:
+        canon_layer, seq_str, cidx_str = key.split(":")
+        concrete_path = topology.canon_to_target(canon_layer)
+        active_nodes.append((concrete_path, int(seq_str), int(cidx_str)))
+
+    effective_loss_config: LossConfig = (
+        loss_config if loss_config is not None else MeanKLLossConfig()
+    )
+
+    result = compute_intervention(
+        model=model,
+        tokens=tokens,
+        active_nodes=active_nodes,
+        nodes_to_ablate=None,
+        tokenizer=tokenizer,
+        adv_pgd_config=DEFAULT_EVAL_PGD_CONFIG,
+        loss_config=effective_loss_config,
+        sampling=sampling,
+        top_k=10,
+    )
+
+    db.save_intervention_run(
+        graph_id=graph_id,
+        selected_nodes=interventable_keys,
+        result_json=result.model_dump_json(),
+    )
 
 
 class EdgeData(BaseModel):
@@ -65,12 +135,14 @@ class GraphData(BaseModel):
     graphType: GraphType
     tokens: list[str]
     edges: list[EdgeData]
+    edgesAbs: list[EdgeData] | None = None  # absolute-target variant, None for old graphs
     outputProbs: dict[str, OutputProbability]
     nodeCiVals: dict[
         str, float
     ]  # node key -> CI value (or output prob for output nodes or 1 for embed node)
     nodeSubcompActs: dict[str, float]  # node key -> subcomponent activation (v_i^T @ a)
     maxAbsAttr: float  # max absolute edge value
+    maxAbsAttrAbs: float | None = None  # max absolute edge value for abs-target variant
     maxAbsSubcompAct: float  # max absolute subcomponent activation for normalization
     l0_total: int  # total active components at current CI threshold
 
@@ -93,6 +165,70 @@ class KLLossResult(BaseModel):
     position: int
 
 
+class LogitLossResult(BaseModel):
+    """Logit loss result (maximize pre-softmax logit)."""
+
+    type: Literal["logit"] = "logit"
+    coeff: float
+    position: int
+    label_token: int
+    label_str: str
+
+
+LossType = Literal["ce", "kl", "logit"]
+LossResult = CELossResult | KLLossResult | LogitLossResult
+
+
+def _build_loss_config(
+    loss_type: LossType,
+    loss_coeff: float,
+    loss_position: int,
+    label_token: int | None,
+) -> PositionalLossConfig:
+    match loss_type:
+        case "ce":
+            assert label_token is not None, "label_token is required for CE loss"
+            return CELossConfig(coeff=loss_coeff, position=loss_position, label_token=label_token)
+        case "kl":
+            return KLLossConfig(coeff=loss_coeff, position=loss_position)
+        case "logit":
+            assert label_token is not None, "label_token is required for logit loss"
+            return LogitLossConfig(
+                coeff=loss_coeff, position=loss_position, label_token=label_token
+            )
+
+
+def _build_loss_result(
+    loss_config: PositionalLossConfig,
+    tok_display: Callable[[int], str],
+) -> LossResult:
+    match loss_config:
+        case CELossConfig(coeff=coeff, position=pos, label_token=label_tok):
+            return CELossResult(
+                coeff=coeff, position=pos, label_token=label_tok, label_str=tok_display(label_tok)
+            )
+        case KLLossConfig(coeff=coeff, position=pos):
+            return KLLossResult(coeff=coeff, position=pos)
+        case LogitLossConfig(coeff=coeff, position=pos, label_token=label_tok):
+            return LogitLossResult(
+                coeff=coeff, position=pos, label_token=label_tok, label_str=tok_display(label_tok)
+            )
+
+
+def _maybe_pgd(
+    n_steps: int | None, step_size: float | None
+) -> tuple[PgdConfig, AdvPGDConfig] | None:
+    assert (n_steps is None) == (step_size is None), (
+        "adv_pgd n_steps and step_size must both be set or both be None"
+    )
+    if n_steps is None:
+        return None
+    assert step_size is not None  # for narrowing
+    return PgdConfig(n_steps=n_steps, step_size=step_size), AdvPGDConfig(
+        n_steps=n_steps, step_size=step_size, init="random"
+    )
+
+
 class OptimizationMetricsResult(BaseModel):
     """Final loss metrics from CI optimization."""
 
@@ -112,10 +248,9 @@ class OptimizationResult(BaseModel):
     pnorm: float
     beta: float
     mask_type: MaskType
-    loss: CELossResult | KLLossResult
+    loss: CELossResult | KLLossResult | LogitLossResult
     metrics: OptimizationMetricsResult
-    adv_pgd_n_steps: int | None = None
-    adv_pgd_step_size: float | None = None
+    pgd: PgdConfig | None = None
 
 
 class GraphDataWithOptimization(GraphData):
@@ -156,19 +291,6 @@ class TokenizeResponse(BaseModel):
     next_token_probs: list[float | None]  # Probability of next token (last token is None)
 
 
-class TokenInfo(BaseModel):
-    """A single token from the tokenizer vocabulary."""
-
-    id: int
-    string: str
-
-
-class TokensResponse(BaseModel):
-    """Response containing all tokens in the vocabulary."""
-
-    tokens: list[TokenInfo]
-
-
 # SSE streaming message types
 class ProgressMessage(BaseModel):
     """Progress update during streaming computation."""
@@ -200,6 +322,12 @@ class CompleteMessageWithOptimization(BaseModel):
     data: GraphDataWithOptimization
 
 
+class BatchGraphResult(BaseModel):
+    """Batch optimization result containing multiple graphs."""
+
+    graphs: list[GraphDataWithOptimization]
+
+
 router = APIRouter(prefix="/api/graphs", tags=["graphs"])
 
 DEVICE = get_device()
@@ -211,14 +339,10 @@ GLOBAL_EDGE_LIMIT = 50_000
 ProgressCallback = Callable[[int, int, str], None]
 
 
-MAX_OUTPUT_NODES_PER_POS = 15
-
-
 def _build_out_probs(
     ci_masked_out_logits: torch.Tensor,
     target_out_logits: torch.Tensor,
     tok_display: Callable[[int], str],
-    adv_pgd_out_logits: torch.Tensor | None = None,
 ) -> dict[str, OutputProbability]:
     """Build output probs dict from logit tensors.
 
@@ -226,9 +350,6 @@ def _build_out_probs(
     """
     ci_masked_out_probs = torch.softmax(ci_masked_out_logits, dim=-1)
     target_out_probs = torch.softmax(target_out_logits, dim=-1)
-    adv_pgd_out_probs = (
-        torch.softmax(adv_pgd_out_logits, dim=-1) if adv_pgd_out_logits is not None else None
-    )
 
     out_probs: dict[str, OutputProbability] = {}
     for s in range(ci_masked_out_probs.shape[0]):
@@ -243,65 +364,78 @@ def _build_out_probs(
             target_prob = float(target_out_probs[s, c_idx].item())
             target_logit = float(target_out_logits[s, c_idx].item())
 
-            adv_pgd_prob: float | None = None
-            adv_pgd_logit: float | None = None
-            if adv_pgd_out_probs is not None and adv_pgd_out_logits is not None:
-                adv_pgd_prob = round(float(adv_pgd_out_probs[s, c_idx].item()), 6)
-                adv_pgd_logit = round(float(adv_pgd_out_logits[s, c_idx].item()), 4)
-
             key = f"{s}:{c_idx}"
             out_probs[key] = OutputProbability(
                 prob=round(prob, 6),
                 logit=round(logit, 4),
                 target_prob=round(target_prob, 6),
                 target_logit=round(target_logit, 4),
-                adv_pgd_prob=adv_pgd_prob,
-                adv_pgd_logit=adv_pgd_logit,
                 token=tok_display(c_idx),
             )
     return out_probs
 
 
+CISnapshotCallback = Callable[[CISnapshot], None]
+
+
 def stream_computation(
-    work: Callable[[ProgressCallback], GraphData | GraphDataWithOptimization],
+    work: Callable[[ProgressCallback, CISnapshotCallback | None], BaseModel],
+    gpu_lock: threading.Lock,
 ) -> StreamingResponse:
-    """Run graph computation in a thread with SSE streaming for progress updates."""
+    """Run graph computation in a thread with SSE streaming for progress updates.
+
+    Acquires gpu_lock before starting and holds it until computation completes.
+    Raises 503 if the lock is already held by another operation.
+    """
+    # Try to acquire lock non-blocking - fail fast if GPU is busy
+    if not gpu_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=503,
+            detail="GPU operation already in progress. Please wait and retry.",
+        )
+
     progress_queue: queue.Queue[dict[str, Any]] = queue.Queue()
 
     def on_progress(current: int, total: int, stage: str) -> None:
         progress_queue.put({"type": "progress", "current": current, "total": total, "stage": stage})
 
+    def on_ci_snapshot(snapshot: CISnapshot) -> None:
+        progress_queue.put({"type": "ci_snapshot", **snapshot.model_dump()})
+
     def compute_thread() -> None:
         try:
-            result = work(on_progress)
+            result = work(on_progress, on_ci_snapshot)
             progress_queue.put({"type": "result", "result": result})
         except Exception as e:
             traceback.print_exc(file=sys.stderr)
             progress_queue.put({"type": "error", "error": str(e)})
 
     def generate() -> Generator[str]:
-        thread = threading.Thread(target=compute_thread)
-        thread.start()
+        try:
+            thread = threading.Thread(target=compute_thread)
+            thread.start()
 
-        while True:
-            try:
-                msg = progress_queue.get(timeout=0.1)
-            except queue.Empty:
-                if not thread.is_alive():
+            while True:
+                try:
+                    msg = progress_queue.get(timeout=0.1)
+                except queue.Empty:
+                    if not thread.is_alive():
+                        break
+                    continue
+
+                if msg["type"] in ("progress", "ci_snapshot"):
+                    yield f"data: {json.dumps(msg)}\n\n"
+                elif msg["type"] == "error":
+                    yield f"data: {json.dumps(msg)}\n\n"
                     break
-                continue
+                elif msg["type"] == "result":
+                    complete_data = {"type": "complete", "data": msg["result"].model_dump()}
+                    yield f"data: {json.dumps(complete_data)}\n\n"
+                    break
 
-            if msg["type"] == "progress":
-                yield f"data: {json.dumps(msg)}\n\n"
-            elif msg["type"] == "error":
-                yield f"data: {json.dumps(msg)}\n\n"
-                break
-            elif msg["type"] == "result":
-                complete_data = {"type": "complete", "data": msg["result"].model_dump()}
-                yield f"data: {json.dumps(complete_data)}\n\n"
-                break
-
-        thread.join()
+            thread.join()
+        finally:
+            gpu_lock.release()
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -343,40 +477,55 @@ def tokenize_text(text: str, loaded: DepLoadedRun) -> TokenizeResponse:
     )
 
 
-@router.get("/tokens")
-@log_errors
-def get_all_tokens(loaded: DepLoadedRun) -> TokensResponse:
-    """Get all tokens in the tokenizer vocabulary for client-side search."""
-    tokens = [
-        TokenInfo(id=tid, string=loaded.tokenizer.get_tok_display(tid))
-        for tid in range(loaded.tokenizer.vocab_size)
-    ]
-    return TokensResponse(tokens=tokens)
+class TokenSearchResult(BaseModel):
+    """A token search result with model probability at the queried position."""
+
+    id: int
+    string: str
+    prob: float
 
 
 class TokenSearchResponse(BaseModel):
     """Response from token search endpoint."""
 
-    tokens: list[TokenInfo]
+    tokens: list[TokenSearchResult]
 
 
 @router.get("/tokens/search")
 @log_errors
 def search_tokens(
     q: Annotated[str, Query(min_length=1)],
+    prompt_id: Annotated[int, Query()],
+    position: Annotated[int, Query()],
     loaded: DepLoadedRun,
-    limit: Annotated[int, Query(ge=1, le=50)] = 10,
+    manager: DepStateManager,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
 ) -> TokenSearchResponse:
-    """Search tokens by substring match. Returns up to `limit` results."""
+    """Search tokens by substring match, sorted by target model probability at position."""
+    prompt = manager.state.db.get_prompt(prompt_id)
+    if prompt is None:
+        raise HTTPException(status_code=404, detail=f"prompt {prompt_id} not found")
+    if not (0 <= position < len(prompt.token_ids)):
+        raise HTTPException(
+            status_code=422,
+            detail=f"position {position} out of range for prompt with {len(prompt.token_ids)} tokens",
+        )
+
+    device = next(loaded.model.parameters()).device
+    tokens_tensor = torch.tensor([prompt.token_ids], device=device)
+    with manager.gpu_lock(), torch.no_grad():
+        logits = loaded.model(tokens_tensor)
+        probs = torch.softmax(logits[0, position], dim=-1)
+
     query = q.lower()
-    matches: list[TokenInfo] = []
+    matches: list[TokenSearchResult] = []
     for tid in range(loaded.tokenizer.vocab_size):
         string = loaded.tokenizer.get_tok_display(tid)
         if query in string.lower():
-            matches.append(TokenInfo(id=tid, string=string))
-            if len(matches) >= limit:
-                break
-    return TokenSearchResponse(tokens=matches)
+            matches.append(TokenSearchResult(id=tid, string=string, prob=probs[tid].item()))
+
+    matches.sort(key=lambda m: m.prob, reverse=True)
+    return TokenSearchResponse(tokens=matches[:limit])
 
 
 NormalizeType = Literal["none", "target", "layer"]
@@ -450,7 +599,9 @@ def compute_graph_stream(
     spans = loaded.tokenizer.get_spans(token_ids)
     tokens_tensor = torch.tensor([token_ids], device=DEVICE)
 
-    def work(on_progress: ProgressCallback) -> GraphData:
+    def work(
+        on_progress: ProgressCallback, _on_ci_snapshot: CISnapshotCallback | None
+    ) -> GraphData:
         t_total = time.perf_counter()
 
         result = compute_prompt_attributions(
@@ -474,6 +625,7 @@ def compute_graph_stream(
             graph=StoredGraph(
                 graph_type=graph_type,
                 edges=result.edges,
+                edges_abs=result.edges_abs,
                 ci_masked_out_logits=ci_masked_out_logits,
                 target_out_logits=target_out_logits,
                 node_ci_vals=result.node_ci_vals,
@@ -482,6 +634,19 @@ def compute_graph_stream(
             ),
         )
         logger.info(f"[perf] save_graph: {time.perf_counter() - t0:.2f}s")
+
+        t0 = time.perf_counter()
+        _save_base_intervention_run(
+            graph_id=graph_id,
+            model=loaded.model,
+            tokens=tokens_tensor,
+            node_ci_vals=result.node_ci_vals,
+            tokenizer=loaded.tokenizer,
+            topology=loaded.topology,
+            db=db,
+            sampling=loaded.config.sampling,
+        )
+        logger.info(f"[perf] base intervention run: {time.perf_counter() - t0:.2f}s")
 
         t0 = time.perf_counter()
         fg = filter_graph_for_display(
@@ -494,6 +659,7 @@ def compute_graph_stream(
             num_tokens=len(token_ids),
             ci_threshold=ci_threshold,
             normalize=normalize,
+            raw_edges_abs=result.edges_abs,
         )
         logger.info(
             f"[perf] filter_graph: {time.perf_counter() - t0:.2f}s ({len(fg.edges)} edges after filter)"
@@ -505,15 +671,17 @@ def compute_graph_stream(
             graphType=graph_type,
             tokens=spans,
             edges=fg.edges,
+            edgesAbs=fg.edges_abs,
             outputProbs=fg.out_probs,
             nodeCiVals=fg.node_ci_vals,
             nodeSubcompActs=result.node_subcomp_acts,
             maxAbsAttr=fg.max_abs_attr,
+            maxAbsAttrAbs=fg.max_abs_attr_abs,
             maxAbsSubcompAct=fg.max_abs_subcomp_act,
             l0_total=fg.l0_total,
         )
 
-    return stream_computation(work)
+    return stream_computation(work, manager._gpu_lock)
 
 
 def _edge_to_edge_data(edge: Edge) -> EdgeData:
@@ -557,9 +725,6 @@ def _normalize_edges(edges: list[Edge], normalize: NormalizeType) -> list[Edge]:
     return out_edges
 
 
-LossType = Literal["ce", "kl"]
-
-
 @router.post("/optimized/stream")
 @log_errors
 def compute_graph_optimized_stream(
@@ -586,19 +751,8 @@ def compute_graph_optimized_stream(
     label_token is required when loss_type is "ce".
     adv_pgd_n_steps and adv_pgd_step_size enable adversarial PGD when both are provided.
     """
-    # Build loss config based on type
-    loss_config: LossConfig
-    match loss_type:
-        case "ce":
-            if label_token is None:
-                raise HTTPException(status_code=400, detail="label_token is required for CE loss")
-            loss_config = CELossConfig(
-                coeff=loss_coeff, position=loss_position, label_token=label_token
-            )
-        case "kl":
-            loss_config = KLLossConfig(coeff=loss_coeff, position=loss_position)
-
-    lr = 1e-2
+    loss_config = _build_loss_config(loss_type, loss_coeff, loss_position, label_token)
+    pgd_configs = _maybe_pgd(adv_pgd_n_steps, adv_pgd_step_size)
 
     db = manager.db
     prompt = db.get_prompt(prompt_id)
@@ -612,11 +766,9 @@ def compute_graph_optimized_stream(
             detail=f"loss_position {loss_position} out of bounds for prompt with {len(token_ids)} tokens",
         )
 
-    label_str = loaded.tokenizer.get_tok_display(label_token) if label_token is not None else None
     spans = loaded.tokenizer.get_spans(token_ids)
     tokens_tensor = torch.tensor([token_ids], device=DEVICE)
 
-    # Slice tokens to only include positions <= loss_position
     num_tokens = loss_position + 1
     spans_sliced = spans[:num_tokens]
 
@@ -627,13 +779,12 @@ def compute_graph_optimized_stream(
         beta=beta,
         mask_type=mask_type,
         loss=loss_config,
-        adv_pgd_n_steps=adv_pgd_n_steps,
-        adv_pgd_step_size=adv_pgd_step_size,
+        pgd=pgd_configs[0] if pgd_configs else None,
     )
 
     optim_config = OptimCIConfig(
         seed=0,
-        lr=lr,
+        lr=1e-2,
         steps=steps,
         weight_decay=0.0,
         lr_schedule="cosine",
@@ -645,12 +796,12 @@ def compute_graph_optimized_stream(
         sampling=loaded.config.sampling,
         ce_kl_rounding_threshold=0.5,
         mask_type=mask_type,
-        adv_pgd=AdvPGDConfig(n_steps=adv_pgd_n_steps, step_size=adv_pgd_step_size, init="random")
-        if adv_pgd_n_steps is not None and adv_pgd_step_size is not None
-        else None,
+        adv_pgd=pgd_configs[1] if pgd_configs else None,
     )
 
-    def work(on_progress: ProgressCallback) -> GraphDataWithOptimization:
+    def work(
+        on_progress: ProgressCallback, on_ci_snapshot: CISnapshotCallback | None
+    ) -> GraphDataWithOptimization:
         result = compute_prompt_attributions_optimized(
             model=loaded.model,
             topology=loaded.topology,
@@ -660,26 +811,40 @@ def compute_graph_optimized_stream(
             output_prob_threshold=0.01,
             device=DEVICE,
             on_progress=on_progress,
+            on_ci_snapshot=on_ci_snapshot,
         )
 
         ci_masked_out_logits = result.ci_masked_out_logits.cpu()
         target_out_logits = result.target_out_logits.cpu()
-        adv_pgd_out_logits = (
-            result.adv_pgd_out_logits.cpu() if result.adv_pgd_out_logits is not None else None
-        )
+
+        opt_params.ci_masked_label_prob = result.metrics.ci_masked_label_prob
+        opt_params.stoch_masked_label_prob = result.metrics.stoch_masked_label_prob
+        opt_params.adv_pgd_label_prob = result.metrics.adv_pgd_label_prob
 
         graph_id = db.save_graph(
             prompt_id=prompt_id,
             graph=StoredGraph(
                 graph_type="optimized",
                 edges=result.edges,
+                edges_abs=result.edges_abs,
                 ci_masked_out_logits=ci_masked_out_logits,
                 target_out_logits=target_out_logits,
-                adv_pgd_out_logits=adv_pgd_out_logits,
                 node_ci_vals=result.node_ci_vals,
                 node_subcomp_acts=result.node_subcomp_acts,
                 optimization_params=opt_params,
             ),
+        )
+
+        _save_base_intervention_run(
+            graph_id=graph_id,
+            model=loaded.model,
+            tokens=tokens_tensor,
+            node_ci_vals=result.node_ci_vals,
+            tokenizer=loaded.tokenizer,
+            topology=loaded.topology,
+            db=db,
+            sampling=loaded.config.sampling,
+            loss_config=loss_config,
         )
 
         fg = filter_graph_for_display(
@@ -692,32 +857,20 @@ def compute_graph_optimized_stream(
             num_tokens=num_tokens,
             ci_threshold=ci_threshold,
             normalize=normalize,
-            adv_pgd_out_logits=adv_pgd_out_logits,
+            raw_edges_abs=result.edges_abs,
         )
-
-        # Build loss result based on config type
-        loss_result: CELossResult | KLLossResult
-        match loss_config:
-            case CELossConfig(coeff=coeff, position=pos, label_token=label_tok):
-                assert label_str is not None
-                loss_result = CELossResult(
-                    coeff=coeff,
-                    position=pos,
-                    label_token=label_tok,
-                    label_str=label_str,
-                )
-            case KLLossConfig(coeff=coeff, position=pos):
-                loss_result = KLLossResult(coeff=coeff, position=pos)
 
         return GraphDataWithOptimization(
             id=graph_id,
             graphType="optimized",
             tokens=spans_sliced,
             edges=fg.edges,
+            edgesAbs=fg.edges_abs,
             outputProbs=fg.out_probs,
             nodeCiVals=fg.node_ci_vals,
             nodeSubcompActs=result.node_subcomp_acts,
             maxAbsAttr=fg.max_abs_attr,
+            maxAbsAttrAbs=fg.max_abs_attr_abs,
             maxAbsSubcompAct=fg.max_abs_subcomp_act,
             l0_total=fg.l0_total,
             optimization=OptimizationResult(
@@ -726,19 +879,203 @@ def compute_graph_optimized_stream(
                 pnorm=pnorm,
                 beta=beta,
                 mask_type=mask_type,
-                loss=loss_result,
+                loss=_build_loss_result(loss_config, loaded.tokenizer.get_tok_display),
                 metrics=OptimizationMetricsResult(
                     ci_masked_label_prob=result.metrics.ci_masked_label_prob,
                     stoch_masked_label_prob=result.metrics.stoch_masked_label_prob,
                     adv_pgd_label_prob=result.metrics.adv_pgd_label_prob,
                     l0_total=result.metrics.l0_total,
                 ),
-                adv_pgd_n_steps=adv_pgd_n_steps,
-                adv_pgd_step_size=adv_pgd_step_size,
+                pgd=pgd_configs[0] if pgd_configs else None,
             ),
         )
 
-    return stream_computation(work)
+    return stream_computation(work, manager._gpu_lock)
+
+
+class BatchOptimizedRequest(BaseModel):
+    """Request body for batch optimized graph computation."""
+
+    prompt_id: int
+    imp_min_coeffs: list[float]
+    steps: int
+    pnorm: float
+    beta: float
+    normalize: NormalizeType
+    ci_threshold: float
+    mask_type: MaskType
+    loss_type: LossType
+    loss_coeff: float
+    loss_position: int
+    label_token: int | None = None
+    adv_pgd_n_steps: int | None = None
+    adv_pgd_step_size: float | None = None
+
+
+@router.post("/optimized/batch/stream")
+@log_errors
+def compute_graph_optimized_batch_stream(
+    body: BatchOptimizedRequest,
+    loaded: DepLoadedRun,
+    manager: DepStateManager,
+):
+    """Compute optimized graphs for multiple sparsity coefficients in one batched optimization.
+
+    Returns N graphs (one per imp_min_coeff) via SSE streaming.
+    All coefficients share the same loss config, steps, and other hyperparameters.
+    """
+    assert len(body.imp_min_coeffs) > 0, "At least one coefficient required"
+    assert len(body.imp_min_coeffs) <= 20, "Too many coefficients (max 20)"
+
+    loss_config = _build_loss_config(
+        body.loss_type, body.loss_coeff, body.loss_position, body.label_token
+    )
+    pgd_configs = _maybe_pgd(body.adv_pgd_n_steps, body.adv_pgd_step_size)
+
+    db = manager.db
+    prompt = db.get_prompt(body.prompt_id)
+    assert prompt is not None, f"prompt {body.prompt_id} not found"
+
+    token_ids = prompt.token_ids
+    assert body.loss_position < len(token_ids), (
+        f"loss_position {body.loss_position} out of bounds for prompt with {len(token_ids)} tokens"
+    )
+
+    spans = loaded.tokenizer.get_spans(token_ids)
+    tokens_tensor = torch.tensor([token_ids], device=DEVICE)
+
+    num_tokens = body.loss_position + 1
+    spans_sliced = spans[:num_tokens]
+
+    configs = [
+        OptimCIConfig(
+            seed=0,
+            lr=1e-2,
+            steps=body.steps,
+            weight_decay=0.0,
+            lr_schedule="cosine",
+            lr_exponential_halflife=None,
+            lr_warmup_pct=0.01,
+            log_freq=max(1, body.steps // 4),
+            imp_min_config=ImportanceMinimalityLossConfig(
+                coeff=coeff, pnorm=body.pnorm, beta=body.beta
+            ),
+            loss_config=loss_config,
+            sampling=loaded.config.sampling,
+            ce_kl_rounding_threshold=0.5,
+            mask_type=body.mask_type,
+            adv_pgd=pgd_configs[1] if pgd_configs else None,
+        )
+        for coeff in body.imp_min_coeffs
+    ]
+
+    def work(
+        on_progress: ProgressCallback, on_ci_snapshot: CISnapshotCallback | None
+    ) -> BatchGraphResult:
+        results = compute_prompt_attributions_optimized_batched(
+            model=loaded.model,
+            topology=loaded.topology,
+            tokens=tokens_tensor,
+            sources_by_target=loaded.sources_by_target,
+            configs=configs,
+            output_prob_threshold=0.01,
+            device=DEVICE,
+            on_progress=on_progress,
+            on_ci_snapshot=on_ci_snapshot,
+        )
+
+        graphs: list[GraphDataWithOptimization] = []
+        for result, coeff in zip(results, body.imp_min_coeffs, strict=True):
+            ci_masked_out_logits = result.ci_masked_out_logits.cpu()
+            target_out_logits = result.target_out_logits.cpu()
+
+            opt_params = OptimizationParams(
+                imp_min_coeff=coeff,
+                steps=body.steps,
+                pnorm=body.pnorm,
+                beta=body.beta,
+                mask_type=body.mask_type,
+                loss=loss_config,
+                pgd=pgd_configs[0] if pgd_configs else None,
+            )
+            opt_params.ci_masked_label_prob = result.metrics.ci_masked_label_prob
+            opt_params.stoch_masked_label_prob = result.metrics.stoch_masked_label_prob
+            opt_params.adv_pgd_label_prob = result.metrics.adv_pgd_label_prob
+
+            graph_id = db.save_graph(
+                prompt_id=body.prompt_id,
+                graph=StoredGraph(
+                    graph_type="optimized",
+                    edges=result.edges,
+                    edges_abs=result.edges_abs,
+                    ci_masked_out_logits=ci_masked_out_logits,
+                    target_out_logits=target_out_logits,
+                    node_ci_vals=result.node_ci_vals,
+                    node_subcomp_acts=result.node_subcomp_acts,
+                    optimization_params=opt_params,
+                ),
+            )
+
+            _save_base_intervention_run(
+                graph_id=graph_id,
+                model=loaded.model,
+                tokens=tokens_tensor,
+                node_ci_vals=result.node_ci_vals,
+                tokenizer=loaded.tokenizer,
+                topology=loaded.topology,
+                db=db,
+                sampling=loaded.config.sampling,
+                loss_config=loss_config,
+            )
+
+            fg = filter_graph_for_display(
+                raw_edges=result.edges,
+                node_ci_vals=result.node_ci_vals,
+                node_subcomp_acts=result.node_subcomp_acts,
+                ci_masked_out_logits=ci_masked_out_logits,
+                target_out_logits=target_out_logits,
+                tok_display=loaded.tokenizer.get_tok_display,
+                num_tokens=num_tokens,
+                ci_threshold=body.ci_threshold,
+                normalize=body.normalize,
+                raw_edges_abs=result.edges_abs,
+            )
+
+            graphs.append(
+                GraphDataWithOptimization(
+                    id=graph_id,
+                    graphType="optimized",
+                    tokens=spans_sliced,
+                    edges=fg.edges,
+                    edgesAbs=fg.edges_abs,
+                    outputProbs=fg.out_probs,
+                    nodeCiVals=fg.node_ci_vals,
+                    nodeSubcompActs=result.node_subcomp_acts,
+                    maxAbsAttr=fg.max_abs_attr,
+                    maxAbsAttrAbs=fg.max_abs_attr_abs,
+                    maxAbsSubcompAct=fg.max_abs_subcomp_act,
+                    l0_total=fg.l0_total,
+                    optimization=OptimizationResult(
+                        imp_min_coeff=coeff,
+                        steps=body.steps,
+                        pnorm=body.pnorm,
+                        beta=body.beta,
+                        mask_type=body.mask_type,
+                        loss=_build_loss_result(loss_config, loaded.tokenizer.get_tok_display),
+                        metrics=OptimizationMetricsResult(
+                            ci_masked_label_prob=result.metrics.ci_masked_label_prob,
+                            stoch_masked_label_prob=result.metrics.stoch_masked_label_prob,
+                            adv_pgd_label_prob=result.metrics.adv_pgd_label_prob,
+                            l0_total=result.metrics.l0_total,
+                        ),
+                        pgd=pgd_configs[0] if pgd_configs else None,
+                    ),
+                )
+            )
+
+        return BatchGraphResult(graphs=graphs)
+
+    return stream_computation(work, manager._gpu_lock)
 
 
 @dataclass
@@ -746,9 +1083,11 @@ class FilteredGraph:
     """Result of filtering a raw graph for display."""
 
     edges: list[EdgeData]
+    edges_abs: list[EdgeData] | None  # absolute-target variant, None for old graphs
     node_ci_vals: dict[str, float]  # with pseudo nodes
     out_probs: dict[str, OutputProbability]
     max_abs_attr: float
+    max_abs_attr_abs: float | None  # max abs for absolute-target edges
     max_abs_subcomp_act: float
     l0_total: int
 
@@ -763,8 +1102,8 @@ def filter_graph_for_display(
     num_tokens: int,
     ci_threshold: float,
     normalize: NormalizeType,
+    raw_edges_abs: list[Edge] | None = None,
     edge_limit: int = GLOBAL_EDGE_LIMIT,
-    adv_pgd_out_logits: torch.Tensor | None = None,
 ) -> FilteredGraph:
     """Filter and transform a raw attribution graph for display.
 
@@ -775,9 +1114,7 @@ def filter_graph_for_display(
     5. Normalize edge strengths (if requested)
     6. Cap edges at edge_limit
     """
-    out_probs = _build_out_probs(
-        ci_masked_out_logits, target_out_logits, tok_display, adv_pgd_out_logits
-    )
+    out_probs = _build_out_probs(ci_masked_out_logits, target_out_logits, tok_display)
 
     filtered_node_ci_vals = {k: v for k, v in node_ci_vals.items() if v > ci_threshold}
 
@@ -789,25 +1126,33 @@ def filter_graph_for_display(
         seq_pos, token_id = key.split(":")
         node_ci_vals_with_pseudo[f"output:{seq_pos}:{token_id}"] = out_prob.prob
 
-    # Filter edges to only those connecting surviving nodes
+    # Filter, normalize, sort, and truncate an edge list to the surviving node set.
     node_keys = set(node_ci_vals_with_pseudo.keys())
-    edges = [e for e in raw_edges if str(e.source) in node_keys and str(e.target) in node_keys]
 
-    edges = _normalize_edges(edges=edges, normalize=normalize)
-    max_abs_attr = compute_max_abs_attr(edges=edges)
+    def _filter_edges(raw: list[Edge]) -> tuple[list[EdgeData], float]:
+        filtered = [e for e in raw if str(e.source) in node_keys and str(e.target) in node_keys]
+        filtered = _normalize_edges(edges=filtered, normalize=normalize)
+        max_abs = compute_max_abs_attr(edges=filtered)
+        filtered = sorted(filtered, key=lambda e: abs(e.strength), reverse=True)
+        if len(filtered) > edge_limit:
+            logger.warning(f"Edge limit {edge_limit} exceeded ({len(filtered)} edges), truncating")
+            filtered = filtered[:edge_limit]
+        return [_edge_to_edge_data(e) for e in filtered], max_abs
 
-    # Always sort by abs(strength) desc so frontend can just slice(0, topK) without re-sorting
-    edges = sorted(edges, key=lambda e: abs(e.strength), reverse=True)
+    edges_out, max_abs_attr = _filter_edges(raw_edges)
 
-    if len(edges) > edge_limit:
-        logger.warning(f"Edge limit {edge_limit} exceeded ({len(edges)} edges), truncating")
-        edges = edges[:edge_limit]
+    edges_abs_out: list[EdgeData] | None = None
+    max_abs_attr_abs: float | None = None
+    if raw_edges_abs is not None:
+        edges_abs_out, max_abs_attr_abs = _filter_edges(raw_edges_abs)
 
     return FilteredGraph(
-        edges=[_edge_to_edge_data(e) for e in edges],
+        edges=edges_out,
+        edges_abs=edges_abs_out,
         node_ci_vals=node_ci_vals_with_pseudo,
         out_probs=out_probs,
         max_abs_attr=max_abs_attr,
+        max_abs_attr_abs=max_abs_attr_abs,
         max_abs_subcomp_act=compute_max_abs_subcomp_act(node_subcomp_acts),
         l0_total=len(filtered_node_ci_vals),
     )
@@ -840,7 +1185,7 @@ def stored_graph_to_response(
         num_tokens=num_tokens,
         ci_threshold=ci_threshold,
         normalize=normalize,
-        adv_pgd_out_logits=graph.adv_pgd_out_logits,
+        raw_edges_abs=graph.edges_abs,
     )
 
     if not is_optimized:
@@ -849,10 +1194,12 @@ def stored_graph_to_response(
             graphType=graph.graph_type,
             tokens=spans,
             edges=fg.edges,
+            edgesAbs=fg.edges_abs,
             outputProbs=fg.out_probs,
             nodeCiVals=fg.node_ci_vals,
             nodeSubcompActs=graph.node_subcomp_acts,
             maxAbsAttr=fg.max_abs_attr,
+            maxAbsAttrAbs=fg.max_abs_attr_abs,
             maxAbsSubcompAct=fg.max_abs_subcomp_act,
             l0_total=fg.l0_total,
         )
@@ -860,29 +1207,17 @@ def stored_graph_to_response(
     assert graph.optimization_params is not None
     opt = graph.optimization_params
 
-    # Build loss result based on stored config type
-    loss_result: CELossResult | KLLossResult
-    match opt.loss:
-        case CELossConfig(coeff=coeff, position=pos, label_token=label_tok):
-            label_str = tokenizer.get_tok_display(label_tok)
-            loss_result = CELossResult(
-                coeff=coeff,
-                position=pos,
-                label_token=label_tok,
-                label_str=label_str,
-            )
-        case KLLossConfig(coeff=coeff, position=pos):
-            loss_result = KLLossResult(coeff=coeff, position=pos)
-
     return GraphDataWithOptimization(
         id=graph.id,
         graphType=graph.graph_type,
         tokens=spans,
         edges=fg.edges,
+        edgesAbs=fg.edges_abs,
         outputProbs=fg.out_probs,
         nodeCiVals=fg.node_ci_vals,
         nodeSubcompActs=graph.node_subcomp_acts,
         maxAbsAttr=fg.max_abs_attr,
+        maxAbsAttrAbs=fg.max_abs_attr_abs,
         maxAbsSubcompAct=fg.max_abs_subcomp_act,
         l0_total=fg.l0_total,
         optimization=OptimizationResult(
@@ -891,11 +1226,14 @@ def stored_graph_to_response(
             pnorm=opt.pnorm,
             beta=opt.beta,
             mask_type=opt.mask_type,
-            loss=loss_result,
-            # Metrics not stored in DB for cached graphs - use l0_total from graph
-            metrics=OptimizationMetricsResult(l0_total=float(fg.l0_total)),
-            adv_pgd_n_steps=opt.adv_pgd_n_steps,
-            adv_pgd_step_size=opt.adv_pgd_step_size,
+            loss=_build_loss_result(opt.loss, tokenizer.get_tok_display),
+            metrics=OptimizationMetricsResult(
+                l0_total=float(fg.l0_total),
+                ci_masked_label_prob=opt.ci_masked_label_prob,
+                stoch_masked_label_prob=opt.stoch_masked_label_prob,
+                adv_pgd_label_prob=opt.adv_pgd_label_prob,
+            ),
+            pgd=opt.pgd,
         ),
     )
 

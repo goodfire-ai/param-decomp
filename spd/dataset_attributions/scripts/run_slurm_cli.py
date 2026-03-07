@@ -13,6 +13,7 @@ import fire
 def submit_attributions(
     wandb_path: str,
     config: str,
+    harvest_subrun_id: str,
     job_suffix: str | None = None,
 ) -> None:
     """Submit multi-GPU dataset attribution harvesting to SLURM.
@@ -20,6 +21,7 @@ def submit_attributions(
     Args:
         wandb_path: WandB run path for the target decomposition run.
         config: Path to AttributionsSlurmConfig YAML/JSON. Uses built-in defaults if omitted.
+        harvest_subrun_id: Harvest subrun to use for alive masks (e.g. "h-20260306_120000").
         job_suffix: Optional suffix for SLURM job names (e.g., "v2" -> "spd-attr-v2").
     """
     from spd.dataset_attributions.config import AttributionsSlurmConfig
@@ -29,7 +31,12 @@ def submit_attributions(
     parse_wandb_run_path(wandb_path)
 
     slurm_config = AttributionsSlurmConfig.from_file(config)
-    impl(wandb_path=wandb_path, config=slurm_config, job_suffix=job_suffix)
+    impl(
+        wandb_path=wandb_path,
+        config=slurm_config,
+        harvest_subrun_id=harvest_subrun_id,
+        job_suffix=job_suffix,
+    )
 
 
 def cli() -> None:

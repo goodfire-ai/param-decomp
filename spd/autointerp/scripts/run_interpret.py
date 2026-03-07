@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from spd.adapters import adapter_from_id
 from spd.autointerp.config import AutointerpConfig
 from spd.autointerp.interpret import run_interpret
-from spd.autointerp.schemas import get_autointerp_subrun_dir
+from spd.autointerp.schemas import get_autointerp_dir, get_autointerp_subrun_dir
 from spd.harvest.repo import HarvestRepo
 from spd.log import logger
 
@@ -22,7 +22,8 @@ from spd.log import logger
 def main(
     decomposition_id: str,
     config_json: dict[str, Any],
-    harvest_subrun_id: str | None = None,
+    harvest_subrun_id: str,
+    autointerp_subrun_id: str | None = None,
 ) -> None:
     assert isinstance(config_json, dict), f"Expected dict from fire, got {type(config_json)}"
     interp_config = AutointerpConfig.model_validate(config_json)
@@ -31,17 +32,16 @@ def main(
     openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
     assert openrouter_api_key, "OPENROUTER_API_KEY not set"
 
-    if harvest_subrun_id is not None:
-        harvest = HarvestRepo(decomposition_id, subrun_id=harvest_subrun_id, readonly=False)
+    harvest = HarvestRepo(decomposition_id, subrun_id=harvest_subrun_id, readonly=False)
+
+    if autointerp_subrun_id is not None:
+        subrun_dir = get_autointerp_dir(decomposition_id) / autointerp_subrun_id
+        assert subrun_dir.exists(), f"Subrun dir not found: {subrun_dir}"
+        logger.info(f"Resuming existing subrun: {autointerp_subrun_id}")
     else:
-        harvest = HarvestRepo.open_most_recent(decomposition_id, readonly=False)
-        if harvest is None:
-            raise ValueError(f"No harvest data found for {decomposition_id}")
-
-    autointerp_run_id = "a-" + datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    subrun_dir = get_autointerp_subrun_dir(decomposition_id, autointerp_run_id)
-    subrun_dir.mkdir(parents=True, exist_ok=True)
+        autointerp_subrun_id = "a-" + datetime.now().strftime("%Y%m%d_%H%M%S")
+        subrun_dir = get_autointerp_subrun_dir(decomposition_id, autointerp_subrun_id)
+        subrun_dir.mkdir(parents=True, exist_ok=True)
 
     # Save config for reproducibility
     interp_config.to_file(subrun_dir / "config.yaml")
@@ -71,16 +71,18 @@ def main(
 def get_command(
     decomposition_id: str,
     config: AutointerpConfig,
-    harvest_subrun_id: str | None = None,
+    harvest_subrun_id: str,
+    autointerp_subrun_id: str | None = None,
 ) -> str:
     config_json = config.model_dump_json(exclude_none=True)
     cmd = (
         "python -m spd.autointerp.scripts.run_interpret "
         f"--decomposition_id {decomposition_id} "
         f"--config_json '{config_json}' "
+        f"--harvest_subrun_id {harvest_subrun_id} "
     )
-    if harvest_subrun_id is not None:
-        cmd += f"--harvest_subrun_id {harvest_subrun_id} "
+    if autointerp_subrun_id is not None:
+        cmd += f"--autointerp_subrun_id {autointerp_subrun_id} "
     return cmd
 
 

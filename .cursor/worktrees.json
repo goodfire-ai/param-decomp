@@ -1,6 +1,0 @@
-{
-  "setup-worktree": [
-    "make install-dev",
-    "make install-app"
-  ]
-}

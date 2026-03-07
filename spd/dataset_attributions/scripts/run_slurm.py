@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from spd.dataset_attributions.config import AttributionsSlurmConfig
-from spd.dataset_attributions.scripts import run as attribution_run
+from spd.dataset_attributions.scripts import run_merge, run_worker
 from spd.log import logger
 from spd.utils.git_utils import create_git_snapshot
 from spd.utils.slurm import (
@@ -42,28 +42,12 @@ class AttributionsSubmitResult:
 def submit_attributions(
     wandb_path: str,
     config: AttributionsSlurmConfig,
+    harvest_subrun_id: str,
     job_suffix: str | None = None,
     snapshot_branch: str | None = None,
     dependency_job_id: str | None = None,
-    harvest_subrun_id: str | None = None,
 ) -> AttributionsSubmitResult:
-    """Submit multi-GPU attribution harvesting job to SLURM.
-
-    Submits a job array where each task processes a subset of batches, then
-    submits a merge job that depends on all workers completing. Creates a git
-    snapshot to ensure consistent code across all workers.
-
-    Args:
-        wandb_path: WandB run path for the target decomposition run.
-        config: Attribution SLURM configuration.
-        job_suffix: Optional suffix for SLURM job names (e.g., "1h" -> "spd-attr-1h").
-        snapshot_branch: Git snapshot branch to use. If None, creates a new snapshot.
-        dependency_job_id: SLURM job to wait for before starting (e.g. harvest merge).
-        harvest_subrun_id: Harvest subrun for alive masks. If None, uses most recent.
-
-    Returns:
-        AttributionsSubmitResult with array, merge results and subrun ID.
-    """
+    """Submit multi-GPU attribution harvesting job to SLURM."""
     n_gpus = config.n_gpus
     partition = config.partition
     time = config.time
@@ -85,13 +69,13 @@ def submit_attributions(
     # SLURM arrays are 1-indexed, so task ID 1 -> rank 0, etc.
     worker_commands = []
     for rank in range(n_gpus):
-        cmd = attribution_run.get_worker_command(
+        cmd = run_worker.get_command(
             wandb_path,
             config_json,
+            harvest_subrun_id=harvest_subrun_id,
             rank=rank,
             world_size=n_gpus,
             subrun_id=subrun_id,
-            harvest_subrun_id=harvest_subrun_id,
         )
         worker_commands.append(cmd)
 
@@ -115,12 +99,13 @@ def submit_attributions(
     )
 
     # Submit merge job with dependency on array completion
-    merge_cmd = attribution_run.get_merge_command(wandb_path, subrun_id)
+    merge_cmd = run_merge.get_command(wandb_path, subrun_id)
     merge_config = SlurmConfig(
         job_name="spd-attr-merge",
         partition=partition,
-        n_gpus=0,  # No GPU needed for merge
+        n_gpus=0,
         time=config.merge_time,
+        mem=config.merge_mem,
         snapshot_branch=snapshot_branch,
         dependency_job_id=array_result.job_id,
         comment=wandb_url,
