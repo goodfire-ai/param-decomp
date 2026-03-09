@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Network Shattering – Parameter Decomposition</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0f172a;
+      color: #e2e8f0;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    #canvas-container {
+      position: relative;
+      width: 1200px;
+      height: 650px;
+    }
+    svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    #controls {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      margin-top: 16px;
+      padding: 10px 24px;
+      background: #1e293b;
+      border-radius: 8px;
+      font-size: 13px;
+    }
+    #controls button {
+      background: #334155;
+      color: #e2e8f0;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      padding: 6px 16px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: background 0.15s;
+    }
+    #controls button:hover { background: #475569; }
+    #controls label { color: #94a3b8; }
+    #speed-slider {
+      width: 100px;
+      accent-color: #6366f1;
+    }
+    #phase-indicator {
+      color: #94a3b8;
+      min-width: 120px;
+      text-align: right;
+    }
+    .arch-label {
+      font-size: 11px;
+      fill: #cbd5e1;
+      text-anchor: middle;
+      pointer-events: none;
+      font-weight: 500;
+    }
+    .title-label {
+      font-size: 15px;
+      fill: #e2e8f0;
+      text-anchor: middle;
+      pointer-events: none;
+      font-weight: 600;
+    }
+    .component-label {
+      font-size: 11px;
+      fill: #94a3b8;
+      text-anchor: middle;
+      pointer-events: none;
+      font-weight: 500;
+    }
+    .symbol-label {
+      font-size: 22px;
+      fill: #64748b;
+      text-anchor: middle;
+      dominant-baseline: central;
+      pointer-events: none;
+      font-weight: 300;
+    }
+    .block-label {
+      font-size: 10px;
+      fill: #64748b;
+      text-anchor: middle;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="canvas-container">
+    <svg id="viz"></svg>
+  </div>
+  <div id="controls">
+    <button id="replay-btn">&#9654; Replay</button>
+    <label>Speed</label>
+    <input id="speed-slider" type="range" min="0.25" max="3" step="0.25" value="1">
+    <span id="speed-display">1×</span>
+    <span id="phase-indicator">Idle</span>
+  </div>
+
+<script>
+// ── Config ──────────────────────────────────────────────────────────────────
+const W = 1200, H = 650;
+const CELL_SIZE = 14, CELL_GAP = 2;
+const COMP_CELL_SIZE = 10, COMP_CELL_GAP = 1.5;
+const N_COMPONENTS = 4;
+
+const COLORS = {
+  paramCell: "#ef4444",
+  components: ["#6366f1", "#10b981", "#f59e0b", "#f43f5e"],
+  attnTint: "#3b82f6",
+  mlpTint:  "#22c55e",
+  embedTint: "#a78bfa",
+  boxBorder: "#475569",
+  boxFill: "#1e293b",
+  ghostBorder: "#334155",
+  ghostFill: "transparent",
+  arrow: "#475569",
+  residual: "#334155",
+};
+
+const PHASES = [
+  { name: "Idle",      duration: 2000 },
+  { name: "Tremor",    duration: 1500 },
+  { name: "Intensify", duration: 1500 },
+  { name: "Shatter",   duration: 2500 },
+  { name: "Settle",    duration: 1000 },
+  { name: "Hold",      duration: 2000 },
+];
+
+// ── Data Model ──────────────────────────────────────────────────────────────
+const MATRICES = [
+  { id: "embed",   label: "Embed",   rows: 4, cols: 5, type: "embed" },
+  { id: "attn0",   label: "Attn",    rows: 4, cols: 5, type: "attn" },
+  { id: "mlp0",    label: "MLP",     rows: 4, cols: 5, type: "mlp" },
+  { id: "attn1",   label: "Attn",    rows: 4, cols: 5, type: "attn" },
+  { id: "mlp1",    label: "MLP",     rows: 4, cols: 5, type: "mlp" },
+  { id: "unembed", label: "Unembed", rows: 4, cols: 5, type: "embed" },
+];
+
+// Seeded PRNG for reproducibility
+function mulberry32(seed) {
+  return function() {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(42);
+
+// Build cells with component assignments
+const cells = [];
+let cellIdx = 0;
+for (const mat of MATRICES) {
+  for (let r = 0; r < mat.rows; r++) {
+    for (let c = 0; c < mat.cols; c++) {
+      cells.push({
+        idx: cellIdx++,
+        matId: mat.id,
+        matType: mat.type,
+        row: r,
+        col: c,
+        weight: 0.3 + rng() * 0.7,         // opacity for unified view
+        component: -1,                       // assigned below
+        vibPhase: rng() * Math.PI * 2,
+        vibFreqX: 1.5 + rng() * 2.5,
+        vibFreqY: 1.5 + rng() * 2.5,
+        vibPhaseY: rng() * Math.PI * 2,
+        // positions filled by layout
+        ux: 0, uy: 0,   // unified
+        cx: 0, cy: 0,   // component
+      });
+    }
+  }
+}
+
+// Assign each cell to exactly one component. Distribute ~30 cells per component.
+// Use a deterministic shuffle-then-assign approach per matrix.
+for (const mat of MATRICES) {
+  const matCells = cells.filter(c => c.matId === mat.id);
+  // Shuffle
+  for (let i = matCells.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [matCells[i], matCells[j]] = [matCells[j], matCells[i]];
+  }
+  // Assign round-robin
+  matCells.forEach((cell, i) => {
+    cell.component = i % N_COMPONENTS;
+  });
+}
+
+// ── Layout ──────────────────────────────────────────────────────────────────
+
+// Architecture layout - unified state (centered)
+const ARCH = {
+  centerX: W / 2,
+  topY: 55,
+  blockWidth: 180,
+  subBlockWidth: 72,
+  subBlockHeight: 52,
+  embedHeight: 52,
+  blockPadding: 10,
+  blockGapY: 12,
+  subBlockGap: 12,
+  arrowLen: 12,
+};
+
+// Compute architecture box positions
+function computeArchLayout() {
+  const cx = ARCH.centerX;
+  let y = ARCH.topY;
+  const positions = {};
+
+  // Embed
+  const embedW = ARCH.subBlockWidth + 20;
+  positions.embed = { x: cx - embedW/2, y, w: embedW, h: ARCH.embedHeight };
+  y += ARCH.embedHeight + ARCH.arrowLen + ARCH.blockGapY;
+
+  // Block 0
+  const blockH = ARCH.subBlockHeight + ARCH.blockPadding * 2 + 16;
+  const blockW = ARCH.blockWidth;
+  positions.block0 = { x: cx - blockW/2, y, w: blockW, h: blockH };
+  const subY = y + ARCH.blockPadding + 16;
+  const subX0 = cx - ARCH.subBlockGap/2 - ARCH.subBlockWidth;
+  const subX1 = cx + ARCH.subBlockGap/2;
+  positions.attn0 = { x: subX0, y: subY, w: ARCH.subBlockWidth, h: ARCH.subBlockHeight };
+  positions.mlp0  = { x: subX1, y: subY, w: ARCH.subBlockWidth, h: ARCH.subBlockHeight };
+  y += blockH + ARCH.arrowLen + ARCH.blockGapY;
+
+  // Block 1
+  positions.block1 = { x: cx - blockW/2, y, w: blockW, h: blockH };
+  const subY2 = y + ARCH.blockPadding + 16;
+  positions.attn1 = { x: subX0, y: subY2, w: ARCH.subBlockWidth, h: ARCH.subBlockHeight };
+  positions.mlp1  = { x: subX1, y: subY2, w: ARCH.subBlockWidth, h: ARCH.subBlockHeight };
+  y += blockH + ARCH.arrowLen + ARCH.blockGapY;
+
+  // Unembed
+  positions.unembed = { x: cx - embedW/2, y, w: embedW, h: ARCH.embedHeight };
+
+  return positions;
+}
+
+const archPos = computeArchLayout();
+
+// Place cells within their architecture boxes
+function cellGridOrigin(box, rows, cols) {
+  const gridW = cols * (CELL_SIZE + CELL_GAP) - CELL_GAP;
+  const gridH = rows * (CELL_SIZE + CELL_GAP) - CELL_GAP;
+  return {
+    ox: box.x + (box.w - gridW) / 2,
+    oy: box.y + (box.h - gridH) / 2,
+  };
+}
+
+for (const cell of cells) {
+  const box = archPos[cell.matId];
+  const { ox, oy } = cellGridOrigin(box, 4, 5);
+  cell.ux = ox + cell.col * (CELL_SIZE + CELL_GAP);
+  cell.uy = oy + cell.row * (CELL_SIZE + CELL_GAP);
+}
+
+// Component column layout - shattered state
+const COMP_LAYOUT = {
+  archLeftX: 145,       // architecture slides to this X center
+  startX: 440,          // first component column X
+  colSpacing: 155,      // spacing between component columns
+  topY: 85,             // top of component columns
+  matGapY: 8,           // gap between matrix grids in component column
+};
+
+// Compute component column positions for each cell
+function computeCompPositions() {
+  for (let comp = 0; comp < N_COMPONENTS; comp++) {
+    const colX = COMP_LAYOUT.startX + comp * COMP_LAYOUT.colSpacing;
+    let curY = COMP_LAYOUT.topY;
+    for (const mat of MATRICES) {
+      const gridW = mat.cols * (COMP_CELL_SIZE + COMP_CELL_GAP) - COMP_CELL_GAP;
+      const gridH = mat.rows * (COMP_CELL_SIZE + COMP_CELL_GAP) - COMP_CELL_GAP;
+      const ox = colX - gridW / 2;
+      const oy = curY;
+      // Set positions for cells of this matrix assigned to this component
+      for (const cell of cells) {
+        if (cell.matId === mat.id && cell.component === comp) {
+          cell.cx = ox + cell.col * (COMP_CELL_SIZE + COMP_CELL_GAP);
+          cell.cy = oy + cell.row * (COMP_CELL_SIZE + COMP_CELL_GAP);
+        }
+      }
+      curY += gridH + COMP_LAYOUT.matGapY;
+    }
+  }
+}
+computeCompPositions();
+
+// Also position non-assigned cells (for ghost outlines) - cells go to their
+// component column based on assignment
+// (Already handled above since every cell is assigned to exactly one component)
+
+// ── SVG Setup ───────────────────────────────────────────────────────────────
+const svg = d3.select("#viz")
+  .attr("viewBox", `0 0 ${W} ${H}`)
+  .attr("preserveAspectRatio", "xMidYMid meet");
+
+// Filters
+const defs = svg.append("defs");
+const glowFilter = defs.append("filter").attr("id", "glow");
+glowFilter.append("feGaussianBlur")
+  .attr("class", "glow-blur")
+  .attr("stdDeviation", 0)
+  .attr("result", "coloredBlur");
+const glowMerge = glowFilter.append("feMerge");
+glowMerge.append("feMergeNode").attr("in", "coloredBlur");
+glowMerge.append("feMergeNode").attr("in", "SourceGraphic");
+
+// Layer groups
+const gArchBg = svg.append("g").attr("class", "arch-bg");
+const gResiduals = svg.append("g").attr("class", "residuals");
+const gCells = svg.append("g").attr("class", "cells");
+const gArchFg = svg.append("g").attr("class", "arch-fg");
+const gLabels = svg.append("g").attr("class", "labels");
+const gCompOutlines = svg.append("g").attr("class", "comp-outlines").style("opacity", 0);
+const gSymbols = svg.append("g").attr("class", "symbols").style("opacity", 0);
+
+// ── Draw Architecture ───────────────────────────────────────────────────────
+const archGroup = svg.append("g").attr("class", "arch-group");
+
+function drawArchitecture() {
+  const cx = ARCH.centerX;
+
+  // Title
+  gLabels.append("text")
+    .attr("class", "title-label")
+    .attr("id", "title-target")
+    .attr("x", cx)
+    .attr("y", ARCH.topY - 22)
+    .text("Target Model")
+    .style("opacity", 0);
+
+  // Helper: draw a box
+  function drawBox(parent, pos, opts = {}) {
+    return parent.append("rect")
+      .attr("x", pos.x).attr("y", pos.y)
+      .attr("width", pos.w).attr("height", pos.h)
+      .attr("rx", 6).attr("ry", 6)
+      .attr("fill", opts.fill || COLORS.boxFill)
+      .attr("stroke", opts.stroke || COLORS.boxBorder)
+      .attr("stroke-width", opts.strokeWidth || 1.5)
+      .style("opacity", opts.opacity || 1);
+  }
+
+  // Embed box
+  drawBox(gArchBg, archPos.embed, { fill: "#1e1b4b20" }).attr("class", "arch-box");
+  gLabels.append("text").attr("class", "arch-label")
+    .attr("x", archPos.embed.x + archPos.embed.w/2)
+    .attr("y", archPos.embed.y - 5).text("Embed");
+
+  // Block 0
+  drawBox(gArchBg, archPos.block0, { fill: "#0f172a", stroke: "#334155" }).attr("class", "arch-box");
+  gLabels.append("text").attr("class", "block-label")
+    .attr("x", archPos.block0.x + archPos.block0.w/2)
+    .attr("y", archPos.block0.y + 13).text("Block 0");
+
+  // Attn 0
+  drawBox(gArchBg, archPos.attn0, { fill: "#1e3a5f30", stroke: "#3b82f650" }).attr("class", "arch-box");
+  gLabels.append("text").attr("class", "arch-label")
+    .attr("x", archPos.attn0.x + archPos.attn0.w/2)
+    .attr("y", archPos.attn0.y - 5).text("Attn");
+
+  // MLP 0
+  drawBox(gArchBg, archPos.mlp0, { fill: "#14532d20", stroke: "#22c55e50" }).attr("class", "arch-box");
+  gLabels.append("text").attr("class", "arch-label")
+    .attr("x", archPos.mlp0.x + archPos.mlp0.w/2)
+    .attr("y", archPos.mlp0.y - 5).text("MLP");
+
+  // Block 1
+  drawBox(gArchBg, archPos.block1, { fill: "#0f172a", stroke: "#334155" }).attr("class", "arch-box");
+  gLabels.append("text").attr("class", "block-label")
+    .attr("x", archPos.block1.x + archPos.block1.w/2)
+    .attr("y", archPos.block1.y + 13).text("Block 1");
+
+  // Attn 1
+  drawBox(gArchBg, archPos.attn1, { fill: "#1e3a5f30", stroke: "#3b82f650" }).attr("class", "arch-box");
+  gLabels.append("text").attr("class", "arch-label")
+    .attr("x", archPos.attn1.x + archPos.attn1.w/2)
+    .attr("y", archPos.attn1.y - 5).text("Attn");
+
+  // MLP 1
+  drawBox(gArchBg, archPos.mlp1, { fill: "#14532d20", stroke: "#22c55e50" }).attr("class", "arch-box");
+  gLabels.append("text").attr("class", "arch-label")
+    .attr("x", archPos.mlp1.x + archPos.mlp1.w/2)
+    .attr("y", archPos.mlp1.y - 5).text("MLP");
+
+  // Unembed box
+  drawBox(gArchBg, archPos.unembed, { fill: "#1e1b4b20" }).attr("class", "arch-box");
+  gLabels.append("text").attr("class", "arch-label")
+    .attr("x", archPos.unembed.x + archPos.unembed.w/2)
+    .attr("y", archPos.unembed.y - 5).text("Unembed");
+
+  // Arrows between blocks
+  function drawArrow(fromBox, toBox) {
+    const x = cx;
+    const y1 = fromBox.y + fromBox.h;
+    const y2 = toBox.y;
+    gArchBg.append("line")
+      .attr("class", "arch-arrow")
+      .attr("x1", x).attr("y1", y1)
+      .attr("x2", x).attr("y2", y2)
+      .attr("stroke", COLORS.arrow)
+      .attr("stroke-width", 1.5)
+      .attr("marker-end", "url(#arrowhead)");
+  }
+
+  // Arrowhead marker
+  defs.append("marker")
+    .attr("id", "arrowhead")
+    .attr("viewBox", "0 0 10 10")
+    .attr("refX", 9).attr("refY", 5)
+    .attr("markerWidth", 6).attr("markerHeight", 6)
+    .attr("orient", "auto")
+    .append("path")
+    .attr("d", "M 0 0 L 10 5 L 0 10 z")
+    .attr("fill", COLORS.arrow);
+
+  drawArrow(archPos.embed, archPos.block0);
+  drawArrow(archPos.block0, archPos.block1);
+  drawArrow(archPos.block1, archPos.unembed);
+
+  // Residual connections (curved bypasses)
+  function drawResidual(blockPos, subBlockLeft, subBlockRight) {
+    const x1 = blockPos.x - 4;
+    const yTop = blockPos.y + 14;
+    const yBot = blockPos.y + blockPos.h - 4;
+    const bulge = 14;
+    gResiduals.append("path")
+      .attr("class", "arch-residual")
+      .attr("d", `M ${x1} ${yTop} C ${x1 - bulge} ${yTop}, ${x1 - bulge} ${yBot}, ${x1} ${yBot}`)
+      .attr("fill", "none")
+      .attr("stroke", COLORS.residual)
+      .attr("stroke-width", 1)
+      .attr("stroke-dasharray", "3,3");
+  }
+  drawResidual(archPos.block0, archPos.attn0, archPos.mlp0);
+  drawResidual(archPos.block1, archPos.attn1, archPos.mlp1);
+}
+drawArchitecture();
+
+// ── Draw Component Outlines (ghost grids for shattered state) ───────────────
+function drawCompOutlines() {
+  for (let comp = 0; comp < N_COMPONENTS; comp++) {
+    const colX = COMP_LAYOUT.startX + comp * COMP_LAYOUT.colSpacing;
+    let curY = COMP_LAYOUT.topY;
+
+    const compG = gCompOutlines.append("g").attr("class", `comp-col comp-col-${comp}`);
+
+    for (const mat of MATRICES) {
+      const gridW = mat.cols * (COMP_CELL_SIZE + COMP_CELL_GAP) - COMP_CELL_GAP;
+      const gridH = mat.rows * (COMP_CELL_SIZE + COMP_CELL_GAP) - COMP_CELL_GAP;
+      const ox = colX - gridW / 2;
+
+      // Ghost grid outline
+      compG.append("rect")
+        .attr("x", ox - 3).attr("y", curY - 3)
+        .attr("width", gridW + 6).attr("height", gridH + 6)
+        .attr("rx", 3).attr("ry", 3)
+        .attr("fill", "none")
+        .attr("stroke", COLORS.components[comp])
+        .attr("stroke-width", 0.5)
+        .attr("stroke-opacity", 0.2);
+
+      // Ghost cells (empty placeholders)
+      for (let r = 0; r < mat.rows; r++) {
+        for (let c = 0; c < mat.cols; c++) {
+          const cellInComp = cells.find(
+            cl => cl.matId === mat.id && cl.row === r && cl.col === c && cl.component === comp
+          );
+          if (!cellInComp) {
+            compG.append("rect")
+              .attr("x", ox + c * (COMP_CELL_SIZE + COMP_CELL_GAP))
+              .attr("y", curY + r * (COMP_CELL_SIZE + COMP_CELL_GAP))
+              .attr("width", COMP_CELL_SIZE)
+              .attr("height", COMP_CELL_SIZE)
+              .attr("rx", 1.5)
+              .attr("fill", "#1e293b")
+              .attr("stroke", "#334155")
+              .attr("stroke-width", 0.3)
+              .attr("opacity", 0.3);
+          }
+        }
+      }
+
+      curY += gridH + COMP_LAYOUT.matGapY;
+    }
+
+    // Component label
+    compG.append("text")
+      .attr("class", "component-label")
+      .attr("x", colX)
+      .attr("y", curY + 10)
+      .attr("fill", COLORS.components[comp])
+      .text(`Component ${comp}`);
+  }
+
+  // ≈ symbol (between architecture and components)
+  const approxX = (COMP_LAYOUT.archLeftX + ARCH.blockWidth / 2 + COMP_LAYOUT.startX) / 2 - 20;
+  gSymbols.append("text")
+    .attr("class", "symbol-label")
+    .attr("id", "approx-symbol")
+    .attr("x", approxX)
+    .attr("y", H / 2 - 10)
+    .text("≈");
+
+  // + symbols between component columns
+  for (let i = 0; i < N_COMPONENTS - 1; i++) {
+    const x = COMP_LAYOUT.startX + (i + 0.5) * COMP_LAYOUT.colSpacing;
+    gSymbols.append("text")
+      .attr("class", "symbol-label")
+      .attr("x", x)
+      .attr("y", H / 2 - 10)
+      .text("+");
+  }
+}
+drawCompOutlines();
+
+// ── Draw Parameter Cells ────────────────────────────────────────────────────
+const cellRects = gCells.selectAll("rect.param-cell")
+  .data(cells)
+  .enter()
+  .append("rect")
+  .attr("class", "param-cell")
+  .attr("x", d => d.ux)
+  .attr("y", d => d.uy)
+  .attr("width", CELL_SIZE)
+  .attr("height", CELL_SIZE)
+  .attr("rx", 2)
+  .attr("fill", COLORS.paramCell)
+  .attr("opacity", d => d.weight * 0.8 + 0.2)
+  .attr("filter", "url(#glow)");
+
+// ── Animation State ─────────────────────────────────────────────────────────
+let animStartTime = null;
+let animTimer = null;
+let speed = 1;
+let hoveredComp = -1;
+
+const speedSlider = document.getElementById("speed-slider");
+const speedDisplay = document.getElementById("speed-display");
+const phaseIndicator = document.getElementById("phase-indicator");
+const replayBtn = document.getElementById("replay-btn");
+
+speedSlider.addEventListener("input", () => {
+  speed = parseFloat(speedSlider.value);
+  speedDisplay.textContent = `${speed}×`;
+});
+
+replayBtn.addEventListener("click", startAnimation);
+
+// ── Phase Timing ────────────────────────────────────────────────────────────
+function getPhaseAt(elapsed) {
+  let t = 0;
+  for (let i = 0; i < PHASES.length; i++) {
+    const dur = PHASES[i].duration;
+    if (elapsed < t + dur) {
+      return { index: i, name: PHASES[i].name, progress: (elapsed - t) / dur };
+    }
+    t += dur;
+  }
+  return { index: PHASES.length - 1, name: PHASES[PHASES.length - 1].name, progress: 1 };
+}
+
+function totalDuration() {
+  return PHASES.reduce((s, p) => s + p.duration, 0);
+}
+
+// ── Easing helpers ──────────────────────────────────────────────────────────
+function easeBackOut(t) {
+  const s = 1.70158;
+  return 1 + (--t) * t * ((s + 1) * t + s);
+}
+
+function elasticOut(t) {
+  return Math.pow(2, -10 * t) * Math.sin((t - 0.075) * (2 * Math.PI) / 0.3) + 1;
+}
+
+function smoothstep(t) {
+  return t * t * (3 - 2 * t);
+}
+
+// ── Architecture group transform for sliding ────────────────────────────────
+// We'll track the arch slide offset and apply to relevant groups
+let archSlideX = 0;
+let archOpacity = 1;
+
+function updateArchTransform() {
+  gArchBg.attr("transform", `translate(${archSlideX}, 0)`).style("opacity", archOpacity);
+  gArchFg.attr("transform", `translate(${archSlideX}, 0)`).style("opacity", archOpacity);
+  gResiduals.attr("transform", `translate(${archSlideX}, 0)`).style("opacity", archOpacity);
+  // Labels slide too, but only arch labels (not component labels)
+  gLabels.attr("transform", `translate(${archSlideX}, 0)`).style("opacity", archOpacity);
+}
+
+// ── Animation Tick ──────────────────────────────────────────────────────────
+function tick(now) {
+  if (animStartTime === null) animStartTime = now;
+  const elapsed = (now - animStartTime) * speed;
+  const total = totalDuration();
+
+  if (elapsed >= total) {
+    renderFrame(total - 1);
+    animTimer.stop();
+    animTimer = null;
+    phaseIndicator.textContent = "Done";
+    enableHover();
+    return;
+  }
+
+  renderFrame(elapsed);
+}
+
+function renderFrame(elapsed) {
+  const phase = getPhaseAt(elapsed);
+  phaseIndicator.textContent = phase.name;
+  const p = phase.progress;
+
+  // Compute continuous time for vibration
+  const now = elapsed / 1000;
+
+  // Phase-dependent parameters
+  let vibAmp = 0;
+  let colorBlend = 0;     // 0 = red, 1 = component color
+  let shatterProgress = 0; // 0 = unified, 1 = shattered
+  let settleProgress = 0;
+  let glowRadius = 0;
+  let archSlide = 0;      // 0 = centered, 1 = slid left
+  let archFade = 1;       // 1 = full, approaching 0.15 = ghost
+  let compOutlineOpacity = 0;
+  let symbolOpacity = 0;
+  let titleOpacity = 0;
+
+  switch (phase.index) {
+    case 0: // Idle
+      titleOpacity = smoothstep(p);
+      break;
+    case 1: // Tremor
+      titleOpacity = 1;
+      vibAmp = p * 2;
+      break;
+    case 2: // Intensify
+      titleOpacity = 1;
+      vibAmp = 2 + p * 6;
+      colorBlend = p * 0.3;
+      glowRadius = p * 3;
+      // Flicker architecture box borders
+      d3.selectAll(".arch-box")
+        .attr("stroke-opacity", 0.5 + 0.5 * Math.sin(now * 15 + p * 10))
+        .attr("stroke-width", 1.5 + Math.sin(now * 12) * 0.8);
+      break;
+    case 3: // Shatter
+      // Reset border flicker
+      d3.selectAll(".arch-box").attr("stroke-opacity", 1).attr("stroke-width", 1.5);
+      titleOpacity = Math.max(0, 1 - p * 2);
+      vibAmp = 8 * (1 - p);
+      colorBlend = 0.3 + 0.7 * smoothstep(p);
+      shatterProgress = easeBackOut(Math.min(p * 1.1, 1));
+      glowRadius = 3 * (1 - p);
+      archSlide = smoothstep(p);
+      archFade = 1 - 0.7 * smoothstep(p);
+      compOutlineOpacity = smoothstep(Math.max(0, (p - 0.3) / 0.7));
+      break;
+    case 4: // Settle
+      colorBlend = 1;
+      shatterProgress = 1;
+      archSlide = 1;
+      archFade = 0.3;
+      compOutlineOpacity = 1;
+      symbolOpacity = smoothstep(p);
+      settleProgress = p;
+      break;
+    case 5: // Hold
+      colorBlend = 1;
+      shatterProgress = 1;
+      archSlide = 1;
+      archFade = 0.3;
+      compOutlineOpacity = 1;
+      symbolOpacity = 1;
+      settleProgress = 1;
+      break;
+  }
+
+  // Update glow filter
+  d3.select(".glow-blur").attr("stdDeviation", glowRadius);
+
+  // Update architecture slide
+  const targetArchX = COMP_LAYOUT.archLeftX - ARCH.centerX;
+  archSlideX = archSlide * targetArchX;
+  archOpacity = archFade;
+  updateArchTransform();
+
+  // Update component outlines
+  gCompOutlines.style("opacity", compOutlineOpacity);
+  gSymbols.style("opacity", symbolOpacity);
+
+  // Title
+  d3.select("#title-target").style("opacity", titleOpacity);
+
+  // Update cells
+  cellRects.each(function(d) {
+    const el = d3.select(this);
+    const compColor = COLORS.components[d.component];
+
+    // Interpolate color
+    const baseColor = d3.color(COLORS.paramCell);
+    const targetColor = d3.color(compColor);
+    const blended = d3.interpolateRgb(baseColor, targetColor)(colorBlend);
+
+    // Interpolate position
+    // In unified state, cells are at ux,uy (offset by arch slide)
+    // In shattered state, cells are at cx,cy (absolute)
+    const unifiedX = d.ux + archSlideX;
+    const unifiedY = d.uy;
+
+    let x, y, size;
+    if (shatterProgress < 0.01) {
+      x = unifiedX;
+      y = unifiedY;
+      size = CELL_SIZE;
+    } else if (shatterProgress > 0.99 && settleProgress > 0) {
+      // Elastic settle
+      const bounce = settleProgress < 1 ? (1 + Math.sin(settleProgress * Math.PI * 3) * 0.03 * (1 - settleProgress)) : 1;
+      x = d.cx;
+      y = d.cy;
+      size = COMP_CELL_SIZE * bounce;
+    } else {
+      x = unifiedX + (d.cx - unifiedX) * shatterProgress;
+      y = unifiedY + (d.cy - unifiedY) * shatterProgress;
+      size = CELL_SIZE + (COMP_CELL_SIZE - CELL_SIZE) * shatterProgress;
+    }
+
+    // Add vibration
+    if (vibAmp > 0.01) {
+      x += Math.sin(now * d.vibFreqX * 4 + d.vibPhase) * vibAmp;
+      y += Math.sin(now * d.vibFreqY * 4 + d.vibPhaseY) * vibAmp;
+    }
+
+    el.attr("x", x)
+      .attr("y", y)
+      .attr("width", size)
+      .attr("height", size)
+      .attr("fill", blended)
+      .attr("opacity", d.weight * 0.8 + 0.2);
+  });
+}
+
+// ── Hover interactions (post-animation) ─────────────────────────────────────
+function enableHover() {
+  // Add invisible hover targets over component columns
+  for (let comp = 0; comp < N_COMPONENTS; comp++) {
+    const colX = COMP_LAYOUT.startX + comp * COMP_LAYOUT.colSpacing;
+
+    svg.append("rect")
+      .attr("class", "hover-target")
+      .attr("x", colX - 40)
+      .attr("y", COMP_LAYOUT.topY - 10)
+      .attr("width", 80)
+      .attr("height", 500)
+      .attr("fill", "transparent")
+      .attr("cursor", "pointer")
+      .on("mouseenter", () => highlightComponent(comp))
+      .on("mouseleave", () => highlightComponent(-1));
+  }
+}
+
+function highlightComponent(comp) {
+  hoveredComp = comp;
+  if (comp === -1) {
+    // Reset all
+    cellRects.attr("opacity", d => d.weight * 0.8 + 0.2);
+    gCompOutlines.selectAll(".comp-col").style("opacity", 1);
+  } else {
+    cellRects.attr("opacity", d => d.component === comp ? (d.weight * 0.8 + 0.2) : 0.08);
+    gCompOutlines.selectAll(".comp-col").style("opacity", (_, i) => i === comp ? 1 : 0.2);
+  }
+}
+
+// ── Start Animation ─────────────────────────────────────────────────────────
+function startAnimation() {
+  // Reset state
+  if (animTimer) animTimer.stop();
+  animStartTime = null;
+  hoveredComp = -1;
+  svg.selectAll(".hover-target").remove();
+
+  // Reset visuals
+  archSlideX = 0;
+  archOpacity = 1;
+  updateArchTransform();
+  gCompOutlines.style("opacity", 0);
+  gSymbols.style("opacity", 0);
+  d3.select("#title-target").style("opacity", 0);
+
+  cellRects
+    .attr("fill", COLORS.paramCell)
+    .attr("opacity", d => d.weight * 0.8 + 0.2)
+    .attr("x", d => d.ux)
+    .attr("y", d => d.uy)
+    .attr("width", CELL_SIZE)
+    .attr("height", CELL_SIZE);
+
+  d3.select(".glow-blur").attr("stdDeviation", 0);
+  d3.selectAll(".arch-box").attr("stroke-opacity", 1).attr("stroke-width", 1.5);
+
+  animTimer = d3.timer(tick);
+}
+
+// Auto-start
+startAnimation();
+
+</script>
+</body>
+</html>
