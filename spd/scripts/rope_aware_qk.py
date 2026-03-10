@@ -3,12 +3,11 @@
 Decomposes the RoPE-modulated dot product into content-aligned and cross-half
 coefficients, allowing evaluation at arbitrary relative position offsets:
 
-    W(Δ) = (1/√d_head) Σ_d [A_d · cos(Δ·θ_d) + B_d · sin(Δ·θ_d)]
+    W(Δ) = Σ_d [A_d · cos(Δ·θ_d) + B_d · sin(Δ·θ_d)]
 
 Assumes non-adjacent-pairs RoPE layout (first-half/second-half dimension split).
 """
 
-import math
 from collections.abc import Sequence
 
 import torch
@@ -44,7 +43,6 @@ def evaluate_qk_at_offsets(
     rotary_cos: Tensor,
     rotary_sin: Tensor,
     offsets: Sequence[int],
-    head_dim: int,
 ) -> Tensor:
     """Evaluate W(Δ) at specified relative position offsets.
 
@@ -54,16 +52,15 @@ def evaluate_qk_at_offsets(
         rotary_cos: (n_ctx, head_dim) precomputed cos buffer from model
         rotary_sin: (n_ctx, head_dim) precomputed sin buffer from model
         offsets: relative position offsets Δ to evaluate
-        head_dim: head dimension (used for 1/√d scaling)
 
     Returns:
         (n_offsets, n_q, n_k) dot product values at each offset
     """
-    half = head_dim // 2
+    half = A.shape[-1]
     results = []
     for delta in offsets:
         cos_d = rotary_cos[delta, :half].float()
         sin_d = rotary_sin[delta, :half].float()
-        W = (A * cos_d + B * sin_d).sum(dim=-1) / math.sqrt(head_dim)
+        W = (A * cos_d + B * sin_d).sum(dim=-1)
         results.append(W)
     return torch.stack(results)

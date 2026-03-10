@@ -8,7 +8,8 @@ For each layer, produces a multi-page PDF:
     information those K components carry forward
 
 The Q->K attention contribution is a weight-only measure (V-norm-scaled U dot products
-with RoPE applied at specified relative position offsets, summed across heads). The K->V
+with RoPE applied at specified relative position offsets, normalized per-head and averaged
+across heads so each head's pair contributions sum to 1). The K->V
 association uses CI co-occurrence counts (number of tokens where both components are
 causally important).
 
@@ -108,9 +109,10 @@ def _compute_attention_contributions(
     rotary_cos: torch.Tensor,
     rotary_sin: torch.Tensor,
 ) -> NDArray[np.floating]:
-    """Compute (n_offsets, n_q_alive, n_k_alive) summed attention contributions at each offset.
+    """Compute (n_offsets, n_q_alive, n_k_alive) mean attention contributions at each offset.
 
-    V-norm-scaled U dot products with RoPE at STORY_OFFSETS, summed across heads.
+    Each head's contributions are normalized by T^h (total QK dot product for that head),
+    then averaged across heads. Pair contributions within a head sum to 1.
     """
     V_q_norms = torch.linalg.norm(q_component.V[:, q_alive], dim=0).float()
     V_k_norms = torch.linalg.norm(k_component.V[:, k_alive], dim=0).float()
@@ -127,11 +129,16 @@ def _compute_attention_contributions(
     head_results = []
     for h in range(n_q_heads):
         A, B = compute_qk_rope_coefficients(U_q[:, h, :], U_k_expanded[:, h, :])
-        W_h = evaluate_qk_at_offsets(A, B, rotary_cos, rotary_sin, STORY_OFFSETS, head_dim)
+        W_h = evaluate_qk_at_offsets(A, B, rotary_cos, rotary_sin, STORY_OFFSETS)
         head_results.append(W_h)  # (n_offsets, n_q, n_k)
 
-    # (n_heads, n_offsets, n_q, n_k) -> sum across heads -> (n_offsets, n_q, n_k)
-    return torch.stack(head_results).sum(dim=0).cpu().numpy()
+    # (n_heads, n_offsets, n_q, n_k) -> normalize per head, then mean
+    # Use T^h at offset 0 so cross-offset structure is preserved
+    W = torch.stack(head_results)  # (n_heads, n_offsets, n_q, n_k)
+    assert STORY_OFFSETS[0] == 0
+    T_h = W[:, 0].sum(dim=(-2, -1), keepdim=True).unsqueeze(1)  # (n_heads, 1, 1, 1)
+    W_normalized = W / T_h
+    return W_normalized.mean(dim=0).cpu().numpy()
 
 
 def _compute_cooccurrence_matrix(

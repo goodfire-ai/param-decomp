@@ -1,10 +1,11 @@
 """Plot weight-only attention contribution heatmaps between q and k subcomponents.
 
 For each layer and relative position offset, produces a single grid containing:
-  - First cell: summed (all heads) q·k attention contributions
+  - First cell: mean (across heads) q·k attention contributions
   - Remaining cells: one per query head
 
-Uses V-norm-scaled U dot products with RoPE applied at specified relative position offsets.
+Each head's contributions are normalized by T^h (total QK dot product for that head),
+so pair contributions within a head sum to 1 and are directly interpretable as fractions.
 
 Usage:
     python -m spd.scripts.plot_qk_c_attention_contributions.plot_qk_c_attention_contributions \
@@ -65,8 +66,10 @@ def _compute_per_head_attention_contributions(
 ) -> NDArray[np.floating]:
     """Compute (n_offsets, n_q_heads, n_q_alive, n_k_alive) per-head attention contributions.
 
-    Scales U vectors by their corresponding V norms before the dot product, so that the
-    result accounts for the unnormalized magnitude split between U and V.
+    Each head's contributions are normalized by T^h (the total QK dot product for that
+    head at offset 0), so pair contributions within a head sum to 1 at offset 0. Using a
+    single per-head scalar preserves relative magnitudes across offsets while making heads
+    comparable.
     """
     V_q_norms = torch.linalg.norm(q_component.V[:, q_alive], dim=0).float()  # (n_q_alive,)
     V_k_norms = torch.linalg.norm(k_component.V[:, k_alive], dim=0).float()  # (n_k_alive,)
@@ -83,11 +86,19 @@ def _compute_per_head_attention_contributions(
     head_results = []
     for h in range(n_q_heads):
         A, B = compute_qk_rope_coefficients(U_q[:, h, :], U_k_expanded[:, h, :])
-        W_h = evaluate_qk_at_offsets(A, B, rotary_cos, rotary_sin, offsets, head_dim)
+        W_h = evaluate_qk_at_offsets(A, B, rotary_cos, rotary_sin, offsets)
         head_results.append(W_h)  # (n_offsets, n_q, n_k)
 
     # (n_heads, n_offsets, n_q, n_k) -> (n_offsets, n_heads, n_q, n_k)
-    return torch.stack(head_results).permute(1, 0, 2, 3).cpu().numpy()
+    W = torch.stack(head_results).permute(1, 0, 2, 3)
+
+    # Normalize each head by T^h at offset 0 (same-position total QK dot product).
+    # Using a single per-head scalar preserves relative magnitudes across offsets.
+    assert offsets[0] == 0, "First offset must be 0 for T^h normalization"
+    T_h = W[0].sum(dim=(-2, -1), keepdim=True).unsqueeze(0)  # (1, n_heads, 1, 1)
+    W_normalized = W / T_h
+
+    return W_normalized.cpu().numpy()
 
 
 def _plot_heatmaps(
@@ -101,12 +112,12 @@ def _plot_heatmaps(
     offset: int,
     vmax: float,
 ) -> None:
-    n_cells = n_q_heads + 1  # summed + per-head
+    n_cells = n_q_heads + 1  # mean + per-head
     n_cols = math.ceil(math.sqrt(n_cells))
     n_rows = math.ceil(n_cells / n_cols)
     n_q, n_k = W_per_head.shape[1], W_per_head.shape[2]
 
-    W_summed = W_per_head.sum(axis=0)
+    W_mean = W_per_head.mean(axis=0)
 
     cell_w = max(4, n_k * 0.15)
     cell_h = max(3, n_q * 0.15)
@@ -114,9 +125,8 @@ def _plot_heatmaps(
         n_rows, n_cols, figsize=(cell_w * n_cols, cell_h * n_rows), squeeze=False
     )
 
-    # All cells: summed first, then per-head
-    all_data = [W_summed] + [W_per_head[h] for h in range(n_q_heads)]
-    titles = ["Sum"] + [f"H{h}" for h in range(n_q_heads)]
+    all_data = [W_mean] + [W_per_head[h] for h in range(n_q_heads)]
+    titles = ["Mean"] + [f"H{h}" for h in range(n_q_heads)]
 
     for cell, (data, title) in enumerate(zip(all_data, titles, strict=True)):
         row, col = divmod(cell, n_cols)
@@ -165,7 +175,7 @@ def _plot_diff_heatmaps(
     n_rows = math.ceil(n_cells / n_cols)
     n_q, n_k = D_per_head.shape[1], D_per_head.shape[2]
 
-    D_summed = D_per_head.sum(axis=0)
+    D_mean = D_per_head.mean(axis=0)
 
     cell_w = max(4, n_k * 0.15)
     cell_h = max(3, n_q * 0.15)
@@ -173,8 +183,8 @@ def _plot_diff_heatmaps(
         n_rows, n_cols, figsize=(cell_w * n_cols, cell_h * n_rows), squeeze=False
     )
 
-    all_data = [D_summed] + [D_per_head[h] for h in range(n_q_heads)]
-    titles = ["Sum"] + [f"H{h}" for h in range(n_q_heads)]
+    all_data = [D_mean] + [D_per_head[h] for h in range(n_q_heads)]
+    titles = ["Mean"] + [f"H{h}" for h in range(n_q_heads)]
 
     for cell, (data, title) in enumerate(zip(all_data, titles, strict=True)):
         row, col = divmod(cell, n_cols)
@@ -216,7 +226,7 @@ def _plot_heatmaps_per_head(
     offsets: tuple[int, ...],
     vmax: float,
 ) -> None:
-    """For each head (and Sum), plot a grid of heatmaps across all offsets."""
+    """For each head (and Mean), plot a grid of heatmaps across all offsets."""
     n_offsets = len(offsets)
     n_cols = math.ceil(math.sqrt(n_offsets))
     n_rows = math.ceil(n_offsets / n_cols)
@@ -231,7 +241,7 @@ def _plot_heatmaps_per_head(
     # W shape: (n_offsets, n_q_heads, n_q, n_k)
     # Build list of (label, data) where data is (n_offsets, n_q, n_k)
     head_series: list[tuple[str, NDArray[np.floating]]] = [
-        ("Sum", W.sum(axis=1)),
+        ("Mean", W.mean(axis=1)),
     ] + [(f"H{h}", W[:, h]) for h in range(n_q_heads)]
 
     for label, data in head_series:
@@ -292,13 +302,13 @@ def _plot_head_vs_sum_scatter(
     out_dir: Path,
     offsets: tuple[int, ...],
 ) -> None:
-    """Scatter: x = sum-across-heads contribution, y = per-head contribution.
+    """Scatter: x = mean-across-heads contribution, y = per-head contribution.
 
     Each head uses a distinct sequential colormap; within that colormap each
     offset maps to a different shade (darker = larger offset index).
     """
     # W shape: (n_offsets, n_q_heads, n_q, n_k)
-    W_summed = W.sum(axis=1)  # (n_offsets, n_q, n_k)
+    W_mean = W.mean(axis=1)  # (n_offsets, n_q, n_k)
     n_offsets = len(offsets)
 
     # Map offset indices to colormap values in [0.3, 0.9] so no shade is too light
@@ -310,7 +320,7 @@ def _plot_head_vs_sum_scatter(
     for h in range(n_q_heads):
         cmap = plt.get_cmap(HEAD_CMAPS[h % len(HEAD_CMAPS)])
         for oi, offset in enumerate(offsets):
-            x = W_summed[oi].ravel()
+            x = W_mean[oi].ravel()
             y = W[oi, h].ravel()
             color = cmap(offset_vals[oi])
             ax.scatter(
@@ -331,7 +341,7 @@ def _plot_head_vs_sum_scatter(
     ax.set_xlim((lo, hi))
     ax.set_ylim((lo, hi))
 
-    ax.set_xlabel("Summed (all heads) attention contribution")
+    ax.set_xlabel("Mean (all heads) attention contribution")
     ax.set_ylabel("Per-head attention contribution")
     ax.set_aspect("equal")
 
@@ -384,7 +394,7 @@ def _plot_head_vs_sum_scatter(
     )
 
     fig.suptitle(
-        f"{run_id}  |  Layer {layer_idx} \u2014 per-head vs summed q\u00b7k contributions"
+        f"{run_id}  |  Layer {layer_idx} \u2014 per-head vs mean q\u00b7k contributions"
         f"  (ci>{MIN_MEAN_CI})",
         fontsize=12,
         fontweight="bold",
@@ -399,7 +409,7 @@ def _plot_head_vs_sum_scatter(
 
 
 def _plot_pair_lines(
-    W_summed: NDArray[np.floating],
+    W_mean: NDArray[np.floating],
     offsets: tuple[int, ...],
     q_alive: list[int],
     k_alive: list[int],
@@ -413,8 +423,8 @@ def _plot_pair_lines(
     Top-N pairs are plotted in color; a wider set of background pairs is plotted
     in faint gray for context.
     """
-    _n_offsets, n_q, n_k = W_summed.shape
-    peak_abs = np.abs(W_summed).max(axis=0)  # (n_q, n_k)
+    _n_offsets, n_q, n_k = W_mean.shape
+    peak_abs = np.abs(W_mean).max(axis=0)  # (n_q, n_k)
     flat_ranked = np.argsort(peak_abs.ravel())[::-1]
 
     top_pairs = [divmod(int(idx), n_k) for idx in flat_ranked[:top_n_pairs]]
@@ -429,13 +439,13 @@ def _plot_pair_lines(
             if (qi, ki) in top_pair_set:
                 continue
             label = "other" if not plotted_gray else None
-            ax.plot(x, W_summed[:, qi, ki], color="0.80", linewidth=0.8, alpha=0.45, label=label)
+            ax.plot(x, W_mean[:, qi, ki], color="0.80", linewidth=0.8, alpha=0.45, label=label)
             plotted_gray = True
 
     for qi, ki in top_pairs:
         ax.plot(
             x,
-            W_summed[:, qi, ki],
+            W_mean[:, qi, ki],
             marker="o",
             markersize=3,
             label=f"Q C{q_alive[qi]} \u2192 K C{k_alive[ki]}",
@@ -443,7 +453,7 @@ def _plot_pair_lines(
 
     ax.axhline(0, color="black", linewidth=0.5, linestyle="--", alpha=0.4)
     ax.set_xlabel("Offset (\u0394)")
-    ax.set_ylabel("Attention contribution (summed across heads)")
+    ax.set_ylabel("Attention contribution (mean across heads)")
     ax.set_xticks(x)
     ax.legend(fontsize=6, loc="center left", bbox_to_anchor=(1.02, 0.5))
 
@@ -577,7 +587,7 @@ def _plot_pair_lines_single_head(
                 label=f"Q C{q_alive[qi]} \u2192 K C{k_alive[ki]}",
             )
 
-        # Sum of all (q, k) pair contributions within this head
+        # Sum of all (q, k) pair contributions within this head (=1 at Δ=0)
         total = W_h.sum(axis=(1, 2))  # (n_offsets,)
         ax.plot(x, total, color="black", linewidth=2, label="sum (all pairs)")
 
@@ -796,8 +806,8 @@ def _plot_layer(
     offsets = cache.offsets
     n_q_heads = cache.n_q_heads
 
-    W_summed_all = W.sum(axis=1)  # (n_offsets, n_q, n_k)
-    vmax = float(max(np.abs(W_summed_all).max(), np.abs(W).max())) or 1.0
+    W_mean_all = W.mean(axis=1)  # (n_offsets, n_q, n_k)
+    vmax = float(max(np.abs(W_mean_all).max(), np.abs(W).max())) or 1.0
 
     if "heatmaps" in plots:
         for offset_idx, offset in enumerate(offsets):
@@ -827,8 +837,8 @@ def _plot_layer(
         non_zero_offsets = [(idx, o) for idx, o in enumerate(offsets) if o != 0]
         if non_zero_offsets:
             diffs = np.stack([W[idx] - W_base for idx, _ in non_zero_offsets])
-            D_summed_all = diffs.sum(axis=1)
-            diff_vmax = float(max(np.abs(D_summed_all).max(), np.abs(diffs).max())) or 1.0
+            D_mean_all = diffs.mean(axis=1)
+            diff_vmax = float(max(np.abs(D_mean_all).max(), np.abs(diffs).max())) or 1.0
 
             diff_dir = out_dir / "diffs"
             diff_dir.mkdir(parents=True, exist_ok=True)
@@ -847,7 +857,7 @@ def _plot_layer(
 
     if "lines" in plots:
         _plot_pair_lines(
-            W_summed_all, offsets, q_alive, k_alive, layer_idx, run_id, out_dir, top_n_pairs
+            W_mean_all, offsets, q_alive, k_alive, layer_idx, run_id, out_dir, top_n_pairs
         )
 
     if "lines_per_head" in plots:
