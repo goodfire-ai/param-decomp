@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from spd.app.backend.dependencies import DepLoadedRun
 from spd.app.backend.utils import log_errors
+from spd.autointerp.repo import InterpRepo
 from spd.autointerp.schemas import ModelMetadata
 from spd.configs import LMTaskConfig
 from spd.harvest import analysis
@@ -175,11 +176,13 @@ async def request_component_interpretation(
     from spd.autointerp.interpret import interpret_component
 
     assert loaded.harvest is not None, "No harvest data available"
-    assert loaded.interp is not None, "No autointerp data available"
 
     component_key = _canonical_to_concrete_key(layer, component_idx, loaded.topology)
 
-    existing = loaded.interp.get_interpretation(component_key)
+    if loaded.interp is not None:
+        existing = loaded.interp.get_interpretation(component_key)
+    else:
+        existing = None
     if existing is not None:
         return InterpretationHeadline(
             label=existing.label,
@@ -239,7 +242,11 @@ async def request_component_interpretation(
                 detail=f"Failed to generate interpretation: {e}",
             ) from e
 
-    loaded.interp.save_interpretation(result)
+    run_id = loaded.run.wandb_path.split("/")[-1]
+    writable_repo = InterpRepo.open_or_create(run_id)
+    writable_repo.save_interpretation(result)
+    # Update the read-only repo so subsequent reads see the new interpretation
+    loaded.interp = InterpRepo.open(run_id)
 
     logger.info(f"Generated interpretation for {component_key}: {result.label}")
 
