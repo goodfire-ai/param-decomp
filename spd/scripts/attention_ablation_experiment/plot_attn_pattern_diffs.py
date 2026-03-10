@@ -6,9 +6,10 @@ Compares four conditions at layer 1:
   - Full component ablation (q/k components zeroed at t/t-1)
   - Per-head component ablation (restricted to specific heads)
 
-Produces two plots:
+Produces plots:
   - Raw attention distributions at query position t, averaged over samples
   - Attention differences (ablated - SPD baseline)
+  - Per-sample versions of both (up to 10 individual samples)
 
 Usage:
     python -m spd.scripts.attention_ablation_experiment.plot_attn_pattern_diffs \
@@ -93,7 +94,9 @@ def plot_attn_pattern_diffs(
         column_name=task_config.column_name,
         shuffle_each_epoch=False,
     )
-    loader, _ = create_data_loader(dataset_config=dataset_config, batch_size=1, buffer_size=1000)
+    loader, tokenizer = create_data_loader(
+        dataset_config=dataset_config, batch_size=1, buffer_size=1000
+    )
 
     out_dir = SCRIPT_DIR / "out" / run_id / "attn_pattern_diffs"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -108,6 +111,10 @@ def plot_attn_pattern_diffs(
     restrict_label = "_".join(f"L{ly}H{hd}" for ly, hd in parsed_restrict_heads)
     logger.section(f"Attention pattern diffs (n={n_samples}, restrict={restrict_label})")
 
+    sample_t_values: list[int] = []
+    sample_token_labels: list[list[str]] = []
+    decode = tokenizer.decode  # pyright: ignore[reportAttributeAccessIssue]
+
     with torch.no_grad():
         for i, batch_data in enumerate(loader):
             if i >= n_samples:
@@ -119,6 +126,18 @@ def plot_attn_pattern_diffs(
             sample_seq_len = input_ids.shape[1]
             rng = random.Random(i)
             t = rng.randint(max_offset_show, min(sample_seq_len, 128) - 1)
+            sample_t_values.append(t)
+
+            if i < 10:
+                labels = []
+                for o in range(max_offset_show + 1):
+                    pos = t - o
+                    if pos >= 0:
+                        tok_str = decode(input_ids[0, pos].item()).replace("\n", "\\n")
+                    else:
+                        tok_str = ""
+                    labels.append(tok_str)
+                sample_token_labels.append(labels)
 
             bs = (input_ids.shape[0], input_ids.shape[1])
             cp = _build_prev_token_component_positions(parsed_components, t)
@@ -178,7 +197,7 @@ def plot_attn_pattern_diffs(
     ]
     raw_ymax = max(all_means) * 1.1
 
-    fig, axes = plt.subplots(n_heads, 1, figsize=(14, n_heads * 2.5), squeeze=False)
+    fig, axes = plt.subplots(n_heads, 1, figsize=(14, n_heads * 1.8), squeeze=False)
     for h in range(n_heads):
         ax = axes[h, 0]
         for cond, (color, ls, lw, label) in styles.items():
@@ -194,10 +213,10 @@ def plot_attn_pattern_diffs(
             )
         ax.set_ylim(-0.02, raw_ymax)
         ax.set_ylabel(f"H{h}", fontsize=10, fontweight="bold")
-        ax.set_xlim(-0.5, max_offset_show + 0.5)
+        ax.set_xlim(max_offset_show + 0.5, -0.5)
         ax.set_xticks(offsets)
         if h == 0:
-            ax.legend(fontsize=7, loc="upper right")
+            ax.legend(fontsize=10, loc="upper left")
         if h == n_heads - 1:
             ax.set_xlabel("Offset from query position", fontsize=9)
 
@@ -230,7 +249,7 @@ def plot_attn_pattern_diffs(
     diff_ymin = min(all_diff_means) * 1.15
     diff_ymax = max(max(all_diff_means) * 1.15, 0.05)
 
-    fig, axes = plt.subplots(n_heads, 1, figsize=(14, n_heads * 2.5), squeeze=False)
+    fig, axes = plt.subplots(n_heads, 1, figsize=(14, n_heads * 1.8), squeeze=False)
     for h in range(n_heads):
         ax = axes[h, 0]
         for cond, (color, ls, lw, label) in diff_styles.items():
@@ -254,10 +273,10 @@ def plot_attn_pattern_diffs(
         ax.axhline(y=0, color="gray", linewidth=0.5, linestyle=":")
         ax.set_ylim(diff_ymin, diff_ymax)
         ax.set_ylabel(f"H{h}", fontsize=10, fontweight="bold")
-        ax.set_xlim(-0.5, max_offset_show + 0.5)
+        ax.set_xlim(max_offset_show + 0.5, -0.5)
         ax.set_xticks(offsets)
         if h == 0:
-            ax.legend(fontsize=7, loc="upper right")
+            ax.legend(fontsize=10, loc="upper left")
         if h == n_heads - 1:
             ax.set_xlabel("Offset from query position", fontsize=9)
 
@@ -271,6 +290,73 @@ def plot_attn_pattern_diffs(
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info(f"Saved {path}")
+
+    # --- Per-sample plots (up to 10) ---
+    n_individual = min(n_samples, 10)
+    for si in range(n_individual):
+        t = sample_t_values[si]
+        tok_labels = sample_token_labels[si]
+
+        # Raw attention values
+        sample_ymax = (
+            max(
+                accum[c][h][o][si]
+                for c in conditions
+                for h in range(n_heads)
+                for o in offsets
+                if si < len(accum[c][h][o])
+            )
+            * 1.1
+        )
+
+        fig, axes = plt.subplots(n_heads, 1, figsize=(14, n_heads * 1.8), squeeze=False)
+        for h in range(n_heads):
+            ax = axes[h, 0]
+            for cond, (color, ls, lw, label) in styles.items():
+                vals = [accum[cond][h][o][si] for o in offsets]
+                ax.plot(offsets, vals, color=color, linestyle=ls, linewidth=lw, label=label)
+            ax.set_ylim(-0.02, sample_ymax)
+            ax.set_ylabel(f"H{h}", fontsize=10, fontweight="bold")
+            ax.set_xlim(max_offset_show + 0.5, -0.5)
+            ax.set_xticks(offsets)
+            ax.set_xticklabels(tok_labels, fontsize=10, rotation=0, ha="center")
+            if h == 0:
+                ax.legend(fontsize=10, loc="upper left")
+        fig.suptitle(
+            f"Layer {layer} attention at query pos t={t} (sample {si})",
+            fontsize=14,
+            fontweight="bold",
+        )
+        fig.tight_layout()
+        path = out_dir / f"attn_dist_sample{si}_t{t}.png"
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
+        # Differences from SPD baseline
+        fig, axes = plt.subplots(n_heads, 1, figsize=(14, n_heads * 1.8), squeeze=False)
+        for h in range(n_heads):
+            ax = axes[h, 0]
+            for cond, (color, ls, lw, label) in diff_styles.items():
+                vals = [accum[cond][h][o][si] - accum["spd_baseline"][h][o][si] for o in offsets]
+                ax.plot(offsets, vals, color=color, linestyle=ls, linewidth=lw, label=label)
+            ax.axhline(y=0, color="gray", linewidth=0.5, linestyle=":")
+            ax.set_ylabel(f"H{h}", fontsize=10, fontweight="bold")
+            ax.set_xlim(max_offset_show + 0.5, -0.5)
+            ax.set_xticks(offsets)
+            ax.set_xticklabels(tok_labels, fontsize=10, rotation=0, ha="center")
+            if h == 0:
+                ax.legend(fontsize=10, loc="upper left")
+        fig.suptitle(
+            f"Layer {layer} attention change at query pos t={t} (sample {si})",
+            fontsize=14,
+            fontweight="bold",
+        )
+        fig.tight_layout()
+        path = out_dir / f"attn_diff_sample{si}_t{t}.png"
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
+        logger.info(f"Saved sample {si} plots (t={t})")
 
 
 if __name__ == "__main__":
