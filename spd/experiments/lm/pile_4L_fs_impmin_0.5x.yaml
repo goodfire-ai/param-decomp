@@ -1,6 +1,6 @@
 wandb_project: spd
 wandb_run_name: null
-wandb_run_name_prefix: ''
+wandb_run_name_prefix: impmin_0.5x_
 seed: 0
 autocast_bf16: true
 n_mask_samples: 1
@@ -41,7 +41,7 @@ identity_module_info: null
 init_spd_checkpoint: null
 use_delta_component: true
 loss_metric_configs:
-- coeff: 0.00015
+- coeff: 0.0001
   classname: ImportanceMinimalityLoss
   pnorm: 2.0
   beta: 0.5
@@ -68,10 +68,7 @@ loss_metric_configs:
     type: per_batch_per_position
   use_sigmoid_parameterization: false
   n_warmup_steps: 2
-  n_samples: 8
-  classname: PersistentPGDReconSubsetLoss
-  routing:
-    type: uniform_k_subset
+  classname: PersistentPGDReconLoss
 - coeff: 10000000.0
   classname: FaithfulnessLoss
 output_loss_type: kl
@@ -139,4 +136,3 @@ task_config:
   shuffle_each_epoch: true
   is_tokenized: true
   streaming: true
-  dataset_seed: null
