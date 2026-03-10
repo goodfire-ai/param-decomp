@@ -567,6 +567,7 @@ class _PersistentPGDBaseConfig(LossMetricConfig):
             "source refinement iterations on the same batch in an inner loop beforehand."
         ),
     ] = 0
+    n_samples: PositiveInt = 1
 
     @model_validator(mode="before")
     @classmethod

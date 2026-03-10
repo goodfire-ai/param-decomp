@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Network Decomposition by Prompt</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #141210;
+      color: #e8e0d6;
+      font-family: 'Suisse Intl', 'Inter', system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    #canvas-container {
+      position: relative;
+      width: 100%;
+      max-width: 1400px;
+      aspect-ratio: 1400 / 680;
+    }
+    svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    #controls {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      margin-top: 16px;
+      padding: 10px 24px;
+      background: #1e1a15;
+      border-radius: 8px;
+      font-size: 13px;
+    }
+    #controls button {
+      background: #2e2820;
+      color: #e8e0d6;
+      border: 1px solid #4a4035;
+      border-radius: 6px;
+      padding: 6px 16px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: background 0.15s;
+    }
+    #controls button:hover { background: #3d3530; }
+    #controls label { color: #8a7d6a; }
+    #speed-slider {
+      width: 100px;
+      accent-color: #DB8A48;
+    }
+    #phase-indicator {
+      color: #8a7d6a;
+      min-width: 120px;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <div id="canvas-container">
+    <svg id="viz"></svg>
+  </div>
+  <div id="controls">
+    <button id="replay-btn">&#9654; Replay</button>
+    <label>Speed</label>
+    <input id="speed-slider" type="range" min="0.25" max="3" step="0.25" value="1">
+    <span id="speed-display">1&times;</span>
+    <span id="phase-indicator">Idle</span>
+  </div>
+
+<script>
+// ── Config ──────────────────────────────────────────────────────────────────
+const W = 1400, H = 680;
+const N_NETWORKS = 4;
+const WORDS = ["The", "meaning", "of", "life"];
+
+// 6 sub-components with warm palette
+const N_SUBCOMPS = 6;
+const SUBCOMP_COLORS = [
+  "#DB8A48", // 0 - Orange — shared across ALL networks
+  "#7EA887", // 1 - Sage   — shared between "The" and "of"
+  "#F7D67E", // 2 - Gold   — unique to "The"
+  "#E87461", // 3 - Coral  — shared between "meaning" and "life"
+  "#B6998B", // 4 - Mauve  — unique to "of"
+  "#C4956A", // 5 - Camel  — unique to "life"
+];
+
+// Which sub-components each network uses (2–3 per network)
+const NETWORK_SUBCOMPS = [
+  [0, 1, 2],  // "The":     Orange(shared), Sage(shared w/ "of"), Gold(unique)
+  [0, 3],     // "meaning": Orange(shared), Coral(shared w/ "life")
+  [0, 1, 4],  // "of":      Orange(shared), Sage(shared w/ "The"), Mauve(unique)
+  [0, 3, 5],  // "life":    Orange(shared), Coral(shared w/ "meaning"), Camel(unique)
+];
+
+const COLORS = {
+  paramCell: "#7A6E5A",
+  boxBorder: "#4a4035",
+  boxFill: "#1e1a15",
+  arrow: "#4a4035",
+  residual: "#2e2820",
+  text: "#c0b8a8",
+  textDim: "#6a6050",
+  wordLabel: "#e8d5b0",
+};
+
+const PHASES = [
+  { name: "FadeIn",     duration: 1200 },
+  { name: "SlideRight", duration: 1000 },
+  { name: "Split0",     duration: 1800 },
+  { name: "Split1",     duration: 1800 },
+  { name: "Split2",     duration: 1800 },
+  { name: "Split3",     duration: 1800 },
+  { name: "FadeSource", duration: 800  },
+  { name: "Hold",       duration: 2000 },
+];
+
+// ── Seeded PRNG ─────────────────────────────────────────────────────────────
+function mulberry32(seed) {
+  return function() {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(42);
+
+// ── Data Model ──────────────────────────────────────────────────────────────
+const MATRICES = [
+  { id: "embed",   label: "Embed",   rows: 4, cols: 5 },
+  { id: "attn0",   label: "Attn",    rows: 4, cols: 5 },
+  { id: "mlp0",    label: "MLP",     rows: 4, cols: 5 },
+  { id: "attn1",   label: "Attn",    rows: 4, cols: 5 },
+  { id: "mlp1",    label: "MLP",     rows: 4, cols: 5 },
+  { id: "unembed", label: "Unembed", rows: 4, cols: 5 },
+];
+
+// Build cells
+const cells = [];
+let cellIdx = 0;
+for (const mat of MATRICES) {
+  for (let r = 0; r < mat.rows; r++) {
+    for (let c = 0; c < mat.cols; c++) {
+      cells.push({
+        idx: cellIdx++,
+        matId: mat.id,
+        row: r, col: c,
+        weight: 0.3 + rng() * 0.7,
+      });
+    }
+  }
+}
+
+// Generate sub-component activation masks (global, so shared sub-comps use same cells)
+const subCompMasks = [];
+for (let sc = 0; sc < N_SUBCOMPS; sc++) {
+  const nPref = 1 + (rng() > 0.6 ? 1 : 0);
+  const cols = [0, 1, 2, 3, 4];
+  for (let i = 4; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [cols[i], cols[j]] = [cols[j], cols[i]];
+  }
+  const prefCols = new Set(cols.slice(0, nPref));
+  subCompMasks.push(cells.map(c => rng() < (prefCols.has(c.col) ? 0.25 : 0.02)));
+}
+
+// Compute cell ownership per network (first matching sub-comp wins)
+for (const cell of cells) {
+  cell.owner = [];
+  for (let net = 0; net < N_NETWORKS; net++) {
+    let owner = -1;
+    for (const sc of NETWORK_SUBCOMPS[net]) {
+      if (subCompMasks[sc][cell.idx]) { owner = sc; break; }
+    }
+    cell.owner.push(owner);
+  }
+}
+
+// ── Architecture Layout ─────────────────────────────────────────────────────
+const CELL_SIZE = 12, CELL_GAP = 2;
+
+const ARCH = {
+  subBlockWidth: 76,
+  subBlockHeight: 62,
+  embedHeight: 62,
+  blockPadding: 10,
+  blockGapY: 10,
+  subBlockGap: 10,
+  arrowLen: 10,
+};
+
+function computeArchPositions(centerX, topY, scale) {
+  const s = scale || 1;
+  const sbw = ARCH.subBlockWidth * s;
+  const sbh = ARCH.subBlockHeight * s;
+  const eh  = ARCH.embedHeight * s;
+  const bp  = ARCH.blockPadding * s;
+  const bgy = ARCH.blockGapY * s;
+  const sbg = ARCH.subBlockGap * s;
+  const al  = ARCH.arrowLen * s;
+  const bw  = sbw * 2 + sbg + bp * 2;
+
+  let y = topY;
+  const positions = {};
+
+  // Embed
+  const embedW = sbw + 20 * s;
+  positions.embed = { x: centerX - embedW / 2, y, w: embedW, h: eh };
+  y += eh + al + bgy;
+
+  // Block 0
+  const blockH = sbh + bp * 2 + 16 * s;
+  positions.block0 = { x: centerX - bw / 2, y, w: bw, h: blockH };
+  const subY = y + bp + 16 * s;
+  const subX0 = centerX - sbg / 2 - sbw;
+  const subX1 = centerX + sbg / 2;
+  positions.attn0 = { x: subX0, y: subY, w: sbw, h: sbh };
+  positions.mlp0  = { x: subX1, y: subY, w: sbw, h: sbh };
+  y += blockH + al + bgy;
+
+  // Block 1
+  positions.block1 = { x: centerX - bw / 2, y, w: bw, h: blockH };
+  const subY2 = y + bp + 16 * s;
+  positions.attn1 = { x: subX0, y: subY2, w: sbw, h: sbh };
+  positions.mlp1  = { x: subX1, y: subY2, w: sbw, h: sbh };
+  y += blockH + al + bgy;
+
+  // Unembed
+  positions.unembed = { x: centerX - embedW / 2, y, w: embedW, h: eh };
+
+  positions._centerX = centerX;
+  positions._topY    = topY;
+  positions._scale   = s;
+  positions._bottomY = y + eh;
+
+  return positions;
+}
+
+// ── Layout positions ────────────────────────────────────────────────────────
+const SPLIT_SPACING = 280;
+const SPLIT_TOP_Y   = 80;
+
+// Final 4-subnetwork positions (evenly spaced across full width)
+const totalSpan = (N_NETWORKS - 1) * SPLIT_SPACING;
+const finalCenterXs = [];
+for (let i = 0; i < N_NETWORKS; i++) {
+  finalCenterXs.push(W / 2 - totalSpan / 2 + i * SPLIT_SPACING);
+}
+
+// Source network position (rightmost slot — same as finalCenterXs[3])
+const SOURCE_X = finalCenterXs[N_NETWORKS - 1];
+
+// Compute arch positions for final subnetwork positions
+const finalArchPositions = finalCenterXs.map(cx =>
+  computeArchPositions(cx, SPLIT_TOP_Y, 1)
+);
+
+// Source network arch positions (at right side)
+const sourceArchPos = computeArchPositions(SOURCE_X, SPLIT_TOP_Y, 1);
+
+// Full (initial) layout — centered
+const fullArchPos = computeArchPositions(W / 2, SPLIT_TOP_Y, 1);
+
+// ── Cell positions within architecture boxes ────────────────────────────────
+function cellGridOrigin(box, rows, cols, cellSize, cellGap) {
+  const gridW = cols * (cellSize + cellGap) - cellGap;
+  const gridH = rows * (cellSize + cellGap) - cellGap;
+  return {
+    ox: box.x + (box.w - gridW) / 2,
+    oy: box.y + (box.h - gridH) / 2,
+  };
+}
+
+function getCellPos(cell, archPos, cellSize, cellGap) {
+  const box = archPos[cell.matId];
+  const { ox, oy } = cellGridOrigin(box, 4, 5, cellSize, cellGap);
+  return {
+    x: ox + cell.col * (cellSize + cellGap),
+    y: oy + cell.row * (cellSize + cellGap),
+  };
+}
+
+// ── SVG Setup ───────────────────────────────────────────────────────────────
+const svg = d3.select("#viz")
+  .attr("viewBox", `0 0 ${W} ${H}`)
+  .attr("preserveAspectRatio", "xMidYMid meet");
+
+const defs = svg.append("defs");
+
+// Arrowhead marker
+defs.append("marker")
+  .attr("id", "arrowhead")
+  .attr("viewBox", "0 0 10 10")
+  .attr("refX", 9).attr("refY", 5)
+  .attr("markerWidth", 6).attr("markerHeight", 6)
+  .attr("orient", "auto")
+  .append("path")
+  .attr("d", "M 0 0 L 10 5 L 0 10 z")
+  .attr("fill", COLORS.arrow);
+
+// Layer groups — source network, then subnetwork copies, then labels on top
+const gSource = svg.append("g").attr("class", "source-network");
+const gCopies = [];
+for (let i = 0; i < N_NETWORKS; i++) {
+  gCopies.push(svg.append("g").attr("class", `network-copy copy-${i}`));
+}
+const gLabels = svg.append("g").attr("class", "word-labels");
+
+// ── Draw architecture skeleton into a group ─────────────────────────────────
+function drawArchInGroup(group, archPos, scale) {
+  const cx = archPos._centerX;
+  const s = scale || 1;
+
+  function drawBox(pos, opts = {}) {
+    return group.append("rect")
+      .attr("x", pos.x).attr("y", pos.y)
+      .attr("width", pos.w).attr("height", pos.h)
+      .attr("rx", 6 * s).attr("ry", 6 * s)
+      .attr("fill", opts.fill || COLORS.boxFill)
+      .attr("stroke", opts.stroke || COLORS.boxBorder)
+      .attr("stroke-width", (opts.strokeWidth || 1.5) * s);
+  }
+
+  function drawLabel(x, y, text, opts = {}) {
+    group.append("text")
+      .attr("x", x).attr("y", y)
+      .attr("text-anchor", "middle")
+      .attr("fill", opts.fill || COLORS.text)
+      .attr("font-size", (opts.size || 11) * s + "px")
+      .attr("font-weight", opts.weight || 500)
+      .style("pointer-events", "none")
+      .text(text);
+  }
+
+  // Embed
+  drawBox(archPos.embed, { fill: "#1e1a1520" });
+  drawLabel(archPos.embed.x + archPos.embed.w / 2, archPos.embed.y - 4 * s, "Embed");
+
+  // Block 0
+  drawBox(archPos.block0, { fill: "#181510", stroke: "#2e2820" });
+  drawLabel(archPos.block0.x + archPos.block0.w / 2, archPos.block0.y + 13 * s, "Block 0",
+    { fill: COLORS.textDim, size: 10 });
+  drawBox(archPos.attn0, { fill: "#1a181520", stroke: "#4a403560" });
+  drawLabel(archPos.attn0.x + archPos.attn0.w / 2, archPos.attn0.y - 4 * s, "Attn");
+  drawBox(archPos.mlp0, { fill: "#1a1b1520", stroke: "#4a403560" });
+  drawLabel(archPos.mlp0.x + archPos.mlp0.w / 2, archPos.mlp0.y - 4 * s, "MLP");
+
+  // Block 1
+  drawBox(archPos.block1, { fill: "#181510", stroke: "#2e2820" });
+  drawLabel(archPos.block1.x + archPos.block1.w / 2, archPos.block1.y + 13 * s, "Block 1",
+    { fill: COLORS.textDim, size: 10 });
+  drawBox(archPos.attn1, { fill: "#1a181520", stroke: "#4a403560" });
+  drawLabel(archPos.attn1.x + archPos.attn1.w / 2, archPos.attn1.y - 4 * s, "Attn");
+  drawBox(archPos.mlp1, { fill: "#1a1b1520", stroke: "#4a403560" });
+  drawLabel(archPos.mlp1.x + archPos.mlp1.w / 2, archPos.mlp1.y - 4 * s, "MLP");
+
+  // Unembed
+  drawBox(archPos.unembed, { fill: "#1e1a1520" });
+  drawLabel(archPos.unembed.x + archPos.unembed.w / 2, archPos.unembed.y - 4 * s, "Unembed");
+
+  // Arrows
+  function drawArrow(fromBox, toBox) {
+    group.append("line")
+      .attr("x1", cx).attr("y1", fromBox.y + fromBox.h)
+      .attr("x2", cx).attr("y2", toBox.y)
+      .attr("stroke", COLORS.arrow)
+      .attr("stroke-width", 1.5 * s)
+      .attr("marker-end", "url(#arrowhead)");
+  }
+  drawArrow(archPos.embed, archPos.block0);
+  drawArrow(archPos.block0, archPos.block1);
+  drawArrow(archPos.block1, archPos.unembed);
+
+  // Residual connections
+  function drawResidual(blockPos) {
+    const x1 = blockPos.x - 4 * s;
+    const yTop = blockPos.y + 14 * s;
+    const yBot = blockPos.y + blockPos.h - 4 * s;
+    const bulge = 14 * s;
+    group.append("path")
+      .attr("d", `M ${x1} ${yTop} C ${x1 - bulge} ${yTop}, ${x1 - bulge} ${yBot}, ${x1} ${yBot}`)
+      .attr("fill", "none")
+      .attr("stroke", COLORS.residual)
+      .attr("stroke-width", 1 * s)
+      .attr("stroke-dasharray", `${3 * s},${3 * s}`);
+  }
+  drawResidual(archPos.block0);
+  drawResidual(archPos.block1);
+}
+
+// Draw source network (at right position, but we'll translate it)
+drawArchInGroup(gSource, sourceArchPos, 1);
+
+// Draw each subnetwork copy at its final position (initially hidden)
+for (let i = 0; i < N_NETWORKS; i++) {
+  drawArchInGroup(gCopies[i], finalArchPositions[i], 1);
+  gCopies[i].style("opacity", 0);
+}
+
+// ── Title label ─────────────────────────────────────────────────────────────
+const titleLabel = svg.append("text")
+  .attr("x", W / 2)
+  .attr("y", fullArchPos._topY - 22)
+  .attr("text-anchor", "middle")
+  .attr("fill", "#e8e0d6")
+  .attr("font-size", "15px")
+  .attr("font-weight", 600)
+  .style("pointer-events", "none")
+  .style("opacity", 0)
+  .text("Neural Network");
+
+// ── Draw cells for the source network ───────────────────────────────────────
+const sourceCellRects = gSource.selectAll("rect.source-cell")
+  .data(cells)
+  .enter()
+  .append("rect")
+  .attr("class", "source-cell")
+  .each(function(d) {
+    const pos = getCellPos(d, sourceArchPos, CELL_SIZE, CELL_GAP);
+    d._sourceX = pos.x;
+    d._sourceY = pos.y;
+  })
+  .attr("x", d => d._sourceX)
+  .attr("y", d => d._sourceY)
+  .attr("width", CELL_SIZE)
+  .attr("height", CELL_SIZE)
+  .attr("rx", 2)
+  .attr("fill", COLORS.paramCell)
+  .attr("opacity", d => d.weight * 0.8 + 0.2);
+
+// ── Draw cells for each subnetwork copy ─────────────────────────────────────
+const copyCellRects = [];
+for (let net = 0; net < N_NETWORKS; net++) {
+  const archPos = finalArchPositions[net];
+  const rects = gCopies[net].selectAll("rect.copy-cell")
+    .data(cells)
+    .enter()
+    .append("rect")
+    .attr("class", "copy-cell")
+    .each(function(d) {
+      const pos = getCellPos(d, archPos, CELL_SIZE, CELL_GAP);
+      d[`_splitX${net}`] = pos.x;
+      d[`_splitY${net}`] = pos.y;
+    })
+    .attr("x", d => d[`_splitX${net}`])
+    .attr("y", d => d[`_splitY${net}`])
+    .attr("width", CELL_SIZE)
+    .attr("height", CELL_SIZE)
+    .attr("rx", 2)
+    .attr("fill", COLORS.paramCell)
+    .attr("opacity", d => d.weight * 0.8 + 0.2);
+  copyCellRects.push(rects);
+}
+
+// ── Word labels below each subnetwork ───────────────────────────────────────
+const wordLabels = [];
+for (let i = 0; i < N_NETWORKS; i++) {
+  const label = gLabels.append("text")
+    .attr("x", finalCenterXs[i])
+    .attr("y", finalArchPositions[i]._bottomY + 28)
+    .attr("text-anchor", "middle")
+    .attr("fill", COLORS.wordLabel)
+    .attr("font-size", "15px")
+    .attr("font-weight", 600)
+    .style("pointer-events", "none")
+    .style("opacity", 0)
+    .text(WORDS[i]);
+  wordLabels.push(label);
+}
+
+// ── Animation State ─────────────────────────────────────────────────────────
+let animStartTime = null;
+let animTimer = null;
+let speed = 1;
+let hoveredComp = -1;
+let animDone = false;
+
+const speedSlider    = document.getElementById("speed-slider");
+const speedDisplay   = document.getElementById("speed-display");
+const phaseIndicator = document.getElementById("phase-indicator");
+const replayBtn      = document.getElementById("replay-btn");
+
+speedSlider.addEventListener("input", () => {
+  speed = parseFloat(speedSlider.value);
+  speedDisplay.textContent = `${speed}\u00d7`;
+});
+
+replayBtn.addEventListener("click", startAnimation);
+
+// ── Phase Timing ────────────────────────────────────────────────────────────
+function getPhaseAt(elapsed) {
+  let t = 0;
+  for (let i = 0; i < PHASES.length; i++) {
+    const dur = PHASES[i].duration;
+    if (elapsed < t + dur) {
+      return { index: i, name: PHASES[i].name, progress: (elapsed - t) / dur };
+    }
+    t += dur;
+  }
+  return { index: PHASES.length - 1, name: PHASES[PHASES.length - 1].name, progress: 1 };
+}
+
+function totalDuration() {
+  return PHASES.reduce((s, p) => s + p.duration, 0);
+}
+
+// ── Easing ──────────────────────────────────────────────────────────────────
+function smoothstep(t) { return t * t * (3 - 2 * t); }
+function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+// ── Position helpers ────────────────────────────────────────────────────────
+
+// Compute the x-position for a subnetwork and the source network given how many
+// subnetworks are visible. Subnetworks fill slots from the left in the final layout.
+// The source stays at SOURCE_X throughout.
+//
+// During a split, the new copy slides from SOURCE_X to its target slot while
+// existing copies shift to their final positions (which don't change once placed).
+
+// ── Animation Tick ──────────────────────────────────────────────────────────
+function tick(now) {
+  if (animStartTime === null) animStartTime = now;
+  const elapsed = (now - animStartTime) * speed;
+  const total = totalDuration();
+
+  if (elapsed >= total) {
+    renderFrame(total - 1);
+    animTimer.stop();
+    animTimer = null;
+    animDone = true;
+    phaseIndicator.textContent = "Done";
+    enableHover();
+    return;
+  }
+
+  renderFrame(elapsed);
+}
+
+function renderFrame(elapsed) {
+  const phase = getPhaseAt(elapsed);
+  phaseIndicator.textContent = phase.name;
+  const p = phase.progress;
+
+  // Determine which subnetworks are visible and their reveal progress
+  // splitState[i] = { visible, slideProgress, revealProgress, labelOpacity }
+  const splitState = [];
+  for (let i = 0; i < N_NETWORKS; i++) {
+    splitState.push({ visible: false, slideProgress: 0, revealProgress: 0, labelOpacity: 0 });
+  }
+
+  let sourceOpacity = 0;
+  let titleOpacity = 0;
+  // Source network translation: starts at center (W/2), ends at SOURCE_X
+  let sourceTranslateX = 0; // offset from sourceArchPos position
+
+  switch (phase.index) {
+    case 0: { // FadeIn — source network fades in at center
+      sourceOpacity = smoothstep(p);
+      titleOpacity = smoothstep(p);
+      // Source is drawn at SOURCE_X, translate it to center
+      sourceTranslateX = (W / 2) - SOURCE_X;
+      break;
+    }
+    case 1: { // SlideRight — source slides from center to right
+      sourceOpacity = 1;
+      titleOpacity = Math.max(0, 1 - p * 3);
+      const slideP = easeOutCubic(p);
+      sourceTranslateX = ((W / 2) - SOURCE_X) * (1 - slideP);
+      break;
+    }
+    case 2: // Split0
+    case 3: // Split1
+    case 4: // Split2
+    case 5: { // Split3
+      const splitIdx = phase.index - 2;
+      sourceOpacity = 1;
+      sourceTranslateX = 0; // source at final right position
+
+      // All previously completed splits are fully done
+      for (let i = 0; i < splitIdx; i++) {
+        splitState[i].visible = true;
+        splitState[i].slideProgress = 1;
+        splitState[i].revealProgress = 1;
+        splitState[i].labelOpacity = 1;
+      }
+
+      // Current split in progress
+      splitState[splitIdx].visible = true;
+      if (p < 0.4) {
+        // 0–40%: slide phase
+        splitState[splitIdx].slideProgress = easeOutCubic(p / 0.4);
+      } else if (p < 0.8) {
+        // 40–80%: reveal phase
+        splitState[splitIdx].slideProgress = 1;
+        splitState[splitIdx].revealProgress = smoothstep((p - 0.4) / 0.4);
+      } else {
+        // 80–100%: label fade in + hold
+        splitState[splitIdx].slideProgress = 1;
+        splitState[splitIdx].revealProgress = 1;
+        splitState[splitIdx].labelOpacity = smoothstep((p - 0.8) / 0.2);
+      }
+      break;
+    }
+    case 6: { // FadeSource — source fades out
+      sourceOpacity = 1 - smoothstep(p);
+      sourceTranslateX = 0;
+      for (let i = 0; i < N_NETWORKS; i++) {
+        splitState[i].visible = true;
+        splitState[i].slideProgress = 1;
+        splitState[i].revealProgress = 1;
+        splitState[i].labelOpacity = 1;
+      }
+      break;
+    }
+    case 7: { // Hold
+      sourceOpacity = 0;
+      sourceTranslateX = 0;
+      for (let i = 0; i < N_NETWORKS; i++) {
+        splitState[i].visible = true;
+        splitState[i].slideProgress = 1;
+        splitState[i].revealProgress = 1;
+        splitState[i].labelOpacity = 1;
+      }
+      break;
+    }
+  }
+
+  // Update title
+  titleLabel.style("opacity", titleOpacity);
+  // Move title with source during FadeIn/SlideRight
+  titleLabel.attr("x", SOURCE_X + sourceTranslateX);
+
+  // Update source network
+  gSource.style("opacity", sourceOpacity);
+  gSource.attr("transform", sourceTranslateX !== 0 ? `translate(${sourceTranslateX}, 0)` : "");
+
+  // Update subnetwork copies
+  const sourceCY = (sourceArchPos._topY + sourceArchPos._bottomY) / 2;
+
+  for (let i = 0; i < N_NETWORKS; i++) {
+    const state = splitState[i];
+
+    if (!state.visible) {
+      gCopies[i].style("opacity", 0);
+      wordLabels[i].style("opacity", 0);
+      continue;
+    }
+
+    // The copy slides from the source position to its final position
+    const finalCX = finalCenterXs[i];
+    const finalCY = (finalArchPositions[i]._topY + finalArchPositions[i]._bottomY) / 2;
+
+    // Translate from source position to final position
+    const dx = (SOURCE_X - finalCX) * (1 - state.slideProgress);
+    const dy = (sourceCY - finalCY) * (1 - state.slideProgress);
+
+    // Opacity: fade in during slide
+    const copyOpacity = state.slideProgress < 1 ? smoothstep(Math.min(state.slideProgress * 2.5, 1)) : 1;
+
+    gCopies[i]
+      .style("opacity", copyOpacity)
+      .attr("transform", (dx !== 0 || dy !== 0) ? `translate(${dx}, ${dy})` : "");
+
+    // Update cell colors
+    const revealProgress = state.revealProgress;
+    copyCellRects[i].each(function(d) {
+      const el = d3.select(this);
+      const owner = d.owner[i];
+
+      if (revealProgress > 0) {
+        if (owner >= 0) {
+          const targetColor = d3.interpolateRgb(COLORS.paramCell, SUBCOMP_COLORS[owner])(revealProgress);
+          el.attr("fill", targetColor).attr("opacity", d.weight * 0.8 + 0.2);
+        } else {
+          const targetOpacity = Math.max(0.04, (d.weight * 0.8 + 0.2) * (1 - revealProgress * 0.95));
+          el.attr("fill", COLORS.paramCell).attr("opacity", targetOpacity);
+        }
+      } else {
+        el.attr("fill", COLORS.paramCell).attr("opacity", d.weight * 0.8 + 0.2);
+      }
+    });
+
+    // Word label
+    wordLabels[i].style("opacity", state.labelOpacity);
+  }
+}
+
+// ── Hover interactions (post-animation) ─────────────────────────────────────
+function enableHover() {
+  for (let net = 0; net < N_NETWORKS; net++) {
+    const archPos = finalArchPositions[net];
+    const w = archPos.block0.w + 40;
+    const x = archPos._centerX - w / 2;
+    const y = archPos._topY - 30;
+    const h = archPos._bottomY - archPos._topY + 60;
+
+    svg.append("rect")
+      .attr("class", "hover-target")
+      .attr("x", x).attr("y", y)
+      .attr("width", w).attr("height", h)
+      .attr("fill", "transparent")
+      .attr("cursor", "pointer")
+      .on("mouseenter", () => highlightCopy(net))
+      .on("mouseleave", () => highlightCopy(-1));
+  }
+}
+
+function highlightCopy(net) {
+  if (!animDone) return;
+  hoveredComp = net;
+  if (net === -1) {
+    for (let i = 0; i < N_NETWORKS; i++) {
+      gCopies[i].style("opacity", 1);
+      wordLabels[i].style("opacity", 1);
+    }
+  } else {
+    for (let i = 0; i < N_NETWORKS; i++) {
+      gCopies[i].style("opacity", i === net ? 1 : 0.15);
+      wordLabels[i].style("opacity", i === net ? 1 : 0.15);
+    }
+  }
+}
+
+// ── Start Animation ─────────────────────────────────────────────────────────
+function startAnimation() {
+  if (animTimer) animTimer.stop();
+  animStartTime = null;
+  hoveredComp = -1;
+  animDone = false;
+  svg.selectAll(".hover-target").remove();
+
+  // Reset visuals
+  gSource.style("opacity", 0).attr("transform", "");
+  titleLabel.style("opacity", 0);
+  for (let i = 0; i < N_NETWORKS; i++) {
+    gCopies[i].style("opacity", 0).attr("transform", "");
+    wordLabels[i].style("opacity", 0);
+  }
+
+  // Reset cell colors
+  sourceCellRects
+    .attr("fill", COLORS.paramCell)
+    .attr("opacity", d => d.weight * 0.8 + 0.2);
+  for (let i = 0; i < N_NETWORKS; i++) {
+    copyCellRects[i]
+      .attr("fill", COLORS.paramCell)
+      .attr("opacity", d => d.weight * 0.8 + 0.2);
+  }
+
+  animTimer = d3.timer(tick);
+}
+
+// Auto-start
+startAnimation();
+
+</script>
+</body>
+</html>
