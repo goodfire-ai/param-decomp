@@ -9,7 +9,8 @@ Compares four conditions at layer 1:
 Produces plots:
   - Raw attention distributions at query position t, averaged over samples
   - Attention differences (ablated - SPD baseline)
-  - Per-sample versions of both (up to 10 individual samples)
+  - Fractional attention change ((ablated - baseline) / baseline per offset)
+  - Per-sample versions of all three (up to 10 individual samples)
 
 Usage:
     python -m spd.scripts.attention_ablation_experiment.plot_attn_pattern_diffs \
@@ -58,6 +59,7 @@ def plot_attn_pattern_diffs(
     restrict_to_heads: str,
     n_samples: int = 1024,
     max_offset_show: int = 20,
+    max_offset_frac: int = 20,
     seed: int = 42,
 ) -> None:
     torch.manual_seed(seed)
@@ -291,6 +293,53 @@ def plot_attn_pattern_diffs(
     plt.close(fig)
     logger.info(f"Saved {path}")
 
+    # --- Plot 3: Fractional change from SPD baseline ---
+    # Normalize by mean baseline attention at each offset across all heads (more stable)
+    frac_offsets = list(range(max_offset_frac + 1))
+    frac_styles = {
+        "full_comp": ("r", "-", 1.5, "Full comp fractional change"),
+        "perhead_comp": ("g", "--", 1.5, f"Per-head comp fractional change ({restrict_label})"),
+    }
+
+    mean_baseline_by_offset = {
+        o: np.mean([v for h in range(n_heads) for v in accum["spd_baseline"][h][o]])
+        for o in frac_offsets
+    }
+
+    fig, axes = plt.subplots(n_heads, 1, figsize=(14, n_heads * 1.8), squeeze=False)
+    for h in range(n_heads):
+        ax = axes[h, 0]
+        for cond, (color, ls, lw, label) in frac_styles.items():
+            fracs_by_offset = []
+            for o in frac_offsets:
+                norm = mean_baseline_by_offset[o]
+                sample_fracs = [
+                    (a - b) / norm if norm > 1e-8 else 0.0
+                    for a, b in zip(accum[cond][h][o], accum["spd_baseline"][h][o], strict=True)
+                ]
+                fracs_by_offset.append(sample_fracs)
+            means = [np.mean(f) for f in fracs_by_offset]
+            ax.plot(frac_offsets, means, color=color, linestyle=ls, linewidth=lw, label=label)
+        ax.axhline(y=0, color="gray", linewidth=0.5, linestyle=":")
+        ax.set_ylabel(f"H{h}", fontsize=10, fontweight="bold")
+        ax.set_xlim(max_offset_frac + 0.5, -0.5)
+        ax.set_xticks(frac_offsets)
+        if h == 0:
+            ax.legend(fontsize=10, loc="upper left")
+        if h == n_heads - 1:
+            ax.set_xlabel("Offset from query position", fontsize=9)
+
+    fig.suptitle(
+        f"Layer {layer} fractional attention change from ablation (n={n_samples})",
+        fontsize=14,
+        fontweight="bold",
+    )
+    fig.tight_layout()
+    path = out_dir / f"attn_frac_mean_n{n_samples}.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Saved {path}")
+
     # --- Per-sample plots (up to 10) ---
     n_individual = min(n_samples, 10)
     for si in range(n_individual):
@@ -353,6 +402,37 @@ def plot_attn_pattern_diffs(
         )
         fig.tight_layout()
         path = out_dir / f"attn_diff_sample{si}_t{t}.png"
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
+        # Fractional change from SPD baseline (limited to recent offsets)
+        frac_tok_labels = tok_labels[: max_offset_frac + 1]
+        fig, axes = plt.subplots(n_heads, 1, figsize=(14, n_heads * 1.8), squeeze=False)
+        for h in range(n_heads):
+            ax = axes[h, 0]
+            for cond, (color, ls, lw, label) in frac_styles.items():
+                vals = [
+                    (accum[cond][h][o][si] - accum["spd_baseline"][h][o][si])
+                    / mean_baseline_by_offset[o]
+                    if mean_baseline_by_offset[o] > 1e-8
+                    else 0.0
+                    for o in frac_offsets
+                ]
+                ax.plot(frac_offsets, vals, color=color, linestyle=ls, linewidth=lw, label=label)
+            ax.axhline(y=0, color="gray", linewidth=0.5, linestyle=":")
+            ax.set_ylabel(f"H{h}", fontsize=10, fontweight="bold")
+            ax.set_xlim(max_offset_frac + 0.5, -0.5)
+            ax.set_xticks(frac_offsets)
+            ax.set_xticklabels(frac_tok_labels, fontsize=10, rotation=0, ha="center")
+            if h == 0:
+                ax.legend(fontsize=10, loc="upper left")
+        fig.suptitle(
+            f"Layer {layer} fractional attention change at query pos t={t} (sample {si})",
+            fontsize=14,
+            fontweight="bold",
+        )
+        fig.tight_layout()
+        path = out_dir / f"attn_frac_sample{si}_t{t}.png"
         fig.savefig(path, dpi=150, bbox_inches="tight")
         plt.close(fig)
 
