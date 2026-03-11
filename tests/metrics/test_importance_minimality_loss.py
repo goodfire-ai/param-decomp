@@ -23,6 +23,10 @@ class TestImportanceMinimalityLoss:
             p_anneal_start_frac=1.0,
             p_anneal_final_p=None,
             p_anneal_end_frac=1.0,
+            coeff_warmup_frac=0.0,
+            coeff_peak_multiplier=1.0,
+            coeff_anneal_start_frac=1.0,
+            coeff_anneal_end_frac=1.0,
         )
         expected = torch.tensor(8.0)
         assert torch.allclose(result, expected)
@@ -41,6 +45,10 @@ class TestImportanceMinimalityLoss:
             p_anneal_start_frac=1.0,
             p_anneal_final_p=None,
             p_anneal_end_frac=1.0,
+            coeff_warmup_frac=0.0,
+            coeff_peak_multiplier=1.0,
+            coeff_anneal_start_frac=1.0,
+            coeff_anneal_end_frac=1.0,
         )
         expected = torch.tensor(13.0)
         assert torch.allclose(result, expected)
@@ -61,6 +69,10 @@ class TestImportanceMinimalityLoss:
             p_anneal_start_frac=1.0,
             p_anneal_final_p=None,
             p_anneal_end_frac=1.0,
+            coeff_warmup_frac=0.0,
+            coeff_peak_multiplier=1.0,
+            coeff_anneal_start_frac=1.0,
+            coeff_anneal_end_frac=1.0,
         )
         expected = (0.0 + eps) ** 0.5 + (1.0 + eps) ** 0.5
         assert torch.allclose(result, torch.tensor(expected))
@@ -77,6 +89,10 @@ class TestImportanceMinimalityLoss:
             p_anneal_start_frac=0.5,
             p_anneal_final_p=1.0,
             p_anneal_end_frac=1.0,
+            coeff_warmup_frac=0.0,
+            coeff_peak_multiplier=1.0,
+            coeff_anneal_start_frac=1.0,
+            coeff_anneal_end_frac=1.0,
         )
         # Should use p=2: 2^2 = 4
         expected = torch.tensor(4.0)
@@ -96,6 +112,10 @@ class TestImportanceMinimalityLoss:
             p_anneal_start_frac=0.0,
             p_anneal_final_p=1.0,
             p_anneal_end_frac=0.5,
+            coeff_warmup_frac=0.0,
+            coeff_peak_multiplier=1.0,
+            coeff_anneal_start_frac=1.0,
+            coeff_anneal_end_frac=1.0,
         )
         # 2^1.5 = 2.828...
         expected = torch.tensor(2.0**1.5)
@@ -113,6 +133,10 @@ class TestImportanceMinimalityLoss:
             p_anneal_start_frac=0.0,
             p_anneal_final_p=1.0,
             p_anneal_end_frac=0.5,
+            coeff_warmup_frac=0.0,
+            coeff_peak_multiplier=1.0,
+            coeff_anneal_start_frac=1.0,
+            coeff_anneal_end_frac=1.0,
         )
         # Should use p=1: 2^1 = 2
         expected = torch.tensor(2.0)
@@ -130,6 +154,10 @@ class TestImportanceMinimalityLoss:
             p_anneal_start_frac=0.0,
             p_anneal_final_p=None,
             p_anneal_end_frac=0.5,
+            coeff_warmup_frac=0.0,
+            coeff_peak_multiplier=1.0,
+            coeff_anneal_start_frac=1.0,
+            coeff_anneal_end_frac=1.0,
         )
         # Should use p=2: 2^2 = 4
         expected = torch.tensor(4.0)
@@ -150,6 +178,10 @@ class TestImportanceMinimalityLoss:
             p_anneal_start_frac=1.0,
             p_anneal_final_p=None,
             p_anneal_end_frac=1.0,
+            coeff_warmup_frac=0.0,
+            coeff_peak_multiplier=1.0,
+            coeff_anneal_start_frac=1.0,
+            coeff_anneal_end_frac=1.0,
         )
         # layer1: per_component_mean = [1, 1], sum = 2
         # layer2: per_component_mean = [2, 2], sum = 4
@@ -175,6 +207,10 @@ class TestImportanceMinimalityLoss:
             p_anneal_start_frac=1.0,
             p_anneal_final_p=None,
             p_anneal_end_frac=1.0,
+            coeff_warmup_frac=0.0,
+            coeff_peak_multiplier=1.0,
+            coeff_anneal_start_frac=1.0,
+            coeff_anneal_end_frac=1.0,
         )
         expected = torch.tensor(5.0)
         assert torch.allclose(result, expected)
@@ -211,6 +247,10 @@ class TestImportanceMinimalityLoss:
             p_anneal_start_frac=1.0,
             p_anneal_final_p=None,
             p_anneal_end_frac=1.0,
+            coeff_warmup_frac=0.0,
+            coeff_peak_multiplier=1.0,
+            coeff_anneal_start_frac=1.0,
+            coeff_anneal_end_frac=1.0,
         )
         loss_beta_1 = importance_minimality_loss(
             ci_upper_leaky=ci_upper_leaky,
@@ -221,6 +261,10 @@ class TestImportanceMinimalityLoss:
             p_anneal_start_frac=1.0,
             p_anneal_final_p=None,
             p_anneal_end_frac=1.0,
+            coeff_warmup_frac=0.0,
+            coeff_peak_multiplier=1.0,
+            coeff_anneal_start_frac=1.0,
+            coeff_anneal_end_frac=1.0,
         )
 
         assert torch.allclose(loss_beta_0, torch.tensor(expected_beta_0))
@@ -240,6 +284,10 @@ class TestImportanceMinimalityLoss:
             p_anneal_start_frac=1.0,
             p_anneal_final_p=None,
             p_anneal_end_frac=1.0,
+            coeff_warmup_frac=0.0,
+            coeff_peak_multiplier=1.0,
+            coeff_anneal_start_frac=1.0,
+            coeff_anneal_end_frac=1.0,
         )
         assert torch.isfinite(result_small)
         assert result_small >= 0
@@ -255,5 +303,9 @@ class TestImportanceMinimalityLoss:
             p_anneal_start_frac=1.0,
             p_anneal_final_p=None,
             p_anneal_end_frac=1.0,
+            coeff_warmup_frac=0.0,
+            coeff_peak_multiplier=1.0,
+            coeff_anneal_start_frac=1.0,
+            coeff_anneal_end_frac=1.0,
         )
         assert torch.isfinite(result_large)

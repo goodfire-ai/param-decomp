@@ -408,6 +408,10 @@ def optimize_ci_values(
             p_anneal_start_frac=config.imp_min_config.p_anneal_start_frac,
             p_anneal_final_p=config.imp_min_config.p_anneal_final_p,
             p_anneal_end_frac=config.imp_min_config.p_anneal_end_frac,
+            coeff_warmup_frac=config.imp_min_config.coeff_warmup_frac,
+            coeff_peak_multiplier=config.imp_min_config.coeff_peak_multiplier,
+            coeff_anneal_start_frac=config.imp_min_config.coeff_anneal_start_frac,
+            coeff_anneal_end_frac=config.imp_min_config.coeff_anneal_end_frac,
         )
 
         recon_loss = compute_recon_loss(recon_out, config.loss_config, target_out, device)

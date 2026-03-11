@@ -340,6 +340,10 @@ class ImportanceMinimalityLossConfig(LossMetricConfig):
     p_anneal_final_p: NonNegativeFloat | None = None
     p_anneal_end_frac: Probability = 1.0
     eps: NonNegativeFloat = 1e-12
+    coeff_warmup_frac: Probability = 0.0
+    coeff_peak_multiplier: NonNegativeFloat = 1.0
+    coeff_anneal_start_frac: Probability = 1.0
+    coeff_anneal_end_frac: Probability = 1.0
 
     @model_validator(mode="before")
     @classmethod
@@ -356,6 +360,22 @@ class ImportanceMinimalityLossConfig(LossMetricConfig):
             logger.warning("beta not in ImportanceMinimalityLossConfig, defaulting to 0.0")
             data["beta"] = 0.0
         return data
+
+    @model_validator(mode="after")
+    def validate_scheduling_fracs(self) -> "ImportanceMinimalityLossConfig":
+        assert self.coeff_warmup_frac <= self.coeff_anneal_start_frac, (
+            f"coeff_warmup_frac ({self.coeff_warmup_frac}) must be <= "
+            f"coeff_anneal_start_frac ({self.coeff_anneal_start_frac})"
+        )
+        assert self.coeff_anneal_end_frac >= self.coeff_anneal_start_frac, (
+            f"coeff_anneal_end_frac ({self.coeff_anneal_end_frac}) must be >= "
+            f"coeff_anneal_start_frac ({self.coeff_anneal_start_frac})"
+        )
+        assert self.p_anneal_end_frac >= self.p_anneal_start_frac, (
+            f"p_anneal_end_frac ({self.p_anneal_end_frac}) must be >= "
+            f"p_anneal_start_frac ({self.p_anneal_start_frac})"
+        )
+        return self
 
 
 class UniformKSubsetRoutingConfig(BaseConfig):
