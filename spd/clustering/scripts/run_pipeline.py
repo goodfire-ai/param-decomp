@@ -106,6 +106,8 @@ class ClusteringPipelineConfig(BaseConfig):
         )
         # Try to load ClusteringRunConfig
         assert ClusteringRunConfig.from_file(self.clustering_run_config_path)
+        if self.n_runs == 1:
+            object.__setattr__(self, "calc_distances", False)
 
         return self
 
