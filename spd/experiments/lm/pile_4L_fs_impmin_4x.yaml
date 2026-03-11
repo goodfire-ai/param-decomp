@@ -1,6 +1,6 @@
 wandb_project: spd
 wandb_run_name: null
-wandb_run_name_prefix: ''
+wandb_run_name_prefix: impmin_4x_
 seed: 0
 autocast_bf16: true
 n_mask_samples: 1
@@ -41,7 +41,7 @@ identity_module_info: null
 init_spd_checkpoint: null
 use_delta_component: true
 loss_metric_configs:
-- coeff: 0.0002
+- coeff: 0.0008
   classname: ImportanceMinimalityLoss
   pnorm: 2.0
   beta: 0.5

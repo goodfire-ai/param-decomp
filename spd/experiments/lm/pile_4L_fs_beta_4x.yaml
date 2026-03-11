@@ -1,6 +1,6 @@
 wandb_project: spd
 wandb_run_name: null
-wandb_run_name_prefix: ''
+wandb_run_name_prefix: beta_4x_
 seed: 0
 autocast_bf16: true
 n_mask_samples: 1
@@ -44,7 +44,7 @@ loss_metric_configs:
 - coeff: 0.0002
   classname: ImportanceMinimalityLoss
   pnorm: 2.0
-  beta: 0.5
+  beta: 2.0
   p_anneal_start_frac: 0.0
   p_anneal_final_p: 0.4
   p_anneal_end_frac: 1.0

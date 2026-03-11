@@ -1,6 +1,6 @@
 wandb_project: spd
 wandb_run_name: null
-wandb_run_name_prefix: ''
+wandb_run_name_prefix: C_2x_
 seed: 0
 autocast_bf16: true
 n_mask_samples: 1
@@ -26,17 +26,17 @@ sampling: continuous
 sigmoid_type: leaky_hard
 module_info:
 - module_pattern: h.*.mlp.c_fc
-  C: 3072
+  C: 6144
 - module_pattern: h.*.mlp.down_proj
-  C: 3584
+  C: 7168
 - module_pattern: h.*.attn.q_proj
-  C: 512
+  C: 1024
 - module_pattern: h.*.attn.k_proj
-  C: 512
+  C: 1024
 - module_pattern: h.*.attn.v_proj
-  C: 1024
+  C: 2048
 - module_pattern: h.*.attn.o_proj
-  C: 1024
+  C: 2048
 identity_module_info: null
 init_spd_checkpoint: null
 use_delta_component: true
