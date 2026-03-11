@@ -1,16 +1,19 @@
 <script lang="ts">
     import {
         type NodeColorMode,
+        type EdgeVariant,
         displaySettings,
         CORRELATION_STAT_LABELS,
         CORRELATION_STAT_DESCRIPTIONS,
         NODE_COLOR_MODE_LABELS,
+        EDGE_VARIANT_LABELS,
     } from "../../lib/displaySettings.svelte";
     import GearIcon from "./icons/GearIcon.svelte";
 
     let showDropdown = $state(false);
 
     const colorModes: NodeColorMode[] = ["ci", "subcomp_act"];
+    const edgeVariants: EdgeVariant[] = ["signed", "abs_target"];
 </script>
 
 <div
@@ -97,6 +100,14 @@
                     <label class="checkbox-item single-row">
                         <input
                             type="checkbox"
+                            checked={displaySettings.curvedEdges}
+                            onchange={() => (displaySettings.curvedEdges = !displaySettings.curvedEdges)}
+                        />
+                        <span class="stat-label">Curved edges</span>
+                    </label>
+                    <label class="checkbox-item single-row">
+                        <input
+                            type="checkbox"
                             checked={displaySettings.showAutoInterpPromptButton}
                             onchange={() =>
                                 (displaySettings.showAutoInterpPromptButton =
@@ -119,6 +130,23 @@
                                 onchange={() => (displaySettings.nodeColorMode = mode)}
                             />
                             <span class="stat-label">{NODE_COLOR_MODE_LABELS[mode]}</span>
+                        </label>
+                    {/each}
+                </div>
+            </div>
+            <div class="settings-section">
+                <h4>Edge Variant</h4>
+                <p class="settings-hint">Attribution target: value or |value|</p>
+                <div class="radio-list">
+                    {#each edgeVariants as variant (variant)}
+                        <label class="radio-item">
+                            <input
+                                type="radio"
+                                name="edge-variant"
+                                checked={displaySettings.edgeVariant === variant}
+                                onchange={() => (displaySettings.edgeVariant = variant)}
+                            />
+                            <span class="stat-label">{EDGE_VARIANT_LABELS[variant]}</span>
                         </label>
                     {/each}
                 </div>

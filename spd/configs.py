@@ -301,6 +301,10 @@ class LMTaskConfig(BaseConfig):
         default=False,
         description="Whether to use a streaming dataset",
     )
+    dataset_seed: int | None = Field(
+        default=None,
+        description="Seed for dataset shuffling/sampling. When None, uses the global `seed`.",
+    )
 
 
 class ModulePatternInfoConfig(BaseConfig):
@@ -587,6 +591,48 @@ class StochasticHiddenActsReconLossConfig(LossMetricConfig):
     classname: Literal["StochasticHiddenActsReconLoss"] = "StochasticHiddenActsReconLoss"
 
 
+class CIHiddenActsReconLossConfig(BaseConfig):
+    classname: Literal["CIHiddenActsReconLoss"] = "CIHiddenActsReconLoss"
+
+
+class PersistentPGDReconEvalConfig(BaseConfig):
+    classname: Literal["PersistentPGDReconEval"] = "PersistentPGDReconEval"
+
+
+class PersistentPGDReconSubsetEvalConfig(BaseConfig):
+    classname: Literal["PersistentPGDReconSubsetEval"] = "PersistentPGDReconSubsetEval"
+
+
+class _AttnPatternsReconLossBaseConfig(BaseConfig):
+    """Attention pattern reconstruction loss config.
+
+    Supports standard attention and RoPE attention (auto-detected from the parent attention
+    module). Models using ALiBi, QK-norm, sliding window, etc. are not supported.
+    """
+
+    n_heads: int
+    q_proj_path: str | None = None
+    k_proj_path: str | None = None
+    c_attn_path: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_paths(self) -> Self:
+        has_separate = self.q_proj_path is not None and self.k_proj_path is not None
+        has_combined = self.c_attn_path is not None
+        assert has_separate != has_combined, (
+            "Specify either (q_proj_path, k_proj_path) or c_attn_path, not both/neither"
+        )
+        return self
+
+
+class CIMaskedAttnPatternsReconLossConfig(_AttnPatternsReconLossBaseConfig):
+    classname: Literal["CIMaskedAttnPatternsReconLoss"] = "CIMaskedAttnPatternsReconLoss"
+
+
+class StochasticAttnPatternsReconLossConfig(_AttnPatternsReconLossBaseConfig):
+    classname: Literal["StochasticAttnPatternsReconLoss"] = "StochasticAttnPatternsReconLoss"
+
+
 #### Metrics that can only be used in eval ####
 class CEandKLLossesConfig(BaseConfig):
     classname: Literal["CEandKLLosses"] = "CEandKLLosses"
@@ -661,16 +707,21 @@ LossMetricConfigType = FaithfulnessLossConfig | ImportanceMinimalityLossConfig |
 
 EvalOnlyMetricConfigType = (
     CEandKLLossesConfig
+    | CIHiddenActsReconLossConfig
     | CIHistogramsConfig
     | CI_L0Config
     | CIMeanPerComponentConfig
     | ComponentActivationDensityConfig
     | IdentityCIErrorConfig
+    | PersistentPGDReconEvalConfig
+    | PersistentPGDReconSubsetEvalConfig
     | PermutedCIPlotsConfig
     | UVPlotsConfig
     | StochasticReconSubsetCEAndKLConfig
     | PGDMultiBatchReconLossConfig
     | PGDMultiBatchReconSubsetLossConfig
+    | CIMaskedAttnPatternsReconLossConfig
+    | StochasticAttnPatternsReconLossConfig
 )
 MetricConfigType = LossMetricConfigType | EvalOnlyMetricConfigType
 
@@ -695,7 +746,10 @@ class Config(BaseConfig):
     )
 
     # --- General ---
-    seed: int = Field(default=0, description="Random seed for reproducibility")
+    seed: int = Field(
+        default=0,
+        description="Random seed for reproducibility. Does not affect dataset shuffling if dataset_seed is set in TaskConfig.",
+    )
     autocast_bf16: bool = Field(
         default=True,
         description="Whether to use torch.autocast with bfloat16 mixed precision",

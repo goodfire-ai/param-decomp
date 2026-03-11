@@ -81,6 +81,14 @@ eval_metric_configs:
   rounding_threshold: 0.0
 - classname: CIMeanPerComponent
 - classname: StochasticHiddenActsReconLoss
+- classname: StochasticAttnPatternsReconLoss
+  n_heads: 4
+  q_proj_path: "h.*.attn.q_proj"
+  k_proj_path: "h.*.attn.k_proj"
+- classname: CIMaskedAttnPatternsReconLoss
+  n_heads: 4
+  q_proj_path: "h.*.attn.q_proj"
+  k_proj_path: "h.*.attn.k_proj"
 - init: random
   step_size: 0.1
   n_steps: 20

@@ -33,7 +33,7 @@ model:
   vocab_size: 50277
 
 train_dataset_config:
-  name: danbraunai/pile-uncopyrighted-tok
+  name: danbraunai/pile-uncopyrighted-tok-shuffled
   is_tokenized: true
   hf_tokenizer_path: EleutherAI/gpt-neox-20b
   split: train
@@ -43,7 +43,7 @@ train_dataset_config:
   column_name: input_ids
 
 val_dataset_config:
-  name: danbraunai/pile-uncopyrighted-tok
+  name: danbraunai/pile-uncopyrighted-tok-shuffled
   is_tokenized: true
   hf_tokenizer_path: EleutherAI/gpt-neox-20b
   split: val

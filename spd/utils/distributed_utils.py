@@ -256,5 +256,20 @@ def gather_all_tensors(tensor: Tensor) -> list[Tensor]:
     return gathered
 
 
+def seed_per_rank(base_seed: int) -> None:
+    """Set global RNG to a unique seed per rank, so stochastic operations diverge across DDP ranks.
+
+    Uses base_seed * world_size + rank to guarantee no collisions across any (base_seed, rank) pair.
+    In non-distributed mode, just sets seed to base_seed.
+    """
+    dist_state = get_distributed_state()
+    world_size = dist_state.world_size if dist_state is not None else 1
+    rank = dist_state.rank if dist_state is not None else 0
+    seed = base_seed * world_size + rank
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+
+
 def get_config_json(config: Config) -> str:
     return f"json:{json.dumps(config.model_dump(mode='json'))}"

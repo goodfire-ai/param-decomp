@@ -38,11 +38,20 @@ loss_metric_configs:
   routing:
     type: uniform_k_subset
 - coeff: 0.5
-  init: random
-  step_size: 1.0
-  n_steps: 1
-  mask_scope: shared_across_batch
-  classname: PGDReconSubsetLoss
+  classname: PersistentPGDReconSubsetLoss
+  optimizer:
+    type: adam
+    lr_schedule:
+      start_val: 0.1
+      warmup_pct: 0.0
+      final_val_frac: 1.0
+      fn_type: constant
+    beta1: 0.9
+    beta2: 0.99
+    eps: 1.0e-08
+  scope:
+    type: repeat_across_batch
+    n_sources: 8
   routing:
     type: uniform_k_subset
 - coeff: 1000000.0
@@ -81,6 +90,8 @@ eval_metric_configs:
   rounding_threshold: 0.0
 - classname: CIMeanPerComponent
 - classname: StochasticHiddenActsReconLoss
+- classname: CIHiddenActsReconLoss
+- classname: PersistentPGDReconSubsetEval
 - init: random
   step_size: 0.1
   n_steps: 20

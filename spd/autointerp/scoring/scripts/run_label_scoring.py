@@ -25,7 +25,7 @@ def main(
     decomposition_id: str,
     scorer_type: LabelScorerType,
     config_json: dict[str, Any],
-    harvest_subrun_id: str | None = None,
+    harvest_subrun_id: str,
 ) -> None:
     assert isinstance(config_json, dict), f"Expected dict from fire, got {type(config_json)}"
     load_dotenv()
@@ -44,15 +44,11 @@ def main(
     # Separate writable DB for saving scores (the repo's DB is readonly/immutable)
     score_db = InterpDB(interp_repo._subrun_dir / "interp.db")
 
-    if harvest_subrun_id is not None:
-        harvest = HarvestRepo(
-            decomposition_id=decomposition_id,
-            subrun_id=harvest_subrun_id,
-            readonly=True,
-        )
-    else:
-        harvest = HarvestRepo.open_most_recent(decomposition_id, readonly=True)
-        assert harvest is not None, f"No harvest data for {decomposition_id}"
+    harvest = HarvestRepo(
+        decomposition_id=decomposition_id,
+        subrun_id=harvest_subrun_id,
+        readonly=True,
+    )
 
     components = harvest.get_all_components()
 
@@ -99,18 +95,16 @@ def get_command(
     decomposition_id: str,
     scorer_type: LabelScorerType,
     config: AutointerpEvalConfig,
-    harvest_subrun_id: str | None = None,
+    harvest_subrun_id: str,
 ) -> str:
     config_json = config.model_dump_json(exclude_none=True)
-    cmd = (
+    return (
         f"python -m spd.autointerp.scoring.scripts.run_label_scoring "
         f"--decomposition_id {decomposition_id} "
         f"--scorer_type {scorer_type} "
         f"--config_json '{config_json}' "
+        f"--harvest_subrun_id {harvest_subrun_id} "
     )
-    if harvest_subrun_id is not None:
-        cmd += f" --harvest_subrun_id {harvest_subrun_id} "
-    return cmd
 
 
 if __name__ == "__main__":

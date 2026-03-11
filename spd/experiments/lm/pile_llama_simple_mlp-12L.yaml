@@ -1,0 +1,154 @@
+wandb_project: spd
+wandb_run_name: null
+wandb_run_name_prefix: ''
+seed: 0
+autocast_bf16: true
+n_mask_samples: 1
+ci_config:
+  mode: global
+  fn_type: global_shared_transformer
+  hidden_dims: null
+  reader_hidden_dims: null
+  d_resid_ci_fn: null
+  block_groups: null
+  transition_attn_config: null
+  transition_hidden_dim: null
+  simple_transformer_ci_cfg:
+    d_model: 2048
+    n_blocks: 8
+    mlp_hidden_dim:
+    - 8192
+    attn_config:
+      n_heads: 16
+      max_len: 512
+      rope_base: 10000.0
+sampling: continuous
+sigmoid_type: leaky_hard
+module_info:
+- module_pattern: h.*.mlp.c_fc
+  C: 3072
+- module_pattern: h.*.mlp.down_proj
+  C: 3584
+- module_pattern: h.*.attn.q_proj
+  C: 512
+- module_pattern: h.*.attn.k_proj
+  C: 512
+- module_pattern: h.*.attn.v_proj
+  C: 1024
+- module_pattern: h.*.attn.o_proj
+  C: 1024
+identity_module_info: null
+init_spd_checkpoint: null
+use_delta_component: true
+loss_metric_configs:
+- coeff: 0.0001
+  classname: ImportanceMinimalityLoss
+  pnorm: 2.0
+  beta: 0.5
+  p_anneal_start_frac: 0.0
+  p_anneal_final_p: 0.4
+  p_anneal_end_frac: 1.0
+  eps: 1.0e-12
+- coeff: 0.5
+  classname: StochasticReconSubsetLoss
+  routing:
+    type: uniform_k_subset
+- coeff: 0.5
+  optimizer:
+    type: adam
+    beta1: 0.5
+    beta2: 0.99
+    eps: 1.0e-08
+    lr_schedule:
+      start_val: 0.01
+      warmup_pct: 0.025
+      final_val_frac: 1.0
+      fn_type: constant
+  scope:
+    type: per_batch_per_position
+  use_sigmoid_parameterization: false
+  n_warmup_steps: 2
+  classname: PersistentPGDReconLoss
+- coeff: 10000000.0
+  classname: FaithfulnessLoss
+output_loss_type: kl
+lr_schedule:
+  start_val: 5.0e-05
+  warmup_pct: 0.0
+  final_val_frac: 0.1
+  fn_type: cosine
+steps: 400000
+batch_size: 64
+grad_clip_norm_components: 0.01
+grad_clip_norm_ci_fns: null
+faithfulness_warmup_steps: 400
+faithfulness_warmup_lr: 0.001
+faithfulness_warmup_weight_decay: 0.0
+train_log_freq: 200
+eval_freq: 1000
+eval_batch_size: 64
+slow_eval_freq: 10000
+n_eval_steps: 1
+slow_eval_on_first_step: true
+save_freq: null
+eval_metric_configs:
+- classname: CIHistograms
+  n_batches_accum: 1
+- classname: ComponentActivationDensity
+- classname: CI_L0
+  groups:
+    layer_0:
+    - h.0.*
+    layer_1:
+    - h.1.*
+    layer_2:
+    - h.2.*
+    layer_3:
+    - h.3.*
+    layer_4:
+    - h.4.*
+    layer_5:
+    - h.5.*
+    layer_6:
+    - h.6.*
+    layer_7:
+    - h.7.*
+    layer_8:
+    - h.8.*
+    layer_9:
+    - h.9.*
+    layer_10:
+    - h.10.*
+    layer_11:
+    - h.11.*
+    total:
+    - '*'
+- classname: CEandKLLosses
+  rounding_threshold: 0.0
+- classname: CIMeanPerComponent
+- coeff: null
+  classname: StochasticHiddenActsReconLoss
+- classname: CIHiddenActsReconLoss
+- coeff: null
+  init: random
+  step_size: 0.1
+  n_steps: 20
+  mask_scope: shared_across_batch
+  classname: PGDReconLoss
+ci_alive_threshold: 0.0
+pretrained_model_class: spd.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
+pretrained_model_path: null
+pretrained_model_name: goodfire/spd/runs/t-f99617bb
+pretrained_model_output_attr: idx_0
+tokenizer_name: EleutherAI/gpt-neox-20b
+task_config:
+  task_name: lm
+  max_seq_len: 512
+  buffer_size: 1000
+  dataset_name: danbraunai/pile-uncopyrighted-tok-shuffled
+  column_name: input_ids
+  train_data_split: train
+  eval_data_split: val
+  shuffle_each_epoch: true
+  is_tokenized: true
+  streaming: true

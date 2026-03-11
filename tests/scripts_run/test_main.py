@@ -26,14 +26,14 @@ class TestSPDRun:
             _get_experiments(f"{fake_exp_name},tms_5-2")
 
     @patch("spd.scripts.run.submit_slurm_job")
-    @patch("spd.scripts.run.create_slurm_array_script")
+    @patch("spd.scripts.run.create_slurm_script")
     @patch("spd.scripts.run.create_git_snapshot")
     @patch("spd.scripts.run._create_wandb_views_and_report")
     def test_sweep_creates_slurm_array(
         self,
         mock_create_wandb_views_and_report,
         mock_create_git_snapshot,
-        mock_create_slurm_array_script,
+        mock_create_slurm_script,
         mock_submit_slurm_job,
     ):
         """Test that sweep runs create SLURM array jobs with sweep params."""
@@ -43,7 +43,7 @@ class TestSPDRun:
         from spd.utils.slurm import SubmitResult
 
         mock_create_git_snapshot.return_value = ("test-branch", "12345678")
-        mock_create_slurm_array_script.return_value = "#!/bin/bash\necho test"
+        mock_create_slurm_script.return_value = "#!/bin/bash\necho test"
         mock_submit_slurm_job.return_value = SubmitResult(
             job_id="12345",
             script_path=Path("/tmp/test.sh"),
@@ -57,10 +57,10 @@ class TestSPDRun:
         )
 
         # Verify SLURM array script was created
-        mock_create_slurm_array_script.assert_called_once()
+        mock_create_slurm_script.assert_called_once()
 
         # Verify the run has sweep params and multiple jobs
-        call_kwargs = mock_create_slurm_array_script.call_args.kwargs
+        call_kwargs = mock_create_slurm_script.call_args.kwargs
         training_jobs = call_kwargs["training_jobs"]
         sweep_params = call_kwargs["sweep_params"]
         assert len(training_jobs) > 1  # Sweep should create multiple jobs

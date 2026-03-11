@@ -74,19 +74,20 @@ def get_sources_by_target(
     cache[f"{embed_path}_post_detach"] = embed_cache[f"{embed_path}_post_detach"]
     cache[f"{unembed_path}_pre_detach"] = comp_output_with_cache.output
 
-    layers = [embed_path, *model.target_module_paths, unembed_path]
+    source_layers = [embed_path, *model.target_module_paths]  # Don't include "output" as source
+    target_layers = [*model.target_module_paths, unembed_path]  # Don't include embed as target
 
     # Test all distinct pairs for gradient flow
     test_pairs = []
-    for in_layer in layers[:-1]:  # Don't include "output" as source
-        for out_layer in layers[1:]:  # Don't include embed as target
-            if in_layer != out_layer:
-                test_pairs.append((in_layer, out_layer))
+    for source_layer in source_layers:
+        for target_layer in target_layers:
+            if source_layer != target_layer:
+                test_pairs.append((source_layer, target_layer))
 
     sources_by_target: dict[str, list[str]] = defaultdict(list)
-    for in_layer, out_layer in test_pairs:
-        out_pre_detach = cache[f"{out_layer}_pre_detach"]
-        in_post_detach = cache[f"{in_layer}_post_detach"]
+    for source_layer, target_layer in test_pairs:
+        out_pre_detach = cache[f"{target_layer}_pre_detach"]
+        in_post_detach = cache[f"{source_layer}_post_detach"]
         out_value = out_pre_detach[0, 0, 0]
         grads = torch.autograd.grad(
             outputs=out_value,
@@ -97,5 +98,5 @@ def get_sources_by_target(
         assert len(grads) == 1
         grad = grads[0]
         if grad is not None:  # pyright: ignore[reportUnnecessaryComparison]
-            sources_by_target[out_layer].append(in_layer)
+            sources_by_target[target_layer].append(source_layer)
     return dict(sources_by_target)

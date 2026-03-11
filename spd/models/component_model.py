@@ -410,7 +410,7 @@ class ComponentModel(LoadableModule):
         self,
         *args: Any,
         mask_infos: dict[str, ComponentsMaskInfo] | None = None,
-        cache_type: Literal["component_acts", "input"],
+        cache_type: Literal["component_acts", "input", "output"],
         **kwargs: Any,
     ) -> OutputWithCache: ...
 
@@ -432,30 +432,20 @@ class ComponentModel(LoadableModule):
         self,
         *args: Any,
         mask_infos: dict[str, ComponentsMaskInfo] | None = None,
-        cache_type: Literal["component_acts", "input", "none"] = "none",
+        cache_type: Literal["component_acts", "input", "output", "none"] = "none",
         **kwargs: Any,
     ) -> Tensor | OutputWithCache:
-        """Forward pass with optional component replacement and/or input caching.
-
-        This method handles the following 4 cases:
-        1. mask_infos is None and cache_type is "none": Regular forward pass.
-        2. mask_infos is None and cache_type is "input" or "component_acts": Forward pass with
-            caching on all modules in self.target_module_paths.
-        3. mask_infos is not None and cache_type is "input" or "component_acts": Forward pass with
-            component replacement and caching on the modules provided in mask_infos.
-        4. mask_infos is not None and cache_type is "none": Forward pass with component replacement
-            on the modules provided in mask_infos and no caching.
+        """Forward pass with optional component replacement and/or input/output caching.
 
         Args:
             mask_infos: Dictionary mapping module names to ComponentsMaskInfo.
                 If provided, those modules will be replaced with their components.
-            cache_type: If "input" or "component_acts", cache the inputs or component acts to the
-                modules provided in mask_infos. If "none", no caching is done. If mask_infos is None,
-                cache the inputs or component acts to all modules in self.target_module_paths.
+            cache_type: What to cache for each hooked module. "input" caches pre-weight
+                activations, "output" caches post-weight activations, "component_acts" caches
+                per-component activations, "none" disables caching.
 
         Returns:
-            OutputWithCache object if cache_type is "input" or "component_acts", otherwise the
-            model output tensor.
+            OutputWithCache object if cache_type is not "none", otherwise the model output tensor.
         """
         if mask_infos is None and cache_type == "none":
             # No hooks needed. Do a regular forward pass of the target model.
@@ -484,7 +474,7 @@ class ComponentModel(LoadableModule):
 
         out = self._extract_output(raw_out)
         match cache_type:
-            case "input" | "component_acts":
+            case "input" | "output" | "component_acts":
                 return OutputWithCache(output=out, cache=cache)
             case "none":
                 return out
@@ -498,7 +488,7 @@ class ComponentModel(LoadableModule):
         module_name: str,
         components: Components | None,
         mask_info: ComponentsMaskInfo | None,
-        cache_type: Literal["component_acts", "input", "none"],
+        cache_type: Literal["component_acts", "input", "output", "none"],
         cache: dict[str, Tensor],
     ) -> Any | None:
         """Unified hook function that handles both component replacement and caching.
@@ -542,12 +532,20 @@ class ComponentModel(LoadableModule):
                 for k, v in component_acts_cache.items():
                     cache[f"{module_name}_{k}"] = v
 
-            if mask_info.routing_mask == "all":
-                return components_out
+            final_out = (
+                components_out
+                if mask_info.routing_mask == "all"
+                else torch.where(mask_info.routing_mask[..., None], components_out, output)
+            )
 
-            return torch.where(mask_info.routing_mask[..., None], components_out, output)
+            if cache_type == "output":
+                cache[module_name] = final_out
+            return final_out
 
         # No component replacement - keep original output
+        if cache_type == "output":
+            assert isinstance(output, Tensor)
+            cache[module_name] = output
         return None
 
     @contextmanager

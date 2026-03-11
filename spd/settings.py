@@ -24,3 +24,6 @@ SBATCH_SCRIPTS_DIR = SPD_OUT_DIR / "sbatch_scripts"
 DEFAULT_PARTITION_NAME = "h200-reserved"
 
 DEFAULT_PROJECT_NAME = "spd"
+
+# Default run for the app to load on startup if set
+SPD_APP_DEFAULT_RUN: str | None = os.environ.get("SPD_APP_DEFAULT_RUN")

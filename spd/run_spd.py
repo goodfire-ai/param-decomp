@@ -44,6 +44,7 @@ from spd.utils.distributed_utils import (
     avg_metrics_across_ranks,
     get_distributed_state,
     is_main_process,
+    seed_per_rank,
     sync_across_processes,
 )
 from spd.utils.general_utils import (
@@ -157,6 +158,9 @@ def optimize(
     )
 
     model.to(device)
+
+    # Diverge global RNG per rank so stochastic masks/sources differ across DP workers.
+    seed_per_rank(config.seed)
 
     # Wrap model with DDP if distributed
     dist_state = get_distributed_state()
@@ -292,7 +296,6 @@ def optimize(
                 ci=ci,
                 target_out=target_model_output.output,
                 weight_deltas=weight_deltas,
-                pre_weight_acts=target_model_output.cache,
                 current_frac_of_training=step / config.steps,
                 sampling=config.sampling,
                 use_delta_component=config.use_delta_component,
@@ -372,6 +375,7 @@ def optimize(
                     slow_step=slow_step,
                     n_eval_steps=n_eval_steps,
                     current_frac_of_training=step / config.steps,
+                    ppgd_states=ppgd_states,
                 )
 
                 dict_safe_update_(metrics, multibatch_pgd_metrics)

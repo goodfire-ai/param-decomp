@@ -29,17 +29,17 @@ from wandb.sdk.wandb_run import Run
 
 from spd.clustering.activations import (
     ProcessedActivations,
+    collect_activations,
     component_activations,
     process_activations,
 )
 from spd.clustering.clustering_run_config import ClusteringRunConfig
 from spd.clustering.consts import (
     ActivationsTensor,
-    BatchTensor,
     ClusterCoactivationShaped,
     ComponentLabels,
 )
-from spd.clustering.dataset import load_dataset
+from spd.clustering.dataset import create_clustering_dataloader
 from spd.clustering.ensemble_registry import _ENSEMBLE_REGISTRY_DB, register_clustering_run
 from spd.clustering.math.merge_matrix import GroupMerge
 from spd.clustering.math.semilog import semilog
@@ -259,23 +259,14 @@ def main(run_config: ClusteringRunConfig) -> Path:
     spd_run = SPDRunInfo.from_path(run_config.model_path)
     task_name: TaskName = spd_run.config.task_config.task_name
 
-    # 1. Load dataset
+    # 1. Create dataloader
     logger.info(f"Loading dataset (seed={run_config.dataset_seed})")
-    load_dataset_kwargs: dict[str, Any] = dict()
-    if run_config.dataset_streaming:
-        logger.info("Using streaming dataset loading")
-        load_dataset_kwargs["config_kwargs"] = dict(streaming=True)
-        assert task_name == "lm", (
-            f"Streaming dataset loading only supported for 'lm' task, got '{task_name = }'. Remove dataset_streaming=True from config or use a different task."
-        )
-    batch: BatchTensor = load_dataset(
+    dataloader = create_clustering_dataloader(
         model_path=run_config.model_path,
         task_name=task_name,
         batch_size=run_config.batch_size,
         seed=run_config.dataset_seed,
-        **load_dataset_kwargs,
     )
-    batch = batch.to(device)
 
     # 2. Setup WandB for this run
     wandb_run: Run | None = None
@@ -294,7 +285,6 @@ def main(run_config: ClusteringRunConfig) -> Path:
                 f"assigned_idx:{assigned_idx}",
             ],
         )
-        # logger.info(f"WandB run: {wandb_run.url}")
 
     # 3. Load model
     logger.info("Loading model")
@@ -302,20 +292,33 @@ def main(run_config: ClusteringRunConfig) -> Path:
 
     # 4. Compute activations
     logger.info("Computing activations")
-    activations_dict: (
-        dict[str, Float[Tensor, "batch seq C"]] | dict[str, Float[Tensor, "batch C"]]
-    ) = component_activations(
-        model=model,
-        batch=batch,
-        device=device,
-    )
+    if task_name == "lm":
+        assert run_config.n_tokens is not None, "n_tokens must be set for LM tasks"
+        assert run_config.n_tokens_per_seq is not None, "n_tokens_per_seq must be set for LM tasks"
+        activations_dict = collect_activations(
+            model=model,
+            dataloader=dataloader,
+            n_tokens=run_config.n_tokens,
+            n_tokens_per_seq=run_config.n_tokens_per_seq,
+            device=device,
+            seed=run_config.dataset_seed,
+        )
+    else:
+        # resid_mlp: single batch, no sequence dimension
+        batch_data = next(iter(dataloader))
+        batch, _ = batch_data  # DatasetGeneratedDataLoader yields (batch, labels)
+        activations_dict = component_activations(
+            model=model,
+            batch=batch,
+            device=device,
+        )
 
     # 5. Process activations
     logger.info("Processing activations")
     processed_activations: ProcessedActivations = process_activations(
         activations=activations_dict,
         filter_dead_threshold=run_config.merge_config.filter_dead_threshold,
-        seq_mode="concat" if task_name == "lm" else None,
+        seq_mode=None,
         filter_modules=run_config.merge_config.filter_modules,
     )
 
@@ -336,14 +339,14 @@ def main(run_config: ClusteringRunConfig) -> Path:
             single=True,
         )
 
-    # Clean up memory
-    activations: ActivationsTensor = processed_activations.activations
+    # Extract what we need, then free the model and temporary objects
+    activations: ActivationsTensor = processed_activations.activations.to(device)
     component_labels: ComponentLabels = ComponentLabels(processed_activations.labels.copy())
     del processed_activations
     del activations_dict
     del model
-    del batch
     gc.collect()
+    torch.cuda.empty_cache()
 
     # 7. Run merge iteration
     logger.info("Starting merging")
@@ -408,21 +411,13 @@ def cli() -> None:
         default=None,
         help="WandB entity name (user or team)",
     )
-    parser.add_argument(
-        "--dataset-streaming",
-        action="store_true",
-        help="Whether to use streaming dataset loading (if supported by the dataset)",
-    )
-
     args: argparse.Namespace = parser.parse_args()
 
     # Load base config
     run_config = ClusteringRunConfig.from_file(args.config)
 
     # Override config values from CLI
-    overrides: dict[str, Any] = {
-        "dataset_streaming": args.dataset_streaming,
-    }
+    overrides: dict[str, Any] = {}
 
     # Handle ensemble-related overrides
     if args.pipeline_run_id is not None:

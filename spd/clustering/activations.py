@@ -1,10 +1,12 @@
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import torch
-from jaxtyping import Bool, Float, Float16, Int
+from jaxtyping import Bool, Float, Float16
 from torch import Tensor
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from spd.clustering.consts import (
     ActivationsTensor,
@@ -13,13 +15,14 @@ from spd.clustering.consts import (
     ComponentLabels,
 )
 from spd.clustering.util import ModuleFilterFunc
+from spd.log import logger
 from spd.models.component_model import ComponentModel, OutputWithCache
 
 
 def component_activations(
     model: ComponentModel,
     device: torch.device | str,
-    batch: Int[Tensor, "batch_size n_ctx"],
+    batch: Tensor,
 ) -> dict[str, ActivationsTensor]:
     """Get the component activations over a **single** batch."""
     causal_importances: dict[str, ActivationsTensor]
@@ -29,14 +32,76 @@ def component_activations(
             cache_type="input",
         )
 
-        # TODO: !!!IMPORTANT!!! unclear what the right thing from CIOutputs is
         causal_importances = model.calc_causal_importances(
             pre_weight_acts=model_output.cache,
             sampling="continuous",
             detach_inputs=False,
-        ).upper_leaky
+        ).lower_leaky
 
     return causal_importances
+
+
+def collect_activations(
+    model: ComponentModel,
+    dataloader: DataLoader[Any],
+    n_tokens: int,
+    n_tokens_per_seq: int,
+    device: torch.device | str,
+    seed: int,
+) -> dict[str, Float[Tensor, "n_tokens C"]]:
+    """Collect activation samples by picking random tokens per sequence.
+
+    Iterates through batches from dataloader, runs component_activations on each,
+    then selects n_tokens_per_seq random token positions per sequence. Collects until
+    n_tokens samples are gathered.
+
+    Args:
+        model: ComponentModel to get activations from
+        dataloader: DataLoader yielding batches of sequences
+        n_tokens: Total number of token samples to collect
+        n_tokens_per_seq: Number of random token positions to sample per sequence
+        device: Device to run on
+        seed: Random seed for reproducible token position selection
+    """
+    rng = torch.Generator().manual_seed(seed)
+    collected: dict[str, list[Tensor]] = {}
+    n_collected = 0
+
+    pbar = tqdm(dataloader, desc="Collecting activations", unit="batch")
+    for batch_data in pbar:
+        input_ids = batch_data["input_ids"]
+        batch_size, n_ctx = input_ids.shape
+
+        activations = component_activations(model=model, batch=input_ids, device=device)
+
+        # Pick n_tokens_per_seq random token positions per sequence
+        positions = torch.randint(0, n_ctx, (batch_size, n_tokens_per_seq), generator=rng)
+        batch_indices = torch.arange(batch_size).unsqueeze(1).expand_as(positions)
+
+        for key, act in activations.items():
+            # act shape: (batch_size, n_ctx, C)
+            sampled = act[batch_indices, positions]  # (batch_size, n_tokens_per_seq, C)
+            sampled = sampled.reshape(batch_size * n_tokens_per_seq, -1)
+            if key not in collected:
+                collected[key] = []
+            collected[key].append(sampled.cpu())
+
+        n_collected += batch_size * n_tokens_per_seq
+        pbar.set_postfix(tokens=f"{min(n_collected, n_tokens)}/{n_tokens}")
+        if n_collected >= n_tokens:
+            break
+
+    assert n_collected >= n_tokens, (
+        f"Dataloader exhausted: collected {n_collected} tokens but needed {n_tokens}"
+    )
+
+    logger.info(f"Collected {n_collected} token activations (requested {n_tokens})")
+
+    # Concatenate and truncate to exactly n_tokens. Pop chunks to free memory before next module.
+    result: dict[str, Float[Tensor, "n_tokens C"]] = {}
+    for key in list(collected.keys()):
+        result[key] = torch.cat(collected.pop(key), dim=0)[:n_tokens]
+    return result
 
 
 def compute_coactivatons(
@@ -118,8 +183,11 @@ def filter_dead_components(
 class ProcessedActivations:
     """Processed activations after filtering and concatenation"""
 
-    activations_raw: dict[str, ActivationsTensor]
-    "activations after filtering, but prior to concatenation"
+    module_component_counts: dict[str, int]
+    "total component count per module (including dead), preserving module order"
+
+    module_alive_counts: dict[str, int]
+    "alive component count per module, preserving module order"
 
     activations: ActivationsTensor
     "activations after filtering and concatenation"
@@ -137,12 +205,10 @@ class ProcessedActivations:
 
     @property
     def n_components_original(self) -> int:
-        """Total number of components before filtering. equal to the sum of all components in `activations_raw`, or to `n_components_alive + n_components_dead`"""
-        return sum(act.shape[1] for act in self.activations_raw.values())
+        return sum(self.module_component_counts.values())
 
     @property
     def n_components_alive(self) -> int:
-        """Number of alive components after filtering. equal to the length of `labels`"""
         n_alive: int = len(self.labels)
         assert n_alive + self.n_components_dead == self.n_components_original, (
             f"({n_alive = }) + ({self.n_components_dead = }) != ({self.n_components_original = })"
@@ -155,7 +221,6 @@ class ProcessedActivations:
 
     @property
     def n_components_dead(self) -> int:
-        """Number of dead components after filtering. equal to the length of `dead_components_lst` if it is not None, or 0 otherwise"""
         return len(self.dead_components_lst) if self.dead_components_lst else 0
 
     @cached_property
@@ -183,13 +248,22 @@ class ProcessedActivations:
 
     @property
     def module_keys(self) -> list[str]:
-        """Get the module keys from the activations_raw"""
-        return list(self.activations_raw.keys())
+        return list(self.module_component_counts.keys())
 
     def get_module_indices(self, module_key: str) -> list[int | None]:
-        """given a module key, return a list len "num components in that moduel", with int index in alive components, or None if dead"""
-        num_components: int = self.activations_raw[module_key].shape[1]
+        """given a module key, return a list len "num components in that module", with int index in alive components, or None if dead"""
+        num_components: int = self.module_component_counts[module_key]
         return [self.label_index[f"{module_key}:{i}"] for i in range(num_components)]
+
+    def get_module_activations(self) -> dict[str, ActivationsTensor]:
+        """Reconstruct per-module activation views (alive components only) from the concatenated tensor."""
+        result: dict[str, ActivationsTensor] = {}
+        offset = 0
+        for key, n_alive in self.module_alive_counts.items():
+            if n_alive > 0:
+                result[key] = self.activations[:, offset : offset + n_alive]
+            offset += n_alive
+        return result
 
 
 def process_activations(
@@ -198,70 +272,96 @@ def process_activations(
         Float[Tensor, "samples C"]  # (sample x component gate activations)
         | Float[Tensor, " n_sample n_ctx C"],  # (sample x seq index x component gate activations)
     ],
-    filter_dead_threshold: float = 0.01,
+    filter_dead_threshold: float,
     seq_mode: Literal["concat", "seq_mean", None] = None,
     filter_modules: ModuleFilterFunc | None = None,
 ) -> ProcessedActivations:
-    """get back a dict of coactivations, slices, and concated activations
+    """Concatenate per-module activations and filter dead components.
 
-    Args:
-        activations: Dictionary of activations by module
-        filter_dead_threshold: Threshold for filtering dead components
-        seq_mode: How to handle sequence dimension
-        filter_modules: Function to filter modules
-        sort_components: Whether to sort components by similarity within each module
+    Fuses concatenation and filtering into a single pass to avoid holding two full
+    copies (~2x total components * n_samples) in memory simultaneously.
     """
 
     # reshape -- special cases for llms
     # ============================================================
     activations_: dict[str, ActivationsTensor]
     if seq_mode == "concat":
-        # Concatenate the sequence dimension into the sample dimension
         activations_ = {
             key: act.reshape(act.shape[0] * act.shape[1], act.shape[2])
             for key, act in activations.items()
         }
     elif seq_mode == "seq_mean":
-        # Take the mean over the sequence dimension
         activations_ = {
             key: act.mean(dim=1) if act.ndim == 3 else act for key, act in activations.items()
         }
     else:
-        # Use the activations as they are
         activations_ = activations
-
-    # put the labelled activations into one big matrix and filter them
-    # ============================================================
 
     # filter activations for only the modules we want
     if filter_modules is not None:
         activations_ = {key: act for key, act in activations_.items() if filter_modules(key)}
 
-    # compute the labels and total component count
-    total_c: int = 0
-    labels: ComponentLabels = ComponentLabels(list())
+    # First pass: compute per-module component counts and alive masks
+    module_component_counts: dict[str, int] = {}
+    alive_masks: dict[str, Bool[Tensor, " c"]] = {}
+    total_alive = 0
     for key, act in activations_.items():
-        c: int = act.shape[-1]
-        labels.extend([f"{key}:{i}" for i in range(c)])
-        total_c += c
+        c = act.shape[-1]
+        module_component_counts[key] = c
+        if filter_dead_threshold > 0:
+            max_act: Float[Tensor, " c"] = act.max(dim=0).values
+            alive = max_act >= filter_dead_threshold
+            alive_masks[key] = alive
+            total_alive += int(alive.sum().item())
+        else:
+            total_alive += c
 
-    # concat the activations
-    act_concat: ActivationsTensor = torch.cat([activations_[key] for key in activations_], dim=-1)
+    total_c = sum(module_component_counts.values())
 
-    # filter dead components
-    filtered_components: FilteredActivations = filter_dead_components(
-        activations=act_concat,
-        labels=labels,
-        filter_dead_threshold=filter_dead_threshold,
-    )
+    # Second pass: pre-allocate output and copy alive components one module at a time,
+    # freeing each module's tensor after copying to keep peak memory ~= 1x total size.
+    first_act = next(iter(activations_.values()))
+    n_samples = first_act.shape[0]
+    dtype = first_act.dtype
+    act_filtered = torch.empty(n_samples, total_alive, dtype=dtype)
 
-    assert filtered_components.n_alive + filtered_components.n_dead == total_c, (
-        f"({filtered_components.n_alive = }) + ({filtered_components.n_dead = }) != ({total_c = })"
-    )
+    offset = 0
+    alive_labels = ComponentLabels(list())
+    dead_labels = ComponentLabels(list())
+    module_alive_counts: dict[str, int] = {}
+
+    for key in list(activations_.keys()):
+        tensor = activations_.pop(key)
+        c = tensor.shape[-1]
+
+        if filter_dead_threshold > 0:
+            alive = alive_masks[key]
+            n_alive = int(alive.sum().item())
+            for i in range(c):
+                label = f"{key}:{i}"
+                if alive[i]:
+                    alive_labels.append(label)
+                else:
+                    dead_labels.append(label)
+            if n_alive > 0:
+                act_filtered[:, offset : offset + n_alive] = tensor[:, alive]
+        else:
+            n_alive = c
+            alive_labels.extend([f"{key}:{i}" for i in range(c)])
+            act_filtered[:, offset : offset + n_alive] = tensor
+
+        module_alive_counts[key] = n_alive
+        offset += n_alive
+        del tensor
+
+    assert offset == total_alive
+    assert list(module_alive_counts.keys()) == list(module_component_counts.keys())
+    assert len(alive_labels) + len(dead_labels) == total_c
 
     return ProcessedActivations(
-        activations_raw=activations_,
-        activations=filtered_components.activations,
-        labels=filtered_components.labels,
-        dead_components_lst=filtered_components.dead_components_labels,
+        module_component_counts=module_component_counts,
+        module_alive_counts=module_alive_counts,
+        activations=act_filtered,
+        labels=alive_labels,
+        dead_components_lst=dead_labels if dead_labels else None,
     )

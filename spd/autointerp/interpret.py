@@ -95,20 +95,18 @@ def run_interpret(
     db_path: Path,
     tokenizer_name: str,
 ) -> list[InterpretationResult]:
-    components = harvest.get_all_components()
+    summary = harvest.get_summary()
+    logger.info(f"Loaded summary for {len(summary)} components")
 
     token_stats = harvest.get_token_stats()
     assert token_stats is not None, "token_stats.pt not found. Run harvest first."
 
     app_tok = AppTokenizer.from_pretrained(tokenizer_name)
 
-    # Sort by firing density descending, just as an easy proxy for doing the most useful work first.
-    # NOTE: this doesn't necessarily align with mean causal importance as we use for sorting in the
-    # app, but it's a close enough proxy.
-    eligible = sorted(components, key=lambda c: c.firing_density, reverse=True)
+    eligible_keys = sorted(summary, key=lambda k: summary[k].firing_density, reverse=True)
 
     if limit is not None:
-        eligible = eligible[:limit]
+        eligible_keys = eligible_keys[:limit]
 
     async def _run() -> list[InterpretationResult]:
         db = InterpDB(db_path)
@@ -118,19 +116,17 @@ def run_interpret(
             if completed:
                 logger.info(f"Resuming: {len(completed)} already completed")
 
-            remaining = [c for c in eligible if c.component_key not in completed]
-            logger.info(f"Interpreting {len(remaining)} components")
+            remaining_keys = [k for k in eligible_keys if k not in completed]
+            logger.info(f"Interpreting {len(remaining_keys)} components")
 
             schema = INTERPRETATION_SCHEMA
 
             def build_jobs() -> Iterable[LLMJob]:
-                for component in remaining:
-                    input_stats = get_input_token_stats(
-                        token_stats, component.component_key, app_tok, top_k=20
-                    )
-                    output_stats = get_output_token_stats(
-                        token_stats, component.component_key, app_tok, top_k=50
-                    )
+                for key in remaining_keys:
+                    component = harvest.get_component(key)
+                    assert component is not None, f"Component {key} not found in harvest"
+                    input_stats = get_input_token_stats(token_stats, key, app_tok, top_k=20)
+                    output_stats = get_output_token_stats(token_stats, key, app_tok, top_k=50)
                     assert input_stats is not None
                     assert output_stats is not None
                     prompt = format_prompt(
@@ -141,7 +137,7 @@ def run_interpret(
                         input_token_stats=input_stats,
                         output_token_stats=output_stats,
                     )
-                    yield LLMJob(prompt=prompt, schema=schema, key=component.component_key)
+                    yield LLMJob(prompt=prompt, schema=schema, key=key)
 
             results: list[InterpretationResult] = []
             n_errors = 0
@@ -156,7 +152,7 @@ def run_interpret(
                 max_requests_per_minute=max_requests_per_minute,
                 cost_limit_usd=cost_limit_usd,
                 response_schema=schema,
-                n_total=len(remaining),
+                n_total=len(remaining_keys),
             ):
                 match outcome:
                     case LLMResult(job=job, parsed=parsed, raw=raw):
@@ -187,12 +183,13 @@ def run_interpret(
                 # 10 is a magic number - just trying to avoid low sample size causing this to false alarm
                 if error_rate > 0.2 and n_errors > 10:
                     raise RuntimeError(
-                        f"Error rate {error_rate:.0%} ({n_errors}/{len(remaining)}) exceeds 20% threshold"
+                        f"Error rate {error_rate:.0%} ({n_errors}/{len(remaining_keys)}) exceeds 20% threshold"
                     )
 
         finally:
             db.close()
 
+        db.mark_done()
         logger.info(f"Completed {len(results)} interpretations -> {db_path}")
         return results
 

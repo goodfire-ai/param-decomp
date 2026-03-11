@@ -1,15 +1,16 @@
 <script lang="ts">
     import { getContext, onMount } from "svelte";
     import { computeMaxAbsComponentAct } from "../lib/colors";
+    import { mapLoadable } from "../lib/index";
     import { COMPONENT_CARD_CONSTANTS } from "../lib/componentCardConstants";
     import { anyCorrelationStatsEnabled, displaySettings } from "../lib/displaySettings.svelte";
-    import { getLayerAlias } from "../lib/layerAliasing";
     import type { ActivationContextsSummary, SubcomponentMetadata } from "../lib/promptAttributionsTypes";
     import { useComponentData } from "../lib/useComponentData.svelte";
     import { RUN_KEY, type RunContext } from "../lib/useRun.svelte";
-    import ActivationContextsPagedTable from "./ActivationContextsPagedTable.svelte";
+    import ActivationContextsPagedTable, { type ActivationExamplesData } from "./ActivationContextsPagedTable.svelte";
     import ComponentProbeInput from "./ComponentProbeInput.svelte";
     import ComponentCorrelationMetrics from "./ui/ComponentCorrelationMetrics.svelte";
+    import GraphInterpBadge from "./ui/GraphInterpBadge.svelte";
     import InterpretationBadge from "./ui/InterpretationBadge.svelte";
     import SectionHeader from "./ui/SectionHeader.svelte";
     import StatusText from "./ui/StatusText.svelte";
@@ -37,6 +38,9 @@
     let currentMetadata = $derived<SubcomponentMetadata>(currentLayerMetadata[currentPage]);
     let currentIntruderScore = $derived(
         currentMetadata ? runState.getIntruderScore(`${selectedLayer}:${currentMetadata.subcomponent_idx}`) : null,
+    );
+    let currentGraphInterpLabel = $derived(
+        currentMetadata ? runState.getGraphInterpLabel(`${selectedLayer}:${currentMetadata.subcomponent_idx}`) : null,
     );
 
     // Component data hook - call load() explicitly when component changes
@@ -280,6 +284,18 @@
         if (componentData.componentDetail.status !== "loaded") return 1;
         return computeMaxAbsComponentAct(componentData.componentDetail.data.example_component_acts);
     });
+
+    const activationExamples = $derived(
+        mapLoadable(
+            componentData.componentDetail,
+            (d): ActivationExamplesData => ({
+                tokens: d.example_tokens,
+                ci: d.example_ci,
+                componentActs: d.example_component_acts,
+                maxAbsComponentAct,
+            }),
+        ),
+    );
 </script>
 
 <div class="viewer-content">
@@ -288,7 +304,7 @@
             <label for="layer-select">Layer:</label>
             <select id="layer-select" value={selectedLayer} onchange={handleLayerChange}>
                 {#each availableLayers as layer (layer)}
-                    <option value={layer}>{getLayerAlias(layer)}</option>
+                    <option value={layer}>{layer}</option>
                 {/each}
             </select>
         </div>
@@ -412,26 +428,22 @@
             {/if}
         </SectionHeader>
 
-        <InterpretationBadge
-            interpretation={componentData.interpretation}
-            interpretationDetail={componentData.interpretationDetail}
-            onGenerate={componentData.generateInterpretation}
-        />
+        <div class="interpretation-badges">
+            <InterpretationBadge
+                interpretation={componentData.interpretation}
+                interpretationDetail={componentData.interpretationDetail}
+                onGenerate={componentData.generateInterpretation}
+            />
+            {#if currentGraphInterpLabel && componentData.graphInterpDetail.status === "loaded" && componentData.graphInterpDetail.data}
+                <GraphInterpBadge headline={currentGraphInterpLabel} detail={componentData.graphInterpDetail.data} />
+            {/if}
+        </div>
 
         <!-- Activation examples -->
-        {#if componentData.componentDetail.status === "loading"}
-            <div class="loading">Loading component data...</div>
-        {:else if componentData.componentDetail.status === "loaded"}
-            <ActivationContextsPagedTable
-                exampleTokens={componentData.componentDetail.data.example_tokens}
-                exampleCi={componentData.componentDetail.data.example_ci}
-                exampleComponentActs={componentData.componentDetail.data.example_component_acts}
-                {maxAbsComponentAct}
-            />
-        {:else if componentData.componentDetail.status === "error"}
-            <StatusText>Error loading component data: {String(componentData.componentDetail.error)}</StatusText>
+        {#if activationExamples.status === "error"}
+            <StatusText>Error loading component data: {String(activationExamples.error)}</StatusText>
         {:else}
-            <StatusText>Something went wrong loading component data.</StatusText>
+            <ActivationContextsPagedTable data={activationExamples} />
         {/if}
 
         <ComponentProbeInput
@@ -701,17 +713,15 @@
         gap: var(--space-2);
     }
 
-    .dataset-attributions-loading {
+    .interpretation-badges {
         display: flex;
         flex-direction: column;
         gap: var(--space-2);
     }
 
-    .loading {
-        padding: var(--space-4);
-        text-align: center;
-        font-size: var(--text-sm);
-        font-family: var(--font-sans);
-        color: var(--text-muted);
+    .dataset-attributions-loading {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-2);
     }
 </style>

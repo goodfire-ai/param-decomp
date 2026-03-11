@@ -3,11 +3,11 @@
 
     type Props = {
         activeView: ViewType;
-        interventionRunCount: number;
+        versionCount: number;
         onViewChange: (view: ViewType) => void;
     };
 
-    let { activeView, interventionRunCount, onViewChange }: Props = $props();
+    let { activeView, versionCount, onViewChange }: Props = $props();
 </script>
 
 <div class="view-tabs">
@@ -20,8 +20,8 @@
         onclick={() => onViewChange("interventions")}
     >
         Interventions
-        {#if interventionRunCount > 0}
-            <span class="badge">{interventionRunCount}</span>
+        {#if versionCount > 1}
+            <span class="badge">{versionCount}</span>
         {/if}
     </button>
 </div>

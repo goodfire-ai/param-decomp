@@ -162,7 +162,9 @@ class PersistentPGDState:
         for module_name, module_c in module_to_c.items():
             source_c = module_c + 1 if use_delta_component else module_c
             source_shape = source_leading_dims + [source_c]
-            source_data = broadcast_tensor(init_fn(source_shape, device=device))
+            source_data = init_fn(source_shape, device=device)
+            if not self._skip_all_reduce:
+                broadcast_tensor(source_data)
             self.sources[module_name] = source_data.requires_grad_(True)
 
         self.optimizer.init_state(self.sources)
@@ -260,7 +262,7 @@ def _get_router_for_ppgd_config(
             return get_subset_router(routing, device)
 
 
-def _get_mask_infos(
+def get_ppgd_mask_infos(
     ci: dict[str, Float[Tensor, "... C"]],
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
     ppgd_sources: dict[str, Float[Tensor, "*batch_dims source_c"]],
@@ -325,7 +327,7 @@ def _compute_ppgd_recon_loss(
     assert ci, "Empty ci"
     batch_dims = next(iter(ci.values())).shape[:-1]
 
-    mask_infos = _get_mask_infos(ci, weight_deltas, ppgd_sources, routing_masks, batch_dims)
+    mask_infos = get_ppgd_mask_infos(ci, weight_deltas, ppgd_sources, routing_masks, batch_dims)
     out = model(batch, mask_infos=mask_infos)
     loss = calc_sum_recon_loss_lm(pred=out, target=target_out, loss_type=output_loss_type)
     n_examples = out.shape.numel() if output_loss_type == "mse" else out.shape[:-1].numel()

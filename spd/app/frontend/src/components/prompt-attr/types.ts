@@ -1,10 +1,10 @@
 import type { Loadable } from "../../lib";
-import type { GraphData } from "../../lib/promptAttributionsTypes";
+import type { GraphData, CISnapshot } from "../../lib/promptAttributionsTypes";
 import type { InterventionRunSummary } from "../../lib/interventionTypes";
 import type { NormalizeType } from "../../lib/api";
 
 export type MaskType = "stochastic" | "ci";
-export type LossType = "ce" | "kl";
+export type LossType = "ce" | "kl" | "logit";
 
 export type ViewSettings = {
     topK: number;
@@ -21,12 +21,6 @@ export type StoredGraph = {
     data: GraphData;
     viewSettings: ViewSettings;
     interventionRuns: InterventionRunSummary[];
-};
-
-/** Transient UI state for the intervention composer, keyed by graph ID */
-export type ComposerState = {
-    selection: Set<string>; // currently selected node keys
-    activeRunId: number | null; // which run is selected (for restoring selection)
 };
 
 export type PromptCard = {
@@ -58,7 +52,15 @@ export type KLLossConfig = {
     position: number;
 };
 
-export type LossConfigDraft = CELossConfigDraft | KLLossConfig;
+export type LogitLossConfigDraft = {
+    type: "logit";
+    coeff: number;
+    position: number;
+    labelTokenId: number | null;
+    labelTokenText: string;
+};
+
+export type LossConfigDraft = CELossConfigDraft | KLLossConfig | LogitLossConfigDraft;
 
 export type OptimizeConfigDraft = {
     loss: LossConfigDraft;
@@ -80,7 +82,15 @@ export type CELossConfigValid = {
     labelTokenText: string;
 };
 
-export type LossConfigValid = CELossConfigValid | KLLossConfig;
+export type LogitLossConfigValid = {
+    type: "logit";
+    coeff: number;
+    position: number;
+    labelTokenId: number;
+    labelTokenText: string;
+};
+
+export type LossConfigValid = CELossConfigValid | KLLossConfig | LogitLossConfigValid;
 
 export type OptimizeConfigValid = {
     loss: LossConfigValid;
@@ -95,7 +105,7 @@ export type OptimizeConfigValid = {
 
 /** Validate draft config, returning valid config or null if incomplete */
 export function validateOptimizeConfig(draft: OptimizeConfigDraft): OptimizeConfigValid | null {
-    if (draft.loss.type === "ce" && draft.loss.labelTokenId === null) {
+    if ((draft.loss.type === "ce" || draft.loss.type === "logit") && draft.loss.labelTokenId === null) {
         return null;
     }
     return draft as OptimizeConfigValid;
@@ -156,7 +166,7 @@ export type TabViewState =
 /** State for graph computation - tracks which card is computing, progress, and errors */
 export type GraphComputeState =
     | { status: "idle" }
-    | { status: "computing"; cardId: number; progress: LoadingState }
+    | { status: "computing"; cardId: number; progress: LoadingState; ciSnapshot: CISnapshot | null }
     | { status: "error"; error: string };
 
 /** State for prompt generation - tracks progress and count */

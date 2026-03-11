@@ -303,7 +303,7 @@ class AppRunner:
         return proc
 
     def monitor_child_liveness(self) -> None:
-        log_lines_to_show = 5
+        log_lines_to_show = 20
         prev_lines: list[str] = []
 
         while True:

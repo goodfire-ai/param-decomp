@@ -22,7 +22,7 @@ from spd.settings import REPO_ROOT
 from spd.utils.compute_utils import (
     GPUS_PER_NODE,
     TrainingJob,
-    create_slurm_array_script,
+    create_slurm_script,
 )
 from spd.utils.git_utils import create_git_snapshot
 from spd.utils.run_utils import apply_nested_updates, generate_grid_combinations, generate_run_id
@@ -99,7 +99,9 @@ def launch_slurm_run(
 
     wandb_urls = [get_wandb_run_url(project, job.run_id) for job in training_jobs]
 
-    array_script_content = create_slurm_array_script(
+    is_array = len(training_jobs) > 1
+
+    script_content = create_slurm_script(
         slurm_job_name=slurm_job_name,
         launch_id=launch_id,
         training_jobs=training_jobs,
@@ -113,15 +115,15 @@ def launch_slurm_run(
 
     # Submit script (handles file writing, submission, renaming, and log file creation)
     result = submit_slurm_job(
-        array_script_content,
-        f"launch_array_{launch_id}",
-        is_array=True,
-        n_array_tasks=len(training_jobs),
+        script_content,
+        f"launch_{launch_id}",
+        is_array=is_array,
+        n_array_tasks=len(training_jobs) if is_array else None,
     )
 
     logger.section("Job submitted successfully!")
     summary: dict[str, str | int | None] = {
-        "Array Job ID": result.job_id,
+        "Array Job ID" if is_array else "Job ID": result.job_id,
         "Total training jobs": len(training_jobs),
         "Max concurrent tasks": n_agents,
         "View logs in": result.log_pattern,

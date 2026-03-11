@@ -84,7 +84,7 @@ def main(
         streaming=config.task_config.streaming,
         column_name=config.task_config.column_name,
         shuffle_each_epoch=config.task_config.shuffle_each_epoch,
-        seed=None,
+        seed=config.task_config.dataset_seed,
     )
 
     match dist_state:
@@ -125,7 +125,7 @@ def main(
         streaming=config.task_config.streaming,
         column_name=config.task_config.column_name,
         shuffle_each_epoch=config.task_config.shuffle_each_epoch,
-        seed=None,
+        seed=config.task_config.dataset_seed,
     )
 
     match dist_state:

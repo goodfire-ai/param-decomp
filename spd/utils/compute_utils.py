@@ -8,7 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from spd.configs import Config
-from spd.utils.slurm import SlurmArrayConfig, generate_array_script, generate_git_snapshot_setup
+from spd.utils.slurm import (
+    SlurmArrayConfig,
+    SlurmConfig,
+    generate_array_script,
+    generate_git_snapshot_setup,
+    generate_script,
+)
 
 CUDA_FLAGS = {
     "NCCL_DEBUG": "WARN",
@@ -69,6 +75,7 @@ def get_command(
     n_gpus: int | None,
     sweep_params: dict[str, Any] | None,
     snapshot_branch: str,
+    is_array: bool,
 ) -> Command:
     """Build the command to run a training job.
 
@@ -80,6 +87,7 @@ def get_command(
                 >8 means multi-node DDP (must be divisible by 8).
         sweep_params: Optional sweep parameters to pass to the job.
         snapshot_branch: Git branch to checkout (used for multi-node workspace setup).
+        is_array: Whether the job is part of a SLURM array.
     """
     port = _choose_master_port(launch_id, job_idx)
     script_args = _build_script_args(launch_id, job, sweep_params)
@@ -109,9 +117,11 @@ def get_command(
             )
 
             # Each node needs its own /tmp workspace since /tmp is node-local
-            work_dir = (
-                "/tmp/spd/workspace-${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}-node$SLURM_PROCID"
-            )
+            if is_array:
+                job_id_suffix = "${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+            else:
+                job_id_suffix = "$SLURM_JOB_ID"
+            work_dir = f"/tmp/spd/workspace-{job_id_suffix}-node$SLURM_PROCID"
             setup = generate_git_snapshot_setup(work_dir, snapshot_branch)
             # Explicit srun flags ensure one task per node across all allocated nodes
             srun_flags = f"--nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1"
@@ -120,7 +130,7 @@ def get_command(
     return Command(env_vars=CUDA_FLAGS, command=command)
 
 
-def create_slurm_array_script(
+def create_slurm_script(
     slurm_job_name: str,
     launch_id: str,
     training_jobs: list[TrainingJob],
@@ -131,13 +141,13 @@ def create_slurm_array_script(
     max_concurrent_tasks: int | None = None,
     per_task_comments: list[str] | None = None,
 ) -> str:
-    """Create a SLURM job array script with git snapshot for consistent code.
+    """Create a SLURM script for training jobs with git snapshot for consistent code.
 
-    This is a thin wrapper around slurm.generate_array_script that handles
-    TrainingJob -> command string conversion and multi-node DDP setup.
+    For a single job, generates a regular SLURM script. For multiple jobs, generates
+    a SLURM job array script with a case statement.
 
     Args:
-        slurm_job_name: Name for the SLURM job array
+        slurm_job_name: Name for the SLURM job
         launch_id: Launch identifier for this group of jobs.
         training_jobs: List of training jobs to execute.
         sweep_params: Optional sweep parameters to pass to the jobs.
@@ -148,6 +158,8 @@ def create_slurm_array_script(
         max_concurrent_tasks: Maximum number of array tasks to run concurrently. If None, no limit.
         per_task_comments: If provided, each task sets its own SLURM comment (e.g. wandb URL).
     """
+    is_array = len(training_jobs) > 1
+
     # Convert TrainingJobs to command strings
     commands: list[str] = []
     for i, training_job in enumerate(training_jobs):
@@ -158,6 +170,7 @@ def create_slurm_array_script(
             n_gpus,
             sweep_params,
             snapshot_branch=snapshot_branch,
+            is_array=is_array,
         )
         commands.append(cmd.command)
 
@@ -170,16 +183,26 @@ def create_slurm_array_script(
             n_nodes = n_gpus // GPUS_PER_NODE
             gpus_per_node = GPUS_PER_NODE
 
-    config = SlurmArrayConfig(
-        job_name=slurm_job_name,
-        partition=partition,
-        n_gpus=gpus_per_node,
-        n_nodes=n_nodes,
-        snapshot_branch=snapshot_branch,
-        max_concurrent_tasks=max_concurrent_tasks,
-    )
-
-    # CUDA_FLAGS are always set for training jobs
-    return generate_array_script(
-        config, commands, env=CUDA_FLAGS, per_task_comments=per_task_comments
-    )
+    if is_array:
+        config = SlurmArrayConfig(
+            job_name=slurm_job_name,
+            partition=partition,
+            n_gpus=gpus_per_node,
+            n_nodes=n_nodes,
+            snapshot_branch=snapshot_branch,
+            max_concurrent_tasks=max_concurrent_tasks,
+        )
+        return generate_array_script(
+            config, commands, env=CUDA_FLAGS, per_task_comments=per_task_comments
+        )
+    else:
+        comment = per_task_comments[0] if per_task_comments is not None else None
+        config = SlurmConfig(
+            job_name=slurm_job_name,
+            partition=partition,
+            n_gpus=gpus_per_node,
+            n_nodes=n_nodes,
+            snapshot_branch=snapshot_branch,
+            comment=comment,
+        )
+        return generate_script(config, commands[0], env=CUDA_FLAGS)

@@ -1,7 +1,7 @@
 wandb_project: spd
 dtype: bfloat16
 batch_size: 1024
-num_iterations: 100_000
+num_iterations: 200_000
 warmup_iters: 600
 learning_rate: 3e-4
 learning_rate_decay_frac: 0.1
@@ -26,7 +26,7 @@ model:
   flash_attention: false
 
 train_dataset_config:
-  name: danbraunai/pile-uncopyrighted-tok
+  name: danbraunai/pile-uncopyrighted-tok-shuffled
   is_tokenized: true
   hf_tokenizer_path: EleutherAI/gpt-neox-20b
   split: train
@@ -36,7 +36,7 @@ train_dataset_config:
   column_name: input_ids
 
 val_dataset_config:
-  name: danbraunai/pile-uncopyrighted-tok
+  name: danbraunai/pile-uncopyrighted-tok-shuffled
   is_tokenized: true
   hf_tokenizer_path: EleutherAI/gpt-neox-20b
   split: val
@@ -44,4 +44,6 @@ val_dataset_config:
   n_ctx: 513  # model n_ctx + 1 for next-token label indexing
   seed: 0
   column_name: input_ids
+
+
 

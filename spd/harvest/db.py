@@ -1,4 +1,4 @@
-"""SQLite database for component-level harvest data."""
+"""SQLite database for component-level harvest data. NFS-hosted, write-once then read-only."""
 
 import sqlite3
 from collections.abc import Iterable
@@ -13,6 +13,7 @@ from spd.harvest.schemas import (
     ComponentSummary,
     ComponentTokenPMI,
 )
+from spd.utils.sqlite import open_nfs_sqlite
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS components (
@@ -73,17 +74,9 @@ def _deserialize_component(row: sqlite3.Row) -> ComponentData:
 
 class HarvestDB:
     def __init__(self, db_path: Path, readonly: bool = False) -> None:
-        if readonly:
-            # immutable=1 skips ALL locking — required on network filesystems where
-            # SQLite's locking protocol fails. Safe because readers only open DBs
-            # that are fully written and closed by a prior pipeline stage.
-            self._conn = sqlite3.connect(
-                f"file:{db_path}?immutable=1", uri=True, check_same_thread=False
-            )
-        else:
-            self._conn = sqlite3.connect(str(db_path))
+        self._conn = open_nfs_sqlite(db_path, readonly)
+        if not readonly:
             self._conn.executescript(_SCHEMA)
-        self._conn.row_factory = sqlite3.Row
 
     def save_component(self, comp: ComponentData) -> None:
         row = _serialize_component(comp)

@@ -151,14 +151,12 @@ def create_clustering_workspace_view(ensemble_id: str, project: str, entity: str
 def generate_clustering_commands(
     pipeline_config: ClusteringPipelineConfig,
     pipeline_run_id: str,
-    dataset_streaming: bool = False,
 ) -> list[str]:
     """Generate commands for each clustering run.
 
     Args:
         pipeline_config: Pipeline configuration
         pipeline_run_id: Pipeline run ID (each run will create its own ExecutionStamp)
-        dataset_streaming: Whether to use dataset streaming
 
     Returns:
         List of shell-safe command strings
@@ -180,8 +178,6 @@ def generate_clustering_commands(
             "--wandb-entity",
             pipeline_config.wandb_entity,
         ]
-        if dataset_streaming:
-            cmd_parts.append("--dataset-streaming")
 
         commands.append(shlex.join(cmd_parts))
 
@@ -222,7 +218,6 @@ def main(
     local: bool = False,
     local_clustering_parallel: bool = False,
     local_calc_distances_parallel: bool = False,
-    dataset_streaming: bool = False,
     track_resources_calc_distances: bool = False,
 ) -> None:
     """Submit clustering runs to SLURM.
@@ -272,7 +267,6 @@ def main(
     clustering_commands = generate_clustering_commands(
         pipeline_config=pipeline_config,
         pipeline_run_id=pipeline_run_id,
-        dataset_streaming=dataset_streaming,
     )
 
     # Generate commands for calculating distances
@@ -440,11 +434,6 @@ def cli():
         action="store_true",
         help="If running locally, whether to track resource usage during distance calculations",
     )
-    parser.add_argument(
-        "--dataset-streaming",
-        action="store_true",
-        help="Whether to use streaming dataset loading (if supported by the dataset). see https://github.com/goodfire-ai/spd/pull/199",
-    )
 
     args = parser.parse_args()
 
@@ -467,7 +456,6 @@ def cli():
     main(
         pipeline_config=pipeline_config,
         local=args.local,
-        dataset_streaming=args.dataset_streaming,
         local_clustering_parallel=args.local_clustering_parallel,
         local_calc_distances_parallel=args.local_calc_distances_parallel,
         track_resources_calc_distances=args.track_resources_calc_distances,

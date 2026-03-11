@@ -159,14 +159,6 @@
         border-color: var(--status-negative);
     }
 
-    .staged-item h3 {
-        font-size: var(--text-base);
-        font-family: var(--font-mono);
-        font-weight: 600;
-        color: var(--text-primary);
-        margin: 0 0 var(--space-2) 0;
-    }
-
     .token-display {
         font-size: var(--text-sm);
         font-family: var(--font-mono);

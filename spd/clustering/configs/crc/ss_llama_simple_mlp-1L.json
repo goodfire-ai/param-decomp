@@ -9,7 +9,9 @@
       "module_name_filter": null
     },
     "model_path": "wandb:goodfire/spd/runs/5cr21lbs",
-    "batch_size": 2048,
+    "batch_size": 64,
+    "n_tokens": 500000,
+    "n_tokens_per_seq": 10,
     "wandb_project": null,
     "logging_intervals": {
       "stat": 10,

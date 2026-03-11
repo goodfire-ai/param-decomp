@@ -38,6 +38,7 @@ def submit_harvest(
     config: HarvestSlurmConfig,
     job_suffix: str | None = None,
     snapshot_branch: str | None = None,
+    dependency_job_id: str | None = None,
 ) -> HarvestSubmitResult:
     """Submit multi-GPU harvest job to SLURM.
 
@@ -76,6 +77,7 @@ def submit_harvest(
         n_gpus=1,
         time=time,
         snapshot_branch=snapshot_branch,
+        dependency_job_id=dependency_job_id,
         comment=config.config.method_config.id,
     )
     array_script = generate_array_script(array_config, worker_commands)

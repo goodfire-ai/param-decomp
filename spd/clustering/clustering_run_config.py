@@ -43,6 +43,14 @@ class ClusteringRunConfig(BaseConfig):
     )
 
     batch_size: PositiveInt = Field(..., description="Batch size for processing")
+    n_tokens: PositiveInt | None = Field(
+        default=None,
+        description="Number of token activation samples to collect (LM only)",
+    )
+    n_tokens_per_seq: PositiveInt | None = Field(
+        default=None,
+        description="Number of random token positions to sample per sequence (LM only)",
+    )
     dataset_seed: int = Field(0, description="Seed for dataset generation/loading")
     ensemble_id: str | None = Field(
         default=None,
@@ -59,10 +67,6 @@ class ClusteringRunConfig(BaseConfig):
         description="WandB project name (None to disable WandB logging)",
     )
     wandb_entity: str = Field(default="goodfire", description="WandB entity (team/user) name")
-    dataset_streaming: bool = Field(
-        default=False,
-        description="Whether to use streaming dataset loading (if supported by the dataset). see https://github.com/goodfire-ai/spd/pull/199",
-    )
 
     @model_validator(mode="before")
     def process_experiment_key(cls, values: dict[str, Any]) -> dict[str, Any]:

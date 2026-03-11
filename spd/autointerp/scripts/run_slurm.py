@@ -30,9 +30,9 @@ class AutointerpSubmitResult:
 def submit_autointerp(
     decomposition_id: str,
     config: AutointerpSlurmConfig,
+    harvest_subrun_id: str,
     dependency_job_id: str | None = None,
     snapshot_branch: str | None = None,
-    harvest_subrun_id: str | None = None,
 ) -> AutointerpSubmitResult:
     """Submit the autointerp pipeline to SLURM.
 
