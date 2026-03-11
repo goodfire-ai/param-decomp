@@ -1,7 +1,7 @@
 wandb_project: spd
 dtype: bfloat16
 batch_size: 1024
-num_iterations: 100_000
+num_iterations: 300_000
 warmup_iters: 600
 learning_rate: 3e-4
 learning_rate_decay_frac: 0.1
