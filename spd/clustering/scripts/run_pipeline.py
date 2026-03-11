@@ -91,6 +91,9 @@ class ClusteringPipelineConfig(BaseConfig):
         description="Weights & Biases project name (set to None to disable WandB logging)",
     )
     wandb_entity: str = Field(default="goodfire", description="WandB entity (team/user) name")
+    calc_distances: bool = Field(
+        default=True, description="Whether to run distance calculations after clustering"
+    )
     create_git_snapshot: bool = Field(
         default=False, description="Create a git snapshot for the run"
     )
@@ -270,9 +273,13 @@ def main(
     )
 
     # Generate commands for calculating distances
-    calc_distances_commands = generate_calc_distances_commands(
-        pipeline_run_id=pipeline_run_id,
-        distances_methods=pipeline_config.distances_methods,
+    calc_distances_commands = (
+        generate_calc_distances_commands(
+            pipeline_run_id=pipeline_run_id,
+            distances_methods=pipeline_config.distances_methods,
+        )
+        if pipeline_config.calc_distances
+        else []
     )
 
     # Submit to SLURM
@@ -283,13 +290,14 @@ def main(
             parallel=local_clustering_parallel,
         )
 
-        # submit calc_distances jobs in parallel
-        logger.info("Calculating distances...")
-        run_locally(
-            commands=calc_distances_commands,
-            parallel=local_calc_distances_parallel,
-            track_resources=track_resources_calc_distances,
-        )
+        if calc_distances_commands:
+            # submit calc_distances jobs in parallel
+            logger.info("Calculating distances...")
+            run_locally(
+                commands=calc_distances_commands,
+                parallel=local_calc_distances_parallel,
+                track_resources=track_resources_calc_distances,
+            )
 
         logger.section("complete!")
 
@@ -297,7 +305,7 @@ def main(
         distances_plots = {
             f"distances via {method}": str(storage.plots_dir / f"distances_{method}.png")
             for method in pipeline_config.distances_methods
-        }
+        } if calc_distances_commands else {}
 
         logger.values(
             {
@@ -337,43 +345,44 @@ def main(
         calc_distances_job_ids: list[str] = []
         calc_distances_logs: list[str] = []
 
-        for method, cmd in zip(
-            pipeline_config.distances_methods, calc_distances_commands, strict=True
-        ):
-            dist_config = SlurmConfig(
-                job_name=f"{pipeline_config.slurm_job_name_prefix}_dist_{method}",
-                partition=pipeline_config.slurm_partition,
-                n_gpus=1,
-                snapshot_branch=execution_stamp.snapshot_branch,
-                dependency_job_id=array_job_id,
-            )
-            dist_script = generate_script(dist_config, cmd)
-            dist_result = submit_slurm_job(dist_script, f"calc_distances_{method}")
-            calc_distances_job_ids.append(dist_result.job_id)
-            calc_distances_logs.append(dist_result.log_pattern)
+        if calc_distances_commands:
+            for method, cmd in zip(
+                pipeline_config.distances_methods, calc_distances_commands, strict=True
+            ):
+                dist_config = SlurmConfig(
+                    job_name=f"{pipeline_config.slurm_job_name_prefix}_dist_{method}",
+                    partition=pipeline_config.slurm_partition,
+                    n_gpus=1,
+                    snapshot_branch=execution_stamp.snapshot_branch,
+                    dependency_job_id=array_job_id,
+                )
+                dist_script = generate_script(dist_config, cmd)
+                dist_result = submit_slurm_job(dist_script, f"calc_distances_{method}")
+                calc_distances_job_ids.append(dist_result.job_id)
+                calc_distances_logs.append(dist_result.log_pattern)
 
         logger.section("Jobs submitted successfully!")
 
-        # Build distances plot paths dict
-        distances_plots = {
-            method: str(storage.plots_dir / f"distances_{method}.png")
-            for method in pipeline_config.distances_methods
+        log_values: dict[str, str | int] = {
+            "Clustering Array Job ID": array_job_id,
+            "Total clustering runs": len(clustering_commands),
+            "Pipeline run ID": pipeline_run_id,
+            "Pipeline output dir": str(storage.base_dir),
+            "Clustering logs": clustering_result.log_pattern,
         }
+        if calc_distances_job_ids:
+            log_values["Calc Distances Job IDs"] = ", ".join(calc_distances_job_ids)
+            log_values["Calc Distances logs"] = ", ".join(calc_distances_logs)
+        logger.values(log_values)
 
-        logger.values(
-            {
-                "Clustering Array Job ID": array_job_id,
-                "Calc Distances Job IDs": ", ".join(calc_distances_job_ids),
-                "Total clustering runs": len(clustering_commands),
-                "Pipeline run ID": pipeline_run_id,
-                "Pipeline output dir": str(storage.base_dir),
-                "Clustering logs": clustering_result.log_pattern,
-                "Calc Distances logs": ", ".join(calc_distances_logs),
+        if calc_distances_commands:
+            distances_plots = {
+                method: str(storage.plots_dir / f"distances_{method}.png")
+                for method in pipeline_config.distances_methods
             }
-        )
-        logger.info("Distances plots will be saved to:")
-        for method, path in distances_plots.items():
-            logger.info(f"  {method}: {path}")
+            logger.info("Distances plots will be saved to:")
+            for method, path in distances_plots.items():
+                logger.info(f"  {method}: {path}")
 
 
 def cli():
@@ -414,6 +423,12 @@ def cli():
         help="Comma-separated list of distance methods (e.g., 'perm_invariant_hamming,matching_dist')",
     )
     parser.add_argument(
+        "--calc-distances",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Whether to run distance calculations after clustering (overrides config value)",
+    )
+    parser.add_argument(
         "--local",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -442,6 +457,8 @@ def cli():
 
     if args.n_runs is not None:
         overrides["n_runs"] = args.n_runs
+    if args.calc_distances is not None:
+        overrides["calc_distances"] = args.calc_distances
     if args.wandb_project is not _NO_ARG_PARSSED_SENTINEL:
         overrides["wandb_project"] = args.wandb_project
     if args.wandb_entity is not None:
