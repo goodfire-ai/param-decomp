@@ -546,6 +546,10 @@ def importance_minimality_loss_per_element(
     p_anneal_start_frac: float,
     p_anneal_final_p: float | None,
     p_anneal_end_frac: float,
+    coeff_warmup_frac: float,
+    coeff_peak_multiplier: float,
+    coeff_anneal_start_frac: float,
+    coeff_anneal_end_frac: float,
 ) -> Float[Tensor, " N"]:
     """Compute importance minimality loss independently for each batch element."""
     losses = []
@@ -561,6 +565,10 @@ def importance_minimality_loss_per_element(
                 p_anneal_start_frac=p_anneal_start_frac,
                 p_anneal_final_p=p_anneal_final_p,
                 p_anneal_end_frac=p_anneal_end_frac,
+                coeff_warmup_frac=coeff_warmup_frac,
+                coeff_peak_multiplier=coeff_peak_multiplier,
+                coeff_anneal_start_frac=coeff_anneal_start_frac,
+                coeff_anneal_end_frac=coeff_anneal_end_frac,
             )
         )
     return torch.stack(losses)
@@ -729,6 +737,10 @@ def optimize_ci_values_batched(
             p_anneal_start_frac=config.imp_min_config.p_anneal_start_frac,
             p_anneal_final_p=config.imp_min_config.p_anneal_final_p,
             p_anneal_end_frac=config.imp_min_config.p_anneal_end_frac,
+            coeff_warmup_frac=config.imp_min_config.coeff_warmup_frac,
+            coeff_peak_multiplier=config.imp_min_config.coeff_peak_multiplier,
+            coeff_anneal_start_frac=config.imp_min_config.coeff_anneal_start_frac,
+            coeff_anneal_end_frac=config.imp_min_config.coeff_anneal_end_frac,
         )
 
         recon_losses = compute_recon_loss_batched(
