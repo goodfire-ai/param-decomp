@@ -60,7 +60,10 @@ class TranscoderHarvestConfig(BaseConfig):
 
     @property
     def id(self) -> str:
-        return "tc-" + str(abs(hash(frozenset(self.artifact_paths.items()))))[:8]
+        import hashlib
+
+        key = str(sorted(self.artifact_paths.items()))
+        return "tc-" + hashlib.sha256(key.encode()).hexdigest()[:8]
 
 
 DecompositionMethodHarvestConfig = (

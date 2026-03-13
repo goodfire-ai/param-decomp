@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VPD vs Transcoder: Component Interpretability</title>
+<style>
+  :root {
+    --font-sans: "Source Sans Pro", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --font-mono: "Source Code Pro", Menlo, Monaco, monospace;
+    --color-bg: #fff;
+    --color-text: #303030;
+    --color-muted: #888;
+    --color-border: #e0e0e0;
+    --color-vpd: #2563eb;
+    --color-tc: #d97706;
+    --color-fire: #ef4444;
+    --color-fire-bg: rgba(239, 68, 68, 0.12);
+    --max-width: 900px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: var(--font-sans); color: var(--color-text);
+    background: var(--color-bg); line-height: 1.6; -webkit-font-smoothing: antialiased;
+  }
+  .container { max-width: var(--max-width); margin: 0 auto; padding: 2rem 1.5rem; }
+  h1 { font-size: 1.8rem; font-weight: 700; margin-bottom: 0.3rem; }
+  h2 { font-size: 1.3rem; font-weight: 600; margin: 2rem 0 0.8rem; border-bottom: 1px solid var(--color-border); padding-bottom: 0.3rem; }
+  h3 { font-size: 1rem; font-weight: 600; margin: 1rem 0 0.4rem; }
+  .subtitle { color: var(--color-muted); font-size: 1rem; margin-bottom: 2rem; }
+
+  .stats-row { display: flex; gap: 2rem; margin: 1rem 0; flex-wrap: wrap; }
+  .stat-card {
+    flex: 1; min-width: 180px; border: 1px solid var(--color-border);
+    border-radius: 6px; padding: 1rem; text-align: center;
+  }
+  .stat-card .method-tag { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+  .stat-card .method-tag.vpd { color: var(--color-vpd); }
+  .stat-card .method-tag.tc { color: var(--color-tc); }
+  .stat-card .stat-value { font-size: 1.8rem; font-weight: 700; margin: 0.3rem 0; }
+  .stat-card .stat-label { font-size: 0.85rem; color: var(--color-muted); }
+
+  .controls { display: flex; gap: 1rem; align-items: center; margin: 1rem 0; flex-wrap: wrap; }
+  .controls select, .controls input {
+    font-family: var(--font-sans); font-size: 0.9rem;
+    padding: 0.4rem 0.6rem; border: 1px solid var(--color-border); border-radius: 4px;
+  }
+
+  .component-grid { display: flex; flex-direction: column; gap: 0.5rem; }
+
+  /* Collapsed card (from index data — instant) */
+  .component-row {
+    border: 1px solid var(--color-border); border-radius: 6px;
+    padding: 0.6rem 1rem; background: #fafafa; cursor: pointer;
+    display: flex; justify-content: space-between; align-items: center;
+    transition: background 0.1s;
+  }
+  .component-row:hover { background: #f0f0f0; }
+  .component-row.vpd { border-left: 3px solid var(--color-vpd); }
+  .component-row.tc { border-left: 3px solid var(--color-tc); }
+  .component-row .label { font-weight: 600; }
+  .component-row .meta { font-size: 0.85rem; color: var(--color-muted); display: flex; gap: 1rem; }
+  .component-row .key { font-family: var(--font-mono); font-size: 0.8rem; color: var(--color-muted); }
+  .confidence { font-size: 0.75rem; padding: 0.1rem 0.4rem; border-radius: 10px; background: var(--color-border); }
+  .confidence.high { background: #d1fae5; color: #065f46; }
+  .confidence.medium { background: #fef3c7; color: #92400e; }
+  .confidence.low { background: #fee2e2; color: #991b1b; }
+  .score-badge { font-size: 0.8rem; padding: 0.1rem 0.4rem; border-radius: 4px; background: #f3f4f6; }
+  .score-badge .v { font-weight: 600; }
+
+  /* Expanded detail (loaded on demand) */
+  .component-detail {
+    border: 1px solid var(--color-border); border-radius: 8px;
+    padding: 1.2rem; background: #fafafa; margin-top: -0.25rem;
+    border-top: none; border-top-left-radius: 0; border-top-right-radius: 0;
+  }
+  .component-detail.vpd { border-left: 3px solid var(--color-vpd); }
+  .component-detail.tc { border-left: 3px solid var(--color-tc); }
+  .component-detail.loading { color: var(--color-muted); font-style: italic; padding: 2rem; text-align: center; }
+
+  .example-row {
+    font-family: var(--font-mono); font-size: 0.82rem;
+    line-height: 1.8; margin-bottom: 0.3rem; white-space: pre-wrap;
+  }
+  .tok { padding: 0.1rem 0; }
+  .tok.firing { background: var(--color-fire-bg); border-bottom: 2px solid var(--color-fire); font-weight: 600; }
+
+  .pmi-section { margin-top: 0.6rem; }
+  .pmi-list { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.3rem; }
+  .pmi-tag { font-family: var(--font-mono); font-size: 0.8rem; padding: 0.15rem 0.5rem; background: #f3f4f6; border-radius: 4px; }
+  .pmi-tag .pmi-val { color: var(--color-muted); font-size: 0.75rem; }
+  .reasoning { font-size: 0.85rem; color: #555; margin-top: 0.5rem; font-style: italic; }
+  .no-data { color: var(--color-muted); font-style: italic; font-size: 0.9rem; padding: 2rem; text-align: center; }
+  .section-header {
+    font-size: 1.3rem; font-weight: 600; margin: 2rem 0 0.8rem;
+    padding: 0 0 0.3rem 0.5rem; border-bottom: 1px solid var(--color-border);
+  }
+  .section-header.vpd { border-left: 3px solid var(--color-vpd); }
+  .section-header.tc { border-left: 3px solid var(--color-tc); }
+  .section-header .count { font-size: 0.85rem; color: var(--color-muted); font-weight: 400; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Component Interpretability Comparison</h1>
+  <p class="subtitle">VPD (Adversarial Parameter Decomposition) vs Transcoders</p>
+  <div id="summary"></div>
+  <h2>Components</h2>
+  <div class="controls">
+    <label>Method:
+      <select id="filter-method">
+        <option value="all">All</option>
+        <option value="vpd">VPD only</option>
+        <option value="transcoder">Transcoder only</option>
+      </select>
+    </label>
+    <label>Layer:
+      <select id="filter-layer"><option value="all">All layers</option></select>
+    </label>
+    <label>Sort:
+      <select id="sort-by">
+        <option value="detection">Detection score</option>
+        <option value="fuzzing">Fuzzing score</option>
+        <option value="density">Firing density</option>
+        <option value="label">Label (A-Z)</option>
+      </select>
+    </label>
+    <label>Search: <input id="search" type="text" placeholder="filter by label..."></label>
+  </div>
+  <div id="vpd-section"></div>
+  <div id="tc-section"></div>
+</div>
+
+<script>
+const DATA = /*DATA_JSON*/null;
+const componentCache = {};
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+
+function renderSummary(data) {
+  const el = document.getElementById("summary");
+  if (!data) { el.innerHTML = '<p class="no-data">No data loaded.</p>'; return; }
+  function stats(d) {
+    const idx = d.component_index;
+    const scored = idx.filter(c => c.detection_score);
+    const avgDet = scored.length ? scored.reduce((s, c) => s + c.detection_score.score, 0) / scored.length : null;
+    const fuzzed = idx.filter(c => c.fuzzing_score);
+    const avgFuz = fuzzed.length ? fuzzed.reduce((s, c) => s + c.fuzzing_score.score, 0) / fuzzed.length : null;
+    return { total: d.n_components, sampled: idx.length, avgDet, avgFuz };
+  }
+  function card(tag, cls, value, label) {
+    return `<div class="stat-card"><div class="method-tag ${cls}">${tag}</div><div class="stat-value">${value}</div><div class="stat-label">${label}</div></div>`;
+  }
+  let html = '<div class="stats-row">';
+  for (const [key, tag, cls] of [["vpd","VPD","vpd"],["transcoder","TC","tc"]]) {
+    const d = data[key];
+    if (!d) continue;
+    const s = stats(d);
+    html += card(tag, cls, s.total.toLocaleString(), "total components");
+    html += card(tag, cls, s.avgDet !== null ? s.avgDet.toFixed(2) : "\u2014", "avg detection");
+    html += card(tag, cls, s.avgFuz !== null ? s.avgFuz.toFixed(2) : "\u2014", "avg fuzzing");
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function renderRow(c, method) {
+  const cls = method === "vpd" ? "vpd" : "tc";
+  const label = c.label || "not interpreted";
+  const conf = c.confidence ? `<span class="confidence ${c.confidence}">${c.confidence}</span>` : "";
+  const det = c.detection_score ? `<span class="score-badge">Det: <span class="v">${c.detection_score.score.toFixed(2)}</span></span>` : "";
+  const fuz = c.fuzzing_score ? `<span class="score-badge">Fuz: <span class="v">${c.fuzzing_score.score.toFixed(2)}</span></span>` : "";
+  const density = (c.firing_density * 100).toFixed(2);
+  const safeKey = c.component_key.replace(/:/g, "_").replace(/\//g, "_");
+  return `
+    <div class="component-row ${cls}" data-key="${esc(c.component_key)}" data-safe-key="${safeKey}" data-method="${method}">
+      <div>
+        <span class="label">${esc(label)}</span> ${conf}
+        <span class="key">${esc(c.component_key)}</span>
+      </div>
+      <div class="meta">
+        <span>${esc(c.layer)}</span>
+        <span>${density}%</span>
+        ${det}${fuz}
+      </div>
+    </div>
+    <div class="component-detail-slot" id="detail-${safeKey}" style="display:none;"></div>`;
+}
+
+function renderDetail(comp, method) {
+  const cls = method === "vpd" ? "vpd" : "tc";
+  let html = `<div class="component-detail ${cls}">`;
+
+  if (comp.activation_examples && comp.activation_examples.length) {
+    html += '<h3>Activation examples</h3>';
+    for (const ex of comp.activation_examples.slice(0, 5)) {
+      html += `<div class="example-row">${ex.tokens.map(t =>
+        `<span class="tok${t.is_firing ? " firing" : ""}">${esc(t.token)}</span>`
+      ).join("")}</div>`;
+    }
+  }
+
+  for (const [key, title] of [["input_token_pmi", "Input tokens (PMI)"], ["output_token_pmi", "Output tokens (PMI)"]]) {
+    const pmi = comp[key];
+    if (pmi && pmi.top && pmi.top.length) {
+      html += `<div class="pmi-section"><h3>${title}</h3><div class="pmi-list">`;
+      for (const [tok, val] of pmi.top.slice(0, 8)) {
+        html += `<span class="pmi-tag">${esc(tok)} <span class="pmi-val">${val.toFixed(1)}</span></span>`;
+      }
+      html += '</div></div>';
+    }
+  }
+
+  if (comp.reasoning) html += `<div class="reasoning">${esc(comp.reasoning)}</div>`;
+  html += '</div>';
+  return html;
+}
+
+async function loadComponent(safeKey, compKey, method, componentsPath) {
+  const cacheKey = `${method}:${compKey}`;
+  if (componentCache[cacheKey]) return componentCache[cacheKey];
+
+  const resp = await fetch(`${componentsPath}/${safeKey}.json`);
+  const data = await resp.json();
+  componentCache[cacheKey] = data;
+  return data;
+}
+
+function filterAndSort(index, layerFilter, sortBy, search) {
+  let filtered = index.filter(c => {
+    if (layerFilter !== "all" && c.layer !== layerFilter) return false;
+    if (search && !(c.label || "").toLowerCase().includes(search)) return false;
+    return true;
+  });
+  filtered.sort((a, b) => {
+    switch (sortBy) {
+      case "detection": return (b.detection_score?.score ?? -1) - (a.detection_score?.score ?? -1);
+      case "fuzzing": return (b.fuzzing_score?.score ?? -1) - (a.fuzzing_score?.score ?? -1);
+      case "density": return b.firing_density - a.firing_density;
+      case "label": return (a.label || "zzz").localeCompare(b.label || "zzz");
+      default: return 0;
+    }
+  });
+  return filtered;
+}
+
+function renderSection(el, title, method, decomp, layerFilter, sortBy, search) {
+  if (!decomp) { el.innerHTML = ""; return; }
+  const filtered = filterAndSort(decomp.component_index, layerFilter, sortBy, search);
+  const cls = method === "vpd" ? "vpd" : "tc";
+  el.innerHTML = `
+    <div class="section-header ${cls}">${title} <span class="count">${filtered.length} shown</span></div>
+    <div class="component-grid">
+      ${filtered.slice(0, 200).map(c => renderRow(c, method)).join("")}
+    </div>`;
+
+  el.querySelectorAll(".component-row").forEach(row => {
+    row.addEventListener("click", async () => {
+      const safeKey = row.dataset.safeKey;
+      const slot = document.getElementById(`detail-${safeKey}`);
+      if (slot.style.display !== "none") {
+        slot.style.display = "none";
+        return;
+      }
+      slot.style.display = "block";
+      slot.innerHTML = `<div class="component-detail ${cls} loading">Loading...</div>`;
+      const comp = await loadComponent(safeKey, row.dataset.key, method, decomp.components_path);
+      slot.innerHTML = renderDetail(comp, method);
+    });
+  });
+}
+
+function render() {
+  if (!DATA) return;
+  renderSummary(DATA);
+
+  const layers = new Set();
+  for (const key of ["vpd", "transcoder"]) {
+    if (DATA[key]) DATA[key].component_index.forEach(c => layers.add(c.layer));
+  }
+  const layerSelect = document.getElementById("filter-layer");
+  for (const l of [...layers].sort()) {
+    const opt = document.createElement("option");
+    opt.value = l; opt.textContent = l;
+    layerSelect.appendChild(opt);
+  }
+
+  function update() {
+    const mf = document.getElementById("filter-method").value;
+    const lf = document.getElementById("filter-layer").value;
+    const sb = document.getElementById("sort-by").value;
+    const q = document.getElementById("search").value.toLowerCase();
+    const vpdEl = document.getElementById("vpd-section");
+    const tcEl = document.getElementById("tc-section");
+
+    if (mf === "all" || mf === "vpd") renderSection(vpdEl, "VPD Components", "vpd", DATA.vpd, lf, sb, q);
+    else vpdEl.innerHTML = "";
+    if (mf === "all" || mf === "transcoder") renderSection(tcEl, "Transcoder Latents", "transcoder", DATA.transcoder, lf, sb, q);
+    else tcEl.innerHTML = "";
+  }
+
+  for (const id of ["filter-method", "filter-layer", "sort-by"]) document.getElementById(id).addEventListener("change", update);
+  document.getElementById("search").addEventListener("input", update);
+  update();
+}
+
+document.addEventListener("DOMContentLoaded", render);
+</script>
+</body>
+</html>
