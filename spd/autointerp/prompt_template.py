@@ -84,9 +84,7 @@ def _build_data_presentation_section(arch: InterpContext) -> str:
 
 The model processes sequences of {arch.seq_len} tokens. Each activation example below shows a \
 {window_size}-token window centered on the token where the component fired, with up to {k} tokens \
-of context on each side. If a firing occurs near the start or end of a sequence, the window will \
-be shorter on that side (there are no tokens beyond the sequence boundary). A short or absent \
-left context therefore indicates the component fired near the beginning of a sequence."""
+of context on each side. Windows are truncated at sequence boundaries."""
 
 
 def format_prompt_template(
