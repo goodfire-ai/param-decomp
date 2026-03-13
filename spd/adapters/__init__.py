@@ -15,7 +15,6 @@ from spd.harvest.config import DecompositionMethodHarvestConfig
 def adapter_from_config(method_config: DecompositionMethodHarvestConfig) -> DecompositionAdapter:
     from spd.harvest.config import (
         CLTHarvestConfig,
-        MOLTHarvestConfig,
         SPDHarvestConfig,
         TranscoderHarvestConfig,
     )
@@ -30,9 +29,9 @@ def adapter_from_config(method_config: DecompositionMethodHarvestConfig) -> Deco
 
             return TranscoderAdapter(method_config)
         case CLTHarvestConfig():
-            raise NotImplementedError("CLT adapter not implemented yet")
-        case MOLTHarvestConfig():
-            raise NotImplementedError("MOLT adapter not implemented yet")
+            from spd.adapters.clt import CLTAdapter
+
+            return CLTAdapter(method_config)
 
 
 def adapter_from_id(decomposition_id: str) -> DecompositionAdapter:
