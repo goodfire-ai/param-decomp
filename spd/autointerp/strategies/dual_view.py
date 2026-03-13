@@ -128,7 +128,8 @@ def format_prompt(
         "does in the network. Use both the input and output evidence."
     )
     md.p(
-        f'Say "unclear" if the evidence is too weak or diffuse. {forbidden_sentence}Lowercase only.'
+        f"Be epistemically honest — express uncertainty in the label and confidence "
+        f"field when the evidence is weak or ambiguous. {forbidden_sentence}Lowercase only."
     )
 
     return md.build()
