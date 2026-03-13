@@ -25,6 +25,7 @@ class ModelMetadata:
     model_class: str
     dataset_name: str
     layer_descriptions: dict[str, str]
+    seq_len: int
 
 
 @dataclass

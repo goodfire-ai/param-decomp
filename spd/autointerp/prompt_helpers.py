@@ -83,6 +83,23 @@ def density_note(firing_density: float) -> str:
     return ""
 
 
+def build_data_presentation(seq_len: int, context_tokens_per_side: int) -> Md:
+    window_size = 2 * context_tokens_per_side + 1
+    md = Md()
+    md.p(
+        f"The model processes sequences of {seq_len} tokens. "
+        f"Each activation example below shows a {window_size}-token window centered on the "
+        f"firing token, with up to {context_tokens_per_side} tokens of context on each side. "
+        f"Windows are truncated at sequence boundaries."
+    )
+    md.p(
+        "All token correlations (input/output PMI, precision, recall) are measured "
+        "at the model's final output logits, not at the component's layer. "
+        "For components in early layers, the causal path to output is indirect."
+    )
+    return md
+
+
 def build_output_section(
     output_stats: TokenPRLift,
     output_pmi: list[tuple[str, float]] | None,

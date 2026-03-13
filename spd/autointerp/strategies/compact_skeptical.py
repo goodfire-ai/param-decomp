@@ -8,6 +8,7 @@ from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.autointerp.config import CompactSkepticalConfig
 from spd.autointerp.prompt_helpers import (
     DATASET_DESCRIPTIONS,
+    build_data_presentation,
     build_fires_on_examples,
 )
 from spd.autointerp.schemas import ModelMetadata
@@ -28,6 +29,7 @@ def format_prompt(
     app_tok: AppTokenizer,
     input_token_stats: TokenPRLift,
     output_token_stats: TokenPRLift,
+    context_tokens_per_side: int,
 ) -> str:
     input_pmi: list[tuple[str, float]] | None = None
     output_pmi: list[tuple[str, float]] | None = None
@@ -72,6 +74,9 @@ def format_prompt(
             f"Component firing rate: {component.firing_density * 100:.2f}% ({rate_str})",
         ]
     )
+
+    md.h(2, "Data presentation")
+    md.extend(build_data_presentation(model_metadata.seq_len, context_tokens_per_side))
 
     md.h(2, "Token correlations")
     md.extend(input_section).extend(output_section)

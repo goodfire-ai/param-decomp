@@ -11,6 +11,7 @@ from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.autointerp.config import DualViewConfig
 from spd.autointerp.prompt_helpers import (
     DATASET_DESCRIPTIONS,
+    build_data_presentation,
     build_fires_on_examples,
     build_input_section,
     build_output_section,
@@ -32,6 +33,7 @@ def format_prompt(
     app_tok: AppTokenizer,
     input_token_stats: TokenPRLift,
     output_token_stats: TokenPRLift,
+    context_tokens_per_side: int,
 ) -> str:
     input_pmi: list[tuple[str, float]] | None = None
     output_pmi: list[tuple[str, float]] | None = None
@@ -98,6 +100,9 @@ def format_prompt(
     )
     if context_notes:
         md.p(context_notes)
+
+    md.h(2, "Data presentation")
+    md.extend(build_data_presentation(model_metadata.seq_len, context_tokens_per_side))
 
     md.h(2, "Output tokens (what the model produces when this component fires)")
     md.extend(output_section)
