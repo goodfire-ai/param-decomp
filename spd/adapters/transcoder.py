@@ -111,9 +111,9 @@ class TranscoderAdapter(DecompositionAdapter):
             n_blocks=self._topology.n_blocks,
             model_class=f"{model_cls.__module__}.{model_cls.__qualname__}",
             dataset_name=ds_cfg.get("name", "unknown"),
-            layer_descriptions={
-                path: self._topology.target_to_canon(path) for path in self.transcoders
-            },
+            layer_descriptions={path: path.removeprefix("h.") for path in self.transcoders},
+            seq_len=self.base_model.config.block_size,
+            decomposition_method="transcoder",
         )
 
     @override

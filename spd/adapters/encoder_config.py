@@ -4,7 +4,7 @@ Originally by Bart Bussmann, vendored from https://github.com/bartbussmann/nn_de
 Only EncoderConfig is used; CLTConfig and SAEConfig are omitted.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 import torch
@@ -12,51 +12,37 @@ import torch
 
 @dataclass
 class EncoderConfig:
-    """Base config for encoder architectures (SAE and Transcoder)."""
+    """Base config for encoder architectures (SAE and Transcoder).
 
-    # Architecture
+    All fields are required — values come from the config.json saved with each checkpoint.
+    """
+
     input_size: int
     output_size: int
-    dict_size: int = 12288
-
-    # Encoder type
-    encoder_type: Literal["vanilla", "topk", "batchtopk", "jumprelu"] = "topk"
-
-    # Training
-    seed: int = 49
-    batch_size: int = 4096
-    lr: float = 3e-4
-    num_tokens: int = int(1e9)
-    l1_coeff: float = 0.0
-    beta1: float = 0.9
-    beta2: float = 0.99
-    max_grad_norm: float = 1.0
-
-    # Device
-    device: str = "cuda:0"
-    dtype: torch.dtype = field(default=torch.float32)
-
-    # Dead feature tracking
-    n_batches_to_dead: int = 50
-
-    # Optional features
-    input_unit_norm: bool = False
-    pre_enc_bias: bool = False
-
-    # TopK specific
-    top_k: int = 32
-    top_k_aux: int = 512
-    aux_penalty: float = 1 / 32
-
-    # JumpReLU specific
-    bandwidth: float = 0.001
-
-    # Logging
-    run_name: str | None = None
-    wandb_project: str = "encoders"
-    perf_log_freq: int = 1000
-    checkpoint_freq: int | Literal["final"] = "final"
-    n_eval_seqs: int = 8
+    dict_size: int
+    encoder_type: Literal["vanilla", "topk", "batchtopk", "jumprelu"]
+    seed: int
+    batch_size: int
+    lr: float
+    num_tokens: int
+    l1_coeff: float
+    beta1: float
+    beta2: float
+    max_grad_norm: float
+    device: str
+    dtype: torch.dtype
+    n_batches_to_dead: int
+    input_unit_norm: bool
+    pre_enc_bias: bool
+    top_k: int
+    top_k_aux: int
+    aux_penalty: float
+    bandwidth: float
+    run_name: str | None
+    wandb_project: str
+    perf_log_freq: int
+    checkpoint_freq: int | Literal["final"]
+    n_eval_seqs: int
 
     @property
     def name(self) -> str:

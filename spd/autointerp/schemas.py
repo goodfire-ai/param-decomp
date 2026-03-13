@@ -20,7 +20,7 @@ def get_autointerp_subrun_dir(decomposition_id: str, autointerp_run_id: str) -> 
     return get_autointerp_dir(decomposition_id) / autointerp_run_id
 
 
-DecompositionMethod = Literal["spd", "clt", "molt"]
+DecompositionMethod = Literal["spd", "clt", "molt", "transcoder"]
 
 DECOMPOSITION_DESCRIPTIONS: dict[DecompositionMethod, str] = {
     "spd": (
@@ -40,6 +40,11 @@ DECOMPOSITION_DESCRIPTIONS: dict[DecompositionMethod, str] = {
         "Each component is a feature from a Multi-Output Learned Transcoder (MOLT). MOLTs "
         "extend transcoders to produce outputs at multiple layers simultaneously. A component "
         "'fires' when its activation magnitude is high."
+    ),
+    "transcoder": (
+        "Each component is a feature from a Transcoder, which learns a sparse dictionary of "
+        "linear transformations mapping MLP inputs to MLP outputs. A component 'fires' when "
+        "its encoder activation is above threshold."
     ),
 }
 
