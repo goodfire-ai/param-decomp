@@ -332,7 +332,7 @@ async def interpret_all(
     return results
 
 
-def get_architecture_info(wandb_path: str) -> ArchitectureInfo:
+def get_architecture_info(wandb_path: str, activation_contexts_dir: Path) -> ArchitectureInfo:
     run_info = SPDRunInfo.from_path(wandb_path)
     model = ComponentModel.from_run_info(run_info)
     n_blocks = get_model_n_blocks(model.target_model)
@@ -340,12 +340,19 @@ def get_architecture_info(wandb_path: str) -> ArchitectureInfo:
     task_config = config.task_config
     assert isinstance(task_config, LMTaskConfig)
     assert config.tokenizer_name is not None
+
+    harvest_config_path = activation_contexts_dir / "config.json"
+    assert harvest_config_path.exists(), f"harvest config not found: {harvest_config_path}"
+    harvest_config = json.loads(harvest_config_path.read_text())
+
     return ArchitectureInfo(
         n_blocks=n_blocks,
         c_per_layer=model.module_to_c,
         model_class=config.pretrained_model_class,
         dataset_name=task_config.dataset_name,
         tokenizer_name=config.tokenizer_name,
+        seq_len=task_config.max_seq_len,
+        context_tokens_per_side=harvest_config["activation_context_tokens_per_side"],
     )
 
 
@@ -358,7 +365,7 @@ def run_interpret(
     autointerp_dir: Path,
     limit: int | None = None,
 ) -> list[InterpretationResult]:
-    arch = get_architecture_info(wandb_path)
+    arch = get_architecture_info(wandb_path, activation_contexts_dir)
     components = HarvestResult.load_components(activation_contexts_dir)
     output_path = autointerp_dir / "results.jsonl"
 

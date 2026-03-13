@@ -170,8 +170,11 @@ async def request_component_interpretation(
             detail="OPENROUTER_API_KEY environment variable not set",
         )
 
+    from spd.harvest.schemas import get_activation_contexts_dir
+
     # Get architecture info and tokenizer
-    arch = get_architecture_info(loaded.run.wandb_path)
+    activation_contexts_dir = get_activation_contexts_dir(loaded.harvest.run_id)
+    arch = get_architecture_info(loaded.run.wandb_path, activation_contexts_dir)
 
     # Get token stats
     token_stats = loaded.harvest.token_stats

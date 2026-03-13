@@ -75,6 +75,20 @@ at that position: high CI (close to 1) means the component is essential and cann
 sparsity: as few components as possible should have high CI for any given input."""
 
 
+def _build_data_presentation_section(arch: ArchitectureInfo) -> str:
+    """Explain how the model sees data and how activation examples are constructed."""
+    k = arch.context_tokens_per_side
+    window_size = 2 * k + 1
+    return f"""\
+## Data Presentation
+
+The model processes sequences of {arch.seq_len} tokens. Each activation example below shows a \
+{window_size}-token window centered on the token where the component fired, with up to {k} tokens \
+of context on each side. If a firing occurs near the start or end of a sequence, the window will \
+be shorter on that side (there are no tokens beyond the sequence boundary). A short or absent \
+left context therefore indicates the component fired near the beginning of a sequence."""
+
+
 def format_prompt_template(
     component: ComponentData,
     arch: ArchitectureInfo,
@@ -134,6 +148,8 @@ def format_prompt_template(
 
     layer_desc = _parse_layer_description(component.layer, arch.n_blocks)
 
+    data_presentation = _build_data_presentation_section(arch)
+
     return f"""\
 Label this neural network component from a Stochastic Parameter Decomposition.
 
@@ -145,6 +161,8 @@ Label this neural network component from a Stochastic Parameter Decomposition.
 
 **Model**: {arch.model_class} ({arch.n_blocks} layers)
 **Dataset**: {dataset_description}
+
+{data_presentation}
 
 ## Component Context
 

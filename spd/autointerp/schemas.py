@@ -21,6 +21,8 @@ class ArchitectureInfo:
     model_class: str
     dataset_name: str
     tokenizer_name: str
+    seq_len: int
+    context_tokens_per_side: int
 
 
 @dataclass
