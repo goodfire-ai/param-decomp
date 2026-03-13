@@ -305,11 +305,10 @@ async def map_llm_calls(
 
             n_done += 1
             total_str = f"/{n_total}" if n_total is not None else ""
-            if n_done == 1 or n_done % 10 == 0 or n_done == n_total:
-                logger.info(
-                    f"[{n_done}{total_str}] ${cost.cost_usd():.2f} "
-                    f"({cost.input_tokens:,} in, {cost.output_tokens:,} out)"
-                )
+            logger.info(
+                f"[{n_done}{total_str}] ${cost.cost_usd():.2f} "
+                f"({cost.input_tokens:,} in, {cost.output_tokens:,} out)"
+            )
 
         async def run_all() -> None:
             job_queue: asyncio.Queue[LLMJob | None] = asyncio.Queue(maxsize=max_concurrent)
