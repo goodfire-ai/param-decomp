@@ -93,9 +93,8 @@ def build_data_presentation(seq_len: int, context_tokens_per_side: int) -> Md:
         f"Windows are truncated at sequence boundaries."
     )
     md.p(
-        "All token correlations (input/output PMI, precision, recall) are measured "
-        "at the model's final output logits, not at the component's layer. "
-        "For components in early layers, the causal path to output is indirect."
+        "Output token correlations measure what the model predicts (at its final logits) "
+        "at positions where the component fires, not the component's direct output."
     )
     return md
 
