@@ -78,19 +78,22 @@ def format_prompt(
     )
 
     md = Md()
+    md.p("Describe what this neural network component does.")
     md.p(
-        "Describe what this neural network component does.\n\n"
         "Each component has an input function (what causes it to fire) and an output "
         "function (what tokens it causes the model to produce). These are often different "
         "— a component might fire on periods but produce sentence-opening words, or "
-        "fire on prepositions but produce abstract nouns.\n\n"
+        "fire on prepositions but produce abstract nouns."
+    )
+    md.p(
         "Consider all of the evidence below critically. Token statistics can be noisy, "
         "especially for high-density components. The activation examples are sampled "
         "and may not be representative. Look for patterns that are consistent across "
         "multiple sources of evidence."
     )
 
-    md.h(2, "Context").bullets(
+    md.h(2, "Context")
+    md.bullets(
         [
             f"Model: {model_metadata.model_class} ({model_metadata.n_blocks} blocks){dataset_line}",
             f"Component location: {layer_desc}",
