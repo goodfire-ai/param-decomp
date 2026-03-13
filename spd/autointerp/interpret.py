@@ -36,6 +36,7 @@ async def interpret_component(
     app_tok: AppTokenizer,
     input_token_stats: TokenPRLift,
     output_token_stats: TokenPRLift,
+    context_tokens_per_side: int,
 ) -> InterpretationResult:
     """Interpret a single component. Used by the app for on-demand interpretation."""
     prompt = format_prompt(
@@ -45,6 +46,7 @@ async def interpret_component(
         app_tok=app_tok,
         input_token_stats=input_token_stats,
         output_token_stats=output_token_stats,
+        context_tokens_per_side=context_tokens_per_side,
     )
 
     schema = INTERPRETATION_SCHEMA
@@ -101,6 +103,11 @@ def run_interpret(
     token_stats = harvest.get_token_stats()
     assert token_stats is not None, "token_stats.pt not found. Run harvest first."
 
+    harvest_config = harvest.get_config()
+    raw = harvest_config["activation_context_tokens_per_side"]
+    assert isinstance(raw, int), f"expected int, got {type(raw)}"
+    context_tokens_per_side = raw
+
     app_tok = AppTokenizer.from_pretrained(tokenizer_name)
 
     eligible_keys = sorted(summary, key=lambda k: summary[k].firing_density, reverse=True)
@@ -136,6 +143,7 @@ def run_interpret(
                         app_tok=app_tok,
                         input_token_stats=input_stats,
                         output_token_stats=output_stats,
+                        context_tokens_per_side=context_tokens_per_side,
                     )
                     yield LLMJob(prompt=prompt, schema=schema, key=key)
 

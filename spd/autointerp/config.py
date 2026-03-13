@@ -31,7 +31,6 @@ class CompactSkepticalConfig(BaseConfig):
     type: Literal["compact_skeptical"] = "compact_skeptical"
     max_examples: int = 30
     include_pmi: bool = True
-    include_spd_context: bool = True
     include_dataset_description: bool = True
     label_max_words: int = 8
     forbidden_words: list[str] | None = None

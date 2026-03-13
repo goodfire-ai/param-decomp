@@ -183,6 +183,8 @@ def compute_losses(
                     weight_deltas=weight_deltas if use_delta_component else None,
                 )
             case PersistentPGDReconLossConfig() | PersistentPGDReconSubsetLossConfig():
+                if current_frac_of_training < cfg.start_frac:
+                    continue
                 loss = ppgd_states[cfg].compute_recon_loss(
                     model=model,
                     batch=batch,

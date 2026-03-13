@@ -171,7 +171,9 @@ def format_unification_prompt(
     md.h(2, "Two-perspective analysis")
     md.p(
         f'OUTPUT FUNCTION: "{output_label.label}" (confidence: {output_label.confidence})\n'
-        f"  Reasoning: {output_label.reasoning}\n\n"
+        f"  Reasoning: {output_label.reasoning}"
+    )
+    md.p(
         f'INPUT FUNCTION: "{input_label.label}" (confidence: {input_label.confidence})\n'
         f"  Reasoning: {input_label.reasoning}"
     )
