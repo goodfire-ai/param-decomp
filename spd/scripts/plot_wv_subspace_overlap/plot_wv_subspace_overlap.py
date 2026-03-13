@@ -5,7 +5,7 @@ matrices, optionally weighted by the data distribution. See the companion
 LaTeX writeup (out/wv_overlap_writeup.tex) for detailed equations.
 
 Usage:
-    python -m spd.scripts.plot_value_reading_tsne.plot_value_reading_tsne \
+    python -m spd.scripts.plot_wv_subspace_overlap.plot_wv_subspace_overlap \
         wandb:goodfire/spd/runs/<run_id> --layer 1
 """
 
