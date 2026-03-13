@@ -127,17 +127,6 @@ def format_prompt(
         "function. The label should read like a short description of the job this component "
         "does in the network. Use both the input and output evidence."
     )
-    md.p("Examples of good labels across different component types:")
-    md.bullets(
-        [
-            '"word stem completion (stems → suffixes)"',
-            '"closes dialogue with quotation marks"',
-            '"object pronouns after verbs"',
-            '"story-ending moral resolution vocabulary"',
-            '"aquatic scene vocabulary (frog, river, pond)"',
-            "\"'of course' and abstract nouns after prepositions\"",
-        ]
-    )
     md.p(
         f'Say "unclear" if the evidence is too weak or diffuse. {forbidden_sentence}Lowercase only.'
     )
