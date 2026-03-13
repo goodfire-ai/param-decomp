@@ -15,7 +15,7 @@ def get_autointerp_dir(wandb_run_id: str) -> Path:
 
 
 @dataclass
-class ArchitectureInfo:
+class InterpContext:
     n_blocks: int
     c_per_layer: dict[str, int]  # Maps layer name -> number of components
     model_class: str

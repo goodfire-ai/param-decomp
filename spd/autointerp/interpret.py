@@ -24,7 +24,7 @@ from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from spd.app.backend.compute import get_model_n_blocks
 from spd.autointerp.prompt_template import INTERPRETATION_SCHEMA, format_prompt_template
-from spd.autointerp.schemas import ArchitectureInfo, InterpretationResult
+from spd.autointerp.schemas import InterpContext, InterpretationResult
 from spd.configs import LMTaskConfig
 from spd.harvest.analysis import TokenPRLift, get_input_token_stats, get_output_token_stats
 from spd.harvest.harvest import HarvestResult
@@ -162,7 +162,7 @@ async def interpret_component(
     client: OpenRouter,
     model: str,
     component: ComponentData,
-    arch: ArchitectureInfo,
+    arch: InterpContext,
     tokenizer: PreTrainedTokenizerBase,
     input_token_stats: TokenPRLift,
     output_token_stats: TokenPRLift,
@@ -223,7 +223,7 @@ async def interpret_component(
 
 async def interpret_all(
     components: list[ComponentData],
-    arch: ArchitectureInfo,
+    arch: InterpContext,
     openrouter_api_key: str,
     interpreter_model: str,
     output_path: Path,
@@ -332,7 +332,7 @@ async def interpret_all(
     return results
 
 
-def get_architecture_info(wandb_path: str, activation_contexts_dir: Path) -> ArchitectureInfo:
+def get_interp_context(wandb_path: str, activation_contexts_dir: Path) -> InterpContext:
     run_info = SPDRunInfo.from_path(wandb_path)
     model = ComponentModel.from_run_info(run_info)
     n_blocks = get_model_n_blocks(model.target_model)
@@ -345,7 +345,7 @@ def get_architecture_info(wandb_path: str, activation_contexts_dir: Path) -> Arc
     assert harvest_config_path.exists(), f"harvest config not found: {harvest_config_path}"
     harvest_config = json.loads(harvest_config_path.read_text())
 
-    return ArchitectureInfo(
+    return InterpContext(
         n_blocks=n_blocks,
         c_per_layer=model.module_to_c,
         model_class=config.pretrained_model_class,
@@ -365,7 +365,7 @@ def run_interpret(
     autointerp_dir: Path,
     limit: int | None = None,
 ) -> list[InterpretationResult]:
-    arch = get_architecture_info(wandb_path, activation_contexts_dir)
+    arch = get_interp_context(wandb_path, activation_contexts_dir)
     components = HarvestResult.load_components(activation_contexts_dir)
     output_path = autointerp_dir / "results.jsonl"
 

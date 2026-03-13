@@ -144,7 +144,7 @@ async def request_component_interpretation(
 
     from spd.autointerp.interpret import (
         OpenRouterModelName,
-        get_architecture_info,
+        get_interp_context,
         interpret_component,
     )
     from spd.autointerp.schemas import get_autointerp_dir
@@ -174,7 +174,7 @@ async def request_component_interpretation(
 
     # Get architecture info and tokenizer
     activation_contexts_dir = get_activation_contexts_dir(loaded.harvest.run_id)
-    arch = get_architecture_info(loaded.run.wandb_path, activation_contexts_dir)
+    arch = get_interp_context(loaded.run.wandb_path, activation_contexts_dir)
 
     # Get token stats
     token_stats = loaded.harvest.token_stats

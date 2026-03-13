@@ -6,7 +6,7 @@ from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from spd.app.backend.utils import build_token_lookup
 from spd.autointerp import MAX_EXAMPLES_PER_COMPONENT
-from spd.autointerp.schemas import ArchitectureInfo
+from spd.autointerp.schemas import InterpContext
 from spd.harvest.analysis import TokenPRLift
 from spd.harvest.schemas import ComponentData
 
@@ -75,7 +75,7 @@ at that position: high CI (close to 1) means the component is essential and cann
 sparsity: as few components as possible should have high CI for any given input."""
 
 
-def _build_data_presentation_section(arch: ArchitectureInfo) -> str:
+def _build_data_presentation_section(arch: InterpContext) -> str:
     """Explain how the model sees data and how activation examples are constructed."""
     k = arch.context_tokens_per_side
     window_size = 2 * k + 1
@@ -91,7 +91,7 @@ left context therefore indicates the component fired near the beginning of a seq
 
 def format_prompt_template(
     component: ComponentData,
-    arch: ArchitectureInfo,
+    arch: InterpContext,
     tokenizer: PreTrainedTokenizerBase,
     input_token_stats: TokenPRLift,
     output_token_stats: TokenPRLift,
