@@ -190,6 +190,25 @@ async def run_fuzzing_scoring(
 
     component_trials: defaultdict[str, list[FuzzingTrial]] = defaultdict(list)
     component_errors: defaultdict[str, int] = defaultdict(int)
+    results: list[FuzzingResult] = []
+
+    def _try_save(ck: str) -> None:
+        n_done = len(component_trials[ck]) + component_errors.get(ck, 0)
+        if n_done < config.n_trials:
+            return
+        if component_errors.get(ck, 0) > 0:
+            return
+        trials = component_trials[ck]
+        total_tp = sum(t.tp for t in trials)
+        total_tn = sum(t.tn for t in trials)
+        total_pos = sum(t.n_correct for t in trials)
+        total_neg = sum(t.n_incorrect for t in trials)
+        tpr = total_tp / total_pos if total_pos > 0 else 0.0
+        tnr = total_tn / total_neg if total_neg > 0 else 0.0
+        score = (tpr + tnr) / 2 if (total_pos > 0 and total_neg > 0) else 0.0
+        result = FuzzingResult(component_key=ck, score=score, trials=trials, n_errors=0)
+        results.append(result)
+        score_db.save_score(ck, "fuzzing", score, json.dumps(asdict(result)))
 
     async for outcome in map_llm_calls(
         openrouter_api_key=openrouter_api_key,
@@ -218,26 +237,12 @@ async def run_fuzzing_scoring(
                         n_incorrect=len(gt.incorrect_positions),
                     )
                 )
+                _try_save(gt.component_key)
             case LLMError(job=job, error=e):
                 gt = ground_truth[job.key]
                 component_errors[gt.component_key] += 1
                 logger.error(f"{job.key}: {type(e).__name__}: {e}")
-
-    results: list[FuzzingResult] = []
-    for component in remaining:
-        ck = component.component_key
-        trials = component_trials.get(ck, [])
-        n_err = component_errors.get(ck, 0)
-        total_tp = sum(t.tp for t in trials)
-        total_tn = sum(t.tn for t in trials)
-        total_pos = sum(t.n_correct for t in trials)
-        total_neg = sum(t.n_incorrect for t in trials)
-        tpr = total_tp / total_pos if total_pos > 0 else 0.0
-        tnr = total_tn / total_neg if total_neg > 0 else 0.0
-        score = (tpr + tnr) / 2 if (total_pos > 0 and total_neg > 0) else 0.0
-        result = FuzzingResult(component_key=ck, score=score, trials=trials, n_errors=n_err)
-        results.append(result)
-        score_db.save_score(ck, "fuzzing", score, json.dumps(asdict(result)))
+                _try_save(gt.component_key)
 
     logger.info(f"Scored {len(results)} components")
     return results

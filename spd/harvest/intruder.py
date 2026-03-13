@@ -200,6 +200,20 @@ async def run_intruder_scoring(
 
     component_trials: defaultdict[str, list[IntruderTrial]] = defaultdict(list)
     component_errors: defaultdict[str, int] = defaultdict(int)
+    results: list[IntruderResult] = []
+
+    def _try_save(ck: str) -> None:
+        n_done = len(component_trials[ck]) + component_errors.get(ck, 0)
+        if n_done < n_trials:
+            return
+        if component_errors.get(ck, 0) > 0:
+            return
+        trials = component_trials[ck]
+        correct = sum(1 for t in trials if t.is_correct)
+        score = correct / len(trials) if trials else 0.0
+        result = IntruderResult(component_key=ck, score=score, trials=trials, n_errors=0)
+        results.append(result)
+        score_db.save_score(ck, "intruder", score, json.dumps(asdict(result)))
 
     async for outcome in map_llm_calls(
         openrouter_api_key=openrouter_api_key,
@@ -223,21 +237,12 @@ async def run_intruder_scoring(
                         is_correct=predicted == gt.correct_answer,
                     )
                 )
+                _try_save(gt.component_key)
             case LLMError(job=job, error=e):
                 gt = ground_truth[job.key]
                 component_errors[gt.component_key] += 1
                 logger.error(f"{job.key}: {type(e).__name__}: {e}")
-
-    results: list[IntruderResult] = []
-    for component in remaining:
-        ck = component.component_key
-        trials = component_trials.get(ck, [])
-        n_err = component_errors.get(ck, 0)
-        correct = sum(1 for t in trials if t.is_correct)
-        score = correct / len(trials) if trials else 0.0
-        result = IntruderResult(component_key=ck, score=score, trials=trials, n_errors=n_err)
-        results.append(result)
-        score_db.save_score(ck, "intruder", score, json.dumps(asdict(result)))
+                _try_save(gt.component_key)
 
     logger.info(f"Scored {len(results)} components")
     return results
