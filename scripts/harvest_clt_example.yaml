@@ -1,0 +1,23 @@
+# Example: Harvest CLT (Cross-Layer Transcoder) activations using spd-harvest.
+#
+# Loads a trained CLT from a wandb artifact and runs the generic harvest pipeline
+# to collect activation statistics (firing densities, token PMI, activation examples).
+#
+# This CLT is from the e2e sweep on Jose's base model (t-9d2b8f02).
+# clt_parallel_k32: BatchTopK k=32, 4096 dict, 4 layers, parallel (non-cascading).
+#
+# Usage:
+#   spd-harvest scripts/harvest_clt_example.yaml
+
+config:
+  method_config:
+    type: CLTHarvestConfig
+    base_model_path: "wandb:goodfire/spd/t-9d2b8f02"
+    artifact_path: "mats-sprint/pile_e2e_sweep_jose/clt_parallel_k32_checkpoint_final:v0"
+  n_batches: 20
+  batch_size: 8
+  activation_examples_per_component: 20
+  activation_context_tokens_per_side: 10
+  pmi_token_top_k: 10
+
+n_gpus: 1
