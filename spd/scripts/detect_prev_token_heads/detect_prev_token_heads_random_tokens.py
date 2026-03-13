@@ -87,24 +87,12 @@ def detect_prev_token_heads_random_tokens(
             marker = " <-- prev-token head" if score > 0.3 else ""
             logger.info(f"  L{layer_idx}H{h}: {score:.4f}{marker}")
 
-    _plot_score_heatmap(
-        accum_scores,
-        run_id,
-        n_batches,
-        out_dir / "prev_token_scores_random_tokens.png",
-    )
-    _plot_attention_patterns(
-        accum_patterns,
-        run_id,
-        f"Mean attention patterns, random tokens  (n={n_batches})",
-        out_dir / "mean_attention_patterns_random_tokens.png",
-    )
+    np.save(out_dir / "prev_token_scores_random_tokens.npy", accum_scores)
+    _plot_score_heatmap(accum_scores, out_dir / "prev_token_scores_random_tokens.png")
+    _plot_attention_patterns(accum_patterns, out_dir / "mean_attention_patterns_random_tokens.png")
     assert single_patterns is not None
     _plot_attention_patterns(
-        single_patterns,
-        run_id,
-        "Single-datapoint attention patterns, random tokens",
-        out_dir / "single_attention_patterns_random_tokens.png",
+        single_patterns, out_dir / "single_attention_patterns_random_tokens.png"
     )
 
     logger.info(f"All plots saved to {out_dir}")

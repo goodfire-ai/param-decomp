@@ -319,6 +319,136 @@ def _plot_diff(
     logger.info(f"Saved {path}")
 
 
+def _plot_grid(
+    baseline_accum: dict[int, dict[int, list[float]]],
+    comp_accums: list[dict[int, dict[int, list[float]]]],
+    component_indices: list[int],
+    proj: str,
+    layer: int,
+    n_heads: int,
+    max_offset_show: int,
+    n_samples: int,
+    out_dir: Path,
+    plot_type: str,
+) -> None:
+    """3x2 grid version of the single-component ablation plots.
+
+    plot_type: "attn" (raw attention), "diff" (ablated - baseline), "frac" (fractional change).
+    """
+    offsets = list(range(max_offset_show + 1))
+    cmap = plt.get_cmap("tab10")
+    proj_label = "Q" if "q_proj" in proj else "K"
+
+    # Precompute cross-head mean baseline for fractional normalization
+    mean_baseline_by_offset: dict[int, float] = {}
+    if plot_type == "frac":
+        mean_baseline_by_offset = {
+            o: float(np.mean([v for h in range(n_heads) for v in baseline_accum[h][o]]))
+            for o in offsets
+        }
+
+    fig, axes = plt.subplots(3, 2, figsize=(9, 7.5), squeeze=False)
+    all_axes_list = []
+
+    for h in range(n_heads):
+        row, col = divmod(h, 2)
+        ax = axes[row, col]
+        all_axes_list.append(ax)
+
+        if plot_type == "attn":
+            # Baseline
+            bl_means = [float(np.mean(baseline_accum[h][o])) for o in offsets]
+            bl_stds = [float(np.std(baseline_accum[h][o])) for o in offsets]
+            bl_means_arr = np.array(bl_means)
+            bl_stds_arr = np.array(bl_stds)
+            ax.plot(offsets, bl_means_arr, color="black", linewidth=2, label="Baseline")
+            ax.fill_between(
+                offsets,
+                bl_means_arr - bl_stds_arr,
+                bl_means_arr + bl_stds_arr,
+                alpha=0.15,
+                color="gray",
+            )
+            # Ablated components
+            for ci_idx, comp_idx in enumerate(component_indices):
+                means = np.array([float(np.mean(comp_accums[ci_idx][h][o])) for o in offsets])
+                stds = np.array([float(np.std(comp_accums[ci_idx][h][o])) for o in offsets])
+                color = cmap(ci_idx % 10)
+                ax.plot(offsets, means, color=color, linewidth=1, label=f"C{comp_idx}")
+                ax.fill_between(offsets, means - stds, means + stds, alpha=0.1, color=color)
+
+        elif plot_type == "diff":
+            for ci_idx, comp_idx in enumerate(component_indices):
+                sample_diffs_per_offset = []
+                for o in offsets:
+                    diffs = [
+                        a - b
+                        for a, b in zip(
+                            comp_accums[ci_idx][h][o], baseline_accum[h][o], strict=True
+                        )
+                    ]
+                    sample_diffs_per_offset.append(diffs)
+                means = np.array([float(np.mean(d)) for d in sample_diffs_per_offset])
+                stds = np.array([float(np.std(d)) for d in sample_diffs_per_offset])
+                color = cmap(ci_idx % 10)
+                ax.plot(offsets, means, color=color, linewidth=1, label=f"C{comp_idx}")
+                ax.fill_between(offsets, means - stds, means + stds, alpha=0.1, color=color)
+            ax.axhline(y=0, color="gray", linewidth=0.5, linestyle=":")
+
+        elif plot_type == "frac":
+            for ci_idx, comp_idx in enumerate(component_indices):
+                sample_fracs_per_offset = []
+                for o in offsets:
+                    norm = mean_baseline_by_offset[o]
+                    if norm > 1e-8:
+                        fracs = [
+                            (a - b) / norm
+                            for a, b in zip(
+                                comp_accums[ci_idx][h][o], baseline_accum[h][o], strict=True
+                            )
+                        ]
+                    else:
+                        fracs = [0.0] * len(baseline_accum[h][o])
+                    sample_fracs_per_offset.append(fracs)
+                means = np.array([float(np.mean(f)) for f in sample_fracs_per_offset])
+                stds = np.array([float(np.std(f)) for f in sample_fracs_per_offset])
+                color = cmap(ci_idx % 10)
+                ax.plot(offsets, means, color=color, linewidth=1, label=f"C{comp_idx}")
+                ax.fill_between(offsets, means - stds, means + stds, alpha=0.1, color=color)
+            ax.axhline(y=0, color="gray", linewidth=0.5, linestyle=":")
+
+        ax.set_title(f"H{h}", fontsize=11, fontweight="bold")
+        ax.set_xticks(offsets)
+
+        if h >= n_heads - 2:
+            ax.set_xlabel("Offset")
+        else:
+            ax.set_xticklabels([])
+
+        y_labels = {"attn": "Mean Attention", "diff": "Attention Diff", "frac": "Fractional Change"}
+        if col == 0:
+            ax.set_ylabel(y_labels[plot_type])
+
+    # Shared y-limits
+    all_ylims = [ax.get_ylim() for ax in all_axes_list]
+    ymin = min(lo for lo, _ in all_ylims)
+    ymax = max(hi for _, hi in all_ylims)
+    for ax in all_axes_list:
+        ax.set_ylim(ymin, ymax)
+
+    # Legend in first subplot
+    axes[0, 0].legend(fontsize=7, loc="upper right", ncol=2)
+
+    fig.tight_layout(h_pad=2.0)
+    path = (
+        out_dir
+        / f"{plot_type}_{proj_label.lower()}_L{layer}_top{len(component_indices)}_n{n_samples}_grid.png"
+    )
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Saved {path}")
+
+
 def plot_single_comp_frac(
     wandb_path: ModelPath,
     layer: int = 1,
@@ -396,6 +526,8 @@ def plot_single_comp_frac(
     _plot_raw_attention(*plot_args_q)
     _plot_diff(*plot_args_q)
     _plot_frac(*plot_args_q)
+    for pt in ("attn", "diff", "frac"):
+        _plot_grid(*plot_args_q, plot_type=pt)
 
     # K components
     logger.section(f"K component ablations (top {top_n}, k_offset={k_offset})")
@@ -427,6 +559,8 @@ def plot_single_comp_frac(
     _plot_raw_attention(*plot_args_k)
     _plot_diff(*plot_args_k)
     _plot_frac(*plot_args_k)
+    for pt in ("attn", "diff", "frac"):
+        _plot_grid(*plot_args_k, plot_type=pt)
 
 
 if __name__ == "__main__":

@@ -90,11 +90,14 @@ def _get_component_info(
     key = f"{module_path}:{component_idx}"
     ci = summary[key].mean_activations["causal_importance"]
     result = interp.get(key)
+    # Escape $ to prevent matplotlib mathtext parsing
+    label = result.label.replace("$", r"\$") if result and result.label else None
+    reasoning = result.reasoning.replace("$", r"\$") if result and result.reasoning else None
     return ComponentInfo(
         idx=component_idx,
         causal_importance=ci,
-        label=result.label if result else None,
-        reasoning=result.reasoning if result else None,
+        label=label,
+        reasoning=reasoning,
     )
 
 

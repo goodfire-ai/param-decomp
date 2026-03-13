@@ -33,15 +33,13 @@ BATCH_SIZE = 32
 
 def _plot_score_heatmap(
     scores: NDArray[np.floating],
-    run_id: str,
-    n_samples: int,
     out_path: Path,
 ) -> None:
     n_layers, n_heads = scores.shape
     fig, ax = plt.subplots(figsize=(max(6, n_heads * 1.2), max(4, n_layers * 1.0)))
 
     im = ax.imshow(scores, aspect="auto", cmap="Blues", vmin=0, vmax=0.95)
-    fig.colorbar(im, ax=ax, shrink=0.8, pad=0.02, label="Mean attn to pos i-1")
+    fig.colorbar(im, ax=ax, shrink=0.8, pad=0.02, label="Mean attention to t-1")
 
     ax.set_xticks(range(n_heads))
     ax.set_xticklabels([f"H{h}" for h in range(n_heads)], fontsize=10)
@@ -58,12 +56,50 @@ def _plot_score_heatmap(
                 h, layer_idx, f"{val:.3f}", ha="center", va="center", fontsize=9, color=text_color
             )
 
-    fig.suptitle(
-        f"{run_id}  |  Previous-token head scores  (n={n_samples} batches)",
-        fontsize=13,
-        fontweight="bold",
-    )
     fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Saved {out_path}")
+
+
+def _plot_score_heatmap_combined(
+    scores_left: NDArray[np.floating],
+    scores_right: NDArray[np.floating],
+    title_left: str,
+    title_right: str,
+    out_path: Path,
+) -> None:
+    n_layers, n_heads = scores_left.shape
+    fig, (ax_l, ax_r) = plt.subplots(
+        1, 2, figsize=(max(6, n_heads * 1.2) * 2 + 1, max(4, n_layers * 1.0))
+    )
+
+    for ax, scores, title in [(ax_l, scores_left, title_left), (ax_r, scores_right, title_right)]:
+        im = ax.imshow(scores, aspect="auto", cmap="Blues", vmin=0, vmax=0.95)
+        ax.set_xticks(range(n_heads))
+        ax.set_xticklabels([f"H{h}" for h in range(n_heads)], fontsize=10)
+        ax.set_yticks(range(n_layers))
+        ax.set_yticklabels([f"L{li}" for li in range(n_layers)], fontsize=10)
+        ax.set_xlabel("Head")
+        ax.set_ylabel("Layer")
+        ax.set_title(title, fontsize=12)
+
+        for layer_idx in range(n_layers):
+            for h in range(n_heads):
+                val = scores[layer_idx, h]
+                text_color = "white" if val > 0.65 else "black"
+                ax.text(
+                    h,
+                    layer_idx,
+                    f"{val:.3f}",
+                    ha="center",
+                    va="center",
+                    fontsize=9,
+                    color=text_color,
+                )
+
+    fig.tight_layout()
+    fig.colorbar(im, ax=[ax_l, ax_r], shrink=0.8, pad=0.01, label="Mean attention to t-1")
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info(f"Saved {out_path}")
@@ -71,8 +107,6 @@ def _plot_score_heatmap(
 
 def _plot_attention_patterns(
     patterns: list[torch.Tensor],
-    run_id: str,
-    title: str,
     out_path: Path,
     max_pos: int = 128,
 ) -> None:
@@ -98,11 +132,6 @@ def _plot_attention_patterns(
             if h == 0:
                 ax.set_ylabel(f"Layer {layer_idx}", fontsize=9)
 
-    fig.suptitle(
-        f"{run_id}  |  {title}  (pos 0-{max_pos})",
-        fontsize=13,
-        fontweight="bold",
-    )
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -185,22 +214,38 @@ def detect_prev_token_heads(wandb_path: ModelPath, n_batches: int = N_BATCHES) -
             marker = " <-- prev-token head" if score > 0.3 else ""
             logger.info(f"  L{layer_idx}H{h}: {score:.4f}{marker}")
 
-    _plot_score_heatmap(accum_scores, run_id, n_processed, out_dir / "prev_token_scores.png")
-    _plot_attention_patterns(
-        accum_patterns,
-        run_id,
-        f"Mean attention patterns  (n={n_processed})",
-        out_dir / "mean_attention_patterns.png",
-    )
+    np.save(out_dir / "prev_token_scores.npy", accum_scores)
+    _plot_score_heatmap(accum_scores, out_dir / "prev_token_scores.png")
+    _plot_attention_patterns(accum_patterns, out_dir / "mean_attention_patterns.png")
     assert single_patterns is not None
-    _plot_attention_patterns(
-        single_patterns,
-        run_id,
-        "Single-datapoint attention patterns",
-        out_dir / "single_attention_patterns.png",
-    )
+    _plot_attention_patterns(single_patterns, out_dir / "single_attention_patterns.png")
+
+    # Generate combined plot if random token scores exist
+    random_scores_path = out_dir / "prev_token_scores_random_tokens.npy"
+    if random_scores_path.exists():
+        _plot_score_heatmap_combined(
+            scores_left=np.load(random_scores_path),
+            scores_right=accum_scores,
+            title_left="Random token sequences",
+            title_right="Dataset samples",
+            out_path=out_dir / "prev_token_scores_combined.png",
+        )
 
     logger.info(f"All plots saved to {out_dir}")
+
+
+def plot_combined(run_id: str) -> None:
+    """Generate combined side-by-side plot from saved .npy scores."""
+    out_dir = SCRIPT_DIR / "out" / run_id
+    random_scores = np.load(out_dir / "prev_token_scores_random_tokens.npy")
+    dataset_scores = np.load(out_dir / "prev_token_scores.npy")
+    _plot_score_heatmap_combined(
+        scores_left=random_scores,
+        scores_right=dataset_scores,
+        title_left="Random token sequences",
+        title_right="Dataset samples",
+        out_path=out_dir / "prev_token_scores_combined.png",
+    )
 
 
 if __name__ == "__main__":

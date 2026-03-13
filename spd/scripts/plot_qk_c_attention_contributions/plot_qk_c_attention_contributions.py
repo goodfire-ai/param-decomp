@@ -4,8 +4,9 @@ For each layer and relative position offset, produces a single grid containing:
   - First cell: mean (across heads) q·k attention contributions
   - Remaining cells: one per query head
 
-Each head's contributions are normalized by T^h (total QK dot product for that head),
-so pair contributions within a head sum to 1 and are directly interpretable as fractions.
+U vectors are scaled by sign(mean_component_activation) * ||V|| to correct for components
+whose activations are typically negative. Contributions are then z-scored per head (subtract
+mean, divide by std across all offsets and pairs), making heads directly comparable.
 
 Usage:
     python -m spd.scripts.plot_qk_c_attention_contributions.plot_qk_c_attention_contributions \
@@ -63,21 +64,44 @@ def _compute_per_head_attention_contributions(
     rotary_cos: torch.Tensor,
     rotary_sin: torch.Tensor,
     offsets: tuple[int, ...],
+    summary: dict[str, ComponentSummary],
+    q_module_path: str,
+    k_module_path: str,
 ) -> NDArray[np.floating]:
     """Compute (n_offsets, n_q_heads, n_q_alive, n_k_alive) per-head attention contributions.
 
-    Each head's contributions are normalized by T^h (the total QK dot product for that
-    head at offset 0), so pair contributions within a head sum to 1 at offset 0. Using a
-    single per-head scalar preserves relative magnitudes across offsets while making heads
-    comparable.
+    Each head's contributions are z-scored (subtract mean, divide by std) across all
+    (offset, q, k) values, making heads comparable.
+
+    U vectors are scaled by sign(mean_activation) * ||V|| so that the weight-only dot
+    product reflects the typical sign of the actual data-dependent contribution.
     """
     V_q_norms = torch.linalg.norm(q_component.V[:, q_alive], dim=0).float()  # (n_q_alive,)
     V_k_norms = torch.linalg.norm(k_component.V[:, k_alive], dim=0).float()  # (n_k_alive,)
 
-    U_q = q_component.U[q_alive].float() * V_q_norms[:, None]  # (n_q_alive, n_q_heads * head_dim)
+    # Sign-correct: scale by sign of mean component activation so weight-only dot products
+    # reflect the typical sign of the actual (data-dependent) contribution.
+    q_signs = torch.tensor(
+        [
+            1.0
+            if summary[f"{q_module_path}:{c}"].mean_activations["component_activation"] >= 0
+            else -1.0
+            for c in q_alive
+        ]
+    )
+    k_signs = torch.tensor(
+        [
+            1.0
+            if summary[f"{k_module_path}:{c}"].mean_activations["component_activation"] >= 0
+            else -1.0
+            for c in k_alive
+        ]
+    )
+
+    U_q = q_component.U[q_alive].float() * (V_q_norms * q_signs)[:, None]
     U_q = U_q.reshape(len(q_alive), n_q_heads, head_dim)
 
-    U_k = k_component.U[k_alive].float() * V_k_norms[:, None]  # (n_k_alive, n_kv_heads * head_dim)
+    U_k = k_component.U[k_alive].float() * (V_k_norms * k_signs)[:, None]
     U_k = U_k.reshape(len(k_alive), n_kv_heads, head_dim)
 
     g = n_q_heads // n_kv_heads
@@ -92,13 +116,14 @@ def _compute_per_head_attention_contributions(
     # (n_heads, n_offsets, n_q, n_k) -> (n_offsets, n_heads, n_q, n_k)
     W = torch.stack(head_results).permute(1, 0, 2, 3)
 
-    # Normalize each head by T^h at offset 0 (same-position total QK dot product).
-    # Using a single per-head scalar preserves relative magnitudes across offsets.
-    assert offsets[0] == 0, "First offset must be 0 for T^h normalization"
-    T_h = W[0].sum(dim=(-2, -1), keepdim=True).unsqueeze(0)  # (1, n_heads, 1, 1)
-    W_normalized = W / T_h
+    # Z-score per head: pool all (offset, q, k) values for each head, then subtract
+    # mean and divide by std. This makes contributions comparable across heads (measured
+    # in standard deviations above/below the head's average pair contribution).
+    mean_h = W.mean(dim=(0, 2, 3), keepdim=True)  # (1, n_heads, 1, 1)
+    std_h = W.std(dim=(0, 2, 3), keepdim=True)  # (1, n_heads, 1, 1)
+    W_zscore = (W - mean_h) / std_h
 
-    return W_normalized.cpu().numpy()
+    return W_zscore.cpu().numpy()
 
 
 def _plot_heatmaps(
@@ -587,7 +612,6 @@ def _plot_pair_lines_single_head(
                 label=f"Q C{q_alive[qi]} \u2192 K C{k_alive[ki]}",
             )
 
-        # Sum of all (q, k) pair contributions within this head (=1 at Δ=0)
         total = W_h.sum(axis=(1, 2))  # (n_offsets,)
         ax.plot(x, total, color="black", linewidth=2, label="sum (all pairs)")
 
@@ -629,6 +653,139 @@ def _plot_pair_lines_single_head(
     logger.info(f"Saved {path}")
 
 
+def _plot_pair_lines_combined(
+    W: NDArray[np.floating],
+    offsets: tuple[int, ...],
+    q_alive: list[int],
+    k_alive: list[int],
+    n_q_heads: int,
+    layer_idx: int,
+    out_dir: Path,
+    top_n: int,
+) -> None:
+    """Combined mean + per-head line plots in a single figure.
+
+    Top row (spanning 2 columns): mean across heads.
+    Rows 1-3 (2 columns each): one subplot per head.
+    Global top-N pairs share consistent colors across all subplots.
+    """
+    n_k = len(k_alive)
+    x = list(offsets)
+    W_mean = W.mean(axis=1)  # (n_offsets, n_q, n_k)
+    n_q = W_mean.shape[1]
+
+    # Global top-N: rank (q, k) pairs by peak |W| across all heads and offsets
+    global_peak = np.abs(W).max(axis=(0, 1))  # (n_q, n_k)
+    global_flat = np.argsort(global_peak.ravel())[::-1][:top_n]
+    global_pairs = [divmod(int(idx), n_k) for idx in global_flat]
+    global_pair_set = set(global_pairs)
+
+    cmap = plt.get_cmap("tab20")
+    pair_colors = {pair: cmap(i % 20) for i, pair in enumerate(global_pairs)}
+
+    fig = plt.figure(figsize=(12, 17))
+    outer = fig.add_gridspec(2, 1, height_ratios=[1, 3], hspace=0.12)
+    gs_top = outer[0].subgridspec(1, 2, wspace=0.12)
+    gs_bottom = outer[1].subgridspec(3, 2, hspace=0.15, wspace=0.12)
+    ax_mean = fig.add_subplot(gs_top[0, 0])
+    ax_legend = fig.add_subplot(gs_top[0, 1])
+    head_axes = [fig.add_subplot(gs_bottom[h // 2, h % 2]) for h in range(n_q_heads)]
+    all_axes = [ax_mean] + head_axes
+
+    # --- Mean subplot ---
+    plotted_gray = False
+    for qi in range(n_q):
+        for ki in range(n_k):
+            if (qi, ki) in global_pair_set:
+                continue
+            label = "Other" if not plotted_gray else None
+            ax_mean.plot(x, W_mean[:, qi, ki], color="0.80", linewidth=0.8, alpha=0.45, label=label)
+            plotted_gray = True
+
+    for qi, ki in global_pairs:
+        ax_mean.plot(
+            x,
+            W_mean[:, qi, ki],
+            color=pair_colors[(qi, ki)],
+            marker="o",
+            markersize=3,
+            label=f"q.{q_alive[qi]} \u2192 k.{k_alive[ki]}",
+        )
+
+    total_mean = W_mean.sum(axis=(1, 2))
+    ax_mean.plot(x, total_mean, color="black", linewidth=2)
+
+    ax_mean.axhline(0, color="black", linewidth=0.5, linestyle="--", alpha=0.4)
+    ax_mean.set_xlabel("Offset")
+    ax_mean.set_ylabel("Standardized Attention Contribution")
+    ax_mean.set_title("All Heads", fontsize=11, fontweight="bold")
+    ax_mean.set_xticks(x)
+
+    # Legend in dedicated cell (0, 1): reorder so "other" is last, add "sum" entry
+    handles, labels = ax_mean.get_legend_handles_labels()
+    pair_entries = [(ha, la) for ha, la in zip(handles, labels, strict=True) if la != "Other"]
+    other_entries = [(ha, la) for ha, la in zip(handles, labels, strict=True) if la == "Other"]
+    sum_handle = plt.Line2D([0], [0], color="black", linewidth=2)
+    ordered_handles = (
+        [ha for ha, _ in pair_entries] + [ha for ha, _ in other_entries] + [sum_handle]
+    )
+    ordered_labels = (
+        [la for _, la in pair_entries] + [la for _, la in other_entries] + ["Sum of All Pairs"]
+    )
+    ax_legend.axis("off")
+    ax_legend.legend(ordered_handles, ordered_labels, fontsize=11, loc="center left", frameon=False)
+
+    # --- Per-head subplots ---
+    for h, ax in enumerate(head_axes):
+        W_h = W[:, h]  # (n_offsets, n_q, n_k)
+
+        for qi in range(n_q):
+            for ki in range(n_k):
+                if (qi, ki) in global_pair_set:
+                    continue
+                ax.plot(x, W_h[:, qi, ki], color="0.80", linewidth=0.8, alpha=0.45)
+
+        for qi, ki in global_pairs:
+            ax.plot(
+                x,
+                W_h[:, qi, ki],
+                color=pair_colors[(qi, ki)],
+                marker="o",
+                markersize=3,
+            )
+
+        total = W_h.sum(axis=(1, 2))
+        ax.plot(x, total, color="black", linewidth=2, label="sum (all pairs)")
+
+        ax.axhline(0, color="black", linewidth=0.5, linestyle="--", alpha=0.4)
+        ax.set_title(f"H{h}", fontsize=11, fontweight="bold")
+        ax.set_xticks(x)
+
+        # X-axis label and tick labels only on bottom row
+        if h >= n_q_heads - 2:
+            ax.set_xlabel("Offset")
+        else:
+            ax.set_xticklabels([])
+
+        # Y-axis label only on left column
+        if h % 2 == 0:
+            ax.set_ylabel("Standardized Attention Contribution")
+
+    # Shared y-axis limits across all subplots
+    all_ylims = [ax.get_ylim() for ax in all_axes]
+    ymin = min(lo for lo, _ in all_ylims)
+    ymax = max(hi for _, hi in all_ylims)
+    for ax in all_axes:
+        ax.set_ylim(ymin, ymax)
+
+    lines_dir = out_dir / "lines_combined"
+    lines_dir.mkdir(parents=True, exist_ok=True)
+    path = lines_dir / f"layer{layer_idx}_qk_pair_lines_combined.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Saved {path}")
+
+
 PLOT_TYPES = (
     "heatmaps",
     "heatmaps_per_head",
@@ -637,6 +794,7 @@ PLOT_TYPES = (
     "lines",
     "lines_per_head",
     "lines_single_head",
+    "lines_combined",
 )
 
 
@@ -743,6 +901,9 @@ def _compute_and_cache_all_layers(
                 rotary_cos,
                 rotary_sin,
                 offsets,
+                summary,
+                q_path,
+                k_path,
             )
 
             cache = _LayerCache(
@@ -874,6 +1035,18 @@ def _plot_layer(
             n_q_heads,
             layer_idx,
             run_id,
+            out_dir,
+            top_n_pairs,
+        )
+
+    if "lines_combined" in plots:
+        _plot_pair_lines_combined(
+            W,
+            offsets,
+            q_alive,
+            k_alive,
+            n_q_heads,
+            layer_idx,
             out_dir,
             top_n_pairs,
         )
