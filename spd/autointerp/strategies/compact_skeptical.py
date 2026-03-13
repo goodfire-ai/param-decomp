@@ -116,17 +116,17 @@ def _build_input_section(
     md = Md()
     if input_stats.top_recall:
         md.labeled_list(
-            "**Input tokens with highest recall (most common current tokens when the component is firing)**",
+            "**Input recall:**",
             [f"{repr(tok)}: {recall * 100:.0f}%" for tok, recall in input_stats.top_recall[:8]],
         )
     if input_stats.top_precision:
         md.labeled_list(
-            "**Input tokens with highest precision (probability the component fires given the current token is X)**",
+            "**Input precision:**",
             [f"{repr(tok)}: {prec * 100:.0f}%" for tok, prec in input_stats.top_precision[:8]],
         )
     if input_pmi:
         md.labeled_list(
-            "**Input tokens with highest PMI (pointwise mutual information. Tokens with higher-than-base-rate likelihood of co-occurrence with the component firing)**",
+            "**Input PMI:**",
             [f"{repr(tok)}: {pmi:.2f}" for tok, pmi in input_pmi[:6]],
         )
     return md
@@ -139,12 +139,12 @@ def _build_output_section(
     md = Md()
     if output_stats.top_precision:
         md.labeled_list(
-            "**Output precision — of all predicted probability for token X, what fraction is at positions where this component fires?**",
+            "**Output precision:**",
             [f"{repr(tok)}: {prec * 100:.0f}%" for tok, prec in output_stats.top_precision[:10]],
         )
     if output_pmi:
         md.labeled_list(
-            "**Output PMI — tokens the model predicts at higher-than-base-rate when this component fires:**",
+            "**Output PMI:**",
             [f"{repr(tok)}: {pmi:.2f}" for tok, pmi in output_pmi[:6]],
         )
     return md

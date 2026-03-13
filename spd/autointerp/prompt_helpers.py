@@ -93,9 +93,27 @@ def build_data_presentation(seq_len: int, context_tokens_per_side: int) -> Md:
         f"Windows are truncated at sequence boundaries. "
         f"Examples are sampled uniformly at random from all firings across the dataset."
     )
+
+    md.h(3, "Metric definitions")
+    md.p("The token statistics below use these metrics:")
+    md.bullets(
+        [
+            "**Recall**: P(token | component fires). What fraction of this component's "
+            "firings occurred on token X? High recall means the component fires on this "
+            "token often, but says nothing about selectivity.",
+            "**Precision**: P(component fires | token). Of all occurrences of token X in "
+            "the dataset, what fraction had this component firing? Low precision with high "
+            "recall means the component fires on this token, but only in specific contexts "
+            "— the token alone is not sufficient.",
+            "**PMI** (pointwise mutual information, in nats): How much more likely is "
+            "co-occurrence than chance? Combines recall and precision into a single "
+            "association strength. 0 = no association, 1 ≈ 3x, 2 ≈ 7x, 3 ≈ 20x.",
+        ]
+    )
     md.p(
-        "Output token correlations measure what the model predicts (at its final logits) "
-        "at positions where the component fires, not the component's direct output."
+        "**Input** metrics concern the token at the position where the component fires. "
+        "**Output** metrics concern what the model predicts (at its final logits) at "
+        "those positions — not the component's direct output."
     )
     return md
 
@@ -107,15 +125,12 @@ def build_output_section(
     md = Md()
     if output_pmi:
         md.labeled_list(
-            "**Output PMI (pointwise mutual information, in nats: how much more likely "
-            "a token is to be produced when this component fires, vs its base rate. "
-            "0 = no association, 1 = ~3x more likely, 2 = ~7x, 3 = ~20x):**",
+            "**Output PMI:**",
             [f"{repr(tok)}: {pmi:.2f}" for tok, pmi in output_pmi[:10]],
         )
     if output_stats.top_precision:
         md.labeled_list(
-            "**Output precision — of all probability mass for token X, what fraction "
-            "is at positions where this component fires?**",
+            "**Output precision:**",
             [f"{repr(tok)}: {prec * 100:.0f}%" for tok, prec in output_stats.top_precision[:10]],
         )
     return md
@@ -128,12 +143,12 @@ def build_input_section(
     md = Md()
     if input_pmi:
         md.labeled_list(
-            "**Input PMI (same metric as above, for input tokens):**",
+            "**Input PMI:**",
             [f"{repr(tok)}: {pmi:.2f}" for tok, pmi in input_pmi[:6]],
         )
     if input_stats.top_precision:
         md.labeled_list(
-            "**Input precision — probability the component fires given the current token is X:**",
+            "**Input precision:**",
             [f"{repr(tok)}: {prec * 100:.0f}%" for tok, prec in input_stats.top_precision[:8]],
         )
     return md
