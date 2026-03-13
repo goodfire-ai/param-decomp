@@ -1,0 +1,42 @@
+# Postprocess: E2E-trained TC (pile_e2e_sweep_jose, k32, base=t-9d2b8f02)
+# Harvest 1000 batches, autointerp + evals, intruder scoring.
+
+harvest:
+  config:
+    method_config:
+      type: TranscoderHarvestConfig
+      base_model_path: "wandb:goodfire/spd/t-9d2b8f02"
+      artifact_paths:
+        "h.0.mlp": "mats-sprint/pile_e2e_sweep_jose/tc_parallel_k32_checkpoint_layer0_final:v0"
+        "h.1.mlp": "mats-sprint/pile_e2e_sweep_jose/tc_parallel_k32_checkpoint_layer1_final:v0"
+        "h.2.mlp": "mats-sprint/pile_e2e_sweep_jose/tc_parallel_k32_checkpoint_layer2_final:v0"
+        "h.3.mlp": "mats-sprint/pile_e2e_sweep_jose/tc_parallel_k32_checkpoint_layer3_final:v0"
+    n_batches: 1000
+    batch_size: 32
+  n_gpus: 4
+
+autointerp:
+  config:
+    model: "google/gemini-3-flash-preview"
+    reasoning_effort: "low"
+    max_requests_per_minute: 200
+    limit: 1000
+    template_strategy:
+      type: dual_view
+  evals:
+    model: "google/gemini-3-flash-preview"
+    reasoning_effort: "none"
+    max_requests_per_minute: 200
+    limit: 1000
+    detection_config:
+      type: detection
+    fuzzing_config:
+      type: fuzzing
+
+intruder:
+  config:
+    max_requests_per_minute: 200
+    limit: 1000
+
+attributions: null
+graph_interp: null
