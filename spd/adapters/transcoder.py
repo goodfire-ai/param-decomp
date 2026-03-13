@@ -10,14 +10,7 @@ import wandb
 from torch.utils.data import DataLoader
 
 from spd.adapters.base import DecompositionAdapter
-from spd.adapters.transcoder_model import (
-    BatchTopKTranscoder,
-    EncoderConfig,
-    JumpReLUTranscoder,
-    SharedTranscoder,
-    TopKTranscoder,
-    VanillaTranscoder,
-)
+from spd.adapters.transcoder_model import BatchTopKTranscoder, EncoderConfig
 from spd.autointerp.schemas import ModelMetadata
 from spd.data import DatasetConfig, create_data_loader
 from spd.harvest.config import TranscoderHarvestConfig
@@ -25,28 +18,20 @@ from spd.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
 from spd.pretrain.run_info import PretrainRunInfo
 from spd.topology import TransformerTopology
 
-_ENCODER_CLASSES: dict[str, type[SharedTranscoder]] = {
-    "vanilla": VanillaTranscoder,
-    "topk": TopKTranscoder,
-    "batchtopk": BatchTopKTranscoder,
-    "jumprelu": JumpReLUTranscoder,
-}
-
-
-# E2e-trained transcoders (e.g. from pile_e2e_sweep_jose) save extra fields in their
-# config.json ("e2e", "e2e_cascading") that aren't part of EncoderConfig. Strip them
-# so the dataclass constructor doesn't choke.
+# E2e-trained transcoders save extra fields in config.json ("e2e", "e2e_cascading")
+# that aren't part of EncoderConfig. Strip them so the dataclass constructor doesn't choke.
 _ENCODER_CONFIG_FIELDS = frozenset(f.name for f in __import__("dataclasses").fields(EncoderConfig))
 
 
-def _load_transcoder(checkpoint_dir: Path, device: str) -> SharedTranscoder:
+def _load_transcoder(checkpoint_dir: Path, device: str) -> BatchTopKTranscoder:
     with open(checkpoint_dir / "config.json") as f:
         cfg_dict: dict[str, Any] = json.load(f)
     cfg_dict["dtype"] = getattr(torch, cfg_dict.get("dtype", "torch.float32").replace("torch.", ""))
     cfg_dict["device"] = device
     filtered = {k: v for k, v in cfg_dict.items() if k in _ENCODER_CONFIG_FIELDS}
     cfg = EncoderConfig(**filtered)
-    encoder = _ENCODER_CLASSES[cfg.encoder_type](cfg)
+    assert cfg.encoder_type == "batchtopk", f"Only batchtopk supported, got {cfg.encoder_type}"
+    encoder = BatchTopKTranscoder(cfg)
     encoder.load_state_dict(torch.load(checkpoint_dir / "encoder.pt", map_location=device))
     encoder.eval()
     return encoder
@@ -82,8 +67,8 @@ class TranscoderAdapter(DecompositionAdapter):
         return TransformerTopology(self.base_model)
 
     @cached_property
-    def transcoders(self) -> dict[str, SharedTranscoder]:
-        result: dict[str, SharedTranscoder] = {}
+    def transcoders(self) -> dict[str, BatchTopKTranscoder]:
+        result: dict[str, BatchTopKTranscoder] = {}
         for module_path, artifact_path in self._config.artifact_paths.items():
             checkpoint_dir = _download_artifact(artifact_path)
             result[module_path] = _load_transcoder(checkpoint_dir, "cpu")

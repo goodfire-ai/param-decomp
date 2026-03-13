@@ -1,9 +1,8 @@
-"""CLT harvest function: computes sparse activations from a Cross-Layer Transcoder."""
+"""CLT harvest function: computes sparse activations from a BatchTopK Cross-Layer Transcoder."""
 
 from typing import override
 
 import torch
-from einops import rearrange
 from torch import Tensor
 
 from spd.adapters.clt import CLTAdapter
@@ -13,9 +12,8 @@ from spd.utils.general_utils import extract_batch_data
 
 
 class CLTHarvestFn(HarvestFn):
-    def __init__(self, adapter: CLTAdapter, activation_threshold: float, device: torch.device):
+    def __init__(self, adapter: CLTAdapter, device: torch.device):
         self._adapter = adapter
-        self._activation_threshold = activation_threshold
         self._device = device
 
         adapter.base_model.to(device).eval()
@@ -55,11 +53,10 @@ class CLTHarvestFn(HarvestFn):
         for layer_idx in clt.layers:
             mlp_in = mlp_inputs[layer_idx]
             B, S, _ = mlp_in.shape
-            flat = rearrange(mlp_in, "b s d -> (b s) d")
-            acts_raw = clt.encode_layer(layer_idx, flat)
-            acts = rearrange(acts_raw, "(b s) c -> b s c", b=B, s=S)
+            flat = mlp_in.reshape(-1, clt.input_size)
+            acts = clt.encode_layer(layer_idx, flat).reshape(B, S, -1)
             module_path = f"h.{layer_idx}.mlp"
-            firings[module_path] = acts > self._activation_threshold
+            firings[module_path] = acts > 0
             activations[module_path] = {"activation": acts}
 
         return HarvestBatch(

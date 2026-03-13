@@ -36,7 +36,6 @@ class CLTHarvestConfig(BaseConfig):
     base_model_path: str
     artifact_path: str
     """Wandb artifact path for the CLT checkpoint (single artifact covering all layers)."""
-    activation_threshold: float = 0.0
 
     @property
     def id(self) -> str:
@@ -50,7 +49,6 @@ class TranscoderHarvestConfig(BaseConfig):
     base_model_path: str
     artifact_paths: dict[str, str]
     """Maps module paths (e.g. "h.0.mlp") to wandb artifact paths."""
-    activation_threshold: float = 0.0
 
     @property
     def id(self) -> str:

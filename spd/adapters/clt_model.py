@@ -10,7 +10,7 @@ Vendored from https://github.com/bartbussmann/nn_decompositions (MIT license).
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -23,27 +23,26 @@ class CLTEncoderConfig:
     layers: list[int]
     input_size: int
     dict_size: int
-    encoder_type: Literal["vanilla", "topk", "batchtopk", "jumprelu"]
     top_k: int
-    bandwidth: float
 
     @staticmethod
     def from_checkpoint_json(cfg_raw: dict[str, Any]) -> "CLTEncoderConfig":
         layers_raw = cfg_raw["layers"]
         layers = json.loads(layers_raw) if isinstance(layers_raw, str) else layers_raw
         assert isinstance(layers, list), f"Expected list for layers, got {type(layers)}"
+        assert cfg_raw["encoder_type"] == "batchtopk", (
+            f"Only batchtopk supported, got {cfg_raw['encoder_type']}"
+        )
         return CLTEncoderConfig(
             layers=layers,
             input_size=cfg_raw["input_size"],
             dict_size=cfg_raw["dict_size"],
-            encoder_type=cfg_raw["encoder_type"],
-            top_k=cfg_raw.get("top_k", 0),
-            bandwidth=cfg_raw.get("bandwidth", 0.001),
+            top_k=cfg_raw["top_k"],
         )
 
 
 class CrossLayerTranscoder(nn.Module):
-    """Cross-Layer Transcoder encoder. Supports per-layer sparse encoding."""
+    """Cross-Layer Transcoder encoder. Per-layer BatchTopK sparse encoding."""
 
     def __init__(self, config: CLTEncoderConfig, state_dict: dict[str, Tensor]):
         super().__init__()
@@ -63,22 +62,12 @@ class CrossLayerTranscoder(nn.Module):
         b_enc: Tensor = getattr(self, f"b_enc_{layer_idx}")
 
         pre_acts = F.relu(x @ W_enc + b_enc)
-
-        match self.config.encoder_type:
-            case "vanilla":
-                return pre_acts
-            case "topk":
-                topk = torch.topk(pre_acts, self.config.top_k, dim=-1)
-                return torch.zeros_like(pre_acts).scatter(-1, topk.indices, topk.values)
-            case "batchtopk":
-                topk = torch.topk(pre_acts.flatten(), self.config.top_k * x.shape[0], dim=-1)
-                return (
-                    torch.zeros_like(pre_acts.flatten())
-                    .scatter(-1, topk.indices, topk.values)
-                    .reshape(pre_acts.shape)
-                )
-            case "jumprelu":
-                raise NotImplementedError("JumpReLU CLT encoding not yet implemented")
+        topk = torch.topk(pre_acts.flatten(), self.config.top_k * x.shape[0], dim=-1)
+        return (
+            torch.zeros_like(pre_acts.flatten())
+            .scatter(-1, topk.indices, topk.values)
+            .reshape(pre_acts.shape)
+        )
 
     @staticmethod
     def from_checkpoint(checkpoint_dir: Path, device: str = "cpu") -> "CrossLayerTranscoder":

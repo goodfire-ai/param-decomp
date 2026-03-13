@@ -1,4 +1,4 @@
-"""Transcoder harvest function: computes sparse activations from transcoders."""
+"""Transcoder harvest function: computes sparse activations from BatchTopK transcoders."""
 
 from typing import override
 
@@ -12,11 +12,8 @@ from spd.utils.general_utils import extract_batch_data
 
 
 class TranscoderHarvestFn(HarvestFn):
-    def __init__(
-        self, adapter: TranscoderAdapter, activation_threshold: float, device: torch.device
-    ):
+    def __init__(self, adapter: TranscoderAdapter, device: torch.device):
         self._adapter = adapter
-        self._activation_threshold = activation_threshold
         self._device = device
 
         adapter.base_model.to(device).eval()
@@ -29,7 +26,6 @@ class TranscoderHarvestFn(HarvestFn):
 
         batch = extract_batch_data(batch_item).to(self._device)
 
-        # Hook target modules to capture their inputs
         mlp_inputs: dict[str, Tensor] = {}
         hooks = []
         for module_path in self._adapter.transcoders:
@@ -58,10 +54,8 @@ class TranscoderHarvestFn(HarvestFn):
             mlp_in = mlp_inputs[module_path]
             B, S, _ = mlp_in.shape
             flat = mlp_in.reshape(-1, tc.input_size)
-            acts_raw = tc.encode(flat)
-            assert isinstance(acts_raw, Tensor)
-            acts = acts_raw.reshape(B, S, -1)
-            firings[module_path] = acts > self._activation_threshold
+            acts = tc.encode(flat).reshape(B, S, -1)
+            firings[module_path] = acts > 0
             activations[module_path] = {"activation": acts}
 
         return HarvestBatch(
