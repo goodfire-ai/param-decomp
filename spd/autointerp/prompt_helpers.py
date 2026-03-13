@@ -7,6 +7,7 @@ import re
 
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.app.backend.utils import delimit_tokens
+from spd.autointerp.schemas import DECOMPOSITION_DESCRIPTIONS, DecompositionMethod
 from spd.harvest.analysis import TokenPRLift
 from spd.harvest.schemas import ComponentData
 from spd.utils.markdown import Md
@@ -83,9 +84,18 @@ def density_note(firing_density: float) -> str:
     return ""
 
 
-def build_data_presentation(seq_len: int, context_tokens_per_side: int) -> Md:
+def build_data_presentation(
+    seq_len: int,
+    context_tokens_per_side: int,
+    decomposition_method: DecompositionMethod,
+) -> Md:
     window_size = 2 * context_tokens_per_side + 1
     md = Md()
+
+    md.h(3, "Decomposition method")
+    md.p(DECOMPOSITION_DESCRIPTIONS[decomposition_method])
+
+    md.h(3, "Data")
     md.p(
         f"The model processes sequences of {seq_len} tokens. "
         f"Each activation example below shows a {window_size}-token window centered on the "
@@ -98,16 +108,10 @@ def build_data_presentation(seq_len: int, context_tokens_per_side: int) -> Md:
     md.p("The token statistics below use these metrics:")
     md.bullets(
         [
-            "**Recall**: P(token | component fires). What fraction of this component's "
-            "firings occurred on token X? High recall means the component fires on this "
-            "token often, but says nothing about selectivity.",
             "**Precision**: P(component fires | token). Of all occurrences of token X in "
-            "the dataset, what fraction had this component firing? Low precision with high "
-            "recall means the component fires on this token, but only in specific contexts "
-            "— the token alone is not sufficient.",
+            "the dataset, what fraction had this component firing?",
             "**PMI** (pointwise mutual information, in nats): How much more likely is "
-            "co-occurrence than chance? Combines recall and precision into a single "
-            "association strength. 0 = no association, 1 ≈ 3x, 2 ≈ 7x, 3 ≈ 20x.",
+            "co-occurrence than chance? 0 = no association, 1 ≈ 3x, 2 ≈ 7x, 3 ≈ 20x.",
         ]
     )
     md.p(

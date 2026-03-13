@@ -80,10 +80,9 @@ def format_prompt(
     md = Md()
     md.p(
         "Describe what this neural network component does.\n\n"
-        "Each component is a learned linear transformation inside a weight matrix. "
-        "It has an input function (what causes it to fire) and an output function "
-        "(what tokens it causes the model to produce). These are often different — "
-        "a component might fire on periods but produce sentence-opening words, or "
+        "Each component has an input function (what causes it to fire) and an output "
+        "function (what tokens it causes the model to produce). These are often different "
+        "— a component might fire on periods but produce sentence-opening words, or "
         "fire on prepositions but produce abstract nouns.\n\n"
         "Consider all of the evidence below critically. Token statistics can be noisy, "
         "especially for high-density components. The activation examples are sampled "
@@ -102,7 +101,11 @@ def format_prompt(
         md.p(context_notes)
 
     md.h(2, "Data presentation")
-    md.extend(build_data_presentation(model_metadata.seq_len, context_tokens_per_side))
+    md.extend(
+        build_data_presentation(
+            model_metadata.seq_len, context_tokens_per_side, model_metadata.decomposition_method
+        )
+    )
 
     md.h(2, "Output tokens (what the model produces when this component fires)")
     md.extend(output_section)
