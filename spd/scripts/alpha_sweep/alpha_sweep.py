@@ -110,6 +110,8 @@ def run_alpha_sweep(
     for i, batch in enumerate(eval_loader):
         if i >= n_batches:
             break
+        if isinstance(batch, dict):
+            batch = batch["input_ids"]
         batches.append(batch)
 
     ce_losses: list[float] = []
