@@ -21,7 +21,7 @@ from numpy.typing import NDArray
 from spd.configs import LMTaskConfig
 from spd.data import DatasetConfig, create_data_loader
 from spd.log import logger
-from spd.models.component_model import SPDRunInfo
+from spd.models.component_model import ComponentModel, SPDRunInfo
 from spd.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
 from spd.spd_types import ModelPath
 from spd.utils.wandb_utils import parse_wandb_run_path
@@ -379,6 +379,134 @@ def _plot_wv_data_strength_weighted_overlap(
     logger.info(f"Saved {path}")
 
 
+def _plot_component_head_amplification(
+    v_weight_per_head: NDArray[np.floating],
+    component_V: NDArray[np.floating],
+    layer: int,
+    out_dir: Path,
+) -> None:
+    """Heatmap of how much each head's W_V amplifies each value component's read direction.
+
+    amplification[c, h] = ||W_V^h @ v_hat_c|| where v_hat_c = V[:, c] / ||V[:, c]||
+
+    Args:
+        v_weight_per_head: (n_heads, head_dim, d_model)
+        component_V: (d_model, n_components) — right vectors from SPD decomposition
+    """
+    n_heads = v_weight_per_head.shape[0]
+
+    # Normalize V to unit length so we measure directional amplification, not V magnitude
+    v_norms = np.linalg.norm(component_V, axis=0, keepdims=True).clip(min=1e-10)
+    component_V_normed = component_V / v_norms
+
+    # (n_heads, head_dim, d_model) @ (d_model, n_components) -> (n_heads, head_dim, n_components)
+    projected = np.einsum("hdi,ic->hic", v_weight_per_head, component_V_normed)
+    # L2 norm over head_dim -> (n_heads, n_components)
+    amplification = np.sqrt((projected**2).sum(axis=1))  # (n_heads, n_components)
+    amplification = amplification.T  # (n_components, n_heads)
+
+    # Sort components by max amplification across heads (descending)
+    sort_idx = np.argsort(-amplification.max(axis=1))
+    amplification = amplification[sort_idx]
+
+    fig, ax = plt.subplots(figsize=(5, 10))
+    im = ax.imshow(amplification, aspect="auto", cmap="viridis", interpolation="nearest")
+    fig.colorbar(im, ax=ax, shrink=0.6, pad=0.02, label=r"$\|W_V^h \mathbf{v}_c\|$")
+
+    ax.set_xticks(range(n_heads))
+    ax.set_xticklabels([f"H{h}" for h in range(n_heads)])
+    ax.set_xlabel("Head")
+    ax.set_ylabel("Value component (sorted by max amplification)")
+
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    fig.tight_layout()
+    path = out_dir / f"layer{layer}_component_head_amplification.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Saved {path}")
+
+
+def _compute_overlap_matrix(
+    gram_matrices: list[NDArray[np.floating]],
+) -> NDArray[np.floating]:
+    """Frobenius cosine similarity between all pairs of Gram matrices."""
+    n = len(gram_matrices)
+    norms = [float(np.linalg.norm(m, "fro")) for m in gram_matrices]
+    overlap = np.zeros((n, n))
+    for a in range(n):
+        for b in range(n):
+            overlap[a, b] = float(np.trace(gram_matrices[a] @ gram_matrices[b])) / (
+                norms[a] * norms[b]
+            )
+    return overlap
+
+
+def _render_overlap_heatmap(
+    ax: plt.Axes,
+    overlap: NDArray[np.floating],
+    title: str,
+) -> "plt.cm.ScalarMappable":
+    """Render a lower-triangular overlap heatmap on the given axes."""
+    n_heads = overlap.shape[0]
+    mask = np.tri(n_heads, dtype=bool)
+    overlap_masked = np.where(mask, overlap, np.nan)
+
+    im = ax.imshow(overlap_masked, cmap="Purples", vmin=0, vmax=1)
+
+    ax.set_xticks(range(n_heads))
+    ax.set_xticklabels([f"H{h}" for h in range(n_heads)])
+    ax.set_yticks(range(n_heads))
+    ax.set_yticklabels([f"H{h}" for h in range(n_heads)])
+
+    for i in range(n_heads):
+        for j in range(i + 1):
+            color = "white" if overlap[i, j] > 0.7 else "black"
+            ax.text(j, i, f"{overlap[i, j]:.2f}", ha="center", va="center", fontsize=9, color=color)
+
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    ax.set_title(title, fontsize=11, fontweight="bold")
+    return im
+
+
+def _plot_combined_paper_figure(
+    v_weight_per_head: NDArray[np.floating],
+    var_svectors: NDArray[np.floating],
+    var_singular_values: NDArray[np.floating],
+    layer: int,
+    out_dir: Path,
+) -> None:
+    """Side-by-side: unweighted subspace overlap (left) and variance-weighted (right)."""
+    n_heads = v_weight_per_head.shape[0]
+
+    # Unweighted Gram matrices
+    M_unweighted = [v_weight_per_head[h].T @ v_weight_per_head[h] for h in range(n_heads)]
+    overlap_unweighted = _compute_overlap_matrix(M_unweighted)
+
+    # Variance-weighted Gram matrices
+    Z_diag_s = var_svectors.T * var_singular_values[None, :]
+    M_var = [
+        (v_weight_per_head[h] @ Z_diag_s).T @ (v_weight_per_head[h] @ Z_diag_s)
+        for h in range(n_heads)
+    ]
+    overlap_var = _compute_overlap_matrix(M_var)
+
+    fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(13, 5), constrained_layout=True)
+
+    _render_overlap_heatmap(ax_left, overlap_unweighted, "Subspace overlap")
+    im = _render_overlap_heatmap(ax_right, overlap_var, "Data-weighted subspace overlap")
+
+    fig.colorbar(im, ax=[ax_left, ax_right], shrink=0.8, pad=0.04, label="Cosine Similarity")
+
+    path = out_dir / f"layer{layer}_wv_overlap_combined.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Saved {path}")
+
+
 def plot_wv_subspace_overlap(
     wandb_path: ModelPath,
     layer: int = 1,
@@ -458,6 +586,19 @@ def plot_wv_subspace_overlap(
     _plot_wv_data_strength_weighted_overlap(
         v_weight_per_head, data_svectors, singular_values, layer, out_dir
     )
+
+    # 5. Combined paper figure
+    _plot_combined_paper_figure(
+        v_weight_per_head, var_svectors, var_singular_values, layer, out_dir
+    )
+
+    # 6. Component-head amplification
+    logger.info("Loading SPD component model...")
+    component_model = ComponentModel.from_pretrained(wandb_path)
+    v_component = component_model.components[f"h.{layer}.attn.v_proj"]
+    component_V = v_component.V.detach().float().cpu().numpy()  # (d_model, n_components)
+    logger.info(f"Value components: {component_V.shape[1]}")
+    _plot_component_head_amplification(v_weight_per_head, component_V, layer, out_dir)
 
     logger.info(f"All outputs saved to {out_dir}")
 
