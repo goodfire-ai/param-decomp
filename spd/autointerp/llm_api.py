@@ -26,7 +26,6 @@ _MAX_BACKOFF_S = 600.0
 @dataclass
 class LLMJob:
     prompt: str
-    schema: dict[str, Any]
     key: str
 
 

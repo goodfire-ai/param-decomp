@@ -238,6 +238,8 @@ async def request_component_interpretation(
             status_code=500,
             detail=f"Failed to generate interpretation: {e}",
         ) from e
+    finally:
+        await provider.close()
 
     loaded.interp.save_interpretation(result)
 

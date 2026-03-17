@@ -188,7 +188,6 @@ async def run_intruder_scoring(
             jobs.append(
                 LLMJob(
                     prompt=_build_prompt(real_examples, intruder, intruder_pos, app_tok),
-                    schema=INTRUDER_SCHEMA,
                     key=key,
                 )
             )

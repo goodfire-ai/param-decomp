@@ -133,7 +133,7 @@ def run_interpret(
                         output_token_stats=output_stats,
                         context_tokens_per_side=context_tokens_per_side,
                     )
-                    yield LLMJob(prompt=prompt, schema=schema, key=key)
+                    yield LLMJob(prompt=prompt, key=key)
 
             results: list[InterpretationResult] = []
             n_errors = 0

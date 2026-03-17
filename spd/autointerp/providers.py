@@ -278,9 +278,11 @@ class OpenAIProvider(LLMProvider):
         response_schema: dict[str, Any],
         timeout_ms: int,
     ) -> ChatResponse:
+        is_reasoning_model = self.model.startswith(("o1-", "o3-", "o4-"))
+        token_key = "max_completion_tokens" if is_reasoning_model else "max_tokens"
         body: dict[str, Any] = {
             "model": self.model,
-            "max_tokens": max_tokens,
+            token_key: max_tokens,
             "messages": [{"role": "user", "content": prompt}],
             "response_format": {
                 "type": "json_schema",
@@ -291,7 +293,7 @@ class OpenAIProvider(LLMProvider):
                 },
             },
         }
-        if self._reasoning_effort != "none" and self.model.startswith(("o1-", "o3-", "o4-")):
+        if self._reasoning_effort != "none" and is_reasoning_model:
             body["reasoning_effort"] = self._reasoning_effort
 
         try:

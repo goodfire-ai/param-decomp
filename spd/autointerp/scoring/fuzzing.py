@@ -174,11 +174,7 @@ async def run_fuzzing_scoring(
             key = f"{component.component_key}/trial{trial_idx}"
             correct_pos = {i + 1 for i, (_, is_correct) in enumerate(formatted) if is_correct}
             incorrect_pos = {i + 1 for i, (_, is_correct) in enumerate(formatted) if not is_correct}
-            jobs.append(
-                LLMJob(
-                    prompt=_build_fuzzing_prompt(label, formatted), schema=FUZZING_SCHEMA, key=key
-                )
-            )
+            jobs.append(LLMJob(prompt=_build_fuzzing_prompt(label, formatted), key=key))
             ground_truth[key] = _TrialGroundTruth(
                 component_key=component.component_key,
                 correct_positions=correct_pos,

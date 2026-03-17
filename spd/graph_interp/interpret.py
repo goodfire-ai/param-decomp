@@ -164,7 +164,6 @@ def run_graph_interp(
                     )
                     yield LLMJob(
                         prompt=make_prompt(component, stats, related),
-                        schema=LABEL_SCHEMA,
                         key=key,
                     )
 
@@ -228,7 +227,7 @@ def run_graph_interp(
                     label_max_words=config.label_max_words,
                     max_examples=config.max_examples,
                 )
-                yield LLMJob(prompt=prompt, schema=LABEL_SCHEMA, key=key)
+                yield LLMJob(prompt=prompt, key=key)
 
         if n_skipped:
             logger.warning(f"Skipping {n_skipped} components missing output or input labels")

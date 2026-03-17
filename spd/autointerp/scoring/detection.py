@@ -181,7 +181,6 @@ async def run_detection_scoring(
             jobs.append(
                 LLMJob(
                     prompt=_build_detection_prompt(label, formatted),
-                    schema=DETECTION_SCHEMA,
                     key=key,
                 )
             )
