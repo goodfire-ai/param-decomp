@@ -37,11 +37,14 @@ class CompareModelsConfig(BaseConfig):
         ..., description="Path to reference model (wandb: or local path)"
     )
 
-    density_threshold: float = Field(
-        ..., description="Minimum activation density for components to be included in comparison"
+    mean_ci_threshold: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Minimum mean causal importance for components to be included in comparison",
     )
     n_eval_steps: int = Field(
-        ..., description="Number of evaluation steps to compute activation densities"
+        ..., description="Number of evaluation steps to compute mean causal importances"
     )
 
     eval_batch_size: int = Field(..., description="Batch size for evaluation data loading")
@@ -66,7 +69,7 @@ class ModelComparator:
             config: CompareModelsConfig instance containing all configuration parameters
         """
         self.config = config
-        self.density_threshold = config.density_threshold
+        self.mean_ci_threshold = config.mean_ci_threshold
         self.device = get_device()
 
         logger.info(f"Loading current model from: {config.current_model_path}")
@@ -232,52 +235,125 @@ class ModelComparator:
             )
         )
 
-    def compute_activation_densities(
-        self, model: ComponentModel, eval_iterator: Iterator[Any], n_steps: int
-    ) -> dict[str, Float[Tensor, " C"]]:
-        """Compute activation densities using same logic as ComponentActivationDensity."""
+    def compute_ci_statistics(
+        self, batches: list[Any]
+    ) -> tuple[dict[str, Float[Tensor, " C"]], dict[str, Tensor]]:
+        """Compute mean causal importances and cosine similarity matrices per component."""
 
-        model_config = self.current_config if model is self.current_model else self.reference_config
-        ci_alive_threshold = self.config.ci_alive_threshold
+        if not batches:
+            raise ValueError("No evaluation batches provided for CI statistics computation.")
 
-        device = get_obj_device(model)
-        n_tokens = 0
-        component_activation_counts: dict[str, Float[Tensor, " C"]] = {
-            module_name: torch.zeros(model.module_to_c[module_name], device=device)
-            for module_name in model.components
-        }
+        device = get_obj_device(self.current_model)
 
-        model.eval()
+        component_ci_sums: dict[str, Float[Tensor, " C"]] = {}
+        component_example_counts: dict[str, Tensor] = {}
+        ci_cross_dot_products: dict[str, Tensor] = {}
+        ci_current_sq_sums: dict[str, Float[Tensor, " C"]] = {}
+        ci_reference_sq_sums: dict[str, Tensor] = {}
+
+        for module_name, current_module in self.current_model.components.items():
+            component_dim_current = current_module.C
+            component_ci_sums[module_name] = torch.zeros(component_dim_current, device=device)
+            component_example_counts[module_name] = torch.tensor(0.0, device=device)
+            ci_current_sq_sums[module_name] = torch.zeros(component_dim_current, device=device)
+
+            reference_module = self.reference_model.components.get(module_name)
+            if reference_module is not None:
+                ci_cross_dot_products[module_name] = torch.zeros(
+                    component_dim_current, reference_module.C, device=device
+                )
+                ci_reference_sq_sums[module_name] = torch.zeros(reference_module.C, device=device)
+
+        self.current_model.eval()
+        self.reference_model.eval()
+
         with torch.no_grad():
-            for _step in range(n_steps):
-                batch = extract_batch_data(next(eval_iterator))
+            for batch in batches:
                 batch = batch.to(self.device)
-                pre_weight_acts = model(batch, cache_type="input").cache
 
-                ci = model.calc_causal_importances(
-                    pre_weight_acts,
-                    sampling=model_config.sampling,
+                pre_weight_current = self.current_model(batch, cache_type="input").cache
+                ci_current = self.current_model.calc_causal_importances(
+                    pre_weight_current,
+                    sampling=self.current_config.sampling,
                 ).lower_leaky
 
-                n_tokens_batch = next(iter(ci.values())).shape[:-1].numel()
-                n_tokens += n_tokens_batch
+                pre_weight_reference = self.reference_model(batch, cache_type="input").cache
+                ci_reference = self.reference_model.calc_causal_importances(
+                    pre_weight_reference,
+                    sampling=self.reference_config.sampling,
+                ).lower_leaky
 
-                for module_name, ci_vals in ci.items():
-                    active_components = ci_vals > ci_alive_threshold
-                    n_activations_per_component = einops.reduce(
-                        active_components, "... C -> C", "sum"
+                for module_name, ci_vals_current in ci_current.items():
+                    ci_vals_current_fp32 = ci_vals_current.to(device=device, dtype=torch.float32)
+
+                    n_leading_dims = ci_vals_current_fp32.ndim - 1
+                    leading_dim_idxs = tuple(range(n_leading_dims))
+                    n_examples = float(ci_vals_current_fp32.shape[:n_leading_dims].numel())
+
+                    component_ci_sums[module_name] += ci_vals_current_fp32.sum(dim=leading_dim_idxs)
+                    component_example_counts[module_name] += n_examples
+
+                    if module_name not in ci_cross_dot_products:
+                        continue
+
+                    if module_name not in ci_reference:
+                        logger.warning(
+                            "Module %s not found in reference CI outputs. Skipping cosine similarity.",
+                            module_name,
+                        )
+                        continue
+
+                    ci_vals_reference = ci_reference[module_name]
+                    if ci_vals_current.shape != ci_vals_reference.shape:
+                        logger.warning(
+                            "Shape mismatch for module %s between current and reference CI outputs "
+                            "(%s vs %s). Skipping cosine similarity.",
+                            module_name,
+                            ci_vals_current.shape,
+                            ci_vals_reference.shape,
+                        )
+                        continue
+
+                    ci_vals_reference_fp32 = ci_vals_reference.to(
+                        device=device, dtype=torch.float32
                     )
-                    component_activation_counts[module_name] += n_activations_per_component
 
-        densities = {
-            module_name: component_activation_counts[module_name] / n_tokens
-            for module_name in model.components
+                    ci_current_flat = ci_vals_current_fp32.reshape(
+                        -1, ci_vals_current_fp32.shape[-1]
+                    )
+                    ci_reference_flat = ci_vals_reference_fp32.reshape(
+                        -1, ci_vals_reference_fp32.shape[-1]
+                    )
+
+                    ci_cross_dot_products[module_name] += (
+                        ci_current_flat.transpose(0, 1) @ ci_reference_flat
+                    )
+                    ci_current_sq_sums[module_name] += (ci_current_flat.square()).sum(dim=0)
+                    ci_reference_sq_sums[module_name] += (ci_reference_flat.square()).sum(dim=0)
+
+        mean_component_cis = {
+            module_name: component_ci_sums[module_name]
+            / component_example_counts[module_name].clamp_min(1.0)
+            for module_name in component_ci_sums
         }
 
-        return densities
+        ci_cosine_matrices: dict[str, Tensor] = {}
+        eps = 1e-12
+        for module_name, dot_products in ci_cross_dot_products.items():
+            current_norm = torch.sqrt(ci_current_sq_sums[module_name]).clamp_min(eps)
+            reference_norm = torch.sqrt(ci_reference_sq_sums[module_name]).clamp_min(eps)
+            denom = torch.outer(current_norm, reference_norm)
+            cos_matrix = torch.zeros_like(dot_products)
+            nonzero_mask = denom > 0
+            cos_matrix[nonzero_mask] = dot_products[nonzero_mask] / denom[nonzero_mask]
+            ci_cosine_matrices[module_name] = cos_matrix
+
+        return mean_component_cis, ci_cosine_matrices
 
     def compute_geometric_similarities(
-        self, activation_densities: dict[str, Float[Tensor, " C"]]
+        self,
+        mean_component_cis: dict[str, Float[Tensor, " C"]],
+        ci_cosine_similarities: dict[str, Tensor],
     ) -> dict[str, float]:
         """Compute geometric similarities between subcomponents."""
         similarities = {}
@@ -298,12 +374,15 @@ class ModelComparator:
             ref_V = reference_components.V
 
             # Filter out components that aren't active enough in the current model
-            alive_mask = activation_densities[layer_name] > self.config.density_threshold
+            alive_mask = mean_component_cis[layer_name] > self.mean_ci_threshold
             C_curr_alive = int(alive_mask.sum().item())
-            logger.info(f"Number of active components in {layer_name}: {C_curr_alive}")
+            logger.info(
+                f"Layer {layer_name}: {C_curr_alive} components above mean CI threshold "
+                f"{self.mean_ci_threshold}"
+            )
             if C_curr_alive == 0:
                 logger.warning(
-                    f"No components are active enough in {layer_name} for density threshold {self.config.density_threshold}. Skipping."
+                    f"No components meet the mean CI threshold {self.mean_ci_threshold} in {layer_name}. Skipping."
                 )
                 continue
 
@@ -340,6 +419,26 @@ class ModelComparator:
             similarities[f"max_abs_cosine_sim_min/{layer_name}"] = max_similarities.min().item()
             similarities[f"max_abs_cosine_sim_max/{layer_name}"] = max_similarities.max().item()
 
+            if layer_name in ci_cosine_similarities:
+                ci_cos_matrix = ci_cosine_similarities[layer_name]
+                if ci_cos_matrix.shape[0] != alive_mask.shape[0]:
+                    logger.warning(
+                        "Mismatch between CI cosine matrix rows (%s) and component count (%s) for %s.",
+                        ci_cos_matrix.shape[0],
+                        alive_mask.shape[0],
+                        layer_name,
+                    )
+                else:
+                    ci_cos_alive = ci_cos_matrix[alive_mask]
+                    if ci_cos_alive.numel() > 0:
+                        ci_cos_max = ci_cos_alive.max(dim=1).values
+                        similarities[f"ci_cosine_mean/{layer_name}"] = ci_cos_max.mean().item()
+                        similarities[f"ci_cosine_std/{layer_name}"] = ci_cos_max.std(
+                            unbiased=False
+                        ).item()
+                        similarities[f"ci_cosine_min/{layer_name}"] = ci_cos_max.min().item()
+                        similarities[f"ci_cosine_max/{layer_name}"] = ci_cos_max.max().item()
+
         metric_names = [
             "mean_max_abs_cosine_sim",
             "max_abs_cosine_sim_std",
@@ -347,7 +446,14 @@ class ModelComparator:
             "max_abs_cosine_sim_max",
         ]
 
-        for metric_name in metric_names:
+        cosine_metric_names = [
+            "ci_cosine_mean",
+            "ci_cosine_std",
+            "ci_cosine_min",
+            "ci_cosine_max",
+        ]
+
+        for metric_name in metric_names + cosine_metric_names:
             values = [
                 similarities[f"{metric_name}/{layer_name}"]
                 for layer_name in self.current_model.components
@@ -366,13 +472,28 @@ class ModelComparator:
             n_steps = self.config.n_eval_steps
         assert isinstance(n_steps, int)
 
-        logger.info("Computing activation densities for current model...")
-        activation_densities = self.compute_activation_densities(
-            self.current_model, eval_iterator, n_steps
-        )
+        batches: list[Any] = []
+        for step in range(n_steps):
+            try:
+                batch = extract_batch_data(next(eval_iterator))
+            except StopIteration:
+                if step == 0:
+                    raise ValueError("Evaluation iterator provided no batches.") from None
+                logger.warning(
+                    "Evaluation iterator exhausted after %s steps (requested %s).",
+                    step,
+                    n_steps,
+                )
+                break
+            batches.append(batch)
+
+        logger.info("Computing causal importance statistics for current and reference models...")
+        mean_component_cis, ci_cosine_similarities = self.compute_ci_statistics(batches)
 
         logger.info("Computing geometric similarities...")
-        similarities = self.compute_geometric_similarities(activation_densities)
+        similarities = self.compute_geometric_similarities(
+            mean_component_cis, ci_cosine_similarities
+        )
 
         return similarities
 

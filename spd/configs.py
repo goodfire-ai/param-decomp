@@ -842,6 +842,10 @@ class Config(BaseConfig):
         default=None,
         description="If set, apply grad norm clipping to the parameters of the CI functions",
     )
+    grad_clip_norm: PositiveFloat | None = Field(
+        default=None,
+        description="If set, clip gradient norm to this value before each optimiser step",
+    )
 
     # --- Faithfulness Warmup ---
     faithfulness_warmup_steps: NonNegativeInt = Field(
