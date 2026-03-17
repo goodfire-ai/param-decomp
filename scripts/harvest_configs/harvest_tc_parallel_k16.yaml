@@ -1,0 +1,19 @@
+config:
+  method_config:
+    type: TranscoderHarvestConfig
+    base_model_path: wandb:goodfire/spd/runs/t-9d2b8f02
+    artifact_paths:
+      h.0.mlp: mats-sprint/pile_e2e_sweep_jose/tc_parallel_k16_checkpoint_layer0_final:v0
+      h.1.mlp: mats-sprint/pile_e2e_sweep_jose/tc_parallel_k16_checkpoint_layer1_final:v0
+      h.2.mlp: mats-sprint/pile_e2e_sweep_jose/tc_parallel_k16_checkpoint_layer2_final:v0
+      h.3.mlp: mats-sprint/pile_e2e_sweep_jose/tc_parallel_k16_checkpoint_layer3_final:v0
+  n_batches: 20000
+  batch_size: 32
+  activation_examples_per_component: 1000
+  activation_context_tokens_per_side: 20
+  pmi_token_top_k: 40
+  max_examples_per_batch_per_component: 5
+n_gpus: 8
+time: '12:00:00'
+merge_time: 04:00:00
+merge_mem: 200G
