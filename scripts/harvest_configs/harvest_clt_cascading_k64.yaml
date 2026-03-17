@@ -1,0 +1,15 @@
+config:
+  method_config:
+    type: CLTHarvestConfig
+    base_model_path: wandb:goodfire/spd/runs/t-9d2b8f02
+    artifact_path: mats-sprint/pile_e2e_sweep_jose/clt_cascading_k64_checkpoint_final:v0
+  n_batches: 20000
+  batch_size: 32
+  activation_examples_per_component: 1000
+  activation_context_tokens_per_side: 20
+  pmi_token_top_k: 40
+  max_examples_per_batch_per_component: 5
+n_gpus: 8
+time: '12:00:00'
+merge_time: 04:00:00
+merge_mem: 200G
