@@ -1,0 +1,9 @@
+model_paths:
+  - "wandb:goodfire/spd/runs/s-e8bde534"
+  - "wandb:goodfire/spd/runs/s-73d2385c"
+
+mean_ci_threshold: 1e-4
+n_eval_steps: 50
+
+eval_batch_size: 128
+shuffle_data: false
