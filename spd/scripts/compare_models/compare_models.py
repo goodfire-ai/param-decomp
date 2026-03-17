@@ -539,12 +539,16 @@ def main(config_path: Path | str) -> None:
     logger.info("Starting model comparison...")
     similarities = comparator.run_comparison(eval_iterator)
 
-    save_file(similarities, output_dir / "similarity_results.json")
+    current_id = config.current_model_path.rstrip("/").split("/")[-1]
+    reference_id = config.reference_model_path.rstrip("/").split("/")[-1]
+    stem = f"{current_id}_vs_{reference_id}"
+
+    save_file(similarities, output_dir / f"{stem}.json")
 
     report = format_results_markdown(similarities, config)
-    (output_dir / "similarity_results.md").write_text(report)
+    (output_dir / f"{stem}.md").write_text(report)
 
-    logger.info(f"Comparison complete! Results saved to {output_dir}")
+    logger.info(f"Comparison complete! Results saved to {output_dir}/{stem}.*")
     logger.info("Similarity metrics:")
     for key, value in similarities.items():
         logger.info(f"  {key}: {value:.4f}")
