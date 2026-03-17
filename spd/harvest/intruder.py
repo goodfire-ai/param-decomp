@@ -144,7 +144,7 @@ class _TrialGroundTruth:
 async def run_intruder_scoring(
     components: list[ComponentData],
     model: str,
-    openrouter_api_key: str,
+    api_key: str,
     tokenizer_name: str,
     score_db: HarvestDB,
     eval_config: IntruderEvalConfig,
@@ -202,7 +202,7 @@ async def run_intruder_scoring(
     component_errors: defaultdict[str, int] = defaultdict(int)
 
     async for outcome in map_llm_calls(
-        openrouter_api_key=openrouter_api_key,
+        api_key=api_key,
         model=model,
         reasoning_effort=eval_config.reasoning_effort,
         jobs=jobs,

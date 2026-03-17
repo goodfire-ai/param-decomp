@@ -47,7 +47,7 @@ MakePrompt = Callable[["ComponentData", "TokenPRLift", list[RelatedComponent]], 
 
 
 def run_graph_interp(
-    openrouter_api_key: str,
+    api_key: str,
     config: GraphInterpConfig,
     harvest: HarvestRepo,
     attribution_storage: DatasetAttributionStorage,
@@ -79,7 +79,7 @@ def run_graph_interp(
         jobs: Iterable[LLMJob], n_total: int | None = None
     ) -> AsyncGenerator[LLMResult | LLMError]:
         async for result in map_llm_calls(
-            openrouter_api_key=openrouter_api_key,
+            api_key=api_key,
             model=config.model,
             reasoning_effort=config.reasoning_effort,
             jobs=jobs,

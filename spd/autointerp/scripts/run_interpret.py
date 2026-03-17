@@ -5,7 +5,6 @@ Usage:
     spd-autointerp <wandb_path>  # SLURM submission
 """
 
-import os
 from datetime import datetime
 from typing import Any
 
@@ -29,8 +28,9 @@ def main(
     interp_config = AutointerpConfig.model_validate(config_json)
 
     load_dotenv()
-    openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
-    assert openrouter_api_key, "OPENROUTER_API_KEY not set"
+    from spd.autointerp.providers import get_api_key_for_model
+
+    api_key = get_api_key_for_model(interp_config.model)
 
     harvest = HarvestRepo(decomposition_id, subrun_id=harvest_subrun_id, readonly=False)
 
@@ -53,7 +53,7 @@ def main(
     adapter = adapter_from_id(decomposition_id)
 
     run_interpret(
-        openrouter_api_key=openrouter_api_key,
+        api_key=api_key,
         model=interp_config.model,
         reasoning_effort=interp_config.reasoning_effort,
         limit=interp_config.limit,

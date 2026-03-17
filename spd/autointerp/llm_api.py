@@ -9,28 +9,13 @@ from collections.abc import AsyncGenerator, Iterable, Sized
 from dataclasses import dataclass, field
 from typing import Any
 
-import httpx
 from aiolimiter import AsyncLimiter
-from openrouter import OpenRouter
-from openrouter.components import (
-    Effort,
-    JSONSchemaConfig,
-    Reasoning,
-    ResponseFormatJSONSchema,
-)
-from openrouter.errors import (
-    BadGatewayResponseError,
-    ChatError,
-    EdgeNetworkTimeoutResponseError,
-    InternalServerResponseError,
-    OpenRouterDefaultError,
-    OpenRouterError,
-    ProviderOverloadedResponseError,
-    RequestTimeoutResponseError,
-    ServiceUnavailableResponseError,
-    TooManyRequestsResponseError,
-)
 
+from spd.autointerp.providers import (
+    ReasoningEffort,
+    RetryableAPIError,
+    create_provider,
+)
 from spd.log import logger
 
 _MAX_RETRIES = 8
@@ -40,29 +25,6 @@ _JITTER_FACTOR = 0.5
 _REQUEST_TIMEOUT_MS = 120_000
 _JSON_PARSE_RETRIES = 3
 _MAX_BACKOFF_S = 600.0
-
-_RETRYABLE_ERRORS = (
-    TooManyRequestsResponseError,
-    ProviderOverloadedResponseError,
-    ServiceUnavailableResponseError,
-    BadGatewayResponseError,
-    InternalServerResponseError,
-    RequestTimeoutResponseError,
-    EdgeNetworkTimeoutResponseError,
-    ChatError,
-    OpenRouterDefaultError,
-    httpx.TransportError,
-)
-
-
-def make_response_format(name: str, schema: dict[str, Any]) -> ResponseFormatJSONSchema:
-    return ResponseFormatJSONSchema(
-        json_schema=JSONSchemaConfig(
-            name=name,
-            schema_={**schema, "additionalProperties": False},
-            strict=True,
-        )
-    )
 
 
 @dataclass
@@ -141,36 +103,15 @@ class _GlobalBackoff:
             await asyncio.sleep(delay)
 
 
-async def _get_model_pricing(api: OpenRouter, model_id: str) -> tuple[float, float]:
-    """Returns (input_price, output_price) per token."""
-    response = await api.models.list_async()
-    for model in response.data:
-        if model.id == model_id:
-            return float(model.pricing.prompt), float(model.pricing.completion)
-    raise ValueError(f"Model {model_id} not found")
-
-
-def _get_retry_after(e: Exception) -> float | None:
-    if not isinstance(e, OpenRouterError):
-        return None
-    val = e.headers.get("retry-after")
-    if val is None:
-        return None
-    try:
-        return float(val)
-    except ValueError:
-        return None
-
-
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 
 async def map_llm_calls(
-    openrouter_api_key: str,
+    api_key: str,
     model: str,
-    reasoning_effort: Effort,
+    reasoning_effort: ReasoningEffort,
     jobs: Iterable[LLMJob],
     max_tokens: int,
     max_concurrent: int,
@@ -190,6 +131,11 @@ async def map_llm_calls(
     generator body naturally interleaves with async HTTP calls.
 
     Pass a shared CostTracker to accumulate costs across multiple calls.
+
+    Provider is inferred from model string:
+      - Contains "/" → OpenRouter (e.g. "google/gemini-3.1-pro-preview")
+      - Starts with "claude-" → first-party Anthropic API
+      - Starts with "gpt-"/"o1-"/"o3-"/"o4-" → first-party OpenAI API
     """
     if n_total is None and isinstance(jobs, Sized):
         n_total = len(jobs)
@@ -198,8 +144,9 @@ async def map_llm_calls(
         "Pass cost_limit_usd or cost_tracker, not both"
     )
 
-    async with OpenRouter(api_key=openrouter_api_key) as api:
-        input_price, output_price = await _get_model_pricing(api, model)
+    provider = create_provider(api_key, model)
+    try:
+        input_price, output_price = await provider.get_pricing()
         if cost_tracker is not None:
             cost = cost_tracker
             cost.input_price_per_token = input_price
@@ -212,8 +159,6 @@ async def map_llm_calls(
             )
         rate_limiter = AsyncLimiter(max_rate=max_requests_per_minute, time_period=60)
         backoff = _GlobalBackoff()
-        reasoning = Reasoning(effort=reasoning_effort)
-        response_format = make_response_format("response", response_schema)
 
         async def chat(prompt: str, context_label: str) -> str:
             if cost.over_budget():
@@ -224,38 +169,23 @@ async def map_llm_calls(
                 await backoff.wait()
                 async with rate_limiter:
                     try:
-                        response = await api.chat.send_async(
-                            model=model,
+                        response = await provider.chat(
+                            prompt=prompt,
                             max_tokens=max_tokens,
-                            messages=[{"role": "user", "content": prompt}],
+                            response_schema=response_schema,
+                            reasoning_effort=reasoning_effort,
                             timeout_ms=_REQUEST_TIMEOUT_MS,
-                            response_format=response_format,
-                            reasoning=reasoning,
                         )
-                        choice = response.choices[0]
-                        message = choice.message
-                        assert isinstance(message.content, str)
-                        assert response.usage is not None
-
-                        if choice.finish_reason == "length":
-                            logger.warning(
-                                f"{context_label}: Response truncated at {max_tokens} tokens"
-                            )
-
-                        await cost.add(
-                            int(response.usage.prompt_tokens),
-                            int(response.usage.completion_tokens),
-                        )
-                        return message.content
-                    except _RETRYABLE_ERRORS as e:
+                        await cost.add(response.input_tokens, response.output_tokens)
+                        return response.content
+                    except RetryableAPIError as e:
                         last_error = e
                         if attempt == _MAX_RETRIES - 1:
                             break
 
-                        retry_after = _get_retry_after(e)
-                        if retry_after is not None:
-                            await backoff.set_backoff(retry_after)
-                            delay = retry_after
+                        if e.retry_after is not None:
+                            await backoff.set_backoff(e.retry_after)
+                            delay = e.retry_after
                         else:
                             delay = min(_BASE_DELAY_S * (2**attempt), _MAX_DELAY_S)
                             jitter = delay * _JITTER_FACTOR * random.random()
@@ -263,7 +193,7 @@ async def map_llm_calls(
 
                         logger.warning(
                             f"[retry {attempt + 1}/{_MAX_RETRIES}] ({context_label}) "
-                            f"{type(e).__name__}, backing off {delay:.1f}s"
+                            f"{type(e).__name__}: {e}, backing off {delay:.1f}s"
                         )
                         await asyncio.sleep(delay)
 
@@ -305,11 +235,10 @@ async def map_llm_calls(
 
             n_done += 1
             total_str = f"/{n_total}" if n_total is not None else ""
-            if n_done == 1 or n_done % 10 == 0 or n_done == n_total:
-                logger.info(
-                    f"[{n_done}{total_str}] ${cost.cost_usd():.2f} "
-                    f"({cost.input_tokens:,} in, {cost.output_tokens:,} out)"
-                )
+            logger.info(
+                f"[{n_done}{total_str}] ${cost.cost_usd():.2f} "
+                f"({cost.input_tokens:,} in, {cost.output_tokens:,} out)"
+            )
 
         async def run_all() -> None:
             job_queue: asyncio.Queue[LLMJob | None] = asyncio.Queue(maxsize=max_concurrent)
@@ -348,3 +277,5 @@ async def map_llm_calls(
                 f"Final cost: ${cost.cost_usd():.2f} "
                 f"({cost.input_tokens:,} in, {cost.output_tokens:,} out)"
             )
+    finally:
+        await provider.close()

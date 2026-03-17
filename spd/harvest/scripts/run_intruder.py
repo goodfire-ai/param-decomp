@@ -1,5 +1,4 @@
 import asyncio
-import os
 from typing import Any
 
 from dotenv import load_dotenv
@@ -19,10 +18,12 @@ def main(
 ) -> None:
     assert isinstance(config_json, dict), f"Expected dict from fire, got {type(config_json)}"
     load_dotenv()
-    openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
-    assert openrouter_api_key, "OPENROUTER_API_KEY not set"
 
     eval_config = IntruderEvalConfig.model_validate(config_json)
+
+    from spd.autointerp.providers import get_api_key_for_model
+
+    api_key = get_api_key_for_model(eval_config.model)
 
     tokenizer_name = adapter_from_id(decomposition_id).tokenizer_name
 
@@ -37,7 +38,7 @@ def main(
         run_intruder_scoring(
             components=components,
             model=eval_config.model,
-            openrouter_api_key=openrouter_api_key,
+            api_key=api_key,
             tokenizer_name=tokenizer_name,
             score_db=score_db,
             eval_config=eval_config,

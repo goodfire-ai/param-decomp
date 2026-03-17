@@ -12,13 +12,12 @@ import random
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 
-from openrouter.components import Effort
-
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.app.backend.utils import delimit_tokens
 from spd.autointerp.config import FuzzingEvalConfig
 from spd.autointerp.db import InterpDB
 from spd.autointerp.llm_api import LLMError, LLMJob, LLMResult, map_llm_calls
+from spd.autointerp.providers import ReasoningEffort
 from spd.autointerp.repo import InterpRepo
 from spd.harvest.schemas import ActivationExample, ComponentData
 from spd.log import logger
@@ -119,8 +118,8 @@ async def run_fuzzing_scoring(
     interp_repo: InterpRepo,
     score_db: InterpDB,
     model: str,
-    reasoning_effort: Effort,
-    openrouter_api_key: str,
+    reasoning_effort: ReasoningEffort,
+    api_key: str,
     tokenizer_name: str,
     config: FuzzingEvalConfig,
     max_concurrent: int,
@@ -192,7 +191,7 @@ async def run_fuzzing_scoring(
     component_errors: defaultdict[str, int] = defaultdict(int)
 
     async for outcome in map_llm_calls(
-        openrouter_api_key=openrouter_api_key,
+        api_key=api_key,
         model=model,
         reasoning_effort=reasoning_effort,
         jobs=jobs,
