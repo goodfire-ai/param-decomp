@@ -73,7 +73,7 @@ def submit_autointerp(
         {
             "Job ID": interpret_result.job_id,
             "Decomposition ID": decomposition_id,
-            "Model": config.config.model,
+            "Model": config.config.llm.model,
             "Log": interpret_result.log_pattern,
         }
     )

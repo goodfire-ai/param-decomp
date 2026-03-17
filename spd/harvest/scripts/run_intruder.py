@@ -23,7 +23,7 @@ def main(
 
     from spd.autointerp.providers import create_provider
 
-    provider = create_provider(eval_config.model, eval_config.reasoning_effort)
+    provider = create_provider(eval_config.llm)
 
     tokenizer_name = adapter_from_id(decomposition_id).tokenizer_name
 

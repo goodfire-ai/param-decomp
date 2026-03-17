@@ -30,7 +30,7 @@ def main(
     load_dotenv()
     from spd.autointerp.providers import create_provider
 
-    provider = create_provider(config.model, config.reasoning_effort)
+    provider = create_provider(config.llm)
     subrun_dir = get_graph_interp_subrun_dir(decomposition_id, subrun_id)
     subrun_dir.mkdir(parents=True, exist_ok=True)
     config.to_file(subrun_dir / "config.yaml")

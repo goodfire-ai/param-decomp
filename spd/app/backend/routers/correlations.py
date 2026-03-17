@@ -168,7 +168,7 @@ async def request_component_interpretation(
     """
     from spd.autointerp.config import CompactSkepticalConfig
     from spd.autointerp.interpret import interpret_component
-    from spd.autointerp.providers import create_provider
+    from spd.autointerp.providers import OpenRouterLLMConfig, create_provider
 
     assert loaded.harvest is not None, "No harvest data available"
     assert loaded.interp is not None, "No autointerp data available"
@@ -186,7 +186,7 @@ async def request_component_interpretation(
     assert component_data is not None, f"Component {component_key} not found in harvest"
 
     try:
-        provider = create_provider("google/gemini-3-flash-preview", "none")
+        provider = create_provider(OpenRouterLLMConfig(reasoning_effort="none"))
     except (AssertionError, ValueError) as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 

@@ -30,7 +30,7 @@ def main(
     load_dotenv()
     from spd.autointerp.providers import create_provider
 
-    provider = create_provider(interp_config.model, interp_config.reasoning_effort)
+    provider = create_provider(interp_config.llm)
 
     harvest = HarvestRepo(decomposition_id, subrun_id=harvest_subrun_id, readonly=False)
 

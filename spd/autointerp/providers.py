@@ -1,24 +1,58 @@
-"""LLM provider implementations for multi-provider autointerp.
+"""LLM provider abstraction for multi-provider autointerp.
 
-Provider routing: model string determines which API to call.
-  - Contains "/" → OpenRouter (e.g. "google/gemini-3.1-pro-preview", "anthropic/claude-sonnet-4")
-  - Starts with "claude-" → first-party Anthropic API
-  - Starts with "gpt-", "o1-", "o3-", "o4-", "chatgpt-" → first-party OpenAI API
+LLMConfig discriminated union determines which API to call:
+  - OpenRouterLLMConfig → OpenRouter API (any model via vendor/model ID)
+  - AnthropicLLMConfig → first-party Anthropic API (tool_use for structured output)
+  - OpenAILLMConfig → first-party OpenAI API (json_schema response format)
 """
 
 import json
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Literal, override
+from typing import Annotated, Any, Literal, override
 
 import httpx
+from pydantic import Field
 
+from spd.base_config import BaseConfig
 from spd.log import logger
 
 ReasoningEffort = Literal["none", "low", "medium", "high"]
 
 ProviderName = Literal["openrouter", "anthropic", "openai"]
+
+# ---------------------------------------------------------------------------
+# LLM config (discriminated union)
+# ---------------------------------------------------------------------------
+
+
+class OpenRouterLLMConfig(BaseConfig):
+    type: Literal["openrouter"] = "openrouter"
+    model: str = "google/gemini-3-flash-preview"
+    reasoning_effort: ReasoningEffort = "low"
+
+
+class AnthropicLLMConfig(BaseConfig):
+    type: Literal["anthropic"] = "anthropic"
+    model: str = "claude-sonnet-4-20250514"
+
+
+class OpenAILLMConfig(BaseConfig):
+    type: Literal["openai"] = "openai"
+    model: str
+    reasoning_effort: ReasoningEffort = "none"
+
+
+LLMConfig = Annotated[
+    OpenRouterLLMConfig | AnthropicLLMConfig | OpenAILLMConfig,
+    Field(discriminator="type"),
+]
+
+
+# ---------------------------------------------------------------------------
+# Provider internals
+# ---------------------------------------------------------------------------
 
 _PROVIDER_ENV_VARS: dict[ProviderName, str] = {
     "openrouter": "OPENROUTER_API_KEY",
@@ -26,7 +60,6 @@ _PROVIDER_ENV_VARS: dict[ProviderName, str] = {
     "openai": "OPENAI_API_KEY",
 }
 
-# Per-token pricing (input, output). Approximate — used for cost tracking, not billing.
 _ANTHROPIC_PRICING: dict[str, tuple[float, float]] = {
     "claude-sonnet-4-20250514": (3.0 / 1_000_000, 15.0 / 1_000_000),
     "claude-opus-4-20250514": (15.0 / 1_000_000, 75.0 / 1_000_000),
@@ -34,35 +67,14 @@ _ANTHROPIC_PRICING: dict[str, tuple[float, float]] = {
 }
 
 _OPENAI_PRICING: dict[str, tuple[float, float]] = {
-    "gpt-4o": (2.50 / 1_000_000, 10.0 / 1_000_000),
-    "gpt-4o-mini": (0.15 / 1_000_000, 0.60 / 1_000_000),
-    "gpt-4.1": (2.0 / 1_000_000, 8.0 / 1_000_000),
-    "gpt-4.1-mini": (0.40 / 1_000_000, 1.60 / 1_000_000),
-    "gpt-4.1-nano": (0.10 / 1_000_000, 0.40 / 1_000_000),
-    "o3": (2.0 / 1_000_000, 8.0 / 1_000_000),
-    "o3-mini": (1.10 / 1_000_000, 4.40 / 1_000_000),
-    "o4-mini": (1.10 / 1_000_000, 4.40 / 1_000_000),
+    # Add GPT-5 series pricing here when available
 }
 
 
-def infer_provider(model: str) -> ProviderName:
-    if "/" in model:
-        return "openrouter"
-    if model.startswith("claude-"):
-        return "anthropic"
-    if model.startswith(("gpt-", "o1-", "o3-", "o4-", "chatgpt-")):
-        return "openai"
-    raise ValueError(
-        f"Cannot infer provider for model '{model}'. "
-        "Use 'vendor/model' for OpenRouter, 'claude-*' for Anthropic, 'gpt-*'/'o*-*' for OpenAI."
-    )
-
-
-def get_api_key_for_model(model: str) -> str:
-    provider = infer_provider(model)
-    env_var = _PROVIDER_ENV_VARS[provider]
+def _get_api_key(provider_name: ProviderName) -> str:
+    env_var = _PROVIDER_ENV_VARS[provider_name]
     key = os.environ.get(env_var)
-    assert key, f"{env_var} not set (required for model '{model}')"
+    assert key, f"{env_var} not set"
     return key
 
 
@@ -189,9 +201,8 @@ class OpenRouterProvider(LLMProvider):
 
 
 class AnthropicProvider(LLMProvider):
-    def __init__(self, api_key: str, model: str, reasoning_effort: ReasoningEffort):
+    def __init__(self, api_key: str, model: str):
         self.model = model
-        self._reasoning_effort = reasoning_effort
         self._client = httpx.AsyncClient(
             base_url="https://api.anthropic.com",
             headers={
@@ -335,13 +346,21 @@ class OpenAIProvider(LLMProvider):
         await self._client.aclose()
 
 
-def create_provider(model: str, reasoning_effort: ReasoningEffort) -> LLMProvider:
-    """Create a provider from model string, auto-resolving the API key from env."""
-    api_key = get_api_key_for_model(model)
-    match infer_provider(model):
-        case "openrouter":
-            return OpenRouterProvider(api_key, model, reasoning_effort)
-        case "anthropic":
-            return AnthropicProvider(api_key, model, reasoning_effort)
-        case "openai":
-            return OpenAIProvider(api_key, model, reasoning_effort)
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def create_provider(
+    config: OpenRouterLLMConfig | AnthropicLLMConfig | OpenAILLMConfig,
+) -> LLMProvider:
+    match config:
+        case OpenRouterLLMConfig():
+            api_key = _get_api_key("openrouter")
+            return OpenRouterProvider(api_key, config.model, config.reasoning_effort)
+        case AnthropicLLMConfig():
+            api_key = _get_api_key("anthropic")
+            return AnthropicProvider(api_key, config.model)
+        case OpenAILLMConfig():
+            api_key = _get_api_key("openai")
+            return OpenAIProvider(api_key, config.model, config.reasoning_effort)
