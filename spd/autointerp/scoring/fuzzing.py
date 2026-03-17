@@ -12,13 +12,12 @@ import random
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 
-from openrouter.components import Effort
-
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.app.backend.utils import delimit_tokens
 from spd.autointerp.config import FuzzingEvalConfig
 from spd.autointerp.db import InterpDB
 from spd.autointerp.llm_api import LLMError, LLMJob, LLMResult, map_llm_calls
+from spd.autointerp.providers import LLMProvider
 from spd.autointerp.repo import InterpRepo
 from spd.harvest.schemas import ActivationExample, ComponentData
 from spd.log import logger
@@ -118,9 +117,7 @@ async def run_fuzzing_scoring(
     components: list[ComponentData],
     interp_repo: InterpRepo,
     score_db: InterpDB,
-    model: str,
-    reasoning_effort: Effort,
-    openrouter_api_key: str,
+    provider: LLMProvider,
     tokenizer_name: str,
     config: FuzzingEvalConfig,
     max_concurrent: int,
@@ -177,11 +174,7 @@ async def run_fuzzing_scoring(
             key = f"{component.component_key}/trial{trial_idx}"
             correct_pos = {i + 1 for i, (_, is_correct) in enumerate(formatted) if is_correct}
             incorrect_pos = {i + 1 for i, (_, is_correct) in enumerate(formatted) if not is_correct}
-            jobs.append(
-                LLMJob(
-                    prompt=_build_fuzzing_prompt(label, formatted), schema=FUZZING_SCHEMA, key=key
-                )
-            )
+            jobs.append(LLMJob(prompt=_build_fuzzing_prompt(label, formatted), key=key))
             ground_truth[key] = _TrialGroundTruth(
                 component_key=component.component_key,
                 correct_positions=correct_pos,
@@ -211,9 +204,7 @@ async def run_fuzzing_scoring(
         score_db.save_score(ck, "fuzzing", score, json.dumps(asdict(result)))
 
     async for outcome in map_llm_calls(
-        openrouter_api_key=openrouter_api_key,
-        model=model,
-        reasoning_effort=reasoning_effort,
+        provider=provider,
         jobs=jobs,
         max_tokens=5000,
         max_concurrent=max_concurrent,

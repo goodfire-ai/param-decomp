@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.app.backend.utils import delimit_tokens
 from spd.autointerp.llm_api import LLMError, LLMJob, LLMResult, map_llm_calls
+from spd.autointerp.providers import LLMProvider
 from spd.harvest.config import IntruderEvalConfig
 from spd.harvest.db import HarvestDB
 from spd.harvest.schemas import ActivationExample, ComponentData
@@ -143,8 +144,7 @@ class _TrialGroundTruth:
 
 async def run_intruder_scoring(
     components: list[ComponentData],
-    model: str,
-    openrouter_api_key: str,
+    provider: LLMProvider,
     tokenizer_name: str,
     score_db: HarvestDB,
     eval_config: IntruderEvalConfig,
@@ -188,7 +188,6 @@ async def run_intruder_scoring(
             jobs.append(
                 LLMJob(
                     prompt=_build_prompt(real_examples, intruder, intruder_pos, app_tok),
-                    schema=INTRUDER_SCHEMA,
                     key=key,
                 )
             )
@@ -216,9 +215,7 @@ async def run_intruder_scoring(
         score_db.save_score(ck, "intruder", score, json.dumps(asdict(result)))
 
     async for outcome in map_llm_calls(
-        openrouter_api_key=openrouter_api_key,
-        model=model,
-        reasoning_effort=eval_config.reasoning_effort,
+        provider=provider,
         jobs=jobs,
         max_tokens=300,
         max_concurrent=eval_config.max_concurrent,
