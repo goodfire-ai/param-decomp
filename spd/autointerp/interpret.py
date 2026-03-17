@@ -12,7 +12,7 @@ from spd.autointerp.llm_api import (
     LLMResult,
     map_llm_calls,
 )
-from spd.autointerp.providers import ReasoningEffort, create_provider
+from spd.autointerp.providers import LLMProvider
 from spd.autointerp.schemas import InterpretationResult, ModelMetadata
 from spd.autointerp.strategies.dispatch import INTERPRETATION_SCHEMA, format_prompt
 from spd.harvest.analysis import TokenPRLift, get_input_token_stats, get_output_token_stats
@@ -24,9 +24,7 @@ MAX_CONCURRENT = 50
 
 
 async def interpret_component(
-    api_key: str,
-    model: str,
-    reasoning_effort: ReasoningEffort,
+    provider: LLMProvider,
     strategy: StrategyConfig,
     component: ComponentData,
     model_metadata: ModelMetadata,
@@ -46,19 +44,12 @@ async def interpret_component(
         context_tokens_per_side=context_tokens_per_side,
     )
 
-    schema = INTERPRETATION_SCHEMA
-    provider = create_provider(api_key, model)
-
-    try:
-        response = await provider.chat(
-            prompt=prompt,
-            max_tokens=8000,
-            response_schema=schema,
-            reasoning_effort=reasoning_effort,
-            timeout_ms=120_000,
-        )
-    finally:
-        await provider.close()
+    response = await provider.chat(
+        prompt=prompt,
+        max_tokens=8000,
+        response_schema=INTERPRETATION_SCHEMA,
+        timeout_ms=120_000,
+    )
 
     raw = response.content
     parsed = json.loads(raw)
@@ -82,9 +73,7 @@ async def interpret_component(
 
 
 def run_interpret(
-    api_key: str,
-    model: str,
-    reasoning_effort: ReasoningEffort,
+    provider: LLMProvider,
     limit: int | None,
     cost_limit_usd: float | None,
     max_requests_per_minute: int,
@@ -150,9 +139,7 @@ def run_interpret(
             n_errors = 0
 
             async for outcome in map_llm_calls(
-                api_key=api_key,
-                model=model,
-                reasoning_effort=reasoning_effort,
+                provider=provider,
                 jobs=build_jobs(),
                 max_tokens=8000,
                 max_concurrent=max_concurrent,

@@ -28,9 +28,9 @@ def main(
     interp_config = AutointerpConfig.model_validate(config_json)
 
     load_dotenv()
-    from spd.autointerp.providers import get_api_key_for_model
+    from spd.autointerp.providers import create_provider
 
-    api_key = get_api_key_for_model(interp_config.model)
+    provider = create_provider(interp_config.model, interp_config.reasoning_effort)
 
     harvest = HarvestRepo(decomposition_id, subrun_id=harvest_subrun_id, readonly=False)
 
@@ -53,9 +53,7 @@ def main(
     adapter = adapter_from_id(decomposition_id)
 
     run_interpret(
-        api_key=api_key,
-        model=interp_config.model,
-        reasoning_effort=interp_config.reasoning_effort,
+        provider=provider,
         limit=interp_config.limit,
         cost_limit_usd=interp_config.cost_limit_usd,
         max_requests_per_minute=interp_config.max_requests_per_minute,

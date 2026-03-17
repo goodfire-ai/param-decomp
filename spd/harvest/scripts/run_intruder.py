@@ -21,9 +21,9 @@ def main(
 
     eval_config = IntruderEvalConfig.model_validate(config_json)
 
-    from spd.autointerp.providers import get_api_key_for_model
+    from spd.autointerp.providers import create_provider
 
-    api_key = get_api_key_for_model(eval_config.model)
+    provider = create_provider(eval_config.model, eval_config.reasoning_effort)
 
     tokenizer_name = adapter_from_id(decomposition_id).tokenizer_name
 
@@ -37,8 +37,7 @@ def main(
     asyncio.run(
         run_intruder_scoring(
             components=components,
-            model=eval_config.model,
-            api_key=api_key,
+            provider=provider,
             tokenizer_name=tokenizer_name,
             score_db=score_db,
             eval_config=eval_config,

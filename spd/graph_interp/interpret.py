@@ -17,6 +17,7 @@ from typing import Literal
 
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.autointerp.llm_api import CostTracker, LLMError, LLMJob, LLMResult, map_llm_calls
+from spd.autointerp.providers import LLMProvider
 from spd.autointerp.schemas import ModelMetadata
 from spd.dataset_attributions.storage import (
     AttrMetric,
@@ -47,7 +48,7 @@ MakePrompt = Callable[["ComponentData", "TokenPRLift", list[RelatedComponent]], 
 
 
 def run_graph_interp(
-    api_key: str,
+    provider: LLMProvider,
     config: GraphInterpConfig,
     harvest: HarvestRepo,
     attribution_storage: DatasetAttributionStorage,
@@ -79,9 +80,7 @@ def run_graph_interp(
         jobs: Iterable[LLMJob], n_total: int | None = None
     ) -> AsyncGenerator[LLMResult | LLMError]:
         async for result in map_llm_calls(
-            api_key=api_key,
-            model=config.model,
-            reasoning_effort=config.reasoning_effort,
+            provider=provider,
             jobs=jobs,
             max_tokens=8000,
             max_concurrent=config.max_concurrent,

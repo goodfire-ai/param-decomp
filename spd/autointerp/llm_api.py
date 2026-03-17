@@ -11,11 +11,7 @@ from typing import Any
 
 from aiolimiter import AsyncLimiter
 
-from spd.autointerp.providers import (
-    ReasoningEffort,
-    RetryableAPIError,
-    create_provider,
-)
+from spd.autointerp.providers import LLMProvider, RetryableAPIError
 from spd.log import logger
 
 _MAX_RETRIES = 8
@@ -109,9 +105,7 @@ class _GlobalBackoff:
 
 
 async def map_llm_calls(
-    api_key: str,
-    model: str,
-    reasoning_effort: ReasoningEffort,
+    provider: LLMProvider,
     jobs: Iterable[LLMJob],
     max_tokens: int,
     max_concurrent: int,
@@ -131,11 +125,6 @@ async def map_llm_calls(
     generator body naturally interleaves with async HTTP calls.
 
     Pass a shared CostTracker to accumulate costs across multiple calls.
-
-    Provider is inferred from model string:
-      - Contains "/" → OpenRouter (e.g. "google/gemini-3.1-pro-preview")
-      - Starts with "claude-" → first-party Anthropic API
-      - Starts with "gpt-"/"o1-"/"o3-"/"o4-" → first-party OpenAI API
     """
     if n_total is None and isinstance(jobs, Sized):
         n_total = len(jobs)
@@ -144,138 +133,133 @@ async def map_llm_calls(
         "Pass cost_limit_usd or cost_tracker, not both"
     )
 
-    provider = create_provider(api_key, model)
-    try:
-        input_price, output_price = await provider.get_pricing()
-        if cost_tracker is not None:
-            cost = cost_tracker
-            cost.input_price_per_token = input_price
-            cost.output_price_per_token = output_price
-        else:
-            cost = CostTracker(
-                input_price_per_token=input_price,
-                output_price_per_token=output_price,
-                limit_usd=cost_limit_usd,
-            )
-        rate_limiter = AsyncLimiter(max_rate=max_requests_per_minute, time_period=60)
-        backoff = _GlobalBackoff()
+    input_price, output_price = await provider.get_pricing()
+    if cost_tracker is not None:
+        cost = cost_tracker
+        cost.input_price_per_token = input_price
+        cost.output_price_per_token = output_price
+    else:
+        cost = CostTracker(
+            input_price_per_token=input_price,
+            output_price_per_token=output_price,
+            limit_usd=cost_limit_usd,
+        )
+    rate_limiter = AsyncLimiter(max_rate=max_requests_per_minute, time_period=60)
+    backoff = _GlobalBackoff()
 
-        async def chat(prompt: str, context_label: str) -> str:
-            if cost.over_budget():
-                raise _BudgetExceededError(f"${cost.cost_usd():.2f}")
+    async def chat(prompt: str, context_label: str) -> str:
+        if cost.over_budget():
+            raise _BudgetExceededError(f"${cost.cost_usd():.2f}")
 
-            last_error: Exception | None = None
-            for attempt in range(_MAX_RETRIES):
-                await backoff.wait()
-                async with rate_limiter:
-                    try:
-                        response = await provider.chat(
-                            prompt=prompt,
-                            max_tokens=max_tokens,
-                            response_schema=response_schema,
-                            reasoning_effort=reasoning_effort,
-                            timeout_ms=_REQUEST_TIMEOUT_MS,
-                        )
-                        await cost.add(response.input_tokens, response.output_tokens)
-                        return response.content
-                    except RetryableAPIError as e:
-                        last_error = e
-                        if attempt == _MAX_RETRIES - 1:
-                            break
-
-                        if e.retry_after is not None:
-                            await backoff.set_backoff(e.retry_after)
-                            delay = e.retry_after
-                        else:
-                            delay = min(_BASE_DELAY_S * (2**attempt), _MAX_DELAY_S)
-                            jitter = delay * _JITTER_FACTOR * random.random()
-                            delay = delay + jitter
-
-                        logger.warning(
-                            f"[retry {attempt + 1}/{_MAX_RETRIES}] ({context_label}) "
-                            f"{type(e).__name__}: {e}, backing off {delay:.1f}s"
-                        )
-                        await asyncio.sleep(delay)
-
-            assert last_error is not None
-            raise RuntimeError(f"Max retries exceeded for {context_label}: {last_error}")
-
-        queue: asyncio.Queue[LLMResult | LLMError | None] = asyncio.Queue()
-
-        n_done = 0
-        budget_exceeded = False
-
-        async def process_one(job: LLMJob) -> None:
-            nonlocal n_done, budget_exceeded
-            if budget_exceeded:
-                return
-
-            try:
-                raw = ""
-                parsed = None
-                for attempt in range(_JSON_PARSE_RETRIES):
-                    raw = await chat(job.prompt, job.key)
-                    try:
-                        parsed = json.loads(raw)
+        last_error: Exception | None = None
+        for attempt in range(_MAX_RETRIES):
+            await backoff.wait()
+            async with rate_limiter:
+                try:
+                    response = await provider.chat(
+                        prompt=prompt,
+                        max_tokens=max_tokens,
+                        response_schema=response_schema,
+                        timeout_ms=_REQUEST_TIMEOUT_MS,
+                    )
+                    await cost.add(response.input_tokens, response.output_tokens)
+                    return response.content
+                except RetryableAPIError as e:
+                    last_error = e
+                    if attempt == _MAX_RETRIES - 1:
                         break
-                    except json.JSONDecodeError:
-                        if attempt == _JSON_PARSE_RETRIES - 1:
-                            raise
-                        logger.warning(
-                            f"{job.key}: invalid JSON "
-                            f"(attempt {attempt + 1}/{_JSON_PARSE_RETRIES}), retrying"
-                        )
-                assert parsed is not None
-                await queue.put(LLMResult(job=job, parsed=parsed, raw=raw))
-            except _BudgetExceededError:
-                budget_exceeded = True
-                return
-            except Exception as e:
-                await queue.put(LLMError(job=job, error=e))
 
-            n_done += 1
-            total_str = f"/{n_total}" if n_total is not None else ""
-            logger.info(
-                f"[{n_done}{total_str}] ${cost.cost_usd():.2f} "
-                f"({cost.input_tokens:,} in, {cost.output_tokens:,} out)"
-            )
+                    if e.retry_after is not None:
+                        await backoff.set_backoff(e.retry_after)
+                        delay = e.retry_after
+                    else:
+                        delay = min(_BASE_DELAY_S * (2**attempt), _MAX_DELAY_S)
+                        jitter = delay * _JITTER_FACTOR * random.random()
+                        delay = delay + jitter
 
-        async def run_all() -> None:
-            job_queue: asyncio.Queue[LLMJob | None] = asyncio.Queue(maxsize=max_concurrent)
+                    logger.warning(
+                        f"[retry {attempt + 1}/{_MAX_RETRIES}] ({context_label}) "
+                        f"{type(e).__name__}: {e}, backing off {delay:.1f}s"
+                    )
+                    await asyncio.sleep(delay)
 
-            async def worker() -> None:
-                while (job := await job_queue.get()) is not None:
-                    await process_one(job)
+        assert last_error is not None
+        raise RuntimeError(f"Max retries exceeded for {context_label}: {last_error}")
 
-            workers = [asyncio.create_task(worker()) for _ in range(max_concurrent)]
-            try:
-                for n_queued, job in enumerate(jobs, 1):
-                    if budget_exceeded:
-                        break
-                    await job_queue.put(job)
-                    if n_queued % 500 == 0:
-                        logger.info(f"Queued {n_queued} jobs")
-                for _ in workers:
-                    await job_queue.put(None)
-                await asyncio.gather(*workers)
-            finally:
-                await queue.put(None)
+    queue: asyncio.Queue[LLMResult | LLMError | None] = asyncio.Queue()
 
-        task = asyncio.create_task(run_all())
+    n_done = 0
+    budget_exceeded = False
+
+    async def process_one(job: LLMJob) -> None:
+        nonlocal n_done, budget_exceeded
+        if budget_exceeded:
+            return
+
         try:
-            while True:
-                item = await queue.get()
-                if item is None:
+            raw = ""
+            parsed = None
+            for attempt in range(_JSON_PARSE_RETRIES):
+                raw = await chat(job.prompt, job.key)
+                try:
+                    parsed = json.loads(raw)
                     break
-                yield item
+                except json.JSONDecodeError:
+                    if attempt == _JSON_PARSE_RETRIES - 1:
+                        raise
+                    logger.warning(
+                        f"{job.key}: invalid JSON "
+                        f"(attempt {attempt + 1}/{_JSON_PARSE_RETRIES}), retrying"
+                    )
+            assert parsed is not None
+            await queue.put(LLMResult(job=job, parsed=parsed, raw=raw))
+        except _BudgetExceededError:
+            budget_exceeded = True
+            return
+        except Exception as e:
+            await queue.put(LLMError(job=job, error=e))
+
+        n_done += 1
+        total_str = f"/{n_total}" if n_total is not None else ""
+        logger.info(
+            f"[{n_done}{total_str}] ${cost.cost_usd():.2f} "
+            f"({cost.input_tokens:,} in, {cost.output_tokens:,} out)"
+        )
+
+    async def run_all() -> None:
+        job_queue: asyncio.Queue[LLMJob | None] = asyncio.Queue(maxsize=max_concurrent)
+
+        async def worker() -> None:
+            while (job := await job_queue.get()) is not None:
+                await process_one(job)
+
+        workers = [asyncio.create_task(worker()) for _ in range(max_concurrent)]
+        try:
+            for n_queued, job in enumerate(jobs, 1):
+                if budget_exceeded:
+                    break
+                await job_queue.put(job)
+                if n_queued % 500 == 0:
+                    logger.info(f"Queued {n_queued} jobs")
+            for _ in workers:
+                await job_queue.put(None)
+            await asyncio.gather(*workers)
         finally:
-            if not task.done():
-                task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-            logger.info(
-                f"Final cost: ${cost.cost_usd():.2f} "
-                f"({cost.input_tokens:,} in, {cost.output_tokens:,} out)"
-            )
+            await queue.put(None)
+
+    task = asyncio.create_task(run_all())
+    try:
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            yield item
     finally:
-        await provider.close()
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        logger.info(
+            f"Final cost: ${cost.cost_usd():.2f} "
+            f"({cost.input_tokens:,} in, {cost.output_tokens:,} out)"
+        )

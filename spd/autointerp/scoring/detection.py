@@ -16,7 +16,7 @@ from spd.app.backend.utils import delimit_tokens
 from spd.autointerp.config import DetectionEvalConfig
 from spd.autointerp.db import InterpDB
 from spd.autointerp.llm_api import LLMError, LLMJob, LLMResult, map_llm_calls
-from spd.autointerp.providers import ReasoningEffort
+from spd.autointerp.providers import LLMProvider
 from spd.autointerp.repo import InterpRepo
 from spd.harvest.schemas import ActivationExample, ComponentData
 from spd.log import logger
@@ -123,9 +123,7 @@ async def run_detection_scoring(
     components: list[ComponentData],
     interp_repo: InterpRepo,
     score_db: InterpDB,
-    model: str,
-    reasoning_effort: ReasoningEffort,
-    api_key: str,
+    provider: LLMProvider,
     tokenizer_name: str,
     config: DetectionEvalConfig,
     max_concurrent: int,
@@ -197,9 +195,7 @@ async def run_detection_scoring(
     component_errors: defaultdict[str, int] = defaultdict(int)
 
     async for outcome in map_llm_calls(
-        api_key=api_key,
-        model=model,
-        reasoning_effort=reasoning_effort,
+        provider=provider,
         jobs=jobs,
         max_tokens=5000,
         max_concurrent=max_concurrent,

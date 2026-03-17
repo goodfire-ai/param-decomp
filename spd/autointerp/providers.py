@@ -96,7 +96,6 @@ class LLMProvider(ABC):
         prompt: str,
         max_tokens: int,
         response_schema: dict[str, Any],
-        reasoning_effort: ReasoningEffort,
         timeout_ms: int,
     ) -> ChatResponse: ...
 
@@ -109,8 +108,9 @@ class LLMProvider(ABC):
 
 
 class OpenRouterProvider(LLMProvider):
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model: str, reasoning_effort: ReasoningEffort):
         self.model = model
+        self._reasoning_effort = reasoning_effort
         self._client = httpx.AsyncClient(
             base_url="https://openrouter.ai/api/v1",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -122,7 +122,6 @@ class OpenRouterProvider(LLMProvider):
         prompt: str,
         max_tokens: int,
         response_schema: dict[str, Any],
-        reasoning_effort: ReasoningEffort,
         timeout_ms: int,
     ) -> ChatResponse:
         body: dict[str, Any] = {
@@ -138,8 +137,8 @@ class OpenRouterProvider(LLMProvider):
                 },
             },
         }
-        if reasoning_effort != "none":
-            body["reasoning"] = {"effort": reasoning_effort}
+        if self._reasoning_effort != "none":
+            body["reasoning"] = {"effort": self._reasoning_effort}
 
         try:
             resp = await self._client.post(
@@ -190,8 +189,9 @@ class OpenRouterProvider(LLMProvider):
 
 
 class AnthropicProvider(LLMProvider):
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model: str, reasoning_effort: ReasoningEffort):
         self.model = model
+        self._reasoning_effort = reasoning_effort
         self._client = httpx.AsyncClient(
             base_url="https://api.anthropic.com",
             headers={
@@ -207,7 +207,6 @@ class AnthropicProvider(LLMProvider):
         prompt: str,
         max_tokens: int,
         response_schema: dict[str, Any],
-        reasoning_effort: ReasoningEffort,
         timeout_ms: int,
     ) -> ChatResponse:
         body: dict[str, Any] = {
@@ -263,8 +262,9 @@ class AnthropicProvider(LLMProvider):
 
 
 class OpenAIProvider(LLMProvider):
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model: str, reasoning_effort: ReasoningEffort):
         self.model = model
+        self._reasoning_effort = reasoning_effort
         self._client = httpx.AsyncClient(
             base_url="https://api.openai.com/v1",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -276,7 +276,6 @@ class OpenAIProvider(LLMProvider):
         prompt: str,
         max_tokens: int,
         response_schema: dict[str, Any],
-        reasoning_effort: ReasoningEffort,
         timeout_ms: int,
     ) -> ChatResponse:
         body: dict[str, Any] = {
@@ -292,8 +291,8 @@ class OpenAIProvider(LLMProvider):
                 },
             },
         }
-        if reasoning_effort != "none" and self.model.startswith(("o1-", "o3-", "o4-")):
-            body["reasoning_effort"] = reasoning_effort
+        if self._reasoning_effort != "none" and self.model.startswith(("o1-", "o3-", "o4-")):
+            body["reasoning_effort"] = self._reasoning_effort
 
         try:
             resp = await self._client.post(
@@ -334,12 +333,13 @@ class OpenAIProvider(LLMProvider):
         await self._client.aclose()
 
 
-def create_provider(api_key: str, model: str) -> LLMProvider:
-    provider_name = infer_provider(model)
-    match provider_name:
+def create_provider(model: str, reasoning_effort: ReasoningEffort) -> LLMProvider:
+    """Create a provider from model string, auto-resolving the API key from env."""
+    api_key = get_api_key_for_model(model)
+    match infer_provider(model):
         case "openrouter":
-            return OpenRouterProvider(api_key, model)
+            return OpenRouterProvider(api_key, model, reasoning_effort)
         case "anthropic":
-            return AnthropicProvider(api_key, model)
+            return AnthropicProvider(api_key, model, reasoning_effort)
         case "openai":
-            return OpenAIProvider(api_key, model)
+            return OpenAIProvider(api_key, model, reasoning_effort)

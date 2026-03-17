@@ -28,9 +28,9 @@ def main(
     config = GraphInterpConfig.model_validate(config_json)
 
     load_dotenv()
-    from spd.autointerp.providers import get_api_key_for_model
+    from spd.autointerp.providers import create_provider
 
-    api_key = get_api_key_for_model(config.model)
+    provider = create_provider(config.model, config.reasoning_effort)
     subrun_dir = get_graph_interp_subrun_dir(decomposition_id, subrun_id)
     subrun_dir.mkdir(parents=True, exist_ok=True)
     config.to_file(subrun_dir / "config.yaml")
@@ -62,7 +62,7 @@ def main(
     logger.info("Data loading complete")
 
     run_graph_interp(
-        api_key=api_key,
+        provider=provider,
         config=config,
         harvest=harvest,
         attribution_storage=attribution_storage,

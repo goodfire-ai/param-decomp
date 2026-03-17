@@ -168,7 +168,7 @@ async def request_component_interpretation(
     """
     from spd.autointerp.config import CompactSkepticalConfig
     from spd.autointerp.interpret import interpret_component
-    from spd.autointerp.providers import get_api_key_for_model
+    from spd.autointerp.providers import create_provider
 
     assert loaded.harvest is not None, "No harvest data available"
     assert loaded.interp is not None, "No autointerp data available"
@@ -185,10 +185,9 @@ async def request_component_interpretation(
     component_data = loaded.harvest.get_component(component_key)
     assert component_data is not None, f"Component {component_key} not found in harvest"
 
-    model_name = "google/gemini-3-flash-preview"
     try:
-        api_key = get_api_key_for_model(model_name)
-    except AssertionError as e:
+        provider = create_provider("google/gemini-3-flash-preview", "none")
+    except (AssertionError, ValueError) as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
     token_stats = loaded.harvest.get_token_stats()
@@ -225,9 +224,7 @@ async def request_component_interpretation(
 
     try:
         result = await interpret_component(
-            api_key=api_key,
-            model=model_name,
-            reasoning_effort="none",
+            provider=provider,
             strategy=CompactSkepticalConfig(),
             component=component_data,
             model_metadata=model_metadata,

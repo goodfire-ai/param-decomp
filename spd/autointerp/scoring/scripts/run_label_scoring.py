@@ -31,9 +31,9 @@ def main(
 
     config = AutointerpEvalConfig.model_validate(config_json)
 
-    from spd.autointerp.providers import get_api_key_for_model
+    from spd.autointerp.providers import create_provider
 
-    api_key = get_api_key_for_model(config.model)
+    provider = create_provider(config.model, config.reasoning_effort)
 
     tokenizer_name = adapter_from_id(decomposition_id).tokenizer_name
 
@@ -60,9 +60,7 @@ def main(
                     components=components,
                     interp_repo=interp_repo,
                     score_db=score_db,
-                    model=config.model,
-                    reasoning_effort=config.reasoning_effort,
-                    api_key=api_key,
+                    provider=provider,
                     tokenizer_name=tokenizer_name,
                     config=config.detection_config,
                     max_concurrent=config.max_concurrent,
@@ -77,9 +75,7 @@ def main(
                     components=components,
                     interp_repo=interp_repo,
                     score_db=score_db,
-                    model=config.model,
-                    reasoning_effort=config.reasoning_effort,
-                    api_key=api_key,
+                    provider=provider,
                     tokenizer_name=tokenizer_name,
                     config=config.fuzzing_config,
                     max_concurrent=config.max_concurrent,
