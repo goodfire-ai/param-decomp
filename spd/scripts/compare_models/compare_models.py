@@ -12,7 +12,6 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
-import einops
 import fire
 import torch
 import torch.nn.functional as F
@@ -353,8 +352,6 @@ class ModelComparator:
             current_components = self.current_model.components[layer_name]
             reference_components = self.reference_model.components[layer_name]
 
-            # Extract U and V matrices
-            C_ref = reference_components.C
             current_U = current_components.U  # Shape: [C, d_out]
             current_V = current_components.V  # Shape: [d_in, C]
             ref_U = reference_components.U
@@ -375,29 +372,17 @@ class ModelComparator:
             current_U_alive = current_U[alive_mask]
             current_V_alive = current_V[:, alive_mask]
 
-            # Compute rank-one matrices: V @ U for each component
-            current_rank_one = einops.einsum(
-                current_V_alive,
-                current_U_alive,
-                "d_in C_curr_alive, C_curr_alive d_out -> C_curr_alive d_in d_out",
-            )
-            ref_rank_one = einops.einsum(
-                ref_V, ref_U, "d_in C_ref, C_ref d_out -> C_ref d_in d_out"
-            )
+            # Cosine similarity of rank-one matrices V@U factorizes as:
+            # cos(vec(v_i u_i^T), vec(v_j u_j^T)) = (v_i·v_j)(u_i·u_j) / (‖v_i‖‖u_i‖ ‖v_j‖‖u_j‖)
+            current_U_norm = F.normalize(current_U_alive, p=2, dim=1)
+            current_V_norm = F.normalize(current_V_alive, p=2, dim=0)
+            ref_U_norm = F.normalize(ref_U, p=2, dim=1)
+            ref_V_norm = F.normalize(ref_V, p=2, dim=0)
 
-            # Compute cosine similarities between all pairs
-            current_flat = current_rank_one.reshape(C_curr_alive, -1)
-            ref_flat = ref_rank_one.reshape(C_ref, -1)
+            u_sim = current_U_norm @ ref_U_norm.T
+            v_sim = current_V_norm.T @ ref_V_norm
 
-            current_norm = F.normalize(current_flat, p=2, dim=1)
-            ref_norm = F.normalize(ref_flat, p=2, dim=1)
-
-            cosine_sim_matrix = einops.einsum(
-                current_norm,
-                ref_norm,
-                "C_curr_alive d_in_d_out, C_ref d_in_d_out -> C_curr_alive C_ref",
-            )
-            cosine_sim_matrix = cosine_sim_matrix.abs()
+            cosine_sim_matrix = (u_sim * v_sim).abs()
 
             max_similarities = cosine_sim_matrix.max(dim=1).values
             similarities[f"mean_max_abs_cosine_sim/{layer_name}"] = max_similarities.mean().item()
