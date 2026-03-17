@@ -466,12 +466,63 @@ class ModelComparator:
         return similarities
 
 
-def main(config_path: Path | str) -> None:
-    """Main execution function.
+def format_results_markdown(similarities: dict[str, float], config: CompareModelsConfig) -> str:
+    """Format similarity results as a readable markdown report."""
+    lines: list[str] = []
+    lines.append("# Model Comparison Results\n")
+    lines.append(f"- **Current model**: `{config.current_model_path}`")
+    lines.append(f"- **Reference model**: `{config.reference_model_path}`")
+    lines.append(f"- **Mean CI threshold**: {config.mean_ci_threshold}")
+    lines.append(f"- **Eval steps**: {config.n_eval_steps}")
+    lines.append(f"- **Batch size**: {config.eval_batch_size}\n")
 
-    Args:
-        config_path: Path to YAML config
-    """
+    prefixes = [
+        ("rank1", "Rank-1 (V@U)"),
+        ("u", "U vectors"),
+        ("v", "V vectors"),
+        ("ci", "CI profiles"),
+    ]
+    stats = ["mean", "std", "min", "max"]
+
+    # Collect all layer names that appear in results
+    layer_names: list[str] = []
+    for key in similarities:
+        if "/" not in key:
+            continue
+        layer = key.split("/", 1)[1]
+        if layer != "all_layers" and layer not in layer_names:
+            layer_names.append(layer)
+
+    # Summary table
+    lines.append("## Summary (all layers)\n")
+    lines.append("| Metric | Mean | Std | Min | Max |")
+    lines.append("|--------|-----:|----:|----:|----:|")
+    for prefix, label in prefixes:
+        vals = [similarities.get(f"{prefix}_cosine_{s}/all_layers") for s in stats]
+        if vals[0] is not None:
+            lines.append(
+                f"| {label} | {vals[0]:.4f} | {vals[1]:.4f} | {vals[2]:.4f} | {vals[3]:.4f} |"
+            )
+    lines.append("")
+
+    # Per-layer tables
+    lines.append("## Per-layer breakdown\n")
+    for prefix, label in prefixes:
+        lines.append(f"### {label}\n")
+        lines.append("| Layer | Mean | Std | Min | Max |")
+        lines.append("|-------|-----:|----:|----:|----:|")
+        for layer in layer_names:
+            vals = [similarities.get(f"{prefix}_cosine_{s}/{layer}") for s in stats]
+            if vals[0] is not None:
+                lines.append(
+                    f"| {layer} | {vals[0]:.4f} | {vals[1]:.4f} | {vals[2]:.4f} | {vals[3]:.4f} |"
+                )
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def main(config_path: Path | str) -> None:
     config = CompareModelsConfig.from_file(config_path)
 
     if config.output_dir is None:
@@ -488,10 +539,12 @@ def main(config_path: Path | str) -> None:
     logger.info("Starting model comparison...")
     similarities = comparator.run_comparison(eval_iterator)
 
-    results_file = output_dir / "similarity_results.json"
-    save_file(similarities, results_file)
+    save_file(similarities, output_dir / "similarity_results.json")
 
-    logger.info(f"Comparison complete! Results saved to {results_file}")
+    report = format_results_markdown(similarities, config)
+    (output_dir / "similarity_results.md").write_text(report)
+
+    logger.info(f"Comparison complete! Results saved to {output_dir}")
     logger.info("Similarity metrics:")
     for key, value in similarities.items():
         logger.info(f"  {key}: {value:.4f}")
