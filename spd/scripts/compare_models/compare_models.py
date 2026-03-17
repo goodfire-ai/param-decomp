@@ -384,11 +384,16 @@ class ModelComparator:
 
             cosine_sim_matrix = (u_sim * v_sim).abs()
 
-            max_similarities = cosine_sim_matrix.max(dim=1).values
-            similarities[f"mean_max_abs_cosine_sim/{layer_name}"] = max_similarities.mean().item()
-            similarities[f"max_abs_cosine_sim_std/{layer_name}"] = max_similarities.std().item()
-            similarities[f"max_abs_cosine_sim_min/{layer_name}"] = max_similarities.min().item()
-            similarities[f"max_abs_cosine_sim_max/{layer_name}"] = max_similarities.max().item()
+            for prefix, matrix in [
+                ("rank1", cosine_sim_matrix),
+                ("u", u_sim.abs()),
+                ("v", v_sim.abs()),
+            ]:
+                max_sim = matrix.max(dim=1).values
+                similarities[f"{prefix}_cosine_mean/{layer_name}"] = max_sim.mean().item()
+                similarities[f"{prefix}_cosine_std/{layer_name}"] = max_sim.std().item()
+                similarities[f"{prefix}_cosine_min/{layer_name}"] = max_sim.min().item()
+                similarities[f"{prefix}_cosine_max/{layer_name}"] = max_sim.max().item()
 
             if layer_name in ci_cosine_similarities:
                 ci_cos_matrix = ci_cosine_similarities[layer_name]
@@ -411,14 +416,9 @@ class ModelComparator:
                         similarities[f"ci_cosine_max/{layer_name}"] = ci_cos_max.max().item()
 
         metric_names = [
-            "mean_max_abs_cosine_sim",
-            "max_abs_cosine_sim_std",
-            "max_abs_cosine_sim_min",
-            "max_abs_cosine_sim_max",
-            "ci_cosine_mean",
-            "ci_cosine_std",
-            "ci_cosine_min",
-            "ci_cosine_max",
+            f"{prefix}_cosine_{stat}"
+            for prefix in ("rank1", "u", "v", "ci")
+            for stat in ("mean", "std", "min", "max")
         ]
 
         for metric_name in metric_names:
