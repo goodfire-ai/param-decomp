@@ -36,6 +36,7 @@ class OpenRouterLLMConfig(BaseConfig):
 class AnthropicLLMConfig(BaseConfig):
     type: Literal["anthropic"] = "anthropic"
     model: str = "claude-sonnet-4-20250514"
+    thinking_budget: int | None = None
 
 
 class OpenAILLMConfig(BaseConfig):
@@ -201,8 +202,9 @@ class OpenRouterProvider(LLMProvider):
 
 
 class AnthropicProvider(LLMProvider):
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model: str, thinking_budget: int | None):
         self.model = model
+        self._thinking_budget = thinking_budget
         self._client = httpx.AsyncClient(
             base_url="https://api.anthropic.com",
             headers={
@@ -220,9 +222,13 @@ class AnthropicProvider(LLMProvider):
         response_schema: dict[str, Any],
         timeout_ms: int,
     ) -> ChatResponse:
+        effective_max_tokens = max_tokens
+        if self._thinking_budget is not None:
+            effective_max_tokens = max_tokens + self._thinking_budget
+
         body: dict[str, Any] = {
             "model": self.model,
-            "max_tokens": max_tokens,
+            "max_tokens": effective_max_tokens,
             "messages": [{"role": "user", "content": prompt}],
             "tools": [
                 {
@@ -233,6 +239,8 @@ class AnthropicProvider(LLMProvider):
             ],
             "tool_choice": {"type": "tool", "name": "respond"},
         }
+        if self._thinking_budget is not None:
+            body["thinking"] = {"type": "enabled", "budget_tokens": self._thinking_budget}
 
         try:
             resp = await self._client.post("/v1/messages", json=body, timeout=timeout_ms / 1000)
@@ -360,7 +368,7 @@ def create_provider(
             return OpenRouterProvider(api_key, config.model, config.reasoning_effort)
         case AnthropicLLMConfig():
             api_key = _get_api_key("anthropic")
-            return AnthropicProvider(api_key, config.model)
+            return AnthropicProvider(api_key, config.model, config.thinking_budget)
         case OpenAILLMConfig():
             api_key = _get_api_key("openai")
             return OpenAIProvider(api_key, config.model, config.reasoning_effort)
