@@ -18,4 +18,3 @@ n_eval_steps: 5  # Number of evaluation steps to compute mean causal importances
 # Data loading parameters
 eval_batch_size: 128  # Batch size for evaluation data loading
 shuffle_data: false  # Whether to shuffle the evaluation data
-ci_alive_threshold: 0.0  # Threshold for considering components as "alive"

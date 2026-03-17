@@ -49,10 +49,6 @@ class CompareModelsConfig(BaseConfig):
 
     eval_batch_size: int = Field(..., description="Batch size for evaluation data loading")
     shuffle_data: bool = Field(..., description="Whether to shuffle the evaluation data")
-    ci_alive_threshold: float = Field(
-        ..., description="Threshold for considering components as 'alive'"
-    )
-
     output_dir: str | None = Field(
         default=None,
         description="Directory to save results (defaults to 'out' directory relative to script location)",
@@ -63,13 +59,7 @@ class ModelComparator:
     """Compare two SPD models for geometric similarity between subcomponents."""
 
     def __init__(self, config: CompareModelsConfig):
-        """Initialize the model comparator.
-
-        Args:
-            config: CompareModelsConfig instance containing all configuration parameters
-        """
         self.config = config
-        self.mean_ci_threshold = config.mean_ci_threshold
         self.device = get_device()
 
         logger.info(f"Loading current model from: {config.current_model_path}")
@@ -343,10 +333,7 @@ class ModelComparator:
             current_norm = torch.sqrt(ci_current_sq_sums[module_name]).clamp_min(eps)
             reference_norm = torch.sqrt(ci_reference_sq_sums[module_name]).clamp_min(eps)
             denom = torch.outer(current_norm, reference_norm)
-            cos_matrix = torch.zeros_like(dot_products)
-            nonzero_mask = denom > 0
-            cos_matrix[nonzero_mask] = dot_products[nonzero_mask] / denom[nonzero_mask]
-            ci_cosine_matrices[module_name] = cos_matrix
+            ci_cosine_matrices[module_name] = dot_products / denom
 
         return mean_component_cis, ci_cosine_matrices
 
@@ -373,16 +360,15 @@ class ModelComparator:
             ref_U = reference_components.U
             ref_V = reference_components.V
 
-            # Filter out components that aren't active enough in the current model
-            alive_mask = mean_component_cis[layer_name] > self.mean_ci_threshold
+            alive_mask = mean_component_cis[layer_name] > self.config.mean_ci_threshold
             C_curr_alive = int(alive_mask.sum().item())
             logger.info(
                 f"Layer {layer_name}: {C_curr_alive} components above mean CI threshold "
-                f"{self.mean_ci_threshold}"
+                f"{self.config.mean_ci_threshold}"
             )
             if C_curr_alive == 0:
                 logger.warning(
-                    f"No components meet the mean CI threshold {self.mean_ci_threshold} in {layer_name}. Skipping."
+                    f"No components meet the mean CI threshold {self.config.mean_ci_threshold} in {layer_name}. Skipping."
                 )
                 continue
 
@@ -444,16 +430,13 @@ class ModelComparator:
             "max_abs_cosine_sim_std",
             "max_abs_cosine_sim_min",
             "max_abs_cosine_sim_max",
-        ]
-
-        cosine_metric_names = [
             "ci_cosine_mean",
             "ci_cosine_std",
             "ci_cosine_min",
             "ci_cosine_max",
         ]
 
-        for metric_name in metric_names + cosine_metric_names:
+        for metric_name in metric_names:
             values = [
                 similarities[f"{metric_name}/{layer_name}"]
                 for layer_name in self.current_model.components
