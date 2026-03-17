@@ -55,7 +55,7 @@ def submit_graph_interp(
         {
             "Job ID": result.job_id,
             "Decomposition ID": decomposition_id,
-            "Model": config.config.model,
+            "Model": config.config.llm.model,
             "Depends on": ", ".join(dependency_job_ids),
             "Log": result.log_pattern,
         }

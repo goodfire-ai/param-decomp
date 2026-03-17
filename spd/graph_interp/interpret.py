@@ -17,6 +17,7 @@ from typing import Literal
 
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.autointerp.llm_api import CostTracker, LLMError, LLMJob, LLMResult, map_llm_calls
+from spd.autointerp.providers import LLMProvider
 from spd.autointerp.schemas import ModelMetadata
 from spd.dataset_attributions.storage import (
     AttrMetric,
@@ -47,7 +48,7 @@ MakePrompt = Callable[["ComponentData", "TokenPRLift", list[RelatedComponent]], 
 
 
 def run_graph_interp(
-    openrouter_api_key: str,
+    provider: LLMProvider,
     config: GraphInterpConfig,
     harvest: HarvestRepo,
     attribution_storage: DatasetAttributionStorage,
@@ -79,9 +80,7 @@ def run_graph_interp(
         jobs: Iterable[LLMJob], n_total: int | None = None
     ) -> AsyncGenerator[LLMResult | LLMError]:
         async for result in map_llm_calls(
-            openrouter_api_key=openrouter_api_key,
-            model=config.model,
-            reasoning_effort=config.reasoning_effort,
+            provider=provider,
             jobs=jobs,
             max_tokens=8000,
             max_concurrent=config.max_concurrent,
@@ -165,7 +164,6 @@ def run_graph_interp(
                     )
                     yield LLMJob(
                         prompt=make_prompt(component, stats, related),
-                        schema=LABEL_SCHEMA,
                         key=key,
                     )
 
@@ -229,7 +227,7 @@ def run_graph_interp(
                     label_max_words=config.label_max_words,
                     max_examples=config.max_examples,
                 )
-                yield LLMJob(prompt=prompt, schema=LABEL_SCHEMA, key=key)
+                yield LLMJob(prompt=prompt, key=key)
 
         if n_skipped:
             logger.warning(f"Skipping {n_skipped} components missing output or input labels")

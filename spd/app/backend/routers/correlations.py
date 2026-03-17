@@ -164,15 +164,11 @@ async def request_component_interpretation(
 ) -> InterpretationHeadline:
     """Generate an interpretation for a component on-demand.
 
-    Requires OPENROUTER_API_KEY environment variable.
     Returns the headline (label + confidence). Full detail available via GET endpoint.
     """
-    import os
-
-    from openrouter import OpenRouter
-
     from spd.autointerp.config import CompactSkepticalConfig
     from spd.autointerp.interpret import interpret_component
+    from spd.autointerp.providers import OpenRouterLLMConfig, create_provider
 
     assert loaded.harvest is not None, "No harvest data available"
     assert loaded.interp is not None, "No autointerp data available"
@@ -189,12 +185,10 @@ async def request_component_interpretation(
     component_data = loaded.harvest.get_component(component_key)
     assert component_data is not None, f"Component {component_key} not found in harvest"
 
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="OPENROUTER_API_KEY environment variable not set",
-        )
+    try:
+        provider = create_provider(OpenRouterLLMConfig(reasoning_effort="none"))
+    except (AssertionError, ValueError) as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
     token_stats = loaded.harvest.get_token_stats()
     assert token_stats is not None, "Token stats required for interpretation"
@@ -228,25 +222,24 @@ async def request_component_interpretation(
     assert isinstance(raw_ctx, int), f"expected int, got {type(raw_ctx)}"
     context_tokens_per_side = raw_ctx
 
-    async with OpenRouter(api_key=api_key) as api:
-        try:
-            result = await interpret_component(
-                api=api,
-                model="google/gemini-3-flash-preview",
-                reasoning_effort="none",
-                strategy=CompactSkepticalConfig(),
-                component=component_data,
-                model_metadata=model_metadata,
-                app_tok=loaded.tokenizer,
-                input_token_stats=input_token_stats,
-                output_token_stats=output_token_stats,
-                context_tokens_per_side=context_tokens_per_side,
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to generate interpretation: {e}",
-            ) from e
+    try:
+        result = await interpret_component(
+            provider=provider,
+            strategy=CompactSkepticalConfig(),
+            component=component_data,
+            model_metadata=model_metadata,
+            app_tok=loaded.tokenizer,
+            input_token_stats=input_token_stats,
+            output_token_stats=output_token_stats,
+            context_tokens_per_side=context_tokens_per_side,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate interpretation: {e}",
+        ) from e
+    finally:
+        await provider.close()
 
     loaded.interp.save_interpretation(result)
 

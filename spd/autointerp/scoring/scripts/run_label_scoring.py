@@ -5,7 +5,6 @@ Usage:
 """
 
 import asyncio
-import os
 from typing import Any, Literal
 
 from dotenv import load_dotenv
@@ -29,10 +28,12 @@ def main(
 ) -> None:
     assert isinstance(config_json, dict), f"Expected dict from fire, got {type(config_json)}"
     load_dotenv()
-    openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
-    assert openrouter_api_key, "OPENROUTER_API_KEY not set"
 
     config = AutointerpEvalConfig.model_validate(config_json)
+
+    from spd.autointerp.providers import create_provider
+
+    provider = create_provider(config.llm)
 
     tokenizer_name = adapter_from_id(decomposition_id).tokenizer_name
 
@@ -59,9 +60,7 @@ def main(
                     components=components,
                     interp_repo=interp_repo,
                     score_db=score_db,
-                    model=config.model,
-                    reasoning_effort=config.reasoning_effort,
-                    openrouter_api_key=openrouter_api_key,
+                    provider=provider,
                     tokenizer_name=tokenizer_name,
                     config=config.detection_config,
                     max_concurrent=config.max_concurrent,
@@ -76,9 +75,7 @@ def main(
                     components=components,
                     interp_repo=interp_repo,
                     score_db=score_db,
-                    model=config.model,
-                    reasoning_effort=config.reasoning_effort,
-                    openrouter_api_key=openrouter_api_key,
+                    provider=provider,
                     tokenizer_name=tokenizer_name,
                     config=config.fuzzing_config,
                     max_concurrent=config.max_concurrent,

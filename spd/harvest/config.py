@@ -6,9 +6,9 @@ HarvestSlurmConfig: HarvestConfig + SLURM submission params.
 
 from typing import Annotated, Any, Literal, override
 
-from openrouter.components import Effort
 from pydantic import Field, PositiveInt
 
+from spd.autointerp.providers import LLMConfig, OpenRouterLLMConfig
 from spd.base_config import BaseConfig
 from spd.settings import DEFAULT_PARTITION_NAME
 from spd.utils.wandb_utils import parse_wandb_run_path
@@ -33,25 +33,32 @@ class SPDHarvestConfig(BaseConfig):
 
 class CLTHarvestConfig(BaseConfig):
     type: Literal["CLTHarvestConfig"] = "CLTHarvestConfig"
-
-    wandb_path: str
-
-    @property
-    def id(self) -> str:
-        return "clt"
-
-
-class MOLTHarvestConfig(BaseConfig):
-    type: Literal["MOLTHarvestConfig"] = "MOLTHarvestConfig"
-
-    wandb_path: str
+    base_model_path: str
+    artifact_path: str
+    """Wandb artifact path for the CLT checkpoint (single artifact covering all layers)."""
 
     @property
     def id(self) -> str:
-        return "molt"
+        import hashlib
+
+        return "clt-" + hashlib.sha256(self.artifact_path.encode()).hexdigest()[:8]
 
 
-DecompositionMethodHarvestConfig = SPDHarvestConfig | CLTHarvestConfig | MOLTHarvestConfig
+class TranscoderHarvestConfig(BaseConfig):
+    type: Literal["TranscoderHarvestConfig"] = "TranscoderHarvestConfig"
+    base_model_path: str
+    artifact_paths: dict[str, str]
+    """Maps module paths (e.g. "h.0.mlp") to wandb artifact paths."""
+
+    @property
+    def id(self) -> str:
+        import hashlib
+
+        key = str(sorted(self.artifact_paths.items()))
+        return "tc-" + hashlib.sha256(key.encode()).hexdigest()[:8]
+
+
+DecompositionMethodHarvestConfig = SPDHarvestConfig | CLTHarvestConfig | TranscoderHarvestConfig
 
 
 # -- Pipeline configs ----------------------------------------------------------
@@ -60,8 +67,7 @@ DecompositionMethodHarvestConfig = SPDHarvestConfig | CLTHarvestConfig | MOLTHar
 class IntruderEvalConfig(BaseConfig):
     """Config for intruder detection eval (decomposition quality, not label quality)."""
 
-    model: str = "google/gemini-3-flash-preview"
-    reasoning_effort: Effort = "none"
+    llm: LLMConfig = OpenRouterLLMConfig(reasoning_effort="none")
     n_real: int = 4
     n_trials: int = 10
     density_tolerance: float = 0.05

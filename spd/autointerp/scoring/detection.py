@@ -11,13 +11,12 @@ import random
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 
-from openrouter.components import Effort
-
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.app.backend.utils import delimit_tokens
 from spd.autointerp.config import DetectionEvalConfig
 from spd.autointerp.db import InterpDB
 from spd.autointerp.llm_api import LLMError, LLMJob, LLMResult, map_llm_calls
+from spd.autointerp.providers import LLMProvider
 from spd.autointerp.repo import InterpRepo
 from spd.harvest.schemas import ActivationExample, ComponentData
 from spd.log import logger
@@ -124,9 +123,7 @@ async def run_detection_scoring(
     components: list[ComponentData],
     interp_repo: InterpRepo,
     score_db: InterpDB,
-    model: str,
-    reasoning_effort: Effort,
-    openrouter_api_key: str,
+    provider: LLMProvider,
     tokenizer_name: str,
     config: DetectionEvalConfig,
     max_concurrent: int,
@@ -184,7 +181,6 @@ async def run_detection_scoring(
             jobs.append(
                 LLMJob(
                     prompt=_build_detection_prompt(label, formatted),
-                    schema=DETECTION_SCHEMA,
                     key=key,
                 )
             )
@@ -196,11 +192,22 @@ async def run_detection_scoring(
 
     component_trials: defaultdict[str, list[DetectionTrial]] = defaultdict(list)
     component_errors: defaultdict[str, int] = defaultdict(int)
+    results: list[DetectionResult] = []
+
+    def _try_save(ck: str) -> None:
+        n_done = len(component_trials[ck]) + component_errors.get(ck, 0)
+        if n_done < config.n_trials:
+            return
+        if component_errors.get(ck, 0) > 0:
+            return
+        trials = component_trials[ck]
+        score = sum(t.balanced_acc for t in trials) / len(trials) if trials else 0.0
+        result = DetectionResult(component_key=ck, score=score, trials=trials, n_errors=0)
+        results.append(result)
+        score_db.save_score(ck, "detection", score, json.dumps(asdict(result)))
 
     async for outcome in map_llm_calls(
-        openrouter_api_key=openrouter_api_key,
-        model=model,
-        reasoning_effort=reasoning_effort,
+        provider=provider,
         jobs=jobs,
         max_tokens=5000,
         max_concurrent=max_concurrent,
@@ -226,20 +233,12 @@ async def run_detection_scoring(
                         balanced_acc=(tpr + tnr) / 2,
                     )
                 )
+                _try_save(gt.component_key)
             case LLMError(job=job, error=e):
                 gt = ground_truth[job.key]
                 component_errors[gt.component_key] += 1
                 logger.error(f"{job.key}: {type(e).__name__}: {e}")
-
-    results: list[DetectionResult] = []
-    for component in remaining:
-        ck = component.component_key
-        trials = component_trials.get(ck, [])
-        n_err = component_errors.get(ck, 0)
-        score = sum(t.balanced_acc for t in trials) / len(trials) if trials else 0.0
-        result = DetectionResult(component_key=ck, score=score, trials=trials, n_errors=n_err)
-        results.append(result)
-        score_db.save_score(ck, "detection", score, json.dumps(asdict(result)))
+                _try_save(gt.component_key)
 
     logger.info(f"Scored {len(results)} components")
     return results
