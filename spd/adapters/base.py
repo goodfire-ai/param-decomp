@@ -32,13 +32,12 @@ class DecompositionAdapter(ABC):
     def dataloader(self, batch_size: int) -> DataLoader[torch.Tensor]: ...
 
 
-def pretrain_dataloader(
-    run_info: PretrainRunInfo, batch_size: int, block_size: int
-) -> DataLoader[torch.Tensor]:
+def pretrain_dataloader(run_info: PretrainRunInfo, batch_size: int) -> DataLoader[torch.Tensor]:
     """Build a streaming dataloader from a pretrain run's dataset config."""
     from spd.data import DatasetConfig, create_data_loader
 
     ds_cfg = run_info.config_dict["train_dataset_config"]
+    block_size = run_info.model_config_dict["block_size"]
     dataset_config = DatasetConfig.model_validate(
         {**ds_cfg, "streaming": True, "n_ctx": block_size}
     )

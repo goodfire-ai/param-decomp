@@ -111,4 +111,4 @@ class TranscoderAdapter(DecompositionAdapter):
 
     @override
     def dataloader(self, batch_size: int) -> DataLoader[torch.Tensor]:
-        return pretrain_dataloader(self._run_info, batch_size, self.base_model.config.block_size)
+        return pretrain_dataloader(self._run_info, batch_size)
