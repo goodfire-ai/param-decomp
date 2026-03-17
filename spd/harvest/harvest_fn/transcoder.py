@@ -27,7 +27,7 @@ class TranscoderHarvestFn(HarvestFn):
         batch = extract_batch_data(batch_item).to(self._device)
 
         mlp_inputs: dict[str, Tensor] = {}
-        hooks = []
+        hooks: list[torch.utils.hooks.RemovableHandle] = []
         for module_path in self._adapter.transcoders:
             module = model.get_submodule(module_path)
 

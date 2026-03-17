@@ -9,10 +9,9 @@ import torch
 import wandb
 from torch.utils.data import DataLoader
 
-from spd.adapters.base import DecompositionAdapter
+from spd.adapters.base import DecompositionAdapter, pretrain_dataloader
 from spd.adapters.transcoder_model import BatchTopKTranscoder, EncoderConfig
 from spd.autointerp.schemas import ModelMetadata
-from spd.data import DatasetConfig, create_data_loader
 from spd.harvest.config import TranscoderHarvestConfig
 from spd.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
 from spd.pretrain.run_info import PretrainRunInfo
@@ -112,11 +111,4 @@ class TranscoderAdapter(DecompositionAdapter):
 
     @override
     def dataloader(self, batch_size: int) -> DataLoader[torch.Tensor]:
-        ds_cfg = self._run_info.config_dict["train_dataset_config"]
-        dataset_config = DatasetConfig.model_validate(
-            {**ds_cfg, "streaming": True, "n_ctx": self.base_model.config.block_size}
-        )
-        loader, _ = create_data_loader(
-            dataset_config=dataset_config, batch_size=batch_size, buffer_size=1000
-        )
-        return loader
+        return pretrain_dataloader(self._run_info, batch_size, self.base_model.config.block_size)
