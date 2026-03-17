@@ -138,6 +138,7 @@ class PersistentPGDState:
         self._use_sigmoid_parameterization = cfg.use_sigmoid_parameterization
         self._router = _get_router_for_ppgd_config(cfg, device)
         self._n_warmup_steps = cfg.n_warmup_steps
+        self._n_samples = cfg.n_samples
         self._output_loss_type: Literal["mse", "kl"] = output_loss_type
         self._lr_schedule = cfg.optimizer.lr_schedule
 
@@ -234,20 +235,27 @@ class PersistentPGDState:
     ) -> Float[Tensor, ""]:
         """Pure forward pass that returns the PPGD reconstruction loss. No source mutation."""
         batch_dims = next(iter(ci.values())).shape[:-1]
-        routing_masks = self._router.get_masks(
-            module_names=model.target_module_paths, mask_shape=batch_dims
-        )
         ppgd_sources = self.get_effective_sources()
-        sum_loss, n_examples = _compute_ppgd_recon_loss(
-            model=model,
-            ppgd_sources=ppgd_sources,
-            output_loss_type=self._output_loss_type,
-            batch=batch,
-            target_out=target_out,
-            ci=ci,
-            weight_deltas=weight_deltas,
-            routing_masks=routing_masks,
-        )
+
+        device = next(iter(ci.values())).device
+        sum_loss = torch.tensor(0.0, device=device)
+        n_examples = 0
+        for _ in range(self._n_samples):
+            routing_masks = self._router.get_masks(
+                module_names=model.target_module_paths, mask_shape=batch_dims
+            )
+            loss, n = _compute_ppgd_recon_loss(
+                model=model,
+                ppgd_sources=ppgd_sources,
+                output_loss_type=self._output_loss_type,
+                batch=batch,
+                target_out=target_out,
+                ci=ci,
+                weight_deltas=weight_deltas,
+                routing_masks=routing_masks,
+            )
+            sum_loss = sum_loss + loss
+            n_examples += n
         return sum_loss / n_examples
 
 
