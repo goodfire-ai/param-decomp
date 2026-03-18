@@ -18,12 +18,12 @@ from spd.log import logger
 from spd.scripts.compare_models.compare_models import (
     METRIC_PREFIXES,
     CompareModelsConfig,
-    ModelComparator,
     _extract_layer_names,
     _metric_summary_table,
     _per_layer_table,
-    format_results_markdown,
     model_id_from_path,
+    resolve_output_dir,
+    run_and_save_pair,
 )
 from spd.utils.run_utils import save_file
 
@@ -95,10 +95,7 @@ def main(config_path: Path | str) -> None:
     config = MultiCompareConfig.from_file(config_path)
     assert len(config.model_paths) >= 2, "Need at least 2 models to compare"
 
-    if config.output_dir is None:
-        output_dir = Path(__file__).parent / "out"
-    else:
-        output_dir = Path(config.output_dir)
+    output_dir = resolve_output_dir(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     pairs = list(itertools.combinations(range(len(config.model_paths)), 2))
@@ -121,18 +118,11 @@ def main(config_path: Path | str) -> None:
             shuffle_data=config.shuffle_data,
         )
 
-        comparator = ModelComparator(pair_config)
-        eval_iterator = comparator.create_eval_data_loader()
-        similarities = comparator.run_comparison(eval_iterator)
-
+        pair_dir = output_dir / f"{id_a}_vs_{id_b}"
+        similarities, _ = run_and_save_pair(pair_config, pair_dir)
         pairwise_results[(id_a, id_b)] = similarities
 
-        stem = f"{id_a}_vs_{id_b}"
-        save_file(similarities, output_dir / f"{stem}.json")
-        (output_dir / f"{stem}.md").write_text(format_results_markdown(similarities, pair_config))
-
-        logger.info(f"  Saved {stem}.json and {stem}.md")
-        del comparator
+        logger.info(f"  Saved to {pair_dir}")
 
     # Save summary
     summary_data = {

@@ -12,11 +12,15 @@ from pathlib import Path
 from typing import Any
 
 import fire
+import matplotlib
+import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
 from jaxtyping import Float
 from pydantic import Field
 from torch import Tensor
+
+matplotlib.use("Agg")
 
 from spd.base_config import BaseConfig
 from spd.configs import Config
@@ -33,6 +37,9 @@ METRIC_PREFIXES = [
     ("ci", "CI profiles"),
 ]
 STATS = ("mean", "std", "min", "max")
+
+# Per-layer sim matrices keyed by metric prefix: {layer_name: {prefix: Tensor[C_curr_alive, C_ref]}}
+SimMatrices = dict[str, dict[str, Tensor]]
 
 
 def model_id_from_path(path: str) -> str:
@@ -308,9 +315,15 @@ class ModelComparator:
         self,
         mean_cis: dict[str, Float[Tensor, " C"]],
         ci_cosine_matrices: dict[str, Tensor],
-    ) -> dict[str, float]:
-        """Compute per-layer similarity metrics between the two models' components."""
+    ) -> tuple[dict[str, float], SimMatrices]:
+        """Compute per-layer similarity metrics between the two models' components.
+
+        Returns:
+            similarities: Scalar summary stats keyed by '{prefix}_cosine_{stat}/{layer}'.
+            matrices: Raw sim matrices keyed by layer_name -> prefix -> Tensor[C_alive, C_ref].
+        """
         similarities: dict[str, float] = {}
+        matrices: SimMatrices = {}
 
         for layer_name in self.current_model.components:
             assert layer_name in self.reference_model.components, (
@@ -340,27 +353,26 @@ class ModelComparator:
             v_sim = curr_V_norm.T @ ref_V_norm
             rank1_sim = (u_sim * v_sim).abs()
 
-            for prefix, matrix in [
-                ("rank1", rank1_sim),
-                ("u", u_sim.abs()),
-                ("v", v_sim.abs()),
-            ]:
-                mean, std, min_val, max_val = max_match_stats(matrix)
-                similarities[f"{prefix}_cosine_mean/{layer_name}"] = mean
-                similarities[f"{prefix}_cosine_std/{layer_name}"] = std
-                similarities[f"{prefix}_cosine_min/{layer_name}"] = min_val
-                similarities[f"{prefix}_cosine_max/{layer_name}"] = max_val
-
             # CI cosine similarities
             assert layer_name in ci_cosine_matrices
             ci_cos_matrix = ci_cosine_matrices[layer_name]
             assert ci_cos_matrix.shape[0] == alive_mask.shape[0]
             ci_cos_alive = ci_cos_matrix[alive_mask]
-            mean, std, min_val, max_val = max_match_stats(ci_cos_alive)
-            similarities[f"ci_cosine_mean/{layer_name}"] = mean
-            similarities[f"ci_cosine_std/{layer_name}"] = std
-            similarities[f"ci_cosine_min/{layer_name}"] = min_val
-            similarities[f"ci_cosine_max/{layer_name}"] = max_val
+
+            layer_matrices = {
+                "rank1": rank1_sim,
+                "u": u_sim.abs(),
+                "v": v_sim.abs(),
+                "ci": ci_cos_alive,
+            }
+            matrices[layer_name] = layer_matrices
+
+            for prefix, matrix in layer_matrices.items():
+                mean, std, min_val, max_val = max_match_stats(matrix)
+                similarities[f"{prefix}_cosine_mean/{layer_name}"] = mean
+                similarities[f"{prefix}_cosine_std/{layer_name}"] = std
+                similarities[f"{prefix}_cosine_min/{layer_name}"] = min_val
+                similarities[f"{prefix}_cosine_max/{layer_name}"] = max_val
 
         # Aggregate across layers
         all_metric_names = [
@@ -375,9 +387,9 @@ class ModelComparator:
             if values:
                 similarities[f"{metric_name}/all_layers"] = sum(values) / len(values)
 
-        return similarities
+        return similarities, matrices
 
-    def run_comparison(self, eval_iterator: Iterator[Any]) -> dict[str, float]:
+    def run_comparison(self, eval_iterator: Iterator[Any]) -> tuple[dict[str, float], SimMatrices]:
         batches = collect_batches(eval_iterator, self.config.n_eval_steps)
 
         logger.info("Computing causal importance statistics for current and reference models...")
@@ -450,27 +462,67 @@ def _per_layer_table(results: dict[str, float], prefix: str, layer_names: list[s
     return lines
 
 
-def main(config_path: Path | str) -> None:
-    config = CompareModelsConfig.from_file(config_path)
+def save_heatmaps(matrices: SimMatrices, output_dir: Path) -> None:
+    """Save cosine similarity matrices as heatmap images."""
+    heatmap_dir = output_dir / "heatmaps"
+    for layer_name, layer_matrices in matrices.items():
+        # Dots in layer names (e.g. h.0.mlp.c_fc) are fine in filenames
+        for prefix, matrix in layer_matrices.items():
+            prefix_dir = heatmap_dir / prefix
+            prefix_dir.mkdir(parents=True, exist_ok=True)
 
-    if config.output_dir is None:
-        output_dir = Path(__file__).parent / "out"
-    else:
-        output_dir = Path(config.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+            data = matrix.detach().cpu().float().numpy()
+
+            fig, ax = plt.subplots(figsize=(10, 8))
+            im = ax.imshow(data, aspect="auto", cmap="viridis", vmin=0, vmax=1)
+            fig.colorbar(im, ax=ax)
+
+            _, label = next((pfx, lbl) for pfx, lbl in METRIC_PREFIXES if pfx == prefix)
+            ax.set_title(f"{label} — {layer_name}")
+            ax.set_xlabel("Reference component")
+            ax.set_ylabel("Current component (alive)")
+
+            fig.tight_layout()
+            fig.savefig(prefix_dir / f"{layer_name}.png", dpi=100)
+            plt.close(fig)
+
+    logger.info(f"Saved heatmaps to {heatmap_dir}")
+
+
+def resolve_output_dir(config_output_dir: str | None) -> Path:
+    if config_output_dir is None:
+        return Path(__file__).parent / "out"
+    return Path(config_output_dir)
+
+
+def run_and_save_pair(
+    config: CompareModelsConfig, pair_dir: Path
+) -> tuple[dict[str, float], SimMatrices]:
+    """Run a pairwise comparison, save results/heatmaps to pair_dir, return results."""
+    pair_dir.mkdir(parents=True, exist_ok=True)
 
     comparator = ModelComparator(config)
     eval_iterator = comparator.create_eval_data_loader()
-    similarities = comparator.run_comparison(eval_iterator)
+    similarities, matrices = comparator.run_comparison(eval_iterator)
+
+    save_file(similarities, pair_dir / "results.json")
+    (pair_dir / "results.md").write_text(format_results_markdown(similarities, config))
+    save_heatmaps(matrices, pair_dir)
+
+    return similarities, matrices
+
+
+def main(config_path: Path | str) -> None:
+    config = CompareModelsConfig.from_file(config_path)
+    output_dir = resolve_output_dir(config.output_dir)
 
     current_id = model_id_from_path(config.current_model_path)
     reference_id = model_id_from_path(config.reference_model_path)
-    stem = f"{current_id}_vs_{reference_id}"
+    pair_dir = output_dir / f"{current_id}_vs_{reference_id}"
 
-    save_file(similarities, output_dir / f"{stem}.json")
-    (output_dir / f"{stem}.md").write_text(format_results_markdown(similarities, config))
+    similarities, _ = run_and_save_pair(config, pair_dir)
 
-    logger.info(f"Comparison complete! Results saved to {output_dir}/{stem}.*")
+    logger.info(f"Comparison complete! Results saved to {pair_dir}")
     for key, value in similarities.items():
         logger.info(f"  {key}: {value:.4f}")
 
