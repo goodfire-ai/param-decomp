@@ -86,6 +86,11 @@ def format_prompt(
         "— a component might fire on periods but produce sentence-opening words, or "
         "fire on prepositions but produce abstract nouns."
     )
+    md.p(
+        "The activation examples are sampled and may not be fully representative. "
+        "Look for patterns that are consistent across multiple examples, and express "
+        "uncertainty when the evidence is weak or noisy."
+    )
 
     md.h(2, "Context")
     md.bullets(
@@ -107,8 +112,10 @@ def format_prompt(
 
     md.h(3, "Example annotation format")
     md.p(
-        "Firing tokens are wrapped in <<<triple angle brackets>>> with their activation "
-        "values. Non-firing tokens appear as plain text."
+        "Each example shows the raw text first, then an annotated version. "
+        "In the annotated version, each firing token is wrapped as "
+        "`<<<token (ci:X, act:Y)>>>` where ci is the causal importance and act is the "
+        "component's inner activation at that position. Non-firing tokens appear as plain text."
     )
     _build_annotation_legend(md, component)
 
