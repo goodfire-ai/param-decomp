@@ -2,7 +2,7 @@
 
 LLMConfig discriminated union determines which API to call:
   - OpenRouterLLMConfig → OpenRouter API (any model via vendor/model ID)
-  - AnthropicLLMConfig → first-party Anthropic API (tool_use for structured output)
+  - AnthropicLLMConfig → first-party Anthropic API (structured outputs)
   - OpenAILLMConfig → first-party OpenAI API (json_schema response format)
 """
 
@@ -36,11 +36,28 @@ class OpenRouterLLMConfig(BaseConfig):
 EffortLevel = Literal["low", "medium", "high", "max"]
 
 
-class AnthropicLLMConfig(BaseConfig):
+class AnthropicSonnet46LLMConfig(BaseConfig):
     type: Literal["anthropic"] = "anthropic"
-    model: str = "claude-sonnet-4-20250514"
-    thinking_budget: int | None = None
+    model: Literal["claude-sonnet-4-6"] = "claude-sonnet-4-6"
+    effort: Literal["low", "medium", "high"] | None = None
+
+
+class AnthropicOpus46LLMConfig(BaseConfig):
+    type: Literal["anthropic"] = "anthropic"
+    model: Literal["claude-opus-4-6"] = "claude-opus-4-6"
     effort: EffortLevel | None = None
+
+
+class AnthropicHaiku45LLMConfig(BaseConfig):
+    type: Literal["anthropic"] = "anthropic"
+    model: Literal["claude-haiku-4-5-20251001"] = "claude-haiku-4-5-20251001"
+    thinking_budget: int | None = Field(default=None, ge=1024)
+
+
+AnthropicLLMConfig = Annotated[
+    AnthropicSonnet46LLMConfig | AnthropicOpus46LLMConfig | AnthropicHaiku45LLMConfig,
+    Field(discriminator="model"),
+]
 
 
 class OpenAILLMConfig(BaseConfig):
@@ -208,12 +225,9 @@ class OpenRouterProvider(LLMProvider):
 
 
 class AnthropicProvider(LLMProvider):
-    def __init__(
-        self, api_key: str, model: str, thinking_budget: int | None, effort: EffortLevel | None
-    ):
-        self.model = model
-        self._thinking_budget = thinking_budget
-        self._effort = effort
+    def __init__(self, api_key: str, config: AnthropicLLMConfig):
+        self.model = config.model
+        self._config = config
         self._client = httpx.AsyncClient(
             base_url="https://api.anthropic.com",
             headers={
@@ -232,31 +246,38 @@ class AnthropicProvider(LLMProvider):
         timeout_ms: int,
     ) -> ChatResponse:
         effective_max_tokens = max_tokens
-        if self._thinking_budget is not None:
-            effective_max_tokens = max_tokens + self._thinking_budget
-
-        uses_thinking = self._thinking_budget is not None or self._effort is not None
+        match self._config:
+            case AnthropicHaiku45LLMConfig(thinking_budget=thinking_budget):
+                if thinking_budget is not None:
+                    effective_max_tokens = max_tokens + thinking_budget
+            case AnthropicSonnet46LLMConfig(effort=effort):
+                pass
+            case AnthropicOpus46LLMConfig(effort=effort):
+                pass
 
         body: dict[str, Any] = {
             "model": self.model,
             "max_tokens": effective_max_tokens,
             "messages": [{"role": "user", "content": prompt}],
-            "tools": [
-                {
-                    "name": "respond",
-                    "description": "Respond with the structured output",
-                    "input_schema": response_schema,
+            "output_config": {
+                "format": {
+                    "type": "json_schema",
+                    "schema": {**response_schema, "additionalProperties": False},
                 }
-            ],
-            "tool_choice": {"type": "auto"}
-            if uses_thinking
-            else {"type": "tool", "name": "respond"},
+            },
         }
-        if self._effort is not None:
-            body["thinking"] = {"type": "adaptive"}
-            body["output_config"] = {"effort": self._effort}
-        elif self._thinking_budget is not None:
-            body["thinking"] = {"type": "enabled", "budget_tokens": self._thinking_budget}
+        match self._config:
+            case AnthropicHaiku45LLMConfig(thinking_budget=thinking_budget):
+                if thinking_budget is not None:
+                    body["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
+            case AnthropicSonnet46LLMConfig(effort=effort):
+                if effort is not None:
+                    body["thinking"] = {"type": "adaptive"}
+                    body["output_config"]["effort"] = effort
+            case AnthropicOpus46LLMConfig(effort=effort):
+                if effort is not None:
+                    body["thinking"] = {"type": "adaptive"}
+                    body["output_config"]["effort"] = effort
 
         try:
             resp = await self._client.post("/v1/messages", json=body, timeout=timeout_ms / 1000)
@@ -272,14 +293,17 @@ class AnthropicProvider(LLMProvider):
         resp.raise_for_status()
         data = resp.json()
 
-        tool_input = None
+        text_blocks: list[str] = []
         for block in data["content"]:
-            if block["type"] == "tool_use" and block["name"] == "respond":
-                tool_input = block["input"]
-                break
-        assert tool_input is not None, f"No tool_use response in: {data['content']}"
+            if block["type"] == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    text_blocks.append(text)
 
-        content = json.dumps(tool_input)
+        content = "\n".join(text_blocks).strip()
+        assert content, f"No text response in: {data['content']}"
+        json.loads(content)
+
         usage = data["usage"]
         return ChatResponse(
             content=content,
@@ -382,9 +406,11 @@ def create_provider(
         case OpenRouterLLMConfig():
             api_key = _get_api_key("openrouter")
             return OpenRouterProvider(api_key, config.model, config.reasoning_effort)
-        case AnthropicLLMConfig():
+        case (
+            AnthropicSonnet46LLMConfig() | AnthropicOpus46LLMConfig() | AnthropicHaiku45LLMConfig()
+        ):
             api_key = _get_api_key("anthropic")
-            return AnthropicProvider(api_key, config.model, config.thinking_budget, config.effort)
+            return AnthropicProvider(api_key, config)
         case OpenAILLMConfig():
             api_key = _get_api_key("openai")
             return OpenAIProvider(api_key, config.model, config.reasoning_effort)
