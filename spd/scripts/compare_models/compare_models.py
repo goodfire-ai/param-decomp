@@ -343,9 +343,13 @@ class ModelComparator:
                 logger.warning(f"No alive components in {layer_name}. Skipping.")
                 continue
 
+            # Sort alive components by mean CI (descending) for consistent ordering
+            alive_mean_cis = mean_cis[layer_name][alive_mask]
+            sort_order = alive_mean_cis.argsort(descending=True)
+
             # Parameter cosine similarities (factored rank-1 decomposition)
-            curr_U_norm = F.normalize(current.U[alive_mask], p=2, dim=1)
-            curr_V_norm = F.normalize(current.V[:, alive_mask], p=2, dim=0)
+            curr_U_norm = F.normalize(current.U[alive_mask][sort_order], p=2, dim=1)
+            curr_V_norm = F.normalize(current.V[:, alive_mask][:, sort_order], p=2, dim=0)
             ref_U_norm = F.normalize(reference.U, p=2, dim=1)
             ref_V_norm = F.normalize(reference.V, p=2, dim=0)
 
@@ -357,7 +361,7 @@ class ModelComparator:
             assert layer_name in ci_cosine_matrices
             ci_cos_matrix = ci_cosine_matrices[layer_name]
             assert ci_cos_matrix.shape[0] == alive_mask.shape[0]
-            ci_cos_alive = ci_cos_matrix[alive_mask]
+            ci_cos_alive = ci_cos_matrix[alive_mask][sort_order]
 
             layer_matrices = {
                 "rank1": rank1_sim,
@@ -479,6 +483,11 @@ def load_matrices(pair_dir: Path) -> SimMatrices:
     return torch.load(path, weights_only=True)
 
 
+HEATMAP_PIXELS_PER_CELL = 3
+HEATMAP_DPI = 150
+HEATMAP_MAX_INCHES = 60
+
+
 def save_heatmaps(matrices: SimMatrices, pair_dir: Path) -> None:
     heatmap_dir = pair_dir / "heatmaps"
     for layer_name, layer_matrices in matrices.items():
@@ -487,18 +496,23 @@ def save_heatmaps(matrices: SimMatrices, pair_dir: Path) -> None:
             prefix_dir.mkdir(parents=True, exist_ok=True)
 
             data = matrix.detach().cpu().float().numpy()
+            n_rows, n_cols = data.shape
 
-            fig, ax = plt.subplots(figsize=(16, 12))
+            # Scale figure so each cell is ~HEATMAP_PIXELS_PER_CELL pixels
+            width = min(n_cols * HEATMAP_PIXELS_PER_CELL / HEATMAP_DPI + 2, HEATMAP_MAX_INCHES)
+            height = min(n_rows * HEATMAP_PIXELS_PER_CELL / HEATMAP_DPI + 2, HEATMAP_MAX_INCHES)
+
+            fig, ax = plt.subplots(figsize=(width, height))
             im = ax.imshow(data, aspect="auto", cmap="viridis", vmin=0, vmax=1)
             fig.colorbar(im, ax=ax)
 
             _, label = next((pfx, lbl) for pfx, lbl in METRIC_PREFIXES if pfx == prefix)
             ax.set_title(f"{label} — {layer_name}")
             ax.set_xlabel("Reference component")
-            ax.set_ylabel("Current component (alive)")
+            ax.set_ylabel("Current component (alive, sorted by mean CI \u2193)")
 
             fig.tight_layout()
-            fig.savefig(prefix_dir / f"{layer_name}.png", dpi=150)
+            fig.savefig(prefix_dir / f"{layer_name}.png", dpi=HEATMAP_DPI)
             plt.close(fig)
 
     logger.info(f"Saved heatmaps to {heatmap_dir}")
