@@ -462,11 +462,26 @@ def _per_layer_table(results: dict[str, float], prefix: str, layer_names: list[s
     return lines
 
 
-def save_heatmaps(matrices: SimMatrices, output_dir: Path) -> None:
-    """Save cosine similarity matrices as heatmap images."""
-    heatmap_dir = output_dir / "heatmaps"
+def save_matrices(matrices: SimMatrices, pair_dir: Path) -> None:
+    """Save raw similarity matrices to disk for later replotting."""
+    # Convert to CPU tensors for serialization
+    serializable = {
+        layer: {prefix: m.detach().cpu() for prefix, m in layer_mats.items()}
+        for layer, layer_mats in matrices.items()
+    }
+    torch.save(serializable, pair_dir / "sim_matrices.pt")
+    logger.info(f"Saved sim matrices to {pair_dir / 'sim_matrices.pt'}")
+
+
+def load_matrices(pair_dir: Path) -> SimMatrices:
+    path = pair_dir / "sim_matrices.pt"
+    assert path.exists(), f"No saved matrices at {path}"
+    return torch.load(path, weights_only=True)
+
+
+def save_heatmaps(matrices: SimMatrices, pair_dir: Path) -> None:
+    heatmap_dir = pair_dir / "heatmaps"
     for layer_name, layer_matrices in matrices.items():
-        # Dots in layer names (e.g. h.0.mlp.c_fc) are fine in filenames
         for prefix, matrix in layer_matrices.items():
             prefix_dir = heatmap_dir / prefix
             prefix_dir.mkdir(parents=True, exist_ok=True)
@@ -498,7 +513,7 @@ def resolve_output_dir(config_output_dir: str | None) -> Path:
 def run_and_save_pair(
     config: CompareModelsConfig, pair_dir: Path
 ) -> tuple[dict[str, float], SimMatrices]:
-    """Run a pairwise comparison, save results/heatmaps to pair_dir, return results."""
+    """Run a pairwise comparison, save results/matrices/heatmaps to pair_dir."""
     pair_dir.mkdir(parents=True, exist_ok=True)
 
     comparator = ModelComparator(config)
@@ -507,9 +522,18 @@ def run_and_save_pair(
 
     save_file(similarities, pair_dir / "results.json")
     (pair_dir / "results.md").write_text(format_results_markdown(similarities, config))
+    save_matrices(matrices, pair_dir)
     save_heatmaps(matrices, pair_dir)
 
     return similarities, matrices
+
+
+def replot(pair_dir: Path | str) -> None:
+    """Regenerate heatmaps from saved matrices without rerunning the comparison."""
+    pair_dir = Path(pair_dir)
+    matrices = load_matrices(pair_dir)
+    save_heatmaps(matrices, pair_dir)
+    logger.info(f"Replotted heatmaps in {pair_dir}")
 
 
 def main(config_path: Path | str) -> None:
@@ -528,4 +552,4 @@ def main(config_path: Path | str) -> None:
 
 
 if __name__ == "__main__":
-    fire.Fire(main)
+    fire.Fire({"run": main, "replot": replot})
