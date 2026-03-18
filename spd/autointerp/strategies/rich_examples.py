@@ -13,9 +13,34 @@ from spd.autointerp.prompt_helpers import (
     human_layer_desc,
     layer_position_note,
 )
-from spd.autointerp.schemas import DECOMPOSITION_DESCRIPTIONS, DecompositionMethod, ModelMetadata
+from spd.autointerp.schemas import DecompositionMethod, ModelMetadata
 from spd.harvest.schemas import ComponentData
 from spd.utils.markdown import Md
+
+_DECOMPOSITION_DESCRIPTIONS: dict[DecompositionMethod, str] = {
+    "spd": (
+        "Each component is a rank-1 parameter matrix learned by Stochastic Parameter "
+        "Decomposition (SPD). A weight matrix W is decomposed as W ≈ Σ u_i v_i^T. "
+        "When the model processes a token, each component computes an activation: the inner "
+        "product of the residual stream with its read direction v_i. This value can be "
+        "positive or negative depending on how the input aligns with v_i — the sign is an "
+        "arbitrary consequence of how the vectors were initialised and does not indicate "
+        "suppression. What matters is the magnitude. "
+        "Each component also has a causal importance (CI) value per token position: CI near 1 "
+        "means the component is essential at that position, CI near 0 means it can be ablated "
+        "without affecting output. A component 'fires' when its CI is high."
+    ),
+    "clt": (
+        "Each component is a feature from a Cross-Layer Transcoder (CLT). CLTs learn sparse, "
+        "interpretable features that map activations at one layer to contributions at another. "
+        "A component 'fires' when its activation magnitude is high."
+    ),
+    "transcoder": (
+        "Each component is a feature from a Transcoder, which learns a sparse dictionary of "
+        "linear transformations mapping MLP inputs to MLP outputs. A component 'fires' when "
+        "its encoder activation is above threshold."
+    ),
+}
 
 
 def format_prompt(
@@ -116,7 +141,7 @@ def _build_data_section(
     window_size = 2 * context_tokens_per_side + 1
     md = Md()
     md.h(3, "Decomposition method")
-    md.p(DECOMPOSITION_DESCRIPTIONS[decomposition_method])
+    md.p(_DECOMPOSITION_DESCRIPTIONS[decomposition_method])
     md.h(3, "Data")
     md.p(
         f"The model processes sequences of {seq_len} tokens. "
@@ -141,8 +166,8 @@ def _build_annotation_legend(md: Md, component: ComponentData) -> None:
         )
     if "component_activation" in act_keys:
         legend_items.append(
-            "**act** (component activation): The component's pre-mask activation magnitude. "
-            "Can be positive or negative. Larger absolute values mean stronger signal."
+            "**act** (component activation): Inner product with the component's read direction. "
+            "Sign is arbitrary; magnitude indicates response strength."
         )
     if "activation" in act_keys:
         legend_items.append(
