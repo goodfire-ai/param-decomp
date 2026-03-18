@@ -2,11 +2,13 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 from scipy import sparse
 
 from spd.clustering.consts import ComponentLabels
-from spd.clustering.sample_membership import CompressedMembership
+from spd.clustering.sample_membership import (
+    CompressedMembership,
+    memberships_to_sample_component_matrix,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,28 +52,10 @@ def memberships_to_csc(
     memberships: list[CompressedMembership],
     n_samples: int,
 ) -> sparse.csc_matrix:
-    n_components = len(memberships)
-    if n_components == 0:
-        return sparse.csc_matrix((n_samples, 0), dtype=np.uint8)
-
-    nnz = sum(membership.count() for membership in memberships)
-    row_indices = np.empty(nnz, dtype=np.int64)
-    col_indices = np.empty(nnz, dtype=np.int32)
-
-    offset = 0
-    for col_idx, membership in enumerate(memberships):
-        sample_indices = membership.to_sample_indices().astype(np.int64, copy=False)
-        col_nnz = sample_indices.size
-        row_indices[offset : offset + col_nnz] = sample_indices
-        col_indices[offset : offset + col_nnz] = col_idx
-        offset += col_nnz
-
-    values = np.ones(nnz, dtype=np.uint8)
-    return sparse.csc_matrix(
-        (values, (row_indices, col_indices)),
-        shape=(n_samples, n_components),
-        dtype=np.uint8,
-    )
+    matrix = memberships_to_sample_component_matrix(memberships, fmt="csc")
+    assert isinstance(matrix, sparse.csc_matrix)
+    assert matrix.shape[0] == n_samples
+    return matrix
 
 
 def save_membership_snapshot(

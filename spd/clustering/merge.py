@@ -10,7 +10,6 @@ from typing import Protocol
 
 import torch
 from jaxtyping import Bool, Float
-from scipy import sparse
 from torch import Tensor
 from tqdm import tqdm
 
@@ -31,8 +30,8 @@ from spd.clustering.math.merge_matrix import GroupMerge
 from spd.clustering.merge_config import MergeConfig
 from spd.clustering.merge_history import MergeHistory
 from spd.clustering.sample_membership import (
-    BitsetMembership,
-    compute_coactivation_matrix,
+    CompressedMembership,
+    compute_coactivation_matrix_from_csr,
     memberships_to_sample_component_csr,
 )
 from spd.log import logger
@@ -217,14 +216,14 @@ def merge_iteration(
 
 def merge_iteration_memberships(
     merge_config: MergeConfig,
-    memberships: list[BitsetMembership],
+    memberships: list[CompressedMembership],
     n_samples: int,
     component_labels: ComponentLabels,
     log_callback: LogCallback | None = None,
 ) -> MergeHistory:
     """Exact merge iteration using compressed sample memberships."""
     csr_start = time.perf_counter()
-    component_activity_csr: sparse.csr_matrix = memberships_to_sample_component_csr(memberships)
+    component_activity_csr = memberships_to_sample_component_csr(memberships)
     logger.info(
         "Built component activity CSR in "
         f"{time.perf_counter() - csr_start:.2f}s "
@@ -236,7 +235,9 @@ def merge_iteration_memberships(
         "Building coactivation matrix from compressed memberships "
         f"(n_groups={len(memberships)}, n_samples={n_samples})"
     )
-    current_coact: ClusterCoactivationShaped = compute_coactivation_matrix(memberships)
+    current_coact: ClusterCoactivationShaped = compute_coactivation_matrix_from_csr(
+        component_activity_csr
+    )
     logger.info(
         "Built coactivation matrix in "
         f"{time.perf_counter() - coact_start:.2f}s "

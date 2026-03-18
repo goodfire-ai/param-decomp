@@ -15,7 +15,7 @@ from spd.clustering.consts import (
     ClusterCoactivationShaped,
     ComponentLabels,
 )
-from spd.clustering.sample_membership import BitsetMembership
+from spd.clustering.sample_membership import CompressedMembership
 from spd.clustering.util import ModuleFilterFunc
 from spd.log import logger
 from spd.models.component_model import ComponentModel, OutputWithCache
@@ -276,7 +276,7 @@ class ProcessedMemberships:
     module_alive_counts: dict[str, int]
     labels: ComponentLabels
     dead_components_lst: ComponentLabels | None
-    memberships: list[BitsetMembership]
+    memberships: list[CompressedMembership]
     n_samples: int
     preview: ProcessedActivations | None = None
 
@@ -389,7 +389,7 @@ class MembershipBuilder:
         module_alive_counts: dict[str, int] = {}
         alive_labels = ComponentLabels(list())
         dead_labels = ComponentLabels(list())
-        memberships: list[BitsetMembership] = []
+        memberships: list[CompressedMembership] = []
 
         preview_module_component_counts: dict[str, int] = {}
         preview_module_alive_counts: dict[str, int] = {}
@@ -425,7 +425,7 @@ class MembershipBuilder:
                         else np.empty((0,), dtype=np.int64)
                     )
                     memberships.append(
-                        BitsetMembership.from_sample_indices(
+                        CompressedMembership.from_sample_indices(
                             sample_indices=sample_ids,
                             n_samples=self.n_samples,
                         )

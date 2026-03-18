@@ -8,7 +8,7 @@ from torch import Tensor
 from spd.clustering.consts import ClusterCoactivationShaped, MergePair
 from spd.clustering.math.merge_matrix import GroupMerge
 from spd.clustering.sample_membership import (
-    BitsetMembership,
+    CompressedMembership,
     count_group_overlaps_from_component_rows,
 )
 
@@ -198,12 +198,12 @@ def recompute_coacts_merge_pair_memberships(
     coact: ClusterCoactivationShaped,
     merges: GroupMerge,
     merge_pair: MergePair,
-    memberships: list[BitsetMembership],
-    component_activity_csr: sparse.csr_matrix | None = None,
+    memberships: list[CompressedMembership],
+    component_activity_csr: sparse.csr_matrix,
 ) -> tuple[
     GroupMerge,
     Float[Tensor, "k_groups-1 k_groups-1"],
-    list[BitsetMembership],
+    list[CompressedMembership],
 ]:
     """Recompute coactivations after a merge using compressed memberships."""
     k_groups: int = coact.shape[0]
@@ -225,26 +225,18 @@ def recompute_coacts_merge_pair_memberships(
     mask[remove_idx] = False
     coact_new: Float[Tensor, "k_groups-1 k_groups-1"] = coact[mask, :][:, mask].clone()
 
-    if component_activity_csr is not None:
-        merged_rows = merged_membership.to_sample_indices()
-        coact_with_merge_np = count_group_overlaps_from_component_rows(
-            merged_rows=merged_rows,
-            component_activity_csr=component_activity_csr,
-            group_idxs=merge_new.group_idxs.cpu().numpy(),
-            n_groups=merge_new.k_groups,
-        )
-        coact_with_merge = torch.tensor(
-            coact_with_merge_np,
-            dtype=coact.dtype,
-            device=coact.device,
-        )
-    else:
-        coact_with_merge = torch.tensor(
-            [float(merged_membership.intersection_count(membership)) for membership in memberships],
-            dtype=coact.dtype,
-            device=coact.device,
-        )
-        coact_with_merge = coact_with_merge[mask]
+    merged_rows = merged_membership.to_sample_indices()
+    coact_with_merge_np = count_group_overlaps_from_component_rows(
+        merged_rows=merged_rows,
+        component_activity_csr=component_activity_csr,
+        group_idxs=merge_new.group_idxs.cpu().numpy(),
+        n_groups=merge_new.k_groups,
+    )
+    coact_with_merge = torch.tensor(
+        coact_with_merge_np,
+        dtype=coact.dtype,
+        device=coact.device,
+    )
 
     coact_new[new_group_idx, :] = coact_with_merge
     coact_new[:, new_group_idx] = coact_with_merge

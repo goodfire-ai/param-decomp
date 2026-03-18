@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 import torch
@@ -265,16 +266,16 @@ class CompressedMembership:
         return _bitset_to_sample_indices(self.bits, self.n_samples)
 
 
-BitsetMembership = CompressedMembership
-
-
-def memberships_to_sample_component_csr(
+def memberships_to_sample_component_matrix(
     memberships: list[CompressedMembership],
-) -> sparse.csr_matrix:
-    """Build a binary sample-by-component CSR matrix from memberships."""
+    *,
+    fmt: Literal["csr", "csc"] = "csr",
+) -> sparse.csr_matrix | sparse.csc_matrix:
+    """Build a binary sample-by-component sparse matrix from memberships."""
     n_groups = len(memberships)
     if n_groups == 0:
-        return sparse.csr_matrix((0, 0), dtype=np.uint8)
+        empty = sparse.csr_matrix((0, 0), dtype=np.uint8)
+        return empty if fmt == "csr" else empty.tocsc()
 
     n_samples = memberships[0].n_samples
     assert all(membership.n_samples == n_samples for membership in memberships), (
@@ -294,11 +295,21 @@ def memberships_to_sample_component_csr(
         offset += group_nnz
 
     values = np.ones(nnz, dtype=np.uint8)
-    return sparse.csr_matrix(
+    matrix = sparse.csr_matrix(
         (values, (row_indices, col_indices)),
         shape=(n_samples, n_groups),
         dtype=np.uint8,
     )
+    return matrix if fmt == "csr" else matrix.tocsc()
+
+
+def memberships_to_sample_component_csr(
+    memberships: list[CompressedMembership],
+) -> sparse.csr_matrix:
+    """Build a binary sample-by-component CSR matrix from memberships."""
+    matrix = memberships_to_sample_component_matrix(memberships, fmt="csr")
+    assert isinstance(matrix, sparse.csr_matrix)
+    return matrix
 
 
 def count_group_overlaps_from_component_rows(
@@ -325,6 +336,15 @@ def count_group_overlaps_from_component_rows(
     )
 
 
+def compute_coactivation_matrix_from_csr(
+    component_activity_csr: sparse.csr_matrix,
+) -> ClusterCoactivationShaped:
+    """Compute the full coactivation matrix from a sample-by-component CSR matrix."""
+    activation_matrix = component_activity_csr.astype(np.int32, copy=False)
+    coact = (activation_matrix.T @ activation_matrix).toarray()
+    return torch.from_numpy(coact.astype(np.float32, copy=False))
+
+
 def compute_coactivation_matrix(
     memberships: list[CompressedMembership],
 ) -> ClusterCoactivationShaped:
@@ -343,6 +363,4 @@ def compute_coactivation_matrix(
         "Memberships must share sample space"
     )
 
-    activation_matrix = memberships_to_sample_component_csr(memberships).astype(np.int32, copy=False)
-    coact = (activation_matrix.T @ activation_matrix).toarray()
-    return torch.from_numpy(coact.astype(np.float32, copy=False))
+    return compute_coactivation_matrix_from_csr(memberships_to_sample_component_csr(memberships))

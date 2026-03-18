@@ -167,13 +167,6 @@ class TestMergeIntegration:
         merges = GroupMerge.identity(n_components=len(memberships))
         component_activity_csr = memberships_to_sample_component_csr(memberships)
 
-        merge_old, coact_old, memberships_old = recompute_coacts_merge_pair_memberships(
-            coact=coact,
-            merges=merges,
-            merge_pair=(0, 1),
-            memberships=memberships,
-            component_activity_csr=None,
-        )
         merge_row, coact_row, memberships_row = recompute_coacts_merge_pair_memberships(
             coact=coact,
             merges=merges,
@@ -182,8 +175,14 @@ class TestMergeIntegration:
             component_activity_csr=component_activity_csr,
         )
 
-        assert torch.equal(merge_old.group_idxs, merge_row.group_idxs)
-        assert torch.equal(coact_old, coact_row)
-        assert [membership.count() for membership in memberships_old] == [
-            membership.count() for membership in memberships_row
-        ]
+        expected_group_idxs = torch.tensor([0, 0, 1, 2], dtype=torch.int64)
+        expected_coact = torch.tensor(
+            [
+                [4.0, 1.0, 1.0],
+                [1.0, 2.0, 0.0],
+                [1.0, 0.0, 3.0],
+            ]
+        )
+        assert torch.equal(merge_row.group_idxs, expected_group_idxs)
+        assert torch.equal(coact_row, expected_coact)
+        assert [membership.count() for membership in memberships_row] == [4, 2, 3]
