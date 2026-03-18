@@ -1,11 +1,10 @@
 """Model comparison script for geometric similarity analysis.
 
-This script compares two SPD models by computing geometric similarities between
-their learned subcomponents. It's designed for post-hoc analysis of completed runs.
+Compares two SPD models by computing geometric similarities between their learned
+subcomponents. Designed for post-hoc analysis of completed runs.
 
 Usage:
     python spd/scripts/compare_models/compare_models.py spd/scripts/compare_models/compare_models_config.yaml
-    python spd/scripts/compare_models/compare_models.py --current_model_path="wandb:..." --reference_model_path="wandb:..."
 """
 
 from collections.abc import Callable, Iterator
@@ -27,31 +26,55 @@ from spd.utils.distributed_utils import get_device
 from spd.utils.general_utils import extract_batch_data, get_obj_device
 from spd.utils.run_utils import save_file
 
+METRIC_PREFIXES = [
+    ("rank1", "Rank-1 (V@U)"),
+    ("u", "U vectors"),
+    ("v", "V vectors"),
+    ("ci", "CI profiles"),
+]
+STATS = ("mean", "std", "min", "max")
+
+
+def model_id_from_path(path: str) -> str:
+    return path.rstrip("/").split("/")[-1]
+
+
+def max_match_stats(
+    sim_matrix: Float[Tensor, "C_curr C_ref"],
+) -> tuple[float, float, float, float]:
+    """Compute mean/std/min/max of per-row max similarities."""
+    max_sim = sim_matrix.max(dim=1).values
+    return (
+        max_sim.mean().item(),
+        max_sim.std().item(),
+        max_sim.min().item(),
+        max_sim.max().item(),
+    )
+
+
+def collect_batches(eval_iterator: Iterator[Any], n_steps: int) -> list[Any]:
+    batches: list[Any] = []
+    for step in range(n_steps):
+        try:
+            batch = extract_batch_data(next(eval_iterator))
+        except StopIteration:
+            assert step > 0, "Evaluation iterator provided no batches"
+            logger.warning(
+                "Evaluation iterator exhausted after %s steps (requested %s).", step, n_steps
+            )
+            break
+        batches.append(batch)
+    return batches
+
 
 class CompareModelsConfig(BaseConfig):
-    """Configuration for model comparison script."""
-
-    current_model_path: str = Field(..., description="Path to current model (wandb: or local path)")
-    reference_model_path: str = Field(
-        ..., description="Path to reference model (wandb: or local path)"
-    )
-
-    mean_ci_threshold: float = Field(
-        ...,
-        ge=0.0,
-        le=1.0,
-        description="Minimum mean causal importance for components to be included in comparison",
-    )
-    n_eval_steps: int = Field(
-        ..., description="Number of evaluation steps to compute mean causal importances"
-    )
-
-    eval_batch_size: int = Field(..., description="Batch size for evaluation data loading")
-    shuffle_data: bool = Field(..., description="Whether to shuffle the evaluation data")
-    output_dir: str | None = Field(
-        default=None,
-        description="Directory to save results (defaults to 'out' directory relative to script location)",
-    )
+    current_model_path: str
+    reference_model_path: str
+    mean_ci_threshold: float = Field(..., ge=0.0, le=1.0)
+    n_eval_steps: int
+    eval_batch_size: int
+    shuffle_data: bool
+    output_dir: str | None = None
 
 
 class ModelComparator:
@@ -72,17 +95,14 @@ class ModelComparator:
         )
 
     def _load_model_and_config(self, model_path: str) -> tuple[ComponentModel, Config]:
-        """Load model and config using the standard pattern from existing codebase."""
         run_info = SPDRunInfo.from_path(model_path)
         model = ComponentModel.from_run_info(run_info)
         model.to(self.device)
         model.eval()
         model.requires_grad_(False)
-
         return model, run_info.config
 
     def create_eval_data_loader(self) -> Iterator[Any]:
-        """Create evaluation data loader using exact same patterns as decomposition scripts."""
         task_name = self.current_config.task_config.task_name
 
         data_loader_fns: dict[str, Callable[[], Iterator[Any]]] = {
@@ -92,26 +112,19 @@ class ModelComparator:
             "ih": self._create_ih_data_loader,
         }
 
-        if task_name not in data_loader_fns:
-            raise ValueError(
-                f"Unsupported task type: {task_name}. Supported types: {', '.join(data_loader_fns.keys())}"
-            )
-
+        assert task_name in data_loader_fns, (
+            f"Unsupported task type: {task_name}. Supported: {', '.join(data_loader_fns)}"
+        )
         return data_loader_fns[task_name]()
 
     def _create_tms_data_loader(self) -> Iterator[Any]:
-        """Create data loader for TMS task."""
         from spd.configs import TMSTaskConfig
         from spd.experiments.tms.models import TMSTargetRunInfo
         from spd.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
 
         assert isinstance(self.current_config.task_config, TMSTaskConfig)
         task_config = self.current_config.task_config
-
-        assert self.current_config.pretrained_model_path, (
-            "pretrained_model_path must be set for TMS models"
-        )
-
+        assert self.current_config.pretrained_model_path
         target_run_info = TMSTargetRunInfo.from_path(self.current_config.pretrained_model_path)
 
         dataset = SparseFeatureDataset(
@@ -124,14 +137,11 @@ class ModelComparator:
         )
         return iter(
             DatasetGeneratedDataLoader(
-                dataset,
-                batch_size=self.config.eval_batch_size,
-                shuffle=self.config.shuffle_data,
+                dataset, batch_size=self.config.eval_batch_size, shuffle=self.config.shuffle_data
             )
         )
 
     def _create_resid_mlp_data_loader(self) -> Iterator[Any]:
-        """Create data loader for ResidMLP task."""
         from spd.configs import ResidMLPTaskConfig
         from spd.experiments.resid_mlp.models import ResidMLPTargetRunInfo
         from spd.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
@@ -139,11 +149,7 @@ class ModelComparator:
 
         assert isinstance(self.current_config.task_config, ResidMLPTaskConfig)
         task_config = self.current_config.task_config
-
-        assert self.current_config.pretrained_model_path, (
-            "pretrained_model_path must be set for ResidMLP models"
-        )
-
+        assert self.current_config.pretrained_model_path
         target_run_info = ResidMLPTargetRunInfo.from_path(self.current_config.pretrained_model_path)
 
         dataset = ResidMLPDataset(
@@ -158,18 +164,15 @@ class ModelComparator:
         )
         return iter(
             DatasetGeneratedDataLoader(
-                dataset,
-                batch_size=self.config.eval_batch_size,
-                shuffle=self.config.shuffle_data,
+                dataset, batch_size=self.config.eval_batch_size, shuffle=self.config.shuffle_data
             )
         )
 
     def _create_lm_data_loader(self) -> Iterator[Any]:
-        """Create data loader for LM task."""
         from spd.configs import LMTaskConfig
         from spd.data import DatasetConfig, create_data_loader
 
-        assert self.current_config.tokenizer_name, "tokenizer_name must be set"
+        assert self.current_config.tokenizer_name
         assert isinstance(self.current_config.task_config, LMTaskConfig)
         task_config = self.current_config.task_config
 
@@ -193,18 +196,13 @@ class ModelComparator:
         return iter(loader)
 
     def _create_ih_data_loader(self) -> Iterator[Any]:
-        """Create data loader for IH task."""
         from spd.configs import IHTaskConfig
         from spd.experiments.ih.model import InductionModelTargetRunInfo
         from spd.utils.data_utils import DatasetGeneratedDataLoader, InductionDataset
 
         assert isinstance(self.current_config.task_config, IHTaskConfig)
         task_config = self.current_config.task_config
-
-        assert self.current_config.pretrained_model_path, (
-            "pretrained_model_path must be set for Induction Head models"
-        )
-
+        assert self.current_config.pretrained_model_path
         target_run_info = InductionModelTargetRunInfo.from_path(
             self.current_config.pretrained_model_path
         )
@@ -218,40 +216,41 @@ class ModelComparator:
         )
         return iter(
             DatasetGeneratedDataLoader(
-                dataset,
-                batch_size=self.config.eval_batch_size,
-                shuffle=self.config.shuffle_data,
+                dataset, batch_size=self.config.eval_batch_size, shuffle=self.config.shuffle_data
             )
         )
 
     def compute_ci_statistics(
         self, batches: list[Any]
     ) -> tuple[dict[str, Float[Tensor, " C"]], dict[str, Tensor]]:
-        """Compute mean causal importances and cosine similarity matrices per component."""
+        """Compute mean CI values and CI cosine similarity matrices between the two models.
 
-        if not batches:
-            raise ValueError("No evaluation batches provided for CI statistics computation.")
-
+        Returns:
+            mean_cis: Mean CI per component in the current model (for alive filtering).
+            ci_cosine_matrices: Per-module [C_curr, C_ref] cosine similarity of CI profiles.
+        """
+        assert batches, "No evaluation batches provided"
         device = get_obj_device(self.current_model)
 
-        component_ci_sums: dict[str, Float[Tensor, " C"]] = {}
-        component_example_counts: dict[str, Tensor] = {}
-        ci_cross_dot_products: dict[str, Tensor] = {}
-        ci_current_sq_sums: dict[str, Float[Tensor, " C"]] = {}
-        ci_reference_sq_sums: dict[str, Tensor] = {}
+        # Per-module accumulators for current model's mean CI
+        ci_sums: dict[str, Float[Tensor, " C"]] = {}
+        n_examples: dict[str, float] = {}
+
+        # Per-module accumulators for cross-model CI cosine similarity
+        cross_dots: dict[str, Tensor] = {}
+        curr_sq_sums: dict[str, Float[Tensor, " C"]] = {}
+        ref_sq_sums: dict[str, Tensor] = {}
 
         for module_name, current_module in self.current_model.components.items():
-            component_dim_current = current_module.C
-            component_ci_sums[module_name] = torch.zeros(component_dim_current, device=device)
-            component_example_counts[module_name] = torch.tensor(0.0, device=device)
-            ci_current_sq_sums[module_name] = torch.zeros(component_dim_current, device=device)
+            c_curr = current_module.C
+            ci_sums[module_name] = torch.zeros(c_curr, device=device)
+            n_examples[module_name] = 0.0
+            curr_sq_sums[module_name] = torch.zeros(c_curr, device=device)
 
-            reference_module = self.reference_model.components.get(module_name)
-            if reference_module is not None:
-                ci_cross_dot_products[module_name] = torch.zeros(
-                    component_dim_current, reference_module.C, device=device
-                )
-                ci_reference_sq_sums[module_name] = torch.zeros(reference_module.C, device=device)
+            ref_module = self.reference_model.components.get(module_name)
+            if ref_module is not None:
+                cross_dots[module_name] = torch.zeros(c_curr, ref_module.C, device=device)
+                ref_sq_sums[module_name] = torch.zeros(ref_module.C, device=device)
 
         self.current_model.eval()
         self.reference_model.eval()
@@ -260,168 +259,114 @@ class ModelComparator:
             for batch in batches:
                 batch = batch.to(self.device)
 
-                pre_weight_current = self.current_model(batch, cache_type="input").cache
                 ci_current = self.current_model.calc_causal_importances(
-                    pre_weight_current,
+                    self.current_model(batch, cache_type="input").cache,
                     sampling=self.current_config.sampling,
                 ).lower_leaky
 
-                pre_weight_reference = self.reference_model(batch, cache_type="input").cache
                 ci_reference = self.reference_model.calc_causal_importances(
-                    pre_weight_reference,
+                    self.reference_model(batch, cache_type="input").cache,
                     sampling=self.reference_config.sampling,
                 ).lower_leaky
 
-                for module_name, ci_vals_current in ci_current.items():
-                    ci_vals_current_fp32 = ci_vals_current.to(device=device, dtype=torch.float32)
+                for module_name, ci_curr in ci_current.items():
+                    ci_curr_fp32 = ci_curr.to(device=device, dtype=torch.float32)
+                    batch_dims = tuple(range(ci_curr_fp32.ndim - 1))
 
-                    n_leading_dims = ci_vals_current_fp32.ndim - 1
-                    leading_dim_idxs = tuple(range(n_leading_dims))
-                    n_examples = float(ci_vals_current_fp32.shape[:n_leading_dims].numel())
+                    ci_sums[module_name] += ci_curr_fp32.sum(dim=batch_dims)
+                    n_examples[module_name] += float(ci_curr_fp32.shape[:-1].numel())
 
-                    component_ci_sums[module_name] += ci_vals_current_fp32.sum(dim=leading_dim_idxs)
-                    component_example_counts[module_name] += n_examples
-
-                    if module_name not in ci_cross_dot_products:
+                    if module_name not in cross_dots or module_name not in ci_reference:
                         continue
 
-                    if module_name not in ci_reference:
-                        logger.warning(
-                            "Module %s not found in reference CI outputs. Skipping cosine similarity.",
-                            module_name,
-                        )
-                        continue
-
-                    ci_vals_reference = ci_reference[module_name]
-                    if ci_vals_current.shape != ci_vals_reference.shape:
-                        logger.warning(
-                            "Shape mismatch for module %s between current and reference CI outputs "
-                            "(%s vs %s). Skipping cosine similarity.",
-                            module_name,
-                            ci_vals_current.shape,
-                            ci_vals_reference.shape,
-                        )
-                        continue
-
-                    ci_vals_reference_fp32 = ci_vals_reference.to(
-                        device=device, dtype=torch.float32
+                    ci_ref = ci_reference[module_name]
+                    assert ci_curr.shape == ci_ref.shape, (
+                        f"Shape mismatch for {module_name}: {ci_curr.shape} vs {ci_ref.shape}"
                     )
+                    ci_ref_fp32 = ci_ref.to(device=device, dtype=torch.float32)
 
-                    ci_current_flat = ci_vals_current_fp32.reshape(
-                        -1, ci_vals_current_fp32.shape[-1]
-                    )
-                    ci_reference_flat = ci_vals_reference_fp32.reshape(
-                        -1, ci_vals_reference_fp32.shape[-1]
-                    )
+                    # Flatten batch dims for dot product accumulation
+                    curr_flat = ci_curr_fp32.reshape(-1, ci_curr_fp32.shape[-1])
+                    ref_flat = ci_ref_fp32.reshape(-1, ci_ref_fp32.shape[-1])
 
-                    ci_cross_dot_products[module_name] += (
-                        ci_current_flat.transpose(0, 1) @ ci_reference_flat
-                    )
-                    ci_current_sq_sums[module_name] += (ci_current_flat.square()).sum(dim=0)
-                    ci_reference_sq_sums[module_name] += (ci_reference_flat.square()).sum(dim=0)
+                    cross_dots[module_name] += curr_flat.T @ ref_flat
+                    curr_sq_sums[module_name] += curr_flat.square().sum(dim=0)
+                    ref_sq_sums[module_name] += ref_flat.square().sum(dim=0)
 
-        mean_component_cis = {
-            module_name: component_ci_sums[module_name]
-            / component_example_counts[module_name].clamp_min(1.0)
-            for module_name in component_ci_sums
-        }
+        mean_cis = {name: ci_sums[name] / max(n_examples[name], 1.0) for name in ci_sums}
 
-        ci_cosine_matrices: dict[str, Tensor] = {}
         eps = 1e-12
-        for module_name, dot_products in ci_cross_dot_products.items():
-            current_norm = torch.sqrt(ci_current_sq_sums[module_name]).clamp_min(eps)
-            reference_norm = torch.sqrt(ci_reference_sq_sums[module_name]).clamp_min(eps)
-            denom = torch.outer(current_norm, reference_norm)
-            ci_cosine_matrices[module_name] = dot_products / denom
+        ci_cosine_matrices: dict[str, Tensor] = {}
+        for module_name, dots in cross_dots.items():
+            curr_norm = torch.sqrt(curr_sq_sums[module_name]).clamp_min(eps)
+            ref_norm = torch.sqrt(ref_sq_sums[module_name]).clamp_min(eps)
+            ci_cosine_matrices[module_name] = dots / torch.outer(curr_norm, ref_norm)
 
-        return mean_component_cis, ci_cosine_matrices
+        return mean_cis, ci_cosine_matrices
 
     def compute_geometric_similarities(
         self,
-        mean_component_cis: dict[str, Float[Tensor, " C"]],
-        ci_cosine_similarities: dict[str, Tensor],
+        mean_cis: dict[str, Float[Tensor, " C"]],
+        ci_cosine_matrices: dict[str, Tensor],
     ) -> dict[str, float]:
-        """Compute geometric similarities between subcomponents."""
-        similarities = {}
+        """Compute per-layer similarity metrics between the two models' components."""
+        similarities: dict[str, float] = {}
 
         for layer_name in self.current_model.components:
-            if layer_name not in self.reference_model.components:
-                logger.warning(f"Layer {layer_name} not found in reference model, skipping")
-                continue
-
-            current_components = self.current_model.components[layer_name]
-            reference_components = self.reference_model.components[layer_name]
-
-            current_U = current_components.U  # Shape: [C, d_out]
-            current_V = current_components.V  # Shape: [d_in, C]
-            ref_U = reference_components.U
-            ref_V = reference_components.V
-
-            alive_mask = mean_component_cis[layer_name] > self.config.mean_ci_threshold
-            C_curr_alive = int(alive_mask.sum().item())
-            logger.info(
-                f"Layer {layer_name}: {C_curr_alive} components above mean CI threshold "
-                f"{self.config.mean_ci_threshold}"
+            assert layer_name in self.reference_model.components, (
+                f"Layer {layer_name} not in reference model"
             )
-            if C_curr_alive == 0:
-                logger.warning(
-                    f"No components meet the mean CI threshold {self.config.mean_ci_threshold} in {layer_name}. Skipping."
-                )
+
+            current = self.current_model.components[layer_name]
+            reference = self.reference_model.components[layer_name]
+
+            alive_mask = mean_cis[layer_name] > self.config.mean_ci_threshold
+            n_alive = int(alive_mask.sum().item())
+            logger.info(
+                f"Layer {layer_name}: {n_alive} components above "
+                f"mean CI threshold {self.config.mean_ci_threshold}"
+            )
+            if n_alive == 0:
+                logger.warning(f"No alive components in {layer_name}. Skipping.")
                 continue
 
-            current_U_alive = current_U[alive_mask]
-            current_V_alive = current_V[:, alive_mask]
+            # Parameter cosine similarities (factored rank-1 decomposition)
+            curr_U_norm = F.normalize(current.U[alive_mask], p=2, dim=1)
+            curr_V_norm = F.normalize(current.V[:, alive_mask], p=2, dim=0)
+            ref_U_norm = F.normalize(reference.U, p=2, dim=1)
+            ref_V_norm = F.normalize(reference.V, p=2, dim=0)
 
-            # Cosine similarity of rank-one matrices V@U factorizes as:
-            # cos(vec(v_i u_i^T), vec(v_j u_j^T)) = (v_i·v_j)(u_i·u_j) / (‖v_i‖‖u_i‖ ‖v_j‖‖u_j‖)
-            current_U_norm = F.normalize(current_U_alive, p=2, dim=1)
-            current_V_norm = F.normalize(current_V_alive, p=2, dim=0)
-            ref_U_norm = F.normalize(ref_U, p=2, dim=1)
-            ref_V_norm = F.normalize(ref_V, p=2, dim=0)
-
-            u_sim = current_U_norm @ ref_U_norm.T
-            v_sim = current_V_norm.T @ ref_V_norm
-
-            cosine_sim_matrix = (u_sim * v_sim).abs()
+            u_sim = curr_U_norm @ ref_U_norm.T
+            v_sim = curr_V_norm.T @ ref_V_norm
+            rank1_sim = (u_sim * v_sim).abs()
 
             for prefix, matrix in [
-                ("rank1", cosine_sim_matrix),
+                ("rank1", rank1_sim),
                 ("u", u_sim.abs()),
                 ("v", v_sim.abs()),
             ]:
-                max_sim = matrix.max(dim=1).values
-                similarities[f"{prefix}_cosine_mean/{layer_name}"] = max_sim.mean().item()
-                similarities[f"{prefix}_cosine_std/{layer_name}"] = max_sim.std().item()
-                similarities[f"{prefix}_cosine_min/{layer_name}"] = max_sim.min().item()
-                similarities[f"{prefix}_cosine_max/{layer_name}"] = max_sim.max().item()
+                mean, std, min_val, max_val = max_match_stats(matrix)
+                similarities[f"{prefix}_cosine_mean/{layer_name}"] = mean
+                similarities[f"{prefix}_cosine_std/{layer_name}"] = std
+                similarities[f"{prefix}_cosine_min/{layer_name}"] = min_val
+                similarities[f"{prefix}_cosine_max/{layer_name}"] = max_val
 
-            if layer_name in ci_cosine_similarities:
-                ci_cos_matrix = ci_cosine_similarities[layer_name]
-                if ci_cos_matrix.shape[0] != alive_mask.shape[0]:
-                    logger.warning(
-                        "Mismatch between CI cosine matrix rows (%s) and component count (%s) for %s.",
-                        ci_cos_matrix.shape[0],
-                        alive_mask.shape[0],
-                        layer_name,
-                    )
-                else:
-                    ci_cos_alive = ci_cos_matrix[alive_mask]
-                    if ci_cos_alive.numel() > 0:
-                        ci_cos_max = ci_cos_alive.max(dim=1).values
-                        similarities[f"ci_cosine_mean/{layer_name}"] = ci_cos_max.mean().item()
-                        similarities[f"ci_cosine_std/{layer_name}"] = ci_cos_max.std(
-                            unbiased=False
-                        ).item()
-                        similarities[f"ci_cosine_min/{layer_name}"] = ci_cos_max.min().item()
-                        similarities[f"ci_cosine_max/{layer_name}"] = ci_cos_max.max().item()
+            # CI cosine similarities
+            assert layer_name in ci_cosine_matrices
+            ci_cos_matrix = ci_cosine_matrices[layer_name]
+            assert ci_cos_matrix.shape[0] == alive_mask.shape[0]
+            ci_cos_alive = ci_cos_matrix[alive_mask]
+            mean, std, min_val, max_val = max_match_stats(ci_cos_alive)
+            similarities[f"ci_cosine_mean/{layer_name}"] = mean
+            similarities[f"ci_cosine_std/{layer_name}"] = std
+            similarities[f"ci_cosine_min/{layer_name}"] = min_val
+            similarities[f"ci_cosine_max/{layer_name}"] = max_val
 
-        metric_names = [
-            f"{prefix}_cosine_{stat}"
-            for prefix in ("rank1", "u", "v", "ci")
-            for stat in ("mean", "std", "min", "max")
+        # Aggregate across layers
+        all_metric_names = [
+            f"{prefix}_cosine_{stat}" for prefix, _ in METRIC_PREFIXES for stat in STATS
         ]
-
-        for metric_name in metric_names:
+        for metric_name in all_metric_names:
             values = [
                 similarities[f"{metric_name}/{layer_name}"]
                 for layer_name in self.current_model.components
@@ -432,42 +377,17 @@ class ModelComparator:
 
         return similarities
 
-    def run_comparison(
-        self, eval_iterator: Iterator[Any], n_steps: int | None = None
-    ) -> dict[str, float]:
-        """Run the full comparison pipeline."""
-        if n_steps is None:
-            n_steps = self.config.n_eval_steps
-        assert isinstance(n_steps, int)
-
-        batches: list[Any] = []
-        for step in range(n_steps):
-            try:
-                batch = extract_batch_data(next(eval_iterator))
-            except StopIteration:
-                if step == 0:
-                    raise ValueError("Evaluation iterator provided no batches.") from None
-                logger.warning(
-                    "Evaluation iterator exhausted after %s steps (requested %s).",
-                    step,
-                    n_steps,
-                )
-                break
-            batches.append(batch)
+    def run_comparison(self, eval_iterator: Iterator[Any]) -> dict[str, float]:
+        batches = collect_batches(eval_iterator, self.config.n_eval_steps)
 
         logger.info("Computing causal importance statistics for current and reference models...")
-        mean_component_cis, ci_cosine_similarities = self.compute_ci_statistics(batches)
+        mean_cis, ci_cosine_matrices = self.compute_ci_statistics(batches)
 
         logger.info("Computing geometric similarities...")
-        similarities = self.compute_geometric_similarities(
-            mean_component_cis, ci_cosine_similarities
-        )
-
-        return similarities
+        return self.compute_geometric_similarities(mean_cis, ci_cosine_matrices)
 
 
 def format_results_markdown(similarities: dict[str, float], config: CompareModelsConfig) -> str:
-    """Format similarity results as a readable markdown report."""
     lines: list[str] = []
     lines.append("# Model Comparison Results\n")
     lines.append(f"- **Current model**: `{config.current_model_path}`")
@@ -476,50 +396,58 @@ def format_results_markdown(similarities: dict[str, float], config: CompareModel
     lines.append(f"- **Eval steps**: {config.n_eval_steps}")
     lines.append(f"- **Batch size**: {config.eval_batch_size}\n")
 
-    prefixes = [
-        ("rank1", "Rank-1 (V@U)"),
-        ("u", "U vectors"),
-        ("v", "V vectors"),
-        ("ci", "CI profiles"),
-    ]
-    stats = ["mean", "std", "min", "max"]
+    layer_names = _extract_layer_names(similarities)
 
-    # Collect all layer names that appear in results
+    lines.append("## Summary (all layers)\n")
+    lines.extend(_metric_summary_table(similarities, "all_layers"))
+    lines.append("")
+
+    lines.append("## Per-layer breakdown\n")
+    for prefix, label in METRIC_PREFIXES:
+        lines.append(f"### {label}\n")
+        lines.extend(_per_layer_table(similarities, prefix, layer_names))
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _extract_layer_names(results: dict[str, float]) -> list[str]:
     layer_names: list[str] = []
-    for key in similarities:
+    for key in results:
         if "/" not in key:
             continue
         layer = key.split("/", 1)[1]
         if layer != "all_layers" and layer not in layer_names:
             layer_names.append(layer)
+    return layer_names
 
-    # Summary table
-    lines.append("## Summary (all layers)\n")
-    lines.append("| Metric | Mean | Std | Min | Max |")
-    lines.append("|--------|-----:|----:|----:|----:|")
-    for prefix, label in prefixes:
-        vals = [similarities.get(f"{prefix}_cosine_{s}/all_layers") for s in stats]
+
+def _metric_summary_table(results: dict[str, float], scope: str) -> list[str]:
+    lines = [
+        "| Metric | Mean | Std | Min | Max |",
+        "|--------|-----:|----:|----:|----:|",
+    ]
+    for prefix, label in METRIC_PREFIXES:
+        vals = [results.get(f"{prefix}_cosine_{s}/{scope}") for s in STATS]
         if vals[0] is not None:
             lines.append(
                 f"| {label} | {vals[0]:.4f} | {vals[1]:.4f} | {vals[2]:.4f} | {vals[3]:.4f} |"
             )
-    lines.append("")
+    return lines
 
-    # Per-layer tables
-    lines.append("## Per-layer breakdown\n")
-    for prefix, label in prefixes:
-        lines.append(f"### {label}\n")
-        lines.append("| Layer | Mean | Std | Min | Max |")
-        lines.append("|-------|-----:|----:|----:|----:|")
-        for layer in layer_names:
-            vals = [similarities.get(f"{prefix}_cosine_{s}/{layer}") for s in stats]
-            if vals[0] is not None:
-                lines.append(
-                    f"| {layer} | {vals[0]:.4f} | {vals[1]:.4f} | {vals[2]:.4f} | {vals[3]:.4f} |"
-                )
-        lines.append("")
 
-    return "\n".join(lines)
+def _per_layer_table(results: dict[str, float], prefix: str, layer_names: list[str]) -> list[str]:
+    lines = [
+        "| Layer | Mean | Std | Min | Max |",
+        "|-------|-----:|----:|----:|----:|",
+    ]
+    for layer in layer_names:
+        vals = [results.get(f"{prefix}_cosine_{s}/{layer}") for s in STATS]
+        if vals[0] is not None:
+            lines.append(
+                f"| {layer} | {vals[0]:.4f} | {vals[1]:.4f} | {vals[2]:.4f} | {vals[3]:.4f} |"
+            )
+    return lines
 
 
 def main(config_path: Path | str) -> None:
@@ -532,24 +460,17 @@ def main(config_path: Path | str) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     comparator = ModelComparator(config)
-
-    logger.info("Setting up evaluation data...")
     eval_iterator = comparator.create_eval_data_loader()
-
-    logger.info("Starting model comparison...")
     similarities = comparator.run_comparison(eval_iterator)
 
-    current_id = config.current_model_path.rstrip("/").split("/")[-1]
-    reference_id = config.reference_model_path.rstrip("/").split("/")[-1]
+    current_id = model_id_from_path(config.current_model_path)
+    reference_id = model_id_from_path(config.reference_model_path)
     stem = f"{current_id}_vs_{reference_id}"
 
     save_file(similarities, output_dir / f"{stem}.json")
-
-    report = format_results_markdown(similarities, config)
-    (output_dir / f"{stem}.md").write_text(report)
+    (output_dir / f"{stem}.md").write_text(format_results_markdown(similarities, config))
 
     logger.info(f"Comparison complete! Results saved to {output_dir}/{stem}.*")
-    logger.info("Similarity metrics:")
     for key, value in similarities.items():
         logger.info(f"  {key}: {value:.4f}")
 

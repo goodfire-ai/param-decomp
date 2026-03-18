@@ -16,43 +16,31 @@ from pydantic import Field
 from spd.base_config import BaseConfig
 from spd.log import logger
 from spd.scripts.compare_models.compare_models import (
+    METRIC_PREFIXES,
     CompareModelsConfig,
     ModelComparator,
+    _extract_layer_names,
+    _metric_summary_table,
+    _per_layer_table,
     format_results_markdown,
+    model_id_from_path,
 )
 from spd.utils.run_utils import save_file
 
 
 class MultiCompareConfig(BaseConfig):
-    model_paths: list[str] = Field(..., description="List of model paths to compare pairwise")
-
-    mean_ci_threshold: float = Field(
-        ...,
-        ge=0.0,
-        le=1.0,
-        description="Minimum mean causal importance for components to be included in comparison",
-    )
-    n_eval_steps: int = Field(
-        ..., description="Number of evaluation steps to compute mean causal importances"
-    )
-
-    eval_batch_size: int = Field(..., description="Batch size for evaluation data loading")
-    shuffle_data: bool = Field(..., description="Whether to shuffle the evaluation data")
-    output_dir: str | None = Field(
-        default=None,
-        description="Directory to save results (defaults to 'out' directory relative to script location)",
-    )
-
-
-def _model_id(path: str) -> str:
-    return path.rstrip("/").split("/")[-1]
+    model_paths: list[str]
+    mean_ci_threshold: float = Field(..., ge=0.0, le=1.0)
+    n_eval_steps: int
+    eval_batch_size: int
+    shuffle_data: bool
+    output_dir: str | None = None
 
 
 def format_summary_markdown(
     pairwise_results: dict[tuple[str, str], dict[str, float]],
     config: MultiCompareConfig,
 ) -> str:
-    """Format a summary report averaging across all pairwise comparisons."""
     lines: list[str] = []
     lines.append("# Multi-Model Comparison Summary\n")
 
@@ -77,60 +65,27 @@ def format_summary_markdown(
         if values:
             averaged[key] = sum(values) / len(values)
 
-    prefixes = [
-        ("rank1", "Rank-1 (V@U)"),
-        ("u", "U vectors"),
-        ("v", "V vectors"),
-        ("ci", "CI profiles"),
-    ]
-    stats = ["mean", "std", "min", "max"]
-
-    # Summary table (all_layers averages)
     lines.append("## Mean across all pairs (all layers)\n")
-    lines.append("| Metric | Mean | Std | Min | Max |")
-    lines.append("|--------|-----:|----:|----:|----:|")
-    for prefix, label in prefixes:
-        vals = [averaged.get(f"{prefix}_cosine_{s}/all_layers") for s in stats]
-        if vals[0] is not None:
-            lines.append(
-                f"| {label} | {vals[0]:.4f} | {vals[1]:.4f} | {vals[2]:.4f} | {vals[3]:.4f} |"
-            )
+    lines.extend(_metric_summary_table(averaged, "all_layers"))
     lines.append("")
 
-    # Per-pair summary (just the all_layers mean for each metric type)
+    # Per-pair summary
     lines.append("## Per-pair results (all_layers mean)\n")
     lines.append("| Pair | Rank-1 | U | V | CI |")
     lines.append("|------|-------:|--:|--:|---:|")
     for (id_a, id_b), result in pairwise_results.items():
-        rank1 = result.get("rank1_cosine_mean/all_layers")
-        u = result.get("u_cosine_mean/all_layers")
-        v = result.get("v_cosine_mean/all_layers")
-        ci = result.get("ci_cosine_mean/all_layers")
-        cells = [f"{x:.4f}" if x is not None else "N/A" for x in (rank1, u, v, ci)]
+        vals = [result.get(f"{p}_cosine_mean/all_layers") for p, _ in METRIC_PREFIXES]
+        cells = [f"{x:.4f}" if x is not None else "N/A" for x in vals]
         lines.append(f"| {id_a} vs {id_b} | {' | '.join(cells)} |")
     lines.append("")
 
     # Per-layer averaged table
-    layer_names: list[str] = []
-    for key in averaged:
-        if "/" not in key:
-            continue
-        layer = key.split("/", 1)[1]
-        if layer != "all_layers" and layer not in layer_names:
-            layer_names.append(layer)
-
+    layer_names = _extract_layer_names(averaged)
     if layer_names:
         lines.append("## Per-layer breakdown (averaged across pairs)\n")
-        for prefix, label in prefixes:
+        for prefix, label in METRIC_PREFIXES:
             lines.append(f"### {label}\n")
-            lines.append("| Layer | Mean | Std | Min | Max |")
-            lines.append("|-------|-----:|----:|----:|----:|")
-            for layer in layer_names:
-                vals = [averaged.get(f"{prefix}_cosine_{s}/{layer}") for s in stats]
-                if vals[0] is not None:
-                    lines.append(
-                        f"| {layer} | {vals[0]:.4f} | {vals[1]:.4f} | {vals[2]:.4f} | {vals[3]:.4f} |"
-                    )
+            lines.extend(_per_layer_table(averaged, prefix, layer_names))
             lines.append("")
 
     return "\n".join(lines)
@@ -152,10 +107,8 @@ def main(config_path: Path | str) -> None:
     pairwise_results: dict[tuple[str, str], dict[str, float]] = {}
 
     for idx, (i, j) in enumerate(pairs):
-        path_a = config.model_paths[i]
-        path_b = config.model_paths[j]
-        id_a = _model_id(path_a)
-        id_b = _model_id(path_b)
+        path_a, path_b = config.model_paths[i], config.model_paths[j]
+        id_a, id_b = model_id_from_path(path_a), model_id_from_path(path_b)
 
         logger.info(f"Pair {idx + 1}/{len(pairs)}: {id_a} vs {id_b}")
 
@@ -176,12 +129,9 @@ def main(config_path: Path | str) -> None:
 
         stem = f"{id_a}_vs_{id_b}"
         save_file(similarities, output_dir / f"{stem}.json")
-        pair_report = format_results_markdown(similarities, pair_config)
-        (output_dir / f"{stem}.md").write_text(pair_report)
+        (output_dir / f"{stem}.md").write_text(format_results_markdown(similarities, pair_config))
 
         logger.info(f"  Saved {stem}.json and {stem}.md")
-
-        # Free GPU memory before next pair
         del comparator
 
     # Save summary
@@ -190,13 +140,9 @@ def main(config_path: Path | str) -> None:
         "pairwise": {f"{a}_vs_{b}": v for (a, b), v in pairwise_results.items()},
     }
     save_file(summary_data, output_dir / "multi_summary.json")
-
-    summary_report = format_summary_markdown(pairwise_results, config)
-    (output_dir / "multi_summary.md").write_text(summary_report)
+    (output_dir / "multi_summary.md").write_text(format_summary_markdown(pairwise_results, config))
 
     logger.info(f"All comparisons complete! Results saved to {output_dir}")
-
-    # Print summary table
     for (id_a, id_b), result in pairwise_results.items():
         rank1 = result.get("rank1_cosine_mean/all_layers", float("nan"))
         ci = result.get("ci_cosine_mean/all_layers", float("nan"))
