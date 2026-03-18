@@ -101,6 +101,39 @@ class AppTokenizer:
         assert "".join(spans) == text, f"span concat mismatch: {''.join(spans)!r} != {text!r}"
         return [escape_for_display(span) for span in spans]
 
+    def get_raw_spans(self, token_ids: list[int]) -> list[str]:
+        """Like get_spans but without control-character escaping.
+
+        Returns per-token strings preserving literal whitespace (newlines, tabs, etc.).
+        Intended for LLM prompt rendering where actual whitespace is meaningful.
+        """
+        if not token_ids:
+            return []
+
+        if not self._is_fast:
+            return self._fallback_raw_spans(token_ids)
+
+        text = self._tok.decode(token_ids, skip_special_tokens=False)
+        re_encoded = self._tok(text, return_offsets_mapping=True, add_special_tokens=False)
+
+        if re_encoded.input_ids != token_ids:
+            return self._fallback_raw_spans(token_ids)
+
+        offsets: list[tuple[int, int]] = re_encoded.offset_mapping
+        assert len(offsets) == len(token_ids)
+
+        spans: list[str] = []
+        prev_end = 0
+        for start, end in offsets:
+            if start >= prev_end:
+                spans.append(text[prev_end:end])
+                prev_end = end
+            else:
+                spans.append("")
+
+        assert "".join(spans) == text
+        return spans
+
     def get_tok_display(self, token_id: int) -> str:
         """Single token -> display string for vocab browsers and hover labels."""
         return escape_for_display(self._tok.decode([token_id], skip_special_tokens=False))
@@ -115,5 +148,14 @@ class AppTokenizer:
         for i in range(len(token_ids)):
             current = self._tok.decode(token_ids[: i + 1], skip_special_tokens=False)
             spans.append(escape_for_display(current[len(prev) :]))
+            prev = current
+        return spans
+
+    def _fallback_raw_spans(self, token_ids: list[int]) -> list[str]:
+        spans: list[str] = []
+        prev = ""
+        for i in range(len(token_ids)):
+            current = self._tok.decode(token_ids[: i + 1], skip_special_tokens=False)
+            spans.append(current[len(prev) :])
             prev = current
         return spans
