@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
+from scipy import sparse
 
 from spd.clustering.consts import ClusterCoactivationShaped
 
@@ -95,6 +96,20 @@ def _count_sparse_bitset_intersection(
     byte_indices = sample_indices // 8
     bit_offsets = sample_indices % 8
     return int(np.count_nonzero(bits[byte_indices] & ((1 << bit_offsets).astype(np.uint8))))
+
+
+def _bitset_to_sample_indices(bits: np.ndarray, n_samples: int) -> np.ndarray:
+    nonzero_byte_idxs = np.flatnonzero(bits)
+    if nonzero_byte_idxs.size == 0:
+        return np.empty((0,), dtype=_index_dtype_for(n_samples))
+
+    unpacked = np.unpackbits(bits[nonzero_byte_idxs], bitorder="little")
+    active_bit_positions = np.flatnonzero(unpacked)
+    sample_indices = nonzero_byte_idxs[active_bit_positions // 8].astype(
+        np.int64, copy=False
+    ) * 8 + (active_bit_positions % 8)
+    sample_indices = sample_indices[sample_indices < n_samples]
+    return sample_indices.astype(_index_dtype_for(n_samples), copy=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +232,13 @@ class CompressedMembership:
         unpacked = np.unpackbits(self.bits, bitorder="little")
         return unpacked[: self.n_samples].astype(bool, copy=False)
 
+    def to_sample_indices(self) -> np.ndarray:
+        if self.sample_indices is not None:
+            return self.sample_indices
+
+        assert self.bits is not None
+        return _bitset_to_sample_indices(self.bits, self.n_samples)
+
 
 BitsetMembership = CompressedMembership
 
@@ -224,15 +246,38 @@ BitsetMembership = CompressedMembership
 def compute_coactivation_matrix(
     memberships: list[CompressedMembership],
 ) -> ClusterCoactivationShaped:
-    """Compute the full coactivation matrix from compressed memberships."""
+    """Compute the full coactivation matrix from compressed memberships.
+
+    This builds a sparse sample-by-component matrix and computes X.T @ X,
+    which is much faster than Python-level pairwise intersections in the
+    typical highly sparse regime.
+    """
     n_groups = len(memberships)
-    coact = np.zeros((n_groups, n_groups), dtype=np.float32)
+    if n_groups == 0:
+        return torch.empty((0, 0), dtype=torch.float32)
 
-    for i, membership_i in enumerate(memberships):
-        coact[i, i] = membership_i.count()
-        for j in range(i + 1, n_groups):
-            overlap = membership_i.intersection_count(memberships[j])
-            coact[i, j] = overlap
-            coact[j, i] = overlap
+    n_samples = memberships[0].n_samples
+    assert all(membership.n_samples == n_samples for membership in memberships), (
+        "Memberships must share sample space"
+    )
 
-    return torch.from_numpy(coact)
+    nnz = sum(membership.count() for membership in memberships)
+    row_indices = np.empty(nnz, dtype=np.int64)
+    col_indices = np.empty(nnz, dtype=np.int32)
+
+    offset = 0
+    for group_idx, membership in enumerate(memberships):
+        sample_indices = membership.to_sample_indices().astype(np.int64, copy=False)
+        group_nnz = sample_indices.size
+        row_indices[offset : offset + group_nnz] = sample_indices
+        col_indices[offset : offset + group_nnz] = group_idx
+        offset += group_nnz
+
+    values = np.ones(nnz, dtype=np.int32)
+    activation_matrix = sparse.csr_matrix(
+        (values, (row_indices, col_indices)),
+        shape=(n_samples, n_groups),
+        dtype=np.int32,
+    )
+    coact = (activation_matrix.T @ activation_matrix).toarray()
+    return torch.from_numpy(coact.astype(np.float32, copy=False))

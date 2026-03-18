@@ -4,6 +4,7 @@ Merge iteration with logging support.
 This wraps the pure merge_iteration_pure() function and adds WandB/plotting callbacks.
 """
 
+import time
 import warnings
 from typing import Protocol
 
@@ -29,6 +30,25 @@ from spd.clustering.math.merge_matrix import GroupMerge
 from spd.clustering.merge_config import MergeConfig
 from spd.clustering.merge_history import MergeHistory
 from spd.clustering.sample_membership import BitsetMembership, compute_coactivation_matrix
+from spd.log import logger
+
+
+def _choose_coact_device(coact: ClusterCoactivationShaped) -> torch.device:
+    """Prefer GPU for dense cost-matrix math when enough memory is available."""
+    if not torch.cuda.is_available():
+        return coact.device
+
+    if coact.device.type == "cuda":
+        return coact.device
+
+    free_bytes, _ = torch.cuda.mem_get_info()
+    coact_bytes = coact.numel() * coact.element_size()
+    # Current coact, a temporary clone during recompute, and the costs tensor dominate.
+    required_bytes = coact_bytes * 3 + 512 * 1024**2
+    if free_bytes >= required_bytes:
+        return torch.device("cuda")
+
+    return coact.device
 
 
 class LogCallback(Protocol):
@@ -198,7 +218,27 @@ def merge_iteration_memberships(
     log_callback: LogCallback | None = None,
 ) -> MergeHistory:
     """Exact merge iteration using compressed sample memberships."""
+    coact_start = time.perf_counter()
+    logger.info(
+        "Building coactivation matrix from compressed memberships "
+        f"(n_groups={len(memberships)}, n_samples={n_samples})"
+    )
     current_coact: ClusterCoactivationShaped = compute_coactivation_matrix(memberships)
+    logger.info(
+        "Built coactivation matrix in "
+        f"{time.perf_counter() - coact_start:.2f}s "
+        f"(shape={tuple(current_coact.shape)})"
+    )
+    coact_device = _choose_coact_device(current_coact)
+    if coact_device != current_coact.device:
+        transfer_start = time.perf_counter()
+        current_coact = current_coact.to(device=coact_device)
+        logger.info(
+            "Moved compressed coactivation matrix to "
+            f"{coact_device} in {time.perf_counter() - transfer_start:.2f}s"
+        )
+    else:
+        logger.info(f"Keeping compressed coactivation matrix on {current_coact.device}")
 
     c_components: int = current_coact.shape[0]
     assert current_coact.shape[1] == c_components, "Coactivation matrix must be square"
@@ -218,6 +258,8 @@ def merge_iteration_memberships(
         unit="iter",
         total=num_iters,
     )
+    merge_start = time.perf_counter()
+    log_every = min(10, num_iters)
     for iter_idx in pbar:
         costs: ClusterCoactivationShaped = compute_merge_costs(
             coact=current_coact / n_samples,
@@ -264,6 +306,16 @@ def merge_iteration_memberships(
                 mdl_loss=mdl_loss,
                 mdl_loss_norm=mdl_loss_norm,
                 diag_acts=diag_acts,
+            )
+
+        if (iter_idx + 1) % log_every == 0 or iter_idx == 0 or iter_idx + 1 == num_iters:
+            elapsed = time.perf_counter() - merge_start
+            logger.info(
+                "Compressed merge progress: "
+                f"iter={iter_idx + 1}/{num_iters}, "
+                f"elapsed={elapsed:.2f}s, "
+                f"sec_per_iter={elapsed / (iter_idx + 1):.4f}, "
+                f"k_groups={k_groups - 1}"
             )
 
         k_groups -= 1
