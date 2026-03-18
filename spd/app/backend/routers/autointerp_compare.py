@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from spd.app.backend.dependencies import DepLoadedRun
 from spd.app.backend.utils import log_errors
-from spd.autointerp.db import DONE_MARKER, InterpDB
+from spd.autointerp.db import InterpDB
 from spd.autointerp.schemas import get_autointerp_dir
 from spd.topology import TransformerTopology
 
@@ -101,8 +101,6 @@ def list_subruns(loaded: DepLoadedRun) -> list[SubrunSummary]:
     results: list[SubrunSummary] = []
     for d in sorted(autointerp_dir.iterdir(), key=lambda d: d.name):
         if not d.is_dir() or not d.name.startswith("a-"):
-            continue
-        if not (d / DONE_MARKER).exists():
             continue
         db_path = d / "interp.db"
         if not db_path.exists():
