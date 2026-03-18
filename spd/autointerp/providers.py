@@ -33,10 +33,14 @@ class OpenRouterLLMConfig(BaseConfig):
     reasoning_effort: ReasoningEffort = "low"
 
 
+EffortLevel = Literal["low", "medium", "high", "max"]
+
+
 class AnthropicLLMConfig(BaseConfig):
     type: Literal["anthropic"] = "anthropic"
     model: str = "claude-sonnet-4-20250514"
     thinking_budget: int | None = None
+    effort: EffortLevel | None = None
 
 
 class OpenAILLMConfig(BaseConfig):
@@ -63,7 +67,9 @@ _PROVIDER_ENV_VARS: dict[ProviderName, str] = {
 
 _ANTHROPIC_PRICING: dict[str, tuple[float, float]] = {
     "claude-sonnet-4-20250514": (3.0 / 1_000_000, 15.0 / 1_000_000),
+    "claude-sonnet-4-6": (3.0 / 1_000_000, 15.0 / 1_000_000),
     "claude-opus-4-20250514": (15.0 / 1_000_000, 75.0 / 1_000_000),
+    "claude-opus-4-6": (15.0 / 1_000_000, 75.0 / 1_000_000),
     "claude-haiku-4-5-20251001": (0.80 / 1_000_000, 4.0 / 1_000_000),
 }
 
@@ -202,9 +208,12 @@ class OpenRouterProvider(LLMProvider):
 
 
 class AnthropicProvider(LLMProvider):
-    def __init__(self, api_key: str, model: str, thinking_budget: int | None):
+    def __init__(
+        self, api_key: str, model: str, thinking_budget: int | None, effort: EffortLevel | None
+    ):
         self.model = model
         self._thinking_budget = thinking_budget
+        self._effort = effort
         self._client = httpx.AsyncClient(
             base_url="https://api.anthropic.com",
             headers={
@@ -226,6 +235,8 @@ class AnthropicProvider(LLMProvider):
         if self._thinking_budget is not None:
             effective_max_tokens = max_tokens + self._thinking_budget
 
+        uses_thinking = self._thinking_budget is not None or self._effort is not None
+
         body: dict[str, Any] = {
             "model": self.model,
             "max_tokens": effective_max_tokens,
@@ -237,9 +248,14 @@ class AnthropicProvider(LLMProvider):
                     "input_schema": response_schema,
                 }
             ],
-            "tool_choice": {"type": "tool", "name": "respond"},
+            "tool_choice": {"type": "auto"}
+            if uses_thinking
+            else {"type": "tool", "name": "respond"},
         }
-        if self._thinking_budget is not None:
+        if self._effort is not None:
+            body["thinking"] = {"type": "adaptive"}
+            body["output_config"] = {"effort": self._effort}
+        elif self._thinking_budget is not None:
             body["thinking"] = {"type": "enabled", "budget_tokens": self._thinking_budget}
 
         try:
@@ -368,7 +384,7 @@ def create_provider(
             return OpenRouterProvider(api_key, config.model, config.reasoning_effort)
         case AnthropicLLMConfig():
             api_key = _get_api_key("anthropic")
-            return AnthropicProvider(api_key, config.model, config.thinking_budget)
+            return AnthropicProvider(api_key, config.model, config.thinking_budget, config.effort)
         case OpenAILLMConfig():
             api_key = _get_api_key("openai")
             return OpenAIProvider(api_key, config.model, config.reasoning_effort)

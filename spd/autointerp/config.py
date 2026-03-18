@@ -53,7 +53,21 @@ class DualViewConfig(BaseConfig):
     forbidden_words: list[str] | None = None
 
 
-StrategyConfig = CompactSkepticalConfig | DualViewConfig
+class RichExamplesConfig(BaseConfig):
+    """Rich examples strategy: drops token statistics, shows per-token CI and activation values.
+
+    Renders firing tokens with inline annotations like <<<token (ci:0.8, act:0.12)>>>
+    so the LLM can judge evidence quality directly from the examples.
+    """
+
+    type: Literal["rich_examples"] = "rich_examples"
+    max_examples: int = 30
+    include_dataset_description: bool = True
+    label_max_words: int = 8
+    forbidden_words: list[str] | None = None
+
+
+StrategyConfig = CompactSkepticalConfig | DualViewConfig | RichExamplesConfig
 
 
 class AutointerpConfig(BaseConfig):

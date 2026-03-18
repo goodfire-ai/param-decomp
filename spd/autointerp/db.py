@@ -132,6 +132,13 @@ class InterpDB:
         )
         self._conn.commit()
 
+    def has_interpretations_table(self) -> bool:
+        row = self._conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='interpretations')"
+        ).fetchone()
+        assert row is not None
+        return bool(row[0])
+
     def has_interpretations(self) -> bool:
         row = self._conn.execute("SELECT EXISTS(SELECT 1 FROM interpretations LIMIT 1)").fetchone()
         assert row is not None

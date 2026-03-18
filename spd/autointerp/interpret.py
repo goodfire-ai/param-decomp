@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from spd.app.backend.app_tokenizer import AppTokenizer
-from spd.autointerp.config import StrategyConfig
+from spd.autointerp.config import RichExamplesConfig, StrategyConfig
 from spd.autointerp.db import InterpDB
 from spd.autointerp.llm_api import (
     LLMError,
@@ -29,8 +29,8 @@ async def interpret_component(
     component: ComponentData,
     model_metadata: ModelMetadata,
     app_tok: AppTokenizer,
-    input_token_stats: TokenPRLift,
-    output_token_stats: TokenPRLift,
+    input_token_stats: TokenPRLift | None,
+    output_token_stats: TokenPRLift | None,
     context_tokens_per_side: int,
 ) -> InterpretationResult:
     """Interpret a single component. Used by the app for on-demand interpretation."""
@@ -87,8 +87,10 @@ def run_interpret(
     summary = harvest.get_summary()
     logger.info(f"Loaded summary for {len(summary)} components")
 
-    token_stats = harvest.get_token_stats()
-    assert token_stats is not None, "token_stats.pt not found. Run harvest first."
+    needs_token_stats = not isinstance(template_strategy, RichExamplesConfig)
+    token_stats = harvest.get_token_stats() if needs_token_stats else None
+    if needs_token_stats:
+        assert token_stats is not None, "token_stats.pt not found. Run harvest first."
 
     harvest_config = harvest.get_config()
     raw = harvest_config["activation_context_tokens_per_side"]
@@ -116,14 +118,16 @@ def run_interpret(
             schema = INTERPRETATION_SCHEMA
 
             def build_jobs() -> Iterable[LLMJob]:
-                assert token_stats is not None, "token_stats required for interpretation"
                 for key in remaining_keys:
                     component = harvest.get_component(key)
                     assert component is not None, f"Component {key} not found in harvest"
-                    input_stats = get_input_token_stats(token_stats, key, app_tok, top_k=20)
-                    output_stats = get_output_token_stats(token_stats, key, app_tok, top_k=50)
-                    assert input_stats is not None
-                    assert output_stats is not None
+                    input_stats: TokenPRLift | None = None
+                    output_stats: TokenPRLift | None = None
+                    if token_stats is not None:
+                        input_stats = get_input_token_stats(token_stats, key, app_tok, top_k=20)
+                        output_stats = get_output_token_stats(token_stats, key, app_tok, top_k=50)
+                        assert input_stats is not None
+                        assert output_stats is not None
                     prompt = format_prompt(
                         strategy=template_strategy,
                         component=component,

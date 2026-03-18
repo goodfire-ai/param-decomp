@@ -29,6 +29,7 @@ from spd.app.backend.database import PromptAttrDB
 from spd.app.backend.routers import (
     activation_contexts_router,
     agents_router,
+    autointerp_compare_router,
     clusters_router,
     correlations_router,
     data_sources_router,
@@ -175,6 +176,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 
 # Routers
 app.include_router(runs_router)
+app.include_router(autointerp_compare_router)
 app.include_router(prompts_router)
 app.include_router(graphs_router)
 app.include_router(activation_contexts_router)

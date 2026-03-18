@@ -1,13 +1,21 @@
 """Strategy dispatch: routes AutointerpConfig variants to their implementations."""
 
 from spd.app.backend.app_tokenizer import AppTokenizer
-from spd.autointerp.config import CompactSkepticalConfig, DualViewConfig, StrategyConfig
+from spd.autointerp.config import (
+    CompactSkepticalConfig,
+    DualViewConfig,
+    RichExamplesConfig,
+    StrategyConfig,
+)
 from spd.autointerp.schemas import ModelMetadata
 from spd.autointerp.strategies.compact_skeptical import (
     format_prompt as compact_skeptical_prompt,
 )
 from spd.autointerp.strategies.dual_view import (
     format_prompt as dual_view_prompt,
+)
+from spd.autointerp.strategies.rich_examples import (
+    format_prompt as rich_examples_prompt,
 )
 from spd.harvest.analysis import TokenPRLift
 from spd.harvest.schemas import ComponentData
@@ -29,12 +37,13 @@ def format_prompt(
     component: ComponentData,
     model_metadata: ModelMetadata,
     app_tok: AppTokenizer,
-    input_token_stats: TokenPRLift,
-    output_token_stats: TokenPRLift,
+    input_token_stats: TokenPRLift | None,
+    output_token_stats: TokenPRLift | None,
     context_tokens_per_side: int,
 ) -> str:
     match strategy:
         case CompactSkepticalConfig():
+            assert input_token_stats is not None and output_token_stats is not None
             return compact_skeptical_prompt(
                 strategy,
                 component,
@@ -45,6 +54,7 @@ def format_prompt(
                 context_tokens_per_side,
             )
         case DualViewConfig():
+            assert input_token_stats is not None and output_token_stats is not None
             return dual_view_prompt(
                 strategy,
                 component,
@@ -52,5 +62,13 @@ def format_prompt(
                 app_tok,
                 input_token_stats,
                 output_token_stats,
+                context_tokens_per_side,
+            )
+        case RichExamplesConfig():
+            return rich_examples_prompt(
+                strategy,
+                component,
+                model_metadata,
+                app_tok,
                 context_tokens_per_side,
             )

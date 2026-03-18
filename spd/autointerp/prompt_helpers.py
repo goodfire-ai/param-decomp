@@ -192,3 +192,59 @@ def build_says_examples(
     max_examples: int,
 ) -> Md:
     return _build_examples(component, app_tok, max_examples, shift_firings=True)
+
+
+def _fmt_ann(activations: dict[str, float]) -> str:
+    """Format activation annotations for a single firing token.
+
+    For SPD: (ci:0.82, act:-0.05)
+    For other methods: just the activation value, e.g. (act:3.21)
+    """
+    parts: list[str] = []
+    if "causal_importance" in activations:
+        parts.append(f"ci:{activations['causal_importance']:.2g}")
+    if "component_activation" in activations:
+        parts.append(f"act:{activations['component_activation']:.2g}")
+    if "activation" in activations:
+        parts.append(f"act:{activations['activation']:.2g}")
+    return f"({', '.join(parts)})"
+
+
+def _delimit_annotated(
+    spans: list[str],
+    firings: list[bool],
+    per_token_activations: list[dict[str, float]],
+) -> str:
+    """Join token strings, wrapping active tokens with <<<token (ci, act)>>>."""
+    parts: list[str] = []
+    for span, active, acts in zip(spans, firings, per_token_activations, strict=True):
+        if active:
+            stripped = span.lstrip()
+            whitespace = span[: len(span) - len(stripped)]
+            ann = _fmt_ann(acts)
+            parts.append(f"{whitespace}<<<{stripped} {ann}>>>")
+        else:
+            parts.append(span)
+    return "".join(parts)
+
+
+def build_annotated_examples(
+    component: ComponentData,
+    app_tok: AppTokenizer,
+    max_examples: int,
+) -> Md:
+    """Build activation examples with per-token CI and activation annotations."""
+    items: list[str] = []
+    for ex in component.activation_examples[:max_examples]:
+        if not any(ex.firings):
+            continue
+        spans = app_tok.get_spans(ex.token_ids)
+        act_keys = list(ex.activations.keys())
+        per_token_acts = [
+            {k: ex.activations[k][i] for k in act_keys} for i in range(len(ex.token_ids))
+        ]
+        items.append(_delimit_annotated(spans, ex.firings, per_token_acts))
+    md = Md()
+    if items:
+        md.numbered(items)
+    return md
