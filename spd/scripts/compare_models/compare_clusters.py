@@ -10,7 +10,6 @@ Usage:
     python spd/scripts/compare_models/compare_clusters.py replot <output_dir>
 """
 
-import math
 from collections import defaultdict
 from pathlib import Path
 from typing import ClassVar
@@ -94,35 +93,71 @@ def build_cluster_weights(
     return cluster_weights
 
 
-def sparse_norm(cluster: ClusterWeights) -> float:
-    sq_sum = sum(w.square().sum().item() for w in cluster.values())
-    return math.sqrt(sq_sum)
-
-
-def sparse_dot(a: ClusterWeights, b: ClusterWeights) -> float:
-    shared_modules = set(a.keys()) & set(b.keys())
-    return sum((a[m] * b[m]).sum().item() for m in shared_modules)
+MAX_DENSE_BYTES = 4 * 1024**3  # 4 GB max per dense matrix chunk
 
 
 def sparse_cosine_sim_matrix(
     clusters_a: list[ClusterWeights],
     clusters_b: list[ClusterWeights],
 ) -> Float[Tensor, "ka kb"]:
-    """Compute cosine similarity between all pairs of clusters."""
+    """Compute cosine similarity between all pairs of clusters.
+
+    Vectorized per-module: for each module, stacks cluster weights into dense
+    matrices and accumulates dot products via matmul. Large modules are processed
+    in chunks to limit memory usage.
+    """
     k_a, k_b = len(clusters_a), len(clusters_b)
 
-    norms_a = [sparse_norm(c) for c in clusters_a]
-    norms_b = [sparse_norm(c) for c in clusters_b]
+    all_modules: set[str] = set()
+    for c in clusters_a:
+        all_modules.update(c.keys())
+    for c in clusters_b:
+        all_modules.update(c.keys())
+
+    dot_matrix = torch.zeros(k_a, k_b)
+    sq_norms_a = torch.zeros(k_a)
+    sq_norms_b = torch.zeros(k_b)
+
+    for module_name in sorted(all_modules):
+        sample = next(
+            (c[module_name] for c in (*clusters_a, *clusters_b) if module_name in c), None
+        )
+        assert sample is not None
+        n_params = sample.numel()
+
+        # Determine chunk size to stay within memory budget
+        max_k = max(k_a, k_b)
+        max_cols = MAX_DENSE_BYTES // (max_k * 4)  # 4 bytes per float32
+        chunk_size = max(1, min(n_params, max_cols))
+
+        flat_a = {
+            i: c[module_name].reshape(-1) for i, c in enumerate(clusters_a) if module_name in c
+        }
+        flat_b = {
+            j: c[module_name].reshape(-1) for j, c in enumerate(clusters_b) if module_name in c
+        }
+
+        for start in range(0, n_params, chunk_size):
+            end = min(start + chunk_size, n_params)
+
+            mat_a = torch.zeros(k_a, end - start)
+            for i, vec in flat_a.items():
+                mat_a[i] = vec[start:end]
+
+            mat_b = torch.zeros(k_b, end - start)
+            for j, vec in flat_b.items():
+                mat_b[j] = vec[start:end]
+
+            dot_matrix += mat_a @ mat_b.T
+            sq_norms_a += mat_a.square().sum(dim=1)
+            sq_norms_b += mat_b.square().sum(dim=1)
+
+        logger.info(f"  Processed module {module_name} ({n_params:,} params)")
 
     eps = 1e-12
-    sim = torch.zeros(k_a, k_b)
-    for i in range(k_a):
-        for j in range(k_b):
-            dot = sparse_dot(clusters_a[i], clusters_b[j])
-            denom = max(norms_a[i] * norms_b[j], eps)
-            sim[i, j] = dot / denom
-
-    return sim
+    norms_a = sq_norms_a.sqrt().clamp_min(eps)
+    norms_b = sq_norms_b.sqrt().clamp_min(eps)
+    return dot_matrix / torch.outer(norms_a, norms_b)
 
 
 def save_cluster_heatmap(
