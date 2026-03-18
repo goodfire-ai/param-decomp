@@ -133,8 +133,8 @@ def format_prompt(
         "does in the network. Use both the input and output evidence."
     )
     md.p(
-        f"Be epistemically honest — express uncertainty in the label and confidence "
-        f"field when the evidence is weak or ambiguous. {forbidden_sentence}Lowercase only."
+        f"Be epistemically honest — express uncertainty in the label "
+        f"when the evidence is weak or ambiguous. {forbidden_sentence}Lowercase only."
     )
 
     return md.build()
@@ -174,7 +174,13 @@ def _build_annotation_legend(md: Md, component: ComponentData) -> None:
     if "component_activation" in act_keys:
         legend_items.append(
             "**act** (component activation): Inner product with the component's read direction. "
-            "Sign is arbitrary; magnitude indicates response strength."
+            "The global sign convention is arbitrary — the component would be equivalent with "
+            "both vectors negated — but sign is meaningful within a component's examples. "
+            "Positive and negative activations produce opposite contributions to the output, "
+            "and may represent qualitatively distinct input patterns rather than just more/less "
+            "of the same thing (e.g. negative acts on one token class, positive on another). "
+            "Check whether examples cluster by sign, and if so, treat each polarity as "
+            "potentially a separate input pattern worth describing independently."
         )
     if "activation" in act_keys:
         legend_items.append(

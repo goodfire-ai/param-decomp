@@ -39,9 +39,6 @@
                 <div class="interpretation-content">
                     <div class="interpretation-header">
                         <span class="interpretation-label">{interpretationData.data.label}</span>
-                        <span class="confidence confidence-{interpretationData.data.confidence}"
-                            >{interpretationData.data.confidence}</span
-                        >
                         {#if interpretationData.data.detection_score !== null}
                             <span class="score-pill {scoreClass(interpretationData.data.detection_score)}"
                                 >Det {Math.round(interpretationData.data.detection_score * 100)}%</span
@@ -153,29 +150,6 @@
     .interpretation-label.muted {
         color: var(--text-muted);
         font-style: italic;
-    }
-
-    .confidence {
-        font-size: var(--text-xs);
-        padding: var(--space-1) var(--space-2);
-        border-radius: var(--radius-sm);
-        text-transform: uppercase;
-        font-weight: 600;
-    }
-
-    .confidence-high {
-        background: color-mix(in srgb, var(--status-positive-bright) 20%, transparent);
-        color: var(--status-positive-bright);
-    }
-
-    .confidence-medium {
-        background: color-mix(in srgb, var(--status-warning) 20%, transparent);
-        color: var(--status-warning);
-    }
-
-    .confidence-low {
-        background: color-mix(in srgb, var(--text-muted) 20%, transparent);
-        color: var(--text-muted);
     }
 
     .score-pill {

@@ -33,7 +33,6 @@ class SubrunSummary(BaseModel):
 
 class InterpretationHeadline(BaseModel):
     label: str
-    confidence: str
     detection_score: float | None = None
     fuzzing_score: float | None = None
 
@@ -157,7 +156,6 @@ def get_subrun_interpretations(
     return {
         _concrete_to_canonical_key(key, loaded.topology): InterpretationHeadline(
             label=result.label,
-            confidence=result.confidence,
             detection_score=detection_scores.get(key),
             fuzzing_score=fuzzing_scores.get(key),
         )

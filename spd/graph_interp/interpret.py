@@ -157,7 +157,6 @@ def run_graph_interp(
                                 pass_name=pass_name,
                                 attribution=r.attribution,
                                 related_label=r.label,
-                                related_confidence=r.confidence,
                             )
                             for r in related
                         ]
@@ -338,15 +337,13 @@ async def _collect_labels(
 
 
 def _parse_label(key: str, parsed: dict[str, object], raw: str, prompt: str) -> LabelResult:
-    assert len(parsed) == 3, f"Expected 3 fields, got {len(parsed)}"
+    assert len(parsed) == 2, f"Expected 2 fields, got {len(parsed)}"
     label = parsed["label"]
-    confidence = parsed["confidence"]
     reasoning = parsed["reasoning"]
-    assert isinstance(label, str) and isinstance(confidence, str) and isinstance(reasoning, str)
+    assert isinstance(label, str) and isinstance(reasoning, str)
     return LabelResult(
         component_key=key,
         label=label,
-        confidence=confidence,
         reasoning=reasoning,
         raw_response=raw,
         prompt=prompt,

@@ -199,9 +199,7 @@
     }
 
     function handlePlotSelect(subcomponentIdx: number) {
-        const pageIndex = currentLayerMetadata.findIndex(
-            (m) => m.subcomponent_idx === subcomponentIdx,
-        );
+        const pageIndex = currentLayerMetadata.findIndex((m) => m.subcomponent_idx === subcomponentIdx);
         if (pageIndex === -1) return;
         currentPage = pageIndex;
         loadCurrentComponent();

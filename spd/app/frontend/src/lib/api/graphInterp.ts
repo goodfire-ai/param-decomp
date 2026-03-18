@@ -6,14 +6,12 @@ import { fetchJson } from "./index";
 
 export type GraphInterpHeadline = {
     label: string;
-    confidence: string;
     output_label: string | null;
     input_label: string | null;
 };
 
 export type LabelDetail = {
     label: string;
-    confidence: string;
     reasoning: string;
     prompt: string;
 };
@@ -29,7 +27,6 @@ export type PromptEdgeResponse = {
     pass_name: string;
     attribution: number;
     related_label: string | null;
-    related_confidence: string | null;
     token_str: string | null;
 };
 
@@ -43,7 +40,6 @@ export type GraphInterpComponentDetail = {
 export type GraphNode = {
     component_key: string;
     label: string;
-    confidence: string;
 };
 
 export type GraphEdge = {

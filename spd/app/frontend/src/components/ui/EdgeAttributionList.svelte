@@ -144,7 +144,6 @@
                                     <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
                                 </svg>
                             </button>
-                            <div class="tooltip-confidence">Confidence: {interp.data.confidence}</div>
                         {:else if isToken && tokenStr}
                             <div class="tooltip-token">Token: '{tokenStr}'</div>
                         {/if}
@@ -340,11 +339,5 @@
 
     .tooltip-node-key.copyable:hover .copy-icon {
         opacity: 0.8;
-    }
-
-    .tooltip-confidence {
-        font-family: var(--font-mono);
-        font-size: var(--text-xs);
-        color: var(--text-muted);
     }
 </style>

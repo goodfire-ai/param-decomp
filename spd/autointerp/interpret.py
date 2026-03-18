@@ -54,18 +54,14 @@ async def interpret_component(
     raw = response.content
     parsed = json.loads(raw)
 
-    assert len(parsed) == 3, f"Expected 3 fields, got {parsed}"
+    assert len(parsed) == 2, f"Expected 2 fields, got {parsed}"
     label = parsed["label"]
-    confidence = parsed["confidence"]
     reasoning_text = parsed["reasoning"]
-    assert (
-        isinstance(label, str) and isinstance(confidence, str) and isinstance(reasoning_text, str)
-    )
+    assert isinstance(label, str) and isinstance(reasoning_text, str)
 
     return InterpretationResult(
         component_key=component.component_key,
         label=label,
-        confidence=confidence,
         reasoning=reasoning_text,
         raw_response=raw,
         prompt=prompt,
@@ -154,19 +150,13 @@ def run_interpret(
             ):
                 match outcome:
                     case LLMResult(job=job, parsed=parsed, raw=raw):
-                        assert len(parsed) == 3, f"Expected 3 fields, got {len(parsed)}"
+                        assert len(parsed) == 2, f"Expected 2 fields, got {len(parsed)}"
                         label = parsed["label"]
-                        confidence = parsed["confidence"]
                         reasoning_text = parsed["reasoning"]
-                        assert (
-                            isinstance(label, str)
-                            and isinstance(confidence, str)
-                            and isinstance(reasoning_text, str)
-                        )
+                        assert isinstance(label, str) and isinstance(reasoning_text, str)
                         result = InterpretationResult(
                             component_key=job.key,
                             label=label,
-                            confidence=confidence,
                             reasoning=reasoning_text,
                             raw_response=raw,
                             prompt=job.prompt,

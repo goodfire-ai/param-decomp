@@ -16,7 +16,6 @@ class RelatedComponent:
     attribution: float
     pmi: float | None
     label: str | None
-    confidence: str | None
 
 
 GetAttributed = Callable[[str, int, Literal["positive", "negative"]], list[DatasetAttributionEntry]]
@@ -53,7 +52,6 @@ def get_related_components(
                 attribution=e.value,
                 pmi=correlation_storage.pmi(component_key, e.component_key),
                 label=label.label if label else None,
-                confidence=label.confidence if label else None,
             )
         )
 
