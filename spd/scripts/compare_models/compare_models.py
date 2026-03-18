@@ -473,7 +473,7 @@ def save_heatmaps(matrices: SimMatrices, output_dir: Path) -> None:
 
             data = matrix.detach().cpu().float().numpy()
 
-            fig, ax = plt.subplots(figsize=(10, 8))
+            fig, ax = plt.subplots(figsize=(16, 12))
             im = ax.imshow(data, aspect="auto", cmap="viridis", vmin=0, vmax=1)
             fig.colorbar(im, ax=ax)
 
@@ -483,7 +483,7 @@ def save_heatmaps(matrices: SimMatrices, output_dir: Path) -> None:
             ax.set_ylabel("Current component (alive)")
 
             fig.tight_layout()
-            fig.savefig(prefix_dir / f"{layer_name}.png", dpi=100)
+            fig.savefig(prefix_dir / f"{layer_name}.png", dpi=150)
             plt.close(fig)
 
     logger.info(f"Saved heatmaps to {heatmap_dir}")
