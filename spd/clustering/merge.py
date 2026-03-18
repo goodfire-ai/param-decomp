@@ -16,6 +16,7 @@ from spd.clustering.compute_costs import (
     compute_mdl_cost,
     compute_merge_costs,
     recompute_coacts_merge_pair,
+    recompute_coacts_merge_pair_memberships,
 )
 from spd.clustering.consts import (
     ActivationsTensor,
@@ -27,6 +28,7 @@ from spd.clustering.consts import (
 from spd.clustering.math.merge_matrix import GroupMerge
 from spd.clustering.merge_config import MergeConfig
 from spd.clustering.merge_history import MergeHistory
+from spd.clustering.sample_membership import BitsetMembership, compute_coactivation_matrix
 
 
 class LogCallback(Protocol):
@@ -185,4 +187,101 @@ def merge_iteration(
 
     # finish up
     # ==================================================
+    return merge_history
+
+
+def merge_iteration_memberships(
+    merge_config: MergeConfig,
+    memberships: list[BitsetMembership],
+    n_samples: int,
+    component_labels: ComponentLabels,
+    log_callback: LogCallback | None = None,
+) -> MergeHistory:
+    """Exact merge iteration using compressed sample memberships."""
+    current_coact: ClusterCoactivationShaped = compute_coactivation_matrix(memberships)
+
+    c_components: int = current_coact.shape[0]
+    assert current_coact.shape[1] == c_components, "Coactivation matrix must be square"
+
+    num_iters: int = merge_config.get_num_iters(c_components)
+    current_merge: GroupMerge = GroupMerge.identity(n_components=c_components)
+    current_memberships = memberships.copy()
+    k_groups: int = c_components
+
+    merge_history: MergeHistory = MergeHistory.from_config(
+        merge_config=merge_config,
+        labels=component_labels,
+    )
+
+    pbar: tqdm[int] = tqdm(
+        range(num_iters),
+        unit="iter",
+        total=num_iters,
+    )
+    for iter_idx in pbar:
+        costs: ClusterCoactivationShaped = compute_merge_costs(
+            coact=current_coact / n_samples,
+            merges=current_merge,
+            alpha=merge_config.alpha,
+        )
+
+        merge_pair: MergePair = merge_config.merge_pair_sample(costs)
+
+        current_merge, current_coact, current_memberships = recompute_coacts_merge_pair_memberships(
+            coact=current_coact,
+            merges=current_merge,
+            merge_pair=merge_pair,
+            memberships=current_memberships,
+        )
+
+        merge_history.add_iteration(
+            idx=iter_idx,
+            selected_pair=merge_pair,
+            current_merge=current_merge,
+        )
+
+        diag_acts: Float[Tensor, " k_groups"] = torch.diag(current_coact)
+        mdl_loss: float = compute_mdl_cost(
+            acts=diag_acts,
+            merges=current_merge,
+            alpha=merge_config.alpha,
+        )
+        mdl_loss_norm: float = mdl_loss / n_samples
+        merge_pair_cost: float = float(costs[merge_pair].item())
+
+        pbar.set_description(f"k={k_groups}, mdl={mdl_loss_norm:.4f}, pair={merge_pair_cost:.4f}")
+
+        if log_callback is not None:
+            log_callback(
+                iter_idx=iter_idx,
+                current_coact=current_coact,
+                component_labels=component_labels,
+                current_merge=current_merge,
+                costs=costs,
+                merge_history=merge_history,
+                k_groups=k_groups,
+                merge_pair_cost=merge_pair_cost,
+                mdl_loss=mdl_loss,
+                mdl_loss_norm=mdl_loss_norm,
+                diag_acts=diag_acts,
+            )
+
+        k_groups -= 1
+        assert current_coact.shape[0] == k_groups, (
+            "Coactivation matrix shape should match number of groups"
+        )
+        assert current_coact.shape[1] == k_groups, (
+            "Coactivation matrix shape should match number of groups"
+        )
+        assert len(current_memberships) == k_groups, (
+            "Membership count should match number of groups"
+        )
+
+        if k_groups <= 3:
+            warnings.warn(
+                f"Stopping early at iteration {iter_idx} as only {k_groups} groups left",
+                stacklevel=2,
+            )
+            break
+
     return merge_history

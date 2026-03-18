@@ -43,6 +43,10 @@ class ClusteringRunConfig(BaseConfig):
     )
 
     batch_size: PositiveInt = Field(..., description="Batch size for processing")
+    n_samples: PositiveInt | None = Field(
+        default=None,
+        description="Number of activation samples to collect for non-LM tasks. Defaults to one batch if unset.",
+    )
     n_tokens: PositiveInt | None = Field(
         default=None,
         description="Number of token activation samples to collect (LM only)",

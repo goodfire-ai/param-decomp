@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Any, Literal, NamedTuple
 
+import numpy as np
 import torch
 from jaxtyping import Bool, Float, Float16
 from torch import Tensor
@@ -14,6 +15,7 @@ from spd.clustering.consts import (
     ClusterCoactivationShaped,
     ComponentLabels,
 )
+from spd.clustering.sample_membership import BitsetMembership
 from spd.clustering.util import ModuleFilterFunc
 from spd.log import logger
 from spd.models.component_model import ComponentModel, OutputWithCache
@@ -264,6 +266,290 @@ class ProcessedActivations:
                 result[key] = self.activations[:, offset : offset + n_alive]
             offset += n_alive
         return result
+
+
+@dataclass(frozen=True)
+class ProcessedMemberships:
+    """Processed, compressed sample memberships for exact merge iteration."""
+
+    module_component_counts: dict[str, int]
+    module_alive_counts: dict[str, int]
+    labels: ComponentLabels
+    dead_components_lst: ComponentLabels | None
+    memberships: list[BitsetMembership]
+    n_samples: int
+    preview: ProcessedActivations | None = None
+
+    @property
+    def n_components_original(self) -> int:
+        return sum(self.module_component_counts.values())
+
+    @property
+    def n_components_alive(self) -> int:
+        return len(self.labels)
+
+    @property
+    def n_components_dead(self) -> int:
+        return len(self.dead_components_lst) if self.dead_components_lst else 0
+
+    def validate(self) -> None:
+        assert self.n_components_alive == len(self.memberships), (
+            f"{self.n_components_alive = } != {len(self.memberships) = }"
+        )
+        assert self.n_components_alive + self.n_components_dead == self.n_components_original, (
+            f"{self.n_components_alive = } + {self.n_components_dead = } != {self.n_components_original = }"
+        )
+
+
+class MembershipBuilder:
+    """Streaming builder for compressed sample memberships.
+
+    This stores only active sample ids per component plus a small dense preview
+    for plots/logging. It assumes thresholded boolean merge semantics.
+    """
+
+    def __init__(
+        self,
+        *,
+        activation_threshold: float,
+        filter_dead_threshold: float,
+        filter_modules: ModuleFilterFunc | None,
+        preview_n_samples: int = 256,
+    ) -> None:
+        self.activation_threshold = activation_threshold
+        self.filter_dead_threshold = filter_dead_threshold
+        self.filter_modules = filter_modules
+        self.preview_n_samples = preview_n_samples
+
+        self.n_samples = 0
+        self.module_component_counts: dict[str, int] = {}
+        self.max_activations: dict[str, Float[Tensor, " c"]] = {}
+        self.sample_idx_chunks: dict[str, list[list[np.ndarray]]] = {}
+        self.preview_chunks: dict[str, list[Tensor]] = {}
+        self.module_order: list[str] = []
+        self._preview_rows = 0
+
+    def _ensure_module(self, key: str, n_components: int) -> None:
+        if key in self.module_component_counts:
+            assert self.module_component_counts[key] == n_components, (
+                f"Inconsistent component count for module '{key}': "
+                f"{self.module_component_counts[key]} vs {n_components}"
+            )
+            return
+
+        self.module_component_counts[key] = n_components
+        self.max_activations[key] = torch.full((n_components,), float("-inf"))
+        self.sample_idx_chunks[key] = [[] for _ in range(n_components)]
+        self.preview_chunks[key] = []
+        self.module_order.append(key)
+
+    def add_batch(
+        self,
+        activations: dict[str, Float[Tensor, "samples C"]],
+    ) -> None:
+        """Add a batch of per-module activations shaped [samples, components]."""
+        filtered = (
+            {key: act for key, act in activations.items() if self.filter_modules(key)}
+            if self.filter_modules is not None
+            else activations
+        )
+        if not filtered:
+            return
+
+        batch_n_samples = next(iter(filtered.values())).shape[0]
+        sample_offset = self.n_samples
+
+        for key, act in filtered.items():
+            act_cpu = act.detach().cpu()
+            assert act_cpu.ndim == 2, f"Expected 2D activations, got shape {tuple(act_cpu.shape)}"
+            self._ensure_module(key, act_cpu.shape[1])
+
+            self.max_activations[key] = torch.maximum(
+                self.max_activations[key], act_cpu.max(dim=0).values
+            )
+
+            if self._preview_rows < self.preview_n_samples:
+                remaining = self.preview_n_samples - self._preview_rows
+                self.preview_chunks[key].append(act_cpu[:remaining].clone())
+
+            mask_np = (act_cpu.numpy() > self.activation_threshold).T
+            comp_indices, row_indices = np.nonzero(mask_np)
+            if comp_indices.size > 0:
+                row_indices = row_indices.astype(np.int32, copy=False) + sample_offset
+                split_points = np.flatnonzero(np.diff(comp_indices)) + 1
+                row_groups = np.split(row_indices, split_points)
+                comp_groups = np.split(comp_indices, split_points)
+                for comp_group, row_group in zip(comp_groups, row_groups, strict=True):
+                    self.sample_idx_chunks[key][int(comp_group[0])].append(row_group)
+
+        self.n_samples += batch_n_samples
+        self._preview_rows = min(self.n_samples, self.preview_n_samples)
+
+    def finalize(self) -> ProcessedMemberships:
+        module_alive_counts: dict[str, int] = {}
+        alive_labels = ComponentLabels(list())
+        dead_labels = ComponentLabels(list())
+        memberships: list[BitsetMembership] = []
+
+        preview_module_component_counts: dict[str, int] = {}
+        preview_module_alive_counts: dict[str, int] = {}
+        preview_chunks_alive: list[Tensor] = []
+
+        for key in self.module_order:
+            max_act = self.max_activations[key]
+            n_components = self.module_component_counts[key]
+            alive = (
+                max_act >= self.filter_dead_threshold
+                if self.filter_dead_threshold > 0
+                else torch.ones(n_components, dtype=torch.bool)
+            )
+            n_alive = int(alive.sum().item())
+            module_alive_counts[key] = n_alive
+            preview_module_component_counts[key] = n_components
+            preview_module_alive_counts[key] = n_alive
+
+            preview_tensor = (
+                torch.cat(self.preview_chunks[key], dim=0)
+                if self.preview_chunks[key]
+                else torch.empty((0, n_components), dtype=max_act.dtype)
+            )
+
+            for comp_idx in range(n_components):
+                label = f"{key}:{comp_idx}"
+                if alive[comp_idx]:
+                    alive_labels.append(label)
+                    chunks = self.sample_idx_chunks[key][comp_idx]
+                    sample_ids = (
+                        np.concatenate(chunks).astype(np.int64, copy=False)
+                        if chunks
+                        else np.empty((0,), dtype=np.int64)
+                    )
+                    memberships.append(
+                        BitsetMembership.from_sample_indices(
+                            sample_indices=sample_ids,
+                            n_samples=self.n_samples,
+                        )
+                    )
+                else:
+                    dead_labels.append(label)
+
+            if n_alive > 0:
+                preview_chunks_alive.append(preview_tensor[:, alive])
+
+        preview: ProcessedActivations | None = None
+        if preview_chunks_alive:
+            preview = ProcessedActivations(
+                module_component_counts=preview_module_component_counts,
+                module_alive_counts=preview_module_alive_counts,
+                activations=torch.cat(preview_chunks_alive, dim=1),
+                labels=ComponentLabels(alive_labels.copy()),
+                dead_components_lst=ComponentLabels(dead_labels.copy()) if dead_labels else None,
+            )
+
+        result = ProcessedMemberships(
+            module_component_counts=self.module_component_counts,
+            module_alive_counts=module_alive_counts,
+            labels=alive_labels,
+            dead_components_lst=dead_labels if dead_labels else None,
+            memberships=memberships,
+            n_samples=self.n_samples,
+            preview=preview,
+        )
+        result.validate()
+        return result
+
+
+def collect_memberships_lm(
+    model: ComponentModel,
+    dataloader: DataLoader[Any],
+    n_tokens: int,
+    n_tokens_per_seq: int,
+    device: torch.device | str,
+    seed: int,
+    activation_threshold: float,
+    filter_dead_threshold: float,
+    filter_modules: ModuleFilterFunc | None = None,
+    preview_n_samples: int = 256,
+) -> ProcessedMemberships:
+    """Collect LM activations across batches into compressed memberships."""
+    rng = torch.Generator().manual_seed(seed)
+    builder = MembershipBuilder(
+        activation_threshold=activation_threshold,
+        filter_dead_threshold=filter_dead_threshold,
+        filter_modules=filter_modules,
+        preview_n_samples=preview_n_samples,
+    )
+    n_collected = 0
+
+    pbar = tqdm(dataloader, desc="Collecting activations", unit="batch")
+    for batch_data in pbar:
+        input_ids = batch_data["input_ids"]
+        batch_size, n_ctx = input_ids.shape
+
+        activations = component_activations(model=model, batch=input_ids, device=device)
+
+        positions = torch.randint(0, n_ctx, (batch_size, n_tokens_per_seq), generator=rng)
+        batch_indices = torch.arange(batch_size).unsqueeze(1).expand_as(positions)
+
+        sampled_activations: dict[str, Float[Tensor, "samples C"]] = {}
+        n_remaining = n_tokens - n_collected
+        batch_take = min(batch_size * n_tokens_per_seq, n_remaining)
+        for key, act in activations.items():
+            sampled = act[batch_indices, positions].reshape(batch_size * n_tokens_per_seq, -1)
+            sampled_activations[key] = sampled[:batch_take]
+
+        builder.add_batch(sampled_activations)
+
+        n_collected += batch_take
+        pbar.set_postfix(tokens=f"{n_collected}/{n_tokens}")
+        if n_collected >= n_tokens:
+            break
+
+    assert n_collected >= n_tokens, (
+        f"Dataloader exhausted: collected {n_collected} tokens but needed {n_tokens}"
+    )
+    logger.info(f"Collected {n_collected} token activations (requested {n_tokens})")
+    return builder.finalize()
+
+
+def collect_memberships_resid_mlp(
+    model: ComponentModel,
+    dataloader: DataLoader[Any],
+    n_samples: int,
+    device: torch.device | str,
+    activation_threshold: float,
+    filter_dead_threshold: float,
+    filter_modules: ModuleFilterFunc | None = None,
+    preview_n_samples: int = 256,
+) -> ProcessedMemberships:
+    """Collect ResidMLP activations across batches into compressed memberships."""
+    builder = MembershipBuilder(
+        activation_threshold=activation_threshold,
+        filter_dead_threshold=filter_dead_threshold,
+        filter_modules=filter_modules,
+        preview_n_samples=preview_n_samples,
+    )
+    n_collected = 0
+
+    pbar = tqdm(dataloader, desc="Collecting activations", unit="batch")
+    for batch_data in pbar:
+        batch, _ = batch_data
+        activations = component_activations(model=model, batch=batch, device=device)
+
+        n_remaining = n_samples - n_collected
+        batch_take = min(batch.shape[0], n_remaining)
+        builder.add_batch({key: act[:batch_take] for key, act in activations.items()})
+
+        n_collected += batch_take
+        pbar.set_postfix(samples=f"{n_collected}/{n_samples}")
+        if n_collected >= n_samples:
+            break
+
+    assert n_collected >= n_samples, (
+        f"Dataloader exhausted: collected {n_collected} samples but needed {n_samples}"
+    )
+    logger.info(f"Collected {n_collected} resid_mlp activations (requested {n_samples})")
+    return builder.finalize()
 
 
 def process_activations(

@@ -29,7 +29,10 @@ from wandb.sdk.wandb_run import Run
 
 from spd.clustering.activations import (
     ProcessedActivations,
+    ProcessedMemberships,
     collect_activations,
+    collect_memberships_lm,
+    collect_memberships_resid_mlp,
     component_activations,
     process_activations,
 )
@@ -43,7 +46,7 @@ from spd.clustering.dataset import create_clustering_dataloader
 from spd.clustering.ensemble_registry import _ENSEMBLE_REGISTRY_DB, register_clustering_run
 from spd.clustering.math.merge_matrix import GroupMerge
 from spd.clustering.math.semilog import semilog
-from spd.clustering.merge import merge_iteration
+from spd.clustering.merge import merge_iteration, merge_iteration_memberships
 from spd.clustering.merge_history import MergeHistory
 from spd.clustering.plotting.activations import plot_activations
 from spd.clustering.plotting.merge import plot_merge_history_cluster_sizes, plot_merge_iteration
@@ -290,44 +293,96 @@ def main(run_config: ClusteringRunConfig) -> Path:
     logger.info("Loading model")
     model = ComponentModel.from_run_info(spd_run).to(device)
 
+    processed_activations: ProcessedActivations | None = None
+    processed_memberships: ProcessedMemberships | None = None
+    activations: ActivationsTensor | None = None
+    component_labels: ComponentLabels
+
     # 4. Compute activations
     logger.info("Computing activations")
-    if task_name == "lm":
-        assert run_config.n_tokens is not None, "n_tokens must be set for LM tasks"
-        assert run_config.n_tokens_per_seq is not None, "n_tokens_per_seq must be set for LM tasks"
-        activations_dict = collect_activations(
-            model=model,
-            dataloader=dataloader,
-            n_tokens=run_config.n_tokens,
-            n_tokens_per_seq=run_config.n_tokens_per_seq,
-            device=device,
-            seed=run_config.dataset_seed,
-        )
+    use_compressed_merge = run_config.merge_config.activation_threshold is not None
+    if use_compressed_merge:
+        activation_threshold = run_config.merge_config.activation_threshold
+        assert activation_threshold is not None
+        if task_name == "lm":
+            assert run_config.n_tokens is not None, "n_tokens must be set for LM tasks"
+            assert run_config.n_tokens_per_seq is not None, (
+                "n_tokens_per_seq must be set for LM tasks"
+            )
+            processed_memberships = collect_memberships_lm(
+                model=model,
+                dataloader=dataloader,
+                n_tokens=run_config.n_tokens,
+                n_tokens_per_seq=run_config.n_tokens_per_seq,
+                device=device,
+                seed=run_config.dataset_seed,
+                activation_threshold=activation_threshold,
+                filter_dead_threshold=run_config.merge_config.filter_dead_threshold,
+                filter_modules=run_config.merge_config.filter_modules,
+            )
+        else:
+            processed_memberships = collect_memberships_resid_mlp(
+                model=model,
+                dataloader=dataloader,
+                n_samples=run_config.n_samples or run_config.batch_size,
+                device=device,
+                activation_threshold=activation_threshold,
+                filter_dead_threshold=run_config.merge_config.filter_dead_threshold,
+                filter_modules=run_config.merge_config.filter_modules,
+            )
+        processed_activations = processed_memberships.preview
+        component_labels = ComponentLabels(processed_memberships.labels.copy())
     else:
-        # resid_mlp: single batch, no sequence dimension
-        batch_data = next(iter(dataloader))
-        batch, _ = batch_data  # DatasetGeneratedDataLoader yields (batch, labels)
-        activations_dict = component_activations(
-            model=model,
-            batch=batch,
-            device=device,
+        if task_name == "lm":
+            assert run_config.n_tokens is not None, "n_tokens must be set for LM tasks"
+            assert run_config.n_tokens_per_seq is not None, (
+                "n_tokens_per_seq must be set for LM tasks"
+            )
+            activations_dict = collect_activations(
+                model=model,
+                dataloader=dataloader,
+                n_tokens=run_config.n_tokens,
+                n_tokens_per_seq=run_config.n_tokens_per_seq,
+                device=device,
+                seed=run_config.dataset_seed,
+            )
+        else:
+            n_samples_target = run_config.n_samples or run_config.batch_size
+            collected_batches: dict[str, list[Tensor]] = {}
+            n_collected = 0
+            for batch_data in dataloader:
+                batch, _ = batch_data
+                batch_take = min(batch.shape[0], n_samples_target - n_collected)
+                acts = component_activations(model=model, batch=batch[:batch_take], device=device)
+                for key, act in acts.items():
+                    collected_batches.setdefault(key, []).append(act.cpu())
+                n_collected += batch_take
+                if n_collected >= n_samples_target:
+                    break
+            assert n_collected >= n_samples_target, (
+                f"Dataloader exhausted: collected {n_collected} samples but needed {n_samples_target}"
+            )
+            activations_dict = {
+                key: torch.cat(chunks, dim=0) for key, chunks in collected_batches.items()
+            }
+
+        logger.info("Processing activations")
+        processed_activations = process_activations(
+            activations=activations_dict,
+            filter_dead_threshold=run_config.merge_config.filter_dead_threshold,
+            seq_mode=None,
+            filter_modules=run_config.merge_config.filter_modules,
         )
+        activations = processed_activations.activations.to(device)
+        component_labels = ComponentLabels(processed_activations.labels.copy())
+        del activations_dict
 
-    # 5. Process activations
-    logger.info("Processing activations")
-    processed_activations: ProcessedActivations = process_activations(
-        activations=activations_dict,
-        filter_dead_threshold=run_config.merge_config.filter_dead_threshold,
-        seq_mode=None,
-        filter_modules=run_config.merge_config.filter_modules,
-    )
-
-    # 6. Log activations (if WandB enabled)
-    if wandb_run is not None:
+    # 5. Log activations preview (if WandB enabled)
+    if wandb_run is not None and processed_activations is not None:
         logger.info("Plotting activations")
         plot_activations(
             processed_activations=processed_activations,
-            save_dir=None,  # Don't save to disk, only WandB
+            save_dir=None,
             n_samples_max=256,
             wandb_run=wandb_run,
         )
@@ -339,11 +394,6 @@ def main(run_config: ClusteringRunConfig) -> Path:
             single=True,
         )
 
-    # Extract what we need, then free the model and temporary objects
-    activations: ActivationsTensor = processed_activations.activations.to(device)
-    component_labels: ComponentLabels = ComponentLabels(processed_activations.labels.copy())
-    del processed_activations
-    del activations_dict
     del model
     gc.collect()
     torch.cuda.empty_cache()
@@ -356,12 +406,22 @@ def main(run_config: ClusteringRunConfig) -> Path:
         else None
     )
 
-    history: MergeHistory = merge_iteration(
-        merge_config=run_config.merge_config,
-        activations=activations,
-        component_labels=component_labels,
-        log_callback=log_callback,
-    )
+    if processed_memberships is not None:
+        history = merge_iteration_memberships(
+            merge_config=run_config.merge_config,
+            memberships=processed_memberships.memberships,
+            n_samples=processed_memberships.n_samples,
+            component_labels=component_labels,
+            log_callback=log_callback,
+        )
+    else:
+        assert activations is not None
+        history = merge_iteration(
+            merge_config=run_config.merge_config,
+            activations=activations,
+            component_labels=component_labels,
+            log_callback=log_callback,
+        )
 
     # 8. Save merge history
 

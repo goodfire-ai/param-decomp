@@ -6,6 +6,7 @@ from torch import Tensor
 
 from spd.clustering.consts import ClusterCoactivationShaped, MergePair
 from spd.clustering.math.merge_matrix import GroupMerge
+from spd.clustering.sample_membership import BitsetMembership
 
 
 def compute_mdl_cost(
@@ -187,3 +188,51 @@ def recompute_coacts_merge_pair(
         coact_new,
         activation_mask_new,
     )
+
+
+def recompute_coacts_merge_pair_memberships(
+    coact: ClusterCoactivationShaped,
+    merges: GroupMerge,
+    merge_pair: MergePair,
+    memberships: list[BitsetMembership],
+) -> tuple[
+    GroupMerge,
+    Float[Tensor, "k_groups-1 k_groups-1"],
+    list[BitsetMembership],
+]:
+    """Recompute coactivations after a merge using compressed memberships."""
+    k_groups: int = coact.shape[0]
+    assert coact.shape[1] == k_groups, "Coactivation matrix must be square"
+    assert len(memberships) == k_groups, "Memberships must match coactivation matrix shape"
+
+    new_group_idx: int = min(merge_pair)
+    remove_idx: int = max(merge_pair)
+    merged_membership = memberships[merge_pair[0]].union(memberships[merge_pair[1]])
+
+    coact_with_merge = torch.tensor(
+        [float(merged_membership.intersection_count(membership)) for membership in memberships],
+        dtype=coact.dtype,
+        device=coact.device,
+    )
+
+    merge_new: GroupMerge = merges.merge_groups(
+        merge_pair[0],
+        merge_pair[1],
+    )
+
+    coact_temp: ClusterCoactivationShaped = coact.clone()
+    coact_temp[new_group_idx, :] = coact_with_merge
+    coact_temp[:, new_group_idx] = coact_with_merge
+
+    mask: Bool[Tensor, " k_groups"] = torch.ones(
+        coact_temp.shape[0], dtype=torch.bool, device=coact_temp.device
+    )
+    mask[remove_idx] = False
+    coact_new: Float[Tensor, "k_groups-1 k_groups-1"] = coact_temp[mask, :][:, mask]
+    coact_new[new_group_idx, new_group_idx] = float(merged_membership.count())
+
+    memberships_new = memberships.copy()
+    memberships_new[new_group_idx] = merged_membership
+    memberships_new.pop(remove_idx)
+
+    return merge_new, coact_new, memberships_new
