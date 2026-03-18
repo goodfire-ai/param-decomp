@@ -2,9 +2,16 @@
 
 import torch
 
+from spd.clustering.compute_costs import recompute_coacts_merge_pair_memberships
 from spd.clustering.consts import ComponentLabels
 from spd.clustering.merge import merge_iteration
 from spd.clustering.merge_config import MergeConfig
+from spd.clustering.math.merge_matrix import GroupMerge
+from spd.clustering.sample_membership import (
+    CompressedMembership,
+    compute_coactivation_matrix,
+    memberships_to_sample_component_csr,
+)
 
 
 class TestMergeIntegration:
@@ -149,3 +156,34 @@ class TestMergeIntegration:
         # Early stopping may occur at 2 groups, so final count could be 2 or 3
         assert history.merges.k_groups[-1].item() >= 2
         assert history.merges.k_groups[-1].item() <= 3
+
+    def test_membership_recompute_matches_row_oriented_path(self):
+        """Row-oriented overlap recompute should match the direct membership path exactly."""
+        memberships = [
+            CompressedMembership.from_sample_indices(torch.tensor(indices).numpy(), n_samples=8)
+            for indices in ([0, 2, 5], [1, 2], [0, 3], [4, 5, 6])
+        ]
+        coact = compute_coactivation_matrix(memberships)
+        merges = GroupMerge.identity(n_components=len(memberships))
+        component_activity_csr = memberships_to_sample_component_csr(memberships)
+
+        merge_old, coact_old, memberships_old = recompute_coacts_merge_pair_memberships(
+            coact=coact,
+            merges=merges,
+            merge_pair=(0, 1),
+            memberships=memberships,
+            component_activity_csr=None,
+        )
+        merge_row, coact_row, memberships_row = recompute_coacts_merge_pair_memberships(
+            coact=coact,
+            merges=merges,
+            merge_pair=(0, 1),
+            memberships=memberships,
+            component_activity_csr=component_activity_csr,
+        )
+
+        assert torch.equal(merge_old.group_idxs, merge_row.group_idxs)
+        assert torch.equal(coact_old, coact_row)
+        assert [membership.count() for membership in memberships_old] == [
+            membership.count() for membership in memberships_row
+        ]

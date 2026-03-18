@@ -2,11 +2,15 @@ import math
 
 import torch
 from jaxtyping import Bool, Float
+from scipy import sparse
 from torch import Tensor
 
 from spd.clustering.consts import ClusterCoactivationShaped, MergePair
 from spd.clustering.math.merge_matrix import GroupMerge
-from spd.clustering.sample_membership import BitsetMembership
+from spd.clustering.sample_membership import (
+    BitsetMembership,
+    count_group_overlaps_from_component_rows,
+)
 
 
 def compute_mdl_cost(
@@ -195,6 +199,7 @@ def recompute_coacts_merge_pair_memberships(
     merges: GroupMerge,
     merge_pair: MergePair,
     memberships: list[BitsetMembership],
+    component_activity_csr: sparse.csr_matrix | None = None,
 ) -> tuple[
     GroupMerge,
     Float[Tensor, "k_groups-1 k_groups-1"],
@@ -209,26 +214,40 @@ def recompute_coacts_merge_pair_memberships(
     remove_idx: int = max(merge_pair)
     merged_membership = memberships[merge_pair[0]].union(memberships[merge_pair[1]])
 
-    coact_with_merge = torch.tensor(
-        [float(merged_membership.intersection_count(membership)) for membership in memberships],
-        dtype=coact.dtype,
-        device=coact.device,
-    )
-
     merge_new: GroupMerge = merges.merge_groups(
         merge_pair[0],
         merge_pair[1],
     )
 
-    coact_temp: ClusterCoactivationShaped = coact.clone()
-    coact_temp[new_group_idx, :] = coact_with_merge
-    coact_temp[:, new_group_idx] = coact_with_merge
-
     mask: Bool[Tensor, " k_groups"] = torch.ones(
-        coact_temp.shape[0], dtype=torch.bool, device=coact_temp.device
+        coact.shape[0], dtype=torch.bool, device=coact.device
     )
     mask[remove_idx] = False
-    coact_new: Float[Tensor, "k_groups-1 k_groups-1"] = coact_temp[mask, :][:, mask]
+    coact_new: Float[Tensor, "k_groups-1 k_groups-1"] = coact[mask, :][:, mask].clone()
+
+    if component_activity_csr is not None:
+        merged_rows = merged_membership.to_sample_indices()
+        coact_with_merge_np = count_group_overlaps_from_component_rows(
+            merged_rows=merged_rows,
+            component_activity_csr=component_activity_csr,
+            group_idxs=merge_new.group_idxs.cpu().numpy(),
+            n_groups=merge_new.k_groups,
+        )
+        coact_with_merge = torch.tensor(
+            coact_with_merge_np,
+            dtype=coact.dtype,
+            device=coact.device,
+        )
+    else:
+        coact_with_merge = torch.tensor(
+            [float(merged_membership.intersection_count(membership)) for membership in memberships],
+            dtype=coact.dtype,
+            device=coact.device,
+        )
+        coact_with_merge = coact_with_merge[mask]
+
+    coact_new[new_group_idx, :] = coact_with_merge
+    coact_new[:, new_group_idx] = coact_with_merge
     coact_new[new_group_idx, new_group_idx] = float(merged_membership.count())
 
     memberships_new = memberships.copy()

@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
+from numba import njit
 from scipy import sparse
 
 from spd.clustering.consts import ClusterCoactivationShaped
@@ -110,6 +111,30 @@ def _bitset_to_sample_indices(bits: np.ndarray, n_samples: int) -> np.ndarray:
     ) * 8 + (active_bit_positions % 8)
     sample_indices = sample_indices[sample_indices < n_samples]
     return sample_indices.astype(_index_dtype_for(n_samples), copy=False)
+
+
+@njit(cache=True)
+def _count_group_overlaps_rows_numba(
+    merged_rows: np.ndarray,
+    indptr: np.ndarray,
+    indices: np.ndarray,
+    group_idxs: np.ndarray,
+    n_groups: int,
+) -> np.ndarray:
+    counts = np.zeros(n_groups, dtype=np.int64)
+    seen = np.full(n_groups, -1, dtype=np.int64)
+    stamp = 0
+    for row in merged_rows:
+        stamp += 1
+        start = indptr[row]
+        end = indptr[row + 1]
+        for pos in range(start, end):
+            group_idx = group_idxs[indices[pos]]
+            if seen[group_idx] == stamp:
+                continue
+            seen[group_idx] = stamp
+            counts[group_idx] += 1
+    return counts
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,18 +268,13 @@ class CompressedMembership:
 BitsetMembership = CompressedMembership
 
 
-def compute_coactivation_matrix(
+def memberships_to_sample_component_csr(
     memberships: list[CompressedMembership],
-) -> ClusterCoactivationShaped:
-    """Compute the full coactivation matrix from compressed memberships.
-
-    This builds a sparse sample-by-component matrix and computes X.T @ X,
-    which is much faster than Python-level pairwise intersections in the
-    typical highly sparse regime.
-    """
+) -> sparse.csr_matrix:
+    """Build a binary sample-by-component CSR matrix from memberships."""
     n_groups = len(memberships)
     if n_groups == 0:
-        return torch.empty((0, 0), dtype=torch.float32)
+        return sparse.csr_matrix((0, 0), dtype=np.uint8)
 
     n_samples = memberships[0].n_samples
     assert all(membership.n_samples == n_samples for membership in memberships), (
@@ -273,11 +293,56 @@ def compute_coactivation_matrix(
         col_indices[offset : offset + group_nnz] = group_idx
         offset += group_nnz
 
-    values = np.ones(nnz, dtype=np.int32)
-    activation_matrix = sparse.csr_matrix(
+    values = np.ones(nnz, dtype=np.uint8)
+    return sparse.csr_matrix(
         (values, (row_indices, col_indices)),
         shape=(n_samples, n_groups),
-        dtype=np.int32,
+        dtype=np.uint8,
     )
+
+
+def count_group_overlaps_from_component_rows(
+    merged_rows: np.ndarray,
+    component_activity_csr: sparse.csr_matrix,
+    group_idxs: np.ndarray,
+    n_groups: int,
+) -> np.ndarray:
+    """Count exact merged-group overlaps by scanning original component rows.
+
+    `group_idxs` maps original component indices to the current group index after
+    the candidate merge has been applied.
+    """
+    merged_rows_i64 = merged_rows.astype(np.int64, copy=False)
+    indptr = component_activity_csr.indptr.astype(np.int64, copy=False)
+    indices = component_activity_csr.indices.astype(np.int32, copy=False)
+    group_idxs_i64 = group_idxs.astype(np.int64, copy=False)
+    return _count_group_overlaps_rows_numba(
+        merged_rows=merged_rows_i64,
+        indptr=indptr,
+        indices=indices,
+        group_idxs=group_idxs_i64,
+        n_groups=n_groups,
+    )
+
+
+def compute_coactivation_matrix(
+    memberships: list[CompressedMembership],
+) -> ClusterCoactivationShaped:
+    """Compute the full coactivation matrix from compressed memberships.
+
+    This builds a sparse sample-by-component matrix and computes X.T @ X,
+    which is much faster than Python-level pairwise intersections in the
+    typical highly sparse regime.
+    """
+    n_groups = len(memberships)
+    if n_groups == 0:
+        return torch.empty((0, 0), dtype=torch.float32)
+
+    n_samples = memberships[0].n_samples
+    assert all(membership.n_samples == n_samples for membership in memberships), (
+        "Memberships must share sample space"
+    )
+
+    activation_matrix = memberships_to_sample_component_csr(memberships).astype(np.int32, copy=False)
     coact = (activation_matrix.T @ activation_matrix).toarray()
     return torch.from_numpy(coact.astype(np.float32, copy=False))

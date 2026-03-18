@@ -34,8 +34,9 @@ dependencies = [
     "aiolimiter>=1.2",
     "openrouter>=0.1.1",
     "httpx>=0.28.0",
-    "zstandard",  # For streaming datasets
+    "zstandard", # For streaming datasets
     "kaleido==0.2.1",
+    "numba>=0.64.0",
 ]
 
 [dependency-groups]

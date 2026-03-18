@@ -10,6 +10,7 @@ import numpy as np
 from spd.clustering.clustering_run_config import ClusteringRunConfig
 from spd.clustering.membership_snapshot import load_membership_snapshot
 from spd.clustering.merge import merge_iteration_memberships
+from spd.clustering.sample_membership import count_group_overlaps_from_component_rows
 from spd.utils.general_utils import replace_pydantic_model
 
 
@@ -28,23 +29,29 @@ def main() -> None:
         row_csr: Any = snapshot.to_csr()
         merged = memberships[0].union(memberships[1])
         merged_indices = merged.to_sample_indices().astype(np.int64, copy=False)
+        group_idxs = np.arange(snapshot.n_components, dtype=np.int64)
 
         st = time.time()
         current = np.array([merged.intersection_count(m) for m in memberships], dtype=np.int64)
         current_s = time.time() - st
 
         st = time.time()
-        row_sum = np.asarray(row_csr[merged_indices].sum(axis=0)).ravel().astype(np.int64)
-        row_sum_s = time.time() - st
+        row_counts = count_group_overlaps_from_component_rows(
+            merged_rows=merged_indices,
+            component_activity_csr=row_csr,
+            group_idxs=group_idxs,
+            n_groups=snapshot.n_components,
+        )
+        row_counts_s = time.time() - st
 
-        assert np.array_equal(current, row_sum)
+        assert np.array_equal(current, row_counts)
         print(
             {
                 "phase": "overlap_profile",
                 "merged_size": int(merged_indices.size),
                 "current_s": round(current_s, 4),
-                "row_sum_s": round(row_sum_s, 4),
-                "speedup": round(current_s / row_sum_s, 2),
+                "row_counts_s": round(row_counts_s, 4),
+                "speedup": round(current_s / row_counts_s, 2),
             }
         )
 
