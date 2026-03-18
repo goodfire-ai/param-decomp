@@ -1,0 +1,9 @@
+side_a:
+  spd_model_path: "wandb:goodfire/spd/runs/s-55ea3f9b"
+  clustering_run_id: "c-5f792413"
+  iteration: 9973
+
+side_b:
+  spd_model_path: "wandb:goodfire/spd/runs/s-55ea3f9b"
+  clustering_run_id: "c-ed3abd74"
+  iteration: 9973
