@@ -4,7 +4,6 @@ Called by SLURM or directly:
     python -m spd.graph_interp.scripts.run <decomposition_id> --config_json '{...}'
 """
 
-import os
 from typing import Any
 
 from dotenv import load_dotenv
@@ -29,8 +28,9 @@ def main(
     config = GraphInterpConfig.model_validate(config_json)
 
     load_dotenv()
-    openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
-    assert openrouter_api_key, "OPENROUTER_API_KEY not set"
+    from spd.autointerp.providers import create_provider
+
+    provider = create_provider(config.llm)
     subrun_dir = get_graph_interp_subrun_dir(decomposition_id, subrun_id)
     subrun_dir.mkdir(parents=True, exist_ok=True)
     config.to_file(subrun_dir / "config.yaml")
@@ -62,7 +62,7 @@ def main(
     logger.info("Data loading complete")
 
     run_graph_interp(
-        openrouter_api_key=openrouter_api_key,
+        provider=provider,
         config=config,
         harvest=harvest,
         attribution_storage=attribution_storage,

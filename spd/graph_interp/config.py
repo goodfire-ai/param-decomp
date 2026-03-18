@@ -1,15 +1,13 @@
 """Graph interpretation configuration."""
 
-from openrouter.components import Effort
-
+from spd.autointerp.providers import LLMConfig, OpenRouterLLMConfig
 from spd.base_config import BaseConfig
 from spd.dataset_attributions.storage import AttrMetric
 from spd.settings import DEFAULT_PARTITION_NAME
 
 
 class GraphInterpConfig(BaseConfig):
-    model: str = "google/gemini-3-flash-preview"
-    reasoning_effort: Effort = "low"
+    llm: LLMConfig = OpenRouterLLMConfig()
     attr_metric: AttrMetric = "attr_abs"
     top_k_attributed: int = 8
     max_examples: int = 20

@@ -74,6 +74,7 @@ def _plot_score_heatmap_combined(
         1, 2, figsize=(max(6, n_heads * 1.2) * 2 + 1, max(4, n_layers * 1.0))
     )
 
+    im = None
     for ax, scores, title in [(ax_l, scores_left, title_left), (ax_r, scores_right, title_right)]:
         im = ax.imshow(scores, aspect="auto", cmap="Blues", vmin=0, vmax=0.95)
         ax.set_xticks(range(n_heads))
@@ -99,6 +100,7 @@ def _plot_score_heatmap_combined(
                 )
 
     fig.tight_layout()
+    assert im is not None
     fig.colorbar(im, ax=[ax_l, ax_r], shrink=0.8, pad=0.01, label="Mean attention to t-1")
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -146,6 +148,7 @@ def detect_prev_token_heads(wandb_path: ModelPath, n_batches: int = N_BATCHES) -
     out_dir.mkdir(parents=True, exist_ok=True)
 
     config = run_info.config
+    assert config.pretrained_model_name is not None
     target_model = LlamaSimpleMLP.from_pretrained(config.pretrained_model_name)
     target_model.eval()
 

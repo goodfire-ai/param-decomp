@@ -11,6 +11,7 @@ from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.autointerp.config import DualViewConfig
 from spd.autointerp.prompt_helpers import (
     DATASET_DESCRIPTIONS,
+    build_data_presentation,
     build_fires_on_examples,
     build_input_section,
     build_output_section,
@@ -32,6 +33,7 @@ def format_prompt(
     app_tok: AppTokenizer,
     input_token_stats: TokenPRLift,
     output_token_stats: TokenPRLift,
+    context_tokens_per_side: int,
 ) -> str:
     input_pmi: list[tuple[str, float]] | None = None
     output_pmi: list[tuple[str, float]] | None = None
@@ -76,20 +78,22 @@ def format_prompt(
     )
 
     md = Md()
+    md.p("Describe what this neural network component does.")
     md.p(
-        "Describe what this neural network component does.\n\n"
-        "Each component is a learned linear transformation inside a weight matrix. "
-        "It has an input function (what causes it to fire) and an output function "
-        "(what tokens it causes the model to produce). These are often different — "
-        "a component might fire on periods but produce sentence-opening words, or "
-        "fire on prepositions but produce abstract nouns.\n\n"
+        "Each component has an input function (what causes it to fire) and an output "
+        "function (what tokens it causes the model to produce). These are often different "
+        "— a component might fire on periods but produce sentence-opening words, or "
+        "fire on prepositions but produce abstract nouns."
+    )
+    md.p(
         "Consider all of the evidence below critically. Token statistics can be noisy, "
         "especially for high-density components. The activation examples are sampled "
         "and may not be representative. Look for patterns that are consistent across "
         "multiple sources of evidence."
     )
 
-    md.h(2, "Context").bullets(
+    md.h(2, "Context")
+    md.bullets(
         [
             f"Model: {model_metadata.model_class} ({model_metadata.n_blocks} blocks){dataset_line}",
             f"Component location: {layer_desc}",
@@ -98,6 +102,13 @@ def format_prompt(
     )
     if context_notes:
         md.p(context_notes)
+
+    md.h(2, "Data presentation")
+    md.extend(
+        build_data_presentation(
+            model_metadata.seq_len, context_tokens_per_side, model_metadata.decomposition_method
+        )
+    )
 
     md.h(2, "Output tokens (what the model produces when this component fires)")
     md.extend(output_section)
@@ -122,19 +133,9 @@ def format_prompt(
         "function. The label should read like a short description of the job this component "
         "does in the network. Use both the input and output evidence."
     )
-    md.p("Examples of good labels across different component types:")
-    md.bullets(
-        [
-            '"word stem completion (stems → suffixes)"',
-            '"closes dialogue with quotation marks"',
-            '"object pronouns after verbs"',
-            '"story-ending moral resolution vocabulary"',
-            '"aquatic scene vocabulary (frog, river, pond)"',
-            "\"'of course' and abstract nouns after prepositions\"",
-        ]
-    )
     md.p(
-        f'Say "unclear" if the evidence is too weak or diffuse. {forbidden_sentence}Lowercase only.'
+        f"Be epistemically honest — express uncertainty in the label and confidence "
+        f"field when the evidence is weak or ambiguous. {forbidden_sentence}Lowercase only."
     )
 
     return md.build()

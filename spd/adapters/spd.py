@@ -69,4 +69,6 @@ class SPDAdapter(DecompositionAdapter):
                 path: self._topology.target_to_canon(path)
                 for path in self.component_model.target_module_paths
             },
+            seq_len=task_cfg.max_seq_len,
+            decomposition_method="spd",
         )

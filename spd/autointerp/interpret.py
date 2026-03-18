@@ -3,9 +3,6 @@ import json
 from collections.abc import Iterable
 from pathlib import Path
 
-from openrouter import OpenRouter
-from openrouter.components import Effort, Reasoning
-
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.autointerp.config import StrategyConfig
 from spd.autointerp.db import InterpDB
@@ -13,9 +10,9 @@ from spd.autointerp.llm_api import (
     LLMError,
     LLMJob,
     LLMResult,
-    make_response_format,
     map_llm_calls,
 )
+from spd.autointerp.providers import LLMProvider
 from spd.autointerp.schemas import InterpretationResult, ModelMetadata
 from spd.autointerp.strategies.dispatch import INTERPRETATION_SCHEMA, format_prompt
 from spd.harvest.analysis import TokenPRLift, get_input_token_stats, get_output_token_stats
@@ -27,15 +24,14 @@ MAX_CONCURRENT = 50
 
 
 async def interpret_component(
-    api: OpenRouter,
-    model: str,
-    reasoning_effort: Effort,
+    provider: LLMProvider,
     strategy: StrategyConfig,
     component: ComponentData,
     model_metadata: ModelMetadata,
     app_tok: AppTokenizer,
     input_token_stats: TokenPRLift,
     output_token_stats: TokenPRLift,
+    context_tokens_per_side: int,
 ) -> InterpretationResult:
     """Interpret a single component. Used by the app for on-demand interpretation."""
     prompt = format_prompt(
@@ -45,22 +41,17 @@ async def interpret_component(
         app_tok=app_tok,
         input_token_stats=input_token_stats,
         output_token_stats=output_token_stats,
+        context_tokens_per_side=context_tokens_per_side,
     )
 
-    schema = INTERPRETATION_SCHEMA
-    response_format = make_response_format("interpretation", schema)
-
-    response = await api.chat.send_async(
-        model=model,
+    response = await provider.chat(
+        prompt=prompt,
         max_tokens=8000,
-        messages=[{"role": "user", "content": prompt}],
-        response_format=response_format,
-        reasoning=Reasoning(effort=reasoning_effort),
+        response_schema=INTERPRETATION_SCHEMA,
+        timeout_ms=120_000,
     )
 
-    choice = response.choices[0]
-    assert isinstance(choice.message.content, str)
-    raw = choice.message.content
+    raw = response.content
     parsed = json.loads(raw)
 
     assert len(parsed) == 3, f"Expected 3 fields, got {parsed}"
@@ -82,9 +73,7 @@ async def interpret_component(
 
 
 def run_interpret(
-    openrouter_api_key: str,
-    model: str,
-    reasoning_effort: Effort,
+    provider: LLMProvider,
     limit: int | None,
     cost_limit_usd: float | None,
     max_requests_per_minute: int,
@@ -100,6 +89,11 @@ def run_interpret(
 
     token_stats = harvest.get_token_stats()
     assert token_stats is not None, "token_stats.pt not found. Run harvest first."
+
+    harvest_config = harvest.get_config()
+    raw = harvest_config["activation_context_tokens_per_side"]
+    assert isinstance(raw, int), f"expected int, got {type(raw)}"
+    context_tokens_per_side = raw
 
     app_tok = AppTokenizer.from_pretrained(tokenizer_name)
 
@@ -122,6 +116,7 @@ def run_interpret(
             schema = INTERPRETATION_SCHEMA
 
             def build_jobs() -> Iterable[LLMJob]:
+                assert token_stats is not None, "token_stats required for interpretation"
                 for key in remaining_keys:
                     component = harvest.get_component(key)
                     assert component is not None, f"Component {key} not found in harvest"
@@ -136,16 +131,15 @@ def run_interpret(
                         app_tok=app_tok,
                         input_token_stats=input_stats,
                         output_token_stats=output_stats,
+                        context_tokens_per_side=context_tokens_per_side,
                     )
-                    yield LLMJob(prompt=prompt, schema=schema, key=key)
+                    yield LLMJob(prompt=prompt, key=key)
 
             results: list[InterpretationResult] = []
             n_errors = 0
 
             async for outcome in map_llm_calls(
-                openrouter_api_key=openrouter_api_key,
-                model=model,
-                reasoning_effort=reasoning_effort,
+                provider=provider,
                 jobs=build_jobs(),
                 max_tokens=8000,
                 max_concurrent=max_concurrent,

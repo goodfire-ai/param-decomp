@@ -41,6 +41,7 @@ def detect_prev_token_heads_random_tokens(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     config = run_info.config
+    assert config.pretrained_model_name is not None
     target_model = LlamaSimpleMLP.from_pretrained(config.pretrained_model_name)
     target_model.eval()
 

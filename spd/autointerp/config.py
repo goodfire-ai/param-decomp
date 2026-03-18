@@ -7,9 +7,9 @@ AutointerpSlurmConfig: CompactSkepticalConfig + eval + SLURM submission params.
 
 from typing import Annotated, Literal
 
-from openrouter.components import Effort
 from pydantic import Field
 
+from spd.autointerp.providers import LLMConfig, OpenRouterLLMConfig
 from spd.base_config import BaseConfig
 from spd.settings import DEFAULT_PARTITION_NAME
 
@@ -31,7 +31,6 @@ class CompactSkepticalConfig(BaseConfig):
     type: Literal["compact_skeptical"] = "compact_skeptical"
     max_examples: int = 30
     include_pmi: bool = True
-    include_spd_context: bool = True
     include_dataset_description: bool = True
     label_max_words: int = 8
     forbidden_words: list[str] | None = None
@@ -58,8 +57,7 @@ StrategyConfig = CompactSkepticalConfig | DualViewConfig
 
 
 class AutointerpConfig(BaseConfig):
-    model: str = "google/gemini-3-flash-preview"
-    reasoning_effort: Effort = "low"
+    llm: LLMConfig = OpenRouterLLMConfig()
     limit: int | None = None
     cost_limit_usd: float | None = None
     max_requests_per_minute: int = 500
@@ -84,8 +82,7 @@ class FuzzingEvalConfig(BaseConfig):
 class AutointerpEvalConfig(BaseConfig):
     """Config for label-based autointerp evals (detection, fuzzing)."""
 
-    model: str = "google/gemini-3-flash-preview"
-    reasoning_effort: Effort = "none"
+    llm: LLMConfig = OpenRouterLLMConfig(reasoning_effort="none")
     detection_config: DetectionEvalConfig
     fuzzing_config: FuzzingEvalConfig
     limit: int | None = None

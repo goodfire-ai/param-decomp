@@ -8,17 +8,13 @@ from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.autointerp.config import CompactSkepticalConfig
 from spd.autointerp.prompt_helpers import (
     DATASET_DESCRIPTIONS,
+    build_data_presentation,
     build_fires_on_examples,
 )
 from spd.autointerp.schemas import ModelMetadata
 from spd.harvest.analysis import TokenPRLift
 from spd.harvest.schemas import ComponentData
 from spd.utils.markdown import Md
-
-SPD_CONTEXT = (
-    "Each component has a causal importance (CI) value per token position. "
-    "High CI (near 1) = essential, cannot be ablated. Low CI (near 0) = ablatable."
-)
 
 
 def format_prompt(
@@ -28,6 +24,7 @@ def format_prompt(
     app_tok: AppTokenizer,
     input_token_stats: TokenPRLift,
     output_token_stats: TokenPRLift,
+    context_tokens_per_side: int,
 ) -> str:
     input_pmi: list[tuple[str, float]] | None = None
     output_pmi: list[tuple[str, float]] | None = None
@@ -62,15 +59,19 @@ def format_prompt(
     md = Md()
     md.p("Label this neural network component.")
 
-    if config.include_spd_context:
-        md.p(SPD_CONTEXT)
-
     md.h(2, "Context").bullets(
         [
             f"Model: {model_metadata.model_class} ({model_metadata.n_blocks} blocks){dataset_line}",
             f"Component location: {layer_desc}",
             f"Component firing rate: {component.firing_density * 100:.2f}% ({rate_str})",
         ]
+    )
+
+    md.h(2, "Data presentation")
+    md.extend(
+        build_data_presentation(
+            model_metadata.seq_len, context_tokens_per_side, model_metadata.decomposition_method
+        )
     )
 
     md.h(2, "Token correlations")
@@ -109,19 +110,14 @@ def _build_input_section(
     input_pmi: list[tuple[str, float]] | None,
 ) -> Md:
     md = Md()
-    if input_stats.top_recall:
-        md.labeled_list(
-            "**Input tokens with highest recall (most common current tokens when the component is firing)**",
-            [f"{repr(tok)}: {recall * 100:.0f}%" for tok, recall in input_stats.top_recall[:8]],
-        )
     if input_stats.top_precision:
         md.labeled_list(
-            "**Input tokens with highest precision (probability the component fires given the current token is X)**",
+            "**Input precision:**",
             [f"{repr(tok)}: {prec * 100:.0f}%" for tok, prec in input_stats.top_precision[:8]],
         )
     if input_pmi:
         md.labeled_list(
-            "**Input tokens with highest PMI (pointwise mutual information. Tokens with higher-than-base-rate likelihood of co-occurrence with the component firing)**",
+            "**Input PMI:**",
             [f"{repr(tok)}: {pmi:.2f}" for tok, pmi in input_pmi[:6]],
         )
     return md
@@ -134,12 +130,12 @@ def _build_output_section(
     md = Md()
     if output_stats.top_precision:
         md.labeled_list(
-            "**Output precision — of all predicted probability for token X, what fraction is at positions where this component fires?**",
+            "**Output precision:**",
             [f"{repr(tok)}: {prec * 100:.0f}%" for tok, prec in output_stats.top_precision[:10]],
         )
     if output_pmi:
         md.labeled_list(
-            "**Output PMI — tokens the model predicts at higher-than-base-rate when this component fires:**",
+            "**Output PMI:**",
             [f"{repr(tok)}: {pmi:.2f}" for tok, pmi in output_pmi[:6]],
         )
     return md

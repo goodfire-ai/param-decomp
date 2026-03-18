@@ -31,6 +31,7 @@ def format_prompt(
     app_tok: AppTokenizer,
     input_token_stats: TokenPRLift,
     output_token_stats: TokenPRLift,
+    context_tokens_per_side: int,
 ) -> str:
     match strategy:
         case CompactSkepticalConfig():
@@ -41,6 +42,7 @@ def format_prompt(
                 app_tok,
                 input_token_stats,
                 output_token_stats,
+                context_tokens_per_side,
             )
         case DualViewConfig():
             return dual_view_prompt(
@@ -50,4 +52,5 @@ def format_prompt(
                 app_tok,
                 input_token_stats,
                 output_token_stats,
+                context_tokens_per_side,
             )
