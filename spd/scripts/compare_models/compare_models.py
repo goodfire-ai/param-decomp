@@ -29,6 +29,7 @@ from spd.models.component_model import ComponentModel, SPDRunInfo
 from spd.utils.distributed_utils import get_device
 from spd.utils.general_utils import extract_batch_data, get_obj_device
 from spd.utils.run_utils import save_file
+from spd.utils.target_ci_solutions import permute_to_identity
 
 METRIC_PREFIXES = [
     ("rank1", "Rank-1 (V@U)"),
@@ -363,11 +364,13 @@ class ModelComparator:
             assert ci_cos_matrix.shape[0] == alive_mask.shape[0]
             ci_cos_alive = ci_cos_matrix[alive_mask][sort_order]
 
+            # Permute columns to approximate diagonal structure (identity-like)
+            _, col_perm = permute_to_identity(rank1_sim)
             layer_matrices = {
-                "rank1": rank1_sim,
-                "u": u_sim.abs(),
-                "v": v_sim.abs(),
-                "ci": ci_cos_alive,
+                "rank1": rank1_sim[:, col_perm],
+                "u": u_sim.abs()[:, col_perm],
+                "v": v_sim.abs()[:, col_perm],
+                "ci": ci_cos_alive[:, col_perm],
             }
             matrices[layer_name] = layer_matrices
 
