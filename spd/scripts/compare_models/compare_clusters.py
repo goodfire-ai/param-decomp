@@ -1,9 +1,8 @@
 """Cluster-based geometric comparison of SPD models.
 
 Compares how different clustering runs group subcomponents by computing cosine
-similarity between cluster-level parameter vectors. Each cluster is represented
-sparsely as a dict of per-module weight matrices (sum of its subcomponents' rank-1
-contributions), avoiding materialization of full parameter-space vectors.
+similarity between cluster-level parameter vectors. Processes one module at a time
+to avoid materializing full parameter-space vectors.
 
 Usage:
     python spd/scripts/compare_models/compare_clusters.py run <config.yaml>
@@ -27,6 +26,7 @@ from spd.clustering.math.merge_matrix import GroupMerge
 from spd.clustering.merge_history import MergeHistory
 from spd.log import logger
 from spd.models.component_model import ComponentModel
+from spd.models.components import Components
 from spd.scripts.compare_models.compare_models import (
     max_match_stats,
     resolve_output_dir,
@@ -37,8 +37,10 @@ from spd.utils.target_ci_solutions import permute_to_identity
 
 matplotlib.use("Agg")
 
-# A cluster's weight representation: only modules where it has subcomponents
-ClusterWeights = dict[str, Tensor]
+# {group_id: {module_name: [subcomp_indices]}}
+GroupModuleIndices = dict[int, dict[str, list[int]]]
+
+MAX_DENSE_BYTES = 4 * 1024**3  # 4 GB max per dense matrix chunk
 
 
 class CompareClusterSide(BaseConfig):
@@ -60,99 +62,103 @@ def parse_label(label: str) -> tuple[str, int]:
     return module, int(idx_str)
 
 
-def build_cluster_weights(
-    model: ComponentModel,
-    merge: GroupMerge,
-    labels: list[str],
-) -> list[ClusterWeights]:
-    """Build sparse weight representations for each cluster.
-
-    Each cluster is a dict mapping module names to (d_in, d_out) weight matrices,
-    computed as V[:, indices] @ U[indices, :] for the subcomponents in that cluster.
-    """
-    # Group label indices by (group_id, module_name)
-    group_module_indices: dict[int, dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
+def _build_group_module_indices(
+    merge: GroupMerge, labels: list[str], model: ComponentModel
+) -> GroupModuleIndices:
+    """Map each (group_id, module_name) to the subcomponent indices it contains."""
+    result: GroupModuleIndices = defaultdict(lambda: defaultdict(list))
     for label_idx, label in enumerate(labels):
         group_id = int(merge.group_idxs[label_idx].item())
         module_name, subcomp_idx = parse_label(label)
         assert module_name in model.components, f"Unknown module: {module_name}"
-        group_module_indices[group_id][module_name].append(subcomp_idx)
-
-    cluster_weights: list[ClusterWeights] = []
-    for group_id in range(merge.k_groups):
-        weights: ClusterWeights = {}
-        module_indices = group_module_indices.get(group_id, {})
-        for module_name, subcomp_indices in module_indices.items():
-            comp = model.components[module_name]
-            idx_tensor = torch.tensor(subcomp_indices, dtype=torch.long)
-            V_subset = comp.V[:, idx_tensor].float()
-            U_subset = comp.U[idx_tensor, :].float()
-            weights[module_name] = V_subset @ U_subset
-        cluster_weights.append(weights)
-
-    return cluster_weights
+        result[group_id][module_name].append(subcomp_idx)
+    return dict(result)
 
 
-MAX_DENSE_BYTES = 4 * 1024**3  # 4 GB max per dense matrix chunk
+def _compute_cluster_weight_row(
+    comp: Components,
+    subcomp_indices: list[int],
+) -> Float[Tensor, " n_params"]:
+    """Compute flattened weight vector for one cluster in one module."""
+    idx = torch.tensor(subcomp_indices, dtype=torch.long)
+    weight = comp.V[:, idx].float() @ comp.U[idx, :].float()
+    return weight.reshape(-1)
 
 
-def sparse_cosine_sim_matrix(
-    clusters_a: list[ClusterWeights],
-    clusters_b: list[ClusterWeights],
+def compute_cluster_cosine_sim(
+    model_a: ComponentModel,
+    merge_a: GroupMerge,
+    labels_a: list[str],
+    model_b: ComponentModel,
+    merge_b: GroupMerge,
+    labels_b: list[str],
 ) -> Float[Tensor, "ka kb"]:
-    """Compute cosine similarity between all pairs of clusters.
+    """Compute cosine similarity between clusters from two clustering runs.
 
-    Vectorized per-module: for each module, stacks cluster weights into dense
-    matrices and accumulates dot products via matmul. Large modules are processed
-    in chunks to limit memory usage.
+    Processes one module at a time. For each module, computes per-cluster weight
+    vectors and accumulates dot products and squared norms. Only clusters that
+    have subcomponents in the current module contribute non-zero rows.
     """
-    k_a, k_b = len(clusters_a), len(clusters_b)
+    k_a, k_b = merge_a.k_groups, merge_b.k_groups
+    gmi_a = _build_group_module_indices(merge_a, labels_a, model_a)
+    gmi_b = _build_group_module_indices(merge_b, labels_b, model_b)
 
-    all_modules: set[str] = set()
-    for c in clusters_a:
-        all_modules.update(c.keys())
-    for c in clusters_b:
-        all_modules.update(c.keys())
+    all_modules = set(model_a.components.keys()) | set(model_b.components.keys())
 
     dot_matrix = torch.zeros(k_a, k_b)
     sq_norms_a = torch.zeros(k_a)
     sq_norms_b = torch.zeros(k_b)
 
     for module_name in sorted(all_modules):
-        sample = next(
-            (c[module_name] for c in (*clusters_a, *clusters_b) if module_name in c), None
+        if module_name not in model_a.components or module_name not in model_b.components:
+            logger.warning(f"Module {module_name} only in one model, skipping")
+            continue
+
+        comp_a = model_a.components[module_name]
+        comp_b = model_b.components[module_name]
+        n_params = comp_a.V.shape[0] * comp_a.U.shape[1]
+
+        # Collect which groups have subcomponents in this module
+        active_a = {
+            g: gmi_a[g][module_name] for g in range(k_a) if g in gmi_a and module_name in gmi_a[g]
+        }
+        active_b = {
+            g: gmi_b[g][module_name] for g in range(k_b) if g in gmi_b and module_name in gmi_b[g]
+        }
+
+        if not active_a and not active_b:
+            continue
+
+        # Compute weight vectors only for active clusters
+        vecs_a = {
+            g: _compute_cluster_weight_row(comp_a, indices) for g, indices in active_a.items()
+        }
+        vecs_b = {
+            g: _compute_cluster_weight_row(comp_b, indices) for g, indices in active_b.items()
+        }
+
+        # Accumulate squared norms
+        for g, vec in vecs_a.items():
+            sq_norms_a[g] += vec.square().sum()
+        for g, vec in vecs_b.items():
+            sq_norms_b[g] += vec.square().sum()
+
+        # Accumulate dot products (only between active pairs)
+        if active_a and active_b:
+            # Stack into dense matrices for matmul
+            a_ids = sorted(active_a.keys())
+            b_ids = sorted(active_b.keys())
+            mat_a = torch.stack([vecs_a[g] for g in a_ids])
+            mat_b = torch.stack([vecs_b[g] for g in b_ids])
+            dots = mat_a @ mat_b.T
+            for i, g_a in enumerate(a_ids):
+                for j, g_b in enumerate(b_ids):
+                    dot_matrix[g_a, g_b] += dots[i, j]
+
+        logger.info(
+            f"  {module_name}: {len(active_a)} active A, {len(active_b)} active B "
+            f"({n_params:,} params)"
         )
-        assert sample is not None
-        n_params = sample.numel()
-
-        # Determine chunk size to stay within memory budget
-        max_k = max(k_a, k_b)
-        max_cols = MAX_DENSE_BYTES // (max_k * 4)  # 4 bytes per float32
-        chunk_size = max(1, min(n_params, max_cols))
-
-        flat_a = {
-            i: c[module_name].reshape(-1) for i, c in enumerate(clusters_a) if module_name in c
-        }
-        flat_b = {
-            j: c[module_name].reshape(-1) for j, c in enumerate(clusters_b) if module_name in c
-        }
-
-        for start in range(0, n_params, chunk_size):
-            end = min(start + chunk_size, n_params)
-
-            mat_a = torch.zeros(k_a, end - start)
-            for i, vec in flat_a.items():
-                mat_a[i] = vec[start:end]
-
-            mat_b = torch.zeros(k_b, end - start)
-            for j, vec in flat_b.items():
-                mat_b[j] = vec[start:end]
-
-            dot_matrix += mat_a @ mat_b.T
-            sq_norms_a += mat_a.square().sum(dim=1)
-            sq_norms_b += mat_b.square().sum(dim=1)
-
-        logger.info(f"  Processed module {module_name} ({n_params:,} params)")
 
     eps = 1e-12
     norms_a = sq_norms_a.sqrt().clamp_min(eps)
@@ -168,24 +174,23 @@ def save_cluster_heatmap(
     k_a, k_b = sim_matrix.shape
     data = sim_matrix.numpy()
 
-    cell_size = max(1.0, 40 / max(k_a, k_b))
+    cell_size = max(0.05, min(1.0, 40 / max(k_a, k_b)))
     fig, ax = plt.subplots(figsize=(k_b * cell_size + 2, k_a * cell_size + 2))
     im = ax.imshow(data, aspect="auto", cmap="viridis", vmin=0, vmax=1)
     fig.colorbar(im, ax=ax)
 
-    # Annotate cells with values when small enough
     if k_a <= 20 and k_b <= 20:
         for i in range(k_a):
             for j in range(k_b):
                 val = data[i, j]
                 color = "black" if val > 0.5 else "white"
                 ax.text(j, i, f"{val:.3f}", ha="center", va="center", color=color, fontsize=10)
+        ax.set_xticks(range(k_b))
+        ax.set_yticks(range(k_a))
 
     ax.set_title(title)
     ax.set_xlabel("Cluster (side B)")
     ax.set_ylabel("Cluster (side A)")
-    ax.set_xticks(range(k_b))
-    ax.set_yticks(range(k_a))
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
@@ -213,23 +218,20 @@ def format_results_markdown(
     lines.append(f"- **Clusters A**: {k_a}")
     lines.append(f"- **Clusters B**: {k_b}\n")
 
-    # Max-match stats (A → B)
     mean, std, min_v, max_v = max_match_stats(sim_matrix)
-    lines.append("## Max-match similarity (A → B)\n")
+    lines.append("## Max-match similarity (A -> B)\n")
     lines.append(f"- Mean: {mean:.4f}")
     lines.append(f"- Std: {std:.4f}")
     lines.append(f"- Min: {min_v:.4f}")
     lines.append(f"- Max: {max_v:.4f}\n")
 
-    # Max-match stats (B → A)
     mean, std, min_v, max_v = max_match_stats(sim_matrix.T)
-    lines.append("## Max-match similarity (B → A)\n")
+    lines.append("## Max-match similarity (B -> A)\n")
     lines.append(f"- Mean: {mean:.4f}")
     lines.append(f"- Std: {std:.4f}")
     lines.append(f"- Min: {min_v:.4f}")
     lines.append(f"- Max: {max_v:.4f}\n")
 
-    # Full matrix
     if k_a <= 20 and k_b <= 20:
         lines.append("## Similarity matrix\n")
         header = "| | " + " | ".join(f"B{j}" for j in range(k_b)) + " |"
@@ -273,15 +275,12 @@ def main(config_path: Path | str) -> None:
     config = CompareClustersConfig.from_file(config_path)
     output_dir = resolve_output_dir(config.output_dir)
 
-    # Load both sides (reuse model if same path)
     model_a, merge_a, labels_a = _load_side(config.side_a)
     if config.side_a.spd_model_path == config.side_b.spd_model_path:
         model_b = model_a
         logger.info("Reusing SPD model for side B (same path)")
     else:
-        model_b = ComponentModel.from_pretrained(config.side_b.spd_model_path)
-        model_b.eval()
-        model_b.requires_grad_(False)
+        model_b, _, _ = _load_side(config.side_b)
 
     history_path_b = (
         SPD_OUT_DIR / "clustering" / "runs" / config.side_b.clustering_run_id / "history.zip"
@@ -296,13 +295,6 @@ def main(config_path: Path | str) -> None:
         f"{merge_b.k_groups} clusters, {len(labels_b)} subcomponents"
     )
 
-    # Build cluster weights
-    logger.info("Building cluster weights for side A...")
-    clusters_a = build_cluster_weights(model_a, merge_a, labels_a)
-    logger.info("Building cluster weights for side B...")
-    clusters_b = build_cluster_weights(model_b, merge_b, labels_b)
-
-    # Save intermediate results
     pair_name = (
         f"{config.side_a.clustering_run_id}_iter{config.side_a.iteration}"
         f"_vs_{config.side_b.clustering_run_id}_iter{config.side_b.iteration}"
@@ -310,30 +302,25 @@ def main(config_path: Path | str) -> None:
     pair_dir = output_dir / pair_name
     pair_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Saving cluster weights...")
-    torch.save(clusters_a, pair_dir / "cluster_weights_a.pt")
-    torch.save(clusters_b, pair_dir / "cluster_weights_b.pt")
-
-    # Compute cosine similarity
     logger.info("Computing cosine similarity matrix...")
-    sim_matrix = sparse_cosine_sim_matrix(clusters_a, clusters_b)
+    sim_matrix = compute_cluster_cosine_sim(model_a, merge_a, labels_a, model_b, merge_b, labels_b)
 
-    # Permute columns for diagonal-like heatmap
     _, col_perm = permute_to_identity(sim_matrix)
     sim_matrix_permuted = sim_matrix[:, col_perm]
 
-    # Save results
     torch.save(sim_matrix, pair_dir / "sim_matrix.pt")
+    a_stats = max_match_stats(sim_matrix)
+    b_stats = max_match_stats(sim_matrix.T)
     save_file(
         {
-            "a_to_b_mean": max_match_stats(sim_matrix)[0],
-            "a_to_b_std": max_match_stats(sim_matrix)[1],
-            "a_to_b_min": max_match_stats(sim_matrix)[2],
-            "a_to_b_max": max_match_stats(sim_matrix)[3],
-            "b_to_a_mean": max_match_stats(sim_matrix.T)[0],
-            "b_to_a_std": max_match_stats(sim_matrix.T)[1],
-            "b_to_a_min": max_match_stats(sim_matrix.T)[2],
-            "b_to_a_max": max_match_stats(sim_matrix.T)[3],
+            "a_to_b_mean": a_stats[0],
+            "a_to_b_std": a_stats[1],
+            "a_to_b_min": a_stats[2],
+            "a_to_b_max": a_stats[3],
+            "b_to_a_mean": b_stats[0],
+            "b_to_a_std": b_stats[1],
+            "b_to_a_min": b_stats[2],
+            "b_to_a_max": b_stats[3],
             "k_groups_a": merge_a.k_groups,
             "k_groups_b": merge_b.k_groups,
         },
@@ -343,22 +330,24 @@ def main(config_path: Path | str) -> None:
     save_cluster_heatmap(
         sim_matrix_permuted,
         pair_dir / "sim_heatmap.png",
-        title=f"Cluster cosine sim: {config.side_a.clustering_run_id} vs {config.side_b.clustering_run_id}",
+        title=(
+            f"Cluster cosine sim: {config.side_a.clustering_run_id} "
+            f"vs {config.side_b.clustering_run_id}"
+        ),
     )
 
     logger.info(f"Results saved to {pair_dir}")
-    a_mean, _, a_min, a_max = max_match_stats(sim_matrix)
-    logger.info(f"  A→B max-match: mean={a_mean:.4f}, min={a_min:.4f}, max={a_max:.4f}")
+    logger.info(
+        f"  A->B max-match: mean={a_stats[0]:.4f}, min={a_stats[2]:.4f}, max={a_stats[3]:.4f}"
+    )
 
 
 def replot(output_dir: Path | str) -> None:
-    """Regenerate heatmap from saved sim_matrix.pt."""
     output_dir = Path(output_dir)
     sim_matrix = torch.load(output_dir / "sim_matrix.pt", weights_only=True)
     _, col_perm = permute_to_identity(sim_matrix)
-    sim_matrix_permuted = sim_matrix[:, col_perm]
     save_cluster_heatmap(
-        sim_matrix_permuted,
+        sim_matrix[:, col_perm],
         output_dir / "sim_heatmap.png",
         title="Cluster cosine similarity",
     )
