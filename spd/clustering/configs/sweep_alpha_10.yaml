@@ -1,0 +1,8 @@
+clustering_run_config_path: "spd/clustering/configs/crc/jose_alpha_10.json"
+n_runs: 1
+distances_methods: ["perm_invariant_hamming"]
+slurm_job_name_prefix: "spd_cluster_a10"
+slurm_partition: "h200-reserved"
+wandb_project: "spd"
+wandb_entity: "goodfire"
+create_git_snapshot: true
