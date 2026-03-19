@@ -1,0 +1,550 @@
+Decomposition: s-55ea3f9b
+Total components in harvest: 9950
+Q/K layers found: ['h.0.attn.k_proj', 'h.0.attn.q_proj', 'h.1.attn.k_proj', 'h.1.attn.q_proj', 'h.2.attn.k_proj', 'h.2.attn.q_proj', 'h.3.attn.k_proj', 'h.3.attn.q_proj']
+
+=== h.0.attn.k_proj (122 components) ===
+  always on (CI > 0.8):    0
+  moderate  (0.05-0.8):    3
+  low       (0.001-0.05):  20
+  dead      (CI < 0.001):  99
+
+  Moderate components (interesting):
+    h.0.attn.k_proj:29: mean_CI=0.4686, firing_density=0.5152, mean_act=-15.0205
+    h.0.attn.k_proj:309: mean_CI=0.3723, firing_density=0.3800, mean_act=-10.1524
+    h.0.attn.k_proj:299: mean_CI=0.0740, firing_density=0.0730, mean_act=2.3665
+
+  Low components:
+    h.0.attn.k_proj:465: mean_CI=0.0376, firing_density=0.0384
+    h.0.attn.k_proj:419: mean_CI=0.0099, firing_density=0.0096
+    h.0.attn.k_proj:238: mean_CI=0.0099, firing_density=0.0097
+    h.0.attn.k_proj:403: mean_CI=0.0079, firing_density=0.0077
+    h.0.attn.k_proj:76: mean_CI=0.0070, firing_density=0.0070
+    h.0.attn.k_proj:371: mean_CI=0.0054, firing_density=0.0052
+    h.0.attn.k_proj:91: mean_CI=0.0036, firing_density=0.0034
+    h.0.attn.k_proj:461: mean_CI=0.0035, firing_density=0.0034
+    h.0.attn.k_proj:97: mean_CI=0.0034, firing_density=0.0032
+    h.0.attn.k_proj:110: mean_CI=0.0030, firing_density=0.0032
+    ... and 10 more
+
+=== h.0.attn.q_proj (106 components) ===
+  always on (CI > 0.8):    0
+  moderate  (0.05-0.8):    1
+  low       (0.001-0.05):  17
+  dead      (CI < 0.001):  88
+
+  Moderate components (interesting):
+    h.0.attn.q_proj:28: mean_CI=0.5568, firing_density=0.5606, mean_act=-21.5898
+
+  Low components:
+    h.0.attn.q_proj:16: mean_CI=0.0490, firing_density=0.0488
+    h.0.attn.q_proj:53: mean_CI=0.0438, firing_density=0.0440
+    h.0.attn.q_proj:378: mean_CI=0.0347, firing_density=0.0351
+    h.0.attn.q_proj:374: mean_CI=0.0210, firing_density=0.0209
+    h.0.attn.q_proj:136: mean_CI=0.0107, firing_density=0.0107
+    h.0.attn.q_proj:381: mean_CI=0.0096, firing_density=0.0096
+    h.0.attn.q_proj:164: mean_CI=0.0068, firing_density=0.0068
+    h.0.attn.q_proj:319: mean_CI=0.0051, firing_density=0.0049
+    h.0.attn.q_proj:42: mean_CI=0.0043, firing_density=0.0042
+    h.0.attn.q_proj:371: mean_CI=0.0037, firing_density=0.0036
+    ... and 7 more
+
+=== h.1.attn.k_proj (48 components) ===
+  always on (CI > 0.8):    1
+  moderate  (0.05-0.8):    1
+  low       (0.001-0.05):  11
+  dead      (CI < 0.001):  35
+
+  Always-on components:
+    h.1.attn.k_proj:329: mean_CI=0.8913, firing_density=0.9783
+
+  Moderate components (interesting):
+    h.1.attn.k_proj:119: mean_CI=0.1287, firing_density=0.1285, mean_act=-2.7353
+
+  Low components:
+    h.1.attn.k_proj:290: mean_CI=0.0175, firing_density=0.0174
+    h.1.attn.k_proj:357: mean_CI=0.0036, firing_density=0.0036
+    h.1.attn.k_proj:315: mean_CI=0.0027, firing_density=0.0026
+    h.1.attn.k_proj:339: mean_CI=0.0026, firing_density=0.0026
+    h.1.attn.k_proj:272: mean_CI=0.0019, firing_density=0.0020
+    h.1.attn.k_proj:220: mean_CI=0.0018, firing_density=0.0017
+    h.1.attn.k_proj:327: mean_CI=0.0018, firing_density=0.0018
+    h.1.attn.k_proj:121: mean_CI=0.0014, firing_density=0.0014
+    h.1.attn.k_proj:218: mean_CI=0.0014, firing_density=0.0014
+    h.1.attn.k_proj:147: mean_CI=0.0012, firing_density=0.0012
+    ... and 1 more
+
+=== h.1.attn.q_proj (14 components) ===
+  always on (CI > 0.8):    1
+  moderate  (0.05-0.8):    0
+  low       (0.001-0.05):  4
+  dead      (CI < 0.001):  9
+
+  Always-on components:
+    h.1.attn.q_proj:316: mean_CI=0.8573, firing_density=0.9221
+
+  Low components:
+    h.1.attn.q_proj:308: mean_CI=0.0043, firing_density=0.0042
+    h.1.attn.q_proj:53: mean_CI=0.0033, firing_density=0.0030
+    h.1.attn.q_proj:149: mean_CI=0.0024, firing_density=0.0023
+    h.1.attn.q_proj:497: mean_CI=0.0015, firing_density=0.0015
+
+=== h.2.attn.k_proj (167 components) ===
+  always on (CI > 0.8):    0
+  moderate  (0.05-0.8):    14
+  low       (0.001-0.05):  114
+  dead      (CI < 0.001):  39
+
+  Moderate components (interesting):
+    h.2.attn.k_proj:206: mean_CI=0.6832, firing_density=0.7128, mean_act=20.5722
+    h.2.attn.k_proj:224: mean_CI=0.1761, firing_density=0.1754, mean_act=-1.6942
+    h.2.attn.k_proj:327: mean_CI=0.1269, firing_density=0.1263, mean_act=-4.5958
+    h.2.attn.k_proj:167: mean_CI=0.1130, firing_density=0.1116, mean_act=0.1942
+    h.2.attn.k_proj:107: mean_CI=0.0793, firing_density=0.0794, mean_act=-1.4356
+    h.2.attn.k_proj:320: mean_CI=0.0705, firing_density=0.0697, mean_act=1.5666
+    h.2.attn.k_proj:373: mean_CI=0.0673, firing_density=0.0662, mean_act=-2.9604
+    h.2.attn.k_proj:1: mean_CI=0.0631, firing_density=0.0619, mean_act=-2.4029
+    h.2.attn.k_proj:286: mean_CI=0.0619, firing_density=0.0609, mean_act=1.6387
+    h.2.attn.k_proj:72: mean_CI=0.0616, firing_density=0.0602, mean_act=3.3962
+    h.2.attn.k_proj:14: mean_CI=0.0567, firing_density=0.0554, mean_act=-2.5604
+    h.2.attn.k_proj:83: mean_CI=0.0562, firing_density=0.0552, mean_act=-2.2293
+    h.2.attn.k_proj:431: mean_CI=0.0561, firing_density=0.0555, mean_act=0.8131
+    h.2.attn.k_proj:0: mean_CI=0.0536, firing_density=0.0524, mean_act=2.3645
+
+  Low components:
+    h.2.attn.k_proj:235: mean_CI=0.0492, firing_density=0.0482
+    h.2.attn.k_proj:308: mean_CI=0.0489, firing_density=0.0479
+    h.2.attn.k_proj:148: mean_CI=0.0460, firing_density=0.0450
+    h.2.attn.k_proj:347: mean_CI=0.0458, firing_density=0.0463
+    h.2.attn.k_proj:217: mean_CI=0.0456, firing_density=0.0447
+    h.2.attn.k_proj:143: mean_CI=0.0446, firing_density=0.0436
+    h.2.attn.k_proj:289: mean_CI=0.0441, firing_density=0.0431
+    h.2.attn.k_proj:331: mean_CI=0.0441, firing_density=0.0429
+    h.2.attn.k_proj:184: mean_CI=0.0437, firing_density=0.0427
+    h.2.attn.k_proj:62: mean_CI=0.0433, firing_density=0.0422
+    ... and 104 more
+
+=== h.2.attn.q_proj (92 components) ===
+  always on (CI > 0.8):    0
+  moderate  (0.05-0.8):    14
+  low       (0.001-0.05):  76
+  dead      (CI < 0.001):  2
+
+  Moderate components (interesting):
+    h.2.attn.q_proj:335: mean_CI=0.6964, firing_density=0.7168, mean_act=18.0479
+    h.2.attn.q_proj:270: mean_CI=0.2354, firing_density=0.2366, mean_act=4.0479
+    h.2.attn.q_proj:279: mean_CI=0.1288, firing_density=0.1278, mean_act=4.3751
+    h.2.attn.q_proj:436: mean_CI=0.1247, firing_density=0.1264, mean_act=-2.6353
+    h.2.attn.q_proj:66: mean_CI=0.1150, firing_density=0.1144, mean_act=2.6793
+    h.2.attn.q_proj:207: mean_CI=0.0888, firing_density=0.0879, mean_act=1.0936
+    h.2.attn.q_proj:261: mean_CI=0.0784, firing_density=0.0768, mean_act=3.2005
+    h.2.attn.q_proj:46: mean_CI=0.0772, firing_density=0.0770, mean_act=-0.5870
+    h.2.attn.q_proj:497: mean_CI=0.0673, firing_density=0.0664, mean_act=-0.0972
+    h.2.attn.q_proj:138: mean_CI=0.0574, firing_density=0.0562, mean_act=1.4566
+    h.2.attn.q_proj:203: mean_CI=0.0562, firing_density=0.0552, mean_act=-2.6644
+    h.2.attn.q_proj:148: mean_CI=0.0555, firing_density=0.0543, mean_act=-0.9996
+    h.2.attn.q_proj:16: mean_CI=0.0540, firing_density=0.0531, mean_act=1.6355
+    h.2.attn.q_proj:171: mean_CI=0.0516, firing_density=0.0505, mean_act=-0.7334
+
+  Low components:
+    h.2.attn.q_proj:271: mean_CI=0.0469, firing_density=0.0464
+    h.2.attn.q_proj:86: mean_CI=0.0458, firing_density=0.0452
+    h.2.attn.q_proj:195: mean_CI=0.0453, firing_density=0.0448
+    h.2.attn.q_proj:371: mean_CI=0.0444, firing_density=0.0435
+    h.2.attn.q_proj:311: mean_CI=0.0428, firing_density=0.0420
+    h.2.attn.q_proj:277: mean_CI=0.0387, firing_density=0.0379
+    h.2.attn.q_proj:435: mean_CI=0.0384, firing_density=0.0381
+    h.2.attn.q_proj:472: mean_CI=0.0382, firing_density=0.0375
+    h.2.attn.q_proj:402: mean_CI=0.0382, firing_density=0.0371
+    h.2.attn.q_proj:432: mean_CI=0.0373, firing_density=0.0366
+    ... and 66 more
+
+=== h.3.attn.k_proj (60 components) ===
+  always on (CI > 0.8):    0
+  moderate  (0.05-0.8):    5
+  low       (0.001-0.05):  40
+  dead      (CI < 0.001):  15
+
+  Moderate components (interesting):
+    h.3.attn.k_proj:145: mean_CI=0.6927, firing_density=0.7164, mean_act=-23.2473
+    h.3.attn.k_proj:96: mean_CI=0.1817, firing_density=0.1800, mean_act=-6.7870
+    h.3.attn.k_proj:507: mean_CI=0.1579, firing_density=0.1574, mean_act=0.1674
+    h.3.attn.k_proj:413: mean_CI=0.0880, firing_density=0.0874, mean_act=-3.6748
+    h.3.attn.k_proj:347: mean_CI=0.0542, firing_density=0.0530, mean_act=-0.1421
+
+  Low components:
+    h.3.attn.k_proj:342: mean_CI=0.0419, firing_density=0.0408
+    h.3.attn.k_proj:29: mean_CI=0.0385, firing_density=0.0377
+    h.3.attn.k_proj:384: mean_CI=0.0203, firing_density=0.0197
+    h.3.attn.k_proj:411: mean_CI=0.0181, firing_density=0.0177
+    h.3.attn.k_proj:444: mean_CI=0.0173, firing_density=0.0167
+    h.3.attn.k_proj:428: mean_CI=0.0165, firing_density=0.0158
+    h.3.attn.k_proj:333: mean_CI=0.0134, firing_density=0.0130
+    h.3.attn.k_proj:439: mean_CI=0.0127, firing_density=0.0123
+    h.3.attn.k_proj:249: mean_CI=0.0098, firing_density=0.0096
+    h.3.attn.k_proj:190: mean_CI=0.0096, firing_density=0.0094
+    ... and 30 more
+
+=== h.3.attn.q_proj (36 components) ===
+  always on (CI > 0.8):    0
+  moderate  (0.05-0.8):    4
+  low       (0.001-0.05):  20
+  dead      (CI < 0.001):  12
+
+  Moderate components (interesting):
+    h.3.attn.q_proj:334: mean_CI=0.7215, firing_density=0.7467, mean_act=22.9219
+    h.3.attn.q_proj:60: mean_CI=0.1741, firing_density=0.1726, mean_act=2.5564
+    h.3.attn.q_proj:182: mean_CI=0.1514, firing_density=0.1508, mean_act=-0.2039
+    h.3.attn.q_proj:350: mean_CI=0.0629, firing_density=0.0620, mean_act=-0.9410
+
+  Low components:
+    h.3.attn.q_proj:283: mean_CI=0.0465, firing_density=0.0462
+    h.3.attn.q_proj:219: mean_CI=0.0401, firing_density=0.0397
+    h.3.attn.q_proj:446: mean_CI=0.0319, firing_density=0.0311
+    h.3.attn.q_proj:467: mean_CI=0.0314, firing_density=0.0307
+    h.3.attn.q_proj:304: mean_CI=0.0285, firing_density=0.0279
+    h.3.attn.q_proj:162: mean_CI=0.0273, firing_density=0.0265
+    h.3.attn.q_proj:428: mean_CI=0.0243, firing_density=0.0237
+    h.3.attn.q_proj:381: mean_CI=0.0216, firing_density=0.0215
+    h.3.attn.q_proj:502: mean_CI=0.0172, firing_density=0.0167
+    h.3.attn.q_proj:137: mean_CI=0.0137, firing_density=0.0133
+    ... and 10 more
+
+============================================================
+DETAILED INFO FOR MODERATE COMPONENTS
+============================================================
+
+--- h.0.attn.k_proj:29 (layer=h.0.attn.k_proj, idx=29) ---
+  firing_density: 0.5152
+  mean_activations: {'causal_importance': 0.4686340391635895, 'component_activation': -15.020478248596191}
+  n_activation_examples: 1000
+  first example: 41 tokens, 18 firing
+  input_pmi top-5: [(41142, 0.6632398962974548), (7013, 0.6632398366928101), (153, 0.6632398366928101), (3143, 0.6632398366928101), (4937, 0.6632398366928101)]
+  output_pmi top-5: [(24556, 0.6538158059120178), (12537, 0.6537889242172241), (9911, 0.6529587507247925), (47259, 0.6520350575447083), (8779, 0.6520001888275146)]
+
+--- h.0.attn.k_proj:309 (layer=h.0.attn.k_proj, idx=309) ---
+  firing_density: 0.3800
+  mean_activations: {'causal_importance': 0.3722688853740692, 'component_activation': -10.152436256408691}
+  n_activation_examples: 1000
+  first example: 41 tokens, 9 firing
+  input_pmi top-5: [(48138, 0.9676835536956787), (43782, 0.9676834940910339), (22613, 0.9676834940910339), (45707, 0.9676834940910339), (46931, 0.9676834940910339)]
+  output_pmi top-5: [(8822, 0.9638929963111877), (8604, 0.9617969393730164), (8834, 0.9593836069107056), (13270, 0.9593683481216431), (33509, 0.9588308334350586)]
+
+--- h.0.attn.k_proj:299 (layer=h.0.attn.k_proj, idx=299) ---
+  firing_density: 0.0730
+  mean_activations: {'causal_importance': 0.07395727932453156, 'component_activation': 2.366469621658325}
+  n_activation_examples: 1000
+  first example: 41 tokens, 2 firing
+  input_pmi top-5: [(43782, 2.6175224781036377), (8860, 2.616004705429077), (34682, 2.6155827045440674), (35732, 2.6142916679382324), (49021, 2.612779378890991)]
+  output_pmi top-5: [(13270, 2.606001377105713), (24750, 2.593590021133423), (42691, 2.5934531688690186), (8699, 2.570990562438965), (21284, 2.5665555000305176)]
+
+--- h.0.attn.q_proj:28 (layer=h.0.attn.q_proj, idx=28) ---
+  firing_density: 0.5606
+  mean_activations: {'causal_importance': 0.5567935705184937, 'component_activation': -21.5898494720459}
+  n_activation_examples: 1000
+  first example: 41 tokens, 22 firing
+  input_pmi top-5: [(20179, 0.5787168145179749), (9156, 0.5787168145179749), (44918, 0.5787168145179749), (18003, 0.5787168145179749), (41521, 0.5787168145179749)]
+  output_pmi top-5: [(8822, 0.576553463935852), (8860, 0.5764696598052979), (8834, 0.5762262940406799), (8861, 0.5761910080909729), (8867, 0.5761328935623169)]
+
+--- h.1.attn.k_proj:119 (layer=h.1.attn.k_proj, idx=119) ---
+  firing_density: 0.1285
+  mean_activations: {'causal_importance': 0.12874822318553925, 'component_activation': -2.735252618789673}
+  n_activation_examples: 1000
+  first example: 41 tokens, 6 firing
+  input_pmi top-5: [(35613, 2.0520341396331787), (43615, 2.0520341396331787), (48664, 2.0520341396331787), (48201, 2.0520341396331787), (44740, 2.0520341396331787)]
+  output_pmi top-5: [(8860, 2.048091411590576), (8822, 2.0472023487091064), (8834, 2.046391725540161), (8798, 2.044170618057251), (22702, 2.0429441928863525)]
+
+--- h.2.attn.k_proj:206 (layer=h.2.attn.k_proj, idx=206) ---
+  firing_density: 0.7128
+  mean_activations: {'causal_importance': 0.6832002401351929, 'component_activation': 20.57215690612793}
+  n_activation_examples: 1000
+  first example: 41 tokens, 17 firing
+  input_pmi top-5: [(47060, 0.3385377824306488), (42126, 0.3385377824306488), (43997, 0.3385377824306488), (41995, 0.3385377824306488), (28858, 0.3385377824306488)]
+  output_pmi top-5: [(8798, 0.3379666805267334), (8860, 0.33729690313339233), (13270, 0.33582332730293274), (1849, 0.33526331186294556), (30491, 0.3350192904472351)]
+
+--- h.2.attn.k_proj:224 (layer=h.2.attn.k_proj, idx=224) ---
+  firing_density: 0.1754
+  mean_activations: {'causal_importance': 0.17606861889362335, 'component_activation': -1.6941670179367065}
+  n_activation_examples: 1000
+  first example: 41 tokens, 10 firing
+  input_pmi top-5: [(5855, 1.7407348155975342), (21170, 1.7407348155975342), (6063, 1.7407348155975342), (21742, 1.7407348155975342), (15479, 1.7407348155975342)]
+  output_pmi top-5: [(47144, 1.6168261766433716), (14058, 1.6046005487442017), (28603, 1.5886898040771484), (50200, 1.5860852003097534), (41136, 1.5858739614486694)]
+
+--- h.2.attn.k_proj:327 (layer=h.2.attn.k_proj, idx=327) ---
+  firing_density: 0.1263
+  mean_activations: {'causal_importance': 0.1268770694732666, 'component_activation': -4.595768451690674}
+  n_activation_examples: 1000
+  first example: 41 tokens, 13 firing
+  input_pmi top-5: [(34985, 2.0692615509033203), (38438, 2.0692615509033203), (20080, 2.0692615509033203), (153, 2.0692615509033203), (15480, 2.0692615509033203)]
+  output_pmi top-5: [(47144, 1.9880212545394897), (152, 1.9761165380477905), (46275, 1.9239832162857056), (29321, 1.9067188501358032), (4253, 1.8947093486785889)]
+
+--- h.2.attn.k_proj:167 (layer=h.2.attn.k_proj, idx=167) ---
+  firing_density: 0.1116
+  mean_activations: {'causal_importance': 0.11300525069236755, 'component_activation': 0.19422762095928192}
+  n_activation_examples: 1000
+  first example: 41 tokens, 9 firing
+  input_pmi top-5: [(35613, 2.1932520866394043), (34985, 2.1932520866394043), (15479, 2.1932520866394043), (37982, 2.192171573638916), (22367, 2.1909356117248535)]
+  output_pmi top-5: [(38747, 2.1331048011779785), (9120, 2.130887269973755), (32735, 2.1179158687591553), (39614, 2.1082301139831543), (44572, 2.1060123443603516)]
+
+--- h.2.attn.k_proj:107 (layer=h.2.attn.k_proj, idx=107) ---
+  firing_density: 0.0794
+  mean_activations: {'causal_importance': 0.07934621721506119, 'component_activation': -1.4355583190917969}
+  n_activation_examples: 1000
+  first example: 41 tokens, 5 firing
+  input_pmi top-5: [(22066, 2.5330259799957275), (19565, 2.524041175842285), (41731, 2.522932291030884), (30472, 2.521833658218384), (43477, 2.520841360092163)]
+  output_pmi top-5: [(8956, 2.3628921508789062), (34862, 2.290203094482422), (32221, 2.290168523788452), (626, 2.264256715774536), (49966, 2.2240982055664062)]
+
+--- h.2.attn.k_proj:320 (layer=h.2.attn.k_proj, idx=320) ---
+  firing_density: 0.0697
+  mean_activations: {'causal_importance': 0.07047787308692932, 'component_activation': 1.5666038990020752}
+  n_activation_examples: 1000
+  first example: 41 tokens, 8 firing
+  input_pmi top-5: [(15480, 2.663015127182007), (208, 2.5760037899017334), (26088, 2.556084394454956), (46090, 2.5172741413116455), (40973, 2.4420244693756104)]
+  output_pmi top-5: [(29321, 2.437488079071045), (49080, 2.4267282485961914), (48128, 2.286993980407715), (33159, 2.2859482765197754), (32821, 2.2847111225128174)]
+
+--- h.2.attn.k_proj:373 (layer=h.2.attn.k_proj, idx=373) ---
+  firing_density: 0.0662
+  mean_activations: {'causal_importance': 0.06727247685194016, 'component_activation': -2.9603676795959473}
+  n_activation_examples: 1000
+  first example: 41 tokens, 10 firing
+  input_pmi top-5: [(34985, 2.7158050537109375), (15479, 2.7158050537109375), (153, 2.7158050537109375), (34917, 2.567385196685791), (17949, 2.552321434020996)]
+  output_pmi top-5: [(23704, 2.2721707820892334), (45659, 2.2429800033569336), (30834, 2.1824750900268555), (41221, 2.1685547828674316), (14587, 2.127516508102417)]
+
+--- h.2.attn.k_proj:1 (layer=h.2.attn.k_proj, idx=1) ---
+  firing_density: 0.0619
+  mean_activations: {'causal_importance': 0.0630621463060379, 'component_activation': -2.4028608798980713}
+  n_activation_examples: 1000
+  first example: 41 tokens, 6 firing
+  input_pmi top-5: [(153, 2.7828176021575928), (30356, 2.7828176021575928), (15479, 2.7828176021575928), (34985, 2.7828176021575928), (0, 2.7813222408294678)]
+  output_pmi top-5: [(47719, 2.540123701095581), (19675, 2.4130988121032715), (32821, 2.404984474182129), (41497, 2.350446939468384), (32735, 2.319624423980713)]
+
+--- h.2.attn.k_proj:286 (layer=h.2.attn.k_proj, idx=286) ---
+  firing_density: 0.0609
+  mean_activations: {'causal_importance': 0.06192314624786377, 'component_activation': 1.638694167137146}
+  n_activation_examples: 1000
+  first example: 41 tokens, 15 firing
+  input_pmi top-5: [(22394, 2.7987208366394043), (15480, 2.7987208366394043), (0, 2.7941441535949707), (46578, 2.6556200981140137), (208, 2.6163992881774902)]
+  output_pmi top-5: [(29304, 2.459083080291748), (43728, 2.4471309185028076), (23685, 2.4434351921081543), (42425, 2.3827097415924072), (33635, 2.345176935195923)]
+
+--- h.2.attn.k_proj:72 (layer=h.2.attn.k_proj, idx=72) ---
+  firing_density: 0.0602
+  mean_activations: {'causal_importance': 0.061610810458660126, 'component_activation': 3.396228551864624}
+  n_activation_examples: 1000
+  first example: 41 tokens, 11 firing
+  input_pmi top-5: [(30356, 2.8092703819274902), (15479, 2.8092703819274902), (26088, 2.7037672996520996), (14723, 2.648015022277832), (44259, 2.610349416732788)]
+  output_pmi top-5: [(18070, 2.4468536376953125), (34682, 2.3810150623321533), (33635, 2.3737595081329346), (14723, 2.3498833179473877), (32821, 2.3248729705810547)]
+
+--- h.2.attn.k_proj:14 (layer=h.2.attn.k_proj, idx=14) ---
+  firing_density: 0.0554
+  mean_activations: {'causal_importance': 0.0566575787961483, 'component_activation': -2.5603575706481934}
+  n_activation_examples: 1000
+  first example: 41 tokens, 5 firing
+  input_pmi top-5: [(34985, 2.8929598331451416), (35613, 2.8929598331451416), (30356, 2.8929598331451416), (35346, 2.811164140701294), (26088, 2.802324056625366)]
+  output_pmi top-5: [(8699, 2.6978650093078613), (21551, 2.656716823577881), (33159, 2.5882256031036377), (46924, 2.580676555633545), (31103, 2.5640945434570312)]
+
+--- h.2.attn.k_proj:83 (layer=h.2.attn.k_proj, idx=83) ---
+  firing_density: 0.0552
+  mean_activations: {'causal_importance': 0.056195616722106934, 'component_activation': -2.229339599609375}
+  n_activation_examples: 1000
+  first example: 41 tokens, 21 firing
+  input_pmi top-5: [(29651, 2.739078998565674), (208, 2.609097480773926), (13704, 2.609097480773926), (6862, 2.6081559658050537), (30624, 2.590405225753784)]
+  output_pmi top-5: [(9318, 2.5831291675567627), (32214, 2.5658605098724365), (39267, 2.517238140106201), (8562, 2.5011813640594482), (18413, 2.493147373199463)]
+
+--- h.2.attn.k_proj:431 (layer=h.2.attn.k_proj, idx=431) ---
+  firing_density: 0.0555
+  mean_activations: {'causal_importance': 0.05609206482768059, 'component_activation': 0.8131407499313354}
+  n_activation_examples: 1000
+  first example: 41 tokens, 2 firing
+  input_pmi top-5: [(15479, 2.892070770263672), (34985, 2.892070770263672), (40521, 2.885267972946167), (48282, 2.843444347381592), (47183, 2.8402631282806396)]
+  output_pmi top-5: [(38747, 2.8502752780914307), (39614, 2.8502705097198486), (13270, 2.8485515117645264), (44572, 2.837742567062378), (42691, 2.8376007080078125)]
+
+--- h.2.attn.k_proj:0 (layer=h.2.attn.k_proj, idx=0) ---
+  firing_density: 0.0524
+  mean_activations: {'causal_importance': 0.0536298044025898, 'component_activation': 2.364495277404785}
+  n_activation_examples: 1000
+  first example: 41 tokens, 16 firing
+  input_pmi top-5: [(34985, 2.948941230773926), (35613, 2.948941230773926), (46275, 2.908233880996704), (208, 2.8619298934936523), (29651, 2.7843501567840576)]
+  output_pmi top-5: [(39267, 2.601360321044922), (12635, 2.5504493713378906), (48128, 2.5193631649017334), (49080, 2.4785656929016113), (26635, 2.4401485919952393)]
+
+--- h.2.attn.q_proj:335 (layer=h.2.attn.q_proj, idx=335) ---
+  firing_density: 0.7168
+  mean_activations: {'causal_importance': 0.696435809135437, 'component_activation': 18.04787254333496}
+  n_activation_examples: 1000
+  first example: 41 tokens, 34 firing
+  input_pmi top-5: [(14658, 0.33290210366249084), (9209, 0.33290210366249084), (48851, 0.33290210366249084), (48711, 0.33290210366249084), (33693, 0.33290210366249084)]
+  output_pmi top-5: [(8860, 0.33121877908706665), (20863, 0.33019208908081055), (8798, 0.3298826217651367), (22623, 0.3297177851200104), (20383, 0.32944953441619873)]
+
+--- h.2.attn.q_proj:270 (layer=h.2.attn.q_proj, idx=270) ---
+  firing_density: 0.2366
+  mean_activations: {'causal_importance': 0.23538418114185333, 'component_activation': 4.047867298126221}
+  n_activation_examples: 1000
+  first example: 41 tokens, 11 firing
+  input_pmi top-5: [(7440, 1.4415884017944336), (34985, 1.4415884017944336), (48181, 1.4415884017944336), (41557, 1.4415884017944336), (3278, 1.4415884017944336)]
+  output_pmi top-5: [(8562, 1.438630223274231), (1656, 1.4386051893234253), (2947, 1.437497615814209), (2536, 1.4365465641021729), (4253, 1.4364122152328491)]
+
+--- h.2.attn.q_proj:279 (layer=h.2.attn.q_proj, idx=279) ---
+  firing_density: 0.1278
+  mean_activations: {'causal_importance': 0.12878113985061646, 'component_activation': 4.375096797943115}
+  n_activation_examples: 1000
+  first example: 36 tokens, 14 firing
+  input_pmi top-5: [(6094, 2.057385206222534), (7354, 2.057385206222534), (12833, 2.057385206222534), (4296, 2.057385206222534), (6211, 2.057385206222534)]
+  output_pmi top-5: [(8860, 2.0535597801208496), (34373, 2.045491933822632), (33835, 2.045380115509033), (48150, 2.0444140434265137), (33140, 2.0406951904296875)]
+
+--- h.2.attn.q_proj:436 (layer=h.2.attn.q_proj, idx=436) ---
+  firing_density: 0.1264
+  mean_activations: {'causal_importance': 0.12465684860944748, 'component_activation': -2.635347366333008}
+  n_activation_examples: 1000
+  first example: 41 tokens, 4 firing
+  input_pmi top-5: [(40973, 2.0685460567474365), (34985, 2.0685460567474365), (41825, 2.0685460567474365), (26061, 2.0685460567474365), (43134, 2.06585431098938)]
+  output_pmi top-5: [(7657, 2.057644844055176), (1723, 2.0566060543060303), (7757, 2.055720806121826), (20300, 2.055546998977661), (7304, 2.05527663230896)]
+
+--- h.2.attn.q_proj:66 (layer=h.2.attn.q_proj, idx=66) ---
+  firing_density: 0.1144
+  mean_activations: {'causal_importance': 0.1149643212556839, 'component_activation': 2.679269790649414}
+  n_activation_examples: 1000
+  first example: 41 tokens, 23 firing
+  input_pmi top-5: [(30356, 2.168471574783325), (6761, 2.168471574783325), (8860, 2.168471574783325), (18031, 2.167058229446411), (8828, 2.166962146759033)]
+  output_pmi top-5: [(2536, 2.166186571121216), (8822, 2.165774345397949), (8860, 2.164893627166748), (8834, 2.1646199226379395), (8798, 2.163783073425293)]
+
+--- h.2.attn.q_proj:207 (layer=h.2.attn.q_proj, idx=207) ---
+  firing_density: 0.0879
+  mean_activations: {'causal_importance': 0.08881323039531708, 'component_activation': 1.0936416387557983}
+  n_activation_examples: 1000
+  first example: 27 tokens, 1 firing
+  input_pmi top-5: [(19650, 2.4310216903686523), (6599, 2.3932812213897705), (44347, 2.3616180419921875), (20667, 2.3277812004089355), (41782, 2.32047963142395)]
+  output_pmi top-5: [(42916, 2.4079999923706055), (33695, 2.4031119346618652), (22379, 2.4028589725494385), (49170, 2.39816951751709), (49763, 2.3973021507263184)]
+
+--- h.2.attn.q_proj:261 (layer=h.2.attn.q_proj, idx=261) ---
+  firing_density: 0.0768
+  mean_activations: {'causal_importance': 0.07841621339321136, 'component_activation': 3.2004547119140625}
+  n_activation_examples: 1000
+  first example: 41 tokens, 4 firing
+  input_pmi top-5: [(45330, 2.559394359588623), (44988, 2.523010492324829), (48765, 2.52174973487854), (37446, 2.517996072769165), (10326, 2.5167124271392822)]
+  output_pmi top-5: [(22702, 2.5503454208374023), (34761, 2.549903631210327), (45330, 2.5473055839538574), (27045, 2.539280414581299), (30491, 2.5349249839782715)]
+
+--- h.2.attn.q_proj:46 (layer=h.2.attn.q_proj, idx=46) ---
+  firing_density: 0.0770
+  mean_activations: {'causal_importance': 0.0771816298365593, 'component_activation': -0.5870414972305298}
+  n_activation_examples: 1000
+  first example: 41 tokens, 7 firing
+  input_pmi top-5: [(40288, 2.560227632522583), (49755, 2.560121536254883), (39945, 2.558013439178467), (47269, 2.5557682514190674), (28543, 2.5538132190704346)]
+  output_pmi top-5: [(6767, 2.5549726486206055), (24203, 2.550612211227417), (45330, 2.5498249530792236), (48765, 2.5472946166992188), (30491, 2.5451905727386475)]
+
+--- h.2.attn.q_proj:497 (layer=h.2.attn.q_proj, idx=497) ---
+  firing_density: 0.0664
+  mean_activations: {'causal_importance': 0.06726403534412384, 'component_activation': -0.0972374975681305}
+  n_activation_examples: 1000
+  first example: 41 tokens, 3 firing
+  input_pmi top-5: [(44779, 2.6605727672576904), (28681, 2.641547679901123), (3182, 2.627626419067383), (30696, 2.5760350227355957), (31102, 2.5691323280334473)]
+  output_pmi top-5: [(42010, 2.687253475189209), (22702, 2.681330442428589), (34575, 2.6638176441192627), (48847, 2.607131242752075), (47337, 2.569535255432129)]
+
+--- h.2.attn.q_proj:138 (layer=h.2.attn.q_proj, idx=138) ---
+  firing_density: 0.0562
+  mean_activations: {'causal_importance': 0.057433757930994034, 'component_activation': 1.456581711769104}
+  n_activation_examples: 1000
+  first example: 41 tokens, 1 firing
+  input_pmi top-5: [(32821, 2.8791091442108154), (13704, 2.8791089057922363), (34985, 2.8791089057922363), (29148, 2.8410816192626953), (44595, 2.7732036113739014)]
+  output_pmi top-5: [(20214, 2.8367528915405273), (32821, 2.814420223236084), (13704, 2.80470609664917), (6145, 2.7860686779022217), (19650, 2.776458978652954)]
+
+--- h.2.attn.q_proj:203 (layer=h.2.attn.q_proj, idx=203) ---
+  firing_density: 0.0552
+  mean_activations: {'causal_importance': 0.056208960711956024, 'component_activation': -2.66444730758667}
+  n_activation_examples: 1000
+  first example: 41 tokens, 18 firing
+  input_pmi top-5: [(48716, 2.857560157775879), (49669, 2.8167381286621094), (45659, 2.722515106201172), (37096, 2.714717388153076), (35916, 2.7115564346313477)]
+  output_pmi top-5: [(39945, 2.8678998947143555), (48980, 2.8076839447021484), (49760, 2.8003451824188232), (45659, 2.763540267944336), (176, 2.748723268508911)]
+
+--- h.2.attn.q_proj:148 (layer=h.2.attn.q_proj, idx=148) ---
+  firing_density: 0.0543
+  mean_activations: {'causal_importance': 0.05545566976070404, 'component_activation': -0.9996220469474792}
+  n_activation_examples: 1000
+  first example: 41 tokens, 2 firing
+  input_pmi top-5: [(43134, 2.886946678161621), (42649, 2.8396127223968506), (29096, 2.8019859790802), (17471, 2.8007888793945312), (28479, 2.7903084754943848)]
+  output_pmi top-5: [(176, 2.8953053951263428), (30754, 2.8501408100128174), (38475, 2.8451597690582275), (40000, 2.8448171615600586), (27618, 2.8364787101745605)]
+
+--- h.2.attn.q_proj:16 (layer=h.2.attn.q_proj, idx=16) ---
+  firing_density: 0.0531
+  mean_activations: {'causal_importance': 0.053950659930706024, 'component_activation': 1.6354929208755493}
+  n_activation_examples: 1000
+  first example: 41 tokens, 4 firing
+  input_pmi top-5: [(13704, 2.9360032081604004), (34985, 2.9360032081604004), (32821, 2.8734827041625977), (38396, 2.8372793197631836), (390, 2.813530683517456)]
+  output_pmi top-5: [(20524, 2.914994478225708), (22998, 2.900750160217285), (20214, 2.8967745304107666), (47823, 2.8952481746673584), (49466, 2.8905692100524902)]
+
+--- h.2.attn.q_proj:171 (layer=h.2.attn.q_proj, idx=171) ---
+  firing_density: 0.0505
+  mean_activations: {'causal_importance': 0.05162807181477547, 'component_activation': -0.7333964109420776}
+  n_activation_examples: 1000
+  first example: 41 tokens, 4 firing
+  input_pmi top-5: [(9888, 2.916134834289551), (16550, 2.9096200466156006), (33136, 2.8834705352783203), (34979, 2.8571276664733887), (6967, 2.817234516143799)]
+  output_pmi top-5: [(176, 2.953019380569458), (23440, 2.945591449737549), (16658, 2.894019603729248), (175, 2.8885886669158936), (48847, 2.82279372215271)]
+
+--- h.3.attn.k_proj:145 (layer=h.3.attn.k_proj, idx=145) ---
+  firing_density: 0.7164
+  mean_activations: {'causal_importance': 0.6927310228347778, 'component_activation': -23.247264862060547}
+  n_activation_examples: 1000
+  first example: 41 tokens, 33 firing
+  input_pmi top-5: [(20386, 0.33357882499694824), (15373, 0.33357882499694824), (16188, 0.33357882499694824), (24795, 0.33357882499694824), (6599, 0.33357882499694824)]
+  output_pmi top-5: [(29304, 0.33372920751571655), (32821, 0.33256834745407104), (22702, 0.330050528049469), (20214, 0.32972052693367004), (35386, 0.3290940225124359)]
+
+--- h.3.attn.k_proj:96 (layer=h.3.attn.k_proj, idx=96) ---
+  firing_density: 0.1800
+  mean_activations: {'causal_importance': 0.18173198401927948, 'component_activation': -6.786985874176025}
+  n_activation_examples: 1000
+  first example: 41 tokens, 10 firing
+  input_pmi top-5: [(6183, 1.7149598598480225), (26384, 1.7149598598480225), (21852, 1.7149598598480225), (21895, 1.7149598598480225), (20637, 1.7149598598480225)]
+  output_pmi top-5: [(8272, 1.663529634475708), (11278, 1.6555283069610596), (26620, 1.6367226839065552), (25609, 1.6257658004760742), (19696, 1.6218189001083374)]
+
+--- h.3.attn.k_proj:507 (layer=h.3.attn.k_proj, idx=507) ---
+  firing_density: 0.1574
+  mean_activations: {'causal_importance': 0.15794511139392853, 'component_activation': 0.16737771034240723}
+  n_activation_examples: 1000
+  first example: 37 tokens, 16 firing
+  input_pmi top-5: [(21742, 1.8490917682647705), (30356, 1.8490917682647705), (10055, 1.8490917682647705), (22394, 1.8490917682647705), (7440, 1.8490917682647705)]
+  output_pmi top-5: [(17384, 1.8009068965911865), (47673, 1.7933778762817383), (28342, 1.745330810546875), (41489, 1.7438685894012451), (42237, 1.7319557666778564)]
+
+--- h.3.attn.k_proj:413 (layer=h.3.attn.k_proj, idx=413) ---
+  firing_density: 0.0874
+  mean_activations: {'causal_importance': 0.08800925314426422, 'component_activation': -3.6748268604278564}
+  n_activation_examples: 1000
+  first example: 41 tokens, 3 firing
+  input_pmi top-5: [(21170, 2.4375312328338623), (21742, 2.4375312328338623), (13275, 2.4375312328338623), (5855, 2.437530994415283), (153, 2.437530994415283)]
+  output_pmi top-5: [(49169, 2.382504940032959), (20427, 2.3761210441589355), (16658, 2.362604856491089), (48440, 2.3562936782836914), (4599, 2.344538688659668)]
+
+--- h.3.attn.k_proj:347 (layer=h.3.attn.k_proj, idx=347) ---
+  firing_density: 0.0530
+  mean_activations: {'causal_importance': 0.05415532365441322, 'component_activation': -0.14212344586849213}
+  n_activation_examples: 1000
+  first example: 39 tokens, 1 firing
+  input_pmi top-5: [(6761, 2.9367337226867676), (34682, 2.923074960708618), (22367, 2.9119021892547607), (4129, 2.904665946960449), (8430, 2.8987996578216553)]
+  output_pmi top-5: [(43421, 2.861607074737549), (32159, 2.8218674659729004), (38257, 2.8158223628997803), (14316, 2.777874231338501), (40611, 2.7711310386657715)]
+
+--- h.3.attn.q_proj:334 (layer=h.3.attn.q_proj, idx=334) ---
+  firing_density: 0.7467
+  mean_activations: {'causal_importance': 0.7214521765708923, 'component_activation': 22.921926498413086}
+  n_activation_examples: 1000
+  first example: 40 tokens, 39 firing
+  input_pmi top-5: [(7347, 0.2920439541339874), (6211, 0.2920439541339874), (6761, 0.2920439541339874), (3375, 0.2920439541339874), (6063, 0.2920439541339874)]
+  output_pmi top-5: [(32821, 0.29148200154304504), (22623, 0.2903154194355011), (25535, 0.29007863998413086), (20863, 0.2899908721446991), (34373, 0.2899906039237976)]
+
+--- h.3.attn.q_proj:60 (layer=h.3.attn.q_proj, idx=60) ---
+  firing_density: 0.1726
+  mean_activations: {'causal_importance': 0.174118310213089, 'component_activation': 2.556389570236206}
+  n_activation_examples: 1000
+  first example: 41 tokens, 15 firing
+  input_pmi top-5: [(13275, 1.7565281391143799), (29910, 1.7565281391143799), (41993, 1.7565281391143799), (7354, 1.7565281391143799), (25996, 1.7565281391143799)]
+  output_pmi top-5: [(8844, 1.752182126045227), (29304, 1.7511283159255981), (39053, 1.7347965240478516), (9757, 1.7341382503509521), (45561, 1.730045199394226)]
+
+--- h.3.attn.q_proj:182 (layer=h.3.attn.q_proj, idx=182) ---
+  firing_density: 0.1508
+  mean_activations: {'causal_importance': 0.15136905014514923, 'component_activation': -0.2038886547088623}
+  n_activation_examples: 1000
+  first example: 41 tokens, 8 firing
+  input_pmi top-5: [(30696, 1.8439195156097412), (17710, 1.8421034812927246), (33093, 1.8414415121078491), (36195, 1.836626648902893), (39330, 1.832712173461914)]
+  output_pmi top-5: [(42010, 1.86114501953125), (48847, 1.8268121480941772), (41953, 1.8194448947906494), (38257, 1.8017102479934692), (27592, 1.787759780883789)]
+
+--- h.3.attn.q_proj:350 (layer=h.3.attn.q_proj, idx=350) ---
+  firing_density: 0.0620
+  mean_activations: {'causal_importance': 0.06292802095413208, 'component_activation': -0.9409838914871216}
+  n_activation_examples: 1000
+  first example: 41 tokens, 1 firing
+  input_pmi top-5: [(40611, 2.7371716499328613), (6041, 2.655829668045044), (40308, 2.64967942237854), (39921, 2.6453075408935547), (44347, 2.6410274505615234)]
+  output_pmi top-5: [(28013, 2.687666893005371), (19733, 2.6759440898895264), (46897, 2.6594135761260986), (29194, 2.649353504180908), (23004, 2.6409971714019775)]

@@ -1,0 +1,11 @@
+model_paths:
+  - "wandb:goodfire/spd/runs/s-3cd59362"   # 0-step seed 0
+  - "wandb:goodfire/spd/runs/s-cc2be6a2"   # 0-step seed 1
+  - "wandb:goodfire/spd/runs/s-ef257360"   # 0-step seed 2
+
+mean_ci_threshold: 1e-4
+n_eval_steps: 50
+
+eval_batch_size: 128
+shuffle_data: false
+output_dir: "spd/scripts/compare_models/out_0steps"
