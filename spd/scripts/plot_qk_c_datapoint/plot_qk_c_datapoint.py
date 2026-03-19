@@ -317,7 +317,7 @@ def plot_qk_c_datapoint(
     query_positions: int | list[int] = 5,
     mode: str = "weighted",
     ci_threshold: float = 0.01,
-    top_n_pairs: int = 40,
+    top_n_pairs: int = 20,
 ) -> None:
     """Plot data-specific QK component contributions for dataset samples.
 
