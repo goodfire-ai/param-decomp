@@ -114,17 +114,19 @@ def format_prompt(
         md.h(2, "Output evidence")
         md.p(
             "Top output PMI tokens, filtered to ignore extremely low-support predictions. "
-            "These are tokens the model disproportionately predicts when this component fires."
+            "These are tokens the model disproportionately predicts when this component fires. "
+            "Treat them as hints, not ground truth, and do not overfit isolated subword completions."
         )
         md.labeled_list(
             "**Output PMI:**",
-            [f"{repr(tok)}: {pmi:.2f}" for tok, pmi in output_token_stats.top_pmi[:10]],
+            [f"{repr(tok)}: {pmi:.2f}" for tok, pmi in output_token_stats.top_pmi[:8]],
         )
 
     md.h(2, "Activation examples — where the component fires")
     md.p(
         "Each firing token shows its activation values inline. "
-        "Use these to judge how strongly the component responds at each position."
+        "Use these to judge how strongly the component responds at each position. "
+        "If the examples split across multiple plausible patterns, prefer uncertainty over a vague average."
     )
     md.extend(fires_on)
 
@@ -136,7 +138,7 @@ def format_prompt(
     )
     md.p(
         "Be epistemically honest — express uncertainty in the label "
-        "when the evidence is weak, ambiguous, or mixed. Lowercase only."
+        "when the evidence is weak, ambiguous, or mixed. Do not merge unrelated patterns into a vague label. Lowercase only."
     )
 
     return md.build()
@@ -158,6 +160,7 @@ def _build_data_section(
         f"firing token, with up to {context_tokens_per_side} tokens of context on each side. "
         f"Windows are truncated at sequence boundaries. "
         f"Examples are sampled uniformly at random from all firings across the dataset. "
+        "Absence from this sample is not evidence against a pattern. "
         "If a firing token appears at the left or right edge of the shown window, that may "
         "itself be evidence of a boundary or beginning-of-sequence feature."
     )
