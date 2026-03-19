@@ -233,18 +233,22 @@ def build_annotated_examples(
     app_tok: AppTokenizer,
     max_examples: int,
 ) -> Md:
-    """Build activation examples with per-token CI and activation annotations."""
-    items: list[str] = []
+    """Build activation examples as XML blocks with raw and annotated versions."""
+    blocks: list[str] = []
     for ex in component.activation_examples[:max_examples]:
         if not any(ex.firings):
             continue
-        spans = app_tok.get_spans(ex.token_ids)
+        spans = app_tok.get_raw_spans(ex.token_ids)
+        raw = "".join(spans)
         act_keys = list(ex.activations.keys())
         per_token_acts = [
             {k: ex.activations[k][i] for k in act_keys} for i in range(len(ex.token_ids))
         ]
-        items.append(_delimit_annotated(spans, ex.firings, per_token_acts))
+        highlighted = _delimit_annotated(spans, ex.firings, per_token_acts)
+        blocks.append(
+            f"<example>\n<raw>\n{raw}\n</raw>\n<highlighted>\n{highlighted}\n</highlighted>\n</example>"
+        )
     md = Md()
-    if items:
-        md.numbered(items)
+    for block in blocks:
+        md.p(block)
     return md

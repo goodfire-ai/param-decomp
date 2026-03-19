@@ -767,7 +767,6 @@ def _tool_get_component_info(params: dict[str, Any]) -> dict[str, Any]:
         if interp is not None:
             result["interpretation"] = {
                 "label": interp.label,
-                "confidence": interp.confidence,
                 "reasoning": interp.reasoning,
             }
         else:

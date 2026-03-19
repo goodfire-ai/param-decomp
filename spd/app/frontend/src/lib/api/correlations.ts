@@ -28,7 +28,6 @@ export async function getComponentTokenStats(
 // Interpretation headline (bulk-fetched) - lightweight data for badges
 export type InterpretationHeadline = {
     label: string;
-    confidence: "low" | "medium" | "high";
     detection_score: number | null;
     fuzzing_score: number | null;
 };

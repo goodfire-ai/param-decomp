@@ -28,7 +28,6 @@
     <button class="graph-interp-badge" onclick={() => (expanded = !expanded)} type="button">
         <div class="badge-header">
             <span class="badge-label">{headline.label}</span>
-            <span class="confidence confidence-{headline.confidence}">{headline.confidence}</span>
             <span class="source-tag">graph</span>
         </div>
         {#if expanded && (headline.output_label || headline.input_label)}
@@ -131,29 +130,6 @@
         font-weight: 500;
         color: var(--text-primary);
         font-size: var(--text-sm);
-    }
-
-    .confidence {
-        font-size: var(--text-xs);
-        padding: var(--space-1) var(--space-2);
-        border-radius: var(--radius-sm);
-        text-transform: uppercase;
-        font-weight: 600;
-    }
-
-    .confidence-high {
-        background: color-mix(in srgb, var(--status-positive-bright) 20%, transparent);
-        color: var(--status-positive-bright);
-    }
-
-    .confidence-medium {
-        background: color-mix(in srgb, var(--status-warning) 20%, transparent);
-        color: var(--status-warning);
-    }
-
-    .confidence-low {
-        background: color-mix(in srgb, var(--text-muted) 20%, transparent);
-        color: var(--text-muted);
     }
 
     .source-tag {

@@ -11,7 +11,6 @@ _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS output_labels (
     component_key TEXT PRIMARY KEY,
     label TEXT NOT NULL,
-    confidence TEXT NOT NULL,
     reasoning TEXT NOT NULL,
     raw_response TEXT NOT NULL,
     prompt TEXT NOT NULL
@@ -20,7 +19,6 @@ CREATE TABLE IF NOT EXISTS output_labels (
 CREATE TABLE IF NOT EXISTS input_labels (
     component_key TEXT PRIMARY KEY,
     label TEXT NOT NULL,
-    confidence TEXT NOT NULL,
     reasoning TEXT NOT NULL,
     raw_response TEXT NOT NULL,
     prompt TEXT NOT NULL
@@ -29,7 +27,6 @@ CREATE TABLE IF NOT EXISTS input_labels (
 CREATE TABLE IF NOT EXISTS unified_labels (
     component_key TEXT PRIMARY KEY,
     label TEXT NOT NULL,
-    confidence TEXT NOT NULL,
     reasoning TEXT NOT NULL,
     raw_response TEXT NOT NULL,
     prompt TEXT NOT NULL
@@ -41,7 +38,6 @@ CREATE TABLE IF NOT EXISTS prompt_edges (
     pass TEXT NOT NULL,
     attribution REAL NOT NULL,
     related_label TEXT,
-    related_confidence TEXT,
     PRIMARY KEY (component_key, related_key, pass)
 );
 
@@ -68,11 +64,10 @@ class GraphInterpDB:
     def _save_label(self, table: str, result: LabelResult) -> None:
         assert table in _LABEL_TABLES
         self._conn.execute(
-            f"INSERT OR REPLACE INTO {table} VALUES (?, ?, ?, ?, ?, ?)",
+            f"INSERT OR REPLACE INTO {table} VALUES (?, ?, ?, ?, ?)",
             (
                 result.component_key,
                 result.label,
-                result.confidence,
                 result.reasoning,
                 result.raw_response,
                 result.prompt,
@@ -141,12 +136,11 @@ class GraphInterpDB:
                 e.pass_name,
                 e.attribution,
                 e.related_label,
-                e.related_confidence,
             )
             for e in edges
         ]
         self._conn.executemany(
-            "INSERT OR REPLACE INTO prompt_edges VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO prompt_edges VALUES (?, ?, ?, ?, ?)",
             rows,
         )
         self._conn.commit()
@@ -177,7 +171,6 @@ def _row_to_label_result(row: sqlite3.Row) -> LabelResult:
     return LabelResult(
         component_key=row["component_key"],
         label=row["label"],
-        confidence=row["confidence"],
         reasoning=row["reasoning"],
         raw_response=row["raw_response"],
         prompt=row["prompt"],
@@ -191,5 +184,4 @@ def _row_to_prompt_edge(row: sqlite3.Row) -> PromptEdge:
         pass_name=row["pass"],
         attribution=row["attribution"],
         related_label=row["related_label"],
-        related_confidence=row["related_confidence"],
     )

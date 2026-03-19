@@ -93,8 +93,6 @@ def format_prompt(
             'Say "unclear" if: tokens are too varied, pattern is abstract, or evidence is weak',
             f"FORBIDDEN words (too vague): {forbidden}",
             "Lowercase only",
-            'Confidence: "high" = clear, specific pattern with strong evidence; '
-            '"medium" = plausible but noisy; "low" = speculative',
         ]
     )
     md.p(

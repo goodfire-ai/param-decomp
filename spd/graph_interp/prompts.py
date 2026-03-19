@@ -27,16 +27,13 @@ LABEL_SCHEMA: dict[str, object] = {
     "type": "object",
     "properties": {
         "label": {"type": "string"},
-        "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
         "reasoning": {"type": "string"},
     },
-    "required": ["label", "confidence", "reasoning"],
+    "required": ["label", "reasoning"],
     "additionalProperties": False,
 }
 
-JSON_INSTRUCTION = (
-    'Respond with JSON: {"label": "...", "confidence": "low|medium|high", "reasoning": "..."}'
-)
+JSON_INSTRUCTION = 'Respond with JSON: {"label": "...", "reasoning": "..."}'
 
 UNCLEAR_NOTE = 'Say "unclear" if the evidence is too weak.'
 
@@ -169,14 +166,8 @@ def format_unification_prompt(
     md.extend(build_says_examples(component, app_tok, max_examples))
 
     md.h(2, "Two-perspective analysis")
-    md.p(
-        f'OUTPUT FUNCTION: "{output_label.label}" (confidence: {output_label.confidence})\n'
-        f"  Reasoning: {output_label.reasoning}"
-    )
-    md.p(
-        f'INPUT FUNCTION: "{input_label.label}" (confidence: {input_label.confidence})\n'
-        f"  Reasoning: {input_label.reasoning}"
-    )
+    md.p(f'OUTPUT FUNCTION: "{output_label.label}"\n  Reasoning: {output_label.reasoning}')
+    md.p(f'INPUT FUNCTION: "{input_label.label}"\n  Reasoning: {input_label.reasoning}')
 
     md.h(2, "Task")
     md.p(
@@ -211,7 +202,7 @@ def _format_related(
         pmi_str = f", co-firing PMI: {n.pmi:.2f}" if n.pmi is not None else ""
         line = f"  {display} (relative attribution: {rel_attr:+.2f}{pmi_str})"
         if n.label is not None:
-            line += f'\n    label: "{n.label}" (confidence: {n.confidence})'
+            line += f'\n    label: "{n.label}"'
         lines.append(line)
 
     md.p("\n".join(lines))

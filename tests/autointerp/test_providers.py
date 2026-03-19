@@ -73,7 +73,7 @@ def test_anthropic_provider_uses_structured_outputs_for_46_models() -> None:
                     "content": [
                         {
                             "type": "text",
-                            "text": '{"label":"foo","confidence":"high","reasoning":"bar"}',
+                            "text": '{"label":"foo","reasoning":"bar"}',
                         }
                     ],
                     "usage": {"input_tokens": 12, "output_tokens": 34},
@@ -102,7 +102,7 @@ def test_anthropic_provider_uses_structured_outputs_for_46_models() -> None:
         },
         "effort": "medium",
     }
-    assert response.content == '{"label":"foo","confidence":"high","reasoning":"bar"}'
+    assert response.content == '{"label":"foo","reasoning":"bar"}'
 
 
 def test_anthropic_provider_uses_manual_thinking_for_haiku() -> None:
@@ -126,7 +126,7 @@ def test_anthropic_provider_uses_manual_thinking_for_haiku() -> None:
                     "content": [
                         {
                             "type": "text",
-                            "text": '{"label":"foo","confidence":"medium","reasoning":"bar"}',
+                            "text": '{"label":"foo","reasoning":"bar"}',
                         }
                     ],
                     "usage": {"input_tokens": 1, "output_tokens": 2},

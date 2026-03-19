@@ -58,7 +58,6 @@ class ModelMetadata:
 class InterpretationResult:
     component_key: str
     label: str
-    confidence: str
     reasoning: str
     raw_response: str
     prompt: str

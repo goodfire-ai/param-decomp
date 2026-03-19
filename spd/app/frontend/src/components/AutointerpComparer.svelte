@@ -17,6 +17,7 @@
     import ActivationContextsPagedTable, { type ActivationExamplesData } from "./ActivationContextsPagedTable.svelte";
     import ComponentProbeInput from "./ComponentProbeInput.svelte";
     import ComponentCorrelationMetrics from "./ui/ComponentCorrelationMetrics.svelte";
+    import ComponentFrequencyCurve from "./ui/ComponentFrequencyCurve.svelte";
     import SectionHeader from "./ui/SectionHeader.svelte";
     import StatusText from "./ui/StatusText.svelte";
     import SubrunInterpCard from "./ui/SubrunInterpCard.svelte";
@@ -191,6 +192,13 @@
         return ci < 0.001 ? ci.toExponential(2) : ci.toFixed(3);
     }
 
+    function handlePlotSelect(subcomponentIdx: number) {
+        const pageIndex = currentLayerMetadata.findIndex((m) => m.subcomponent_idx === subcomponentIdx);
+        if (pageIndex === -1) return;
+        currentPage = pageIndex;
+        loadCurrentComponent();
+    }
+
     // Activation examples data
     const maxAbsComponentAct = $derived.by(() => {
         if (componentData.componentDetail.status !== "loaded") return 1;
@@ -290,6 +298,12 @@
                 {/if}
             </div>
         </div>
+
+        <ComponentFrequencyCurve
+            metadata={activationContextsSummary[selectedLayer]}
+            currentSubcomponentIdx={currentMetadata?.subcomponent_idx ?? null}
+            onSelect={handlePlotSelect}
+        />
 
         <div class="two-panel">
             <div class="left-panel">

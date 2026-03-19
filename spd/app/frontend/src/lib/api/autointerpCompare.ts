@@ -16,7 +16,6 @@ export type SubrunSummary = {
 
 export type CompareInterpretationHeadline = {
     label: string;
-    confidence: string;
     detection_score: number | null;
     fuzzing_score: number | null;
 };

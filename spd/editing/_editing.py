@@ -55,7 +55,6 @@ def parse_component_key(key: str) -> tuple[str, int]:
 class ComponentMatch:
     key: str
     label: str
-    confidence: str
     firing_density: float
     mean_activations: dict[str, float]
 
@@ -83,7 +82,6 @@ def search_interpretations(
             ComponentMatch(
                 key=key,
                 label=result.label,
-                confidence=result.confidence,
                 firing_density=s.firing_density,
                 mean_activations=s.mean_activations,
             )
@@ -167,7 +165,7 @@ def inspect_component(
     print(f"{'=' * 70}")
     print(f"{key}  (density={comp.firing_density:.4f}{ci_str})")
     if interp_result:
-        print(f"Label: [{interp_result.confidence}] {interp_result.label}")
+        print(f"Label: {interp_result.label}")
     print()
 
     decode = tokenizer.decode

@@ -60,6 +60,18 @@ class InterpRepo:
             run_id=run_id,
         )
 
+    @classmethod
+    def open_subrun(cls, run_id: str, subrun_id: str) -> "InterpRepo":
+        """Open a specific autointerp subrun by ID."""
+        subrun_dir = get_autointerp_dir(run_id) / subrun_id
+        db_path = subrun_dir / "interp.db"
+        assert db_path.exists(), f"No interp.db at {subrun_dir}"
+        return cls(
+            db=InterpDB(db_path, readonly=True),
+            subrun_dir=subrun_dir,
+            run_id=run_id,
+        )
+
     # -- Provenance ------------------------------------------------------------
 
     def get_config(self) -> dict[str, Any] | None:

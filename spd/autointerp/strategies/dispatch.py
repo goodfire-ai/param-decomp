@@ -24,10 +24,9 @@ INTERPRETATION_SCHEMA = {
     "type": "object",
     "properties": {
         "label": {"type": "string"},
-        "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
         "reasoning": {"type": "string"},
     },
-    "required": ["label", "confidence", "reasoning"],
+    "required": ["label", "reasoning"],
     "additionalProperties": False,
 }
 
