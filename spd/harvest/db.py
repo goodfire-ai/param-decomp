@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS components (
     layer TEXT NOT NULL,
     component_idx INTEGER NOT NULL,
     firing_density REAL NOT NULL,
+    n_activation_examples INTEGER NOT NULL DEFAULT 0,
     mean_activations TEXT NOT NULL,
     activation_examples TEXT NOT NULL,
     input_token_pmi TEXT NOT NULL,
@@ -42,14 +43,20 @@ CREATE TABLE IF NOT EXISTS scores (
 """
 
 
+def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    cols = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row[1] == column for row in cols)
+
+
 def _serialize_component(
     comp: ComponentData,
-) -> tuple[str, str, int, float, bytes, bytes, bytes, bytes]:
+) -> tuple[str, str, int, float, int, bytes, bytes, bytes, bytes]:
     return (
         comp.component_key,
         comp.layer,
         comp.component_idx,
         comp.firing_density,
+        len(comp.activation_examples),
         orjson.dumps(comp.mean_activations),
         orjson.dumps([ex.model_dump() for ex in comp.activation_examples]),
         orjson.dumps(comp.input_token_pmi.model_dump()),
@@ -81,7 +88,7 @@ class HarvestDB:
     def save_component(self, comp: ComponentData) -> None:
         row = _serialize_component(comp)
         self._conn.execute(
-            "INSERT OR REPLACE INTO components VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO components VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             row,
         )
         self._conn.commit()
@@ -91,7 +98,7 @@ class HarvestDB:
         n = 0
         for comp in components:
             self._conn.execute(
-                "INSERT OR REPLACE INTO components VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO components VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 _serialize_component(comp),
             )
             n += 1
@@ -162,9 +169,34 @@ class HarvestDB:
         return row[0]
 
     def get_all_components(self) -> list[ComponentData]:
-        """Load all components."""
+        """Load all components. SLOW (~minutes for large DBs) — prefer get_component_keys()
+        + get_components_bulk() when you don't need every component's full data."""
         rows = self._conn.execute("SELECT * FROM components").fetchall()
         return [_deserialize_component(row) for row in rows]
+
+    def get_component_keys(self) -> list[str]:
+        """Return all component keys (fast — no blob deserialization)."""
+        rows = self._conn.execute("SELECT component_key FROM components").fetchall()
+        return [row["component_key"] for row in rows]
+
+    def get_eligible_component_keys(self, min_examples: int) -> list[str]:
+        """Return component keys with at least `min_examples` activation examples.
+
+        Uses n_activation_examples integer column if available (fast, new DBs).
+        Falls back to json_array_length for legacy DBs (slower but no migration needed).
+        """
+        if _has_column(self._conn, "components", "n_activation_examples"):
+            rows = self._conn.execute(
+                "SELECT component_key FROM components WHERE n_activation_examples >= ?",
+                (min_examples,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT component_key FROM components "
+                "WHERE json_array_length(activation_examples) >= ?",
+                (min_examples,),
+            ).fetchall()
+        return [row["component_key"] for row in rows]
 
     # -- Scores (e.g. intruder eval) ------------------------------------------
 

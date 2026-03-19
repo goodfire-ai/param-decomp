@@ -2,10 +2,9 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from jaxtyping import Bool, Float, Int
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel
 from torch import Tensor
 
 from spd.settings import SPD_OUT_DIR
@@ -48,22 +47,6 @@ class ActivationExample(BaseModel):
     token_ids: list[int]
     firings: list[bool]
     activations: dict[str, list[float]]
-
-    @model_validator(mode="before")
-    @classmethod
-    def _strip_legacy_padding(cls, data: dict[str, Any]) -> dict[str, Any]:
-        """Strip -1 padding sentinels from old harvest data."""
-        PAD = -1
-        token_ids = data["token_ids"]
-        if any(t == PAD for t in token_ids):
-            mask = [t != PAD for t in token_ids]
-            data["token_ids"] = [v for v, k in zip(token_ids, mask, strict=True) if k]
-            data["firings"] = [v for v, k in zip(data["firings"], mask, strict=True) if k]
-            data["activations"] = {
-                act_type: [v for v, k in zip(vals, mask, strict=True) if k]
-                for act_type, vals in data["activations"].items()
-            }
-        return data
 
 
 class ComponentTokenPMI(BaseModel):
