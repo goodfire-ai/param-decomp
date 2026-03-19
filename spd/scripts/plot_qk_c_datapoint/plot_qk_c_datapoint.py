@@ -1,22 +1,18 @@
 """Data-specific QK component contribution plots for dataset samples.
 
-For each (sample, query_pos), decomposes the pre-softmax attention logits into
-per-(q_component, k_component) contributions at each key position, and overlays the
-sum with ground-truth logits from the target model.
+For each (sample, query_pos, layer), decomposes pre-softmax attention logits into
+per-(q_component, k_component) contributions at each key position. In weighted mode,
+the component sum is overlaid with ground-truth logits from the target model.
 
-Two modes:
-  - weighted: contribution scaled by actual component activations at each position
-  - binary: contribution counted only if both components' per-token CI exceeds a threshold
-
-The sum over ALL components (not just alive ones) is used for validation against ground truth.
-Alive filtering only controls which pairs get individual lines in the plot.
+Top-N pairs are ranked by peak absolute contribution on each specific datapoint.
+Per-head subplots mask out pairs whose contribution is negligible in that head.
 
 Usage:
     python -m spd.scripts.plot_qk_c_datapoint.plot_qk_c_datapoint \
         wandb:goodfire/spd/runs/<run_id> \
-        --sample_indices 0 1 2 \
-        --query_positions 5 4 3 \
-        --layer 1
+        --layer 1 \
+        --sample_indices='[0,1,2]' \
+        --query_positions='[5,4,3]'
 """
 
 import math
@@ -145,10 +141,6 @@ def _compute_datapoint_contributions(
 
     # Transpose to (n_q_heads, C_q, C_k, n_key_pos)
     contributions = contributions.transpose(0, 2, 3, 1)
-
-    # Ground truth: actual pre-softmax logits from target model
-    for blk in target_model._h:
-        blk.attn.flash_attention = False
 
     with torch.no_grad():
         results = collect_attention_patterns_with_logits(target_model, input_ids)
@@ -370,6 +362,9 @@ def plot_qk_c_datapoint(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
+    for blk in target_model._h:
+        blk.attn.flash_attention = False
+
     # Load dataset
     task_config = config.task_config
     assert isinstance(task_config, LMTaskConfig)
@@ -392,11 +387,12 @@ def plot_qk_c_datapoint(
 
     # Collect the requested samples
     max_idx = max(sample_indices)
+    requested = set(sample_indices)
     samples: dict[int, torch.Tensor] = {}
     for i, batch in enumerate(loader):
         if i > max_idx:
             break
-        if i in sample_indices:
+        if i in requested:
             samples[i] = batch[task_config.column_name][:, :seq_len]
     assert len(samples) == len(sample_indices), (
         f"Could only load {len(samples)} of {len(sample_indices)} requested samples"
