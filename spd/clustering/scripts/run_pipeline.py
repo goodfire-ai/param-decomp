@@ -86,6 +86,7 @@ class ClusteringPipelineConfig(BaseConfig):
         default=None, description="Prefix for SLURM job names"
     )
     slurm_partition: str | None = Field(default=None, description="SLURM partition to use")
+    slurm_mem: str | None = Field(default=None, description="Memory limit per job (e.g. '300G')")
     wandb_project: str | None = Field(
         default=None,
         description="Weights & Biases project name (set to None to disable WandB logging)",
@@ -323,6 +324,7 @@ def main(
             n_gpus=1,  # Always 1 GPU per run
             snapshot_branch=execution_stamp.snapshot_branch,
             max_concurrent_tasks=pipeline_config.n_runs,  # Run all concurrently
+            mem=pipeline_config.slurm_mem,
         )
         clustering_script = generate_array_script(clustering_config, clustering_commands)
         clustering_result = submit_slurm_job(
