@@ -3,10 +3,10 @@
 import torch
 
 from spd.clustering.compute_costs import recompute_coacts_merge_pair_memberships
-from spd.clustering.consts import ComponentLabels
+from spd.clustering.consts import ComponentLabels, MergePair
+from spd.clustering.math.merge_matrix import GroupMerge
 from spd.clustering.merge import merge_iteration
 from spd.clustering.merge_config import MergeConfig
-from spd.clustering.math.merge_matrix import GroupMerge
 from spd.clustering.sample_membership import (
     CompressedMembership,
     compute_coactivation_matrix,
@@ -170,7 +170,7 @@ class TestMergeIntegration:
         merge_row, coact_row, memberships_row = recompute_coacts_merge_pair_memberships(
             coact=coact,
             merges=merges,
-            merge_pair=(0, 1),
+            merge_pair=MergePair((0, 1)),
             memberships=memberships,
             component_activity_csr=component_activity_csr,
         )

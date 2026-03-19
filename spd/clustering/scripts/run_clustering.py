@@ -318,6 +318,7 @@ def main(run_config: ClusteringRunConfig) -> Path:
                 seed=run_config.dataset_seed,
                 activation_threshold=activation_threshold,
                 filter_dead_threshold=run_config.merge_config.filter_dead_threshold,
+                filter_dead_stat=run_config.merge_config.filter_dead_stat,
                 filter_modules=run_config.merge_config.filter_modules,
             )
         else:
@@ -328,6 +329,7 @@ def main(run_config: ClusteringRunConfig) -> Path:
                 device=device,
                 activation_threshold=activation_threshold,
                 filter_dead_threshold=run_config.merge_config.filter_dead_threshold,
+                filter_dead_stat=run_config.merge_config.filter_dead_stat,
                 filter_modules=run_config.merge_config.filter_modules,
             )
         processed_activations = processed_memberships.preview
@@ -370,6 +372,7 @@ def main(run_config: ClusteringRunConfig) -> Path:
         processed_activations = process_activations(
             activations=activations_dict,
             filter_dead_threshold=run_config.merge_config.filter_dead_threshold,
+            filter_dead_stat=run_config.merge_config.filter_dead_stat,
             seq_mode=None,
             filter_modules=run_config.merge_config.filter_modules,
         )

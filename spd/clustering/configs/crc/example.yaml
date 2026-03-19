@@ -12,6 +12,7 @@ merge_config:
   merge_pair_sampling_kwargs:
     threshold: 0.05  # For range sampler: fraction of the range of costs to sample from
   filter_dead_threshold: 0.001  # Threshold for filtering dead components
+  filter_dead_stat: "max"  # Dead-component statistic: "max" or "mean"
   module_name_filter: null  # Can be a string prefix like "model.layers.0." if you want to do only some modules
 
 wandb_project: spd

@@ -80,7 +80,7 @@ Computes pairwise distances between clustering runs in an ensemble:
 ```python
 ClusteringPipelineConfig  # Pipeline settings (n_runs, distances_methods, SLURM config)
 ClusteringRunConfig       # Single run settings (model_path, batch_size, n_tokens, merge_config)
-MergeConfig               # Merge algorithm params (alpha, iters, activation_threshold)
+MergeConfig               # Merge algorithm params (alpha, iters, activation_threshold, filter_dead_stat)
 ```
 
 ### Data Structures

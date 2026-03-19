@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 from scipy import sparse
 
 from spd.clustering.consts import ComponentLabels
@@ -54,7 +55,9 @@ def memberships_to_csc(
 ) -> sparse.csc_matrix:
     matrix = memberships_to_sample_component_matrix(memberships, fmt="csc")
     assert isinstance(matrix, sparse.csc_matrix)
-    assert matrix.shape[0] == n_samples
+    shape = matrix.shape
+    assert shape is not None
+    assert shape[0] == n_samples
     return matrix
 
 

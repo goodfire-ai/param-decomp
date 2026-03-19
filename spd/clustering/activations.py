@@ -16,7 +16,7 @@ from spd.clustering.consts import (
     ComponentLabels,
 )
 from spd.clustering.sample_membership import CompressedMembership
-from spd.clustering.util import ModuleFilterFunc
+from spd.clustering.util import DeadComponentFilterStat, ModuleFilterFunc
 from spd.log import logger
 from spd.models.component_model import ComponentModel, OutputWithCache
 
@@ -117,6 +117,17 @@ def compute_coactivatons(
     return activations_f16.T @ activations_f16
 
 
+def _get_component_filter_values(
+    activations: ActivationsTensor,
+    filter_stat: DeadComponentFilterStat,
+) -> Float[Tensor, " c"]:
+    if filter_stat == "max":
+        return activations.max(dim=0).values
+
+    assert filter_stat == "mean", f"Unsupported dead component filter stat: {filter_stat}"
+    return activations.mean(dim=0)
+
+
 class FilteredActivations(NamedTuple):
     activations: ActivationsTensor
     "activations after filtering dead components"
@@ -146,21 +157,26 @@ def filter_dead_components(
     activations: ActivationsTensor,
     labels: ComponentLabels,
     filter_dead_threshold: float = 0.01,
+    filter_dead_stat: DeadComponentFilterStat = "max",
 ) -> FilteredActivations:
     """Filter out dead components based on a threshold
 
     if `filter_dead_threshold` is 0, no filtering is applied.
     activations and labels are returned as is, `dead_components_labels` is `None`.
 
-    otherwise, components whose **maximum** activations across all samples is below the threshold
-    are considered dead and filtered out. The labels of these components are returned in `dead_components_labels`.
+    otherwise, components whose aggregate activation statistic across all samples is below the
+    threshold are considered dead and filtered out. The statistic is selected by
+    `filter_dead_stat` and the labels of dead components are returned in `dead_components_labels`.
     `dead_components_labels` will also be `None` if no components were below the threshold.
     """
     dead_components_lst: ComponentLabels | None = None
     if filter_dead_threshold > 0:
         dead_components_lst = ComponentLabels(list())
-        max_act: Float[Tensor, " c"] = activations.max(dim=0).values
-        dead_components: Bool[Tensor, " c"] = max_act < filter_dead_threshold
+        filter_values: Float[Tensor, " c"] = _get_component_filter_values(
+            activations=activations,
+            filter_stat=filter_dead_stat,
+        )
+        dead_components: Bool[Tensor, " c"] = filter_values < filter_dead_threshold
 
         if dead_components.any():
             activations = activations[:, ~dead_components]
@@ -313,17 +329,20 @@ class MembershipBuilder:
         *,
         activation_threshold: float,
         filter_dead_threshold: float,
+        filter_dead_stat: DeadComponentFilterStat,
         filter_modules: ModuleFilterFunc | None,
         preview_n_samples: int = 256,
     ) -> None:
         self.activation_threshold = activation_threshold
         self.filter_dead_threshold = filter_dead_threshold
+        self.filter_dead_stat = filter_dead_stat
         self.filter_modules = filter_modules
         self.preview_n_samples = preview_n_samples
 
         self.n_samples = 0
         self.module_component_counts: dict[str, int] = {}
         self.max_activations: dict[str, Float[Tensor, " c"]] = {}
+        self.sum_activations: dict[str, Float[Tensor, " c"]] = {}
         self.sample_idx_chunks: dict[str, list[list[np.ndarray]]] = {}
         self.preview_chunks: dict[str, list[Tensor]] = {}
         self.module_order: list[str] = []
@@ -339,6 +358,7 @@ class MembershipBuilder:
 
         self.module_component_counts[key] = n_components
         self.max_activations[key] = torch.full((n_components,), float("-inf"))
+        self.sum_activations[key] = torch.zeros((n_components,), dtype=torch.float64)
         self.sample_idx_chunks[key] = [[] for _ in range(n_components)]
         self.preview_chunks[key] = []
         self.module_order.append(key)
@@ -367,6 +387,7 @@ class MembershipBuilder:
             self.max_activations[key] = torch.maximum(
                 self.max_activations[key], act_cpu.max(dim=0).values
             )
+            self.sum_activations[key] += act_cpu.sum(dim=0, dtype=torch.float64)
 
             if self._preview_rows < self.preview_n_samples:
                 remaining = self.preview_n_samples - self._preview_rows
@@ -396,10 +417,16 @@ class MembershipBuilder:
         preview_chunks_alive: list[Tensor] = []
 
         for key in self.module_order:
-            max_act = self.max_activations[key]
+            filter_values = (
+                self.max_activations[key]
+                if self.filter_dead_stat == "max"
+                else (self.sum_activations[key] / self.n_samples).to(
+                    self.max_activations[key].dtype
+                )
+            )
             n_components = self.module_component_counts[key]
             alive = (
-                max_act >= self.filter_dead_threshold
+                filter_values >= self.filter_dead_threshold
                 if self.filter_dead_threshold > 0
                 else torch.ones(n_components, dtype=torch.bool)
             )
@@ -411,7 +438,7 @@ class MembershipBuilder:
             preview_tensor = (
                 torch.cat(self.preview_chunks[key], dim=0)
                 if self.preview_chunks[key]
-                else torch.empty((0, n_components), dtype=max_act.dtype)
+                else torch.empty((0, n_components), dtype=filter_values.dtype)
             )
 
             for comp_idx in range(n_components):
@@ -468,6 +495,7 @@ def collect_memberships_lm(
     seed: int,
     activation_threshold: float,
     filter_dead_threshold: float,
+    filter_dead_stat: DeadComponentFilterStat = "max",
     filter_modules: ModuleFilterFunc | None = None,
     preview_n_samples: int = 256,
 ) -> ProcessedMemberships:
@@ -476,6 +504,7 @@ def collect_memberships_lm(
     builder = MembershipBuilder(
         activation_threshold=activation_threshold,
         filter_dead_threshold=filter_dead_threshold,
+        filter_dead_stat=filter_dead_stat,
         filter_modules=filter_modules,
         preview_n_samples=preview_n_samples,
     )
@@ -519,6 +548,7 @@ def collect_memberships_resid_mlp(
     device: torch.device | str,
     activation_threshold: float,
     filter_dead_threshold: float,
+    filter_dead_stat: DeadComponentFilterStat = "max",
     filter_modules: ModuleFilterFunc | None = None,
     preview_n_samples: int = 256,
 ) -> ProcessedMemberships:
@@ -526,6 +556,7 @@ def collect_memberships_resid_mlp(
     builder = MembershipBuilder(
         activation_threshold=activation_threshold,
         filter_dead_threshold=filter_dead_threshold,
+        filter_dead_stat=filter_dead_stat,
         filter_modules=filter_modules,
         preview_n_samples=preview_n_samples,
     )
@@ -559,6 +590,7 @@ def process_activations(
         | Float[Tensor, " n_sample n_ctx C"],  # (sample x seq index x component gate activations)
     ],
     filter_dead_threshold: float,
+    filter_dead_stat: DeadComponentFilterStat = "max",
     seq_mode: Literal["concat", "seq_mean", None] = None,
     filter_modules: ModuleFilterFunc | None = None,
 ) -> ProcessedActivations:
@@ -595,8 +627,11 @@ def process_activations(
         c = act.shape[-1]
         module_component_counts[key] = c
         if filter_dead_threshold > 0:
-            max_act: Float[Tensor, " c"] = act.max(dim=0).values
-            alive = max_act >= filter_dead_threshold
+            filter_values: Float[Tensor, " c"] = _get_component_filter_values(
+                activations=act,
+                filter_stat=filter_dead_stat,
+            )
+            alive = filter_values >= filter_dead_threshold
             alive_masks[key] = alive
             total_alive += int(alive.sum().item())
         else:

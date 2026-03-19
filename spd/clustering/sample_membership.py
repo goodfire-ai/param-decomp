@@ -114,7 +114,7 @@ def _bitset_to_sample_indices(bits: np.ndarray, n_samples: int) -> np.ndarray:
     return sample_indices.astype(_index_dtype_for(n_samples), copy=False)
 
 
-@njit(cache=True)
+@njit(cache=True)  # pyright: ignore[reportUntypedFunctionDecorator]
 def _count_group_overlaps_rows_numba(
     merged_rows: np.ndarray,
     indptr: np.ndarray,
@@ -275,7 +275,7 @@ def memberships_to_sample_component_matrix(
     n_groups = len(memberships)
     if n_groups == 0:
         empty = sparse.csr_matrix((0, 0), dtype=np.uint8)
-        return empty if fmt == "csr" else empty.tocsc()
+        return empty if fmt == "csr" else sparse.csc_matrix(empty)
 
     n_samples = memberships[0].n_samples
     assert all(membership.n_samples == n_samples for membership in memberships), (
@@ -300,7 +300,7 @@ def memberships_to_sample_component_matrix(
         shape=(n_samples, n_groups),
         dtype=np.uint8,
     )
-    return matrix if fmt == "csr" else matrix.tocsc()
+    return matrix if fmt == "csr" else sparse.csc_matrix(matrix)
 
 
 def memberships_to_sample_component_csr(
