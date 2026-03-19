@@ -49,3 +49,45 @@ Important:
 2. Run delimiter sweep variants in parallel.
 3. Run `exp/rich-hiconf-union-jose100`.
 4. Inspect compare view and evals before fanning further.
+
+## Launch Record
+
+Launch date:
+- `2026-03-19`
+
+Shared launch config:
+- config file: `scratch/autointerp_rich_jose100_qwen_base.yaml`
+- decomposition id: `s-55ea3f9b`
+- harvest subrun: `h-20260318_223737`
+- subset file: `component_subsets/jose_coherent_100_seed0.txt`
+- model: `qwen/qwen3-235b-a22b-2507`
+
+Submitted runs:
+
+- branch: `exp/rich-base-jose100`
+  - interpret: `358322`
+  - detection: `358328`
+  - fuzzing: `358333`
+
+- branch: `exp/rich-delim-angle-jose100`
+  - interpret: `358320`
+  - detection: `358324`
+  - fuzzing: `358332`
+
+- branch: `exp/rich-delim-inline-jose100`
+  - interpret: `358323`
+  - detection: `358326`
+  - fuzzing: `358330`
+
+- branch: `exp/rich-delim-prefix-jose100`
+  - interpret: `358321`
+  - detection: `358325`
+  - fuzzing: `358329`
+
+- branch: `exp/rich-hiconf-union-jose100`
+  - interpret: `358327`
+  - detection: `358331`
+  - fuzzing: `358334`
+
+Logs:
+- SLURM logs live under `/mnt/polished-lake/artifacts/mechanisms/spd/slurm_logs/`
