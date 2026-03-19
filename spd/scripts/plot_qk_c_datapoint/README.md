@@ -72,7 +72,7 @@ python -m spd.scripts.plot_qk_c_datapoint.plot_qk_c_datapoint \
 | `--query_positions` | `5` | Query position(s). Single int broadcast to all samples, or list matched 1:1 |
 | `--mode` | `weighted` | `"weighted"` or `"binary"` |
 | `--ci_threshold` | `0.01` | Per-token CI threshold for binary mode |
-| `--top_n_pairs` | `40` | Number of top pairs to highlight |
+| `--top_n_pairs` | `20` | Number of top pairs to highlight |
 
 ### Output Location
 
