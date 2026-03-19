@@ -104,7 +104,7 @@ def format_prompt(
     md.h(3, "Example annotation format")
     md.p(
         "Each example is one annotated line. Firing tokens are wrapped as "
-        "`[[[token]]] (ci:X, act:Y)` — ci is the causal importance, act is the component's "
+        "`token(ci:X, act:Y)` — ci is the causal importance, act is the component's "
         "inner activation at that position. Non-firing tokens appear as plain text. "
         "Control characters are rendered visibly, e.g. newline as `↵`."
     )
@@ -193,4 +193,4 @@ def _build_annotation_legend(md: Md, component: ComponentData) -> None:
         )
     if legend_items:
         md.bullets(legend_items)
-    md.p("Example: `the [[[cat]]] (ci:0.92, act:0.45) sat` — 'cat' is a firing token.")
+    md.p("Example: `the cat(ci:0.92, act:0.45) sat` — 'cat' is a firing token.")

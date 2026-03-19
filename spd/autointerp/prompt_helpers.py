@@ -217,7 +217,7 @@ def _delimit_annotated(
     per_token_activations: list[dict[str, float]],
     app_tok: AppTokenizer,
 ) -> str:
-    """Join token strings, wrapping active tokens as [[[token]]] (ci, act)."""
+    """Join token strings, rendering active tokens as token(ci, act)."""
     parts: list[str] = []
     for token_id, span, active, acts in zip(
         token_ids, spans, firings, per_token_activations, strict=True
@@ -228,7 +228,7 @@ def _delimit_annotated(
             whitespace = display_span[: len(display_span) - len(stripped)]
             token_text = stripped or app_tok.get_tok_display(token_id)
             ann = _fmt_ann(acts)
-            parts.append(f"{whitespace}[[[{token_text}]]] {ann}")
+            parts.append(f"{whitespace}{token_text}{ann}")
         else:
             parts.append(span)
     return "".join(parts)
