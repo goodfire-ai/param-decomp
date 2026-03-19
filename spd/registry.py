@@ -195,6 +195,12 @@ EXPERIMENT_REGISTRY: dict[str, ExperimentConfig] = {
         config_path=Path("spd/experiments/lm/pile_llama_simple_mlp-12L.yaml"),
         expected_runtime=2880,
     ),
+    "othello_gpt": ExperimentConfig(
+        task_name="lm",
+        decomp_script=Path("spd/decompositions/othello_decomposition.py"),
+        config_path=Path("spd/decompositions/othello_gpt_config.yaml"),
+        expected_runtime=360,
+    ),
 }
 
 
