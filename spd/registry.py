@@ -195,6 +195,30 @@ EXPERIMENT_REGISTRY: dict[str, ExperimentConfig] = {
         config_path=Path("spd/experiments/lm/pile_llama_simple_mlp-12L.yaml"),
         expected_runtime=2880,
     ),
+    "pile_4L_freq_beta0.0": ExperimentConfig(
+        task_name="lm",
+        decomp_script=Path("spd/experiments/lm/lm_decomposition.py"),
+        config_path=Path("spd/experiments/lm/pile_llama_simple_mlp-4L_freq_beta0.0.yaml"),
+        expected_runtime=1440,
+    ),
+    "pile_4L_freq_beta0.25": ExperimentConfig(
+        task_name="lm",
+        decomp_script=Path("spd/experiments/lm/lm_decomposition.py"),
+        config_path=Path("spd/experiments/lm/pile_llama_simple_mlp-4L_freq_beta0.25.yaml"),
+        expected_runtime=1440,
+    ),
+    "pile_4L_freq_beta0.5": ExperimentConfig(
+        task_name="lm",
+        decomp_script=Path("spd/experiments/lm/lm_decomposition.py"),
+        config_path=Path("spd/experiments/lm/pile_llama_simple_mlp-4L_freq_beta0.5.yaml"),
+        expected_runtime=1440,
+    ),
+    "pile_4L_freq_beta1.0": ExperimentConfig(
+        task_name="lm",
+        decomp_script=Path("spd/experiments/lm/lm_decomposition.py"),
+        config_path=Path("spd/experiments/lm/pile_llama_simple_mlp-4L_freq_beta1.0.yaml"),
+        expected_runtime=1440,
+    ),
 }
 
 
