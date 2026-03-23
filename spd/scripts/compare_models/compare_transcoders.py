@@ -110,8 +110,8 @@ def load_clt_decoders(
 
     with open(path / "config.json") as f:
         cfg = json.load(f)
-    layers_raw = cfg["layers"]
-    layers: list[int] = json.loads(layers_raw) if isinstance(layers_raw, str) else layers_raw
+    layers: list[int] = cfg["layers"]
+    assert isinstance(layers, list)
 
     decoders: dict[int, Tensor] = {}
     for i in layers:
@@ -197,17 +197,14 @@ def compare_decoder_pair(
 
 
 def format_summary_markdown(
-    pairwise_results: dict[tuple[str, str], dict[str, Any]],
     config: CompareTranscodersConfig,
-    layer_results: dict[tuple[str, str], dict[int, dict[str, float]]] | None = None,
+    layer_results: dict[tuple[str, str], dict[int, dict[str, float]]],
 ) -> str:
     lines: list[str] = []
     lines.append(f"# {config.model_type.upper()} Geometric Consistency\n")
     lines.append(f"- **Project**: `{config.wandb_project}`")
     lines.append(f"- **Runs**: {', '.join(config.run_ids)}")
-    lines.append(f"- **Pairs**: {len(pairwise_results)}\n")
-
-    assert layer_results is not None
+    lines.append(f"- **Pairs**: {len(layer_results)}\n")
     all_layers = sorted({layer for lr in layer_results.values() for layer in lr})
 
     # Summary table: per-layer averages across all pairs
@@ -236,10 +233,10 @@ def format_summary_markdown(
     layer_headers = " | ".join(f"L{layer}" for layer in all_layers)
     lines.append(f"| Pair | {layer_headers} | Mean |")
     lines.append("|------|" + "|".join("----:" for _ in all_layers) + "|-----:|")
-    for (id_a, id_b), r in pairwise_results.items():
-        lr = layer_results[(id_a, id_b)]
+    for (id_a, id_b), lr in layer_results.items():
         layer_vals = " | ".join(f"{lr[layer]['a_to_b_mean']:.4f}" for layer in all_layers)
-        lines.append(f"| {id_a} vs {id_b} | {layer_vals} | {r['a_to_b_mean']:.4f} |")
+        pair_mean = sum(lr[layer]["a_to_b_mean"] for layer in all_layers) / len(all_layers)
+        lines.append(f"| {id_a} vs {id_b} | {layer_vals} | {pair_mean:.4f} |")
     lines.append("")
 
     return "\n".join(lines)
@@ -340,7 +337,7 @@ def main(config_path: Path | str) -> None:
     }
     save_file(summary_data, output_dir / "multi_summary.json")
     (output_dir / "multi_summary.md").write_text(
-        format_summary_markdown(pairwise_results, config, pairwise_layer_results)
+        format_summary_markdown(config, pairwise_layer_results)
     )
 
     logger.info(f"All comparisons complete! Results saved to {output_dir}")

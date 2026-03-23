@@ -116,6 +116,10 @@ def compute_cluster_cosine_sim(
 
         comp_a = model_a.components[module_name]
         comp_b = model_b.components[module_name]
+        assert comp_a.V.shape[0] == comp_b.V.shape[0] and comp_a.U.shape[1] == comp_b.U.shape[1], (
+            f"Module {module_name}: param shape mismatch "
+            f"({comp_a.V.shape[0]}x{comp_a.U.shape[1]} vs {comp_b.V.shape[0]}x{comp_b.U.shape[1]})"
+        )
         n_params = comp_a.V.shape[0] * comp_a.U.shape[1]
 
         # Collect which groups have subcomponents in this module
@@ -276,24 +280,10 @@ def main(config_path: Path | str) -> None:
     output_dir = resolve_output_dir(config.output_dir)
 
     model_a, merge_a, labels_a = _load_side(config.side_a)
+    model_b, merge_b, labels_b = _load_side(config.side_b)
     if config.side_a.spd_model_path == config.side_b.spd_model_path:
         model_b = model_a
         logger.info("Reusing SPD model for side B (same path)")
-    else:
-        model_b, _, _ = _load_side(config.side_b)
-
-    history_path_b = (
-        SPD_OUT_DIR / "clustering" / "runs" / config.side_b.clustering_run_id / "history.zip"
-    )
-    assert history_path_b.exists(), f"No history at {history_path_b}"
-    history_b = MergeHistory.read(history_path_b)
-    assert config.side_b.iteration < history_b.n_iters_current
-    merge_b = history_b[config.side_b.iteration].merges
-    labels_b = list(history_b.labels)
-    logger.info(
-        f"Side B: iteration {config.side_b.iteration}: "
-        f"{merge_b.k_groups} clusters, {len(labels_b)} subcomponents"
-    )
 
     pair_name = (
         f"{config.side_a.clustering_run_id}_iter{config.side_a.iteration}"
