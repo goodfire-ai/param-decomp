@@ -63,6 +63,29 @@ def _lm_sample_positions(
     return batch_indices, positions
 
 
+def _flatten_lm_activations(
+    act: Float[Tensor, "batch n_ctx C"],
+    *,
+    batch_size: int,
+    n_ctx: int,
+    n_tokens_per_seq: int | None,
+    use_all_tokens_per_seq: bool,
+    rng: torch.Generator,
+) -> Float[Tensor, "samples C"]:
+    """Flatten LM activations for either full-sequence or random-token collection."""
+    if use_all_tokens_per_seq:
+        return act.reshape(batch_size * n_ctx, -1)
+
+    batch_indices, positions = _lm_sample_positions(
+        batch_size=batch_size,
+        n_ctx=n_ctx,
+        n_tokens_per_seq=n_tokens_per_seq,
+        use_all_tokens_per_seq=False,
+        rng=rng,
+    )
+    return act[batch_indices, positions].reshape(batch_size * positions.shape[1], -1)
+
+
 def collect_activations(
     model: ComponentModel,
     dataloader: DataLoader[Any],
@@ -99,19 +122,19 @@ def collect_activations(
 
         activations = component_activations(model=model, batch=input_ids, device=device)
 
-        batch_indices, positions = _lm_sample_positions(
-            batch_size=batch_size,
-            n_ctx=n_ctx,
-            n_tokens_per_seq=n_tokens_per_seq,
-            use_all_tokens_per_seq=use_all_tokens_per_seq,
-            rng=rng,
-        )
-        tokens_per_seq = positions.shape[1]
+        tokens_per_seq = n_ctx if use_all_tokens_per_seq else n_tokens_per_seq
+        assert tokens_per_seq is not None
 
         for key, act in activations.items():
             # act shape: (batch_size, n_ctx, C)
-            sampled = act[batch_indices, positions]  # (batch_size, tokens_per_seq, C)
-            sampled = sampled.reshape(batch_size * tokens_per_seq, -1)
+            sampled = _flatten_lm_activations(
+                act,
+                batch_size=batch_size,
+                n_ctx=n_ctx,
+                n_tokens_per_seq=n_tokens_per_seq,
+                use_all_tokens_per_seq=use_all_tokens_per_seq,
+                rng=rng,
+            )
             if key not in collected:
                 collected[key] = []
             collected[key].append(sampled.cpu())
@@ -410,26 +433,30 @@ class MembershipBuilder:
         sample_offset = self.n_samples
 
         for key, act in filtered.items():
-            act_cpu = act.detach().cpu()
-            assert act_cpu.ndim == 2, f"Expected 2D activations, got shape {tuple(act_cpu.shape)}"
-            self._ensure_module(key, act_cpu.shape[1])
+            act_local = act.detach()
+            assert act_local.ndim == 2, f"Expected 2D activations, got shape {tuple(act_local.shape)}"
+            self._ensure_module(key, act_local.shape[1])
 
             self.max_activations[key] = torch.maximum(
-                self.max_activations[key], act_cpu.max(dim=0).values
+                self.max_activations[key], act_local.max(dim=0).values.cpu()
             )
-            self.sum_activations[key] += act_cpu.sum(dim=0, dtype=torch.float64)
+            self.sum_activations[key] += act_local.sum(dim=0, dtype=torch.float64).cpu()
 
             if self._preview_rows < self.preview_n_samples:
                 remaining = self.preview_n_samples - self._preview_rows
-                self.preview_chunks[key].append(act_cpu[:remaining].clone())
+                self.preview_chunks[key].append(act_local[:remaining].cpu().clone())
 
-            mask_np = (act_cpu.numpy() > self.activation_threshold).T
-            comp_indices, row_indices = np.nonzero(mask_np)
-            if comp_indices.size > 0:
+            row_indices_t, comp_indices_t = torch.nonzero(
+                act_local > self.activation_threshold,
+                as_tuple=True,
+            )
+            if row_indices_t.numel() > 0:
                 self.module_sample_rows[key].append(
-                    row_indices.astype(np.int32, copy=False) + sample_offset
+                    row_indices_t.to(dtype=torch.int32).cpu().numpy() + sample_offset
                 )
-                self.module_sample_components[key].append(comp_indices.astype(np.int32, copy=False))
+                self.module_sample_components[key].append(
+                    comp_indices_t.to(dtype=torch.int32).cpu().numpy()
+                )
 
         self.n_samples += batch_n_samples
         self._preview_rows = min(self.n_samples, self.preview_n_samples)
@@ -576,23 +603,26 @@ def collect_memberships_lm(
 
         activations = component_activations(model=model, batch=input_ids, device=device)
 
-        batch_indices, positions = _lm_sample_positions(
-            batch_size=batch_size,
-            n_ctx=n_ctx,
-            n_tokens_per_seq=n_tokens_per_seq,
-            use_all_tokens_per_seq=use_all_tokens_per_seq,
-            rng=rng,
-        )
-        tokens_per_seq = positions.shape[1]
+        tokens_per_seq = n_ctx if use_all_tokens_per_seq else n_tokens_per_seq
+        assert tokens_per_seq is not None
 
         sampled_activations: dict[str, Float[Tensor, "samples C"]] = {}
         n_remaining = n_tokens - n_collected
         batch_take = min(batch_size * tokens_per_seq, n_remaining)
         for key, act in activations.items():
-            sampled = act[batch_indices, positions].reshape(batch_size * tokens_per_seq, -1)
+            sampled = _flatten_lm_activations(
+                act,
+                batch_size=batch_size,
+                n_ctx=n_ctx,
+                n_tokens_per_seq=n_tokens_per_seq,
+                use_all_tokens_per_seq=use_all_tokens_per_seq,
+                rng=rng,
+            )
             sampled_activations[key] = sampled[:batch_take]
 
         builder.add_batch(sampled_activations)
+        del sampled_activations
+        del activations
 
         n_collected += batch_take
         pbar.set_postfix(tokens=f"{n_collected}/{n_tokens}")
