@@ -50,7 +50,7 @@ def main() -> None:
 
     if task_name == "lm":
         assert run_config.n_tokens is not None
-        assert run_config.n_tokens_per_seq is not None
+        assert run_config.use_all_tokens_per_seq or run_config.n_tokens_per_seq is not None
         processed = collect_memberships_lm(
             model=model,
             dataloader=dataloader,
@@ -61,6 +61,7 @@ def main() -> None:
             activation_threshold=run_config.merge_config.activation_threshold,
             filter_dead_threshold=run_config.merge_config.filter_dead_threshold,
             filter_modules=run_config.merge_config.filter_modules,
+            use_all_tokens_per_seq=run_config.use_all_tokens_per_seq,
         )
     else:
         n_samples = run_config.n_samples or run_config.batch_size

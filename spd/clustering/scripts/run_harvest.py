@@ -76,7 +76,7 @@ def harvest(config: HarvestConfig) -> Path:
     processed: ProcessedMemberships
     if task_name == "lm":
         assert config.n_tokens is not None
-        assert config.n_tokens_per_seq is not None
+        assert config.use_all_tokens_per_seq or config.n_tokens_per_seq is not None
         processed = collect_memberships_lm(
             model=model,
             dataloader=dataloader,
@@ -88,6 +88,7 @@ def harvest(config: HarvestConfig) -> Path:
             filter_dead_threshold=config.filter_dead_threshold,
             filter_dead_stat=config.filter_dead_stat,
             filter_modules=config.filter_modules,
+            use_all_tokens_per_seq=config.use_all_tokens_per_seq,
         )
     else:
         processed = collect_memberships_resid_mlp(

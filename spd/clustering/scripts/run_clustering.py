@@ -306,7 +306,7 @@ def main(run_config: ClusteringRunConfig) -> Path:
         assert activation_threshold is not None
         if task_name == "lm":
             assert run_config.n_tokens is not None, "n_tokens must be set for LM tasks"
-            assert run_config.n_tokens_per_seq is not None, (
+            assert run_config.use_all_tokens_per_seq or run_config.n_tokens_per_seq is not None, (
                 "n_tokens_per_seq must be set for LM tasks"
             )
             processed_memberships = collect_memberships_lm(
@@ -320,6 +320,7 @@ def main(run_config: ClusteringRunConfig) -> Path:
                 filter_dead_threshold=run_config.merge_config.filter_dead_threshold,
                 filter_dead_stat=run_config.merge_config.filter_dead_stat,
                 filter_modules=run_config.merge_config.filter_modules,
+                use_all_tokens_per_seq=run_config.use_all_tokens_per_seq,
             )
         else:
             processed_memberships = collect_memberships_resid_mlp(
@@ -337,7 +338,7 @@ def main(run_config: ClusteringRunConfig) -> Path:
     else:
         if task_name == "lm":
             assert run_config.n_tokens is not None, "n_tokens must be set for LM tasks"
-            assert run_config.n_tokens_per_seq is not None, (
+            assert run_config.use_all_tokens_per_seq or run_config.n_tokens_per_seq is not None, (
                 "n_tokens_per_seq must be set for LM tasks"
             )
             activations_dict = collect_activations(
@@ -347,6 +348,7 @@ def main(run_config: ClusteringRunConfig) -> Path:
                 n_tokens_per_seq=run_config.n_tokens_per_seq,
                 device=device,
                 seed=run_config.dataset_seed,
+                use_all_tokens_per_seq=run_config.use_all_tokens_per_seq,
             )
         else:
             n_samples_target = run_config.n_samples or run_config.batch_size

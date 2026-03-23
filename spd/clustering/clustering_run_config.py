@@ -55,6 +55,10 @@ class ClusteringRunConfig(BaseConfig):
         default=None,
         description="Number of random token positions to sample per sequence (LM only)",
     )
+    use_all_tokens_per_seq: bool = Field(
+        default=False,
+        description="If true for LM tasks, use every token position from each sequence instead of random token subsampling.",
+    )
     dataset_seed: int = Field(0, description="Seed for dataset generation/loading")
     ensemble_id: str | None = Field(
         default=None,

@@ -26,6 +26,10 @@ class HarvestConfig(BaseConfig):
     n_tokens_per_seq: PositiveInt | None = Field(
         default=None, description="Random token positions per sequence (LM only)"
     )
+    use_all_tokens_per_seq: bool = Field(
+        default=False,
+        description="If true for LM tasks, use every token position from each sequence instead of random token subsampling.",
+    )
     dataset_seed: int = Field(default=0)
     activation_threshold: Probability = Field(
         description="Threshold for considering a component active"

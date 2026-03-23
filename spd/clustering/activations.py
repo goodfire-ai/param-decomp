@@ -44,19 +44,40 @@ def component_activations(
     return causal_importances
 
 
+def _lm_sample_positions(
+    *,
+    batch_size: int,
+    n_ctx: int,
+    n_tokens_per_seq: int | None,
+    use_all_tokens_per_seq: bool,
+    rng: torch.Generator,
+) -> tuple[Tensor, Tensor]:
+    """Return batch/token position indices for LM activation sampling."""
+    if use_all_tokens_per_seq:
+        positions = torch.arange(n_ctx).unsqueeze(0).expand(batch_size, -1)
+    else:
+        assert n_tokens_per_seq is not None, "n_tokens_per_seq must be set when not using all tokens"
+        positions = torch.randint(0, n_ctx, (batch_size, n_tokens_per_seq), generator=rng)
+
+    batch_indices = torch.arange(batch_size).unsqueeze(1).expand_as(positions)
+    return batch_indices, positions
+
+
 def collect_activations(
     model: ComponentModel,
     dataloader: DataLoader[Any],
     n_tokens: int,
-    n_tokens_per_seq: int,
+    n_tokens_per_seq: int | None,
     device: torch.device | str,
     seed: int,
+    use_all_tokens_per_seq: bool = False,
 ) -> dict[str, Float[Tensor, "n_tokens C"]]:
-    """Collect activation samples by picking random tokens per sequence.
+    """Collect LM activation samples from random positions or full sequences.
 
     Iterates through batches from dataloader, runs component_activations on each,
-    then selects n_tokens_per_seq random token positions per sequence. Collects until
-    n_tokens samples are gathered.
+    then either samples `n_tokens_per_seq` token positions per sequence or keeps
+    every token position when `use_all_tokens_per_seq=True`. Collects until
+    `n_tokens` samples are gathered.
 
     Args:
         model: ComponentModel to get activations from
@@ -65,6 +86,7 @@ def collect_activations(
         n_tokens_per_seq: Number of random token positions to sample per sequence
         device: Device to run on
         seed: Random seed for reproducible token position selection
+        use_all_tokens_per_seq: If true, keep every token position from each sequence
     """
     rng = torch.Generator().manual_seed(seed)
     collected: dict[str, list[Tensor]] = {}
@@ -77,19 +99,24 @@ def collect_activations(
 
         activations = component_activations(model=model, batch=input_ids, device=device)
 
-        # Pick n_tokens_per_seq random token positions per sequence
-        positions = torch.randint(0, n_ctx, (batch_size, n_tokens_per_seq), generator=rng)
-        batch_indices = torch.arange(batch_size).unsqueeze(1).expand_as(positions)
+        batch_indices, positions = _lm_sample_positions(
+            batch_size=batch_size,
+            n_ctx=n_ctx,
+            n_tokens_per_seq=n_tokens_per_seq,
+            use_all_tokens_per_seq=use_all_tokens_per_seq,
+            rng=rng,
+        )
+        tokens_per_seq = positions.shape[1]
 
         for key, act in activations.items():
             # act shape: (batch_size, n_ctx, C)
-            sampled = act[batch_indices, positions]  # (batch_size, n_tokens_per_seq, C)
-            sampled = sampled.reshape(batch_size * n_tokens_per_seq, -1)
+            sampled = act[batch_indices, positions]  # (batch_size, tokens_per_seq, C)
+            sampled = sampled.reshape(batch_size * tokens_per_seq, -1)
             if key not in collected:
                 collected[key] = []
             collected[key].append(sampled.cpu())
 
-        n_collected += batch_size * n_tokens_per_seq
+        n_collected += batch_size * tokens_per_seq
         pbar.set_postfix(tokens=f"{min(n_collected, n_tokens)}/{n_tokens}")
         if n_collected >= n_tokens:
             break
@@ -521,7 +548,7 @@ def collect_memberships_lm(
     model: ComponentModel,
     dataloader: DataLoader[Any],
     n_tokens: int,
-    n_tokens_per_seq: int,
+    n_tokens_per_seq: int | None,
     device: torch.device | str,
     seed: int,
     activation_threshold: float,
@@ -529,6 +556,7 @@ def collect_memberships_lm(
     filter_dead_stat: DeadComponentFilterStat = "max",
     filter_modules: ModuleFilterFunc | None = None,
     preview_n_samples: int = 256,
+    use_all_tokens_per_seq: bool = False,
 ) -> ProcessedMemberships:
     """Collect LM activations across batches into compressed memberships."""
     rng = torch.Generator().manual_seed(seed)
@@ -548,14 +576,20 @@ def collect_memberships_lm(
 
         activations = component_activations(model=model, batch=input_ids, device=device)
 
-        positions = torch.randint(0, n_ctx, (batch_size, n_tokens_per_seq), generator=rng)
-        batch_indices = torch.arange(batch_size).unsqueeze(1).expand_as(positions)
+        batch_indices, positions = _lm_sample_positions(
+            batch_size=batch_size,
+            n_ctx=n_ctx,
+            n_tokens_per_seq=n_tokens_per_seq,
+            use_all_tokens_per_seq=use_all_tokens_per_seq,
+            rng=rng,
+        )
+        tokens_per_seq = positions.shape[1]
 
         sampled_activations: dict[str, Float[Tensor, "samples C"]] = {}
         n_remaining = n_tokens - n_collected
-        batch_take = min(batch_size * n_tokens_per_seq, n_remaining)
+        batch_take = min(batch_size * tokens_per_seq, n_remaining)
         for key, act in activations.items():
-            sampled = act[batch_indices, positions].reshape(batch_size * n_tokens_per_seq, -1)
+            sampled = act[batch_indices, positions].reshape(batch_size * tokens_per_seq, -1)
             sampled_activations[key] = sampled[:batch_take]
 
         builder.add_batch(sampled_activations)
