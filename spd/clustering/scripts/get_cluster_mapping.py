@@ -73,12 +73,27 @@ def get_spd_run_path(run_dir: Path) -> str:
         Formatted path like "spd/goodfire/5cr21lbs"
     """
     config_path = run_dir / "clustering_run_config.json"
-    assert config_path.exists(), f"Clustering run config not found: {config_path}"
+    merge_config_path = run_dir / "merge_config.json"
 
-    with open(config_path) as f:
-        config = json.load(f)
+    if config_path.exists():
+        with open(config_path) as f:
+            config = json.load(f)
+        model_path = config["model_path"]
+    else:
+        assert merge_config_path.exists(), (
+            f"Neither clustering_run_config.json nor merge_config.json found in {run_dir}"
+        )
+        with open(merge_config_path) as f:
+            merge_config = json.load(f)
 
-    model_path = config["model_path"]
+        snapshot_path = Path(merge_config["snapshot_path"])
+        harvest_config_path = snapshot_path / "harvest_config.json"
+        assert harvest_config_path.exists(), f"Harvest config not found: {harvest_config_path}"
+
+        with open(harvest_config_path) as f:
+            harvest_config = json.load(f)
+        model_path = harvest_config["model_path"]
+
     entity, project, run_id = parse_wandb_run_path(model_path)
 
     return f"{entity}/{project}/{run_id}"
