@@ -1,0 +1,11 @@
+{
+  "model_path": "wandb:goodfire/spd/runs/s-55ea3f9b",
+  "batch_size": 192,
+  "n_tokens": 88000000,
+  "use_all_tokens_per_seq": true,
+  "dataset_seed": 0,
+  "activation_threshold": 0.1,
+  "filter_dead_threshold": 0.1,
+  "filter_dead_stat": "max",
+  "module_name_filter": null
+}
