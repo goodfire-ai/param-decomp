@@ -1,0 +1,7 @@
+model_type: transcoder
+wandb_project: "mats-sprint/pile_multiseed_jose2"
+label: "tc_local_mse"
+run_ids:
+  - "mrwfwu8f"   # seed 0
+  - "g79l9mdy"   # seed 1
+  - "4aye18d8"   # seed 2

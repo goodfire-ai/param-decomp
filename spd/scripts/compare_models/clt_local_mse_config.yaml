@@ -1,0 +1,7 @@
+model_type: clt
+wandb_project: "mats-sprint/pile_multiseed_jose2"
+label: "clt_local_mse"
+run_ids:
+  - "17sbdath"   # seed 0
+  - "xmzt89pl"   # seed 1
+  - "tqyguqn0"   # seed 2
