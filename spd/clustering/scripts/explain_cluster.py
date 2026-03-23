@@ -14,19 +14,13 @@ Usage:
 """
 
 import json
-import math
 from pathlib import Path
 
 import fire
 import numpy as np
-import torch
-from scipy import sparse
 
-from spd.clustering.compute_costs import compute_merge_costs
-from spd.clustering.math.merge_matrix import BatchedGroupMerge, GroupMerge
 from spd.clustering.membership_snapshot import load_membership_snapshot
 from spd.clustering.merge_history import MergeHistory
-from spd.clustering.sample_membership import compute_coactivation_matrix_from_csr
 from spd.log import logger
 
 
@@ -53,17 +47,10 @@ def explain_cluster(
     logger.info(f"Loading membership snapshot from {snapshot_path}")
     snapshot = load_membership_snapshot(snapshot_path)
 
-    # Compute full component-level coactivation matrix
-    logger.info("Computing component coactivation matrix...")
-    csr = snapshot.to_csr()
-    assert isinstance(csr, (sparse.csr_matrix, sparse.csr_array))
-    coact_full = compute_coactivation_matrix_from_csr(csr)
-    coact_full = torch.from_numpy(coact_full).float()
     n_samples = snapshot.n_samples
-    logger.info(f"Coactivation matrix: {coact_full.shape}, {n_samples} samples")
-
-    # Normalize coactivation by n_samples (as the merge loop does)
-    coact_norm = coact_full / n_samples
+    csc = snapshot.matrix_csc
+    # Don't compute full 9k×9k — we'll compute pairwise on demand for target components
+    logger.info(f"Membership matrix: {csc.shape}, {n_samples} samples")
 
     # Find which components are in the target cluster at the target iteration
     target_merge = history.merges[iteration]
@@ -87,13 +74,25 @@ def explain_cluster(
     ]
     assert len(target_components) > 0, f"Cluster {cluster_id} not found at iteration {iteration}"
 
+    # Helper: compute co-firing count between two sets of component indices
+    def cofire_count(idx_a: list[int], idx_b: list[int]) -> int:
+        """Count samples where ANY component in idx_a AND ANY component in idx_b fire."""
+        col_a = csc[:, idx_a].astype(np.int32)
+        col_b = csc[:, idx_b].astype(np.int32)
+        active_a = (col_a.sum(axis=1) > 0).A1
+        active_b = (col_b.sum(axis=1) > 0).A1
+        return int((active_a & active_b).sum())
+
+    def firing_count(idx: int) -> int:
+        return int(csc[:, idx].nnz)
+
     target_labels = [labels[i] for i in target_components]
     print(f"\n{'='*80}")
     print(f"Cluster {cluster_id}: {len(target_components)} components")
     print(f"{'='*80}")
     for i, (comp_idx, label) in enumerate(zip(target_components, target_labels)):
-        firing = int(coact_full[comp_idx, comp_idx].item())
-        print(f"  [{i}] {label}  (fires {firing}/{n_samples} = {firing/n_samples:.4f})")
+        fc = firing_count(comp_idx)
+        print(f"  [{i}] {label}  (fires {fc}/{n_samples} = {fc/n_samples:.4f})")
 
     # Pairwise coactivation within cluster
     print(f"\nPairwise coactivation (raw counts, {n_samples} samples):")
@@ -101,9 +100,9 @@ def explain_cluster(
         for j, cj in enumerate(target_components):
             if j <= i:
                 continue
-            coact_ij = int(coact_full[ci, cj].item())
-            si = int(coact_full[ci, ci].item())
-            sj = int(coact_full[cj, cj].item())
+            coact_ij = cofire_count([ci], [cj])
+            si = firing_count(ci)
+            sj = firing_count(cj)
             union = si + sj - coact_ij
             jaccard = coact_ij / union if union > 0 else 0
             print(f"  {labels[ci]} × {labels[cj]}: coact={coact_ij}, jaccard={jaccard:.4f}")
@@ -142,11 +141,10 @@ def explain_cluster(
         # Compute coactivation between the two groups
         a_list = sorted(group_a_members)
         b_list = sorted(group_b_members)
-        cross_coact = coact_full[np.ix_(a_list, b_list)].sum().item()
-        a_total = sum(coact_full[i, i].item() for i in a_list)
-        b_total = sum(coact_full[i, i].item() for i in b_list)
+        cross_coact = cofire_count(a_list, b_list)
+        a_total = cofire_count(a_list, a_list)
+        b_total = cofire_count(b_list, b_list)
 
-        # Compute what fraction of group activations co-fire
         union_acts = a_total + b_total - cross_coact
         jaccard = cross_coact / union_acts if union_acts > 0 else 0
 
