@@ -1,6 +1,7 @@
 model_type: clt
 wandb_project: "mats-sprint/pile_multiseed_jose2"
 label: "clt_local_mse"
+alive_masks_dir: "spd/scripts/compare_models/out/alive_masks"
 run_ids:
   - "17sbdath"   # seed 0
   - "xmzt89pl"   # seed 1

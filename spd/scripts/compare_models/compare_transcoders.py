@@ -43,6 +43,10 @@ class CompareTranscodersConfig(BaseConfig):
     model_type: Literal["transcoder", "clt"]
     wandb_project: str
     run_ids: list[str]
+    alive_masks_dir: str | None = Field(
+        None,
+        description="Directory containing alive mask .pt files (tc_<run_id>.pt or clt_<run_id>.pt)",
+    )
     output_dir: str | None = None
     label: str = Field("", description="Human-readable label for the output directory name")
 
@@ -267,6 +271,20 @@ def main(config_path: Path | str) -> None:
         else:
             all_decoders[run_id] = load_clt_decoders(config.wandb_project, run_id)
 
+    # Load alive masks if provided
+    all_alive_masks: dict[str, dict[int, Tensor]] | None = None
+    if config.alive_masks_dir is not None:
+        masks_dir = Path(config.alive_masks_dir)
+        all_alive_masks = {}
+        prefix = "tc" if config.model_type == "transcoder" else "clt"
+        for run_id in config.run_ids:
+            mask_path = masks_dir / f"{prefix}_{run_id}.pt"
+            assert mask_path.exists(), f"No alive mask at {mask_path}"
+            all_alive_masks[run_id] = torch.load(mask_path, weights_only=True)
+            n_total = sum(m.shape[0] for m in all_alive_masks[run_id].values())
+            n_alive = sum(m.sum().item() for m in all_alive_masks[run_id].values())
+            logger.info(f"  {run_id} alive: {int(n_alive)}/{n_total}")
+
     pairwise_results: dict[tuple[str, str], dict[str, Any]] = {}
     pairwise_layer_results: dict[tuple[str, str], dict[int, dict[str, float]]] = {}
 
@@ -284,9 +302,20 @@ def main(config_path: Path | str) -> None:
         all_layer_stats: list[float] = []
 
         for layer in layers:
+            da = dec_a[layer]
+            db = dec_b[layer]
+
+            # Filter to alive features if masks provided
+            if all_alive_masks is not None:
+                mask_a = all_alive_masks[id_a][layer]
+                mask_b = all_alive_masks[id_b][layer]
+                da = da[mask_a]
+                db = db[mask_b]
+                logger.info(f"  layer {layer}: {da.shape[0]} alive A, {db.shape[0]} alive B")
+
             layer_dir = pair_dir / f"layer_{layer}"
             title = f"{config.model_type} layer {layer}: {id_a} vs {id_b}"
-            r = compare_decoder_pair(dec_a[layer], dec_b[layer], layer_dir, title)
+            r = compare_decoder_pair(da, db, layer_dir, title)
             layer_results[layer] = r
             all_layer_stats.append(r["a_to_b_mean"])
             logger.info(f"  layer {layer}: mean={r['a_to_b_mean']:.4f}")

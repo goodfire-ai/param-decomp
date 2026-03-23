@@ -1,6 +1,7 @@
 model_type: transcoder
 wandb_project: "mats-sprint/pile_multiseed_jose2"
 label: "tc_local_mse"
+alive_masks_dir: "spd/scripts/compare_models/out/alive_masks"
 run_ids:
   - "mrwfwu8f"   # seed 0
   - "g79l9mdy"   # seed 1
