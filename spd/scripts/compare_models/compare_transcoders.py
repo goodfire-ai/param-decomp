@@ -203,30 +203,40 @@ def format_summary_markdown(
     lines.append(f"- **Runs**: {', '.join(config.run_ids)}")
     lines.append(f"- **Pairs**: {len(pairwise_results)}\n")
 
-    # Average across pairs
-    all_a2b = [r["a_to_b_mean"] for r in pairwise_results.values()]
-    lines.append("## Summary (averaged across pairs)\n")
-    lines.append(f"- **Mean max-match (A→B)**: {sum(all_a2b) / len(all_a2b):.4f}\n")
+    assert layer_results is not None
+    all_layers = sorted({layer for lr in layer_results.values() for layer in lr})
 
-    # Per-pair table
-    lines.append("## Per-pair results\n")
-    lines.append("| Pair | A→B Mean |")
-    lines.append("|------|------:|")
-    for (id_a, id_b), r in pairwise_results.items():
-        lines.append(f"| {id_a} vs {id_b} | {r['a_to_b_mean']:.4f} |")
+    # Summary table: per-layer averages across all pairs
+    lines.append("## Summary (averaged across pairs)\n")
+    lines.append("| Layer | Mean | Std | Min | Max |")
+    lines.append("|-------|-----:|----:|----:|----:|")
+    overall_means: list[float] = []
+    for layer in all_layers:
+        means = [lr[layer]["a_to_b_mean"] for lr in layer_results.values() if layer in lr]
+        stds = [lr[layer]["a_to_b_std"] for lr in layer_results.values() if layer in lr]
+        mins = [lr[layer]["a_to_b_min"] for lr in layer_results.values() if layer in lr]
+        maxs = [lr[layer]["a_to_b_max"] for lr in layer_results.values() if layer in lr]
+        avg_mean = sum(means) / len(means)
+        avg_std = sum(stds) / len(stds)
+        avg_min = sum(mins) / len(mins)
+        avg_max = sum(maxs) / len(maxs)
+        overall_means.append(avg_mean)
+        lines.append(
+            f"| {layer} | {avg_mean:.4f} | {avg_std:.4f} | {avg_min:.4f} | {avg_max:.4f} |"
+        )
+    lines.append(f"| **All layers** | **{sum(overall_means) / len(overall_means):.4f}** | | | |")
     lines.append("")
 
-    # Per-layer table for CLTs
-    if layer_results:
-        lines.append("## Per-layer breakdown (averaged across pairs)\n")
-        all_layers = sorted({layer for lr in layer_results.values() for layer in lr})
-        lines.append("| Layer | Mean max-match |")
-        lines.append("|-------|------:|")
-        for layer in all_layers:
-            vals = [lr[layer]["a_to_b_mean"] for lr in layer_results.values() if layer in lr]
-            avg = sum(vals) / len(vals)
-            lines.append(f"| {layer} | {avg:.4f} |")
-        lines.append("")
+    # Per-pair table with per-layer breakdown
+    lines.append("## Per-pair results\n")
+    layer_headers = " | ".join(f"L{layer}" for layer in all_layers)
+    lines.append(f"| Pair | {layer_headers} | Mean |")
+    lines.append("|------|" + "|".join("----:" for _ in all_layers) + "|-----:|")
+    for (id_a, id_b), r in pairwise_results.items():
+        lr = layer_results[(id_a, id_b)]
+        layer_vals = " | ".join(f"{lr[layer]['a_to_b_mean']:.4f}" for layer in all_layers)
+        lines.append(f"| {id_a} vs {id_b} | {layer_vals} | {r['a_to_b_mean']:.4f} |")
+    lines.append("")
 
     return "\n".join(lines)
 
@@ -281,10 +291,10 @@ def main(config_path: Path | str) -> None:
             all_layer_stats.append(r["a_to_b_mean"])
             logger.info(f"  layer {layer}: mean={r['a_to_b_mean']:.4f}")
 
-        # Aggregate across layers
-        aggregate = {
+        # Aggregate across layers — include full per-layer stats
+        aggregate: dict[str, Any] = {
             "a_to_b_mean": sum(all_layer_stats) / len(all_layer_stats),
-            "per_layer": {str(layer): lr["a_to_b_mean"] for layer, lr in layer_results.items()},
+            "per_layer": {str(layer): lr for layer, lr in layer_results.items()},
         }
         save_file(aggregate, pair_dir / "results.json")
         pairwise_results[(id_a, id_b)] = aggregate
