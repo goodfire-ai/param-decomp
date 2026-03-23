@@ -17,6 +17,8 @@ type ClusterMapping = {
     data: ClusterMappingData;
     filePath: string;
     runWandbPath: string;
+    clusteringRunId: string;
+    iteration: number;
 };
 
 /**
@@ -198,8 +200,14 @@ export function useRun() {
     }
 
     /** Set cluster mapping for the current run */
-    function setClusterMapping(data: ClusterMappingData, filePath: string, runWandbPath: string) {
-        clusterMapping = { data, filePath, runWandbPath };
+    function setClusterMapping(
+        data: ClusterMappingData,
+        filePath: string,
+        runWandbPath: string,
+        clusteringRunId: string,
+        iteration: number,
+    ) {
+        clusterMapping = { data, filePath, runWandbPath, clusteringRunId, iteration };
     }
 
     /** Clear cluster mapping */

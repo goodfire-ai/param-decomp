@@ -2,19 +2,28 @@
     import { getContext } from "svelte";
     import { RUN_KEY, type RunContext, type ClusterMappingData } from "../lib/useRun.svelte";
     import ClusterComponentCard from "./ClusterComponentCard.svelte";
+    import ClusterCorrelationMatrix from "./ClusterCorrelationMatrix.svelte";
+    import ClusterDendrogram from "./ClusterDendrogram.svelte";
+    import ClusterFullMatrix from "./ClusterFullMatrix.svelte";
 
     const runState = getContext<RunContext>(RUN_KEY);
 
     type Props = {
         clusterMappingData: ClusterMappingData;
+        clusteringRunId: string;
+        iteration: number;
     };
 
-    let { clusterMappingData }: Props = $props();
+    let { clusterMappingData, clusteringRunId, iteration }: Props = $props();
 
     type ComponentMember = { layer: string; cIdx: number };
 
+    type SubTab = "matrix" | "list";
+    let activeSubTab = $state<SubTab>("matrix");
+
     /** "unclustered" is a sentinel for the singletons group */
     let selectedClusterId = $state<number | "unclustered" | null>(null);
+    let orderedMembers = $state<ComponentMember[]>([]);
 
     /** Invert the mapping: cluster ID -> list of component members */
     const clusterGroups = $derived.by(() => {
@@ -47,6 +56,19 @@
         return group ? group[1] : [];
     });
 
+    const layerGroups = $derived.by((): { layer: string; members: ComponentMember[] }[] => {
+        const groups: Record<string, ComponentMember[]> = {};
+        for (const m of selectedMembers) {
+            (groups[m.layer] ??= []).push(m);
+        }
+        return Object.entries(groups)
+            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+            .map(([layer, members]) => ({
+                layer,
+                members: members.sort((a, b) => a.cIdx - b.cIdx),
+            }));
+    });
+
     function getPreviewLabels(members: ComponentMember[]): string[] {
         const labels: string[] = [];
         for (const member of members) {
@@ -63,8 +85,16 @@
 
 <div class="clusters-viewer">
     {#if selectedClusterId === null}
+        <div class="subtab-bar">
+            <button class="subtab-btn" class:active={activeSubTab === "matrix"} onclick={() => (activeSubTab = "matrix")}>Matrix</button>
+            <button class="subtab-btn" class:active={activeSubTab === "list"} onclick={() => (activeSubTab = "list")}>List ({clusterGroups.sorted.length})</button>
+        </div>
+        {#if activeSubTab === "matrix"}
+            <div class="matrix-pane">
+                <ClusterFullMatrix {clusterMappingData} onSelectCluster={(id) => { selectedClusterId = id; }} />
+            </div>
+        {:else}
         <div class="cluster-list">
-            <h2 class="list-header">Clusters ({clusterGroups.sorted.length})</h2>
             {#each clusterGroups.sorted as [clusterId, members] (clusterId)}
                 {@const previewLabels = getPreviewLabels(members)}
                 <button class="cluster-row" onclick={() => (selectedClusterId = clusterId)}>
@@ -90,15 +120,47 @@
                 </button>
             {/if}
         </div>
+        {/if}
     {:else}
         <div class="cluster-detail">
             <div class="detail-header">
-                <button class="back-button" onclick={() => (selectedClusterId = null)}>&lt; Back</button>
-                <h2 class="detail-title">
-                    {selectedClusterId === "unclustered" ? "Unclustered" : `Cluster ${selectedClusterId}`}
-                </h2>
-                <span class="detail-count">{selectedMembers.length} components</span>
+                <div class="detail-header-left">
+                    <button class="back-button" onclick={() => (selectedClusterId = null)}>&lt; Back</button>
+                    <h2 class="detail-title">
+                        {selectedClusterId === "unclustered" ? "Unclustered" : `Cluster ${selectedClusterId}`}
+                    </h2>
+                    <span class="detail-count">{selectedMembers.length} components</span>
+                </div>
+                {#if layerGroups.length > 0}
+                    <div class="layer-breakdown">
+                        {#each layerGroups as group (group.layer)}
+                            <div class="layer-group">
+                                <span class="layer-group-label">{group.layer}</span>
+                                <div class="layer-group-pills">
+                                    {#each group.members as member (`${group.layer}:${member.cIdx}`)}
+                                        {@const key = `${member.layer}:${member.cIdx}`}
+                                        {@const interp = runState.getInterpretation(key)}
+                                        <span
+                                            class="component-idx-pill"
+                                            title={interp.status === "loaded" && interp.data.status === "generated"
+                                                ? `${key}: ${interp.data.data.label}`
+                                                : key}
+                                        >
+                                            {member.cIdx}
+                                        </span>
+                                    {/each}
+                                </div>
+                            </div>
+                        {/each}
+                    </div>
+                {/if}
             </div>
+            {#if selectedMembers.length >= 2}
+                <div class="grid-and-dendrogram">
+                    <ClusterCorrelationMatrix members={orderedMembers.length > 0 ? orderedMembers : selectedMembers} {clusteringRunId} />
+                    <ClusterDendrogram members={selectedMembers} {clusteringRunId} {iteration} onLeafOrder={(order) => (orderedMembers = order)} />
+                </div>
+            {/if}
             <div class="cluster-cards">
                 {#each selectedMembers as member (`${member.layer}:${member.cIdx}`)}
                     <div class="cluster-card-item">
@@ -114,15 +176,57 @@
     .clusters-viewer {
         font-family: var(--font-sans);
         color: var(--text-primary);
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+    }
+
+    .subtab-bar {
+        display: flex;
+        gap: var(--space-1);
+        flex-shrink: 0;
+        margin-bottom: var(--space-3);
+    }
+
+    .subtab-btn {
+        padding: var(--space-2) var(--space-4);
+        font: inherit;
+        font-size: var(--text-sm);
+        font-weight: 500;
+        background: transparent;
+        border: none;
+        border-bottom: 2px solid transparent;
+        cursor: pointer;
+        color: var(--text-muted);
+        transition:
+            color var(--transition-normal),
+            border-color var(--transition-normal);
+    }
+
+    .subtab-btn:hover {
+        color: var(--text-secondary);
+    }
+
+    .subtab-btn.active {
+        color: var(--text-primary);
+        border-bottom-color: var(--accent-primary);
+    }
+
+    .matrix-pane {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .grid-and-dendrogram {
+        display: flex;
+        gap: var(--space-4);
+        align-items: flex-start;
     }
 
     /* Cluster list */
-    .list-header {
-        font-size: var(--text-lg);
-        font-weight: 600;
-        margin: 0 0 var(--space-4) 0;
-    }
-
     .cluster-list {
         display: flex;
         flex-direction: column;
@@ -200,7 +304,50 @@
     .detail-header {
         display: flex;
         align-items: center;
+        justify-content: space-between;
         gap: var(--space-3);
+    }
+
+    .detail-header-left {
+        display: flex;
+        align-items: center;
+        gap: var(--space-3);
+    }
+
+    .layer-breakdown {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-1);
+    }
+
+    .layer-group {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+    }
+
+    .layer-group-label {
+        font-size: var(--text-xs);
+        font-family: var(--font-mono);
+        color: var(--text-secondary);
+        white-space: nowrap;
+    }
+
+    .layer-group-pills {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 2px;
+    }
+
+    .component-idx-pill {
+        font-size: var(--text-xs);
+        font-family: var(--font-mono);
+        padding: 1px var(--space-1);
+        background: var(--bg-inset);
+        border-radius: var(--radius-sm);
+        color: var(--accent-primary);
+        font-weight: 600;
+        cursor: default;
     }
 
     .back-button {

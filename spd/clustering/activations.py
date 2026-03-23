@@ -4,7 +4,7 @@ from typing import Any, Literal, NamedTuple
 
 import numpy as np
 import torch
-from jaxtyping import Bool, Float, Float16
+from jaxtyping import Bool, Float
 from scipy import sparse
 from torch import Tensor
 from torch.utils.data import DataLoader
@@ -161,11 +161,7 @@ def compute_coactivatons(
     activations: ActivationsTensor | BoolActivationsTensor,
 ) -> ClusterCoactivationShaped:
     """Compute the coactivations matrix from the activations."""
-    # TODO: this works for both boolean and continuous activations,
-    # but we could do better by just using OR for boolean activations
-    # and maybe even some bitshift hacks. but for now, we convert to float16
-    activations_f16: Float16[Tensor, "samples C"] = activations.to(torch.float16)
-    return activations_f16.T @ activations_f16
+    return activations.float().T @ activations.float()
 
 
 def _get_component_filter_values(
