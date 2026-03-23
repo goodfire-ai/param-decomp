@@ -5,6 +5,7 @@ from typing import Any, Literal, NamedTuple
 import numpy as np
 import torch
 from jaxtyping import Bool, Float, Float16
+from scipy import sparse
 from torch import Tensor
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -343,7 +344,8 @@ class MembershipBuilder:
         self.module_component_counts: dict[str, int] = {}
         self.max_activations: dict[str, Float[Tensor, " c"]] = {}
         self.sum_activations: dict[str, Float[Tensor, " c"]] = {}
-        self.sample_idx_chunks: dict[str, list[list[np.ndarray]]] = {}
+        self.module_sample_rows: dict[str, list[np.ndarray]] = {}
+        self.module_sample_components: dict[str, list[np.ndarray]] = {}
         self.preview_chunks: dict[str, list[Tensor]] = {}
         self.module_order: list[str] = []
         self._preview_rows = 0
@@ -359,7 +361,8 @@ class MembershipBuilder:
         self.module_component_counts[key] = n_components
         self.max_activations[key] = torch.full((n_components,), float("-inf"))
         self.sum_activations[key] = torch.zeros((n_components,), dtype=torch.float64)
-        self.sample_idx_chunks[key] = [[] for _ in range(n_components)]
+        self.module_sample_rows[key] = []
+        self.module_sample_components[key] = []
         self.preview_chunks[key] = []
         self.module_order.append(key)
 
@@ -396,12 +399,10 @@ class MembershipBuilder:
             mask_np = (act_cpu.numpy() > self.activation_threshold).T
             comp_indices, row_indices = np.nonzero(mask_np)
             if comp_indices.size > 0:
-                row_indices = row_indices.astype(np.int32, copy=False) + sample_offset
-                split_points = np.flatnonzero(np.diff(comp_indices)) + 1
-                row_groups = np.split(row_indices, split_points)
-                comp_groups = np.split(comp_indices, split_points)
-                for comp_group, row_group in zip(comp_groups, row_groups, strict=True):
-                    self.sample_idx_chunks[key][int(comp_group[0])].append(row_group)
+                self.module_sample_rows[key].append(
+                    row_indices.astype(np.int32, copy=False) + sample_offset
+                )
+                self.module_sample_components[key].append(comp_indices.astype(np.int32, copy=False))
 
         self.n_samples += batch_n_samples
         self._preview_rows = min(self.n_samples, self.preview_n_samples)
@@ -443,22 +444,52 @@ class MembershipBuilder:
 
             for comp_idx in range(n_components):
                 label = f"{key}:{comp_idx}"
-                if alive[comp_idx]:
-                    alive_labels.append(label)
-                    chunks = self.sample_idx_chunks[key][comp_idx]
-                    sample_ids = (
-                        np.concatenate(chunks).astype(np.int64, copy=False)
-                        if chunks
-                        else np.empty((0,), dtype=np.int64)
-                    )
+                if not alive[comp_idx]:
+                    dead_labels.append(label)
+
+            alive_np = alive.numpy()
+            alive_component_indices = np.flatnonzero(alive_np).astype(np.int32, copy=False)
+            for comp_idx in alive_component_indices:
+                alive_labels.append(f"{key}:{int(comp_idx)}")
+
+            if n_alive > 0:
+                row_chunks = self.module_sample_rows.pop(key)
+                component_chunks = self.module_sample_components.pop(key)
+                if row_chunks:
+                    sample_rows = np.concatenate(row_chunks).astype(np.int64, copy=False)
+                    sample_components = np.concatenate(component_chunks).astype(np.int32, copy=False)
+                    alive_entries = alive_np[sample_components]
+                    if alive_entries.any():
+                        alive_mapping = np.full(n_components, -1, dtype=np.int32)
+                        alive_mapping[alive_component_indices] = np.arange(n_alive, dtype=np.int32)
+                        csc = sparse.csc_matrix(
+                            (
+                                np.ones(int(alive_entries.sum()), dtype=np.uint8),
+                                (
+                                    sample_rows[alive_entries],
+                                    alive_mapping[sample_components[alive_entries]],
+                                ),
+                            ),
+                            shape=(self.n_samples, n_alive),
+                            dtype=np.uint8,
+                        )
+                    else:
+                        csc = sparse.csc_matrix((self.n_samples, n_alive), dtype=np.uint8)
+                else:
+                    csc = sparse.csc_matrix((self.n_samples, n_alive), dtype=np.uint8)
+
+                for alive_idx in range(n_alive):
+                    sample_ids = csc.indices[csc.indptr[alive_idx] : csc.indptr[alive_idx + 1]]
                     memberships.append(
                         CompressedMembership.from_sample_indices(
                             sample_indices=sample_ids,
                             n_samples=self.n_samples,
                         )
                     )
-                else:
-                    dead_labels.append(label)
+
+            else:
+                self.module_sample_rows.pop(key)
+                self.module_sample_components.pop(key)
 
             if n_alive > 0:
                 preview_chunks_alive.append(preview_tensor[:, alive])
