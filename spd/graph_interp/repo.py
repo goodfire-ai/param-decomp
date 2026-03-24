@@ -37,7 +37,7 @@ class GraphInterpRepo:
                 for d in base_dir.iterdir()
                 if d.is_dir() and d.name.startswith("ti-") and (d / DONE_MARKER).exists()
             ],
-            key=lambda d: d.name,
+            key=lambda d: d.stat().st_mtime,
         )
         if not candidates:
             return None
