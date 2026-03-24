@@ -23,16 +23,24 @@ export const CANONICAL_RUNS: RegistryEntry[] = [
         notes: "pile_llama_simple_mlp-4L",
         clusterMappings: [
             {
-                path: "/mnt/polished-lake/artifacts/mechanisms/spd/clustering/runs/c-70b28465/cluster_mapping.json",
-                notes: "All layers, iteration 9100",
+                path: "/mnt/polished-lake/artifacts/mechanisms/spd/clustering/runs/c-bd99c7aa/cluster_mapping.json",
+                notes: "exp_rank α=5 decay=0.8, iter 6351 (MDL-optimal, best quality)",
             },
             {
-                path: "/mnt/polished-lake/artifacts/mechanisms/spd/clustering/runs/c-7e8b960e/cluster_mapping_alpha10_i3000.json",
-                notes: "All layers, iteration 3000, α 10"
+                path: "/mnt/polished-lake/artifacts/mechanisms/spd/clustering/runs/c-651d85c4/cluster_mapping.json",
+                notes: "exp_rank α=10 decay=0.8, iter 4423 (MDL-optimal, tightest clusters)",
+            },
+            {
+                path: "/mnt/polished-lake/artifacts/mechanisms/spd/clustering/runs/c-e8fb48bb/cluster_mapping.json",
+                notes: "exp_rank α=2 decay=0.8, iter 7999 (most merges)",
+            },
+            {
+                path: "/mnt/polished-lake/artifacts/mechanisms/spd/clustering/runs/c-70b28465/cluster_mapping.json",
+                notes: "range α=1, iter 9100 (old, lower quality)",
             },
             {
                 path: "/mnt/polished-lake/artifacts/mechanisms/spd/clustering/runs/c-eae05b96/cluster_mapping_alpha2_i8000.json",
-                notes: "All layers, iteration 8000, α 2"
+                notes: "range α=2, iter 8000 (old, lower quality)",
             },
         ],
     },
