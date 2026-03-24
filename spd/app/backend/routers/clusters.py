@@ -164,12 +164,24 @@ def load_cluster_mapping(file_path: str) -> ClusterMapping:
     # Pre-load clustering run data (history.zip) so subsequent requests are fast
     _load_clustering_run(parsed.clustering_run_id)
 
+    # Persist the path so it survives page reloads via /api/status
+    state.state.cluster_mapping_path = str(path)
+
     canonical_clusters = _to_canonical_keys(parsed.clusters, run_state.topology)
     return ClusterMapping(
         mapping=canonical_clusters,
         clustering_run_id=parsed.clustering_run_id,
         iteration=parsed.iteration,
     )
+
+
+@router.post("/clear")
+@log_errors
+def clear_cluster_mapping() -> dict[str, str]:
+    """Clear the persisted cluster mapping path."""
+    state = StateManager.get()
+    state.state.cluster_mapping_path = None
+    return {"status": "cleared"}
 
 
 def _to_canonical_keys(

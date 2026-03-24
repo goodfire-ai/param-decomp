@@ -56,6 +56,7 @@ class AppState:
     db: PromptAttrDB
     run_state: RunState | None = field(default=None)
     dataset_search_state: DatasetSearchState | None = field(default=None)
+    cluster_mapping_path: str | None = field(default=None)
 
 
 class StateManager:

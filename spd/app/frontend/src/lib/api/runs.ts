@@ -16,6 +16,7 @@ export type LoadedRun = {
     dataset_search_enabled: boolean;
     graph_interp_available: boolean;
     autointerp_available: boolean;
+    cluster_mapping_path: string | null;
 };
 
 export async function getStatus(): Promise<LoadedRun | null> {

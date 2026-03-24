@@ -4,7 +4,9 @@
     import ClusterComponentCard from "./ClusterComponentCard.svelte";
     import ClusterCorrelationMatrix from "./ClusterCorrelationMatrix.svelte";
     import ClusterDendrogram from "./ClusterDendrogram.svelte";
+    import ClusterForceGraph from "./ClusterForceGraph.svelte";
     import ClusterFullMatrix from "./ClusterFullMatrix.svelte";
+    import ClusterMiniMatrix from "./ClusterMiniMatrix.svelte";
 
     const runState = getContext<RunContext>(RUN_KEY);
 
@@ -20,6 +22,8 @@
 
     type SubTab = "matrix" | "list";
     let activeSubTab = $state<SubTab>("matrix");
+    type DetailViz = "graph" | "matrix";
+    let activeDetailViz = $state<DetailViz>("graph");
 
     /** "unclustered" is a sentinel for the singletons group */
     let selectedClusterId = $state<number | "unclustered" | null>(null);
@@ -56,6 +60,11 @@
         return group ? group[1] : [];
     });
 
+    const PAGE_SIZE = 12;
+    let cardPage = $state(0);
+    const cardPageCount = $derived(Math.max(1, Math.ceil(selectedMembers.length / PAGE_SIZE)));
+    const pagedMembers = $derived(selectedMembers.slice(cardPage * PAGE_SIZE, (cardPage + 1) * PAGE_SIZE));
+
     const layerGroups = $derived.by((): { layer: string; members: ComponentMember[] }[] => {
         const groups: Record<string, ComponentMember[]> = {};
         for (const m of selectedMembers) {
@@ -81,51 +90,93 @@
         }
         return labels;
     }
+
+    function resetDetailState() {
+        orderedMembers = [];
+        activeDetailViz = "graph";
+        cardPage = 0;
+    }
+
+    function selectCluster(clusterId: number | "unclustered") {
+        selectedClusterId = clusterId;
+        resetDetailState();
+    }
+
+    function clearSelection() {
+        selectedClusterId = null;
+        resetDetailState();
+    }
+
+    function handleLeafOrder(order: ComponentMember[]) {
+        if (
+            orderedMembers.length === order.length &&
+            orderedMembers.every(
+                (member, idx) => member.layer === order[idx]?.layer && member.cIdx === order[idx]?.cIdx,
+            )
+        ) {
+            return;
+        }
+        orderedMembers = order;
+    }
 </script>
 
 <div class="clusters-viewer">
     {#if selectedClusterId === null}
         <div class="subtab-bar">
-            <button class="subtab-btn" class:active={activeSubTab === "matrix"} onclick={() => (activeSubTab = "matrix")}>Matrix</button>
-            <button class="subtab-btn" class:active={activeSubTab === "list"} onclick={() => (activeSubTab = "list")}>List ({clusterGroups.sorted.length})</button>
+            <button
+                class="subtab-btn"
+                class:active={activeSubTab === "matrix"}
+                onclick={() => (activeSubTab = "matrix")}>Matrix</button
+            >
+            <button class="subtab-btn" class:active={activeSubTab === "list"} onclick={() => (activeSubTab = "list")}
+                >List ({clusterGroups.sorted.length})</button
+            >
         </div>
         {#if activeSubTab === "matrix"}
             <div class="matrix-pane">
-                <ClusterFullMatrix {clusterMappingData} onSelectCluster={(id) => { selectedClusterId = id; }} />
+                <ClusterFullMatrix
+                    {clusterMappingData}
+                    onSelectCluster={(id) => {
+                        selectCluster(id);
+                    }}
+                />
             </div>
         {:else}
-        <div class="cluster-list">
-            {#each clusterGroups.sorted as [clusterId, members] (clusterId)}
-                {@const previewLabels = getPreviewLabels(members)}
-                <button class="cluster-row" onclick={() => (selectedClusterId = clusterId)}>
-                    <div class="cluster-row-main">
-                        <span class="cluster-id">Cluster {clusterId}</span>
-                        <span class="cluster-count">{members.length} components</span>
-                    </div>
-                    {#if previewLabels.length > 0}
-                        <div class="preview-labels">
-                            {#each previewLabels as label, i (i)}
-                                <span class="preview-pill">{label}</span>
-                            {/each}
+            <div class="cluster-list">
+                {#each clusterGroups.sorted as [clusterId, members] (clusterId)}
+                    {@const previewLabels = getPreviewLabels(members)}
+                    <button class="cluster-row" onclick={() => selectCluster(clusterId)}>
+                        <div class="cluster-row-top">
+                            <div class="cluster-row-main">
+                                <span class="cluster-id">Cluster {clusterId}</span>
+                                <span class="cluster-count">{members.length} components</span>
+                            </div>
+                            <ClusterMiniMatrix {members} {clusteringRunId} {iteration} />
                         </div>
-                    {/if}
-                </button>
-            {/each}
-            {#if clusterGroups.singletons.length > 0}
-                <button class="cluster-row singletons-row" onclick={() => (selectedClusterId = "unclustered")}>
-                    <div class="cluster-row-main">
-                        <span class="cluster-id">Unclustered</span>
-                        <span class="cluster-count">{clusterGroups.singletons.length} components</span>
-                    </div>
-                </button>
-            {/if}
-        </div>
+                        {#if previewLabels.length > 0}
+                            <div class="preview-labels">
+                                {#each previewLabels as label, i (i)}
+                                    <span class="preview-pill">{label}</span>
+                                {/each}
+                            </div>
+                        {/if}
+                    </button>
+                {/each}
+                {#if clusterGroups.singletons.length > 0}
+                    <button class="cluster-row singletons-row" onclick={() => selectCluster("unclustered")}>
+                        <div class="cluster-row-main">
+                            <span class="cluster-id">Unclustered</span>
+                            <span class="cluster-count">{clusterGroups.singletons.length} components</span>
+                        </div>
+                    </button>
+                {/if}
+            </div>
         {/if}
     {:else}
         <div class="cluster-detail">
             <div class="detail-header">
                 <div class="detail-header-left">
-                    <button class="back-button" onclick={() => (selectedClusterId = null)}>&lt; Back</button>
+                    <button class="back-button" onclick={clearSelection}>&lt; Back</button>
                     <h2 class="detail-title">
                         {selectedClusterId === "unclustered" ? "Unclustered" : `Cluster ${selectedClusterId}`}
                     </h2>
@@ -156,13 +207,46 @@
                 {/if}
             </div>
             {#if selectedMembers.length >= 2}
-                <div class="grid-and-dendrogram">
-                    <ClusterCorrelationMatrix members={orderedMembers.length > 0 ? orderedMembers : selectedMembers} {clusteringRunId} />
-                    <ClusterDendrogram members={selectedMembers} {clusteringRunId} {iteration} onLeafOrder={(order) => (orderedMembers = order)} />
+                <div class="detail-viz-tabs">
+                    <button
+                        class="subtab-btn"
+                        class:active={activeDetailViz === "graph"}
+                        onclick={() => (activeDetailViz = "graph")}>Graph</button
+                    >
+                    <button
+                        class="subtab-btn"
+                        class:active={activeDetailViz === "matrix"}
+                        onclick={() => (activeDetailViz = "matrix")}>Matrix + Merge Tree</button
+                    >
+                </div>
+                {#if activeDetailViz === "graph"}
+                    <ClusterForceGraph members={selectedMembers} {clusteringRunId} />
+                {:else}
+                    <div class="grid-and-dendrogram">
+                        <ClusterCorrelationMatrix
+                            members={orderedMembers.length > 0 ? orderedMembers : selectedMembers}
+                            {clusteringRunId}
+                        />
+                        <ClusterDendrogram
+                            members={selectedMembers}
+                            {clusteringRunId}
+                            {iteration}
+                            onLeafOrder={handleLeafOrder}
+                        />
+                    </div>
+                {/if}
+            {/if}
+            {#if cardPageCount > 1}
+                <div class="card-pagination">
+                    <button class="page-btn" disabled={cardPage === 0} onclick={() => cardPage--}>&lsaquo; Prev</button>
+                    <span class="page-indicator">Page {cardPage + 1} of {cardPageCount}</span>
+                    <button class="page-btn" disabled={cardPage >= cardPageCount - 1} onclick={() => cardPage++}
+                        >Next &rsaquo;</button
+                    >
                 </div>
             {/if}
             <div class="cluster-cards">
-                {#each selectedMembers as member (`${member.layer}:${member.cIdx}`)}
+                {#each pagedMembers as member (`${member.layer}:${member.cIdx}`)}
                     <div class="cluster-card-item">
                         <ClusterComponentCard layer={member.layer} cIdx={member.cIdx} />
                     </div>
@@ -226,6 +310,11 @@
         align-items: flex-start;
     }
 
+    .detail-viz-tabs {
+        display: flex;
+        gap: var(--space-1);
+    }
+
     /* Cluster list */
     .cluster-list {
         display: flex;
@@ -250,6 +339,13 @@
             border-color var(--transition-normal);
     }
 
+    .cluster-row-top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: var(--space-3);
+    }
+
     .cluster-row:hover {
         background: var(--bg-elevated);
         border-color: var(--border-strong);
@@ -258,7 +354,9 @@
     .cluster-row-main {
         display: flex;
         align-items: center;
+        flex-wrap: wrap;
         gap: var(--space-3);
+        min-width: 0;
     }
 
     .cluster-id {
@@ -374,6 +472,39 @@
     }
 
     .detail-count {
+        font-size: var(--text-sm);
+        color: var(--text-muted);
+    }
+
+    .card-pagination {
+        display: flex;
+        align-items: center;
+        gap: var(--space-3);
+    }
+
+    .page-btn {
+        padding: var(--space-1) var(--space-3);
+        background: var(--bg-elevated);
+        border: 1px solid var(--border-default);
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        font: inherit;
+        font-size: var(--text-sm);
+        color: var(--text-secondary);
+    }
+
+    .page-btn:hover:not(:disabled) {
+        background: var(--bg-inset);
+        border-color: var(--border-strong);
+        color: var(--text-primary);
+    }
+
+    .page-btn:disabled {
+        opacity: 0.4;
+        cursor: default;
+    }
+
+    .page-indicator {
         font-size: var(--text-sm);
         color: var(--text-muted);
     }

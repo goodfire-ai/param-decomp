@@ -5,7 +5,7 @@
 import { apiUrl } from "./index";
 
 export type ClusterMapping = {
-    mapping: Record<string, number>;
+    mapping: Record<string, number | null>;
     clustering_run_id: string;
     iteration: number;
 };
@@ -51,9 +51,16 @@ export async function loadClusterMapping(filePath: string): Promise<ClusterMappi
     return (await response.json()) as ClusterMapping;
 }
 
-export async function fetchClusterPairwiseCorrelations(
-    componentKeys: string[],
-): Promise<ClusterPairwiseResponse> {
+export async function clearClusterMappingBackend(): Promise<void> {
+    const url = apiUrl("/api/clusters/clear");
+    const response = await fetch(url.toString(), { method: "POST" });
+    if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || "Failed to clear cluster mapping");
+    }
+}
+
+export async function fetchClusterPairwiseCorrelations(componentKeys: string[]): Promise<ClusterPairwiseResponse> {
     const url = apiUrl("/api/clusters/pairwise_correlations");
 
     const response = await fetch(url.toString(), {

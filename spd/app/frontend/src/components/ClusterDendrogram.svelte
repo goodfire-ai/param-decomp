@@ -1,9 +1,18 @@
 <script lang="ts">
     import { getContext } from "svelte";
-    import { SvelteMap, SvelteSet } from "svelte/reactivity";
+    import { SvelteMap } from "svelte/reactivity";
     import { RUN_KEY, type RunContext } from "../lib/useRun.svelte";
-    import type { MergeIterationsResponse, MergePairIteration } from "../lib/api/clusters";
+    import type { MergeIterationsResponse } from "../lib/api/clusters";
     import { fetchMergeIterations, fetchClusterPairwiseCorrelations } from "../lib/api/clusters";
+    import {
+        buildDendrogram,
+        assignLeafPositions,
+        collectLeaves,
+        collectInternalNodes,
+        maxIter,
+        generateLines,
+        type TreeNode,
+    } from "../lib/dendrogram";
 
     type ComponentMember = { layer: string; cIdx: number };
 
@@ -59,155 +68,9 @@
             .catch(() => {});
     });
 
-    // Dendrogram tree types
-    type LeafNode = { type: "leaf"; key: string; y: number };
-    type InternalNode = { type: "internal"; left: TreeNode; right: TreeNode; mergeIter: number; y: number };
-    type TreeNode = LeafNode | InternalNode;
-
-    // Build dendrogram from pairwise merge iterations via single-linkage
-    function buildDendrogram(
-        componentKeys: string[],
-        pairs: MergePairIteration[],
-    ): TreeNode | null {
-        if (componentKeys.length === 0) return null;
-        if (componentKeys.length === 1) return { type: "leaf", key: componentKeys[0], y: 0 };
-
-        // Sort pairs by merge iteration (earliest first)
-        const sorted = pairs
-            .filter((p) => p.merge_iteration >= 0)
-            .sort((a, b) => a.merge_iteration - b.merge_iteration);
-
-        // Union-find
-        const parent = new SvelteMap<string, string>();
-        const nodes = new SvelteMap<string, TreeNode>();
-        let leafY = 0;
-
-        for (const key of componentKeys) {
-            parent.set(key, key);
-            nodes.set(key, { type: "leaf", key, y: leafY });
-            leafY++;
-        }
-
-        function find(x: string): string {
-            let root = x;
-            while (parent.get(root) !== root) root = parent.get(root)!;
-            // Path compression
-            let curr = x;
-            while (curr !== root) {
-                const next = parent.get(curr)!;
-                parent.set(curr, root);
-                curr = next;
-            }
-            return root;
-        }
-
-        for (const pair of sorted) {
-            const rootA = find(pair.key_a);
-            const rootB = find(pair.key_b);
-            if (rootA === rootB) continue;
-
-            const nodeA = nodes.get(rootA)!;
-            const nodeB = nodes.get(rootB)!;
-            const merged: InternalNode = {
-                type: "internal",
-                left: nodeA,
-                right: nodeB,
-                mergeIter: pair.merge_iteration,
-                y: (nodeA.y + nodeB.y) / 2,
-            };
-
-            // New root key
-            const mergedKey = `${rootA}|${rootB}`;
-            parent.set(rootA, mergedKey);
-            parent.set(rootB, mergedKey);
-            parent.set(mergedKey, mergedKey);
-            nodes.set(mergedKey, merged);
-        }
-
-        // Find remaining roots and merge any disconnected components
-        const roots = new SvelteSet<string>();
-        for (const key of componentKeys) {
-            roots.add(find(key));
-        }
-        const rootNodes = [...roots].map((r) => nodes.get(r)!);
-        if (rootNodes.length === 1) return rootNodes[0];
-
-        // If disconnected, chain them at max iteration
-        let result = rootNodes[0];
-        for (let i = 1; i < rootNodes.length; i++) {
-            result = {
-                type: "internal",
-                left: result,
-                right: rootNodes[i],
-                mergeIter: -1,
-                y: (result.y + rootNodes[i].y) / 2,
-            };
-        }
-        return result;
-    }
-
-    // Assign leaf y-positions by in-order traversal (so tree doesn't cross)
-    function assignLeafPositions(node: TreeNode, startY: number): number {
-        if (node.type === "leaf") {
-            node.y = startY;
-            return startY + 1;
-        }
-        const nextY = assignLeafPositions(node.left, startY);
-        const finalY = assignLeafPositions(node.right, nextY);
-        node.y = (node.left.y + node.right.y) / 2;
-        return finalY;
-    }
-
-    // Collect all leaves in order
-    function collectLeaves(node: TreeNode): LeafNode[] {
-        if (node.type === "leaf") return [node];
-        return [...collectLeaves(node.left), ...collectLeaves(node.right)];
-    }
-
-    function collectInternalNodes(node: TreeNode): InternalNode[] {
-        if (node.type === "leaf") return [];
-        return [node, ...collectInternalNodes(node.left), ...collectInternalNodes(node.right)];
-    }
-
     function countLeaves(node: TreeNode): number {
         if (node.type === "leaf") return 1;
         return countLeaves(node.left) + countLeaves(node.right);
-    }
-
-    // Find max merge iteration for scaling
-    function maxIter(node: TreeNode): number {
-        if (node.type === "leaf") return 0;
-        return Math.max(node.mergeIter, maxIter(node.left), maxIter(node.right));
-    }
-
-    // Generate SVG paths for the dendrogram
-    type SvgLine = { x1: number; y1: number; x2: number; y2: number; mergeIter: number };
-
-    function generateLines(
-        node: TreeNode,
-        xScale: (iter: number) => number,
-        yScale: (pos: number) => number,
-        rightX: number,
-    ): SvgLine[] {
-        if (node.type === "leaf") return [];
-
-        const nodeX = node.mergeIter >= 0 ? xScale(node.mergeIter) : 0;
-        const leftChild = node.left;
-        const rightChild = node.right;
-
-        const leftX = leftChild.type === "leaf" ? rightX : xScale(leftChild.mergeIter);
-        const rightChildX = rightChild.type === "leaf" ? rightX : xScale(rightChild.mergeIter);
-
-        const lines: SvgLine[] = [
-            // Vertical line connecting children
-            { x1: nodeX, y1: yScale(leftChild.y), x2: nodeX, y2: yScale(rightChild.y), mergeIter: node.mergeIter },
-            // Horizontal to left child
-            { x1: nodeX, y1: yScale(leftChild.y), x2: leftX, y2: yScale(leftChild.y), mergeIter: node.mergeIter },
-            // Horizontal to right child
-            { x1: nodeX, y1: yScale(rightChild.y), x2: rightChildX, y2: yScale(rightChild.y), mergeIter: node.mergeIter },
-        ];
-
-        return [...lines, ...generateLines(leftChild, xScale, yScale, rightX), ...generateLines(rightChild, xScale, yScale, rightX)];
     }
 
     // Computed dendrogram
@@ -264,7 +127,8 @@
 <div class="dendrogram-section">
     <h3 class="section-title">Merge Tree</h3>
     <div class="section-description">
-        How components were grouped by the clustering algorithm. Branches that join on the right were merged early (strong co-activation); branches that join on the left were merged late (weaker signal).
+        How components were grouped by the clustering algorithm. Branches that join on the right were merged early
+        (strong co-activation); branches that join on the left were merged late (weaker signal).
     </div>
 
     {#if data.status === "loading"}
@@ -278,13 +142,7 @@
             <svg width={svgWidth} height={svgHeight} class="dendrogram-svg">
                 <!-- Tree lines -->
                 {#each lines as line, i (i)}
-                    <line
-                        x1={line.x1}
-                        y1={line.y1}
-                        x2={line.x2}
-                        y2={line.y2}
-                        class="tree-line"
-                    />
+                    <line x1={line.x1} y1={line.y1} x2={line.x2} y2={line.y2} class="tree-line" />
                 {/each}
 
                 <!-- Merge node circles -->
@@ -293,10 +151,7 @@
                     {@const cy = yScale(node.y)}
                     {@const leftCount = countLeaves(node.left)}
                     {@const rightCount = countLeaves(node.right)}
-                    <circle
-                        {cx} {cy} r="4"
-                        class="merge-node"
-                    >
+                    <circle {cx} {cy} r="4" class="merge-node">
                         <title>Iteration {node.mergeIter}: merge {leftCount} + {rightCount} components</title>
                     </circle>
                 {/each}
