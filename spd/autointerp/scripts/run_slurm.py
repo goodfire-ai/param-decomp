@@ -11,7 +11,9 @@ Dependency graph (depends on a prior harvest merge):
 (Intruder eval is label-free and belongs to the harvest functional unit.)
 """
 
+import re
 from dataclasses import dataclass
+from datetime import datetime
 
 from spd.autointerp.config import AutointerpSlurmConfig
 from spd.autointerp.scoring.scripts import run_label_scoring
@@ -22,9 +24,18 @@ from spd.utils.slurm import SlurmConfig, SubmitResult, generate_script, submit_s
 
 @dataclass
 class AutointerpSubmitResult:
+    autointerp_subrun_id: str
     interpret_result: SubmitResult
     detection_result: SubmitResult | None
     fuzzing_result: SubmitResult | None
+
+
+def _make_autointerp_subrun_id(snapshot_branch: str | None) -> str:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    if snapshot_branch is None:
+        return f"a-{timestamp}"
+    branch_tag = re.sub(r"[^a-zA-Z0-9]+", "-", snapshot_branch).strip("-").lower()
+    return f"a-{timestamp}-{branch_tag}"[:120]
 
 
 def submit_autointerp(
@@ -48,12 +59,14 @@ def submit_autointerp(
     Returns:
         AutointerpSubmitResult with interpret, detection, and fuzzing results.
     """
+    autointerp_subrun_id = _make_autointerp_subrun_id(snapshot_branch)
 
     # === 1. Interpret job ===
     interpret_cmd = run_interpret.get_command(
         decomposition_id=decomposition_id,
         config=config.config,
         harvest_subrun_id=harvest_subrun_id,
+        autointerp_subrun_id=autointerp_subrun_id,
     )
 
     interpret_slurm = SlurmConfig(
@@ -73,6 +86,7 @@ def submit_autointerp(
         {
             "Job ID": interpret_result.job_id,
             "Decomposition ID": decomposition_id,
+            "Autointerp Subrun": autointerp_subrun_id,
             "Model": config.config.llm.model,
             "Log": interpret_result.log_pattern,
         }
@@ -80,6 +94,7 @@ def submit_autointerp(
 
     if config.evals is None:
         return AutointerpSubmitResult(
+            autointerp_subrun_id=autointerp_subrun_id,
             interpret_result=interpret_result,
             detection_result=None,
             fuzzing_result=None,
@@ -93,6 +108,7 @@ def submit_autointerp(
             scorer_type=scorer,
             config=config.evals,
             harvest_subrun_id=harvest_subrun_id,
+            autointerp_subrun_id=autointerp_subrun_id,
         )
         eval_slurm = SlurmConfig(
             job_name=f"spd-{scorer}",
@@ -111,11 +127,13 @@ def submit_autointerp(
             {
                 "Job ID": scoring_result.job_id,
                 "Depends on": f"interpret ({interpret_result.job_id})",
+                "Autointerp Subrun": autointerp_subrun_id,
                 "Log": scoring_result.log_pattern,
             }
         )
 
     return AutointerpSubmitResult(
+        autointerp_subrun_id=autointerp_subrun_id,
         interpret_result=interpret_result,
         detection_result=scoring_results["detection"],
         fuzzing_result=scoring_results["fuzzing"],

@@ -135,6 +135,7 @@ def get_output_token_stats(
     component_key: str,
     tok: AppTokenizer,
     top_k: int,
+    pmi_min_count: float = 0.0,
 ) -> TokenPRLift | None:
     """Compute P/R/lift/PMI for output tokens."""
     idx = storage.key_to_idx[component_key]
@@ -146,6 +147,7 @@ def get_output_token_stats(
         firing_count=storage.firing_counts[idx].item(),
         top_k=top_k,
         tok=tok,
+        pmi_min_count=pmi_min_count,
     )
 
 
@@ -156,6 +158,7 @@ def _compute_token_stats(
     firing_count: float,
     tok: AppTokenizer,
     top_k: int,
+    pmi_min_count: float = 0.0,
 ) -> TokenPRLift | None:
     """Compute P/R/lift/PMI from count tensors."""
     if firing_count == 0:
@@ -164,6 +167,7 @@ def _compute_token_stats(
     valid_mask = (counts > 0) & (totals > 0)
     if not valid_mask.any():
         return None
+    pmi_valid_mask = valid_mask & (counts >= pmi_min_count)
 
     recall = counts / firing_count
     precision = torch.where(totals > 0, counts / totals, torch.zeros_like(counts))
@@ -171,16 +175,27 @@ def _compute_token_stats(
     lift = precision / base_rate if base_rate > 0 else torch.zeros_like(precision)
 
     pmi = torch.log(counts * n_tokens / (firing_count * totals))
-    pmi = torch.where(valid_mask, pmi, torch.full_like(pmi, float("-inf")))
+    pmi = torch.where(pmi_valid_mask, pmi, torch.full_like(pmi, float("-inf")))
 
-    def get_top_k(values: Tensor, k: int, largest: bool = True) -> list[tuple[str, float]]:
+    def get_top_k(
+        values: Tensor,
+        k: int,
+        largest: bool = True,
+        mask: Tensor | None = None,
+    ) -> list[tuple[str, float]]:
+        active_mask = valid_mask if mask is None else mask
+        n_active = int(active_mask.sum().item())
+        if n_active == 0 or k == 0:
+            return []
         masked = torch.where(
-            valid_mask,
+            active_mask,
             values,
             torch.full_like(values, float("-inf") if largest else float("inf")),
         )
         top_vals, top_idx = torch.topk(
-            masked, min(k, int(valid_mask.sum().item())), largest=largest
+            masked,
+            min(k, n_active),
+            largest=largest,
         )
 
         result: list[tuple[str, float]] = []
@@ -198,6 +213,6 @@ def _compute_token_stats(
         top_recall=get_top_k(recall, top_k),
         top_precision=get_top_k(precision, top_k),
         top_lift=get_top_k(lift, top_k),
-        top_pmi=get_top_k(pmi, top_k, largest=True),
-        bottom_pmi=get_top_k(pmi, top_k, largest=False),
+        top_pmi=get_top_k(pmi, top_k, largest=True, mask=pmi_valid_mask),
+        bottom_pmi=get_top_k(pmi, top_k, largest=False, mask=pmi_valid_mask),
     )

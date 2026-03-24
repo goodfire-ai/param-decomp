@@ -29,6 +29,9 @@ class SubrunSummary(BaseModel):
     n_completed: int
     mean_detection_score: float | None
     mean_fuzzing_score: float | None
+    note: str | None
+    harvest_subrun_id: str | None
+    harvest_mismatch: bool
 
 
 class InterpretationHeadline(BaseModel):
@@ -97,6 +100,8 @@ def list_subruns(loaded: DepLoadedRun) -> list[SubrunSummary]:
     if not autointerp_dir.exists():
         return []
 
+    active_harvest_id = loaded.harvest.subrun_id if loaded.harvest else None
+
     results: list[SubrunSummary] = []
     for d in sorted(autointerp_dir.iterdir(), key=lambda d: d.name):
         if not d.is_dir() or not d.name.startswith("a-"):
@@ -115,8 +120,19 @@ def list_subruns(loaded: DepLoadedRun) -> list[SubrunSummary]:
                 continue
             mean_detection = _mean_score(db, "detection")
             mean_fuzzing = _mean_score(db, "fuzzing")
+            harvest_subrun_id_raw = db.get_config_value("harvest_subrun_id")
         finally:
             db.close()
+
+        notes_path = d / "notes.txt"
+        note = notes_path.read_text().strip() if notes_path.exists() else None
+
+        harvest_subrun_id = str(harvest_subrun_id_raw) if harvest_subrun_id_raw else None
+        harvest_mismatch = (
+            harvest_subrun_id is not None
+            and active_harvest_id is not None
+            and harvest_subrun_id != active_harvest_id
+        )
 
         results.append(
             SubrunSummary(
@@ -127,6 +143,9 @@ def list_subruns(loaded: DepLoadedRun) -> list[SubrunSummary]:
                 n_completed=n_completed,
                 mean_detection_score=mean_detection,
                 mean_fuzzing_score=mean_fuzzing,
+                note=note,
+                harvest_subrun_id=harvest_subrun_id,
+                harvest_mismatch=harvest_mismatch,
             )
         )
 

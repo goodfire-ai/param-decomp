@@ -8,8 +8,9 @@ from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.autointerp.config import CompactSkepticalConfig
 from spd.autointerp.prompt_helpers import (
     DATASET_DESCRIPTIONS,
+    build_annotated_examples,
     build_data_presentation,
-    build_fires_on_examples,
+    describe_example_rendering,
 )
 from spd.autointerp.schemas import ModelMetadata
 from spd.harvest.analysis import TokenPRLift
@@ -39,7 +40,12 @@ def format_prompt(
 
     input_section = _build_input_section(input_token_stats, input_pmi)
     output_section = _build_output_section(output_token_stats, output_pmi)
-    examples_section = build_fires_on_examples(component, app_tok, config.max_examples)
+    examples_section = build_annotated_examples(
+        component,
+        app_tok,
+        config.max_examples,
+        rendering=config.example_rendering,
+    )
 
     rate_str = (
         f"~1 in {int(1 / component.firing_density)} tokens"
@@ -77,7 +83,8 @@ def format_prompt(
     md.h(2, "Token correlations")
     md.extend(input_section).extend(output_section)
 
-    md.h(2, "Activation examples (active tokens in <<delimiters>>)")
+    md.h(2, "Activation examples")
+    md.p(describe_example_rendering(config.example_rendering))
     md.extend(examples_section)
 
     md.h(2, "Task")

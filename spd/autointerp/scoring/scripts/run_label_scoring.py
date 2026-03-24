@@ -15,6 +15,7 @@ from spd.autointerp.db import InterpDB
 from spd.autointerp.repo import InterpRepo
 from spd.autointerp.scoring.detection import run_detection_scoring
 from spd.autointerp.scoring.fuzzing import run_fuzzing_scoring
+from spd.autointerp.subsets import get_subrun_component_keys_path, load_component_keys_file
 from spd.harvest.repo import HarvestRepo
 
 LabelScorerType = Literal["detection", "fuzzing"]
@@ -46,6 +47,14 @@ def main(
             f"No autointerp data for {decomposition_id}. Run autointerp first."
         )
 
+    target_component_keys: list[str] | None = None
+    if config.component_keys_path is not None:
+        target_component_keys = load_component_keys_file(config.component_keys_path)
+    else:
+        subrun_keys_path = get_subrun_component_keys_path(interp_repo._subrun_dir)
+        if subrun_keys_path.exists():
+            target_component_keys = load_component_keys_file(subrun_keys_path)
+
     # Separate writable DB for saving scores (the repo's DB is readonly/immutable)
     score_db = InterpDB(interp_repo._subrun_dir / "interp.db")
 
@@ -55,7 +64,7 @@ def main(
         readonly=True,
     )
 
-    components = harvest.get_all_components()
+    components = sorted(harvest.get_all_components(), key=lambda c: c.component_key)
 
     match scorer_type:
         case "detection":
@@ -70,6 +79,8 @@ def main(
                     max_concurrent=config.max_concurrent,
                     max_requests_per_minute=config.max_requests_per_minute,
                     limit=config.limit,
+                    target_component_keys=target_component_keys,
+                    seed=config.seed,
                     cost_limit_usd=config.cost_limit_usd,
                 )
             )
@@ -85,6 +96,8 @@ def main(
                     max_concurrent=config.max_concurrent,
                     max_requests_per_minute=config.max_requests_per_minute,
                     limit=config.limit,
+                    target_component_keys=target_component_keys,
+                    seed=config.seed,
                     cost_limit_usd=config.cost_limit_usd,
                 )
             )

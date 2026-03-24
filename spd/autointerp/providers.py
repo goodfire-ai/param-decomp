@@ -4,8 +4,10 @@ LLMConfig discriminated union determines which API to call:
   - OpenRouterLLMConfig → OpenRouter API (any model via vendor/model ID)
   - AnthropicLLMConfig → first-party Anthropic API (structured outputs)
   - OpenAILLMConfig → first-party OpenAI API (json_schema response format)
+  - GoogleAILLMConfig → Google AI / Gemini API (Google AI Studio API key)
 """
 
+import copy
 import json
 import os
 from abc import ABC, abstractmethod
@@ -20,7 +22,7 @@ from spd.log import logger
 
 ReasoningEffort = Literal["none", "low", "medium", "high"]
 
-ProviderName = Literal["openrouter", "anthropic", "openai"]
+ProviderName = Literal["openrouter", "anthropic", "openai", "google_ai"]
 
 # ---------------------------------------------------------------------------
 # LLM config (discriminated union)
@@ -66,8 +68,16 @@ class OpenAILLMConfig(BaseConfig):
     reasoning_effort: ReasoningEffort = "none"
 
 
+class GoogleAILLMConfig(BaseConfig):
+    """Gemini Developer API (API key from Google AI Studio)."""
+
+    type: Literal["google_ai"] = "google_ai"
+    model: str = "gemini-3-flash-preview"
+    thinking_level: Literal["minimal", "low", "medium", "high"] | None = None
+
+
 LLMConfig = Annotated[
-    OpenRouterLLMConfig | AnthropicLLMConfig | OpenAILLMConfig,
+    OpenRouterLLMConfig | AnthropicLLMConfig | OpenAILLMConfig | GoogleAILLMConfig,
     Field(discriminator="type"),
 ]
 
@@ -80,6 +90,7 @@ _PROVIDER_ENV_VARS: dict[ProviderName, str] = {
     "openrouter": "OPENROUTER_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
+    "google_ai": "GEMINI_API_KEY",
 }
 
 _ANTHROPIC_PRICING: dict[str, tuple[float, float]] = {
@@ -92,6 +103,15 @@ _ANTHROPIC_PRICING: dict[str, tuple[float, float]] = {
 
 _OPENAI_PRICING: dict[str, tuple[float, float]] = {
     # Add GPT-5 series pricing here when available
+}
+
+# Per-token USD (input, output). Approximate public list prices; unknown models use a conservative default.
+_GEMINI_PRICING: dict[str, tuple[float, float]] = {
+    "gemini-2.5-flash": (0.30 / 1_000_000, 2.50 / 1_000_000),
+    "gemini-2.5-flash-lite": (0.10 / 1_000_000, 0.40 / 1_000_000),
+    "gemini-2.5-pro": (1.25 / 1_000_000, 10.0 / 1_000_000),
+    "gemini-3-flash-preview": (0.30 / 1_000_000, 2.50 / 1_000_000),
+    "gemini-3-pro-preview": (2.0 / 1_000_000, 12.0 / 1_000_000),
 }
 
 
@@ -123,6 +143,19 @@ def _parse_retry_after_header(resp: httpx.Response) -> float | None:
         return float(val)
     except ValueError:
         return None
+
+
+def _gemini_response_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Strip keywords Gemini's responseJsonSchema does not accept (e.g. additionalProperties)."""
+
+    def prune(obj: Any) -> Any:
+        if isinstance(obj, dict):
+            return {k: prune(v) for k, v in obj.items() if k != "additionalProperties"}
+        if isinstance(obj, list):
+            return [prune(x) for x in obj]
+        return obj
+
+    return prune(copy.deepcopy(schema))
 
 
 class LLMProvider(ABC):
@@ -394,13 +427,106 @@ class OpenAIProvider(LLMProvider):
         await self._client.aclose()
 
 
+class GoogleAIProvider(LLMProvider):
+    """Gemini API via Generative Language REST (Google AI Studio key)."""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        thinking_level: Literal["minimal", "low", "medium", "high"] | None = None,
+    ):
+        self.model = model
+        self._thinking_level = thinking_level
+        self._pruned_schema: dict[str, Any] | None = None
+        self._client = httpx.AsyncClient(
+            base_url="https://generativelanguage.googleapis.com/v1beta/",
+            headers={"x-goog-api-key": api_key},
+        )
+
+    @override
+    async def chat(
+        self,
+        prompt: str,
+        max_tokens: int,
+        response_schema: dict[str, Any],
+        timeout_ms: int,
+    ) -> ChatResponse:
+        if self._pruned_schema is None:
+            self._pruned_schema = _gemini_response_json_schema(response_schema)
+
+        body: dict[str, Any] = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "maxOutputTokens": max_tokens,
+                "responseMimeType": "application/json",
+                "responseJsonSchema": self._pruned_schema,
+            },
+        }
+        if self._thinking_level is not None:
+            body["generationConfig"]["thinkingConfig"] = {
+                "thinkingLevel": self._thinking_level,
+            }
+
+        path = f"models/{self.model}:generateContent"
+        try:
+            resp = await self._client.post(path, json=body, timeout=timeout_ms / 1000)
+        except httpx.TransportError as e:
+            raise RetryableAPIError(str(e)) from e
+
+        if resp.status_code in (429, 500, 502, 503, 504):
+            retry_after = _parse_retry_after_header(resp)
+            raise RetryableAPIError(
+                f"HTTP {resp.status_code}: {resp.text[:200]}", retry_after=retry_after
+            )
+
+        resp.raise_for_status()
+        data = resp.json()
+
+        assert "error" not in data, f"Gemini API error: {data['error']}"
+
+        candidates = data.get("candidates") or []
+        assert candidates, f"No candidates in Gemini response: {data}"
+
+        candidate = candidates[0]
+        finish = candidate.get("finishReason", "")
+        if finish == "MAX_TOKENS":
+            logger.warning(f"Response truncated at {max_tokens} tokens (finishReason={finish})")
+
+        parts = candidate.get("content", {}).get("parts") or []
+        text_parts = [p["text"] for p in parts if isinstance(p.get("text"), str)]
+        content = "".join(text_parts).strip()
+        assert content, f"Empty text in Gemini response: {candidate}"
+
+        json.loads(content)
+
+        usage = data.get("usageMetadata") or {}
+        in_tok = usage.get("promptTokenCount")
+        out_tok = usage.get("candidatesTokenCount")
+        assert in_tok is not None and out_tok is not None, f"Missing usageMetadata: {usage}"
+
+        return ChatResponse(
+            content=content,
+            input_tokens=int(in_tok),
+            output_tokens=int(out_tok),
+        )
+
+    @override
+    async def get_pricing(self) -> tuple[float, float]:
+        return _GEMINI_PRICING.get(self.model, (1.0 / 1_000_000, 4.0 / 1_000_000))
+
+    @override
+    async def close(self) -> None:
+        await self._client.aclose()
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 
 def create_provider(
-    config: OpenRouterLLMConfig | AnthropicLLMConfig | OpenAILLMConfig,
+    config: OpenRouterLLMConfig | AnthropicLLMConfig | OpenAILLMConfig | GoogleAILLMConfig,
 ) -> LLMProvider:
     match config:
         case OpenRouterLLMConfig():
@@ -414,3 +540,10 @@ def create_provider(
         case OpenAILLMConfig():
             api_key = _get_api_key("openai")
             return OpenAIProvider(api_key, config.model, config.reasoning_effort)
+        case GoogleAILLMConfig():
+            api_key = _get_api_key("google_ai")
+            return GoogleAIProvider(
+                api_key,
+                config.model,
+                thinking_level=config.thinking_level,
+            )

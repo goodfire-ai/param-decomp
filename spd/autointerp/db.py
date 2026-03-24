@@ -125,6 +125,12 @@ class InterpDB:
         )
         self._conn.commit()
 
+    def get_config_value(self, key: str) -> object | None:
+        row = self._conn.execute("SELECT value FROM config WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            return None
+        return orjson.loads(row["value"])
+
     def has_interpretations_table(self) -> bool:
         row = self._conn.execute(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='interpretations')"

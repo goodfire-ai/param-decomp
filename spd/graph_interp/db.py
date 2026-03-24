@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS output_labels (
     component_key TEXT PRIMARY KEY,
     label TEXT NOT NULL,
     reasoning TEXT NOT NULL,
+    summary_for_neighbors TEXT NOT NULL DEFAULT '',
     raw_response TEXT NOT NULL,
     prompt TEXT NOT NULL
 );
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS input_labels (
     component_key TEXT PRIMARY KEY,
     label TEXT NOT NULL,
     reasoning TEXT NOT NULL,
+    summary_for_neighbors TEXT NOT NULL DEFAULT '',
     raw_response TEXT NOT NULL,
     prompt TEXT NOT NULL
 );
@@ -28,6 +30,7 @@ CREATE TABLE IF NOT EXISTS unified_labels (
     component_key TEXT PRIMARY KEY,
     label TEXT NOT NULL,
     reasoning TEXT NOT NULL,
+    summary_for_neighbors TEXT NOT NULL DEFAULT '',
     raw_response TEXT NOT NULL,
     prompt TEXT NOT NULL
 );
@@ -64,11 +67,12 @@ class GraphInterpDB:
     def _save_label(self, table: str, result: LabelResult) -> None:
         assert table in _LABEL_TABLES
         self._conn.execute(
-            f"INSERT OR REPLACE INTO {table} VALUES (?, ?, ?, ?, ?)",
+            f"INSERT OR REPLACE INTO {table} VALUES (?, ?, ?, ?, ?, ?)",
             (
                 result.component_key,
                 result.label,
                 result.reasoning,
+                result.summary_for_neighbors,
                 result.raw_response,
                 result.prompt,
             ),
@@ -172,6 +176,7 @@ def _row_to_label_result(row: sqlite3.Row) -> LabelResult:
         component_key=row["component_key"],
         label=row["label"],
         reasoning=row["reasoning"],
+        summary_for_neighbors=row["summary_for_neighbors"],
         raw_response=row["raw_response"],
         prompt=row["prompt"],
     )

@@ -11,12 +11,12 @@ from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.autointerp.config import DualViewConfig
 from spd.autointerp.prompt_helpers import (
     DATASET_DESCRIPTIONS,
+    build_annotated_examples,
     build_data_presentation,
-    build_fires_on_examples,
     build_input_section,
     build_output_section,
-    build_says_examples,
     density_note,
+    describe_example_rendering,
     human_layer_desc,
     layer_position_note,
 )
@@ -48,8 +48,20 @@ def format_prompt(
 
     output_section = build_output_section(output_token_stats, output_pmi)
     input_section = build_input_section(input_token_stats, input_pmi)
-    fires_on_examples = build_fires_on_examples(component, app_tok, config.max_examples)
-    says_examples = build_says_examples(component, app_tok, config.max_examples)
+    fires_on_examples = build_annotated_examples(
+        component,
+        app_tok,
+        config.max_examples,
+        rendering=config.example_rendering,
+        shift_firings=False,
+    )
+    says_examples = build_annotated_examples(
+        component,
+        app_tok,
+        config.max_examples,
+        rendering=config.example_rendering,
+        shift_firings=True,
+    )
 
     rate_str = (
         f"~1 in {int(1 / component.firing_density)} tokens"
@@ -117,12 +129,12 @@ def format_prompt(
     md.extend(input_section)
 
     md.h(2, "Activation examples — where the component fires")
-    md.p("<<delimiters>> mark tokens where this component is active.")
+    md.p(describe_example_rendering(config.example_rendering))
     md.extend(fires_on_examples)
 
     md.h(2, "Activation examples — what the model produces")
     md.p(
-        "Same examples with <<delimiters>> shifted right by one — "
+        "Same examples with the marked positions shifted right by one token, "
         "showing the token that follows each firing position."
     )
     md.extend(says_examples)

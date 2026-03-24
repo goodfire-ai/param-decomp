@@ -123,6 +123,8 @@ async def run_fuzzing_scoring(
     max_concurrent: int,
     max_requests_per_minute: int,
     limit: int | None,
+    target_component_keys: list[str] | None,
+    seed: int,
     cost_limit_usd: float | None,
 ) -> list[FuzzingResult]:
     app_tok = AppTokenizer.from_pretrained(tokenizer_name)
@@ -131,11 +133,25 @@ async def run_fuzzing_scoring(
 
     min_examples = config.n_correct + config.n_incorrect
 
-    eligible = [
-        c
-        for c in components
-        if c.component_key in labels and len(c.activation_examples) >= min_examples
-    ]
+    if target_component_keys is not None:
+        eligible_by_key = {
+            c.component_key: c
+            for c in components
+            if len(c.activation_examples) >= min_examples and c.component_key in labels
+        }
+        missing = [key for key in target_component_keys if key not in eligible_by_key]
+        if missing:
+            logger.warning(
+                "Skipping target component keys missing labels or enough activation examples "
+                f"for fuzzing: {missing[:10]} ({len(missing)} missing)"
+            )
+        eligible = [eligible_by_key[key] for key in target_component_keys if key in eligible_by_key]
+    else:
+        eligible = [
+            c
+            for c in components
+            if c.component_key in labels and len(c.activation_examples) >= min_examples
+        ]
     if limit is not None:
         eligible = eligible[:limit]
 
@@ -147,7 +163,7 @@ async def run_fuzzing_scoring(
     remaining = [c for c in eligible if c.component_key not in completed]
     logger.info(f"Scoring {len(remaining)} components ({len(remaining) * config.n_trials} trials)")
 
-    rng = random.Random()
+    rng = random.Random(seed)
     jobs: list[LLMJob] = []
     ground_truth: dict[str, _TrialGroundTruth] = {}
 
@@ -206,7 +222,7 @@ async def run_fuzzing_scoring(
     async for outcome in map_llm_calls(
         provider=provider,
         jobs=jobs,
-        max_tokens=5000,
+        max_tokens=8000,
         max_concurrent=max_concurrent,
         max_requests_per_minute=max_requests_per_minute,
         cost_limit_usd=cost_limit_usd,

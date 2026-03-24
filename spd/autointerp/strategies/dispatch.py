@@ -2,12 +2,16 @@
 
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.autointerp.config import (
+    CanonConfig,
     CompactSkepticalConfig,
     DualViewConfig,
     RichExamplesConfig,
     StrategyConfig,
 )
 from spd.autointerp.schemas import ModelMetadata
+from spd.autointerp.strategies.canon import (
+    format_prompt as canon_prompt,
+)
 from spd.autointerp.strategies.compact_skeptical import (
     format_prompt as compact_skeptical_prompt,
 )
@@ -39,6 +43,7 @@ def format_prompt(
     input_token_stats: TokenPRLift | None,
     output_token_stats: TokenPRLift | None,
     context_tokens_per_side: int,
+    activation_threshold: float,
 ) -> str:
     match strategy:
         case CompactSkepticalConfig():
@@ -64,10 +69,23 @@ def format_prompt(
                 context_tokens_per_side,
             )
         case RichExamplesConfig():
+            assert output_token_stats is not None
             return rich_examples_prompt(
                 strategy,
                 component,
                 model_metadata,
                 app_tok,
+                output_token_stats,
                 context_tokens_per_side,
+            )
+        case CanonConfig():
+            return canon_prompt(
+                strategy,
+                component,
+                model_metadata,
+                app_tok,
+                input_token_stats,
+                output_token_stats,
+                context_tokens_per_side,
+                activation_threshold,
             )

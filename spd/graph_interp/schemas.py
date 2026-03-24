@@ -22,6 +22,7 @@ class LabelResult:
     component_key: str
     label: str
     reasoning: str
+    summary_for_neighbors: str
     raw_response: str
     prompt: str
 

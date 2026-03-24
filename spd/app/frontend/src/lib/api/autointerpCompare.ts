@@ -12,6 +12,9 @@ export type SubrunSummary = {
     n_completed: number;
     mean_detection_score: number | null;
     mean_fuzzing_score: number | null;
+    note: string | null;
+    harvest_subrun_id: string | null;
+    harvest_mismatch: boolean;
 };
 
 export type CompareInterpretationHeadline = {

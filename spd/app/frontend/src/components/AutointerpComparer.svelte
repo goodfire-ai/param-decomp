@@ -317,6 +317,7 @@
                             subrunId={subrun.subrun_id}
                             strategy={subrun.strategy}
                             llmModel={subrun.llm_model}
+                            note={subrun.note}
                             headline={getHeadline(subrun.subrun_id)}
                             detail={getDetail(subrun.subrun_id)}
                         />

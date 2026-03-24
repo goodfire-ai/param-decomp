@@ -1,9 +1,4 @@
-"""Autointerp configuration.
-
-CompactSkepticalConfig: interpretation strategy config.
-AutointerpEvalConfig: eval job config (detection, fuzzing).
-AutointerpSlurmConfig: CompactSkepticalConfig + eval + SLURM submission params.
-"""
+"""Autointerp configuration."""
 
 from typing import Annotated, Literal
 
@@ -25,6 +20,51 @@ FORBIDDEN_WORDS_DEFAULT = [
 ]
 
 
+class LegacyDelimitedExamplesConfig(BaseConfig):
+    format: Literal["legacy_delimited"] = "legacy_delimited"
+
+
+class SingleLineExamplesConfig(BaseConfig):
+    format: Literal["single_line"] = "single_line"
+    annotation_style: Literal["none", "activation"] = "none"
+    highlight_delimiter: Literal["brackets", "angle"] = "brackets"
+
+
+class XmlExamplesConfig(BaseConfig):
+    format: Literal["xml"] = "xml"
+    annotation_style: Literal["none", "activation"] = "none"
+    highlight_delimiter: Literal["brackets", "angle"] = "brackets"
+    sanitize_raw: bool = False
+    sanitize_highlighted: bool = False
+
+
+ExampleRenderingConfig = Annotated[
+    LegacyDelimitedExamplesConfig | SingleLineExamplesConfig | XmlExamplesConfig,
+    Field(discriminator="format"),
+]
+RichExampleRenderingConfig = Annotated[
+    SingleLineExamplesConfig | XmlExamplesConfig,
+    Field(discriminator="format"),
+]
+
+
+def default_example_rendering() -> ExampleRenderingConfig:
+    return LegacyDelimitedExamplesConfig()
+
+
+def default_rich_example_rendering() -> RichExampleRenderingConfig:
+    return SingleLineExamplesConfig(annotation_style="activation")
+
+
+CANON_RENDERING = XmlExamplesConfig(
+    format="xml",
+    annotation_style="activation",
+    highlight_delimiter="brackets",
+    sanitize_raw=False,
+    sanitize_highlighted=False,
+)
+
+
 class CompactSkepticalConfig(BaseConfig):
     """Current default strategy: compact prompt, skeptical tone, structured JSON output."""
 
@@ -34,6 +74,7 @@ class CompactSkepticalConfig(BaseConfig):
     include_dataset_description: bool = True
     label_max_words: int = 8
     forbidden_words: list[str] | None = None
+    example_rendering: ExampleRenderingConfig = Field(default_factory=default_example_rendering)
 
 
 class DualViewConfig(BaseConfig):
@@ -51,28 +92,45 @@ class DualViewConfig(BaseConfig):
     include_dataset_description: bool = True
     label_max_words: int = 8
     forbidden_words: list[str] | None = None
+    example_rendering: ExampleRenderingConfig = Field(default_factory=default_example_rendering)
 
 
 class RichExamplesConfig(BaseConfig):
     """Rich examples strategy: drops token statistics, shows per-token CI and activation values.
 
-    Renders firing tokens with inline annotations like <<<token (ci:0.8, act:0.12)>>>
-    so the LLM can judge evidence quality directly from the examples.
+    Supports both compact one-line rendering and an XML dual-block rendering
+    with separate raw and highlighted views.
     """
 
     type: Literal["rich_examples"] = "rich_examples"
     max_examples: int = 30
     include_dataset_description: bool = True
     label_max_words: int = 8
-    forbidden_words: list[str] | None = None
+    output_pmi_min_count: float = 2.0
+    example_rendering: RichExampleRenderingConfig = Field(
+        default_factory=default_rich_example_rendering
+    )
 
 
-StrategyConfig = CompactSkepticalConfig | DualViewConfig | RichExamplesConfig
+class CanonConfig(BaseConfig):
+    """Canon strategy: detailed SPD explanation, sign convention, CI-vs-act guidance,
+    output PMI, and XML dual-view examples.
+
+    Uses a fixed XML rendering (brackets, activation annotations, no sanitization).
+    """
+
+    type: Literal["canon"] = "canon"
+    max_examples: int = 30
+    label_max_words: int = 8
+
+
+StrategyConfig = CompactSkepticalConfig | DualViewConfig | RichExamplesConfig | CanonConfig
 
 
 class AutointerpConfig(BaseConfig):
     llm: LLMConfig = OpenRouterLLMConfig()
     limit: int | None = None
+    component_keys_path: str | None = None
     cost_limit_usd: float | None = None
     max_requests_per_minute: int = 500
     max_concurrent: int = 50
@@ -100,6 +158,8 @@ class AutointerpEvalConfig(BaseConfig):
     detection_config: DetectionEvalConfig
     fuzzing_config: FuzzingEvalConfig
     limit: int | None = None
+    component_keys_path: str | None = None
+    seed: int = 0
     cost_limit_usd: float | None = None
     max_requests_per_minute: int = 500
     max_concurrent: int = 50

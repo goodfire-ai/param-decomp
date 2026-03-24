@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from spd.app.backend.app_tokenizer import AppTokenizer
-from spd.autointerp.config import RichExamplesConfig, StrategyConfig
+from spd.autointerp.config import CanonConfig, RichExamplesConfig, StrategyConfig
 from spd.autointerp.db import InterpDB
 from spd.autointerp.llm_api import (
     LLMError,
@@ -17,10 +17,27 @@ from spd.autointerp.schemas import InterpretationResult, ModelMetadata
 from spd.autointerp.strategies.dispatch import INTERPRETATION_SCHEMA, format_prompt
 from spd.harvest.analysis import TokenPRLift, get_input_token_stats, get_output_token_stats
 from spd.harvest.repo import HarvestRepo
-from spd.harvest.schemas import ComponentData
+from spd.harvest.schemas import ComponentData, ComponentSummary
 from spd.log import logger
 
 MAX_CONCURRENT = 50
+
+
+def resolve_target_component_keys(
+    summary: dict[str, ComponentSummary],
+    limit: int | None,
+    component_keys: list[str] | None,
+) -> list[str]:
+    if component_keys is not None:
+        missing = [key for key in component_keys if key not in summary]
+        assert not missing, f"Component keys not found in harvest: {missing[:10]}"
+        ordered = component_keys
+    else:
+        ordered = sorted(summary, key=lambda k: summary[k].firing_density, reverse=True)
+
+    if limit is not None:
+        ordered = ordered[:limit]
+    return ordered
 
 
 async def interpret_component(
@@ -32,6 +49,7 @@ async def interpret_component(
     input_token_stats: TokenPRLift | None,
     output_token_stats: TokenPRLift | None,
     context_tokens_per_side: int,
+    activation_threshold: float,
 ) -> InterpretationResult:
     """Interpret a single component. Used by the app for on-demand interpretation."""
     prompt = format_prompt(
@@ -42,6 +60,7 @@ async def interpret_component(
         input_token_stats=input_token_stats,
         output_token_stats=output_token_stats,
         context_tokens_per_side=context_tokens_per_side,
+        activation_threshold=activation_threshold,
     )
 
     response = await provider.chat(
@@ -71,6 +90,7 @@ async def interpret_component(
 def run_interpret(
     provider: LLMProvider,
     limit: int | None,
+    component_keys: list[str] | None,
     cost_limit_usd: float | None,
     max_requests_per_minute: int,
     max_concurrent: int,
@@ -83,10 +103,8 @@ def run_interpret(
     summary = harvest.get_summary()
     logger.info(f"Loaded summary for {len(summary)} components")
 
-    needs_token_stats = not isinstance(template_strategy, RichExamplesConfig)
-    token_stats = harvest.get_token_stats() if needs_token_stats else None
-    if needs_token_stats:
-        assert token_stats is not None, "token_stats.pt not found. Run harvest first."
+    token_stats = harvest.get_token_stats()
+    assert token_stats is not None, "token_stats.pt not found. Run harvest first."
 
     harvest_config = harvest.get_config()
     raw = harvest_config["activation_context_tokens_per_side"]
@@ -94,11 +112,7 @@ def run_interpret(
     context_tokens_per_side = raw
 
     app_tok = AppTokenizer.from_pretrained(tokenizer_name)
-
-    eligible_keys = sorted(summary, key=lambda k: summary[k].firing_density, reverse=True)
-
-    if limit is not None:
-        eligible_keys = eligible_keys[:limit]
+    eligible_keys = resolve_target_component_keys(summary, limit, component_keys)
 
     async def _run() -> list[InterpretationResult]:
         db = InterpDB(db_path)
@@ -111,19 +125,44 @@ def run_interpret(
             remaining_keys = [k for k in eligible_keys if k not in completed]
             logger.info(f"Interpreting {len(remaining_keys)} components")
 
-            schema = INTERPRETATION_SCHEMA
+            raw_threshold = harvest_config["activation_threshold"]
+            assert isinstance(raw_threshold, int | float)
+            activation_threshold = float(raw_threshold)
 
             def build_jobs() -> Iterable[LLMJob]:
                 for key in remaining_keys:
                     component = harvest.get_component(key)
                     assert component is not None, f"Component {key} not found in harvest"
-                    input_stats: TokenPRLift | None = None
-                    output_stats: TokenPRLift | None = None
-                    if token_stats is not None:
-                        input_stats = get_input_token_stats(token_stats, key, app_tok, top_k=20)
-                        output_stats = get_output_token_stats(token_stats, key, app_tok, top_k=50)
-                        assert input_stats is not None
-                        assert output_stats is not None
+                    match template_strategy:
+                        case RichExamplesConfig(output_pmi_min_count=pmi_min_count):
+                            input_stats = None
+                            output_stats = get_output_token_stats(
+                                token_stats,
+                                key,
+                                app_tok,
+                                top_k=20,
+                                pmi_min_count=pmi_min_count,
+                            )
+                            assert output_stats is not None
+                        case CanonConfig():
+                            input_stats = get_input_token_stats(token_stats, key, app_tok, top_k=20)
+                            output_stats = get_output_token_stats(
+                                token_stats,
+                                key,
+                                app_tok,
+                                top_k=20,
+                                pmi_min_count=2.0,
+                            )
+                            assert input_stats is not None
+                            assert output_stats is not None
+                        case _:
+                            input_stats = get_input_token_stats(token_stats, key, app_tok, top_k=20)
+                            output_stats = get_output_token_stats(
+                                token_stats, key, app_tok, top_k=50
+                            )
+                            assert input_stats is not None
+                            assert output_stats is not None
+
                     prompt = format_prompt(
                         strategy=template_strategy,
                         component=component,
@@ -132,6 +171,7 @@ def run_interpret(
                         input_token_stats=input_stats,
                         output_token_stats=output_stats,
                         context_tokens_per_side=context_tokens_per_side,
+                        activation_threshold=activation_threshold,
                     )
                     yield LLMJob(prompt=prompt, key=key)
 
@@ -145,7 +185,7 @@ def run_interpret(
                 max_concurrent=max_concurrent,
                 max_requests_per_minute=max_requests_per_minute,
                 cost_limit_usd=cost_limit_usd,
-                response_schema=schema,
+                response_schema=INTERPRETATION_SCHEMA,
                 n_total=len(remaining_keys),
             ):
                 match outcome:
@@ -173,6 +213,15 @@ def run_interpret(
                     raise RuntimeError(
                         f"Error rate {error_rate:.0%} ({n_errors}/{len(remaining_keys)}) exceeds 20% threshold"
                     )
+
+            completed_now = completed | {result.component_key for result in results}
+            missing = [key for key in eligible_keys if key not in completed_now]
+            if component_keys is not None and missing:
+                logger.warning(
+                    "Interpreted a partial target subset: "
+                    f"{len(completed_now)}/{len(eligible_keys)} complete; "
+                    f"missing {missing[:10]}"
+                )
 
         finally:
             db.close()

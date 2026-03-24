@@ -31,6 +31,7 @@ from spd.graph_interp.graph_context import RelatedComponent, get_related_compone
 from spd.graph_interp.ordering import group_and_sort_by_layer
 from spd.graph_interp.prompts import (
     LABEL_SCHEMA,
+    UNIFIED_LABEL_SCHEMA,
     format_input_prompt,
     format_output_prompt,
     format_unification_prompt,
@@ -77,7 +78,9 @@ def run_graph_interp(
     shared_cost = CostTracker(limit_usd=config.cost_limit_usd)
 
     async def llm_map(
-        jobs: Iterable[LLMJob], n_total: int | None = None
+        jobs: Iterable[LLMJob],
+        n_total: int | None = None,
+        response_schema: dict[str, object] = LABEL_SCHEMA,
     ) -> AsyncGenerator[LLMResult | LLMError]:
         async for result in map_llm_calls(
             provider=provider,
@@ -86,7 +89,7 @@ def run_graph_interp(
             max_concurrent=config.max_concurrent,
             max_requests_per_minute=config.max_requests_per_minute,
             cost_limit_usd=None,
-            response_schema=LABEL_SCHEMA,
+            response_schema=response_schema,
             n_total=n_total,
             cost_tracker=shared_cost,
         ):
@@ -134,7 +137,7 @@ def run_graph_interp(
         get_related: GetRelated,
         save_label: Callable[[LabelResult], None],
         pass_name: Literal["output", "input"],
-        get_token_stats: Callable[[str], TokenPRLift | None],
+        get_token_stats: Callable[[str], TokenPRLift],
         make_prompt: MakePrompt,
     ) -> Step:
         async def process(
@@ -146,7 +149,6 @@ def run_graph_interp(
                     component = harvest.get_component(key)
                     assert component is not None, f"Component {key} not found in harvest DB"
                     stats = get_token_stats(key)
-                    assert stats is not None, f"No {pass_name} token stats for {key}"
 
                     related = get_related(key, labels_so_far)
                     db.save_prompt_edges(
@@ -223,16 +225,26 @@ def run_graph_interp(
                     component=component,
                     model_metadata=model_metadata,
                     app_tok=app_tok,
+                    output_token_stats=_get_output_stats(key),
+                    input_token_stats=_get_input_stats(key),
                     label_max_words=config.label_max_words,
                     max_examples=config.max_examples,
+                    context_tokens_per_side=context_tokens_per_side,
                 )
                 yield LLMJob(prompt=prompt, key=key)
 
         if n_skipped:
             logger.warning(f"Skipping {n_skipped} components missing output or input labels")
+
+        async def unified_llm_map(
+            jobs: Iterable[LLMJob], n_total: int | None = None
+        ) -> AsyncGenerator[LLMResult | LLMError]:
+            async for result in llm_map(jobs, n_total, response_schema=UNIFIED_LABEL_SCHEMA):
+                yield result
+
         logger.info(f"Unifying {len(unifiable_keys)} components")
         new_labels = await _collect_labels(
-            llm_map, jobs(), len(unifiable_keys), db.save_unified_label
+            unified_llm_map, jobs(), len(unifiable_keys), db.save_unified_label
         )
         logger.info(f"Unification: completed {len(new_labels)}/{len(keys)}")
 
@@ -245,44 +257,65 @@ def run_graph_interp(
     get_targets = _make_get_attributed(attribution_storage.get_top_targets, metric)
     get_sources = _make_get_attributed(attribution_storage.get_top_sources, metric)
 
+    harvest_config = harvest.get_config()
+    raw_ctx = harvest_config["activation_context_tokens_per_side"]
+    assert isinstance(raw_ctx, int)
+    context_tokens_per_side = raw_ctx
+
+    def _get_output_stats(key: str) -> TokenPRLift:
+        result = get_output_token_stats(token_stats, key, app_tok, top_k=20, pmi_min_count=2.0)
+        assert result is not None, f"No output token stats for {key}"
+        return result
+
+    def _get_input_stats(key: str) -> TokenPRLift:
+        result = get_input_token_stats(token_stats, key, app_tok, top_k=20)
+        assert result is not None, f"No input token stats for {key}"
+        return result
+
     def _output_prompt(
-        component: ComponentData, stats: TokenPRLift, related: list[RelatedComponent]
+        component: ComponentData,
+        output_stats: TokenPRLift,
+        related: list[RelatedComponent],
     ) -> str:
         return format_output_prompt(
             component=component,
             model_metadata=model_metadata,
             app_tok=app_tok,
-            output_token_stats=stats,
+            output_token_stats=output_stats,
             related=related,
             label_max_words=config.label_max_words,
             max_examples=config.max_examples,
+            context_tokens_per_side=context_tokens_per_side,
         )
 
     def _input_prompt(
-        component: ComponentData, stats: TokenPRLift, related: list[RelatedComponent]
+        component: ComponentData,
+        input_stats: TokenPRLift,
+        related: list[RelatedComponent],
     ) -> str:
         return format_input_prompt(
             component=component,
             model_metadata=model_metadata,
             app_tok=app_tok,
-            input_token_stats=stats,
+            input_token_stats=input_stats,
             related=related,
             label_max_words=config.label_max_words,
             max_examples=config.max_examples,
+            context_tokens_per_side=context_tokens_per_side,
         )
 
     label_output = _make_process_layer(
         _get_related(get_targets),
         db.save_output_label,
         "output",
-        lambda key: get_output_token_stats(token_stats, key, app_tok, top_k=50),
+        _get_output_stats,
         _output_prompt,
     )
     label_input = _make_process_layer(
         _get_related(get_sources),
         db.save_input_label,
         "input",
-        lambda key: get_input_token_stats(token_stats, key, app_tok, top_k=20),
+        _get_input_stats,
         _input_prompt,
     )
 
@@ -337,14 +370,15 @@ async def _collect_labels(
 
 
 def _parse_label(key: str, parsed: dict[str, object], raw: str, prompt: str) -> LabelResult:
-    assert len(parsed) == 2, f"Expected 2 fields, got {len(parsed)}"
     label = parsed["label"]
     reasoning = parsed["reasoning"]
-    assert isinstance(label, str) and isinstance(reasoning, str)
+    summary = parsed.get("summary_for_neighbors", "")
+    assert isinstance(label, str) and isinstance(reasoning, str) and isinstance(summary, str)
     return LabelResult(
         component_key=key,
         label=label,
         reasoning=reasoning,
+        summary_for_neighbors=summary,
         raw_response=raw,
         prompt=prompt,
     )

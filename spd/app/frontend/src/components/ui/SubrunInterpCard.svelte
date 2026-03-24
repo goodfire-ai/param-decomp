@@ -6,11 +6,12 @@
         subrunId: string;
         strategy: string;
         llmModel: string;
+        note: string | null;
         headline: CompareInterpretationHeadline | null;
         detail: Loadable<CompareInterpretationDetail | null>;
     }
 
-    let { subrunId, strategy, llmModel, headline, detail }: Props = $props();
+    let { subrunId, strategy, llmModel, note, headline, detail }: Props = $props();
 
     let showPrompt = $state(false);
 
@@ -25,6 +26,9 @@
 
 <div class="subrun-card">
     <div class="card-header">
+        {#if note}
+            <span class="note-tag">{note}</span>
+        {/if}
         <span class="strategy-tag">{strategy}</span>
         <span class="model-tag">{shortModel}</span>
         <span class="subrun-id">{subrunId}</span>
@@ -82,6 +86,15 @@
         padding: var(--space-2) var(--space-3);
         background: var(--bg-elevated);
         border-bottom: 1px solid var(--border-default);
+    }
+
+    .note-tag {
+        font-size: var(--text-xs);
+        font-weight: 600;
+        padding: var(--space-1) var(--space-2);
+        border-radius: var(--radius-sm);
+        background: color-mix(in srgb, var(--status-warning) 20%, transparent);
+        color: var(--status-warning);
     }
 
     .strategy-tag {

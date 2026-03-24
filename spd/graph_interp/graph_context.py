@@ -16,6 +16,7 @@ class RelatedComponent:
     attribution: float
     pmi: float | None
     label: str | None
+    summary: str | None
 
 
 GetAttributed = Callable[[str, int, Literal["positive", "negative"]], list[DatasetAttributionEntry]]
@@ -45,13 +46,14 @@ def get_related_components(
             f"Same-layer component {e.component_key} in related list for {component_key}"
         )
 
-        label = labels_so_far.get(e.component_key)
+        label_result = labels_so_far.get(e.component_key)
         result.append(
             RelatedComponent(
                 component_key=e.component_key,
                 attribution=e.value,
                 pmi=correlation_storage.pmi(component_key, e.component_key),
-                label=label.label if label else None,
+                label=label_result.label if label_result else None,
+                summary=label_result.summary_for_neighbors if label_result else None,
             )
         )
 

@@ -9,11 +9,11 @@ from spd.autointerp.config import RichExamplesConfig
 from spd.autointerp.prompt_helpers import (
     DATASET_DESCRIPTIONS,
     build_annotated_examples,
-    density_note,
+    describe_example_rendering,
     human_layer_desc,
-    layer_position_note,
 )
 from spd.autointerp.schemas import DecompositionMethod, ModelMetadata
+from spd.harvest.analysis import TokenPRLift
 from spd.harvest.schemas import ComponentData
 from spd.utils.markdown import Md
 
@@ -24,8 +24,10 @@ _DECOMPOSITION_DESCRIPTIONS: dict[DecompositionMethod, str] = {
         "When the model processes a token, each component computes an activation: the inner "
         "product of the residual stream with its read direction v_i. This value can be "
         "positive or negative depending on how the input aligns with v_i — the sign is an "
-        "arbitrary consequence of how the vectors were initialised and does not indicate "
-        "suppression. What matters is the magnitude. "
+        "arbitrary consequence of how the vectors were initialised and does not by itself "
+        "mean suppression. CI and activation magnitude are the main indicators of whether "
+        "the component is active at a position, but within one component the sign can still "
+        "separate distinct patterns. "
         "Each component also has a causal importance (CI) value per token position: CI near 1 "
         "means the component is essential at that position, CI near 0 means it can be ablated "
         "without affecting output. A component 'fires' when its CI is high."
@@ -48,9 +50,15 @@ def format_prompt(
     component: ComponentData,
     model_metadata: ModelMetadata,
     app_tok: AppTokenizer,
+    output_token_stats: TokenPRLift,
     context_tokens_per_side: int,
 ) -> str:
-    fires_on = build_annotated_examples(component, app_tok, config.max_examples)
+    fires_on = build_annotated_examples(
+        component,
+        app_tok,
+        config.max_examples,
+        rendering=config.example_rendering,
+    )
 
     rate_str = (
         f"~1 in {int(1 / component.firing_density)} tokens"
@@ -60,10 +68,7 @@ def format_prompt(
 
     canonical = model_metadata.layer_descriptions.get(component.layer, component.layer)
     layer_desc = human_layer_desc(canonical, model_metadata.n_blocks)
-    position_note = layer_position_note(canonical, model_metadata.n_blocks)
-    dens_note = density_note(component.firing_density)
-
-    context_notes = " ".join(filter(None, [position_note, dens_note]))
+    model_name = model_metadata.model_class.rsplit(".", 1)[-1]
 
     dataset_line = ""
     if config.include_dataset_description:
@@ -71,12 +76,6 @@ def format_prompt(
             model_metadata.dataset_name, model_metadata.dataset_name
         )
         dataset_line = f", dataset: {dataset_desc}"
-
-    forbidden_sentence = (
-        "FORBIDDEN vague words: " + ", ".join(config.forbidden_words) + ". "
-        if config.forbidden_words
-        else ""
-    )
 
     md = Md()
     md.p("Describe what this neural network component does.")
@@ -89,19 +88,17 @@ def format_prompt(
     md.p(
         "The activation examples are sampled and may not be fully representative. "
         "Look for patterns that are consistent across multiple examples, and express "
-        "uncertainty when the evidence is weak or noisy."
+        "uncertainty when the evidence is weak, noisy, or clearly mixed."
     )
 
     md.h(2, "Context")
     md.bullets(
         [
-            f"Model: {model_metadata.model_class} ({model_metadata.n_blocks} blocks){dataset_line}",
+            f"Model: {model_name} ({model_metadata.n_blocks} blocks){dataset_line}",
             f"Component location: {layer_desc}",
             f"Component firing rate: {component.firing_density * 100:.2f}% ({rate_str})",
         ]
     )
-    if context_notes:
-        md.p(context_notes)
 
     md.h(2, "Data presentation")
     md.extend(
@@ -111,30 +108,42 @@ def format_prompt(
     )
 
     md.h(3, "Example annotation format")
-    md.p(
-        "Each example is an XML block with a `<raw>` section (the unmodified text) and a "
-        "`<highlighted>` section where firing tokens are wrapped as "
-        "`<<<token (ci:X, act:Y)>>>` — ci is the causal importance, act is the component's "
-        "inner activation at that position. Non-firing tokens appear as plain text."
-    )
+    md.p(describe_example_rendering(config.example_rendering))
     _build_annotation_legend(md, component)
 
+    if output_token_stats.top_pmi:
+        md.h(2, "Output evidence")
+        md.p(
+            "Top output PMI tokens, filtered to ignore extremely low-support predictions. "
+            "These are tokens the model disproportionately predicts when this component fires."
+        )
+        md.labeled_list(
+            "**Output PMI:**",
+            [f"{repr(tok)}: {pmi:.2f}" for tok, pmi in output_token_stats.top_pmi[:10]],
+        )
+
     md.h(2, "Activation examples — where the component fires")
-    md.p(
-        "Each firing token shows its activation values inline. "
-        "Use these to judge how strongly the component responds at each position."
-    )
+    if config.example_rendering.format == "xml":
+        md.p(
+            "Each example shows both the raw window and a highlighted version with inline "
+            "activation values on firing tokens."
+        )
+    else:
+        md.p(
+            "Each firing token shows its activation values inline. "
+            "Use these to judge how strongly the component responds at each position."
+        )
     md.extend(fires_on)
 
     md.h(2, "Task")
     md.p(
         f"Give a {config.label_max_words}-word-or-fewer label describing this component's "
         "function. The label should read like a short description of the job this component "
-        "does in the network. Use both the input and output evidence."
+        "does in the network. Use both the activation examples and the output evidence."
     )
     md.p(
-        f"Be epistemically honest — express uncertainty in the label "
-        f"when the evidence is weak or ambiguous. {forbidden_sentence}Lowercase only."
+        "Be epistemically honest — express uncertainty in the label "
+        "when the evidence is weak, ambiguous, or mixed. Lowercase only."
     )
 
     return md.build()
@@ -155,7 +164,9 @@ def _build_data_section(
         f"Each activation example below shows a {window_size}-token window centered on the "
         f"firing token, with up to {context_tokens_per_side} tokens of context on each side. "
         f"Windows are truncated at sequence boundaries. "
-        f"Examples are sampled uniformly at random from all firings across the dataset."
+        f"Examples are sampled uniformly at random from all firings across the dataset. "
+        "If a firing token appears at the left or right edge of the shown window, that may "
+        "itself be evidence of a boundary or beginning-of-sequence feature."
     )
     return md
 
@@ -189,4 +200,7 @@ def _build_annotation_legend(md: Md, component: ComponentData) -> None:
         )
     if legend_items:
         md.bullets(legend_items)
-    md.p("Example: `the <<<cat (ci:0.92, act:0.45)>>> sat` — 'cat' is a firing token.")
+    md.p(
+        "Example: `the [[[cat]]] (ci:0.92, act:0.45) sat` or `the <<<cat (ci:0.92, act:0.45)>>> sat` "
+        "— 'cat' is a firing token."
+    )

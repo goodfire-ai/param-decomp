@@ -219,6 +219,10 @@ async def request_component_interpretation(
     assert isinstance(raw_ctx, int), f"expected int, got {type(raw_ctx)}"
     context_tokens_per_side = raw_ctx
 
+    raw_threshold = harvest_config.get("activation_threshold", 0.0)
+    assert isinstance(raw_threshold, int | float)
+    activation_threshold = float(raw_threshold)
+
     try:
         result = await interpret_component(
             provider=provider,
@@ -229,6 +233,7 @@ async def request_component_interpretation(
             input_token_stats=input_token_stats,
             output_token_stats=output_token_stats,
             context_tokens_per_side=context_tokens_per_side,
+            activation_threshold=activation_threshold,
         )
     except Exception as e:
         raise HTTPException(

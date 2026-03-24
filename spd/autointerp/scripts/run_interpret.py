@@ -12,8 +12,13 @@ from dotenv import load_dotenv
 
 from spd.adapters import adapter_from_id
 from spd.autointerp.config import AutointerpConfig
-from spd.autointerp.interpret import run_interpret
+from spd.autointerp.interpret import resolve_target_component_keys, run_interpret
 from spd.autointerp.schemas import get_autointerp_dir, get_autointerp_subrun_dir
+from spd.autointerp.subsets import (
+    get_subrun_component_keys_path,
+    load_component_keys_file,
+    save_component_keys_file,
+)
 from spd.harvest.repo import HarvestRepo
 from spd.log import logger
 
@@ -33,20 +38,42 @@ def main(
     provider = create_provider(interp_config.llm)
 
     harvest = HarvestRepo(decomposition_id, subrun_id=harvest_subrun_id, readonly=False)
+    target_component_keys = (
+        load_component_keys_file(interp_config.component_keys_path)
+        if interp_config.component_keys_path is not None
+        else None
+    )
 
     if autointerp_subrun_id is not None:
         subrun_dir = get_autointerp_dir(decomposition_id) / autointerp_subrun_id
-        assert subrun_dir.exists(), f"Subrun dir not found: {subrun_dir}"
-        logger.info(f"Resuming existing subrun: {autointerp_subrun_id}")
+        if subrun_dir.exists():
+            logger.info(f"Resuming existing subrun: {autointerp_subrun_id}")
+        else:
+            subrun_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Starting new subrun: {autointerp_subrun_id}")
     else:
-        autointerp_subrun_id = "a-" + datetime.now().strftime("%Y%m%d_%H%M%S")
+        autointerp_subrun_id = "a-" + datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         subrun_dir = get_autointerp_subrun_dir(decomposition_id, autointerp_subrun_id)
         subrun_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save config for reproducibility
+    # Save config + provenance
     interp_config.to_file(subrun_dir / "config.yaml")
 
     db_path = subrun_dir / "interp.db"
+    from spd.autointerp.db import InterpDB
+
+    db = InterpDB(db_path)
+    db.save_config("harvest_subrun_id", harvest_subrun_id)
+    if interp_config.component_keys_path is not None:
+        resolved_keys = resolve_target_component_keys(
+            harvest.get_summary(),
+            interp_config.limit,
+            target_component_keys,
+        )
+        selected_keys_path = get_subrun_component_keys_path(subrun_dir)
+        save_component_keys_file(selected_keys_path, resolved_keys)
+        db.save_config("component_keys_file", selected_keys_path.name)
+    db.close()
 
     logger.info(f"Autointerp run: {subrun_dir}")
 
@@ -54,7 +81,8 @@ def main(
 
     run_interpret(
         provider=provider,
-        limit=interp_config.limit,
+        limit=None if target_component_keys is not None else interp_config.limit,
+        component_keys=target_component_keys,
         cost_limit_usd=interp_config.cost_limit_usd,
         max_requests_per_minute=interp_config.max_requests_per_minute,
         model_metadata=adapter.model_metadata,

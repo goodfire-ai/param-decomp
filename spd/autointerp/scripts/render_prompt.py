@@ -8,6 +8,7 @@ from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.autointerp.config import RichExamplesConfig
 from spd.autointerp.schemas import ModelMetadata
 from spd.autointerp.strategies.rich_examples import format_prompt
+from spd.harvest.analysis import TokenPRLift
 from spd.harvest.schemas import ActivationExample, ComponentData, ComponentTokenPMI
 
 TOKENIZER_NAME = "openai-community/gpt2"
@@ -180,7 +181,14 @@ DUMMY_CONFIG = RichExamplesConfig(
     max_examples=30,
     include_dataset_description=True,
     label_max_words=8,
-    forbidden_words=None,
+)
+
+DUMMY_OUTPUT_TOKEN_STATS = TokenPRLift(
+    top_recall=[],
+    top_precision=[],
+    top_lift=[],
+    top_pmi=[(" question", 2.4), (" what", 2.1), (" why", 1.9)],
+    bottom_pmi=None,
 )
 
 
@@ -191,6 +199,7 @@ def main() -> None:
         component=DUMMY_COMPONENT,
         model_metadata=DUMMY_MODEL_METADATA,
         app_tok=app_tok,
+        output_token_stats=DUMMY_OUTPUT_TOKEN_STATS,
         context_tokens_per_side=10,
     )
     print(prompt)
