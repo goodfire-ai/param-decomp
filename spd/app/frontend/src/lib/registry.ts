@@ -38,6 +38,10 @@ export const CANONICAL_RUNS: RegistryEntry[] = [
                 path: "/mnt/polished-lake/artifacts/mechanisms/spd/clustering/runs/c-70b28465/cluster_mapping.json",
                 notes: "range α=1, iter 9100, 500K toks (old, lower quality)",
             },
+            {
+                path: "/mnt/polished-lake/artifacts/mechanisms/spd/clustering/runs/c-eae05b96/cluster_mapping_alpha2_i8000.json",
+                notes: "range α=2, iter 8000, 10M toks (old, lower quality)",
+            },
          ],
     },
     {
