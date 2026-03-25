@@ -8,8 +8,7 @@ from jaxtyping import Float, Int
 from torch import Tensor
 
 from spd.app.backend.app_tokenizer import AppTokenizer
-from spd.editing._editing import get_ci, get_component_activations, parse_component_key
-from spd.editing.component_trainer import train_write_delta, write_edit
+from spd.editing._editing import parse_component_key
 from spd.models.component_model import ComponentModel
 
 
@@ -32,90 +31,33 @@ class ExampleDiff:
     max_kl: float
 
 
-@dataclass
-class TrainResult:
-    diffs: list[ExampleDiff]
-    train_prob: float
-    heldout_prob: float
-    steps: int
-    u_delta: Float[Tensor, " d_out"]
-
-
-def train_and_compare(
+def compute_diffs(
+    forward_fn: Callable[[Tensor], Tensor],
     model: ComponentModel,
     tok: AppTokenizer,
     component_key: str,
-    train_seqs: list[tuple[Int[Tensor, " seq"], list[int]]],
-    heldout_seqs: list[tuple[Int[Tensor, " seq"], list[int]]],
-    target_token: int,
-    lr: float = 1e-3,
-    n_steps: int = 100,
-    topk: int = 8,
-) -> TrainResult:
-    """Train a component's write vector and return per-token before/after comparisons.
-
-    train_seqs should already have target positions mutated to target_token.
-    """
-    forward_base = lambda tokens: model._extract_output(model.target_model(tokens))
-
-    baseline_logits: list[Float[Tensor, "seq vocab"]] = []
-    with torch.no_grad():
-        for tokens_t, _ in heldout_seqs:
-            baseline_logits.append(forward_base(tokens_t.unsqueeze(0))[0])
-
-    u_delta = train_write_delta(model, component_key, train_seqs, lr=lr, n_steps=n_steps)
-
-    with write_edit(model, component_key, u_delta) as forward_fn, torch.no_grad():
-        train_probs = _eval_probs(forward_fn, train_seqs, target_token)
-        heldout_probs = _eval_probs(forward_fn, heldout_seqs, target_token)
-        diffs = _compute_diffs(
-            forward_fn, model, tok, component_key, heldout_seqs, baseline_logits, topk
-        )
-
-    diffs.sort(key=lambda d: -d.max_kl)
-    return TrainResult(
-        diffs=diffs,
-        train_prob=sum(train_probs) / len(train_probs),
-        heldout_prob=sum(heldout_probs) / len(heldout_probs),
-        steps=n_steps,
-        u_delta=u_delta,
-    )
-
-
-def _eval_probs(
-    forward_fn: Callable[[Tensor], Tensor],
     seqs: list[tuple[Int[Tensor, " seq"], list[int]]],
-    target_token: int,
-) -> list[float]:
-    probs = []
-    for tokens_t, positions in seqs:
-        logits = forward_fn(tokens_t.unsqueeze(0))
-        for p in positions:
-            probs.append(logits[0, p].softmax(-1)[target_token].item())
-    return probs
-
-
-def _compute_diffs(
-    forward_fn: Callable[[Tensor], Tensor],
-    model: ComponentModel,
-    tok: AppTokenizer,
-    component_key: str,
-    heldout_seqs: list[tuple[Int[Tensor, " seq"], list[int]]],
     baseline_logits: list[Float[Tensor, "seq vocab"]],
-    topk: int,
+    topk: int = 8,
 ) -> list[ExampleDiff]:
+    """Per-token before/after diffs for a set of sequences."""
     module, cidx = parse_component_key(component_key)
     results = []
 
-    for i, (tokens_t, positions) in enumerate(heldout_seqs):
+    for i, (tokens_t, positions) in enumerate(seqs):
         probs_base = baseline_logits[i].softmax(-1)
         probs_edit = forward_fn(tokens_t.unsqueeze(0))[0].softmax(-1)
-
         kl = (probs_edit * ((probs_edit + 1e-10).log() - (probs_base + 1e-10).log())).sum(-1)
 
-        ci_map = get_ci(model, tokens_t)
-        ci_vals = ci_map[module][:, cidx].cpu()
-        act_vals = get_component_activations(model, tokens_t, component_key).cpu()
+        with torch.no_grad():
+            out = model(tokens_t.unsqueeze(0), cache_type="input")
+            ci = model.calc_causal_importances(
+                pre_weight_acts=out.cache, sampling="continuous", detach_inputs=False
+            )
+        ci_vals = ci.lower_leaky[module].squeeze(0)[:, cidx].cpu()
+
+        pre_weight_acts = out.cache[module]  # [1, seq, d_in]
+        act_vals = (pre_weight_acts @ model.components[module].V[:, cidx]).squeeze(0).cpu()
 
         spans = tok.get_spans(tokens_t.tolist())
         firing_set = set(positions)
