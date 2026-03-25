@@ -8,7 +8,7 @@ from jaxtyping import Float, Int
 from torch import Tensor
 
 from spd.app.backend.app_tokenizer import AppTokenizer
-from spd.editing._editing import parse_component_key
+from spd.editing.utils import parse_component_key
 from spd.models.component_model import ComponentModel
 
 
