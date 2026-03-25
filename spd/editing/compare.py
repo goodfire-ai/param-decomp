@@ -8,8 +8,9 @@ from jaxtyping import Float, Int
 from torch import Tensor
 
 from spd.app.backend.app_tokenizer import AppTokenizer
-from spd.editing._editing import EditableModel, parse_component_key
+from spd.editing._editing import get_ci, get_component_activations, parse_component_key
 from spd.editing.component_trainer import train_write_delta, write_edit
+from spd.models.component_model import ComponentModel
 
 
 @dataclass
@@ -41,7 +42,7 @@ class TrainResult:
 
 
 def train_and_compare(
-    em: EditableModel,
+    model: ComponentModel,
     tok: AppTokenizer,
     component_key: str,
     train_seqs: list[tuple[Int[Tensor, " seq"], list[int]]],
@@ -55,22 +56,20 @@ def train_and_compare(
 
     train_seqs should already have target positions mutated to target_token.
     """
-    # Cache baselines before any edit
+    forward_base = lambda tokens: model._extract_output(model.target_model(tokens))
+
     baseline_logits: list[Float[Tensor, "seq vocab"]] = []
-    forward_fn_base = lambda tokens: em.model._extract_output(em.model.target_model(tokens))
     with torch.no_grad():
         for tokens_t, _ in heldout_seqs:
-            baseline_logits.append(forward_fn_base(tokens_t.unsqueeze(0))[0])
+            baseline_logits.append(forward_base(tokens_t.unsqueeze(0))[0])
 
-    # Train
-    u_delta = train_write_delta(em.model, component_key, train_seqs, lr=lr, n_steps=n_steps)
+    u_delta = train_write_delta(model, component_key, train_seqs, lr=lr, n_steps=n_steps)
 
-    # Eval with the learned delta
-    with write_edit(em.model, component_key, u_delta) as forward_fn, torch.no_grad():
+    with write_edit(model, component_key, u_delta) as forward_fn, torch.no_grad():
         train_probs = _eval_probs(forward_fn, train_seqs, target_token)
         heldout_probs = _eval_probs(forward_fn, heldout_seqs, target_token)
         diffs = _compute_diffs(
-            forward_fn, em, tok, component_key, heldout_seqs, baseline_logits, topk
+            forward_fn, model, tok, component_key, heldout_seqs, baseline_logits, topk
         )
 
     diffs.sort(key=lambda d: -d.max_kl)
@@ -98,7 +97,7 @@ def _eval_probs(
 
 def _compute_diffs(
     forward_fn: Callable[[Tensor], Tensor],
-    em: EditableModel,
+    model: ComponentModel,
     tok: AppTokenizer,
     component_key: str,
     heldout_seqs: list[tuple[Int[Tensor, " seq"], list[int]]],
@@ -114,9 +113,9 @@ def _compute_diffs(
 
         kl = (probs_edit * ((probs_edit + 1e-10).log() - (probs_base + 1e-10).log())).sum(-1)
 
-        ci_map = em.get_ci(tokens_t)
+        ci_map = get_ci(model, tokens_t)
         ci_vals = ci_map[module][:, cidx].cpu()
-        act_vals = em.get_component_activations(tokens_t, component_key).cpu()
+        act_vals = get_component_activations(model, tokens_t, component_key).cpu()
 
         spans = tok.get_spans(tokens_t.tolist())
         firing_set = set(positions)
