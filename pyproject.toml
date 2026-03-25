@@ -73,7 +73,7 @@ include = ["spd*"]
 [tool.ruff]
 line-length = 100
 fix = true
-extend-exclude = ["spd/app/frontend"]
+extend-exclude = ["spd/app/frontend", "scribe-internal-old", "scripts", "scratch.py"]
 
 [tool.ruff.lint]
 ignore = [

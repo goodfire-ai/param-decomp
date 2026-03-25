@@ -18,13 +18,20 @@ from spd.editing._editing import (
     search_by_token_pmi,
     search_interpretations,
 )
+from spd.editing.compare import ExampleDiff, TokenDiff, TrainResult, train_and_compare
 from spd.editing.component_trainer import ComponentTrainer
+from spd.editing.viz import render_edit_comparison
 
 __all__ = [
     "AblationEffect",
     "AlignmentResult",
     "ComponentMatch",
     "ComponentTrainer",
+    "ExampleDiff",
+    "TokenDiff",
+    "TrainResult",
+    "train_and_compare",
+    "render_edit_comparison",
     "ComponentVectors",
     "EditableModel",
     "ForwardFn",
