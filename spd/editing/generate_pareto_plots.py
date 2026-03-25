@@ -278,8 +278,9 @@ def main(out_dir: Path) -> None:
     random.seed(42)
     random.shuffle(examples)
 
-    # Eval: 50 examples (indices 32-82), train pool: rest
-    eval_examples = examples[32:82]
+    # Eval: first 50 examples, train: rest
+    eval_examples = examples[:50]
+    train_pool = examples[50:]
     eval_tokens = [torch.tensor(ex.token_ids, device="cuda") for ex in eval_examples]
 
     dl, _ = train_loader_and_tokenizer(config, batch_size=40)
@@ -313,7 +314,6 @@ def main(out_dir: Path) -> None:
     print("SPD analytical done")
 
     # --- SPD trained ---
-    train_pool = examples[:32] + examples[82:]
 
     for n_ex in [1, 4, 8, 16]:
         train_seqs = make_train_seqs(train_pool[:n_ex])

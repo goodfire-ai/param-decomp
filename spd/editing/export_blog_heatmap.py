@@ -18,9 +18,10 @@ import torch
 from torch import Tensor
 
 from spd.app.backend.app_tokenizer import AppTokenizer
+from spd.data import train_loader_and_tokenizer
 from spd.editing.component_trainer import write_edit
 from spd.editing.lora_baseline import LoRATrainer
-from spd.editing.utils import eval_dataloader, load_model
+from spd.editing.utils import load_model
 from spd.harvest.repo import HarvestRepo
 from spd.harvest.schemas import ActivationExample
 
@@ -100,8 +101,8 @@ def main(out_dir: Path) -> None:
     random.seed(42)
     random.shuffle(examples)
 
-    # Eval: 30 examples (indices 32-62), train pool: rest
-    eval_examples = examples[32:62]
+    # Eval: first 30 examples, train: rest
+    eval_examples = examples[:30]
     eval_tokens = [torch.tensor(ex.token_ids, device="cuda") for ex in eval_examples]
 
     # --- SPD analytical: U = -3 * unembed('o') / |unembed('o')| ---
@@ -121,7 +122,7 @@ def main(out_dir: Path) -> None:
     print(f"SPD: {len(spd_examples)} examples")
 
     # --- LoRA: n=all, λ=10, 300 steps ---
-    train_pool = examples[:32] + examples[62:]
+    train_pool = examples[30:]
     train_seqs = []
     for ex in train_pool:
         t = torch.tensor(ex.token_ids, device="cuda")
@@ -130,7 +131,7 @@ def main(out_dir: Path) -> None:
             t[pos + 1] = TARGET_TOKEN
         train_seqs.append((t, positions))
 
-    dl = eval_dataloader(config, batch_size=20)
+    dl, _ = train_loader_and_tokenizer(config, batch_size=20)
     reg_seqs = [row.cuda() for row in next(iter(dl))["input_ids"]]
 
     lora = LoRATrainer(model.target_model, LAYER_PATH, reg_seqs, lr=1e-3)
