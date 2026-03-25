@@ -107,6 +107,10 @@ class ComponentTrainer:
                 trainable_params.append(comp.U)
 
         assert trainable_params, "No trainable parameters"
+        self._trainable_params = trainable_params
+        self._lr = lr
+        self._weight_decay = weight_decay
+        self._original_params = {id(p): p.detach().clone() for p in trainable_params}
         self.optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=weight_decay)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Tensor:
@@ -154,6 +158,22 @@ class ComponentTrainer:
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+
+    def reset(self) -> None:
+        """Restore original parameter values and re-create optimizer. No model reload needed.
+
+        After reset, the trainer is in the same state as after __init__ — ready for a
+        fresh training run on the same component(s).
+        """
+        with torch.no_grad():
+            for p in self._trainable_params:
+                p.copy_(self._original_params[id(p)])
+        self._frozen_weight_deltas = {
+            k: v.detach().clone() for k, v in self.model.calc_weight_deltas().items()
+        }
+        self.optimizer = torch.optim.AdamW(
+            self._trainable_params, lr=self._lr, weight_decay=self._weight_decay
+        )
 
     def cleanup(self) -> None:
         """Remove gradient hooks and re-freeze parameters."""

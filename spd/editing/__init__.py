@@ -20,6 +20,7 @@ from spd.editing._editing import (
 )
 from spd.editing.compare import ExampleDiff, TokenDiff, TrainResult, train_and_compare
 from spd.editing.component_trainer import ComponentTrainer
+from spd.editing.lora_baseline import LoRATrainer
 from spd.editing.viz import render_edit_comparison
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "AlignmentResult",
     "ComponentMatch",
     "ComponentTrainer",
+    "LoRATrainer",
     "ExampleDiff",
     "TokenDiff",
     "TrainResult",
