@@ -19,7 +19,7 @@ from spd.editing._editing import (
     search_interpretations,
 )
 from spd.editing.compare import ExampleDiff, TokenDiff, TrainResult, train_and_compare
-from spd.editing.component_trainer import ComponentTrainer
+from spd.editing.component_trainer import train_write_delta, write_edit
 from spd.editing.lora_baseline import LoRATrainer
 from spd.editing.viz import render_edit_comparison
 
@@ -27,12 +27,13 @@ __all__ = [
     "AblationEffect",
     "AlignmentResult",
     "ComponentMatch",
-    "ComponentTrainer",
     "LoRATrainer",
     "ExampleDiff",
     "TokenDiff",
     "TrainResult",
     "train_and_compare",
+    "train_write_delta",
+    "write_edit",
     "render_edit_comparison",
     "ComponentVectors",
     "EditableModel",

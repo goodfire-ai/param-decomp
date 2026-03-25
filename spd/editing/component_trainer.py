@@ -1,184 +1,121 @@
-"""Train specific component U/V vectors on arbitrary losses.
+"""Write-vector editing for SPD components.
 
-Each SPD component is a rank-1 adapter: V[:, c] @ U[c, :]. This module lets you
-unfreeze specific read (V column) or write (U row) vectors and optimize them,
-while the rest of the model stays frozen. The forward pass uses all-ones component
-masks plus a snapshotted weight delta, so it starts from the target model's behavior
-and learns rank-1 perturbations.
+Each SPD component is a rank-1 adapter: V[:, c] @ U[c, :]. The write vector (U row)
+determines what the component contributes to the residual stream. This module provides
+functions to train or analytically set write vectors, producing a U delta tensor that
+can be applied via a forward hook.
+
+The delta formulation: with the hook installed, forward pass computes
+    target_model(x) + (x @ V_col) * U_delta
+where V_col is the component's read vector (fixed) and U_delta is the learned or
+analytical perturbation. No weight snapshots needed.
 
 Usage:
-    em, tok = EditableModel.from_wandb("wandb:goodfire/spd/s-892f140b")
+    em, tok = EditableModel.from_wandb("wandb:goodfire/spd/s-55ea3f9b")
 
-    trainer = ComponentTrainer(
-        em.model,
-        targets={"h.1.mlp.down_proj:798": "both", "h.1.attn.o_proj:82": "write"},
-        lr=1e-4,
-    )
+    # Analytical: set U to negated unembed direction
+    unembed = em.model.target_model.lm_head.weight[token_id].detach()
+    u_delta = -3.0 * unembed / unembed.norm()
+    with write_edit(em.model, "h.2.mlp.down_proj:2359", u_delta) as forward_fn:
+        logits = forward_fn(tokens.unsqueeze(0))
 
-    for batch_tokens in data:
-        logits = trainer(batch_tokens)
-        loss = F.cross_entropy(logits[:, :-1].flatten(0, 1), batch_tokens[:, 1:].flatten())
-        trainer.step(loss)
-
-    trainer.cleanup()
+    # Trained:
+    u_delta = train_write_delta(em.model, "h.2.mlp.down_proj:2359", train_seqs, lr=1e-3)
+    with write_edit(em.model, "h.2.mlp.down_proj:2359", u_delta) as forward_fn:
+        logits = forward_fn(tokens.unsqueeze(0))
 """
 
-from functools import partial
-from typing import Any, Literal
+from contextlib import contextmanager
+from typing import Any
 
 import torch
-from jaxtyping import Float
+import torch.nn.functional as F
+from jaxtyping import Float, Int
 from torch import Tensor
-from torch.utils.hooks import RemovableHandle
 
 from spd.editing._editing import parse_component_key
 from spd.models.component_model import ComponentModel
-from spd.models.components import EmbeddingComponents
-
-TrainMode = Literal["read", "write", "both"]
 
 
-class ComponentTrainer:
-    """Trains specific component U/V vectors while the rest of the model is frozen.
+def _get_linear(model: ComponentModel, module_path: str) -> torch.nn.Linear:
+    mod: Any = model.target_model
+    for part in module_path.split("."):
+        mod = getattr(mod, part)
+    assert isinstance(mod, torch.nn.Linear)
+    return mod
 
-    Forward pass runs through all components with ones masks + frozen weight delta,
-    so the model starts from target-model behavior. Only the specified V columns
-    (read vectors) and/or U rows (write vectors) receive gradients.
+
+@contextmanager
+def write_edit(
+    model: ComponentModel,
+    comp_key: str,
+    u_delta: Float[Tensor, " d_out"],
+):
+    """Context manager that applies a write-vector delta to a component.
+
+    Yields a forward_fn(tokens) -> logits that runs the target model with the
+    rank-1 perturbation: output += (x @ V_col) * U_delta.
     """
+    module_path, cidx = parse_component_key(comp_key)
+    v_col = model.components[module_path].V[:, cidx].detach()
+    linear = _get_linear(model, module_path)
 
-    def __init__(
-        self,
-        model: ComponentModel,
-        targets: dict[str, TrainMode],
-        lr: float,
-        weight_decay: float = 0.0,
-    ):
-        self.model = model
-        self.model.train()
+    def hook(_mod: torch.nn.Module, _inp: tuple[Any, ...], out: Tensor) -> Tensor:
+        x = _inp[0]  # [..., d_in]
+        activation = x @ v_col  # [...] — scalar per position
+        return out + activation.unsqueeze(-1) * u_delta.unsqueeze(0)
 
-        # Snapshot weight deltas BEFORE changing requires_grad
-        self._frozen_weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] = {
-            k: v.detach().clone() for k, v in model.calc_weight_deltas().items()
-        }
+    handle = linear.register_forward_hook(hook)
 
-        # Freeze everything
-        model.requires_grad_(False)
+    def forward_fn(tokens: Tensor) -> Tensor:
+        return model._extract_output(model.target_model(tokens))
 
-        # Parse targets into per-layer specs
-        layer_specs: dict[str, dict[int, TrainMode]] = {}
-        for key, mode in targets.items():
-            layer, idx = parse_component_key(key)
-            assert layer in model.components, f"Unknown layer: {layer}"
-            assert idx < model.components[layer].C, (
-                f"Component index {idx} >= C={model.components[layer].C} for {layer}"
-            )
-            layer_specs.setdefault(layer, {})[idx] = mode
+    try:
+        yield forward_fn
+    finally:
+        handle.remove()
 
-        # Unfreeze relevant V/U params and register gradient masks
-        self._grad_hooks: list[RemovableHandle] = []
-        trainable_params: list[Tensor] = []
 
-        for layer, specs in layer_specs.items():
-            comp = model.components[layer]
+def train_write_delta(
+    model: ComponentModel,
+    comp_key: str,
+    train_seqs: list[tuple[Int[Tensor, " seq"], list[int]]],
+    lr: float = 1e-3,
+    n_steps: int = 100,
+) -> Float[Tensor, " d_out"]:
+    """Train a write-vector delta for a component. Returns the learned U delta.
 
-            train_any_read = any(m in ("read", "both") for m in specs.values())
-            train_any_write = any(m in ("write", "both") for m in specs.values())
+    Does not mutate the model. The delta can be applied with write_edit().
+    """
+    module_path, cidx = parse_component_key(comp_key)
+    v_col = model.components[module_path].V[:, cidx].detach()
+    linear = _get_linear(model, module_path)
 
-            if train_any_read:
-                comp.V.requires_grad = True
-                v_mask = torch.zeros(comp.C, device=comp.V.device)
-                for idx, mode in specs.items():
-                    if mode in ("read", "both"):
-                        v_mask[idx] = 1.0
-                # Mask: [C] broadcast to [d_in, C] — zeros out gradients for non-target columns
-                hook = comp.V.register_hook(lambda g, m=v_mask: g * m.unsqueeze(0))
-                self._grad_hooks.append(hook)
-                trainable_params.append(comp.V)
+    d_out = int(linear.weight.shape[0])
+    u_delta = torch.zeros(d_out, device=v_col.device)
+    u_delta.requires_grad = True
 
-            if train_any_write:
-                comp.U.requires_grad = True
-                u_mask = torch.zeros(comp.C, device=comp.U.device)
-                for idx, mode in specs.items():
-                    if mode in ("write", "both"):
-                        u_mask[idx] = 1.0
-                # Mask: [C] broadcast to [C, d_out] — zeros out gradients for non-target rows
-                hook = comp.U.register_hook(lambda g, m=u_mask: g * m.unsqueeze(1))
-                self._grad_hooks.append(hook)
-                trainable_params.append(comp.U)
+    def hook(_mod: torch.nn.Module, _inp: tuple[Any, ...], out: Tensor) -> Tensor:
+        x = _inp[0]
+        activation = x @ v_col
+        return out + activation.unsqueeze(-1) * u_delta.unsqueeze(0)
 
-        assert trainable_params, "No trainable parameters"
-        self._trainable_params = trainable_params
-        self._lr = lr
-        self._weight_decay = weight_decay
-        self._original_params = {id(p): p.detach().clone() for p in trainable_params}
-        self.optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=weight_decay)
+    handle = linear.register_forward_hook(hook)
+    optimizer = torch.optim.AdamW([u_delta], lr=lr)
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Tensor:
-        return self.forward(*args, **kwargs)
+    def forward(tokens: Tensor) -> Tensor:
+        return model._extract_output(model.target_model(tokens))
 
-    def forward(self, *args: Any, **kwargs: Any) -> Tensor:
-        """Forward pass with all-ones masks and frozen weight deltas.
+    try:
+        for _ in range(n_steps):
+            for tokens_mut, positions in train_seqs:
+                logits = forward(tokens_mut.unsqueeze(0))
+                pos_t = torch.tensor(positions, device=tokens_mut.device)
+                loss = F.cross_entropy(logits[0, positions], tokens_mut[pos_t + 1])
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+    finally:
+        handle.remove()
 
-        Accepts the same arguments as the target model. Hooks intercept each
-        decomposed layer and route through components + weight delta.
-        """
-        hooks = {
-            module_name: partial(self._component_hook, module_name=module_name)
-            for module_name in self.model.target_module_paths
-        }
-        with self.model._attach_forward_hooks(hooks):
-            raw_out = self.model.target_model(*args, **kwargs)
-        return self.model._extract_output(raw_out)
-
-    def _component_hook(
-        self,
-        _module: Any,
-        args: list[Any],
-        kwargs: dict[Any, Any],
-        _output: Any,
-        module_name: str,
-    ) -> Tensor:
-        assert len(args) == 1 and len(kwargs) == 0
-        x = args[0]
-        components = self.model.components[module_name]
-
-        batch_shape = x.shape if isinstance(components, EmbeddingComponents) else x.shape[:-1]
-
-        weight_delta = self._frozen_weight_deltas[module_name].to(x.device)
-        weight_delta_mask = torch.ones(batch_shape, device=x.device)
-
-        return components(
-            x,
-            mask=None,
-            weight_delta_and_mask=(weight_delta, weight_delta_mask),
-        )
-
-    def step(self, loss: Tensor) -> None:
-        """Backward + optimizer step."""
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
-    def reset(self) -> None:
-        """Restore original parameter values and re-create optimizer. No model reload needed.
-
-        After reset, the trainer is in the same state as after __init__ — ready for a
-        fresh training run on the same component(s).
-        """
-        with torch.no_grad():
-            for p in self._trainable_params:
-                p.copy_(self._original_params[id(p)])
-        self._frozen_weight_deltas = {
-            k: v.detach().clone() for k, v in self.model.calc_weight_deltas().items()
-        }
-        self.optimizer = torch.optim.AdamW(
-            self._trainable_params, lr=self._lr, weight_decay=self._weight_decay
-        )
-
-    def cleanup(self) -> None:
-        """Remove gradient hooks and re-freeze parameters."""
-        for hook in self._grad_hooks:
-            hook.remove()
-        self._grad_hooks.clear()
-        self.model.requires_grad_(False)
-        self.model.eval()
+    return u_delta.detach()

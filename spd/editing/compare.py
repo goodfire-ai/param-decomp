@@ -1,5 +1,6 @@
-"""Compare model outputs before and after component training."""
+"""Compare model outputs before and after component write-vector editing."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
@@ -8,7 +9,7 @@ from torch import Tensor
 
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.editing._editing import EditableModel, parse_component_key
-from spd.editing.component_trainer import ComponentTrainer, TrainMode
+from spd.editing.component_trainer import train_write_delta, write_edit
 
 
 @dataclass
@@ -36,13 +37,13 @@ class TrainResult:
     train_prob: float
     heldout_prob: float
     steps: int
+    u_delta: Float[Tensor, " d_out"]
 
 
 def train_and_compare(
     em: EditableModel,
     tok: AppTokenizer,
     component_key: str,
-    train_mode: TrainMode,
     train_seqs: list[tuple[Int[Tensor, " seq"], list[int]]],
     heldout_seqs: list[tuple[Int[Tensor, " seq"], list[int]]],
     target_token: int,
@@ -50,34 +51,27 @@ def train_and_compare(
     n_steps: int = 100,
     topk: int = 8,
 ) -> TrainResult:
-    """Train a component and return per-token before/after comparisons on held-out.
+    """Train a component's write vector and return per-token before/after comparisons.
 
-    train_seqs/heldout_seqs: list of (token_ids, firing_positions). Train seqs should
-    already have target positions mutated to target_token.
+    train_seqs should already have target positions mutated to target_token.
     """
-    trainer = ComponentTrainer(em.model, targets={component_key: train_mode}, lr=lr)
-
-    # Cache baseline logits + CI/activation on held-out
+    # Cache baselines before any edit
     baseline_logits: list[Float[Tensor, "seq vocab"]] = []
+    forward_fn_base = lambda tokens: em.model._extract_output(em.model.target_model(tokens))
     with torch.no_grad():
         for tokens_t, _ in heldout_seqs:
-            baseline_logits.append(trainer(tokens_t.unsqueeze(0))[0])
+            baseline_logits.append(forward_fn_base(tokens_t.unsqueeze(0))[0])
 
     # Train
-    for _ in range(n_steps):
-        for tokens_mut, positions in train_seqs:
-            logits = trainer(tokens_mut.unsqueeze(0))
-            pos_t = torch.tensor(positions, device=tokens_mut.device)
-            loss = torch.nn.functional.cross_entropy(logits[0, positions], tokens_mut[pos_t + 1])
-            trainer.step(loss)
+    u_delta = train_write_delta(em.model, component_key, train_seqs, lr=lr, n_steps=n_steps)
 
-    # Eval
-    with torch.no_grad():
-        train_probs = _eval_probs(trainer, train_seqs, target_token)
-        heldout_probs = _eval_probs(trainer, heldout_seqs, target_token)
-        diffs = _compute_diffs(trainer, em, tok, component_key, heldout_seqs, baseline_logits, topk)
-
-    trainer.cleanup()
+    # Eval with the learned delta
+    with write_edit(em.model, component_key, u_delta) as forward_fn, torch.no_grad():
+        train_probs = _eval_probs(forward_fn, train_seqs, target_token)
+        heldout_probs = _eval_probs(forward_fn, heldout_seqs, target_token)
+        diffs = _compute_diffs(
+            forward_fn, em, tok, component_key, heldout_seqs, baseline_logits, topk
+        )
 
     diffs.sort(key=lambda d: -d.max_kl)
     return TrainResult(
@@ -85,24 +79,25 @@ def train_and_compare(
         train_prob=sum(train_probs) / len(train_probs),
         heldout_prob=sum(heldout_probs) / len(heldout_probs),
         steps=n_steps,
+        u_delta=u_delta,
     )
 
 
 def _eval_probs(
-    trainer: ComponentTrainer,
+    forward_fn: Callable[[Tensor], Tensor],
     seqs: list[tuple[Int[Tensor, " seq"], list[int]]],
     target_token: int,
 ) -> list[float]:
     probs = []
     for tokens_t, positions in seqs:
-        logits = trainer(tokens_t.unsqueeze(0))
+        logits = forward_fn(tokens_t.unsqueeze(0))
         for p in positions:
             probs.append(logits[0, p].softmax(-1)[target_token].item())
     return probs
 
 
 def _compute_diffs(
-    trainer: ComponentTrainer,
+    forward_fn: Callable[[Tensor], Tensor],
     em: EditableModel,
     tok: AppTokenizer,
     component_key: str,
@@ -115,7 +110,7 @@ def _compute_diffs(
 
     for i, (tokens_t, positions) in enumerate(heldout_seqs):
         probs_base = baseline_logits[i].softmax(-1)
-        probs_edit = trainer(tokens_t.unsqueeze(0))[0].softmax(-1)
+        probs_edit = forward_fn(tokens_t.unsqueeze(0))[0].softmax(-1)
 
         kl = (probs_edit * ((probs_edit + 1e-10).log() - (probs_base + 1e-10).log())).sum(-1)
 
