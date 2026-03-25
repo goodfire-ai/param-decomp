@@ -135,14 +135,13 @@ def main(out_dir: Path) -> None:
     reg_seqs = [row.cuda() for row in next(iter(dl))["input_ids"]]
 
     lora = LoRATrainer(model.target_model, LAYER_PATH, reg_seqs, lr=1e-3)
-    lora_baselines = cache_baselines(lora.forward, eval_tokens)
 
     for step in range(300):
         lora.train_step(train_seqs, kl_weight=10.0)
         if step % 100 == 0:
             print(f"  LoRA step {step}")
 
-    lora_examples = export_diffs(lora.forward, lora_baselines, eval_tokens, eval_firings, tok)
+    lora_examples = export_diffs(lora.forward, true_baselines, eval_tokens, eval_firings, tok)
     lora.cleanup()
 
     print(f"LoRA: {len(lora_examples)} examples")

@@ -156,6 +156,7 @@ def label_eval_emoticons(
     resp = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=2048,
+        temperature=0.0,
         messages=[
             {
                 "role": "user",
@@ -304,6 +305,8 @@ def main(out_dir: Path) -> None:
     print("SPD analytical done")
 
     # --- SPD trained ---
+    # Hand-verified emoticon indices from the s-55ea3f9b harvest (seed=42 shuffle).
+    # Re-verified by LLM below to catch harvest ordering changes.
     VERIFIED_IDXS = [
         5,
         6,
@@ -329,6 +332,11 @@ def main(out_dir: Path) -> None:
         31,
     ]
     verified = [firings[i] for i in VERIFIED_IDXS]
+    _, verified_non = label_eval_emoticons(verified, tok.get_spans)
+    assert len(verified_non) == 0, (
+        f"VERIFIED_IDXS contains {len(verified_non)} non-emoticon examples — "
+        f"harvest ordering may have changed. Re-verify manually."
+    )
 
     for n_ex in [1, 4, 8, 16]:
         train_seqs = []
@@ -359,11 +367,10 @@ def main(out_dir: Path) -> None:
 
         for kl_w in kl_weights:
             lora.reset()
-            lora_baselines = cache_baselines(lora.forward, eval_tokens + global_tokens)
             for _ in range(300):
                 lora.train_step(train_seqs, kl_weight=kl_w)
             pareto_data[f"lora_n{n_ex}_l{kl_w}"] = measure_pareto(
-                lora.forward, lora_baselines, *pareto_eval_args
+                lora.forward, baselines, *pareto_eval_args
             )
 
         r = pareto_data[f"lora_n{n_ex}_l10.0"]
