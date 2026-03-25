@@ -22,6 +22,7 @@ from spd.editing.component_trainer import write_edit
 from spd.editing.lora_baseline import LoRATrainer
 from spd.editing.utils import eval_dataloader, load_model
 from spd.harvest.repo import HarvestRepo
+from spd.harvest.schemas import ActivationExample
 
 WANDB_PATH = "wandb:goodfire/spd/s-55ea3f9b"
 RUN_ID = "s-55ea3f9b"
@@ -29,38 +30,35 @@ COMP_KEY = "h.2.mlp.down_proj:2359"
 TARGET_TOKEN = 80  # "o"
 LAYER_PATH = "h.2.mlp.down_proj"
 
-
-def collect_firings(harvest: HarvestRepo, comp_key: str) -> list[tuple[list[int], int, set[int]]]:
-    """Returns list of (token_ids, fire_position, all_fire_positions)."""
-    comp = harvest.get_component(comp_key)
-    assert comp is not None
-    results = []
-    for ex in comp.activation_examples:
-        for i, fires in enumerate(ex.firings):
-            if fires and i + 1 < len(ex.token_ids):
-                fire_set = {j for j, f in enumerate(ex.firings) if f}
-                results.append((ex.token_ids, i, fire_set))
-    return results
-
-
 ForwardFn = Callable[[Tensor], Tensor]
+
+
+def fire_positions(ex: ActivationExample) -> list[int]:
+    return [i for i, f in enumerate(ex.firings) if f and i + 1 < len(ex.token_ids)]
+
+
+def get_examples(harvest: HarvestRepo) -> list[ActivationExample]:
+    comp = harvest.get_component(COMP_KEY)
+    assert comp is not None
+    return [ex for ex in comp.activation_examples if fire_positions(ex)]
 
 
 def export_diffs(
     forward_fn: ForwardFn,
     baseline_probs: dict[int, Tensor],
     token_tensors: list[Tensor],
-    firings: list[tuple[list[int], int, set[int]]],
+    examples: list[ActivationExample],
     tok: AppTokenizer,
     topk: int = 8,
 ) -> list[dict[str, object]]:
-    examples = []
+    results = []
     with torch.no_grad():
-        for tokens_t, (_, _, fire_set) in zip(token_tensors, firings, strict=True):
+        for tokens_t, ex in zip(token_tensors, examples, strict=True):
             probs_edit = forward_fn(tokens_t.unsqueeze(0))[0].softmax(-1)
             probs_base = baseline_probs[id(tokens_t)]
             kl = (probs_edit * ((probs_edit + 1e-10).log() - (probs_base + 1e-10).log())).sum(-1)
             spans = tok.get_spans(tokens_t.tolist())
+            fires = {i for i, f in enumerate(ex.firings) if f}
 
             tokens_out = []
             for t in range(len(spans)):
@@ -70,7 +68,7 @@ def export_diffs(
                     {
                         "span": spans[t],
                         "kl": round(kl[t].item(), 6),
-                        "fires": t in fire_set,
+                        "fires": t in fires,
                         "topk_before": [
                             [tok.get_tok_display(int(j)), round(probs_base[t, j].item(), 4)]
                             for j in before_idx
@@ -81,8 +79,8 @@ def export_diffs(
                         ],
                     }
                 )
-            examples.append({"tokens": tokens_out})
-    return examples
+            results.append({"tokens": tokens_out})
+    return results
 
 
 def cache_baselines(forward_fn: ForwardFn, token_tensors: list[Tensor]) -> dict[int, Tensor]:
@@ -98,14 +96,13 @@ def main(out_dir: Path) -> None:
     harvest = HarvestRepo.open_most_recent(RUN_ID)
     assert harvest is not None
 
-    # Collect and shuffle firings
-    all_firings = collect_firings(harvest, COMP_KEY)
+    examples = get_examples(harvest)
     random.seed(42)
-    random.shuffle(all_firings)
+    random.shuffle(examples)
 
-    # Eval: 30 held-out examples (indices 32-62)
-    eval_firings = all_firings[32:62]
-    eval_tokens = [torch.tensor(ids, device="cuda") for ids, _, _ in eval_firings]
+    # Eval: 30 examples (indices 32-62), train pool: rest
+    eval_examples = examples[32:62]
+    eval_tokens = [torch.tensor(ex.token_ids, device="cuda") for ex in eval_examples]
 
     # --- SPD analytical: U = -3 * unembed('o') / |unembed('o')| ---
     lm_head = model.target_model.lm_head
@@ -119,17 +116,19 @@ def main(out_dir: Path) -> None:
     true_baselines = cache_baselines(base_forward, eval_tokens)
 
     with write_edit(model, COMP_KEY, u_delta) as spd_forward:
-        spd_examples = export_diffs(spd_forward, true_baselines, eval_tokens, eval_firings, tok)
+        spd_examples = export_diffs(spd_forward, true_baselines, eval_tokens, eval_examples, tok)
 
     print(f"SPD: {len(spd_examples)} examples")
 
     # --- LoRA: n=all, λ=10, 300 steps ---
-    train_firings = all_firings[:32] + all_firings[62:]
+    train_pool = examples[:32] + examples[62:]
     train_seqs = []
-    for ids, pos, _ in train_firings:
-        t = torch.tensor(ids, device="cuda")
-        t[pos + 1] = TARGET_TOKEN
-        train_seqs.append((t, [pos]))
+    for ex in train_pool:
+        t = torch.tensor(ex.token_ids, device="cuda")
+        positions = fire_positions(ex)
+        for pos in positions:
+            t[pos + 1] = TARGET_TOKEN
+        train_seqs.append((t, positions))
 
     dl = eval_dataloader(config, batch_size=20)
     reg_seqs = [row.cuda() for row in next(iter(dl))["input_ids"]]
@@ -141,7 +140,7 @@ def main(out_dir: Path) -> None:
         if step % 100 == 0:
             print(f"  LoRA step {step}")
 
-    lora_examples = export_diffs(lora.forward, true_baselines, eval_tokens, eval_firings, tok)
+    lora_examples = export_diffs(lora.forward, true_baselines, eval_tokens, eval_examples, tok)
     lora.cleanup()
 
     print(f"LoRA: {len(lora_examples)} examples")

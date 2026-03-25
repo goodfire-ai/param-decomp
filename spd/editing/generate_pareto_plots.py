@@ -1,7 +1,7 @@
 """Generate Pareto frontier plots: SPD component editing vs LoRA baseline.
 
 Sweeps SPD analytical (α), SPD trained (n), and LoRA (n × λ), then plots
-P('o') vs surrounding/global KL for all firings, emoticon-only, and non-emoticon.
+P('o') vs surrounding/global KL for all examples, emoticon-only, and non-emoticon.
 
 Usage:
     python -m spd.editing.generate_pareto_plots --out-dir figures/
@@ -32,6 +32,15 @@ TARGET_TOKEN = 80  # "o"
 LAYER_PATH = "h.2.mlp.down_proj"
 
 ForwardFn = Callable[[Tensor], Tensor]
+
+
+def fire_positions(ex: ActivationExample) -> list[int]:
+    """Positions where the component fires and a next-token exists."""
+    return [i for i, f in enumerate(ex.firings) if f and i + 1 < len(ex.token_ids)]
+
+
+def fire_set(ex: ActivationExample) -> set[int]:
+    return {i for i, f in enumerate(ex.firings) if f}
 
 
 @dataclass
@@ -65,22 +74,20 @@ def cache_baselines(forward_fn: ForwardFn, seqs: list[Tensor]) -> dict[int, Tens
 def measure_blast(
     forward_fn: ForwardFn,
     baselines: dict[int, Tensor],
-    eval_tokens: list[Tensor],
-    eval_positions: list[int],
-    eval_fire_sets: list[set[int]],
+    examples: list[ActivationExample],
+    tokens: list[Tensor],
     global_tokens: list[Tensor],
 ) -> BlastRadius:
     r = BlastRadius()
     with torch.no_grad():
-        for tokens_t, pos, fire_set in zip(
-            eval_tokens, eval_positions, eval_fire_sets, strict=True
-        ):
-            logits = forward_fn(tokens_t.unsqueeze(0))[0]
-            probs = logits.softmax(-1)
+        for ex, tokens_t in zip(examples, tokens, strict=True):
+            probs = forward_fn(tokens_t.unsqueeze(0))[0].softmax(-1)
             kl = kl_per_token(probs, baselines[id(tokens_t)])
-            r.on_fire_p.append(probs[pos, TARGET_TOKEN].item())
+            fires = fire_set(ex)
+            for pos in fire_positions(ex):
+                r.on_fire_p.append(probs[pos, TARGET_TOKEN].item())
             for i in range(kl.shape[0]):
-                if i not in fire_set:
+                if i not in fires:
                     r.surrounding_kl.append(kl[i].item())
         for tokens_t in global_tokens:
             probs = forward_fn(tokens_t.unsqueeze(0))[0].softmax(-1)
@@ -92,30 +99,25 @@ def measure_blast(
 def measure_pareto(
     forward_fn: ForwardFn,
     baselines: dict[int, Tensor],
+    all_examples: list[ActivationExample],
     all_tokens: list[Tensor],
-    all_positions: list[int],
-    all_fire_sets: list[set[int]],
     emo_idxs: list[int],
     non_emo_idxs: list[int],
     global_tokens: list[Tensor],
 ) -> ParetoPoint:
-    br = measure_blast(
-        forward_fn, baselines, all_tokens, all_positions, all_fire_sets, global_tokens
-    )
+    br = measure_blast(forward_fn, baselines, all_examples, all_tokens, global_tokens)
     br_emo = measure_blast(
         forward_fn,
         baselines,
+        [all_examples[i] for i in emo_idxs],
         [all_tokens[i] for i in emo_idxs],
-        [all_positions[i] for i in emo_idxs],
-        [all_fire_sets[i] for i in emo_idxs],
         [],
     )
     br_non = measure_blast(
         forward_fn,
         baselines,
+        [all_examples[i] for i in non_emo_idxs],
         [all_tokens[i] for i in non_emo_idxs],
-        [all_positions[i] for i in non_emo_idxs],
-        [all_fire_sets[i] for i in non_emo_idxs],
         [],
     )
     return ParetoPoint(
@@ -127,40 +129,54 @@ def measure_pareto(
     )
 
 
-def get_firings(harvest: HarvestRepo) -> list[tuple[ActivationExample, int]]:
+def get_examples(harvest: HarvestRepo) -> list[ActivationExample]:
+    """Examples with at least one firing position (and a next token after it)."""
     comp = harvest.get_component(COMP_KEY)
     assert comp is not None
-    results = []
-    for ex in comp.activation_examples:
-        for i, fires in enumerate(ex.firings):
-            if fires and i + 1 < len(ex.token_ids):
-                results.append((ex, i))
-    return results
+    return [ex for ex in comp.activation_examples if fire_positions(ex)]
 
 
-def label_eval_emoticons(
-    firings: list[tuple[ActivationExample, int]],
+def make_train_seqs(
+    examples: list[ActivationExample],
+) -> list[tuple[Tensor, list[int]]]:
+    """Build (mutated_tokens, fire_positions) pairs for training."""
+    seqs = []
+    for ex in examples:
+        t = torch.tensor(ex.token_ids, device="cuda")
+        positions = fire_positions(ex)
+        for pos in positions:
+            t[pos + 1] = TARGET_TOKEN
+        seqs.append((t, positions))
+    return seqs
+
+
+def label_emoticon_examples(
+    examples: list[ActivationExample],
     tok_display_fn: Callable[[list[int]], list[str]],
 ) -> tuple[list[int], list[int]]:
-    """Use Claude haiku to classify eval positions as emoticon vs not. Returns (emo_idxs, non_emo_idxs)."""
+    """Use Claude haiku to classify examples as emoticon vs not. Returns (emo_idxs, non_emo_idxs)."""
     contexts = []
-    for i, (ex, p) in enumerate(firings):
+    for i, ex in enumerate(examples):
         spans = tok_display_fn(ex.token_ids)
-        ctx_start, ctx_end = max(0, p - 6), min(len(spans), p + 6)
-        ctx = "".join(spans[ctx_start:ctx_end]).strip()
-        fire_tok = spans[p].strip()
-        next_tok = spans[p + 1].strip() if p + 1 < len(spans) else ""
-        contexts.append(f'{i}: "{ctx}"  [fires at "{fire_tok}", next="{next_tok}"]')
+        positions = fire_positions(ex)
+        snippets = []
+        for p in positions:
+            ctx_start, ctx_end = max(0, p - 4), min(len(spans), p + 4)
+            snippet = "".join(spans[ctx_start:ctx_end]).strip()
+            fire_tok = spans[p].strip()
+            next_tok = spans[p + 1].strip() if p + 1 < len(spans) else ""
+            snippets.append(f'"{snippet}" ["{fire_tok}"→"{next_tok}"]')
+        contexts.append(f"{i}: {'; '.join(snippets)}")
 
     client = anthropic.Anthropic()
     resp = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=2048,
+        max_tokens=4096,
         temperature=0.0,
         messages=[
             {
                 "role": "user",
-                "content": f"""Classify each as EMOTICON (true) or NOT (false). Emoticons: :) ;-) :D :-( :P :o) >:( =) :3 :] :/ etc. NOT: code, URLs, timestamps, package names, TL;DR, :class:, line numbers, regular punctuation.
+                "content": f"""Classify each example as EMOTICON (true) or NOT (false). An example is EMOTICON if ANY of its firing positions start an emoticon like :) ;-) :D :-( :P :o) >:( =) :3 :] :/ etc. NOT: code, URLs, timestamps, package names, TL;DR, :class:, line numbers, regular punctuation.
 Return ONLY a JSON object mapping id to true/false.
 
 {chr(10).join(contexts)}""",
@@ -257,32 +273,23 @@ def main(out_dir: Path) -> None:
     harvest = HarvestRepo.open_most_recent(RUN_ID)
     assert harvest is not None
 
-    firings = get_firings(harvest)
+    examples = get_examples(harvest)
     random.seed(42)
-    random.shuffle(firings)
+    random.shuffle(examples)
 
-    # Eval set (indices 32-82), train pool = rest
-    eval_firings = firings[32:82]
-    eval_tokens = [torch.tensor(ex.token_ids, device="cuda") for ex, _ in eval_firings]
-    eval_positions = [p for _, p in eval_firings]
-    eval_fire_sets = [{i for i, f in enumerate(ex.firings) if f} for ex, _ in eval_firings]
+    # Eval: 50 examples (indices 32-82), train pool: rest
+    eval_examples = examples[32:82]
+    eval_tokens = [torch.tensor(ex.token_ids, device="cuda") for ex in eval_examples]
 
     dl = eval_dataloader(config, batch_size=40)
     global_tokens = [row.cuda() for row in next(iter(dl))["input_ids"]]
 
-    # LLM-label eval positions
-    print("Labeling eval positions...")
-    emo_idxs, non_emo_idxs = label_eval_emoticons(eval_firings, tok.get_spans)
+    # LLM-label eval examples
+    print("Labeling eval examples...")
+    emo_idxs, non_emo_idxs = label_emoticon_examples(eval_examples, tok.get_spans)
     print(f"  {len(emo_idxs)} emoticon, {len(non_emo_idxs)} non-emoticon")
 
-    pareto_eval_args = (
-        eval_tokens,
-        eval_positions,
-        eval_fire_sets,
-        emo_idxs,
-        non_emo_idxs,
-        global_tokens,
-    )
+    pareto_eval_args = (eval_examples, eval_tokens, emo_idxs, non_emo_idxs, global_tokens)
     pareto_data: dict[str, ParetoPoint] = {}
 
     # --- SPD analytical ---
@@ -305,7 +312,7 @@ def main(out_dir: Path) -> None:
     print("SPD analytical done")
 
     # --- SPD trained ---
-    # Hand-verified emoticon indices from the s-55ea3f9b harvest (seed=42 shuffle).
+    # Hand-verified emoticon example indices from s-55ea3f9b harvest (seed=42 shuffle).
     # Re-verified by LLM below to catch harvest ordering changes.
     VERIFIED_IDXS = [
         5,
@@ -331,26 +338,22 @@ def main(out_dir: Path) -> None:
         30,
         31,
     ]
-    verified = [firings[i] for i in VERIFIED_IDXS]
-    _, verified_non = label_eval_emoticons(verified, tok.get_spans)
+    verified = [examples[i] for i in VERIFIED_IDXS]
+    _, verified_non = label_emoticon_examples(verified, tok.get_spans)
     assert len(verified_non) == 0, (
         f"VERIFIED_IDXS contains {len(verified_non)} non-emoticon examples — "
         f"harvest ordering may have changed. Re-verify manually."
     )
 
     for n_ex in [1, 4, 8, 16]:
-        train_seqs = []
-        for ex, p in verified[:n_ex]:
-            t = torch.tensor(ex.token_ids, device="cuda")
-            t[p + 1] = TARGET_TOKEN
-            train_seqs.append((t, [p]))
+        train_seqs = make_train_seqs(verified[:n_ex])
         u_delta = train_write_delta(model, COMP_KEY, train_seqs, lr=1e-3, n_steps=100)
         with write_edit(model, COMP_KEY, u_delta) as fwd:
             pareto_data[f"spd_trained_n{n_ex}"] = measure_pareto(fwd, baselines, *pareto_eval_args)
         print(f"  SPD n={n_ex} done")
 
     # --- LoRA ---
-    train_pool = firings[:32] + firings[82:]
+    train_pool = examples[:32] + examples[82:]
     reg_seqs = global_tokens[:20]
     kl_weights = [0.0, 1.0, 3.0, 10.0, 30.0, 100.0]
     lora_ns = [1, 8, 64, 256, len(train_pool)]
@@ -358,12 +361,8 @@ def main(out_dir: Path) -> None:
     lora = LoRATrainer(model.target_model, LAYER_PATH, reg_seqs, lr=1e-3)
 
     for n_ex in lora_ns:
-        train_seqs = []
         source = verified[:n_ex] if n_ex <= 16 else train_pool[:n_ex]
-        for ex, p in source:
-            t = torch.tensor(ex.token_ids, device="cuda")
-            t[p + 1] = TARGET_TOKEN
-            train_seqs.append((t, [p]))
+        train_seqs = make_train_seqs(source)
 
         for kl_w in kl_weights:
             lora.reset()
