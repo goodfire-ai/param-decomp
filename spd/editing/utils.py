@@ -2,9 +2,14 @@
 
 import re
 from dataclasses import dataclass
+from typing import Any
+
+from torch.utils.data import DataLoader
 
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.autointerp.repo import InterpRepo
+from spd.configs import Config
+from spd.data import train_loader_and_tokenizer
 from spd.harvest.repo import HarvestRepo
 from spd.models.component_model import ComponentModel, SPDRunInfo
 
@@ -55,10 +60,17 @@ def search_interpretations(
     return matches
 
 
-def load_model(wandb_path: str, device: str = "cuda") -> tuple[ComponentModel, AppTokenizer]:
-    """Load a ComponentModel + tokenizer from a wandb path."""
+def load_model(
+    wandb_path: str, device: str = "cuda"
+) -> tuple[ComponentModel, AppTokenizer, Config]:
+    """Load a ComponentModel + tokenizer + config from a wandb path."""
     run_info = SPDRunInfo.from_path(wandb_path)
     model = ComponentModel.from_run_info(run_info).to(device).eval()
     assert run_info.config.tokenizer_name is not None
     tokenizer = AppTokenizer.from_pretrained(run_info.config.tokenizer_name)
-    return model, tokenizer
+    return model, tokenizer, run_info.config
+
+
+def eval_dataloader(config: Config, batch_size: int = 32) -> DataLoader[Any]:
+    """Get a dataloader from the run's training dataset config."""
+    return train_loader_and_tokenizer(config, batch_size)[0]

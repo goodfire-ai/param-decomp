@@ -18,10 +18,9 @@ import torch
 from torch import Tensor
 
 from spd.app.backend.app_tokenizer import AppTokenizer
-from spd.data import DatasetConfig, create_data_loader
 from spd.editing.component_trainer import write_edit
 from spd.editing.lora_baseline import LoRATrainer
-from spd.editing.utils import load_model
+from spd.editing.utils import eval_dataloader, load_model
 from spd.harvest.repo import HarvestRepo
 
 WANDB_PATH = "wandb:goodfire/spd/s-55ea3f9b"
@@ -95,7 +94,7 @@ def cache_baselines(forward_fn: ForwardFn, token_tensors: list[Tensor]) -> dict[
 
 
 def main(out_dir: Path) -> None:
-    model, tok = load_model(WANDB_PATH)
+    model, tok, config = load_model(WANDB_PATH)
     harvest = HarvestRepo.open_most_recent(RUN_ID)
     assert harvest is not None
 
@@ -132,20 +131,8 @@ def main(out_dir: Path) -> None:
         t[pos + 1] = TARGET_TOKEN
         train_seqs.append((t, [pos]))
 
-    eval_loader, _ = create_data_loader(
-        DatasetConfig(
-            name="danbraunai/pile-uncopyrighted-tok-shuffled",
-            hf_tokenizer_path="EleutherAI/gpt-neox-20b",
-            split="val",
-            n_ctx=512,
-            is_tokenized=True,
-            streaming=True,
-            column_name="input_ids",
-        ),
-        batch_size=20,
-        buffer_size=1000,
-    )
-    reg_seqs = [row.cuda() for row in next(iter(eval_loader))["input_ids"]]
+    dl = eval_dataloader(config, batch_size=20)
+    reg_seqs = [row.cuda() for row in next(iter(dl))["input_ids"]]
 
     lora = LoRATrainer(model.target_model, LAYER_PATH, reg_seqs, lr=1e-3)
     lora_baselines = cache_baselines(lora.forward, eval_tokens)

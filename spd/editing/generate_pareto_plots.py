@@ -19,10 +19,9 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from spd.data import DatasetConfig, create_data_loader
 from spd.editing.component_trainer import train_write_delta, write_edit
 from spd.editing.lora_baseline import LoRATrainer
-from spd.editing.utils import load_model
+from spd.editing.utils import eval_dataloader, load_model
 from spd.harvest.repo import HarvestRepo
 from spd.harvest.schemas import ActivationExample
 
@@ -253,7 +252,7 @@ def plot_pareto(pareto_data: dict[str, ParetoPoint], out_dir: Path) -> None:
 
 def main(out_dir: Path) -> None:
     out_dir.mkdir(exist_ok=True)
-    model, tok = load_model(WANDB_PATH)
+    model, tok, config = load_model(WANDB_PATH)
     harvest = HarvestRepo.open_most_recent(RUN_ID)
     assert harvest is not None
 
@@ -267,20 +266,8 @@ def main(out_dir: Path) -> None:
     eval_positions = [p for _, p in eval_firings]
     eval_fire_sets = [{i for i, f in enumerate(ex.firings) if f} for ex, _ in eval_firings]
 
-    eval_loader, _ = create_data_loader(
-        DatasetConfig(
-            name="danbraunai/pile-uncopyrighted-tok-shuffled",
-            hf_tokenizer_path="EleutherAI/gpt-neox-20b",
-            split="val",
-            n_ctx=512,
-            is_tokenized=True,
-            streaming=True,
-            column_name="input_ids",
-        ),
-        batch_size=40,
-        buffer_size=1000,
-    )
-    global_tokens = [row.cuda() for row in next(iter(eval_loader))["input_ids"]]
+    dl = eval_dataloader(config, batch_size=40)
+    global_tokens = [row.cuda() for row in next(iter(dl))["input_ids"]]
 
     # LLM-label eval positions
     print("Labeling eval positions...")

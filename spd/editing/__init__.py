@@ -5,6 +5,7 @@ from spd.editing.component_trainer import train_write_delta, write_edit
 from spd.editing.lora_baseline import LoRATrainer
 from spd.editing.utils import (
     ComponentMatch,
+    eval_dataloader,
     load_model,
     parse_component_key,
     search_interpretations,
@@ -17,6 +18,7 @@ __all__ = [
     "LoRATrainer",
     "TokenDiff",
     "compute_diffs",
+    "eval_dataloader",
     "load_model",
     "parse_component_key",
     "render_edit_comparison",
