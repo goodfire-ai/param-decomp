@@ -19,9 +19,10 @@ import numpy as np
 import torch
 from torch import Tensor
 
+from spd.data import train_loader_and_tokenizer
 from spd.editing.component_trainer import train_write_delta, write_edit
 from spd.editing.lora_baseline import LoRATrainer
-from spd.editing.utils import eval_dataloader, load_model
+from spd.editing.utils import load_model
 from spd.harvest.repo import HarvestRepo
 from spd.harvest.schemas import ActivationExample
 
@@ -281,7 +282,7 @@ def main(out_dir: Path) -> None:
     eval_examples = examples[32:82]
     eval_tokens = [torch.tensor(ex.token_ids, device="cuda") for ex in eval_examples]
 
-    dl = eval_dataloader(config, batch_size=40)
+    dl, _ = train_loader_and_tokenizer(config, batch_size=40)
     global_tokens = [row.cuda() for row in next(iter(dl))["input_ids"]]
 
     # LLM-label eval examples
@@ -312,48 +313,16 @@ def main(out_dir: Path) -> None:
     print("SPD analytical done")
 
     # --- SPD trained ---
-    # Hand-verified emoticon example indices from s-55ea3f9b harvest (seed=42 shuffle).
-    # Re-verified by LLM below to catch harvest ordering changes.
-    VERIFIED_IDXS = [
-        5,
-        6,
-        7,
-        8,
-        9,
-        10,
-        11,
-        13,
-        14,
-        16,
-        18,
-        19,
-        21,
-        22,
-        23,
-        24,
-        26,
-        27,
-        28,
-        29,
-        30,
-        31,
-    ]
-    verified = [examples[i] for i in VERIFIED_IDXS]
-    _, verified_non = label_emoticon_examples(verified, tok.get_spans)
-    assert len(verified_non) == 0, (
-        f"VERIFIED_IDXS contains {len(verified_non)} non-emoticon examples — "
-        f"harvest ordering may have changed. Re-verify manually."
-    )
+    train_pool = examples[:32] + examples[82:]
 
     for n_ex in [1, 4, 8, 16]:
-        train_seqs = make_train_seqs(verified[:n_ex])
+        train_seqs = make_train_seqs(train_pool[:n_ex])
         u_delta = train_write_delta(model, COMP_KEY, train_seqs, lr=1e-3, n_steps=100)
         with write_edit(model, COMP_KEY, u_delta) as fwd:
             pareto_data[f"spd_trained_n{n_ex}"] = measure_pareto(fwd, baselines, *pareto_eval_args)
         print(f"  SPD n={n_ex} done")
 
     # --- LoRA ---
-    train_pool = examples[:32] + examples[82:]
     reg_seqs = global_tokens[:20]
     kl_weights = [0.0, 1.0, 3.0, 10.0, 30.0, 100.0]
     lora_ns = [1, 8, 64, 256, len(train_pool)]
@@ -361,8 +330,7 @@ def main(out_dir: Path) -> None:
     lora = LoRATrainer(model.target_model, LAYER_PATH, reg_seqs, lr=1e-3)
 
     for n_ex in lora_ns:
-        source = verified[:n_ex] if n_ex <= 16 else train_pool[:n_ex]
-        train_seqs = make_train_seqs(source)
+        train_seqs = make_train_seqs(train_pool[:n_ex])
 
         for kl_w in kl_weights:
             lora.reset()
