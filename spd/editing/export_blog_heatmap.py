@@ -18,6 +18,7 @@ import torch
 from torch import Tensor
 
 from spd.app.backend.app_tokenizer import AppTokenizer
+from spd.data import DatasetConfig, create_data_loader
 from spd.editing.component_trainer import write_edit
 from spd.editing.lora_baseline import LoRATrainer
 from spd.editing.utils import load_model
@@ -131,11 +132,20 @@ def main(out_dir: Path) -> None:
         t[pos + 1] = TARGET_TOKEN
         train_seqs.append((t, [pos]))
 
-    global_comp = harvest.get_component("h.0.mlp.c_fc:100")
-    assert global_comp is not None
-    reg_seqs = [
-        torch.tensor(ex.token_ids, device="cuda") for ex in global_comp.activation_examples[:20]
-    ]
+    eval_loader, _ = create_data_loader(
+        DatasetConfig(
+            name="danbraunai/pile-uncopyrighted-tok-shuffled",
+            hf_tokenizer_path="EleutherAI/gpt-neox-20b",
+            split="val",
+            n_ctx=512,
+            is_tokenized=True,
+            streaming=True,
+            column_name="input_ids",
+        ),
+        batch_size=20,
+        buffer_size=1000,
+    )
+    reg_seqs = [row.cuda() for row in next(iter(eval_loader))["input_ids"]]
 
     lora = LoRATrainer(model.target_model, LAYER_PATH, reg_seqs, lr=1e-3)
     lora_baselines = cache_baselines(lora.forward, eval_tokens)
