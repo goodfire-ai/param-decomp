@@ -19,7 +19,6 @@ import torch
 from scipy import sparse
 
 from spd.clustering.compute_costs import compute_merge_costs
-from spd.clustering.math.merge_matrix import GroupMerge
 from spd.clustering.membership_snapshot import load_membership_snapshot
 from spd.clustering.merge_history import MergeHistory
 from spd.log import logger
@@ -344,7 +343,6 @@ def render(
     iterations: str | None = None,
 ) -> None:
     """Render scatter plots from pre-computed data. Fast (no GPU needed)."""
-    import glob
     import pickle
 
     data_path = Path(data_dir)
