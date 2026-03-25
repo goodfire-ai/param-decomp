@@ -32,7 +32,7 @@ export const CANONICAL_RUNS: RegistryEntry[] = [
             },
             {
                 path: "/mnt/polished-lake/artifacts/mechanisms/spd/clustering/runs/c-e8fb48bb/cluster_mapping.json",
-                notes: "exp_rank α=2 decay=0.8, iter 7999, 10M toks (most merges)",
+                notes: "exp_rank α=2 decay=0.8, iter 7038, 10M toks (last good merge iteration)",
             },
             {
                 path: "/mnt/polished-lake/artifacts/mechanisms/spd/clustering/runs/c-eae05b96/cluster_mapping_alpha2_i8000.json",
@@ -42,7 +42,7 @@ export const CANONICAL_RUNS: RegistryEntry[] = [
                 path: "/mnt/polished-lake/artifacts/mechanisms/spd/clustering/runs/c-70b28465/cluster_mapping.json",
                 notes: "range α=1, iter 9100, 500K toks (old, lower quality)",
             },
-         ],
+        ],
     },
     {
         name: "Thomas",

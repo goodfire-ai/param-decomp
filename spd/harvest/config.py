@@ -71,10 +71,8 @@ class IntruderEvalConfig(BaseConfig):
     n_real: int = 4
     n_trials: int = 10
     density_tolerance: float = 0.05
-    max_concurrent: int = 50
     limit: int | None = None
     cost_limit_usd: float | None = None
-    max_requests_per_minute: int = 500
 
 
 class IntruderSlurmConfig(BaseConfig):
@@ -82,7 +80,7 @@ class IntruderSlurmConfig(BaseConfig):
 
     config: IntruderEvalConfig = IntruderEvalConfig()
     partition: str = DEFAULT_PARTITION_NAME
-    time: str = "4:00:00"
+    time: str = "10:00:00"
 
 
 class HarvestConfig(BaseConfig):

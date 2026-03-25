@@ -161,14 +161,32 @@
     <div class="matrix-controls">
         <div class="source-toggle">
             <span class="control-label">Source:</span>
-            <button class="source-btn" class:active={selectedSource === "harvest"} onclick={() => (selectedSource = "harvest")}>Harvest</button>
-            <button class="source-btn" class:active={selectedSource === "clustering"} onclick={() => (selectedSource = "clustering")}>Clustering</button>
+            <button
+                class="source-btn"
+                class:active={selectedSource === "harvest"}
+                onclick={() => (selectedSource = "harvest")}>Harvest</button
+            >
+            <button
+                class="source-btn"
+                class:active={selectedSource === "clustering"}
+                onclick={() => (selectedSource = "clustering")}>Clustering</button
+            >
         </div>
         <div class="metric-toggle">
             <span class="control-label">Metric:</span>
-            <button class="metric-btn" class:active={selectedMetric === "jaccard"} onclick={() => (selectedMetric = "jaccard")}>Jaccard</button>
-            <button class="metric-btn" class:active={selectedMetric === "precision_ab"} onclick={() => (selectedMetric = "precision_ab")}>Precision</button>
-            <button class="metric-btn" class:active={selectedMetric === "pmi"} onclick={() => (selectedMetric = "pmi")}>PMI</button>
+            <button
+                class="metric-btn"
+                class:active={selectedMetric === "jaccard"}
+                onclick={() => (selectedMetric = "jaccard")}>Jaccard</button
+            >
+            <button
+                class="metric-btn"
+                class:active={selectedMetric === "precision_ab"}
+                onclick={() => (selectedMetric = "precision_ab")}>Precision</button
+            >
+            <button class="metric-btn" class:active={selectedMetric === "pmi"} onclick={() => (selectedMetric = "pmi")}
+                >PMI</button
+            >
         </div>
     </div>
     <div class="source-description">{sourceDescription}</div>

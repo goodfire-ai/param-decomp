@@ -13,7 +13,11 @@
     let selectedMetric = $state<FullMatrixMetric>("jaccard");
 
     type LoadedData = { response: FullMatrixResponse; floats: Float32Array };
-    type DataState = { status: "idle" } | { status: "loading" } | { status: "loaded"; data: LoadedData } | { status: "error"; error: string };
+    type DataState =
+        | { status: "idle" }
+        | { status: "loading" }
+        | { status: "loaded"; data: LoadedData }
+        | { status: "error"; error: string };
 
     let overviewState = $state<DataState>({ status: "idle" });
     let detailState = $state<DataState>({ status: "idle" });
@@ -30,7 +34,14 @@
     const DETAIL_SIZE = 500;
     const DETAIL_REGION = 200;
 
-    let hoverInfo = $state<{ x: number; y: number; rowKey: string; colKey: string; value: number | null; cluster: ClusterBoundary | null } | null>(null);
+    let hoverInfo = $state<{
+        x: number;
+        y: number;
+        rowKey: string;
+        colKey: string;
+        value: number | null;
+        cluster: ClusterBoundary | null;
+    } | null>(null);
 
     function decodeMatrix(response: FullMatrixResponse): Float32Array {
         const binaryStr = atob(response.matrix_b64);
@@ -63,8 +74,8 @@
         if (overviewState.status !== "loaded") return;
         // Read reactive deps
         const fullSize = overviewState.data.response.full_size;
-        const row = Math.round(selRow * fullSize / overviewState.data.response.height);
-        const col = Math.round(selCol * fullSize / overviewState.data.response.width);
+        const row = Math.round((selRow * fullSize) / overviewState.data.response.height);
+        const col = Math.round((selCol * fullSize) / overviewState.data.response.width);
         const metric = selectedMetric;
         const mapping = clusterMappingData;
 
@@ -117,8 +128,8 @@
         // Selection rectangle
         const _row = selRow;
         const _col = selCol;
-        const selW = Math.round(DETAIL_REGION * ov.width / ov.full_size);
-        const selH = Math.round(DETAIL_REGION * ov.height / ov.full_size);
+        const selW = Math.round((DETAIL_REGION * ov.width) / ov.full_size);
+        const selH = Math.round((DETAIL_REGION * ov.height) / ov.full_size);
         ctx.strokeStyle = "rgba(255, 200, 0, 0.9)";
         ctx.lineWidth = 2;
         ctx.strokeRect(_col, _row, selW, selH);
@@ -130,7 +141,15 @@
         const { response, floats } = detailState.data;
         detailCanvas.width = response.width;
         detailCanvas.height = response.height;
-        renderCanvas(detailCanvas, floats, response.width, response.height, response.row_boundaries, response.col_boundaries, selectedMetric);
+        renderCanvas(
+            detailCanvas,
+            floats,
+            response.width,
+            response.height,
+            response.row_boundaries,
+            response.col_boundaries,
+            selectedMetric,
+        );
     });
 
     function metricToColor(val: number, metric: FullMatrixMetric): [number, number, number] {
@@ -138,14 +157,26 @@
         if (metric === "pmi") {
             if (val > 0) {
                 const n = Math.min(val / 6, 1);
-                return [Math.round(59 * n + 255 * (1 - n)), Math.round(130 * n + 255 * (1 - n)), Math.round(246 * n + 255 * (1 - n))];
+                return [
+                    Math.round(59 * n + 255 * (1 - n)),
+                    Math.round(130 * n + 255 * (1 - n)),
+                    Math.round(246 * n + 255 * (1 - n)),
+                ];
             } else {
                 const n = Math.min(Math.abs(val) / 6, 1);
-                return [Math.round(239 * n + 255 * (1 - n)), Math.round(68 * n + 255 * (1 - n)), Math.round(68 * n + 255 * (1 - n))];
+                return [
+                    Math.round(239 * n + 255 * (1 - n)),
+                    Math.round(68 * n + 255 * (1 - n)),
+                    Math.round(68 * n + 255 * (1 - n)),
+                ];
             }
         }
         const n = Math.min(Math.max(val, 0), 1);
-        return [Math.round(59 * n + 255 * (1 - n)), Math.round(130 * n + 255 * (1 - n)), Math.round(246 * n + 255 * (1 - n))];
+        return [
+            Math.round(59 * n + 255 * (1 - n)),
+            Math.round(130 * n + 255 * (1 - n)),
+            Math.round(246 * n + 255 * (1 - n)),
+        ];
     }
 
     function renderCanvas(
@@ -206,8 +237,8 @@
         const scaleY = ov.height / rect.height;
         const mx = (e.clientX - rect.left) * scaleX;
         const my = (e.clientY - rect.top) * scaleY;
-        const selW = Math.round(DETAIL_REGION * ov.width / ov.full_size);
-        const selH = Math.round(DETAIL_REGION * ov.height / ov.full_size);
+        const selW = Math.round((DETAIL_REGION * ov.width) / ov.full_size);
+        const selH = Math.round((DETAIL_REGION * ov.height) / ov.full_size);
         selCol = Math.max(0, Math.min(Math.round(mx - selW / 2), ov.width - selW));
         selRow = Math.max(0, Math.min(Math.round(my - selH / 2), ov.height - selH));
     }
@@ -227,14 +258,20 @@
     }
 
     function handleDetailMouseMove(e: MouseEvent) {
-        if (detailState.status !== "loaded" || !detailCanvas) { hoverInfo = null; return; }
+        if (detailState.status !== "loaded" || !detailCanvas) {
+            hoverInfo = null;
+            return;
+        }
         const rect = detailCanvas.getBoundingClientRect();
         const d = detailState.data.response;
         const scaleX = d.width / rect.width;
         const scaleY = d.height / rect.height;
         const matX = Math.floor((e.clientX - rect.left) * scaleX);
         const matY = Math.floor((e.clientY - rect.top) * scaleY);
-        if (matX < 0 || matX >= d.width || matY < 0 || matY >= d.height) { hoverInfo = null; return; }
+        if (matX < 0 || matX >= d.width || matY < 0 || matY >= d.height) {
+            hoverInfo = null;
+            return;
+        }
         const idx = matY * d.width + matX;
         const val = detailState.data.floats[idx];
         const colKey = matX < d.component_keys.length ? d.component_keys[matX] : "";
@@ -266,13 +303,24 @@
     <div class="matrix-header">
         <div class="matrix-controls">
             <span class="control-label">Metric:</span>
-            <button class="metric-btn" class:active={selectedMetric === "jaccard"} onclick={() => (selectedMetric = "jaccard")}>Jaccard</button>
-            <button class="metric-btn" class:active={selectedMetric === "precision"} onclick={() => (selectedMetric = "precision")}>Precision</button>
-            <button class="metric-btn" class:active={selectedMetric === "pmi"} onclick={() => (selectedMetric = "pmi")}>PMI</button>
+            <button
+                class="metric-btn"
+                class:active={selectedMetric === "jaccard"}
+                onclick={() => (selectedMetric = "jaccard")}>Jaccard</button
+            >
+            <button
+                class="metric-btn"
+                class:active={selectedMetric === "precision"}
+                onclick={() => (selectedMetric = "precision")}>Precision</button
+            >
+            <button class="metric-btn" class:active={selectedMetric === "pmi"} onclick={() => (selectedMetric = "pmi")}
+                >PMI</button
+            >
         </div>
         {#if overviewState.status === "loaded"}
             <span class="info-text">
-                {overviewState.data.response.full_size}×{overviewState.data.response.full_size} components · {overviewState.data.response.n_tokens.toLocaleString()} tokens · {overviewState.data.response.row_boundaries.length} clusters
+                {overviewState.data.response.full_size}×{overviewState.data.response.full_size} components · {overviewState.data.response.n_tokens.toLocaleString()}
+                tokens · {overviewState.data.response.row_boundaries.length} clusters
             </span>
         {/if}
     </div>
@@ -313,12 +361,24 @@
                         ></canvas>
                         {#if hoverInfo}
                             <div class="tooltip" style="left: {hoverInfo.x + 12}px; top: {hoverInfo.y - 40}px;">
-                                <div class="tooltip-row"><span class="tooltip-label">row</span><span class="tooltip-key">{hoverInfo.rowKey}</span></div>
-                                <div class="tooltip-row"><span class="tooltip-label">col</span><span class="tooltip-key">{hoverInfo.colKey}</span></div>
+                                <div class="tooltip-row">
+                                    <span class="tooltip-label">row</span><span class="tooltip-key"
+                                        >{hoverInfo.rowKey}</span
+                                    >
+                                </div>
+                                <div class="tooltip-row">
+                                    <span class="tooltip-label">col</span><span class="tooltip-key"
+                                        >{hoverInfo.colKey}</span
+                                    >
+                                </div>
                                 <div class="tooltip-row">
                                     <span class="tooltip-label">{selectedMetric}</span>
-                                    <span class="tooltip-val">{hoverInfo.value !== null ? hoverInfo.value.toFixed(4) : "—"}</span>
-                                    {#if hoverInfo.cluster}<span class="tooltip-cluster">Cluster {hoverInfo.cluster.cluster_id}</span>{/if}
+                                    <span class="tooltip-val"
+                                        >{hoverInfo.value !== null ? hoverInfo.value.toFixed(4) : "—"}</span
+                                    >
+                                    {#if hoverInfo.cluster}<span class="tooltip-cluster"
+                                            >Cluster {hoverInfo.cluster.cluster_id}</span
+                                        >{/if}
                                 </div>
                             </div>
                         {/if}
@@ -374,7 +434,9 @@
         border-radius: var(--radius-sm);
         cursor: pointer;
         color: var(--text-secondary);
-        transition: background var(--transition-normal), border-color var(--transition-normal);
+        transition:
+            background var(--transition-normal),
+            border-color var(--transition-normal);
     }
 
     .metric-btn:hover {

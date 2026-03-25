@@ -1,9 +1,9 @@
 from pathlib import Path
 
 from spd.clustering.scripts.watch_progress import (
+    JobStatus,
     LogSummary,
     SchedulerInfo,
-    JobStatus,
     _render_section,
     expand_job_tokens,
     summarize_log,

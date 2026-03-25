@@ -58,13 +58,9 @@
             </thead>
             <tbody>
                 {#each subruns as subrun (subrun.subrun_id)}
-                    <tr
-                        class:selected={selectedIds.has(subrun.subrun_id)}
-                        onclick={() => toggle(subrun.subrun_id)}
-                    >
+                    <tr class:selected={selectedIds.has(subrun.subrun_id)} onclick={() => toggle(subrun.subrun_id)}>
                         <td class="col-select">
-                            <span class="checkbox" class:checked={selectedIds.has(subrun.subrun_id)}
-                            ></span>
+                            <span class="checkbox" class:checked={selectedIds.has(subrun.subrun_id)}></span>
                         </td>
                         <td class="col-note">
                             {#if subrun.note}
