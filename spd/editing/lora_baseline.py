@@ -62,24 +62,44 @@ class LoRATrainer:
         self,
         batch: list[tuple[tuple[Tensor, list[int]], Tensor]],
     ) -> float:
-        """One step on a batch of (example, baseline) pairs. Accumulates loss, single optimizer step."""
+        """One batched step. Pads sequences, single forward pass, masked CE + KL."""
+        B = len(batch)
+        max_len = max(tokens.shape[0] for (tokens, _), _ in batch)
+        vocab = int(self.linear.weight.shape[0])
+
+        # Pad tokens and baselines to max_len
+        tokens_padded = torch.zeros(B, max_len, dtype=torch.long, device="cuda")
+        baselines_padded = torch.zeros(B, max_len, vocab, device="cuda")
+        seq_lens = []
+        all_positions: list[list[int]] = []
+        for i, ((tokens, positions), baseline) in enumerate(batch):
+            seq_lens.append(tokens.shape[0])
+            tokens_padded[i, : tokens.shape[0]] = tokens
+            baselines_padded[i, : baseline.shape[0]] = baseline
+            all_positions.append(positions)
+
+        logits = self.forward(tokens_padded)  # [B, max_len, vocab]
+
+        # CE at fire positions
         ce_total = torch.tensor(0.0, device="cuda")
-        kl_total = torch.tensor(0.0, device="cuda")
-
-        for (tokens, positions), baseline in batch:
-            logits = self.forward(tokens.unsqueeze(0))[0]
+        for i, positions in enumerate(all_positions):
             pos_t = torch.tensor(positions, device="cuda")
-            ce_total = ce_total + F.cross_entropy(logits[positions], tokens[pos_t + 1])
+            ce_total = ce_total + F.cross_entropy(logits[i, positions], tokens_padded[i, pos_t + 1])
+        ce = ce_total / B
 
-            if self.kl_weight > 0:
-                probs = logits.softmax(-1)
-                kl = (probs * ((probs + 1e-10).log() - (baseline + 1e-10).log())).sum(-1)
-                fire_mask = torch.ones(len(tokens), dtype=torch.bool, device="cuda")
-                fire_mask[positions] = False
-                kl_total = kl_total + kl[fire_mask].mean()
+        # KL at non-fire, non-pad positions
+        kl_loss = torch.tensor(0.0, device="cuda")
+        if self.kl_weight > 0:
+            probs = logits.softmax(-1)
+            kl = (probs * ((probs + 1e-10).log() - (baselines_padded + 1e-10).log())).sum(-1)
+            for i, positions in enumerate(all_positions):
+                mask = torch.zeros(max_len, dtype=torch.bool, device="cuda")
+                mask[: seq_lens[i]] = True
+                mask[positions] = False
+                kl_loss = kl_loss + kl[i, mask].mean()
+            kl_loss = kl_loss / B
 
-        n = len(batch)
-        loss = ce_total / n + self.kl_weight * kl_total / n
+        loss = ce + self.kl_weight * kl_loss
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
