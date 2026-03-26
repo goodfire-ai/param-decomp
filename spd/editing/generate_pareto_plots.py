@@ -306,11 +306,8 @@ def main(out_dir: Path) -> None:
     unembed = lm_head.weight[TARGET_TOKEN].detach().float()
     unembed_normed = unembed / unembed.norm()
 
-    def base_forward(tokens: Tensor) -> Tensor:
-        return model._extract_output(model.target_model(tokens))
-
-    eval_baselines = cache_baselines(base_forward, eval_tokens)
-    global_baselines = cache_baselines(base_forward, global_tokens)
+    eval_baselines = cache_baselines(model, eval_tokens)
+    global_baselines = cache_baselines(model, global_tokens)
 
     pareto_eval_args = (
         eval_examples,

@@ -63,7 +63,7 @@ def write_edit(
     handle = linear.register_forward_hook(hook)
 
     def forward_fn(tokens: Tensor) -> Tensor:
-        return model._extract_output(model.target_model(tokens))
+        return model(tokens)
 
     try:
         yield forward_fn
@@ -94,7 +94,7 @@ def train_write_delta(
     try:
         for _ in range(n_steps):
             for tokens_mut, positions in train_seqs:
-                logits = model._extract_output(model.target_model(tokens_mut.unsqueeze(0)))
+                logits = model(tokens_mut.unsqueeze(0))
                 pos_t = torch.tensor(positions, device=tokens_mut.device)
                 loss = F.cross_entropy(logits[0, positions], tokens_mut[pos_t + 1])
                 optimizer.zero_grad()

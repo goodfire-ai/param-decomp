@@ -106,10 +106,7 @@ def main(out_dir: Path) -> None:
     unembed = lm_head.weight[TARGET_TOKEN].detach().float()
     u_delta = -3.0 * unembed / unembed.norm()
 
-    def base_forward(tokens: Tensor) -> Tensor:
-        return model._extract_output(model.target_model(tokens))
-
-    true_baselines = cache_baselines(base_forward, eval_tokens)
+    true_baselines = cache_baselines(model, eval_tokens)
 
     with write_edit(model, COMP_KEY, u_delta) as spd_forward:
         spd_examples = export_diffs(spd_forward, true_baselines, eval_tokens, eval_examples, tok)
