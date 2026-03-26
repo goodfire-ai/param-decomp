@@ -82,7 +82,7 @@ def export_diffs(
     return results
 
 
-def cache_baselines(forward_fn: ForwardFn, token_tensors: list[Tensor]) -> list[Tensor]:
+def get_probs(forward_fn: ForwardFn, token_tensors: list[Tensor]) -> list[Tensor]:
     with torch.no_grad():
         return [forward_fn(t.unsqueeze(0))[0].softmax(-1) for t in token_tensors]
 
@@ -106,7 +106,7 @@ def main(out_dir: Path) -> None:
     unembed = lm_head.weight[TARGET_TOKEN].detach().float()
     u_delta = -3.0 * unembed / unembed.norm()
 
-    true_baselines = cache_baselines(model, eval_tokens)
+    true_baselines = get_probs(model, eval_tokens)
 
     with write_edit(model, COMP_KEY, u_delta) as spd_forward:
         spd_examples = export_diffs(spd_forward, true_baselines, eval_tokens, eval_examples, tok)

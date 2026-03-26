@@ -64,7 +64,7 @@ def kl_per_token(probs_a: Tensor, probs_b: Tensor) -> Tensor:
     return (probs_a * ((probs_a + 1e-10).log() - (probs_b + 1e-10).log())).sum(-1)
 
 
-def cache_baselines(forward_fn: ForwardFn, seqs: list[Tensor]) -> list[Tensor]:
+def get_probs(forward_fn: ForwardFn, seqs: list[Tensor]) -> list[Tensor]:
     with torch.no_grad():
         return [forward_fn(t.unsqueeze(0))[0].softmax(-1) for t in seqs]
 
@@ -306,8 +306,8 @@ def main(out_dir: Path) -> None:
     unembed = lm_head.weight[TARGET_TOKEN].detach().float()
     unembed_normed = unembed / unembed.norm()
 
-    eval_baselines = cache_baselines(model, eval_tokens)
-    global_baselines = cache_baselines(model, global_tokens)
+    eval_baselines = get_probs(model, eval_tokens)
+    global_baselines = get_probs(model, global_tokens)
 
     pareto_eval_args = (
         eval_examples,
