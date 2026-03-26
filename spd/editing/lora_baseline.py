@@ -1,4 +1,8 @@
-"""Rank-1 LoRA baseline for comparison with SPD component editing."""
+"""Rank-1 LoRA baseline for comparison with SPD component editing.
+
+CE loss at fire positions (teach it to predict target token) + KL loss at all
+other positions (preserve original predictions). Single forward pass per step.
+"""
 
 import random
 from typing import Any
@@ -16,7 +20,7 @@ class LoRATrainer:
         self,
         target_model: torch.nn.Module,
         layer_path: str,
-        reg_seqs: list[Int[Tensor, " seq"]],
+        train_seqs: list[tuple[Int[Tensor, " seq"], list[int]]],
         lr: float = 1e-3,
     ):
         self.target_model = target_model
@@ -38,25 +42,15 @@ class LoRATrainer:
         self._hook = self.linear.register_forward_hook(self._fwd_hook)
         self.optimizer = torch.optim.AdamW([self.A, self.B], lr=lr)
 
-        max_len = max(t.shape[0] for t in reg_seqs)
-        self.reg_batch = torch.zeros(len(reg_seqs), max_len, dtype=torch.long, device="cuda")
-        self.reg_lens = [t.shape[0] for t in reg_seqs]
-        for i, t in enumerate(reg_seqs):
-            self.reg_batch[i, : t.shape[0]] = t
+        self.train_seqs = train_seqs
+        self._cache_baselines()
 
-        self.reg_base_batch = self._compute_reg_baselines()
-
-    def _compute_reg_baselines(self) -> Tensor:
-        base_list = []
+    def _cache_baselines(self) -> None:
+        """Cache per-token baseline probs for all training sequences."""
+        self.base_probs: dict[int, Tensor] = {}
         with torch.no_grad():
-            for i, seq_len in enumerate(self.reg_lens):
-                t = self.reg_batch[i, :seq_len]
-                base_list.append(self.forward(t.unsqueeze(0))[0].softmax(-1))
-        vocab = base_list[0].shape[-1]
-        result = torch.zeros(len(self.reg_lens), self.reg_batch.shape[1], vocab, device="cuda")
-        for i, (bl, seq_len) in enumerate(zip(base_list, self.reg_lens, strict=True)):
-            result[i, :seq_len] = bl[:seq_len]
-        return result
+            for tokens, _ in self.train_seqs:
+                self.base_probs[id(tokens)] = self.forward(tokens.unsqueeze(0))[0].softmax(-1)
 
     def _fwd_hook(self, _mod: torch.nn.Module, _inp: tuple[Any, ...], out: Tensor) -> Tensor:
         return out + (_inp[0] @ self.A.T) @ self.B.T
@@ -64,46 +58,39 @@ class LoRATrainer:
     def forward(self, tokens: Tensor) -> Tensor:
         return self.target_model(tokens)[0]
 
-    def train_step(
-        self,
-        train_seqs: list[tuple[Int[Tensor, " seq"], list[int]]],
-        kl_weight: float = 0.0,
-        batch_size: int = 8,
-    ) -> float:
-        """One training step with optional KL regularization. Returns total loss."""
-        idxs = random.sample(range(len(train_seqs)), min(batch_size, len(train_seqs)))
-        batch = [train_seqs[j] for j in idxs]
-        max_len = max(t.shape[0] for t, _ in batch)
-        batch_t = torch.zeros(len(batch), max_len, dtype=torch.long, device="cuda")
-        batch_pos = []
-        for i, (t, pos) in enumerate(batch):
-            batch_t[i, : t.shape[0]] = t
-            batch_pos.append(pos)
+    def train_step(self, kl_weight: float, batch_size: int = 8) -> float:
+        """One step: CE at fire positions + KL at all other positions. Returns loss."""
+        idxs = random.sample(range(len(self.train_seqs)), min(batch_size, len(self.train_seqs)))
 
-        logits = self.forward(batch_t)
-        ce = torch.tensor(0.0, device="cuda")
-        for i, pos in enumerate(batch_pos):
-            ce = ce + F.cross_entropy(
-                logits[i, pos], batch_t[i, torch.tensor(pos, device="cuda") + 1]
-            )
-        ce = ce / len(batch)
+        ce_total = torch.tensor(0.0, device="cuda")
+        kl_total = torch.tensor(0.0, device="cuda")
+        n_ce = 0
+        n_kl = 0
 
-        kl_reg = torch.tensor(0.0, device="cuda")
-        if kl_weight > 0:
-            logits_reg = self.forward(self.reg_batch)
-            probs_reg = logits_reg.softmax(-1)
-            kl_all = (
-                probs_reg * ((probs_reg + 1e-10).log() - (self.reg_base_batch + 1e-10).log())
-            ).sum(-1)
-            for i, seq_len in enumerate(self.reg_lens):
-                kl_reg = kl_reg + kl_all[i, :seq_len].mean()
-            kl_reg = kl_reg / len(self.reg_lens)
+        for idx in idxs:
+            tokens, positions = self.train_seqs[idx]
+            logits = self.forward(tokens.unsqueeze(0))[0]  # [seq, vocab]
 
-        total = ce + kl_weight * kl_reg
+            # CE at fire positions
+            pos_t = torch.tensor(positions, device="cuda")
+            ce_total = ce_total + F.cross_entropy(logits[positions], tokens[pos_t + 1])
+            n_ce += 1
+
+            # KL at all other positions
+            if kl_weight > 0:
+                probs = logits.softmax(-1)
+                base = self.base_probs[id(tokens)]
+                kl = (probs * ((probs + 1e-10).log() - (base + 1e-10).log())).sum(-1)
+                fire_mask = torch.ones(len(tokens), dtype=torch.bool, device="cuda")
+                fire_mask[positions] = False
+                kl_total = kl_total + kl[fire_mask].mean()
+                n_kl += 1
+
+        loss = ce_total / n_ce + kl_weight * (kl_total / max(n_kl, 1))
         self.optimizer.zero_grad()
-        total.backward()
+        loss.backward()
         self.optimizer.step()
-        return total.item()
+        return loss.item()
 
     def reset(self) -> None:
         """Reset LoRA params to init. No model reload needed."""
@@ -112,7 +99,7 @@ class LoRATrainer:
             self.A.copy_(torch.randn(1, d_in, device="cuda") * 0.01)
             self.B.zero_()
         self.optimizer = torch.optim.AdamW([self.A, self.B], lr=self.lr)
-        self.reg_base_batch = self._compute_reg_baselines()
+        self._cache_baselines()
 
     def cleanup(self) -> None:
         """Remove forward hook."""

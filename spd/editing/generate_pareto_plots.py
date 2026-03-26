@@ -322,27 +322,24 @@ def main(out_dir: Path) -> None:
         print(f"  SPD n={n_ex} done")
 
     # --- LoRA ---
-    reg_seqs = global_tokens[:20]
     kl_weights = [0.0, 1.0, 3.0, 10.0, 30.0, 100.0]
     lora_ns = [1, 8, 64, 256, len(train_pool)]
 
-    lora = LoRATrainer(model.target_model, LAYER_PATH, reg_seqs, lr=1e-3)
-
     for n_ex in lora_ns:
         train_seqs = make_train_seqs(train_pool[:n_ex])
+        lora = LoRATrainer(model.target_model, LAYER_PATH, train_seqs, lr=1e-3)
 
         for kl_w in kl_weights:
             lora.reset()
             for _ in range(300):
-                lora.train_step(train_seqs, kl_weight=kl_w)
+                lora.train_step(kl_weight=kl_w)
             pareto_data[f"lora_n{n_ex}_l{kl_w}"] = measure_pareto(
                 lora.forward, baselines, *pareto_eval_args
             )
 
         r = pareto_data[f"lora_n{n_ex}_l10.0"]
         print(f"  LoRA n={n_ex} λ=10: P_emo={r.p_emo:.0%} surr={r.surr_kl:.4f}")
-
-    lora.cleanup()
+        lora.cleanup()
 
     print(f"\n{len(pareto_data)} pareto points. Plotting...")
     plot_pareto(pareto_data, lora_ns, out_dir)

@@ -18,7 +18,6 @@ import torch
 from torch import Tensor
 
 from spd.app.backend.app_tokenizer import AppTokenizer
-from spd.data import train_loader_and_tokenizer
 from spd.editing.component_trainer import write_edit
 from spd.editing.lora_baseline import LoRATrainer
 from spd.editing.utils import load_model
@@ -93,7 +92,7 @@ def cache_baselines(forward_fn: ForwardFn, token_tensors: list[Tensor]) -> dict[
 
 
 def main(out_dir: Path) -> None:
-    model, tok, config = load_model(WANDB_PATH)
+    model, tok, _ = load_model(WANDB_PATH)
     harvest = HarvestRepo.open_most_recent(RUN_ID)
     assert harvest is not None
 
@@ -131,13 +130,10 @@ def main(out_dir: Path) -> None:
             t[pos + 1] = TARGET_TOKEN
         train_seqs.append((t, positions))
 
-    dl, _ = train_loader_and_tokenizer(config, batch_size=20)
-    reg_seqs = [row.cuda() for row in next(iter(dl))["input_ids"]]
-
-    lora = LoRATrainer(model.target_model, LAYER_PATH, reg_seqs, lr=1e-3)
+    lora = LoRATrainer(model.target_model, LAYER_PATH, train_seqs, lr=1e-3)
 
     for step in range(300):
-        lora.train_step(train_seqs, kl_weight=10.0)
+        lora.train_step(kl_weight=10.0)
         if step % 100 == 0:
             print(f"  LoRA step {step}")
 
