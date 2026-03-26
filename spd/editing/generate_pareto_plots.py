@@ -20,7 +20,7 @@ import torch
 from torch import Tensor
 
 from spd.data import train_loader_and_tokenizer
-from spd.editing.component_trainer import train_write_delta, write_edit
+from spd.editing.component_trainer import train_write_vector, write_edit
 from spd.editing.lora_baseline import LoRATrainer
 from spd.editing.utils import load_model
 from spd.harvest.repo import HarvestRepo
@@ -29,9 +29,9 @@ from spd.models.component_model import ComponentModel
 
 WANDB_PATH = "wandb:goodfire/spd/s-55ea3f9b"
 RUN_ID = "s-55ea3f9b"
-COMP_KEY = "h.2.mlp.down_proj:2359"
+MODULE_NAME = "h.2.mlp.down_proj"
+U_IDX = 2359
 TARGET_TOKEN = 80  # "o"
-LAYER_PATH = "h.2.mlp.down_proj"
 
 ForwardFn = Callable[[Tensor], Tensor]
 
@@ -141,7 +141,7 @@ def measure_pareto(
 
 def get_examples(harvest: HarvestRepo) -> list[ActivationExample]:
     """Examples with at least one firing position (and a next token after it)."""
-    comp = harvest.get_component(COMP_KEY)
+    comp = harvest.get_component(f"{MODULE_NAME}:{U_IDX}")
     assert comp is not None
     return [ex for ex in comp.activation_examples if fire_positions(ex)]
 
@@ -316,16 +316,16 @@ def main(out_dir: Path) -> None:
 
     # --- SPD analytical ---
     for alpha in [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0]:
-        u_delta = (-alpha * unembed_normed).to(torch.bfloat16)
-        with write_edit(model, COMP_KEY, u_delta) as fwd:
+        new_u = (-alpha * unembed_normed).to(torch.bfloat16)
+        with write_edit(model, MODULE_NAME, U_IDX, new_u) as fwd:
             pareto_data[f"spd_analytical_a{alpha}"] = measure_pareto(fwd, *pareto_eval_args)
     print("SPD analytical done")
 
     # --- SPD trained ---
     for n_ex in [1, 4, 8, 16]:
         train_seqs = make_train_seqs(train_pool[:n_ex])
-        u_delta = train_write_delta(model, COMP_KEY, train_seqs, lr=1e-3, n_steps=100)
-        with write_edit(model, COMP_KEY, u_delta) as fwd:
+        new_u = train_write_vector(model, MODULE_NAME, U_IDX, train_seqs, lr=1e-3, n_steps=100)
+        with write_edit(model, MODULE_NAME, U_IDX, new_u) as fwd:
             pareto_data[f"spd_trained_n{n_ex}"] = measure_pareto(fwd, *pareto_eval_args)
         print(f"  SPD n={n_ex} done")
 
@@ -335,7 +335,7 @@ def main(out_dir: Path) -> None:
 
     for n_ex in lora_ns:
         train_seqs = make_train_seqs(train_pool[:n_ex])
-        lora = LoRATrainer(model.target_model, LAYER_PATH, train_seqs, lr=1e-3)
+        lora = LoRATrainer(model.target_model, MODULE_NAME, train_seqs, lr=1e-3)
 
         for kl_w in kl_weights:
             lora.reset()

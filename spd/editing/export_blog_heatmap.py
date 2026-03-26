@@ -30,9 +30,9 @@ from spd.harvest.schemas import ActivationExample
 
 WANDB_PATH = "wandb:goodfire/spd/s-55ea3f9b"
 RUN_ID = "s-55ea3f9b"
-COMP_KEY = "h.2.mlp.down_proj:2359"
+MODULE_NAME = "h.2.mlp.down_proj"
+U_IDX = 2359
 TARGET_TOKEN = 80  # "o"
-LAYER_PATH = "h.2.mlp.down_proj"
 
 ForwardFn = Callable[[Tensor], Tensor]
 
@@ -93,15 +93,15 @@ def main(out_dir: Path) -> None:
     lm_head = model.target_model.lm_head
     assert isinstance(lm_head, torch.nn.Linear)
     unembed = lm_head.weight[TARGET_TOKEN].detach().float()
-    u_delta = -3.0 * unembed / unembed.norm()
+    new_u = (-3.0 * unembed / unembed.norm()).to(torch.bfloat16)
 
-    with write_edit(model, COMP_KEY, u_delta) as spd_forward:
+    with write_edit(model, MODULE_NAME, U_IDX, new_u) as spd_forward:
         spd_examples = export_diffs(spd_forward, baselines, eval_tokens, eval_examples, tok)
     print(f"SPD: {len(spd_examples)} examples")
 
     # LoRA
     train_seqs = make_train_seqs(train_pool)
-    lora = LoRATrainer(model.target_model, LAYER_PATH, train_seqs, lr=1e-3)
+    lora = LoRATrainer(model.target_model, MODULE_NAME, train_seqs, lr=1e-3)
     for step in range(300):
         lora.train_step(kl_weight=10.0)
         if step % 100 == 0:
@@ -116,7 +116,7 @@ def main(out_dir: Path) -> None:
         (
             "training-heatmap.json",
             {
-                "component": COMP_KEY,
+                "component": f"{MODULE_NAME}:{U_IDX}",
                 "method": "SPD analytical (α=3, 0 training examples)",
                 "target_token": "o",
                 "examples": spd_examples,
@@ -125,7 +125,7 @@ def main(out_dir: Path) -> None:
         (
             "training-heatmap-lora.json",
             {
-                "component": LAYER_PATH,
+                "component": MODULE_NAME,
                 "method": f"LoRA rank-1 (n={len(train_pool)}, λ=10, 300 steps)",
                 "target_token": "o",
                 "examples": lora_examples,

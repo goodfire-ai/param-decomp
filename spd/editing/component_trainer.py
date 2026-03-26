@@ -3,68 +3,47 @@
 Each SPD component is a rank-1 adapter: V[:, c] @ U[c, :]. The write vector (U row)
 determines what the component contributes to the residual stream.
 
-The delta formulation: a forward hook on the target linear adds
-    (x @ V_col) * U_delta
-where V_col is the component's read vector (fixed) and U_delta is the learned or
-analytical perturbation.
+write_edit: directly replaces the U row, restores on exit.
+train_write_delta: optimizes U[c] via gradient descent on CE + optional KL reg.
 
 Usage:
     model, tok, config = load_model("wandb:goodfire/spd/s-55ea3f9b")
 
-    # Analytical
+    # Analytical: replace U with scaled negated unembed
     unembed = model.target_model.lm_head.weight[token_id].detach()
-    u_delta = -3.0 * unembed / unembed.norm()
-    with write_edit(model, "h.2.mlp.down_proj:2359", u_delta) as forward_fn:
+    new_u = -3.0 * unembed / unembed.norm()
+    with write_edit(model, "h.2.mlp.down_proj", 2359, new_u) as forward_fn:
         logits = forward_fn(tokens.unsqueeze(0))
 
     # Trained
-    u_delta = train_write_delta(model, "h.2.mlp.down_proj:2359", train_seqs, lr=1e-3, n_steps=100)
-    with write_edit(model, "h.2.mlp.down_proj:2359", u_delta) as forward_fn:
+    new_u = train_write_vector(model, "h.2.mlp.down_proj", 2359, train_seqs, lr=1e-3, n_steps=100)
+    with write_edit(model, "h.2.mlp.down_proj", 2359, new_u) as forward_fn:
         logits = forward_fn(tokens.unsqueeze(0))
 """
 
 from contextlib import contextmanager
-from typing import Any
 
 import torch
 import torch.nn.functional as F
 from jaxtyping import Float, Int
 from torch import Tensor
 
-from spd.editing.utils import parse_component_key
 from spd.models.component_model import ComponentModel
-
-
-def _resolve_hook_args(
-    model: ComponentModel, comp_key: str
-) -> tuple[torch.nn.Linear, Float[Tensor, " d_in"]]:
-    module_path, cidx = parse_component_key(comp_key)
-    v_col = model.components[module_path].V[:, cidx].detach()
-    mod: Any = model.target_model
-    for part in module_path.split("."):
-        mod = getattr(mod, part)
-    assert isinstance(mod, torch.nn.Linear)
-    return mod, v_col
 
 
 @contextmanager
 def write_edit(
     model: ComponentModel,
-    comp_key: str,
-    u_delta: Float[Tensor, " d_out"],
+    module_name: str,
+    u_idx: int,
+    new_u: Float[Tensor, " d_out"],
 ):
-    """Context manager applying a write-vector delta. Yields forward_fn(tokens) -> logits."""
-    linear, v_col = _resolve_hook_args(model, comp_key)
-    assert len(linear._forward_hooks) == 0, (
-        f"Target linear already has hooks: {list(linear._forward_hooks.keys())}. "
-        "Another edit (e.g. LoRA) may be active — clean it up first."
-    )
+    """Replace U[u_idx] with new_u. Restores on exit. Yields forward_fn(tokens) -> logits."""
+    comp = model.components[module_name]
+    existing_u = comp.U[u_idx].clone()
+    assert existing_u.shape == new_u.shape
 
-    def hook(_mod: torch.nn.Module, _inp: tuple[Any, ...], out: Tensor) -> Tensor:
-        activation = _inp[0] @ v_col
-        return out + activation.unsqueeze(-1) * u_delta.unsqueeze(0)
-
-    handle = linear.register_forward_hook(hook)
+    comp.U[u_idx].copy_(new_u)
 
     def forward_fn(tokens: Tensor) -> Tensor:
         return model(tokens)
@@ -72,43 +51,55 @@ def write_edit(
     try:
         yield forward_fn
     finally:
-        handle.remove()
+        comp.U[u_idx].copy_(existing_u)
 
 
-def train_write_delta(
+def train_write_vector(
     model: ComponentModel,
-    comp_key: str,
+    module_name: str,
+    u_idx: int,
     train_seqs: list[tuple[Int[Tensor, " seq"], list[int]]],
     lr: float,
     n_steps: int,
+    kl_weight: float = 0.0,
 ) -> Float[Tensor, " d_out"]:
-    """Train a write-vector delta. Returns the learned U delta tensor."""
-    linear, v_col = _resolve_hook_args(model, comp_key)
-    assert len(linear._forward_hooks) == 0, (
-        f"Target linear already has hooks: {list(linear._forward_hooks.keys())}. "
-        "Another edit (e.g. LoRA) may be active — clean it up first."
-    )
+    """Optimize U[u_idx] via gradient descent. Returns the trained U row."""
+    comp = model.components[module_name]
+    original_u = comp.U[u_idx].detach().clone()
 
-    d_out = int(linear.weight.shape[0])
-    u_delta = torch.zeros(d_out, device=v_col.device, requires_grad=True)
+    # Cache baselines before any modification
+    base_probs: list[Tensor] = []
+    if kl_weight > 0:
+        with torch.no_grad():
+            for tokens, _ in train_seqs:
+                base_probs.append(model(tokens.unsqueeze(0))[0].softmax(-1))
 
-    def hook(_mod: torch.nn.Module, _inp: tuple[Any, ...], out: Tensor) -> Tensor:
-        activation = _inp[0] @ v_col
-        return out + activation.unsqueeze(-1) * u_delta.unsqueeze(0)
+    # Enable grad on just this one row
+    comp.U.requires_grad_(False)
+    u_param = comp.U[u_idx].detach().clone().requires_grad_(True)
 
-    handle = linear.register_forward_hook(hook)
-    optimizer = torch.optim.AdamW([u_delta], lr=lr)
+    optimizer = torch.optim.AdamW([u_param], lr=lr)
 
-    try:
-        for _ in range(n_steps):
-            for tokens_mut, positions in train_seqs:
-                logits = model(tokens_mut.unsqueeze(0))
-                pos_t = torch.tensor(positions, device=tokens_mut.device)
-                loss = F.cross_entropy(logits[0, positions], tokens_mut[pos_t + 1])
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-    finally:
-        handle.remove()
+    for _ in range(n_steps):
+        for i, (tokens_mut, positions) in enumerate(train_seqs):
+            comp.U.data[u_idx] = u_param
+            logits = model(tokens_mut.unsqueeze(0))[0]
+            pos_t = torch.tensor(positions, device=tokens_mut.device)
+            ce = F.cross_entropy(logits[positions], tokens_mut[pos_t + 1])
 
-    return u_delta.detach()
+            kl_loss = torch.tensor(0.0, device=tokens_mut.device)
+            if kl_weight > 0:
+                probs = logits.softmax(-1)
+                kl = (probs * ((probs + 1e-10).log() - (base_probs[i] + 1e-10).log())).sum(-1)
+                fire_mask = torch.ones(len(tokens_mut), dtype=torch.bool, device=tokens_mut.device)
+                fire_mask[positions] = False
+                kl_loss = kl[fire_mask].mean()
+
+            loss = ce + kl_weight * kl_loss
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+    result = u_param.detach().clone()
+    comp.U.data[u_idx] = original_u
+    return result
