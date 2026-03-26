@@ -1,8 +1,11 @@
 """SLURM submission for intruder eval jobs."""
 
+import secrets
+
 from spd.harvest.config import IntruderSlurmConfig
 from spd.harvest.scripts.run_intruder import get_command
 from spd.log import logger
+from spd.utils.git_utils import create_git_snapshot
 from spd.utils.slurm import SlurmConfig, SubmitResult, generate_script, submit_slurm_job
 
 
@@ -13,6 +16,11 @@ def submit_intruder(
     snapshot_branch: str | None = None,
     dependency_job_id: str | None = None,
 ) -> SubmitResult:
+    if snapshot_branch is None:
+        run_id = f"intruder-{secrets.token_hex(4)}"
+        snapshot_branch, commit_hash = create_git_snapshot(snapshot_id=run_id)
+        logger.info(f"Created git snapshot: {snapshot_branch} ({commit_hash[:8]})")
+
     cmd = get_command(decomposition_id, slurm_config.config, harvest_subrun_id)
 
     slurm = SlurmConfig(
@@ -34,6 +42,7 @@ def submit_intruder(
         {
             "Decomposition": decomposition_id,
             "Harvest subrun": harvest_subrun_id,
+            "Snapshot": snapshot_branch,
             "Job ID": result.job_id,
             "Log": result.log_pattern,
         }

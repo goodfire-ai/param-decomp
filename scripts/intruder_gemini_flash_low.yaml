@@ -1,0 +1,8 @@
+config:
+  llm:
+    type: google_ai
+    model: gemini-3-flash-preview
+    thinking_level: low
+    max_concurrent: 500
+    max_requests_per_minute: 2000
+time: "10:00:00"

@@ -1,0 +1,26 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+notebooks/
+*.log
+.temp_images/
+.ipynb_checkpoints/
+
+# Local configuration
+.scribe_config.json
+scribe_experiments/
+.mcp.json
+.scribe/
+.claude/
+.mcp.json
+_plans/*
+.env
+.gemini/

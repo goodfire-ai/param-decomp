@@ -1,0 +1,33 @@
+[project]
+name = "scribe"
+version = "0.1.1"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastmcp>=2.10.6",
+    "ipykernel>=6.30.0",
+    "jupyter-client>=8.6.3",
+    "jupyter-server>=2.16.0",
+    "nbformat>=5.10.4",
+    "pillow>=11.3.0",
+    "psutil>=7.0.0",
+    "python-dotenv>=1.1.1",
+    "requests>=2.32.4",
+]
+
+[project.scripts]
+scribe = "scribe.cli.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[tool.setuptools]
+packages = ["scribe"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
