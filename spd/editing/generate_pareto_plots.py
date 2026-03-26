@@ -191,8 +191,7 @@ Return ONLY a JSON object mapping id to true/false.
     return emo, non_emo
 
 
-def plot_pareto(pareto_data: dict[str, ParetoPoint], out_dir: Path) -> None:
-    lora_ns = [1, 8, 64, 256, 1058]
+def plot_pareto(pareto_data: dict[str, ParetoPoint], lora_ns: list[int], out_dir: Path) -> None:
     kl_weights = [0.0, 1.0, 3.0, 10.0, 30.0, 100.0]
     lora_cmap = plt.colormaps["Oranges"]
     lora_colors = {n: lora_cmap(0.3 + 0.65 * i / (len(lora_ns) - 1)) for i, n in enumerate(lora_ns)}
@@ -346,7 +345,7 @@ def main(out_dir: Path) -> None:
     lora.cleanup()
 
     print(f"\n{len(pareto_data)} pareto points. Plotting...")
-    plot_pareto(pareto_data, out_dir)
+    plot_pareto(pareto_data, lora_ns, out_dir)
     print("Done.")
 
 
