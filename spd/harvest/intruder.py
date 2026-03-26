@@ -77,9 +77,7 @@ class DensityIndex:
         lo = bisect.bisect_left(self._densities, target_density - tolerance)
         hi = bisect.bisect_right(self._densities, target_density + tolerance)
 
-        candidates = [
-            self._keys[i] for i in range(lo, hi) if self._keys[i] != target_key
-        ]
+        candidates = [self._keys[i] for i in range(lo, hi) if self._keys[i] != target_key]
 
         if not candidates:
             return None
@@ -116,7 +114,9 @@ def _build_prompt(
 
     examples_text = ""
     for i, ex in enumerate(all_examples):
-        examples_text += f"<example_{i + 1}>\n{_format_example_xml(ex, app_tok)}\n</example_{i + 1}>\n\n"
+        examples_text += (
+            f"<example_{i + 1}>\n{_format_example_xml(ex, app_tok)}\n</example_{i + 1}>\n\n"
+        )
 
     return f"""\
 Below are {n_total} text snippets from a neural network's training data. {n_real} come from contexts \
@@ -152,7 +152,9 @@ def _build_trials(
     n_skipped = 0
     for i, ck in enumerate(remaining_keys):
         if i > 0 and i % 1000 == 0:
-            logger.info(f"Building trials: {i}/{len(remaining_keys)} components ({n_skipped} skipped)")
+            logger.info(
+                f"Building trials: {i}/{len(remaining_keys)} components ({n_skipped} skipped)"
+            )
         component = db.get_component(ck)
         assert component is not None, f"Component {ck} not found in DB"
 
@@ -262,6 +264,7 @@ async def run_intruder_scoring(
                         reasoning=parsed.get("reasoning", ""),
                     )
                 )
+                db.save_intruder_prompt(job.key, job.prompt)
                 _try_save(gt.component_key)
             case LLMError(job=job, error=e):
                 gt = ground_truth[job.key]
