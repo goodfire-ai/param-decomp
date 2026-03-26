@@ -22,6 +22,7 @@ Usage:
 """
 
 from contextlib import contextmanager
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -38,11 +39,28 @@ def write_edit(
     u_idx: int,
     new_u: Float[Tensor, " d_out"],
 ):
-    """Replace U[u_idx] with new_u. Restores on exit. Yields forward_fn(tokens) -> logits."""
-    comp = model.components[module_name]
-    existing_u = comp.U[u_idx].clone()
-    assert existing_u.shape == new_u.shape
+    """Replace U[u_idx] with new_u by patching the target weight matrix.
 
+    The target linear's weight includes all components: W = Σ V[:,c] @ U[c,:] + delta.
+    Changing U[c] by (new_u - old_u) changes W by V[:,c] ⊗ (new_u - old_u).
+    """
+    comp = model.components[module_name]
+    old_u = comp.U.data[u_idx].clone()
+    assert old_u.shape == new_u.shape
+
+    # Find the target linear
+    mod: Any = model.target_model
+    for part in module_name.split("."):
+        mod = getattr(mod, part)
+    assert isinstance(mod, torch.nn.Linear)
+
+    # ΔW = V[:,c] ⊗ (new_u - old_u)  — outer product, shape [d_in, d_out]
+    # Weight is [d_out, d_in], so we need (new_u - old_u) ⊗ V[:,c]^T = [d_out] x [d_in]
+    v_col = comp.V[:, u_idx].detach()  # [d_in]
+    u_diff = (new_u - old_u).detach()  # [d_out]
+    delta_w = u_diff.unsqueeze(1) * v_col.unsqueeze(0)  # [d_out, d_in]
+
+    mod.weight.data.add_(delta_w)
     comp.U.data[u_idx] = new_u
 
     def forward_fn(tokens: Tensor) -> Tensor:
@@ -51,7 +69,8 @@ def write_edit(
     try:
         yield forward_fn
     finally:
-        comp.U.data[u_idx] = existing_u
+        mod.weight.data.sub_(delta_w)
+        comp.U.data[u_idx] = old_u
 
 
 def train_write_vector(
@@ -63,27 +82,41 @@ def train_write_vector(
     n_steps: int,
     kl_weight: float = 0.0,
 ) -> Float[Tensor, " d_out"]:
-    """Optimize U[u_idx] via gradient descent. Returns the trained U row."""
+    """Optimize U[u_idx] via gradient descent. Returns the trained U row.
+
+    Uses a forward hook to add V_col ⊗ (u_param - original_u) to the layer output,
+    so gradients flow through u_param. The target weight matrix is not modified.
+    """
     comp = model.components[module_name]
     original_u = comp.U[u_idx].detach().clone()
-    original_requires_grad = comp.U.requires_grad
+    v_col = comp.V[:, u_idx].detach()
 
-    # Cache baselines before any modification
+    # Find target linear
+    mod: Any = model.target_model
+    for part in module_name.split("."):
+        mod = getattr(mod, part)
+    assert isinstance(mod, torch.nn.Linear)
+
+    # Cache baselines before installing hook
     base_probs: list[Tensor] = []
     if kl_weight > 0:
         with torch.no_grad():
             for tokens, _ in train_seqs:
                 base_probs.append(model(tokens.unsqueeze(0))[0].softmax(-1))
 
-    # u_param is the trainable copy; we poke it into comp.U.data each step
-    comp.U.requires_grad_(False)
     u_param = original_u.clone().requires_grad_(True)
     optimizer = torch.optim.AdamW([u_param], lr=lr)
+
+    def hook(_mod: torch.nn.Module, _inp: tuple[Any, ...], out: Tensor) -> Tensor:
+        u_diff = u_param - original_u
+        activation = _inp[0] @ v_col
+        return out + activation.unsqueeze(-1) * u_diff.unsqueeze(0)
+
+    handle = mod.register_forward_hook(hook)
 
     try:
         for _ in range(n_steps):
             for i, (tokens_mut, positions) in enumerate(train_seqs):
-                comp.U.data[u_idx] = u_param
                 logits = model(tokens_mut.unsqueeze(0))[0]
                 pos_t = torch.tensor(positions, device=tokens_mut.device)
                 ce = F.cross_entropy(logits[positions], tokens_mut[pos_t + 1])
@@ -103,7 +136,6 @@ def train_write_vector(
                 loss.backward()
                 optimizer.step()
     finally:
-        comp.U.data[u_idx] = original_u
-        comp.U.requires_grad_(original_requires_grad)
+        handle.remove()
 
     return u_param.detach()
