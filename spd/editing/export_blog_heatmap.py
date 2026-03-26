@@ -21,6 +21,7 @@ from spd.editing.component_trainer import u_replaced
 from spd.editing.generate_pareto_plots import (
     get_examples,
     get_probs,
+    get_probs_raw,
     make_train_seqs,
 )
 from spd.editing.lora_baseline import LoRATrainer
@@ -76,7 +77,7 @@ def export_diffs(
 
 
 def main(out_dir: Path) -> None:
-    model, tok, _ = load_model(WANDB_PATH)
+    model, tok, _, _dl = load_model(WANDB_PATH, device="cuda", batch_size=40)
     harvest = HarvestRepo.open_most_recent(RUN_ID)
     assert harvest is not None
 
@@ -101,13 +102,19 @@ def main(out_dir: Path) -> None:
 
     # LoRA
     train_seqs = make_train_seqs(train_pool)
-    lora = LoRATrainer(model.target_model, MODULE_NAME, train_seqs, lr=1e-3)
-    for step in range(300):
-        lora.train_step(kl_weight=10.0)
-        if step % 100 == 0:
-            print(f"  LoRA step {step}")
-    lora_examples = export_diffs(lora.forward, baselines, eval_tokens, eval_examples, tok)
-    lora.cleanup()
+
+    def forward_base(tokens: Tensor) -> Tensor:
+        return model.target_model(tokens)[0]
+
+    train_baselines = get_probs_raw(forward_base, [t for t, _ in train_seqs])
+
+    with LoRATrainer(model.target_model, MODULE_NAME, lr=1e-3, kl_weight=10.0) as lora:
+        for step in range(300):
+            idx = random.randint(0, len(train_seqs) - 1)
+            lora.train_step(train_seqs[idx], train_baselines[idx])
+            if step % 100 == 0:
+                print(f"  LoRA step {step}")
+        lora_examples = export_diffs(lora.forward, baselines, eval_tokens, eval_examples, tok)
     print(f"LoRA: {len(lora_examples)} examples")
 
     # Write

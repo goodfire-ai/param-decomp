@@ -2,26 +2,30 @@
 
 CE loss at fire positions (teach it to predict target token) + KL loss at all
 other positions (preserve original predictions). Single forward pass per step.
+
+Usage:
+    with LoRATrainer(model.target_model, "h.2.mlp.down_proj", train_seqs, lr=1e-3) as lora:
+        for _ in range(300):
+            lora.train_step(kl_weight=10.0)
+        result = eval_edit(lora.forward)
 """
 
-import random
 from typing import Any
 
 import torch
 import torch.nn.functional as F
-from jaxtyping import Int
 from torch import Tensor
 
 
 class LoRATrainer:
-    """Rank-1 LoRA on a single linear layer. Reusable across runs without model reload."""
+    """Rank-1 LoRA on a single linear layer. Context manager — hook removed on exit."""
 
     def __init__(
         self,
         target_model: torch.nn.Module,
         layer_path: str,
-        train_seqs: list[tuple[Int[Tensor, " seq"], list[int]]],
         lr: float,
+        kl_weight: float,
     ):
         self.target_model = target_model
         self.target_model.eval()
@@ -37,19 +41,16 @@ class LoRATrainer:
         self.B = torch.zeros(d_out, 1, device="cuda")
         self.A.requires_grad = True
         self.B.requires_grad = True
-        self.lr = lr
 
-        self.train_seqs = train_seqs
-        self.base_probs = self._compute_baselines()
         self._hook = self.linear.register_forward_hook(self._fwd_hook)
         self.optimizer = torch.optim.AdamW([self.A, self.B], lr=lr)
+        self.kl_weight = kl_weight
 
-    def _compute_baselines(self) -> list[Tensor]:
-        assert not hasattr(self, "_hook"), "baselines must be computed without hook"
-        with torch.no_grad():
-            return [
-                self.forward(tokens.unsqueeze(0))[0].softmax(-1) for tokens, _ in self.train_seqs
-            ]
+    def __enter__(self) -> "LoRATrainer":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self._hook.remove()
 
     def _fwd_hook(self, _mod: torch.nn.Module, _inp: tuple[Any, ...], out: Tensor) -> Tensor:
         return out + (_inp[0] @ self.A.T) @ self.B.T
@@ -57,46 +58,29 @@ class LoRATrainer:
     def forward(self, tokens: Tensor) -> Tensor:
         return self.target_model(tokens)[0]
 
-    def train_step(self, kl_weight: float, batch_size: int = 8) -> float:
+    def train_step(self, batch: tuple[Tensor, list[int]], baseline: Tensor) -> float:
         """One step: CE at fire positions + KL at all other positions."""
-        idxs = random.sample(range(len(self.train_seqs)), min(batch_size, len(self.train_seqs)))
+        tokens, positions = batch
+        assert baseline.shape == (len(tokens), self.linear.weight.shape[0]), (
+            f"Baseline shape {baseline.shape} != {self.linear.weight.shape[0]}"
+        )
 
         ce_total = torch.tensor(0.0, device="cuda")
         kl_total = torch.tensor(0.0, device="cuda")
+        logits = self.forward(tokens.unsqueeze(0))[0]
 
-        for idx in idxs:
-            tokens, positions = self.train_seqs[idx]
-            logits = self.forward(tokens.unsqueeze(0))[0]
+        pos_t = torch.tensor(positions, device="cuda")
+        ce_total = ce_total + F.cross_entropy(logits[positions], tokens[pos_t + 1])
 
-            pos_t = torch.tensor(positions, device="cuda")
-            ce_total = ce_total + F.cross_entropy(logits[positions], tokens[pos_t + 1])
+        if self.kl_weight > 0:
+            probs = logits.softmax(-1)
+            kl = (probs * ((probs + 1e-10).log() - (baseline + 1e-10).log())).sum(-1)
+            fire_mask = torch.ones(len(tokens), dtype=torch.bool, device="cuda")
+            fire_mask[positions] = False
+            kl_total = kl_total + kl[fire_mask].mean()
 
-            if kl_weight > 0:
-                probs = logits.softmax(-1)
-                kl = (probs * ((probs + 1e-10).log() - (self.base_probs[idx] + 1e-10).log())).sum(
-                    -1
-                )
-                fire_mask = torch.ones(len(tokens), dtype=torch.bool, device="cuda")
-                fire_mask[positions] = False
-                kl_total = kl_total + kl[fire_mask].mean()
-
-        loss = ce_total / len(idxs) + kl_weight * kl_total / len(idxs)
+        loss = ce_total / len(tokens) + self.kl_weight * kl_total / len(tokens)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
         return loss.item()
-
-    def reset(self) -> None:
-        """Reset LoRA params to init. No model reload needed."""
-        d_in = int(self.linear.weight.shape[1])
-        with torch.no_grad():
-            self.A.copy_(torch.randn(1, d_in, device="cuda") * 0.01)
-            self.B.zero_()
-        self.optimizer = torch.optim.AdamW([self.A, self.B], lr=self.lr)
-        self._hook.remove()
-        del self._hook
-        self.base_probs = self._compute_baselines()
-        self._hook = self.linear.register_forward_hook(self._fwd_hook)
-
-    def cleanup(self) -> None:
-        self._hook.remove()

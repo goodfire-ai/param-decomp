@@ -19,7 +19,6 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from spd.data import train_loader_and_tokenizer
 from spd.editing.component_trainer import u_replaced
 from spd.editing.lora_baseline import LoRATrainer
 from spd.editing.utils import load_model
@@ -68,6 +67,11 @@ def kl_per_token(probs_a: Tensor, probs_b: Tensor) -> Tensor:
 def get_probs(component_model: ComponentModel, seqs: list[Tensor]) -> list[Tensor]:
     with torch.no_grad():
         return [component_model(t.unsqueeze(0))[0].softmax(-1) for t in seqs]
+
+
+def get_probs_raw(forward_fn: ForwardFn, seqs: list[Tensor]) -> list[Tensor]:
+    with torch.no_grad():
+        return [forward_fn(t.unsqueeze(0))[0].softmax(-1) for t in seqs]
 
 
 def measure_blast(
@@ -272,7 +276,7 @@ def plot_pareto(pareto_data: dict[str, ParetoPoint], lora_ns: list[int], out_dir
 
 def main(out_dir: Path) -> None:
     out_dir.mkdir(exist_ok=True)
-    model, tok, config = load_model(WANDB_PATH)
+    model, tok, _, dl = load_model(WANDB_PATH, device="cuda", batch_size=40)
     harvest = HarvestRepo.open_most_recent(RUN_ID)
     assert harvest is not None
 
@@ -285,7 +289,6 @@ def main(out_dir: Path) -> None:
     train_pool = examples[50:]
     eval_tokens = [torch.tensor(ex.token_ids, device="cuda") for ex in eval_examples]
 
-    dl, _ = train_loader_and_tokenizer(config, batch_size=40)
     global_tokens = [row.cuda() for row in next(iter(dl))["input_ids"]]
 
     # LLM-label eval examples
@@ -325,19 +328,25 @@ def main(out_dir: Path) -> None:
     kl_weights = [0.0, 1.0, 3.0, 10.0, 30.0, 100.0]
     lora_ns = [1, 8, 64, 256, len(train_pool)]
 
+    def forward_base(tokens: Tensor) -> Tensor:
+        return model.target_model(tokens)[0]
+
     for n_ex in lora_ns:
         train_seqs = make_train_seqs(train_pool[:n_ex])
-        lora = LoRATrainer(model.target_model, MODULE_NAME, train_seqs, lr=1e-3)
+        # Cache baselines before any LoRA hook
+        train_baselines = get_probs_raw(forward_base, [t for t, _ in train_seqs])
 
         for kl_w in kl_weights:
-            lora.reset()
-            for _ in range(300):
-                lora.train_step(kl_weight=kl_w)
-            pareto_data[f"lora_n{n_ex}_l{kl_w}"] = measure_pareto(lora.forward, *pareto_eval_args)
+            with LoRATrainer(model.target_model, MODULE_NAME, lr=1e-3, kl_weight=kl_w) as lora:
+                for _ in range(300):
+                    idx = random.randint(0, len(train_seqs) - 1)
+                    lora.train_step(train_seqs[idx], train_baselines[idx])
+                pareto_data[f"lora_n{n_ex}_l{kl_w}"] = measure_pareto(
+                    lora.forward, *pareto_eval_args
+                )
 
         r = pareto_data[f"lora_n{n_ex}_l10.0"]
         print(f"  LoRA n={n_ex} λ=10: P_emo={r.p_emo:.0%} surr={r.surr_kl:.4f}")
-        lora.cleanup()
 
     print(f"\n{len(pareto_data)} pareto points. Plotting...")
     plot_pareto(pareto_data, lora_ns, out_dir)
