@@ -1,26 +1,24 @@
 """Write-vector editing for SPD components.
 
 Each SPD component is a rank-1 adapter: V[:, c] @ U[c, :]. The write vector (U row)
-determines what the component contributes to the residual stream. This module provides
-functions to train or analytically set write vectors, producing a U delta tensor that
-can be applied via a forward hook.
+determines what the component contributes to the residual stream.
 
-The delta formulation: with the hook installed, forward pass computes
-    target_model(x) + (x @ V_col) * U_delta
+The delta formulation: a forward hook on the target linear adds
+    (x @ V_col) * U_delta
 where V_col is the component's read vector (fixed) and U_delta is the learned or
-analytical perturbation. No weight snapshots needed.
+analytical perturbation.
 
 Usage:
-    model, tok = load_model("wandb:goodfire/spd/s-55ea3f9b")
+    model, tok, config = load_model("wandb:goodfire/spd/s-55ea3f9b")
 
-    # Analytical: set U to negated unembed direction
+    # Analytical
     unembed = model.target_model.lm_head.weight[token_id].detach()
     u_delta = -3.0 * unembed / unembed.norm()
     with write_edit(model, "h.2.mlp.down_proj:2359", u_delta) as forward_fn:
         logits = forward_fn(tokens.unsqueeze(0))
 
-    # Trained:
-    u_delta = train_write_delta(model, "h.2.mlp.down_proj:2359", train_seqs, lr=1e-3)
+    # Trained
+    u_delta = train_write_delta(model, "h.2.mlp.down_proj:2359", train_seqs, lr=1e-3, n_steps=100)
     with write_edit(model, "h.2.mlp.down_proj:2359", u_delta) as forward_fn:
         logits = forward_fn(tokens.unsqueeze(0))
 """
@@ -40,7 +38,6 @@ from spd.models.component_model import ComponentModel
 def _resolve_hook_args(
     model: ComponentModel, comp_key: str
 ) -> tuple[torch.nn.Linear, Float[Tensor, " d_in"]]:
-    """Return the target linear module and the component's read vector."""
     module_path, cidx = parse_component_key(comp_key)
     v_col = model.components[module_path].V[:, cidx].detach()
     mod: Any = model.target_model
@@ -56,14 +53,11 @@ def write_edit(
     comp_key: str,
     u_delta: Float[Tensor, " d_out"],
 ):
-    """Context manager applying a write-vector delta to a component.
-
-    Yields a forward_fn(tokens) -> logits with the rank-1 perturbation active.
-    """
+    """Context manager applying a write-vector delta. Yields forward_fn(tokens) -> logits."""
     linear, v_col = _resolve_hook_args(model, comp_key)
 
     def hook(_mod: torch.nn.Module, _inp: tuple[Any, ...], out: Tensor) -> Tensor:
-        activation = _inp[0] @ v_col  # [...] scalar per position
+        activation = _inp[0] @ v_col
         return out + activation.unsqueeze(-1) * u_delta.unsqueeze(0)
 
     handle = linear.register_forward_hook(hook)
@@ -81,10 +75,10 @@ def train_write_delta(
     model: ComponentModel,
     comp_key: str,
     train_seqs: list[tuple[Int[Tensor, " seq"], list[int]]],
-    lr: float = 1e-3,
-    n_steps: int = 100,
+    lr: float,
+    n_steps: int,
 ) -> Float[Tensor, " d_out"]:
-    """Train a write-vector delta for a component. Returns the learned U delta."""
+    """Train a write-vector delta. Returns the learned U delta tensor."""
     linear, v_col = _resolve_hook_args(model, comp_key)
 
     d_out = int(linear.weight.shape[0])

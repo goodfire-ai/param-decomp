@@ -21,7 +21,7 @@ class LoRATrainer:
         target_model: torch.nn.Module,
         layer_path: str,
         train_seqs: list[tuple[Int[Tensor, " seq"], list[int]]],
-        lr: float = 1e-3,
+        lr: float,
     ):
         self.target_model = target_model
         self.target_model.eval()
@@ -40,38 +40,29 @@ class LoRATrainer:
         self.lr = lr
 
         self.train_seqs = train_seqs
-
-        # Cache baselines BEFORE installing hook — clean model outputs
         self.base_probs = self._compute_baselines()
         self._hook = self.linear.register_forward_hook(self._fwd_hook)
         self.optimizer = torch.optim.AdamW([self.A, self.B], lr=lr)
 
-    def _forward_raw(self, tokens: Tensor) -> Tensor:
-        """Forward through target model. Result depends on whether hook is installed."""
-        return self.target_model(tokens)[0]
-
     def _compute_baselines(self) -> list[Tensor]:
-        """Baseline probs for each training sequence. Must be called without hook."""
+        assert not hasattr(self, "_hook"), "baselines must be computed without hook"
         with torch.no_grad():
             return [
-                self._forward_raw(tokens.unsqueeze(0))[0].softmax(-1)
-                for tokens, _ in self.train_seqs
+                self.forward(tokens.unsqueeze(0))[0].softmax(-1) for tokens, _ in self.train_seqs
             ]
 
     def _fwd_hook(self, _mod: torch.nn.Module, _inp: tuple[Any, ...], out: Tensor) -> Tensor:
         return out + (_inp[0] @ self.A.T) @ self.B.T
 
     def forward(self, tokens: Tensor) -> Tensor:
-        return self._forward_raw(tokens)
+        return self.target_model(tokens)[0]
 
     def train_step(self, kl_weight: float, batch_size: int = 8) -> float:
-        """One step: CE at fire positions + KL at all other positions. Returns loss."""
+        """One step: CE at fire positions + KL at all other positions."""
         idxs = random.sample(range(len(self.train_seqs)), min(batch_size, len(self.train_seqs)))
 
         ce_total = torch.tensor(0.0, device="cuda")
         kl_total = torch.tensor(0.0, device="cuda")
-        n_ce = 0
-        n_kl = 0
 
         for idx in idxs:
             tokens, positions = self.train_seqs[idx]
@@ -79,18 +70,17 @@ class LoRATrainer:
 
             pos_t = torch.tensor(positions, device="cuda")
             ce_total = ce_total + F.cross_entropy(logits[positions], tokens[pos_t + 1])
-            n_ce += 1
 
             if kl_weight > 0:
                 probs = logits.softmax(-1)
-                base = self.base_probs[idx]
-                kl = (probs * ((probs + 1e-10).log() - (base + 1e-10).log())).sum(-1)
+                kl = (probs * ((probs + 1e-10).log() - (self.base_probs[idx] + 1e-10).log())).sum(
+                    -1
+                )
                 fire_mask = torch.ones(len(tokens), dtype=torch.bool, device="cuda")
                 fire_mask[positions] = False
                 kl_total = kl_total + kl[fire_mask].mean()
-                n_kl += 1
 
-        loss = ce_total / n_ce + kl_weight * (kl_total / max(n_kl, 1))
+        loss = ce_total / len(idxs) + kl_weight * kl_total / len(idxs)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
@@ -103,11 +93,10 @@ class LoRATrainer:
             self.A.copy_(torch.randn(1, d_in, device="cuda") * 0.01)
             self.B.zero_()
         self.optimizer = torch.optim.AdamW([self.A, self.B], lr=self.lr)
-        # Re-cache baselines without hook
         self._hook.remove()
+        del self._hook
         self.base_probs = self._compute_baselines()
         self._hook = self.linear.register_forward_hook(self._fwd_hook)
 
     def cleanup(self) -> None:
-        """Remove forward hook."""
         self._hook.remove()
