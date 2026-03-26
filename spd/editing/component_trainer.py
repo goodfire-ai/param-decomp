@@ -66,6 +66,7 @@ def train_write_vector(
     """Optimize U[u_idx] via gradient descent. Returns the trained U row."""
     comp = model.components[module_name]
     original_u = comp.U[u_idx].detach().clone()
+    original_requires_grad = comp.U.requires_grad
 
     # Cache baselines before any modification
     base_probs: list[Tensor] = []
@@ -74,32 +75,35 @@ def train_write_vector(
             for tokens, _ in train_seqs:
                 base_probs.append(model(tokens.unsqueeze(0))[0].softmax(-1))
 
-    # Enable grad on just this one row
+    # u_param is the trainable copy; we poke it into comp.U.data each step
     comp.U.requires_grad_(False)
-    u_param = comp.U[u_idx].detach().clone().requires_grad_(True)
-
+    u_param = original_u.clone().requires_grad_(True)
     optimizer = torch.optim.AdamW([u_param], lr=lr)
 
-    for _ in range(n_steps):
-        for i, (tokens_mut, positions) in enumerate(train_seqs):
-            comp.U.data[u_idx] = u_param
-            logits = model(tokens_mut.unsqueeze(0))[0]
-            pos_t = torch.tensor(positions, device=tokens_mut.device)
-            ce = F.cross_entropy(logits[positions], tokens_mut[pos_t + 1])
+    try:
+        for _ in range(n_steps):
+            for i, (tokens_mut, positions) in enumerate(train_seqs):
+                comp.U.data[u_idx] = u_param
+                logits = model(tokens_mut.unsqueeze(0))[0]
+                pos_t = torch.tensor(positions, device=tokens_mut.device)
+                ce = F.cross_entropy(logits[positions], tokens_mut[pos_t + 1])
 
-            kl_loss = torch.tensor(0.0, device=tokens_mut.device)
-            if kl_weight > 0:
-                probs = logits.softmax(-1)
-                kl = (probs * ((probs + 1e-10).log() - (base_probs[i] + 1e-10).log())).sum(-1)
-                fire_mask = torch.ones(len(tokens_mut), dtype=torch.bool, device=tokens_mut.device)
-                fire_mask[positions] = False
-                kl_loss = kl[fire_mask].mean()
+                kl_loss = torch.tensor(0.0, device=tokens_mut.device)
+                if kl_weight > 0:
+                    probs = logits.softmax(-1)
+                    kl = (probs * ((probs + 1e-10).log() - (base_probs[i] + 1e-10).log())).sum(-1)
+                    fire_mask = torch.ones(
+                        len(tokens_mut), dtype=torch.bool, device=tokens_mut.device
+                    )
+                    fire_mask[positions] = False
+                    kl_loss = kl[fire_mask].mean()
 
-            loss = ce + kl_weight * kl_loss
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+                loss = ce + kl_weight * kl_loss
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+    finally:
+        comp.U.data[u_idx] = original_u
+        comp.U.requires_grad_(original_requires_grad)
 
-    result = u_param.detach().clone()
-    comp.U.data[u_idx] = original_u
-    return result
+    return u_param.detach()
