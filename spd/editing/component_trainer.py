@@ -21,21 +21,8 @@ from jaxtyping import Float
 from torch import Tensor
 
 from spd.models.component_model import ComponentModel
-from spd.models.components import ComponentsMaskInfo, make_mask_infos
+from spd.models.components import make_mask_infos
 from spd.utils.general_utils import get_obj_device
-
-
-def all_ones_mask_infos(model: ComponentModel) -> dict[str, ComponentsMaskInfo]:
-    device = get_obj_device(model)
-    component_masks = {}
-    weight_deltas_and_masks = {}
-    for module_name in model.target_module_paths:
-        C = model.module_to_c[module_name]
-        component_masks[module_name] = torch.ones((C,), device=device)
-        wd = model.calc_weight_deltas()[module_name]
-        wdm = torch.ones((C,), device=device)
-        weight_deltas_and_masks[module_name] = (wd, wdm)
-    return make_mask_infos(component_masks, weight_deltas_and_masks)
 
 
 @contextmanager
@@ -50,10 +37,26 @@ def u_replaced(
     old_u = comp.U.data[u_idx].clone()
     assert old_u.shape == new_u.shape
 
+    device = get_obj_device(model)
+
+    # Snapshot weight deltas BEFORE changing U
+    frozen_weight_deltas = {k: v.detach().clone() for k, v in model.calc_weight_deltas().items()}
+
     comp.U.data[u_idx] = new_u
-    mask_infos = all_ones_mask_infos(model)
 
     def forward_fn(tokens: Tensor) -> Tensor:
+        component_masks = {}
+        weight_deltas_and_masks = {}
+        for mn in model.target_module_paths:
+            C = model.module_to_c[mn]
+            component_masks[mn] = torch.ones((C,), device=device)
+            weight_deltas_and_masks[mn] = (
+                frozen_weight_deltas[mn],
+                torch.ones(tokens.shape, device=device),
+            )
+        mask_infos = make_mask_infos(
+            component_masks, weight_deltas_and_masks=weight_deltas_and_masks
+        )
         return model(tokens, mask_infos=mask_infos)
 
     try:
