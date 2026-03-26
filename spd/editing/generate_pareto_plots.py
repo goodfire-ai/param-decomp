@@ -20,7 +20,7 @@ import torch
 from torch import Tensor
 
 from spd.data import train_loader_and_tokenizer
-from spd.editing.component_trainer import train_write_vector, write_edit
+from spd.editing.component_trainer import u_replaced
 from spd.editing.lora_baseline import LoRATrainer
 from spd.editing.utils import load_model
 from spd.harvest.repo import HarvestRepo
@@ -317,17 +317,9 @@ def main(out_dir: Path) -> None:
     # --- SPD analytical ---
     for alpha in [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0]:
         new_u = (-alpha * unembed_normed).to(torch.bfloat16)
-        with write_edit(model, MODULE_NAME, U_IDX, new_u) as fwd:
+        with u_replaced(model, MODULE_NAME, U_IDX, new_u) as fwd:
             pareto_data[f"spd_analytical_a{alpha}"] = measure_pareto(fwd, *pareto_eval_args)
     print("SPD analytical done")
-
-    # --- SPD trained ---
-    for n_ex in [1, 4, 8, 16]:
-        train_seqs = make_train_seqs(train_pool[:n_ex])
-        new_u = train_write_vector(model, MODULE_NAME, U_IDX, train_seqs, lr=1e-3, n_steps=100)
-        with write_edit(model, MODULE_NAME, U_IDX, new_u) as fwd:
-            pareto_data[f"spd_trained_n{n_ex}"] = measure_pareto(fwd, *pareto_eval_args)
-        print(f"  SPD n={n_ex} done")
 
     # --- LoRA ---
     kl_weights = [0.0, 1.0, 3.0, 10.0, 30.0, 100.0]

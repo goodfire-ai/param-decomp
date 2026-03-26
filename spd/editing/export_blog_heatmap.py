@@ -17,7 +17,7 @@ import torch
 from torch import Tensor
 
 from spd.app.backend.app_tokenizer import AppTokenizer
-from spd.editing.component_trainer import write_edit
+from spd.editing.component_trainer import u_replaced
 from spd.editing.generate_pareto_plots import (
     get_examples,
     get_probs,
@@ -95,7 +95,7 @@ def main(out_dir: Path) -> None:
     unembed = lm_head.weight[TARGET_TOKEN].detach().float()
     new_u = (-3.0 * unembed / unembed.norm()).to(torch.bfloat16)
 
-    with write_edit(model, MODULE_NAME, U_IDX, new_u) as spd_forward:
+    with u_replaced(model, MODULE_NAME, U_IDX, new_u) as spd_forward:
         spd_examples = export_diffs(spd_forward, baselines, eval_tokens, eval_examples, tok)
     print(f"SPD: {len(spd_examples)} examples")
 

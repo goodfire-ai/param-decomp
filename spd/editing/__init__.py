@@ -1,7 +1,7 @@
 """Component-level model editing for VPD decompositions."""
 
 from spd.editing.compare import ExampleDiff, TokenDiff, compute_diffs
-from spd.editing.component_trainer import train_write_vector, write_edit
+from spd.editing.component_trainer import u_replaced
 from spd.editing.lora_baseline import LoRATrainer
 from spd.editing.utils import (
     ComponentMatch,
@@ -21,6 +21,5 @@ __all__ = [
     "parse_component_key",
     "render_edit_comparison",
     "search_interpretations",
-    "train_write_vector",
-    "write_edit",
+    "u_replaced",
 ]
