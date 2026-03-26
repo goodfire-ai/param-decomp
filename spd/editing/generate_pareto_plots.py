@@ -333,8 +333,8 @@ def main(out_dir: Path) -> None:
         for kl_w in kl_weights:
             with LoRATrainer(model.target_model, MODULE_NAME, lr=1e-3, kl_weight=kl_w) as lora:
                 for _ in range(300):
-                    idx = random.randint(0, len(train_seqs) - 1)
-                    lora.train_step(train_seqs[idx], train_baselines[idx])
+                    idxs = random.sample(range(len(train_seqs)), min(8, len(train_seqs)))
+                    lora.train_step([(train_seqs[i], train_baselines[i]) for i in idxs])
                 pareto_data[f"lora_n{n_ex}_l{kl_w}"] = measure_pareto(
                     lora.forward, *pareto_eval_args
                 )

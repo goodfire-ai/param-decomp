@@ -58,28 +58,28 @@ class LoRATrainer:
     def forward(self, tokens: Tensor) -> Tensor:
         return self.target_model(tokens)[0]
 
-    def train_step(self, batch: tuple[Tensor, list[int]], baseline: Tensor) -> float:
-        """One step: CE at fire positions + KL at all other positions."""
-        tokens, positions = batch
-        assert baseline.shape == (len(tokens), self.linear.weight.shape[0]), (
-            f"Baseline shape {baseline.shape} != {self.linear.weight.shape[0]}"
-        )
-
+    def train_step(
+        self,
+        batch: list[tuple[tuple[Tensor, list[int]], Tensor]],
+    ) -> float:
+        """One step on a batch of (example, baseline) pairs. Accumulates loss, single optimizer step."""
         ce_total = torch.tensor(0.0, device="cuda")
         kl_total = torch.tensor(0.0, device="cuda")
-        logits = self.forward(tokens.unsqueeze(0))[0]
 
-        pos_t = torch.tensor(positions, device="cuda")
-        ce_total = ce_total + F.cross_entropy(logits[positions], tokens[pos_t + 1])
+        for (tokens, positions), baseline in batch:
+            logits = self.forward(tokens.unsqueeze(0))[0]
+            pos_t = torch.tensor(positions, device="cuda")
+            ce_total = ce_total + F.cross_entropy(logits[positions], tokens[pos_t + 1])
 
-        if self.kl_weight > 0:
-            probs = logits.softmax(-1)
-            kl = (probs * ((probs + 1e-10).log() - (baseline + 1e-10).log())).sum(-1)
-            fire_mask = torch.ones(len(tokens), dtype=torch.bool, device="cuda")
-            fire_mask[positions] = False
-            kl_total = kl_total + kl[fire_mask].mean()
+            if self.kl_weight > 0:
+                probs = logits.softmax(-1)
+                kl = (probs * ((probs + 1e-10).log() - (baseline + 1e-10).log())).sum(-1)
+                fire_mask = torch.ones(len(tokens), dtype=torch.bool, device="cuda")
+                fire_mask[positions] = False
+                kl_total = kl_total + kl[fire_mask].mean()
 
-        loss = ce_total / len(tokens) + self.kl_weight * kl_total / len(tokens)
+        n = len(batch)
+        loss = ce_total / n + self.kl_weight * kl_total / n
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()

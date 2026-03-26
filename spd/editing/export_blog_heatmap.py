@@ -109,8 +109,8 @@ def main(out_dir: Path) -> None:
 
     with LoRATrainer(model.target_model, MODULE_NAME, lr=1e-3, kl_weight=10.0) as lora:
         for step in range(300):
-            idx = random.randint(0, len(train_seqs) - 1)
-            lora.train_step(train_seqs[idx], train_baselines[idx])
+            idxs = random.sample(range(len(train_seqs)), min(8, len(train_seqs)))
+            lora.train_step([(train_seqs[i], train_baselines[i]) for i in idxs])
             if step % 100 == 0:
                 print(f"  LoRA step {step}")
         lora_examples = export_diffs(lora.forward, baselines, eval_tokens, eval_examples, tok)
