@@ -327,14 +327,29 @@ def main(out_dir: Path) -> None:
 
     for n_ex in lora_ns:
         train_seqs = make_train_seqs(train_pool[:n_ex])
-        # Cache baselines before any LoRA hook
         train_baselines = get_probs(forward_base, [t for t, _ in train_seqs])
+
+        # Pre-pad all training data into tensors
+        n_train = len(train_seqs)
+        max_len = max(t.shape[0] for t, _ in train_seqs)
+        vocab = train_baselines[0].shape[-1]
+        all_tokens = torch.zeros(n_train, max_len, dtype=torch.long, device="cuda")
+        all_baselines = torch.zeros(n_train, max_len, vocab, device="cuda")
+        all_fire = torch.zeros(n_train, max_len, dtype=torch.bool, device="cuda")
+        all_pad = torch.zeros(n_train, max_len, dtype=torch.bool, device="cuda")
+        for i, ((t, positions), b) in enumerate(zip(train_seqs, train_baselines, strict=True)):
+            all_tokens[i, : t.shape[0]] = t
+            all_baselines[i, : b.shape[0]] = b
+            all_fire[i, positions] = True
+            all_pad[i, : t.shape[0]] = True
 
         for kl_w in kl_weights:
             with LoRATrainer(model.target_model, MODULE_NAME, lr=1e-3, kl_weight=kl_w) as lora:
                 for _ in range(300):
-                    idxs = random.sample(range(len(train_seqs)), min(8, len(train_seqs)))
-                    lora.train_step([(train_seqs[i], train_baselines[i]) for i in idxs])
+                    idxs = torch.randint(n_train, (min(8, n_train),))
+                    lora.train_step(
+                        all_tokens[idxs], all_baselines[idxs], all_fire[idxs], all_pad[idxs]
+                    )
                 pareto_data[f"lora_n{n_ex}_l{kl_w}"] = measure_pareto(
                     lora.forward, *pareto_eval_args
                 )

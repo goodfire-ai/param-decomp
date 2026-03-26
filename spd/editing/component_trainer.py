@@ -3,7 +3,8 @@
 Each SPD component is a rank-1 adapter: V[:, c] @ U[c, :]. The write vector (U row)
 determines what the component contributes to the residual stream.
 
-u_replaced: context manager that swaps a U row and runs through the component path.
+u_replaced: context manager that computes a weight-space delta from a U-vector
+replacement and applies it as a forward hook on the target linear layer.
 
 Usage:
     model, tok, config = load_model("wandb:goodfire/spd/s-55ea3f9b")
@@ -15,14 +16,26 @@ Usage:
 """
 
 from contextlib import contextmanager
+from typing import Any
 
 import torch
 from jaxtyping import Float
 from torch import Tensor
 
 from spd.models.component_model import ComponentModel
-from spd.models.components import make_mask_infos
-from spd.utils.general_utils import get_obj_device
+
+
+def _resolve_linear(root: torch.nn.Module, path: str) -> torch.nn.Linear:
+    mod: Any = root
+    for part in path.split("."):
+        assert hasattr(mod, part), (
+            f"{type(mod).__name__} has no attribute {part!r} (resolving {path!r})"
+        )
+        mod = getattr(mod, part)
+    assert isinstance(mod, torch.nn.Linear), (
+        f"{path!r} resolved to {type(mod).__name__}, expected Linear"
+    )
+    return mod
 
 
 @contextmanager
@@ -32,34 +45,27 @@ def u_replaced(
     u_idx: int,
     new_u: Float[Tensor, " d_out"],
 ):
-    """Replace U[u_idx] with new_u. Forward runs through the component path (all-ones masks)."""
+    """Replace U[u_idx] with new_u via a weight-space delta hook on the target layer.
+
+    The weight delta is: delta_W = outer(new_u - old_u, V[:, u_idx]).
+    Applied as a forward hook so the edit goes through the same code path as the
+    unmodified model (and the LoRA baseline).
+    """
     comp = model.components[module_name]
-    old_u = comp.U.data[u_idx].clone()
+    old_u = comp.U.data[u_idx]
     assert old_u.shape == new_u.shape
 
-    device = get_obj_device(model)
+    delta_u = (new_u - old_u).float()
+    v = comp.V.data[:, u_idx].float()
+    delta_W = torch.outer(delta_u, v)  # [d_out, d_in]
 
-    # Snapshot weight deltas BEFORE changing U
-    frozen_weight_deltas = {k: v.detach().clone() for k, v in model.calc_weight_deltas().items()}
+    linear = _resolve_linear(model.target_model, module_name)
 
-    comp.U.data[u_idx] = new_u
+    def hook(_mod: torch.nn.Module, _inp: tuple[Any, ...], out: Tensor) -> Tensor:
+        return out + (_inp[0].float() @ delta_W.T).to(out.dtype)
 
-    def forward_fn(tokens: Tensor) -> Tensor:
-        component_masks = {}
-        weight_deltas_and_masks = {}
-        for mn in model.target_module_paths:
-            C = model.module_to_c[mn]
-            component_masks[mn] = torch.ones((C,), device=device)
-            weight_deltas_and_masks[mn] = (
-                frozen_weight_deltas[mn],
-                torch.ones(tokens.shape, device=device),
-            )
-        mask_infos = make_mask_infos(
-            component_masks, weight_deltas_and_masks=weight_deltas_and_masks
-        )
-        return model(tokens, mask_infos=mask_infos)
-
+    handle = linear.register_forward_hook(hook)
     try:
-        yield forward_fn
+        yield model
     finally:
-        comp.U.data[u_idx] = old_u
+        handle.remove()

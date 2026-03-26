@@ -107,10 +107,30 @@ def main(out_dir: Path) -> None:
 
     train_baselines = get_probs(forward_base, [t for t, _ in train_seqs])
 
+    # Pad train sequences into batched tensors for LoRATrainer.train_step
+    max_len = max(t.shape[0] for t, _ in train_seqs)
+
+    def build_batch(idxs: list[int]) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        B = len(idxs)
+        tokens_b = torch.zeros(B, max_len, dtype=torch.long, device="cuda")
+        baselines_b = torch.zeros(B, max_len, train_baselines[0].shape[-1], device="cuda")
+        fire_mask = torch.zeros(B, max_len, dtype=torch.bool, device="cuda")
+        pad_mask = torch.zeros(B, max_len, dtype=torch.bool, device="cuda")
+        for j, i in enumerate(idxs):
+            t, positions = train_seqs[i]
+            seq_len = t.shape[0]
+            tokens_b[j, :seq_len] = t
+            baselines_b[j, :seq_len] = train_baselines[i][:seq_len]
+            pad_mask[j, :seq_len] = True
+            for p in positions:
+                fire_mask[j, p] = True
+        return tokens_b, baselines_b, fire_mask, pad_mask
+
     with LoRATrainer(model.target_model, MODULE_NAME, lr=1e-3, kl_weight=10.0) as lora:
         for step in range(300):
             idxs = random.sample(range(len(train_seqs)), min(8, len(train_seqs)))
-            lora.train_step([(train_seqs[i], train_baselines[i]) for i in idxs])
+            tokens_b, baselines_b, fire_mask, pad_mask = build_batch(idxs)
+            lora.train_step(tokens_b, baselines_b, fire_mask, pad_mask)
             if step % 100 == 0:
                 print(f"  LoRA step {step}")
         lora_examples = export_diffs(lora.forward, baselines, eval_tokens, eval_examples, tok)
