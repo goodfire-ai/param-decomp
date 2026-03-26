@@ -45,7 +45,7 @@ def get_examples(harvest: HarvestRepo) -> list[ActivationExample]:
 
 def export_diffs(
     forward_fn: ForwardFn,
-    baseline_probs: dict[int, Tensor],
+    baselines: list[Tensor],
     token_tensors: list[Tensor],
     examples: list[ActivationExample],
     tok: AppTokenizer,
@@ -53,9 +53,8 @@ def export_diffs(
 ) -> list[dict[str, object]]:
     results = []
     with torch.no_grad():
-        for tokens_t, ex in zip(token_tensors, examples, strict=True):
+        for tokens_t, probs_base, ex in zip(token_tensors, baselines, examples, strict=True):
             probs_edit = forward_fn(tokens_t.unsqueeze(0))[0].softmax(-1)
-            probs_base = baseline_probs[id(tokens_t)]
             kl = (probs_edit * ((probs_edit + 1e-10).log() - (probs_base + 1e-10).log())).sum(-1)
             spans = tok.get_spans(tokens_t.tolist())
             fires = {i for i, f in enumerate(ex.firings) if f}
@@ -83,12 +82,9 @@ def export_diffs(
     return results
 
 
-def cache_baselines(forward_fn: ForwardFn, token_tensors: list[Tensor]) -> dict[int, Tensor]:
-    baselines = {}
+def cache_baselines(forward_fn: ForwardFn, token_tensors: list[Tensor]) -> list[Tensor]:
     with torch.no_grad():
-        for t in token_tensors:
-            baselines[id(t)] = forward_fn(t.unsqueeze(0))[0].softmax(-1)
-    return baselines
+        return [forward_fn(t.unsqueeze(0))[0].softmax(-1) for t in token_tensors]
 
 
 def main(out_dir: Path) -> None:

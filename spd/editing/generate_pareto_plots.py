@@ -64,61 +64,69 @@ def kl_per_token(probs_a: Tensor, probs_b: Tensor) -> Tensor:
     return (probs_a * ((probs_a + 1e-10).log() - (probs_b + 1e-10).log())).sum(-1)
 
 
-def cache_baselines(forward_fn: ForwardFn, seqs: list[Tensor]) -> dict[int, Tensor]:
-    baselines: dict[int, Tensor] = {}
+def cache_baselines(forward_fn: ForwardFn, seqs: list[Tensor]) -> list[Tensor]:
     with torch.no_grad():
-        for t in seqs:
-            baselines[id(t)] = forward_fn(t.unsqueeze(0))[0].softmax(-1)
-    return baselines
+        return [forward_fn(t.unsqueeze(0))[0].softmax(-1) for t in seqs]
 
 
 def measure_blast(
     forward_fn: ForwardFn,
-    baselines: dict[int, Tensor],
     examples: list[ActivationExample],
     tokens: list[Tensor],
+    baselines: list[Tensor],
     global_tokens: list[Tensor],
+    global_baselines: list[Tensor],
 ) -> BlastRadius:
     r = BlastRadius()
     with torch.no_grad():
-        for ex, tokens_t in zip(examples, tokens, strict=True):
+        for ex, tokens_t, base in zip(examples, tokens, baselines, strict=True):
             probs = forward_fn(tokens_t.unsqueeze(0))[0].softmax(-1)
-            kl = kl_per_token(probs, baselines[id(tokens_t)])
+            kl = kl_per_token(probs, base)
             fires = fire_set(ex)
             for pos in fire_positions(ex):
                 r.on_fire_p.append(probs[pos, TARGET_TOKEN].item())
             for i in range(kl.shape[0]):
                 if i not in fires:
                     r.surrounding_kl.append(kl[i].item())
-        for tokens_t in global_tokens:
+        for tokens_t, base in zip(global_tokens, global_baselines, strict=True):
             probs = forward_fn(tokens_t.unsqueeze(0))[0].softmax(-1)
-            kl = kl_per_token(probs, baselines[id(tokens_t)])
+            kl = kl_per_token(probs, base)
             r.global_kl.extend(kl.tolist())
     return r
 
 
 def measure_pareto(
     forward_fn: ForwardFn,
-    baselines: dict[int, Tensor],
     all_examples: list[ActivationExample],
     all_tokens: list[Tensor],
+    eval_baselines: list[Tensor],
     emo_idxs: list[int],
     non_emo_idxs: list[int],
     global_tokens: list[Tensor],
+    global_baselines: list[Tensor],
 ) -> ParetoPoint:
-    br = measure_blast(forward_fn, baselines, all_examples, all_tokens, global_tokens)
+    br = measure_blast(
+        forward_fn,
+        all_examples,
+        all_tokens,
+        eval_baselines,
+        global_tokens,
+        global_baselines,
+    )
     br_emo = measure_blast(
         forward_fn,
-        baselines,
         [all_examples[i] for i in emo_idxs],
         [all_tokens[i] for i in emo_idxs],
+        [eval_baselines[i] for i in emo_idxs],
+        [],
         [],
     )
     br_non = measure_blast(
         forward_fn,
-        baselines,
         [all_examples[i] for i in non_emo_idxs],
         [all_tokens[i] for i in non_emo_idxs],
+        [eval_baselines[i] for i in non_emo_idxs],
+        [],
         [],
     )
     return ParetoPoint(
@@ -290,10 +298,9 @@ def main(out_dir: Path) -> None:
     emo_idxs, non_emo_idxs = label_emoticon_examples(eval_examples, tok.get_spans)
     print(f"  {len(emo_idxs)} emoticon, {len(non_emo_idxs)} non-emoticon")
 
-    pareto_eval_args = (eval_examples, eval_tokens, emo_idxs, non_emo_idxs, global_tokens)
     pareto_data: dict[str, ParetoPoint] = {}
 
-    # --- SPD analytical ---
+    # --- Baselines ---
     lm_head = model.target_model.lm_head
     assert isinstance(lm_head, torch.nn.Linear)
     unembed = lm_head.weight[TARGET_TOKEN].detach().float()
@@ -302,23 +309,32 @@ def main(out_dir: Path) -> None:
     def base_forward(tokens: Tensor) -> Tensor:
         return model._extract_output(model.target_model(tokens))
 
-    baselines = cache_baselines(base_forward, eval_tokens + global_tokens)
+    eval_baselines = cache_baselines(base_forward, eval_tokens)
+    global_baselines = cache_baselines(base_forward, global_tokens)
 
+    pareto_eval_args = (
+        eval_examples,
+        eval_tokens,
+        eval_baselines,
+        emo_idxs,
+        non_emo_idxs,
+        global_tokens,
+        global_baselines,
+    )
+
+    # --- SPD analytical ---
     for alpha in [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0]:
         u_delta = (-alpha * unembed_normed).to(torch.bfloat16)
         with write_edit(model, COMP_KEY, u_delta) as fwd:
-            pareto_data[f"spd_analytical_a{alpha}"] = measure_pareto(
-                fwd, baselines, *pareto_eval_args
-            )
+            pareto_data[f"spd_analytical_a{alpha}"] = measure_pareto(fwd, *pareto_eval_args)
     print("SPD analytical done")
 
     # --- SPD trained ---
-
     for n_ex in [1, 4, 8, 16]:
         train_seqs = make_train_seqs(train_pool[:n_ex])
         u_delta = train_write_delta(model, COMP_KEY, train_seqs, lr=1e-3, n_steps=100)
         with write_edit(model, COMP_KEY, u_delta) as fwd:
-            pareto_data[f"spd_trained_n{n_ex}"] = measure_pareto(fwd, baselines, *pareto_eval_args)
+            pareto_data[f"spd_trained_n{n_ex}"] = measure_pareto(fwd, *pareto_eval_args)
         print(f"  SPD n={n_ex} done")
 
     # --- LoRA ---
@@ -333,9 +349,7 @@ def main(out_dir: Path) -> None:
             lora.reset()
             for _ in range(300):
                 lora.train_step(kl_weight=kl_w)
-            pareto_data[f"lora_n{n_ex}_l{kl_w}"] = measure_pareto(
-                lora.forward, baselines, *pareto_eval_args
-            )
+            pareto_data[f"lora_n{n_ex}_l{kl_w}"] = measure_pareto(lora.forward, *pareto_eval_args)
 
         r = pareto_data[f"lora_n{n_ex}_l10.0"]
         print(f"  LoRA n={n_ex} λ=10: P_emo={r.p_emo:.0%} surr={r.surr_kl:.4f}")
