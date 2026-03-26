@@ -55,6 +55,10 @@ def write_edit(
 ):
     """Context manager applying a write-vector delta. Yields forward_fn(tokens) -> logits."""
     linear, v_col = _resolve_hook_args(model, comp_key)
+    assert len(linear._forward_hooks) == 0, (
+        f"Target linear already has hooks: {list(linear._forward_hooks.keys())}. "
+        "Another edit (e.g. LoRA) may be active — clean it up first."
+    )
 
     def hook(_mod: torch.nn.Module, _inp: tuple[Any, ...], out: Tensor) -> Tensor:
         activation = _inp[0] @ v_col
@@ -80,6 +84,10 @@ def train_write_delta(
 ) -> Float[Tensor, " d_out"]:
     """Train a write-vector delta. Returns the learned U delta tensor."""
     linear, v_col = _resolve_hook_args(model, comp_key)
+    assert len(linear._forward_hooks) == 0, (
+        f"Target linear already has hooks: {list(linear._forward_hooks.keys())}. "
+        "Another edit (e.g. LoRA) may be active — clean it up first."
+    )
 
     d_out = int(linear.weight.shape[0])
     u_delta = torch.zeros(d_out, device=v_col.device, requires_grad=True)

@@ -178,7 +178,7 @@ def label_emoticon_examples(
             snippets.append(f'"{snippet}" ["{fire_tok}"→"{next_tok}"]')
         contexts.append(f"{i}: {'; '.join(snippets)}")
 
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic()  # pyright: ignore[reportAttributeAccessIssue]
     resp = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=4096,
@@ -193,7 +193,7 @@ Return ONLY a JSON object mapping id to true/false.
             }
         ],
     )
-    text: str = resp.content[0].text  # pyright: ignore[reportAttributeAccessIssue]
+    text: str = resp.content[0].text
     labels = json.loads(text[text.index("{") : text.rindex("}") + 1])
     emo = [int(k) for k, v in labels.items() if v]
     non_emo = [int(k) for k, v in labels.items() if not v]
