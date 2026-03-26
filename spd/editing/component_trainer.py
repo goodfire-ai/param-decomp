@@ -43,7 +43,7 @@ def write_edit(
     existing_u = comp.U[u_idx].clone()
     assert existing_u.shape == new_u.shape
 
-    comp.U[u_idx].copy_(new_u)
+    comp.U.data[u_idx] = new_u
 
     def forward_fn(tokens: Tensor) -> Tensor:
         return model(tokens)
@@ -51,7 +51,7 @@ def write_edit(
     try:
         yield forward_fn
     finally:
-        comp.U[u_idx].copy_(existing_u)
+        comp.U.data[u_idx] = existing_u
 
 
 def train_write_vector(
