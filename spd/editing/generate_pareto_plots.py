@@ -202,78 +202,72 @@ Return ONLY a JSON object mapping id to true/false.
 
 def plot_pareto(pareto_data: dict[str, ParetoPoint], lora_ns: list[int], out_dir: Path) -> None:
     kl_weights = [0.0, 1.0, 3.0, 10.0, 30.0, 100.0]
-    lora_cmap = plt.colormaps["Oranges"]
-    lora_colors = {n: lora_cmap(0.3 + 0.65 * i / (len(lora_ns) - 1)) for i, n in enumerate(lora_ns)}
+    alphas = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0]
+    max_lora_n = max(lora_ns)
 
-    for y_field, ylabel in [
-        ("p_all", "P('o') all"),
-        ("p_emo", "P('o') emoticon"),
-        ("p_non_emo", "P('o') non-emoticon"),
+    # Main plot: SPD analytical (sweep α) vs LoRA max-n (sweep λ)
+    fig, (ax_s, ax_g) = plt.subplots(1, 2, figsize=(14, 6))
+
+    for ax, kl_field, xlabel in [
+        (ax_s, "surr_kl", "Surrounding KL"),
+        (ax_g, "glob_kl", "Global KL"),
     ]:
-        fig, (ax_s, ax_g) = plt.subplots(1, 2, figsize=(16, 7))
-
-        for ax, kl_field, xlabel in [
-            (ax_s, "surr_kl", "Surrounding KL (log)"),
-            (ax_g, "glob_kl", "Global KL (log)"),
-        ]:
-            for n in lora_ns:
-                ps = [getattr(pareto_data[f"lora_n{n}_l{w}"], y_field) for w in kl_weights]
-                ks = [
-                    max(getattr(pareto_data[f"lora_n{n}_l{w}"], kl_field), 1e-4) for w in kl_weights
-                ]
-                ax.plot(
-                    ks,
-                    ps,
-                    "o-",
-                    color=lora_colors[n],
-                    linewidth=1.5,
-                    markersize=4,
-                    label=f"LoRA n={n}",
-                )
-
-            spd_ns = [1, 4, 8, 16]
-            spd_ps = [getattr(pareto_data[f"spd_trained_n{n}"], y_field) for n in spd_ns]
-            spd_ks = [
-                max(getattr(pareto_data[f"spd_trained_n{n}"], kl_field), 1e-4) for n in spd_ns
-            ]
-            ax.plot(
-                spd_ks,
-                spd_ps,
-                "D-",
+        # SPD analytical
+        ana_kl = [getattr(pareto_data[f"spd_analytical_a{a}"], kl_field) for a in alphas]
+        ana_p = [pareto_data[f"spd_analytical_a{a}"].p_all for a in alphas]
+        ax.plot(
+            ana_kl,
+            ana_p,
+            "D-",
+            color="#58a6ff",
+            linewidth=2,
+            markersize=7,
+            label="SPD analytical (sweep α)",
+            zorder=5,
+        )
+        for a, x, y in zip(alphas, ana_kl, ana_p, strict=True):
+            ax.annotate(
+                f"α={a}",
+                (x, y),
+                textcoords="offset points",
+                xytext=(6, -4),
+                fontsize=7,
                 color="#58a6ff",
-                linewidth=2,
-                markersize=6,
-                label="SPD trained",
-                zorder=8,
             )
 
-            alphas = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0]
-            ana_ps = [getattr(pareto_data[f"spd_analytical_a{a}"], y_field) for a in alphas]
-            ana_ks = [
-                max(getattr(pareto_data[f"spd_analytical_a{a}"], kl_field), 1e-4) for a in alphas
-            ]
-            ax.plot(
-                ana_ks,
-                ana_ps,
-                "-",
-                color="#1971c2",
-                linewidth=2.5,
-                alpha=0.8,
-                label="SPD analytical (0 examples)",
-                zorder=9,
+        # LoRA max-n
+        lora_kl = [getattr(pareto_data[f"lora_n{max_lora_n}_l{w}"], kl_field) for w in kl_weights]
+        lora_p = [pareto_data[f"lora_n{max_lora_n}_l{w}"].p_all for w in kl_weights]
+        ax.plot(
+            lora_kl,
+            lora_p,
+            "o-",
+            color="#f0883e",
+            linewidth=2,
+            markersize=7,
+            label=f"LoRA n={max_lora_n} (sweep λ)",
+            zorder=5,
+        )
+        for w, x, y in zip(kl_weights, lora_kl, lora_p, strict=True):
+            ax.annotate(
+                f"λ={w}",
+                (x, y),
+                textcoords="offset points",
+                xytext=(6, -4),
+                fontsize=7,
+                color="#f0883e",
             )
 
-            ax.set_xscale("log")
-            ax.set_xlabel(xlabel)
-            ax.set_ylabel(ylabel)
-            ax.legend(fontsize=6, loc="lower right")
+        ax.set_xscale("log")
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("P('o') at fire positions")
+        ax.legend(fontsize=9)
 
-        fig.suptitle(f"Pareto: {ylabel}", fontsize=13, y=1.02)
-        fig.tight_layout()
-        fname = f"pareto_{y_field}.png"
-        fig.savefig(out_dir / fname, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        print(f"  Saved {fname}")
+    fig.suptitle("Pareto: SPD analytical vs LoRA baseline", fontsize=13)
+    fig.tight_layout()
+    fig.savefig(out_dir / "pareto_main.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print("  Saved pareto_main.png")
 
 
 def main(out_dir: Path) -> None:
