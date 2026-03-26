@@ -2,11 +2,10 @@
 
 Generates real model data comparing SPD analytical editing vs LoRA baseline.
 SPD: replace U row with scaled negated unembed (0 training examples).
-LoRA: rank-1, 1000+ training examples, λ=10 KL regularization.
+LoRA: rank-1, all training examples, λ=10 KL regularization, 300 steps.
 
 Usage:
-    python -m spd.editing.export_blog_heatmap \\
-        --out-dir /path/to/vpd-blog/data
+    python -m spd.editing.export_blog_heatmap --out-dir /path/to/vpd-blog/data
 """
 
 import json
@@ -19,6 +18,11 @@ from torch import Tensor
 
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.editing.component_trainer import write_edit
+from spd.editing.generate_pareto_plots import (
+    get_examples,
+    get_probs,
+    make_train_seqs,
+)
 from spd.editing.lora_baseline import LoRATrainer
 from spd.editing.utils import load_model
 from spd.harvest.repo import HarvestRepo
@@ -33,23 +37,12 @@ LAYER_PATH = "h.2.mlp.down_proj"
 ForwardFn = Callable[[Tensor], Tensor]
 
 
-def fire_positions(ex: ActivationExample) -> list[int]:
-    return [i for i, f in enumerate(ex.firings) if f and i + 1 < len(ex.token_ids)]
-
-
-def get_examples(harvest: HarvestRepo) -> list[ActivationExample]:
-    comp = harvest.get_component(COMP_KEY)
-    assert comp is not None
-    return [ex for ex in comp.activation_examples if fire_positions(ex)]
-
-
 def export_diffs(
     forward_fn: ForwardFn,
     baselines: list[Tensor],
     token_tensors: list[Tensor],
     examples: list[ActivationExample],
     tok: AppTokenizer,
-    topk: int = 8,
 ) -> list[dict[str, object]]:
     results = []
     with torch.no_grad():
@@ -61,8 +54,8 @@ def export_diffs(
 
             tokens_out = []
             for t in range(len(spans)):
-                before_idx = probs_base[t].topk(topk).indices
-                after_idx = probs_edit[t].topk(topk).indices
+                before_idx = probs_base[t].topk(8).indices
+                after_idx = probs_edit[t].topk(8).indices
                 tokens_out.append(
                     {
                         "span": spans[t],
@@ -82,11 +75,6 @@ def export_diffs(
     return results
 
 
-def get_probs(forward_fn: ForwardFn, token_tensors: list[Tensor]) -> list[Tensor]:
-    with torch.no_grad():
-        return [forward_fn(t.unsqueeze(0))[0].softmax(-1) for t in token_tensors]
-
-
 def main(out_dir: Path) -> None:
     model, tok, _ = load_model(WANDB_PATH)
     harvest = HarvestRepo.open_most_recent(RUN_ID)
@@ -96,69 +84,55 @@ def main(out_dir: Path) -> None:
     random.seed(42)
     random.shuffle(examples)
 
-    # Eval: first 30 examples, train: rest
     eval_examples = examples[:30]
+    train_pool = examples[30:]
     eval_tokens = [torch.tensor(ex.token_ids, device="cuda") for ex in eval_examples]
+    baselines = get_probs(model, eval_tokens)
 
-    # --- SPD analytical: U = -3 * unembed('o') / |unembed('o')| ---
+    # SPD analytical
     lm_head = model.target_model.lm_head
     assert isinstance(lm_head, torch.nn.Linear)
     unembed = lm_head.weight[TARGET_TOKEN].detach().float()
     u_delta = -3.0 * unembed / unembed.norm()
 
-    true_baselines = get_probs(model, eval_tokens)
-
     with write_edit(model, COMP_KEY, u_delta) as spd_forward:
-        spd_examples = export_diffs(spd_forward, true_baselines, eval_tokens, eval_examples, tok)
-
+        spd_examples = export_diffs(spd_forward, baselines, eval_tokens, eval_examples, tok)
     print(f"SPD: {len(spd_examples)} examples")
 
-    # --- LoRA: n=all, λ=10, 300 steps ---
-    train_pool = examples[30:]
-    train_seqs = []
-    for ex in train_pool:
-        t = torch.tensor(ex.token_ids, device="cuda")
-        positions = fire_positions(ex)
-        for pos in positions:
-            t[pos + 1] = TARGET_TOKEN
-        train_seqs.append((t, positions))
-
+    # LoRA
+    train_seqs = make_train_seqs(train_pool)
     lora = LoRATrainer(model.target_model, LAYER_PATH, train_seqs, lr=1e-3)
-
     for step in range(300):
         lora.train_step(kl_weight=10.0)
         if step % 100 == 0:
             print(f"  LoRA step {step}")
-
-    lora_examples = export_diffs(lora.forward, true_baselines, eval_tokens, eval_examples, tok)
+    lora_examples = export_diffs(lora.forward, baselines, eval_tokens, eval_examples, tok)
     lora.cleanup()
-
     print(f"LoRA: {len(lora_examples)} examples")
 
     # Write
     out_dir.mkdir(exist_ok=True)
-    (out_dir / "training-heatmap.json").write_text(
-        json.dumps(
+    for fname, data in [
+        (
+            "training-heatmap.json",
             {
                 "component": COMP_KEY,
-                "label": "Punctuation marks starting an emoticon",
+                "method": "SPD analytical (α=3, 0 training examples)",
                 "target_token": "o",
                 "examples": spd_examples,
             },
-            separators=(",", ":"),
-        )
-    )
-    (out_dir / "training-heatmap-lora.json").write_text(
-        json.dumps(
+        ),
+        (
+            "training-heatmap-lora.json",
             {
-                "component": f"{LAYER_PATH} (rank-1 LoRA)",
-                "label": "Punctuation marks starting an emoticon",
+                "component": LAYER_PATH,
+                "method": f"LoRA rank-1 (n={len(train_pool)}, λ=10, 300 steps)",
                 "target_token": "o",
                 "examples": lora_examples,
             },
-            separators=(",", ":"),
-        )
-    )
+        ),
+    ]:
+        (out_dir / fname).write_text(json.dumps(data, separators=(",", ":")))
     print(f"Written to {out_dir}")
 
 

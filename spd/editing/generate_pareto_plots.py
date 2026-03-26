@@ -25,6 +25,7 @@ from spd.editing.lora_baseline import LoRATrainer
 from spd.editing.utils import load_model
 from spd.harvest.repo import HarvestRepo
 from spd.harvest.schemas import ActivationExample
+from spd.models.component_model import ComponentModel
 
 WANDB_PATH = "wandb:goodfire/spd/s-55ea3f9b"
 RUN_ID = "s-55ea3f9b"
@@ -64,9 +65,9 @@ def kl_per_token(probs_a: Tensor, probs_b: Tensor) -> Tensor:
     return (probs_a * ((probs_a + 1e-10).log() - (probs_b + 1e-10).log())).sum(-1)
 
 
-def get_probs(forward_fn: ForwardFn, seqs: list[Tensor]) -> list[Tensor]:
+def get_probs(component_model: ComponentModel, seqs: list[Tensor]) -> list[Tensor]:
     with torch.no_grad():
-        return [forward_fn(t.unsqueeze(0))[0].softmax(-1) for t in seqs]
+        return [component_model(t.unsqueeze(0))[0].softmax(-1) for t in seqs]
 
 
 def measure_blast(
@@ -354,6 +355,21 @@ def main(out_dir: Path) -> None:
 
     print(f"\n{len(pareto_data)} pareto points. Plotting...")
     plot_pareto(pareto_data, lora_ns, out_dir)
+
+    # Export raw data
+    from dataclasses import asdict
+
+    data_out = {k: asdict(v) for k, v in pareto_data.items()}
+    data_out["_meta"] = {
+        "eval_n": len(eval_examples),
+        "train_n": len(train_pool),
+        "emo_n": len(emo_idxs),
+        "non_emo_n": len(non_emo_idxs),
+        "global_n": len(global_tokens),
+        "lora_ns": lora_ns,
+    }
+    (out_dir / "pareto_data.json").write_text(json.dumps(data_out, indent=2))
+    print(f"Data written to {out_dir / 'pareto_data.json'}")
     print("Done.")
 
 
