@@ -24,7 +24,6 @@ from spd.editing.lora_baseline import LoRATrainer
 from spd.editing.utils import load_model
 from spd.harvest.repo import HarvestRepo
 from spd.harvest.schemas import ActivationExample
-from spd.models.component_model import ComponentModel
 
 WANDB_PATH = "wandb:goodfire/spd/s-55ea3f9b"
 RUN_ID = "s-55ea3f9b"
@@ -64,12 +63,7 @@ def kl_per_token(probs_a: Tensor, probs_b: Tensor) -> Tensor:
     return (probs_a * ((probs_a + 1e-10).log() - (probs_b + 1e-10).log())).sum(-1)
 
 
-def get_probs(component_model: ComponentModel, seqs: list[Tensor]) -> list[Tensor]:
-    with torch.no_grad():
-        return [component_model(t.unsqueeze(0))[0].softmax(-1) for t in seqs]
-
-
-def get_probs_raw(forward_fn: ForwardFn, seqs: list[Tensor]) -> list[Tensor]:
+def get_probs(forward_fn: ForwardFn, seqs: list[Tensor]) -> list[Tensor]:
     with torch.no_grad():
         return [forward_fn(t.unsqueeze(0))[0].softmax(-1) for t in seqs]
 
@@ -334,7 +328,7 @@ def main(out_dir: Path) -> None:
     for n_ex in lora_ns:
         train_seqs = make_train_seqs(train_pool[:n_ex])
         # Cache baselines before any LoRA hook
-        train_baselines = get_probs_raw(forward_base, [t for t, _ in train_seqs])
+        train_baselines = get_probs(forward_base, [t for t, _ in train_seqs])
 
         for kl_w in kl_weights:
             with LoRATrainer(model.target_model, MODULE_NAME, lr=1e-3, kl_weight=kl_w) as lora:

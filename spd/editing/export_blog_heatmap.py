@@ -21,7 +21,6 @@ from spd.editing.component_trainer import u_replaced
 from spd.editing.generate_pareto_plots import (
     get_examples,
     get_probs,
-    get_probs_raw,
     make_train_seqs,
 )
 from spd.editing.lora_baseline import LoRATrainer
@@ -106,7 +105,7 @@ def main(out_dir: Path) -> None:
     def forward_base(tokens: Tensor) -> Tensor:
         return model.target_model(tokens)[0]
 
-    train_baselines = get_probs_raw(forward_base, [t for t, _ in train_seqs])
+    train_baselines = get_probs(forward_base, [t for t, _ in train_seqs])
 
     with LoRATrainer(model.target_model, MODULE_NAME, lr=1e-3, kl_weight=10.0) as lora:
         for step in range(300):
