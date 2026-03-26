@@ -158,6 +158,32 @@ def make_train_seqs(
     return seqs
 
 
+def pad_train_seqs(
+    seqs: list[tuple[Tensor, list[int]]],
+    baselines: list[Tensor],
+) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Pad variable-length training sequences into batched tensors.
+
+    Returns (tokens, baselines, fire_mask, pad_mask), all [B, max_len].
+    """
+    B = len(seqs)
+    max_len = max(t.shape[0] for t, _ in seqs)
+    vocab = baselines[0].shape[-1]
+
+    tokens = torch.zeros(B, max_len, dtype=torch.long, device="cuda")
+    base_padded = torch.zeros(B, max_len, vocab, device="cuda")
+    fire_mask = torch.zeros(B, max_len, dtype=torch.bool, device="cuda")
+    pad_mask = torch.zeros(B, max_len, dtype=torch.bool, device="cuda")
+
+    for i, ((t, positions), b) in enumerate(zip(seqs, baselines, strict=True)):
+        tokens[i, : t.shape[0]] = t
+        base_padded[i, : b.shape[0]] = b
+        fire_mask[i, positions] = True
+        pad_mask[i, : t.shape[0]] = True
+
+    return tokens, base_padded, fire_mask, pad_mask
+
+
 def label_emoticon_examples(
     examples: list[ActivationExample],
     tok_display_fn: Callable[[list[int]], list[str]],
@@ -328,20 +354,8 @@ def main(out_dir: Path) -> None:
     for n_ex in lora_ns:
         train_seqs = make_train_seqs(train_pool[:n_ex])
         train_baselines = get_probs(forward_base, [t for t, _ in train_seqs])
-
-        # Pre-pad all training data into tensors
-        n_train = len(train_seqs)
-        max_len = max(t.shape[0] for t, _ in train_seqs)
-        vocab = train_baselines[0].shape[-1]
-        all_tokens = torch.zeros(n_train, max_len, dtype=torch.long, device="cuda")
-        all_baselines = torch.zeros(n_train, max_len, vocab, device="cuda")
-        all_fire = torch.zeros(n_train, max_len, dtype=torch.bool, device="cuda")
-        all_pad = torch.zeros(n_train, max_len, dtype=torch.bool, device="cuda")
-        for i, ((t, positions), b) in enumerate(zip(train_seqs, train_baselines, strict=True)):
-            all_tokens[i, : t.shape[0]] = t
-            all_baselines[i, : b.shape[0]] = b
-            all_fire[i, positions] = True
-            all_pad[i, : t.shape[0]] = True
+        all_tokens, all_baselines, all_fire, all_pad = pad_train_seqs(train_seqs, train_baselines)
+        n_train = all_tokens.shape[0]
 
         for kl_w in kl_weights:
             with LoRATrainer(model.target_model, MODULE_NAME, lr=1e-3, kl_weight=kl_w) as lora:

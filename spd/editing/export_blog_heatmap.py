@@ -21,7 +21,9 @@ from spd.editing.component_trainer import u_replaced
 from spd.editing.generate_pareto_plots import (
     get_examples,
     get_probs,
+    kl_per_token,
     make_train_seqs,
+    pad_train_seqs,
 )
 from spd.editing.lora_baseline import LoRATrainer
 from spd.editing.utils import load_model
@@ -48,7 +50,7 @@ def export_diffs(
     with torch.no_grad():
         for tokens_t, probs_base, ex in zip(token_tensors, baselines, examples, strict=True):
             probs_edit = forward_fn(tokens_t.unsqueeze(0))[0].softmax(-1)
-            kl = (probs_edit * ((probs_edit + 1e-10).log() - (probs_base + 1e-10).log())).sum(-1)
+            kl = kl_per_token(probs_edit, probs_base)
             spans = tok.get_spans(tokens_t.tolist())
             fires = {i for i, f in enumerate(ex.firings) if f}
 
@@ -106,31 +108,13 @@ def main(out_dir: Path) -> None:
         return model.target_model(tokens)[0]
 
     train_baselines = get_probs(forward_base, [t for t, _ in train_seqs])
-
-    # Pad train sequences into batched tensors for LoRATrainer.train_step
-    max_len = max(t.shape[0] for t, _ in train_seqs)
-
-    def build_batch(idxs: list[int]) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        B = len(idxs)
-        tokens_b = torch.zeros(B, max_len, dtype=torch.long, device="cuda")
-        baselines_b = torch.zeros(B, max_len, train_baselines[0].shape[-1], device="cuda")
-        fire_mask = torch.zeros(B, max_len, dtype=torch.bool, device="cuda")
-        pad_mask = torch.zeros(B, max_len, dtype=torch.bool, device="cuda")
-        for j, i in enumerate(idxs):
-            t, positions = train_seqs[i]
-            seq_len = t.shape[0]
-            tokens_b[j, :seq_len] = t
-            baselines_b[j, :seq_len] = train_baselines[i][:seq_len]
-            pad_mask[j, :seq_len] = True
-            for p in positions:
-                fire_mask[j, p] = True
-        return tokens_b, baselines_b, fire_mask, pad_mask
+    all_tokens, all_baselines, all_fire, all_pad = pad_train_seqs(train_seqs, train_baselines)
+    n_train = all_tokens.shape[0]
 
     with LoRATrainer(model.target_model, MODULE_NAME, lr=1e-3, kl_weight=10.0) as lora:
         for step in range(300):
-            idxs = random.sample(range(len(train_seqs)), min(8, len(train_seqs)))
-            tokens_b, baselines_b, fire_mask, pad_mask = build_batch(idxs)
-            lora.train_step(tokens_b, baselines_b, fire_mask, pad_mask)
+            idxs = torch.randint(n_train, (min(8, n_train),))
+            lora.train_step(all_tokens[idxs], all_baselines[idxs], all_fire[idxs], all_pad[idxs])
             if step % 100 == 0:
                 print(f"  LoRA step {step}")
         lora_examples = export_diffs(lora.forward, baselines, eval_tokens, eval_examples, tok)
