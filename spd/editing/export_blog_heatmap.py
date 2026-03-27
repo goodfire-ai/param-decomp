@@ -121,7 +121,7 @@ def main(out_dir: Path) -> None:
     print(f"LoRA: {len(lora_examples)} examples")
 
     # Write
-    out_dir.mkdir(exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     for fname, data in [
         (
             "training-heatmap.json",
