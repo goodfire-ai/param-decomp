@@ -36,7 +36,13 @@
         error = null;
         try {
             const result = await loadClusterMapping(path);
-            runState.setClusterMapping(result.mapping, path, loadedRun.wandb_path);
+            runState.setClusterMapping(
+                result.mapping,
+                path,
+                loadedRun.wandb_path,
+                result.clustering_run_id,
+                result.iteration,
+            );
             inputPath = "";
         } catch (e) {
             error = e instanceof Error ? e.message : "Failed to load";
