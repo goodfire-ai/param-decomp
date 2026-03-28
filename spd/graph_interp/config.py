@@ -13,8 +13,6 @@ class GraphInterpConfig(BaseConfig):
     max_examples: int = 20
     label_max_words: int = 8
     cost_limit_usd: float | None = None
-    max_requests_per_minute: int = 500
-    max_concurrent: int = 50
     limit: int | None = None
 
 

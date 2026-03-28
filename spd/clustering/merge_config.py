@@ -14,16 +14,16 @@ from spd.clustering.math.merge_pair_samplers import (
     MergePairSampler,
     MergePairSamplerKey,
 )
-from spd.clustering.util import ModuleFilterFunc, ModuleFilterSource
+from spd.clustering.util import DeadComponentFilterStat, ModuleFilterFunc, ModuleFilterSource
 from spd.spd_types import Probability
 
 MergeConfigKey = Literal[
-    "activation_threshold",
     "alpha",
     "iters",
     "merge_pair_sampling_method",
     "merge_pair_sampling_kwargs",
     "filter_dead_threshold",
+    "filter_dead_stat",
 ]
 
 
@@ -44,9 +44,9 @@ def _to_module_filter(
 
 
 class MergeConfig(BaseConfig):
-    activation_threshold: Probability | None = Field(
+    activation_threshold: Probability = Field(
         default=0.01,
-        description="Threshold for considering a component active in a group. If None, use raw scalar causal importances",
+        description="Threshold for considering a component active in a group.",
     )
     alpha: float = Field(
         default=1.0,
@@ -66,7 +66,11 @@ class MergeConfig(BaseConfig):
     )
     filter_dead_threshold: float = Field(
         default=0.001,
-        description="Threshold for filtering out dead components. If a component's activation is below this threshold, it is considered dead and not included in the merge.",
+        description="Threshold for filtering out dead components using the statistic selected by filter_dead_stat.",
+    )
+    filter_dead_stat: DeadComponentFilterStat = Field(
+        default="max",
+        description="Statistic used to determine whether a component is dead before clustering.",
     )
     module_name_filter: ModuleFilterSource = Field(
         default=None,

@@ -15,6 +15,7 @@ class TestMergeConfigSampling:
 
         assert config.merge_pair_sampling_method == "range"
         assert config.merge_pair_sampling_kwargs == {"threshold": 0.05}
+        assert config.filter_dead_stat == "max"
 
     def test_range_sampler_config(self):
         """Test MergeConfig with range sampler."""
@@ -75,6 +76,7 @@ class TestMergeConfigSampling:
             merge_pair_sampling_method="mcmc",
             merge_pair_sampling_kwargs={"temperature": 0.5},
             filter_dead_threshold=0.001,
+            filter_dead_stat="mean",
             module_name_filter="model.layers",
         )
 
@@ -84,6 +86,7 @@ class TestMergeConfigSampling:
         assert config.merge_pair_sampling_method == "mcmc"
         assert config.merge_pair_sampling_kwargs == {"temperature": 0.5}
         assert config.filter_dead_threshold == 0.001
+        assert config.filter_dead_stat == "mean"
         assert config.module_name_filter == "model.layers"
 
     def test_config_serialization(self):

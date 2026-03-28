@@ -43,6 +43,10 @@ class ClusteringRunConfig(BaseConfig):
     )
 
     batch_size: PositiveInt = Field(..., description="Batch size for processing")
+    n_samples: PositiveInt | None = Field(
+        default=None,
+        description="Number of activation samples to collect for non-LM tasks. Defaults to one batch if unset.",
+    )
     n_tokens: PositiveInt | None = Field(
         default=None,
         description="Number of token activation samples to collect (LM only)",
@@ -50,6 +54,10 @@ class ClusteringRunConfig(BaseConfig):
     n_tokens_per_seq: PositiveInt | None = Field(
         default=None,
         description="Number of random token positions to sample per sequence (LM only)",
+    )
+    use_all_tokens_per_seq: bool = Field(
+        default=False,
+        description="If true for LM tasks, use every token position from each sequence instead of random token subsampling.",
     )
     dataset_seed: int = Field(0, description="Seed for dataset generation/loading")
     ensemble_id: str | None = Field(
