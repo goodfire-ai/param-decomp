@@ -207,6 +207,8 @@ class TestSamplerRegistry:
                 pair = sampler(costs, threshold=0.5)
             elif name == "mcmc":
                 pair = sampler(costs, temperature=1.0)
+            elif name == "exp_rank":
+                pair = sampler(costs, decay=0.2)
             else:
                 pytest.fail(f"Unknown sampler {name}")
 
