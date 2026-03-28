@@ -40,11 +40,6 @@ CREATE TABLE IF NOT EXISTS scores (
     details TEXT NOT NULL,
     PRIMARY KEY (component_key, score_type)
 );
-
-CREATE TABLE IF NOT EXISTS intruder_prompts (
-    trial_key TEXT PRIMARY KEY,
-    prompt TEXT NOT NULL
-);
 """
 
 
@@ -186,24 +181,6 @@ class HarvestDB:
         ).fetchall()
         return [row["component_key"] for row in rows]
 
-    def get_component_densities(self, min_examples: int) -> list[tuple[str, float]]:
-        """Return (component_key, firing_density) for eligible components. Fast — no blob deserialization."""
-        if self._has_column("components", "n_activation_examples"):
-            rows = self._conn.execute(
-                "SELECT component_key, firing_density FROM components WHERE n_activation_examples >= ?",
-                (min_examples,),
-            ).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT component_key, firing_density FROM components WHERE json_array_length(activation_examples) >= ?",
-                (min_examples,),
-            ).fetchall()
-        return [(row["component_key"], row["firing_density"]) for row in rows]
-
-    def _has_column(self, table: str, column: str) -> bool:
-        cols = [r[1] for r in self._conn.execute(f"PRAGMA table_info({table})").fetchall()]
-        return column in cols
-
     # -- Scores (e.g. intruder eval) ------------------------------------------
 
     def save_score(self, component_key: str, score_type: str, score: float, details: str) -> None:
@@ -219,27 +196,6 @@ class HarvestDB:
             (score_type,),
         ).fetchall()
         return {row["component_key"]: row["score"] for row in rows}
-
-    # -- Intruder prompts ------------------------------------------------------
-
-    def save_intruder_prompt(self, trial_key: str, prompt: str) -> None:
-        self._ensure_table("intruder_prompts")
-        self._conn.execute(
-            "INSERT OR REPLACE INTO intruder_prompts VALUES (?, ?)",
-            (trial_key, prompt),
-        )
-        self._conn.commit()
-
-    def _ensure_table(self, table: str) -> None:
-        """Create table if it doesn't exist (for tables added after initial schema)."""
-        existing = [
-            r[0]
-            for r in self._conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
-        ]
-        if table not in existing:
-            self._conn.executescript(_SCHEMA)
 
     def close(self) -> None:
         self._conn.close()

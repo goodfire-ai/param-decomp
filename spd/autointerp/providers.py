@@ -33,8 +33,6 @@ class OpenRouterLLMConfig(BaseConfig):
     type: Literal["openrouter"] = "openrouter"
     model: str = "google/gemini-3-flash-preview"
     reasoning_effort: ReasoningEffort = "low"
-    max_concurrent: int = 50
-    max_requests_per_minute: int = 500
 
 
 EffortLevel = Literal["low", "medium", "high", "max"]
@@ -44,24 +42,18 @@ class AnthropicSonnet46LLMConfig(BaseConfig):
     type: Literal["anthropic"] = "anthropic"
     model: Literal["claude-sonnet-4-6"] = "claude-sonnet-4-6"
     effort: Literal["low", "medium", "high"] | None = None
-    max_concurrent: int = 40
-    max_requests_per_minute: int = 300
 
 
 class AnthropicOpus46LLMConfig(BaseConfig):
     type: Literal["anthropic"] = "anthropic"
     model: Literal["claude-opus-4-6"] = "claude-opus-4-6"
     effort: EffortLevel | None = None
-    max_concurrent: int = 20
-    max_requests_per_minute: int = 100
 
 
 class AnthropicHaiku45LLMConfig(BaseConfig):
     type: Literal["anthropic"] = "anthropic"
     model: Literal["claude-haiku-4-5-20251001"] = "claude-haiku-4-5-20251001"
     thinking_budget: int | None = Field(default=None, ge=1024)
-    max_concurrent: int = 40
-    max_requests_per_minute: int = 300
 
 
 AnthropicLLMConfig = Annotated[
@@ -74,8 +66,6 @@ class OpenAILLMConfig(BaseConfig):
     type: Literal["openai"] = "openai"
     model: str
     reasoning_effort: ReasoningEffort = "none"
-    max_concurrent: int = 50
-    max_requests_per_minute: int = 500
 
 
 class GoogleAILLMConfig(BaseConfig):
@@ -84,8 +74,6 @@ class GoogleAILLMConfig(BaseConfig):
     type: Literal["google_ai"] = "google_ai"
     model: str = "gemini-3-flash-preview"
     thinking_level: Literal["minimal", "low", "medium", "high"] | None = None
-    max_concurrent: int = 100
-    max_requests_per_minute: int = 1000
 
 
 LLMConfig = Annotated[

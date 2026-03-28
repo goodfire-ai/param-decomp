@@ -132,6 +132,8 @@ class AutointerpConfig(BaseConfig):
     limit: int | None = None
     component_keys_path: str | None = None
     cost_limit_usd: float | None = None
+    max_requests_per_minute: int = 500
+    max_concurrent: int = 50
     template_strategy: Annotated[StrategyConfig, Field(discriminator="type")]
 
 
@@ -159,6 +161,8 @@ class AutointerpEvalConfig(BaseConfig):
     component_keys_path: str | None = None
     seed: int = 0
     cost_limit_usd: float | None = None
+    max_requests_per_minute: int = 500
+    max_concurrent: int = 50
 
 
 class AutointerpSlurmConfig(BaseConfig):

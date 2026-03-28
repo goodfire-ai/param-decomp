@@ -20,6 +20,8 @@ from spd.harvest.repo import HarvestRepo
 from spd.harvest.schemas import ComponentData, ComponentSummary
 from spd.log import logger
 
+MAX_CONCURRENT = 50
+
 
 def resolve_target_component_keys(
     summary: dict[str, ComponentSummary],

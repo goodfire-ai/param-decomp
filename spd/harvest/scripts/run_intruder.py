@@ -8,6 +8,7 @@ from spd.harvest.config import IntruderEvalConfig
 from spd.harvest.db import HarvestDB
 from spd.harvest.intruder import run_intruder_scoring
 from spd.harvest.repo import HarvestRepo
+from spd.log import logger
 
 
 def main(
@@ -27,19 +28,24 @@ def main(
     tokenizer_name = adapter_from_id(decomposition_id).tokenizer_name
 
     harvest = HarvestRepo(decomposition_id, subrun_id=harvest_subrun_id, readonly=True)
-    db = HarvestDB(harvest._dir / "harvest.db")
+    score_db = HarvestDB(harvest._dir / "harvest.db")
+
+    logger.info("Loading components from harvest DB...")
+    components = harvest.get_all_components()
+    logger.info(f"Loaded {len(components)} components")
 
     asyncio.run(
         run_intruder_scoring(
-            db=db,
+            components=components,
             provider=provider,
             tokenizer_name=tokenizer_name,
+            score_db=score_db,
             eval_config=eval_config,
             limit=eval_config.limit,
             cost_limit_usd=eval_config.cost_limit_usd,
         )
     )
-    db.close()
+    score_db.close()
 
 
 def get_command(decomposition_id: str, config: IntruderEvalConfig, harvest_subrun_id: str) -> str:
