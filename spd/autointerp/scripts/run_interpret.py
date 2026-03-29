@@ -84,13 +84,13 @@ def main(
         limit=None if target_component_keys is not None else interp_config.limit,
         component_keys=target_component_keys,
         cost_limit_usd=interp_config.cost_limit_usd,
-        max_requests_per_minute=interp_config.max_requests_per_minute,
+        max_requests_per_minute=interp_config.llm.max_requests_per_minute,
         model_metadata=adapter.model_metadata,
         template_strategy=interp_config.template_strategy,
         harvest=harvest,
         db_path=db_path,
         tokenizer_name=adapter.tokenizer_name,
-        max_concurrent=interp_config.max_concurrent,
+        max_concurrent=interp_config.llm.max_concurrent,
     )
 
 
