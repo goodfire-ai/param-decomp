@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from functools import cached_property
+from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
 import numpy as np
@@ -292,6 +293,86 @@ class ProcessedMemberships:
         )
         assert self.n_components_alive + self.n_components_dead == self.n_components_original, (
             f"{self.n_components_alive = } + {self.n_components_dead = } != {self.n_components_original = }"
+        )
+
+    def save(self, path: Path) -> None:
+        """Save to directory: sparse memberships + metadata + optional preview tensor."""
+        import json
+
+        from scipy import sparse as sp
+
+        from spd.clustering.sample_membership import memberships_to_sample_component_matrix
+
+        path.mkdir(parents=True, exist_ok=True)
+
+        matrix = memberships_to_sample_component_matrix(self.memberships, fmt="csc")
+        assert isinstance(matrix, sp.csc_matrix)
+        sp.save_npz(path / "memberships.npz", matrix)
+
+        metadata = {
+            "n_samples": self.n_samples,
+            "labels": list(self.labels),
+            "dead_components_lst": list(self.dead_components_lst)
+            if self.dead_components_lst
+            else None,
+            "module_component_counts": self.module_component_counts,
+            "module_alive_counts": self.module_alive_counts,
+        }
+        (path / "metadata.json").write_text(json.dumps(metadata, indent=2))
+
+        if self.preview is not None:
+            torch.save(self.preview.activations, path / "preview.pt")
+
+    @classmethod
+    def load(cls, path: Path) -> "ProcessedMemberships":
+        """Load from directory saved by .save()."""
+        import json
+
+        from scipy import sparse as sp
+
+        metadata = json.loads((path / "metadata.json").read_text())
+        labels = ComponentLabels(metadata["labels"])
+        dead = (
+            ComponentLabels(metadata["dead_components_lst"])
+            if metadata["dead_components_lst"]
+            else None
+        )
+
+        matrix_csc = sp.load_npz(path / "memberships.npz").tocsc()
+        assert matrix_csc.shape[0] == metadata["n_samples"]
+        assert matrix_csc.shape[1] == len(labels)
+
+        memberships: list[CompressedMembership] = []
+        for col_idx in range(matrix_csc.shape[1]):
+            sample_indices = matrix_csc.indices[
+                matrix_csc.indptr[col_idx] : matrix_csc.indptr[col_idx + 1]
+            ].astype(np.int64, copy=False)
+            memberships.append(
+                CompressedMembership.from_sample_indices(
+                    sample_indices, n_samples=metadata["n_samples"]
+                )
+            )
+
+        preview: ProcessedActivations | None = None
+        preview_path = path / "preview.pt"
+        if preview_path.exists():
+            preview_acts = torch.load(preview_path, weights_only=True)
+            preview = ProcessedActivations(
+                module_component_counts=metadata["module_component_counts"],
+                module_alive_counts=metadata["module_alive_counts"],
+                activations=preview_acts,
+                labels=ComponentLabels(list(labels)),
+                dead_components_lst=ComponentLabels(list(dead)) if dead else None,
+            )
+
+        return cls(
+            module_component_counts=metadata["module_component_counts"],
+            module_alive_counts=metadata["module_alive_counts"],
+            labels=labels,
+            dead_components_lst=dead,
+            memberships=memberships,
+            n_samples=metadata["n_samples"],
+            preview=preview,
         )
 
 

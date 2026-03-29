@@ -13,8 +13,8 @@ import json
 import os
 from pathlib import Path
 
+from spd.clustering.activations import ProcessedMemberships
 from spd.clustering.consts import ComponentLabels
-from spd.clustering.membership_snapshot import load_membership_snapshot
 from spd.clustering.merge import LogCallback, merge_iteration_memberships
 from spd.clustering.merge_config import MergeConfig
 from spd.clustering.storage import StorageBase
@@ -56,14 +56,14 @@ def merge(
         )
     )
 
-    snapshot = load_membership_snapshot(snapshot_path)
-    logger.info(f"Loaded: {snapshot.n_components} components, {snapshot.n_samples} samples")
+    processed = ProcessedMemberships.load(snapshot_path)
+    logger.info(f"Loaded: {processed.n_components_alive} components, {processed.n_samples} samples")
 
     history = merge_iteration_memberships(
         merge_config=merge_config,
-        memberships=snapshot.to_memberships(),
-        n_samples=snapshot.n_samples,
-        component_labels=ComponentLabels(list(snapshot.labels)),
+        memberships=processed.memberships,
+        n_samples=processed.n_samples,
+        component_labels=ComponentLabels(list(processed.labels)),
         log_callback=log_callback,
     )
 

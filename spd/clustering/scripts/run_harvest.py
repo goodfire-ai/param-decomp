@@ -17,7 +17,6 @@ import torch
 from spd.clustering.activations import collect_memberships
 from spd.clustering.dataset import create_clustering_dataloader
 from spd.clustering.harvest_config import HarvestConfig
-from spd.clustering.membership_snapshot import save_membership_snapshot
 from spd.clustering.storage import StorageBase
 from spd.log import logger
 from spd.models.component_model import ComponentModel, SPDRunInfo
@@ -74,12 +73,7 @@ def harvest(config: HarvestConfig) -> Path:
     torch.cuda.empty_cache()
 
     logger.info(f"Saving: {processed.n_components_alive} alive, {processed.n_samples} samples")
-    save_membership_snapshot(
-        storage.base_dir,
-        memberships=processed.memberships,
-        labels=processed.labels,
-        n_samples=processed.n_samples,
-    )
+    processed.save(storage.base_dir)
 
     logger.info(f"Harvest complete: {storage.base_dir}")
     return storage.base_dir

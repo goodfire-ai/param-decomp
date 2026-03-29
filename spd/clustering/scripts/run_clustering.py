@@ -26,6 +26,7 @@ from matplotlib.figure import Figure
 from torch import Tensor
 from wandb.sdk.wandb_run import Run
 
+from spd.clustering.activations import ProcessedMemberships
 from spd.clustering.clustering_run_config import ClusteringRunConfig
 from spd.clustering.consts import ClusterCoactivationShaped, ComponentLabels
 from spd.clustering.harvest_config import HarvestConfig
@@ -33,6 +34,7 @@ from spd.clustering.math.merge_matrix import GroupMerge
 from spd.clustering.math.semilog import semilog
 from spd.clustering.merge import LogCallback
 from spd.clustering.merge_history import MergeHistory
+from spd.clustering.plotting.activations import plot_activations
 from spd.clustering.plotting.merge import plot_merge_history_cluster_sizes, plot_merge_iteration
 from spd.clustering.scripts.run_harvest import harvest
 from spd.clustering.scripts.run_merge import merge
@@ -190,6 +192,19 @@ def main(
             config=run_config.model_dump(mode="json"),
             tags=["clustering", f"model:{run_config.wandb_decomp_model}"],
         )
+
+    # Log activation preview
+    if wandb_run is not None:
+        loaded = ProcessedMemberships.load(snapshot_path)
+        if loaded.preview is not None:
+            plot_activations(
+                processed_activations=loaded.preview,
+                save_dir=None,
+                n_samples_max=256,
+                wandb_run=wandb_run,
+            )
+            wandb_log_tensor(wandb_run, loaded.preview.activations, "activations", 0, single=True)
+        del loaded
 
     # Merge
     log_callback: LogCallback | None = (
