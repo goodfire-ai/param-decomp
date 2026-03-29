@@ -13,6 +13,7 @@ Output structure:
 import argparse
 import json
 import multiprocessing
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -20,11 +21,10 @@ from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
 
 from spd.clustering.consts import DistancesArray, DistancesMethod
-from spd.clustering.ensemble_registry import get_clustering_runs
 from spd.clustering.math.merge_distances import compute_distances
 from spd.clustering.merge_history import MergeHistory, MergeHistoryEnsemble
 from spd.clustering.plotting.merge import plot_dists_distribution
-from spd.clustering.scripts.run_clustering import ClusteringRunStorage
+from spd.clustering.scripts.run_clustering import ClusteringRunStorage, read_run_ids
 from spd.log import logger
 from spd.settings import SPD_OUT_DIR
 from spd.utils.run_utils import ExecutionStamp
@@ -39,40 +39,26 @@ if torch.cuda.is_available():
         pass
 
 
-def main(pipeline_run_id: str, distances_method: DistancesMethod) -> None:
-    """Calculate distances between clustering runs in an ensemble.
-
-    Args:
-        pipeline_run_id: Pipeline run ID to query from registry
-        distances_method: Method for calculating distances
-    """
+def main(pipeline_run_id: str, run_ids_file: Path, distances_method: DistancesMethod) -> None:
     logger.info(f"Calculating distances for pipeline run: {pipeline_run_id}")
 
-    # Query registry for clustering runs
-    clustering_runs = get_clustering_runs(pipeline_run_id)
-    if not clustering_runs:
-        raise ValueError(f"No clustering runs found for pipeline {pipeline_run_id}")
+    run_ids = read_run_ids(run_ids_file)
+    assert run_ids, f"No run IDs found in {run_ids_file}"
+    logger.info(f"Found {len(run_ids)} clustering runs")
 
-    logger.info(f"Found {len(clustering_runs)} clustering runs")
-
-    # Load histories from individual clustering run directories
     histories: list[MergeHistory] = []
-    for idx, clustering_run_id in clustering_runs:
+    for run_id in run_ids:
         history_path = ClusteringRunStorage(
             ExecutionStamp(
-                run_id=clustering_run_id,
+                run_id=run_id,
                 snapshot_branch="<not needed>",
                 commit_hash="<not needed>",
                 run_type="clustering/runs",
             )
         ).history_path
-
-        if not history_path.exists():
-            raise FileNotFoundError(
-                f"History not found for run {clustering_run_id}: {history_path}"
-            )
+        assert history_path.exists(), f"History not found for run {run_id}: {history_path}"
         histories.append(MergeHistory.read(history_path))
-        logger.info(f"Loaded history for run {idx}: {clustering_run_id}")
+        logger.info(f"Loaded history for run {run_id}")
 
     # Compute normalized ensemble
     ensemble: MergeHistoryEnsemble = MergeHistoryEnsemble(data=histories)
@@ -122,20 +108,16 @@ def main(pipeline_run_id: str, distances_method: DistancesMethod) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Calculate distances between clustering runs")
-    parser.add_argument(
-        "--pipeline-run-id",
-        type=str,
-        required=True,
-        help="Pipeline run ID to query from registry",
-    )
+    parser.add_argument("--pipeline-run-id", type=str, required=True)
+    parser.add_argument("--run-ids-file", type=Path, required=True)
     parser.add_argument(
         "--distances-method",
         choices=DistancesMethod.__args__,
         default="perm_invariant_hamming",
-        help="Method for calculating distances",
     )
     args = parser.parse_args()
     main(
         pipeline_run_id=args.pipeline_run_id,
+        run_ids_file=args.run_ids_file,
         distances_method=args.distances_method,
     )

@@ -1,7 +1,7 @@
 """Perform a single clustering run (harvest + merge in one process).
 
 Called standalone or via `spd-clustering` (run_pipeline.py) for ensemble runs.
-The ensemble pipeline varies dataset seeds across runs for stability analysis.
+Each ensemble job gets a unique seed via --seed-offset.
 
 Output:
     <SPD_OUT_DIR>/clustering/runs/<run_id>/
@@ -10,6 +10,7 @@ Output:
 """
 
 import argparse
+import fcntl
 import gc
 import os
 import tempfile
@@ -25,11 +26,10 @@ from matplotlib.figure import Figure
 from torch import Tensor
 from wandb.sdk.wandb_run import Run
 
-from spd.clustering.activations import collect_memberships
+from spd.clustering.activations import ProcessedMemberships, collect_memberships
 from spd.clustering.clustering_run_config import ClusteringRunConfig
 from spd.clustering.consts import ClusterCoactivationShaped, ComponentLabels
 from spd.clustering.dataset import create_clustering_dataloader
-from spd.clustering.ensemble_registry import _ENSEMBLE_REGISTRY_DB, register_clustering_run
 from spd.clustering.math.merge_matrix import GroupMerge
 from spd.clustering.math.semilog import semilog
 from spd.clustering.merge import LogCallback, merge_iteration_memberships
@@ -42,7 +42,7 @@ from spd.log import logger
 from spd.models.component_model import ComponentModel, SPDRunInfo
 from spd.utils.distributed_utils import get_device
 from spd.utils.general_utils import replace_pydantic_model
-from spd.utils.run_utils import _NO_ARG_PARSSED_SENTINEL, ExecutionStamp, read_noneable_str
+from spd.utils.run_utils import ExecutionStamp
 
 os.environ["WANDB_QUIET"] = "true"
 
@@ -148,32 +148,28 @@ def _log_callback(
         plt.close(fig)
 
 
+# ── Run ID registry (append-only JSONL for ensemble tracking) ──────────────
+
+
+def append_run_id(registry_path: Path, run_id: str) -> None:
+    """Atomically append a run ID to a JSONL registry file."""
+    registry_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(registry_path, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(run_id + "\n")
+        fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def read_run_ids(registry_path: Path) -> list[str]:
+    """Read all run IDs from a JSONL registry file."""
+    assert registry_path.exists(), f"Registry not found: {registry_path}"
+    return [line.strip() for line in registry_path.read_text().splitlines() if line.strip()]
+
+
 # ── Main ───────────────────────────────────────────────────────────────────
 
 
-def main(run_config: ClusteringRunConfig) -> Path:
-    execution_stamp = ExecutionStamp.create(run_type="clustering/runs", create_snapshot=False)
-    storage = ClusteringRunStorage(execution_stamp)
-    clustering_run_id = execution_stamp.run_id
-    logger.info(f"Clustering run {clustering_run_id} → {storage.base_dir}")
-
-    # Ensemble registration (seed varies per run)
-    if run_config.ensemble_id:
-        assigned_idx = register_clustering_run(
-            pipeline_run_id=run_config.ensemble_id,
-            clustering_run_id=clustering_run_id,
-        )
-        logger.info(
-            f"Registered with pipeline {run_config.ensemble_id} "
-            f"at index {assigned_idx} in {_ENSEMBLE_REGISTRY_DB}"
-        )
-        run_config = replace_pydantic_model(
-            run_config, {"dataset_seed": run_config.dataset_seed + assigned_idx}
-        )
-
-    run_config.to_file(storage.config_path)
-
-    device = get_device()
+def _harvest(run_config: ClusteringRunConfig, device: torch.device | str) -> ProcessedMemberships:
     spd_run = SPDRunInfo.from_path(run_config.model_path)
     task_name = spd_run.config.task_config.task_name
     model = ComponentModel.from_run_info(spd_run).to(device)
@@ -184,24 +180,6 @@ def main(run_config: ClusteringRunConfig) -> Path:
         seed=run_config.dataset_seed,
     )
 
-    # WandB
-    wandb_run: Run | None = None
-    if run_config.wandb_project is not None:
-        wandb_run = wandb.init(
-            id=clustering_run_id,
-            entity=run_config.wandb_entity,
-            project=run_config.wandb_project,
-            group=run_config.ensemble_id,
-            config=run_config.model_dump(mode="json"),
-            tags=[
-                "clustering",
-                f"task:{task_name}",
-                f"model:{run_config.wandb_decomp_model}",
-                f"ensemble_id:{run_config.ensemble_id}",
-            ],
-        )
-
-    # Harvest
     mc = run_config.merge_config
     processed = collect_memberships(
         model=model,
@@ -219,6 +197,48 @@ def main(run_config: ClusteringRunConfig) -> Path:
         dataset_seed=run_config.dataset_seed,
     )
 
+    del model
+    gc.collect()
+    torch.cuda.empty_cache()
+    return processed
+
+
+def main(
+    run_config: ClusteringRunConfig,
+    seed_offset: int = 0,
+    run_ids_file: Path | None = None,
+) -> Path:
+    if seed_offset != 0:
+        run_config = replace_pydantic_model(
+            run_config, {"dataset_seed": run_config.dataset_seed + seed_offset}
+        )
+
+    execution_stamp = ExecutionStamp.create(run_type="clustering/runs", create_snapshot=False)
+    storage = ClusteringRunStorage(execution_stamp)
+    run_id = execution_stamp.run_id
+    logger.info(f"Clustering run {run_id} → {storage.base_dir}")
+
+    if run_ids_file is not None:
+        append_run_id(run_ids_file, run_id)
+
+    run_config.to_file(storage.config_path)
+    device = get_device()
+
+    # WandB
+    wandb_run: Run | None = None
+    if run_config.wandb_project is not None:
+        wandb_run = wandb.init(
+            id=run_id,
+            entity=run_config.wandb_entity,
+            project=run_config.wandb_project,
+            group=run_config.ensemble_id,
+            config=run_config.model_dump(mode="json"),
+            tags=["clustering", f"model:{run_config.wandb_decomp_model}"],
+        )
+
+    # Harvest
+    processed = _harvest(run_config, device)
+
     if wandb_run is not None and processed.preview is not None:
         plot_activations(
             processed_activations=processed.preview,
@@ -228,10 +248,6 @@ def main(run_config: ClusteringRunConfig) -> Path:
         )
         wandb_log_tensor(wandb_run, processed.preview.activations, "activations", 0, single=True)
 
-    del model
-    gc.collect()
-    torch.cuda.empty_cache()
-
     # Merge
     log_callback: LogCallback | None = (
         partial(_log_callback, run=wandb_run, run_config=run_config)
@@ -239,7 +255,7 @@ def main(run_config: ClusteringRunConfig) -> Path:
         else None
     )
     history = merge_iteration_memberships(
-        merge_config=mc,
+        merge_config=run_config.merge_config,
         memberships=processed.memberships,
         n_samples=processed.n_samples,
         component_labels=ComponentLabels(processed.labels.copy()),
@@ -272,23 +288,25 @@ def main(run_config: ClusteringRunConfig) -> Path:
 def cli() -> None:
     parser = argparse.ArgumentParser(description="Run a single clustering run")
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--pipeline-run-id", type=str, default=None)
-    parser.add_argument("--wandb-project", type=read_noneable_str, default=_NO_ARG_PARSSED_SENTINEL)
+    parser.add_argument("--seed-offset", type=int, default=0)
+    parser.add_argument("--run-ids-file", type=Path, default=None)
+    parser.add_argument("--wandb-project", type=str, default=None)
     parser.add_argument("--wandb-entity", type=str, default=None)
+    parser.add_argument("--ensemble-id", type=str, default=None)
     args = parser.parse_args()
 
     run_config = ClusteringRunConfig.from_file(args.config)
     overrides: dict[str, Any] = {}
-    if args.pipeline_run_id is not None:
-        overrides["ensemble_id"] = args.pipeline_run_id
-    if args.wandb_project is not _NO_ARG_PARSSED_SENTINEL:
+    if args.wandb_project is not None:
         overrides["wandb_project"] = args.wandb_project
     if args.wandb_entity is not None:
         overrides["wandb_entity"] = args.wandb_entity
+    if args.ensemble_id is not None:
+        overrides["ensemble_id"] = args.ensemble_id
     if overrides:
         run_config = replace_pydantic_model(run_config, overrides)
 
-    main(run_config)
+    main(run_config, seed_offset=args.seed_offset, run_ids_file=args.run_ids_file)
 
 
 if __name__ == "__main__":

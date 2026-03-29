@@ -126,7 +126,7 @@ def test_collect_memberships_lm_all_tokens_matches_dense(monkeypatch: Any) -> No
     activation_threshold = 0.1
     filter_dead_threshold = 0.1
 
-    def fake_component_activations(_model: Any, _device: torch.device | str, batch: torch.Tensor):
+    def fake_component_activations(model: Any, device: torch.device | str, batch: torch.Tensor):  # pyright: ignore[reportUnusedParameter]
         vals = batch.to(torch.float32)
         return OrderedDict(
             {

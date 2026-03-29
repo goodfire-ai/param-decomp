@@ -152,16 +152,9 @@ def create_clustering_workspace_view(ensemble_id: str, project: str, entity: str
 def generate_clustering_commands(
     pipeline_config: ClusteringPipelineConfig,
     pipeline_run_id: str,
+    run_ids_file: Path,
 ) -> list[str]:
-    """Generate commands for each clustering run.
-
-    Args:
-        pipeline_config: Pipeline configuration
-        pipeline_run_id: Pipeline run ID (each run will create its own ExecutionStamp)
-
-    Returns:
-        List of shell-safe command strings
-    """
+    """Generate commands for each clustering run."""
     commands: list[str] = []
 
     for idx in range(pipeline_config.n_runs):
@@ -170,15 +163,17 @@ def generate_clustering_commands(
             "spd/clustering/scripts/run_clustering.py",
             "--config",
             pipeline_config.clustering_run_config_path.as_posix(),
-            "--pipeline-run-id",
-            pipeline_run_id,
-            "--idx-in-ensemble",
+            "--seed-offset",
             str(idx),
-            "--wandb-project",
-            str(pipeline_config.wandb_project),
-            "--wandb-entity",
-            pipeline_config.wandb_entity,
+            "--run-ids-file",
+            str(run_ids_file),
+            "--ensemble-id",
+            pipeline_run_id,
         ]
+        if pipeline_config.wandb_project is not None:
+            cmd_parts += ["--wandb-project", pipeline_config.wandb_project]
+        if pipeline_config.wandb_entity:
+            cmd_parts += ["--wandb-entity", pipeline_config.wandb_entity]
 
         commands.append(shlex.join(cmd_parts))
 
@@ -186,17 +181,11 @@ def generate_clustering_commands(
 
 
 def generate_calc_distances_commands(
-    pipeline_run_id: str, distances_methods: list[DistancesMethod]
+    pipeline_run_id: str,
+    run_ids_file: Path,
+    distances_methods: list[DistancesMethod],
 ) -> list[str]:
-    """Generate commands for calculating distances.
-
-    Args:
-        pipeline_run_id: Pipeline run ID (will query registry for clustering runs)
-        distances_methods: List of methods for calculating distances
-
-    Returns:
-        List of shell-safe command strings, one per method
-    """
+    """Generate commands for calculating distances."""
     commands: list[str] = []
     for method in distances_methods:
         commands.append(
@@ -206,6 +195,8 @@ def generate_calc_distances_commands(
                     "spd/clustering/scripts/calc_distances.py",
                     "--pipeline-run-id",
                     pipeline_run_id,
+                    "--run-ids-file",
+                    str(run_ids_file),
                     "--distances-method",
                     method,
                 ]
@@ -265,14 +256,17 @@ def main(
         logger.info(f"WandB workspace: {workspace_url}")
 
     # Generate commands for clustering runs
+    run_ids_file = storage.base_dir / "run_ids.txt"
     clustering_commands = generate_clustering_commands(
         pipeline_config=pipeline_config,
         pipeline_run_id=pipeline_run_id,
+        run_ids_file=run_ids_file,
     )
 
     # Generate commands for calculating distances
     calc_distances_commands = generate_calc_distances_commands(
         pipeline_run_id=pipeline_run_id,
+        run_ids_file=run_ids_file,
         distances_methods=pipeline_config.distances_methods,
     )
 

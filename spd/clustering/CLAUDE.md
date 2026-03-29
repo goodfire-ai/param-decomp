@@ -60,7 +60,7 @@ SPD_OUT_DIR/clustering/
 │   ├── ensemble_merge_array.npz         # Normalized merge array
 │   ├── distances_<method>.npz           # Distance matrices
 │   └── distances_<method>.png           # Distance distribution plot
-└── ensemble_registry.db                 # SQLite DB mapping pipeline → clustering runs
+├── run_ids.txt                          # Run IDs for each ensemble (one per line, written by jobs)
 ```
 
 ## Architecture
