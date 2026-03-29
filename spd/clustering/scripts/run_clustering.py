@@ -1,17 +1,17 @@
-"""Perform a single clustering run (harvest + merge in one process).
+"""Perform a single clustering run: harvest → merge with wandb logging.
 
 Called standalone or via `spd-clustering` (run_pipeline.py) for ensemble runs.
-Each ensemble job gets a unique seed via --seed-offset.
+Calls harvest() to collect activations to disk, then merge() with a wandb log callback.
 
 Output:
-    <SPD_OUT_DIR>/clustering/runs/<run_id>/
-        ├── clustering_run_config.json
+    <SPD_OUT_DIR>/clustering/harvests/<harvest_id>/   (from harvest)
+    <SPD_OUT_DIR>/clustering/runs/<run_id>/            (from merge)
+        ├── merge_config.json
         └── history.zip
 """
 
 import argparse
 import fcntl
-import gc
 import os
 import tempfile
 from functools import partial
@@ -26,35 +26,20 @@ from matplotlib.figure import Figure
 from torch import Tensor
 from wandb.sdk.wandb_run import Run
 
-from spd.clustering.activations import ProcessedMemberships, collect_memberships
 from spd.clustering.clustering_run_config import ClusteringRunConfig
 from spd.clustering.consts import ClusterCoactivationShaped, ComponentLabels
-from spd.clustering.dataset import create_clustering_dataloader
+from spd.clustering.harvest_config import HarvestConfig
 from spd.clustering.math.merge_matrix import GroupMerge
 from spd.clustering.math.semilog import semilog
-from spd.clustering.merge import LogCallback, merge_iteration_memberships
+from spd.clustering.merge import LogCallback
 from spd.clustering.merge_history import MergeHistory
-from spd.clustering.plotting.activations import plot_activations
 from spd.clustering.plotting.merge import plot_merge_history_cluster_sizes, plot_merge_iteration
-from spd.clustering.storage import StorageBase
+from spd.clustering.scripts.run_harvest import harvest
+from spd.clustering.scripts.run_merge import merge
 from spd.clustering.wandb_tensor_info import wandb_log_tensor
-from spd.log import logger
-from spd.models.component_model import ComponentModel, SPDRunInfo
-from spd.utils.distributed_utils import get_device
 from spd.utils.general_utils import replace_pydantic_model
-from spd.utils.run_utils import ExecutionStamp
 
 os.environ["WANDB_QUIET"] = "true"
-
-
-class ClusteringRunStorage(StorageBase):
-    _CONFIG = "clustering_run_config.json"
-    _HISTORY = "history.zip"
-
-    def __init__(self, execution_stamp: ExecutionStamp) -> None:
-        super().__init__(execution_stamp)
-        self.config_path: Path = self.base_dir / self._CONFIG
-        self.history_path: Path = self.base_dir / self._HISTORY
 
 
 # ── WandB logging ──────────────────────────────────────────────────────────
@@ -148,11 +133,10 @@ def _log_callback(
         plt.close(fig)
 
 
-# ── Run ID registry (append-only JSONL for ensemble tracking) ──────────────
+# ── Run ID registry (append-only text file for ensemble tracking) ──────────
 
 
 def append_run_id(registry_path: Path, run_id: str) -> None:
-    """Atomically append a run ID to a JSONL registry file."""
     registry_path.parent.mkdir(parents=True, exist_ok=True)
     with open(registry_path, "a") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
@@ -161,46 +145,11 @@ def append_run_id(registry_path: Path, run_id: str) -> None:
 
 
 def read_run_ids(registry_path: Path) -> list[str]:
-    """Read all run IDs from a JSONL registry file."""
     assert registry_path.exists(), f"Registry not found: {registry_path}"
     return [line.strip() for line in registry_path.read_text().splitlines() if line.strip()]
 
 
 # ── Main ───────────────────────────────────────────────────────────────────
-
-
-def _harvest(run_config: ClusteringRunConfig, device: torch.device | str) -> ProcessedMemberships:
-    spd_run = SPDRunInfo.from_path(run_config.model_path)
-    task_name = spd_run.config.task_config.task_name
-    model = ComponentModel.from_run_info(spd_run).to(device)
-    dataloader = create_clustering_dataloader(
-        model_path=run_config.model_path,
-        task_name=task_name,
-        batch_size=run_config.batch_size,
-        seed=run_config.dataset_seed,
-    )
-
-    mc = run_config.merge_config
-    processed = collect_memberships(
-        model=model,
-        dataloader=dataloader,
-        task_name=task_name,
-        device=device,
-        activation_threshold=mc.activation_threshold,
-        filter_dead_threshold=mc.filter_dead_threshold,
-        filter_dead_stat=mc.filter_dead_stat,
-        filter_modules=mc.filter_modules,
-        n_tokens=run_config.n_tokens,
-        n_tokens_per_seq=run_config.n_tokens_per_seq,
-        use_all_tokens_per_seq=run_config.use_all_tokens_per_seq,
-        n_samples=run_config.n_samples or run_config.batch_size,
-        dataset_seed=run_config.dataset_seed,
-    )
-
-    del model
-    gc.collect()
-    torch.cuda.empty_cache()
-    return processed
 
 
 def main(
@@ -213,22 +162,28 @@ def main(
             run_config, {"dataset_seed": run_config.dataset_seed + seed_offset}
         )
 
-    execution_stamp = ExecutionStamp.create(run_type="clustering/runs", create_snapshot=False)
-    storage = ClusteringRunStorage(execution_stamp)
-    run_id = execution_stamp.run_id
-    logger.info(f"Clustering run {run_id} → {storage.base_dir}")
+    mc = run_config.merge_config
 
-    if run_ids_file is not None:
-        append_run_id(run_ids_file, run_id)
-
-    run_config.to_file(storage.config_path)
-    device = get_device()
+    # Harvest
+    harvest_config = HarvestConfig(
+        model_path=run_config.model_path,
+        batch_size=run_config.batch_size,
+        n_samples=run_config.n_samples,
+        n_tokens=run_config.n_tokens,
+        n_tokens_per_seq=run_config.n_tokens_per_seq,
+        use_all_tokens_per_seq=run_config.use_all_tokens_per_seq,
+        dataset_seed=run_config.dataset_seed,
+        activation_threshold=mc.activation_threshold,
+        filter_dead_threshold=mc.filter_dead_threshold,
+        filter_dead_stat=mc.filter_dead_stat,
+        module_name_filter=mc.module_name_filter,
+    )
+    snapshot_path = harvest(harvest_config)
 
     # WandB
     wandb_run: Run | None = None
     if run_config.wandb_project is not None:
         wandb_run = wandb.init(
-            id=run_id,
             entity=run_config.wandb_entity,
             project=run_config.wandb_project,
             group=run_config.ensemble_id,
@@ -236,36 +191,23 @@ def main(
             tags=["clustering", f"model:{run_config.wandb_decomp_model}"],
         )
 
-    # Harvest
-    processed = _harvest(run_config, device)
-
-    if wandb_run is not None and processed.preview is not None:
-        plot_activations(
-            processed_activations=processed.preview,
-            save_dir=None,
-            n_samples_max=256,
-            wandb_run=wandb_run,
-        )
-        wandb_log_tensor(wandb_run, processed.preview.activations, "activations", 0, single=True)
-
     # Merge
     log_callback: LogCallback | None = (
         partial(_log_callback, run=wandb_run, run_config=run_config)
         if wandb_run is not None
         else None
     )
-    history = merge_iteration_memberships(
-        merge_config=run_config.merge_config,
-        memberships=processed.memberships,
-        n_samples=processed.n_samples,
-        component_labels=ComponentLabels(processed.labels.copy()),
+    run_id, history_path = merge(
+        snapshot_path=snapshot_path,
+        merge_config=mc,
         log_callback=log_callback,
     )
 
-    history.save(storage.history_path)
-    logger.info(f"History saved to {storage.history_path}")
+    if run_ids_file is not None:
+        append_run_id(run_ids_file, run_id)
 
     if wandb_run is not None:
+        history = MergeHistory.read(history_path)
         fig_cs: Figure = plot_merge_history_cluster_sizes(history=history)
         wandb_run.log(
             {"plots/merge_history_cluster_sizes": wandb.Image(fig_cs)},
@@ -278,11 +220,11 @@ def main(
             type="merge_history",
             metadata={"n_iters_current": history.n_iters_current},
         )
-        artifact.add_file(str(storage.history_path))
+        artifact.add_file(str(history_path))
         wandb_run.log_artifact(artifact)
         wandb_run.finish()
 
-    return storage.history_path
+    return history_path
 
 
 def cli() -> None:

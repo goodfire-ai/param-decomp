@@ -24,7 +24,8 @@ from spd.clustering.consts import DistancesArray, DistancesMethod
 from spd.clustering.math.merge_distances import compute_distances
 from spd.clustering.merge_history import MergeHistory, MergeHistoryEnsemble
 from spd.clustering.plotting.merge import plot_dists_distribution
-from spd.clustering.scripts.run_clustering import ClusteringRunStorage, read_run_ids
+from spd.clustering.scripts.run_clustering import read_run_ids
+from spd.clustering.scripts.run_merge import MergeStorage
 from spd.log import logger
 from spd.settings import SPD_OUT_DIR
 from spd.utils.run_utils import ExecutionStamp
@@ -48,7 +49,7 @@ def main(pipeline_run_id: str, run_ids_file: Path, distances_method: DistancesMe
 
     histories: list[MergeHistory] = []
     for run_id in run_ids:
-        history_path = ClusteringRunStorage(
+        history_path = MergeStorage(
             ExecutionStamp(
                 run_id=run_id,
                 snapshot_branch="<not needed>",

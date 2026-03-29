@@ -15,7 +15,7 @@ from pathlib import Path
 
 from spd.clustering.consts import ComponentLabels
 from spd.clustering.membership_snapshot import load_membership_snapshot
-from spd.clustering.merge import merge_iteration_memberships
+from spd.clustering.merge import LogCallback, merge_iteration_memberships
 from spd.clustering.merge_config import MergeConfig
 from spd.clustering.storage import StorageBase
 from spd.log import logger
@@ -34,10 +34,16 @@ class MergeStorage(StorageBase):
         self.history_path: Path = self.base_dir / self._HISTORY
 
 
-def merge(snapshot_path: Path, merge_config: MergeConfig) -> Path:
+def merge(
+    snapshot_path: Path,
+    merge_config: MergeConfig,
+    log_callback: LogCallback | None = None,
+) -> tuple[str, Path]:
+    """Returns (run_id, history_path)."""
     execution_stamp = ExecutionStamp.create(run_type="clustering/runs", create_snapshot=False)
     storage = MergeStorage(execution_stamp)
-    logger.info(f"Merge run {execution_stamp.run_id} → {storage.base_dir}")
+    run_id = execution_stamp.run_id
+    logger.info(f"Merge run {run_id} → {storage.base_dir}")
 
     storage.config_path.parent.mkdir(parents=True, exist_ok=True)
     storage.config_path.write_text(
@@ -58,11 +64,12 @@ def merge(snapshot_path: Path, merge_config: MergeConfig) -> Path:
         memberships=snapshot.to_memberships(),
         n_samples=snapshot.n_samples,
         component_labels=ComponentLabels(list(snapshot.labels)),
+        log_callback=log_callback,
     )
 
     history.save(storage.history_path)
     logger.info(f"History saved to {storage.history_path}")
-    return storage.history_path
+    return run_id, storage.history_path
 
 
 def cli() -> None:
