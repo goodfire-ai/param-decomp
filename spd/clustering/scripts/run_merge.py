@@ -17,19 +17,11 @@ from spd.clustering.activations import ProcessedMemberships
 from spd.clustering.consts import ComponentLabels
 from spd.clustering.merge import LogCallback, merge_iteration_memberships
 from spd.clustering.merge_config import MergeConfig
+from spd.clustering.paths import clustering_run_dir
 from spd.log import logger
-from spd.settings import SPD_OUT_DIR
 from spd.utils.run_utils import generate_run_id
 
 os.environ["WANDB_QUIET"] = "true"
-
-MERGE_RUN_TYPE = "clustering/runs"
-
-
-def _run_dir(run_id: str) -> Path:
-    d = SPD_OUT_DIR / MERGE_RUN_TYPE / run_id
-    d.mkdir(parents=True, exist_ok=True)
-    return d
 
 
 def merge(
@@ -39,7 +31,8 @@ def merge(
     log_callback: LogCallback | None = None,
 ) -> Path:
     """Run merge iteration, return history path."""
-    out = _run_dir(run_id)
+    out = clustering_run_dir(run_id)
+    out.mkdir(parents=True, exist_ok=True)
     logger.info(f"Merge run {run_id} → {out}")
 
     (out / "merge_config.json").write_text(
@@ -77,7 +70,7 @@ def cli() -> None:
     merge(
         snapshot_path=args.snapshot,
         merge_config=MergeConfig.from_file(args.merge_config),
-        run_id=generate_run_id(MERGE_RUN_TYPE),
+        run_id=generate_run_id("clustering/runs"),
     )
 
 

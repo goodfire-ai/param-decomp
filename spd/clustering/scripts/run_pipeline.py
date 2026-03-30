@@ -29,8 +29,8 @@ from pydantic import Field, PositiveInt, field_validator, model_validator
 from spd.base_config import BaseConfig
 from spd.clustering.clustering_run_config import ClusteringRunConfig
 from spd.clustering.consts import DistancesMethod
+from spd.clustering.paths import clustering_ensemble_dir
 from spd.log import logger
-from spd.settings import SPD_OUT_DIR
 from spd.utils.general_utils import replace_pydantic_model
 from spd.utils.git_utils import create_git_snapshot
 from spd.utils.run_utils import (
@@ -210,7 +210,7 @@ def main(
         )
 
     pipeline_run_id = generate_run_id("clustering/ensembles")
-    pipeline_dir = SPD_OUT_DIR / "clustering" / "ensembles" / pipeline_run_id
+    pipeline_dir = clustering_ensemble_dir(pipeline_run_id)
     pipeline_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Pipeline {pipeline_run_id} → {pipeline_dir}")
 

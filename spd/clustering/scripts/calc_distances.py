@@ -22,10 +22,9 @@ from matplotlib.axes import Axes
 from spd.clustering.consts import DistancesArray, DistancesMethod
 from spd.clustering.math.merge_distances import compute_distances
 from spd.clustering.merge_history import MergeHistory, MergeHistoryEnsemble
+from spd.clustering.paths import clustering_ensemble_dir, clustering_run_dir
 from spd.clustering.plotting.merge import plot_dists_distribution
-from spd.clustering.scripts.run_merge import _run_dir
 from spd.log import logger
-from spd.settings import SPD_OUT_DIR
 
 # Set spawn method for CUDA compatibility with multiprocessing
 # Must be done before any CUDA operations
@@ -44,7 +43,7 @@ def main(pipeline_run_id: str, run_ids: list[str], distances_method: DistancesMe
 
     histories: list[MergeHistory] = []
     for run_id in run_ids:
-        history_path = _run_dir(run_id) / "history.zip"
+        history_path = clustering_run_dir(run_id) / "history.zip"
         assert history_path.exists(), f"History not found for run {run_id}: {history_path}"
         histories.append(MergeHistory.read(history_path))
         logger.info(f"Loaded history for run {run_id}")
@@ -54,7 +53,7 @@ def main(pipeline_run_id: str, run_ids: list[str], distances_method: DistancesMe
     merge_array, merge_meta = ensemble.normalized()
 
     # Get pipeline output directory
-    pipeline_dir = SPD_OUT_DIR / "clustering" / "ensembles" / pipeline_run_id
+    pipeline_dir = clustering_ensemble_dir(pipeline_run_id)
 
     # Save ensemble metadata and merge array
     ensemble_meta_path = pipeline_dir / "ensemble_meta.json"

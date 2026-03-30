@@ -36,7 +36,7 @@ from spd.clustering.merge_history import MergeHistory
 from spd.clustering.plotting.activations import plot_activations
 from spd.clustering.plotting.merge import plot_merge_history_cluster_sizes, plot_merge_iteration
 from spd.clustering.scripts.run_harvest import harvest as harvest_fn
-from spd.clustering.scripts.run_merge import MERGE_RUN_TYPE, merge
+from spd.clustering.scripts.run_merge import merge
 from spd.clustering.wandb_tensor_info import wandb_log_tensor
 from spd.utils.general_utils import replace_pydantic_model
 from spd.utils.run_utils import generate_run_id
@@ -232,7 +232,7 @@ def cli() -> None:
     if overrides:
         run_config = replace_pydantic_model(run_config, overrides)
 
-    run_id = args.run_id or generate_run_id(MERGE_RUN_TYPE)
+    run_id = args.run_id or generate_run_id("clustering/runs")
     main(run_config, run_id=run_id, seed_offset=args.seed_offset)
 
 

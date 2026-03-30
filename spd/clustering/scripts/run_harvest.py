@@ -18,20 +18,18 @@ import torch
 from spd.clustering.activations import collect_memberships
 from spd.clustering.dataset import create_clustering_dataloader
 from spd.clustering.harvest_config import HarvestConfig
+from spd.clustering.paths import clustering_harvest_dir
 from spd.log import logger
 from spd.models.component_model import ComponentModel, SPDRunInfo
-from spd.settings import SPD_OUT_DIR
 from spd.utils.distributed_utils import get_device
 from spd.utils.run_utils import generate_run_id
 
 os.environ["WANDB_QUIET"] = "true"
 
-HARVEST_RUN_TYPE = "clustering/harvests"
-
 
 def harvest(config: HarvestConfig) -> Path:
-    run_id = generate_run_id(HARVEST_RUN_TYPE)
-    out = SPD_OUT_DIR / HARVEST_RUN_TYPE / run_id
+    run_id = generate_run_id("clustering/harvests")
+    out = clustering_harvest_dir(run_id)
     out.mkdir(parents=True, exist_ok=True)
     logger.info(f"Harvest {run_id} → {out}")
 
