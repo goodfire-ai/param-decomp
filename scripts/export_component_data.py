@@ -81,7 +81,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Export component data for blog post")
     parser.add_argument("run_id", help="SPD run ID (e.g. s-55ea3f9b)")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Output directory")
-    parser.add_argument("--n-examples", type=int, default=30, help="Activation examples per component")
+    parser.add_argument(
+        "--n-examples", type=int, default=30, help="Activation examples per component"
+    )
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -98,7 +100,9 @@ def main() -> None:
 
     # Find latest harvest DB
     harvest_dir = get_harvest_dir(run_id)
-    harvest_subdirs = sorted(d for d in harvest_dir.iterdir() if d.is_dir() and d.name.startswith("h-"))
+    harvest_subdirs = sorted(
+        d for d in harvest_dir.iterdir() if d.is_dir() and d.name.startswith("h-")
+    )
     assert harvest_subdirs, f"No harvest data in {harvest_dir}"
     harvest_db_path = harvest_subdirs[-1] / "harvest.db"
     assert harvest_db_path.exists(), f"No harvest.db in {harvest_subdirs[-1]}"
@@ -134,14 +138,16 @@ def main() -> None:
             json.loads(raw_examples), tokenizer, n_examples=args.n_examples
         )
 
-        components.append({
-            "key": canonical_key,
-            "label": interp_by_key[component_key],
-            "layer_display": canonical_display_name(canonical_layer),
-            "firing_density": firing_density,
-            "activation_examples": examples,
-            "max_act": max_act,
-        })
+        components.append(
+            {
+                "key": canonical_key,
+                "label": interp_by_key[component_key],
+                "layer_display": canonical_display_name(canonical_layer),
+                "firing_density": firing_density,
+                "activation_examples": examples,
+                "max_act": max_act,
+            }
+        )
 
     out_path = args.out_dir / "components.json"
     out_path.write_text(json.dumps(components))

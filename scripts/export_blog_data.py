@@ -130,10 +130,9 @@ def convert_examples(
 
 
 def convert_pmi(raw_pmi: dict[str, Any], tokenizer: AppTokenizer, top_k: int = 8) -> dict[str, Any]:
-    return {"top": [
-        [tokenizer.get_tok_display(tid), score]
-        for tid, score in raw_pmi["top"][:top_k]
-    ]}
+    return {
+        "top": [[tokenizer.get_tok_display(tid), score] for tid, score in raw_pmi["top"][:top_k]]
+    }
 
 
 def build_dataset_attributions(
@@ -170,11 +169,13 @@ def build_dataset_attributions(
         for entry in entries:
             graph_key = find_graph_key(entry.layer, entry.component_idx)
             label = resolve_label(entry.layer, entry.component_idx)
-            result.append({
-                "key": graph_key,
-                "label": label,
-                "value": round(entry.value, 4),
-            })
+            result.append(
+                {
+                    "key": graph_key,
+                    "label": label,
+                    "value": round(entry.value, 4),
+                }
+            )
         return result
 
     pos_sources = storage.get_top_sources(storage_key, top_k, "positive", "attr_abs")
@@ -211,9 +212,7 @@ def build_graph(
     assert row, f"Graph {graph_id} not found"
     prompt_id, raw_edges, raw_ci, raw_acts = row
 
-    prompt_row = app_db.execute(
-        "SELECT token_ids FROM prompts WHERE id=?", (prompt_id,)
-    ).fetchone()
+    prompt_row = app_db.execute("SELECT token_ids FROM prompts WHERE id=?", (prompt_id,)).fetchone()
     assert prompt_row
     token_ids = json.loads(prompt_row[0])
     all_tokens = tokenizer.get_spans(token_ids)
@@ -242,7 +241,9 @@ def build_graph(
                     key = f"output:{t['seq_pos']}:{t['component_idx']}"
                     if seq_allowed(key):
                         output_strength[key] = output_strength.get(key, 0) + abs(e["strength"])
-            top_keys = sorted(output_strength, key=lambda k: output_strength[k], reverse=True)[:output_filter]
+            top_keys = sorted(output_strength, key=lambda k: output_strength[k], reverse=True)[
+                :output_filter
+            ]
             allowed_outputs = set(top_keys)
         case None:
             pass
@@ -264,12 +265,14 @@ def build_graph(
             continue
 
         if is_allowed(src, e["source"]["layer"]) and is_allowed(tgt, e["target"]["layer"]):
-            edges.append({
-                "src": src,
-                "tgt": tgt,
-                "val": e["strength"],
-                "is_cross_seq": e["is_cross_seq"],
-            })
+            edges.append(
+                {
+                    "src": src,
+                    "tgt": tgt,
+                    "val": e["strength"],
+                    "is_cross_seq": e["is_cross_seq"],
+                }
+            )
             active_keys.add(src)
             active_keys.add(tgt)
 
@@ -318,8 +321,12 @@ def build_graph(
                 }
                 if attr_repo:
                     details["dataset_attributions"] = build_dataset_attributions(
-                        node_key, active_keys, interp_by_key,
-                        canonical_to_concrete, attr_repo, tokenizer,
+                        node_key,
+                        active_keys,
+                        interp_by_key,
+                        canonical_to_concrete,
+                        attr_repo,
+                        tokenizer,
                     )
                 else:
                     details["input_token_pmi"] = convert_pmi(json.loads(raw_in_pmi), tokenizer)
@@ -328,12 +335,26 @@ def build_graph(
 
             components[node_key] = comp
 
-    topology_layers = ["embed"] + [
-        f"{b}.{sub}.{proj}"
-        for b in range(max(int(k.split(".")[0]) for k in canonical_to_concrete.values() if k[0].isdigit()) + 1)
-        for sub, proj in [("attn", "q"), ("attn", "k"), ("attn", "v"), ("attn", "o"), ("mlp", "up"), ("mlp", "down")]
-        if f"{b}.{sub}.{proj}" in {v for v in canonical_to_concrete.values()}
-    ] + ["output"]
+    topology_layers = (
+        ["embed"]
+        + [
+            f"{b}.{sub}.{proj}"
+            for b in range(
+                max(int(k.split(".")[0]) for k in canonical_to_concrete.values() if k[0].isdigit())
+                + 1
+            )
+            for sub, proj in [
+                ("attn", "q"),
+                ("attn", "k"),
+                ("attn", "v"),
+                ("attn", "o"),
+                ("mlp", "up"),
+                ("mlp", "down"),
+            ]
+            if f"{b}.{sub}.{proj}" in {v for v in canonical_to_concrete.values()}
+        ]
+        + ["output"]
+    )
 
     graph: dict[str, Any] = {
         "tokens": tokens,
@@ -352,7 +373,9 @@ def build_graph(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export blog graph data from SPD databases")
     parser.add_argument("run_id", help="SPD run ID (e.g. s-55ea3f9b)")
-    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Output directory for JSON files")
+    parser.add_argument(
+        "--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Output directory for JSON files"
+    )
     args = parser.parse_args()
 
     out_dir: Path = args.out_dir
@@ -381,7 +404,9 @@ def main() -> None:
 
     # Find latest harvest DB
     harvest_dir = get_harvest_dir(run_id)
-    harvest_subdirs = sorted(d for d in harvest_dir.iterdir() if d.is_dir() and d.name.startswith("h-"))
+    harvest_subdirs = sorted(
+        d for d in harvest_dir.iterdir() if d.is_dir() and d.name.startswith("h-")
+    )
     assert harvest_subdirs, f"No harvest data in {harvest_dir}"
     harvest_db_path = harvest_subdirs[-1] / "harvest.db"
     assert harvest_db_path.exists(), f"No harvest.db in {harvest_subdirs[-1]}"
@@ -408,7 +433,9 @@ def main() -> None:
     else:
         print("WARNING: No dataset attributions found, falling back to PMI")
 
-    print(f"Loaded {len(harvest_by_key)} harvest + {len(interp_by_key)} interp entries (from {interp_repo.subrun_id})")
+    print(
+        f"Loaded {len(harvest_by_key)} harvest + {len(interp_by_key)} interp entries (from {interp_repo.subrun_id})"
+    )
 
     cluster_mapping = None
     if CLUSTER_MAPPING_PATH and CLUSTER_MAPPING_PATH.exists():
@@ -420,8 +447,15 @@ def main() -> None:
     def write_graph(name: str, graph_id: int, **kwargs: Any) -> None:
         print(f"Building {name} (graph {graph_id})...")
         graph, details = build_graph(
-            graph_id, tokenizer, harvest_by_key, interp_by_key,
-            canonical_to_concrete, app_db, attr_repo, cluster_mapping, **kwargs
+            graph_id,
+            tokenizer,
+            harvest_by_key,
+            interp_by_key,
+            canonical_to_concrete,
+            app_db,
+            attr_repo,
+            cluster_mapping,
+            **kwargs,
         )
         graph_path = out_dir / f"{name}.json"
         details_path = out_dir / f"{name}-details.json"
