@@ -19,7 +19,6 @@ Output structure (only pipeline_config.json is saved to directly in this script.
 
 import argparse
 import os
-import shlex
 from pathlib import Path
 from typing import Any
 
@@ -29,13 +28,12 @@ from pydantic import Field, PositiveInt, field_validator, model_validator
 from spd.base_config import BaseConfig
 from spd.clustering.clustering_run_config import ClusteringRunConfig
 from spd.clustering.consts import DistancesMethod
-from spd.clustering.paths import clustering_ensemble_dir
+from spd.clustering.paths import clustering_ensemble_dir, new_ensemble_id, new_run_id
 from spd.log import logger
 from spd.utils.general_utils import replace_pydantic_model
 from spd.utils.git_utils import create_git_snapshot
 from spd.utils.run_utils import (
     _NO_ARG_PARSSED_SENTINEL,
-    generate_run_id,
     read_noneable_str,
     run_locally,
 )
@@ -132,30 +130,21 @@ def generate_clustering_commands(
     pipeline_run_id: str,
     run_ids: list[str],
 ) -> list[str]:
-    """Generate commands for each clustering run."""
-    commands: list[str] = []
+    from spd.clustering.scripts.run_clustering import get_command as clustering_command
 
-    for idx, run_id in enumerate(run_ids):
-        cmd_parts = [
-            "python",
-            "spd/clustering/scripts/run_clustering.py",
-            "--config",
-            pipeline_config.clustering_run_config_path.as_posix(),
-            "--run-id",
-            run_id,
-            "--seed-offset",
-            str(idx),
-            "--ensemble-id",
-            pipeline_run_id,
-        ]
-        if pipeline_config.wandb_project is not None:
-            cmd_parts += ["--wandb-project", pipeline_config.wandb_project]
-        if pipeline_config.wandb_entity:
-            cmd_parts += ["--wandb-entity", pipeline_config.wandb_entity]
-
-        commands.append(shlex.join(cmd_parts))
-
-    return commands
+    return [
+        clustering_command(
+            config_path=pipeline_config.clustering_run_config_path,
+            run_id=run_id,
+            seed_offset=idx,
+            ensemble_id=pipeline_run_id,
+            wandb_project=pipeline_config.wandb_project,
+            wandb_entity=pipeline_config.wandb_entity
+            if pipeline_config.wandb_entity != "goodfire"
+            else None,
+        )
+        for idx, run_id in enumerate(run_ids)
+    ]
 
 
 def generate_calc_distances_commands(
@@ -163,25 +152,9 @@ def generate_calc_distances_commands(
     run_ids: list[str],
     distances_methods: list[DistancesMethod],
 ) -> list[str]:
-    """Generate commands for calculating distances."""
-    run_ids_csv = ",".join(run_ids)
-    commands: list[str] = []
-    for method in distances_methods:
-        commands.append(
-            shlex.join(
-                [
-                    "python",
-                    "spd/clustering/scripts/calc_distances.py",
-                    "--pipeline-run-id",
-                    pipeline_run_id,
-                    "--run-ids",
-                    run_ids_csv,
-                    "--distances-method",
-                    method,
-                ]
-            )
-        )
-    return commands
+    from spd.clustering.scripts.calc_distances import get_command as distances_command
+
+    return [distances_command(pipeline_run_id, run_ids, method) for method in distances_methods]
 
 
 def main(
@@ -209,7 +182,7 @@ def main(
             f"{local_clustering_parallel=}, {local_calc_distances_parallel=}, {track_resources_calc_distances=}, {local=}"
         )
 
-    pipeline_run_id = generate_run_id("clustering/ensembles")
+    pipeline_run_id = new_ensemble_id()
     pipeline_dir = clustering_ensemble_dir(pipeline_run_id)
     pipeline_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Pipeline {pipeline_run_id} → {pipeline_dir}")
@@ -234,7 +207,7 @@ def main(
         logger.info(f"WandB workspace: {workspace_url}")
 
     # Pre-generate run IDs for each clustering task
-    run_ids = [generate_run_id("clustering/runs") for _ in range(pipeline_config.n_runs)]
+    run_ids = [new_run_id() for _ in range(pipeline_config.n_runs)]
 
     # Generate commands
     clustering_commands = generate_clustering_commands(

@@ -109,3 +109,20 @@ if __name__ == "__main__":
         run_ids=args.run_ids.split(","),
         distances_method=args.distances_method,
     )
+
+
+def get_command(pipeline_run_id: str, run_ids: list[str], distances_method: DistancesMethod) -> str:
+    import shlex
+
+    return shlex.join(
+        [
+            "python",
+            "spd/clustering/scripts/calc_distances.py",
+            "--pipeline-run-id",
+            pipeline_run_id,
+            "--run-ids",
+            ",".join(run_ids),
+            "--distances-method",
+            distances_method,
+        ]
+    )

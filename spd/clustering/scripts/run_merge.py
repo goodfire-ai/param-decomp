@@ -17,9 +17,8 @@ from spd.clustering.consts import ComponentLabels
 from spd.clustering.memberships import ProcessedMemberships
 from spd.clustering.merge import LogCallback, merge_iteration_memberships
 from spd.clustering.merge_config import MergeConfig
-from spd.clustering.paths import clustering_run_dir
+from spd.clustering.paths import clustering_run_dir, new_run_id
 from spd.log import logger
-from spd.utils.run_utils import generate_run_id
 
 os.environ["WANDB_QUIET"] = "true"
 
@@ -70,7 +69,7 @@ def cli() -> None:
     merge(
         snapshot_path=args.snapshot,
         merge_config=MergeConfig.from_file(args.merge_config),
-        run_id=generate_run_id("clustering/runs"),
+        run_id=new_run_id(),
     )
 
 

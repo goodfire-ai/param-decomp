@@ -33,13 +33,13 @@ from spd.clustering.math.semilog import semilog
 from spd.clustering.memberships import ProcessedMemberships
 from spd.clustering.merge import LogCallback
 from spd.clustering.merge_history import MergeHistory
+from spd.clustering.paths import new_run_id
 from spd.clustering.plotting.activations import plot_activations
 from spd.clustering.plotting.merge import plot_merge_history_cluster_sizes, plot_merge_iteration
 from spd.clustering.scripts.run_harvest import harvest as harvest_fn
 from spd.clustering.scripts.run_merge import merge
 from spd.clustering.wandb_tensor_info import wandb_log_tensor
 from spd.utils.general_utils import replace_pydantic_model
-from spd.utils.run_utils import generate_run_id
 
 os.environ["WANDB_QUIET"] = "true"
 
@@ -232,8 +232,37 @@ def cli() -> None:
     if overrides:
         run_config = replace_pydantic_model(run_config, overrides)
 
-    run_id = args.run_id or generate_run_id("clustering/runs")
+    run_id = args.run_id or new_run_id()
     main(run_config, run_id=run_id, seed_offset=args.seed_offset)
+
+
+def get_command(
+    config_path: Path,
+    run_id: str,
+    seed_offset: int,
+    ensemble_id: str,
+    wandb_project: str | None = None,
+    wandb_entity: str | None = None,
+) -> str:
+    import shlex
+
+    parts = [
+        "python",
+        "spd/clustering/scripts/run_clustering.py",
+        "--config",
+        config_path.as_posix(),
+        "--run-id",
+        run_id,
+        "--seed-offset",
+        str(seed_offset),
+        "--ensemble-id",
+        ensemble_id,
+    ]
+    if wandb_project is not None:
+        parts += ["--wandb-project", wandb_project]
+    if wandb_entity is not None:
+        parts += ["--wandb-entity", wandb_entity]
+    return shlex.join(parts)
 
 
 if __name__ == "__main__":
