@@ -48,6 +48,7 @@ dev = [
     "ruff",
     "basedpyright<1.32.0", # pyright and wandb issues, see https://github.com/goodfire-ai/spd/pull/232
     "pre-commit",
+    "scikit-learn",
 ]
 
 [project.scripts]
