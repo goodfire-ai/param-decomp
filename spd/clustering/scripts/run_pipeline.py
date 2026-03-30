@@ -29,12 +29,13 @@ from pydantic import Field, PositiveInt, field_validator, model_validator
 from spd.base_config import BaseConfig
 from spd.clustering.clustering_run_config import ClusteringRunConfig
 from spd.clustering.consts import DistancesMethod
-from spd.clustering.storage import StorageBase
 from spd.log import logger
+from spd.settings import SPD_OUT_DIR
 from spd.utils.general_utils import replace_pydantic_model
+from spd.utils.git_utils import create_git_snapshot
 from spd.utils.run_utils import (
     _NO_ARG_PARSSED_SENTINEL,
-    ExecutionStamp,
+    generate_run_id,
     read_noneable_str,
     run_locally,
 )
@@ -47,29 +48,6 @@ from spd.utils.slurm import (
 )
 
 os.environ["WANDB_QUIET"] = "true"
-
-
-class ClusteringPipelineStorage(StorageBase):
-    """Storage paths for clustering pipeline (ensemble).
-
-    All paths are relative to ExecutionStamp.out_dir.
-    """
-
-    # Relative path constants
-    _PIPELINE_CONFIG = "pipeline_config.yaml"
-    _RUN_IDS = "run_ids.json"
-    _ENSEMBLE_META = "ensemble_meta.json"
-    _ENSEMBLE_MERGE_ARRAY = "ensemble_merge_array.npz"
-
-    def __init__(self, execution_stamp: ExecutionStamp) -> None:
-        super().__init__(execution_stamp)
-        self.pipeline_config_path: Path = self.base_dir / self._PIPELINE_CONFIG
-        self.run_ids_path: Path = self.base_dir / self._RUN_IDS
-        self.ensemble_meta_path: Path = self.base_dir / self._ENSEMBLE_META
-        self.ensemble_merge_array_path: Path = self.base_dir / self._ENSEMBLE_MERGE_ARRAY
-
-    def distances_path(self, method: DistancesMethod) -> Path:
-        return self.base_dir / f"distances_{method}.npz"
 
 
 class ClusteringPipelineConfig(BaseConfig):
@@ -231,21 +209,20 @@ def main(
             f"{local_clustering_parallel=}, {local_calc_distances_parallel=}, {track_resources_calc_distances=}, {local=}"
         )
 
-    # Create ExecutionStamp for pipeline
-    execution_stamp: ExecutionStamp = ExecutionStamp.create(
-        run_type="clustering/ensembles",
-        create_snapshot=pipeline_config.create_git_snapshot,
-    )
-    pipeline_run_id: str = execution_stamp.run_id
-    logger.info(f"Pipeline run ID: {pipeline_run_id}")
+    pipeline_run_id = generate_run_id("clustering/ensembles")
+    pipeline_dir = SPD_OUT_DIR / "clustering" / "ensembles" / pipeline_run_id
+    pipeline_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Pipeline {pipeline_run_id} → {pipeline_dir}")
 
-    # Initialize storage
-    storage = ClusteringPipelineStorage(execution_stamp)
-    logger.info(f"Pipeline output directory: {storage.base_dir}")
+    # Git snapshot
+    snapshot_branch: str | None = None
+    if pipeline_config.create_git_snapshot:
+        snapshot_branch, commit_hash = create_git_snapshot(snapshot_id=pipeline_run_id)
+        logger.info(f"Created git snapshot: {snapshot_branch} ({commit_hash[:8]})")
 
     # Save pipeline config
-    pipeline_config.to_file(storage.pipeline_config_path)
-    logger.info(f"Pipeline config saved to {storage.pipeline_config_path}")
+    pipeline_config.to_file(pipeline_dir / "pipeline_config.yaml")
+    logger.info(f"Pipeline config saved to {pipeline_dir / 'pipeline_config.yaml'}")
 
     # Create WandB workspace if requested
     if pipeline_config.wandb_project is not None:
@@ -257,8 +234,6 @@ def main(
         logger.info(f"WandB workspace: {workspace_url}")
 
     # Pre-generate run IDs for each clustering task
-    from spd.utils.run_utils import generate_run_id
-
     run_ids = [generate_run_id("clustering/runs") for _ in range(pipeline_config.n_runs)]
 
     # Generate commands
@@ -293,7 +268,7 @@ def main(
 
         # Build distances plot paths dict
         distances_plots = {
-            f"distances via {method}": str(storage.plots_dir / f"distances_{method}.png")
+            f"distances via {method}": str(pipeline_dir / "plots" / f"distances_{method}.png")
             for method in pipeline_config.distances_methods
         }
 
@@ -301,7 +276,7 @@ def main(
             {
                 "Total clustering runs": len(clustering_commands),
                 "Pipeline run ID": pipeline_run_id,
-                "Pipeline output dir": str(storage.base_dir),
+                "Pipeline output dir": str(pipeline_dir),
                 **distances_plots,
             }
         )
@@ -319,7 +294,7 @@ def main(
             job_name=f"{pipeline_config.slurm_job_name_prefix}_cluster",
             partition=pipeline_config.slurm_partition,
             n_gpus=1,  # Always 1 GPU per run
-            snapshot_branch=execution_stamp.snapshot_branch,
+            snapshot_branch=snapshot_branch,
             max_concurrent_tasks=pipeline_config.n_runs,  # Run all concurrently
             mem=pipeline_config.slurm_mem,
         )
@@ -343,7 +318,7 @@ def main(
                 job_name=f"{pipeline_config.slurm_job_name_prefix}_dist_{method}",
                 partition=pipeline_config.slurm_partition,
                 n_gpus=1,
-                snapshot_branch=execution_stamp.snapshot_branch,
+                snapshot_branch=snapshot_branch,
                 dependency_job_id=array_job_id,
             )
             dist_script = generate_script(dist_config, cmd)
@@ -355,7 +330,7 @@ def main(
 
         # Build distances plot paths dict
         distances_plots = {
-            method: str(storage.plots_dir / f"distances_{method}.png")
+            method: str(pipeline_dir / "plots" / f"distances_{method}.png")
             for method in pipeline_config.distances_methods
         }
 
@@ -365,7 +340,7 @@ def main(
                 "Calc Distances Job IDs": ", ".join(calc_distances_job_ids),
                 "Total clustering runs": len(clustering_commands),
                 "Pipeline run ID": pipeline_run_id,
-                "Pipeline output dir": str(storage.base_dir),
+                "Pipeline output dir": str(pipeline_dir),
                 "Clustering logs": clustering_result.log_pattern,
                 "Calc Distances logs": ", ".join(calc_distances_logs),
             }
