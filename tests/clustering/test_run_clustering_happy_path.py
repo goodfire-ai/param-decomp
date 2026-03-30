@@ -32,4 +32,4 @@ def test_run_clustering_happy_path(monkeypatch: Any):
             ),
             wandb_project=None,
         )
-        main(config)
+        main(config, run_id="c-test")

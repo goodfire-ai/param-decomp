@@ -3,8 +3,9 @@
 Output:
     <SPD_OUT_DIR>/clustering/harvests/<harvest_id>/
         ├── harvest_config.json
-        ├── memberships.npz     # scipy sparse CSC matrix
-        └── metadata.json       # labels, n_samples, n_components
+        ├── memberships.npz
+        ├── metadata.json
+        └── preview.pt (optional)
 """
 
 import argparse
@@ -17,29 +18,24 @@ import torch
 from spd.clustering.activations import collect_memberships
 from spd.clustering.dataset import create_clustering_dataloader
 from spd.clustering.harvest_config import HarvestConfig
-from spd.clustering.storage import StorageBase
 from spd.log import logger
 from spd.models.component_model import ComponentModel, SPDRunInfo
+from spd.settings import SPD_OUT_DIR
 from spd.utils.distributed_utils import get_device
-from spd.utils.run_utils import ExecutionStamp
+from spd.utils.run_utils import generate_run_id
 
 os.environ["WANDB_QUIET"] = "true"
 
-
-class HarvestStorage(StorageBase):
-    _CONFIG = "harvest_config.json"
-
-    def __init__(self, execution_stamp: ExecutionStamp) -> None:
-        super().__init__(execution_stamp)
-        self.config_path: Path = self.base_dir / self._CONFIG
+HARVEST_RUN_TYPE = "clustering/harvests"
 
 
 def harvest(config: HarvestConfig) -> Path:
-    execution_stamp = ExecutionStamp.create(run_type="clustering/harvests", create_snapshot=False)
-    storage = HarvestStorage(execution_stamp)
-    logger.info(f"Harvest {execution_stamp.run_id} → {storage.base_dir}")
+    run_id = generate_run_id(HARVEST_RUN_TYPE)
+    out = SPD_OUT_DIR / HARVEST_RUN_TYPE / run_id
+    out.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Harvest {run_id} → {out}")
 
-    config.to_file(storage.config_path)
+    config.to_file(out / "harvest_config.json")
 
     device = get_device()
     spd_run = SPDRunInfo.from_path(config.model_path)
@@ -59,15 +55,15 @@ def harvest(config: HarvestConfig) -> Path:
     torch.cuda.empty_cache()
 
     logger.info(f"Saving: {processed.n_components_alive} alive, {processed.n_samples} samples")
-    processed.save(storage.base_dir)
+    processed.save(out)
 
-    logger.info(f"Harvest complete: {storage.base_dir}")
-    return storage.base_dir
+    logger.info(f"Harvest complete: {out}")
+    return out
 
 
 def cli() -> None:
     parser = argparse.ArgumentParser(description="Harvest activations into membership snapshot.")
-    parser.add_argument("config", type=Path, help="Path to HarvestConfig JSON/YAML.")
+    parser.add_argument("config", type=Path)
     args = parser.parse_args()
     harvest(HarvestConfig.from_file(args.config))
 

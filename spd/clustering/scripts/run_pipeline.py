@@ -152,21 +152,21 @@ def create_clustering_workspace_view(ensemble_id: str, project: str, entity: str
 def generate_clustering_commands(
     pipeline_config: ClusteringPipelineConfig,
     pipeline_run_id: str,
-    run_ids_file: Path,
+    run_ids: list[str],
 ) -> list[str]:
     """Generate commands for each clustering run."""
     commands: list[str] = []
 
-    for idx in range(pipeline_config.n_runs):
+    for idx, run_id in enumerate(run_ids):
         cmd_parts = [
             "python",
             "spd/clustering/scripts/run_clustering.py",
             "--config",
             pipeline_config.clustering_run_config_path.as_posix(),
+            "--run-id",
+            run_id,
             "--seed-offset",
             str(idx),
-            "--run-ids-file",
-            str(run_ids_file),
             "--ensemble-id",
             pipeline_run_id,
         ]
@@ -182,10 +182,11 @@ def generate_clustering_commands(
 
 def generate_calc_distances_commands(
     pipeline_run_id: str,
-    run_ids_file: Path,
+    run_ids: list[str],
     distances_methods: list[DistancesMethod],
 ) -> list[str]:
     """Generate commands for calculating distances."""
+    run_ids_csv = ",".join(run_ids)
     commands: list[str] = []
     for method in distances_methods:
         commands.append(
@@ -195,8 +196,8 @@ def generate_calc_distances_commands(
                     "spd/clustering/scripts/calc_distances.py",
                     "--pipeline-run-id",
                     pipeline_run_id,
-                    "--run-ids-file",
-                    str(run_ids_file),
+                    "--run-ids",
+                    run_ids_csv,
                     "--distances-method",
                     method,
                 ]
@@ -255,18 +256,20 @@ def main(
         )
         logger.info(f"WandB workspace: {workspace_url}")
 
-    # Generate commands for clustering runs
-    run_ids_file = storage.base_dir / "run_ids.txt"
+    # Pre-generate run IDs for each clustering task
+    from spd.utils.run_utils import generate_run_id
+
+    run_ids = [generate_run_id("clustering/runs") for _ in range(pipeline_config.n_runs)]
+
+    # Generate commands
     clustering_commands = generate_clustering_commands(
         pipeline_config=pipeline_config,
         pipeline_run_id=pipeline_run_id,
-        run_ids_file=run_ids_file,
+        run_ids=run_ids,
     )
-
-    # Generate commands for calculating distances
     calc_distances_commands = generate_calc_distances_commands(
         pipeline_run_id=pipeline_run_id,
-        run_ids_file=run_ids_file,
+        run_ids=run_ids,
         distances_methods=pipeline_config.distances_methods,
     )
 

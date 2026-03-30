@@ -13,7 +13,6 @@ Output structure:
 import argparse
 import json
 import multiprocessing
-from pathlib import Path
 
 import numpy as np
 import torch
@@ -24,11 +23,9 @@ from spd.clustering.consts import DistancesArray, DistancesMethod
 from spd.clustering.math.merge_distances import compute_distances
 from spd.clustering.merge_history import MergeHistory, MergeHistoryEnsemble
 from spd.clustering.plotting.merge import plot_dists_distribution
-from spd.clustering.scripts.run_clustering import read_run_ids
-from spd.clustering.scripts.run_merge import MergeStorage
+from spd.clustering.scripts.run_merge import _run_dir
 from spd.log import logger
 from spd.settings import SPD_OUT_DIR
-from spd.utils.run_utils import ExecutionStamp
 
 # Set spawn method for CUDA compatibility with multiprocessing
 # Must be done before any CUDA operations
@@ -40,23 +37,14 @@ if torch.cuda.is_available():
         pass
 
 
-def main(pipeline_run_id: str, run_ids_file: Path, distances_method: DistancesMethod) -> None:
+def main(pipeline_run_id: str, run_ids: list[str], distances_method: DistancesMethod) -> None:
     logger.info(f"Calculating distances for pipeline run: {pipeline_run_id}")
-
-    run_ids = read_run_ids(run_ids_file)
-    assert run_ids, f"No run IDs found in {run_ids_file}"
-    logger.info(f"Found {len(run_ids)} clustering runs")
+    assert run_ids, "No run IDs provided"
+    logger.info(f"Loading {len(run_ids)} clustering runs")
 
     histories: list[MergeHistory] = []
     for run_id in run_ids:
-        history_path = MergeStorage(
-            ExecutionStamp(
-                run_id=run_id,
-                snapshot_branch="<not needed>",
-                commit_hash="<not needed>",
-                run_type="clustering/runs",
-            )
-        ).history_path
+        history_path = _run_dir(run_id) / "history.zip"
         assert history_path.exists(), f"History not found for run {run_id}: {history_path}"
         histories.append(MergeHistory.read(history_path))
         logger.info(f"Loaded history for run {run_id}")
@@ -110,7 +98,7 @@ def main(pipeline_run_id: str, run_ids_file: Path, distances_method: DistancesMe
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Calculate distances between clustering runs")
     parser.add_argument("--pipeline-run-id", type=str, required=True)
-    parser.add_argument("--run-ids-file", type=Path, required=True)
+    parser.add_argument("--run-ids", type=str, required=True, help="Comma-separated run IDs")
     parser.add_argument(
         "--distances-method",
         choices=DistancesMethod.__args__,
@@ -119,6 +107,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     main(
         pipeline_run_id=args.pipeline_run_id,
-        run_ids_file=args.run_ids_file,
+        run_ids=args.run_ids.split(","),
         distances_method=args.distances_method,
     )

@@ -1,7 +1,8 @@
 """Perform a single clustering run: harvest → merge with wandb logging.
 
 Called standalone or via `spd-clustering` (run_pipeline.py) for ensemble runs.
-Calls harvest() to collect activations to disk, then merge() with a wandb log callback.
+The pipeline pre-assigns run IDs and creates the git snapshot;
+each SLURM task checks out that snapshot and receives its run ID via --run-id.
 
 Output:
     <SPD_OUT_DIR>/clustering/harvests/<harvest_id>/   (from harvest)
@@ -11,7 +12,6 @@ Output:
 """
 
 import argparse
-import fcntl
 import os
 import tempfile
 from functools import partial
@@ -36,9 +36,10 @@ from spd.clustering.merge_history import MergeHistory
 from spd.clustering.plotting.activations import plot_activations
 from spd.clustering.plotting.merge import plot_merge_history_cluster_sizes, plot_merge_iteration
 from spd.clustering.scripts.run_harvest import harvest as harvest_fn
-from spd.clustering.scripts.run_merge import merge
+from spd.clustering.scripts.run_merge import MERGE_RUN_TYPE, merge
 from spd.clustering.wandb_tensor_info import wandb_log_tensor
 from spd.utils.general_utils import replace_pydantic_model
+from spd.utils.run_utils import generate_run_id
 
 os.environ["WANDB_QUIET"] = "true"
 
@@ -134,29 +135,13 @@ def _log_callback(
         plt.close(fig)
 
 
-# ── Run ID registry (append-only text file for ensemble tracking) ──────────
-
-
-def append_run_id(registry_path: Path, run_id: str) -> None:
-    registry_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(registry_path, "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        f.write(run_id + "\n")
-        fcntl.flock(f, fcntl.LOCK_UN)
-
-
-def read_run_ids(registry_path: Path) -> list[str]:
-    assert registry_path.exists(), f"Registry not found: {registry_path}"
-    return [line.strip() for line in registry_path.read_text().splitlines() if line.strip()]
-
-
 # ── Main ───────────────────────────────────────────────────────────────────
 
 
 def main(
     run_config: ClusteringRunConfig,
+    run_id: str,
     seed_offset: int = 0,
-    run_ids_file: Path | None = None,
 ) -> Path:
     if seed_offset != 0:
         hc = run_config.harvest
@@ -171,6 +156,7 @@ def main(
     wandb_run: Run | None = None
     if run_config.wandb_project is not None:
         wandb_run = wandb.init(
+            id=run_id,
             entity=run_config.wandb_entity,
             project=run_config.wandb_project,
             group=run_config.ensemble_id,
@@ -197,14 +183,12 @@ def main(
         if wandb_run is not None
         else None
     )
-    run_id, history_path = merge(
+    history_path = merge(
         snapshot_path=snapshot_path,
         merge_config=run_config.merge,
+        run_id=run_id,
         log_callback=log_callback,
     )
-
-    if run_ids_file is not None:
-        append_run_id(run_ids_file, run_id)
 
     if wandb_run is not None:
         history = MergeHistory.read(history_path)
@@ -230,8 +214,8 @@ def main(
 def cli() -> None:
     parser = argparse.ArgumentParser(description="Run a single clustering run")
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--run-id", type=str, default=None)
     parser.add_argument("--seed-offset", type=int, default=0)
-    parser.add_argument("--run-ids-file", type=Path, default=None)
     parser.add_argument("--wandb-project", type=str, default=None)
     parser.add_argument("--wandb-entity", type=str, default=None)
     parser.add_argument("--ensemble-id", type=str, default=None)
@@ -248,7 +232,8 @@ def cli() -> None:
     if overrides:
         run_config = replace_pydantic_model(run_config, overrides)
 
-    main(run_config, seed_offset=args.seed_offset, run_ids_file=args.run_ids_file)
+    run_id = args.run_id or generate_run_id(MERGE_RUN_TYPE)
+    main(run_config, run_id=run_id, seed_offset=args.seed_offset)
 
 
 if __name__ == "__main__":
