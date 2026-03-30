@@ -5,12 +5,11 @@ import numpy as np
 import pytest
 import torch
 
-from spd.clustering.activations import (
+from spd.clustering.activations import ProcessedActivations, process_activations
+from spd.clustering.memberships import (
     MembershipBuilder,
-    ProcessedActivations,
     ProcessedMemberships,
     collect_memberships_lm,
-    process_activations,
 )
 from spd.clustering.util import DeadComponentFilterStat
 
@@ -149,7 +148,7 @@ def test_collect_memberships_lm_all_tokens_matches_dense(monkeypatch: Any) -> No
         )
 
     monkeypatch.setattr(
-        "spd.clustering.activations.component_activations",
+        "spd.clustering.memberships.component_activations",
         fake_component_activations,
     )
 

@@ -15,9 +15,9 @@ from pathlib import Path
 
 import torch
 
-from spd.clustering.activations import collect_memberships
 from spd.clustering.dataset import create_clustering_dataloader
 from spd.clustering.harvest_config import HarvestConfig
+from spd.clustering.memberships import collect_memberships
 from spd.clustering.paths import clustering_harvest_dir
 from spd.log import logger
 from spd.models.component_model import ComponentModel, SPDRunInfo

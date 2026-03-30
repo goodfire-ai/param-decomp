@@ -13,8 +13,8 @@ import json
 import os
 from pathlib import Path
 
-from spd.clustering.activations import ProcessedMemberships
 from spd.clustering.consts import ComponentLabels
+from spd.clustering.memberships import ProcessedMemberships
 from spd.clustering.merge import LogCallback, merge_iteration_memberships
 from spd.clustering.merge_config import MergeConfig
 from spd.clustering.paths import clustering_run_dir

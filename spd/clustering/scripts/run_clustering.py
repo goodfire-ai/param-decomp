@@ -26,11 +26,11 @@ from matplotlib.figure import Figure
 from torch import Tensor
 from wandb.sdk.wandb_run import Run
 
-from spd.clustering.activations import ProcessedMemberships
 from spd.clustering.clustering_run_config import ClusteringRunConfig
 from spd.clustering.consts import ClusterCoactivationShaped, ComponentLabels
 from spd.clustering.math.merge_matrix import GroupMerge
 from spd.clustering.math.semilog import semilog
+from spd.clustering.memberships import ProcessedMemberships
 from spd.clustering.merge import LogCallback
 from spd.clustering.merge_history import MergeHistory
 from spd.clustering.plotting.activations import plot_activations
