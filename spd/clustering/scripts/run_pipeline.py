@@ -29,6 +29,8 @@ from spd.base_config import BaseConfig
 from spd.clustering.clustering_run_config import ClusteringRunConfig
 from spd.clustering.consts import DistancesMethod
 from spd.clustering.paths import clustering_ensemble_dir, new_ensemble_id, new_run_id
+from spd.clustering.scripts.calc_distances import get_command as distances_command
+from spd.clustering.scripts.run_clustering import get_command as clustering_command
 from spd.log import logger
 from spd.utils.general_utils import replace_pydantic_model
 from spd.utils.git_utils import create_git_snapshot
@@ -125,38 +127,6 @@ def create_clustering_workspace_view(ensemble_id: str, project: str, entity: str
         raise e
 
 
-def generate_clustering_commands(
-    pipeline_config: ClusteringPipelineConfig,
-    pipeline_run_id: str,
-    run_ids: list[str],
-) -> list[str]:
-    from spd.clustering.scripts.run_clustering import get_command as clustering_command
-
-    return [
-        clustering_command(
-            config_path=pipeline_config.clustering_run_config_path,
-            run_id=run_id,
-            seed_offset=idx,
-            ensemble_id=pipeline_run_id,
-            wandb_project=pipeline_config.wandb_project,
-            wandb_entity=pipeline_config.wandb_entity
-            if pipeline_config.wandb_entity != "goodfire"
-            else None,
-        )
-        for idx, run_id in enumerate(run_ids)
-    ]
-
-
-def generate_calc_distances_commands(
-    pipeline_run_id: str,
-    run_ids: list[str],
-    distances_methods: list[DistancesMethod],
-) -> list[str]:
-    from spd.clustering.scripts.calc_distances import get_command as distances_command
-
-    return [distances_command(pipeline_run_id, run_ids, method) for method in distances_methods]
-
-
 def main(
     pipeline_config: ClusteringPipelineConfig,
     local: bool = False,
@@ -207,19 +177,27 @@ def main(
         logger.info(f"WandB workspace: {workspace_url}")
 
     # Pre-generate run IDs for each clustering task
-    run_ids = [new_run_id() for _ in range(pipeline_config.n_runs)]
+    clustering_run_ids = [new_run_id() for _ in range(pipeline_config.n_runs)]
 
     # Generate commands
-    clustering_commands = generate_clustering_commands(
-        pipeline_config=pipeline_config,
-        pipeline_run_id=pipeline_run_id,
-        run_ids=run_ids,
-    )
-    calc_distances_commands = generate_calc_distances_commands(
-        pipeline_run_id=pipeline_run_id,
-        run_ids=run_ids,
-        distances_methods=pipeline_config.distances_methods,
-    )
+    clustering_commands = [
+        clustering_command(
+            config_path=pipeline_config.clustering_run_config_path,
+            run_id=run_id,
+            seed_offset=idx,
+            ensemble_id=pipeline_run_id,
+            wandb_project=pipeline_config.wandb_project,
+            wandb_entity=pipeline_config.wandb_entity
+            if pipeline_config.wandb_entity != "goodfire"
+            else None,
+        )
+        for idx, run_id in enumerate(clustering_run_ids)
+    ]
+
+    calc_distances_commands = [
+        distances_command(pipeline_run_id, clustering_run_ids, method)
+        for method in pipeline_config.distances_methods
+    ]
 
     # Submit to SLURM
     if local:

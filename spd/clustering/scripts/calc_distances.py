@@ -36,13 +36,15 @@ if torch.cuda.is_available():
         pass
 
 
-def main(pipeline_run_id: str, run_ids: list[str], distances_method: DistancesMethod) -> None:
+def main(
+    pipeline_run_id: str, clustering_run_ids: list[str], distances_method: DistancesMethod
+) -> None:
     logger.info(f"Calculating distances for pipeline run: {pipeline_run_id}")
-    assert run_ids, "No run IDs provided"
-    logger.info(f"Loading {len(run_ids)} clustering runs")
+    assert clustering_run_ids, "No run IDs provided"
+    logger.info(f"Loading {len(clustering_run_ids)} clustering runs")
 
     histories: list[MergeHistory] = []
-    for run_id in run_ids:
+    for run_id in clustering_run_ids:
         history_path = clustering_run_dir(run_id) / "history.zip"
         assert history_path.exists(), f"History not found for run {run_id}: {history_path}"
         histories.append(MergeHistory.read(history_path))
@@ -97,7 +99,12 @@ def main(pipeline_run_id: str, run_ids: list[str], distances_method: DistancesMe
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Calculate distances between clustering runs")
     parser.add_argument("--pipeline-run-id", type=str, required=True)
-    parser.add_argument("--run-ids", type=str, required=True, help="Comma-separated run IDs")
+    parser.add_argument(
+        "--clustering-run-ids",
+        type=str,
+        required=True,
+        help="Comma-separated run IDs for the clustering jobs",
+    )
     parser.add_argument(
         "--distances-method",
         choices=DistancesMethod.__args__,
@@ -106,12 +113,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
     main(
         pipeline_run_id=args.pipeline_run_id,
-        run_ids=args.run_ids.split(","),
+        clustering_run_ids=args.clustering_run_ids.split(","),
         distances_method=args.distances_method,
     )
 
 
-def get_command(pipeline_run_id: str, run_ids: list[str], distances_method: DistancesMethod) -> str:
+def get_command(
+    pipeline_run_id: str, clustering_run_ids: list[str], distances_method: DistancesMethod
+) -> str:
     import shlex
 
     return shlex.join(
@@ -120,8 +129,8 @@ def get_command(pipeline_run_id: str, run_ids: list[str], distances_method: Dist
             "spd/clustering/scripts/calc_distances.py",
             "--pipeline-run-id",
             pipeline_run_id,
-            "--run-ids",
-            ",".join(run_ids),
+            "--clustering-run-ids",
+            ",".join(clustering_run_ids),
             "--distances-method",
             distances_method,
         ]
