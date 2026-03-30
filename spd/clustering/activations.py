@@ -17,6 +17,7 @@ from spd.clustering.consts import (
     ClusterCoactivationShaped,
     ComponentLabels,
 )
+from spd.clustering.harvest_config import HarvestConfig
 from spd.clustering.sample_membership import CompressedMembership
 from spd.clustering.util import DeadComponentFilterStat, ModuleFilterFunc
 from spd.log import logger
@@ -695,45 +696,36 @@ def collect_memberships(
     dataloader: DataLoader[Any],
     task_name: str,
     device: torch.device | str,
-    activation_threshold: float,
-    filter_dead_threshold: float,
-    filter_dead_stat: DeadComponentFilterStat,
-    filter_modules: ModuleFilterFunc | None,
-    *,
-    n_tokens: int | None = None,
-    n_tokens_per_seq: int | None = None,
-    use_all_tokens_per_seq: bool = False,
-    n_samples: int | None = None,
-    dataset_seed: int = 0,
+    config: HarvestConfig,
 ) -> ProcessedMemberships:
     """Collect compressed memberships from a model. Dispatches by task_name."""
     if task_name == "lm":
-        assert n_tokens is not None, "n_tokens required for LM tasks"
-        assert use_all_tokens_per_seq or n_tokens_per_seq is not None
+        assert config.n_tokens is not None, "n_tokens required for LM tasks"
+        assert config.use_all_tokens_per_seq or config.n_tokens_per_seq is not None
         return collect_memberships_lm(
             model=model,
             dataloader=dataloader,
-            n_tokens=n_tokens,
-            n_tokens_per_seq=n_tokens_per_seq,
+            n_tokens=config.n_tokens,
+            n_tokens_per_seq=config.n_tokens_per_seq,
             device=device,
-            seed=dataset_seed,
-            activation_threshold=activation_threshold,
-            filter_dead_threshold=filter_dead_threshold,
-            filter_dead_stat=filter_dead_stat,
-            filter_modules=filter_modules,
-            use_all_tokens_per_seq=use_all_tokens_per_seq,
+            seed=config.dataset_seed,
+            activation_threshold=config.activation_threshold,
+            filter_dead_threshold=config.filter_dead_threshold,
+            filter_dead_stat=config.filter_dead_stat,
+            filter_modules=config.filter_modules,
+            use_all_tokens_per_seq=config.use_all_tokens_per_seq,
         )
 
-    assert n_samples is not None, f"n_samples required for {task_name} tasks"
+    n_samples = config.n_samples or config.batch_size
     return collect_memberships_resid_mlp(
         model=model,
         dataloader=dataloader,
         n_samples=n_samples,
         device=device,
-        activation_threshold=activation_threshold,
-        filter_dead_threshold=filter_dead_threshold,
-        filter_dead_stat=filter_dead_stat,
-        filter_modules=filter_modules,
+        activation_threshold=config.activation_threshold,
+        filter_dead_threshold=config.filter_dead_threshold,
+        filter_dead_stat=config.filter_dead_stat,
+        filter_modules=config.filter_modules,
     )
 
 

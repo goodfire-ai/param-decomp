@@ -1,22 +1,24 @@
 {
-    "merge_config": {
-      "activation_threshold": 0.1,
-      "alpha": 1,
-      "iters": 1000,
-      "merge_pair_sampling_method": "range",
-      "merge_pair_sampling_kwargs": {"threshold": 0.001},
-      "filter_dead_threshold": 0.1,
-      "module_name_filter": null
+    "harvest": {
+        "model_path": "wandb:goodfire/spd/runs/5cr21lbs",
+        "batch_size": 64,
+        "n_tokens": 500000,
+        "n_tokens_per_seq": 10,
+        "activation_threshold": 0.1,
+        "filter_dead_threshold": 0.1,
+        "module_name_filter": null
     },
-    "model_path": "wandb:goodfire/spd/runs/5cr21lbs",
-    "batch_size": 64,
-    "n_tokens": 500000,
-    "n_tokens_per_seq": 10,
+    "merge": {
+        "alpha": 1,
+        "iters": 1000,
+        "merge_pair_sampling_method": "range",
+        "merge_pair_sampling_kwargs": {"threshold": 0.001}
+    },
     "wandb_project": null,
     "logging_intervals": {
-      "stat": 10,
-      "tensor": 200,
-      "plot": 2000,
-      "artifact": 2000
+        "stat": 10,
+        "tensor": 200,
+        "plot": 2000,
+        "artifact": 2000
     }
-  }
+}

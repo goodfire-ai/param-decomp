@@ -2,28 +2,31 @@
 
 from typing import Any
 
-from pydantic import Field, PositiveInt, field_validator, model_validator
+from pydantic import PositiveInt, field_validator, model_validator
 
 from spd.base_config import BaseConfig
-from spd.clustering.merge_config import _to_module_filter
 from spd.clustering.util import DeadComponentFilterStat, ModuleFilterFunc, ModuleFilterSource
 from spd.registry import EXPERIMENT_REGISTRY
 from spd.spd_types import Probability
 
 
+def _to_module_filter(source: ModuleFilterSource) -> ModuleFilterFunc:
+    if source is None:
+        return lambda _: True
+    if isinstance(source, str):
+        return lambda name: name.startswith(source)
+    if isinstance(source, set):
+        return lambda name: name in source
+    assert callable(source)
+    return source
+
+
 class HarvestConfig(BaseConfig):
     model_path: str
     batch_size: PositiveInt
-    n_samples: PositiveInt | None = Field(
-        default=None,
-        description="Number of activation samples (non-LM tasks). Defaults to batch_size.",
-    )
-    n_tokens: PositiveInt | None = Field(
-        default=None, description="Number of token samples to collect (LM only)"
-    )
-    n_tokens_per_seq: PositiveInt | None = Field(
-        default=None, description="Random token positions per sequence (LM only)"
-    )
+    n_samples: PositiveInt | None = None
+    n_tokens: PositiveInt | None = None
+    n_tokens_per_seq: PositiveInt | None = None
     use_all_tokens_per_seq: bool = False
     dataset_seed: int = 0
     activation_threshold: Probability

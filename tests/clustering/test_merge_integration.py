@@ -35,19 +35,18 @@ class TestMergeIntegration:
         """Test merge iteration with range sampler."""
         n_samples = 100
         n_components = 10
+        threshold = 0.1
         activations = torch.rand(n_samples, n_components)
         component_labels = ComponentLabels([f"comp_{i}" for i in range(n_components)])
 
         config = MergeConfig(
-            activation_threshold=0.1,
             alpha=1.0,
             iters=5,
             merge_pair_sampling_method="range",
             merge_pair_sampling_kwargs={"threshold": 0.1},
-            filter_dead_threshold=0.001,
         )
 
-        memberships = _activations_to_memberships(activations, config.activation_threshold)
+        memberships = _activations_to_memberships(activations, threshold)
         history = merge_iteration_memberships(
             merge_config=config,
             memberships=memberships,
@@ -65,19 +64,18 @@ class TestMergeIntegration:
         """Test merge iteration with MCMC sampler."""
         n_samples = 100
         n_components = 10
+        threshold = 0.1
         activations = torch.rand(n_samples, n_components)
         component_labels = ComponentLabels([f"comp_{i}" for i in range(n_components)])
 
         config = MergeConfig(
-            activation_threshold=0.1,
             alpha=1.0,
             iters=5,
             merge_pair_sampling_method="mcmc",
             merge_pair_sampling_kwargs={"temperature": 1.0},
-            filter_dead_threshold=0.001,
         )
 
-        memberships = _activations_to_memberships(activations, config.activation_threshold)
+        memberships = _activations_to_memberships(activations, threshold)
         history = merge_iteration_memberships(
             merge_config=config,
             memberships=memberships,
@@ -103,7 +101,6 @@ class TestMergeIntegration:
         threshold = 0.1
 
         config_range = MergeConfig(
-            activation_threshold=threshold,
             alpha=1.0,
             iters=3,
             merge_pair_sampling_method="range",
@@ -119,7 +116,6 @@ class TestMergeIntegration:
         )
 
         config_mcmc = MergeConfig(
-            activation_threshold=threshold,
             alpha=1.0,
             iters=3,
             merge_pair_sampling_method="mcmc",
@@ -143,18 +139,18 @@ class TestMergeIntegration:
         """Test merge with very few components."""
         n_samples = 50
         n_components = 3
+        threshold = 0.1
         activations = torch.rand(n_samples, n_components)
         component_labels = ComponentLabels([f"comp_{i}" for i in range(n_components)])
 
         config = MergeConfig(
-            activation_threshold=0.1,
             alpha=1.0,
             iters=1,
             merge_pair_sampling_method="mcmc",
             merge_pair_sampling_kwargs={"temperature": 2.0},
         )
 
-        memberships = _activations_to_memberships(activations, config.activation_threshold)
+        memberships = _activations_to_memberships(activations, threshold)
         history = merge_iteration_memberships(
             merge_config=config,
             memberships=memberships,

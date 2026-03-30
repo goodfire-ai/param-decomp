@@ -29,14 +29,13 @@ from wandb.sdk.wandb_run import Run
 from spd.clustering.activations import ProcessedMemberships
 from spd.clustering.clustering_run_config import ClusteringRunConfig
 from spd.clustering.consts import ClusterCoactivationShaped, ComponentLabels
-from spd.clustering.harvest_config import HarvestConfig
 from spd.clustering.math.merge_matrix import GroupMerge
 from spd.clustering.math.semilog import semilog
 from spd.clustering.merge import LogCallback
 from spd.clustering.merge_history import MergeHistory
 from spd.clustering.plotting.activations import plot_activations
 from spd.clustering.plotting.merge import plot_merge_history_cluster_sizes, plot_merge_iteration
-from spd.clustering.scripts.run_harvest import harvest
+from spd.clustering.scripts.run_harvest import harvest as harvest_fn
 from spd.clustering.scripts.run_merge import merge
 from spd.clustering.wandb_tensor_info import wandb_log_tensor
 from spd.utils.general_utils import replace_pydantic_model
@@ -160,27 +159,13 @@ def main(
     run_ids_file: Path | None = None,
 ) -> Path:
     if seed_offset != 0:
+        hc = run_config.harvest
         run_config = replace_pydantic_model(
-            run_config, {"dataset_seed": run_config.dataset_seed + seed_offset}
+            run_config, {"harvest": {"dataset_seed": hc.dataset_seed + seed_offset}}
         )
 
-    mc = run_config.merge_config
-
     # Harvest
-    harvest_config = HarvestConfig(
-        model_path=run_config.model_path,
-        batch_size=run_config.batch_size,
-        n_samples=run_config.n_samples,
-        n_tokens=run_config.n_tokens,
-        n_tokens_per_seq=run_config.n_tokens_per_seq,
-        use_all_tokens_per_seq=run_config.use_all_tokens_per_seq,
-        dataset_seed=run_config.dataset_seed,
-        activation_threshold=mc.activation_threshold,
-        filter_dead_threshold=mc.filter_dead_threshold,
-        filter_dead_stat=mc.filter_dead_stat,
-        module_name_filter=mc.module_name_filter,
-    )
-    snapshot_path = harvest(harvest_config)
+    snapshot_path = harvest_fn(run_config.harvest)
 
     # WandB
     wandb_run: Run | None = None
@@ -214,7 +199,7 @@ def main(
     )
     run_id, history_path = merge(
         snapshot_path=snapshot_path,
-        merge_config=mc,
+        merge_config=run_config.merge,
         log_callback=log_callback,
     )
 

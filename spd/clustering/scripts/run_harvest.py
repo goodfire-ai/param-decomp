@@ -52,21 +52,7 @@ def harvest(config: HarvestConfig) -> Path:
         seed=config.dataset_seed,
     )
 
-    processed = collect_memberships(
-        model=model,
-        dataloader=dataloader,
-        task_name=task_name,
-        device=device,
-        activation_threshold=config.activation_threshold,
-        filter_dead_threshold=config.filter_dead_threshold,
-        filter_dead_stat=config.filter_dead_stat,
-        filter_modules=config.filter_modules,
-        n_tokens=config.n_tokens,
-        n_tokens_per_seq=config.n_tokens_per_seq,
-        use_all_tokens_per_seq=config.use_all_tokens_per_seq,
-        n_samples=config.n_samples or config.batch_size,
-        dataset_seed=config.dataset_seed,
-    )
+    processed = collect_memberships(model, dataloader, task_name, device, config)
 
     del model
     gc.collect()
