@@ -40,28 +40,11 @@ def _write_yaml(data: dict[str, Any], path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _compute_alive_masks(
-    wandb_project: str,
-    run_ids: list[str],
-    model_type: str,
-    alive_dir: Path,
-) -> None:
-    """Compute alive masks for transcoder/CLT runs by running encoders on real data."""
-    prefix = "tc" if model_type == "transcoder" else "clt"
-    needed = [rid for rid in run_ids if not (alive_dir / f"{prefix}_{rid}.pt").exists()]
-    if not needed:
-        logger.info(f"All alive masks exist for {model_type} runs")
-        return
-
-    logger.info(f"Computing alive masks for {len(needed)} {model_type} runs...")
-
+def _collect_mlp_inputs() -> dict[int, torch.Tensor]:
+    """Collect MLP inputs from the Jose target model on Pile validation data."""
     from spd.data import DatasetConfig, create_data_loader
     from spd.models.component_model import ComponentModel
-    from spd.scripts.compare_models.compare_transcoders import (
-        _download_run_artifacts,
-    )
 
-    # Load target model to get MLP inputs
     logger.info("Loading target model for MLP inputs...")
     model = ComponentModel.from_pretrained("wandb:goodfire/spd/runs/s-55ea3f9b")
     model.eval()
@@ -98,30 +81,56 @@ def _compute_alive_masks(
             target(batch["input_ids"])
     for h in hooks:
         h.remove()
+
     mlp_inputs: dict[int, torch.Tensor] = {}
     for i in range(4):
         mlp_inputs[i] = torch.cat(mlp_input_lists[i]).reshape(-1, 768)
-
     del model, target
+    return mlp_inputs
 
-    def compute_alive(W_enc: torch.Tensor, b_enc: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
-        n_feat = W_enc.shape[1]
-        ever_active = torch.zeros(n_feat, dtype=torch.bool)
-        for s in range(0, x.shape[0], 4096):
-            batch = x[s : s + 4096]
-            pre = F.relu(batch @ W_enc + b_enc)
-            k = min(16 * batch.shape[0], pre.numel())
-            _, idxs = torch.topk(pre.flatten(), k)
-            ever_active[idxs.unique() % n_feat] = True
-        return ever_active
+
+def _compute_alive_for_encoder(
+    W_enc: torch.Tensor, b_enc: torch.Tensor, x: torch.Tensor
+) -> torch.Tensor:
+    n_feat = W_enc.shape[1]
+    ever_active = torch.zeros(n_feat, dtype=torch.bool)
+    for s in range(0, x.shape[0], 4096):
+        batch = x[s : s + 4096]
+        pre = F.relu(batch @ W_enc + b_enc)
+        k = min(16 * batch.shape[0], pre.numel())
+        _, idxs = torch.topk(pre.flatten(), k)
+        ever_active[idxs.unique() % n_feat] = True
+    return ever_active
+
+
+def _compute_all_alive_masks(
+    groups: list[dict[str, Any]],
+    alive_dir: Path,
+) -> None:
+    """Compute alive masks for all TC/CLT groups, loading target model only once."""
+    from spd.scripts.compare_models.compare_transcoders import _download_run_artifacts
+
+    # Collect all (prefix, run_id) pairs that need masks
+    needed: list[tuple[str, str, str]] = []  # (prefix, wandb_project, run_id)
+    for group in groups:
+        prefix = "tc" if group["model_type"] == "transcoder" else "clt"
+        for rid in group["run_ids"]:
+            if not (alive_dir / f"{prefix}_{rid}.pt").exists():
+                needed.append((prefix, group["wandb_project"], rid))
+
+    if not needed:
+        logger.info("All alive masks already cached")
+        return
 
     alive_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Computing alive masks for {len(needed)} runs...")
+    mlp_inputs = _collect_mlp_inputs()
 
-    for run_id in needed:
+    for prefix, wandb_project, run_id in needed:
         artifacts = _download_run_artifacts(wandb_project, run_id)
         alive_per_layer: dict[int, torch.Tensor] = {}
 
-        if model_type == "transcoder":
+        if prefix == "tc":
             for name, path in artifacts:
                 if "checkpoint" not in name or "history" in name:
                     continue
@@ -129,7 +138,7 @@ def _compute_alive_masks(
                     if part.startswith("layer"):
                         layer = int(part.replace("layer", ""))
                         sd = torch.load(path / "encoder.pt", map_location="cpu", weights_only=True)
-                        alive_per_layer[layer] = compute_alive(
+                        alive_per_layer[layer] = _compute_alive_for_encoder(
                             sd["W_enc"].float(), sd["b_enc"].float(), mlp_inputs[layer]
                         )
                         break
@@ -139,7 +148,7 @@ def _compute_alive_masks(
             _, path = model_arts[0]
             sd = torch.load(path / "encoder.pt", map_location="cpu", weights_only=True)
             for layer in range(4):
-                alive_per_layer[layer] = compute_alive(
+                alive_per_layer[layer] = _compute_alive_for_encoder(
                     sd[f"W_enc.{layer}"].float(), sd[f"b_enc.{layer}"].float(), mlp_inputs[layer]
                 )
 
@@ -162,18 +171,20 @@ def _submit_slurm(
     script_path: str,
     config_path: str,
     gpu: bool,
+    subcommand: str = "",
     mem: str = "64G",
     time: str = "4:00:00",
 ) -> int:
     """Submit a SLURM job and return the job ID."""
     gpu_arg = "--gres=gpu:1" if gpu else ""
+    sub = f" {subcommand}" if subcommand else ""
     cmd = f"""sbatch --job-name={job_name} {gpu_arg} --mem={mem} --time={time} \
 --output=$HOME/slurm_logs/{job_name}-%j.out <<'SBATCH'
 #!/bin/bash
 source {VENV}/bin/activate
 export PYTHONPATH={WORKTREE}:$PYTHONPATH
 cd {WORKTREE}
-python {script_path} run {config_path}
+python {script_path}{sub} {config_path}
 SBATCH"""
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     assert "Submitted batch job" in result.stdout, f"SLURM submission failed: {result.stderr}"
@@ -228,16 +239,15 @@ def run(config_path: Path | str) -> None:
             "spd/scripts/compare_models/compare_clusters.py",
             str(cfg_path),
             gpu=False,
+            subcommand="run",
             mem="128G",
         )
 
     # --- Alive masks (CPU, needed before TC/CLT comparisons) ---
     alive_dir = output_dir / "alive_masks"
     all_tc_clt = list(config.get("transcoders", [])) + list(config.get("clts", []))
-    for group in all_tc_clt:
-        _compute_alive_masks(
-            group["wandb_project"], group["run_ids"], group["model_type"], alive_dir
-        )
+    if all_tc_clt:
+        _compute_all_alive_masks(all_tc_clt, alive_dir)
 
     # --- Transcoders (CPU) ---
     for group in config.get("transcoders", []):
