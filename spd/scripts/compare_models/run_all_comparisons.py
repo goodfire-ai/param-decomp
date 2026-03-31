@@ -10,7 +10,6 @@ Usage:
 
 import json
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -103,7 +102,7 @@ def _compute_alive_for_encoder(
     return ever_active
 
 
-def _compute_all_alive_masks(
+def _compute_all_alive_masks(  # pyright: ignore[reportUnusedFunction] - called from embedded SLURM script
     groups: list[dict[str, Any]],
     alive_dir: Path,
 ) -> None:
@@ -243,72 +242,69 @@ def run(config_path: Path | str) -> None:
             mem="128G",
         )
 
-    # --- Alive masks (CPU, needed before TC/CLT comparisons) ---
+    # --- Alive masks + TC/CLT comparisons (CPU SLURM job) ---
+    # Submit a single SLURM job that computes alive masks then runs all TC/CLT comparisons
     alive_dir = output_dir / "alive_masks"
     all_tc_clt = list(config.get("transcoders", [])) + list(config.get("clts", []))
     if all_tc_clt:
-        _compute_all_alive_masks(all_tc_clt, alive_dir)
+        # Write per-group configs
+        tc_clt_configs: list[str] = []
+        for group in all_tc_clt:
+            label = group["label"].replace(" ", "_").lower()
+            prefix = "tc" if group["model_type"] == "transcoder" else "clt"
+            cfg_path = output_dir / f"{prefix}_{label}_config.yaml"
+            _write_yaml(
+                {
+                    "model_type": group["model_type"],
+                    "wandb_project": group["wandb_project"],
+                    "run_ids": group["run_ids"],
+                    "alive_masks_dir": str(alive_dir),
+                    "output_dir": str(output_dir / f"{prefix}_{label}"),
+                    "label": label,
+                },
+                cfg_path,
+            )
+            tc_clt_configs.append(str(cfg_path))
 
-    # --- Transcoders (CPU) ---
-    for group in config.get("transcoders", []):
-        label = group["label"].replace(" ", "_").lower()
-        cfg_path = output_dir / f"tc_{label}_config.yaml"
-        _write_yaml(
-            {
-                "model_type": group["model_type"],
-                "wandb_project": group["wandb_project"],
-                "run_ids": group["run_ids"],
-                "alive_masks_dir": str(alive_dir),
-                "output_dir": str(output_dir / f"tc_{label}"),
-                "label": label,
-            },
-            cfg_path,
-        )
-        # Run directly (CPU, fast enough)
-        logger.info(f"Running transcoder comparison: {group['label']}")
-        subprocess.run(
-            [
-                sys.executable,
-                "spd/scripts/compare_models/compare_transcoders.py",
-                "run",
-                str(cfg_path),
-            ],
-            check=True,
-            env={
-                **__import__("os").environ,
-                "PYTHONPATH": f"{WORKTREE}:{__import__('os').environ.get('PYTHONPATH', '')}",
-            },
-        )
+        # Submit a SLURM job that runs alive mask computation + all TC/CLT comparisons
+        tc_clt_script = output_dir / "run_tc_clt.sh"
+        tc_clt_script.write_text(
+            f"""#!/bin/bash
+source {VENV}/bin/activate
+export PYTHONPATH={WORKTREE}:$PYTHONPATH
+cd {WORKTREE}
 
-    # --- CLTs (CPU) ---
-    for group in config.get("clts", []):
-        label = group["label"].replace(" ", "_").lower()
-        cfg_path = output_dir / f"clt_{label}_config.yaml"
-        _write_yaml(
-            {
-                "model_type": group["model_type"],
-                "wandb_project": group["wandb_project"],
-                "run_ids": group["run_ids"],
-                "alive_masks_dir": str(alive_dir),
-                "output_dir": str(output_dir / f"clt_{label}"),
-                "label": label,
-            },
-            cfg_path,
+# Compute alive masks
+python -c "
+from spd.scripts.compare_models.run_all_comparisons import _compute_all_alive_masks
+import yaml
+groups = []
+for cfg_path in {tc_clt_configs!r}:
+    with open(cfg_path) as f:
+        groups.append(yaml.safe_load(f))
+_compute_all_alive_masks(groups, __import__('pathlib').Path('{alive_dir}'))
+"
+
+# Run each TC/CLT comparison
+"""
+            + "\n".join(
+                f"python spd/scripts/compare_models/compare_transcoders.py run {cfg}"
+                for cfg in tc_clt_configs
+            )
+            + "\n",
         )
-        logger.info(f"Running CLT comparison: {group['label']}")
-        subprocess.run(
-            [
-                sys.executable,
-                "spd/scripts/compare_models/compare_transcoders.py",
-                "run",
-                str(cfg_path),
-            ],
-            check=True,
-            env={
-                **__import__("os").environ,
-                "PYTHONPATH": f"{WORKTREE}:{__import__('os').environ.get('PYTHONPATH', '')}",
-            },
+        tc_clt_script.chmod(0o755)
+        result = subprocess.run(
+            f"sbatch --job-name=geom-tc-clt --mem=64G --time=4:00:00 "
+            f"--output=$HOME/slurm_logs/geom-tc-clt-%j.out {tc_clt_script}",
+            shell=True,
+            capture_output=True,
+            text=True,
         )
+        assert "Submitted batch job" in result.stdout, f"SLURM failed: {result.stderr}"
+        tc_clt_job = int(result.stdout.strip().split()[-1])
+        job_ids["tc_clt"] = tc_clt_job
+        logger.info(f"Submitted TC/CLT job: {tc_clt_job}")
 
     # Save job IDs for collect
     if job_ids:
