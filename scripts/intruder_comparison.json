@@ -1,0 +1,46 @@
+{
+    "models": {
+        "CLT k8 (local)": ["clt-1dbdaa40", "h-20260323_163757"],
+        "CLT k16 (local)": ["clt-1d4752ea", "h-20260323_163726"],
+        "CLT k32 (local)": ["clt-be6155ff", "h-20260323_163736"],
+        "CLT k64 (local)": ["clt-5b6d6a61", "h-20260323_163746"],
+        "TC k8 (local)": ["tc-12ea536e", "h-20260323_163842"],
+        "TC k16 (local)": ["tc-95683750", "h-20260323_163808"],
+        "TC k32 (local)": ["tc-ef67440e", "h-20260323_163819"],
+        "TC k64 (local)": ["tc-14c6b065", "h-20260323_163832"],
+        "CLT k16 (e2e par)": ["clt-8f697a95", "h-20260317_144852"],
+        "TC k16 (e2e ind)": ["tc-3218437f", "h-20260317_174440"],
+        "VPD (CI>0.0)": ["s-55ea3f9b", "h-20260227_010249"],
+        "VPD (CI>0.1)": ["s-55ea3f9b", "h-20260319_121635"]
+    },
+    "groups": {
+        "CLT\n(local)": ["CLT k8 (local)", "CLT k16 (local)", "CLT k32 (local)", "CLT k64 (local)"],
+        "TC\n(local)": ["TC k8 (local)", "TC k16 (local)", "TC k32 (local)", "TC k64 (local)"],
+        "CLT\n(e2e)": ["CLT k16 (e2e par)"],
+        "TC\n(e2e)": ["TC k16 (e2e ind)"],
+        "VPD\n(CI>0.0)": ["VPD (CI>0.0)"],
+        "VPD\n(CI>0.1)": ["VPD (CI>0.1)"]
+    },
+    "colors": {
+        "CLT k8 (local)": "#1f77b4",
+        "CLT k16 (local)": "#4a90d9",
+        "CLT k32 (local)": "#7ab3e8",
+        "CLT k64 (local)": "#aed4f5",
+        "TC k8 (local)": "#d62728",
+        "TC k16 (local)": "#e55a5a",
+        "TC k32 (local)": "#ef8c8c",
+        "TC k64 (local)": "#f7bfbf",
+        "CLT k16 (e2e par)": "#2ca02c",
+        "TC k16 (e2e ind)": "#ff7f0e",
+        "VPD (CI>0.0)": "#888888",
+        "VPD (CI>0.1)": "#2c2c2c"
+    },
+    "group_colors": {
+        "CLT\n(local)": "#1f77b4",
+        "TC\n(local)": "#d62728",
+        "CLT\n(e2e)": "#2ca02c",
+        "TC\n(e2e)": "#ff7f0e",
+        "VPD\n(CI>0.0)": "#888888",
+        "VPD\n(CI>0.1)": "#2c2c2c"
+    }
+}
