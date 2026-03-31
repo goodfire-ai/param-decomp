@@ -1,0 +1,55 @@
+output_dir: "spd/scripts/compare_models/out/all_comparisons"
+
+spd_trained:
+  model_paths:
+    - "wandb:goodfire/spd/runs/s-e8bde534"
+    - "wandb:goodfire/spd/runs/s-73d2385c"
+    - "wandb:goodfire/spd/runs/s-aac60aec"
+    - "wandb:goodfire/spd/runs/s-2d14f6c0"
+    - "wandb:goodfire/spd/runs/s-6a33629b"
+  mean_ci_threshold: 1e-4
+  n_eval_steps: 50
+  eval_batch_size: 128
+  shuffle_data: false
+
+spd_init:
+  model_paths:
+    - "wandb:goodfire/spd/runs/s-5ef795b3"
+    - "wandb:goodfire/spd/runs/s-c74f952f"
+    - "wandb:goodfire/spd/runs/s-d532d8b8"
+  mean_ci_threshold: 0.0
+  n_eval_steps: 50
+  eval_batch_size: 128
+  shuffle_data: false
+
+spd_clusters:
+  side_a:
+    spd_model_path: "wandb:goodfire/spd/runs/s-55ea3f9b"
+    clustering_run_id: "c-1723351d"
+    iteration: 4423
+  side_b:
+    spd_model_path: "wandb:goodfire/spd/runs/s-e8bde534"
+    clustering_run_id: "c-89c345bf"
+    iteration: 4423
+
+transcoders:
+  - label: "TC local MSE"
+    model_type: transcoder
+    wandb_project: "mats-sprint/pile_multiseed_jose2"
+    run_ids: ["mrwfwu8f", "g79l9mdy", "4aye18d8", "jos97f9i", "qy13k51o"]
+
+  - label: "TC e2e"
+    model_type: transcoder
+    wandb_project: "mats-sprint/pile_multiseed_jose2"
+    run_ids: ["z9567vuy", "kxpwcbdx", "abat1svk", "uuboaw36", "xbusz9qi"]
+
+clts:
+  - label: "CLT local MSE"
+    model_type: clt
+    wandb_project: "mats-sprint/pile_multiseed_jose2"
+    run_ids: ["17sbdath", "xmzt89pl", "tqyguqn0", "ft6ljijh", "iajwsefm"]
+
+  - label: "CLT e2e parallel"
+    model_type: clt
+    wandb_project: "mats-sprint/pile_multiseed_jose2"
+    run_ids: ["wf7mbave", "7o579nw1", "uj5xomc0", "st70dv8u", "ewotesmm"]
