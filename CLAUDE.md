@@ -214,7 +214,9 @@ Each experiment (`spd/experiments/{tms,resid_mlp,lm}/`) contains:
 | `spd-attributions` | `spd/dataset_attributions/scripts/run_slurm_cli.py` | Submit dataset attribution SLURM job |
 | `spd-postprocess` | `spd/postprocess/cli.py` | Unified postprocessing pipeline (harvest + attributions + interpret + evals) |
 | `spd-graph-interp` | `spd/graph_interp/scripts/run_slurm_cli.py` | Submit graph interpretation SLURM job |
-| `spd-clustering` | `spd/clustering/scripts/run_pipeline.py` | Clustering pipeline |
+| `spd-clustering` | `spd/clustering/scripts/run_pipeline.py` | Clustering ensemble pipeline |
+| `spd-cluster-harvest` | `spd/clustering/scripts/run_harvest.py` | Harvest activations → membership snapshot |
+| `spd-cluster-merge` | `spd/clustering/scripts/run_merge.py` | Merge from snapshot (CPU-only) |
 | `spd-pretrain` | `spd/pretrain/scripts/run_slurm_cli.py` | Pretrain target models |
 | `spd-investigate` | `spd/investigate/scripts/run_slurm_cli.py` | Launch investigation agent |
 

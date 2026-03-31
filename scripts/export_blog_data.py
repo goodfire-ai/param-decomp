@@ -7,6 +7,7 @@ Run: uv run python scripts/export_blog_data.py s-55ea3f9b [--out-dir ../vpd-blog
 
 import argparse
 import json
+import math
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -102,12 +103,12 @@ def convert_examples(
     global_max_act = 0.0
     for ex in raw_examples[:n_examples]:
         token_ids = ex["token_ids"]
-        firings = ex["firings"]
+        ci_values = ex["activations"]["causal_importance"]
         acts = ex["activations"]["component_activation"]
         n = len(token_ids)
         spans = tokenizer.get_spans(token_ids)
 
-        firing_indices = [i for i, f in enumerate(firings) if f]
+        firing_indices = [i for i, ci in enumerate(ci_values) if ci > 0]
         center = firing_indices[0] if firing_indices else n // 2
         start = max(0, center - window // 2)
         end = min(n, start + window)
@@ -120,10 +121,10 @@ def convert_examples(
         tokens = [
             {
                 "token": span,
-                "is_firing": f,
+                "ci": round(ci, 4),
                 "act": round(a, 4),
             }
-            for span, f, a in zip(spans[start:end], firings[start:end], window_acts, strict=True)
+            for span, ci, a in zip(spans[start:end], ci_values[start:end], window_acts, strict=True)
         ]
         out.append({"tokens": tokens})
     return {"examples": out, "max_act": round(global_max_act, 4)}
@@ -198,6 +199,7 @@ def build_graph(
     tokenizer: AppTokenizer,
     harvest_by_key: dict[str, tuple[float, str, str, str]],
     interp_by_key: dict[str, str],
+    reasoning_by_key: dict[str, str],
     canonical_to_concrete: dict[str, str],
     app_db: sqlite3.Connection,
     attr_repo: AttributionRepo | None,
@@ -276,6 +278,17 @@ def build_graph(
             active_keys.add(src)
             active_keys.add(tgt)
 
+    # L2-normalize edge strengths by target layer (matches app's "layer" normalize mode)
+    layer_l2: dict[str, float] = {}
+    for e in edges:
+        tgt_layer = e["tgt"].split(":")[0]
+        layer_l2[tgt_layer] = layer_l2.get(tgt_layer, 0.0) + e["val"] ** 2
+    layer_l2 = {k: math.sqrt(v) for k, v in layer_l2.items()}
+    for e in edges:
+        norm = layer_l2[e["tgt"].split(":")[0]]
+        if norm > 0:
+            e["val"] = e["val"] / norm
+
     for key in active_keys:
         if key not in node_ci_vals:
             layer = key.split(":")[0]
@@ -286,7 +299,6 @@ def build_graph(
     component_details: dict[str, dict[str, Any]] = {}
     for node_key in sorted(active_keys):
         layer, seq_str, idx_str = node_key.split(":")
-        h_key = harvest_key(node_key, canonical_to_concrete)
         display = canonical_display_name(layer)
 
         if layer == "embed":
@@ -302,13 +314,17 @@ def build_graph(
                 "layer_display": display,
             }
         else:
+            h_key = harvest_key(node_key, canonical_to_concrete)
             label = interp_by_key.get(h_key, "unlabeled")
+            reasoning = reasoning_by_key.get(h_key)
 
             comp: dict[str, Any] = {
                 "type": "component",
                 "label": label,
                 "layer_display": display,
             }
+            if reasoning:
+                comp["reasoning"] = reasoning
 
             harvest_row = harvest_by_key.get(h_key)
             if harvest_row:
@@ -340,8 +356,7 @@ def build_graph(
         + [
             f"{b}.{sub}.{proj}"
             for b in range(
-                max(int(k.split(".")[0]) for k in canonical_to_concrete.values() if k[0].isdigit())
-                + 1
+                max(int(k.split(".")[0]) for k in canonical_to_concrete if k[0].isdigit()) + 1
             )
             for sub, proj in [
                 ("attn", "q"),
@@ -351,7 +366,7 @@ def build_graph(
                 ("mlp", "up"),
                 ("mlp", "down"),
             ]
-            if f"{b}.{sub}.{proj}" in {v for v in canonical_to_concrete.values()}
+            if f"{b}.{sub}.{proj}" in canonical_to_concrete
         ]
         + ["output"]
     )
@@ -426,6 +441,7 @@ def main() -> None:
     assert interp_repo, f"No autointerp data for {run_id}"
     all_interps = interp_repo.get_all_interpretations()
     interp_by_key = {k: v.label for k, v in all_interps.items()}
+    reasoning_by_key = {k: v.reasoning for k, v in all_interps.items()}
 
     attr_repo = AttributionRepo.open(run_id)
     if attr_repo:
@@ -451,6 +467,7 @@ def main() -> None:
             tokenizer,
             harvest_by_key,
             interp_by_key,
+            reasoning_by_key,
             canonical_to_concrete,
             app_db,
             attr_repo,

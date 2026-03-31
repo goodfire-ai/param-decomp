@@ -10,7 +10,6 @@ def test_merge_history_normalization_happy_path():
     config = MergeConfig(
         iters=3,
         alpha=1.0,
-        activation_threshold=None,
     )
 
     histories = []

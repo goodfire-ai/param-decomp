@@ -24,8 +24,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from scipy import stats
-from sklearn.linear_model import LogisticRegression  # pyright: ignore[reportMissingImports]
-from sklearn.metrics import roc_auc_score  # pyright: ignore[reportMissingImports]
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
 
 from spd.log import logger
 

@@ -50,12 +50,12 @@ def convert_examples(
     global_max_act = 0.0
     for ex in raw_examples[:n_examples]:
         token_ids = ex["token_ids"]
-        firings = ex["firings"]
+        ci_values = ex["activations"]["causal_importance"]
         acts = ex["activations"]["component_activation"]
         n = len(token_ids)
         spans = tokenizer.get_spans(token_ids)
 
-        firing_indices = [i for i, f in enumerate(firings) if f]
+        firing_indices = [i for i, ci in enumerate(ci_values) if ci > 0]
         center = firing_indices[0] if firing_indices else n // 2
         start = max(0, center - window // 2)
         end = min(n, start + window)
@@ -68,10 +68,10 @@ def convert_examples(
         tokens = [
             {
                 "token": span,
-                "is_firing": f,
+                "ci": round(ci, 4),
                 "act": round(a, 4),
             }
-            for span, f, a in zip(spans[start:end], firings[start:end], window_acts, strict=True)
+            for span, ci, a in zip(spans[start:end], ci_values[start:end], window_acts, strict=True)
         ]
         out.append({"tokens": tokens})
     return out, round(global_max_act, 4)
@@ -84,7 +84,17 @@ def main() -> None:
     parser.add_argument(
         "--n-examples", type=int, default=30, help="Activation examples per component"
     )
+    parser.add_argument(
+        "--components",
+        nargs="+",
+        help="Canonical component keys to export (e.g. '1.attn.o:899 2.mlp.down:1560')",
+    )
     args = parser.parse_args()
+
+    wanted_keys: set[str] | None = None
+    if args.components:
+        wanted_keys = set(args.components)
+        print(f"Filtering to {len(wanted_keys)} components")
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -120,6 +130,7 @@ def main() -> None:
     assert interp_repo, f"No autointerp data for {run_id}"
     all_interps = interp_repo.get_all_interpretations()
     interp_by_key = {k: v.label for k, v in all_interps.items()}
+    reasoning_by_key = {k: v.reasoning for k, v in all_interps.items()}
     print(f"  {len(interp_by_key)} labels from {interp_repo.subrun_id}")
 
     print("Building component list...")
@@ -134,20 +145,25 @@ def main() -> None:
         canonical_layer = topology.target_to_canon(concrete_layer)
         canonical_key = f"{canonical_layer}:{comp_idx}"
 
+        if wanted_keys is not None and canonical_key not in wanted_keys:
+            continue
+
         examples, max_act = convert_examples(
             json.loads(raw_examples), tokenizer, n_examples=args.n_examples
         )
 
-        components.append(
-            {
-                "key": canonical_key,
-                "label": interp_by_key[component_key],
-                "layer_display": canonical_display_name(canonical_layer),
-                "firing_density": firing_density,
-                "activation_examples": examples,
-                "max_act": max_act,
-            }
-        )
+        comp: dict[str, Any] = {
+            "key": canonical_key,
+            "label": interp_by_key[component_key],
+            "layer_display": canonical_display_name(canonical_layer),
+            "firing_density": firing_density,
+            "activation_examples": examples,
+            "max_act": max_act,
+        }
+        reasoning = reasoning_by_key.get(component_key)
+        if reasoning:
+            comp["reasoning"] = reasoning
+        components.append(comp)
 
     out_path = args.out_dir / "components.json"
     out_path.write_text(json.dumps(components))

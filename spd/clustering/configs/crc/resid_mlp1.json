@@ -1,20 +1,22 @@
 {
-  "merge_config": {
-    "activation_threshold": 0.01,
-    "alpha": 1,
-    "iters": 5,
-    "merge_pair_sampling_method": "range",
-    "merge_pair_sampling_kwargs": {"threshold": 0.05},
-    "filter_dead_threshold": 0,
-    "module_name_filter": null
-  },
-  "experiment_key": "resid_mlp1",
-  "batch_size": 128,
-  "wandb_project": "spd",
-  "logging_intervals": {
-    "stat": 1,
-    "tensor": 5,
-    "plot": 5,
-    "artifact": 5
-  }
+    "harvest": {
+        "experiment_key": "resid_mlp1",
+        "batch_size": 128,
+        "activation_threshold": 0.01,
+        "filter_dead_threshold": 0,
+        "module_name_filter": null
+    },
+    "merge": {
+        "alpha": 1,
+        "iters": 5,
+        "merge_pair_sampling_method": "range",
+        "merge_pair_sampling_kwargs": {"threshold": 0.05}
+    },
+    "wandb_project": "spd",
+    "logging_intervals": {
+        "stat": 1,
+        "tensor": 5,
+        "plot": 5,
+        "artifact": 5
+    }
 }
