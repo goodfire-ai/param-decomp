@@ -2,6 +2,7 @@
     import { getContext } from "svelte";
     import { RUN_KEY, type RunContext } from "../lib/useRun.svelte";
     import ActivationContextsTab from "./ActivationContextsTab.svelte";
+    import AutointerpCompareTab from "./AutointerpCompareTab.svelte";
     import ClusterPathInput from "./ClusterPathInput.svelte";
     import ClustersTab from "./ClustersTab.svelte";
     import DatasetExplorerTab from "./DatasetExplorerTab.svelte";
@@ -19,6 +20,7 @@
     let activeTab = $state<
         | "prompts"
         | "components"
+        | "autointerp-compare"
         | "dataset-search"
         | "model-graph"
         | "data-sources"
@@ -82,6 +84,16 @@
                 >
                     Components
                 </button>
+                {#if runState.run.data.autointerp_available}
+                    <button
+                        type="button"
+                        class="tab-button"
+                        class:active={activeTab === "autointerp-compare"}
+                        onclick={() => (activeTab = "autointerp-compare")}
+                    >
+                        Autointerp Compare
+                    </button>
+                {/if}
                 {#if datasetSearchEnabled}
                     <button
                         type="button"
@@ -139,6 +151,9 @@
             </div>
             <div class="tab-content" class:hidden={activeTab !== "components"}>
                 <ActivationContextsTab />
+            </div>
+            <div class="tab-content" class:hidden={activeTab !== "autointerp-compare"}>
+                <AutointerpCompareTab />
             </div>
             {#if datasetSearchEnabled}
                 <div class="tab-content" class:hidden={activeTab !== "dataset-search"}>

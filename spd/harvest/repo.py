@@ -125,6 +125,12 @@ class HarvestRepo:
     def get_all_components(self) -> list[ComponentData]:
         return self._db.get_all_components()
 
+    def get_component_keys(self) -> list[str]:
+        return self._db.get_component_keys()
+
+    def get_eligible_component_keys(self, min_examples: int) -> list[str]:
+        return self._db.get_eligible_component_keys(min_examples)
+
     # -- Correlations & token stats (tensor data) ------------------------------
 
     def get_correlations(self) -> CorrelationStorage | None:

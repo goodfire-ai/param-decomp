@@ -11,7 +11,6 @@ _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS interpretations (
     component_key TEXT PRIMARY KEY,
     label TEXT NOT NULL,
-    confidence TEXT NOT NULL,
     reasoning TEXT NOT NULL,
     raw_response TEXT NOT NULL,
     prompt TEXT NOT NULL
@@ -46,11 +45,10 @@ class InterpDB:
 
     def save_interpretation(self, result: InterpretationResult) -> None:
         self._conn.execute(
-            "INSERT OR REPLACE INTO interpretations VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO interpretations VALUES (?, ?, ?, ?, ?)",
             (
                 result.component_key,
                 result.label,
-                result.confidence,
                 result.reasoning,
                 result.raw_response,
                 result.prompt,
@@ -59,12 +57,9 @@ class InterpDB:
         self._conn.commit()
 
     def save_interpretations(self, results: list[InterpretationResult]) -> None:
-        rows = [
-            (r.component_key, r.label, r.confidence, r.reasoning, r.raw_response, r.prompt)
-            for r in results
-        ]
+        rows = [(r.component_key, r.label, r.reasoning, r.raw_response, r.prompt) for r in results]
         self._conn.executemany(
-            "INSERT OR REPLACE INTO interpretations VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO interpretations VALUES (?, ?, ?, ?, ?)",
             rows,
         )
         self._conn.commit()
@@ -79,7 +74,6 @@ class InterpDB:
         return InterpretationResult(
             component_key=row["component_key"],
             label=row["label"],
-            confidence=row["confidence"],
             reasoning=row["reasoning"],
             raw_response=row["raw_response"],
             prompt=row["prompt"],
@@ -91,7 +85,6 @@ class InterpDB:
             row["component_key"]: InterpretationResult(
                 component_key=row["component_key"],
                 label=row["label"],
-                confidence=row["confidence"],
                 reasoning=row["reasoning"],
                 raw_response=row["raw_response"],
                 prompt=row["prompt"],
@@ -131,6 +124,19 @@ class InterpDB:
             (key, orjson.dumps(value).decode()),
         )
         self._conn.commit()
+
+    def get_config_value(self, key: str) -> object | None:
+        row = self._conn.execute("SELECT value FROM config WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            return None
+        return orjson.loads(row["value"])
+
+    def has_interpretations_table(self) -> bool:
+        row = self._conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='interpretations')"
+        ).fetchone()
+        assert row is not None
+        return bool(row[0])
 
     def has_interpretations(self) -> bool:
         row = self._conn.execute("SELECT EXISTS(SELECT 1 FROM interpretations LIMIT 1)").fetchone()

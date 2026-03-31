@@ -17,7 +17,6 @@
     // -- Controls --
     let minAttrThreshold = $state(0.1);
     let searchText = $state("");
-    let showConfidence = $state<Record<string, boolean>>({ high: true, medium: true, low: true });
     let selectedNodeKey = $state<string | null>(null);
     let hoveredNodeKey = $state<string | null>(null);
     let showAllEdges = $state(false);
@@ -26,7 +25,6 @@
     type LayoutNode = {
         key: string;
         label: string;
-        confidence: string;
         x: number;
         y: number;
         rowKey: string;
@@ -79,7 +77,6 @@
                 layoutNodes.set(node.component_key, {
                     key: node.component_key,
                     label: node.label,
-                    confidence: node.confidence,
                     x: startX + ni * spacing,
                     y,
                     rowKey: rk,
@@ -97,7 +94,6 @@
     const filteredNodes = $derived.by(() => {
         const result: LayoutNode[] = [];
         for (const node of layout.nodes.values()) {
-            if (!showConfidence[node.confidence]) continue;
             if (searchText && !node.label.toLowerCase().includes(searchText.toLowerCase())) continue;
             result.push(node);
         }
@@ -129,17 +125,6 @@
             .slice(0, 20);
     });
 
-    function confidenceColor(conf: string): string {
-        switch (conf) {
-            case "high":
-                return "var(--status-positive-bright)";
-            case "medium":
-                return "var(--status-warning)";
-            default:
-                return "var(--text-muted)";
-        }
-    }
-
     function edgeColor(attr: number): string {
         return attr >= 0 ? "var(--accent-primary)" : "var(--status-negative)";
     }
@@ -156,17 +141,6 @@
 <div class="model-graph-container">
     <!-- Controls bar -->
     <div class="controls-bar">
-        <div class="control-group">
-            <label class="control-label">
-                <input type="checkbox" bind:checked={showConfidence.high} /> High
-            </label>
-            <label class="control-label">
-                <input type="checkbox" bind:checked={showConfidence.medium} /> Med
-            </label>
-            <label class="control-label">
-                <input type="checkbox" bind:checked={showConfidence.low} /> Low
-            </label>
-        </div>
         <div class="control-group">
             <label class="control-label">
                 Min attr:
@@ -224,7 +198,7 @@
                     cx={node.x}
                     cy={node.y}
                     r={NODE_RADIUS}
-                    fill={confidenceColor(node.confidence)}
+                    fill="var(--accent-primary)"
                     opacity={selectedNodeKey === node.key ? 1 : 0.7}
                     stroke={selectedNodeKey === node.key ? "white" : "none"}
                     stroke-width={selectedNodeKey === node.key ? 2 : 0}
@@ -250,7 +224,6 @@
         >
             <div class="tooltip-label">{tooltipNode.label}</div>
             <div class="tooltip-meta">
-                <span class="tooltip-confidence confidence-{tooltipNode.confidence}">{tooltipNode.confidence}</span>
                 <span class="tooltip-key">{tooltipNode.key}</span>
             </div>
         </div>
@@ -263,7 +236,6 @@
             <div class="detail-panel">
                 <div class="detail-header">
                     <span class="detail-label">{selectedNode.label}</span>
-                    <span class="confidence confidence-{selectedNode.confidence}">{selectedNode.confidence}</span>
                     <button class="close-btn" onclick={() => (selectedNodeKey = null)}>x</button>
                 </div>
                 <div class="detail-key">{selectedNode.key}</div>
@@ -408,25 +380,9 @@
         margin-top: 2px;
     }
 
-    .tooltip-confidence {
-        font-size: 10px;
-        font-weight: 600;
-        text-transform: uppercase;
-    }
-
     .tooltip-key {
         font-size: 10px;
         font-family: var(--font-mono);
-        color: var(--text-muted);
-    }
-
-    .confidence-high {
-        color: var(--status-positive-bright);
-    }
-    .confidence-medium {
-        color: var(--status-warning);
-    }
-    .confidence-low {
         color: var(--text-muted);
     }
 
@@ -510,11 +466,5 @@
     .no-edges {
         font-size: var(--text-xs);
         color: var(--text-muted);
-    }
-
-    .confidence {
-        font-size: 10px;
-        font-weight: 600;
-        text-transform: uppercase;
     }
 </style>

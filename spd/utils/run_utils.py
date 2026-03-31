@@ -315,13 +315,14 @@ def generate_grid_combinations(parameters: dict[str, Any]) -> list[dict[str, Any
     return combinations
 
 
-RunType = Literal["spd", "train", "clustering/runs", "clustering/ensembles"]
+RunType = Literal["spd", "train", "clustering/runs", "clustering/ensembles", "clustering/harvests"]
 
 RUN_TYPE_ABBREVIATIONS: Final[dict[RunType, str]] = {
     "spd": "s",
     "train": "t",
     "clustering/runs": "c",
     "clustering/ensembles": "e",
+    "clustering/harvests": "ch",
 }
 
 

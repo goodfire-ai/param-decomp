@@ -16,7 +16,7 @@ spd-autointerp <wandb_path>
 spd-autointerp <wandb_path> --model google/gemini-3-flash-preview --reasoning_effort medium
 ```
 
-Requires `OPENROUTER_API_KEY` env var.
+Requires the API key for your chosen provider (e.g. `OPENROUTER_API_KEY`, or `GEMINI_API_KEY` when `llm.type` is `google_ai` — key from [Google AI Studio](https://aistudio.google.com/app/apikey)).
 
 ## Data Storage
 
@@ -67,7 +67,7 @@ Each strategy config type has a corresponding prompt implementation:
 
 ### Interpret (`interpret.py`)
 
-- Uses OpenRouter API with structured JSON outputs
+- Uses OpenRouter, Anthropic, OpenAI, or Google AI (Gemini) with structured JSON outputs (`LLMConfig` in `providers.py`)
 - Maximum parallelism with exponential backoff on rate limits
 - Resume support: Skips already-completed components via `db.get_completed_keys()`
 - Progress logging via `spd.log.logger`

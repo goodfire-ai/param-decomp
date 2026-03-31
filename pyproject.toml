@@ -34,8 +34,9 @@ dependencies = [
     "aiolimiter>=1.2",
     "openrouter>=0.1.1",
     "httpx>=0.28.0",
-    "zstandard",  # For streaming datasets
+    "zstandard", # For streaming datasets
     "kaleido==0.2.1",
+    "numba>=0.64.0",
 ]
 
 [dependency-groups]
@@ -47,6 +48,7 @@ dev = [
     "ruff",
     "basedpyright<1.32.0", # pyright and wandb issues, see https://github.com/goodfire-ai/spd/pull/232
     "pre-commit",
+    "scikit-learn",
 ]
 
 [project.scripts]
@@ -54,6 +56,8 @@ spd-run = "spd.scripts.run_cli:cli"
 spd-local = "spd.scripts.run_local:cli"
 spd-pretrain = "spd.pretrain.scripts.run_slurm:cli"
 spd-clustering = "spd.clustering.scripts.run_pipeline:cli"
+spd-cluster-harvest = "spd.clustering.scripts.run_harvest:cli"
+spd-cluster-merge = "spd.clustering.scripts.run_merge:cli"
 spd-harvest = "spd.harvest.scripts.run_slurm_cli:cli"
 spd-autointerp = "spd.autointerp.scripts.run_slurm_cli:cli"
 spd-attributions = "spd.dataset_attributions.scripts.run_slurm_cli:cli"
@@ -72,7 +76,7 @@ include = ["spd*"]
 [tool.ruff]
 line-length = 100
 fix = true
-extend-exclude = ["spd/app/frontend"]
+extend-exclude = ["spd/app/frontend", "scribe-internal-old", "scripts/analyze_cluster_quality.py", "scripts/inspect_merge_3698.py", "scripts/inspect_merge_3698_10m.py"]
 
 [tool.ruff.lint]
 ignore = [

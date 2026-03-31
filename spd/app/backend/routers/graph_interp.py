@@ -38,14 +38,12 @@ def _canonical_to_concrete_key(
 
 class GraphInterpHeadline(BaseModel):
     label: str
-    confidence: str
     output_label: str | None
     input_label: str | None
 
 
 class LabelDetail(BaseModel):
     label: str
-    confidence: str
     reasoning: str
     prompt: str
 
@@ -61,7 +59,6 @@ class PromptEdgeResponse(BaseModel):
     pass_name: str
     attribution: float
     related_label: str | None
-    related_confidence: str | None
     token_str: str | None
 
 
@@ -75,7 +72,6 @@ class GraphInterpComponentDetail(BaseModel):
 class GraphNode(BaseModel):
     component_key: str
     label: str
-    confidence: str
 
 
 class GraphEdge(BaseModel):
@@ -121,7 +117,6 @@ def get_all_labels(loaded: DepLoadedRun) -> dict[str, GraphInterpHeadline]:
 
         result[canonical_key] = GraphInterpHeadline(
             label=label.label,
-            confidence=label.confidence,
             output_label=o.label if o else None,
             input_label=i.label if i else None,
         )
@@ -134,7 +129,6 @@ def _to_detail(label: LabelResult | None) -> LabelDetail | None:
         return None
     return LabelDetail(
         label=label.label,
-        confidence=label.confidence,
         reasoning=label.reasoning,
         prompt=label.prompt,
     )
@@ -180,7 +174,6 @@ def get_component_detail(
                 pass_name=e.pass_name,
                 attribution=e.attribution,
                 related_label=e.related_label,
-                related_confidence=e.related_confidence,
                 token_str=token_str,
             )
         )
@@ -210,7 +203,6 @@ def get_model_graph(loaded: DepLoadedRun) -> ModelGraphResponse:
             GraphNode(
                 component_key=canonical_key,
                 label=label.label,
-                confidence=label.confidence,
             )
         )
 

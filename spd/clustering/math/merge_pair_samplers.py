@@ -1,3 +1,4 @@
+import math
 import random
 from typing import Any, Literal, Protocol
 
@@ -7,7 +8,7 @@ from torch import Tensor
 
 from spd.clustering.consts import ClusterCoactivationShaped, MergePair
 
-MergePairSamplerKey = Literal["range", "mcmc"]
+MergePairSamplerKey = Literal["range", "mcmc", "exp_rank"]
 
 
 class MergePairSamplerConfigurable(Protocol):
@@ -115,7 +116,50 @@ def mcmc_sampler(
     return MergePair((row, col))
 
 
+def exp_rank_sampler(
+    costs: ClusterCoactivationShaped,
+    decay: float = 0.2,
+    **kwargs: Any,
+) -> MergePair:
+    """Sample a merge pair with probability exponentially decaying in rank.
+
+    P(rank r) ∝ exp(-decay * r), where rank 0 is the lowest-cost pair.
+    decay=0 is uniform, decay→∞ is greedy.
+
+    Args:
+        costs: Cost matrix for all possible merges
+        decay: Exponential decay rate in rank space. Controls exploration:
+            0.01 = broad (top ~100 ranks likely), 0.1 = focused (top ~10), 1.0 = nearly greedy
+    """
+    assert not kwargs
+    k_groups = costs.shape[0]
+
+    valid_mask = ~torch.eye(k_groups, dtype=torch.bool, device=costs.device)
+    # Upper triangle only (symmetric costs)
+    upper_mask = torch.triu(valid_mask, diagonal=1)
+    upper_indices = torch.stack(torch.where(upper_mask), dim=1)
+    upper_costs = costs[upper_mask]
+
+    # Sort by cost (ascending)
+    sorted_indices = torch.argsort(upper_costs)
+
+    # P(rank r) ∝ exp(-decay * r) → CDF = (1 - exp(-decay * r)) / (1 - exp(-decay * N))
+    # Sample via inverse CDF to avoid torch.multinomial's 2^24 limit
+    n = len(sorted_indices)
+    u = random.random()
+    exp_neg_decay_n = math.exp(-decay * n)
+    rank = int(-math.log(1 - u * (1 - exp_neg_decay_n)) / decay)
+    rank = min(rank, n - 1)
+
+    pair_idx = sorted_indices[rank]
+    row = int(upper_indices[pair_idx, 0].item())
+    col = int(upper_indices[pair_idx, 1].item())
+
+    return MergePair((row, col))
+
+
 MERGE_PAIR_SAMPLERS: dict[MergePairSamplerKey, MergePairSamplerConfigurable] = {
     "range": range_sampler,
     "mcmc": mcmc_sampler,
+    "exp_rank": exp_rank_sampler,
 }

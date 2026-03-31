@@ -3,40 +3,53 @@ import json
 from collections.abc import Iterable
 from pathlib import Path
 
-from openrouter import OpenRouter
-from openrouter.components import Effort, Reasoning
-
 from spd.app.backend.app_tokenizer import AppTokenizer
-from spd.autointerp.config import StrategyConfig
+from spd.autointerp.config import CanonConfig, RichExamplesConfig, StrategyConfig
 from spd.autointerp.db import InterpDB
 from spd.autointerp.llm_api import (
     LLMError,
     LLMJob,
     LLMResult,
-    make_response_format,
     map_llm_calls,
 )
+from spd.autointerp.providers import LLMProvider
 from spd.autointerp.schemas import InterpretationResult, ModelMetadata
 from spd.autointerp.strategies.dispatch import INTERPRETATION_SCHEMA, format_prompt
 from spd.harvest.analysis import TokenPRLift, get_input_token_stats, get_output_token_stats
 from spd.harvest.repo import HarvestRepo
-from spd.harvest.schemas import ComponentData
+from spd.harvest.schemas import ComponentData, ComponentSummary
 from spd.log import logger
 
 MAX_CONCURRENT = 50
 
 
+def resolve_target_component_keys(
+    summary: dict[str, ComponentSummary],
+    limit: int | None,
+    component_keys: list[str] | None,
+) -> list[str]:
+    if component_keys is not None:
+        missing = [key for key in component_keys if key not in summary]
+        assert not missing, f"Component keys not found in harvest: {missing[:10]}"
+        ordered = component_keys
+    else:
+        ordered = sorted(summary, key=lambda k: summary[k].firing_density, reverse=True)
+
+    if limit is not None:
+        ordered = ordered[:limit]
+    return ordered
+
+
 async def interpret_component(
-    api: OpenRouter,
-    model: str,
-    reasoning_effort: Effort,
+    provider: LLMProvider,
     strategy: StrategyConfig,
     component: ComponentData,
     model_metadata: ModelMetadata,
     app_tok: AppTokenizer,
-    input_token_stats: TokenPRLift,
-    output_token_stats: TokenPRLift,
+    input_token_stats: TokenPRLift | None,
+    output_token_stats: TokenPRLift | None,
     context_tokens_per_side: int,
+    activation_threshold: float,
 ) -> InterpretationResult:
     """Interpret a single component. Used by the app for on-demand interpretation."""
     prompt = format_prompt(
@@ -47,36 +60,27 @@ async def interpret_component(
         input_token_stats=input_token_stats,
         output_token_stats=output_token_stats,
         context_tokens_per_side=context_tokens_per_side,
+        activation_threshold=activation_threshold,
     )
 
-    schema = INTERPRETATION_SCHEMA
-    response_format = make_response_format("interpretation", schema)
-
-    response = await api.chat.send_async(
-        model=model,
+    response = await provider.chat(
+        prompt=prompt,
         max_tokens=8000,
-        messages=[{"role": "user", "content": prompt}],
-        response_format=response_format,
-        reasoning=Reasoning(effort=reasoning_effort),
+        response_schema=INTERPRETATION_SCHEMA,
+        timeout_ms=120_000,
     )
 
-    choice = response.choices[0]
-    assert isinstance(choice.message.content, str)
-    raw = choice.message.content
+    raw = response.content
     parsed = json.loads(raw)
 
-    assert len(parsed) == 3, f"Expected 3 fields, got {parsed}"
+    assert len(parsed) == 2, f"Expected 2 fields, got {parsed}"
     label = parsed["label"]
-    confidence = parsed["confidence"]
     reasoning_text = parsed["reasoning"]
-    assert (
-        isinstance(label, str) and isinstance(confidence, str) and isinstance(reasoning_text, str)
-    )
+    assert isinstance(label, str) and isinstance(reasoning_text, str)
 
     return InterpretationResult(
         component_key=component.component_key,
         label=label,
-        confidence=confidence,
         reasoning=reasoning_text,
         raw_response=raw,
         prompt=prompt,
@@ -84,10 +88,9 @@ async def interpret_component(
 
 
 def run_interpret(
-    openrouter_api_key: str,
-    model: str,
-    reasoning_effort: Effort,
+    provider: LLMProvider,
     limit: int | None,
+    component_keys: list[str] | None,
     cost_limit_usd: float | None,
     max_requests_per_minute: int,
     max_concurrent: int,
@@ -109,11 +112,7 @@ def run_interpret(
     context_tokens_per_side = raw
 
     app_tok = AppTokenizer.from_pretrained(tokenizer_name)
-
-    eligible_keys = sorted(summary, key=lambda k: summary[k].firing_density, reverse=True)
-
-    if limit is not None:
-        eligible_keys = eligible_keys[:limit]
+    eligible_keys = resolve_target_component_keys(summary, limit, component_keys)
 
     async def _run() -> list[InterpretationResult]:
         db = InterpDB(db_path)
@@ -126,16 +125,44 @@ def run_interpret(
             remaining_keys = [k for k in eligible_keys if k not in completed]
             logger.info(f"Interpreting {len(remaining_keys)} components")
 
-            schema = INTERPRETATION_SCHEMA
+            raw_threshold = harvest_config["activation_threshold"]
+            assert isinstance(raw_threshold, int | float)
+            activation_threshold = float(raw_threshold)
 
             def build_jobs() -> Iterable[LLMJob]:
                 for key in remaining_keys:
                     component = harvest.get_component(key)
                     assert component is not None, f"Component {key} not found in harvest"
-                    input_stats = get_input_token_stats(token_stats, key, app_tok, top_k=20)
-                    output_stats = get_output_token_stats(token_stats, key, app_tok, top_k=50)
-                    assert input_stats is not None
-                    assert output_stats is not None
+                    match template_strategy:
+                        case RichExamplesConfig(output_pmi_min_count=pmi_min_count):
+                            input_stats = None
+                            output_stats = get_output_token_stats(
+                                token_stats,
+                                key,
+                                app_tok,
+                                top_k=20,
+                                pmi_min_count=pmi_min_count,
+                            )
+                            assert output_stats is not None
+                        case CanonConfig():
+                            input_stats = get_input_token_stats(token_stats, key, app_tok, top_k=20)
+                            output_stats = get_output_token_stats(
+                                token_stats,
+                                key,
+                                app_tok,
+                                top_k=20,
+                                pmi_min_count=2.0,
+                            )
+                            assert input_stats is not None
+                            assert output_stats is not None
+                        case _:
+                            input_stats = get_input_token_stats(token_stats, key, app_tok, top_k=20)
+                            output_stats = get_output_token_stats(
+                                token_stats, key, app_tok, top_k=50
+                            )
+                            assert input_stats is not None
+                            assert output_stats is not None
+
                     prompt = format_prompt(
                         strategy=template_strategy,
                         component=component,
@@ -144,39 +171,32 @@ def run_interpret(
                         input_token_stats=input_stats,
                         output_token_stats=output_stats,
                         context_tokens_per_side=context_tokens_per_side,
+                        activation_threshold=activation_threshold,
                     )
-                    yield LLMJob(prompt=prompt, schema=schema, key=key)
+                    yield LLMJob(prompt=prompt, key=key)
 
             results: list[InterpretationResult] = []
             n_errors = 0
 
             async for outcome in map_llm_calls(
-                openrouter_api_key=openrouter_api_key,
-                model=model,
-                reasoning_effort=reasoning_effort,
+                provider=provider,
                 jobs=build_jobs(),
                 max_tokens=8000,
                 max_concurrent=max_concurrent,
                 max_requests_per_minute=max_requests_per_minute,
                 cost_limit_usd=cost_limit_usd,
-                response_schema=schema,
+                response_schema=INTERPRETATION_SCHEMA,
                 n_total=len(remaining_keys),
             ):
                 match outcome:
                     case LLMResult(job=job, parsed=parsed, raw=raw):
-                        assert len(parsed) == 3, f"Expected 3 fields, got {len(parsed)}"
+                        assert len(parsed) == 2, f"Expected 2 fields, got {len(parsed)}"
                         label = parsed["label"]
-                        confidence = parsed["confidence"]
                         reasoning_text = parsed["reasoning"]
-                        assert (
-                            isinstance(label, str)
-                            and isinstance(confidence, str)
-                            and isinstance(reasoning_text, str)
-                        )
+                        assert isinstance(label, str) and isinstance(reasoning_text, str)
                         result = InterpretationResult(
                             component_key=job.key,
                             label=label,
-                            confidence=confidence,
                             reasoning=reasoning_text,
                             raw_response=raw,
                             prompt=job.prompt,
@@ -193,6 +213,15 @@ def run_interpret(
                     raise RuntimeError(
                         f"Error rate {error_rate:.0%} ({n_errors}/{len(remaining_keys)}) exceeds 20% threshold"
                     )
+
+            completed_now = completed | {result.component_key for result in results}
+            missing = [key for key in eligible_keys if key not in completed_now]
+            if component_keys is not None and missing:
+                logger.warning(
+                    "Interpreted a partial target subset: "
+                    f"{len(completed_now)}/{len(eligible_keys)} complete; "
+                    f"missing {missing[:10]}"
+                )
 
         finally:
             db.close()

@@ -2,6 +2,7 @@
 
 from spd.app.backend.routers.activation_contexts import router as activation_contexts_router
 from spd.app.backend.routers.agents import router as agents_router
+from spd.app.backend.routers.autointerp_compare import router as autointerp_compare_router
 from spd.app.backend.routers.clusters import router as clusters_router
 from spd.app.backend.routers.correlations import router as correlations_router
 from spd.app.backend.routers.data_sources import router as data_sources_router
@@ -20,6 +21,7 @@ from spd.app.backend.routers.runs import router as runs_router
 __all__ = [
     "activation_contexts_router",
     "agents_router",
+    "autointerp_compare_router",
     "clusters_router",
     "correlations_router",
     "data_sources_router",

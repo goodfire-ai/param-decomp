@@ -21,8 +21,8 @@ def get_graph_interp_subrun_dir(decomposition_id: str, subrun_id: str) -> Path:
 class LabelResult:
     component_key: str
     label: str
-    confidence: str
     reasoning: str
+    summary_for_neighbors: str
     raw_response: str
     prompt: str
 
@@ -34,4 +34,3 @@ class PromptEdge:
     pass_name: Literal["output", "input"]
     attribution: float
     related_label: str | None
-    related_confidence: str | None

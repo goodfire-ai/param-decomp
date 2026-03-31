@@ -15,6 +15,7 @@ class TestMergeConfigSampling:
 
         assert config.merge_pair_sampling_method == "range"
         assert config.merge_pair_sampling_kwargs == {"threshold": 0.05}
+        assert config.alpha == 1.0
 
     def test_range_sampler_config(self):
         """Test MergeConfig with range sampler."""
@@ -69,22 +70,16 @@ class TestMergeConfigSampling:
     def test_config_with_all_parameters(self):
         """Test MergeConfig with all parameters set."""
         config = MergeConfig(
-            activation_threshold=0.01,
             alpha=1.5,
             iters=200,
             merge_pair_sampling_method="mcmc",
             merge_pair_sampling_kwargs={"temperature": 0.5},
-            filter_dead_threshold=0.001,
-            module_name_filter="model.layers",
         )
 
-        assert config.activation_threshold == 0.01
         assert config.alpha == 1.5
         assert config.iters == 200
         assert config.merge_pair_sampling_method == "mcmc"
         assert config.merge_pair_sampling_kwargs == {"temperature": 0.5}
-        assert config.filter_dead_threshold == 0.001
-        assert config.module_name_filter == "model.layers"
 
     def test_config_serialization(self):
         """Test that config can be serialized and deserialized."""
