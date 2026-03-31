@@ -20,27 +20,5 @@
         "TC\n(e2e)": ["TC k16 (e2e ind)"],
         "VPD\n(CI>0.0)": ["VPD (CI>0.0)"],
         "VPD\n(CI>0.1)": ["VPD (CI>0.1)"]
-    },
-    "colors": {
-        "CLT k8 (local)": "#1f77b4",
-        "CLT k16 (local)": "#4a90d9",
-        "CLT k32 (local)": "#7ab3e8",
-        "CLT k64 (local)": "#aed4f5",
-        "TC k8 (local)": "#d62728",
-        "TC k16 (local)": "#e55a5a",
-        "TC k32 (local)": "#ef8c8c",
-        "TC k64 (local)": "#f7bfbf",
-        "CLT k16 (e2e par)": "#2ca02c",
-        "TC k16 (e2e ind)": "#ff7f0e",
-        "VPD (CI>0.0)": "#888888",
-        "VPD (CI>0.1)": "#2c2c2c"
-    },
-    "group_colors": {
-        "CLT\n(local)": "#1f77b4",
-        "TC\n(local)": "#d62728",
-        "CLT\n(e2e)": "#2ca02c",
-        "TC\n(e2e)": "#ff7f0e",
-        "VPD\n(CI>0.0)": "#888888",
-        "VPD\n(CI>0.1)": "#2c2c2c"
     }
 }
