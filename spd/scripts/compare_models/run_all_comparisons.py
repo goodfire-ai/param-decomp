@@ -345,16 +345,20 @@ def _read_spd_results(results_dir: Path) -> dict[str, float] | None:
 
 def _read_tc_clt_results(results_dir: Path) -> float | None:
     """Read the overall mean max-match from a TC/CLT multi_summary.json."""
-    summary_path = results_dir / "multi_summary.json"
-    if not summary_path.exists():
-        return None
-    with open(summary_path) as f:
-        data = json.load(f)
-    pairwise = data.get("pairwise", {})
-    if not pairwise:
-        return None
-    means = [r["a_to_b_mean"] for r in pairwise.values() if "a_to_b_mean" in r]
-    return sum(means) / len(means) if means else None
+    # compare_transcoders.py nests output under a label subdirectory
+    for summary_path in [
+        results_dir / "multi_summary.json",
+        *results_dir.glob("*/multi_summary.json"),
+    ]:
+        if summary_path.exists():
+            with open(summary_path) as f:
+                data = json.load(f)
+            pairwise = data.get("pairwise", {})
+            if pairwise:
+                means = [r["a_to_b_mean"] for r in pairwise.values() if "a_to_b_mean" in r]
+                if means:
+                    return sum(means) / len(means)
+    return None
 
 
 def _read_cluster_results(results_dir: Path) -> float | None:
