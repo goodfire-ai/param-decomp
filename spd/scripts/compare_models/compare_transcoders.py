@@ -110,8 +110,8 @@ def load_clt_decoders(
 
     with open(path / "config.json") as f:
         cfg = json.load(f)
-    layers: list[int] = cfg["layers"]
-    assert isinstance(layers, list)
+    layers_raw = cfg["layers"]
+    layers: list[int] = json.loads(layers_raw) if isinstance(layers_raw, str) else layers_raw
 
     decoders: dict[int, Tensor] = {}
     for i in layers:
