@@ -41,10 +41,13 @@ NONLINEAR_MODULE_PATTERNS = ["down_proj", "o_proj"]
 class InteractionAnalysisConfig(BaseConfig):
     model_path: str = Field(..., description="wandb: or local path to SPD model")
     harvest_id: str | None = Field(None, description="CI harvest ID for alive filtering")
-    alive_density_threshold: float = Field(default=0.001)
+    alive_ci_threshold: float = Field(default=1e-5, description="Min mean CI to count as alive")
     module_filter: list[str] = Field(
         default=NONLINEAR_MODULE_PATTERNS,
         description="Only analyse modules matching these substrings",
+    )
+    cluster_mapping_path: str | None = Field(
+        None, description="Path to cluster_mapping.json for heatmap reordering"
     )
     output_dir: str | None = None
 
@@ -103,19 +106,57 @@ def compute_H_matrices(
 
 
 def get_alive_inds(
-    activation_density: dict[str, Float[Tensor, " C"]],
+    mean_ci: dict[str, Float[Tensor, " C"]],
     threshold: float,
 ) -> dict[str, Tensor]:
-    """Return sorted alive indices per module."""
+    """Return alive indices per module, sorted by mean CI descending."""
     result: dict[str, Tensor] = {}
-    for module_name, density in activation_density.items():
-        sorted_inds = torch.argsort(density, descending=True)
-        alive = sorted_inds[density[sorted_inds] > threshold]
+    for module_name, ci in mean_ci.items():
+        sorted_inds = torch.argsort(ci, descending=True)
+        alive = sorted_inds[ci[sorted_inds] > threshold]
         result[module_name] = alive
     return result
 
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
+
+
+def load_cluster_ordering(
+    cluster_mapping_path: str,
+    alive_inds: dict[str, Tensor],
+) -> dict[str, Tensor]:
+    """Build per-module permutation that groups same-cluster subcomponents together.
+
+    Returns a dict mapping module_name -> permutation indices (into the alive matrix).
+    """
+    with open(cluster_mapping_path) as f:
+        data = json.load(f)
+    clusters: dict[str, int | None] = data["clusters"]
+
+    # Parse into per-module: {module: {local_component_idx: cluster_id}}
+    module_cluster: dict[str, dict[int, int]] = defaultdict(dict)
+    for key, cluster_id in clusters.items():
+        if cluster_id is None:
+            continue
+        module_name, idx_str = key.rsplit(":", 1)
+        module_cluster[module_name][int(idx_str)] = cluster_id
+
+    orderings: dict[str, Tensor] = {}
+    for module_name, alive_idx in alive_inds.items():
+        alive_list = alive_idx.tolist()
+        mc = module_cluster.get(module_name, {})
+        # Assign a cluster to each alive position; unclustered get a sentinel
+        max_cluster = max(mc.values(), default=-1) + 1
+        cluster_for_pos = [mc.get(comp_idx, max_cluster) for comp_idx in alive_list]
+        # Stable sort by cluster ID
+        perm = sorted(range(len(alive_list)), key=lambda i: cluster_for_pos[i])
+        orderings[module_name] = torch.tensor(perm, dtype=torch.long)
+    return orderings
+
+
+def _reorder_matrix(mat: Tensor, perm: Tensor) -> Tensor:
+    """Reorder rows and columns of a square matrix by permutation."""
+    return mat[perm][:, perm]
 
 
 def _off_diag(matrix: Tensor) -> np.ndarray:
@@ -132,6 +173,7 @@ def plot_heatmaps(
     title_suffix: str,
     vmin: float | None = None,
     vmax: float | None = None,
+    axis_label: str = "Component",
 ) -> None:
     module_names = sorted(matrices.keys())
     n_modules = len(module_names)
@@ -151,8 +193,8 @@ def plot_heatmaps(
         images.append(im)
         n = mat.shape[0]
         ax.set_title(f"{name} ({n} alive) — {title_suffix}")
-        ax.set_xlabel("Component (sorted by density)")
-        ax.set_ylabel("Component (sorted by density)")
+        ax.set_xlabel(axis_label)
+        ax.set_ylabel(axis_label)
 
     if images:
         cbar_ax = fig.add_subplot(gs[:, 1])
@@ -200,20 +242,38 @@ def plot_I_distribution(
     i_matrices: dict[str, Tensor],
     output_dir: Path,
 ) -> None:
-    """Histogram of off-diagonal I values per module."""
+    """Histogram of off-diagonal I values on a log10 scale. Values < 1e-6 go into a floor bin."""
     hist_dir = output_dir / "histograms"
     hist_dir.mkdir(parents=True, exist_ok=True)
+
+    floor = 1e-6
+    log_floor = np.log10(floor)  # -6
 
     for name in sorted(i_matrices):
         off = _off_diag(i_matrices[name])
 
+        # Clamp small/zero values to the floor so they land in the leftmost bin
+        off_clamped = np.maximum(off, floor)
+        log_vals = np.log10(off_clamped)
+
+        # Bins from -6 to ceil(max) in 60 equal steps
+        log_max = max(np.ceil(log_vals.max()), log_floor + 1)
+        bins = np.linspace(log_floor, log_max, 60)
+
         fig, ax = plt.subplots(figsize=(8, 5))
-        ax.hist(off, bins=100, edgecolor="none", alpha=0.7)
+        ax.hist(log_vals, bins=bins, edgecolor="none", alpha=0.7)
         ax.set_xlabel("I (interaction strength)")
         ax.set_ylabel("Count")
         ax.set_yscale("log")
         ax.set_title(f"{name} — off-diagonal I distribution")
-        ax.axvline(1.0, color="red", linestyle="--", alpha=0.5, label="I = 1")
+
+        # Readable tick labels: <1e-6, 1e-5, ..., 1e0, etc.
+        tick_exp = np.arange(int(log_floor), int(log_max) + 1)
+        tick_labels = [f"<1e{int(t)}" if t == log_floor else f"1e{int(t)}" for t in tick_exp]
+        ax.set_xticks(tick_exp)
+        ax.set_xticklabels(tick_labels)
+
+        ax.axvline(0.0, color="red", linestyle="--", alpha=0.5, label="I = 1")
         ax.legend()
 
         safe = name.replace(".", "_")
@@ -241,6 +301,7 @@ def plot_row_summaries(
         ax.bar(range(n), row_sums.cpu().numpy(), width=1.0, edgecolor="none", alpha=0.7)
         ax.set_xlabel("Component index (sorted by density)")
         ax.set_ylabel("Σ I_{c,c'} (off-diagonal)")
+        ax.set_yscale("log")
         ax.set_title(f"{name} — total interaction per component")
         ax.axhline(1.0, color="red", linestyle="--", alpha=0.5)
 
@@ -326,29 +387,40 @@ def main(config_path: Path | str | None = None, **overrides: Any) -> None:
     harvest_data = torch.load(harvest_path, map_location="cpu", weights_only=False)
     sum_ga_cross = harvest_data["sum_ga_cross"]
 
-    # ── Load CI harvest for alive filtering ───────────────────────────────
-    from spd.scripts.geometric_interaction.geometric_interaction import (
-        compute_per_module_coactivation,
-        load_harvest_coactivation,
-    )
+    # ── Load mean CI from harvest for alive filtering ───────────────────
+    from spd.harvest.repo import HarvestRepo
 
-    logger.info(f"Loading CI harvest for alive filtering (run {run_id})")
-    component_keys, count_i, count_ij, count_total = load_harvest_coactivation(
-        run_id, config.harvest_id
-    )
-    activation_density, _, _ = compute_per_module_coactivation(
-        component_keys, count_i, count_ij, count_total
-    )
+    logger.info(f"Loading mean CI from harvest (run {run_id})")
+    if config.harvest_id is not None:
+        repo = HarvestRepo(run_id, config.harvest_id, readonly=True)
+    else:
+        repo = HarvestRepo.open_most_recent(run_id)
+        assert repo is not None, f"No harvest data found for {run_id}"
+    summary = repo.get_summary()
+
+    mean_ci_per_module: dict[str, Float[Tensor, " C"]] = {}
+    module_components: dict[str, list[tuple[int, float]]] = defaultdict(list)
+    for comp in summary.values():
+        ci_val = comp.mean_activations["causal_importance"]
+        module_components[comp.layer].append((comp.component_idx, ci_val))
+    for module_name, pairs in module_components.items():
+        n_components = max(idx for idx, _ in pairs) + 1
+        ci_tensor = torch.zeros(n_components)
+        for idx, ci_val in pairs:
+            ci_tensor[idx] = ci_val
+        mean_ci_per_module[module_name] = ci_tensor
 
     # ── Filter to modules of interest ─────────────────────────────────────
     def matches_filter(name: str) -> bool:
+        if not config.module_filter:
+            return True
         return any(pat in name for pat in config.module_filter)
 
     filtered_modules = [m for m in sorted(uv_by_module) if matches_filter(m)]
     logger.info(f"Filtered to {len(filtered_modules)} modules: {filtered_modules}")
 
     # ── Compute alive indices ─────────────────────────────────────────────
-    alive_inds = get_alive_inds(activation_density, config.alive_density_threshold)
+    alive_inds = get_alive_inds(mean_ci_per_module, config.alive_ci_threshold)
     for name in filtered_modules:
         n_alive = len(alive_inds.get(name, []))
         n_total = uv_by_module[name][0].shape[0]
@@ -398,6 +470,11 @@ def main(config_path: Path | str | None = None, **overrides: Any) -> None:
             "I_off_diag_mean": float(i_off.mean()),
             "I_off_diag_median": float(np.median(i_off)),
             "I_off_diag_max": float(i_off.max()),
+            "I_off_diag_gt_1e-6_frac": float((i_off > 1e-6).mean()),
+            "I_off_diag_gt_1e-5_frac": float((i_off > 1e-5).mean()),
+            "I_off_diag_gt_0.0001_frac": float((i_off > 1e-4).mean()),
+            "I_off_diag_gt_0.001_frac": float((i_off > 1e-3).mean()),
+            "I_off_diag_gt_0.01_frac": float((i_off > 1e-2).mean()),
             "I_off_diag_gt_0.1_frac": float((i_off > 0.1).mean()),
             "I_off_diag_gt_0.5_frac": float((i_off > 0.5).mean()),
             "I_off_diag_gt_1.0_frac": float((i_off > 1.0).mean()),
@@ -412,23 +489,56 @@ def main(config_path: Path | str | None = None, **overrides: Any) -> None:
             f"I>0.1={100 * (i_off > 0.1).mean():.1f}%, rho(G,H)={rho_gh:.4f}"
         )
 
+    # ── Cluster-based reordering for heatmaps ────────────────────────────
+    if config.cluster_mapping_path is not None:
+        logger.info(f"Loading cluster ordering from {config.cluster_mapping_path}")
+        cluster_perm = load_cluster_ordering(config.cluster_mapping_path, alive_inds)
+
+        def _reorder_all(matrices: dict[str, Tensor]) -> dict[str, Tensor]:
+            return {
+                name: _reorder_matrix(mat, cluster_perm[name])
+                for name, mat in matrices.items()
+                if name in cluster_perm
+            }
+
+        G_plot, H_plot, I_plot = _reorder_all(G_alive), _reorder_all(H_alive), _reorder_all(I_alive)
+        axis_label = "Subcomponent index"
+    else:
+        G_plot, H_plot, I_plot = G_alive, H_alive, I_alive
+        axis_label = "Subcomponent index"
+
     # ── Plots ─────────────────────────────────────────────────────────────
     logger.info("Generating plots...")
 
     plot_heatmaps(
-        G_alive, output_dir / "heatmaps" / "G.png", "Reds", "G", "Geometric", vmin=0, vmax=1
+        G_plot,
+        output_dir / "heatmaps" / "G.png",
+        "Reds",
+        "G",
+        "Geometric",
+        vmin=0,
+        vmax=1,
+        axis_label=axis_label,
     )
     plot_heatmaps(
-        H_alive, output_dir / "heatmaps" / "H.png", "Blues", "H", "Coactivation", vmin=0, vmax=1
+        H_plot,
+        output_dir / "heatmaps" / "H.png",
+        "Blues",
+        "H",
+        "Coactivation",
+        vmin=0,
+        vmax=1,
+        axis_label=axis_label,
     )
     plot_heatmaps(
-        I_alive,
+        I_plot,
         output_dir / "heatmaps" / "I.png",
         "Purples",
         "I = G×H",
         "Interaction",
         vmin=0,
         vmax=1,
+        axis_label=axis_label,
     )
 
     plot_scatter_G_vs_H(G_alive, H_alive, output_dir)
