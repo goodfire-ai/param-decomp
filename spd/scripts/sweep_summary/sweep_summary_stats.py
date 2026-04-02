@@ -652,6 +652,7 @@ def generate_report(
     target_info: TargetModelInfo,
     spd_config: SPDConfig,
     n_alive: dict[str, int] | None,
+    extra_ces: dict[str, float] | None = None,
 ) -> str:
     sections: list[str] = []
 
@@ -741,6 +742,16 @@ def generate_report(
             ce_std_row.append("—")
     sections.append("\n### Summary\n")
     sections.append(_md_table(ce_summary_headers, [ce_mean_row, ce_std_row]))
+
+    if extra_ces:
+        sections.append("\n### Extra (user-provided)\n")
+        extra_ce_headers = ["label", "CE", "compute recovered"]
+        extra_ce_rows: list[list[str]] = []
+        for label, ce_val in extra_ces.items():
+            pct = _compute_recovered_pct(target_info, ce_val)
+            pct_str = f"{pct:.1f}%" if pct is not None else "N/A"
+            extra_ce_rows.append([label, _fmt(ce_val), pct_str])
+        sections.append(_md_table(extra_ce_headers, extra_ce_rows))
 
     # 7. Training compute recovered
     sections.append("\n## Training Compute Recovered\n")
@@ -852,12 +863,26 @@ def main() -> None:
         action="store_true",
         help="Print report to stdout instead of saving to file",
     )
+    parser.add_argument(
+        "--extra-ce",
+        nargs="+",
+        metavar="LABEL=VALUE",
+        help="Extra CE values to include in compute recovered analysis (e.g. rounded_0.1=2.95)",
+    )
     args = parser.parse_args()
+
+    extra_ces: dict[str, float] | None = None
+    if args.extra_ce:
+        extra_ces = {}
+        for entry in args.extra_ce:
+            assert "=" in entry, f"Expected LABEL=VALUE, got: {entry}"
+            label, val = entry.split("=", 1)
+            extra_ces[label] = float(val)
 
     seeds, data, target_info, spd_config, n_alive = fetch_runs(args.run_ids, args.project)
     if args.harvest_run:
         n_alive = _fetch_n_alive_from_harvest(args.harvest_run)
-    report = generate_report(seeds, data, target_info, spd_config, n_alive)
+    report = generate_report(seeds, data, target_info, spd_config, n_alive, extra_ces=extra_ces)
 
     if args.stdout:
         print(report)
