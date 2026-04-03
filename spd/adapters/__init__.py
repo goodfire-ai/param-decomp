@@ -23,7 +23,7 @@ def adapter_from_config(method_config: DecompositionMethodHarvestConfig) -> Deco
         case SPDHarvestConfig():
             from spd.adapters.spd import SPDAdapter
 
-            return SPDAdapter(method_config.id)
+            return SPDAdapter(method_config.wandb_path)
         case TranscoderHarvestConfig():
             from spd.adapters.transcoder import TranscoderAdapter
 
@@ -41,11 +41,6 @@ def adapter_from_id(decomposition_id: str) -> DecompositionAdapter:
     method config from the harvest DB (which is always populated before downstream
     steps like autointerp run).
     """
-    if decomposition_id.startswith("s-"):
-        from spd.adapters.spd import SPDAdapter
-
-        return SPDAdapter(decomposition_id)
-
     return adapter_from_config(_load_method_config(decomposition_id))
 
 
