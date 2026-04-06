@@ -568,6 +568,7 @@ class _PersistentPGDBaseConfig(LossMetricConfig):
         ),
     ] = 0
     start_frac: Probability = 0.0
+    n_samples: PositiveInt = 1
 
     @model_validator(mode="before")
     @classmethod
