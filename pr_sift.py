@@ -3,7 +3,10 @@
 # requires-python = ">=3.11"
 # dependencies = ["anthropic"]
 # ///
-"""Tinder-style keyboard UI for sifting PRs and commits into paper-worthy / not."""
+"""Tinder-style keyboard UI for sifting PRs and commits into paper-worthy / not.
+
+Usage: uv run pr_sift.py
+"""
 
 import json
 import re
@@ -13,8 +16,6 @@ import termios
 import tty
 from pathlib import Path
 
-import anthropic
-
 OUTPUT_FILE = Path("paper_prs.json")
 STATE_FILE = Path(".pr_sift_state.json")
 
@@ -22,8 +23,6 @@ PR_FILE = Path("/tmp/spd_prs.json")
 DESC_CACHE_FILE = Path(".pr_sift_descriptions.json")
 
 ALWAYS_SELECTED = {"claude-spd1"}
-
-client = anthropic.Anthropic()
 
 
 def get_diff(item: dict) -> str:
@@ -38,6 +37,8 @@ def get_diff(item: dict) -> str:
 
 
 def describe_item(item: dict, cache: dict) -> str:
+    import anthropic
+
     if item["id"] in cache:
         return cache[item["id"]]
 
@@ -45,7 +46,7 @@ def describe_item(item: dict, cache: dict) -> str:
     if not diff.strip():
         return "(could not fetch diff)"
 
-    resp = client.messages.create(
+    resp = anthropic.Anthropic().messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=200,
         messages=[
@@ -217,6 +218,7 @@ def get_direct_commits(selected_git_names: set[str]) -> list[dict]:
                 "id": f"commit-{h[:10]}",
                 "kind": "commit",
                 "title": f"{h[:8]}  {subject}",
+                "author": git_name,
                 "date": date,
                 "additions": adds,
                 "deletions": dels,
@@ -239,6 +241,7 @@ def load_items(selected_authors: set[str]) -> list[dict]:
                     "id": f"pr-{pr['number']}",
                     "kind": "PR",
                     "title": f"#{pr['number']}  {pr['title']}",
+                    "author": pr["author"]["login"],
                     "date": pr["mergedAt"],
                     "additions": pr.get("additions", 0),
                     "deletions": pr.get("deletions", 0),
@@ -280,7 +283,7 @@ def save_results(items: list[dict], decisions: dict) -> None:
         json.dump(worthy, f, indent=2)
 
 
-def render_item(item: dict, idx: int, total: int, decisions: dict, desc_cache: dict) -> None:
+def render_item(item: dict, idx: int, total: int, decisions: dict, desc_cache: dict | None) -> None:
     n_yes = sum(1 for v in decisions.values() if v == "yes")
     n_no = sum(1 for v in decisions.values() if v == "no")
 
@@ -302,31 +305,23 @@ def render_item(item: dict, idx: int, total: int, decisions: dict, desc_cache: d
     raw_print(f"{kind_label}  {item['title']}{marker}")
     adds = item["additions"]
     dels = item["deletions"]
-    raw_print(f"\033[2m{item['date'][:10]}  \033[32m+{adds}\033[0m\033[2m/\033[31m-{dels}\033[0m")
+    raw_print(
+        f"\033[2m{item['date'][:10]}  {item['author']}  \033[32m+{adds}\033[0m\033[2m/\033[31m-{dels}\033[0m"
+    )
     raw_print()
 
     body = item["body"].strip()
-    if not body:
-        raw_print("  \033[2m(generating description...)\033[0m", end="")
-        body = "\033[3m" + describe_item(item, desc_cache) + "\033[0m"
-        # Re-render now that we have the description
-        raw_print("\033[2J\033[H", end="")
-        raw_print(
-            f"\033[1m {idx + 1}/{total} \033[0m  "
-            f"\033[32m{n_yes} yes\033[0m · \033[31m{n_no} no\033[0m"
-        )
-        raw_print("─" * 70)
-        raw_print(f"{kind_label}  {item['title']}{marker}")
-        raw_print(
-            f"\033[2m{item['date'][:10]}  \033[32m+{adds}\033[0m\033[2m/\033[31m-{dels}\033[0m"
-        )
-        raw_print()
+    if not body and desc_cache is not None and item["id"] in desc_cache:
+        body = "\033[3m" + desc_cache[item["id"]] + "\033[0m"
 
-    lines = body.split("\n")[:15]
+    lines = body.split("\n")[:15] if body else []
     for line in lines:
         raw_print(f"  {line}")
     if len(body.split("\n")) > 15:
         raw_print(f"  \033[2m... ({len(body.split(chr(10)))} lines total)\033[0m")
+
+    if not lines:
+        raw_print("  \033[2m(no description — press i to generate)\033[0m")
 
     raw_print()
     raw_print("─" * 70)
@@ -334,6 +329,7 @@ def render_item(item: dict, idx: int, total: int, decisions: dict, desc_cache: d
         "  \033[31m←\033[0m not worthy    "
         "\033[32m→\033[0m paper-worthy    "
         "\033[2m⌫\033[0m back    "
+        "\033[2mi\033[0m describe    "
         "\033[2mq\033[0m quit"
     )
 
@@ -373,7 +369,7 @@ def main() -> None:
     state = load_state()
     decisions: dict = state["decisions"]
     idx: int = state["index"]
-    desc_cache = load_desc_cache()
+    desc_cache: dict | None = None
 
     if not items:
         print("No items found.")
@@ -406,6 +402,11 @@ def main() -> None:
                             idx += 1
             elif ch == "\x7f" and idx > 0:  # backspace
                 idx -= 1
+            elif ch == "i":
+                if desc_cache is None:
+                    desc_cache = load_desc_cache()
+                describe_item(items[idx], desc_cache)
+                # re-render will pick it up from cache
 
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
@@ -425,7 +426,7 @@ def main() -> None:
             continue
         title = it["title"]
         body = it["body"].strip()
-        if not body:
+        if not body and desc_cache:
             body = desc_cache.get(it["id"], "")
         summary = body.split("\n")[0][:80] if body else ""
         print(f"  \033[32m✓\033[0m {title}")
