@@ -154,11 +154,13 @@ def build_login_to_git_names() -> dict[str, set[str]]:
 
     Squash merges have subjects like 'Title (#123)'. We match the PR number
     to the PR JSON to get the GitHub login, and record the git author name.
+    Git names that appear under multiple logins are excluded (ambiguous).
     """
     with open(PR_FILE) as f:
         pr_num_to_login = {pr["number"]: pr["author"]["login"] for pr in json.load(f)}
 
-    mapping: dict[str, set[str]] = {}
+    # First pass: collect all logins each git name is associated with
+    git_name_to_logins: dict[str, set[str]] = {}
     result = subprocess.run(
         ["git", "log", "dev", "--no-merges", "--format=%an|%s"],
         capture_output=True,
@@ -173,7 +175,13 @@ def build_login_to_git_names() -> dict[str, set[str]]:
             pr_num = int(m.group(1))
             if pr_num in pr_num_to_login:
                 login = pr_num_to_login[pr_num]
-                mapping.setdefault(login, set()).add(git_name)
+                git_name_to_logins.setdefault(git_name, set()).add(login)
+
+    # Invert: login → git names. Ambiguous git names appear under all their logins.
+    mapping: dict[str, set[str]] = {}
+    for git_name, logins in git_name_to_logins.items():
+        for login in logins:
+            mapping.setdefault(login, set()).add(git_name)
 
     return mapping
 
@@ -264,7 +272,7 @@ def load_state() -> dict:
     if STATE_FILE.exists():
         with open(STATE_FILE) as f:
             return json.load(f)
-    return {"decisions": {}, "index": 0}
+    return {"decisions": {}}
 
 
 def save_state(state: dict) -> None:
@@ -283,7 +291,7 @@ def save_results(items: list[dict], decisions: dict) -> None:
         json.dump(worthy, f, indent=2)
 
 
-def render_item(item: dict, idx: int, total: int, decisions: dict, desc_cache: dict | None) -> None:
+def render_item(item: dict, idx: int, total: int, decisions: dict, desc_cache: dict) -> None:
     n_yes = sum(1 for v in decisions.values() if v == "yes")
     n_no = sum(1 for v in decisions.values() if v == "no")
 
@@ -311,7 +319,7 @@ def render_item(item: dict, idx: int, total: int, decisions: dict, desc_cache: d
     raw_print()
 
     body = item["body"].strip()
-    if not body and desc_cache is not None and item["id"] in desc_cache:
+    if not body and item["id"] in desc_cache:
         body = "\033[3m" + desc_cache[item["id"]] + "\033[0m"
 
     lines = body.split("\n")[:15] if body else []
@@ -368,14 +376,14 @@ def main() -> None:
     items = load_items(selected_authors)
     state = load_state()
     decisions: dict = state["decisions"]
-    idx: int = state["index"]
-    desc_cache: dict | None = None
+    desc_cache = load_desc_cache()
 
     if not items:
         print("No items found.")
         return
 
-    idx = min(idx, len(items) - 1)
+    # Start at the first item without a decision
+    idx = next((i for i, it in enumerate(items) if it["id"] not in decisions), 0)
 
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
@@ -403,8 +411,6 @@ def main() -> None:
             elif ch == "\x7f" and idx > 0:  # backspace
                 idx -= 1
             elif ch == "i":
-                if desc_cache is None:
-                    desc_cache = load_desc_cache()
                 describe_item(items[idx], desc_cache)
                 # re-render will pick it up from cache
 
@@ -412,7 +418,6 @@ def main() -> None:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
     state["decisions"] = decisions
-    state["index"] = idx
     save_state(state)
     save_results(items, decisions)
 
@@ -426,7 +431,7 @@ def main() -> None:
             continue
         title = it["title"]
         body = it["body"].strip()
-        if not body and desc_cache:
+        if not body:
             body = desc_cache.get(it["id"], "")
         summary = body.split("\n")[0][:80] if body else ""
         print(f"  \033[32m✓\033[0m {title}")
