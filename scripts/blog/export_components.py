@@ -1,16 +1,14 @@
 """Export all alive components for the VPD blog post.
 
-Produces per-weight-matrix JSON files with:
-- Component metadata (labels, firing density, activation examples)
-- 32x32 top-left tile of the full weight matrix W = V @ U (int8 + scale)
-- Leading 32 elements of each component's U and V vectors (int8 + scale)
-  (frontend reconstructs rank-1 matrix via outer product)
-
-This is the single source of truth for component data — used by the model
-overview visualization, the component carousel, and inline <comp> tags.
+Produces normalized data files:
+  index.json                — matrix manifest
+  labels.json               — key→label for build-time <comp> tag resolution
+  weights/{slug}.json       — int8 weight tiles (fullmat + per-component U/V)
+  components/{slug}.json    — metadata + columnar activation examples {t,c,a}
+  ../components.json        — carousel showcase (full data for top components)
 
 Run from ~/spd:
-  uv run python scripts/blog/export_components.py --out-dir ../vpd-blog-replit/data/model-overview
+  uv run python -m scripts.blog.export_components --out-dir ../vpd-blog-replit/data/model-overview
 """
 
 import argparse
@@ -71,6 +69,7 @@ def convert_examples(
     raw_examples: list[dict[str, Any]],
     tokenizer: AppTokenizer,
 ) -> tuple[list[dict[str, Any]], float]:
+    """Convert harvest examples to columnar {t, c, a} format."""
     out: list[dict[str, Any]] = []
     global_max_act = 0.0
     for ex in raw_examples[:N_ACTIVATION_EXAMPLES]:
@@ -90,11 +89,11 @@ def convert_examples(
         local_max = max((abs(a) for a in window_acts), default=0.0)
         global_max_act = max(global_max_act, local_max)
 
-        tokens = [
-            {"token": span, "ci": round(ci, 4), "act": round(a, 4)}
-            for span, ci, a in zip(spans[start:end], ci_values[start:end], window_acts, strict=True)
-        ]
-        out.append({"tokens": tokens})
+        out.append({
+            "t": list(spans[start:end]),
+            "c": [round(ci, 4) for ci in ci_values[start:end]],
+            "a": [round(a, 4) for a in window_acts],
+        })
     return out, round(global_max_act, 4)
 
 
@@ -105,6 +104,8 @@ def main() -> None:
 
     out_dir: Path = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "weights").mkdir(exist_ok=True)
+    (out_dir / "components").mkdir(exist_ok=True)
     tile = WEIGHT_TILE_SIZE
 
     print("Loading run info...")
@@ -180,11 +181,12 @@ def main() -> None:
 
         comp: dict[str, Any] = {
             "key": f"{canonical}:{comp_idx}",
+            "canonical": canonical,
             "label": label,
             "layer_display": canonical_display_name(canonical),
             "firing_density": firing_density,
-            "activation_examples": examples,
             "max_act": max_act,
+            "examples": examples,
         }
         reasoning = reasoning_by_key.get(component_key)
         if reasoning:
@@ -199,7 +201,8 @@ def main() -> None:
     def canon_to_param_stem(canon: str) -> str:
         return topology.canon_to_target(canon).replace(".", "-")
 
-    # Export per-matrix baked JSON
+    # Export per-matrix files
+    labels: dict[str, str] = {}
     index_entries = []
     for canon in sorted(by_matrix.keys()):
         comps = by_matrix[canon]
@@ -210,10 +213,6 @@ def main() -> None:
         V_mat = uv["V"]  # (d_in, n_components)
         U_mat = uv["U"]  # (n_components, d_out)
         n_total = V_mat.shape[1]
-
-        # Top-left tile of W = V @ U, V is (d_in, n_comp), U is (n_comp, d_out)
-        W_tile = (V_mat[:tile, :] @ U_mat[:, :tile])
-        fullmat_encoded = to_b64_int8(W_tile)
 
         # Per-component leading-tile U/V vectors
         comp_weights: dict[str, dict[str, dict[str, str | float]]] = {}
@@ -227,41 +226,74 @@ def main() -> None:
 
         slug = canon.replace(".", "-")
 
-        # Baked file: weights + fullmat tile + component metadata + examples
-        baked = {
+        # Weights file: tile + per-component U/V
+        weights = {
             "canonical": canon,
             "display": canonical_display_name(canon),
             "n_components": n_total,
             "n_exported": len(comps),
             "tile_size": tile,
-            "fullmat": fullmat_encoded,
+            "fullmat": to_b64_int8(V_mat[:tile, :] @ U_mat[:, :tile]),
             "weights": comp_weights,
-            "components": comps,
         }
+        weights_path = out_dir / "weights" / f"{slug}.json"
+        weights_path.write_text(json.dumps(weights))
 
-        baked_path = out_dir / f"{slug}.json"
-        baked_path.write_text(json.dumps(baked))
-        baked_kb = baked_path.stat().st_size // 1024
+        # Components file: metadata + columnar examples per component
+        comp_data: dict[str, dict[str, Any]] = {}
+        for comp in comps:
+            entry: dict[str, Any] = {
+                "label": comp["label"],
+                "layer_display": comp["layer_display"],
+                "firing_density": comp["firing_density"],
+                "max_act": comp["max_act"],
+                "examples": comp["examples"],
+            }
+            if comp.get("reasoning"):
+                entry["reasoning"] = comp["reasoning"]
+            comp_data[comp["key"]] = entry
 
-        print(f"  {canon}: {len(comps)}/{n_total} alive -> {slug}.json ({baked_kb}KB)")
+        comp_path = out_dir / "components" / f"{slug}.json"
+        comp_path.write_text(json.dumps(comp_data))
+
+        # Collect labels for build-time resolution
+        for comp in comps:
+            labels[comp["key"]] = comp["label"]
+
+        w_kb = weights_path.stat().st_size // 1024
+        c_kb = comp_path.stat().st_size // 1024
+        print(f"  {canon}: {len(comps)}/{n_total} alive -> weights {w_kb}KB, components {c_kb}KB")
 
         index_entries.append({
             "canonical": canon,
             "display": canonical_display_name(canon),
             "n_components": n_total,
             "n_exported": len(comps),
-            "file": f"{slug}.json",
+            "weights_file": f"weights/{slug}.json",
+            "components_file": f"components/{slug}.json",
         })
 
     index_path = out_dir / "index.json"
     index_path.write_text(json.dumps(index_entries, indent=2))
 
-    # Showcase: top components per matrix for the carousel (no weight data).
-    # Written to data/components.json (sibling of data/model-overview/) for
-    # backwards compatibility with the post.md components block.
+    # Labels: key→label for build-time <comp> tag resolution (not loaded at runtime)
+    labels_path = out_dir / "labels.json"
+    labels_path.write_text(json.dumps(labels))
+    print(f"Labels: {len(labels)} components -> {labels_path.name} ({labels_path.stat().st_size // 1024}KB)")
+
+    # Showcase: full component data for the carousel (loaded on page load)
     showcase = []
     for canon in sorted(by_matrix.keys()):
-        showcase.extend(by_matrix[canon][:SHOWCASE_N_PER_MATRIX])
+        for comp in by_matrix[canon][:SHOWCASE_N_PER_MATRIX]:
+            showcase.append({
+                "key": comp["key"],
+                "label": comp["label"],
+                "layer_display": comp["layer_display"],
+                "firing_density": comp["firing_density"],
+                "max_act": comp["max_act"],
+                "reasoning": comp.get("reasoning"),
+                "examples": comp["examples"],
+            })
     showcase_path = out_dir.parent / "components.json"
     showcase_path.write_text(json.dumps(showcase))
     print(f"Showcase: {len(showcase)} components -> {showcase_path.name} ({showcase_path.stat().st_size // 1024}KB)")

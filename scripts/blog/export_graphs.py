@@ -108,11 +108,11 @@ def convert_examples(
         local_max = max((abs(a) for a in window_acts), default=0.0)
         global_max_act = max(global_max_act, local_max)
 
-        tokens = [
-            {"token": span, "ci": round(ci, 4), "act": round(a, 4)}
-            for span, ci, a in zip(spans[start:end], ci_values[start:end], window_acts, strict=True)
-        ]
-        out.append({"tokens": tokens})
+        out.append({
+            "t": list(spans[start:end]),
+            "c": [round(ci, 4) for ci in ci_values[start:end]],
+            "a": [round(a, 4) for a in window_acts],
+        })
     return {"examples": out, "max_act": round(global_max_act, 4)}
 
 
