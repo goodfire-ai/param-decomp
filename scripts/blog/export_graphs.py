@@ -317,7 +317,7 @@ def build_graph(
                 comp["firing_density"] = fd
                 examples_result = convert_examples(json.loads(raw_ex), tokenizer)
                 details: dict[str, Any] = {
-                    "activation_examples": examples_result["examples"],
+                    "examples": examples_result["examples"],
                     "max_act": examples_result["max_act"],
                 }
                 if attr_repo:
