@@ -139,11 +139,11 @@ def build_dataset_attributions(
         if entry_layer in ("embed", "output"):
             return tokenizer.get_tok_display(entry_idx)
         h_key = f"{canonical_to_concrete[entry_layer]}:{entry_idx}"
-        assert h_key in interp_by_key, (
-            f"No autointerp label for attributed component {h_key} "
-            f"(referenced from {node_key} dataset attributions)"
-        )
-        return interp_by_key[h_key]
+        label = interp_by_key.get(h_key)
+        if label:
+            return label
+        # Dead/unlabeled components can still appear as attribution targets
+        return f"{entry_layer}:{entry_idx}"
 
     def find_graph_key(entry_layer: str, entry_idx: int) -> str | None:
         for k in active_keys:

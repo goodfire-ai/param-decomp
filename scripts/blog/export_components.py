@@ -27,6 +27,7 @@ from scripts.blog.constants import (
     ALIVE_CI_THRESHOLD,
     N_ACTIVATION_EXAMPLES,
     RUN_ID,
+    SHOWCASE_N_PER_MATRIX,
     WEIGHT_TILE_SIZE,
 )
 from spd.app.backend.app_tokenizer import AppTokenizer
@@ -254,6 +255,17 @@ def main() -> None:
 
     index_path = out_dir / "index.json"
     index_path.write_text(json.dumps(index_entries, indent=2))
+
+    # Showcase: top components per matrix for the carousel (no weight data).
+    # Written to data/components.json (sibling of data/model-overview/) for
+    # backwards compatibility with the post.md components block.
+    showcase = []
+    for canon in sorted(by_matrix.keys()):
+        showcase.extend(by_matrix[canon][:SHOWCASE_N_PER_MATRIX])
+    showcase_path = out_dir.parent / "components.json"
+    showcase_path.write_text(json.dumps(showcase))
+    print(f"Showcase: {len(showcase)} components -> {showcase_path.name} ({showcase_path.stat().st_size // 1024}KB)")
+
     print(f"\nDone: {len(index_entries)} matrices -> {index_path}")
 
 

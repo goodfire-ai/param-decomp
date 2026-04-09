@@ -20,6 +20,7 @@ ALIVE_CI_THRESHOLD = 1e-6
 WEIGHT_TILE_SIZE = 32  # top-left tile of W, and leading elements of U/V
 N_ACTIVATION_EXAMPLES = 15
 ACTIVATION_WINDOW = 16
+SHOWCASE_N_PER_MATRIX = 3  # top components per matrix for the carousel showcase
 
 # --- Graph export ---
 GRAPHS = [
