@@ -12,7 +12,7 @@ WANDB_PATH = f"wandb:goodfire/spd/{RUN_ID}"
 
 # --- Clustering ---
 CLUSTER_MAPPING_PATH = Path(
-    "/mnt/polished-lake/artifacts/mechanisms/spd/clustering/runs/c-70b28465/cluster_mapping.json"
+    "/mnt/polished-lake/artifacts/mechanisms/spd/clustering/runs/c-651d85c4/cluster_mapping.json"
 )
 
 # --- Component export (model overview, carousel, inline <comp>) ---
