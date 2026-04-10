@@ -18,9 +18,10 @@ CLUSTER_MAPPING_PATH = Path(
 # --- Component export (model overview, carousel, inline <comp>) ---
 ALIVE_CI_THRESHOLD = 1e-6
 WEIGHT_TILE_SIZE = 32  # top-left tile of W, and leading elements of U/V
-N_ACTIVATION_EXAMPLES = 15
+N_ACTIVATION_EXAMPLES = 50
 ACTIVATION_WINDOW = 16
 SHOWCASE_N_PER_MATRIX = 3  # top components per matrix for the carousel showcase
+COMP_BIN_SIZE = 256  # components per bin file (binned by raw component index)
 
 # --- Graph export ---
 GRAPHS = [

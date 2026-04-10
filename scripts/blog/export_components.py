@@ -23,6 +23,8 @@ import numpy as np
 from scripts.blog.constants import (
     ACTIVATION_WINDOW,
     ALIVE_CI_THRESHOLD,
+    COMP_BIN_SIZE,
+    DATASET_ATTRIBUTION_TOP_K,
     N_ACTIVATION_EXAMPLES,
     RUN_ID,
     SHOWCASE_N_PER_MATRIX,
@@ -30,6 +32,7 @@ from scripts.blog.constants import (
 )
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.autointerp.repo import InterpRepo
+from spd.dataset_attributions import AttributionRepo
 from spd.harvest.schemas import get_harvest_dir
 from spd.models.component_model import ComponentModel, SPDRunInfo
 from spd.topology import TransformerTopology
@@ -99,6 +102,53 @@ def convert_examples(
     return out, round(global_max_act, 4)
 
 
+def build_dataset_attributions(
+    component_key: str,
+    interp_by_key: dict[str, str],
+    canonical_to_concrete: dict[str, str],
+    attr_repo: AttributionRepo,
+    tokenizer: AppTokenizer,
+) -> dict[str, Any]:
+    """Build incoming/outgoing dataset attributions for a component.
+
+    Adapted from export_graphs.py — same logic without graph-specific key mapping.
+    """
+    storage = attr_repo.get_attributions()
+    top_k = DATASET_ATTRIBUTION_TOP_K
+
+    def resolve_label(entry_layer: str, entry_idx: int) -> str:
+        if entry_layer in ("embed", "output"):
+            return tokenizer.get_tok_display(entry_idx)
+        concrete = canonical_to_concrete.get(entry_layer)
+        if concrete:
+            label = interp_by_key.get(f"{concrete}:{entry_idx}")
+            if label:
+                return label
+        return f"{entry_layer}:{entry_idx}"
+
+    def collect_entries(entries: list[Any]) -> list[dict[str, Any]]:
+        return [
+            {
+                "key": f"{e.layer}:{e.component_idx}",
+                "label": resolve_label(e.layer, e.component_idx),
+                "value": round(e.value, 4),
+            }
+            for e in entries
+        ]
+
+    pos_sources = storage.get_top_sources(component_key, top_k, "positive", "attr_abs")
+    neg_sources = storage.get_top_sources(component_key, top_k, "negative", "attr_abs")
+    all_sources = sorted(pos_sources + neg_sources, key=lambda e: abs(e.value), reverse=True)
+    incoming = collect_entries(all_sources[:top_k])
+
+    pos_targets = storage.get_top_targets(component_key, top_k, "positive", "attr_abs")
+    neg_targets = storage.get_top_targets(component_key, top_k, "negative", "attr_abs")
+    all_targets = sorted(pos_targets + neg_targets, key=lambda e: abs(e.value), reverse=True)
+    outgoing = collect_entries(all_targets[:top_k])
+
+    return {"incoming": incoming, "outgoing": outgoing}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", type=Path, required=True, help="Output directory")
@@ -119,6 +169,16 @@ def main() -> None:
     model = ComponentModel.from_run_info(run_info)
     model.eval()
     topology = TransformerTopology(model.target_model)
+
+    canonical_to_concrete: dict[str, str] = {}
+    for target_path in model.target_module_paths:
+        canonical_to_concrete[topology.target_to_canon(target_path)] = target_path
+
+    attr_repo = AttributionRepo.open(RUN_ID)
+    if attr_repo:
+        print(f"Loaded dataset attributions (from {attr_repo.subrun_id})")
+    else:
+        print("WARNING: No dataset attributions found, skipping")
 
     # Extract U/V matrices keyed by _components parameter stem
     uv_params: dict[str, dict[str, np.ndarray]] = {}
@@ -181,8 +241,9 @@ def main() -> None:
         raw_examples = json.loads(raw_examples_json)
         examples, max_act = convert_examples(raw_examples, tokenizer)
 
+        canonical_key = f"{canonical}:{comp_idx}"
         comp: dict[str, Any] = {
-            "key": f"{canonical}:{comp_idx}",
+            "key": canonical_key,
             "canonical": canonical,
             "label": label,
             "layer_display": canonical_display_name(canonical),
@@ -193,6 +254,10 @@ def main() -> None:
         reasoning = reasoning_by_key.get(component_key)
         if reasoning:
             comp["reasoning"] = reasoning
+        if attr_repo:
+            comp["dataset_attributions"] = build_dataset_attributions(
+                canonical_key, interp_by_key, canonical_to_concrete, attr_repo, tokenizer,
+            )
         by_matrix.setdefault(canonical, []).append(comp)
 
     print(
@@ -243,9 +308,12 @@ def main() -> None:
         weights_path = out_dir / "weights" / f"{slug}.json"
         weights_path.write_text(json.dumps(weights))
 
-        # Components file: metadata + columnar examples per component
-        comp_data: dict[str, dict[str, Any]] = {}
+        # Components files: binned by raw component index
+        bins: dict[int, dict[str, dict[str, Any]]] = {}
         for comp in comps:
+            comp_idx = int(comp["key"].split(":")[-1])
+            bin_n = comp_idx // COMP_BIN_SIZE
+            bin_data = bins.setdefault(bin_n, {})
             entry: dict[str, Any] = {
                 "label": comp["label"],
                 "layer_display": comp["layer_display"],
@@ -255,29 +323,35 @@ def main() -> None:
             }
             if comp.get("reasoning"):
                 entry["reasoning"] = comp["reasoning"]
-            comp_data[comp["key"]] = entry
+            if comp.get("dataset_attributions"):
+                entry["dataset_attributions"] = comp["dataset_attributions"]
+            bin_data[comp["key"]] = entry
 
-        comp_path = out_dir / "components" / f"{slug}.json"
-        comp_path.write_text(json.dumps(comp_data))
+        total_comp_kb = 0
+        for bin_n, bin_data in sorted(bins.items()):
+            bin_path = out_dir / "components" / f"{slug}_bin{bin_n}.json"
+            bin_path.write_text(json.dumps(bin_data))
+            total_comp_kb += bin_path.stat().st_size // 1024
 
         # Collect labels for build-time resolution
         for comp in comps:
             labels[comp["key"]] = comp["label"]
 
-        w_kb = weights_path.stat().st_size // 1024
-        c_kb = comp_path.stat().st_size // 1024
-        print(f"  {canon}: {len(comps)}/{n_total} alive -> weights {w_kb}KB, components {c_kb}KB")
+        # sorted_keys: component keys in firing density descending order (comps already sorted)
+        sorted_keys = [comp["key"] for comp in comps]
 
-        index_entries.append(
-            {
-                "canonical": canon,
-                "display": canonical_display_name(canon),
-                "n_components": n_total,
-                "n_exported": len(comps),
-                "weights_file": f"weights/{slug}.json",
-                "components_file": f"components/{slug}.json",
-            }
-        )
+        w_kb = weights_path.stat().st_size // 1024
+        print(f"  {canon}: {len(comps)}/{n_total} alive -> weights {w_kb}KB, components {total_comp_kb}KB ({len(bins)} bins)")
+
+        index_entries.append({
+            "canonical": canon,
+            "display": canonical_display_name(canon),
+            "n_components": n_total,
+            "n_exported": len(comps),
+            "weights_file": f"weights/{slug}.json",
+            "bin_size": COMP_BIN_SIZE,
+            "sorted_keys": sorted_keys,
+        })
 
     index_path = out_dir / "index.json"
     index_path.write_text(json.dumps(index_entries, indent=2))
@@ -293,17 +367,18 @@ def main() -> None:
     showcase = []
     for canon in sorted(by_matrix.keys()):
         for comp in by_matrix[canon][:SHOWCASE_N_PER_MATRIX]:
-            showcase.append(
-                {
-                    "key": comp["key"],
-                    "label": comp["label"],
-                    "layer_display": comp["layer_display"],
-                    "firing_density": comp["firing_density"],
-                    "max_act": comp["max_act"],
-                    "reasoning": comp.get("reasoning"),
-                    "examples": comp["examples"],
-                }
-            )
+            entry = {
+                "key": comp["key"],
+                "label": comp["label"],
+                "layer_display": comp["layer_display"],
+                "firing_density": comp["firing_density"],
+                "max_act": comp["max_act"],
+                "reasoning": comp.get("reasoning"),
+                "examples": comp["examples"],
+            }
+            if comp.get("dataset_attributions"):
+                entry["dataset_attributions"] = comp["dataset_attributions"]
+            showcase.append(entry)
     showcase_path = out_dir.parent / "components.json"
     showcase_path.write_text(json.dumps(showcase))
     print(
