@@ -205,12 +205,20 @@ def _compute_layer_data(
     }
 
 
+def _make_label(prompt: str) -> str:
+    text = prompt.strip().replace("\n", " ")
+    if len(text) <= 50:
+        return text
+    return text[:50].rstrip() + "\u2026"
+
+
 def compute_data(
     wandb_path: ModelPath,
     prompts_file: str,
     layers: list[int] | None = None,
     min_density: float = MIN_DENSITY,
     top_k: int | None = None,
+    multiprompt: bool = False,
 ) -> None:
     _entity, _project, run_id = parse_wandb_run_path(str(wandb_path))
     run_info = SPDRunInfo.from_path(wandb_path)
@@ -248,8 +256,8 @@ def compute_data(
     prompts = load_prompts(Path(prompts_file))
     logger.info(f"Loaded {len(prompts)} prompts, computing for layers {layers}")
 
-    # Manifest: lightweight index listing available (prompt, layer) combos
     manifest_entries: list[dict[str, object]] = []
+    multiprompt_buckets: dict[int, list[dict[str, object]]] = {}
 
     for p_idx, prompt in enumerate(prompts):
         encoded = tokenizer.encode(prompt, add_special_tokens=False)
@@ -279,28 +287,42 @@ def compute_data(
             )
             layer_data["tokens"] = tokens
 
-            # Save one JSON per (prompt, layer)
-            filename = f"prompt_{p_idx}_layer_{layer_idx}.json"
-            layer_path = out_dir / filename
-            with open(layer_path, "w") as f:
-                json.dump(layer_data, f)
+            if multiprompt:
+                layer_data["label"] = _make_label(prompt)
+                multiprompt_buckets.setdefault(layer_idx, []).append(layer_data)
+            else:
+                filename = f"prompt_{p_idx}_layer_{layer_idx}.json"
+                layer_path = out_dir / filename
+                with open(layer_path, "w") as f:
+                    json.dump(layer_data, f)
 
-            manifest_entries.append(
-                {
-                    "prompt_idx": p_idx,
-                    "text": prompt[:200],
-                    "n_tokens": len(tokens),
-                    "layer_idx": layer_idx,
-                    "n_q_alive": len(q_alive),
-                    "n_k_alive": len(k_alive),
-                    "file": filename,
-                }
-            )
+                manifest_entries.append(
+                    {
+                        "prompt_idx": p_idx,
+                        "text": prompt[:200],
+                        "n_tokens": len(tokens),
+                        "layer_idx": layer_idx,
+                        "n_q_alive": len(q_alive),
+                        "n_k_alive": len(k_alive),
+                        "file": filename,
+                    }
+                )
 
-            size_mb = layer_path.stat().st_size / 1024 / 1024
-            logger.info(f"  Saved {filename} ({size_mb:.1f} MB)")
+                size_mb = layer_path.stat().st_size / 1024 / 1024
+                logger.info(f"  Saved {filename} ({size_mb:.1f} MB)")
 
         logger.info(f"[{p_idx + 1}/{len(prompts)}] {len(tokens)} tokens: {prompt[:60]}...")
+
+    for layer_idx, entries in multiprompt_buckets.items():
+        filename = f"layer_{layer_idx}.json"
+        layer_path = out_dir / filename
+        with open(layer_path, "w") as f:
+            json.dump({"prompts": entries}, f)
+        size_mb = layer_path.stat().st_size / 1024 / 1024
+        logger.info(f"Saved {filename} ({len(entries)} prompts, {size_mb:.1f} MB)")
+        manifest_entries.append(
+            {"layer_idx": layer_idx, "n_prompts": len(entries), "file": filename}
+        )
 
     # Save manifest
     manifest = {"run_id": run_id, "entries": manifest_entries}
