@@ -102,6 +102,7 @@ def _compute_layer_data(
     layer_idx: int,
     q_alive: list[int],
     k_alive: list[int],
+    top_k: int | None = None,
 ) -> dict[str, object]:
     """Compute W tensor, activations, and pair rankings for one layer."""
     q_path = f"h.{layer_idx}.attn.q_proj"
@@ -163,15 +164,31 @@ def _compute_layer_data(
     W_peak = np.abs(W).max(axis=(0, 1))  # (n_q_alive, n_k_alive)
     pair_scores = scale * W_peak * q_act_max[:, None] * k_act_max[None, :]
     flat_order = np.argsort(pair_scores.ravel())[::-1]
-    top_pairs = []
+    top_pairs_full = []
     for flat_idx in flat_order[:100]:
         qi, ki = divmod(int(flat_idx), len(k_alive))
-        top_pairs.append([qi, ki, float(pair_scores[qi, ki])])
+        top_pairs_full.append([qi, ki, float(pair_scores[qi, ki])])
 
     # Alive-only attention for validation
     component_attn = _compute_alive_only_attention(
         model, target_model, input_ids, layer_idx, q_alive, k_alive
     )
+
+    if top_k is not None:
+        top_pairs_full = top_pairs_full[:top_k]
+        used_qi = sorted({p[0] for p in top_pairs_full})
+        used_ki = sorted({p[1] for p in top_pairs_full})
+        qi_remap = {old: new for new, old in enumerate(used_qi)}
+        ki_remap = {old: new for new, old in enumerate(used_ki)}
+        top_pairs = [[qi_remap[p[0]], ki_remap[p[1]], p[2]] for p in top_pairs_full]
+        q_alive = [q_alive[i] for i in used_qi]
+        k_alive = [k_alive[i] for i in used_ki]
+        w_out = W[:, :, used_qi, :][:, :, :, used_ki]
+        q_acts_alive = q_acts_alive[:, used_qi]
+        k_acts_alive = k_acts_alive[:, used_ki]
+    else:
+        top_pairs = top_pairs_full
+        w_out = W
 
     return {
         "layer_idx": layer_idx,
@@ -180,7 +197,7 @@ def _compute_layer_data(
         "scale": scale,
         "alive_q": q_alive,
         "alive_k": k_alive,
-        "W": W.tolist(),
+        "W": w_out.tolist(),
         "q_acts": q_acts_alive.tolist(),
         "k_acts": k_acts_alive.tolist(),
         "component_model_attn": component_attn.tolist(),
@@ -193,6 +210,7 @@ def compute_data(
     prompts_file: str,
     layers: list[int] | None = None,
     min_density: float = MIN_DENSITY,
+    top_k: int | None = None,
 ) -> None:
     _entity, _project, run_id = parse_wandb_run_path(str(wandb_path))
     run_info = SPDRunInfo.from_path(wandb_path)
@@ -257,7 +275,7 @@ def compute_data(
                 continue
 
             layer_data = _compute_layer_data(
-                model, target_model, input_ids, layer_idx, q_alive, k_alive
+                model, target_model, input_ids, layer_idx, q_alive, k_alive, top_k
             )
             layer_data["tokens"] = tokens
 
