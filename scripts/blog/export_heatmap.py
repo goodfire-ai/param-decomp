@@ -59,19 +59,21 @@ def export_diffs(
             for t in range(len(spans)):
                 before_idx = probs_base[t].topk(8).indices
                 after_idx = probs_edit[t].topk(8).indices
-                tokens_out.append({
-                    "span": spans[t],
-                    "kl": round(kl[t].item(), 6),
-                    "fires": t in fires,
-                    "topk_before": [
-                        [tok.get_tok_display(int(j)), round(probs_base[t, j].item(), 4)]
-                        for j in before_idx
-                    ],
-                    "topk_after": [
-                        [tok.get_tok_display(int(j)), round(probs_edit[t, j].item(), 4)]
-                        for j in after_idx
-                    ],
-                })
+                tokens_out.append(
+                    {
+                        "span": spans[t],
+                        "kl": round(kl[t].item(), 6),
+                        "fires": t in fires,
+                        "topk_before": [
+                            [tok.get_tok_display(int(j)), round(probs_base[t, j].item(), 4)]
+                            for j in before_idx
+                        ],
+                        "topk_after": [
+                            [tok.get_tok_display(int(j)), round(probs_edit[t, j].item(), 4)]
+                            for j in after_idx
+                        ],
+                    }
+                )
             results.append({"tokens": tokens_out})
     return results
 

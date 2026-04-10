@@ -443,13 +443,48 @@ def _compute_overlap_matrix(
     return overlap
 
 
+def _compute_raw_fcs(matrices: list[NDArray[np.floating]]) -> NDArray[np.floating]:
+    """Frobenius cosine similarity between raw matrices (not their Grams).
+
+    Captures whether the full linear maps are similar, not just their read/write subspaces.
+    """
+    n = len(matrices)
+    flat = [m.ravel() for m in matrices]
+    norms = [float(np.linalg.norm(f)) for f in flat]
+    overlap = np.zeros((n, n))
+    for a in range(n):
+        for b in range(n):
+            overlap[a, b] = float(flat[a] @ flat[b]) / (norms[a] * norms[b])
+    return overlap
+
+
+def _analytical_fcs_baseline(m: int, n: int, write_side: bool = False, raw: bool = False) -> float:
+    """Analytical expected FCS between random (m x n) i.i.d. N(0,1) matrices.
+
+    For Gram FCS (raw=False):
+        Read Gram M = W^T W: baseline ≈ m / (m+n+1)
+        Write Gram M = W W^T: baseline ≈ n / (m+n+1)
+    For raw FCS (raw=True):
+        E[<W_a, W_b>_F] = 0 since entries are independent zero-mean, so baseline ≈ 0.
+    """
+    if raw:
+        return 0.0
+    if write_side:
+        return n / (m + n + 1)
+    return m / (m + n + 1)
+
+
 def _compute_random_fcs_baseline(
     d_head: int,
     d_model: int,
     n_trials: int = 1000,
     projection: NDArray[np.floating] | None = None,
+    write_side: bool = False,
+    raw: bool = False,
 ) -> tuple[float, float]:
-    """Expected Frobenius cosine similarity between Gram matrices of random matrices.
+    """Empirical FCS baseline between random matrices.
+
+    Also asserts consistency with the analytical formula (when no projection is applied).
 
     Args:
         d_head: Number of rows in each random matrix (head dimension).
@@ -457,7 +492,8 @@ def _compute_random_fcs_baseline(
         n_trials: Number of random pairs to average over.
         projection: If provided, each random W is right-multiplied by this matrix
             before computing the Gram matrix. Shape (d_model, k) for arbitrary k.
-            Use Z @ diag(s) for data-weighted baselines.
+        write_side: If True, compute W W^T (write Gram) instead of W^T W (read Gram).
+        raw: If True, compute FCS of the raw matrices (not their Grams).
 
     Returns:
         (mean, std) of the FCS across trials.
@@ -470,12 +506,31 @@ def _compute_random_fcs_baseline(
         if projection is not None:
             wa = wa @ projection
             wb = wb @ projection
-        ma = wa.T @ wa
-        mb = wb.T @ wb
-        vals[i] = float(np.trace(ma @ mb)) / (
-            float(np.linalg.norm(ma, "fro")) * float(np.linalg.norm(mb, "fro"))
+        if raw:
+            fa, fb = wa.ravel(), wb.ravel()
+            vals[i] = float(fa @ fb) / (float(np.linalg.norm(fa)) * float(np.linalg.norm(fb)))
+        elif write_side:
+            ma = wa @ wa.T
+            mb = wb @ wb.T
+            vals[i] = float(np.trace(ma @ mb)) / (
+                float(np.linalg.norm(ma, "fro")) * float(np.linalg.norm(mb, "fro"))
+            )
+        else:
+            ma = wa.T @ wa
+            mb = wb.T @ wb
+            vals[i] = float(np.trace(ma @ mb)) / (
+                float(np.linalg.norm(ma, "fro")) * float(np.linalg.norm(mb, "fro"))
+            )
+    empirical_mean = float(vals.mean())
+
+    if projection is None:
+        analytical = _analytical_fcs_baseline(d_head, d_model, write_side=write_side, raw=raw)
+        assert abs(empirical_mean - analytical) < 0.02, (
+            f"Empirical FCS baseline {empirical_mean:.4f} doesn't match "
+            f"analytical {analytical:.4f} for ({d_head}, {d_model}, write={write_side}, raw={raw})"
         )
-    return float(vals.mean()), float(vals.std())
+
+    return empirical_mean, float(vals.std())
 
 
 def _render_overlap_heatmap(
@@ -495,7 +550,7 @@ def _render_overlap_heatmap(
     mask = np.tri(n_heads, dtype=bool)
     overlap_masked = np.where(mask, overlap, np.nan)
 
-    im = ax.imshow(overlap_masked, cmap="Purples", vmin=0, vmax=1)
+    im = ax.imshow(overlap_masked, cmap="RdBu_r", vmin=-1, vmax=1)
 
     ax.set_xticks(range(n_heads))
     ax.set_xticklabels([f"H{h}" for h in range(n_heads)])
@@ -504,76 +559,274 @@ def _render_overlap_heatmap(
 
     for i in range(n_heads):
         for j in range(i + 1):
-            color = "white" if overlap[i, j] > 0.7 else "black"
+            color = "white" if abs(overlap[i, j]) > 0.5 else "black"
             ax.text(j, i, f"{overlap[i, j]:.2f}", ha="center", va="center", fontsize=9, color=color)
 
     for spine in ax.spines.values():
         spine.set_visible(False)
 
     if random_baseline is not None:
-        mean, std = random_baseline
-        title = f"{title}\n(random baseline: {mean:.3f} +/- {std:.3f})"
+        mean, _std = random_baseline
+        title = f"{title}\n(Random matrix baseline: {mean:.3f})"
 
     ax.set_title(title, fontsize=11, fontweight="bold")
     return im
 
 
 def _plot_combined_paper_figure(
-    v_weight_per_head: NDArray[np.floating],
+    weight_per_head: NDArray[np.floating],
     var_svectors: NDArray[np.floating],
     var_singular_values: NDArray[np.floating],
     layer: int,
     out_dir: Path,
+    title_prefix: str = "",
 ) -> None:
-    """Side-by-side: unweighted subspace overlap (left) and variance-weighted (right)."""
-    n_heads, head_dim, d_model = v_weight_per_head.shape
+    """Side-by-side read overlap: unweighted (left) and variance-weighted (right)."""
+    n_heads = weight_per_head.shape[0]
+    d_row = weight_per_head.shape[1]
+    d_model = weight_per_head.shape[2]
 
-    # Unweighted Gram matrices
-    M_unweighted = [v_weight_per_head[h].T @ v_weight_per_head[h] for h in range(n_heads)]
+    # Read Gram: W^T W
+    M_unweighted = [weight_per_head[h].T @ weight_per_head[h] for h in range(n_heads)]
     overlap_unweighted = _compute_overlap_matrix(M_unweighted)
 
-    # Variance-weighted Gram matrices
     Z_diag_s = var_svectors.T * var_singular_values[None, :]
     M_var = [
-        (v_weight_per_head[h] @ Z_diag_s).T @ (v_weight_per_head[h] @ Z_diag_s)
-        for h in range(n_heads)
+        (weight_per_head[h] @ Z_diag_s).T @ (weight_per_head[h] @ Z_diag_s) for h in range(n_heads)
     ]
     overlap_var = _compute_overlap_matrix(M_var)
 
-    # Random baselines
-    logger.info("Computing random baselines for FCS...")
-    baseline_unweighted = _compute_random_fcs_baseline(head_dim, d_model)
-    baseline_data_weighted = _compute_random_fcs_baseline(head_dim, d_model, projection=Z_diag_s)
-    logger.info(
-        f"Random baselines — unweighted: {baseline_unweighted[0]:.4f}, "
-        f"data-weighted: {baseline_data_weighted[0]:.4f}"
-    )
+    logger.info("Computing random baselines for read FCS...")
+    baseline_unweighted = _compute_random_fcs_baseline(d_row, d_model)
+    baseline_data_weighted = _compute_random_fcs_baseline(d_row, d_model, projection=Z_diag_s)
 
     fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(13, 5), constrained_layout=True)
 
+    prefix = f"{title_prefix} " if title_prefix else ""
     _render_overlap_heatmap(
-        ax_left, overlap_unweighted, "Subspace overlap", random_baseline=baseline_unweighted
+        ax_left,
+        overlap_unweighted,
+        f"{prefix}Read overlap",
+        random_baseline=baseline_unweighted,
     )
     im = _render_overlap_heatmap(
         ax_right,
         overlap_var,
-        "Data-weighted subspace overlap",
+        f"{prefix}Read overlap (data-weighted)",
         random_baseline=baseline_data_weighted,
     )
 
     fig.colorbar(im, ax=[ax_left, ax_right], shrink=0.8, pad=0.04, label="Cosine Similarity")
 
-    path = out_dir / f"layer{layer}_wv_overlap_combined.png"
+    path = out_dir / f"layer{layer}_read_overlap_combined.png"
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info(f"Saved {path}")
+
+
+def _plot_combined_write_figure(
+    weight_per_head: NDArray[np.floating],
+    var_svectors: NDArray[np.floating],
+    var_singular_values: NDArray[np.floating],
+    layer: int,
+    out_dir: Path,
+    title_prefix: str = "",
+) -> None:
+    """Side-by-side write overlap: unweighted (left) and variance-weighted (right)."""
+    n_heads = weight_per_head.shape[0]
+    d_row = weight_per_head.shape[1]
+    d_model = weight_per_head.shape[2]
+
+    # Write Gram: W W^T
+    M_unweighted = [weight_per_head[h] @ weight_per_head[h].T for h in range(n_heads)]
+    overlap_unweighted = _compute_overlap_matrix(M_unweighted)
+
+    Z_diag_s = var_svectors.T * var_singular_values[None, :]
+    M_var = [
+        (weight_per_head[h] @ Z_diag_s) @ (weight_per_head[h] @ Z_diag_s).T for h in range(n_heads)
+    ]
+    overlap_var = _compute_overlap_matrix(M_var)
+
+    logger.info("Computing random baselines for write FCS...")
+    baseline_unweighted = _compute_random_fcs_baseline(d_row, d_model, write_side=True)
+    baseline_data_weighted = _compute_random_fcs_baseline(
+        d_row, d_model, projection=Z_diag_s, write_side=True
+    )
+
+    fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(13, 5), constrained_layout=True)
+
+    prefix = f"{title_prefix} " if title_prefix else ""
+    _render_overlap_heatmap(
+        ax_left,
+        overlap_unweighted,
+        f"{prefix}Write overlap",
+        random_baseline=baseline_unweighted,
+    )
+    im = _render_overlap_heatmap(
+        ax_right,
+        overlap_var,
+        f"{prefix}Write overlap (data-weighted)",
+        random_baseline=baseline_data_weighted,
+    )
+
+    fig.colorbar(im, ax=[ax_left, ax_right], shrink=0.8, pad=0.04, label="Cosine Similarity")
+
+    path = out_dir / f"layer{layer}_write_overlap_combined.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Saved {path}")
+
+
+def _plot_ov_paper_figure(
+    weight_per_head: NDArray[np.floating],
+    var_svectors: NDArray[np.floating],
+    var_singular_values: NDArray[np.floating],
+    layer: int,
+    out_dir: Path,
+    data_label: str = "Data weighted",
+    filename_suffix: str = "",
+) -> None:
+    """1x3 paper figure: data-weighted read overlap, write overlap, and raw FCS."""
+    n_heads = weight_per_head.shape[0]
+    d_row = weight_per_head.shape[1]
+    d_model = weight_per_head.shape[2]
+
+    Z_diag_s = var_svectors.T * var_singular_values[None, :]
+
+    # Data-weighted matrices
+    W_dw = [weight_per_head[h] @ Z_diag_s for h in range(n_heads)]
+
+    # Read Gram: W^T W
+    M_read = [w.T @ w for w in W_dw]
+    overlap_read = _compute_overlap_matrix(M_read)
+
+    # Write Gram: W W^T
+    M_write = [w @ w.T for w in W_dw]
+    overlap_write = _compute_overlap_matrix(M_write)
+
+    # Raw FCS
+    overlap_raw = _compute_raw_fcs(W_dw)
+
+    logger.info("Computing random baselines for OV paper figure...")
+    baseline_read = _compute_random_fcs_baseline(d_row, d_model, projection=Z_diag_s)
+    baseline_write = _compute_random_fcs_baseline(
+        d_row, d_model, projection=Z_diag_s, write_side=True
+    )
+    baseline_raw = _compute_random_fcs_baseline(d_row, d_model, projection=Z_diag_s, raw=True)
+
+    fig, (ax_read, ax_write, ax_raw) = plt.subplots(1, 3, figsize=(19, 5), constrained_layout=True)
+
+    _render_overlap_heatmap(
+        ax_read,
+        overlap_read,
+        f"Read subspace cosine sim ({data_label})",
+        random_baseline=baseline_read,
+    )
+    _render_overlap_heatmap(
+        ax_write,
+        overlap_write,
+        f"Write subspace cosine sim ({data_label})",
+        random_baseline=baseline_write,
+    )
+    im = _render_overlap_heatmap(
+        ax_raw,
+        overlap_raw,
+        f"Raw cosine sim ({data_label})",
+        random_baseline=baseline_raw,
+    )
+
+    fig.colorbar(
+        im, ax=[ax_read, ax_write, ax_raw], shrink=0.8, pad=0.02, label="Cosine Similarity"
+    )
+
+    path = out_dir / f"layer{layer}_ov_paper_figure{filename_suffix}.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Saved {path}")
+
+
+FAST_N_BATCHES = 10
+
+
+def _collect_qk_filtered_activations(
+    component_model: "ComponentModel",
+    loader: "torch.utils.data.DataLoader[dict[str, torch.Tensor]]",
+    column_name: str,
+    layer: int,
+    seq_len: int,
+    q_idx: int,
+    k_idx: int,
+    n_batches: int,
+    device: torch.device,
+    ci_threshold: float = 0.5,
+) -> torch.Tensor:
+    """Collect post-RMSNorm activations filtered to tokens where both QK components are active.
+
+    Returns: (n_filtered_tokens, d_model)
+    """
+    q_path = f"h.{layer}.attn.q_proj"
+    k_path = f"h.{layer}.attn.k_proj"
+
+    all_acts: list[torch.Tensor] = []
+    total_tokens = 0
+    filtered_tokens = 0
+
+    with torch.no_grad():
+        for i, batch in enumerate(loader):
+            if i >= n_batches:
+                break
+            input_ids = batch[column_name][:, :seq_len].to(device)
+            out = component_model(input_ids, cache_type="input")
+            ci = component_model.calc_causal_importances(
+                out.cache, sampling="continuous", detach_inputs=True
+            )
+
+            q_ci = ci.lower_leaky[q_path][:, :, q_idx]  # (batch, seq)
+            k_ci = ci.lower_leaky[k_path][:, :, k_idx]  # (batch, seq)
+            mask = (q_ci > ci_threshold) & (k_ci > ci_threshold)  # (batch, seq)
+
+            # The input cache for q_proj IS the post-RMSNorm activation
+            acts = out.cache[q_path].float().cpu()  # (batch, seq, d_model)
+            mask_cpu = mask.cpu()
+
+            total_tokens += mask_cpu.numel()
+            filtered_tokens += mask_cpu.sum().item()
+            all_acts.append(acts[mask_cpu])  # (n_passing, d_model)
+
+            if (i + 1) % 25 == 0:
+                logger.info(
+                    f"QK filter: {i + 1}/{n_batches} batches, "
+                    f"{filtered_tokens}/{total_tokens} tokens pass ({filtered_tokens / total_tokens:.1%})"
+                )
+
+    result = torch.cat(all_acts, dim=0)
+    logger.info(
+        f"QK filter complete: {filtered_tokens}/{total_tokens} tokens pass "
+        f"({filtered_tokens / total_tokens:.1%}), shape {result.shape}"
+    )
+    return result
+
+
+def _compute_variance_svd(
+    activations: torch.Tensor,
+) -> tuple[NDArray[np.floating], NDArray[np.floating]]:
+    """Compute mean-centered SVD of activations. Returns (singular_values, svectors)."""
+    activations_centered = activations - activations.mean(dim=0, keepdim=True)
+    _, sv_t, Vt = torch.linalg.svd(activations_centered, full_matrices=False)
+    return sv_t.numpy(), Vt.numpy()
 
 
 def plot_wv_subspace_overlap(
     wandb_path: ModelPath,
     layer: int = 1,
     n_batches: int = N_BATCHES,
+    fast: bool = False,
+    qk_filter: str | None = None,
 ) -> None:
+    if fast:
+        n_batches = FAST_N_BATCHES
+        logger.info(f"Fast mode: n_batches={n_batches}, skipping individual plots")
+
     _entity, _project, run_id = parse_wandb_run_path(str(wandb_path))
     run_info = SPDRunInfo.from_path(wandb_path)
 
@@ -626,41 +879,116 @@ def plot_wv_subspace_overlap(
 
     # 2b. SVD of mean-centered residual stream (variance weighting)
     logger.info("Computing mean-centered residual stream SVD...")
-    activations_centered = activations - activations.mean(dim=0, keepdim=True)
-    _, var_singular_values_t, var_Vt = torch.linalg.svd(activations_centered, full_matrices=False)
-    var_singular_values = var_singular_values_t.numpy()  # (d_model,)
-    var_svectors = var_Vt.numpy()  # (d_model, d_model) — rows are principal components
+    var_singular_values, var_svectors = _compute_variance_svd(activations)
 
     # 3. Extract per-head W_V
     v_weight = target_model._h[layer].attn.v_proj.weight.detach().float().cpu().numpy()
     # v_weight shape: (n_heads * head_dim, d_model)
     v_weight_per_head = v_weight.reshape(n_heads, head_dim, d_model)
 
-    # 4. Plots
-    _plot_wv_subspace_overlap(v_weight_per_head, layer, out_dir)
-    _plot_wv_strength_weighted_overlap(v_weight_per_head, layer, out_dir)
-    _plot_wv_data_weighted_overlap(
-        v_weight_per_head, data_svectors, singular_values, layer, out_dir
-    )
-    _plot_wv_variance_weighted_overlap(
-        v_weight_per_head, var_svectors, var_singular_values, layer, out_dir
-    )
-    _plot_wv_data_strength_weighted_overlap(
-        v_weight_per_head, data_svectors, singular_values, layer, out_dir
-    )
+    # 3b. Extract per-head W_OV = W_O_head @ W_V_head
+    o_weight = target_model._h[layer].attn.o_proj.weight.detach().float().cpu().numpy()
+    # o_weight: (d_model, n_heads * head_dim) — heads partition the input (columns)
+    ov_weight_per_head = np.zeros((n_heads, d_model, d_model))
+    for h in range(n_heads):
+        o_h = o_weight[:, h * head_dim : (h + 1) * head_dim]  # (d_model, head_dim)
+        ov_weight_per_head[h] = o_h @ v_weight_per_head[h]  # (d_model, d_model)
 
-    # 5. Combined paper figure
-    _plot_combined_paper_figure(
-        v_weight_per_head, var_svectors, var_singular_values, layer, out_dir
-    )
-
-    # 6. Component-head amplification
+    # 4. Load SPD component model
     logger.info("Loading SPD component model...")
     component_model = ComponentModel.from_pretrained(wandb_path)
+    component_model.to(device).eval()
     v_component = component_model.components[f"h.{layer}.attn.v_proj"]
     component_V = v_component.V.detach().float().cpu().numpy()  # (d_model, n_components)
     logger.info(f"Value components: {component_V.shape[1]}")
-    _plot_component_head_amplification(v_weight_per_head, component_V, layer, out_dir)
+
+    # 5. Generate plots for both W_V and W_OV
+    def _run_all_plots(
+        weight_per_head: NDArray[np.floating],
+        plot_out_dir: Path,
+        title_prefix: str,
+        is_ov: bool = False,
+    ) -> None:
+        plot_out_dir.mkdir(exist_ok=True)
+        if not fast:
+            _plot_wv_subspace_overlap(weight_per_head, layer, plot_out_dir)
+            _plot_wv_strength_weighted_overlap(weight_per_head, layer, plot_out_dir)
+            _plot_wv_data_weighted_overlap(
+                weight_per_head, data_svectors, singular_values, layer, plot_out_dir
+            )
+            _plot_wv_variance_weighted_overlap(
+                weight_per_head, var_svectors, var_singular_values, layer, plot_out_dir
+            )
+            _plot_wv_data_strength_weighted_overlap(
+                weight_per_head, data_svectors, singular_values, layer, plot_out_dir
+            )
+        _plot_combined_paper_figure(
+            weight_per_head,
+            var_svectors,
+            var_singular_values,
+            layer,
+            plot_out_dir,
+            title_prefix=title_prefix,
+        )
+        _plot_combined_write_figure(
+            weight_per_head,
+            var_svectors,
+            var_singular_values,
+            layer,
+            plot_out_dir,
+            title_prefix=title_prefix,
+        )
+        _plot_component_head_amplification(weight_per_head, component_V, layer, plot_out_dir)
+        if is_ov:
+            _plot_ov_paper_figure(
+                weight_per_head,
+                var_svectors,
+                var_singular_values,
+                layer,
+                plot_out_dir,
+            )
+
+    logger.info("Generating W_OV plots...")
+    _run_all_plots(ov_weight_per_head, out_dir / "ov", title_prefix="W_OV", is_ov=True)
+
+    # 6. QK-filtered OV analysis
+    if qk_filter is not None:
+        if isinstance(qk_filter, tuple):
+            q_idx, k_idx = int(qk_filter[0]), int(qk_filter[1])
+        else:
+            q_idx, k_idx = (int(x) for x in str(qk_filter).split(","))
+        logger.info(f"Collecting QK-filtered activations (q={q_idx}, k={k_idx})...")
+
+        # Need a fresh loader since the previous one was consumed
+        filtered_loader, _ = create_data_loader(
+            dataset_config=dataset_config, batch_size=BATCH_SIZE, buffer_size=1000
+        )
+        filtered_acts = _collect_qk_filtered_activations(
+            component_model,
+            filtered_loader,
+            task_config.column_name,
+            layer,
+            task_config.max_seq_len,
+            q_idx,
+            k_idx,
+            n_batches,
+            device,
+        )
+
+        logger.info("Computing QK-filtered variance SVD...")
+        filt_var_sv, filt_var_svectors = _compute_variance_svd(filtered_acts)
+
+        qk_out_dir = out_dir / "ov" / f"qk_{q_idx}_{k_idx}"
+        qk_out_dir.mkdir(parents=True, exist_ok=True)
+        _plot_ov_paper_figure(
+            ov_weight_per_head,
+            filt_var_svectors,
+            filt_var_sv,
+            layer,
+            qk_out_dir,
+            data_label=f"Data weighted: Q.{q_idx}, K.{k_idx}",
+            filename_suffix=f"_qk_{q_idx}_{k_idx}",
+        )
 
     logger.info(f"All outputs saved to {out_dir}")
 

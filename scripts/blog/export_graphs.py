@@ -108,11 +108,13 @@ def convert_examples(
         local_max = max((abs(a) for a in window_acts), default=0.0)
         global_max_act = max(global_max_act, local_max)
 
-        out.append({
-            "t": list(spans[start:end]),
-            "c": [round(ci, 4) for ci in ci_values[start:end]],
-            "a": [round(a, 4) for a in window_acts],
-        })
+        out.append(
+            {
+                "t": list(spans[start:end]),
+                "c": [round(ci, 4) for ci in ci_values[start:end]],
+                "a": [round(a, 4) for a in window_acts],
+            }
+        )
     return {"examples": out, "max_act": round(global_max_act, 4)}
 
 
@@ -159,11 +161,13 @@ def build_dataset_attributions(
         for entry in entries:
             graph_key = find_graph_key(entry.layer, entry.component_idx)
             label = resolve_label(entry.layer, entry.component_idx)
-            result.append({
-                "key": graph_key,
-                "label": label,
-                "value": round(entry.value, 4),
-            })
+            result.append(
+                {
+                    "key": graph_key,
+                    "label": label,
+                    "value": round(entry.value, 4),
+                }
+            )
         return result
 
     pos_sources = storage.get_top_sources(storage_key, top_k, "positive", "attr_abs")
@@ -254,12 +258,14 @@ def build_graph(
             continue
 
         if is_allowed(src, e["source"]["layer"]) and is_allowed(tgt, e["target"]["layer"]):
-            edges.append({
-                "src": src,
-                "tgt": tgt,
-                "val": e["strength"],
-                "is_cross_seq": e["is_cross_seq"],
-            })
+            edges.append(
+                {
+                    "src": src,
+                    "tgt": tgt,
+                    "val": e["strength"],
+                    "is_cross_seq": e["is_cross_seq"],
+                }
+            )
             active_keys.add(src)
             active_keys.add(tgt)
 
@@ -372,7 +378,9 @@ def build_graph(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out-dir", type=Path, required=True, help="Output directory for graph JSON files")
+    parser.add_argument(
+        "--out-dir", type=Path, required=True, help="Output directory for graph JSON files"
+    )
     args = parser.parse_args()
 
     out_dir: Path = args.out_dir

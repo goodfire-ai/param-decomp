@@ -89,11 +89,13 @@ def convert_examples(
         local_max = max((abs(a) for a in window_acts), default=0.0)
         global_max_act = max(global_max_act, local_max)
 
-        out.append({
-            "t": list(spans[start:end]),
-            "c": [round(ci, 4) for ci in ci_values[start:end]],
-            "a": [round(a, 4) for a in window_acts],
-        })
+        out.append(
+            {
+                "t": list(spans[start:end]),
+                "c": [round(ci, 4) for ci in ci_values[start:end]],
+                "a": [round(a, 4) for a in window_acts],
+            }
+        )
     return out, round(global_max_act, 4)
 
 
@@ -193,7 +195,9 @@ def main() -> None:
             comp["reasoning"] = reasoning
         by_matrix.setdefault(canonical, []).append(comp)
 
-    print(f"  Skipped {n_skipped_dead} dead (ci <= {ALIVE_CI_THRESHOLD}), {n_skipped_unlabeled} unlabeled")
+    print(
+        f"  Skipped {n_skipped_dead} dead (ci <= {ALIVE_CI_THRESHOLD}), {n_skipped_unlabeled} unlabeled"
+    )
 
     for canon in by_matrix:
         by_matrix[canon].sort(key=lambda c: c["firing_density"], reverse=True)
@@ -264,14 +268,16 @@ def main() -> None:
         c_kb = comp_path.stat().st_size // 1024
         print(f"  {canon}: {len(comps)}/{n_total} alive -> weights {w_kb}KB, components {c_kb}KB")
 
-        index_entries.append({
-            "canonical": canon,
-            "display": canonical_display_name(canon),
-            "n_components": n_total,
-            "n_exported": len(comps),
-            "weights_file": f"weights/{slug}.json",
-            "components_file": f"components/{slug}.json",
-        })
+        index_entries.append(
+            {
+                "canonical": canon,
+                "display": canonical_display_name(canon),
+                "n_components": n_total,
+                "n_exported": len(comps),
+                "weights_file": f"weights/{slug}.json",
+                "components_file": f"components/{slug}.json",
+            }
+        )
 
     index_path = out_dir / "index.json"
     index_path.write_text(json.dumps(index_entries, indent=2))
@@ -279,24 +285,30 @@ def main() -> None:
     # Labels: key→label for build-time <comp> tag resolution (not loaded at runtime)
     labels_path = out_dir / "labels.json"
     labels_path.write_text(json.dumps(labels))
-    print(f"Labels: {len(labels)} components -> {labels_path.name} ({labels_path.stat().st_size // 1024}KB)")
+    print(
+        f"Labels: {len(labels)} components -> {labels_path.name} ({labels_path.stat().st_size // 1024}KB)"
+    )
 
     # Showcase: full component data for the carousel (loaded on page load)
     showcase = []
     for canon in sorted(by_matrix.keys()):
         for comp in by_matrix[canon][:SHOWCASE_N_PER_MATRIX]:
-            showcase.append({
-                "key": comp["key"],
-                "label": comp["label"],
-                "layer_display": comp["layer_display"],
-                "firing_density": comp["firing_density"],
-                "max_act": comp["max_act"],
-                "reasoning": comp.get("reasoning"),
-                "examples": comp["examples"],
-            })
+            showcase.append(
+                {
+                    "key": comp["key"],
+                    "label": comp["label"],
+                    "layer_display": comp["layer_display"],
+                    "firing_density": comp["firing_density"],
+                    "max_act": comp["max_act"],
+                    "reasoning": comp.get("reasoning"),
+                    "examples": comp["examples"],
+                }
+            )
     showcase_path = out_dir.parent / "components.json"
     showcase_path.write_text(json.dumps(showcase))
-    print(f"Showcase: {len(showcase)} components -> {showcase_path.name} ({showcase_path.stat().st_size // 1024}KB)")
+    print(
+        f"Showcase: {len(showcase)} components -> {showcase_path.name} ({showcase_path.stat().st_size // 1024}KB)"
+    )
 
     print(f"\nDone: {len(index_entries)} matrices -> {index_path}")
 
