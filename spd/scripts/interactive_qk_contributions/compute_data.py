@@ -8,18 +8,25 @@ Usage:
     python -m spd.scripts.interactive_qk_contributions.compute_data \
         wandb:goodfire/spd/runs/<run_id> \
         --prompts_file path/to/prompts.json
+
+    python -m spd.scripts.interactive_qk_contributions.compute_data \
+        wandb:goodfire/spd/runs/<run_id> \
+        --dataset_samples 30 --seq_len 12
 """
 
 import json
 import math
+import random
 from pathlib import Path
 
 import fire
 import numpy as np
 import torch
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
+from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.configs import LMTaskConfig
+from spd.data import DatasetConfig, create_data_loader
 from spd.harvest.repo import HarvestRepo
 from spd.harvest.schemas import ComponentSummary
 from spd.log import logger
@@ -212,14 +219,77 @@ def _make_label(prompt: str) -> str:
     return text[:50].rstrip() + "\u2026"
 
 
+def _samples_from_prompts_file(
+    prompts_file: str,
+    tokenizer: PreTrainedTokenizerBase,
+    max_seq_len: int,
+) -> list[tuple[list[int], str]]:
+    """Load prompts from JSON file, tokenize, return (token_ids, label) pairs."""
+    prompts = load_prompts(Path(prompts_file))
+    samples = []
+    for prompt in prompts:
+        encoded = tokenizer.encode(prompt, add_special_tokens=False)  # pyright: ignore[reportAttributeAccessIssue]
+        if len(encoded) > max_seq_len:
+            encoded = encoded[:max_seq_len]
+        samples.append((encoded, _make_label(prompt)))
+    return samples
+
+
+def _samples_from_dataset(
+    task_config: LMTaskConfig,
+    tokenizer_name: str,
+    n_samples: int,
+    seq_len: int,
+    seed: int = 42,
+) -> list[tuple[list[int], str]]:
+    """Sample random subsequences from the training dataset."""
+    dataset_config = DatasetConfig(
+        name=task_config.dataset_name,
+        hf_tokenizer_path=tokenizer_name,
+        split=task_config.train_data_split,
+        n_ctx=task_config.max_seq_len,
+        is_tokenized=task_config.is_tokenized,
+        streaming=task_config.streaming,
+        column_name=task_config.column_name,
+        shuffle_each_epoch=False,
+    )
+    loader, tokenizer = create_data_loader(
+        dataset_config=dataset_config,
+        batch_size=1,
+        buffer_size=1000,
+        global_seed=seed,
+    )
+
+    rng = random.Random(seed)
+    samples: list[tuple[list[int], str]] = []
+    for batch in loader:
+        if len(samples) >= n_samples:
+            break
+        ids = batch[task_config.column_name][0].tolist()
+        if len(ids) < seq_len:
+            continue
+        start = rng.randint(0, len(ids) - seq_len)
+        subseq = ids[start : start + seq_len]
+        label = tokenizer.decode(subseq)  # pyright: ignore[reportAttributeAccessIssue]
+        samples.append((subseq, _make_label(label)))
+
+    return samples
+
+
 def compute_data(
     wandb_path: ModelPath,
-    prompts_file: str,
+    prompts_file: str | None = None,
+    dataset_samples: int | None = None,
+    seq_len: int = 12,
     layers: list[int] | None = None,
     min_density: float = MIN_DENSITY,
     top_k: int | None = None,
     multiprompt: bool = False,
+    seed: int = 42,
 ) -> None:
+    assert (prompts_file is None) != (dataset_samples is None), \
+        "Specify exactly one of --prompts_file or --dataset_samples"
+
     _entity, _project, run_id = parse_wandb_run_path(str(wandb_path))
     run_info = SPDRunInfo.from_path(wandb_path)
     config = run_info.config
@@ -242,7 +312,6 @@ def compute_data(
     tokenizer = AutoTokenizer.from_pretrained(config.tokenizer_name)
     task_config = config.task_config
     assert isinstance(task_config, LMTaskConfig)
-    max_seq_len = task_config.max_seq_len
 
     # Harvest data for alive filtering
     repo = HarvestRepo.open_most_recent(run_id)
@@ -253,19 +322,27 @@ def compute_data(
     if layers is None:
         layers = list(range(n_layers))
 
-    prompts = load_prompts(Path(prompts_file))
-    logger.info(f"Loaded {len(prompts)} prompts, computing for layers {layers}")
+    # Build samples: list of (token_ids, label)
+    if prompts_file is not None:
+        samples = _samples_from_prompts_file(
+            prompts_file, tokenizer, task_config.max_seq_len
+        )
+    else:
+        assert dataset_samples is not None
+        samples = _samples_from_dataset(
+            task_config, config.tokenizer_name, dataset_samples, seq_len, seed
+        )
+
+    logger.info(f"Loaded {len(samples)} samples, computing for layers {layers}")
 
     manifest_entries: list[dict[str, object]] = []
     multiprompt_buckets: dict[int, list[dict[str, object]]] = {}
 
-    for p_idx, prompt in enumerate(prompts):
-        encoded = tokenizer.encode(prompt, add_special_tokens=False)
-        if len(encoded) > max_seq_len:
-            encoded = encoded[:max_seq_len]
+    app_tokenizer = AppTokenizer(tokenizer)
 
+    for p_idx, (encoded, label) in enumerate(samples):
         input_ids = torch.tensor([encoded], device=device)
-        tokens = [tokenizer.decode([t]) for t in encoded]  # pyright: ignore[reportAttributeAccessIssue]
+        tokens = app_tokenizer.get_spans(encoded)
 
         for layer_idx in layers:
             q_path = f"h.{layer_idx}.attn.q_proj"
@@ -288,7 +365,7 @@ def compute_data(
             layer_data["tokens"] = tokens
 
             if multiprompt:
-                layer_data["label"] = _make_label(prompt)
+                layer_data["label"] = label
                 multiprompt_buckets.setdefault(layer_idx, []).append(layer_data)
             else:
                 filename = f"prompt_{p_idx}_layer_{layer_idx}.json"
@@ -299,7 +376,7 @@ def compute_data(
                 manifest_entries.append(
                     {
                         "prompt_idx": p_idx,
-                        "text": prompt[:200],
+                        "text": label,
                         "n_tokens": len(tokens),
                         "layer_idx": layer_idx,
                         "n_q_alive": len(q_alive),
@@ -311,7 +388,7 @@ def compute_data(
                 size_mb = layer_path.stat().st_size / 1024 / 1024
                 logger.info(f"  Saved {filename} ({size_mb:.1f} MB)")
 
-        logger.info(f"[{p_idx + 1}/{len(prompts)}] {len(tokens)} tokens: {prompt[:60]}...")
+        logger.info(f"[{p_idx + 1}/{len(samples)}] {len(tokens)} tokens: {label}")
 
     for layer_idx, entries in multiprompt_buckets.items():
         filename = f"layer_{layer_idx}.json"
