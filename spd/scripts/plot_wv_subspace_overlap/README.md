@@ -26,15 +26,15 @@ python -m spd.scripts.plot_wv_subspace_overlap.plot_wv_subspace_overlap \
 python -m spd.scripts.plot_wv_subspace_overlap.plot_wv_subspace_overlap \
     wandb:goodfire/spd/runs/<run_id> --layer 1 --fast
 
-# With QK-filtered data weighting (filter activations to tokens where
-# both Q component 316 and K component 329 are causally important)
+# With K-filtered data weighting (filter activations to tokens where
+# K component 329 is causally important — the attended-to positions)
 python -m spd.scripts.plot_wv_subspace_overlap.plot_wv_subspace_overlap \
-    wandb:goodfire/spd/runs/<run_id> --layer 1 --qk_filter 316,329
+    wandb:goodfire/spd/runs/<run_id> --layer 1 --k_filter 329
 ```
 
 ### `analyze_ov_subspace_semantics.py` — Semantic analysis
 
-Identifies which SPD V and O components most align with each head's OV subspace. Requires `plot_wv_subspace_overlap.py` to have been run first (uses saved `.npy` files). Auto-discovers any QK-filtered SVD data and produces a variant for each.
+Identifies which SPD V and O components most align with each head's OV subspace. Requires `plot_wv_subspace_overlap.py` to have been run first (uses saved `.npy` files). Auto-discovers any K-filtered SVD data and produces a variant for each.
 
 ```bash
 python -m spd.scripts.plot_wv_subspace_overlap.analyze_ov_subspace_semantics \
@@ -122,13 +122,15 @@ For W_OV (`m = n = 768`): read and write baselines are both ~0.500. For data-wei
 
 Values above baseline indicate genuine structural similarity; values at or below baseline are consistent with random matrices.
 
-### Step 7: QK-filtered data weighting
+### Step 7: K-filtered data weighting
 
-The data weighting in Step 5 uses all tokens. But different QK component interactions are only active on subsets of tokens. To understand the OV circuit's behavior *when a specific QK interaction is active*, we can filter the activations:
+The data weighting in Step 5 uses all tokens. But the OV circuit reads from key/value positions — the attended-to tokens. When studying a particular attention behavior, the relevant input distribution is the activations at positions where the K component fires.
+
+To filter:
 
 1. Run the SPD ComponentModel on the data with `cache_type="input"`
-2. Compute causal importance (CI) for specified Q and K components (using `sampling="continuous"`)
-3. Keep only tokens where both have CI > 0.5
+2. Compute causal importance (CI) for the specified K component (using `sampling="continuous"`)
+3. Keep only tokens where the K component has CI > 0.5
 4. Compute PCA on the filtered activations
 5. Use the filtered PCA for data weighting
 
@@ -159,7 +161,7 @@ write_alignment[h, c] = ||W_OV^{hT} @ u_scaled_c||
 Three variants are produced:
 - **Raw** (`raw/`): alignment on raw `W_OV`
 - **Data weighted** (`data_weighted/`): alignment on `W_OV @ Z_diag_s` (all-token PCA)
-- **QK-filtered** (`qk_*/`): alignment on `W_OV @ Z_diag_s_filtered` (auto-discovered from saved QK-filtered SVD data)
+- **K-filtered** (`k_*/`): alignment on `W_OV @ Z_diag_s_filtered` (auto-discovered from saved K-filtered SVD data)
 
 Each outputs a markdown file with per-head tables of the top-20 V and O components ranked by alignment, with their autointerp labels.
 
@@ -177,10 +179,10 @@ out/<run_id>/ov/
 ├── layer1_ov_weight_per_head.npy           # (n_heads, d_model, d_model) — for semantics script
 ├── layer1_var_svectors.npy                 # (d_model, d_model) — PCA right singular vectors
 ├── layer1_var_singular_values.npy          # (d_model,) — PCA singular values
-└── qk_316_329/                             # only if --qk_filter was used
-    ├── layer1_ov_paper_figure_qk_316_329.png
-    ├── layer1_var_svectors.npy             # QK-filtered PCA vectors
-    └── layer1_var_singular_values.npy      # QK-filtered PCA singular values
+└── k_329/                                  # only if --k_filter was used
+    ├── layer1_ov_paper_figure_k_329.png
+    ├── layer1_var_svectors.npy             # K-filtered PCA vectors
+    └── layer1_var_singular_values.npy      # K-filtered PCA singular values
 ```
 
 In full (non-`--fast`) mode, these additional individual variant plots are also produced:
@@ -200,8 +202,8 @@ out/<run_id>/ov/
 │   └── layer1_subspace_semantics.md        # component alignment on raw W_OV
 ├── data_weighted/
 │   └── layer1_subspace_semantics.md        # component alignment on PCA-weighted W_OV
-└── qk_316_329/                             # auto-discovered from saved QK-filtered SVD
-    └── layer1_subspace_semantics.md        # component alignment with QK-filtered weighting
+└── k_329/                                  # auto-discovered from saved K-filtered SVD
+    └── layer1_subspace_semantics.md        # component alignment with K-filtered weighting
 ```
 
 ## Key equations reference

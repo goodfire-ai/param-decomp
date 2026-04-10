@@ -4,9 +4,10 @@ Loads saved W_OV matrices from plot_wv_subspace_overlap and computes alignment s
 between each head's OV circuit and the SPD component decomposition vectors. Outputs
 markdown files listing the top-aligned components per head with their autointerp labels.
 
-Produces two variants:
+Produces variants:
   - Raw: alignment computed on raw W_OV matrices
   - Data-weighted: alignment computed on W_OV @ Z_bar @ S_bar (PCA-weighted)
+  - K-filtered: alignment using PCA of activations at K-component-active positions (auto-discovered)
 
 Usage:
     python -m spd.scripts.plot_wv_subspace_overlap.analyze_ov_subspace_semantics \
@@ -177,22 +178,22 @@ def analyze_ov_subspace_semantics(
         ),
     ]
 
-    # Discover QK-filtered SVD data
-    for qk_dir in sorted(data_dir.glob("qk_*")):
-        sv_path = qk_dir / f"layer{layer}_var_svectors.npy"
-        s_path = qk_dir / f"layer{layer}_var_singular_values.npy"
+    # Discover K-filtered SVD data
+    for k_dir in sorted(data_dir.glob("k_*")):
+        sv_path = k_dir / f"layer{layer}_var_svectors.npy"
+        s_path = k_dir / f"layer{layer}_var_singular_values.npy"
         if sv_path.exists() and s_path.exists():
-            qk_label = qk_dir.name.replace("qk_", "Q.").replace("_", ", K.")
+            k_label = k_dir.name.replace("k_", "K.")
             filt_svectors = np.load(sv_path)
             filt_sv = np.load(s_path)
             variants.append(
                 (
-                    f"Data weighted: {qk_label}",
+                    f"Data weighted: {k_label}",
                     _apply_data_weighting(filt_svectors, filt_sv),
-                    qk_dir.name,
+                    k_dir.name,
                 )
             )
-            logger.info(f"Found QK-filtered data: {qk_dir.name}")
+            logger.info(f"Found K-filtered data: {k_dir.name}")
 
     for variant_label, ov_matrices, subdir in variants:
         logger.info(f"Computing {variant_label} alignments...")

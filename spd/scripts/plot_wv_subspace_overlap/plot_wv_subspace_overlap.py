@@ -755,23 +755,25 @@ def _plot_ov_paper_figure(
 FAST_N_BATCHES = 10
 
 
-def _collect_qk_filtered_activations(
+def _collect_k_filtered_activations(
     component_model: "ComponentModel",
     loader: "torch.utils.data.DataLoader[dict[str, torch.Tensor]]",
     column_name: str,
     layer: int,
     seq_len: int,
-    q_idx: int,
     k_idx: int,
     n_batches: int,
     device: torch.device,
     ci_threshold: float = 0.5,
 ) -> torch.Tensor:
-    """Collect post-RMSNorm activations filtered to tokens where both QK components are active.
+    """Collect post-RMSNorm activations filtered to tokens where a K component is active.
+
+    The OV circuit reads from the residual stream at key positions (the attended-to
+    tokens). Filtering to positions where the K component fires gives us the input
+    distribution the OV circuit actually sees when this K component is active.
 
     Returns: (n_filtered_tokens, d_model)
     """
-    q_path = f"h.{layer}.attn.q_proj"
     k_path = f"h.{layer}.attn.k_proj"
 
     all_acts: list[torch.Tensor] = []
@@ -788,12 +790,11 @@ def _collect_qk_filtered_activations(
                 out.cache, sampling="continuous", detach_inputs=True
             )
 
-            q_ci = ci.lower_leaky[q_path][:, :, q_idx]  # (batch, seq)
             k_ci = ci.lower_leaky[k_path][:, :, k_idx]  # (batch, seq)
-            mask = (q_ci > ci_threshold) & (k_ci > ci_threshold)  # (batch, seq)
+            mask = k_ci > ci_threshold  # (batch, seq)
 
-            # The input cache for q_proj IS the post-RMSNorm activation
-            acts = out.cache[q_path].float().cpu()  # (batch, seq, d_model)
+            # The input cache for k_proj IS the post-RMSNorm activation
+            acts = out.cache[k_path].float().cpu()  # (batch, seq, d_model)
             mask_cpu = mask.cpu()
 
             total_tokens += mask_cpu.numel()
@@ -802,13 +803,13 @@ def _collect_qk_filtered_activations(
 
             if (i + 1) % 25 == 0:
                 logger.info(
-                    f"QK filter: {i + 1}/{n_batches} batches, "
+                    f"K filter: {i + 1}/{n_batches} batches, "
                     f"{filtered_tokens}/{total_tokens} tokens pass ({filtered_tokens / total_tokens:.1%})"
                 )
 
     result = torch.cat(all_acts, dim=0)
     logger.info(
-        f"QK filter complete: {filtered_tokens}/{total_tokens} tokens pass "
+        f"K filter complete: {filtered_tokens}/{total_tokens} tokens pass "
         f"({filtered_tokens / total_tokens:.1%}), shape {result.shape}"
     )
     return result
@@ -828,7 +829,7 @@ def plot_wv_subspace_overlap(
     layer: int = 1,
     n_batches: int = N_BATCHES,
     fast: bool = False,
-    qk_filter: str | None = None,
+    k_filter: int | None = None,
 ) -> None:
     if fast:
         n_batches = FAST_N_BATCHES
@@ -975,46 +976,42 @@ def plot_wv_subspace_overlap(
     logger.info("Generating W_OV plots...")
     _run_all_plots(ov_weight_per_head, out_dir / "ov", title_prefix="W_OV", is_ov=True)
 
-    # 6. QK-filtered OV analysis
-    if qk_filter is not None:
-        if isinstance(qk_filter, tuple):
-            q_idx, k_idx = int(qk_filter[0]), int(qk_filter[1])
-        else:
-            q_idx, k_idx = (int(x) for x in str(qk_filter).split(","))
-        logger.info(f"Collecting QK-filtered activations (q={q_idx}, k={k_idx})...")
+    # 7. K-filtered OV analysis
+    if k_filter is not None:
+        k_idx = int(k_filter)
+        logger.info(f"Collecting K-filtered activations (k={k_idx})...")
 
         # Need a fresh loader since the previous one was consumed
         filtered_loader, _ = create_data_loader(
             dataset_config=dataset_config, batch_size=BATCH_SIZE, buffer_size=1000
         )
-        filtered_acts = _collect_qk_filtered_activations(
+        filtered_acts = _collect_k_filtered_activations(
             component_model,
             filtered_loader,
             task_config.column_name,
             layer,
             task_config.max_seq_len,
-            q_idx,
             k_idx,
             n_batches,
             device,
         )
 
-        logger.info("Computing QK-filtered variance SVD...")
+        logger.info("Computing K-filtered variance SVD...")
         filt_var_sv, filt_var_svectors = _compute_variance_svd(filtered_acts)
 
-        qk_out_dir = out_dir / "ov" / f"qk_{q_idx}_{k_idx}"
-        qk_out_dir.mkdir(parents=True, exist_ok=True)
-        np.save(qk_out_dir / f"layer{layer}_var_svectors.npy", filt_var_svectors)
-        np.save(qk_out_dir / f"layer{layer}_var_singular_values.npy", filt_var_sv)
-        logger.info(f"Saved QK-filtered SVD data to {qk_out_dir}")
+        k_out_dir = out_dir / "ov" / f"k_{k_idx}"
+        k_out_dir.mkdir(parents=True, exist_ok=True)
+        np.save(k_out_dir / f"layer{layer}_var_svectors.npy", filt_var_svectors)
+        np.save(k_out_dir / f"layer{layer}_var_singular_values.npy", filt_var_sv)
+        logger.info(f"Saved K-filtered SVD data to {k_out_dir}")
         _plot_ov_paper_figure(
             ov_weight_per_head,
             filt_var_svectors,
             filt_var_sv,
             layer,
-            qk_out_dir,
-            data_label=f"Data weighted: Q.{q_idx}, K.{k_idx}",
-            filename_suffix=f"_qk_{q_idx}_{k_idx}",
+            k_out_dir,
+            data_label=f"Data weighted: K.{k_idx}",
+            filename_suffix=f"_k_{k_idx}",
         )
 
     logger.info(f"All outputs saved to {out_dir}")
