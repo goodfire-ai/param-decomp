@@ -1,7 +1,7 @@
-"""Plot weight-only attention contribution heatmaps between q and k subcomponents.
+"""Plot weight-only static interaction strength heatmaps between q and k subcomponents.
 
 For each layer and relative position offset, produces a single grid containing:
-  - First cell: mean (across heads) q·k attention contributions
+  - First cell: mean (across heads) q·k static interaction strengths
   - Remaining cells: one per query head
 
 U vectors are scaled by sign(mean_component_activation) * ||V|| to correct for components
@@ -68,9 +68,9 @@ def _compute_per_head_attention_contributions(
     q_module_path: str,
     k_module_path: str,
 ) -> NDArray[np.floating]:
-    """Compute (n_offsets, n_q_heads, n_q_alive, n_k_alive) per-head attention contributions.
+    """Compute (n_offsets, n_q_heads, n_q_alive, n_k_alive) per-head static interaction strengths.
 
-    Each head's contributions are z-scored (subtract mean, divide by std) across all
+    Each head's interaction strengths are z-scored (subtract mean, divide by std) across all
     (offset, q, k) values, making heads comparable.
 
     U vectors are scaled by sign(mean_activation) * ||V|| so that the weight-only dot
@@ -117,8 +117,8 @@ def _compute_per_head_attention_contributions(
     W = torch.stack(head_results).permute(1, 0, 2, 3)
 
     # Z-score per head: pool all (offset, q, k) values for each head, then subtract
-    # mean and divide by std. This makes contributions comparable across heads (measured
-    # in standard deviations above/below the head's average pair contribution).
+    # mean and divide by std. This makes interaction strengths comparable across heads (measured
+    # in standard deviations above/below the head's average pair interaction strength).
     mean_h = W.mean(dim=(0, 2, 3), keepdim=True)  # (1, n_heads, 1, 1)
     std_h = W.std(dim=(0, 2, 3), keepdim=True)  # (1, n_heads, 1, 1)
     W_zscore = (W - mean_h) / std_h
@@ -170,7 +170,7 @@ def _plot_heatmaps(
         axes[row, col].set_visible(False)
 
     fig.suptitle(
-        f"{run_id}  |  Layer {layer_idx} \u2014 q\u00b7k attention contributions"
+        f"{run_id}  |  Layer {layer_idx} \u2014 q\u00b7k static interaction strengths"
         f" (\u0394={offset})  (ci>{MIN_MEAN_CI})",
         fontsize=14,
         fontweight="bold",
@@ -290,7 +290,7 @@ def _plot_heatmaps_per_head(
             axes[row, col].set_visible(False)
 
         fig.suptitle(
-            f"{run_id}  |  Layer {layer_idx} {label} \u2014 q\u00b7k attention contributions"
+            f"{run_id}  |  Layer {layer_idx} {label} \u2014 q\u00b7k static interaction strengths"
             f"  (ci>{MIN_MEAN_CI})",
             fontsize=14,
             fontweight="bold",
@@ -327,7 +327,7 @@ def _plot_head_vs_sum_scatter(
     out_dir: Path,
     offsets: tuple[int, ...],
 ) -> None:
-    """Scatter: x = mean-across-heads contribution, y = per-head contribution.
+    """Scatter: x = mean-across-heads interaction strength, y = per-head interaction strength.
 
     Each head uses a distinct sequential colormap; within that colormap each
     offset maps to a different shade (darker = larger offset index).
@@ -366,8 +366,8 @@ def _plot_head_vs_sum_scatter(
     ax.set_xlim((lo, hi))
     ax.set_ylim((lo, hi))
 
-    ax.set_xlabel("Mean (all heads) attention contribution")
-    ax.set_ylabel("Per-head attention contribution")
+    ax.set_xlabel("Mean (all heads) static interaction strength")
+    ax.set_ylabel("Per-head static interaction strength")
     ax.set_aspect("equal")
 
     # Legend: one entry per head (color patch at mid-shade), one per offset (grey shades)
@@ -419,7 +419,7 @@ def _plot_head_vs_sum_scatter(
     )
 
     fig.suptitle(
-        f"{run_id}  |  Layer {layer_idx} \u2014 per-head vs mean q\u00b7k contributions"
+        f"{run_id}  |  Layer {layer_idx} \u2014 per-head vs mean q\u00b7k interaction strengths"
         f"  (ci>{MIN_MEAN_CI})",
         fontsize=12,
         fontweight="bold",
@@ -443,7 +443,7 @@ def _plot_pair_lines(
     out_dir: Path,
     top_n_pairs: int,
 ) -> None:
-    """Line plot of attention contribution vs offset for top (q_c, k_c) pairs.
+    """Line plot of static interaction strength vs offset for top (q_c, k_c) pairs.
 
     Top-N pairs are plotted in color; a wider set of background pairs is plotted
     in faint gray for context.
@@ -478,12 +478,12 @@ def _plot_pair_lines(
 
     ax.axhline(0, color="black", linewidth=0.5, linestyle="--", alpha=0.4)
     ax.set_xlabel("Offset (\u0394)")
-    ax.set_ylabel("Attention contribution (mean across heads)")
+    ax.set_ylabel("Static interaction strength (mean across heads)")
     ax.set_xticks(x)
     ax.legend(fontsize=6, loc="center left", bbox_to_anchor=(1.02, 0.5))
 
     fig.suptitle(
-        f"{run_id}  |  Layer {layer_idx} \u2014 q\u00b7k pair contributions vs offset"
+        f"{run_id}  |  Layer {layer_idx} \u2014 q\u00b7k pair interaction strengths vs offset"
         f"  (top {len(top_pairs)} pairs, ci>{MIN_MEAN_CI})",
         fontsize=12,
         fontweight="bold",
@@ -507,7 +507,7 @@ def _plot_pair_lines_per_head(
     out_dir: Path,
     top_n: int,
 ) -> None:
-    """Line plot of per-head attention contribution vs offset for top (head, q_c, k_c) triples."""
+    """Line plot of per-head static interaction strength vs offset for top (head, q_c, k_c) triples."""
     peak_abs = np.abs(W).max(axis=0)  # (n_q_heads, n_q, n_k)
 
     flat_indices = np.argsort(peak_abs.ravel())[::-1][:top_n]
@@ -533,12 +533,12 @@ def _plot_pair_lines_per_head(
 
     ax.axhline(0, color="black", linewidth=0.5, linestyle="--", alpha=0.4)
     ax.set_xlabel("Offset (\u0394)")
-    ax.set_ylabel("Attention contribution (single head)")
+    ax.set_ylabel("Static interaction strength (single head)")
     ax.set_xticks(x)
     ax.legend(fontsize=6, loc="center left", bbox_to_anchor=(1.02, 0.5))
 
     fig.suptitle(
-        f"{run_id}  |  Layer {layer_idx} \u2014 per-head q\u00b7k pair contributions vs offset"
+        f"{run_id}  |  Layer {layer_idx} \u2014 per-head q\u00b7k pair interaction strengths vs offset"
         f"  (top {len(triples)}, ci>{MIN_MEAN_CI})",
         fontsize=12,
         fontweight="bold",
@@ -617,7 +617,7 @@ def _plot_pair_lines_single_head(
 
         ax.axhline(0, color="black", linewidth=0.5, linestyle="--", alpha=0.4)
         ax.set_xlabel("Offset (\u0394)")
-        ax.set_ylabel("Attention contribution")
+        ax.set_ylabel("Static interaction strength")
         ax.set_title(f"H{h}", fontsize=11, fontweight="bold")
         ax.set_xticks(x)
 
@@ -638,7 +638,7 @@ def _plot_pair_lines_single_head(
     )
 
     fig.suptitle(
-        f"{run_id}  |  Layer {layer_idx} \u2014 per-head q\u00b7k pair contributions vs offset"
+        f"{run_id}  |  Layer {layer_idx} \u2014 per-head q\u00b7k pair interaction strengths vs offset"
         f"  (top {top_n}, ci>{MIN_MEAN_CI})",
         fontsize=13,
         fontweight="bold",
@@ -717,7 +717,7 @@ def _plot_pair_lines_combined(
 
     ax_mean.axhline(0, color="black", linewidth=0.5, linestyle="--", alpha=0.4)
     ax_mean.set_xlabel("Offset")
-    ax_mean.set_ylabel("Standardized Attention Contribution")
+    ax_mean.set_ylabel("Standardized Static Interaction Strength")
     ax_mean.set_title("All Heads", fontsize=11, fontweight="bold")
     ax_mean.set_xticks(x)
 
@@ -769,7 +769,7 @@ def _plot_pair_lines_combined(
 
         # Y-axis label only on left column
         if h % 2 == 0:
-            ax.set_ylabel("Standardized Attention Contribution")
+            ax.set_ylabel("Standardized Static Interaction Strength")
 
     # Shared y-axis limits across all subplots
     all_ylims = [ax.get_ylim() for ax in all_axes]
@@ -1059,7 +1059,7 @@ def plot_qk_c_attention_contributions(
     plots: str = "all",
     recompute: bool = False,
 ) -> None:
-    """Plot weight-only attention contribution analyses.
+    """Plot weight-only static interaction strength analyses.
 
     Args:
         wandb_path: WandB run path.
