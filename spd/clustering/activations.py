@@ -1,12 +1,10 @@
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Any, Literal, NamedTuple
+from typing import Literal, NamedTuple
 
 import torch
-from jaxtyping import Bool, Float, Float16
+from jaxtyping import Bool, Float
 from torch import Tensor
-from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 from spd.clustering.consts import (
     ActivationsTensor,
@@ -14,8 +12,7 @@ from spd.clustering.consts import (
     ClusterCoactivationShaped,
     ComponentLabels,
 )
-from spd.clustering.util import ModuleFilterFunc
-from spd.log import logger
+from spd.clustering.util import DeadComponentFilterStat, ModuleFilterFunc
 from spd.models.component_model import ComponentModel, OutputWithCache
 
 
@@ -41,78 +38,22 @@ def component_activations(
     return causal_importances
 
 
-def collect_activations(
-    model: ComponentModel,
-    dataloader: DataLoader[Any],
-    n_tokens: int,
-    n_tokens_per_seq: int,
-    device: torch.device | str,
-    seed: int,
-) -> dict[str, Float[Tensor, "n_tokens C"]]:
-    """Collect activation samples by picking random tokens per sequence.
-
-    Iterates through batches from dataloader, runs component_activations on each,
-    then selects n_tokens_per_seq random token positions per sequence. Collects until
-    n_tokens samples are gathered.
-
-    Args:
-        model: ComponentModel to get activations from
-        dataloader: DataLoader yielding batches of sequences
-        n_tokens: Total number of token samples to collect
-        n_tokens_per_seq: Number of random token positions to sample per sequence
-        device: Device to run on
-        seed: Random seed for reproducible token position selection
-    """
-    rng = torch.Generator().manual_seed(seed)
-    collected: dict[str, list[Tensor]] = {}
-    n_collected = 0
-
-    pbar = tqdm(dataloader, desc="Collecting activations", unit="batch")
-    for batch_data in pbar:
-        input_ids = batch_data["input_ids"]
-        batch_size, n_ctx = input_ids.shape
-
-        activations = component_activations(model=model, batch=input_ids, device=device)
-
-        # Pick n_tokens_per_seq random token positions per sequence
-        positions = torch.randint(0, n_ctx, (batch_size, n_tokens_per_seq), generator=rng)
-        batch_indices = torch.arange(batch_size).unsqueeze(1).expand_as(positions)
-
-        for key, act in activations.items():
-            # act shape: (batch_size, n_ctx, C)
-            sampled = act[batch_indices, positions]  # (batch_size, n_tokens_per_seq, C)
-            sampled = sampled.reshape(batch_size * n_tokens_per_seq, -1)
-            if key not in collected:
-                collected[key] = []
-            collected[key].append(sampled.cpu())
-
-        n_collected += batch_size * n_tokens_per_seq
-        pbar.set_postfix(tokens=f"{min(n_collected, n_tokens)}/{n_tokens}")
-        if n_collected >= n_tokens:
-            break
-
-    assert n_collected >= n_tokens, (
-        f"Dataloader exhausted: collected {n_collected} tokens but needed {n_tokens}"
-    )
-
-    logger.info(f"Collected {n_collected} token activations (requested {n_tokens})")
-
-    # Concatenate and truncate to exactly n_tokens. Pop chunks to free memory before next module.
-    result: dict[str, Float[Tensor, "n_tokens C"]] = {}
-    for key in list(collected.keys()):
-        result[key] = torch.cat(collected.pop(key), dim=0)[:n_tokens]
-    return result
-
-
 def compute_coactivatons(
     activations: ActivationsTensor | BoolActivationsTensor,
 ) -> ClusterCoactivationShaped:
     """Compute the coactivations matrix from the activations."""
-    # TODO: this works for both boolean and continuous activations,
-    # but we could do better by just using OR for boolean activations
-    # and maybe even some bitshift hacks. but for now, we convert to float16
-    activations_f16: Float16[Tensor, "samples C"] = activations.to(torch.float16)
-    return activations_f16.T @ activations_f16
+    return activations.float().T @ activations.float()
+
+
+def _get_component_filter_values(
+    activations: ActivationsTensor,
+    filter_stat: DeadComponentFilterStat,
+) -> Float[Tensor, " c"]:
+    if filter_stat == "max":
+        return activations.max(dim=0).values
+
+    assert filter_stat == "mean", f"Unsupported dead component filter stat: {filter_stat}"
+    return activations.mean(dim=0)
 
 
 class FilteredActivations(NamedTuple):
@@ -144,21 +85,26 @@ def filter_dead_components(
     activations: ActivationsTensor,
     labels: ComponentLabels,
     filter_dead_threshold: float = 0.01,
+    filter_dead_stat: DeadComponentFilterStat = "max",
 ) -> FilteredActivations:
     """Filter out dead components based on a threshold
 
     if `filter_dead_threshold` is 0, no filtering is applied.
     activations and labels are returned as is, `dead_components_labels` is `None`.
 
-    otherwise, components whose **maximum** activations across all samples is below the threshold
-    are considered dead and filtered out. The labels of these components are returned in `dead_components_labels`.
+    otherwise, components whose aggregate activation statistic across all samples is below the
+    threshold are considered dead and filtered out. The statistic is selected by
+    `filter_dead_stat` and the labels of dead components are returned in `dead_components_labels`.
     `dead_components_labels` will also be `None` if no components were below the threshold.
     """
     dead_components_lst: ComponentLabels | None = None
     if filter_dead_threshold > 0:
         dead_components_lst = ComponentLabels(list())
-        max_act: Float[Tensor, " c"] = activations.max(dim=0).values
-        dead_components: Bool[Tensor, " c"] = max_act < filter_dead_threshold
+        filter_values: Float[Tensor, " c"] = _get_component_filter_values(
+            activations=activations,
+            filter_stat=filter_dead_stat,
+        )
+        dead_components: Bool[Tensor, " c"] = filter_values < filter_dead_threshold
 
         if dead_components.any():
             activations = activations[:, ~dead_components]
@@ -273,6 +219,7 @@ def process_activations(
         | Float[Tensor, " n_sample n_ctx C"],  # (sample x seq index x component gate activations)
     ],
     filter_dead_threshold: float,
+    filter_dead_stat: DeadComponentFilterStat = "max",
     seq_mode: Literal["concat", "seq_mean", None] = None,
     filter_modules: ModuleFilterFunc | None = None,
 ) -> ProcessedActivations:
@@ -309,8 +256,11 @@ def process_activations(
         c = act.shape[-1]
         module_component_counts[key] = c
         if filter_dead_threshold > 0:
-            max_act: Float[Tensor, " c"] = act.max(dim=0).values
-            alive = max_act >= filter_dead_threshold
+            filter_values: Float[Tensor, " c"] = _get_component_filter_values(
+                activations=act,
+                filter_stat=filter_dead_stat,
+            )
+            alive = filter_values >= filter_dead_threshold
             alive_masks[key] = alive
             total_alive += int(alive.sum().item())
         else:

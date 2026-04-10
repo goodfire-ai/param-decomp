@@ -67,20 +67,23 @@ def get_cluster_mapping(
 
 
 def get_spd_run_path(run_dir: Path) -> str:
-    """Extract the SPD run path from the clustering run config.
+    """Extract the SPD run path from the clustering run's merge config.
 
-    Returns:
-        Formatted path like "spd/goodfire/5cr21lbs"
+    Follows: merge_config.json → snapshot_path → harvest_config.json → model_path
     """
-    config_path = run_dir / "clustering_run_config.json"
-    assert config_path.exists(), f"Clustering run config not found: {config_path}"
+    merge_config_path = run_dir / "merge_config.json"
+    assert merge_config_path.exists(), f"merge_config.json not found in {run_dir}"
 
-    with open(config_path) as f:
-        config = json.load(f)
+    with open(merge_config_path) as f:
+        merge_config = json.load(f)
 
-    model_path = config["model_path"]
+    harvest_config_path = Path(merge_config["snapshot_path"]) / "harvest_config.json"
+    assert harvest_config_path.exists(), f"Harvest config not found: {harvest_config_path}"
+
+    with open(harvest_config_path) as f:
+        model_path = json.load(f)["model_path"]
+
     entity, project, run_id = parse_wandb_run_path(model_path)
-
     return f"{entity}/{project}/{run_id}"
 
 

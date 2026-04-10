@@ -4,9 +4,30 @@ Hierarchical clustering of SPD components based on coactivation patterns. Runs e
 
 ## Usage
 
+### Harvest-then-merge workflow (recommended for sweeps)
+
+Separate GPU-heavy activation collection from CPU-only merging. Harvest once, merge many times with different configs.
+
+```bash
+# 1. Harvest activations into a compressed membership snapshot (GPU, ~2h for 2M tokens)
+spd-cluster-harvest harvest_config.json
+# → SPD_OUT_DIR/clustering/harvests/ch-<id>/
+
+# 2. Merge with different configs (CPU-only, ~30min each)
+spd-cluster-merge /path/to/ch-<id>/ merge_alpha_1.json
+spd-cluster-merge /path/to/ch-<id>/ merge_alpha_5.json
+spd-cluster-merge /path/to/ch-<id>/ merge_alpha_10.json
+# → SPD_OUT_DIR/clustering/runs/c-<id>/ (one per merge)
+```
+
+- `HarvestConfig` (`harvest_config.py`): model_path, n_tokens, activation_threshold, batch_size, etc.
+- `MergeConfig` (`merge_config.py`): alpha, iters, merge_pair_sampling_method, etc.
+
+### Ensemble pipeline (for stability analysis)
+
 **`spd-clustering` / `run_pipeline.py`**: Runs multiple clustering runs (ensemble) with different seeds, then runs `calc_distances` to compute pairwise distances between results. Use this for ensemble experiments.
 
-**`run_clustering.py`**: Runs a single clustering run. Useful for testing or when you only need one clustering result.
+**`run_clustering.py`**: Runs a single monolithic clustering run (harvest + merge together). Usually called by the pipeline.
 
 ```bash
 # Run clustering pipeline via SLURM (ensemble of runs + distance calculation)
@@ -25,8 +46,12 @@ Data is stored in `SPD_OUT_DIR/clustering/` (see `spd/settings.py`):
 
 ```
 SPD_OUT_DIR/clustering/
-├── runs/<run_id>/                       # Single clustering run outputs
-│   ├── clustering_run_config.json
+├── harvests/<harvest_id>/               # Membership snapshots (from spd-cluster-harvest)
+│   ├── harvest_config.json
+│   ├── memberships.npz                  # Sparse CSC matrix (scipy)
+│   └── metadata.json                    # labels, n_samples, n_components
+├── runs/<run_id>/                       # Merge outputs (from spd-cluster-merge or run_clustering)
+│   ├── clustering_run_config.json       # or merge_config.json
 │   └── history.zip                      # MergeHistory (group assignments per iteration)
 ├── ensembles/<pipeline_run_id>/         # Pipeline/ensemble outputs
 │   ├── pipeline_config.yaml
@@ -35,7 +60,7 @@ SPD_OUT_DIR/clustering/
 │   ├── ensemble_merge_array.npz         # Normalized merge array
 │   ├── distances_<method>.npz           # Distance matrices
 │   └── distances_<method>.png           # Distance distribution plot
-└── ensemble_registry.db                 # SQLite DB mapping pipeline → clustering runs
+├── run_ids.txt                          # Run IDs for each ensemble (one per line, written by jobs)
 ```
 
 ## Architecture
@@ -80,7 +105,7 @@ Computes pairwise distances between clustering runs in an ensemble:
 ```python
 ClusteringPipelineConfig  # Pipeline settings (n_runs, distances_methods, SLURM config)
 ClusteringRunConfig       # Single run settings (model_path, batch_size, n_tokens, merge_config)
-MergeConfig               # Merge algorithm params (alpha, iters, activation_threshold)
+MergeConfig               # Merge algorithm params (alpha, iters, activation_threshold, filter_dead_stat)
 ```
 
 ### Data Structures
@@ -115,6 +140,12 @@ DistancesArray            # Float[np.ndarray, "n_iters n_ens n_ens"]
 ```bash
 python -m spd.clustering.scripts.get_cluster_mapping /path/to/clustering_run --iteration 299
 ```
+
+## Run ID Prefixes
+
+Top-level run types use `RUN_TYPE_ABBREVIATIONS` in `spd/utils/run_utils.py`: `s` (spd), `t` (train), `c` (clustering/runs), `e` (clustering/ensembles), `ch` (clustering/harvests).
+
+Subrun prefixes are **not** centralized yet — each module hardcodes its own in its `repo.py`: `h-` (harvest), `a-` (autointerp), `da-` (dataset_attributions), `ti-` (graph_interp). These should eventually be unified into `RUN_TYPE_ABBREVIATIONS`.
 
 ## App Integration
 

@@ -290,7 +290,7 @@ def _sbatch_header(
         lines.append(f"#SBATCH --dependency=afterok:{config.dependency_job_id}")
 
     if config.comment:
-        lines.append(f"#SBATCH --comment={config.comment}")
+        lines.append(f'#SBATCH --comment="{config.comment}"')
 
     return "\n".join(lines)
 

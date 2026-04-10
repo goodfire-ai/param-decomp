@@ -129,3 +129,49 @@ def test_linear_gradient_thresholds(threshold: float) -> None:
 
     assert result.n_alive == expected_alive
     assert result.n_dead == n_components - expected_alive
+
+
+def test_filter_dead_components_mean_stat() -> None:
+    """Mean-based filtering keeps components whose average activation clears the threshold."""
+    activations = torch.tensor(
+        [
+            [1e-5, 0.0, 1e-5],
+            [0.0, 0.0, 1e-5],
+            [0.0, 0.0, 1e-5],
+            [0.0, 0.0, 1e-5],
+        ]
+    )
+    labels = ComponentLabels(["spiky", "dead", "steady"])
+
+    result: FilteredActivations = filter_dead_components(
+        activations=activations,
+        labels=labels,
+        filter_dead_threshold=5e-6,
+        filter_dead_stat="mean",
+    )
+
+    assert result.labels == ["steady"]
+    assert result.dead_components_labels == ["spiky", "dead"]
+
+
+def test_filter_dead_components_max_stat_preserves_spikes() -> None:
+    """Max-based filtering preserves components with a single large activation."""
+    activations = torch.tensor(
+        [
+            [1e-5, 0.0, 1e-5],
+            [0.0, 0.0, 1e-5],
+            [0.0, 0.0, 1e-5],
+            [0.0, 0.0, 1e-5],
+        ]
+    )
+    labels = ComponentLabels(["spiky", "dead", "steady"])
+
+    result: FilteredActivations = filter_dead_components(
+        activations=activations,
+        labels=labels,
+        filter_dead_threshold=5e-6,
+        filter_dead_stat="max",
+    )
+
+    assert result.labels == ["spiky", "steady"]
+    assert result.dead_components_labels == ["dead"]
