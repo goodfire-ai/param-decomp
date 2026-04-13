@@ -8,7 +8,16 @@ REPO_ROOT = (
 )
 
 CLUSTER_BASE_PATH = Path("/mnt/polished-lake/artifacts/mechanisms/spd")
-ON_CLUSTER = CLUSTER_BASE_PATH.exists()
+
+
+def _cluster_path_exists() -> bool:
+    try:
+        return CLUSTER_BASE_PATH.exists()
+    except PermissionError:
+        return False
+
+
+ON_CLUSTER = _cluster_path_exists()
 
 # Base directory for SPD outputs (runs, logs, scripts, etc.)
 _default_out_dir = CLUSTER_BASE_PATH if ON_CLUSTER else Path.home() / "spd_out"

@@ -1,0 +1,29 @@
+issue: 437
+title: Cluster mapping
+description: Create cluster mapping JSON from the most recently finished clustering run.
+
+artifacts:
+  - path: experiments/issue-437/cluster_mapping_c-d8b3750d.json
+    description: Cluster mapping JSON from run c-d8b3750d (ensemble e-9c716814, 2026-03-18)
+  - path: experiments/issue-437/create_cluster_mapping.py
+    description: Script used to generate the cluster mapping
+
+results:
+  clustering_run: c-d8b3750d
+  ensemble_id: e-9c716814
+  spd_run: goodfire/spd/s-55ea3f9b
+  n_components: 9977
+  n_clusters: 3
+  n_iterations: 9973
+  alpha: 10
+  n_tokens: 500000
+  
+notes: |
+  The most recently finished clustering run with accessible merge history is c-d8b3750d
+  (2026-03-18). Four more recent runs exist from 2026-03-23 (c-9ef2f07f, c-eae05b96,
+  c-3e42b874, c-7e8b960e) but they don't have merge_history artifacts in WandB and the
+  cluster disk path is inaccessible from this user account.
+  
+  Also fixed a PermissionError bug in spd/settings.py where CLUSTER_BASE_PATH.exists()
+  would raise PermissionError instead of returning False when the path exists but is
+  not accessible.
