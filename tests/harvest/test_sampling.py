@@ -4,8 +4,7 @@ import math
 
 import torch
 
-from spd.harvest.lib.reservoir_sampler import ReservoirSampler, ReservoirState
-from spd.harvest.lib.sampling import compute_pmi, sample_at_most_n_per_group, top_k_pmi
+from spd.harvest.sampling import compute_pmi, sample_at_most_n_per_group, top_k_pmi
 
 
 class TestSampleAtMostNPerGroup:
@@ -191,79 +190,3 @@ class TestTopKPMI:
 
         assert top == []
         assert bottom == []
-
-
-class TestReservoirSampler:
-    def test_fills_up_to_k(self) -> None:
-        sampler: ReservoirSampler[int] = ReservoirSampler(k=5)
-        for i in range(3):
-            sampler.add(i)
-
-        assert len(sampler.samples) == 3
-        assert sampler.n_seen == 3
-
-    def test_caps_at_k(self) -> None:
-        sampler: ReservoirSampler[int] = ReservoirSampler(k=5)
-        for i in range(100):
-            sampler.add(i)
-
-        assert len(sampler.samples) == 5
-        assert sampler.n_seen == 100
-
-    def test_state_roundtrip(self) -> None:
-        sampler: ReservoirSampler[str] = ReservoirSampler(k=3)
-        sampler.add("a")
-        sampler.add("b")
-
-        state = sampler.get_state()
-        restored = ReservoirSampler.from_state(state)
-
-        assert restored.k == sampler.k
-        assert restored.samples == sampler.samples
-        assert restored.n_seen == sampler.n_seen
-
-
-class TestReservoirStateMerge:
-    def test_merge_underfilled_reservoirs(self) -> None:
-        state1: ReservoirState[str] = ReservoirState(k=5, samples=["a", "b"], n_seen=100)
-        state2: ReservoirState[str] = ReservoirState(k=5, samples=["c"], n_seen=100)
-
-        merged = ReservoirState.merge([state1, state2])
-
-        assert merged.k == 5
-        assert merged.n_seen == 200
-        assert set(merged.samples) == {"a", "b", "c"}
-
-    def test_merge_preserves_k(self) -> None:
-        state1: ReservoirState[int] = ReservoirState(k=3, samples=[1, 2, 3], n_seen=100)
-        state2: ReservoirState[int] = ReservoirState(k=3, samples=[4, 5, 6], n_seen=100)
-
-        merged = ReservoirState.merge([state1, state2])
-
-        assert merged.k == 3
-        assert len(merged.samples) == 3
-        assert merged.n_seen == 200
-
-    def test_merge_empty_states(self) -> None:
-        state1: ReservoirState[int] = ReservoirState(k=5, samples=[], n_seen=0)
-        state2: ReservoirState[int] = ReservoirState(k=5, samples=[], n_seen=0)
-
-        merged = ReservoirState.merge([state1, state2])
-
-        assert merged.samples == []
-        assert merged.n_seen == 0
-
-    def test_merge_weighted_by_n_seen(self) -> None:
-        # State1 saw way more samples, so its items should be more likely to appear
-        state1: ReservoirState[str] = ReservoirState(k=2, samples=["a", "b"], n_seen=1000)
-        state2: ReservoirState[str] = ReservoirState(k=2, samples=["c", "d"], n_seen=10)
-
-        # Run multiple merges and check that state1 items dominate
-        from_state1 = 0
-        n_trials = 100
-        for _ in range(n_trials):
-            merged = ReservoirState.merge([state1, state2])
-            from_state1 += sum(1 for s in merged.samples if s in ["a", "b"])
-
-        # With 1000:10 ratio, state1 items should appear ~99% of the time
-        assert from_state1 > n_trials * 2 * 0.9  # at least 90% from state1

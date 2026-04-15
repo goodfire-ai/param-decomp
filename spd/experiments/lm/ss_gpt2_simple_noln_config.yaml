@@ -6,8 +6,10 @@ wandb_run_name_prefix: ""
 # --- General ---
 seed: 0
 n_mask_samples: 1
-ci_fn_type: "vector_mlp"
-ci_fn_hidden_dims: [12]
+ci_config:
+  mode: layerwise
+  fn_type: vector_mlp
+  hidden_dims: [12]
 sigmoid_type: "leaky_hard"
 module_info:
   - module_pattern: "h.*.mlp.c_fc"

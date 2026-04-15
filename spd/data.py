@@ -304,6 +304,7 @@ def train_loader_and_tokenizer(
         streaming=task_config.streaming,
         column_name=task_config.column_name,
         shuffle_each_epoch=task_config.shuffle_each_epoch,
+        seed=task_config.dataset_seed,
     )
 
     train_loader, tokenizer = create_data_loader(

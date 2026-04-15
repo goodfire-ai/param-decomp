@@ -2,30 +2,41 @@
  * API client for /api/activation_contexts endpoints.
  */
 
-import type { ActivationContextsSummary, ComponentDetail, ComponentProbeResult } from "../promptAttributionsTypes";
-import { API_URL, fetchJson } from "./index";
+import type {
+    ActivationContextsSummary,
+    SubcomponentProbeResult,
+    SubcomponentActivationContexts,
+} from "../promptAttributionsTypes";
+import { ApiError, fetchJson } from "./index";
 
-// Types for activation contexts
-export type SubcomponentActivationContexts = {
-    subcomponent_idx: number;
-    mean_ci: number;
-    example_tokens: string[][];
-    example_ci: number[][];
-    example_component_acts: number[][];
-};
-
-export async function getActivationContextsSummary(): Promise<ActivationContextsSummary> {
-    return fetchJson<ActivationContextsSummary>(`${API_URL}/api/activation_contexts/summary`);
+export async function getActivationContextsSummary(): Promise<ActivationContextsSummary | null> {
+    try {
+        return await fetchJson<ActivationContextsSummary>("/api/activation_contexts/summary");
+    } catch (e) {
+        if (e instanceof ApiError && e.status === 404) return null;
+        throw e;
+    }
 }
 
-export async function getComponentDetail(layer: string, componentIdx: number): Promise<ComponentDetail> {
-    return fetchJson<ComponentDetail>(
-        `${API_URL}/api/activation_contexts/${encodeURIComponent(layer)}/${componentIdx}`,
+/** Default limit for initial load - 100 examples = 10 pages at 10 per page. */
+const ACTIVATION_EXAMPLES_INITIAL_LIMIT = 100;
+
+export async function getActivationContextDetail(
+    layer: string,
+    componentIdx: number,
+    limit: number = ACTIVATION_EXAMPLES_INITIAL_LIMIT,
+): Promise<SubcomponentActivationContexts> {
+    return fetchJson<SubcomponentActivationContexts>(
+        `/api/activation_contexts/${encodeURIComponent(layer)}/${componentIdx}?limit=${limit}`,
     );
 }
 
-export async function probeComponent(text: string, layer: string, componentIdx: number): Promise<ComponentProbeResult> {
-    return fetchJson<ComponentProbeResult>(`${API_URL}/api/activation_contexts/probe`, {
+export async function probeComponent(
+    text: string,
+    layer: string,
+    componentIdx: number,
+): Promise<SubcomponentProbeResult> {
+    return fetchJson<SubcomponentProbeResult>("/api/activation_contexts/probe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text, layer, component_idx: componentIdx }),

@@ -7,8 +7,8 @@
 
 import type { Loadable } from ".";
 import * as api from "./api";
-import type { RunState as RunData, Interpretation } from "./api";
-import type { ActivationContextsSummary, ComponentDetail, PromptPreview, TokenInfo } from "./promptAttributionsTypes";
+import type { LoadedRun as RunData, InterpretationHeadline, GraphInterpHeadline } from "./api";
+import type { PromptPreview, SubcomponentActivationContexts, SubcomponentMetadata } from "./promptAttributionsTypes";
 
 /** Maps component keys to cluster IDs. Singletons (unclustered components) have null values. */
 export type ClusterMappingData = Record<string, number | null>;
@@ -28,7 +28,7 @@ type ClusterMapping = {
 export type InterpretationBackendState =
     | { status: "none" }
     | { status: "generating" }
-    | { status: "generated"; data: Interpretation }
+    | { status: "generated"; data: InterpretationHeadline }
     | { status: "generation-error"; error: unknown };
 
 export function useRun() {
@@ -38,26 +38,32 @@ export function useRun() {
     /** Interpretation labels keyed by component key (layer:cIdx) */
     let interpretations = $state<Loadable<Record<string, InterpretationBackendState>>>({ status: "uninitialized" });
 
+    /** Intruder eval scores keyed by component key */
+    let intruderScores = $state<Loadable<Record<string, number>>>({ status: "uninitialized" });
+
+    /** Graph interp labels keyed by component key (layer:cIdx) */
+    let graphInterpLabels = $state<Loadable<Record<string, GraphInterpHeadline>>>({ status: "uninitialized" });
+
     /** Cluster mapping for the current run */
     let clusterMapping = $state<ClusterMapping | null>(null);
 
     /** Available prompts for the current run */
     let prompts = $state<Loadable<PromptPreview[]>>({ status: "uninitialized" });
 
-    /** All tokens in the tokenizer for the current run */
-    let allTokens = $state<Loadable<TokenInfo[]>>({ status: "uninitialized" });
+    /** Activation contexts summary (null = harvest not available) */
+    let activationContextsSummary = $state<Loadable<Record<string, SubcomponentMetadata[]> | null>>({
+        status: "uninitialized",
+    });
 
-    /** Activation contexts summary */
-    let activationContextsSummary = $state<Loadable<ActivationContextsSummary>>({ status: "uninitialized" });
-
-    /** Cached component details keyed by component key (layer:cIdx) - non-reactive */
-    let _componentDetailsCache: Record<string, ComponentDetail> = {};
+    // Cached activation context detail keyed by component key (layer:cIdx) - non-reactive
+    let _componentDetailsCache: Record<string, SubcomponentActivationContexts> = {};
 
     /** Reset all run-scoped state */
     function resetRunScopedState() {
         prompts = { status: "uninitialized" };
-        allTokens = { status: "uninitialized" };
         interpretations = { status: "uninitialized" };
+        intruderScores = { status: "uninitialized" };
+        graphInterpLabels = { status: "uninitialized" };
         activationContextsSummary = { status: "uninitialized" };
         _componentDetailsCache = {};
         clusterMapping = null;
@@ -67,10 +73,17 @@ export function useRun() {
     function fetchRunScopedData() {
         prompts = { status: "loading" };
         interpretations = { status: "loading" };
+        intruderScores = { status: "loading" };
 
         api.listPrompts()
             .then((p) => (prompts = { status: "loaded", data: p }))
             .catch((error) => (prompts = { status: "error", error }));
+        api.getIntruderScores()
+            .then((data) => (intruderScores = { status: "loaded", data }))
+            .catch((error) => (intruderScores = { status: "error", error }));
+        api.getAllGraphInterpLabels()
+            .then((data) => (graphInterpLabels = { status: "loaded", data }))
+            .catch((error) => (graphInterpLabels = { status: "error", error }));
         api.getAllInterpretations()
             .then((i) => {
                 interpretations = {
@@ -89,19 +102,11 @@ export function useRun() {
             .catch((error) => (interpretations = { status: "error", error }));
     }
 
-    /** Fetch tokens - must complete before run is considered loaded */
-    async function fetchTokens(): Promise<TokenInfo[]> {
-        allTokens = { status: "loading" };
-        const tokens = await api.getAllTokens();
-        allTokens = { status: "loaded", data: tokens };
-        return tokens;
-    }
-
     async function loadRun(wandbPath: string, contextLength: number) {
         run = { status: "loading" };
         try {
             await api.loadRun(wandbPath, contextLength);
-            const [status] = await Promise.all([api.getStatus(), fetchTokens()]);
+            const status = await api.getStatus();
             if (status) {
                 run = { status: "loaded", data: status };
                 fetchRunScopedData();
@@ -123,10 +128,6 @@ export function useRun() {
         try {
             const status = await api.getStatus();
             if (status) {
-                // Fetch tokens if we don't have them (e.g., page refresh)
-                if (allTokens.status === "uninitialized") {
-                    await fetchTokens();
-                }
                 run = { status: "loaded", data: status };
                 // Fetch other run-scoped data if we don't have it
                 if (interpretations.status === "uninitialized") {
@@ -163,6 +164,12 @@ export function useRun() {
         }
     }
 
+    /** Get intruder score for a component, if available */
+    function getIntruderScore(componentKey: string): number | null {
+        if (intruderScores.status !== "loaded") return null;
+        return intruderScores.data[componentKey] ?? null;
+    }
+
     /** Set interpretation for a component (updates cache without full reload) */
     function setInterpretation(componentKey: string, interpretation: InterpretationBackendState) {
         if (interpretations.status === "loaded") {
@@ -170,12 +177,12 @@ export function useRun() {
         }
     }
 
-    /** Get component detail (fetches once, then cached) */
-    async function getComponentDetail(layer: string, cIdx: number): Promise<ComponentDetail> {
+    /** Get activation context detail (fetches once, then cached) */
+    async function getActivationContextDetail(layer: string, cIdx: number): Promise<SubcomponentActivationContexts> {
         const cacheKey = `${layer}:${cIdx}`;
         if (cacheKey in _componentDetailsCache) return _componentDetailsCache[cacheKey];
 
-        const detail = await api.getComponentDetail(layer, cIdx);
+        const detail = await api.getActivationContextDetail(layer, cIdx);
         _componentDetailsCache[cacheKey] = detail;
         return detail;
     }
@@ -205,6 +212,11 @@ export function useRun() {
         return clusterMapping?.data[key] ?? null;
     }
 
+    function getGraphInterpLabel(componentKey: string): GraphInterpHeadline | null {
+        if (graphInterpLabels.status !== "loaded") return null;
+        return graphInterpLabels.data[componentKey] ?? null;
+    }
+
     return {
         get run() {
             return run;
@@ -212,17 +224,26 @@ export function useRun() {
         get interpretations() {
             return interpretations;
         },
+        get graphInterpLabels() {
+            return graphInterpLabels;
+        },
         get clusterMapping() {
             return clusterMapping;
         },
         get prompts() {
             return prompts;
         },
-        get allTokens() {
-            return allTokens;
-        },
         get activationContextsSummary() {
             return activationContextsSummary;
+        },
+        get datasetAttributionsAvailable() {
+            return run.status === "loaded" && run.data.dataset_attributions_available;
+        },
+        get graphInterpAvailable() {
+            return run.status === "loaded" && run.data.graph_interp_available;
+        },
+        get autoInterpAvailable() {
+            return run.status === "loaded" && run.data.autointerp_available;
         },
         loadRun,
         clearRun,
@@ -230,7 +251,9 @@ export function useRun() {
         refreshPrompts,
         getInterpretation,
         setInterpretation,
-        getComponentDetail,
+        getIntruderScore,
+        getGraphInterpLabel,
+        getActivationContextDetail,
         loadActivationContextsSummary,
         setClusterMapping,
         clearClusterMapping,

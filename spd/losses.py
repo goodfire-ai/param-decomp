@@ -1,6 +1,5 @@
 from typing import Literal
 
-import torch
 from jaxtyping import Float, Int
 from torch import Tensor
 
@@ -11,6 +10,8 @@ from spd.configs import (
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     LossMetricConfigType,
+    PersistentPGDReconLossConfig,
+    PersistentPGDReconSubsetLossConfig,
     PGDReconLayerwiseLossConfig,
     PGDReconLossConfig,
     PGDReconSubsetLossConfig,
@@ -37,28 +38,27 @@ from spd.metrics import (
     unmasked_recon_loss,
 )
 from spd.models.component_model import CIOutputs, ComponentModel
+from spd.persistent_pgd import PersistentPGDState
 
 
-def compute_total_loss(
+def compute_losses(
     loss_metric_configs: list[LossMetricConfigType],
     model: ComponentModel,
     batch: Int[Tensor, "..."],
     ci: CIOutputs,
     target_out: Tensor,
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
-    pre_weight_acts: dict[str, Float[Tensor, "..."]],
     current_frac_of_training: float,
     sampling: SamplingType,
     use_delta_component: bool,
     n_mask_samples: int,
+    ppgd_states: dict[
+        PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig, PersistentPGDState
+    ],
     output_loss_type: Literal["mse", "kl"],
-) -> tuple[Float[Tensor, ""], dict[str, float]]:
-    """Compute weighted total loss and per-term raw values using new loss primitives.
-
-    Returns (total, terms_dict). terms_dict contains raw per-term values (no coeffs) and a weighted total.
-    """
-    total = torch.tensor(0.0, device=batch.device)
-    terms: dict[str, float] = {}
+) -> dict[LossMetricConfigType, Float[Tensor, ""]]:
+    """Compute losses for each config and return a dict mapping config to loss tensor."""
+    losses: dict[LossMetricConfigType, Float[Tensor, ""]] = {}
 
     for cfg in loss_metric_configs:
         assert cfg.coeff is not None, "All loss metric configs must have a coeff"
@@ -179,15 +179,20 @@ def compute_total_loss(
                     sampling=sampling,
                     n_mask_samples=n_mask_samples,
                     batch=batch,
-                    pre_weight_acts=pre_weight_acts,
+                    ci=ci.lower_leaky,
+                    weight_deltas=weight_deltas if use_delta_component else None,
+                )
+            case PersistentPGDReconLossConfig() | PersistentPGDReconSubsetLossConfig():
+                if current_frac_of_training < cfg.start_frac:
+                    continue
+                loss = ppgd_states[cfg].compute_recon_loss(
+                    model=model,
+                    batch=batch,
+                    target_out=target_out,
                     ci=ci.lower_leaky,
                     weight_deltas=weight_deltas if use_delta_component else None,
                 )
 
-        terms[f"loss/{cfg.classname}"] = loss.item()
+        losses[cfg] = loss
 
-        total = total + cfg.coeff * loss
-
-    terms["loss/total"] = total.item()
-
-    return total, terms
+    return losses

@@ -5,7 +5,15 @@ import torch.nn as nn
 from jaxtyping import Float
 from torch import Tensor
 
-from spd.configs import UniformKSubsetRoutingConfig
+from spd.configs import (
+    AdamPGDConfig,
+    LayerwiseCiConfig,
+    PersistentPGDReconLossConfig,
+    ScheduleConfig,
+    SignPGDConfig,
+    SingleSourceScope,
+    UniformKSubsetRoutingConfig,
+)
 from spd.metrics import (
     ci_masked_recon_layerwise_loss,
     ci_masked_recon_loss,
@@ -17,6 +25,7 @@ from spd.metrics import (
     stochastic_recon_subset_loss,
 )
 from spd.models.component_model import ComponentModel
+from spd.persistent_pgd import PersistentPGDState
 from spd.utils.module_utils import ModulePathInfo
 
 
@@ -30,6 +39,23 @@ class TinyLinearModel(nn.Module):
         return self.fc(x)
 
 
+class TinySeqModel(nn.Module):
+    """A simple sequence model that applies a linear layer to each position.
+
+    Input shape: (batch, seq_len, d_in)
+    Output shape: (batch, seq_len, d_out)
+    """
+
+    def __init__(self, d_in: int, d_out: int) -> None:
+        super().__init__()
+        self.fc = nn.Linear(d_in, d_out, bias=False)
+
+    @override
+    def forward(self, x: Tensor) -> Tensor:
+        # x: (batch, seq_len, d_in) -> (batch, seq_len, d_out)
+        return self.fc(x)
+
+
 def _make_component_model(weight: Float[Tensor, "d_out d_in"]) -> ComponentModel:
     d_out, d_in = weight.shape
     target = TinyLinearModel(d_in=d_in, d_out=d_out)
@@ -40,8 +66,26 @@ def _make_component_model(weight: Float[Tensor, "d_out d_in"]) -> ComponentModel
     comp_model = ComponentModel(
         target_model=target,
         module_path_info=[ModulePathInfo(module_path="fc", C=1)],
-        ci_fn_hidden_dims=[2],
-        ci_fn_type="mlp",
+        ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
+        pretrained_model_output_attr=None,
+        sigmoid_type="leaky_hard",
+    )
+
+    return comp_model
+
+
+def _make_seq_component_model(weight: Float[Tensor, "d_out d_in"]) -> ComponentModel:
+    """Create a ComponentModel from TinySeqModel for 3D (batch, seq, hidden) shaped data."""
+    d_out, d_in = weight.shape
+    target = TinySeqModel(d_in=d_in, d_out=d_out)
+    with torch.no_grad():
+        target.fc.weight.copy_(weight)
+    target.requires_grad_(False)
+
+    comp_model = ComponentModel(
+        target_model=target,
+        module_path_info=[ModulePathInfo(module_path="fc", C=1)],
+        ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         pretrained_model_output_attr=None,
         sigmoid_type="leaky_hard",
     )
@@ -656,3 +700,252 @@ class TestStochasticReconSubsetLoss:
 
         # All should be valid
         assert all(loss >= 0.0 for loss in losses)
+
+
+class TestPersistentPGDReconLoss:
+    def test_basic_forward_and_state_update(self: object) -> None:
+        """Test that persistent PGD computes loss and updates state."""
+        fc_weight = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+        model = _make_component_model(weight=fc_weight)
+
+        # Use (batch, seq) shaped data to match PersistentPGD's expectations
+        batch = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
+        target_out = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
+        # CI needs (batch, seq, C) shape for PersistentPGD
+        ci = {"fc": torch.tensor([[[0.5], [0.5]]], dtype=torch.float32)}
+
+        cfg = PersistentPGDReconLossConfig(
+            optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+            scope=SingleSourceScope(),
+        )
+
+        # Initialize state
+        state = PersistentPGDState(
+            module_to_c=model.module_to_c,
+            batch_dims=(1, 2),
+            device="cpu",
+            use_delta_component=False,
+            cfg=cfg,
+            output_loss_type="mse",
+        )
+
+        # Store initial mask values
+        initial_sources = {k: v.clone() for k, v in state.sources.items()}
+
+        # Compute loss and gradients
+        loss = state.compute_recon_loss(
+            model=model,
+            batch=batch,
+            target_out=target_out,
+            ci=ci,
+            weight_deltas=None,
+        )
+        grad = state.get_grads(loss)
+
+        # Apply PGD step
+        state.step(grad)
+
+        # Loss should be non-negative
+        assert loss >= 0.0
+
+        # Masks should have been updated (not equal to initial)
+        for k in state.sources:
+            # Due to PGD step, masks should change (unless gradient is exactly 0)
+            assert state.sources[k].shape == initial_sources[k].shape
+            # Masks should still be in [0, 1]
+            assert torch.all(state.sources[k] >= 0.0)
+            assert torch.all(state.sources[k] <= 1.0)
+
+    def test_masks_persist_across_calls(self: object) -> None:
+        """Test that masks persist and accumulate updates across calls."""
+        fc_weight = torch.tensor([[2.0, 0.0], [0.0, 2.0]], dtype=torch.float32)
+        model = _make_component_model(weight=fc_weight)
+
+        batch = torch.tensor([[1.0, 1.0]], dtype=torch.float32)
+        target_out = torch.tensor([[2.0, 2.0]], dtype=torch.float32)
+        # CI needs (batch, seq, C) shape for PersistentPGD
+        ci = {"fc": torch.tensor([[[0.3], [0.3]]], dtype=torch.float32)}
+
+        cfg = PersistentPGDReconLossConfig(
+            optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+            scope=SingleSourceScope(),
+        )
+
+        state = PersistentPGDState(
+            module_to_c=model.module_to_c,
+            batch_dims=(1, 2),
+            device="cpu",
+            use_delta_component=False,
+            cfg=cfg,
+            output_loss_type="mse",
+        )
+
+        # Run multiple steps
+        sources_history = []
+        for _ in range(5):
+            sources_history.append({k: v.clone() for k, v in state.sources.items()})
+            loss = state.compute_recon_loss(
+                model=model,
+                batch=batch,
+                target_out=target_out,
+                ci=ci,
+                weight_deltas=None,
+            )
+            grad = state.get_grads(loss)
+            state.step(grad)
+            assert loss >= 0.0
+
+        # Masks should have changed over time
+        # (they accumulate updates, so later masks differ from earlier ones)
+        for k in state.sources:
+            initial = sources_history[0][k]
+            final = state.sources[k]
+            # Should have changed from initial (very unlikely to be identical after 5 steps)
+            assert not torch.allclose(initial, final)
+
+    def test_with_delta_component(self: object) -> None:
+        """Test persistent PGD with delta component enabled."""
+        # Use sequence model for proper 3D shapes (batch, seq, hidden)
+        fc_weight = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+        model = _make_seq_component_model(weight=fc_weight)
+
+        # Input shape: (batch=1, seq=2, d_in=2)
+        batch = torch.tensor([[[1.0, 2.0], [0.5, 1.5]]], dtype=torch.float32)
+        target_out = torch.tensor([[[1.0, 2.0], [0.5, 1.5]]], dtype=torch.float32)
+        # CI shape: (batch=1, seq=2, C=1)
+        ci = {"fc": torch.tensor([[[0.5], [0.5]]], dtype=torch.float32)}
+        weight_deltas = model.calc_weight_deltas()
+
+        # batch_dims for PersistentPGDState is (batch, seq) = (1, 2)
+        batch_dims = batch.shape[:2]
+
+        cfg = PersistentPGDReconLossConfig(
+            optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+            scope=SingleSourceScope(),
+        )
+
+        # Initialize state with delta component
+        state = PersistentPGDState(
+            module_to_c=model.module_to_c,
+            batch_dims=batch_dims,
+            device="cpu",
+            use_delta_component=True,
+            cfg=cfg,
+            output_loss_type="mse",
+        )
+
+        # Masks should have C+1 elements when using delta component
+        assert state.sources["fc"].shape[-1] == model.module_to_c["fc"] + 1
+
+        loss = state.compute_recon_loss(
+            model=model,
+            batch=batch,
+            target_out=target_out,
+            ci=ci,
+            weight_deltas=weight_deltas,
+        )
+        grad = state.get_grads(loss)
+        state.step(grad)
+
+        assert loss >= 0.0
+
+    def test_batch_dimension(self: object) -> None:
+        """Test that masks broadcast correctly across batch dimension."""
+        # Use sequence model for proper 3D shapes (batch, seq, hidden)
+        fc_weight = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+        model = _make_seq_component_model(weight=fc_weight)
+
+        # Batch of 3 examples, seq_len of 2, d_in of 2
+        # Shape: (batch=3, seq=2, d_in=2)
+        batch = torch.tensor(
+            [
+                [[1.0, 2.0], [0.5, 1.5]],
+                [[2.0, 3.0], [1.0, 2.0]],
+                [[0.5, 1.0], [0.25, 0.5]],
+            ],
+            dtype=torch.float32,
+        )
+        target_out = torch.tensor(
+            [
+                [[1.0, 2.0], [0.5, 1.5]],
+                [[2.0, 3.0], [1.0, 2.0]],
+                [[0.5, 1.0], [0.25, 0.5]],
+            ],
+            dtype=torch.float32,
+        )
+        # CI needs (batch, seq, C) shape - (3, 2, 1) for 3 batch, 2 seq positions, 1 component
+        ci = {
+            "fc": torch.tensor(
+                [[[0.5], [0.5]], [[0.6], [0.6]], [[0.4], [0.4]]], dtype=torch.float32
+            )
+        }
+
+        # batch_dims for PersistentPGDState is (batch, seq) = (3, 2)
+        batch_dims = batch.shape[:2]
+
+        cfg = PersistentPGDReconLossConfig(
+            optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+            scope=SingleSourceScope(),
+        )
+
+        state = PersistentPGDState(
+            module_to_c=model.module_to_c,
+            batch_dims=batch_dims,
+            device="cpu",
+            use_delta_component=False,
+            cfg=cfg,
+            output_loss_type="mse",
+        )
+
+        # Masks should have shape (1, 1, C) for single_mask scope - single mask shared across batch
+        assert state.sources["fc"].shape == (1, 1, model.module_to_c["fc"])
+
+        loss = state.compute_recon_loss(
+            model=model,
+            batch=batch,
+            target_out=target_out,
+            ci=ci,
+            weight_deltas=None,
+        )
+        grad = state.get_grads(loss)
+        state.step(grad)
+
+        assert loss >= 0.0
+
+    def test_adam_optimizer_state(self: object) -> None:
+        """Test that Adam optimizer path updates internal state."""
+        fc_weight = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+        model = _make_component_model(weight=fc_weight)
+
+        batch = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
+        target_out = torch.tensor([[0.5, 1.5]], dtype=torch.float32)
+        # CI needs (batch, seq, C) shape for PersistentPGD
+        ci = {"fc": torch.tensor([[[0.4], [0.4]]], dtype=torch.float32)}
+
+        cfg = PersistentPGDReconLossConfig(
+            optimizer=AdamPGDConfig(
+                lr_schedule=ScheduleConfig(start_val=0.05), beta1=0.9, beta2=0.999, eps=1e-8
+            ),
+            scope=SingleSourceScope(),
+        )
+
+        state = PersistentPGDState(
+            module_to_c=model.module_to_c,
+            batch_dims=(1, 2),
+            device="cpu",
+            use_delta_component=False,
+            cfg=cfg,
+            output_loss_type="mse",
+        )
+
+        loss = state.compute_recon_loss(
+            model=model,
+            batch=batch,
+            target_out=target_out,
+            ci=ci,
+            weight_deltas=None,
+        )
+        grad = state.get_grads(loss)
+        state.step(grad)
+
+        assert loss >= 0.0

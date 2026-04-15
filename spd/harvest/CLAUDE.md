@@ -29,41 +29,44 @@ The command:
 For environments without SLURM, run the worker script directly:
 
 ```bash
-# Single GPU with specific number of batches
-python -m spd.harvest.scripts.run <wandb_path> --n_batches 1000
-
-# Single GPU processing entire dataset (omit --n_batches)
+# Single GPU (defaults from HarvestConfig, auto-generates subrun ID)
 python -m spd.harvest.scripts.run <wandb_path>
 
+# Single GPU with config file
+python -m spd.harvest.scripts.run <wandb_path> --config_path path/to/config.yaml
+
 # Multi-GPU (run in parallel via shell, tmux, etc.)
-python -m spd.harvest.scripts.run <path> --n_batches 1000 --rank 0 --world_size 4 &
-python -m spd.harvest.scripts.run <path> --n_batches 1000 --rank 1 --world_size 4 &
-python -m spd.harvest.scripts.run <path> --n_batches 1000 --rank 2 --world_size 4 &
-python -m spd.harvest.scripts.run <path> --n_batches 1000 --rank 3 --world_size 4 &
+# All workers and the merge step must share the same --subrun_id
+SUBRUN="h-$(date +%Y%m%d_%H%M%S)"
+python -m spd.harvest.scripts.run <path> --config_json '{"n_batches": 1000}' --rank 0 --world_size 4 --subrun_id $SUBRUN &
+python -m spd.harvest.scripts.run <path> --config_json '{"n_batches": 1000}' --rank 1 --world_size 4 --subrun_id $SUBRUN &
+python -m spd.harvest.scripts.run <path> --config_json '{"n_batches": 1000}' --rank 2 --world_size 4 --subrun_id $SUBRUN &
+python -m spd.harvest.scripts.run <path> --config_json '{"n_batches": 1000}' --rank 3 --world_size 4 --subrun_id $SUBRUN &
 wait
 
 # Merge results after all workers complete
-python -m spd.harvest.scripts.run <path> --merge
+python -m spd.harvest.scripts.run <path> --merge --subrun_id $SUBRUN
 ```
 
 Each worker processes batches where `batch_idx % world_size == rank`, then the merge step combines all partial results.
 
 ## Data Storage
 
-Data is stored in `SPD_OUT_DIR/harvest/` (see `spd/settings.py`):
+Each harvest invocation creates a timestamped sub-run directory. `HarvestRepo` automatically loads from the latest sub-run.
 
 ```
 SPD_OUT_DIR/harvest/<run_id>/
-├── activation_contexts/
-│   ├── config.json
-│   ├── summary.json          # Lightweight {component_key: {layer, idx, mean_ci}}
-│   └── components.jsonl      # One ComponentData per line (quite big - usually ≈10gb)
-├── correlations/
+├── h-20260211_120000/          # sub-run 1
+│   ├── harvest.db              # SQLite DB: components table + config table (WAL mode)
 │   ├── component_correlations.pt
-│   └── token_stats.pt
-└── worker_states/
-    └── worker_*.pt           # Per-worker states (cleaned up after merge)
+│   ├── token_stats.pt
+│   └── worker_states/          # cleaned up after merge
+│       └── worker_*.pt
+├── h-20260211_140000/          # sub-run 2
+│   └── ...
 ```
+
+Legacy layout (pre sub-run, `activation_contexts/` + `correlations/`) is no longer supported.
 
 ## Architecture
 
@@ -71,19 +74,27 @@ SPD_OUT_DIR/harvest/<run_id>/
 
 Entry point via `spd-harvest`. Submits array job + dependent merge job.
 
+**Intruder evaluation** (`spd/harvest/intruder.py`) evaluates the quality of the *decomposition itself* — whether component activation patterns are coherent — without relying on LLM-generated labels. Intruder scores are stored in `harvest.db`, not `interp.db`. Intruder eval is submitted as a top-level postprocess stage (via `spd-postprocess`), not as part of the harvest pipeline.
+
 ### Worker Script (`scripts/run.py`)
 
-Internal script called by SLURM jobs. Supports:
+Internal script called by SLURM jobs. Accepts config via `--config_path` (file) or `--config_json` (inline JSON). Supports:
+- `--config_path`/`--config_json`: Provide `HarvestConfig` (defaults used if neither given)
 - `--rank R --world_size N`: Process subset of batches
 - `--merge`: Combine per-rank results into final files
+- `--subrun_id`: Sub-run identifier (auto-generated if not provided)
+
+### Config (`config.py`)
+
+`HarvestConfig` (tuning params) and `HarvestSlurmConfig` (HarvestConfig + SLURM params). `wandb_path` is a runtime arg, not part of config.
 
 ### Harvest Logic (`harvest.py`)
 
 Main harvesting functions:
-- `harvest_activation_contexts()`: Process batches for a single rank
-- `merge_activation_contexts()`: Combine results from all ranks
+- `harvest_activation_contexts(wandb_path, config, output_dir, ...)`: Process batches for a single rank
+- `merge_activation_contexts(output_dir)`: Combine worker results from `output_dir/worker_states/` into `output_dir`
 
-### Harvester (`lib/harvester.py`)
+### Harvester (`harvester.py`)
 
 Core class that accumulates statistics in a single pass:
 - **Correlations**: Co-occurrence counts between components (for precision/recall/PMI)
@@ -95,21 +106,21 @@ Key optimizations:
 - Subsampling: Caps firings per batch at 10k (plenty for k=20 examples per component)
 - All accumulation on GPU, only moves to CPU for final `build_results()`
 
-### Reservoir Sampler (`lib/reservoir_sampler.py`)
-
-Implements reservoir sampling for uniform random sampling from a stream. Maintains a fixed-size buffer of examples that represents a uniform sample over all items seen.
-
 ### Storage (`storage.py`)
 
 `CorrelationStorage` and `TokenStatsStorage` classes for loading/saving harvested data.
 
-### Loaders (`loaders.py`)
+### Database (`db.py`)
 
-Functions for loading harvested data by run ID:
-- `load_activation_contexts_summary(run_id)` -> dict[component_key, ComponentSummary]
-- `load_component_activation_contexts(run_id, component_key)` -> ComponentData
-- `load_correlations(run_id)` -> CorrelationStorage
-- `load_token_stats(run_id)` -> TokenStatsStorage
+`HarvestDB` class wrapping SQLite for component-level data. Two tables:
+- `components`: keyed by `component_key`, stores layer/idx/mean_ci + JSON blobs for activation examples and PMI data
+- `config`: key-value store for harvest config (ci_threshold, etc.)
+
+Uses WAL mode for concurrent reads. Serialization via `orjson`.
+
+### Repository (`repo.py`)
+
+`HarvestRepo` provides read-only access to all harvest data for a run. Automatically resolves the latest sub-run directory (by lexicographic sort of `h-YYYYMMDD_HHMMSS` names). Falls back to legacy layout if no sub-runs exist. Used by the app backend.
 
 ## Key Types (`schemas.py`)
 

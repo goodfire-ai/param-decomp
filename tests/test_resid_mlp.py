@@ -4,6 +4,7 @@ from spd.configs import (
     Config,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
+    LayerwiseCiConfig,
     ModulePatternInfoConfig,
     ResidMLPTaskConfig,
     ScheduleConfig,
@@ -43,8 +44,7 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         # General
         seed=0,
         n_mask_samples=1,
-        ci_fn_type="mlp",
-        ci_fn_hidden_dims=[8],
+        ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[8]),
         loss_metric_configs=[
             ImportanceMinimalityLossConfig(
                 coeff=3e-3,

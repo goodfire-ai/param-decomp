@@ -34,8 +34,10 @@ stochastic_recon_layerwise_coeff: 1
 importance_minimality_coeff: 1e-2
 pnorm: 0.1
 output_loss_type: kl
-ci_fn_type: "vector_mlp"
-ci_fn_hidden_dims: [128]
+ci_config:
+  mode: layerwise
+  fn_type: vector_mlp
+  hidden_dims: [128]
 
 
 # --- Faithfulness Warmup ---

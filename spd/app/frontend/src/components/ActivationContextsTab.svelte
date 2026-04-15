@@ -18,6 +18,8 @@
         <div class="loading">Loading activation contexts summary...</div>
     {:else if summary.status === "error"}
         <StatusText>Error loading summary: {String(summary.error)}</StatusText>
+    {:else if summary.data === null}
+        <StatusText>No harvest data available. Run postprocessing first.</StatusText>
     {:else}
         <ActivationContextsViewer activationContextsSummary={summary.data} />
     {/if}

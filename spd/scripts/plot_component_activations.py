@@ -11,62 +11,18 @@ Usage:
 """
 
 import argparse
-import json
 from collections import defaultdict
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
 
-from spd.harvest.schemas import (
-    ActivationExample,
-    ComponentData,
-    ComponentTokenPMI,
-    get_activation_contexts_dir,
-)
-from spd.settings import SPD_OUT_DIR
-
-
-def load_activation_contexts(run_id: str) -> dict[str, ComponentData]:
-    """Load all activation contexts."""
-    ctx_dir = get_activation_contexts_dir(run_id)
-    path = ctx_dir / "components.jsonl"
-    assert path.exists(), f"No harvest data found for run {run_id}"
-
-    components: dict[str, ComponentData] = {}
-    with open(path) as f:
-        for line in f:
-            data = json.loads(line)
-            data["activation_examples"] = [
-                ActivationExample(
-                    token_ids=ex["token_ids"],
-                    ci_values=ex["ci_values"],
-                    component_acts=ex.get("component_acts", [0.0] * len(ex["token_ids"])),
-                )
-                for ex in data["activation_examples"]
-            ]
-            data["input_token_pmi"] = ComponentTokenPMI(**data["input_token_pmi"])
-            data["output_token_pmi"] = ComponentTokenPMI(**data["output_token_pmi"])
-            comp = ComponentData(**data)
-            components[comp.component_key] = comp
-    return components
-
-
-def load_firing_counts(run_id: str) -> dict[str, int]:
-    """Load pre-calculated firing counts from harvest data."""
-    token_stats_path = SPD_OUT_DIR / "harvest" / run_id / "correlations" / "token_stats.pt"
-    assert token_stats_path.exists(), f"No token stats found for run {run_id}"
-
-    data = torch.load(token_stats_path)
-    component_keys = data["component_keys"]
-    firing_counts = data["firing_counts"]
-
-    return {key: int(count) for key, count in zip(component_keys, firing_counts, strict=True)}
+from spd.harvest.repo import HarvestRepo
+from spd.harvest.schemas import ComponentData
 
 
 def extract_activations(
-    contexts: dict[str, ComponentData],
+    components: list[ComponentData],
     ci_threshold: float,
 ) -> tuple[dict[str, dict[str, list[float]]], dict[str, dict[str, list[float]]]]:
     """Extract component activations, separating all vs above-threshold.
@@ -79,10 +35,13 @@ def extract_activations(
     all_activations: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     filtered_activations: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
 
-    for component_key, component_data in contexts.items():
+    for component_data in components:
         layer = component_data.layer
+        component_key = component_data.component_key
         for example in component_data.activation_examples:
-            for ci_val, act_val in zip(example.ci_values, example.component_acts, strict=True):
+            ci_vals = example.activations["causal_importance"]
+            act_vals = example.activations["component_activation"]
+            for ci_val, act_val in zip(ci_vals, act_vals, strict=True):
                 all_activations[layer][component_key].append(act_val)
                 if ci_val > ci_threshold:
                     filtered_activations[layer][component_key].append(act_val)
@@ -183,15 +142,23 @@ def main():
     output_dir_median.mkdir(parents=True, exist_ok=True)
     output_dir_freq.mkdir(parents=True, exist_ok=True)
 
-    print(f"Loading activation contexts for run {args.run_id}...")
-    contexts = load_activation_contexts(args.run_id)
-    print(f"Loaded {len(contexts)} components")
+    repo = HarvestRepo.open_most_recent(decomposition_id=args.run_id, readonly=True)
+    assert repo is not None, f"No harvest data for {args.run_id}"
+
+    print(f"Loading components for run {args.run_id}...")
+    components = repo.get_all_components()
+    print(f"Loaded {len(components)} components")
 
     print("Loading firing counts...")
-    firing_counts = load_firing_counts(args.run_id)
+    token_stats = repo.get_token_stats()
+    assert token_stats is not None, f"No token stats found for run {args.run_id}"
+    firing_counts = {
+        key: int(count)
+        for key, count in zip(token_stats.component_keys, token_stats.firing_counts, strict=True)
+    }
 
     print("Extracting activations...")
-    all_by_layer, filtered_by_layer = extract_activations(contexts, args.ci_threshold)
+    all_by_layer, filtered_by_layer = extract_activations(components, args.ci_threshold)
 
     n_layers = len(filtered_by_layer)
     n_total = sum(sum(len(v) for v in layer.values()) for layer in filtered_by_layer.values())
@@ -201,7 +168,6 @@ def main():
         print("No datapoints found above threshold. Try lowering --ci-threshold.")
         return
 
-    # Create plots ordered by median normalized activation
     print(f"Creating per-layer plots (ordered by median) in {output_dir_median}/...")
     for layer_name in sorted(all_by_layer.keys()):
         all_acts = all_by_layer[layer_name]
@@ -215,7 +181,6 @@ def main():
         create_layer_scatter_plot(normalized, ordered_keys, layer_name, args.run_id, output_path)
         print(f"  {output_path}")
 
-    # Create plots ordered by CI activation frequency (with abs distance from midpoint)
     print(f"Creating per-layer plots (ordered by frequency) in {output_dir_freq}/...")
     for layer_name in sorted(all_by_layer.keys()):
         all_acts = all_by_layer[layer_name]
@@ -223,7 +188,6 @@ def main():
         normalized = normalize_per_component(all_acts, filtered_acts)
         if not normalized:
             continue
-        # Transform to absolute distance from midpoint
         abs_from_midpoint = {key: np.abs(acts - 0.5) for key, acts in normalized.items()}
         ordered_keys = order_by_frequency(abs_from_midpoint, firing_counts)
         safe_name = layer_name.replace(".", "_")

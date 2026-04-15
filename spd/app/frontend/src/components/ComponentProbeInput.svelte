@@ -1,8 +1,8 @@
 <script lang="ts">
-    import type { ComponentProbeResult } from "../lib/promptAttributionsTypes";
+    import type { SubcomponentProbeResult } from "../lib/promptAttributionsTypes";
+    import type { Loadable } from "../lib";
     import { probeComponent } from "../lib/api";
     import TokenHighlights from "./TokenHighlights.svelte";
-    import { displaySettings } from "../lib/displaySettings.svelte";
 
     interface Props {
         layer: string;
@@ -13,25 +13,22 @@
     let { layer, componentIdx, maxAbsComponentAct }: Props = $props();
 
     let probeText = $state("");
-    let probeResult = $state<ComponentProbeResult | null>(null);
-    let probeLoading = $state(false);
-    let probeError = $state<string | null>(null);
+    let probeResult = $state<Loadable<SubcomponentProbeResult>>({ status: "uninitialized" });
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
     async function runProbe(text: string) {
         if (!text.trim()) {
-            probeResult = null;
-            probeError = null;
+            probeResult = { status: "uninitialized" };
             return;
         }
 
-        probeLoading = true;
-        probeError = null;
+        probeResult = { status: "loading" };
 
         try {
-            probeResult = await probeComponent(text, layer, componentIdx);
-        } finally {
-            probeLoading = false;
+            const data = await probeComponent(text, layer, componentIdx);
+            probeResult = { status: "loaded", data };
+        } catch (e) {
+            probeResult = { status: "error", error: e };
         }
     }
 
@@ -46,8 +43,7 @@
     // Re-run probe when layer or component changes (if there's text)
     $effect(() => {
         void [layer, componentIdx]; // track dependencies
-        probeResult = null;
-        probeError = null;
+        probeResult = { status: "uninitialized" };
         if (probeText.trim()) {
             if (debounceTimer) clearTimeout(debounceTimer);
             debounceTimer = setTimeout(() => runProbe(probeText), 100);
@@ -56,30 +52,19 @@
 </script>
 
 <div class="probe-section">
-    <div class="header-with-hint">
-        <h5>Custom Text</h5>
-        {#if displaySettings.exampleColorMode === "ci"}
-            <span class="hint">(Change "Color by" above to "Both" to see subcomponent activations)</span>
-        {/if}
-    </div>
-    <input
-        type="text"
-        class="probe-input"
-        placeholder="Enter text..."
-        value={probeText}
-        oninput={onProbeInput}
-    />
-    {#if probeLoading}
+    <h5>Custom Text</h5>
+    <input type="text" class="probe-input" placeholder="Enter text..." value={probeText} oninput={onProbeInput} />
+    {#if probeResult.status === "loading"}
         <p class="probe-status">Loading...</p>
-    {:else if probeError}
-        <p class="probe-error">{probeError}</p>
-    {:else if probeResult && probeResult.tokens.length > 0}
+    {:else if probeResult.status === "error"}
+        <p class="probe-error">{probeResult.error}</p>
+    {:else if probeResult.status === "loaded" && probeResult.data.tokens.length > 0}
         <div class="probe-result">
             <TokenHighlights
-                tokenStrings={probeResult.tokens}
-                tokenCi={probeResult.ci_values}
-                tokenComponentActs={probeResult.subcomp_acts}
-                colorMode={displaySettings.exampleColorMode}
+                tokenStrings={probeResult.data.tokens}
+                tokenCi={probeResult.data.ci_values}
+                tokenComponentActs={probeResult.data.subcomp_acts}
+                tokenNextProbs={probeResult.data.next_token_probs}
                 {maxAbsComponentAct}
             />
         </div>
@@ -91,28 +76,6 @@
         padding: var(--space-2);
         background: var(--bg-surface);
         border: 1px solid var(--border-default);
-    }
-
-    .header-with-hint {
-        display: flex;
-        align-items: baseline;
-        gap: var(--space-2);
-        margin-bottom: var(--space-2);
-    }
-
-    h5 {
-        margin: 0;
-        font-size: var(--text-sm);
-        font-family: var(--font-sans);
-        color: var(--text-secondary);
-        font-weight: 600;
-    }
-
-    .hint {
-        font-size: var(--text-xs);
-        font-family: var(--font-sans);
-        color: var(--text-muted);
-        font-style: italic;
     }
 
     .probe-input {

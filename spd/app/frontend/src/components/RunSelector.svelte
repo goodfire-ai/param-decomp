@@ -1,5 +1,22 @@
 <script lang="ts">
-    import { CANONICAL_RUNS, formatRunIdForDisplay, type RegistryEntry } from "../lib/registry";
+    import { onMount } from "svelte";
+    import { CANONICAL_RUNS, formatRunIdForDisplay } from "../lib/registry";
+    import { fetchRunInfo, type RunInfoResponse, type DataAvailability } from "../lib/api/runRegistry";
+
+    const AVAILABILITY_COLUMNS: { key: keyof DataAvailability; abbrev: string; tooltip: string }[] = [
+        { key: "harvest", abbrev: "H", tooltip: "Harvest: activation stats, correlations, token associations" },
+        { key: "autointerp", abbrev: "AI", tooltip: "Autointerp: LLM-generated component labels" },
+        {
+            key: "attributions",
+            abbrev: "DA",
+            tooltip: "Dataset Attributions: component-to-component attribution strengths",
+        },
+        {
+            key: "graph_interp",
+            abbrev: "GI",
+            tooltip: "Graph Interp: context-aware labels using attribution graph structure",
+        },
+    ];
 
     type Props = {
         onSelect: (wandbPath: string, contextLength: number) => void;
@@ -12,8 +29,27 @@
     let customPath = $state("");
     let contextLength = $state(512);
 
-    function handleRegistrySelect(entry: RegistryEntry) {
-        onSelect(entry.wandbRunId, contextLength);
+    let backendData = $state<Record<string, RunInfoResponse>>({});
+    let backendLoaded = $state(false);
+
+    onMount(() => {
+        fetchRunInfo(CANONICAL_RUNS.map((r) => r.wandbRunId)).then(
+            (runs) => {
+                const map: Record<string, RunInfoResponse> = {};
+                for (const run of runs) {
+                    map[run.wandb_run_id] = run;
+                }
+                backendData = map;
+                backendLoaded = true;
+            },
+            () => {
+                backendLoaded = true;
+            },
+        );
+    });
+
+    function handleRowClick(wandbRunId: string) {
+        onSelect(wandbRunId, contextLength);
     }
 
     function handleCustomSubmit(event: Event) {
@@ -40,31 +76,71 @@
             {/if}
         </h1>
 
-        <div class="context-length-section">
-            <label for="context-length">Context Length:</label>
-            <input
-                type="number"
-                id="context-length"
-                bind:value={contextLength}
-                disabled={isLoading}
-                min="1"
-                max="2048"
-            />
-        </div>
-
-        <div class="runs-grid">
-            {#each CANONICAL_RUNS as entry (entry.wandbRunId)}
-                <button class="run-card" onclick={() => handleRegistrySelect(entry)} disabled={isLoading}>
-                    <span class="run-model">{entry.modelName}</span>
-                    <span class="run-id">{formatRunIdForDisplay(entry.wandbRunId)}</span>
-                    {#if entry.notes}
-                        <span class="run-notes">{entry.notes}</span>
-                    {/if}
-                    {#if entry.clusterMappings}
-                        <span class="run-cluster-mappings">{entry.clusterMappings.length} clustering runs</span>
-                    {/if}
-                </button>
-            {/each}
+        <div class="table-wrapper">
+            <table class="runs-table">
+                <thead>
+                    <tr>
+                        <th>Run</th>
+                        <th>Architecture</th>
+                        <th>Notes</th>
+                        {#each AVAILABILITY_COLUMNS as col (col.key)}
+                            <th class="avail-col tooltip-wrap"
+                                >{col.abbrev}<span class="tooltip">{col.tooltip}</span></th
+                            >
+                        {/each}
+                    </tr>
+                </thead>
+                <tbody>
+                    {#each CANONICAL_RUNS as entry (entry.wandbRunId)}
+                        {@const info = backendData[entry.wandbRunId]}
+                        <tr
+                            class="run-row"
+                            onclick={() => handleRowClick(entry.wandbRunId)}
+                            role="button"
+                            tabindex="0"
+                            onkeydown={(e) => {
+                                if (e.key === "Enter") handleRowClick(entry.wandbRunId);
+                            }}
+                        >
+                            <td class="cell-run">
+                                {#if entry.name}
+                                    <span class="run-name">{entry.name}</span>
+                                {/if}
+                                <span class="run-id">{formatRunIdForDisplay(entry.wandbRunId)}</span>
+                            </td>
+                            <td class="cell-arch">
+                                {#if info?.architecture}
+                                    {info.architecture}
+                                {:else if !backendLoaded}
+                                    <span class="skeleton"></span>
+                                {:else}
+                                    <span class="muted">-</span>
+                                {/if}
+                            </td>
+                            <td class="cell-notes">
+                                {#if entry.notes}
+                                    {entry.notes}
+                                {/if}
+                            </td>
+                            {#each AVAILABILITY_COLUMNS as col (col.key)}
+                                <td class="cell-avail">
+                                    {#if info}
+                                        <span
+                                            class="dot"
+                                            class:available={info.availability[col.key]}
+                                            title={col.tooltip}
+                                        ></span>
+                                    {:else if !backendLoaded}
+                                        <span class="skeleton skeleton-dot"></span>
+                                    {:else}
+                                        <span class="dot"></span>
+                                    {/if}
+                                </td>
+                            {/each}
+                        </tr>
+                    {/each}
+                </tbody>
+            </table>
         </div>
 
         <div class="divider">
@@ -74,7 +150,7 @@
         <form class="custom-form" onsubmit={handleCustomSubmit}>
             <input
                 type="text"
-                placeholder="e.g. goodfire/spd/runs/33n6xjjt"
+                placeholder="e.g. s-17805b61 or goodfire/spd/runs/33n6xjjt"
                 bind:value={customPath}
                 disabled={isLoading}
             />
@@ -131,9 +207,9 @@
     }
 
     .selector-content {
-        max-width: 720px;
+        max-width: 860px;
         width: 100%;
-        transition: opacity 0.2s;
+        transition: opacity var(--transition-slow);
     }
 
     .selector-content.dimmed {
@@ -145,93 +221,165 @@
         font-size: var(--text-3xl);
         font-weight: 600;
         color: var(--text-primary);
-        margin: 0 0 var(--space-2) 0;
+        margin: 0 0 var(--space-4) 0;
         text-align: center;
         font-family: var(--font-sans);
     }
 
-    .context-length-section {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: var(--space-2);
-        margin-bottom: var(--space-4);
-    }
-
-    .context-length-section label {
-        font-size: var(--text-sm);
-        color: var(--text-secondary);
-        font-family: var(--font-sans);
-        font-weight: 500;
-    }
-
-    .context-length-section input {
-        width: 80px;
-        padding: var(--space-1) var(--space-2);
-        border: 1px solid var(--border-default);
-        border-radius: var(--radius-sm);
-        background: var(--bg-elevated);
-        color: var(--text-primary);
-        font-size: var(--text-sm);
-        font-family: var(--font-mono);
-    }
-
-    .runs-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-        gap: var(--space-3);
+    .table-wrapper {
         margin-bottom: var(--space-6);
-    }
-
-    .run-card {
-        display: flex;
-        flex-direction: column;
-        align-items: flex-start;
-        gap: var(--space-1);
-        padding: var(--space-3);
-        background: var(--bg-surface);
         border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
-        cursor: pointer;
-        text-align: left;
-        transition:
-            border-color 0.15s,
-            background 0.15s;
+        overflow: hidden;
     }
 
-    .run-card:hover:not(:disabled) {
-        border-color: var(--accent-primary);
+    .runs-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-family: var(--font-sans);
+        font-size: var(--text-sm);
+    }
+
+    .runs-table thead {
+        background: var(--bg-surface);
+    }
+
+    .runs-table th {
+        padding: var(--space-2) var(--space-3);
+        text-align: left;
+        font-weight: 500;
+        color: var(--text-muted);
+        font-size: var(--text-xs);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        border-bottom: 1px solid var(--border-default);
+    }
+
+    .avail-col {
+        width: 36px;
+        text-align: center !important;
+    }
+
+    .tooltip-wrap {
+        position: relative;
+        cursor: help;
+    }
+
+    .tooltip {
+        display: none;
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        margin-top: 4px;
+        padding: var(--space-1) var(--space-2);
+        background: var(--bg-elevated);
+        border: 1px solid var(--border-default);
+        border-radius: var(--radius-sm);
+        font-size: var(--text-xs);
+        font-weight: 400;
+        text-transform: none;
+        letter-spacing: normal;
+        color: var(--text-secondary);
+        white-space: nowrap;
+        z-index: 10;
+        pointer-events: none;
+    }
+
+    .tooltip-wrap:hover .tooltip {
+        display: block;
+    }
+
+    .runs-table td {
+        padding: var(--space-2) var(--space-3);
+        border-bottom: 1px solid var(--border-default);
+    }
+
+    .runs-table tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    .run-row {
+        cursor: pointer;
+        transition: background var(--transition-normal);
+    }
+
+    .run-row:hover {
         background: var(--bg-elevated);
     }
 
-    .run-card:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
+    .cell-run {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
     }
 
-    .run-model {
-        font-size: var(--text-sm);
+    .run-name {
         font-weight: 600;
         color: var(--text-primary);
-        font-family: var(--font-sans);
     }
 
     .run-id {
-        font-size: var(--text-xs);
         font-family: var(--font-mono);
+        font-size: var(--text-xs);
         color: var(--accent-primary);
     }
 
-    .run-notes {
+    .cell-arch {
+        font-family: var(--font-mono);
         font-size: var(--text-xs);
-        color: var(--text-muted);
-        font-family: var(--font-sans);
+        color: var(--text-secondary);
     }
 
-    .run-cluster-mappings {
-        font-size: var(--text-xs);
+    .cell-notes {
         color: var(--text-muted);
-        font-family: var(--font-sans);
+        font-size: var(--text-xs);
+    }
+
+    .cell-avail {
+        text-align: center;
+    }
+
+    .muted {
+        color: var(--text-muted);
+    }
+
+    .dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--border-default);
+    }
+
+    .dot.available {
+        background: var(--status-success, #22c55e);
+    }
+
+    .skeleton {
+        display: inline-block;
+        height: 12px;
+        width: 80px;
+        border-radius: var(--radius-sm);
+        background: var(--border-default);
+        opacity: 0.4;
+        animation: pulse 1.2s ease-in-out infinite;
+    }
+
+    .skeleton-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+    }
+
+    @keyframes pulse {
+        0%,
+        100% {
+            opacity: 0.4;
+        }
+        50% {
+            opacity: 0.15;
+        }
     }
 
     .divider {

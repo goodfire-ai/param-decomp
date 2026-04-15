@@ -12,7 +12,7 @@
 
     let backendUser = $state<Loadable<string>>({ status: "uninitialized" });
 
-    let showWhichView = $derived(runState.run?.status === "loaded" ? "run-view" : "run-selector");
+    let showWhichView = $derived(runState.run.status === "loaded" ? "run-view" : "run-selector");
 
     async function handleLoadRun(wandbPath: string, contextLength: number) {
         await runState.loadRun(wandbPath, contextLength);
@@ -20,15 +20,15 @@
 
     onMount(() => {
         runState.syncStatus();
-        api.getWhoami().then((user) => (backendUser = { status: "loaded", data: user }));
+        api.whoami().then((user) => (backendUser = { status: "loaded", data: user }));
     });
 </script>
 
 {#if showWhichView === "run-selector"}
     <RunSelector
         onSelect={handleLoadRun}
-        isLoading={runState.run?.status === "loading"}
-        username={backendUser?.status === "loaded" ? backendUser.data : null}
+        isLoading={runState.run.status === "loading"}
+        username={backendUser.status === "loaded" ? backendUser.data : null}
     />
 {:else}
     <RunView />

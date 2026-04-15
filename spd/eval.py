@@ -12,7 +12,9 @@ from wandb.plot.custom_chart import CustomChart
 from spd.configs import (
     CEandKLLossesConfig,
     CI_L0Config,
+    CIHiddenActsReconLossConfig,
     CIHistogramsConfig,
+    CIMaskedAttnPatternsReconLossConfig,
     CIMaskedReconLayerwiseLossConfig,
     CIMaskedReconLossConfig,
     CIMaskedReconSubsetLossConfig,
@@ -24,11 +26,16 @@ from spd.configs import (
     ImportanceMinimalityLossConfig,
     MetricConfigType,
     PermutedCIPlotsConfig,
+    PersistentPGDReconEvalConfig,
+    PersistentPGDReconLossConfig,
+    PersistentPGDReconSubsetEvalConfig,
+    PersistentPGDReconSubsetLossConfig,
     PGDMultiBatchReconLossConfig,
     PGDMultiBatchReconSubsetLossConfig,
     PGDReconLayerwiseLossConfig,
     PGDReconLossConfig,
     PGDReconSubsetLossConfig,
+    StochasticAttnPatternsReconLossConfig,
     StochasticHiddenActsReconLossConfig,
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
@@ -38,6 +45,10 @@ from spd.configs import (
     UVPlotsConfig,
 )
 from spd.metrics import UnmaskedReconLoss
+from spd.metrics.attn_patterns_recon_loss import (
+    CIMaskedAttnPatternsReconLoss,
+    StochasticAttnPatternsReconLoss,
+)
 from spd.metrics.base import Metric
 from spd.metrics.ce_and_kl_losses import CEandKLLosses
 from spd.metrics.ci_histograms import CIHistograms
@@ -48,6 +59,7 @@ from spd.metrics.ci_masked_recon_subset_loss import CIMaskedReconSubsetLoss
 from spd.metrics.ci_mean_per_component import CIMeanPerComponent
 from spd.metrics.component_activation_density import ComponentActivationDensity
 from spd.metrics.faithfulness_loss import FaithfulnessLoss
+from spd.metrics.hidden_acts_recon_loss import CIHiddenActsReconLoss, StochasticHiddenActsReconLoss
 from spd.metrics.identity_ci_error import IdentityCIError
 from spd.metrics.importance_minimality_loss import ImportanceMinimalityLoss
 from spd.metrics.permuted_ci_plots import PermutedCIPlots
@@ -55,13 +67,14 @@ from spd.metrics.pgd_masked_recon_layerwise_loss import PGDReconLayerwiseLoss
 from spd.metrics.pgd_masked_recon_loss import PGDReconLoss
 from spd.metrics.pgd_masked_recon_subset_loss import PGDReconSubsetLoss
 from spd.metrics.pgd_utils import CreateDataIter, calc_multibatch_pgd_masked_recon_loss
-from spd.metrics.stochastic_hidden_acts_recon_loss import StochasticHiddenActsReconLoss
+from spd.metrics.ppgd_eval_losses import PPGDReconEval
 from spd.metrics.stochastic_recon_layerwise_loss import StochasticReconLayerwiseLoss
 from spd.metrics.stochastic_recon_loss import StochasticReconLoss
 from spd.metrics.stochastic_recon_subset_ce_and_kl import StochasticReconSubsetCEAndKL
 from spd.metrics.stochastic_recon_subset_loss import StochasticReconSubsetLoss
 from spd.metrics.uv_plots import UVPlots
 from spd.models.component_model import ComponentModel, OutputWithCache
+from spd.persistent_pgd import PersistentPGDState
 from spd.routing import AllLayersRouter, get_subset_router
 from spd.utils.distributed_utils import avg_metrics_across_ranks, is_distributed
 from spd.utils.general_utils import dict_safe_update_, extract_batch_data
@@ -121,6 +134,9 @@ def init_metric(
     model: ComponentModel,
     run_config: Config,
     device: str,
+    ppgd_states: dict[
+        PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig, PersistentPGDState
+    ],
 ) -> Metric:
     match cfg:
         case ImportanceMinimalityLossConfig():
@@ -260,6 +276,57 @@ def init_metric(
                 use_delta_component=run_config.use_delta_component,
                 n_mask_samples=run_config.n_mask_samples,
             )
+        case CIHiddenActsReconLossConfig():
+            metric = CIHiddenActsReconLoss(model=model, device=device)
+        case PersistentPGDReconEvalConfig():
+            matching = [
+                s for k, s in ppgd_states.items() if isinstance(k, PersistentPGDReconLossConfig)
+            ]
+            assert len(matching) == 1
+            metric = PPGDReconEval(
+                model=model,
+                device=device,
+                effective_sources=matching[0].get_effective_sources(),
+                use_delta_component=run_config.use_delta_component,
+                output_loss_type=run_config.output_loss_type,
+                metric_name=cfg.classname,
+            )
+        case PersistentPGDReconSubsetEvalConfig():
+            matching = [
+                s
+                for k, s in ppgd_states.items()
+                if isinstance(k, PersistentPGDReconSubsetLossConfig)
+            ]
+            assert len(matching) == 1
+            metric = PPGDReconEval(
+                model=model,
+                device=device,
+                effective_sources=matching[0].get_effective_sources(),
+                use_delta_component=run_config.use_delta_component,
+                output_loss_type=run_config.output_loss_type,
+                metric_name=cfg.classname,
+            )
+        case CIMaskedAttnPatternsReconLossConfig():
+            metric = CIMaskedAttnPatternsReconLoss(
+                model=model,
+                device=device,
+                n_heads=cfg.n_heads,
+                q_proj_path=cfg.q_proj_path,
+                k_proj_path=cfg.k_proj_path,
+                c_attn_path=cfg.c_attn_path,
+            )
+        case StochasticAttnPatternsReconLossConfig():
+            metric = StochasticAttnPatternsReconLoss(
+                model=model,
+                device=device,
+                sampling=run_config.sampling,
+                use_delta_component=run_config.use_delta_component,
+                n_mask_samples=run_config.n_mask_samples,
+                n_heads=cfg.n_heads,
+                q_proj_path=cfg.q_proj_path,
+                k_proj_path=cfg.k_proj_path,
+                c_attn_path=cfg.c_attn_path,
+            )
         case UVPlotsConfig():
             metric = UVPlots(
                 model=model,
@@ -273,10 +340,12 @@ def init_metric(
                 device=device,
                 output_loss_type=run_config.output_loss_type,
             )
-
-        case _:
-            # We shouldn't handle **all** cases because PGDMultiBatch metrics should be handled by
-            # the evaluate_multibatch_pgd function below.
+        case (
+            PGDMultiBatchReconLossConfig()
+            | PGDMultiBatchReconSubsetLossConfig()
+            | PersistentPGDReconLossConfig()
+            | PersistentPGDReconSubsetLossConfig()
+        ):
             raise ValueError(f"Unsupported metric config for eval: {cfg}")
     return metric
 
@@ -290,12 +359,28 @@ def evaluate(
     slow_step: bool,
     n_eval_steps: int,
     current_frac_of_training: float,
+    ppgd_states: dict[
+        PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig, PersistentPGDState
+    ],
 ) -> MetricOutType:
     """Run evaluation and return a mapping of metric names to values/images."""
 
+    # Persistent PGD losses are training-only (sources are coupled to train batch size)
+    eval_metric_configs = [
+        cfg
+        for cfg in eval_metric_configs
+        if not isinstance(cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig)
+    ]
+
     metrics: list[Metric] = []
     for cfg in eval_metric_configs:
-        metric = init_metric(cfg=cfg, model=model, run_config=run_config, device=device)
+        metric = init_metric(
+            cfg=cfg,
+            model=model,
+            run_config=run_config,
+            device=device,
+            ppgd_states=ppgd_states,
+        )
         if metric.slow and not slow_step:
             continue
         metrics.append(metric)

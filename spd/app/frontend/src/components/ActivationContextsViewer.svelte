@@ -1,21 +1,22 @@
 <script lang="ts">
-    import { onMount } from "svelte";
+    import { getContext, onMount } from "svelte";
     import { computeMaxAbsComponentAct } from "../lib/colors";
-    import { hasAnyCorrelationStats } from "../lib/displaySettings.svelte";
-    import type { ActivationContextsSummary, ComponentSummary } from "../lib/promptAttributionsTypes";
+    import { mapLoadable } from "../lib/index";
+    import { COMPONENT_CARD_CONSTANTS } from "../lib/componentCardConstants";
+    import { anyCorrelationStatsEnabled, displaySettings } from "../lib/displaySettings.svelte";
+    import type { ActivationContextsSummary, SubcomponentMetadata } from "../lib/promptAttributionsTypes";
     import { useComponentData } from "../lib/useComponentData.svelte";
-    import ActivationContextsPagedTable from "./ActivationContextsPagedTable.svelte";
+    import { RUN_KEY, type RunContext } from "../lib/useRun.svelte";
+    import ActivationContextsPagedTable, { type ActivationExamplesData } from "./ActivationContextsPagedTable.svelte";
     import ComponentProbeInput from "./ComponentProbeInput.svelte";
     import ComponentCorrelationMetrics from "./ui/ComponentCorrelationMetrics.svelte";
+    import ComponentFrequencyCurve from "./ui/ComponentFrequencyCurve.svelte";
+    import GraphInterpBadge from "./ui/GraphInterpBadge.svelte";
     import InterpretationBadge from "./ui/InterpretationBadge.svelte";
     import SectionHeader from "./ui/SectionHeader.svelte";
     import StatusText from "./ui/StatusText.svelte";
     import TokenStatsSection from "./ui/TokenStatsSection.svelte";
-
-    const N_TOKENS_TO_DISPLAY_INPUT = 80;
-    const N_TOKENS_TO_DISPLAY_OUTPUT = 30;
-
-    const showCorrelations = $derived(hasAnyCorrelationStats());
+    import DatasetAttributionsSection from "./ui/DatasetAttributionsSection.svelte";
 
     type Props = {
         activationContextsSummary: ActivationContextsSummary;
@@ -23,18 +24,29 @@
 
     let { activationContextsSummary }: Props = $props();
 
+    const runState = getContext<RunContext>(RUN_KEY);
+
     let availableLayers = $derived(Object.keys(activationContextsSummary).sort());
     let currentPage = $state(0);
     let selectedLayer = $state<string>(Object.keys(activationContextsSummary)[0]);
 
     // Layer metadata is already sorted by mean_ci desc from backend
-    let currentLayerMetadata = $derived(activationContextsSummary[selectedLayer]);
+    // Filter by mean CI cutoff for ordered navigation (but not for "go to index" search)
+    let currentLayerMetadata = $derived(
+        activationContextsSummary[selectedLayer].filter((m) => m.mean_ci >= displaySettings.meanCiCutoff),
+    );
     let totalPages = $derived(currentLayerMetadata.length);
-    let currentMetadata = $derived<ComponentSummary>(currentLayerMetadata[currentPage]);
+    let currentMetadata = $derived<SubcomponentMetadata>(currentLayerMetadata[currentPage]);
+    let currentIntruderScore = $derived(
+        currentMetadata ? runState.getIntruderScore(`${selectedLayer}:${currentMetadata.subcomponent_idx}`) : null,
+    );
+    let currentGraphInterpLabel = $derived(
+        currentMetadata ? runState.getGraphInterpLabel(`${selectedLayer}:${currentMetadata.subcomponent_idx}`) : null,
+    );
 
     // Component data hook - call load() explicitly when component changes
     const componentData = useComponentData();
-    const DEBOUNCE_MS = 300;
+    const DEBOUNCE_MS = 250;
     let loadTimeout: ReturnType<typeof setTimeout> | null = null;
 
     // Load data for current component (debounced to avoid spamming on rapid navigation)
@@ -55,6 +67,14 @@
         return () => {
             if (loadTimeout) clearTimeout(loadTimeout);
         };
+    });
+
+    // Reset page if cutoff changes cause current page to be out of bounds
+    $effect(() => {
+        if (currentPage >= totalPages && totalPages > 0) {
+            currentPage = 0;
+            loadCurrentComponent();
+        }
     });
 
     function handlePageInput(event: Event) {
@@ -84,11 +104,20 @@
             return;
         }
 
-        // Find the page index that contains this subcomponent index
+        // Search in unfiltered metadata to allow finding any component
+        const fullMetadata = activationContextsSummary[selectedLayer];
+        const component = fullMetadata.find((m) => m.subcomponent_idx === targetIdx);
+
+        if (!component) {
+            searchError = `Not found`;
+            return;
+        }
+
+        // Find the page index in filtered list
         const pageIndex = currentLayerMetadata.findIndex((m) => m.subcomponent_idx === targetIdx);
 
         if (pageIndex === -1) {
-            searchError = `Not found`;
+            searchError = `Below cutoff (${component.mean_ci.toExponential(2)})`;
             return;
         }
 
@@ -120,22 +149,21 @@
     // Derive token lists from loaded tokenStats (null if not loaded or no data)
     const inputTokenLists = $derived.by(() => {
         const ts = componentData.tokenStats;
-        if (ts?.status !== "loaded" || ts.data === null) return null;
+        if (ts.status !== "loaded" || ts.data === null) return null;
         return [
-            {
-                title: "Top Recall",
-                mathNotation: "P(token | component fires)",
-                items: ts.data.input.top_recall
-                    .slice(0, N_TOKENS_TO_DISPLAY_INPUT)
-                    .map(([token, value]) => ({ token, value })),
-                maxScale: 1,
-            },
+            // TODO clean this up, but for now Top Recall is honestly not useful
+            // {
+            //     title: "Top Recall",
+            //     mathNotation: "P(token | component fires)",
+            //     items: ts.data.input.top_recall
+            //         .slice(0, COMPONENT_CARD_CONSTANTS.N_INPUT_TOKENS)
+            //         .map(([token, value]) => ({ token, value })),
+            //     maxScale: 1,
+            // },
             {
                 title: "Top Precision",
                 mathNotation: "P(component fires | token)",
-                items: ts.data.input.top_precision
-                    .slice(0, N_TOKENS_TO_DISPLAY_INPUT)
-                    .map(([token, value]) => ({ token, value })),
+                items: ts.data.input.top_precision.map(([token, value]) => ({ token, value })),
                 maxScale: 1,
             },
         ];
@@ -143,7 +171,7 @@
 
     const outputTokenLists = $derived.by(() => {
         const ts = componentData.tokenStats;
-        if (ts?.status !== "loaded" || ts.data === null) return null;
+        if (ts.status !== "loaded" || ts.data === null) return null;
         // Compute max absolute PMI for scaling
         const maxAbsPmi = Math.max(
             ts.data.output.top_pmi[0]?.[1] ?? 0,
@@ -153,27 +181,16 @@
             {
                 title: "Top PMI",
                 mathNotation: "positive association with predictions",
-                items: ts.data.output.top_pmi
-                    .slice(0, N_TOKENS_TO_DISPLAY_OUTPUT)
-                    .map(([token, value]) => ({ token, value })),
+                items: ts.data.output.top_pmi.map(([token, value]) => ({ token, value })),
                 maxScale: maxAbsPmi,
             },
             {
                 title: "Bottom PMI",
                 mathNotation: "negative association with predictions",
-                items: ts.data.output.bottom_pmi
-                    .slice(0, N_TOKENS_TO_DISPLAY_OUTPUT)
-                    .map(([token, value]) => ({ token, value })),
+                items: ts.data.output.bottom_pmi.map(([token, value]) => ({ token, value })),
                 maxScale: maxAbsPmi,
             },
         ];
-    });
-
-    // Activating tokens from token stats (for highlighting in table)
-    let inputTopRecall = $derived.by(() => {
-        const tokenStats = componentData.tokenStats;
-        if (tokenStats?.status !== "loaded" || tokenStats.data === null) return [];
-        return tokenStats.data.input.top_recall.map(([token, value]) => ({ token, value }));
     });
 
     // Format mean CI for display
@@ -181,11 +198,30 @@
         return ci < 0.001 ? ci.toExponential(2) : ci.toFixed(3);
     }
 
+    function handlePlotSelect(subcomponentIdx: number) {
+        const pageIndex = currentLayerMetadata.findIndex((m) => m.subcomponent_idx === subcomponentIdx);
+        if (pageIndex === -1) return;
+        currentPage = pageIndex;
+        loadCurrentComponent();
+    }
+
     // Compute global max absolute component act for normalization (used by both activating examples and probe)
     const maxAbsComponentAct = $derived.by(() => {
-        if (componentData.componentDetail?.status !== "loaded") return 1;
+        if (componentData.componentDetail.status !== "loaded") return 1;
         return computeMaxAbsComponentAct(componentData.componentDetail.data.example_component_acts);
     });
+
+    const activationExamples = $derived(
+        mapLoadable(
+            componentData.componentDetail,
+            (d): ActivationExamplesData => ({
+                tokens: d.example_tokens,
+                ci: d.example_ci,
+                componentActs: d.example_component_acts,
+                maxAbsComponentAct,
+            }),
+        ),
+    );
 </script>
 
 <div class="viewer-content">
@@ -203,6 +239,7 @@
             <label for="page-input">Subcomponent:</label>
             <button onclick={previousPage} disabled={currentPage === 0}>&lt;</button>
             <input
+                id="page-input"
                 type="number"
                 min="1"
                 max={totalPages}
@@ -230,32 +267,36 @@
         </div>
     </div>
 
+    <ComponentFrequencyCurve
+        metadata={activationContextsSummary[selectedLayer]}
+        currentSubcomponentIdx={currentMetadata?.subcomponent_idx ?? null}
+        onSelect={handlePlotSelect}
+    />
+
     <div class="component-section">
         <SectionHeader title="Subcomponent {currentMetadata.subcomponent_idx}" level="h4">
             <span class="mean-ci">Mean CI: {formatMeanCi(currentMetadata.mean_ci)}</span>
+            {#if currentIntruderScore !== null}
+                <span class="mean-ci">Intruder: {Math.round(currentIntruderScore * 100)}%</span>
+            {/if}
         </SectionHeader>
 
-        <InterpretationBadge
-            interpretation={componentData.interpretation}
-            interpretationDetail={componentData.interpretationDetail}
-            onGenerate={componentData.generateInterpretation}
-        />
+        <div class="interpretation-badges">
+            <InterpretationBadge
+                interpretation={componentData.interpretation}
+                interpretationDetail={componentData.interpretationDetail}
+                onGenerate={componentData.generateInterpretation}
+            />
+            {#if currentGraphInterpLabel && componentData.graphInterpDetail.status === "loaded" && componentData.graphInterpDetail.data}
+                <GraphInterpBadge headline={currentGraphInterpLabel} detail={componentData.graphInterpDetail.data} />
+            {/if}
+        </div>
 
         <!-- Activation examples -->
-        {#if componentData.componentDetail?.status === "loading"}
-            <div class="loading">Loading component data...</div>
-        {:else if componentData.componentDetail?.status === "loaded"}
-            <ActivationContextsPagedTable
-                exampleTokens={componentData.componentDetail.data.example_tokens}
-                exampleCi={componentData.componentDetail.data.example_ci}
-                exampleComponentActs={componentData.componentDetail.data.example_component_acts}
-                activatingTokens={inputTopRecall.map(({ token }) => token)}
-                {maxAbsComponentAct}
-            />
-        {:else if componentData.componentDetail?.status === "error"}
-            <StatusText>Error loading component data: {String(componentData.componentDetail.error)}</StatusText>
+        {#if activationExamples.status === "error"}
+            <StatusText>Error loading component data: {String(activationExamples.error)}</StatusText>
         {:else}
-            <StatusText>Something went wrong loading component data.</StatusText>
+            <ActivationContextsPagedTable data={activationExamples} />
         {/if}
 
         <ComponentProbeInput
@@ -263,6 +304,21 @@
             componentIdx={currentMetadata.subcomponent_idx}
             {maxAbsComponentAct}
         />
+
+        <!-- Dataset attributions -->
+        {#if componentData.datasetAttributions?.status === "loaded" && componentData.datasetAttributions.data}
+            <DatasetAttributionsSection attributions={componentData.datasetAttributions.data} />
+        {:else if componentData.datasetAttributions?.status === "loading"}
+            <div class="dataset-attributions-loading">
+                <SectionHeader title="Dataset Attributions" />
+                <StatusText>Loading...</StatusText>
+            </div>
+        {:else if componentData.datasetAttributions?.status === "error"}
+            <div class="dataset-attributions-loading">
+                <SectionHeader title="Dataset Attributions" />
+                <StatusText>Error: {String(componentData.datasetAttributions.error)}</StatusText>
+            </div>
+        {/if}
 
         <div class="token-stats-row">
             {#if componentData.tokenStats.status === "uninitialized" || componentData.tokenStats.status === "loading"}
@@ -285,7 +341,7 @@
         </div>
 
         <!-- Component correlations -->
-        {#if showCorrelations}
+        {#if anyCorrelationStatsEnabled()}
             <div class="correlations-section">
                 <SectionHeader title="Correlated Components" />
                 {#if componentData.correlations.status === "uninitialized" || componentData.correlations.status === "loading"}
@@ -295,7 +351,10 @@
                 {:else if componentData.correlations.data === null}
                     <StatusText>No correlations data. Run harvest pipeline first.</StatusText>
                 {:else}
-                    <ComponentCorrelationMetrics correlations={componentData.correlations.data} pageSize={10} />
+                    <ComponentCorrelationMetrics
+                        correlations={componentData.correlations.data}
+                        pageSize={COMPONENT_CARD_CONSTANTS.CORRELATIONS_PAGE_SIZE}
+                    />
                 {/if}
             </div>
         {/if}
@@ -468,11 +527,15 @@
         gap: var(--space-2);
     }
 
-    .loading {
-        padding: var(--space-4);
-        text-align: center;
-        font-size: var(--text-sm);
-        font-family: var(--font-sans);
-        color: var(--text-muted);
+    .interpretation-badges {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-2);
+    }
+
+    .dataset-attributions-loading {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-2);
     }
 </style>

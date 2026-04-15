@@ -1,3 +1,4 @@
+import fnmatch
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -10,23 +11,49 @@ from torch import Tensor, nn
 from torch.utils.hooks import RemovableHandle
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
-from spd.configs import Config, SamplingType
+from spd.configs import CiConfig, Config, GlobalCiConfig, LayerwiseCiConfig, SamplingType
 from spd.identity_insertion import insert_identity_operations_
 from spd.interfaces import LoadableModule, RunInfo
 from spd.models.components import (
     Components,
     ComponentsMaskInfo,
     EmbeddingComponents,
+    GlobalCiFnWrapper,
+    GlobalReverseResidualCiFn,
+    GlobalSharedMLPCiFn,
+    GlobalSharedTransformerCiFn,
     Identity,
+    LayerwiseCiFnWrapper,
     LinearComponents,
     MLPCiFn,
+    TargetLayerConfig,
     VectorMLPCiFn,
     VectorSharedMLPCiFn,
 )
 from spd.models.sigmoids import SIGMOID_TYPES, SigmoidType
-from spd.spd_types import CiFnType, ModelPath
-from spd.utils.general_utils import resolve_class, runtime_cast
+from spd.spd_types import LayerwiseCiFnType, ModelPath
+from spd.utils.general_utils import resolve_class
 from spd.utils.module_utils import ModulePathInfo, expand_module_patterns
+
+
+def _validate_checkpoint_ci_config_compatibility(
+    state_dict: dict[str, Tensor], ci_config: CiConfig
+) -> None:
+    """Validate that checkpoint CI weights match the config CI mode."""
+    has_layerwise_ci_fns = any(k.startswith("ci_fn._ci_fns") for k in state_dict)
+    has_global_ci_fn = any(k.startswith("ci_fn._global_ci_fn") for k in state_dict)
+
+    match ci_config:
+        case LayerwiseCiConfig():
+            assert has_layerwise_ci_fns, (
+                f"Config specifies layerwise CI but checkpoint has no ci_fn._ci_fns keys "
+                f"(has ci_fn._global_ci_fn: {has_global_ci_fn})"
+            )
+        case GlobalCiConfig():
+            assert has_global_ci_fn, (
+                f"Config specifies global CI but checkpoint has no ci_fn._global_ci_fn keys "
+                f"(has ci_fn._ci_fns: {has_layerwise_ci_fns})"
+            )
 
 
 @dataclass
@@ -75,8 +102,7 @@ class ComponentModel(LoadableModule):
         self,
         target_model: nn.Module,
         module_path_info: list[ModulePathInfo],
-        ci_fn_type: CiFnType,
-        ci_fn_hidden_dims: list[int],
+        ci_config: CiConfig,
         sigmoid_type: SigmoidType,
         pretrained_model_output_attr: str | None,
     ):
@@ -101,15 +127,33 @@ class ComponentModel(LoadableModule):
             {k.replace(".", "-"): self.components[k] for k in sorted(self.components)}
         )
 
-        self.ci_fns = ComponentModel._create_ci_fns(
-            target_model=target_model,
-            module_to_c=self.module_to_c,
-            ci_fn_type=ci_fn_type,
-            ci_fn_hidden_dims=ci_fn_hidden_dims,
-        )
-        self._ci_fns = nn.ModuleDict(
-            {k.replace(".", "-"): self.ci_fns[k] for k in sorted(self.ci_fns)}
-        )
+        match ci_config:
+            case LayerwiseCiConfig():
+                raw_layerwise_ci_fns = {
+                    path: ComponentModel._create_layerwise_ci_fn(
+                        target_module=target_model.get_submodule(path),
+                        C=C,
+                        ci_fn_type=ci_config.fn_type,
+                        ci_fn_hidden_dims=ci_config.hidden_dims,
+                    )
+                    for path, C in self.module_to_c.items()
+                }
+                self.ci_fn = LayerwiseCiFnWrapper(
+                    ci_fns=raw_layerwise_ci_fns,
+                    components=self.components,
+                    ci_fn_type=ci_config.fn_type,
+                )
+            case GlobalCiConfig():
+                raw_global_ci_fn = ComponentModel._create_global_ci_fn(
+                    target_model=target_model,
+                    module_to_c=self.module_to_c,
+                    components=self.components,
+                    ci_config=ci_config,
+                )
+                self.ci_fn = GlobalCiFnWrapper(
+                    global_ci_fn=raw_global_ci_fn,
+                    components=self.components,
+                )
 
         if sigmoid_type == "leaky_hard":
             self.lower_leaky_fn = SIGMOID_TYPES["lower_leaky_hard"]
@@ -187,28 +231,39 @@ class ComponentModel(LoadableModule):
         return components
 
     @staticmethod
-    def _create_ci_fn(
+    def _get_module_input_dim(target_module: nn.Module) -> int:
+        """Extract input dimension from a Linear-like module.
+
+        For embedding layers, this should not be called - handle them separately.
+        """
+        match target_module:
+            case nn.Linear():
+                return target_module.weight.shape[1]
+            case RadfordConv1D():
+                return target_module.weight.shape[0]
+            case Identity():
+                return target_module.d
+            case _:
+                raise ValueError(
+                    f"Module {type(target_module)} not supported. "
+                    "Embedding modules should be handled separately."
+                )
+
+    @staticmethod
+    def _create_layerwise_ci_fn(
         target_module: nn.Module,
         C: int,
-        ci_fn_type: CiFnType,
+        ci_fn_type: LayerwiseCiFnType,
         ci_fn_hidden_dims: list[int],
     ) -> nn.Module:
-        """Helper to create a causal importance function (ci_fn) based on ci_fn_type and module type."""
+        """Helper to create a single layerwise CI function based on ci_fn_type and module type."""
         if isinstance(target_module, nn.Embedding):
             assert ci_fn_type == "mlp", "Embedding modules only supported for ci_fn_type='mlp'"
 
         if ci_fn_type == "mlp":
             return MLPCiFn(C=C, hidden_dims=ci_fn_hidden_dims)
 
-        match target_module:
-            case nn.Linear():
-                input_dim = target_module.weight.shape[1]
-            case RadfordConv1D():
-                input_dim = target_module.weight.shape[0]
-            case Identity():
-                input_dim = target_module.d
-            case _:
-                raise ValueError(f"Module {type(target_module)} not supported for {ci_fn_type=}")
+        input_dim = ComponentModel._get_module_input_dim(target_module)
 
         match ci_fn_type:
             case "vector_mlp":
@@ -217,22 +272,107 @@ class ComponentModel(LoadableModule):
                 return VectorSharedMLPCiFn(C=C, input_dim=input_dim, hidden_dims=ci_fn_hidden_dims)
 
     @staticmethod
-    def _create_ci_fns(
+    def _create_global_ci_fn(
         target_model: nn.Module,
         module_to_c: dict[str, int],
-        ci_fn_type: CiFnType,
-        ci_fn_hidden_dims: list[int],
-    ) -> dict[str, nn.Module]:
-        ci_fns: dict[str, nn.Module] = {}
+        components: dict[str, Components],
+        ci_config: GlobalCiConfig,
+    ) -> GlobalSharedMLPCiFn | GlobalSharedTransformerCiFn | GlobalReverseResidualCiFn:
+        """Create a global CI function that takes all layer activations as input."""
+        ci_fn_type = ci_config.fn_type
+        ci_fn_hidden_dims = ci_config.hidden_dims
+
+        # Build layer_configs: layer_name -> (input_dim, C)
+        layer_configs: dict[str, tuple[int, int]] = {}
         for target_module_path, target_module_c in module_to_c.items():
             target_module = target_model.get_submodule(target_module_path)
-            ci_fns[target_module_path] = ComponentModel._create_ci_fn(
-                target_module=target_module,
-                C=target_module_c,
-                ci_fn_type=ci_fn_type,
-                ci_fn_hidden_dims=ci_fn_hidden_dims,
-            )
-        return ci_fns
+            component = components[target_module_path]
+
+            # For embeddings, global CI uses component acts (C dimensions)
+            # For linear-like modules, use the actual input dimension
+            if isinstance(target_module, nn.Embedding):
+                assert isinstance(component, EmbeddingComponents)
+                input_dim = component.C
+            else:
+                input_dim = ComponentModel._get_module_input_dim(target_module)
+
+            layer_configs[target_module_path] = (input_dim, target_module_c)
+
+        match ci_fn_type:
+            case "global_shared_mlp":
+                assert ci_fn_hidden_dims is not None  # validated by Pydantic
+                return GlobalSharedMLPCiFn(
+                    layer_configs=layer_configs, hidden_dims=ci_fn_hidden_dims
+                )
+            case "global_shared_transformer":
+                transformer_cfg = ci_config.simple_transformer_ci_cfg
+                assert transformer_cfg is not None  # validated by Pydantic
+
+                return GlobalSharedTransformerCiFn(
+                    target_model_layer_configs={
+                        target_module_path: TargetLayerConfig(input_dim=input_dim, C=C)
+                        for target_module_path, (input_dim, C) in layer_configs.items()
+                    },
+                    d_model=transformer_cfg.d_model,
+                    n_layers=transformer_cfg.n_blocks,
+                    n_heads=transformer_cfg.attn_config.n_heads,
+                    mlp_hidden_dims=transformer_cfg.mlp_hidden_dim,
+                    max_len=transformer_cfg.attn_config.max_len,
+                    rope_base=transformer_cfg.attn_config.rope_base,
+                )
+            case "global_reverse_residual":
+                # block_groups, d_resid_ci_fn, reader_hidden_dims, transition_hidden_dim
+                # are validated by Pydantic
+                block_groups = ci_config.block_groups
+                d_resid_ci_fn = ci_config.d_resid_ci_fn
+                reader_hidden_dims = ci_config.reader_hidden_dims
+                transition_hidden_dim = ci_config.transition_hidden_dim
+                assert block_groups is not None  # for type narrowing
+                assert d_resid_ci_fn is not None  # for type narrowing
+                assert reader_hidden_dims is not None  # for type narrowing
+
+                # Build block_configs from block_groups
+                block_configs: list[tuple[str, list[str], list[int], list[int]]] = []
+                all_matched_modules: set[str] = set()
+
+                for block_group in block_groups:
+                    matched_modules: list[str] = []
+                    for pattern in block_group.patterns:
+                        matches = [name for name in module_to_c if fnmatch.fnmatch(name, pattern)]
+                        assert matches, (
+                            f"Block pattern '{pattern}' in block '{block_group.name}' "
+                            f"matched no modules. Available: {list(module_to_c.keys())}"
+                        )
+                        for match in matches:
+                            assert match not in matched_modules, (
+                                f"Module '{match}' matched multiple patterns in block "
+                                f"'{block_group.name}'"
+                            )
+                        matched_modules.extend(matches)
+
+                    for module in matched_modules:
+                        assert module not in all_matched_modules, (
+                            f"Module '{module}' matched multiple block groups"
+                        )
+                        all_matched_modules.add(module)
+
+                    input_dims = [layer_configs[m][0] for m in matched_modules]
+                    c_values = [layer_configs[m][1] for m in matched_modules]
+
+                    block_configs.append((block_group.name, matched_modules, input_dims, c_values))
+
+                assert all_matched_modules == set(module_to_c.keys()), (
+                    f"Some modules not in any block group. "
+                    f"Missing: {set(module_to_c.keys()) - all_matched_modules}"
+                )
+
+                return GlobalReverseResidualCiFn(
+                    block_configs=block_configs,
+                    d_resid_ci_fn=d_resid_ci_fn,
+                    reader_hidden_dims=reader_hidden_dims,
+                    transition_hidden_dim=transition_hidden_dim,
+                    attn_config=ci_config.transition_attn_config,
+                )
 
     def _extract_output(self, raw_output: Any) -> Tensor:
         """Extract the desired output from the model's raw output.
@@ -270,7 +410,7 @@ class ComponentModel(LoadableModule):
         self,
         *args: Any,
         mask_infos: dict[str, ComponentsMaskInfo] | None = None,
-        cache_type: Literal["component_acts", "input"],
+        cache_type: Literal["component_acts", "input", "output"],
         **kwargs: Any,
     ) -> OutputWithCache: ...
 
@@ -292,30 +432,20 @@ class ComponentModel(LoadableModule):
         self,
         *args: Any,
         mask_infos: dict[str, ComponentsMaskInfo] | None = None,
-        cache_type: Literal["component_acts", "input", "none"] = "none",
+        cache_type: Literal["component_acts", "input", "output", "none"] = "none",
         **kwargs: Any,
     ) -> Tensor | OutputWithCache:
-        """Forward pass with optional component replacement and/or input caching.
-
-        This method handles the following 4 cases:
-        1. mask_infos is None and cache_type is "none": Regular forward pass.
-        2. mask_infos is None and cache_type is "input" or "component_acts": Forward pass with
-            caching on all modules in self.target_module_paths.
-        3. mask_infos is not None and cache_type is "input" or "component_acts": Forward pass with
-            component replacement and caching on the modules provided in mask_infos.
-        4. mask_infos is not None and cache_type is "none": Forward pass with component replacement
-            on the modules provided in mask_infos and no caching.
+        """Forward pass with optional component replacement and/or input/output caching.
 
         Args:
             mask_infos: Dictionary mapping module names to ComponentsMaskInfo.
                 If provided, those modules will be replaced with their components.
-            cache_type: If "input" or "component_acts", cache the inputs or component acts to the
-                modules provided in mask_infos. If "none", no caching is done. If mask_infos is None,
-                cache the inputs or component acts to all modules in self.target_module_paths.
+            cache_type: What to cache for each hooked module. "input" caches pre-weight
+                activations, "output" caches post-weight activations, "component_acts" caches
+                per-component activations, "none" disables caching.
 
         Returns:
-            OutputWithCache object if cache_type is "input" or "component_acts", otherwise the
-            model output tensor.
+            OutputWithCache object if cache_type is not "none", otherwise the model output tensor.
         """
         if mask_infos is None and cache_type == "none":
             # No hooks needed. Do a regular forward pass of the target model.
@@ -344,7 +474,7 @@ class ComponentModel(LoadableModule):
 
         out = self._extract_output(raw_out)
         match cache_type:
-            case "input" | "component_acts":
+            case "input" | "output" | "component_acts":
                 return OutputWithCache(output=out, cache=cache)
             case "none":
                 return out
@@ -358,7 +488,7 @@ class ComponentModel(LoadableModule):
         module_name: str,
         components: Components | None,
         mask_info: ComponentsMaskInfo | None,
-        cache_type: Literal["component_acts", "input", "none"],
+        cache_type: Literal["component_acts", "input", "output", "none"],
         cache: dict[str, Tensor],
     ) -> Any | None:
         """Unified hook function that handles both component replacement and caching.
@@ -402,12 +532,20 @@ class ComponentModel(LoadableModule):
                 for k, v in component_acts_cache.items():
                     cache[f"{module_name}_{k}"] = v
 
-            if mask_info.routing_mask == "all":
-                return components_out
+            final_out = (
+                components_out
+                if mask_info.routing_mask == "all"
+                else torch.where(mask_info.routing_mask[..., None], components_out, output)
+            )
 
-            return torch.where(mask_info.routing_mask[..., None], components_out, output)
+            if cache_type == "output":
+                cache[module_name] = final_out
+            return final_out
 
         # No component replacement - keep original output
+        if cache_type == "output":
+            assert isinstance(output, Tensor)
+            cache[module_name] = output
         return None
 
     @contextmanager
@@ -470,10 +608,9 @@ class ComponentModel(LoadableModule):
         comp_model = ComponentModel(
             target_model=target_model,
             module_path_info=module_path_info,
-            ci_fn_hidden_dims=config.ci_fn_hidden_dims,
-            ci_fn_type=config.ci_fn_type,
-            pretrained_model_output_attr=config.pretrained_model_output_attr,
+            ci_config=config.ci_config,
             sigmoid_type=config.sigmoid_type,
+            pretrained_model_output_attr=config.pretrained_model_output_attr,
         )
 
         comp_model_weights = torch.load(
@@ -481,6 +618,8 @@ class ComponentModel(LoadableModule):
         )
 
         handle_deprecated_state_dict_keys_(comp_model_weights)
+
+        _validate_checkpoint_ci_config_compatibility(comp_model_weights, config.ci_config)
 
         comp_model.load_state_dict(comp_model_weights)
         return comp_model
@@ -498,38 +637,33 @@ class ComponentModel(LoadableModule):
         sampling: SamplingType,
         detach_inputs: bool = False,
     ) -> CIOutputs:
-        """Calculate causal importances.
+        """Calculate causal importances using the unified CI function interface.
 
         Args:
             pre_weight_acts: The activations before each layer in the target model.
+            sampling: The sampling type for stochastic masks.
             detach_inputs: Whether to detach the inputs to the causal importance function.
 
         Returns:
-            Tuple of (causal_importances, causal_importances_upper_leaky) dictionaries for each layer.
+            CIOutputs containing lower_leaky, upper_leaky, and pre_sigmoid CI values.
         """
+        if detach_inputs:
+            pre_weight_acts = {k: v.detach() for k, v in pre_weight_acts.items()}
+
+        ci_fn_outputs = self.ci_fn(pre_weight_acts)
+        return self._apply_sigmoid_to_ci_outputs(ci_fn_outputs, sampling)
+
+    def _apply_sigmoid_to_ci_outputs(
+        self,
+        ci_fn_outputs: dict[str, Float[Tensor, "... C"]],
+        sampling: SamplingType,
+    ) -> CIOutputs:
+        """Apply sigmoid functions to CI function outputs."""
         causal_importances_lower_leaky = {}
         causal_importances_upper_leaky = {}
         pre_sigmoid = {}
 
-        for target_module_name in pre_weight_acts:
-            input_activations = pre_weight_acts[target_module_name]
-            ci_fn = self.ci_fns[target_module_name]
-
-            match ci_fn:
-                case MLPCiFn():
-                    ci_fn_input = self.components[target_module_name].get_component_acts(
-                        input_activations
-                    )
-                case VectorMLPCiFn() | VectorSharedMLPCiFn():
-                    ci_fn_input = input_activations
-                case _:
-                    raise ValueError(f"Unknown ci_fn type: {type(ci_fn)}")
-
-            if detach_inputs:
-                ci_fn_input = ci_fn_input.detach()
-
-            ci_fn_output = runtime_cast(Tensor, ci_fn(ci_fn_input))
-
+        for target_module_name, ci_fn_output in ci_fn_outputs.items():
             if sampling == "binomial":
                 ci_fn_output_for_lower_leaky = 1.05 * ci_fn_output - 0.05 * torch.rand_like(
                     ci_fn_output
@@ -538,11 +672,11 @@ class ComponentModel(LoadableModule):
                 ci_fn_output_for_lower_leaky = ci_fn_output
 
             lower_leaky_output = self.lower_leaky_fn(ci_fn_output_for_lower_leaky)
-            assert lower_leaky_output.all() <= 1.0
+            assert (lower_leaky_output <= 1.0).all()
             causal_importances_lower_leaky[target_module_name] = lower_leaky_output
 
             upper_leaky_output = self.upper_leaky_fn(ci_fn_output)
-            assert upper_leaky_output.all() >= 0
+            assert (upper_leaky_output >= 0).all()
             causal_importances_upper_leaky[target_module_name] = upper_leaky_output
 
             pre_sigmoid[target_module_name] = ci_fn_output
@@ -601,6 +735,9 @@ def handle_deprecated_state_dict_keys_(state_dict: dict[str, Tensor]) -> None:
             )
             # module path has "." replaced with "-"
             new_key = f"_components.{target_module_path.replace('.', '-')}.{new_key.split('.')[-1]}"
+        # Old checkpoints had _ci_fns.* at top level, now under ci_fn._ci_fns.*
+        if new_key.startswith("_ci_fns.") and not new_key.startswith("ci_fn."):
+            new_key = "ci_fn." + new_key
         # replace if modified
         if new_key != key:
             state_dict[new_key] = state_dict.pop(key)

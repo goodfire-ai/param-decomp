@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from typing import Literal
 
 
 def format_scientific_latex(value: float) -> str:
@@ -16,3 +17,4 @@ def format_scientific_latex(value: float) -> str:
 
 ModuleFilterSource = str | Callable[[str], bool] | set[str] | None
 ModuleFilterFunc = Callable[[str], bool]
+DeadComponentFilterStat = Literal["max", "mean"]

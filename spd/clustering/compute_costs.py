@@ -2,10 +2,15 @@ import math
 
 import torch
 from jaxtyping import Bool, Float
+from scipy import sparse
 from torch import Tensor
 
 from spd.clustering.consts import ClusterCoactivationShaped, MergePair
 from spd.clustering.math.merge_matrix import GroupMerge
+from spd.clustering.sample_membership import (
+    CompressedMembership,
+    count_group_overlaps_from_component_rows,
+)
 
 
 def compute_mdl_cost(
@@ -119,71 +124,56 @@ def compute_merge_costs(
     return output
 
 
-def recompute_coacts_merge_pair(
+def recompute_coacts_merge_pair_memberships(
     coact: ClusterCoactivationShaped,
     merges: GroupMerge,
     merge_pair: MergePair,
-    activation_mask: Bool[Tensor, "samples k_groups"],
+    memberships: list[CompressedMembership],
+    component_activity_csr: sparse.csr_matrix,
 ) -> tuple[
     GroupMerge,
     Float[Tensor, "k_groups-1 k_groups-1"],
-    Bool[Tensor, "samples k_groups"],
+    list[CompressedMembership],
 ]:
-    # check shape
+    """Recompute coactivations after a merge using compressed memberships."""
     k_groups: int = coact.shape[0]
     assert coact.shape[1] == k_groups, "Coactivation matrix must be square"
+    assert len(memberships) == k_groups, "Memberships must match coactivation matrix shape"
 
-    # activations of the new merged group
-    activation_mask_grp: Bool[Tensor, " samples"] = (
-        activation_mask[:, merge_pair[0]] + activation_mask[:, merge_pair[1]]
-    )
-
-    # coactivations with the new merged group
-    coact_with_merge: Float[Tensor, " k_groups"] = (
-        activation_mask_grp.float() @ activation_mask.float()
-    )
     new_group_idx: int = min(merge_pair)
     remove_idx: int = max(merge_pair)
-    new_group_self_coact: float = activation_mask_grp.float().sum().item()
+    merged_membership = memberships[merge_pair[0]].union(memberships[merge_pair[1]])
 
-    # assemble the merge pair
     merge_new: GroupMerge = merges.merge_groups(
         merge_pair[0],
         merge_pair[1],
     )
-    # TODO: we don't use this index for anything, and could reconstruct it from the merge pair if needed. get rid of it
-    # `merge_groups` will set `old_to_new_idx` to be an actual dict for `merge_new`
-    old_to_new_idx: dict[int | None, int | None] = merge_new.old_to_new_idx  # pyright: ignore[reportAssignmentType]
-    assert old_to_new_idx[None] == new_group_idx, (
-        "New group index should be the minimum of the merge pair"
-    )
-    assert old_to_new_idx[new_group_idx] is None
-    assert old_to_new_idx[remove_idx] is None
-    # TODO: check that the rest are in order? probably not necessary
 
-    # reindex coactivations
-    coact_temp: ClusterCoactivationShaped = coact.clone()
-    # add in the similarities with the new group
-    coact_temp[new_group_idx, :] = coact_with_merge
-    coact_temp[:, new_group_idx] = coact_with_merge
-    # delete the old group
     mask: Bool[Tensor, " k_groups"] = torch.ones(
-        coact_temp.shape[0], dtype=torch.bool, device=coact_temp.device
+        coact.shape[0], dtype=torch.bool, device=coact.device
     )
     mask[remove_idx] = False
-    coact_new: Float[Tensor, "k_groups-1 k_groups-1"] = coact_temp[mask, :][:, mask]
-    # add in the self-coactivation of the new group
-    coact_new[new_group_idx, new_group_idx] = new_group_self_coact
+    coact_new: Float[Tensor, "k_groups-1 k_groups-1"] = coact[mask, :][:, mask].clone()
 
-    # reindex mask
-    activation_mask_new: Float[Tensor, "samples ..."] = activation_mask.clone()
-    # add in the new group
-    activation_mask_new[:, new_group_idx] = activation_mask_grp
-    # remove the old group
-    activation_mask_new = activation_mask_new[:, mask]
-
-    return (
-        merge_new,
-        coact_new,
-        activation_mask_new,
+    merged_rows = merged_membership.to_sample_indices()
+    coact_with_merge_np = count_group_overlaps_from_component_rows(
+        merged_rows=merged_rows,
+        component_activity_csr=component_activity_csr,
+        group_idxs=merge_new.group_idxs.cpu().numpy(),
+        n_groups=merge_new.k_groups,
     )
+    coact_with_merge = torch.tensor(
+        coact_with_merge_np,
+        dtype=coact.dtype,
+        device=coact.device,
+    )
+
+    coact_new[new_group_idx, :] = coact_with_merge
+    coact_new[:, new_group_idx] = coact_with_merge
+    coact_new[new_group_idx, new_group_idx] = float(merged_membership.count())
+
+    memberships_new = memberships.copy()
+    memberships_new[new_group_idx] = merged_membership
+    memberships_new.pop(remove_idx)
+
+    return merge_new, coact_new, memberships_new

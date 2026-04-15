@@ -56,14 +56,13 @@ def get_grad_norms_dict(
             comp_grad_norm_sq_sum += param_grad_sum_sq
 
     ci_fn_grad_norm_sq_sum: Float[Tensor, ""] = torch.zeros((), device=device)
-    for target_module_path, ci_fn in component_model.ci_fns.items():
-        for local_param_name, local_param in ci_fn.named_parameters():
-            ci_fn_grad = runtime_cast(Tensor, local_param.grad)
-            ci_fn_grad_sum_sq = ci_fn_grad.pow(2).sum()
-            key = f"ci_fns/{target_module_path}.{local_param_name}"
-            assert key not in out, f"Key {key} already exists in grad norms log"
-            out[key] = ci_fn_grad_sum_sq.sqrt().item()
-            ci_fn_grad_norm_sq_sum += ci_fn_grad_sum_sq
+    for local_param_name, local_param in component_model.ci_fn.named_parameters():
+        ci_fn_grad = runtime_cast(Tensor, local_param.grad)
+        ci_fn_grad_sum_sq = ci_fn_grad.pow(2).sum()
+        key = f"ci_fns/{local_param_name}"
+        assert key not in out, f"Key {key} already exists in grad norms log"
+        out[key] = ci_fn_grad_sum_sq.sqrt().item()
+        ci_fn_grad_norm_sq_sum += ci_fn_grad_sum_sq
 
     out["summary/components"] = comp_grad_norm_sq_sum.sqrt().item()
     out["summary/ci_fns"] = ci_fn_grad_norm_sq_sum.sqrt().item()

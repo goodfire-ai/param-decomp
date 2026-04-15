@@ -5,13 +5,13 @@ These functions operate on storage classes from harvest/storage.py.
 
 import math
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 import torch
 from jaxtyping import Float
 from torch import Tensor
-from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
+from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.harvest.storage import CorrelationStorage, TokenStatsStorage
 
 Metric = Literal["precision", "recall", "jaccard", "pmi"]
@@ -44,10 +44,6 @@ class TokenPRLift:
     bottom_pmi: list[tuple[str, float]] | None
 
 
-def _build_key_to_idx(component_keys: list[str]) -> dict[str, int]:
-    return {k: i for i, k in enumerate(component_keys)}
-
-
 def get_correlated_components(
     storage: CorrelationStorage,
     component_key: str,
@@ -56,8 +52,7 @@ def get_correlated_components(
     largest: bool = True,
 ) -> list[CorrelatedComponent]:
     """Get top-k or bottom-k correlated components."""
-    key_to_idx = _build_key_to_idx(storage.component_keys)
-    i = key_to_idx[component_key]
+    i = storage.key_to_idx[component_key]
 
     count_this = int(storage.count_i[i].item())
     if count_this == 0:
@@ -113,58 +108,46 @@ def get_correlated_components(
 
 def has_component(storage: CorrelationStorage, component_key: str) -> bool:
     """Check if a component exists in the storage."""
-    key_to_idx = _build_key_to_idx(storage.component_keys)
-    return component_key in key_to_idx
+    return component_key in storage.key_to_idx
 
 
 def get_input_token_stats(
     storage: TokenStatsStorage,
     component_key: str,
-    tokenizer: PreTrainedTokenizerBase,
+    tok: AppTokenizer,
     top_k: int,
 ) -> TokenPRLift | None:
     """Compute P/R/lift/PMI for input tokens."""
-    key_to_idx = _build_key_to_idx(storage.component_keys)
-    idx = key_to_idx[component_key]
+    idx = storage.key_to_idx[component_key]
 
-    result = _compute_token_stats(
+    return _compute_token_stats(
         counts=storage.input_counts[idx],
         totals=storage.input_totals,
         n_tokens=storage.n_tokens,
         firing_count=storage.firing_counts[idx].item(),
-        tokenizer=tokenizer,
+        tok=tok,
         top_k=top_k,
-    )
-    if result is None:
-        return None
-
-    # Input stats don't have bottom PMI
-    return TokenPRLift(
-        top_recall=result.top_recall,
-        top_precision=result.top_precision,
-        top_lift=result.top_lift,
-        top_pmi=result.top_pmi,
-        bottom_pmi=None,
     )
 
 
 def get_output_token_stats(
     storage: TokenStatsStorage,
     component_key: str,
-    tokenizer: PreTrainedTokenizerBase,
+    tok: AppTokenizer,
     top_k: int,
+    pmi_min_count: float = 0.0,
 ) -> TokenPRLift | None:
     """Compute P/R/lift/PMI for output tokens."""
-    key_to_idx = _build_key_to_idx(storage.component_keys)
-    idx = key_to_idx[component_key]
+    idx = storage.key_to_idx[component_key]
 
     return _compute_token_stats(
         counts=storage.output_counts[idx],
         totals=storage.output_totals,
         n_tokens=storage.n_tokens,
         firing_count=storage.firing_counts[idx].item(),
-        tokenizer=tokenizer,
         top_k=top_k,
+        tok=tok,
+        pmi_min_count=pmi_min_count,
     )
 
 
@@ -173,8 +156,9 @@ def _compute_token_stats(
     totals: Float[Tensor, " vocab"],
     n_tokens: int,
     firing_count: float,
-    tokenizer: PreTrainedTokenizerBase,
+    tok: AppTokenizer,
     top_k: int,
+    pmi_min_count: float = 0.0,
 ) -> TokenPRLift | None:
     """Compute P/R/lift/PMI from count tensors."""
     if firing_count == 0:
@@ -183,6 +167,7 @@ def _compute_token_stats(
     valid_mask = (counts > 0) & (totals > 0)
     if not valid_mask.any():
         return None
+    pmi_valid_mask = valid_mask & (counts >= pmi_min_count)
 
     recall = counts / firing_count
     precision = torch.where(totals > 0, counts / totals, torch.zeros_like(counts))
@@ -190,30 +175,44 @@ def _compute_token_stats(
     lift = precision / base_rate if base_rate > 0 else torch.zeros_like(precision)
 
     pmi = torch.log(counts * n_tokens / (firing_count * totals))
-    pmi = torch.where(valid_mask, pmi, torch.full_like(pmi, float("-inf")))
+    pmi = torch.where(pmi_valid_mask, pmi, torch.full_like(pmi, float("-inf")))
 
-    def get_top_k(values: Tensor, k: int, largest: bool = True) -> list[tuple[str, float]]:
+    def get_top_k(
+        values: Tensor,
+        k: int,
+        largest: bool = True,
+        mask: Tensor | None = None,
+    ) -> list[tuple[str, float]]:
+        active_mask = valid_mask if mask is None else mask
+        n_active = int(active_mask.sum().item())
+        if n_active == 0 or k == 0:
+            return []
         masked = torch.where(
-            valid_mask,
+            active_mask,
             values,
             torch.full_like(values, float("-inf") if largest else float("inf")),
         )
         top_vals, top_idx = torch.topk(
-            masked, min(k, int(valid_mask.sum().item())), largest=largest
+            masked,
+            min(k, n_active),
+            largest=largest,
         )
-        result = []
-        for idx, val in zip(top_idx.tolist(), top_vals.tolist(), strict=True):
+
+        result: list[tuple[str, float]] = []
+
+        for idx, val in zip(
+            cast(list[int], top_idx.tolist()), cast(list[float], top_vals.tolist()), strict=True
+        ):
             if val == float("-inf"):
                 continue
             assert math.isfinite(val), f"Unexpected non-finite score {val} for token {idx}"
-            token_str = tokenizer.decode([idx])
-            result.append((token_str, round(val, 3 if abs(val) < 10 else 2)))
+            result.append((tok.get_tok_display(idx), round(val, 3 if abs(val) < 10 else 2)))
         return result
 
     return TokenPRLift(
         top_recall=get_top_k(recall, top_k),
         top_precision=get_top_k(precision, top_k),
         top_lift=get_top_k(lift, top_k),
-        top_pmi=get_top_k(pmi, top_k, largest=True),
-        bottom_pmi=get_top_k(pmi, top_k, largest=False),
+        top_pmi=get_top_k(pmi, top_k, largest=True, mask=pmi_valid_mask),
+        bottom_pmi=get_top_k(pmi, top_k, largest=False, mask=pmi_valid_mask),
     )

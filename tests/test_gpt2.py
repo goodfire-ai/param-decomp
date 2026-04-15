@@ -8,6 +8,7 @@ from spd.configs import (
     Config,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
+    LayerwiseCiConfig,
     LMTaskConfig,
     ModulePatternInfoConfig,
     ScheduleConfig,
@@ -35,8 +36,7 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         # General
         seed=0,
         n_mask_samples=1,
-        ci_fn_type="vector_mlp",
-        ci_fn_hidden_dims=[128],
+        ci_config=LayerwiseCiConfig(fn_type="vector_mlp", hidden_dims=[128]),
         module_info=[
             ModulePatternInfoConfig(module_pattern="transformer.h.2.attn.c_attn", C=10),
             ModulePatternInfoConfig(module_pattern="transformer.h.3.mlp.c_fc", C=10),

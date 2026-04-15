@@ -5,148 +5,111 @@ Multi-GPU pipeline for computing component-to-component attribution strengths ag
 ## Usage (SLURM)
 
 ```bash
-# Process specific number of batches
 spd-attributions <wandb_path> --n_batches 1000 --n_gpus 8
-
-# Process entire training dataset (omit --n_batches)
-spd-attributions <wandb_path> --n_gpus 24
-
-# With optional parameters
-spd-attributions <wandb_path> --n_batches 1000 --n_gpus 8 \
-    --batch_size 64 --ci_threshold 1e-6 --time 48:00:00
+spd-attributions <wandb_path> --n_gpus 24  # whole dataset
 ```
 
 The command:
-1. Creates a git snapshot branch for reproducibility (jobs may be queued)
-2. Submits a SLURM job array with N tasks (one per GPU)
+1. Creates a git snapshot branch for reproducibility
+2. Submits a SLURM job array (one per GPU)
 3. Each task processes batches where `batch_idx % world_size == rank`
-4. Submits a merge job (depends on array completion) that combines all worker results
-
-**Note**: `--n_batches` is optional. If omitted, the pipeline processes the entire training dataset.
+4. Submits a merge job (depends on array completion)
 
 ## Usage (non-SLURM)
 
-For environments without SLURM, run the worker script directly:
-
 ```bash
-# Single GPU with specific number of batches
-python -m spd.dataset_attributions.scripts.run <wandb_path> --n_batches 1000
+# Single GPU
+python -m spd.dataset_attributions.scripts.run_worker <wandb_path>
 
-# Single GPU processing entire dataset (omit --n_batches)
-python -m spd.dataset_attributions.scripts.run <wandb_path>
-
-# Multi-GPU (run in parallel via shell, tmux, etc.)
-python -m spd.dataset_attributions.scripts.run <path> --n_batches 1000 --rank 0 --world_size 4 &
-python -m spd.dataset_attributions.scripts.run <path> --n_batches 1000 --rank 1 --world_size 4 &
-python -m spd.dataset_attributions.scripts.run <path> --n_batches 1000 --rank 2 --world_size 4 &
-python -m spd.dataset_attributions.scripts.run <path> --n_batches 1000 --rank 3 --world_size 4 &
+# Multi-GPU
+SUBRUN="da-$(date +%Y%m%d_%H%M%S)"
+python -m spd.dataset_attributions.scripts.run_worker <path> --config_json '{"n_batches": 1000}' --rank 0 --world_size 4 --subrun_id $SUBRUN &
+python -m spd.dataset_attributions.scripts.run_worker <path> --config_json '{"n_batches": 1000}' --rank 1 --world_size 4 --subrun_id $SUBRUN &
+# ...
 wait
-
-# Merge results after all workers complete
-python -m spd.dataset_attributions.scripts.run <path> --merge
+python -m spd.dataset_attributions.scripts.run_merge --wandb_path <path> --subrun_id $SUBRUN
 ```
-
-Each worker processes batches where `batch_idx % world_size == rank`, then the merge step combines all partial results.
 
 ## Data Storage
 
-Data is stored in `SPD_OUT_DIR/dataset_attributions/` (see `spd/settings.py`):
-
 ```
 SPD_OUT_DIR/dataset_attributions/<run_id>/
-├── dataset_attributions.pt           # Final merged attributions
-└── dataset_attributions_rank_*.pt    # Per-worker results (cleaned up after merge)
+├── da-20260223_183250/                    # sub-run (latest picked by repo)
+│   ├── dataset_attributions.pt            # merged result
+│   └── worker_states/
+│       └── dataset_attributions_rank_*.pt
 ```
+
+`AttributionRepo.open(run_id)` loads the latest `da-*` subrun that has a `dataset_attributions.pt`.
+
+## Attribution Metrics
+
+Two metrics: `AttrMetric = Literal["attr", "attr_abs"]`
+
+| Metric | Formula | Description |
+|--------|---------|-------------|
+| `attr` | E[∂y/∂x · x] | Signed mean attribution |
+| `attr_abs` | E[∂\|y\|/∂x · x] | Attribution to absolute value of target (2 backward passes) |
+
+Naming convention: modifier *before* `attr` applies to the target (e.g. `attr_abs` = attribution to |target|).
 
 ## Architecture
 
-### SLURM Launcher (`scripts/run_slurm.py`, `scripts/run_slurm_cli.py`)
-
-Entry point via `spd-attributions`. Submits array job + dependent merge job.
-
-### Worker Script (`scripts/run.py`)
-
-Internal script called by SLURM jobs. Supports:
-- `--rank R --world_size N`: Process subset of batches
-- `--merge`: Combine per-rank results into final file
-
-### Harvest Logic (`harvest.py`)
-
-Main harvesting functions:
-- `harvest_attributions()`: Process batches for a single rank
-- `merge_attributions()`: Combine results from all ranks
-
-### Attribution Harvester (`harvester.py`)
-
-Core class that accumulates attribution strengths using gradient × activation formula:
-
-```
-attribution[src, tgt] = Σ_batch Σ_pos (∂out[pos, tgt] / ∂in[pos, src]) × in_act[pos, src]
-```
-
-Key optimizations:
-1. Sum outputs over positions before gradients (reduces backward passes)
-2. For output targets, store attributions to output residual stream instead of vocab tokens (reduces storage from O((V+C)²) to O((V+C)×(C+d_model)))
-
 ### Storage (`storage.py`)
 
-`DatasetAttributionStorage` class using output-residual-based storage for scalability.
+`DatasetAttributionStorage` stores four structurally distinct edge types:
 
-**Storage structure:**
-- `source_to_component`: (n_sources, n_components) - direct attributions to component targets
-- `source_to_out_residual`: (n_sources, d_model) - attributions to output residual stream for output queries
+| Edge type | Fields | Shape | Has abs? |
+|-----------|--------|-------|----------|
+| component → component | `regular_attr`, `regular_attr_abs` | `dict[target, dict[source, (tgt_c, src_c)]]` | yes |
+| embed → component | `embed_attr`, `embed_attr_abs` | `dict[target, (tgt_c, vocab)]` | yes |
+| component → unembed | `unembed_attr` | `dict[source, (d_model, src_c)]` | no |
+| embed → unembed | `embed_unembed_attr` | `(d_model, vocab)` | no |
 
-**Source indexing (rows):**
-- `[0, vocab_size)`: wte tokens
-- `[vocab_size, vocab_size + n_components)`: component layers
+All layer names use **canonical addressing** (`"embed"`, `"0.glu.up"`, `"output"`).
 
-**Target handling:**
-- Component targets: direct lookup in `source_to_component`
-- Output targets: computed on-the-fly via `source_to_out_residual @ w_unembed[:, token_id]`
+Unembed edges are stored in residual space (d_model dimensions). `w_unembed` is stored alongside the attribution data, so output token attributions are computed on-the-fly internally — callers never need to provide the projection matrix. No abs variant for unembed edges because abs is a nonlinear operation incompatible with residual-space storage.
 
-**Why output-residual-based storage?**
+**Normalization**: `normed[t, s] = raw[t, s] / source_denom[s] / target_rms[t]`. Component sources use `ci_sum[s]` as denominator, embed sources use `embed_token_count[s]` (per-token occurrence count). This puts both source types on comparable per-occurrence scales.
 
-For large vocab models (V=32K), the naive approach would require O((V+C)²) storage (~4 GB).
-The output-residual-based approach requires only O((V+C)×(C+d)) storage (~670 MB for Llama-scale),
-a 6.5x reduction. Output attributions are computed on-the-fly at query time with negligible latency.
+Key methods: `get_top_sources(key, k, sign, metric)`, `get_top_targets(key, k, sign, metric)`. Both return `[]` for nonexistent components. `merge(paths)` classmethod for combining worker results via weighted average by n_tokens.
 
-### Loaders (`loaders.py`)
+### Harvester (`harvester.py`)
 
-```python
-from spd.dataset_attributions.loaders import load_dataset_attributions
+Accumulates attributions using gradient × activation. Uses **concrete module paths** internally (talks to model cache/CI). Four accumulator groups mirror the storage edge types. Key optimizations:
+1. Sum outputs over positions before gradients (reduces backward passes)
+2. Output-residual storage (O(d_model) instead of O(vocab))
+3. `scatter_add_` for embed sources, vectorized `.add_()` for components (>14x faster than per-element loops)
 
-storage = load_dataset_attributions(run_id)
-if storage:
-    # Get top sources attributing to a component (no w_unembed needed)
-    top_sources = storage.get_top_sources("h.0.mlp.c_fc:5", k=10, sign="positive")
+### Harvest (`harvest.py`)
 
-    # Get top component targets (no w_unembed needed)
-    top_comp_targets = storage.get_top_component_targets("h.0.mlp.c_fc:5", k=10, sign="positive")
+Orchestrates the pipeline: loads model, builds gradient connectivity, runs batches, translates concrete→canonical at storage boundary via `topology.target_to_canon()`.
 
-    # Get top targets including outputs (requires w_unembed)
-    w_unembed = model.target_model.lm_head.weight.T.detach()
-    top_targets = storage.get_top_targets("h.0.mlp.c_fc:5", k=10, sign="positive", w_unembed=w_unembed)
+### Scripts
 
-    # Get top output targets only (requires w_unembed)
-    top_outputs = storage.get_top_output_targets("h.0.mlp.c_fc:5", k=10, sign="positive", w_unembed=w_unembed)
-```
+- `scripts/run_worker.py` — worker entrypoint (single GPU)
+- `scripts/run_merge.py` — merge entrypoint (CPU only, needs ~200G RAM)
+- `scripts/run_slurm.py` — SLURM launcher (array + merge jobs)
+- `scripts/run_slurm_cli.py` — CLI wrapper for `spd-attributions`
 
-## Key Types
+### Config (`config.py`)
 
-```python
-DatasetAttributionStorage   # Main storage class with split matrices
-DatasetAttributionEntry     # Single entry: component_key, layer, component_idx, value
-DatasetAttributionConfig    # Config: wandb_path, n_batches, batch_size, ci_threshold
-```
+- `DatasetAttributionConfig`: n_batches, batch_size, ci_threshold
+- `AttributionsSlurmConfig`: adds n_gpus, partition, time, merge_time, merge_mem (default 200G)
+
+### Repository (`repo.py`)
+
+`AttributionRepo.open(run_id)` → loads latest subrun. Returns `None` if no data.
 
 ## Query Methods
 
-| Method | w_unembed required? | Description |
-|--------|---------------------|-------------|
-| `get_top_sources(component_key, k, sign)` | No | Top sources → component target |
-| `get_top_sources(output_key, k, sign, w_unembed)` | Yes | Top sources → output token |
-| `get_top_component_targets(source_key, k, sign)` | No | Top component targets |
-| `get_top_output_targets(source_key, k, sign, w_unembed)` | Yes | Top output token targets |
-| `get_top_targets(source_key, k, sign, w_unembed)` | Yes | All targets (components + outputs) |
-| `get_attribution(source_key, component_key)` | No | Single component attribution |
-| `get_attribution(source_key, output_key, w_unembed)` | Yes | Single output attribution |
+All query methods take `metric: AttrMetric` (`"attr"` or `"attr_abs"`).
+
+| Method | Description |
+|--------|-------------|
+| `get_top_sources(target_key, k, sign, metric)` | Top sources → target |
+| `get_top_targets(source_key, k, sign, metric)` | Top targets ← source |
+
+Key format: `"embed:{token_id}"`, `"0.glu.up:{c_idx}"`, `"output:{token_id}"`.
+
+Note: `attr_abs` returns empty for output targets (unembed edges have no abs variant).

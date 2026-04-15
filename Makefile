@@ -6,8 +6,10 @@ install: copy-templates
 .PHONY: install-dev
 install-dev: copy-templates
 	uv sync
-	pre-commit install
+	uv run pre-commit install
 
+.PHONY: install-all
+install-all: install-dev install-app
 
 # special install for CI (GitHub Actions) that reduces disk usage and install time
 # 1. create a fresh venv with `--clear` -- this is mostly only for local testing of the CI install

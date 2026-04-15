@@ -13,7 +13,162 @@ from pydantic import (
 
 from spd.base_config import BaseConfig
 from spd.log import logger
-from spd.spd_types import CiFnType, ModelPath, Probability
+from spd.spd_types import GlobalCiFnType, LayerwiseCiFnType, ModelPath, Probability
+
+
+class LayerwiseCiConfig(BaseConfig):
+    """Configuration for layerwise CI functions (one per layer)."""
+
+    mode: Literal["layerwise"] = "layerwise"
+    fn_type: LayerwiseCiFnType = Field(
+        ..., description="Type of layerwise CI function: mlp, vector_mlp, or shared_mlp"
+    )
+    hidden_dims: list[NonNegativeInt] = Field(
+        ..., description="Hidden dimensions for the CI function MLP"
+    )
+
+
+class BlockGroupConfig(BaseConfig):
+    """Defines a group of modules processed together in global reverse residual CI.
+
+    Modules within a block have their activations concatenated, projected to the residual
+    stream dimension, and processed together by a single reader network.
+    """
+
+    name: str = Field(..., description="Block identifier (e.g. 'unembed', 'layer_2_mlp')")
+    patterns: list[str] = Field(
+        ...,
+        description="Module patterns for this block (fnmatch-style, e.g. ['layers.2.mlp_*'])",
+    )
+
+
+class AttnConfig(BaseConfig):
+    """Configuration for self-attention.
+
+    Uses RoPE (Rotary Position Embeddings) for sequence length generalization.
+    """
+
+    n_heads: PositiveInt = Field(
+        ...,
+        description="Number of attention heads. Must divide the input dimension.",
+    )
+    max_len: PositiveInt = Field(
+        default=2048,
+        description="Maximum sequence length for RoPE embeddings.",
+    )
+    rope_base: float = Field(
+        default=10000.0,
+        description="Base for RoPE frequency computation.",
+    )
+
+
+class GlobalSharedTransformerCiConfig(BaseConfig):
+    d_model: PositiveInt
+    n_blocks: PositiveInt
+    mlp_hidden_dim: list[NonNegativeInt] = Field(
+        description="Hidden dimension for transformer MLP blocks. "
+        "If None, defaults to [4 * d_model].",
+    )
+    attn_config: AttnConfig
+
+    @model_validator(mode="after")
+    def validate_config(self) -> Self:
+        assert self.d_model % self.attn_config.n_heads == 0, (
+            f"d_model ({self.d_model}) must be divisible by "
+            f"attn_config.n_heads ({self.attn_config.n_heads})"
+        )
+        d_head = self.d_model // self.attn_config.n_heads
+        assert d_head % 2 == 0, (
+            f"d_head ({d_head}) must be even for RoPE. "
+            f"d_model={self.d_model}, "
+            f"n_heads={self.attn_config.n_heads}"
+        )
+        return self
+
+
+class GlobalCiConfig(BaseConfig):
+    """Configuration for global CI function (single function for all layers).
+
+    For fn_type='global_shared_mlp': Concatenates all activations, processes through MLP.
+    For fn_type='global_reverse_residual': Processes blocks in reverse order with residual stream.
+    For fn_type='global_shared_transformer': Concatenates activations, projects to shared d_model,
+    and applies transformer blocks over the sequence dimension.
+    """
+
+    mode: Literal["global"] = "global"
+    fn_type: GlobalCiFnType = Field(
+        ...,
+        description="Type of global CI function: global_shared_mlp, "
+        "global_reverse_residual, or global_shared_transformer",
+    )
+    hidden_dims: list[NonNegativeInt] | None = Field(
+        default=None,
+        description="Hidden dimensions for global_shared_mlp CI function. "
+        "Use reader_hidden_dims for global_reverse_residual.",
+    )
+    reader_hidden_dims: list[NonNegativeInt] | None = Field(
+        default=None,
+        description="Hidden dimensions for reader MLPs in global_reverse_residual. "
+        "Required when fn_type='global_reverse_residual', ignored otherwise.",
+    )
+    d_resid_ci_fn: PositiveInt | None = Field(
+        default=None,
+        description="Residual stream dimension for global_reverse_residual. "
+        "Required when fn_type='global_reverse_residual', ignored otherwise.",
+    )
+    block_groups: list[BlockGroupConfig] | None = Field(
+        default=None,
+        description="Ordered list of block groups for global_reverse_residual. "
+        "Order determines processing sequence (first = processed first, typically unembed). "
+        "Required when fn_type='global_reverse_residual', ignored otherwise.",
+    )
+    transition_attn_config: AttnConfig | None = Field(
+        default=None,
+        description="Self-attention config for transitions in global_reverse_residual. "
+        "If None, uses MLP-only transitions (original behavior). "
+        "Only applies when fn_type='global_reverse_residual'.",
+    )
+    transition_hidden_dim: PositiveInt | None = Field(
+        default=None,
+        description="Hidden dimension for transition MLP in global_reverse_residual. "
+        "MLP structure: d_resid_ci_fn -> transition_hidden_dim -> d_resid_ci_fn with GeLU. "
+        "Required when fn_type='global_reverse_residual', ignored otherwise.",
+    )
+    simple_transformer_ci_cfg: GlobalSharedTransformerCiConfig | None = None
+
+    @model_validator(mode="after")
+    def validate_ci_config(self) -> Self:
+        if self.fn_type == "global_reverse_residual":
+            assert self.d_resid_ci_fn is not None, (
+                "d_resid_ci_fn must be specified when fn_type='global_reverse_residual'"
+            )
+            assert self.block_groups is not None and len(self.block_groups) > 0, (
+                "block_groups must be specified with at least one block when "
+                "fn_type='global_reverse_residual'"
+            )
+            assert self.reader_hidden_dims is not None, (
+                "reader_hidden_dims must be specified when fn_type='global_reverse_residual'"
+            )
+            if self.transition_attn_config is not None:
+                assert self.d_resid_ci_fn % self.transition_attn_config.n_heads == 0, (
+                    f"d_resid_ci_fn ({self.d_resid_ci_fn}) must be divisible by "
+                    f"transition_attn_config.n_heads ({self.transition_attn_config.n_heads})"
+                )
+        elif self.fn_type == "global_shared_mlp":
+            assert self.hidden_dims is not None, (
+                "hidden_dims must be specified when fn_type='global_shared_mlp'"
+            )
+            assert self.transition_attn_config is None, (
+                "transition_attn_config is only valid for global_reverse_residual"
+            )
+        elif self.fn_type == "global_shared_transformer":
+            assert self.simple_transformer_ci_cfg is not None, (
+                "simple_transformer_ci_cfg must be specified when fn_type='global_shared_transformer'"
+            )
+        return self
+
+
+CiConfig = LayerwiseCiConfig | GlobalCiConfig
 
 
 class ScheduleConfig(BaseConfig):
@@ -146,6 +301,10 @@ class LMTaskConfig(BaseConfig):
         default=False,
         description="Whether to use a streaming dataset",
     )
+    dataset_seed: int | None = Field(
+        default=None,
+        description="Seed for dataset shuffling/sampling. When None, uses the global `seed`.",
+    )
 
 
 class ModulePatternInfoConfig(BaseConfig):
@@ -184,7 +343,15 @@ class ImportanceMinimalityLossConfig(LossMetricConfig):
 
     @model_validator(mode="before")
     @classmethod
-    def default_beta(cls, data: dict[str, Any]) -> dict[str, Any]:
+    def migrate_old_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
+        # Migrate pnorm_1 to pnorm (intermediate format)
+        if "pnorm_1" in data and "pnorm" not in data:
+            data["pnorm"] = data.pop("pnorm_1")
+        elif "pnorm_1" in data:
+            data.pop("pnorm_1")
+        # Remove deprecated pnorm_2
+        data.pop("pnorm_2", None)
+        # Default beta if missing
         if "beta" not in data:
             logger.warning("beta not in ImportanceMinimalityLossConfig, defaulting to 0.0")
             data["beta"] = 0.0
@@ -282,8 +449,190 @@ class PGDMultiBatchReconSubsetLossConfig(PGDMultiBatchConfig):
     ]
 
 
+class SignPGDConfig(BaseConfig):
+    type: Literal["sign"] = "sign"
+    lr_schedule: ScheduleConfig
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_step_size(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "step_size" in data and "lr_schedule" not in data:
+            data["lr_schedule"] = {
+                "start_val": data.pop("step_size"),
+                "warmup_pct": 0.0,
+                "final_val_frac": 1.0,
+                "fn_type": "constant",
+            }
+        return data
+
+
+class AdamPGDConfig(BaseConfig):
+    type: Literal["adam"] = "adam"
+    beta1: Probability = Field(default=0.9, description="Adam beta1 for masks")
+    beta2: Probability = Field(default=0.999, description="Adam beta2 for masks")
+    eps: NonNegativeFloat = Field(default=1e-8, description="Adam epsilon for masks")
+    lr_schedule: ScheduleConfig
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_lr(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "lr" in data and "lr_schedule" not in data:
+            data["lr_schedule"] = {
+                "start_val": data.pop("lr"),
+                "warmup_pct": 0.0,
+                "final_val_frac": 1.0,
+                "fn_type": "constant",
+            }
+        return data
+
+
+PGDOptimizerConfig = SignPGDConfig | AdamPGDConfig
+
+
+class SingleSourceScope(BaseConfig):
+    type: Literal["single_source"] = "single_source"
+
+
+class BroadcastAcrossBatchScope(BaseConfig):
+    type: Literal["broadcast_across_batch"] = "broadcast_across_batch"
+
+
+class RepeatAcrossBatchScope(BaseConfig):
+    """Sources of shape (N, S, C) where N divides both batch_size and eval_batch_size.
+
+    Repeated along batch dim at forward time: (N, S, C) -> (B, S, C).
+    """
+
+    type: Literal["repeat_across_batch"] = "repeat_across_batch"
+    n_sources: PositiveInt
+
+
+class PerBatchPerPositionScope(BaseConfig):
+    """Sources of shape (B, S, C) — one source per batch element per position, separate across
+    ranks.
+
+    Unlike other scopes, gradients are NOT all-reduced across ranks, so each rank
+    maintains fully independent sources for its own batch elements.
+    """
+
+    type: Literal["per_batch_per_position"] = "per_batch_per_position"
+
+
+PersistentPGDSourceScope = Annotated[
+    SingleSourceScope
+    | BroadcastAcrossBatchScope
+    | RepeatAcrossBatchScope
+    | PerBatchPerPositionScope,
+    Field(discriminator="type"),
+]
+
+
+def _coerce_ppgd_scope(config_dict: dict[str, Any]) -> None:
+    """Backwards compat: migrate old scope format/names to current names."""
+    scope = config_dict.get("scope")
+    if isinstance(scope, str):
+        scope = {"type": scope}
+        config_dict["scope"] = scope
+    if not isinstance(scope, dict):
+        return
+    match scope.get("type"):
+        case "single_mask":
+            scope["type"] = "single_source"
+        case "batch_invariant":
+            scope["type"] = "repeat_across_batch"
+            if "n_masks" in scope:
+                scope["n_sources"] = scope.pop("n_masks")
+        case "per_batch" | "unique_per_batch_per_token":
+            scope["type"] = "per_batch_per_position"
+        case _:
+            pass
+
+
+class _PersistentPGDBaseConfig(LossMetricConfig):
+    """Shared fields for persistent PGD configs.
+
+    Persistent PGD maintains persistent masks that receive one gradient update per training step,
+    amortizing PGD optimization across training.
+    """
+
+    optimizer: Annotated[PGDOptimizerConfig, Field(discriminator="type")]
+    scope: PersistentPGDSourceScope
+    use_sigmoid_parameterization: bool = False
+    n_warmup_steps: Annotated[
+        NonNegativeInt,
+        Field(
+            description="Number of additional inner PGD source-optimization steps to run on each "
+            "batch before the final loss computation. Each training step always performs one PPGD "
+            "source update (grad + step) as part of the outer loop; these warmup steps add extra "
+            "source refinement iterations on the same batch in an inner loop beforehand."
+        ),
+    ] = 0
+    start_frac: Probability = 0.0
+    n_samples: PositiveInt = 1
+
+    @model_validator(mode="before")
+    @classmethod
+    def _compat_scope(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            _coerce_ppgd_scope(data)
+        return data
+
+
+class PersistentPGDReconLossConfig(_PersistentPGDBaseConfig):
+    classname: Literal["PersistentPGDReconLoss"] = "PersistentPGDReconLoss"
+
+
+class PersistentPGDReconSubsetLossConfig(_PersistentPGDBaseConfig):
+    classname: Literal["PersistentPGDReconSubsetLoss"] = "PersistentPGDReconSubsetLoss"
+    routing: Annotated[
+        SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
+    ]
+
+
 class StochasticHiddenActsReconLossConfig(LossMetricConfig):
     classname: Literal["StochasticHiddenActsReconLoss"] = "StochasticHiddenActsReconLoss"
+
+
+class CIHiddenActsReconLossConfig(BaseConfig):
+    classname: Literal["CIHiddenActsReconLoss"] = "CIHiddenActsReconLoss"
+
+
+class PersistentPGDReconEvalConfig(BaseConfig):
+    classname: Literal["PersistentPGDReconEval"] = "PersistentPGDReconEval"
+
+
+class PersistentPGDReconSubsetEvalConfig(BaseConfig):
+    classname: Literal["PersistentPGDReconSubsetEval"] = "PersistentPGDReconSubsetEval"
+
+
+class _AttnPatternsReconLossBaseConfig(BaseConfig):
+    """Attention pattern reconstruction loss config.
+
+    Supports standard attention and RoPE attention (auto-detected from the parent attention
+    module). Models using ALiBi, QK-norm, sliding window, etc. are not supported.
+    """
+
+    n_heads: int
+    q_proj_path: str | None = None
+    k_proj_path: str | None = None
+    c_attn_path: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_paths(self) -> Self:
+        has_separate = self.q_proj_path is not None and self.k_proj_path is not None
+        has_combined = self.c_attn_path is not None
+        assert has_separate != has_combined, (
+            "Specify either (q_proj_path, k_proj_path) or c_attn_path, not both/neither"
+        )
+        return self
+
+
+class CIMaskedAttnPatternsReconLossConfig(_AttnPatternsReconLossBaseConfig):
+    classname: Literal["CIMaskedAttnPatternsReconLoss"] = "CIMaskedAttnPatternsReconLoss"
+
+
+class StochasticAttnPatternsReconLossConfig(_AttnPatternsReconLossBaseConfig):
+    classname: Literal["StochasticAttnPatternsReconLoss"] = "StochasticAttnPatternsReconLoss"
 
 
 #### Metrics that can only be used in eval ####
@@ -352,22 +701,29 @@ ReconLossConfigType = (
     | PGDReconSubsetLossConfig
     | PGDReconLayerwiseLossConfig
     | StochasticHiddenActsReconLossConfig
+    | PersistentPGDReconLossConfig
+    | PersistentPGDReconSubsetLossConfig
 )
 
 LossMetricConfigType = FaithfulnessLossConfig | ImportanceMinimalityLossConfig | ReconLossConfigType
 
 EvalOnlyMetricConfigType = (
     CEandKLLossesConfig
+    | CIHiddenActsReconLossConfig
     | CIHistogramsConfig
     | CI_L0Config
     | CIMeanPerComponentConfig
     | ComponentActivationDensityConfig
     | IdentityCIErrorConfig
+    | PersistentPGDReconEvalConfig
+    | PersistentPGDReconSubsetEvalConfig
     | PermutedCIPlotsConfig
     | UVPlotsConfig
     | StochasticReconSubsetCEAndKLConfig
     | PGDMultiBatchReconLossConfig
     | PGDMultiBatchReconSubsetLossConfig
+    | CIMaskedAttnPatternsReconLossConfig
+    | StochasticAttnPatternsReconLossConfig
 )
 MetricConfigType = LossMetricConfigType | EvalOnlyMetricConfigType
 
@@ -392,7 +748,10 @@ class Config(BaseConfig):
     )
 
     # --- General ---
-    seed: int = Field(default=0, description="Random seed for reproducibility")
+    seed: int = Field(
+        default=0,
+        description="Random seed for reproducibility. Does not affect dataset shuffling if dataset_seed is set in TaskConfig.",
+    )
     autocast_bf16: bool = Field(
         default=True,
         description="Whether to use torch.autocast with bfloat16 mixed precision",
@@ -401,13 +760,11 @@ class Config(BaseConfig):
         ...,
         description="Number of stochastic masks to sample when using stochastic recon losses",
     )
-    ci_fn_type: CiFnType = Field(
-        default="vector_mlp",
-        description="Type of causal importance function used to calculate the causal importance.",
-    )
-    ci_fn_hidden_dims: list[NonNegativeInt] = Field(
-        default=[8],
-        description="Hidden dimensions for the causal importance function used to calculate the causal importance",
+    ci_config: CiConfig = Field(
+        ...,
+        discriminator="mode",
+        description="Configuration for the causal importance function. "
+        "Use LayerwiseCiConfig for per-layer CI functions or GlobalCiConfig for a single global CI function.",
     )
     sampling: SamplingType = Field(
         default="continuous",
@@ -445,6 +802,11 @@ class Config(BaseConfig):
                 )
 
         return result
+
+    init_spd_checkpoint: str | None = Field(
+        default=None,
+        description="Path to a .pth checkpoint from a prior SPD run for component/CI initialization",
+    )
 
     use_delta_component: bool = Field(
         default=True,
@@ -604,8 +966,6 @@ class Config(BaseConfig):
         "pretrained_model_name_hf": "pretrained_model_name",
         "recon_coeff": "ci_recon_coeff",
         "recon_layerwise_coeff": "ci_recon_layerwise_coeff",
-        "gate_type": "ci_fn_type",
-        "gate_hidden_dims": "ci_fn_hidden_dims",
     }
 
     @model_validator(mode="before")
@@ -616,6 +976,7 @@ class Config(BaseConfig):
         config_dict.pop("eval_metrics", None)
 
         cls._migrate_to_module_info(config_dict)
+        cls._migrate_to_ci_config(config_dict)
         migrate_to_lr_schedule_config(config_dict)
 
         for key in list(config_dict.keys()):
@@ -673,6 +1034,44 @@ class Config(BaseConfig):
                 {"module_pattern": p, "C": global_c} for p in identity_patterns
             ]
 
+    @classmethod
+    def _migrate_to_ci_config(cls, config_dict: dict[str, Any]) -> None:
+        """Migrate old ci_fn_type/ci_fn_hidden_dims/use_global_ci to new ci_config structure."""
+        has_old_fields = (
+            "ci_fn_type" in config_dict
+            or "ci_fn_hidden_dims" in config_dict
+            or "use_global_ci" in config_dict
+        )
+        if not has_old_fields:
+            return
+
+        logger.info(
+            "Migrating old ci_fn_type/ci_fn_hidden_dims/use_global_ci to ci_config structure"
+        )
+
+        ci_fn_type = config_dict.pop("ci_fn_type", "vector_mlp")
+        ci_fn_hidden_dims = config_dict.pop("ci_fn_hidden_dims", [8])
+        use_global_ci = config_dict.pop("use_global_ci", False)
+
+        # Determine if this is a global CI function
+        is_global = use_global_ci or ci_fn_type.startswith("global_")
+
+        if is_global:
+            # Map layerwise type to global type if use_global_ci was set
+            if not ci_fn_type.startswith("global_"):
+                ci_fn_type = "global_shared_mlp"
+            config_dict["ci_config"] = {
+                "mode": "global",
+                "fn_type": ci_fn_type,
+                "hidden_dims": ci_fn_hidden_dims,
+            }
+        else:
+            config_dict["ci_config"] = {
+                "mode": "layerwise",
+                "fn_type": ci_fn_type,
+                "hidden_dims": ci_fn_hidden_dims,
+            }
+
     @model_validator(mode="after")
     def validate_model(self) -> Self:
         assert self.slow_eval_freq % self.eval_freq == 0, (
@@ -684,5 +1083,13 @@ class Config(BaseConfig):
 
         for cfg in self.loss_metric_configs:
             assert cfg.coeff is not None, "All loss_metric_configs must have a coeff"
+
+        if any(
+            isinstance(cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig)
+            for cfg in self.loss_metric_configs
+        ):
+            assert isinstance(self.task_config, LMTaskConfig), (
+                "Persistent PGD losses are only supported with LM tasks"
+            )
 
         return self

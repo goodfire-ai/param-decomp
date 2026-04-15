@@ -23,7 +23,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from spd.configs import PGDReconLossConfig
+from spd.configs import LayerwiseCiConfig, PGDReconLossConfig
 from spd.metrics.pgd_utils import pgd_masked_recon_loss_update
 from spd.models.component_model import ComponentModel
 from spd.routing import AllLayersRouter
@@ -56,8 +56,7 @@ def _make_component_model(fc_weight: Tensor) -> ComponentModel:
     return ComponentModel(
         target_model=target,
         module_path_info=[ModulePathInfo(module_path="fc", C=1)],
-        ci_fn_hidden_dims=[2],
-        ci_fn_type="mlp",
+        ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         pretrained_model_output_attr=None,
         sigmoid_type="leaky_hard",
     )

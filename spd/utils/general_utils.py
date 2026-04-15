@@ -209,27 +209,16 @@ def extract_batch_data(
 def calc_kl_divergence_lm(
     pred: Float[Tensor, "... vocab"],
     target: Float[Tensor, "... vocab"],
-    reduce: bool = True,
-) -> Float[Tensor, ""] | Float[Tensor, "..."]:
-    """Calculate the KL divergence between two logits.
+) -> Float[Tensor, ""]:
+    """Calculate the mean per-position KL divergence between two logits.
 
-    Args:
-        pred: The predicted logits
-        target: The target logits
-        reduce: Whether to reduce the KL divergence across the batch and sequence dimensions
-
-    Returns:
-        The KL divergence
+    Uses fused reduction to avoid materializing a full [batch, seq, vocab] intermediate.
     """
     assert pred.shape == target.shape
     log_q = torch.log_softmax(pred, dim=-1)  # log Q
     p = torch.softmax(target, dim=-1)  # P
-    kl_raw = F.kl_div(log_q, p, reduction="none")  # P · (log P − log Q)
-    kl = kl_raw.sum(dim=-1)
-    if reduce:
-        return kl.mean()  # Σ_vocab / (batch·seq)
-    else:
-        return kl
+    n_positions = pred.numel() // pred.shape[-1]
+    return F.kl_div(log_q, p, reduction="sum") / n_positions
 
 
 def calc_sum_recon_loss_lm(
@@ -242,7 +231,9 @@ def calc_sum_recon_loss_lm(
         case "mse":
             loss = ((pred - target) ** 2).sum()
         case "kl":
-            loss = calc_kl_divergence_lm(pred=pred, target=target, reduce=False).sum()
+            log_q = torch.log_softmax(pred, dim=-1)
+            p = torch.softmax(target, dim=-1)
+            loss = F.kl_div(log_q, p, reduction="sum")
     return loss
 
 

@@ -4,7 +4,12 @@ from pathlib import Path
 
 import fire
 
-from spd.configs import LMTaskConfig
+from spd.configs import (
+    LMTaskConfig,
+    PersistentPGDReconLossConfig,
+    PersistentPGDReconSubsetLossConfig,
+    RepeatAcrossBatchScope,
+)
 from spd.data import DatasetConfig, create_data_loader
 from spd.log import logger
 from spd.pretrain.run_info import PretrainRunInfo
@@ -79,7 +84,7 @@ def main(
         streaming=config.task_config.streaming,
         column_name=config.task_config.column_name,
         shuffle_each_epoch=config.task_config.shuffle_each_epoch,
-        seed=None,
+        seed=config.task_config.dataset_seed,
     )
 
     match dist_state:
@@ -92,6 +97,16 @@ def main(
             train_rank_batch_size = config.batch_size // world_size
         case None:
             train_rank_batch_size = config.batch_size
+
+    for cfg in config.loss_metric_configs:
+        if isinstance(
+            cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
+        ) and isinstance(cfg.scope, RepeatAcrossBatchScope):
+            n = cfg.scope.n_sources
+            assert train_rank_batch_size % n == 0, (
+                f"repeat_across_batch n_sources={n} must divide per-rank batch_size="
+                f"{train_rank_batch_size}"
+            )
 
     train_loader, _tokenizer = create_data_loader(
         dataset_config=train_data_config,
@@ -110,7 +125,7 @@ def main(
         streaming=config.task_config.streaming,
         column_name=config.task_config.column_name,
         shuffle_each_epoch=config.task_config.shuffle_each_epoch,
-        seed=None,
+        seed=config.task_config.dataset_seed,
     )
 
     match dist_state:

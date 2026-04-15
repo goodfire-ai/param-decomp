@@ -4,16 +4,19 @@ Web-based visualization and analysis tool for exploring neural network component
 
 - **Backend**: Python FastAPI (`backend/`)
 - **Frontend**: Svelte 5 + TypeScript (`frontend/`)
-- **Database**: SQLite at `.data/app/prompt_attr.db` (relative to repo root)
+- **Database**: SQLite at `SPD_OUT_DIR/app/prompt_attr.db` (shared across team via NFS)
+- **TODOs**: See `TODO.md` for open work items
 
 ## Project Context
 
 This is a **rapidly iterated research tool**. Key implications:
 
-- **Please do not code for backwards compatibility**: Schema changes don't need migrations, expect state can be deleted, etc.
-- **Database is disposable**: Delete `.data/app/prompt_attr.db` if schema changes break things
+- **Database is persistent shared state**: Lives at `SPD_OUT_DIR/app/prompt_attr.db` on NFS, shared across the team. Do not delete. Uses DELETE journal mode (NFS-safe) with `fcntl.flock` write locking for concurrent access.
+  - **Schema changes require manual migration**: Update the `CREATE TABLE IF NOT EXISTS` statements to match the desired schema, then manually `ALTER TABLE` the real DB (back it up first). No automatic migration framework — just SQL.
+  - Keep the CREATE TABLE statements as the source of truth for the schema.
 - **Prefer simplicity**: Avoid over-engineering for hypothetical future needs
 - **Fail loud and fast**: The users are a small team of highly technical people. Errors are good. We want to know immediately if something is wrong. No soft failing, assert, assert, assert
+- **Token display**: Always ship token strings rendered server-side via `AppTokenizer`, never raw token IDs. For embed/output layers, `component_idx` is a token ID — resolve it to a display string in the backend response.
 
 ## Running the App
 
@@ -32,23 +35,26 @@ This launches both backend (FastAPI/uvicorn) and frontend (Vite) dev servers.
 ```
 backend/
 ├── server.py              # FastAPI app, CORS, routers
-├── state.py               # Singleton StateManager + HarvestCache (lazy-loaded harvest data)
-├── compute.py             # Core attribution computation
+├── state.py               # Singleton StateManager + HarvestRepo (lazy-loaded harvest data)
+├── compute.py             # Core attribution computation + intervention evaluation
+├── app_tokenizer.py       # AppTokenizer: wraps HF tokenizers for display/encoding
+├── (topology lives at spd/topology.py — TransformerTopology)
 ├── schemas.py             # Pydantic API models
 ├── dependencies.py        # FastAPI dependency injection
 ├── utils.py               # Logging/timing utilities
 ├── database.py            # SQLite interface
-├── optim_cis.py           # Sparse CI optimization
+├── optim_cis.py           # Sparse CI optimization, loss configs, PGD
 └── routers/
-    ├── runs.py            # Load W&B runs
+    ├── runs.py            # Load W&B runs + GET /api/model_info
     ├── graphs.py          # Compute attribution graphs
     ├── prompts.py         # Prompt management
     ├── activation_contexts.py  # Serves pre-harvested activation contexts
     ├── intervention.py    # Selective component activation
     ├── correlations.py    # Component correlations + token stats + interpretations
     ├── clusters.py        # Component clustering
-    ├── dataset_search.py  # SimpleStories dataset search
-    └── agents.py          # Various useful endpoints that AI agents should look at when helping 
+    ├── dataset_search.py  # Dataset search (reads dataset from run config)
+    ├── agents.py          # Various useful endpoints that AI agents should look at when helping
+    └── mcp.py             # MCP (Model Context Protocol) endpoint for Claude Code
 ```
 
 Note: Activation contexts, correlations, and token stats are now loaded from pre-harvested data (see `spd/harvest/`). The app no longer computes these on-the-fly.
@@ -70,6 +76,7 @@ frontend/src/
 │   │   ├── dataset.ts            # Dataset search
 │   │   └── clusters.ts           # Component clustering
 │   ├── index.ts                  # Shared utilities (Loadable<T> pattern)
+│   ├── graphLayout.ts               # Shared graph layout (parseLayer, row sorting)
 │   ├── promptAttributionsTypes.ts # TypeScript types
 │   ├── interventionTypes.ts
 │   ├── colors.ts                 # Color utilities
@@ -84,9 +91,9 @@ frontend/src/
     ├── ActivationContextsTab.svelte  # Component firing patterns tab
     ├── ActivationContextsViewer.svelte
     ├── ActivationContextsPagedTable.svelte
-    ├── DatasetSearchTab.svelte       # SimpleStories search UI
+    ├── DatasetSearchTab.svelte       # Dataset search UI
     ├── DatasetSearchResults.svelte
-    ├── ClusterPathInput.svelte       # Cluster path selector
+    ├── ClusterPathInput.svelte       # Cluster path selector (dropdown populated from registry.ts)
     ├── ComponentProbeInput.svelte    # Component probe UI
     ├── TokenHighlights.svelte        # Token highlighting
     ├── prompt-attr/
@@ -150,8 +157,13 @@ Edge(source: Node, target: Node, strength: float, is_cross_seq: bool)
 # strength = gradient * activation
 # is_cross_seq = True for k/v → o_proj (attention pattern)
 
-PromptAttributionResult(edges: list[Edge], output_probs: Tensor[seq, vocab], node_ci_vals: dict[str, float])
-# node_ci_vals maps "layer:seq:c_idx" → CI value
+PromptAttributionResult(edges, ci_masked_out_logits, target_out_logits, node_ci_vals, node_subcomp_acts)
+
+TokenPrediction(token, token_id, prob, logit, target_prob, target_logit)
+
+InterventionResult(input_tokens, ci, stochastic, adversarial, ci_loss, stochastic_loss, adversarial_loss)
+# ci/stochastic/adversarial are list[list[TokenPrediction]] (per-position top-k)
+# losses are evaluated using the graph's implied loss context
 ```
 
 ### Frontend Types (`promptAttributionsTypes.ts`)
@@ -188,7 +200,7 @@ GraphData = {
    - `strength = grad * source_activation`
    - Create Edge for each alive source component
 
-**Cross-sequence edges**: `is_kv_to_o_pair()` detects k/v → o_proj in same attention block.
+**Cross-sequence edges**: `topology.is_cross_seq_pair()` detects k/v → o_proj in same attention block.
 These have gradients across sequence positions (causal attention pattern).
 
 ### Causal Importance (CI)
@@ -207,13 +219,31 @@ Finds sparse CI mask that:
 - Minimizes L0 (active component count)
 - Uses importance minimality + CE loss (or KL loss)
 
-### Intervention Forward
+### Interventions (`compute.py → compute_intervention`)
 
-`compute_intervention_forward()`:
+A single unified function evaluates a node selection under three masking regimes:
 
-1. Build component masks (all zeros)
-2. Set mask=1.0 for selected nodes
-3. Forward pass → top-k predictions per position
+- **CI**: mask = selection (binary on/off)
+- **Stochastic**: mask = selection + (1-selection) × Uniform(0,1)
+- **Adversarial**: PGD optimizes alive-but-unselected components to maximize loss; non-alive get Uniform(0,1)
+
+Returns `InterventionResult` with top-k `TokenPrediction`s per position for each regime, plus per-regime loss values.
+
+**Loss context**: Every graph has an implied loss that interventions evaluate against:
+
+- **Standard/manual graphs** → `MeanKLLossConfig` (mean KL divergence from target across all positions)
+- **Optimized graphs** → the graph's optimization loss (CE for a specific token at a position, or KL at a position)
+
+This loss is used for two things: (1) what PGD maximizes during adversarial evaluation, and (2) the `ci_loss`/`stochastic_loss`/`adversarial_loss` metrics reported in `InterventionResult`.
+
+**Alive masks**: `compute_intervention` recomputes the model's natural CI (one forward pass + `calc_causal_importances`) and binarizes at 0 to get alive masks. This ensures the alive set is always the full model's CI — not the graph's potentially sparse optimized CI. PGD can only manipulate alive-but-unselected components.
+
+**Training PGD vs Eval PGD**: The PGD settings in the graph optimization config (`adv_pgd_n_steps`,
+`adv_pgd_step_size`) are a _training_ regularizer — they make CI optimization robust. The PGD in
+`compute_intervention` is an _eval_ metric — it measures worst-case performance for a given node
+selection. Eval PGD defaults are in `compute.py` (`DEFAULT_EVAL_PGD_CONFIG`).
+
+**Base intervention run**: Created automatically during graph computation. Uses all interventable nodes with CI > 0. Persisted as an `intervention_run` so predictions are available synchronously.
 
 ---
 
@@ -241,24 +271,29 @@ POST /api/graphs
 ### Intervention
 
 ```
-POST /api/intervention {text, nodes: ["h.0.attn.q_proj:3:5", ...]}
-  → compute_intervention_forward()
-  ← InterventionResponse with top-k predictions
+POST /api/intervention/run {graph_id, selected_nodes, top_k, adv_pgd}
+  → compute_intervention(active_nodes, graph_alive_masks, loss_config)
+  ← InterventionRunSummary {id, selected_nodes, result: InterventionResult}
+
+InterventionResult = {
+  input_tokens, ci, stochastic, adversarial,  // TokenPrediction[][] per regime
+  ci_loss, stochastic_loss, adversarial_loss   // loss under each regime
+}
 ```
 
 ### Component Correlations & Interpretations
 
 ```
 GET /api/correlations/components/{layer}/{component_idx}
-  → Load from HarvestCache (pre-harvested data)
+  → Load from HarvestRepo (pre-harvested data)
   ← ComponentCorrelationsResponse (precision, recall, jaccard, pmi)
 
 GET /api/correlations/token_stats/{layer}/{component_idx}
-  → Load from HarvestCache
+  → Load from HarvestRepo
   ← TokenStatsResponse (input/output token associations)
 
 GET /api/correlations/interpretation/{layer}/{component_idx}
-  → Load from HarvestCache (autointerp results)
+  → Load from HarvestRepo (autointerp results)
   ← InterpretationResponse (label, confidence, reasoning)
 ```
 
@@ -266,25 +301,25 @@ GET /api/correlations/interpretation/{layer}/{component_idx}
 
 ```
 POST /api/dataset/search?query=...
-  → Search SimpleStories dataset
-  ← DatasetSearchMetadata
+  → Search the loaded run's training dataset (reads dataset_name from config)
+  ← DatasetSearchMetadata (includes dataset_name)
 
 GET /api/dataset/results?page=1&page_size=20
-  ← Paginated search results
+  ← Paginated search results (text + generic metadata dict)
 ```
 
 ---
 
 ## Database Schema
 
-Located at `.data/app/prompt_attr.db`. Delete this file if schema changes cause issues.
+Located at `SPD_OUT_DIR/app/prompt_attr.db` (shared via NFS). Uses DELETE journal mode with `fcntl.flock` write locking for safe concurrent access from multiple backends.
 
-| Table              | Key                                | Purpose                                           |
-| ------------------ | ---------------------------------- | ------------------------------------------------- |
-| `runs`             | `wandb_path`                       | W&B run references                                |
-| `prompts`          | `(run_id, context_length)`         | Token sequences                                   |
-| `graphs`           | `(prompt_id, optimization_params)` | Attribution edges + output probs + node CI values |
-| `intervention_runs`| `graph_id`                         | Saved intervention results                        |
+| Table               | Key                                | Purpose                                                  |
+| ------------------- | ---------------------------------- | -------------------------------------------------------- |
+| `runs`              | `wandb_path`                       | W&B run references                                       |
+| `prompts`           | `(run_id, context_length)`         | Token sequences                                          |
+| `graphs`            | `(prompt_id, optimization_params)` | Attribution edges + CI/target logits + node CI values    |
+| `intervention_runs` | `graph_id`                         | Saved `InterventionResult` JSON (single `result` column) |
 
 Note: Activation contexts, correlations, token stats, and interpretations are loaded from pre-harvested data at `SPD_OUT_DIR/{harvest,autointerp}/` (see `spd/harvest/` and `spd/autointerp/`).
 
@@ -299,13 +334,14 @@ StateManager.get() → AppState:
   - db: PromptAttrDB (always available)
   - run_state: RunState | None
       - model: ComponentModel
-      - tokenizer: PreTrainedTokenizerBase
+      - topology: TransformerTopology  # Model topology (embedding, unembed, cross-seq roles)
+      - tokenizer: AppTokenizer     # Token display, encoding, span construction
       - sources_by_target: dict[target_layer → source_layers]
-      - config, context_length, token_strings
-      - harvest: HarvestCache  # Lazy-loaded pre-harvested data
+      - config, context_length
+      - harvest: HarvestRepo       # Lazy-loaded pre-harvested data
   - dataset_search_state: DatasetSearchState | None  # Cached search results
 
-HarvestCache:  # Lazy-loads from SPD_OUT_DIR/harvest/<run_id>/
+HarvestRepo:  # Lazy-loads from SPD_OUT_DIR/harvest/<run_id>/
   - correlations: CorrelationStorage | None
   - token_stats: TokenStatsStorage | None
   - activation_contexts: dict[str, ComponentData] | None
@@ -332,6 +368,6 @@ HarvestCache:  # Lazy-loads from SPD_OUT_DIR/harvest/<run_id>/
 
 ## Performance Notes
 
-- **Edge limit**: `GLOBAL_EDGE_LIMIT = 5000` in graph visualization
+- **Edge limit**: `GLOBAL_EDGE_LIMIT = 50000` in graph visualization
 - **SSE streaming**: Long computations stream progress updates
 - **Lazy loading**: Component details fetched on hover/pin

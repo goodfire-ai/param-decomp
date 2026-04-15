@@ -1,18 +1,21 @@
-model_path: wandb:goodfire/spd/runs/zxbu57pt  # WandB path to the decomposed model
-batch_size: 8  # Batch size for processing -- number of samples for each run in the ensemble
-dataset_seed: 0  # Note, overridden if run in the pipeline (spd/clustering/scripts/run_pipeline.py)
+harvest:
+  model_path: wandb:goodfire/spd/runs/zxbu57pt  # WandB path to the decomposed model
+  batch_size: 8  # Batch size for processing -- number of samples for each run in the ensemble
+  dataset_seed: 0  # Note, overridden if run in the pipeline (spd/clustering/scripts/run_pipeline.py)
+  activation_threshold: 0.01  # threshold for considering a component active
+  filter_dead_threshold: 0.001  # Threshold for filtering dead components
+  filter_dead_stat: "max"  # Dead-component statistic: "max" or "mean"
+  module_name_filter: null  # Can be a string prefix like "model.layers.0." if you want to do only some modules
+
 # output_dir: .data/clustering/clustering_runs  # Note, overridden if run in the pipeline (spd/clustering/scripts/run_pipeline.py)
 # ensemble_id: 1234567890  # Note, overridden if run in the pipeline (spd/clustering/scripts/run_pipeline.py)
 
-merge_config:
-  activation_threshold: 0.01  # set to null to use scalar activations for cost calculation
+merge:
   alpha: 1.0  # rank penalty term
   iters: 10  # iterations to run. setting this to exactly the number of components can be buggy when doing ensembles, so set it to a bit less?
   merge_pair_sampling_method: "range"  # Method for sampling merge pairs: 'range' or 'mcmc'
   merge_pair_sampling_kwargs:
     threshold: 0.05  # For range sampler: fraction of the range of costs to sample from
-  filter_dead_threshold: 0.001  # Threshold for filtering dead components
-  module_name_filter: null  # Can be a string prefix like "model.layers.0." if you want to do only some modules
 
 wandb_project: spd
 wandb_entity: goodfire

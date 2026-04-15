@@ -6,8 +6,10 @@ wandb_run_name_prefix: ""
 # --- General ---
 seed: 1
 n_mask_samples: 1
-ci_fn_type: "shared_mlp"
-ci_fn_hidden_dims: [550]
+ci_config:
+  mode: layerwise
+  fn_type: shared_mlp
+  hidden_dims: [550]
 sigmoid_type: "leaky_hard"
 module_info:
   - module_pattern: "h.*.mlp.c_fc"
@@ -78,10 +80,16 @@ eval_metric_configs:
 - classname: CEandKLLosses
   rounding_threshold: 0.0
 - classname: CIMeanPerComponent
-- coeff: null
-  classname: StochasticHiddenActsReconLoss
-- coeff: null
-  init: random
+- classname: StochasticHiddenActsReconLoss
+- classname: StochasticAttnPatternsReconLoss
+  n_heads: 4
+  q_proj_path: "h.*.attn.q_proj"
+  k_proj_path: "h.*.attn.k_proj"
+- classname: CIMaskedAttnPatternsReconLoss
+  n_heads: 4
+  q_proj_path: "h.*.attn.q_proj"
+  k_proj_path: "h.*.attn.k_proj"
+- init: random
   step_size: 0.1
   n_steps: 20
   mask_scope: shared_across_batch

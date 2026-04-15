@@ -18,8 +18,11 @@ TEST_CONFIG = {
     "seed": 0,
     "C": 3,
     "n_mask_samples": 1,
-    "ci_fn_type": "vector_mlp",
-    "ci_fn_hidden_dims": [2],
+    "ci_config": {
+        "mode": "layerwise",
+        "fn_type": "vector_mlp",
+        "hidden_dims": [2],
+    },
     "sigmoid_type": "leaky_hard",
     "target_module_patterns": ["model.layers.0.mlp.gate_proj"],
     # --- Loss metrics ---

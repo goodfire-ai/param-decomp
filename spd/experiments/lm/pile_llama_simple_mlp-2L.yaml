@@ -56,13 +56,17 @@ loss_metric_configs:
   classname: PersistentPGDReconSubsetLoss
   optimizer:
     type: adam
-    lr: 0.1
+    lr_schedule:
+      start_val: 0.1
+      warmup_pct: 0.0
+      final_val_frac: 1.0
+      fn_type: constant
     beta1: 0.9
     beta2: 0.99
     eps: 1.0e-08
   scope:
-    type: batch_invariant
-    n_masks: 8
+    type: repeat_across_batch
+    n_sources: 8
   routing:
     type: uniform_k_subset
 - coeff: 1000000.0
@@ -102,10 +106,10 @@ eval_metric_configs:
 - classname: CEandKLLosses
   rounding_threshold: 0.0
 - classname: CIMeanPerComponent
-- coeff: null
-  classname: StochasticHiddenActsReconLoss
-- coeff: null
-  init: random
+- classname: StochasticHiddenActsReconLoss
+- classname: CIHiddenActsReconLoss
+- classname: PersistentPGDReconSubsetEval
+- init: random
   step_size: 0.1
   n_steps: 20
   mask_scope: shared_across_batch

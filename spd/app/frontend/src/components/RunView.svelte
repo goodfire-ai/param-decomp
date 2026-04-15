@@ -1,46 +1,73 @@
 <script lang="ts">
     import { getContext } from "svelte";
     import { RUN_KEY, type RunContext } from "../lib/useRun.svelte";
+    import ActivationContextsTab from "./ActivationContextsTab.svelte";
+    import AutointerpCompareTab from "./AutointerpCompareTab.svelte";
     import ClusterPathInput from "./ClusterPathInput.svelte";
-    import DatasetSearchTab from "./DatasetSearchTab.svelte";
+    import ClustersTab from "./ClustersTab.svelte";
+    import DatasetExplorerTab from "./DatasetExplorerTab.svelte";
+    import InvestigationsTab from "./InvestigationsTab.svelte";
+    import DataSourcesTab from "./DataSourcesTab.svelte";
     import PromptAttributionsTab from "./PromptAttributionsTab.svelte";
     import DisplaySettingsDropdown from "./ui/DisplaySettingsDropdown.svelte";
-    import ActivationContextsTab from "./ActivationContextsTab.svelte";
 
     const runState = getContext<RunContext>(RUN_KEY);
 
-    let activeTab = $state<"prompts" | "components" | "dataset-search" | null>(null);
-    let showRunMenu = $state(false);
+    const datasetSearchEnabled = $derived(
+        runState.run?.status === "loaded" && runState.run.data.dataset_search_enabled,
+    );
+
+    let activeTab = $state<
+        | "prompts"
+        | "components"
+        | "autointerp-compare"
+        | "dataset-search"
+        | "model-graph"
+        | "data-sources"
+        | "investigations"
+        | "clusters"
+        | null
+    >(null);
+
+    $effect(() => {
+        if (runState.prompts.status === "loaded" && activeTab === null) {
+            activeTab = "prompts";
+        }
+    });
+
+    $effect(() => {
+        if (activeTab === "clusters" && !runState.clusterMapping) {
+            activeTab = "prompts";
+        }
+    });
 </script>
 
 <div class="app-layout">
     <header class="top-bar">
-        {#if runState.run?.status === "loaded" && runState.run.data}
-            <div class="run-menu" onmouseenter={() => (showRunMenu = true)} onmouseleave={() => (showRunMenu = false)}>
-                <button type="button" class="run-menu-trigger">
-                    <span class="run-path">{runState.run.data.wandb_path}</span>
-                </button>
-                {#if showRunMenu}
-                    <div class="run-menu-dropdown">
-                        <pre class="config-yaml">{runState.run.data.config_yaml}</pre>
-                        <button type="button" class="change-run-button" onclick={() => runState.clearRun()}
-                            >Change Run</button
-                        >
-                    </div>
-                {/if}
-            </div>
+        {#if runState.run.status === "loaded"}
+            {@const wandbParts = runState.run.data.wandb_path.split("/")}
+            <button type="button" class="change-run-button" onclick={() => runState.clearRun()}>&lt;</button>
+            <span class="run-path"
+                >{runState.run.data.wandb_path}
+                <a
+                    class="wandb-link"
+                    href="https://wandb.ai/{wandbParts[0]}/{wandbParts[1]}/runs/{wandbParts[2]}"
+                    target="_blank"
+                    rel="noopener">(wandb)</a
+                >
+            </span>
         {/if}
 
         <nav class="nav-group">
             <button
                 type="button"
                 class="tab-button"
-                class:active={activeTab === "dataset-search"}
-                onclick={() => (activeTab = "dataset-search")}
+                class:active={activeTab === "investigations"}
+                onclick={() => (activeTab = "investigations")}
             >
-                Dataset Search
+                Investigations
             </button>
-            {#if runState.run?.status === "loaded" && runState.run.data}
+            {#if runState.run.status === "loaded" && runState.run.data}
                 <button
                     type="button"
                     class="tab-button"
@@ -57,11 +84,49 @@
                 >
                     Components
                 </button>
+                {#if runState.run.data.autointerp_available}
+                    <button
+                        type="button"
+                        class="tab-button"
+                        class:active={activeTab === "autointerp-compare"}
+                        onclick={() => (activeTab = "autointerp-compare")}
+                    >
+                        Autointerp Compare
+                    </button>
+                {/if}
+                {#if datasetSearchEnabled}
+                    <button
+                        type="button"
+                        class="tab-button"
+                        class:active={activeTab === "dataset-search"}
+                        onclick={() => (activeTab = "dataset-search")}
+                    >
+                        Dataset Explorer
+                    </button>
+                {/if}
+                <button
+                    type="button"
+                    class="tab-button"
+                    class:active={activeTab === "data-sources"}
+                    onclick={() => (activeTab = "data-sources")}
+                >
+                    Data Sources
+                </button>
+                {#if runState.clusterMapping}
+                    <button
+                        type="button"
+                        class="tab-button"
+                        class:active={activeTab === "clusters"}
+                        onclick={() => (activeTab = "clusters")}
+                    >
+                        Clusters
+                    </button>
+                {/if}
             {/if}
         </nav>
 
         <div class="top-bar-spacer"></div>
-        {#if runState.run?.status === "loaded" && runState.run.data}
+        {#if runState.run.status === "loaded"}
             <div class="cluster-path-input-container">
                 <ClusterPathInput />
             </div>
@@ -70,29 +135,45 @@
     </header>
 
     <main class="main-content">
-        {#if runState.run?.status === "error"}
+        {#if runState.run.status === "error"}
             <div class="warning-banner">
                 {runState.run.error}
             </div>
         {/if}
-        <!-- Dataset Search tab - always available, doesn't require loaded run -->
-        <div class="tab-content" class:hidden={activeTab !== "dataset-search"}>
-            <DatasetSearchTab />
+        <!-- Investigations tab - always available, doesn't require loaded run -->
+        <div class="tab-content" class:hidden={activeTab !== "investigations"}>
+            <InvestigationsTab />
         </div>
-        {#if runState.prompts.status === "loaded" && runState.allTokens.status === "loaded"}
+        {#if runState.prompts.status === "loaded"}
             <!-- Use hidden class instead of conditional rendering to preserve state -->
             <div class="tab-content" class:hidden={activeTab !== "prompts"}>
-                <PromptAttributionsTab prompts={runState.prompts.data} allTokens={runState.allTokens.data} />
+                <PromptAttributionsTab prompts={runState.prompts.data} />
             </div>
             <div class="tab-content" class:hidden={activeTab !== "components"}>
                 <ActivationContextsTab />
             </div>
-        {:else if runState.run.status === "loading" || runState.prompts.status === "loading" || runState.allTokens.status === "loading"}
-            <div class="empty-state" class:hidden={activeTab === "dataset-search"}>
+            <div class="tab-content" class:hidden={activeTab !== "autointerp-compare"}>
+                <AutointerpCompareTab />
+            </div>
+            {#if datasetSearchEnabled}
+                <div class="tab-content" class:hidden={activeTab !== "dataset-search"}>
+                    <DatasetExplorerTab />
+                </div>
+            {/if}
+            <div class="tab-content" class:hidden={activeTab !== "data-sources"}>
+                <DataSourcesTab />
+            </div>
+            {#if runState.clusterMapping}
+                <div class="tab-content" class:hidden={activeTab !== "clusters"}>
+                    <ClustersTab />
+                </div>
+            {/if}
+        {:else if runState.run.status === "loading" || runState.prompts.status === "loading"}
+            <div class="empty-state">
                 <p>Loading run...</p>
             </div>
         {:else}
-            <div class="empty-state" class:hidden={activeTab === "dataset-search"}>
+            <div class="empty-state">
                 <p>Enter a W&B Path above to get started</p>
             </div>
         {/if}
@@ -116,80 +197,45 @@
         min-height: 44px;
     }
 
-    /* Run menu - hoverable dropdown */
-    .run-menu {
-        position: relative;
-        display: flex;
-        align-items: stretch;
-    }
-
-    .run-menu-trigger {
+    .run-path {
         display: flex;
         align-items: center;
         gap: var(--space-2);
+        padding: 0 var(--space-3);
+        border-right: 1px solid var(--border-default);
+        font-family: var(--font-mono);
+        font-size: var(--text-sm);
+        color: var(--text-primary);
+    }
+
+    .wandb-link {
+        color: var(--text-muted);
+        text-decoration: none;
+        font-size: var(--text-xs);
+    }
+
+    .wandb-link:hover {
+        color: var(--accent-primary);
+    }
+
+    .change-run-button {
+        display: flex;
+        align-items: center;
         padding: 0 var(--space-3);
         margin: 0;
         background: none;
         border: none;
         border-right: 1px solid var(--border-default);
         border-radius: 0;
-        cursor: pointer;
         font: inherit;
         font-size: var(--text-sm);
-        transition: background 0.15s;
-    }
-
-    .run-menu-trigger:hover .run-path {
-        background: var(--bg-inset);
-    }
-
-    .run-path {
-        font-family: var(--font-mono);
-        color: var(--text-primary);
-    }
-
-    .run-menu-dropdown {
-        position: absolute;
-        top: 100%;
-        left: 0;
-        z-index: 1000;
-        display: flex;
-        flex-direction: column;
-        gap: var(--space-2);
-        padding: var(--space-3);
-        background: var(--bg-elevated);
-        border: 1px solid var(--border-strong);
-        border-radius: var(--radius-md);
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-    }
-
-    .config-yaml {
-        max-width: 420px;
-        max-height: 50vh;
-        overflow: auto;
-        margin: 0;
-        font-size: var(--text-xs);
-        font-family: var(--font-mono);
-        color: var(--text-primary);
-        white-space: pre-wrap;
-        word-wrap: break-word;
-    }
-
-    .change-run-button {
-        padding: var(--space-2) var(--space-3);
-        background: var(--bg-inset);
-        border: 1px solid var(--border-default);
-        border-radius: var(--radius-sm);
-        font-size: var(--text-sm);
-        font-family: var(--font-sans);
-        color: var(--text-secondary);
         font-weight: 500;
+        color: var(--text-muted);
         cursor: pointer;
-        text-align: center;
     }
 
     .change-run-button:hover {
-        background: var(--bg-surface);
+        background: var(--bg-inset);
         color: var(--text-primary);
     }
 
@@ -211,8 +257,8 @@
         color: var(--text-muted);
         cursor: pointer;
         transition:
-            color 0.15s,
-            background 0.15s;
+            color var(--transition-normal),
+            background var(--transition-normal);
     }
 
     .tab-button:hover {
