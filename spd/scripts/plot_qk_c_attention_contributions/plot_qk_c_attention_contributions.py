@@ -729,6 +729,7 @@ def _plot_pair_lines_combined(
     ax_mean.set_ylabel("Standardized Static Interaction Strength")
     ax_mean.set_title("All Heads", fontsize=11, fontweight="bold")
     ax_mean.set_xticks(x)
+    ax_mean.set_xticklabels([str(v) if v % 2 == 0 else "" for v in x])
 
     # Legend in dedicated cell (0, 1): reorder so "other" is last, add "sum" entry
     handles, labels = ax_mean.get_legend_handles_labels()
@@ -773,6 +774,7 @@ def _plot_pair_lines_combined(
         # X-axis label and tick labels only on bottom row
         if h >= n_q_heads - 2:
             ax.set_xlabel("Offset")
+            ax.set_xticklabels([str(v) if v % 2 == 0 else "" for v in x])
         else:
             ax.set_xticklabels([])
 
