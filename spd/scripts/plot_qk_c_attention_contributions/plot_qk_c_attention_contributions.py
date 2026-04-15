@@ -36,7 +36,7 @@ from spd.spd_types import ModelPath
 from spd.utils.wandb_utils import parse_wandb_run_path
 
 SCRIPT_DIR = Path(__file__).parent
-MIN_MEAN_CI = 0.01
+MIN_MEAN_CI = 0.001
 DEFAULT_OFFSETS = tuple(range(17))
 
 
@@ -81,22 +81,31 @@ def _compute_per_head_attention_contributions(
 
     # Sign-correct: scale by sign of mean component activation so weight-only dot products
     # reflect the typical sign of the actual (data-dependent) contribution.
-    q_signs = torch.tensor(
-        [
-            1.0
-            if summary[f"{q_module_path}:{c}"].mean_activations["component_activation"] >= 0
-            else -1.0
-            for c in q_alive
-        ]
-    )
-    k_signs = torch.tensor(
-        [
-            1.0
-            if summary[f"{k_module_path}:{c}"].mean_activations["component_activation"] >= 0
-            else -1.0
-            for c in k_alive
-        ]
-    )
+    # Use firing-filtered mean (mean activation on tokens where CI > threshold) when available,
+    # falling back to the global mean for backward compatibility with old harvest data.
+    def _sign_of(comp_key: str) -> float:
+        ma = summary[comp_key].mean_activations
+        act = ma.get("firing_component_activation", ma["component_activation"])
+        return 1.0 if act >= 0 else -1.0
+
+    q_signs = torch.tensor([_sign_of(f"{q_module_path}:{c}") for c in q_alive])
+    k_signs = torch.tensor([_sign_of(f"{k_module_path}:{c}") for c in k_alive])
+
+    if logger.isEnabledFor(20):  # INFO
+        for c, sign in zip(q_alive, q_signs.tolist(), strict=True):
+            _k = f"{q_module_path}:{c}"
+            _ma = summary[_k].mean_activations
+            _global = _ma["component_activation"]
+            _firing = _ma.get("firing_component_activation")
+            _extra = f", firing_mean={_firing:+.3f}" if _firing is not None else ""
+            logger.info(f"  {_k}: sign={sign:+.0f} (global_mean={_global:+.3f}{_extra})")
+        for c, sign in zip(k_alive, k_signs.tolist(), strict=True):
+            _k = f"{k_module_path}:{c}"
+            _ma = summary[_k].mean_activations
+            _global = _ma["component_activation"]
+            _firing = _ma.get("firing_component_activation")
+            _extra = f", firing_mean={_firing:+.3f}" if _firing is not None else ""
+            logger.info(f"  {_k}: sign={sign:+.0f} (global_mean={_global:+.3f}{_extra})")
 
     U_q = q_component.U[q_alive].float() * (V_q_norms * q_signs)[:, None]
     U_q = U_q.reshape(len(q_alive), n_q_heads, head_dim)
@@ -851,6 +860,27 @@ def _compute_and_cache_all_layers(
     repo = HarvestRepo.open_most_recent(run_id)
     assert repo is not None, f"No harvest data found for {run_id}"
     summary = repo.get_summary()
+
+    # Compute firing-filtered mean activations from reservoir-sampled activation examples.
+    # This gives the mean activation on tokens where CI > threshold, which is a better sign
+    # reference for the SIS sign correction than the global mean (which is diluted by the
+    # vast majority of tokens where the component doesn't fire).
+    if not any("firing_component_activation" in s.mean_activations for s in summary.values()):
+        logger.info("Computing firing-filtered mean activations from activation examples...")
+        for comp_key, comp_summary in summary.items():
+            comp_data = repo.get_component(comp_key)
+            if comp_data is None:
+                continue
+            firing_acts = [
+                ex.activations["component_activation"][firing_idx]
+                for ex in comp_data.activation_examples
+                for firing_idx in [next((i for i, f in enumerate(ex.firings) if f), None)]
+                if firing_idx is not None
+            ]
+            if firing_acts:
+                comp_summary.mean_activations["firing_component_activation"] = sum(
+                    firing_acts
+                ) / len(firing_acts)
 
     target_model = model.target_model
     assert isinstance(target_model, LlamaSimpleMLP)
