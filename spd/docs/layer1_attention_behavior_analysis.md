@@ -116,12 +116,18 @@ The coactivating V components paint a coherent picture: when K.290 fires on a ne
 
 **Peak |z-scored SIS|:** 3.11 (Q.308/K.218), 2.72 (Q.308/K.485)
 
-These two pairs share the same Q component and have semantically related K components, forming a coherent attention behavior around copula/existential verb constructions.
+These two pairs share the same Q component and have semantically related K components, forming a coherent attention behavior around copula/existential verb constructions. However, the two K components are not simply "one for 'it' and one for 'there'" — they encode genuinely different syntactic contexts with different downstream consequences.
 
 **Components:**
 - **Q.308** (CI = 0.004, label: "existence and state verbs (is, was, there are/is)"): A rare, conditional query that activates on tokens where the model is about to predict a copula or state verb. Weight norm is concentrated in **H3** (1.13) with a secondary peak in H5 (0.67), compared to 0.34–0.60 in other heads.
-- **K.218** (CI = 0.001, label: "fires on the pronoun 'it', predicting subsequent verbs"): Activates on the word "it" (and variants). Weight norm concentrated in H3 (0.80) and H5 (0.93).
-- **K.485** (CI = 0.001, label: "predicts existence or copula verbs after 'there'/'it'"): Activates on "there" and "it" in existential constructions. Weight norm similarly concentrated in H3 (0.79) and H5 (0.80).
+- **K.218** (CI = 0.001, firing density = 0.2%, label: "fires on the pronoun 'it', predicting subsequent verbs"): Fires almost exclusively on the token "it" (including capitalized "It" and sentence-initial variants). Its input token PMI is dominated by "It" (+6.09), " It" (+5.99), " it" (+5.63), "Its" (+5.45). Crucially, its *output* token PMI reveals what the model predicts next when K.218 fires: " seems" (+5.11), " hurts" (+4.91), " turns" (+4.83), " looks" (+4.61), " feels" (+4.61), " sounds" (+4.56), " appears" (+4.54). These are **sensory/experiential verbs** — "it seems", "it looks", "it feels" — not just copula verbs. Weight norm concentrated in H3 (0.80) and H5 (0.93).
+- **K.485** (CI = 0.001, firing density = 0.15%, label: "predicts existence or copula verbs after 'there'/'it'"): Fires primarily on "there" and "here" in existential constructions, with weaker activation on "it" when used as a dummy subject. Input token PMI: "There" (+6.47), " there" (+6.28), "Below" (+6.20), "Here" (+6.17), " Where" (+5.47). Its output PMI is dominated by **existence verbs**: " exists" (+5.61), " exist" (+4.48), " is" (+3.96), " are" (+3.87), " was" (+3.58). Weight norm concentrated in H3 (0.79) and H5 (0.80).
+
+**The distinction between K.218 and K.485** is not merely "it" vs "there". Examining the activation examples makes this clear:
+
+- **K.218** fires on "it" across a wide range of constructions: anaphoric "it" ("Playing *it* is the only"), dummy subject "it" ("*It* is essential to understand"), possessive "its" ("all *it*'s advantages"), and even "it" as a direct object ("trying to pass *it* off"). The CI values vary substantially — highest when "it" precedes a state/sensory verb ("*it* is as contended", CI=1.0; "*It* is essential", CI=1.0), lower in other contexts ("pass *it* off", CI=0.11). K.218 is essentially an "it"-detector that becomes causally important specifically when "it" is the subject of an upcoming verb.
+
+- **K.485** fires on "there" and "here" in existential/locative constructions: "*there* are treatments available", "*There* is evidence that", "*Here* is how we construct", "*there* was a new power". It also fires on "it" but only in dummy-subject constructions ("*it* was found that", "*It* is an error to") — notably *not* on anaphoric "it" or object "it". K.485 is a construction-level detector for existential/presentative sentences.
 
 **Static Analysis:**
 
@@ -176,32 +182,47 @@ H3 dominates both interactions, with the largest absolute mean and widest range,
 
 **K-V Coactivation:**
 
-K.485 has highly specific V coactivation:
+**K-V Coactivation and the OV Circuit:**
 
-| V Component | P(V|K.485) | P(K.485|V) | Label |
-|-------------|------------|------------|-------|
-| V.180 | 0.908 | 0.295 | fires on pronouns and dummy subjects (it, there) |
-| V.744 | 0.851 | 0.047 | fires on pronouns and determiners |
-| V.448 | 0.607 | 0.616 | fires on 'there/where/here' predicting 'to be' verbs |
-| V.614 | 0.567 | **0.955** | predicting forms of 'to be' after 'there'/'here' |
-| V.622 | 0.521 | **0.924** | fires on "there" to predict existence verbs |
-| V.596 | 0.521 | **0.934** | predicts 'to be' verbs and 'exists' after 'there' |
+The exclusivity analysis (P(K|V) — "how specific is this V component to this K component?") reveals a striking asymmetry between K.485 and K.218:
 
-The value information available at K.485-selected positions is strikingly coherent. V.180 ("pronouns and dummy subjects") and V.744 ("pronouns and determiners") encode the syntactic category of the attended token. V.448 ("there/where/here predicting 'to be' verbs") directly encodes the existential construction context. Most remarkably, V.614 ("predicting forms of 'to be' after there/here"), V.622 ("fires on 'there' to predict existence verbs"), and V.596 ("predicts 'to be' verbs and 'exists' after 'there'") have extremely high P(K.485|V) values (>0.92), meaning they almost exclusively fire when K.485 is also active. These three components form a tightly coupled functional group that specifically encodes the prediction of copula/existence verbs following "there" — exactly the information the downstream MLP would need to boost "is", "are", "was", etc.
+**K.485 has a dedicated suite of exclusive V components:**
 
-K.218 has a different coactivation pattern:
+| V Component | P(V|K.485) | P(K.485|V) | Label | Input PMI top tokens |
+|-------------|------------|------------|-------|---------------------|
+| V.180 | 0.908 | 0.295 | pronouns and dummy subjects (it, there) | "It", "There", "it", "there" |
+| V.744 | 0.851 | 0.047 | pronouns and determiners | "This", "These", "Its", "It" |
+| V.448 | 0.607 | **0.616** | 'there/where/here' predicting 'to be' verbs | "There", "Here", "there", "Below", "wherever" |
+| V.614 | 0.567 | **0.955** | predicting forms of 'to be' after 'there'/'here' | "There", "there", "Below", "Here" |
+| V.622 | 0.521 | **0.924** | "there" to predict existence verbs | "There", "there" (almost nothing else) |
+| V.596 | 0.521 | **0.934** | 'to be' verbs and 'exists' after 'there' | "There", "there" (almost nothing else) |
 
-| V Component | P(V|K.218) | P(K.218|V) | Label |
-|-------------|------------|------------|-------|
-| V.180 | 0.991 | 0.429 | fires on pronouns and dummy subjects (it, there) |
-| V.744 | 0.960 | 0.070 | fires on pronouns and determiners |
-| V.694 | 0.144 | 0.010 | fires on pronouns related to people |
-| V.946 | 0.080 | 0.001 | distinguishes content words from function words/symbols |
-| V.731 | 0.023 | 0.002 | fires on forms of 'to be' |
+V.614, V.622, and V.596 are essentially *locked* to K.485 — over 92% of the tokens where any of them fire, K.485 fires too. These are extremely narrow components: V.622 and V.596 fire on fewer than 280k tokens out of 328M (0.08%), and their input PMI is almost entirely "There"/"there" with a long drop-off to anything else. Their output PMI is dominated by existence verbs: " exists" (+6.2), " exist" (+5.0), " are" (+4.4), " is" (+3.8), " was" (+3.7). These three components encode a specific prediction: *a form of "to be" or "to exist" is coming next*. V.448 is slightly broader (it also fires on "where", "here", "Below") but still 62% exclusive to K.485 and carries similar output predictions ("exists", "are", "exist").
 
-V.180 ("pronouns and dummy subjects") fires on 99.1% of K.218-active positions, and V.744 ("pronouns and determiners") on 96.0%. These two components — shared with K.485 — encode the general pronoun/determiner identity of the "it" token. Unlike K.485, however, K.218 does not coactivate strongly with the existential-construction-specific V components (V.614, V.622, V.596). Instead, the value information at "it" positions is more generic: pronoun identity (V.180, V.744, V.694) and, weakly, verb-type information (V.731, "forms of 'to be'"). This makes sense — "it" appears in many contexts beyond existential constructions (e.g., "it seems", "it was raining", anaphoric "it"), so the value information at "it" positions is less specialized.
+**K.218 has NO exclusive V components:**
 
-**Interpretation:** Q.308/K.218 and Q.308/K.485 together implement **copula verb attention routing** — a mechanism concentrated in H3 (and secondarily H5) that modulates attention to positions containing "it" or "there" when the model is about to predict a copula verb. The V coactivation reveals a clear division of labor: at "there" positions (K.485), the OV circuit carries highly specific existential construction information via V.614/V.622/V.596, directly encoding the expectation of upcoming "to be" verbs. At "it" positions (K.218), the carried information is more generic — pronoun identity rather than construction-specific predictions. This is the most head-concentrated behavior in layer 1, with Q.308 and both K components having their largest weight norms in H3.
+| V Component | P(V|K.218) | P(K.218|V) | Label | Output PMI top tokens |
+|-------------|------------|------------|-------|-----------------------|
+| V.180 | 0.991 | 0.429 | pronouns and dummy subjects (it, there) | " suffices", " exists", " seems", " hurts" |
+| V.744 | 0.960 | 0.070 | pronouns and determiners | " DAMAGE", " suffices", " own", " WARRANTY" |
+| V.694 | 0.144 | 0.010 | pronouns related to people | "'m", "'ve", "'re", "'ll" |
+| V.946 | 0.080 | 0.001 | content words vs function words | (very generic) |
+| V.731 | 0.023 | 0.002 | forms of 'to be' | " able", " afraid", " unable", " grateful" |
+
+The highest P(K.218|V) is V.180 at 0.43 — meaning only 43% of V.180's firings coincide with K.218. This is because V.180 also fires whenever K.485 fires (it's the shared "pronoun and dummy subject" detector). No V component in the entire layer 1 vocabulary has P(K.218|V) above 0.43. This means the value information at "it" positions is carried entirely by *general-purpose* V components — pronoun detectors (V.180, V.744, V.694) and broad syntactic classifiers (V.946) — that also serve many other contexts.
+
+However, this does not mean K.218 carries *less useful* information than K.485. The V components at "it" positions are broader but still informative: V.180's output PMI includes " seems" (+4.4), " hurts" (+4.2), " looks" (+3.9) — the sensory/experiential verbs that follow "it". V.694 ("pronouns related to people") has output PMI dominated by person-agreement morphemes ("'m", "'ve", "'re", "'ll"), and V.731 ("forms of 'to be'") predicts predicate adjectives (" able", " afraid", " grateful") — exactly what follows "it is" + adjective constructions. The value information at "it" positions is *combinatorially* specific: the *combination* of V.180 + V.694 + V.731 being active together at an "it" position encodes enough for the downstream computation, even though no single V component is exclusive to "it".
+
+**Summary of the K.218 vs K.485 distinction:**
+
+| | K.218 ("it") | K.485 ("there"/"here") |
+|---|---|---|
+| **Fires on** | "it" in all syntactic roles (subject, object, possessive), but CI highest for dummy-subject "it" | "there", "here", "Below" in existential/presentative constructions; also dummy-subject "it" |
+| **What follows** | Sensory/experiential verbs ("seems", "looks", "feels"), copula + adjective ("is able", "is afraid"), general verbs | Existence verbs ("exists", "is", "are", "was"), existence assertions |
+| **Exclusive V components** | None — relies on general pronoun/determiner V components | V.614, V.622, V.596 (>92% exclusive), V.448 (62% exclusive) |
+| **OV circuit content** | Pronoun identity + broad verb-type predictions assembled from shared components | Dedicated existential-construction prediction via exclusive V components |
+
+The two K components represent different levels of specialization in the model's copula/verb prediction circuitry. K.485 with its dedicated V components is a *specialized module* for existential constructions — it identifies "there"/"here" positions and the OV circuit at those positions carries tightly coupled prediction information about existence verbs. K.218 is more of a *general pronoun routing signal* — it identifies "it" positions, and the OV circuit there combines information from broadly-shared V components that together supply the context needed for verb prediction. This is the most head-concentrated behavior in layer 1, with Q.308 and both K components having their largest weight norms in H3.
 
 ### Behavior 5: Sequence-Start and First-Token Attention (Q.316 × K.315 and Q.316 × K.121)
 
