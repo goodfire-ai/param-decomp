@@ -178,28 +178,30 @@ H3 dominates both interactions, with the largest absolute mean and widest range,
 
 K.485 has highly specific V coactivation:
 
-| V Component | P(V|K.485) | Label |
-|-------------|------------|-------|
-| V.180 | 0.908 | (not in top V by CI) |
-| V.744 | 0.851 | (not in top V by CI) |
-| V.448 | 0.607 | (not in top V by CI) |
-| V.614 | 0.567 | (P(K|V) = 0.955 — very specific) |
-| V.622 | 0.521 | (P(K|V) = 0.924 — very specific) |
-| V.596 | 0.521 | (P(K|V) = 0.934 — very specific) |
+| V Component | P(V|K.485) | P(K.485|V) | Label |
+|-------------|------------|------------|-------|
+| V.180 | 0.908 | 0.295 | fires on pronouns and dummy subjects (it, there) |
+| V.744 | 0.851 | 0.047 | fires on pronouns and determiners |
+| V.448 | 0.607 | 0.616 | fires on 'there/where/here' predicting 'to be' verbs |
+| V.614 | 0.567 | **0.955** | predicting forms of 'to be' after 'there'/'here' |
+| V.622 | 0.521 | **0.924** | fires on "there" to predict existence verbs |
+| V.596 | 0.521 | **0.934** | predicts 'to be' verbs and 'exists' after 'there' |
 
-V.614, V.622, and V.596 have extremely high P(K.485|V) values (>0.92), meaning they almost exclusively fire when K.485 is also active. These components form a tightly coupled functional group dedicated to existential construction processing.
+The value information available at K.485-selected positions is strikingly coherent. V.180 ("pronouns and dummy subjects") and V.744 ("pronouns and determiners") encode the syntactic category of the attended token. V.448 ("there/where/here predicting 'to be' verbs") directly encodes the existential construction context. Most remarkably, V.614 ("predicting forms of 'to be' after there/here"), V.622 ("fires on 'there' to predict existence verbs"), and V.596 ("predicts 'to be' verbs and 'exists' after 'there'") have extremely high P(K.485|V) values (>0.92), meaning they almost exclusively fire when K.485 is also active. These three components form a tightly coupled functional group that specifically encodes the prediction of copula/existence verbs following "there" — exactly the information the downstream MLP would need to boost "is", "are", "was", etc.
 
 K.218 has a different coactivation pattern:
 
-| V Component | P(V|K.218) | Label |
-|-------------|------------|-------|
-| V.180 | 0.991 | (shared with K.485) |
-| V.744 | 0.960 | (shared with K.485) |
-| V.694 | 0.144 | fires on pronouns related to people |
+| V Component | P(V|K.218) | P(K.218|V) | Label |
+|-------------|------------|------------|-------|
+| V.180 | 0.991 | 0.429 | fires on pronouns and dummy subjects (it, there) |
+| V.744 | 0.960 | 0.070 | fires on pronouns and determiners |
+| V.694 | 0.144 | 0.010 | fires on pronouns related to people |
+| V.946 | 0.080 | 0.001 | distinguishes content words from function words/symbols |
+| V.731 | 0.023 | 0.002 | fires on forms of 'to be' |
 
-V.180 and V.744 are shared between K.218 and K.485, suggesting they encode information common to both "it" and "there" constructions. V.694 ("pronouns related to people") provides additional pronoun-related value information.
+V.180 ("pronouns and dummy subjects") fires on 99.1% of K.218-active positions, and V.744 ("pronouns and determiners") on 96.0%. These two components — shared with K.485 — encode the general pronoun/determiner identity of the "it" token. Unlike K.485, however, K.218 does not coactivate strongly with the existential-construction-specific V components (V.614, V.622, V.596). Instead, the value information at "it" positions is more generic: pronoun identity (V.180, V.744, V.694) and, weakly, verb-type information (V.731, "forms of 'to be'"). This makes sense — "it" appears in many contexts beyond existential constructions (e.g., "it seems", "it was raining", anaphoric "it"), so the value information at "it" positions is less specialized.
 
-**Interpretation:** Q.308/K.218 and Q.308/K.485 together implement **copula verb attention routing** — a mechanism concentrated in H3 (and secondarily H5) that modulates attention to positions containing "it" or "there" when the model is about to predict a copula verb. The tight V coactivation (V.614, V.622, V.596 with >92% specificity to K.485) indicates the OV circuit carries highly specific information about existential constructions. This is the most head-concentrated behavior in layer 1, with Q.308 and both K components having their largest weight norms in H3.
+**Interpretation:** Q.308/K.218 and Q.308/K.485 together implement **copula verb attention routing** — a mechanism concentrated in H3 (and secondarily H5) that modulates attention to positions containing "it" or "there" when the model is about to predict a copula verb. The V coactivation reveals a clear division of labor: at "there" positions (K.485), the OV circuit carries highly specific existential construction information via V.614/V.622/V.596, directly encoding the expectation of upcoming "to be" verbs. At "it" positions (K.218), the carried information is more generic — pronoun identity rather than construction-specific predictions. This is the most head-concentrated behavior in layer 1, with Q.308 and both K components having their largest weight norms in H3.
 
 ### Behavior 5: Sequence-Start and First-Token Attention (Q.316 × K.315 and Q.316 × K.121)
 
