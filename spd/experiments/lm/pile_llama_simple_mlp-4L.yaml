@@ -25,54 +25,18 @@ ci_config:
 sampling: continuous
 sigmoid_type: leaky_hard
 module_info:
-- module_pattern: h.3.mlp.c_fc
-  C: 1536
-- module_pattern: h.2.mlp.c_fc
+- module_pattern: h.*.mlp.c_fc
+  C: 3072
+- module_pattern: h.*.mlp.down_proj
+  C: 3584
+- module_pattern: h.*.attn.q_proj
   C: 512
-- module_pattern: h.1.mlp.c_fc
+- module_pattern: h.*.attn.k_proj
   C: 512
-- module_pattern: h.0.mlp.c_fc
-  C: 1536
-- module_pattern: h.3.mlp.down_proj
-  C: 2560
-- module_pattern: h.2.mlp.down_proj
-  C: 512
-- module_pattern: h.1.mlp.down_proj
-  C: 512
-- module_pattern: h.0.mlp.down_proj
-  C: 1536
-- module_pattern: h.3.attn.q_proj
-  C: 128
-- module_pattern: h.2.attn.q_proj
-  C: 128
-- module_pattern: h.1.attn.q_proj
-  C: 128
-- module_pattern: h.0.attn.q_proj
-  C: 256
-- module_pattern: h.3.attn.k_proj
-  C: 128
-- module_pattern: h.2.attn.k_proj
-  C: 256
-- module_pattern: h.1.attn.k_proj
-  C: 128
-- module_pattern: h.0.attn.k_proj
-  C: 256
-- module_pattern: h.3.attn.v_proj
-  C: 512
-- module_pattern: h.2.attn.v_proj
-  C: 640
-- module_pattern: h.1.attn.v_proj
-  C: 256
-- module_pattern: h.0.attn.v_proj
-  C: 512
-- module_pattern: h.3.attn.o_proj
-  C: 512
-- module_pattern: h.2.attn.o_proj
-  C: 640
-- module_pattern: h.1.attn.o_proj
-  C: 256
-- module_pattern: h.0.attn.o_proj
-  C: 512
+- module_pattern: h.*.attn.v_proj
+  C: 1024
+- module_pattern: h.*.attn.o_proj
+  C: 1024
 identity_module_info: null
 init_spd_checkpoint: null
 use_delta_component: true
@@ -85,8 +49,12 @@ loss_metric_configs:
   p_anneal_final_p: 0.4
   p_anneal_end_frac: 1.0
   eps: 1.0e-12
+# - coeff: 0.5
+#   classname: StochasticReconSubsetLoss
+#   routing:
+#     type: uniform_k_subset
 - coeff: 0.5
-  classname: StochasticReconSubsetLoss
+  classname: CIMaskedReconSubsetLoss
   routing:
     type: uniform_k_subset
 - coeff: 0.5
@@ -98,8 +66,8 @@ loss_metric_configs:
     lr_schedule:
       start_val: 0.01
       warmup_pct: 0.025
-      final_val_frac: 0.1
-      fn_type: cosine
+      final_val_frac: 1.0
+      fn_type: constant
   scope:
     type: per_batch_per_position
   use_sigmoid_parameterization: false
@@ -172,4 +140,3 @@ task_config:
   shuffle_each_epoch: true
   is_tokenized: true
   streaming: true
-  dataset_seed: null
