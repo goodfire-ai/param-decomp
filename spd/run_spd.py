@@ -308,10 +308,12 @@ def optimize(
             )
 
         total_loss = torch.tensor(0.0, device=device)
+        current_frac_of_training = step / config.steps
         for loss_cfg, loss_val in losses.items():
-            assert loss_cfg.coeff is not None
-            total_loss = total_loss + loss_cfg.coeff * loss_val
+            coeff = loss_cfg.get_coeff(current_frac_of_training)
+            total_loss = total_loss + coeff * loss_val
             batch_log_data[f"train/loss/{loss_cfg.classname}"] = loss_val.item()
+            batch_log_data[f"train/loss_coeff/{loss_cfg.classname}"] = coeff
 
         batch_log_data["train/loss/total"] = total_loss.item()
 

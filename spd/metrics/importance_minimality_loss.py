@@ -7,46 +7,8 @@ from torch.distributed import ReduceOp
 
 from spd.metrics.base import Metric
 from spd.models.component_model import CIOutputs, ComponentModel
+from spd.utils.annealing import linearly_anneal_value
 from spd.utils.distributed_utils import all_reduce, get_distributed_state
-
-
-def _get_linear_annealed_p(
-    current_frac_of_training: float,
-    initial_p: float,
-    p_anneal_start_frac: float,
-    p_anneal_final_p: float | None,
-    p_anneal_end_frac: float,
-) -> float:
-    """Calculate the linearly annealed p value for L_p sparsity loss.
-
-    Args:
-        current_frac_of_training: Current fraction of training
-        initial_p: Starting p value
-        p_anneal_start_frac: Fraction of training after which to start annealing
-        p_anneal_final_p: Final p value to anneal to
-        p_anneal_end_frac: Fraction of training when annealing ends. We stay at the final p value from this point onward
-
-    Returns:
-        Current p value based on linear annealing schedule
-    """
-    if p_anneal_final_p is None or p_anneal_start_frac >= 1.0:
-        return initial_p
-
-    assert p_anneal_end_frac >= p_anneal_start_frac, (
-        f"p_anneal_end_frac ({p_anneal_end_frac}) must be >= "
-        f"p_anneal_start_frac ({p_anneal_start_frac})"
-    )
-
-    if current_frac_of_training < p_anneal_start_frac:
-        return initial_p
-    elif current_frac_of_training >= p_anneal_end_frac:
-        return p_anneal_final_p
-    else:
-        # Linear interpolation between start and end fractions
-        progress = (current_frac_of_training - p_anneal_start_frac) / (
-            p_anneal_end_frac - p_anneal_start_frac
-        )
-        return initial_p + (p_anneal_final_p - initial_p) * progress
 
 
 def _importance_minimality_loss_update(
@@ -69,12 +31,12 @@ def _importance_minimality_loss_update(
     have. That said, we're unsure about this, perhaps we do want to normalize over n_layers.
     """
     assert ci_upper_leaky, "Empty ci_upper_leaky"
-    pnorm = _get_linear_annealed_p(
+    pnorm = linearly_anneal_value(
         current_frac_of_training=current_frac_of_training,
-        initial_p=pnorm,
-        p_anneal_start_frac=p_anneal_start_frac,
-        p_anneal_final_p=p_anneal_final_p,
-        p_anneal_end_frac=p_anneal_end_frac,
+        initial_value=pnorm,
+        start_frac=p_anneal_start_frac,
+        final_value=p_anneal_final_p,
+        end_frac=p_anneal_end_frac,
     )
     per_component_sums: dict[str, Float[Tensor, " C"]] = {}
     for layer_name, layer_ci_upper_leaky in ci_upper_leaky.items():

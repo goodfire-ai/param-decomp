@@ -15,7 +15,7 @@ ci_config:
   transition_hidden_dim: null
   simple_transformer_ci_cfg:
     d_model: 2048
-    n_blocks: 8
+    n_blocks: 12
     mlp_hidden_dim:
     - 8192
     attn_config:
@@ -41,13 +41,13 @@ identity_module_info: null
 init_spd_checkpoint: null
 use_delta_component: true
 loss_metric_configs:
-- coeff: 0.0001
+- coeff: 0.00005
   classname: ImportanceMinimalityLoss
   pnorm: 2.0
-  beta: 0.5
+  beta: 1
   p_anneal_start_frac: 0.0
   p_anneal_final_p: 0.4
-  p_anneal_end_frac: 1.0
+  p_anneal_end_frac: 0.8
   eps: 1.0e-12
 - coeff: 0.5
   classname: StochasticReconSubsetLoss
@@ -71,13 +71,18 @@ loss_metric_configs:
   classname: PersistentPGDReconLoss
 - coeff: 10000000.0
   classname: FaithfulnessLoss
+- coeff: 1.0
+  coeff_anneal_start_frac: 0.0
+  coeff_anneal_final_coeff: 0.0
+  coeff_anneal_end_frac: 0.5
+  classname: StochasticHiddenActsReconLoss
 output_loss_type: kl
 lr_schedule:
-  start_val: 5.0e-05
+  start_val: 8.0e-05
   warmup_pct: 0.0
   final_val_frac: 0.1
   fn_type: cosine
-steps: 400000
+steps: 600000
 batch_size: 64
 grad_clip_norm_components: 0.01
 grad_clip_norm_ci_fns: null
