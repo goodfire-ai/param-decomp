@@ -66,7 +66,6 @@ loss_metric_configs:
     type: uniform_k_subset
 - coeff: 1000000.0
   classname: FaithfulnessLoss
-output_loss_type: kl
 lr_schedule:
   start_val: 0.0005
   warmup_pct: 0.0

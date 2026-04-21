@@ -62,7 +62,6 @@ loss_metric_configs:
       n_sources: 32
     routing:
       type: uniform_k_subset
-output_loss_type: kl
 lr_schedule:
   start_val: 0.0003
   warmup_pct: 0.0

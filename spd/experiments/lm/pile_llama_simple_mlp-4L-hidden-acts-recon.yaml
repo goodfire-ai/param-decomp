@@ -70,7 +70,6 @@ loss_metric_configs:
   n_warmup_steps: 2
 - coeff: 10000000.0
   classname: FaithfulnessLoss
-output_loss_type: kl
 lr_schedule:
   start_val: 5.0e-05
   warmup_pct: 0.0

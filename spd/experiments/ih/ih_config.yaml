@@ -33,7 +33,6 @@ ci_recon_layerwise_coeff: null
 stochastic_recon_layerwise_coeff: 1
 importance_minimality_coeff: 1e-2
 pnorm: 0.1
-output_loss_type: kl
 ci_config:
   mode: layerwise
   fn_type: vector_mlp

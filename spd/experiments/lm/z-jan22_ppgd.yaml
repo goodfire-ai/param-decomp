@@ -86,7 +86,6 @@ loss_metric_configs:
       type: per_batch_per_position
     routing:
       type: uniform_k_subset
-output_loss_type: kl
 lr_schedule:
   start_val: 0.0003
   warmup_pct: 0.0

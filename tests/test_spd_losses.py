@@ -743,7 +743,7 @@ class TestPersistentPGDReconLoss:
             device="cpu",
             use_delta_component=False,
             cfg=cfg,
-            output_loss_type="mse",
+            reconstruction_loss=recon_loss_mse,
         )
 
         # Store initial mask values
@@ -794,7 +794,7 @@ class TestPersistentPGDReconLoss:
             device="cpu",
             use_delta_component=False,
             cfg=cfg,
-            output_loss_type="mse",
+            reconstruction_loss=recon_loss_mse,
         )
 
         # Run multiple steps
@@ -848,7 +848,7 @@ class TestPersistentPGDReconLoss:
             device="cpu",
             use_delta_component=True,
             cfg=cfg,
-            output_loss_type="mse",
+            reconstruction_loss=recon_loss_mse,
         )
 
         # Masks should have C+1 elements when using delta component
@@ -911,7 +911,7 @@ class TestPersistentPGDReconLoss:
             device="cpu",
             use_delta_component=False,
             cfg=cfg,
-            output_loss_type="mse",
+            reconstruction_loss=recon_loss_mse,
         )
 
         # Masks should have shape (1, 1, C) for single_mask scope - single mask shared across batch
@@ -952,7 +952,7 @@ class TestPersistentPGDReconLoss:
             device="cpu",
             use_delta_component=False,
             cfg=cfg,
-            output_loss_type="mse",
+            reconstruction_loss=recon_loss_mse,
         )
 
         loss = state.compute_recon_loss(

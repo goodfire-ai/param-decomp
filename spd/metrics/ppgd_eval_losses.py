@@ -41,6 +41,9 @@ class PPGDReconEval(Metric):
         self._module_sum_mse: dict[str, Tensor] = {}
         self._module_n: dict[str, Tensor] = {}
 
+        self._output_sum_loss = torch.tensor(0.0, device=device)
+        self._output_n = torch.tensor(0, device=device)
+
     @override
     def update(
         self,
