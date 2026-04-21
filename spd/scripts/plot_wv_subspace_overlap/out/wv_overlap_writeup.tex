@@ -1,0 +1,86 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath, amssymb, bm}
+\usepackage[margin=1in]{geometry}
+\usepackage{enumitem}
+
+\newcommand{\WV}{W_V}
+\newcommand{\frob}[1]{\lVert #1 \rVert_F}
+\newcommand{\tr}{\operatorname{tr}}
+
+\title{$W_V$ Subspace Overlap Metrics}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Motivation}
+
+In a multi-head attention layer, each head $h$ has a value projection matrix $\WV^h \in \mathbb{R}^{d_{\text{head}} \times d_{\text{model}}}$ that determines which directions in the residual stream the head reads from.
+We would like to quantify the extent to which two heads read from the same subspace of the residual stream, and optionally weight that comparison by which subspaces the data actually occupies.
+
+We present five variants of a pairwise head overlap metric, each capturing a different notion of ``shared reading behavior.''
+
+\section{Setup}
+
+For each head $h$, define the \textbf{Gram matrix}
+\[
+    M_h = {\WV^h}^\top \WV^h \in \mathbb{R}^{d_{\text{model}} \times d_{\text{model}}}.
+\]
+This is a positive semi-definite matrix encoding the head's receptive field: for any input direction $x$, the quantity $x^\top M_h\, x = \lVert \WV^h x \rVert^2$ measures how strongly the head amplifies that direction.
+
+\section{Metric Variants}
+
+\subsection{Unweighted Subspace Overlap (Frobenius Cosine Similarity)}
+
+\[
+    \text{overlap}(a, b) = \frac{\tr(M_a\, M_b)}{\frob{M_a}\;\frob{M_b}}.
+\]
+
+This is the cosine similarity between the two Gram matrices viewed as vectors in $\mathbb{R}^{d^2}$. It is a pure directional measure: it equals 1 when the heads weight the same input directions in the same proportions, regardless of the overall magnitude of their value matrices. Expanding in eigenbases ($\lambda_i^a$ are eigenvalues of $M_a$, i.e.\ squared singular values of $\WV^a$):
+\[
+    \tr(M_a\, M_b) = \sum_{i,j} \lambda_i^a\, \lambda_j^b\, \bigl(\bm{u}_i^a \cdot \bm{u}_j^b\bigr)^2,
+\]
+so the metric is large when both heads have large eigenvalues on aligned directions.
+
+\subsection{Strength-Weighted Overlap}
+
+\[
+    \text{overlap}_{\text{str}}(a,b) = \underbrace{\frac{\tr(M_a\, M_b)}{\frob{M_a}\;\frob{M_b}}}_{\text{cosine (directional)}} \;\cdot\; \underbrace{\sqrt{\frob{M_a}\;\frob{M_b}}}_{\text{joint strength}}.
+\]
+
+This multiplies the directional cosine by the geometric mean of the Gram matrix norms. The result is large only when both heads read strongly \emph{and} from the same subspace. A head with large $\WV$ norms paired with a weak head yields a small value even if their subspaces are perfectly aligned.
+
+\subsection{Data-Weighted Overlap}
+
+Let $X \in \mathbb{R}^{N \times d_{\text{model}}}$ be the matrix of post-RMSNorm residual stream activations (not mean-centered). Its SVD is $X = U\, S\, Z^\top$, where $Z \in \mathbb{R}^{d_{\text{model}} \times d_{\text{model}}}$ has columns $\bm{z}_i$ (right singular vectors) and $S = \operatorname{diag}(s_1, \dots, s_{d_{\text{model}}})$.
+
+We form the \textbf{data-weighted} value matrix for each head:
+\[
+    \WV^h_{\text{eff}} = \WV^h\, Z\, S \in \mathbb{R}^{d_{\text{head}} \times d_{\text{model}}},
+\]
+which rotates $\WV^h$ into the data's principal basis and scales each axis by the corresponding singular value. Directions where the data has large magnitude are amplified; directions the data barely occupies are suppressed. We then compute the Gram matrix $M_h^{\text{data}} = {\WV^h_{\text{eff}}}^\top \WV^h_{\text{eff}}$ and apply the Frobenius cosine similarity:
+\[
+    \text{overlap}_{\text{data}}(a,b) = \frac{\tr\!\bigl(M_a^{\text{data}}\, M_b^{\text{data}}\bigr)}{\frob{M_a^{\text{data}}}\;\frob{M_b^{\text{data}}}}.
+\]
+
+Because the SVD is performed on the raw (not mean-centered) activations, the first singular vector predominantly captures the mean direction of the residual stream. Subsequent singular vectors capture remaining structure, which is approximately but not exactly the variance.
+
+\subsection{Variance-Weighted Overlap}
+
+Identical to the data-weighted variant, except the SVD is performed on mean-centered activations:
+\[
+    \bar{X} = X - \mathbf{1}\, \bm{\mu}^\top, \qquad \bar{X} = \bar{U}\, \bar{S}\, \bar{Z}^\top,
+\]
+where $\bm{\mu} = \frac{1}{N}\sum_n \bm{x}_n$. The effective value matrix becomes $\WV^h_{\text{eff}} = \WV^h\, \bar{Z}\, \bar{S}$, and the singular values now reflect the standard deviation of the data along each principal component (up to a factor of $\sqrt{N}$). This weights overlap by which subspaces the data \emph{varies} along, ignoring the (potentially large) mean direction.
+
+\subsection{Data + Strength Weighted Overlap}
+
+Combines data weighting with strength weighting. Using the data-weighted Gram matrices $M_h^{\text{data}}$:
+\[
+    \text{overlap}_{\text{data+str}}(a,b) = \frac{\tr\!\bigl(M_a^{\text{data}}\, M_b^{\text{data}}\bigr)}{\frob{M_a^{\text{data}}}\;\frob{M_b^{\text{data}}}} \;\cdot\; \sqrt{\frob{M_a^{\text{data}}}\;\frob{M_b^{\text{data}}}}.
+\]
+
+The cosine factor measures whether the heads read from the same data-relevant directions; the geometric mean of norms measures whether they both do so strongly. The result is normalized by its maximum value across all head pairs for display.
+
+\end{document}

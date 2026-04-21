@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { colors } from "../../lib/colors";
+    import { colors, rgbToCss } from "../../lib/colors";
 
     type Props = {
         /** Number of items in set A (subject/query component) */
@@ -63,9 +63,9 @@
 <div class="set-overlap-vis" title="A \ B: {countAOnly}, A∩B: {countIntersection} B \ A: {countBOnly}">
     <!-- Back to front: leftover (white) -> other/B-only -> both/intersection -> self/A-only -->
     <div class="bar leftover" class:hidden={isUnion}></div>
-    <div class="bar" style="width: {pctOther}%; background: {colors.setOverlap.other}"></div>
-    <div class="bar" style="width: {pctBoth}%; background: {colors.setOverlap.both}"></div>
-    <div class="bar" style="width: {pctSelf}%; background: {colors.setOverlap.self}"></div>
+    <div class="bar" style="width: {pctOther}%; background: {rgbToCss(colors.setOverlap.other)}"></div>
+    <div class="bar" style="width: {pctBoth}%; background: {rgbToCss(colors.setOverlap.both)}"></div>
+    <div class="bar" style="width: {pctSelf}%; background: {rgbToCss(colors.setOverlap.self)}"></div>
 </div>
 
 <style>
@@ -80,13 +80,13 @@
         left: 0;
         top: 0;
         height: 100%;
-        transition: width 150ms ease-out;
+        transition: width var(--transition-normal);
     }
 
     .leftover {
         width: 100%;
         background: white;
-        transition: opacity 150ms ease-out;
+        transition: opacity var(--transition-normal);
     }
 
     .leftover.hidden {

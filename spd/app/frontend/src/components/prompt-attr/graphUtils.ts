@@ -7,30 +7,50 @@ export function lerp(min: number, max: number, t: number): number {
     return min + (max - min) * t;
 }
 
+export type TooltipPos = {
+    left?: number;
+    right?: number;
+    top?: number;
+    bottom?: number;
+    maxHeight?: number;
+};
+
 /** Calculate tooltip position that stays within viewport bounds. */
-export function calcTooltipPos(mouseX: number, mouseY: number): { x: number; y: number } {
+export function calcTooltipPos(mouseX: number, mouseY: number, size: "small" | "large"): TooltipPos {
     const padding = 15;
     const tooltipMaxWidth = 800;
-    // Tooltip has max-height: 80vh, so use that as the estimate
-    const tooltipHeight = typeof window !== "undefined" ? window.innerHeight * 0.8 : 400;
+    const tooltipMaxHeight = typeof window !== "undefined" ? window.innerHeight * 0.8 : 400;
 
-    let left = mouseX + padding;
-    let top = mouseY + padding;
+    const pos: TooltipPos = {};
 
     if (typeof window !== "undefined") {
-        // If tooltip would overflow right edge, position to left of cursor
-        if (left + tooltipMaxWidth > window.innerWidth) {
-            left = mouseX - tooltipMaxWidth - padding;
+        // Horizontal: position right of cursor, or left if would overflow
+        if (mouseX + padding + tooltipMaxWidth > window.innerWidth) {
+            pos.right = Math.max(padding, window.innerWidth - mouseX + padding);
+        } else {
+            pos.left = mouseX + padding;
         }
-        // Clamp to left edge
-        left = Math.max(padding, left);
 
-        // Clamp to bottom of screen (don't flip, just constrain)
-        if (top + tooltipHeight > window.innerHeight) {
-            top = window.innerHeight - tooltipHeight - padding;
+        // Vertical: strategy depends on tooltip size
+        const wouldOverflowBottom = mouseY + padding + tooltipMaxHeight > window.innerHeight;
+
+        if (size === "small" && wouldOverflowBottom) {
+            // Small tooltips: anchor bottom edge near cursor
+            pos.bottom = Math.max(padding, window.innerHeight - mouseY + padding);
+            pos.maxHeight = mouseY - padding * 2;
+        } else {
+            // Large tooltips (or small with space below): use top with clamping
+            pos.top = mouseY + padding;
+            if (wouldOverflowBottom) {
+                pos.top = 5; // Pin near top to maximize vertical space
+            }
         }
+
+        return pos;
     }
-    return { x: Math.max(0, left), y: Math.max(0, top) };
+
+    // SSR fallback
+    return { left: mouseX + padding, top: mouseY + padding };
 }
 
 /**

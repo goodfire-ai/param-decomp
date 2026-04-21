@@ -11,10 +11,85 @@ from spd.configs import PGDConfig, PGDInitStrategy, PGDMultiBatchConfig, Samplin
 from spd.log import logger
 from spd.models.batch_and_loss_fns import ReconstructionLoss
 from spd.models.component_model import ComponentModel, OutputWithCache
-from spd.models.components import RoutingMasks, make_mask_infos
+from spd.models.components import ComponentsMaskInfo, RoutingMasks, make_mask_infos
 from spd.routing import Router
-from spd.utils.distributed_utils import all_reduce
-from spd.utils.general_utils import get_obj_device
+from spd.utils.distributed_utils import all_reduce, broadcast_tensor
+
+
+def _init_adv_sources(
+    model: ComponentModel,
+    batch_dims: tuple[int, ...],
+    device: torch.device | str,
+    weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
+    pgd_config: PGDConfig,
+) -> dict[str, Float[Tensor, "*batch_dims mask_c"]]:
+    adv_sources: dict[str, Float[Tensor, "*batch_dims mask_c"]] = {}
+    for module_name in model.target_module_paths:
+        module_c = model.module_to_c[module_name]
+        mask_c = module_c if weight_deltas is None else module_c + 1
+        match pgd_config.mask_scope:
+            case "unique_per_datapoint":
+                shape = torch.Size([*batch_dims, mask_c])
+                source = get_pgd_init_tensor(pgd_config.init, shape, device)
+            case "shared_across_batch":
+                singleton_batch_dims = [1 for _ in batch_dims]
+                shape = torch.Size([*singleton_batch_dims, mask_c])
+                source = broadcast_tensor(get_pgd_init_tensor(pgd_config.init, shape, device))
+        adv_sources[module_name] = source.requires_grad_(True)
+    return adv_sources
+
+
+def _run_pgd_loop(
+    adv_sources: dict[str, Float[Tensor, "..."]],
+    pgd_config: PGDConfig,
+    fwd_fn: Callable[[], tuple[Float[Tensor, ""], int]],
+) -> tuple[Float[Tensor, ""], int]:
+    for _ in range(pgd_config.n_steps):
+        assert all(adv.grad is None for adv in adv_sources.values())
+        with torch.enable_grad():
+            sum_loss, n_examples = fwd_fn()
+            loss = sum_loss / n_examples
+        grads = torch.autograd.grad(loss, list(adv_sources.values()))
+        match pgd_config.mask_scope:
+            case "shared_across_batch":
+                adv_sources_grads = {
+                    k: all_reduce(g, op=ReduceOp.AVG)
+                    for k, g in zip(adv_sources.keys(), grads, strict=True)
+                }
+            case "unique_per_datapoint":
+                adv_sources_grads = dict(zip(adv_sources.keys(), grads, strict=True))
+        with torch.no_grad():
+            for k in adv_sources:
+                adv_sources[k].add_(pgd_config.step_size * adv_sources_grads[k].sign())
+                adv_sources[k].clamp_(0.0, 1.0)
+
+    return fwd_fn()
+
+
+def _construct_mask_infos_from_adv_sources(
+    adv_sources: dict[str, Float[Tensor, "*batch_dim_or_ones mask_c"]],
+    ci: dict[str, Float[Tensor, "... C"]],
+    weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
+    routing_masks: RoutingMasks,
+    batch_dims: tuple[int, ...],
+) -> dict[str, "ComponentsMaskInfo"]:
+    expanded_adv_sources = {k: v.expand(*batch_dims, -1) for k, v in adv_sources.items()}
+    adv_sources_components: dict[str, Float[Tensor, "*batch_dims C"]]
+    match weight_deltas:
+        case None:
+            weight_deltas_and_masks = None
+            adv_sources_components = expanded_adv_sources
+        case dict():
+            weight_deltas_and_masks = {
+                k: (weight_deltas[k], expanded_adv_sources[k][..., -1]) for k in weight_deltas
+            }
+            adv_sources_components = {k: v[..., :-1] for k, v in expanded_adv_sources.items()}
+
+    return make_mask_infos(
+        component_masks=interpolate_pgd_mask(ci, adv_sources_components),
+        weight_deltas_and_masks=weight_deltas_and_masks,
+        routing_masks=routing_masks,
+    )
 
 
 def pgd_masked_recon_loss_update(
@@ -32,22 +107,8 @@ def pgd_masked_recon_loss_update(
     Optimizes adversarial stochastic masks and optionally weight deltas for the given objective function.
     """
     batch_dims = next(iter(ci.values())).shape[:-1]
-
     routing_masks = router.get_masks(module_names=model.target_module_paths, mask_shape=batch_dims)
-
-    adv_sources: dict[str, Float[Tensor, "*batch_dims mask_c"]] = {}
-    for module_name in model.target_module_paths:
-        module_c = model.module_to_c[module_name]
-        mask_c = module_c if weight_deltas is None else module_c + 1
-        match pgd_config.mask_scope:
-            case "unique_per_datapoint":
-                shape = torch.Size([*batch_dims, mask_c])
-            case "shared_across_batch":
-                singleton_batch_dims = [1 for _ in batch_dims]
-                shape = torch.Size([*singleton_batch_dims, mask_c])
-        adv_sources[module_name] = _get_pgd_init_tensor(
-            pgd_config.init, shape, device=get_obj_device(model)
-        ).requires_grad_(True)
+    adv_sources = _init_adv_sources(model, batch_dims, batch.device, weight_deltas, pgd_config)
 
     fwd_pass = partial(
         _forward_with_adv_sources,
@@ -62,22 +123,7 @@ def pgd_masked_recon_loss_update(
         reconstruction_loss=reconstruction_loss,
     )
 
-    for _ in range(pgd_config.n_steps):
-        assert all(adv.grad is None for adv in adv_sources.values())
-        with torch.enable_grad():
-            sum_loss, n_examples = fwd_pass()
-            loss = sum_loss / n_examples
-        grads = torch.autograd.grad(loss, list(adv_sources.values()))
-        adv_sources_grads = {
-            k: all_reduce(g, op=ReduceOp.AVG)
-            for k, g in zip(adv_sources.keys(), grads, strict=True)
-        }
-        with torch.no_grad():
-            for k in adv_sources:
-                adv_sources[k].add_(pgd_config.step_size * adv_sources_grads[k].sign())
-                adv_sources[k].clamp_(0.0, 1.0)
-
-    return fwd_pass()
+    return _run_pgd_loop(adv_sources, pgd_config, fwd_pass)
 
 
 CreateDataIter = Callable[[], Iterator[Any]]
@@ -126,8 +172,8 @@ def calc_multibatch_pgd_masked_recon_loss(
         singleton_batch_dims = [1 for _ in batch_dims]
         mask_c = module_c if not use_delta_component else module_c + 1
         shape = torch.Size([*singleton_batch_dims, mask_c])
-        adv_sources[module_name] = _get_pgd_init_tensor(
-            init=pgd_config.init, shape=shape, device=device
+        adv_sources[module_name] = broadcast_tensor(
+            get_pgd_init_tensor(pgd_config.init, shape, device)
         ).requires_grad_(True)
 
     fwd_bwd_fn = partial(
@@ -166,22 +212,12 @@ def _forward_with_adv_sources(
     batch_dims: tuple[int, ...],
     reconstruction_loss: ReconstructionLoss,
 ):
-    expanded_adv_sources = {k: v.expand(*batch_dims, -1) for k, v in adv_sources.items()}
-    adv_sources_components: dict[str, Float[Tensor, "*batch_dims C"]]
-    match weight_deltas:
-        case None:
-            weight_deltas_and_masks = None
-            adv_sources_components = expanded_adv_sources
-        case dict():
-            weight_deltas_and_masks = {
-                k: (weight_deltas[k], expanded_adv_sources[k][..., -1]) for k in weight_deltas
-            }
-            adv_sources_components = {k: v[..., :-1] for k, v in expanded_adv_sources.items()}
-
-    mask_infos = make_mask_infos(
-        component_masks=_interpolate_component_mask(ci, adv_sources_components),
-        weight_deltas_and_masks=weight_deltas_and_masks,
+    mask_infos = _construct_mask_infos_from_adv_sources(
+        adv_sources=adv_sources,
+        ci=ci,
+        weight_deltas=weight_deltas,
         routing_masks=routing_masks,
+        batch_dims=batch_dims,
     )
     out = model(batch, mask_infos=mask_infos)
 
@@ -261,11 +297,12 @@ def _multibatch_pgd_fwd_bwd(
     return pgd_step_accum_sum_loss, pgd_step_accum_sum_n_examples, pgd_step_accum_sum_grads
 
 
-def _get_pgd_init_tensor(
+def get_pgd_init_tensor(
     init: PGDInitStrategy,
     shape: tuple[int, ...],
     device: torch.device | str,
 ) -> Float[Tensor, "... shape"]:
+    """Create initial PGD source tensor (random, ones, or zeroes). Shared by training PGD and app eval PGD."""
     match init:
         case "random":
             return torch.rand(shape, device=device)
@@ -275,7 +312,7 @@ def _get_pgd_init_tensor(
             return torch.zeros(shape, device=device)
 
 
-def _interpolate_component_mask(
+def interpolate_pgd_mask(
     ci: dict[str, Float[Tensor, "*batch_dims C"]],
     adv_sources_components: dict[str, Float[Tensor, "*batch_dims C"]],
 ) -> dict[str, Float[Tensor, "*batch_dims C"]]:
@@ -292,7 +329,6 @@ def _interpolate_component_mask(
     component_masks: dict[str, Float[Tensor, "*batch_dims C"]] = {}
     for module_name in ci:
         adv_source = adv_sources_components[module_name]
-        assert torch.all(adv_source <= 1.0) and torch.all(adv_source >= 0.0)
         assert ci[module_name].shape[-1] == adv_source.shape[-1]
         scaled_noise_to_add = (1 - ci[module_name]) * adv_source
         component_masks[module_name] = ci[module_name] + scaled_noise_to_add

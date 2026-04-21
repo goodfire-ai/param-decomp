@@ -1,14 +1,25 @@
 <script lang="ts">
-    import type { OutputProbEntry } from "../../lib/promptAttributionsTypes";
+    import { topEdgeAttributions, type EdgeData, type OutputProbability } from "../../lib/promptAttributionsTypes";
     import { getOutputHeaderColor } from "../../lib/colors";
+    import { displaySettings } from "../../lib/displaySettings.svelte";
+    import { COMPONENT_CARD_CONSTANTS } from "../../lib/componentCardConstants";
+    import EdgeAttributionGrid from "../ui/EdgeAttributionGrid.svelte";
 
     type Props = {
         cIdx: number;
-        outputProbs: Record<string, OutputProbEntry>;
+        outputProbs: Record<string, OutputProbability>;
         seqIdx?: number; // When present: show single position. When absent: show all positions for this vocab id
+        edgesByTarget?: Map<string, EdgeData[]>;
     };
 
-    let { cIdx, outputProbs, seqIdx }: Props = $props();
+    let { cIdx, outputProbs, seqIdx, edgesByTarget }: Props = $props();
+
+    const outputNodeKey = $derived(seqIdx !== undefined ? `output:${seqIdx}:${cIdx}` : null);
+    const outputIncoming = $derived(
+        outputNodeKey && edgesByTarget
+            ? topEdgeAttributions(edgesByTarget.get(outputNodeKey) ?? [], (e) => e.src, 20)
+            : [],
+    );
 
     function escapeHtml(text: string): string {
         return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -56,9 +67,7 @@
         </div>
         <p class="stats">
             <strong>Position:</strong>
-            {seqIdx} |
-            <strong>Vocab ID:</strong>
-            {cIdx}
+            {seqIdx}
         </p>
     {:else if allPositions}
         <p><strong>"{allPositions[0].token}"</strong></p>
@@ -84,6 +93,17 @@
                 {/each}
             </tbody>
         </table>
+    {/if}
+    {#if displaySettings.showEdgeAttributions && outputIncoming.length > 0}
+        <EdgeAttributionGrid
+            title="Prompt Attributions"
+            incomingLabel="Incoming"
+            outgoingLabel="Outgoing"
+            incoming={outputIncoming}
+            outgoing={[]}
+            pageSize={COMPONENT_CARD_CONSTANTS.PROMPT_ATTRIBUTIONS_PAGE_SIZE}
+            onClick={() => {}}
+        />
     {/if}
 </div>
 

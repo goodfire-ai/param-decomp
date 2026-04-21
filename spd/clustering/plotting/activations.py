@@ -47,7 +47,6 @@ def plot_activations(
     if save_dir is not None:
         save_dir.mkdir(parents=True, exist_ok=True)
 
-    act_dict: dict[str, ActivationsTensor] = processed_activations.activations_raw
     act_concat: ActivationsTensor = processed_activations.activations
     coact: ClusterCoactivationShaped = compute_coactivatons(act_concat)
     labels: ComponentLabels = ComponentLabels(processed_activations.labels)
@@ -56,9 +55,12 @@ def plot_activations(
     # trim the activations if n_samples_max is specified
     # clone here so we don't modify the original tensor
     act_concat = act_concat[:n_samples_max].clone()
-    # we don't use the stuff in this dict again, so we can modify it in-place
-    for key in act_dict:
-        act_dict[key] = act_dict[key][:n_samples_max]
+
+    # Reconstruct per-module views (alive components only), truncated to n_samples_max
+    act_dict: dict[str, ActivationsTensor] = {
+        key: act[:n_samples_max]
+        for key, act in processed_activations.get_module_activations().items()
+    }
 
     # Update n_samples to reflect the truncated size
     n_samples = act_concat.shape[0]

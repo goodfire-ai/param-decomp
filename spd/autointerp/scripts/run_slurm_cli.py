@@ -1,29 +1,38 @@
 """CLI entry point for autointerp SLURM launcher.
 
 Thin wrapper for fast --help. Heavy imports deferred to run_slurm.py.
+
+Usage:
+    spd-autointerp <wandb_path>
+    spd-autointerp <wandb_path> --config autointerp_config.yaml
 """
 
 import fire
 
-from spd.settings import DEFAULT_PARTITION_NAME
-
 
 def main(
-    wandb_path: str,
-    model: str = "google/gemini-3-flash-preview",
-    partition: str = DEFAULT_PARTITION_NAME,
-    time: str = "12:00:00",
-    limit: int | None = None,
+    decomposition_id: str,
+    config: str,
+    harvest_subrun_id: str,
+    snapshot_branch: str | None = None,
 ) -> None:
-    from spd.autointerp.interpret import OpenRouterModelName
-    from spd.autointerp.scripts.run_slurm import launch_interpret_job
+    """Submit autointerp pipeline (interpret + evals) to SLURM.
 
-    launch_interpret_job(
-        wandb_path=wandb_path,
-        model=OpenRouterModelName(model),
-        partition=partition,
-        time=time,
-        limit=limit,
+    Args:
+        decomposition_id: ID of the target decomposition run.
+        config: Path to AutointerpSlurmConfig YAML/JSON.
+        harvest_subrun_id: Harvest subrun to use (e.g. "h-20260306_120000").
+        snapshot_branch: Git branch to run from (default: current REPO_ROOT checkout).
+    """
+    from spd.autointerp.config import AutointerpSlurmConfig
+    from spd.autointerp.scripts.run_slurm import submit_autointerp
+
+    slurm_config = AutointerpSlurmConfig.from_file(config)
+    submit_autointerp(
+        decomposition_id,
+        slurm_config,
+        harvest_subrun_id=harvest_subrun_id,
+        snapshot_branch=snapshot_branch,
     )
 
 

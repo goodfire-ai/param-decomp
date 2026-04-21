@@ -1,16 +1,16 @@
 <script lang="ts">
-    import { getContext } from "svelte";
-    import { SvelteSet } from "svelte/reactivity";
+    import { getContext, untrack } from "svelte";
+    import { SvelteSet, SvelteMap } from "svelte/reactivity";
     import type {
         GraphData,
+        EdgeData,
         PinnedNode,
         HoveredNode,
         HoveredEdge,
-        LayerInfo,
         NodePosition,
     } from "../lib/promptAttributionsTypes";
-    import { formatNodeKeyForDisplay } from "../lib/promptAttributionsTypes";
-    import { colors, getEdgeColor, getOutputNodeColor, getSubcompActColor } from "../lib/colors";
+    import { getActiveEdges } from "../lib/promptAttributionsTypes";
+    import { colors, getEdgeColor, getSubcompActColor, rgbToCss, getNextTokenProbBgColor } from "../lib/colors";
     import { displaySettings } from "../lib/displaySettings.svelte";
     import {
         lerp,
@@ -20,11 +20,20 @@
         computeComponentOffsets,
         computeClusterSpans,
         type ClusterSpan,
+        type TooltipPos,
     } from "./prompt-attr/graphUtils";
     import NodeTooltip from "./prompt-attr/NodeTooltip.svelte";
     import { RUN_KEY, type RunContext } from "../lib/useRun.svelte";
     import { useZoomPan } from "../lib/useZoomPan.svelte";
     import ZoomControls from "../lib/ZoomControls.svelte";
+    import {
+        parseLayer,
+        getRowKey as _getRowKey,
+        getRowLabel as _getRowLabel,
+        sortRows,
+        getGroupProjections,
+        buildLayerAddress,
+    } from "../lib/graphLayout";
 
     const runState = getContext<RunContext>(RUN_KEY);
 
@@ -37,12 +46,9 @@
     const CLUSTER_BAR_GAP = 2;
     const LAYER_X_OFFSET = 3; // Horizontal offset per layer to avoid edge overlap
 
-    // Row order for layout (qkv share a row, lm_head before output)
-    const ROW_ORDER = ["wte", "qkv", "o_proj", "c_fc", "down_proj", "lm_head", "output"];
-    const QKV_SUBTYPES = ["q_proj", "k_proj", "v_proj"];
-
     type Props = {
         data: GraphData;
+        tokenIds: number[];
         topK: number;
         componentGap: number;
         layerGap: number;
@@ -51,10 +57,12 @@
         stagedNodes: PinnedNode[];
         onStagedNodesChange: (nodes: PinnedNode[]) => void;
         onEdgeCountChange?: (count: number) => void;
+        onHoveredNodeChange?: (node: HoveredNode | null) => void;
     };
 
     let {
         data,
+        tokenIds,
         topK,
         componentGap,
         layerGap,
@@ -63,15 +71,39 @@
         stagedNodes,
         onStagedNodesChange,
         onEdgeCountChange,
+        onHoveredNodeChange,
     }: Props = $props();
+
+    // Compute masked prediction probability of self given previous position.
+    // For token at position i, we look up outputProbs[(i-1):tokenIds[i]] - how well
+    // position i-1 predicted this token. First token has no previous, so null.
+    // NOTE: outputProbs only includes tokens with >=1% probability (backend threshold).
+    // If the correct token isn't found, it means the masked model gave it <1% probability.
+    const maskedSelfProbs = $derived.by(() => {
+        const probs: (number | null)[] = [];
+        for (let i = 0; i < data.tokens.length; i++) {
+            if (i === 0) {
+                probs.push(null); // First token has no previous position
+            } else {
+                const thisTokenId = tokenIds[i];
+                const entry = data.outputProbs[`${i - 1}:${thisTokenId}`];
+                probs.push(entry?.prob ?? null);
+            }
+        }
+        return probs;
+    });
 
     // UI state
     let hoveredNode = $state<HoveredNode | null>(null);
     let hoveredEdge = $state<HoveredEdge | null>(null);
     let hoveredBarClusterId = $state<number | null>(null);
     let isHoveringTooltip = $state(false);
-    let tooltipPos = $state({ x: 0, y: 0 });
+    let tooltipPos = $state<TooltipPos>({ left: 0, top: 0 });
     let edgeTooltipPos = $state({ x: 0, y: 0 });
+
+    $effect(() => {
+        onHoveredNodeChange?.(hoveredNode);
+    });
 
     // Alt/Option key temporarily toggles hide unpinned edges
     let altHeld = $state(false);
@@ -102,47 +134,36 @@
     });
 
     // Refs
-    let graphContainer: HTMLDivElement;
     let innerContainer: HTMLDivElement;
+    let edgeCanvas: HTMLCanvasElement;
+
+    type EdgeDrawItem = {
+        edge: EdgeData;
+        path: Path2D;
+        color: string;
+        width: number;
+        opacity: number;
+    };
 
     // Zoom/pan
     const zoom = useZoomPan(() => innerContainer);
 
-    // Parse layer name into structured info
-    function parseLayer(name: string): LayerInfo {
-        if (name === "wte") {
-            return { name, block: -1, type: "embed", subtype: "wte" };
-        }
-        if (name === "lm_head") {
-            return { name, block: Infinity - 1, type: "mlp", subtype: "lm_head" };
-        }
-        if (name === "output") {
-            return { name, block: Infinity, type: "output", subtype: "output" };
-        }
-        const m = name.match(/h\.(\d+)\.(attn|mlp)\.(\w+)/);
-        if (!m) throw new Error(`parseLayer: unrecognized layer name: ${name}`);
-        return { name, block: +m[1], type: m[2] as "attn" | "mlp", subtype: m[3] };
-    }
-
     function getRowKey(layer: string): string {
-        const info = parseLayer(layer);
-        if (QKV_SUBTYPES.includes(info.subtype)) {
-            return `h.${info.block}.qkv`;
-        }
-        return layer;
+        return _getRowKey(layer);
     }
 
     function getRowLabel(layer: string): string {
-        const info = parseLayer(layer);
-        const rowKey = getRowKey(layer);
-        if (rowKey.endsWith(".qkv")) return `${info.block}.q/k/v`;
-        if (layer === "wte" || layer === "output") return layer;
-        if (layer === "lm_head") return "W_U";
-        return `${info.block}.${info.subtype}`;
+        return _getRowLabel(layer);
     }
 
+    // Select active edge variant based on display setting
+    const active = $derived(getActiveEdges(data, displaySettings.edgeVariant));
+    const activeEdges = $derived(active.edges);
+    const activeEdgesBySource = $derived(active.bySource);
+    const activeEdgesByTarget = $derived(active.byTarget);
+
     // Use pre-computed values from backend, derive max CI
-    const maxAbsAttr = $derived(data.maxAbsAttr || 1);
+    const maxAbsAttr = $derived(active.maxAbsAttr);
     const maxCi = $derived.by(() => {
         let max = 0;
         for (const ci of Object.values(data.nodeCiVals)) {
@@ -170,15 +191,11 @@
         return runState.getClusterId(hoveredNode.layer, hoveredNode.cIdx);
     });
 
-    // Filter edges by topK (for rendering)
-    const filteredEdges = $derived.by(() => {
-        const edgesCopy = [...data.edges];
-        const sortedEdges = edgesCopy.sort((a, b) => Math.abs(b.val) - Math.abs(a.val));
-        return sortedEdges.slice(0, topK);
-    });
+    // Filter edges by topK (for rendering). Edges arrive pre-sorted by abs(val) desc from backend.
+    const filteredEdges = $derived(activeEdges.slice(0, topK));
 
     // Build layout
-    const { nodePositions, layerYPositions, seqWidths, seqXStarts, width, height, clusterSpans } = $derived.by(() => {
+    const { nodePositions, layerYPositions, seqXStarts, width, height, clusterSpans } = $derived.by(() => {
         const nodesPerLayerSeq: Record<string, number[]> = {};
         const allLayers = new SvelteSet<string>();
         const allRows = new SvelteSet<string>();
@@ -193,27 +210,9 @@
         }
 
         // Sort rows for Y positioning
-        const parseRow = (r: string) => {
-            if (r === "wte") return { block: -1, subtype: "wte" };
-            if (r === "lm_head") return { block: Infinity - 1, subtype: "lm_head" };
-            if (r === "output") return { block: Infinity, subtype: "output" };
-            const mQkv = r.match(/h\.(\d+)\.qkv/);
-            if (mQkv) return { block: +mQkv[1], subtype: "qkv" };
-            const m = r.match(/h\.(\d+)\.(attn|mlp)\.(\w+)/);
-            if (!m) throw new Error(`parseRow: unrecognized row key: ${r}`);
-            return { block: +m[1], subtype: m[3] };
-        };
+        const rows = sortRows(Array.from(allRows));
 
-        const rows = Array.from(allRows).sort((a, b) => {
-            const infoA = parseRow(a);
-            const infoB = parseRow(b);
-            if (infoA.block !== infoB.block) return infoA.block - infoB.block;
-            const idxA = ROW_ORDER.indexOf(infoA.subtype);
-            const idxB = ROW_ORDER.indexOf(infoB.subtype);
-            return idxA - idxB;
-        });
-
-        // Assign Y positions (output at top, wte at bottom)
+        // Assign Y positions (output at top, embed at bottom)
         const rowYPositions: Record<string, number> = {};
         for (let i = 0; i < rows.length; i++) {
             const distanceFromEnd = rows.length - 1 - i;
@@ -229,7 +228,7 @@
             layerYPositions[layer] = rowYPositions[rowKey];
             const rowIdx = rows.indexOf(rowKey);
             const distanceFromOutput = rows.length - 1 - rowIdx;
-            if (distanceFromOutput === 0 || layer === "wte") {
+            if (distanceFromOutput === 0 || layer === "embed") {
                 layerXOffsets[layer] = 0;
             } else {
                 layerXOffsets[layer] = distanceFromOutput % 2 === 1 ? LAYER_X_OFFSET : -LAYER_X_OFFSET;
@@ -241,27 +240,25 @@
         const maxComponentsPerSeq = tokens.map((_, seqIdx) => {
             let maxAtSeq = 0;
             for (const row of rows) {
-                if (row.endsWith(".qkv")) {
-                    const blockMatch = row.match(/h\.(\d+)/);
-                    if (blockMatch) {
-                        const block = blockMatch[1];
-                        let totalQkv = 0;
-                        for (const subtype of QKV_SUBTYPES) {
-                            const layer = `h.${block}.attn.${subtype}`;
-                            const nodes = nodesPerLayerSeq[`${layer}:${seqIdx}`] ?? [];
-                            totalQkv += nodes.length;
-                        }
-                        totalQkv += 2; // gaps between groups
-                        maxAtSeq = Math.max(maxAtSeq, totalQkv);
-                    }
-                } else {
-                    for (const layer of allLayers) {
-                        if (getRowKey(layer) === row) {
-                            const nodes = nodesPerLayerSeq[`${layer}:${seqIdx}`] ?? [];
-                            maxAtSeq = Math.max(maxAtSeq, nodes.length);
-                        }
+                // Count nodes in this row at this seq position
+                // Rows are "block.sublayer" — find all layers that belong to this row
+                let totalInRow = 0;
+                for (const layer of allLayers) {
+                    if (getRowKey(layer) === row) {
+                        const nodes = nodesPerLayerSeq[`${layer}:${seqIdx}`] ?? [];
+                        totalInRow += nodes.length;
                     }
                 }
+                // Add gaps between grouped projections (only for grouped rows)
+                const rowParts = row.split(".");
+                const isGroupedRow = rowParts.length >= 3 && rowParts[2].includes("_");
+                if (isGroupedRow) {
+                    const groupProjs = getGroupProjections(rowParts[1]);
+                    if (groupProjs && groupProjs.length > 1) {
+                        totalInRow += groupProjs.length - 1;
+                    }
+                }
+                maxAtSeq = Math.max(maxAtSeq, totalInRow);
             }
             return maxAtSeq;
         });
@@ -283,7 +280,8 @@
 
         for (const layer of allLayers) {
             const info = parseLayer(layer);
-            const isQkv = QKV_SUBTYPES.includes(info.subtype);
+            const groupProjs = info.sublayer ? getGroupProjections(info.sublayer) : null;
+            const isGrouped = groupProjs !== null && info.projection !== null && groupProjs.includes(info.projection);
 
             for (let seqIdx = 0; seqIdx < tokens.length; seqIdx++) {
                 const nodes = nodesPerLayerSeq[`${layer}:${seqIdx}`];
@@ -292,14 +290,13 @@
                 let baseX = seqXStarts[seqIdx] + COL_PADDING + layerXOffsets[layer];
                 const baseY = layerYPositions[layer];
 
-                // For qkv layers, offset X based on subtype
-                if (isQkv) {
-                    const subtypeIdx = QKV_SUBTYPES.indexOf(info.subtype);
-                    for (let i = 0; i < subtypeIdx; i++) {
-                        const prevLayer = `h.${info.block}.attn.${QKV_SUBTYPES[i]}`;
-                        const prevLayerNodes = nodesPerLayerSeq[`${prevLayer}:${seqIdx}`];
-                        const prevCount = prevLayerNodes?.length ?? 0;
-                        baseX += prevCount * (COMPONENT_SIZE + componentGap);
+                // For grouped projections (e.g. q/k/v), offset X based on position in group
+                if (isGrouped && groupProjs && info.projection) {
+                    const projIdx = groupProjs.indexOf(info.projection);
+                    for (let i = 0; i < projIdx; i++) {
+                        const prevLayer = buildLayerAddress(info.block, info.sublayer, groupProjs[i]);
+                        const prevLayerNodes = nodesPerLayerSeq[`${prevLayer}:${seqIdx}`] ?? [];
+                        baseX += prevLayerNodes.length * (COMPONENT_SIZE + componentGap);
                         baseX += QKV_GROUP_GAP;
                     }
                 }
@@ -343,7 +340,6 @@
         return {
             nodePositions,
             layerYPositions,
-            seqWidths,
             seqXStarts,
             width: widthVal,
             height: heightVal,
@@ -355,12 +351,23 @@
     const svgWidth = $derived(width * zoom.scale + Math.max(zoom.translateX, 0));
     const svgHeight = $derived(height * zoom.scale + Math.max(zoom.translateY, 0));
 
-    const EDGE_HIT_AREA_WIDTH = 4; // Wider invisible stroke for easier hover
+    const EDGE_HIT_AREA_WIDTH = 12; // Wide stroke for canvas isPointInStroke hit testing
 
     // Check if a node key matches the currently hovered component (same layer:cIdx, any seqIdx)
+    // For embed nodes: match by token value (highlight same tokens across positions)
+    // For other nodes: match by layer:cIdx (highlight same component across positions)
     function nodeMatchesHoveredComponent(nodeKey: string): boolean {
-        if (!hoveredComponentKey) return false;
-        const [layer, , cIdx] = nodeKey.split(":");
+        if (!hoveredNode) return false;
+        const [layer, seqIdxStr, cIdx] = nodeKey.split(":");
+        const seqIdx = parseInt(seqIdxStr);
+
+        // For embed nodes, match by token value
+        if (hoveredNode.layer === "embed") {
+            if (layer !== "embed") return false;
+            return data.tokens[seqIdx] === data.tokens[hoveredNode.seqIdx];
+        }
+
+        // For other nodes, match by component key (layer:cIdx)
         return `${layer}:${cIdx}` === hoveredComponentKey;
     }
 
@@ -374,6 +381,92 @@
         return nodeClusterId === hoveredClusterId;
     }
 
+    // -- Node interaction state machine --
+    // Global mode computed once; each node looks up its role via O(1) set/map membership.
+
+    type SpotlightConnected = {
+        role: "spotlight_connected";
+        color: string;
+        opacity: number;
+    };
+
+    type NodeRole =
+        | "default"
+        | "highlighted"
+        | "cluster_hovered"
+        | "dimmed"
+        | "hidden"
+        | "spotlight_source"
+        | SpotlightConnected;
+
+    type InteractionMode =
+        | { mode: "spotlight"; connected: Map<string, SpotlightConnected>; hoveredKey: string }
+        | { mode: "focusing"; accentKeys: Set<string>; clusterKeys: Set<string> }
+        | { mode: "resting"; accentKeys: Set<string> };
+
+    const interactionMode = $derived.by((): InteractionMode => {
+        const isHovering = hoveredNode !== null || hoveredBarClusterId !== null;
+        const hasPinned = pinnedNodeKeys.size > 0;
+
+        // Spotlight: hideUnpinned + hovering a node + no pinned nodes
+        if (effectiveHideUnpinned && hoveredNode && !hasPinned) {
+            const nodeKey = `${hoveredNode.layer}:${hoveredNode.seqIdx}:${hoveredNode.cIdx}`;
+            const maxAttr = maxAbsAttr;
+            const connected = new SvelteMap<string, SpotlightConnected>();
+
+            const addEdge = (edge: EdgeData, connectedKey: string) => {
+                const absVal = Math.abs(edge.val);
+                const existing = connected.get(connectedKey);
+                if (!existing || absVal > existing.opacity) {
+                    const val = edge.val;
+                    connected.set(connectedKey, {
+                        role: "spotlight_connected",
+                        color: getEdgeColor(val),
+                        opacity: lerp(0, 0.5, absVal / maxAttr),
+                    });
+                }
+            };
+
+            for (const edge of activeEdgesBySource.get(nodeKey) ?? []) addEdge(edge, edge.tgt);
+            for (const edge of activeEdgesByTarget.get(nodeKey) ?? []) addEdge(edge, edge.src);
+
+            return { mode: "spotlight", connected, hoveredKey: nodeKey };
+        }
+
+        // Focusing: something is being hovered — accented nodes highlighted, rest dimmed
+        if (isHovering) {
+            const accentKeys = new SvelteSet<string>();
+            const clusterKeys = new SvelteSet<string>();
+            for (const key of Object.keys(nodePositions)) {
+                if (pinnedNodeKeys.has(key) || nodeMatchesHoveredComponent(key)) {
+                    accentKeys.add(key);
+                } else if (isNodeInSameCluster(key)) {
+                    clusterKeys.add(key);
+                }
+            }
+            return { mode: "focusing", accentKeys, clusterKeys };
+        }
+
+        // Resting: nothing hovered — pinned nodes accented, everything else default
+        return { mode: "resting", accentKeys: pinnedNodeKeys };
+    });
+
+    function getNodeRole(key: string, mode: InteractionMode): NodeRole {
+        switch (mode.mode) {
+            case "spotlight": {
+                if (key === mode.hoveredKey) return "spotlight_source";
+                return mode.connected.get(key) ?? "hidden";
+            }
+            case "focusing":
+                if (mode.accentKeys.has(key)) return "highlighted";
+                if (mode.clusterKeys.has(key)) return "cluster_hovered";
+                return "dimmed";
+            case "resting":
+                if (mode.accentKeys.has(key)) return "highlighted";
+                return "default";
+        }
+    }
+
     type EdgeState = "normal" | "highlighted" | "hidden";
 
     // Hover acts as a "promotion": hidden → normal → highlighted
@@ -383,8 +476,10 @@
         const connectedToHoveredNode = nodeMatchesHoveredComponent(src) || nodeMatchesHoveredComponent(tgt);
         const isThisEdgeHovered = hoveredEdge?.src === src && hoveredEdge?.tgt === tgt;
 
-        // No pinned nodes - just node hover behavior
+        // No pinned nodes
         if (!hasPinned) {
+            // Spotlight mode: hide all edges, nodes carry the color instead
+            if (effectiveHideUnpinned && hoveredNode) return "hidden";
             return connectedToHoveredNode ? "highlighted" : "normal";
         }
 
@@ -413,61 +508,98 @@
         }
     }
 
-    // Build SVG edges string (for {@html} - performance optimization)
-    // Render order: visible paths first (smaller on top), then hit areas (larger on top)
-    // Only render hit areas for edges connected to pinned nodes
-    const edgesSvgString = $derived.by(() => {
-        let visibleSvg = "";
-        let hitAreaSvg = "";
+    // Precompute edge geometry for canvas rendering.
+    // Only recomputes when data/layout changes, not on hover.
+    // Ordered smallest-first (reverse of filteredEdges which is desc by abs val).
+    const edgeDrawData = $derived.by(() => {
+        // Register coarse reactive dependencies
+        const edges = filteredEdges;
+        const positions = nodePositions;
+        const maxAttr = maxAbsAttr;
 
-        // filteredEdges is already sorted by abs(val) descending
-        // Render visible paths in reverse order (smallest first, so largest renders on top)
-        for (let i = filteredEdges.length - 1; i >= 0; i--) {
-            const edge = filteredEdges[i];
-            const p1 = nodePositions[edge.src];
-            const p2 = nodePositions[edge.tgt];
-            if (p1 && p2) {
-                const color = getEdgeColor(edge.val);
-                const w = lerp(1, 4, Math.abs(edge.val) / maxAbsAttr);
-                const op = lerp(0, 0.5, Math.abs(edge.val) / maxAbsAttr);
-                const dy = Math.abs(p2.y - p1.y);
-                const curveOffset = Math.max(20, dy * 0.4);
-                const cp1y = p1.y - curveOffset;
-                const cp2y = p2.y + curveOffset;
-                const d = `M ${p1.x},${p1.y} C ${p1.x},${cp1y} ${p2.x},${cp2y} ${p2.x},${p2.y}`;
-                visibleSvg += `<path class="edge edge-visible" data-src="${edge.src}" data-tgt="${edge.tgt}" data-val="${edge.val}" d="${d}" stroke="${color}" stroke-width="${w}" opacity="${op}" fill="none" pointer-events="none"/>`;
+        // Hot loop in untrack() to avoid O(n²) fine-grained proxy dependency tracking.
+        // Without this, each property access on Svelte's deep reactive proxies (edge.src,
+        // edge.tgt, etc.) registers a fine-grained dependency, scaling quadratically.
+        return untrack(() => {
+            const items: EdgeDrawItem[] = [];
+            for (let i = edges.length - 1; i >= 0; i--) {
+                const edge = edges[i];
+                const p1 = positions[edge.src];
+                const p2 = positions[edge.tgt];
+                if (!p1 || !p2) continue;
+                const path = new Path2D();
+                path.moveTo(p1.x, p1.y);
+                if (displaySettings.curvedEdges) {
+                    const dy = Math.abs(p2.y - p1.y);
+                    const curveOffset = Math.max(20, dy * 0.4);
+                    path.bezierCurveTo(p1.x, p1.y - curveOffset, p2.x, p2.y + curveOffset, p2.x, p2.y);
+                } else {
+                    path.lineTo(p2.x, p2.y);
+                }
+                items.push({
+                    edge,
+                    path,
+                    color: getEdgeColor(edge.val),
+                    width: lerp(1, 4, Math.abs(edge.val) / maxAttr),
+                    opacity: lerp(0, 0.5, Math.abs(edge.val) / maxAttr),
+                });
             }
-        }
-
-        // Only render hit areas for edges connected to pinned nodes
-        // Render in reverse order so largest edges' hit areas are on top
-        for (let i = filteredEdges.length - 1; i >= 0; i--) {
-            const edge = filteredEdges[i];
-            if (!pinnedNodeKeys.has(edge.src) && !pinnedNodeKeys.has(edge.tgt)) continue;
-
-            const p1 = nodePositions[edge.src];
-            const p2 = nodePositions[edge.tgt];
-            if (p1 && p2) {
-                const dy = Math.abs(p2.y - p1.y);
-                const curveOffset = Math.max(20, dy * 0.4);
-                const cp1y = p1.y - curveOffset;
-                const cp2y = p2.y + curveOffset;
-                const d = `M ${p1.x},${p1.y} C ${p1.x},${cp1y} ${p2.x},${cp2y} ${p2.x},${p2.y}`;
-                hitAreaSvg += `<path class="edge edge-hit-area" data-src="${edge.src}" data-tgt="${edge.tgt}" data-val="${edge.val}" d="${d}" stroke="transparent" stroke-width="${EDGE_HIT_AREA_WIDTH}" fill="none"/>`;
-            }
-        }
-
-        return visibleSvg + hitAreaSvg;
+            return items;
+        });
     });
 
-    function isNodePinned(layer: string, seqIdx: number, cIdx: number): boolean {
-        return pinnedNodeKeys.has(`${layer}:${seqIdx}:${cIdx}`);
-    }
+    // Canvas edge rendering effect
+    $effect(() => {
+        if (!edgeCanvas) return;
+        const ctx = edgeCanvas.getContext("2d");
+        if (!ctx) return;
 
-    // Check if a node key should be highlighted (pinned or hovered component)
-    function isNodeHighlighted(nodeKey: string): boolean {
-        return pinnedNodeKeys.has(nodeKey) || nodeMatchesHoveredComponent(nodeKey);
-    }
+        // Register coarse reactive deps (used by getEdgeState inside the loop)
+        const items = edgeDrawData;
+        const cw = svgWidth;
+        const ch = svgHeight;
+        const zs = zoom.scale;
+        const ztx = zoom.translateX;
+        const zty = zoom.translateY;
+        void pinnedNodeKeys;
+        void hoveredNode;
+        void hoveredEdge;
+        void effectiveHideUnpinned;
+        void hoveredComponentKey;
+        void interactionMode;
+
+        const dpr = window.devicePixelRatio || 1;
+
+        // Hot loop in untrack() — same O(n²) proxy issue as edgeDrawData
+        untrack(() => {
+            // Size canvas to match SVG
+            edgeCanvas.width = cw * dpr;
+            edgeCanvas.height = ch * dpr;
+            edgeCanvas.style.width = `${cw}px`;
+            edgeCanvas.style.height = `${ch}px`;
+
+            ctx.clearRect(0, 0, edgeCanvas.width, edgeCanvas.height);
+
+            // Apply zoom/pan transform matching the SVG <g> transform
+            ctx.setTransform(zs * dpr, 0, 0, zs * dpr, ztx * dpr, zty * dpr);
+
+            // Draw edges
+            for (const item of items) {
+                const state = getEdgeState(item.edge.src, item.edge.tgt);
+                if (state === "hidden") continue;
+
+                const isHighlighted = state === "highlighted";
+                ctx.strokeStyle = item.color;
+                ctx.lineWidth = isHighlighted ? 3 : item.width;
+                ctx.globalAlpha = isHighlighted ? 1 : item.opacity;
+                ctx.stroke(item.path);
+            }
+
+            // Reset transform
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.globalAlpha = 1;
+        });
+    });
 
     // Pre-compute node styles (fill, opacity) - only recomputes when data/layout changes, not on hover
     const nodeStyles = $derived.by(() => {
@@ -484,8 +616,11 @@
             if (layer === "output") {
                 const probEntry = data.outputProbs[`${seqIdx}:${cIdx}`];
                 if (probEntry) {
-                    fill = getOutputNodeColor(probEntry.prob);
-                    opacity = 0.4 + probEntry.prob * 0.6;
+                    fill = rgbToCss(colors.outputBase);
+                    opacity = 0.2 + probEntry.prob * 0.8;
+                } else {
+                    // remove me. we should just assert this should be present
+                    console.error(`OutputNodeCard: no entry for ${seqIdx}:${cIdx}`);
                 }
             } else {
                 // Component nodes: color/opacity based on CI or subcomp activation
@@ -503,7 +638,7 @@
                         throw new Error(`Inconsistent state: intensity > 1: ${intensity}`);
                     }
                     fill = getSubcompActColor(subcompAct);
-                    opacity = 0.3 + intensity * 0.7;
+                    opacity = 0.2 + intensity * 0.8;
                 }
             }
 
@@ -524,7 +659,8 @@
         }
 
         hoveredNode = { layer, seqIdx, cIdx };
-        tooltipPos = calcTooltipPos(event.clientX, event.clientY);
+        const size = layer === "embed" || layer === "output" ? "small" : "large";
+        tooltipPos = calcTooltipPos(event.clientX, event.clientY, size);
     }
 
     function handleNodeMouseLeave() {
@@ -554,22 +690,40 @@
         }
     }
 
-    function handleEdgeMouseEnter(event: MouseEvent) {
-        const target = event.target as SVGElement;
-        if (target.classList.contains("edge-hit-area")) {
-            const src = target.getAttribute("data-src") || "";
-            const tgt = target.getAttribute("data-tgt") || "";
-            const val = parseFloat(target.getAttribute("data-val") || "0");
-            hoveredEdge = { src, tgt, val };
-            edgeTooltipPos = { x: event.clientX + 10, y: event.clientY + 10 };
-        }
-    }
+    // Cached offscreen context for edge hit testing
+    let hitTestCtx: CanvasRenderingContext2D | null = null;
 
-    function handleEdgeMouseLeave(event: MouseEvent) {
-        const target = event.target as SVGElement;
-        if (target.classList.contains("edge-hit-area")) {
-            hoveredEdge = null;
+    function handleEdgeHitTest(event: MouseEvent) {
+        if (pinnedNodeKeys.size === 0) {
+            if (hoveredEdge) hoveredEdge = null;
+            return;
         }
+
+        // Convert screen coords to world coords
+        const rect = innerContainer.getBoundingClientRect();
+        const screenX = event.clientX - rect.left + innerContainer.scrollLeft;
+        const screenY = event.clientY - rect.top + innerContainer.scrollTop;
+        const worldX = (screenX - zoom.translateX) / zoom.scale;
+        const worldY = (screenY - zoom.translateY) / zoom.scale;
+
+        if (!hitTestCtx) {
+            hitTestCtx = document.createElement("canvas").getContext("2d");
+        }
+        if (!hitTestCtx) return;
+        hitTestCtx.lineWidth = EDGE_HIT_AREA_WIDTH / zoom.scale;
+
+        // Test edges connected to pinned nodes (reverse order so largest edges match first)
+        for (let i = edgeDrawData.length - 1; i >= 0; i--) {
+            const { edge, path } = edgeDrawData[i];
+            if (!pinnedNodeKeys.has(edge.src) && !pinnedNodeKeys.has(edge.tgt)) continue;
+            if (hitTestCtx.isPointInStroke(path, worldX, worldY)) {
+                hoveredEdge = { src: edge.src, tgt: edge.tgt, val: edge.val };
+                edgeTooltipPos = { x: event.clientX + 10, y: event.clientY + 10 };
+                return;
+            }
+        }
+
+        if (hoveredEdge) hoveredEdge = null;
     }
 
     function handlePanStart(event: MouseEvent) {
@@ -581,21 +735,6 @@
         }
     }
 
-    // Update edge classes based on state (DOM manipulation for performance with @html edges)
-    $effect(() => {
-        if (!graphContainer) return;
-
-        const edges = graphContainer.querySelectorAll(".edge-visible");
-        edges.forEach((el) => {
-            const src = el.getAttribute("data-src") || "";
-            const tgt = el.getAttribute("data-tgt") || "";
-            const state = getEdgeState(src, tgt);
-
-            el.classList.toggle("highlighted", state === "highlighted");
-            el.classList.toggle("hidden", state === "hidden");
-        });
-    });
-
     // Notify parent of edge count changes
     $effect(() => {
         onEdgeCountChange?.(filteredEdges.length);
@@ -606,7 +745,6 @@
 <div
     class="graph-wrapper"
     class:panning={zoom.isPanning}
-    bind:this={graphContainer}
     onmousedown={handlePanStart}
     onmousemove={zoom.updatePan}
     onmouseup={zoom.endPan}
@@ -642,15 +780,10 @@
         </svg>
     </div>
 
-    <div class="graph-container" bind:this={innerContainer}>
-        <svg width={svgWidth} height={svgHeight} onmouseover={handleEdgeMouseEnter} onmouseout={handleEdgeMouseLeave}>
+    <div class="graph-container" bind:this={innerContainer} onmousemove={handleEdgeHitTest}>
+        <canvas bind:this={edgeCanvas} class="edge-canvas" style="width: {svgWidth}px; height: {svgHeight}px;"></canvas>
+        <svg width={svgWidth} height={svgHeight}>
             <g transform="translate({zoom.translateX}, {zoom.translateY}) scale({zoom.scale})">
-                <!-- Edges (bulk rendered for performance, uses @html for large SVG performance) -->
-                <g class="edges-layer">
-                    <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                    {@html edgesSvgString}
-                </g>
-
                 <!-- Cluster bars (below nodes) -->
                 <g class="cluster-bars-layer">
                     {#each clusterSpans as span (`${span.layer}:${span.seqIdx}:${span.clusterId}`)}
@@ -676,45 +809,40 @@
                         {@const [layer, seqIdxStr, cIdxStr] = key.split(":")}
                         {@const seqIdx = parseInt(seqIdxStr)}
                         {@const cIdx = parseInt(cIdxStr)}
-                        {@const isHighlighted = isNodeHighlighted(key)}
-                        {@const isPinned = pinnedNodeKeys.has(key)}
-                        {@const inSameCluster = isNodeInSameCluster(key)}
-                        {@const isHoveredComponent = nodeMatchesHoveredComponent(key)}
-                        {@const isDimmed =
-                            (hoveredNode !== null || hoveredBarClusterId !== null) &&
-                            !isHoveredComponent &&
-                            !inSameCluster &&
-                            !isPinned}
+                        {@const role = getNodeRole(key, interactionMode)}
                         {@const style = nodeStyles[key]}
-                        <g
-                            class="node-group"
-                            onmouseenter={(e) => handleNodeMouseEnter(e, layer, seqIdx, cIdx)}
-                            onmouseleave={handleNodeMouseLeave}
-                            onclick={() => handleNodeClick(layer, seqIdx, cIdx)}
-                        >
-                            <!-- Invisible hit area for easier hovering -->
-                            <rect
-                                x={pos.x - COMPONENT_SIZE / 2 - HIT_AREA_PADDING}
-                                y={pos.y - COMPONENT_SIZE / 2 - HIT_AREA_PADDING}
-                                width={COMPONENT_SIZE + HIT_AREA_PADDING * 2}
-                                height={COMPONENT_SIZE + HIT_AREA_PADDING * 2}
-                                fill="transparent"
-                            />
-                            <!-- Visible node -->
-                            <rect
-                                class="node"
-                                class:highlighted={isHighlighted}
-                                class:cluster-hovered={inSameCluster}
-                                class:dimmed={isDimmed}
-                                x={pos.x - COMPONENT_SIZE / 2}
-                                y={pos.y - COMPONENT_SIZE / 2}
-                                width={COMPONENT_SIZE}
-                                height={COMPONENT_SIZE}
-                                fill={style.fill}
-                                rx="1"
-                                opacity={style.opacity}
-                            />
-                        </g>
+                        {@const isSpotlight = typeof role === "object"}
+                        {#if role !== "hidden"}
+                            <g
+                                class="node-group"
+                                onmouseenter={(e) => handleNodeMouseEnter(e, layer, seqIdx, cIdx)}
+                                onmouseleave={handleNodeMouseLeave}
+                                onclick={() => handleNodeClick(layer, seqIdx, cIdx)}
+                            >
+                                <rect
+                                    x={pos.x - COMPONENT_SIZE / 2 - HIT_AREA_PADDING}
+                                    y={pos.y - COMPONENT_SIZE / 2 - HIT_AREA_PADDING}
+                                    width={COMPONENT_SIZE + HIT_AREA_PADDING * 2}
+                                    height={COMPONENT_SIZE + HIT_AREA_PADDING * 2}
+                                    fill="transparent"
+                                />
+                                <rect
+                                    class="node"
+                                    class:highlighted={role === "highlighted"}
+                                    class:cluster-hovered={role === "cluster_hovered"}
+                                    class:dimmed={role === "dimmed"}
+                                    x={pos.x - COMPONENT_SIZE / 2}
+                                    y={pos.y - COMPONENT_SIZE / 2}
+                                    width={COMPONENT_SIZE}
+                                    height={COMPONENT_SIZE}
+                                    fill={isSpotlight ? role.color : style.fill}
+                                    rx="1"
+                                    fill-opacity={isSpotlight ? role.opacity : style.opacity}
+                                    stroke={isSpotlight ? colors.textSecondary : "none"}
+                                    stroke-width={isSpotlight ? 1.5 : 0}
+                                />
+                            </g>
+                        {/if}
                     {/each}
                 </g>
             </g>
@@ -724,11 +852,12 @@
             <svg width={svgWidth} height="50" style="display: block;">
                 <g transform="translate({zoom.translateX}, 0) scale({zoom.scale}, 1)">
                     {#each data.tokens as token, i (i)}
-                        {@const colCenter = seqXStarts[i] + seqWidths[i] / 2}
+                        {@const colLeft = seqXStarts[i] + 8}
+                        {@const maskedProb = maskedSelfProbs[i]}
                         <text
-                            x={colCenter}
+                            x={colLeft}
                             y="20"
-                            text-anchor="middle"
+                            text-anchor="start"
                             font-size="11"
                             font-family="'Berkeley Mono', 'SF Mono', monospace"
                             font-weight="500"
@@ -738,13 +867,31 @@
                             {token}
                         </text>
                         <text
-                            x={colCenter}
+                            x={colLeft}
                             y="36"
-                            text-anchor="middle"
+                            text-anchor="start"
                             font-size="9"
                             font-family="'Berkeley Mono', 'SF Mono', monospace"
                             fill={colors.textMuted}>[{i}]</text
                         >
+                        <!-- Masked prediction probability dot: P(self | previous) -->
+                        {@const isFirstToken = i === 0}
+                        <circle
+                            cx={colLeft + 24}
+                            cy="33"
+                            r="4"
+                            fill={getNextTokenProbBgColor(maskedProb)}
+                            stroke={colors.textMuted}
+                            stroke-width="0.5"
+                        >
+                            <title
+                                >{maskedProb !== null
+                                    ? `P(self): ${(maskedProb * 100).toFixed(1)}%`
+                                    : isFirstToken
+                                      ? "First token"
+                                      : "P(self): <1%"}</title
+                            >
+                        </circle>
                     {/each}
                 </g>
             </svg>
@@ -756,11 +903,11 @@
         <div class="edge-tooltip" style="left: {edgeTooltipPos.x}px; top: {edgeTooltipPos.y}px;">
             <div class="edge-tooltip-row">
                 <span class="edge-tooltip-label">Src</span>
-                <code>{formatNodeKeyForDisplay(hoveredEdge.src)}</code>
+                <code>{hoveredEdge.src}</code>
             </div>
             <div class="edge-tooltip-row">
                 <span class="edge-tooltip-label">Tgt</span>
-                <code>{formatNodeKeyForDisplay(hoveredEdge.tgt)}</code>
+                <code>{hoveredEdge.tgt}</code>
             </div>
             <div class="edge-tooltip-row">
                 <span class="edge-tooltip-label">Val</span>
@@ -772,7 +919,7 @@
     {/if}
 
     <!-- Node tooltip -->
-    {#if hoveredNode && !isNodePinned(hoveredNode.layer, hoveredNode.seqIdx, hoveredNode.cIdx)}
+    {#if hoveredNode}
         <NodeTooltip
             {hoveredNode}
             {tooltipPos}
@@ -781,8 +928,8 @@
             nodeCiVals={data.nodeCiVals}
             nodeSubcompActs={data.nodeSubcompActs}
             tokens={data.tokens}
-            edgesBySource={data.edgesBySource}
-            edgesByTarget={data.edgesByTarget}
+            edgesBySource={activeEdgesBySource}
+            edgesByTarget={activeEdgesByTarget}
             onMouseEnter={() => (isHoveringTooltip = true)}
             onMouseLeave={() => {
                 isHoveringTooltip = false;
@@ -821,6 +968,13 @@
         background: var(--bg-inset);
     }
 
+    .edge-canvas {
+        position: absolute;
+        top: 0;
+        left: 0;
+        pointer-events: none;
+    }
+
     .token-labels-container {
         position: sticky;
         bottom: 0;
@@ -833,15 +987,6 @@
         display: block;
     }
 
-    :global(.edge.highlighted) {
-        opacity: 1 !important;
-        stroke-width: 3 !important;
-    }
-
-    :global(.edge.hidden) {
-        display: none;
-    }
-
     .node-group {
         cursor: pointer;
     }
@@ -849,7 +994,7 @@
     .node {
         transform-box: fill-box;
         transform-origin: center;
-        transition: transform 0.15s ease-out;
+        transition: transform var(--transition-normal);
     }
 
     .node.cluster-hovered {
@@ -872,8 +1017,8 @@
         opacity: 0.5;
         cursor: pointer;
         transition:
-            opacity 0.15s ease-out,
-            fill 0.15s ease-out;
+            opacity var(--transition-normal),
+            fill var(--transition-normal);
     }
 
     .cluster-bar:hover,

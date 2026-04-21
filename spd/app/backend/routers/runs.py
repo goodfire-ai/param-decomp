@@ -7,17 +7,24 @@ import torch
 import yaml
 from fastapi import APIRouter
 from pydantic import BaseModel
-from transformers import AutoTokenizer
-from transformers.tokenization_utils_fast import PreTrainedTokenizerFast
 
-from spd.app.backend.compute import get_sources_by_target
+from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.app.backend.dependencies import DepStateManager
-from spd.app.backend.state import HarvestCache, RunState
-from spd.app.backend.utils import build_token_lookup, log_errors
+from spd.app.backend.state import RunState
+from spd.app.backend.utils import log_errors
+from spd.autointerp.repo import InterpRepo
+from spd.configs import LMTaskConfig
+from spd.dataset_attributions.repo import AttributionRepo
+from spd.graph_interp.repo import GraphInterpRepo
+from spd.harvest.repo import HarvestRepo
 from spd.log import logger
 from spd.models.component_model import ComponentModel, SPDRunInfo
+from spd.topology import TransformerTopology, get_sources_by_target
 from spd.utils.distributed_utils import get_device
 from spd.utils.wandb_utils import parse_wandb_run_path
+
+# Datasets small enough to load into memory for search
+_SEARCHABLE_DATASETS = {"SimpleStories/SimpleStories"}
 
 # =============================================================================
 # Schemas
@@ -34,6 +41,10 @@ class LoadedRun(BaseModel):
     prompt_count: int
     context_length: int
     backend_user: str
+    dataset_attributions_available: bool
+    dataset_search_enabled: bool
+    graph_interp_available: bool
+    autointerp_available: bool
 
 
 router = APIRouter(prefix="/api", tags=["runs"])
@@ -100,26 +111,27 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
     spd_config = run_info.config
     assert spd_config.tokenizer_name is not None
     logger.info(f"[API] Loading tokenizer for run {run.id}: {spd_config.tokenizer_name}")
-    loaded_tokenizer = AutoTokenizer.from_pretrained(spd_config.tokenizer_name)
-    assert isinstance(loaded_tokenizer, PreTrainedTokenizerFast)
+    app_tokenizer = AppTokenizer.from_pretrained(spd_config.tokenizer_name)
 
-    # Build sources_by_target mapping
+    # Build topology and sources_by_target mapping
+    logger.info(f"[API] Building topology for run {run.id}")
+    topology = TransformerTopology(model.target_model)
+
     logger.info(f"[API] Building sources_by_target mapping for run {run.id}")
-    sources_by_target = get_sources_by_target(model, DEVICE, spd_config.sampling)
-
-    # Build token lookup for activation contexts
-    logger.info(f"[API] Building token lookup for run {run.id}")
-    token_strings = build_token_lookup(loaded_tokenizer, spd_config.tokenizer_name)
+    sources_by_target = get_sources_by_target(model, topology, DEVICE, spd_config.sampling)
 
     manager.run_state = RunState(
         run=run,
         model=model,
-        tokenizer=loaded_tokenizer,
+        topology=topology,
+        tokenizer=app_tokenizer,
         sources_by_target=sources_by_target,
         config=spd_config,
-        token_strings=token_strings,
         context_length=context_length,
-        harvest=HarvestCache(run_id=run_id),
+        harvest=HarvestRepo.open_most_recent(run_id),
+        interp=InterpRepo.open(run_id),
+        attributions=AttributionRepo.open(run_id),
+        graph_interp=GraphInterpRepo.open(run_id),
     )
 
     logger.info(f"[API] Run {run.id} loaded on {DEVICE}")
@@ -142,6 +154,11 @@ def get_status(manager: DepStateManager) -> LoadedRun | None:
 
     prompt_count = manager.db.get_prompt_count(run.id, context_length)
 
+    task_config = manager.run_state.config.task_config
+    dataset_search_enabled = (
+        isinstance(task_config, LMTaskConfig) and task_config.dataset_name in _SEARCHABLE_DATASETS
+    )
+
     return LoadedRun(
         id=run.id,
         wandb_path=run.wandb_path,
@@ -150,6 +167,10 @@ def get_status(manager: DepStateManager) -> LoadedRun | None:
         prompt_count=prompt_count,
         context_length=context_length,
         backend_user=getpass.getuser(),
+        dataset_attributions_available=manager.run_state.attributions is not None,
+        dataset_search_enabled=dataset_search_enabled,
+        graph_interp_available=manager.run_state.graph_interp is not None,
+        autointerp_available=manager.run_state.interp is not None,
     )
 
 

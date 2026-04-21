@@ -1,7 +1,8 @@
 <script lang="ts">
     import { getContext } from "svelte";
-    import type { EdgeAttribution, OutputProbEntry, TokenInfo } from "../../lib/promptAttributionsTypes";
-    import { formatNodeKeyForDisplay } from "../../lib/promptAttributionsTypes";
+    import { colors } from "../../lib/colors";
+    import { isTokenNode } from "../../lib/componentKeys";
+    import type { EdgeAttribution } from "../../lib/promptAttributionsTypes";
     import { RUN_KEY, type InterpretationBackendState, type RunContext } from "../../lib/useRun.svelte";
     import { lerp } from "../prompt-attr/graphUtils";
 
@@ -11,22 +12,22 @@
         items: EdgeAttribution[];
         onClick: (key: string) => void;
         pageSize: number;
-        direction: "positive" | "negative";
+        direction?: "positive" | "negative";
         title?: string;
-        // Optional: only needed for prompt-level attributions with wte/output pseudo-layers
-        tokens?: string[];
-        outputProbs?: Record<string, OutputProbEntry>;
     };
 
-    let { items, onClick, pageSize, direction, title, tokens, outputProbs }: Props = $props();
+    let { items, onClick, pageSize, direction, title }: Props = $props();
 
-    // Extract component key (layer:cIdx) from either format
     function getComponentKey(key: string): string {
         const parts = key.split(":");
         if (parts.length === 3) {
-            return `${parts[0]}:${parts[2]}`; // layer:cIdx from layer:seq:cIdx
+            return `${parts[0]}:${parts[2]}`;
         }
-        return key; // already layer:cIdx
+        return key;
+    }
+
+    function getLayerLabel(key: string): string {
+        return key.split(":")[0];
     }
 
     function getInterpretation(key: string): InterpretationBackendState {
@@ -36,78 +37,15 @@
         return { status: "none" };
     }
 
-    // Get display info for a key - returns label and whether it's a token (pseudo-layer) node
-    // Token nodes (wte/output) show the token string; component nodes show interpretation label
-    function getDisplayInfo(key: string): { label: string; isTokenNode: boolean; isOutputToken?: boolean } {
-        const parts = key.split(":");
-
-        // Handle prompt attributions with 3-part keys (layer:seq:cIdx)
-        if (tokens && outputProbs && parts.length === 3) {
-            const layer = parts[0];
-            const seqIdx = parseInt(parts[1]);
-            const cIdx = parts[2];
-
-            // wte (input embedding) nodes: show the token at this sequence position
-            if (layer === "wte") {
-                if (seqIdx < 0 || seqIdx >= tokens.length) {
-                    throw new Error(
-                        `EdgeAttributionList: seqIdx ${seqIdx} out of bounds for tokens length ${tokens.length}`,
-                    );
-                }
-                return { label: tokens[seqIdx], isTokenNode: true };
-            }
-
-            // output nodes: show the predicted token string
-            if (layer === "output") {
-                const entry = outputProbs[`${seqIdx}:${cIdx}`];
-                if (!entry) {
-                    throw new Error(`EdgeAttributionList: output node ${key} not found in outputProbs`);
-                }
-                return { label: entry.token, isTokenNode: true };
-            }
-        }
-
-        // Handle dataset attributions with 2-part keys (layer:cIdx)
-        if (parts.length === 2) {
-            const layer = parts[0];
-            const cIdx = parts[1];
-
-            // wte node in dataset attributions: single pseudo-component
-            if (layer === "wte") {
-                return { label: "Input Embeddings", isTokenNode: true };
-            }
-
-            // output nodes in dataset attributions: show token string
-            // Format: output:tokenId where tokenId is the vocab index
-            if (layer === "output") {
-                const vocabIdx = parseInt(cIdx);
-                // Tokens are guaranteed loaded when run is loaded (see useRun.svelte.ts)
-                const tokens = (runState.allTokens as { status: "loaded"; data: TokenInfo[] }).data;
-                const tokenInfo = tokens.find((t) => t.id === vocabIdx);
-                if (!tokenInfo) throw new Error(`Token not found for vocab index ${vocabIdx}`);
-                return { label: tokenInfo.string, isTokenNode: true, isOutputToken: true };
-            }
-        }
-
-        // Component nodes: show interpretation label or "N/A"
-        const interp = getInterpretation(key);
-
-        if (interp.status === "generated")
-            return {
-                label: interp.data.label,
-                isTokenNode: false,
-            };
-
-        if (interp.status === "generating") return { label: "Generating...", isTokenNode: false };
-
-        return { label: "N/A", isTokenNode: false };
+    function getTokenTypeLabel(key: string): string {
+        const layer = key.split(":")[0];
+        return layer === "embed" ? "Input token" : "Output token";
     }
 
     let currentPage = $state(0);
     const totalPages = $derived(Math.ceil(items.length / pageSize));
     const paginatedItems = $derived(items.slice(currentPage * pageSize, (currentPage + 1) * pageSize));
 
-    // Track which pill is being hovered and its position
     let hoveredKey = $state<string | null>(null);
     let tooltipPosition = $state<{ top: number; left: number } | null>(null);
 
@@ -123,7 +61,6 @@
         tooltipPosition = null;
     }
 
-    // Reset page when items change
     $effect(() => {
         items; // eslint-disable-line @typescript-eslint/no-unused-expressions
         currentPage = 0;
@@ -131,10 +68,8 @@
 
     function getBgColor(normalizedMagnitude: number): string {
         const intensity = lerp(0, 0.8, normalizedMagnitude);
-        if (direction === "negative") {
-            return `rgba(220, 38, 38, ${intensity})`; // red
-        }
-        return `rgba(22, 74, 193, ${intensity})`; // blue
+        const rgb = direction === "negative" ? colors.negativeRgb : colors.positiveRgb;
+        return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${intensity})`;
     }
 
     async function copyToClipboard(text: string) {
@@ -156,17 +91,34 @@
         {/if}
     </div>
     <div class="items">
-        {#each paginatedItems as { key, value, normalizedMagnitude } (key)}
+        {#each paginatedItems as { key, value, normalizedMagnitude, tokenStr } (key)}
             {@const bgColor = getBgColor(normalizedMagnitude)}
             {@const textColor = normalizedMagnitude > 0.8 ? "white" : "var(--text-primary)"}
-            {@const displayInfo = getDisplayInfo(key)}
-            {@const interp = !displayInfo.isTokenNode ? getInterpretation(key) : undefined}
-            {@const isHovered = hoveredKey === key}
+            {@const formattedKey = key}
+            {@const isToken = isTokenNode(key)}
+            {@const interp = isToken ? undefined : getInterpretation(key)}
+            {@const hasInterpretation = interp?.status === "generated"}
+            {@const polarity = value >= 0 ? "+" : "\u2212"}
             <div class="pill-container" onmouseenter={(e) => handleMouseEnter(key, e)} onmouseleave={handleMouseLeave}>
                 <button class="edge-pill" style="background: {bgColor};" onclick={() => onClick(key)}>
-                    <span class="node-key" style="color: {textColor};">{formatNodeKeyForDisplay(key)}</span>
+                    {#if !direction}
+                        <span class="polarity" style="color: {textColor};">{polarity}</span>
+                    {/if}
+                    {#if hasInterpretation}
+                        <span class="pill-content">
+                            <span class="interp-label" style="color: {textColor};">{interp.data.label}</span>
+                            <span class="layer-label" style="color: {textColor};">{getLayerLabel(key)}</span>
+                        </span>
+                    {:else if isToken && tokenStr}
+                        <span class="pill-content">
+                            <span class="interp-label" style="color: {textColor};">'{tokenStr}'</span>
+                            <span class="layer-label" style="color: {textColor};">{getTokenTypeLabel(key)}</span>
+                        </span>
+                    {:else}
+                        <span class="node-key" style="color: {textColor};">{formattedKey}</span>
+                    {/if}
                 </button>
-                {#if isHovered && tooltipPosition}
+                {#if hoveredKey === key && tooltipPosition}
                     <!-- svelte-ignore a11y_no_static_element_interactions -->
                     <div
                         class="tooltip"
@@ -175,9 +127,10 @@
                         onmouseleave={handleMouseLeave}
                     >
                         <div class="tooltip-value">Attribution: {value.toFixed(3)}</div>
-                        {#if !displayInfo.isTokenNode && interp?.status === "generated"}
-                            <button class="tooltip-label copyable" onclick={() => copyToClipboard(interp.data.label)}>
-                                {interp.data.label}
+                        {#if hasInterpretation}
+                            <div class="tooltip-label">{interp.data.label}</div>
+                            <button class="tooltip-node-key copyable" onclick={() => copyToClipboard(formattedKey)}>
+                                {formattedKey}
                                 <svg
                                     class="copy-icon"
                                     width="12"
@@ -191,9 +144,8 @@
                                     <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
                                 </svg>
                             </button>
-                            <div class="tooltip-confidence">Confidence: {interp.data.confidence}</div>
-                        {:else if displayInfo.isTokenNode}
-                            <div class="tooltip-token">Token: {displayInfo.label}</div>
+                        {:else if isToken && tokenStr}
+                            <div class="tooltip-token">Token: '{tokenStr}'</div>
                         {/if}
                     </div>
                 {/if}
@@ -213,7 +165,7 @@
         display: flex;
         align-items: center;
         gap: var(--space-2);
-        min-height: 1.25rem; /* Ensure consistent height even when empty */
+        min-height: 1.25rem;
     }
 
     .list-title {
@@ -263,24 +215,59 @@
 
     .pill-container {
         position: relative;
+        flex: 0 1 auto;
+        min-width: 0;
+        max-width: 100%;
     }
 
     .edge-pill {
         display: inline-flex;
-        align-items: center;
-        gap: var(--space-2);
-        padding: 2px 4px;
-        border-radius: 3px;
-        white-space: nowrap;
+        align-items: flex-start;
+        gap: var(--space-1);
+        padding: var(--space-1) var(--space-1);
+        border-radius: var(--radius-sm);
         cursor: default;
         border: 1px solid var(--border-default);
         font-family: inherit;
         font-size: inherit;
+        max-width: 100%;
+    }
+
+    .polarity {
+        font-weight: 700;
+        font-size: 10px;
+        line-height: 1;
+        flex-shrink: 0;
+        opacity: 0.7;
     }
 
     .node-key {
         font-family: var(--font-mono);
         font-size: var(--text-xs);
+        overflow-wrap: break-word;
+        text-align: left;
+    }
+
+    .pill-content {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: baseline;
+        gap: var(--space-2);
+    }
+
+    .interp-label {
+        font-family: var(--font-sans);
+        font-size: var(--text-xs);
+        font-weight: 500;
+        overflow-wrap: break-word;
+        text-align: left;
+    }
+
+    .layer-label {
+        font-family: var(--font-mono);
+        font-size: 9px;
+        opacity: 0.7;
+        text-align: right;
     }
 
     .tooltip {
@@ -290,8 +277,8 @@
         padding: var(--space-2) var(--space-3);
         background: var(--bg-elevated);
         border: 1px solid var(--border-strong);
-        border-radius: 4px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+        border-radius: var(--radius-sm);
+        box-shadow: var(--shadow-lg);
         z-index: 10000;
         min-width: 200px;
         max-width: 350px;
@@ -317,38 +304,40 @@
         font-size: var(--text-sm);
         color: var(--text-primary);
         margin-bottom: var(--space-1);
+        word-wrap: break-word;
     }
 
-    .tooltip-label.copyable {
+    .tooltip-node-key {
+        font-family: var(--font-mono);
+        font-size: var(--text-xs);
+        color: var(--text-secondary);
+        margin-bottom: var(--space-1);
+    }
+
+    .tooltip-node-key.copyable {
         display: flex;
         align-items: center;
         gap: var(--space-2);
         background: none;
         border: none;
-        padding: 2px 4px;
-        margin: -2px -4px;
+        padding: var(--space-1) var(--space-1);
+        margin: calc(-1 * var(--space-1)) calc(-1 * var(--space-1));
         margin-bottom: var(--space-1);
-        border-radius: 3px;
+        border-radius: var(--radius-sm);
         cursor: pointer;
         text-align: left;
     }
 
-    .tooltip-label.copyable:hover {
+    .tooltip-node-key.copyable:hover {
         background: var(--bg-surface);
     }
 
-    .tooltip-label.copyable .copy-icon {
+    .tooltip-node-key.copyable .copy-icon {
         opacity: 0.4;
         flex-shrink: 0;
     }
 
-    .tooltip-label.copyable:hover .copy-icon {
+    .tooltip-node-key.copyable:hover .copy-icon {
         opacity: 0.8;
-    }
-
-    .tooltip-confidence {
-        font-family: var(--font-mono);
-        font-size: var(--text-xs);
-        color: var(--text-muted);
     }
 </style>

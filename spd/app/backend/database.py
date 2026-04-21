@@ -6,25 +6,49 @@ SPD_OUT_DIR/harvest/<run_id>/.
 Interpretations are stored separately at SPD_OUT_DIR/autointerp/<run_id>/.
 """
 
+import fcntl
 import hashlib
+import io
 import json
+import os
 import sqlite3
-from dataclasses import asdict
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
+import torch
 from pydantic import BaseModel
 
 from spd.app.backend.compute import Edge, Node
-from spd.app.backend.optim_cis import MaskType
-from spd.app.backend.schemas import OutputProbability
-from spd.settings import REPO_ROOT
+from spd.app.backend.optim_cis import (
+    CELossConfig,
+    KLLossConfig,
+    LogitLossConfig,
+    MaskType,
+    PositionalLossConfig,
+)
+from spd.settings import SPD_OUT_DIR
 
 GraphType = Literal["standard", "optimized", "manual"]
 
-# Persistent data directories
-_APP_DATA_DIR = REPO_ROOT / ".data" / "app"
-DEFAULT_DB_PATH = _APP_DATA_DIR / "prompt_attr.db"
+_DEFAULT_DB_PATH = SPD_OUT_DIR / "app" / "prompt_attr.db"
+
+
+def get_default_db_path() -> Path:
+    """Get the default database path.
+
+    Checks env vars in order:
+    1. SPD_INVESTIGATION_DIR - investigation mode, db at dir/app.db
+    2. SPD_APP_DB_PATH - explicit override
+    3. Default: SPD_OUT_DIR/app/prompt_attr.db
+    """
+    investigation_dir = os.environ.get("SPD_INVESTIGATION_DIR")
+    if investigation_dir:
+        return Path(investigation_dir) / "app.db"
+    env_path = os.environ.get("SPD_APP_DB_PATH")
+    if env_path:
+        return Path(env_path)
+    return _DEFAULT_DB_PATH
 
 
 class Run(BaseModel):
@@ -43,6 +67,11 @@ class PromptRecord(BaseModel):
     is_custom: bool = False
 
 
+class PgdConfig(BaseModel):
+    n_steps: int
+    step_size: float
+
+
 class OptimizationParams(BaseModel):
     """Optimization parameters that affect graph computation."""
 
@@ -51,11 +80,12 @@ class OptimizationParams(BaseModel):
     pnorm: float
     beta: float
     mask_type: MaskType
-    # CE loss params (optional, must be set together)
-    label_token: int | None = None
-    ce_loss_coeff: float | None = None
-    # KL loss param (optional)
-    kl_loss_coeff: float | None = None
+    loss: PositionalLossConfig
+    pgd: PgdConfig | None = None
+    # Computed metrics (persisted for display on reload)
+    ci_masked_label_prob: float | None = None
+    stoch_masked_label_prob: float | None = None
+    adv_pgd_label_prob: float | None = None
 
 
 class StoredGraph(BaseModel):
@@ -68,13 +98,16 @@ class StoredGraph(BaseModel):
 
     # Core graph data (all types)
     edges: list[Edge]
-    out_probs: dict[str, OutputProbability]  # seq:c_idx -> {prob, target_prob, token}
+    edges_abs: list[Edge] | None = (
+        None  # absolute-target variant (∂|y|/∂x · x), None for old graphs
+    )
+    ci_masked_out_logits: torch.Tensor  # [seq, vocab]
+    target_out_logits: torch.Tensor  # [seq, vocab]
     node_ci_vals: dict[str, float]  # layer:seq:c_idx -> ci_val (required for all graphs)
     node_subcomp_acts: dict[str, float] = {}  # layer:seq:c_idx -> subcomp act (v_i^T @ a)
 
     # Optimized-specific (None for other types)
     optimization_params: OptimizationParams | None = None
-    label_prob: float | None = None  # P(label_token) with optimized CI mask
 
     # Manual-specific (None for other types)
     included_nodes: list[str] | None = None  # Nodes included in this graph
@@ -86,17 +119,7 @@ class InterventionRunRecord(BaseModel):
     id: int
     graph_id: int
     selected_nodes: list[str]  # node keys that were selected
-    result_json: str  # JSON-encoded InterventionResponse
-    created_at: str
-
-
-class ForkedInterventionRunRecord(BaseModel):
-    """A forked intervention run with modified tokens."""
-
-    id: int
-    intervention_run_id: int
-    token_replacements: list[tuple[int, int]]  # [(seq_pos, new_token_id), ...]
-    result_json: str  # JSON-encoded InterventionResponse
+    result_json: str  # JSON-encoded InterventionResult
     created_at: str
 
 
@@ -105,16 +128,15 @@ class PromptAttrDB:
 
     Schema:
     - runs: One row per SPD run (keyed by wandb_path)
-    - activation_contexts: Component metadata + generation config, 1:1 with runs
     - prompts: One row per stored prompt (token sequence), keyed by run_id
-    - original_component_seq_max_activations: Inverted index mapping components to prompts by a
-      component's max activation for that prompt
+    - graphs: Attribution graphs for prompts
 
-    Attribution graphs (edges) are computed on-demand at serve time, not stored.
+    Attribution graphs are computed on-demand and cached.
     """
 
     def __init__(self, db_path: Path | None = None, check_same_thread: bool = True):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path = db_path or get_default_db_path()
+        self._lock_path = self.db_path.with_suffix(".db.lock")
         self._check_same_thread = check_same_thread
         self._conn: sqlite3.Connection | None = None
 
@@ -138,6 +160,16 @@ class PromptAttrDB:
     def __exit__(self, *args: object) -> None:
         self.close()
 
+    @contextmanager
+    def _write_lock(self):
+        """Acquire an exclusive file lock for write operations (NFS-safe)."""
+        with open(self._lock_path, "w") as lock_fd:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                yield
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+
     # -------------------------------------------------------------------------
     # Schema initialization
     # -------------------------------------------------------------------------
@@ -145,7 +177,7 @@ class PromptAttrDB:
     def init_schema(self) -> None:
         """Initialize the database schema. Safe to call multiple times."""
         conn = self._get_conn()
-        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA journal_mode=DELETE")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS runs (
@@ -162,19 +194,8 @@ class PromptAttrDB:
                 is_custom INTEGER NOT NULL DEFAULT 0
             );
 
-            CREATE TABLE IF NOT EXISTS original_component_seq_max_activations (
-                prompt_id INTEGER NOT NULL REFERENCES prompts(id),
-                component_key TEXT NOT NULL,
-                max_ci REAL NOT NULL,
-                positions TEXT NOT NULL
-            );
-
             CREATE INDEX IF NOT EXISTS idx_prompts_run_id
                 ON prompts(run_id);
-            CREATE INDEX IF NOT EXISTS idx_component_key
-                ON original_component_seq_max_activations(component_key);
-            CREATE INDEX IF NOT EXISTS idx_prompt_id
-                ON original_component_seq_max_activations(prompt_id);
 
             CREATE TABLE IF NOT EXISTS graphs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -182,14 +203,20 @@ class PromptAttrDB:
                 graph_type TEXT NOT NULL,  -- 'standard', 'optimized', 'manual'
 
                 -- Optimization params (NULL for non-optimized graphs)
-                label_token INTEGER,
                 imp_min_coeff REAL,
-                ce_loss_coeff REAL,
-                kl_loss_coeff REAL,
                 steps INTEGER,
                 pnorm REAL,
                 beta REAL,
                 mask_type TEXT,
+                loss_config TEXT,  -- JSON: {type: "ce"|"kl", coeff, position, label_token?}
+                loss_config_hash TEXT,  -- SHA256 hash for uniqueness indexing
+                adv_pgd_n_steps INTEGER,
+                adv_pgd_step_size REAL,
+
+                -- Optimization metrics (NULL for non-optimized graphs)
+                ci_masked_label_prob REAL,
+                stoch_masked_label_prob REAL,
+                adv_pgd_label_prob REAL,
 
                 -- Manual graph params (NULL for non-manual graphs)
                 included_nodes TEXT,  -- JSON array of node keys in this graph
@@ -197,15 +224,14 @@ class PromptAttrDB:
 
                 -- The actual graph data (JSON)
                 edges_data TEXT NOT NULL,
+                -- Absolute-target edges (∂|y|/∂x · x), NULL for old graphs
+                edges_data_abs TEXT,
                 -- Node CI values: "layer:seq:c_idx" -> ci_val (required for all graphs)
                 node_ci_vals TEXT NOT NULL,
                 -- Node subcomponent activations: "layer:seq:c_idx" -> v_i^T @ a
                 node_subcomp_acts TEXT NOT NULL DEFAULT '{}',
-                -- Output probabilities: "seq:c_idx" -> {prob, token}
-                output_probs_data TEXT NOT NULL,
-
-                -- Optimization stats (NULL for non-optimized graphs)
-                label_prob REAL,
+                -- Output logits: torch.save({ci_masked, target}) as blob
+                output_logits BLOB NOT NULL,
 
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
@@ -217,7 +243,7 @@ class PromptAttrDB:
 
             -- One optimized graph per unique parameter combination
             CREATE UNIQUE INDEX IF NOT EXISTS idx_graphs_optimized
-                ON graphs(prompt_id, label_token, imp_min_coeff, ce_loss_coeff, kl_loss_coeff, steps, pnorm, beta, mask_type)
+                ON graphs(prompt_id, imp_min_coeff, steps, pnorm, beta, mask_type, loss_config_hash, adv_pgd_n_steps, adv_pgd_step_size)
                 WHERE graph_type = 'optimized';
 
             -- One manual graph per unique node set (using hash for reliable uniqueness)
@@ -232,24 +258,14 @@ class PromptAttrDB:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 graph_id INTEGER NOT NULL REFERENCES graphs(id),
                 selected_nodes TEXT NOT NULL,  -- JSON array of node keys
-                result TEXT NOT NULL,  -- JSON InterventionResponse
+                result TEXT NOT NULL,  -- JSON InterventionResult
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
             CREATE INDEX IF NOT EXISTS idx_intervention_runs_graph
                 ON intervention_runs(graph_id);
-
-            CREATE TABLE IF NOT EXISTS forked_intervention_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                intervention_run_id INTEGER NOT NULL REFERENCES intervention_runs(id) ON DELETE CASCADE,
-                token_replacements TEXT NOT NULL,  -- JSON array of [seq_pos, new_token_id] tuples
-                result TEXT NOT NULL,  -- JSON InterventionResponse
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_forked_intervention_runs_parent
-                ON forked_intervention_runs(intervention_run_id);
         """)
+
         conn.commit()
 
     # -------------------------------------------------------------------------
@@ -258,15 +274,16 @@ class PromptAttrDB:
 
     def create_run(self, wandb_path: str) -> int:
         """Create a new run. Returns the run ID."""
-        conn = self._get_conn()
-        cursor = conn.execute(
-            "INSERT INTO runs (wandb_path) VALUES (?)",
-            (wandb_path,),
-        )
-        conn.commit()
-        run_id = cursor.lastrowid
-        assert run_id is not None
-        return run_id
+        with self._write_lock():
+            conn = self._get_conn()
+            cursor = conn.execute(
+                "INSERT INTO runs (wandb_path) VALUES (?)",
+                (wandb_path,),
+            )
+            conn.commit()
+            run_id = cursor.lastrowid
+            assert run_id is not None
+            return run_id
 
     def get_run_by_wandb_path(self, wandb_path: str) -> Run | None:
         """Get a run by its wandb path."""
@@ -294,48 +311,6 @@ class PromptAttrDB:
     # Prompt operations
     # -------------------------------------------------------------------------
 
-    def add_prompts(
-        self,
-        run_id: int,
-        prompts: list[tuple[list[int], dict[str, tuple[float, list[int]]]]],
-        context_length: int,
-    ) -> list[int]:
-        """Add multiple prompts to the database in a single transaction.
-
-        Args:
-            run_id: The run these prompts belong to.
-            prompts: List of (token_ids, active_components) tuples.
-            context_length: The context length setting used when generating these prompts.
-
-        Returns:
-            List of prompt IDs.
-        """
-        conn = self._get_conn()
-        prompt_ids: list[int] = []
-        component_rows: list[tuple[int, str, float, str]] = []
-
-        for token_ids, active_components in prompts:
-            cursor = conn.execute(
-                "INSERT INTO prompts (run_id, token_ids, context_length) VALUES (?, ?, ?)",
-                (run_id, json.dumps(token_ids), context_length),
-            )
-            prompt_id = cursor.lastrowid
-            assert prompt_id is not None
-            prompt_ids.append(prompt_id)
-
-            for component_key, (max_ci, positions) in active_components.items():
-                component_rows.append((prompt_id, component_key, max_ci, json.dumps(positions)))
-
-        if component_rows:
-            conn.executemany(
-                """INSERT INTO original_component_seq_max_activations
-                   (prompt_id, component_key, max_ci, positions) VALUES (?, ?, ?, ?)""",
-                component_rows,
-            )
-
-        conn.commit()
-        return prompt_ids
-
     def find_prompt_by_token_ids(
         self,
         run_id: int,
@@ -354,7 +329,6 @@ class PromptAttrDB:
         self,
         run_id: int,
         token_ids: list[int],
-        active_components: dict[str, tuple[float, list[int]]],
         context_length: int,
     ) -> int:
         """Add a custom prompt to the database, or return existing if duplicate.
@@ -362,37 +336,25 @@ class PromptAttrDB:
         Args:
             run_id: The run this prompt belongs to.
             token_ids: The token IDs for the prompt.
-            active_components: Dict mapping component_key to (max_ci, positions).
             context_length: The context length setting.
 
         Returns:
             The prompt ID (existing or newly created).
         """
-        existing_id = self.find_prompt_by_token_ids(run_id, token_ids, context_length)
-        if existing_id is not None:
-            return existing_id
+        with self._write_lock():
+            existing_id = self.find_prompt_by_token_ids(run_id, token_ids, context_length)
+            if existing_id is not None:
+                return existing_id
 
-        conn = self._get_conn()
-        cursor = conn.execute(
-            "INSERT INTO prompts (run_id, token_ids, context_length, is_custom) VALUES (?, ?, ?, 1)",
-            (run_id, json.dumps(token_ids), context_length),
-        )
-        prompt_id = cursor.lastrowid
-        assert prompt_id is not None
-
-        component_rows = [
-            (prompt_id, component_key, max_ci, json.dumps(positions))
-            for component_key, (max_ci, positions) in active_components.items()
-        ]
-        if component_rows:
-            conn.executemany(
-                """INSERT INTO original_component_seq_max_activations
-                   (prompt_id, component_key, max_ci, positions) VALUES (?, ?, ?, ?)""",
-                component_rows,
+            conn = self._get_conn()
+            cursor = conn.execute(
+                "INSERT INTO prompts (run_id, token_ids, context_length, is_custom) VALUES (?, ?, ?, 1)",
+                (run_id, json.dumps(token_ids), context_length),
             )
-
-        conn.commit()
-        return prompt_id
+            prompt_id = cursor.lastrowid
+            assert prompt_id is not None
+            conn.commit()
+            return prompt_id
 
     def get_prompt(self, prompt_id: int) -> PromptRecord | None:
         """Get a prompt by ID."""
@@ -429,57 +391,6 @@ class PromptAttrDB:
         ).fetchall()
         return [row["id"] for row in rows]
 
-    def has_prompts(self, run_id: int, context_length: int) -> bool:
-        """Check if any prompts exist for a run with a specific context length."""
-        return self.get_prompt_count(run_id, context_length) > 0
-
-    # -------------------------------------------------------------------------
-    # Query operations
-    # -------------------------------------------------------------------------
-
-    def find_prompts_with_components(
-        self,
-        run_id: int,
-        component_keys: list[str],
-        require_all: bool = True,
-    ) -> list[int]:
-        """Find prompts where specified components are active.
-
-        Args:
-            run_id: The run to search within.
-            component_keys: List of component keys like "h.0.attn.q_proj:5".
-            require_all: If True, require ALL components to be active (intersection).
-                        If False, require ANY component to be active (union).
-
-        Returns:
-            List of prompt IDs matching the query.
-        """
-        assert component_keys, "No component keys provided"
-
-        conn = self._get_conn()
-        placeholders = ",".join("?" * len(component_keys))
-
-        if require_all:
-            query = f"""
-                SELECT ca.prompt_id
-                FROM original_component_seq_max_activations ca
-                JOIN prompts p ON ca.prompt_id = p.id
-                WHERE p.run_id = ? AND ca.component_key IN ({placeholders})
-                GROUP BY ca.prompt_id
-                HAVING COUNT(DISTINCT ca.component_key) = ?
-            """
-            rows = conn.execute(query, (run_id, *component_keys, len(component_keys))).fetchall()
-        else:
-            query = f"""
-                SELECT DISTINCT ca.prompt_id
-                FROM original_component_seq_max_activations ca
-                JOIN prompts p ON ca.prompt_id = p.id
-                WHERE p.run_id = ? AND ca.component_key IN ({placeholders})
-            """
-            rows = conn.execute(query, (run_id, *component_keys)).fetchall()
-
-        return [row["prompt_id"] for row in rows]
-
     # -------------------------------------------------------------------------
     # Graph operations
     # -------------------------------------------------------------------------
@@ -500,32 +411,69 @@ class PromptAttrDB:
         """
         conn = self._get_conn()
 
-        edges_json = json.dumps([asdict(e) for e in graph.edges])
-        probs_json = json.dumps({k: v.model_dump() for k, v in graph.out_probs.items()})
+        def _node_to_dict(n: Node) -> dict[str, str | int]:
+            return {
+                "layer": n.layer,
+                "seq_pos": n.seq_pos,
+                "component_idx": n.component_idx,
+            }
+
+        def _edges_to_json(edges: list[Edge]) -> str:
+            return json.dumps(
+                [
+                    {
+                        "source": _node_to_dict(e.source),
+                        "target": _node_to_dict(e.target),
+                        "strength": e.strength,
+                        "is_cross_seq": e.is_cross_seq,
+                    }
+                    for e in edges
+                ]
+            )
+
+        edges_json = _edges_to_json(graph.edges)
+        edges_abs_json = _edges_to_json(graph.edges_abs) if graph.edges_abs is not None else None
+        buf = io.BytesIO()
+        logits_dict: dict[str, torch.Tensor] = {
+            "ci_masked": graph.ci_masked_out_logits,
+            "target": graph.target_out_logits,
+        }
+        torch.save(logits_dict, buf)
+        output_logits_blob = buf.getvalue()
         node_ci_vals_json = json.dumps(graph.node_ci_vals)
         node_subcomp_acts_json = json.dumps(graph.node_subcomp_acts)
 
         # Extract optimization-specific values (NULL for non-optimized graphs)
-        label_token = None
         imp_min_coeff = None
-        ce_loss_coeff = None
-        kl_loss_coeff = None
         steps = None
         pnorm = None
         beta = None
         mask_type = None
-        label_prob = None
+        loss_config_json: str | None = None
+        loss_config_hash: str | None = None
+        adv_pgd_n_steps = None
+        adv_pgd_step_size = None
+        ci_masked_label_prob = None
+        stoch_masked_label_prob = None
+        adv_pgd_label_prob = None
 
         if graph.optimization_params:
-            label_token = graph.optimization_params.label_token
             imp_min_coeff = graph.optimization_params.imp_min_coeff
-            ce_loss_coeff = graph.optimization_params.ce_loss_coeff
-            kl_loss_coeff = graph.optimization_params.kl_loss_coeff
             steps = graph.optimization_params.steps
             pnorm = graph.optimization_params.pnorm
             beta = graph.optimization_params.beta
             mask_type = graph.optimization_params.mask_type
-            label_prob = graph.label_prob
+            loss_config_json = graph.optimization_params.loss.model_dump_json()
+            loss_config_hash = hashlib.sha256(loss_config_json.encode()).hexdigest()
+            adv_pgd_n_steps = (
+                graph.optimization_params.pgd.n_steps if graph.optimization_params.pgd else None
+            )
+            adv_pgd_step_size = (
+                graph.optimization_params.pgd.step_size if graph.optimization_params.pgd else None
+            )
+            ci_masked_label_prob = graph.optimization_params.ci_masked_label_prob
+            stoch_masked_label_prob = graph.optimization_params.stoch_masked_label_prob
+            adv_pgd_label_prob = graph.optimization_params.adv_pgd_label_prob
 
         # Extract manual-specific values (NULL for non-manual graphs)
         # Sort included_nodes and compute hash for reliable uniqueness
@@ -535,94 +483,128 @@ class PromptAttrDB:
             included_nodes_json = json.dumps(sorted(graph.included_nodes))
             included_nodes_hash = hashlib.sha256(included_nodes_json.encode()).hexdigest()
 
-        try:
-            cursor = conn.execute(
-                """INSERT INTO graphs
-                   (prompt_id, graph_type,
-                    label_token, imp_min_coeff, ce_loss_coeff, kl_loss_coeff, steps, pnorm,
-                    beta, mask_type, included_nodes, included_nodes_hash,
-                    edges_data, output_probs_data, node_ci_vals, node_subcomp_acts, label_prob)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    prompt_id,
-                    graph.graph_type,
-                    label_token,
-                    imp_min_coeff,
-                    ce_loss_coeff,
-                    kl_loss_coeff,
-                    steps,
-                    pnorm,
-                    beta,
-                    mask_type,
-                    included_nodes_json,
-                    included_nodes_hash,
-                    edges_json,
-                    probs_json,
-                    node_ci_vals_json,
-                    node_subcomp_acts_json,
-                    label_prob,
-                ),
-            )
-            conn.commit()
-            graph_id = cursor.lastrowid
-            assert graph_id is not None
-            return graph_id
-        except sqlite3.IntegrityError as e:
-            match graph.graph_type:
-                case "standard":
-                    raise ValueError(
-                        f"Standard graph already exists for prompt_id={prompt_id}. "
-                        "Use get_graphs() to retrieve existing graph or delete it first."
-                    ) from e
-                case "optimized":
-                    raise ValueError(
-                        f"Optimized graph with same parameters already exists for prompt_id={prompt_id}."
-                    ) from e
-                case "manual":
-                    # Get-or-create semantics: return existing graph ID
-                    conn.rollback()
-                    row = conn.execute(
-                        """SELECT id FROM graphs
-                           WHERE prompt_id = ? AND graph_type = 'manual'
-                           AND included_nodes_hash = ?""",
-                        (prompt_id, included_nodes_hash),
-                    ).fetchone()
-                    if row:
-                        return row["id"]
-                    # Should not happen if constraint triggered
-                    raise ValueError("A manual graph with the same nodes already exists.") from e
+        with self._write_lock():
+            try:
+                cursor = conn.execute(
+                    """INSERT INTO graphs
+                       (prompt_id, graph_type,
+                        imp_min_coeff, steps, pnorm, beta, mask_type,
+                        loss_config, loss_config_hash,
+                        adv_pgd_n_steps, adv_pgd_step_size,
+                        ci_masked_label_prob, stoch_masked_label_prob, adv_pgd_label_prob,
+                        included_nodes, included_nodes_hash,
+                        edges_data, edges_data_abs, output_logits, node_ci_vals, node_subcomp_acts)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        prompt_id,
+                        graph.graph_type,
+                        imp_min_coeff,
+                        steps,
+                        pnorm,
+                        beta,
+                        mask_type,
+                        loss_config_json,
+                        loss_config_hash,
+                        adv_pgd_n_steps,
+                        adv_pgd_step_size,
+                        ci_masked_label_prob,
+                        stoch_masked_label_prob,
+                        adv_pgd_label_prob,
+                        included_nodes_json,
+                        included_nodes_hash,
+                        edges_json,
+                        edges_abs_json,
+                        output_logits_blob,
+                        node_ci_vals_json,
+                        node_subcomp_acts_json,
+                    ),
+                )
+                conn.commit()
+                graph_id = cursor.lastrowid
+                assert graph_id is not None
+                return graph_id
+            except sqlite3.IntegrityError as e:
+                match graph.graph_type:
+                    case "standard":
+                        raise ValueError(
+                            f"Standard graph already exists for prompt_id={prompt_id}. "
+                            "Use get_graphs() to retrieve existing graph or delete it first."
+                        ) from e
+                    case "optimized":
+                        raise ValueError(
+                            f"Optimized graph with same parameters already exists for prompt_id={prompt_id}."
+                        ) from e
+                    case "manual":
+                        conn.rollback()
+                        row = conn.execute(
+                            """SELECT id FROM graphs
+                               WHERE prompt_id = ? AND graph_type = 'manual'
+                               AND included_nodes_hash = ?""",
+                            (prompt_id, included_nodes_hash),
+                        ).fetchone()
+                        if row:
+                            return row["id"]
+                        raise ValueError(
+                            "A manual graph with the same nodes already exists."
+                        ) from e
 
     def _row_to_stored_graph(self, row: sqlite3.Row) -> StoredGraph:
         """Convert a database row to a StoredGraph."""
-        edges = [
-            Edge(
-                source=Node(**e["source"]),
-                target=Node(**e["target"]),
-                strength=float(e["strength"]),
-                is_cross_seq=bool(e["is_cross_seq"]),
+
+        def _node_from_dict(d: dict[str, str | int]) -> Node:
+            return Node(
+                layer=str(d["layer"]),
+                seq_pos=int(d["seq_pos"]),
+                component_idx=int(d["component_idx"]),
             )
-            for e in json.loads(row["edges_data"])
-        ]
-        out_probs = {
-            k: OutputProbability(**v) for k, v in json.loads(row["output_probs_data"]).items()
-        }
+
+        def _parse_edges(data: str) -> list[Edge]:
+            return [
+                Edge(
+                    source=_node_from_dict(e["source"]),
+                    target=_node_from_dict(e["target"]),
+                    strength=float(e["strength"]),
+                    is_cross_seq=bool(e["is_cross_seq"]),
+                )
+                for e in json.loads(data)
+            ]
+
+        edges = _parse_edges(row["edges_data"])
+        edges_abs = _parse_edges(row["edges_data_abs"]) if row["edges_data_abs"] else None
+        logits_data = torch.load(io.BytesIO(row["output_logits"]), weights_only=True)
+        ci_masked_out_logits: torch.Tensor = logits_data["ci_masked"]
+        target_out_logits: torch.Tensor = logits_data["target"]
         node_ci_vals: dict[str, float] = json.loads(row["node_ci_vals"])
         node_subcomp_acts: dict[str, float] = json.loads(row["node_subcomp_acts"] or "{}")
 
         opt_params: OptimizationParams | None = None
-        label_prob: float | None = None
         if row["graph_type"] == "optimized":
+            loss_config_data = json.loads(row["loss_config"])
+            loss_type = loss_config_data["type"]
+            assert loss_type in ("ce", "kl", "logit"), f"Unknown loss type: {loss_type}"
+            loss_config: PositionalLossConfig
+            match loss_type:
+                case "ce":
+                    loss_config = CELossConfig(**loss_config_data)
+                case "kl":
+                    loss_config = KLLossConfig(**loss_config_data)
+                case "logit":
+                    loss_config = LogitLossConfig(**loss_config_data)
+            pgd = None
+            if row["adv_pgd_n_steps"] is not None:
+                pgd = PgdConfig(n_steps=row["adv_pgd_n_steps"], step_size=row["adv_pgd_step_size"])
             opt_params = OptimizationParams(
                 imp_min_coeff=row["imp_min_coeff"],
                 steps=row["steps"],
                 pnorm=row["pnorm"],
                 beta=row["beta"],
                 mask_type=row["mask_type"],
-                label_token=row["label_token"],
-                ce_loss_coeff=row["ce_loss_coeff"],
-                kl_loss_coeff=row["kl_loss_coeff"],
+                loss=loss_config,
+                pgd=pgd,
+                ci_masked_label_prob=row["ci_masked_label_prob"],
+                stoch_masked_label_prob=row["stoch_masked_label_prob"],
+                adv_pgd_label_prob=row["adv_pgd_label_prob"],
             )
-            label_prob = row["label_prob"]
 
         # Parse manual-specific fields
         included_nodes: list[str] | None = None
@@ -633,11 +615,12 @@ class PromptAttrDB:
             id=row["id"],
             graph_type=row["graph_type"],
             edges=edges,
-            out_probs=out_probs,
+            edges_abs=edges_abs,
+            ci_masked_out_logits=ci_masked_out_logits,
+            target_out_logits=target_out_logits,
             node_ci_vals=node_ci_vals,
             node_subcomp_acts=node_subcomp_acts,
             optimization_params=opt_params,
-            label_prob=label_prob,
             included_nodes=included_nodes,
         )
 
@@ -652,10 +635,10 @@ class PromptAttrDB:
         """
         conn = self._get_conn()
         rows = conn.execute(
-            """SELECT id, graph_type, edges_data, output_probs_data, node_ci_vals,
-                      node_subcomp_acts, label_token, imp_min_coeff, ce_loss_coeff, kl_loss_coeff,
-                      steps, pnorm, beta, mask_type, label_prob,
-                      included_nodes
+            """SELECT id, graph_type, edges_data, edges_data_abs, output_logits, node_ci_vals,
+                      node_subcomp_acts, imp_min_coeff, steps, pnorm, beta, mask_type,
+                      loss_config, adv_pgd_n_steps, adv_pgd_step_size, included_nodes,
+                      ci_masked_label_prob, stoch_masked_label_prob, adv_pgd_label_prob
                FROM graphs
                WHERE prompt_id = ?
                ORDER BY
@@ -669,10 +652,11 @@ class PromptAttrDB:
         """Retrieve a single graph by its ID. Returns (graph, prompt_id) or None."""
         conn = self._get_conn()
         row = conn.execute(
-            """SELECT id, prompt_id, graph_type, edges_data, output_probs_data, node_ci_vals,
-                      node_subcomp_acts, label_token, imp_min_coeff, ce_loss_coeff, kl_loss_coeff,
-                      steps, pnorm, beta, mask_type, label_prob,
-                      included_nodes
+            """SELECT id, prompt_id, graph_type, edges_data, edges_data_abs, output_logits,
+                      node_ci_vals, node_subcomp_acts, imp_min_coeff, steps, pnorm, beta,
+                      mask_type, loss_config, adv_pgd_n_steps, adv_pgd_step_size,
+                      included_nodes, ci_masked_label_prob, stoch_masked_label_prob,
+                      adv_pgd_label_prob
                FROM graphs
                WHERE id = ?""",
             (graph_id,),
@@ -681,23 +665,18 @@ class PromptAttrDB:
             return None
         return (self._row_to_stored_graph(row), row["prompt_id"])
 
-    def delete_graphs_for_prompt(self, prompt_id: int) -> int:
-        """Delete all graphs for a prompt. Returns the number of deleted rows."""
-        conn = self._get_conn()
-        cursor = conn.execute("DELETE FROM graphs WHERE prompt_id = ?", (prompt_id,))
-        conn.commit()
-        return cursor.rowcount
-
-    def delete_graphs_for_run(self, run_id: int) -> int:
-        """Delete all graphs for all prompts in a run. Returns the number of deleted rows."""
-        conn = self._get_conn()
-        cursor = conn.execute(
-            """DELETE FROM graphs
-               WHERE prompt_id IN (SELECT id FROM prompts WHERE run_id = ?)""",
-            (run_id,),
-        )
-        conn.commit()
-        return cursor.rowcount
+    def delete_prompt(self, prompt_id: int) -> None:
+        """Delete a prompt and all its graphs, intervention runs, and forked runs."""
+        with self._write_lock():
+            conn = self._get_conn()
+            graph_ids_query = "SELECT id FROM graphs WHERE prompt_id = ?"
+            conn.execute(
+                f"DELETE FROM intervention_runs WHERE graph_id IN ({graph_ids_query})",
+                (prompt_id,),
+            )
+            conn.execute("DELETE FROM graphs WHERE prompt_id = ?", (prompt_id,))
+            conn.execute("DELETE FROM prompts WHERE id = ?", (prompt_id,))
+            conn.commit()
 
     # -------------------------------------------------------------------------
     # Intervention run operations
@@ -714,21 +693,22 @@ class PromptAttrDB:
         Args:
             graph_id: The graph ID this run belongs to.
             selected_nodes: List of node keys that were selected.
-            result_json: JSON-encoded InterventionResponse.
+            result_json: JSON-encoded InterventionResult.
 
         Returns:
             The intervention run ID.
         """
-        conn = self._get_conn()
-        cursor = conn.execute(
-            """INSERT INTO intervention_runs (graph_id, selected_nodes, result)
-               VALUES (?, ?, ?)""",
-            (graph_id, json.dumps(selected_nodes), result_json),
-        )
-        conn.commit()
-        run_id = cursor.lastrowid
-        assert run_id is not None
-        return run_id
+        with self._write_lock():
+            conn = self._get_conn()
+            cursor = conn.execute(
+                """INSERT INTO intervention_runs (graph_id, selected_nodes, result)
+                   VALUES (?, ?, ?)""",
+                (graph_id, json.dumps(selected_nodes), result_json),
+            )
+            conn.commit()
+            run_id = cursor.lastrowid
+            assert run_id is not None
+            return run_id
 
     def get_intervention_runs(self, graph_id: int) -> list[InterventionRunRecord]:
         """Get all intervention runs for a graph.
@@ -761,102 +741,7 @@ class PromptAttrDB:
 
     def delete_intervention_run(self, run_id: int) -> None:
         """Delete an intervention run."""
-        conn = self._get_conn()
-        conn.execute("DELETE FROM intervention_runs WHERE id = ?", (run_id,))
-        conn.commit()
-
-    def delete_intervention_runs_for_graph(self, graph_id: int) -> int:
-        """Delete all intervention runs for a graph. Returns count deleted."""
-        conn = self._get_conn()
-        cursor = conn.execute("DELETE FROM intervention_runs WHERE graph_id = ?", (graph_id,))
-        conn.commit()
-        return cursor.rowcount
-
-    # -------------------------------------------------------------------------
-    # Forked intervention run operations
-    # -------------------------------------------------------------------------
-
-    def save_forked_intervention_run(
-        self,
-        intervention_run_id: int,
-        token_replacements: list[tuple[int, int]],
-        result_json: str,
-    ) -> int:
-        """Save a forked intervention run.
-
-        Args:
-            intervention_run_id: The parent intervention run ID.
-            token_replacements: List of (seq_pos, new_token_id) tuples.
-            result_json: JSON-encoded InterventionResponse.
-
-        Returns:
-            The forked intervention run ID.
-        """
-        conn = self._get_conn()
-        cursor = conn.execute(
-            """INSERT INTO forked_intervention_runs (intervention_run_id, token_replacements, result)
-               VALUES (?, ?, ?)""",
-            (intervention_run_id, json.dumps(token_replacements), result_json),
-        )
-        conn.commit()
-        fork_id = cursor.lastrowid
-        assert fork_id is not None
-        return fork_id
-
-    def get_forked_intervention_runs(
-        self, intervention_run_id: int
-    ) -> list[ForkedInterventionRunRecord]:
-        """Get all forked runs for an intervention run.
-
-        Args:
-            intervention_run_id: The parent intervention run ID.
-
-        Returns:
-            List of forked intervention run records, ordered by creation time.
-        """
-        conn = self._get_conn()
-        rows = conn.execute(
-            """SELECT id, intervention_run_id, token_replacements, result, created_at
-               FROM forked_intervention_runs
-               WHERE intervention_run_id = ?
-               ORDER BY created_at""",
-            (intervention_run_id,),
-        ).fetchall()
-
-        return [
-            ForkedInterventionRunRecord(
-                id=row["id"],
-                intervention_run_id=row["intervention_run_id"],
-                token_replacements=json.loads(row["token_replacements"]),
-                result_json=row["result"],
-                created_at=row["created_at"],
-            )
-            for row in rows
-        ]
-
-    def get_intervention_run(self, run_id: int) -> InterventionRunRecord | None:
-        """Get a single intervention run by ID."""
-        conn = self._get_conn()
-        row = conn.execute(
-            """SELECT id, graph_id, selected_nodes, result, created_at
-               FROM intervention_runs
-               WHERE id = ?""",
-            (run_id,),
-        ).fetchone()
-
-        if row is None:
-            return None
-
-        return InterventionRunRecord(
-            id=row["id"],
-            graph_id=row["graph_id"],
-            selected_nodes=json.loads(row["selected_nodes"]),
-            result_json=row["result"],
-            created_at=row["created_at"],
-        )
-
-    def delete_forked_intervention_run(self, fork_id: int) -> None:
-        """Delete a forked intervention run."""
-        conn = self._get_conn()
-        conn.execute("DELETE FROM forked_intervention_runs WHERE id = ?", (fork_id,))
-        conn.commit()
+        with self._write_lock():
+            conn = self._get_conn()
+            conn.execute("DELETE FROM intervention_runs WHERE id = ?", (run_id,))
+            conn.commit()

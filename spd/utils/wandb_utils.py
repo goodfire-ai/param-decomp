@@ -15,7 +15,7 @@ from wandb.apis.public import File, Run
 from spd.base_config import BaseConfig
 from spd.log import logger
 from spd.registry import EXPERIMENT_REGISTRY
-from spd.settings import REPO_ROOT
+from spd.settings import DEFAULT_PROJECT_NAME, REPO_ROOT
 from spd.utils.general_utils import fetch_latest_checkpoint_name
 
 WORKSPACE_TEMPLATES = {
@@ -31,7 +31,11 @@ WORKSPACE_TEMPLATES = {
 
 # Regex patterns for parsing W&B run references
 # Run IDs can be 8 chars (e.g., "d2ec3bfe") or prefixed with char-dash (e.g., "s-d2ec3bfe")
+DEFAULT_WANDB_ENTITY = "goodfire"
+DEFAULT_WANDB_PROJECT = DEFAULT_PROJECT_NAME
+
 _RUN_ID_PATTERN = r"(?:[a-z0-9]-)?[a-z0-9]{8}"
+_BARE_RUN_ID_RE = re.compile(r"^(s-[a-z0-9]{8})$")
 _WANDB_PATH_RE = re.compile(rf"^([^/\s]+)/([^/\s]+)/({_RUN_ID_PATTERN})$")
 _WANDB_PATH_WITH_RUNS_RE = re.compile(rf"^([^/\s]+)/([^/\s]+)/runs/({_RUN_ID_PATTERN})$")
 _WANDB_URL_RE = re.compile(
@@ -52,7 +56,12 @@ METRIC_CONFIG_SHORT_NAMES: dict[str, str] = {
     "PGDReconLoss": "PGDRecon",
     "PGDReconSubsetLoss": "PGDReconSub",
     "PGDReconLayerwiseLoss": "PGDReconLayer",
-    "StochasticHiddenActsReconLoss": "StochHiddenRecon",
+    "PersistentPGDReconLoss": "PersistPGDRecon",
+    "PersistentPGDReconSubsetLoss": "PersistPGDReconSub",
+    "StochasticHiddenActsReconLoss": "StochHiddenActRecon",
+    "CIHiddenActsReconLoss": "CIHiddenActRecon",
+    "StochasticAttnPatternsReconLoss": "StochAttnRecon",
+    "CIMaskedAttnPatternsReconLoss": "CIAttnRecon",
     "UnmaskedReconLoss": "UnmaskedRecon",
     # Eval metrics
     "CEandKLLosses": "CEandKL",
@@ -66,7 +75,32 @@ METRIC_CONFIG_SHORT_NAMES: dict[str, str] = {
     "StochasticReconSubsetCEAndKL": "StochReconSubCEKL",
     "PGDMultiBatchReconLoss": "PGDMultiBatchRecon",
     "PGDMultiBatchReconSubsetLoss": "PGDMultiBatchReconSub",
+    "PersistentPGDReconEval": "PersistPGDReconEval",
+    "PersistentPGDReconSubsetEval": "PersistPGDReconSubEval",
 }
+
+
+def get_wandb_entity() -> str:
+    """Get the WandB entity from env var or the authenticated user's default entity."""
+    load_dotenv(override=True)
+    entity = os.getenv("WANDB_ENTITY")
+    if entity is None:
+        entity = wandb.Api().default_entity
+    assert entity is not None, (
+        "Could not determine WandB entity. Set WANDB_ENTITY in .env or log in with `wandb login`."
+    )
+    return entity
+
+
+def get_wandb_run_url(project: str, run_id: str) -> str:
+    """Get the direct WandB URL for a run."""
+    return f"https://wandb.ai/{get_wandb_entity()}/{project}/runs/{run_id}"
+
+
+def wandb_path_to_url(wandb_path: str) -> str:
+    """Convert a WandB run path to a URL."""
+    entity, project, run_id = parse_wandb_run_path(wandb_path)
+    return f"https://wandb.ai/{entity}/{project}/runs/{run_id}"
 
 
 def _parse_metric_config_key(key: str) -> tuple[str, str, str] | None:
@@ -144,6 +178,7 @@ def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
     """Parse various W&B run reference formats into (entity, project, run_id).
 
     Accepts:
+    - "s-xxxxxxxx" (bare SPD run ID, assumes goodfire/spd)
     - "entity/project/runId" (compact form)
     - "entity/project/runs/runId" (with /runs/)
     - "wandb:entity/project/runId" (with wandb: prefix)
@@ -162,6 +197,10 @@ def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
     if s.startswith("wandb:"):
         s = s[6:]
 
+    # Bare run ID (e.g. "s-17805b61") → default entity/project
+    if m := _BARE_RUN_ID_RE.match(s):
+        return DEFAULT_WANDB_ENTITY, DEFAULT_WANDB_PROJECT, m.group(1)
+
     # Try compact form: entity/project/runid
     if m := _WANDB_PATH_RE.match(s):
         return m.group(1), m.group(2), m.group(3)
@@ -176,6 +215,7 @@ def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
 
     raise ValueError(
         f"Invalid W&B run reference. Expected one of:\n"
+        f' - "s-xxxxxxxx" (bare run ID)\n'
         f' - "entity/project/xxxxxxxx"\n'
         f' - "entity/project/runs/xxxxxxxx"\n'
         f' - "wandb:entity/project/runs/xxxxxxxx"\n'
@@ -270,8 +310,8 @@ def download_wandb_file(run: Run, wandb_run_dir: Path, file_name: str) -> Path:
     """
     file_on_wandb = run.file(file_name)
     assert isinstance(file_on_wandb, File)
-    path = Path(file_on_wandb.download(exist_ok=True, replace=False, root=str(wandb_run_dir)).name)
-    return path
+    file_on_wandb.download(exist_ok=True, replace=False, root=str(wandb_run_dir))
+    return wandb_run_dir / file_name
 
 
 def init_wandb(
@@ -290,12 +330,10 @@ def init_wandb(
         name: The name of the wandb run.
         tags: Optional list of tags to add to the run.
     """
-    load_dotenv(override=True)
-
     wandb.init(
         id=run_id,
         project=project,
-        entity=os.getenv("WANDB_ENTITY"),
+        entity=get_wandb_entity(),
         name=name,
         tags=tags,
     )
@@ -328,7 +366,7 @@ def ensure_project_exists(project: str) -> None:
         logger.info(f"Project '{project}' created successfully")
 
 
-def create_workspace_view(run_id: str, experiment_name: str, project: str) -> str:
+def create_workspace_view(launch_id: str, experiment_name: str, project: str) -> str:
     """Create a wandb workspace view for an experiment."""
     # Use experiment-specific template if available
     template_url: str = WORKSPACE_TEMPLATES.get(experiment_name, WORKSPACE_TEMPLATES["default"])
@@ -338,12 +376,11 @@ def create_workspace_view(run_id: str, experiment_name: str, project: str) -> st
     workspace.project = project
 
     # Update the workspace name
-    workspace.name = f"{experiment_name} - {run_id}"
+    workspace.name = f"{experiment_name} - {launch_id}"
 
-    # Filter for runs that have BOTH the run_id AND experiment name tags
-    # Create filter using the same pattern as in run_grid_search.py
+    # Filter for runs that have BOTH the launch_id AND experiment name tags
     workspace.runset_settings.filters = [
-        ws.Tags("tags").isin([run_id]),
+        ws.Tags("tags").isin([launch_id]),
         ws.Tags("tags").isin([experiment_name]),
     ]
 
@@ -355,7 +392,7 @@ def create_workspace_view(run_id: str, experiment_name: str, project: str) -> st
 
 def create_wandb_report(
     report_title: str,
-    run_id: str,
+    launch_id: str,
     branch_name: str,
     commit_hash: str | None,
     experiments: list[str],
@@ -363,7 +400,7 @@ def create_wandb_report(
     project: str,
     report_total_width: int = 24,
 ) -> str:
-    """Create a W&B report for the run."""
+    """Create a W&B report for the launch."""
     report = wr.Report(
         project=project,
         title=report_title,
@@ -379,8 +416,10 @@ def create_wandb_report(
     for experiment in experiments:
         task_name: str = EXPERIMENT_REGISTRY[experiment].task_name
 
-        # Use run_id and experiment name tags for filtering
-        combined_filter = f'(Tags("tags") in ["{run_id}"]) and (Tags("tags") in ["{experiment}"])'
+        # Use launch_id and experiment name tags for filtering
+        combined_filter = (
+            f'(Tags("tags") in ["{launch_id}"]) and (Tags("tags") in ["{experiment}"])'
+        )
 
         # Create runset for this specific experiment
         runset = wr.Runset(
@@ -545,7 +584,7 @@ class ReportCfg:
 
 def create_view_and_report(
     project: str,
-    run_id: str,
+    launch_id: str,
     experiments: list[str],
     report_cfg: ReportCfg | None,
 ) -> None:
@@ -553,7 +592,7 @@ def create_view_and_report(
 
     Args:
         project: W&B project name
-        run_id: Unique run identifier
+        launch_id: Launch identifier for this group of jobs
         experiments: List of experiment names to create views for
         report_cfg: How to set up a wandb view, and optionally a report for the run, if at all.
     """
@@ -564,15 +603,15 @@ def create_view_and_report(
     logger.section("Creating workspace views...")
     workspace_urls: dict[str, str] = {}
     for experiment in experiments:
-        workspace_url = create_workspace_view(run_id, experiment, project)
+        workspace_url = create_workspace_view(launch_id, experiment, project)
         workspace_urls[experiment] = workspace_url
 
     # Create report if requested
     report_url: str | None = None
     if report_cfg is not None and len(experiments) > 1:
         report_url = create_wandb_report(
-            report_title=report_cfg.report_title or f"SPD Run Report - {run_id}",
-            run_id=run_id,
+            report_title=report_cfg.report_title or f"SPD Launch Report - {launch_id}",
+            launch_id=launch_id,
             branch_name=report_cfg.branch,
             commit_hash=report_cfg.commit_hash,
             experiments=experiments,

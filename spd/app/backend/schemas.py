@@ -27,17 +27,6 @@ class OutputProbability(BaseModel):
 # =============================================================================
 
 
-class ActivationContextsGenerationConfig(BaseModel):
-    """Configuration for generating activation contexts."""
-
-    importance_threshold: float = 0.01
-    n_batches: int = 100
-    batch_size: int = 32
-    n_tokens_either_side: int = 5
-    topk_examples: int = 20
-    separation_tokens: int = 0
-
-
 class SubcomponentMetadata(BaseModel):
     """Lightweight metadata for a subcomponent (without examples/token_prs)"""
 

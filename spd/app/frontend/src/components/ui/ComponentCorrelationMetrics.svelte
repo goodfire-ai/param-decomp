@@ -1,10 +1,10 @@
 <script lang="ts">
-    import type { ComponentCorrelations } from "../../lib/promptAttributionsTypes";
+    import type { SubcomponentCorrelationsResponse } from "../../lib/promptAttributionsTypes";
     import { displaySettings } from "../../lib/displaySettings.svelte";
     import ComponentCorrelationPills from "../prompt-attr/ComponentCorrelationPills.svelte";
 
     type Props = {
-        correlations: ComponentCorrelations;
+        correlations: SubcomponentCorrelationsResponse;
         pageSize: number;
         onComponentClick?: (componentKey: string) => void;
     };

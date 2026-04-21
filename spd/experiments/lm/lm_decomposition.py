@@ -1,17 +1,20 @@
 """Language Model decomposition script."""
 
-import json
 from pathlib import Path
 
 import fire
-import wandb
 
-from spd.configs import Config, LMTaskConfig
+from spd.configs import (
+    LMTaskConfig,
+    PersistentPGDReconLossConfig,
+    PersistentPGDReconSubsetLossConfig,
+    RepeatAcrossBatchScope,
+)
 from spd.data import DatasetConfig, create_data_loader, lm_collate_fn
 from spd.log import logger
 from spd.models.batch_and_loss_fns import make_run_batch, recon_loss_kl
 from spd.pretrain.run_info import PretrainRunInfo
-from spd.run_spd import optimize
+from spd.run_spd import run_experiment
 from spd.utils.distributed_utils import (
     DistributedState,
     ensure_cached_and_call,
@@ -20,9 +23,8 @@ from spd.utils.distributed_utils import (
     is_main_process,
     with_distributed_cleanup,
 )
-from spd.utils.general_utils import resolve_class, save_pre_run_info, set_seed
-from spd.utils.run_utils import setup_decomposition_run
-from spd.utils.wandb_utils import init_wandb
+from spd.utils.general_utils import resolve_class, set_seed
+from spd.utils.run_utils import parse_config, parse_sweep_params
 
 
 @with_distributed_cleanup
@@ -30,43 +32,17 @@ def main(
     config_path: Path | str | None = None,
     config_json: str | None = None,
     evals_id: str | None = None,
-    sweep_id: str | None = None,
+    launch_id: str | None = None,
     sweep_params_json: str | None = None,
+    run_id: str | None = None,
 ) -> None:
-    assert (config_path is not None) != (config_json is not None), (
-        "Need exactly one of config_path and config_json"
-    )
-    if config_path is not None:
-        config = Config.from_file(config_path)
-    else:
-        assert config_json is not None
-        config = Config(**json.loads(config_json.removeprefix("json:")))
+    config = parse_config(config_path, config_json)
 
     dist_state = init_distributed()
     logger.info(f"Distributed state: {dist_state}")
 
-    sweep_params = (
-        None if sweep_params_json is None else json.loads(sweep_params_json.removeprefix("json:"))
-    )
-
     # Use the same seed across all ranks for deterministic data loading
     set_seed(config.seed)
-
-    if is_main_process():
-        out_dir, run_id, tags = setup_decomposition_run(
-            experiment_tag="lm", evals_id=evals_id, sweep_id=sweep_id
-        )
-        if config.wandb_project:
-            init_wandb(
-                config=config,
-                project=config.wandb_project,
-                run_id=run_id,
-                name=config.wandb_run_name,
-                tags=tags,
-            )
-        logger.info(config)
-    else:
-        out_dir = None
 
     device = get_device()
     assert isinstance(config.task_config, LMTaskConfig), "task_config not LMTaskConfig"
@@ -97,18 +73,6 @@ def main(
         )
     target_model.eval()
 
-    if is_main_process():
-        assert out_dir is not None
-        save_pre_run_info(
-            save_to_wandb=config.wandb_project is not None,
-            out_dir=out_dir,
-            spd_config=config,
-            sweep_params=sweep_params,
-            target_model=None,
-            train_config=None,
-            task_name=None,
-        )
-
     # --- Load Data --- #
     if is_main_process():
         logger.info("Loading dataset...")
@@ -121,23 +85,33 @@ def main(
         streaming=config.task_config.streaming,
         column_name=config.task_config.column_name,
         shuffle_each_epoch=config.task_config.shuffle_each_epoch,
-        seed=None,
+        seed=config.task_config.dataset_seed,
     )
 
     match dist_state:
         case DistributedState(world_size=world_size):
             # Keep per-process batch size constant to maintain scale of all metrics so we can simply average
             # them across processes.
-            assert config.microbatch_size % world_size == 0 and config.microbatch_size > 0, (
-                f"Microbatch size {config.microbatch_size} is not divisible by world size {world_size}. "
+            assert config.batch_size % world_size == 0 and config.batch_size > 0, (
+                f"Batch size {config.batch_size} is not divisible by world size {world_size}. "
             )
-            train_rank_microbatch_size = config.microbatch_size // world_size
+            train_rank_batch_size = config.batch_size // world_size
         case None:
-            train_rank_microbatch_size = config.microbatch_size
+            train_rank_batch_size = config.batch_size
+
+    for cfg in config.loss_metric_configs:
+        if isinstance(
+            cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
+        ) and isinstance(cfg.scope, RepeatAcrossBatchScope):
+            n = cfg.scope.n_sources
+            assert train_rank_batch_size % n == 0, (
+                f"repeat_across_batch n_sources={n} must divide per-rank batch_size="
+                f"{train_rank_batch_size}"
+            )
 
     train_loader, _tokenizer = create_data_loader(
         dataset_config=train_data_config,
-        batch_size=train_rank_microbatch_size,
+        batch_size=train_rank_batch_size,
         buffer_size=config.task_config.buffer_size,
         global_seed=config.seed,
         dist_state=dist_state,
@@ -153,7 +127,7 @@ def main(
         streaming=config.task_config.streaming,
         column_name=config.task_config.column_name,
         shuffle_each_epoch=config.task_config.shuffle_each_epoch,
-        seed=None,
+        seed=config.task_config.dataset_seed,
     )
 
     match dist_state:
@@ -174,11 +148,7 @@ def main(
         collate_fn=lm_collate_fn,
     )
 
-    if is_main_process():
-        logger.info("Starting optimization...")
-
-    assert config.output_extract is not None, "LM models require output_extract"
-    optimize(
+    run_experiment(
         target_model=target_model,
         config=config,
         device=device,
@@ -186,13 +156,12 @@ def main(
         eval_loader=eval_loader,
         run_batch=make_run_batch(config.output_extract),
         reconstruction_loss=recon_loss_kl,
-        out_dir=out_dir,
+        experiment_tag="lm",
+        run_id=run_id,
+        launch_id=launch_id,
+        evals_id=evals_id,
+        sweep_params=parse_sweep_params(sweep_params_json),
     )
-
-    if is_main_process():
-        logger.info("Optimization finished.")
-        if config.wandb_project:
-            wandb.finish()
 
 
 if __name__ == "__main__":

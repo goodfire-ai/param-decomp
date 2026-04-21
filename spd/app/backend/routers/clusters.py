@@ -10,6 +10,7 @@ from spd.app.backend.state import StateManager
 from spd.app.backend.utils import log_errors
 from spd.base_config import BaseConfig
 from spd.settings import SPD_OUT_DIR
+from spd.topology import TransformerTopology
 
 router = APIRouter(prefix="/api/clusters", tags=["clusters"])
 
@@ -26,11 +27,10 @@ class ClusterMapping(BaseConfig):
 class ClusterMappingFile(BaseConfig):
     """Schema for the on-disk cluster mapping JSON file."""
 
-    ensemble_id: str
+    clustering_run_id: str
     notes: str
     spd_run: str
-    n_iterations: int
-    run_idx: int
+    iteration: int
     clusters: dict[str, int | None]
 
 
@@ -42,7 +42,7 @@ def load_cluster_mapping(file_path: str) -> ClusterMapping:
     Paths are resolved relative to SPD_OUT_DIR unless they are absolute.
 
     The file should contain a JSON object with:
-    - ensemble_id: string
+    - clustering_run_id: string
     - notes: string
     - spd_run: wandb path (must match currently loaded run)
     - clusters: dict mapping component keys to cluster IDs
@@ -87,4 +87,17 @@ def load_cluster_mapping(file_path: str) -> ClusterMapping:
             f"but loaded run is '{run_state.run.wandb_path}'",
         )
 
-    return ClusterMapping(mapping=parsed.clusters)
+    canonical_clusters = _to_canonical_keys(parsed.clusters, run_state.topology)
+    return ClusterMapping(mapping=canonical_clusters)
+
+
+def _to_canonical_keys(
+    clusters: dict[str, int | None], topology: TransformerTopology
+) -> dict[str, int | None]:
+    """Convert concrete component keys (e.g. 'h.3.mlp.down_proj:5') to canonical (e.g. '3.mlp.down:5')."""
+    result: dict[str, int | None] = {}
+    for key, cluster_id in clusters.items():
+        layer, idx = key.rsplit(":", 1)
+        canonical_layer = topology.target_to_canon(layer)
+        result[f"{canonical_layer}:{idx}"] = cluster_id
+    return result

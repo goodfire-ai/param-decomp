@@ -33,36 +33,32 @@ def log_errors[T: Callable[..., Any]](func: T) -> T:
 _PUNCT_NO_SPACE = set(".,!?;:'\")-]}>/")
 
 
-def build_token_lookup(
-    tokenizer: Any,
-    tokenizer_name: str,
-) -> dict[int, str]:
-    """Build token ID -> string lookup.
+def delimit_tokens(tokens: list[tuple[str, bool]]) -> str:
+    """Join token strings, wrapping active spans in <<delimiters>>.
 
-    Uses tokenizer-specific strategy to produce strings that concatenate correctly.
+    Consecutive active tokens are grouped: [(" over", T), (" the", T), (" moon", T)]
+    produces " <<over the moon>>".
     """
-    lookup: dict[int, str] = {}
-    vocab_size: int = tokenizer.vocab_size
-
-    for tid in range(vocab_size):
-        decoded: str = tokenizer.decode([tid], skip_special_tokens=False)
-
-        match tokenizer_name:
-            case "SimpleStories/test-SimpleStories-gpt2-1.25M":
-                # WordPiece handling:
-                if decoded.startswith("##"):
-                    lookup[tid] = decoded[2:]
-                elif decoded and decoded[0] in _PUNCT_NO_SPACE:
-                    lookup[tid] = decoded
-                else:
-                    lookup[tid] = " " + decoded
-            case "openai-community/gpt2":
-                # BPE (GPT-2 style): spaces encoded in token via Ġ -> space
-                lookup[tid] = decoded
-            case _:
-                raise ValueError(f"Unsupported tokenizer name: {tokenizer_name}")
-
-    return lookup
+    parts: list[str] = []
+    in_span = False
+    for tok, active in tokens:
+        if active and not in_span:
+            stripped = tok.lstrip()
+            parts.append(tok[: len(tok) - len(stripped)])
+            parts.append("<<")
+            parts.append(stripped)
+            in_span = True
+        elif active:
+            parts.append(tok)
+        elif in_span:
+            parts.append(">>")
+            parts.append(tok)
+            in_span = False
+        else:
+            parts.append(tok)
+    if in_span:
+        parts.append(">>")
+    return "".join(parts)
 
 
 @contextmanager

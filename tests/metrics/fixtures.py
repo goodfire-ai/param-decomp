@@ -7,6 +7,7 @@ import torch.nn as nn
 from jaxtyping import Float
 from torch import Tensor
 
+from spd.configs import LayerwiseCiConfig
 from spd.models.batch_and_loss_fns import run_batch_passthrough
 from spd.models.component_model import ComponentModel
 from spd.utils.module_utils import ModulePathInfo
@@ -40,7 +41,7 @@ class TwoLayerLinearModel(nn.Module):
 
 
 def make_one_layer_component_model(
-    weight: Float[Tensor, "d_out d_in"],
+    weight: Float[Tensor, "d_out d_in"], C: int = 1
 ) -> ComponentModel:
     """Create a ComponentModel with a single linear layer for testing.
 
@@ -59,9 +60,8 @@ def make_one_layer_component_model(
     comp_model = ComponentModel(
         target_model=target,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path="fc", C=1)],
-        ci_fn_hidden_dims=[2],
-        ci_fn_type="mlp",
+        module_path_info=[ModulePathInfo(module_path="fc", C=C)],
+        ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
     )
 
@@ -97,8 +97,7 @@ def make_two_layer_component_model(
             ModulePathInfo(module_path="fc1", C=1),
             ModulePathInfo(module_path="fc2", C=1),
         ],
-        ci_fn_hidden_dims=[2],
-        ci_fn_type="mlp",
+        ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
     )
 

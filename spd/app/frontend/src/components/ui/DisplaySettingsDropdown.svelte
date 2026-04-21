@@ -1,16 +1,19 @@
 <script lang="ts">
     import {
         type NodeColorMode,
+        type EdgeVariant,
         displaySettings,
         CORRELATION_STAT_LABELS,
         CORRELATION_STAT_DESCRIPTIONS,
         NODE_COLOR_MODE_LABELS,
+        EDGE_VARIANT_LABELS,
     } from "../../lib/displaySettings.svelte";
     import GearIcon from "./icons/GearIcon.svelte";
 
     let showDropdown = $state(false);
 
     const colorModes: NodeColorMode[] = ["ci", "subcomp_act"];
+    const edgeVariants: EdgeVariant[] = ["signed", "abs_target"];
 </script>
 
 <div
@@ -86,6 +89,32 @@
                         />
                         <span class="stat-label">Edge attributions</span>
                     </label>
+                    <label class="checkbox-item single-row">
+                        <input
+                            type="checkbox"
+                            checked={displaySettings.centerOnPeak}
+                            onchange={() => (displaySettings.centerOnPeak = !displaySettings.centerOnPeak)}
+                        />
+                        <span class="stat-label">Center on peak</span>
+                    </label>
+                    <label class="checkbox-item single-row">
+                        <input
+                            type="checkbox"
+                            checked={displaySettings.curvedEdges}
+                            onchange={() => (displaySettings.curvedEdges = !displaySettings.curvedEdges)}
+                        />
+                        <span class="stat-label">Curved edges</span>
+                    </label>
+                    <label class="checkbox-item single-row">
+                        <input
+                            type="checkbox"
+                            checked={displaySettings.showAutoInterpPromptButton}
+                            onchange={() =>
+                                (displaySettings.showAutoInterpPromptButton =
+                                    !displaySettings.showAutoInterpPromptButton)}
+                        />
+                        <span class="stat-label">Autointerp prompt button</span>
+                    </label>
                 </div>
             </div>
             <div class="settings-section">
@@ -103,6 +132,42 @@
                             <span class="stat-label">{NODE_COLOR_MODE_LABELS[mode]}</span>
                         </label>
                     {/each}
+                </div>
+            </div>
+            <div class="settings-section">
+                <h4>Edge Variant</h4>
+                <p class="settings-hint">Attribution target: value or |value|</p>
+                <div class="radio-list">
+                    {#each edgeVariants as variant (variant)}
+                        <label class="radio-item">
+                            <input
+                                type="radio"
+                                name="edge-variant"
+                                checked={displaySettings.edgeVariant === variant}
+                                onchange={() => (displaySettings.edgeVariant = variant)}
+                            />
+                            <span class="stat-label">{EDGE_VARIANT_LABELS[variant]}</span>
+                        </label>
+                    {/each}
+                </div>
+            </div>
+            <div class="settings-section">
+                <h4>Component Filtering</h4>
+                <p class="settings-hint">Filter components in Components tab by mean CI</p>
+                <div class="cutoff-control">
+                    <label for="mean-ci-cutoff">Mean CI Cutoff:</label>
+                    <input
+                        id="mean-ci-cutoff"
+                        type="number"
+                        step="any"
+                        value={displaySettings.meanCiCutoff}
+                        oninput={(e) => {
+                            const val = parseFloat((e.target as HTMLInputElement).value);
+                            if (!isNaN(val) && val >= 0) {
+                                displaySettings.meanCiCutoff = val;
+                            }
+                        }}
+                    />
                 </div>
             </div>
         </div>
@@ -154,7 +219,7 @@
         background: var(--bg-elevated);
         border: 1px solid var(--border-strong);
         border-radius: var(--radius-md);
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        box-shadow: var(--shadow-md);
         padding: var(--space-3);
     }
 
@@ -240,5 +305,33 @@
         margin: 0;
         cursor: pointer;
         accent-color: var(--accent-primary);
+    }
+
+    .cutoff-control {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+    }
+
+    .cutoff-control label {
+        font-size: var(--text-sm);
+        font-weight: 500;
+        color: var(--text-primary);
+    }
+
+    .cutoff-control input[type="number"] {
+        width: 100px;
+        padding: var(--space-1) var(--space-2);
+        border: 1px solid var(--border-default);
+        border-radius: var(--radius-sm);
+        font-size: var(--text-sm);
+        font-family: var(--font-mono);
+        background: var(--bg-surface);
+        color: var(--text-primary);
+    }
+
+    .cutoff-control input[type="number"]:focus {
+        outline: none;
+        border-color: var(--accent-primary);
     }
 </style>

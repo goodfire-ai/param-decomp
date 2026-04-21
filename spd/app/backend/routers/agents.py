@@ -39,7 +39,7 @@ def get_graph_by_id(
     return stored_graph_to_response(
         graph=graph,
         token_ids=prompt.token_ids,
-        token_strings_map=loaded.token_strings,
+        tokenizer=loaded.tokenizer,
         normalize=normalize,
         ci_threshold=ci_threshold,
     )

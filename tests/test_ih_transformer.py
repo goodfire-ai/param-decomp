@@ -8,6 +8,7 @@ from spd.configs import (
     FaithfulnessLossConfig,
     IHTaskConfig,
     ImportanceMinimalityLossConfig,
+    LayerwiseCiConfig,
     ModulePatternInfoConfig,
     ScheduleConfig,
     StochasticHiddenActsReconLossConfig,
@@ -51,8 +52,7 @@ def test_ih_transformer_decomposition_happy_path(tmp_path: Path) -> None:
         # General
         seed=0,
         n_mask_samples=1,
-        ci_fn_type="vector_mlp",
-        ci_fn_hidden_dims=[128],
+        ci_config=LayerwiseCiConfig(fn_type="vector_mlp", hidden_dims=[128]),
         module_info=[
             ModulePatternInfoConfig(module_pattern="blocks.*.attn.q_proj", C=10),
             ModulePatternInfoConfig(module_pattern="blocks.*.attn.k_proj", C=10),
@@ -118,12 +118,8 @@ def test_ih_transformer_decomposition_happy_path(tmp_path: Path) -> None:
         prefix_window=ih_transformer_config.seq_len - 3,
     )
 
-    train_loader = DatasetGeneratedDataLoader(
-        dataset, batch_size=config.microbatch_size, shuffle=False
-    )
-    eval_loader = DatasetGeneratedDataLoader(
-        dataset, batch_size=config.microbatch_size, shuffle=False
-    )
+    train_loader = DatasetGeneratedDataLoader(dataset, batch_size=config.batch_size, shuffle=False)
+    eval_loader = DatasetGeneratedDataLoader(dataset, batch_size=config.batch_size, shuffle=False)
 
     # Run optimize function
     optimize(

@@ -2,7 +2,7 @@ import importlib
 import random
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import einops
 import numpy as np
@@ -170,23 +170,32 @@ def resolve_class(path: str) -> type[nn.Module]:
 def calc_kl_divergence_lm(
     pred: Float[Tensor, "... vocab"],
     target: Float[Tensor, "... vocab"],
-) -> Float[Tensor, ""] | Float[Tensor, "..."]:
-    """Calculate the KL divergence between two logits.
+) -> Float[Tensor, ""]:
+    """Calculate the mean per-position KL divergence between two logits.
 
-    Args:
-        pred: The predicted logits
-        target: The target logits
-        reduce: Whether to reduce the KL divergence across the batch and sequence dimensions
-
-    Returns:
-        The KL divergence
+    Uses fused reduction to avoid materializing a full [batch, seq, vocab] intermediate.
     """
     assert pred.shape == target.shape
     log_q = torch.log_softmax(pred, dim=-1)  # log Q
     p = torch.softmax(target, dim=-1)  # P
-    kl_raw = F.kl_div(log_q, p, reduction="none")  # P · (log P − log Q)
-    kl = kl_raw.sum(dim=-1)
-    return kl.mean()  # Σ_vocab / (batch·seq)
+    n_positions = pred.numel() // pred.shape[-1]
+    return F.kl_div(log_q, p, reduction="sum") / n_positions
+
+
+def calc_sum_recon_loss_lm(
+    pred: Float[Tensor, "... vocab"],
+    target: Float[Tensor, "... vocab"],
+    loss_type: Literal["mse", "kl"],
+) -> Float[Tensor, ""]:
+    """Calculate the reconstruction loss for a language model without reduction."""
+    match loss_type:
+        case "mse":
+            loss = ((pred - target) ** 2).sum()
+        case "kl":
+            log_q = torch.log_softmax(pred, dim=-1)
+            p = torch.softmax(target, dim=-1)
+            loss = F.kl_div(log_q, p, reduction="sum")
+    return loss
 
 
 def runtime_cast[T](type_: type[T], obj: Any) -> T:

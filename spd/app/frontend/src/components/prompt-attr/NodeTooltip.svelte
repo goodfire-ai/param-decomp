@@ -1,10 +1,13 @@
 <script lang="ts">
     import { getContext } from "svelte";
-    import type { OutputProbEntry, Edge } from "../../lib/promptAttributionsTypes";
-    import { getLayerDisplayName } from "../../lib/promptAttributionsTypes";
-    import { RUN_KEY, type RunContext } from "../../lib/useRun.svelte";
+    import { topEdgeAttributions, type OutputProbability, type EdgeData } from "../../lib/promptAttributionsTypes";
+    import type { TooltipPos } from "./graphUtils";
     import ComponentNodeCard from "./ComponentNodeCard.svelte";
     import OutputNodeCard from "./OutputNodeCard.svelte";
+    import EdgeAttributionGrid from "../ui/EdgeAttributionGrid.svelte";
+    import { displaySettings } from "../../lib/displaySettings.svelte";
+    import { COMPONENT_CARD_CONSTANTS } from "../../lib/componentCardConstants";
+    import { RUN_KEY, type RunContext } from "../../lib/useRun.svelte";
 
     const runState = getContext<RunContext>(RUN_KEY);
 
@@ -16,14 +19,14 @@
 
     type Props = {
         hoveredNode: HoveredNode;
-        tooltipPos: { x: number; y: number };
+        tooltipPos: TooltipPos;
         hideNodeCard?: boolean;
-        outputProbs: Record<string, OutputProbEntry>;
+        outputProbs: Record<string, OutputProbability>;
         nodeCiVals: Record<string, number>;
         nodeSubcompActs: Record<string, number>;
         tokens: string[];
-        edgesBySource: Map<string, Edge[]>;
-        edgesByTarget: Map<string, Edge[]>;
+        edgesBySource: Map<string, EdgeData[]>;
+        edgesByTarget: Map<string, EdgeData[]>;
         onMouseEnter: () => void;
         onMouseLeave: () => void;
         onPinComponent?: (layer: string, cIdx: number, seqIdx: number) => void;
@@ -44,9 +47,10 @@
         onPinComponent,
     }: Props = $props();
 
-    const isWte = $derived(hoveredNode.layer === "wte");
+    const isWte = $derived(hoveredNode.layer === "embed");
     const isOutput = $derived(hoveredNode.layer === "output");
     const isComponent = $derived(!isWte && !isOutput);
+    const clusterId = $derived(isComponent ? runState.getClusterId(hoveredNode.layer, hoveredNode.cIdx) : undefined);
 
     // Get CI value for component nodes
     const ciVal = $derived.by(() => {
@@ -62,11 +66,6 @@
         return nodeSubcompActs[key] ?? null;
     });
 
-    // Get cluster ID for component nodes (undefined = no mapping, null = singleton, number = cluster)
-    const clusterId = $derived(
-        isComponent ? runState.clusterMapping?.data[`${hoveredNode.layer}:${hoveredNode.cIdx}`] : undefined,
-    );
-
     const token = $derived.by(() => {
         if (hoveredNode.seqIdx >= tokens.length) {
             throw new Error(
@@ -75,16 +74,31 @@
         }
         return tokens[hoveredNode.seqIdx];
     });
+
+    const positionStyle = $derived.by(() => {
+        const parts: string[] = [];
+        if (tooltipPos.left !== undefined) parts.push(`left: ${tooltipPos.left}px`);
+        if (tooltipPos.right !== undefined) parts.push(`right: ${tooltipPos.right}px`);
+        if (tooltipPos.top !== undefined) parts.push(`top: ${tooltipPos.top}px`);
+        if (tooltipPos.bottom !== undefined) parts.push(`bottom: ${tooltipPos.bottom}px`);
+        if (tooltipPos.maxHeight !== undefined) parts.push(`max-height: ${tooltipPos.maxHeight}px`);
+        return parts.join("; ");
+    });
+
+    const wteNodeKey = $derived(`embed:${hoveredNode.seqIdx}:0`);
+    const wteOutgoing = $derived(
+        isWte ? topEdgeAttributions(edgesBySource.get(wteNodeKey) ?? [], (e) => e.tgt, 20) : [],
+    );
 </script>
 
 <div
     class="node-tooltip"
-    style="left: {tooltipPos.x}px; top: {tooltipPos.y}px;"
+    style={positionStyle}
     onmouseenter={onMouseEnter}
     onmouseleave={onMouseLeave}
     onwheel={(e) => e.stopPropagation()}
 >
-    <h3>{getLayerDisplayName(hoveredNode.layer)}:{hoveredNode.seqIdx}:{hoveredNode.cIdx}</h3>
+    <h3>{hoveredNode.layer}:{hoveredNode.seqIdx}:{hoveredNode.cIdx}</h3>
     {#if isComponent && ciVal !== null}
         <div class="ci-value">CI: {ciVal.toFixed(3)}</div>
     {/if}
@@ -103,8 +117,19 @@
                 {hoveredNode.seqIdx}
             </p>
         </div>
+        {#if displaySettings.showEdgeAttributions && wteOutgoing.length > 0}
+            <EdgeAttributionGrid
+                title="Prompt Attributions"
+                incomingLabel="Incoming"
+                outgoingLabel="Outgoing"
+                incoming={[]}
+                outgoing={wteOutgoing}
+                pageSize={COMPONENT_CARD_CONSTANTS.PROMPT_ATTRIBUTIONS_PAGE_SIZE}
+                onClick={() => {}}
+            />
+        {/if}
     {:else if isOutput}
-        <OutputNodeCard cIdx={hoveredNode.cIdx} {outputProbs} seqIdx={hoveredNode.seqIdx} />
+        <OutputNodeCard cIdx={hoveredNode.cIdx} {outputProbs} seqIdx={hoveredNode.seqIdx} {edgesByTarget} />
     {:else if !hideNodeCard}
         <!-- Key forces remount when component identity changes, so ComponentNodeCard can load on mount -->
         {#key `${hoveredNode.layer}:${hoveredNode.cIdx}`}
@@ -112,6 +137,9 @@
                 layer={hoveredNode.layer}
                 cIdx={hoveredNode.cIdx}
                 seqIdx={hoveredNode.seqIdx}
+                {ciVal}
+                {subcompAct}
+                {token}
                 {edgesBySource}
                 {edgesByTarget}
                 {tokens}
@@ -133,31 +161,15 @@
         max-width: 800px;
         max-height: 80vh;
         overflow-y: auto;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        box-shadow: var(--shadow-md);
     }
 
-    .ci-value {
-        font-size: var(--text-sm);
+    .node-tooltip h3 {
+        font-size: var(--text-base);
         font-family: var(--font-mono);
-        color: var(--accent-primary);
         font-weight: 600;
-        margin: var(--space-1) 0 var(--space-2) 0;
-    }
-
-    .subcomp-act {
-        font-size: var(--text-sm);
-        font-family: var(--font-mono);
-        color: var(--accent-secondary);
-        font-weight: 600;
-        margin: var(--space-1) 0 var(--space-2) 0;
-    }
-
-    .cluster-id {
-        font-size: var(--text-sm);
-        font-family: var(--font-mono);
-        color: var(--text-secondary);
-        font-weight: 600;
-        margin: var(--space-1) 0 var(--space-2) 0;
+        color: var(--text-primary);
+        margin: 0 0 var(--space-2) 0;
     }
 
     .wte-info {

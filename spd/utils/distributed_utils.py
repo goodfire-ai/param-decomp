@@ -5,7 +5,7 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import wraps
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 import torch
 import torch.distributed as dist
@@ -187,23 +187,11 @@ def all_reduce(
     return tensor
 
 
-def broadcast_obj[T](value: T) -> T:
-    """Broadcast an object from rank 0 to all ranks."""
-    assert is_distributed()
-    payload: list[object] = [value if is_main_process() else None]
-    dist.broadcast_object_list(payload, src=0)
-    return cast(T, payload[0])
-
-
-def call_on_rank0_then_broadcast[**P, T](
-    fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs
-) -> T:
-    """Call `fn` only on rank 0 and broadcast the result to all ranks."""
+def broadcast_tensor(tensor: Tensor) -> Tensor:
+    """Broadcast tensor data from rank 0 to all ranks, in-place."""
     if is_distributed():
-        result = fn(*args, **kwargs) if is_main_process() else None
-        result = broadcast_obj(result)
-        return cast(T, result)
-    return fn(*args, **kwargs)
+        dist.broadcast(tensor, src=0)
+    return tensor
 
 
 def ensure_cached_and_call[**P, T](fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
@@ -266,6 +254,21 @@ def gather_all_tensors(tensor: Tensor) -> list[Tensor]:
     gathered[state.rank] = tensor
 
     return gathered
+
+
+def seed_per_rank(base_seed: int) -> None:
+    """Set global RNG to a unique seed per rank, so stochastic operations diverge across DDP ranks.
+
+    Uses base_seed * world_size + rank to guarantee no collisions across any (base_seed, rank) pair.
+    In non-distributed mode, just sets seed to base_seed.
+    """
+    dist_state = get_distributed_state()
+    world_size = dist_state.world_size if dist_state is not None else 1
+    rank = dist_state.rank if dist_state is not None else 0
+    seed = base_seed * world_size + rank
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
 
 
 def get_config_json(config: Config) -> str:

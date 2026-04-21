@@ -47,7 +47,7 @@
         color: var(--text-secondary);
         font-size: var(--text-sm);
         cursor: pointer;
-        transition: all 0.1s;
+        transition: all var(--transition-fast);
     }
 
     .zoom-btn:hover {

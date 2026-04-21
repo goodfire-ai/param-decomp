@@ -8,6 +8,7 @@ from spd.configs import (
     Config,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
+    LayerwiseCiConfig,
     ModulePatternInfoConfig,
     ScheduleConfig,
     StochasticReconLayerwiseLossConfig,
@@ -48,8 +49,7 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
         # General
         seed=0,
         n_mask_samples=1,
-        ci_fn_type="mlp",
-        ci_fn_hidden_dims=[8],
+        ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[8]),
         module_info=[
             ModulePatternInfoConfig(module_pattern="linear1", C=10),
             ModulePatternInfoConfig(module_pattern="linear2", C=10),
@@ -118,12 +118,8 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
         synced_inputs=None,
     )
 
-    train_loader = DatasetGeneratedDataLoader(
-        dataset, batch_size=config.microbatch_size, shuffle=False
-    )
-    eval_loader = DatasetGeneratedDataLoader(
-        dataset, batch_size=config.microbatch_size, shuffle=False
-    )
+    train_loader = DatasetGeneratedDataLoader(dataset, batch_size=config.batch_size, shuffle=False)
+    eval_loader = DatasetGeneratedDataLoader(dataset, batch_size=config.batch_size, shuffle=False)
 
     tied_weights = None
     if target_model.config.tied_weights:

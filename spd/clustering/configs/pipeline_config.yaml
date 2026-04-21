@@ -1,4 +1,4 @@
-clustering_run_config_path: "spd/clustering/configs/crc/ss_llama_simple_mlp-1L.json"
+clustering_run_config_path: "spd/clustering/configs/crc/pile_llama_simple_mlp-4L.json"
 n_runs: 2
 distances_methods: ["perm_invariant_hamming"]
 slurm_job_name_prefix: "spd"

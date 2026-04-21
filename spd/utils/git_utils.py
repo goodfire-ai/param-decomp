@@ -41,12 +41,16 @@ def repo_current_commit_hash() -> str:
     return commit_hash
 
 
-def create_git_snapshot(run_id: str) -> tuple[str, str]:
+def create_git_snapshot(snapshot_id: str) -> tuple[str, str]:
     """Create a git snapshot branch with current changes.
 
     Creates a timestamped branch containing all current changes (staged and unstaged). Uses a
     temporary worktree to avoid affecting the current working directory. Will push the snapshot
     branch to origin if possible, but will continue without error if push permissions are lacking.
+
+    Args:
+        snapshot_id: Identifier used in the branch name and commit message (e.g. a launch_id
+            or run_id).
 
     Returns:
         (branch_name, commit_hash) where commit_hash is the HEAD of the snapshot branch
@@ -56,11 +60,11 @@ def create_git_snapshot(run_id: str) -> tuple[str, str]:
         subprocess.CalledProcessError: If git commands fail (except for push)
     """
     # prefix branch name
-    snapshot_branch: str = f"snapshot/{run_id}"
+    snapshot_branch: str = f"snapshot/{snapshot_id}"
 
     # Create temporary worktree path
     with tempfile.TemporaryDirectory() as temp_dir:
-        worktree_path = Path(temp_dir) / f"spd-snapshot-{run_id}"
+        worktree_path = Path(temp_dir) / f"spd-snapshot-{snapshot_id}"
 
         try:
             # Create worktree with new branch
@@ -97,7 +101,7 @@ def create_git_snapshot(run_id: str) -> tuple[str, str]:
             # Commit changes if any exist
             if diff_result.returncode != 0:  # Non-zero means there are changes
                 subprocess.run(
-                    ["git", "commit", "-m", f"run id {run_id}", "--no-verify"],
+                    ["git", "commit", "-m", f"snapshot {snapshot_id}", "--no-verify"],
                     cwd=worktree_path,
                     check=True,
                     capture_output=True,

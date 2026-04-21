@@ -1,23 +1,33 @@
 <script lang="ts">
     import { getContext } from "svelte";
-    import type { OutputProbEntry, PinnedNode, Edge } from "../../lib/promptAttributionsTypes";
-    import { getLayerDisplayName } from "../../lib/promptAttributionsTypes";
-    import { RUN_KEY, type RunContext } from "../../lib/useRun.svelte";
+    import type { OutputProbability, PinnedNode, EdgeData } from "../../lib/promptAttributionsTypes";
     import ComponentNodeCard from "./ComponentNodeCard.svelte";
     import OutputNodeCard from "./OutputNodeCard.svelte";
+    import { RUN_KEY, type RunContext } from "../../lib/useRun.svelte";
 
     const runState = getContext<RunContext>(RUN_KEY);
 
     type Props = {
         stagedNodes: PinnedNode[];
-        outputProbs: Record<string, OutputProbEntry>;
+        outputProbs: Record<string, OutputProbability>;
+        nodeCiVals: Record<string, number>;
+        nodeSubcompActs: Record<string, number>;
         tokens: string[];
-        edgesBySource: Map<string, Edge[]>;
-        edgesByTarget: Map<string, Edge[]>;
+        edgesBySource: Map<string, EdgeData[]>;
+        edgesByTarget: Map<string, EdgeData[]>;
         onStagedNodesChange: (nodes: PinnedNode[]) => void;
     };
 
-    let { stagedNodes, outputProbs, tokens, edgesBySource, edgesByTarget, onStagedNodesChange }: Props = $props();
+    let {
+        stagedNodes,
+        outputProbs,
+        nodeCiVals,
+        nodeSubcompActs,
+        tokens,
+        edgesBySource,
+        edgesByTarget,
+        onStagedNodesChange,
+    }: Props = $props();
 
     function clearAll() {
         onStagedNodesChange([]);
@@ -56,15 +66,16 @@
             {#each stagedNodes as node, idx (`${node.layer}:${node.seqIdx}:${node.cIdx}-${idx}`)}
                 {@const token = getTokenAtPosition(node.seqIdx)}
                 {@const isOutput = node.layer === "output"}
-                {@const isWte = node.layer === "wte"}
+                {@const isWte = node.layer === "embed"}
                 {@const isComponent = !isWte && !isOutput}
-                {@const clusterId = isComponent
-                    ? runState.clusterMapping?.data[`${node.layer}:${node.cIdx}`]
-                    : undefined}
+                {@const nodeKey = `${node.layer}:${node.seqIdx}:${node.cIdx}`}
+                {@const ciVal = isComponent ? (nodeCiVals[nodeKey] ?? null) : null}
+                {@const subcompAct = isComponent ? (nodeSubcompActs[nodeKey] ?? null) : null}
+                {@const clusterId = isComponent ? runState.getClusterId(node.layer, node.cIdx) : undefined}
                 <div class="staged-item">
                     <div class="staged-header">
                         <div class="node-info">
-                            <strong>{getLayerDisplayName(node.layer)}:{node.seqIdx}:{node.cIdx}</strong>
+                            <strong>{node.layer}:{node.seqIdx}:{node.cIdx}</strong>
                             <span class="token-preview">"{token}"</span>
                             {#if clusterId !== undefined}
                                 <span class="cluster-id">Cluster: {clusterId ?? "null"}</span>
@@ -74,6 +85,7 @@
                     </div>
 
                     {#if isWte}
+                        <div class="token-display">"{token}"</div>
                         <p class="wte-info">Input embedding at position {node.seqIdx}</p>
                     {:else if isOutput}
                         <OutputNodeCard cIdx={node.cIdx} {outputProbs} seqIdx={node.seqIdx} />
@@ -82,6 +94,9 @@
                             layer={node.layer}
                             cIdx={node.cIdx}
                             seqIdx={node.seqIdx}
+                            {ciVal}
+                            {subcompAct}
+                            {token}
                             {edgesBySource}
                             {edgesByTarget}
                             {tokens}
@@ -127,7 +142,7 @@
 
     .staged-header {
         display: flex;
-        justify-content: space-between;
+        justify-content: flex-end;
         align-items: center;
         margin-bottom: var(--space-2);
     }
@@ -142,6 +157,13 @@
         background: var(--status-negative);
         color: var(--bg-base);
         border-color: var(--status-negative);
+    }
+
+    .token-display {
+        font-size: var(--text-sm);
+        font-family: var(--font-mono);
+        color: var(--text-secondary);
+        margin-bottom: var(--space-2);
     }
 
     .staged-items {
@@ -165,13 +187,5 @@
         font-size: var(--text-sm);
         font-family: var(--font-mono);
         color: var(--text-secondary);
-    }
-
-    .cluster-id {
-        font-size: var(--text-sm);
-        font-family: var(--font-mono);
-        color: var(--text-secondary);
-        font-weight: 600;
-        margin-left: var(--space-2);
     }
 </style>

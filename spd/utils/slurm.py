@@ -40,9 +40,11 @@ class SlurmConfig:
     n_gpus: int = 1
     n_nodes: int = 1
     time: str = "72:00:00"
+    mem: str | None = None  # Memory limit (e.g., "64G", "128G")
     cpus_per_task: int | None = None
     snapshot_branch: str | None = None
     dependency_job_id: str | None = None
+    comment: str | None = None
 
 
 @dataclass
@@ -107,6 +109,7 @@ def generate_array_script(
     config: SlurmArrayConfig,
     commands: list[str],
     env: dict[str, str] | None = None,
+    per_task_comments: list[str] | None = None,
 ) -> str:
     """Generate a SLURM job array script.
 
@@ -117,6 +120,8 @@ def generate_array_script(
         config: SLURM array job configuration
         commands: List of shell commands, one per array task
         env: Optional environment variables to export at the start of the script
+        per_task_comments: If provided, each task sets its own SLURM comment via scontrol
+            at the start of execution. Must have the same length as commands.
 
     Returns:
         Complete SLURM array script content as a string
@@ -126,6 +131,9 @@ def generate_array_script(
     """
     if not commands:
         raise ValueError("Cannot generate array script with empty commands list")
+
+    if per_task_comments is not None:
+        assert len(per_task_comments) == len(commands)
 
     n_jobs = len(commands)
 
@@ -141,6 +149,23 @@ def generate_array_script(
     env_exports = _env_exports(env)
     case_block = _case_block(commands)
 
+    # Set per-task comment from inside the running job
+    if per_task_comments is not None:
+        comment_case_block = _case_block(
+            [
+                f'scontrol update job="${{SLURM_ARRAY_JOB_ID}}_{i}" comment="{comment}"'
+                for i, comment in enumerate(per_task_comments, start=1)
+            ]
+        )
+        comment_section = f"""
+# Set per-task SLURM comment
+case $SLURM_ARRAY_TASK_ID in
+{comment_case_block}
+esac
+"""
+    else:
+        comment_section = ""
+
     return f"""\
 #!/bin/bash
 {header}
@@ -148,6 +173,7 @@ def generate_array_script(
 set -euo pipefail
 umask 002  # Ensure files are group-writable
 {env_exports}
+{comment_section}
 {setup}
 
 # Execute the appropriate command based on array task ID
@@ -254,11 +280,17 @@ def _sbatch_header(
     if config.cpus_per_task is not None:
         lines.append(f"#SBATCH --cpus-per-task={config.cpus_per_task}")
 
+    if config.mem is not None:
+        lines.append(f"#SBATCH --mem={config.mem}")
+
     if is_array and array_range:
         lines.append(f"#SBATCH --array={array_range}")
 
     if config.dependency_job_id:
         lines.append(f"#SBATCH --dependency=afterok:{config.dependency_job_id}")
+
+    if config.comment:
+        lines.append(f'#SBATCH --comment="{config.comment}"')
 
     return "\n".join(lines)
 

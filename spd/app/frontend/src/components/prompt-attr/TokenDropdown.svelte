@@ -1,45 +1,41 @@
 <script lang="ts">
-    import type { TokenInfo } from "../../lib/promptAttributionsTypes";
+    import type { TokenSearchResult } from "../../lib/promptAttributionsTypes";
+    import * as api from "../../lib/api";
+    import { sanitizeToken } from "../../lib/tokenUtils";
 
     type Props = {
-        tokens: TokenInfo[];
         value: string;
         selectedTokenId: number | null;
         onSelect: (tokenId: number | null, tokenString: string) => void;
+        promptId: number;
+        position: number;
         placeholder?: string;
     };
 
-    let { tokens, value, selectedTokenId, onSelect, placeholder = "Search tokens..." }: Props = $props();
+    let { value, onSelect, promptId, position, placeholder = "Search tokens..." }: Props = $props();
 
-    /** Format token for display: strip leading space, add ## prefix if no leading space */
-    function formatTokenDisplay(tokenString: string): string {
-        if (tokenString.startsWith(" ")) {
-            return tokenString.slice(1);
-        }
-        return "##" + tokenString;
-    }
-
-    // Only format when a token is actually selected; otherwise show raw user input
-    let inputValue = $derived(selectedTokenId !== null && value ? formatTokenDisplay(value) : value);
+    let inputValue = $derived(value);
     let isOpen = $state(false);
     let highlightedIndex = $state(0);
     let inputElement: HTMLInputElement | null = $state(null);
     let dropdownPos = $state({ top: 0, left: 0 });
+    let searchResults = $state<TokenSearchResult[]>([]);
+    let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const filteredTokens = $derived.by(() => {
-        if (!inputValue.trim()) return [];
-        const search = inputValue.toLowerCase();
-        const matches: TokenInfo[] = [];
-        for (const t of tokens) {
-            // Search on formatted display string so "##art" matches continuation tokens
-            const displayStr = formatTokenDisplay(t.string).toLowerCase();
-            if (displayStr.includes(search)) {
-                matches.push(t);
-                if (matches.length >= 10) break;
-            }
+    function doSearch(query: string) {
+        if (searchTimer) clearTimeout(searchTimer);
+        if (!query.trim()) {
+            searchResults = [];
+            return;
         }
-        return matches;
-    });
+        searchTimer = setTimeout(async () => {
+            try {
+                searchResults = await api.searchTokens(query, promptId, position);
+            } catch {
+                searchResults = [];
+            }
+        }, 150);
+    }
 
     function updateDropdownPosition() {
         if (!inputElement) return;
@@ -47,14 +43,13 @@
         dropdownPos = { top: rect.bottom + 2, left: rect.left };
     }
 
-    function handleSelect(token: TokenInfo) {
-        inputValue = formatTokenDisplay(token.string);
+    function handleSelect(token: TokenSearchResult) {
         onSelect(token.id, token.string);
         isOpen = false;
     }
 
     function handleKeydown(e: KeyboardEvent) {
-        if (!isOpen || filteredTokens.length === 0) {
+        if (!isOpen || searchResults.length === 0) {
             if (e.key === "ArrowDown" && inputValue.trim()) {
                 e.preventDefault();
                 updateDropdownPosition();
@@ -66,7 +61,7 @@
         switch (e.key) {
             case "ArrowDown":
                 e.preventDefault();
-                highlightedIndex = Math.min(highlightedIndex + 1, filteredTokens.length - 1);
+                highlightedIndex = Math.min(highlightedIndex + 1, searchResults.length - 1);
                 break;
             case "ArrowUp":
                 e.preventDefault();
@@ -74,8 +69,8 @@
                 break;
             case "Enter":
                 e.preventDefault();
-                if (filteredTokens[highlightedIndex]) {
-                    handleSelect(filteredTokens[highlightedIndex]);
+                if (searchResults[highlightedIndex]) {
+                    handleSelect(searchResults[highlightedIndex]);
                 }
                 break;
             case "Escape":
@@ -89,23 +84,27 @@
         updateDropdownPosition();
         isOpen = true;
         highlightedIndex = 0;
-        // When user types, clear the selected token ID so they must pick again
         const target = e.target as HTMLInputElement;
         onSelect(null, target.value);
+        doSearch(target.value);
     }
 
     function handleFocus() {
         if (inputValue.trim()) {
             updateDropdownPosition();
             isOpen = true;
+            doSearch(inputValue);
         }
     }
 
     function handleBlur() {
-        // Small delay to allow click events on dropdown items to fire first
         setTimeout(() => {
             isOpen = false;
         }, 150);
+    }
+
+    function formatProb(prob: number): string {
+        return `${(prob * 100).toFixed(1)}%`;
     }
 </script>
 
@@ -122,9 +121,9 @@
         class="dropdown-input"
     />
 
-    {#if isOpen && filteredTokens.length > 0}
+    {#if isOpen && searchResults.length > 0}
         <ul class="dropdown-list" style="top: {dropdownPos.top}px; left: {dropdownPos.left}px;">
-            {#each filteredTokens as token, i (token.id)}
+            {#each searchResults as token, i (token.id)}
                 <li>
                     <button
                         type="button"
@@ -133,13 +132,16 @@
                         onmousedown={() => handleSelect(token)}
                         onmouseenter={() => (highlightedIndex = i)}
                     >
-                        <span class="token-string">{formatTokenDisplay(token.string)}</span>
-                        <span class="token-id">#{token.id}</span>
+                        <span class="token-string">{sanitizeToken(token.string)}</span>
+                        <span class="token-meta">
+                            <span class="token-prob">{formatProb(token.prob)}</span>
+                            <span class="token-id">#{token.id}</span>
+                        </span>
                     </button>
                 </li>
             {/each}
         </ul>
-    {:else if isOpen && inputValue.trim() && filteredTokens.length === 0}
+    {:else if isOpen && inputValue.trim() && searchResults.length === 0}
         <div class="dropdown-empty" style="top: {dropdownPos.top}px; left: {dropdownPos.left}px;">
             No matching tokens
         </div>
@@ -153,7 +155,7 @@
     }
 
     .dropdown-input {
-        width: 100px;
+        width: 120px;
         padding: var(--space-1);
         border: 1px solid var(--border-default);
         background: var(--bg-elevated);
@@ -173,7 +175,7 @@
 
     .dropdown-list {
         position: fixed;
-        min-width: 200px;
+        min-width: 250px;
         max-height: 300px;
         overflow-y: auto;
         margin: 0;
@@ -182,7 +184,7 @@
         background: var(--bg-elevated);
         border: 1px solid var(--border-strong);
         border-radius: var(--radius-sm);
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        box-shadow: var(--shadow-md);
         z-index: 10000;
     }
 
@@ -199,21 +201,38 @@
         color: var(--text-primary);
         font-family: var(--font-mono);
         font-size: var(--text-sm);
+        gap: var(--space-3);
     }
 
     .dropdown-item:hover,
     .dropdown-item.highlighted {
-        background: var(--bg-inset);
+        background: var(--bg-surface);
     }
 
     .token-string {
         white-space: pre;
+        background: var(--bg-base);
+        padding: 1px 3px;
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--radius-sm);
+    }
+
+    .token-meta {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        flex-shrink: 0;
+    }
+
+    .token-prob {
+        font-size: var(--text-xs);
+        color: var(--text-secondary);
+        font-variant-numeric: tabular-nums;
     }
 
     .token-id {
         font-size: var(--text-xs);
         color: var(--text-muted);
-        margin-left: var(--space-2);
     }
 
     .dropdown-empty {

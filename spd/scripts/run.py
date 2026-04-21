@@ -22,12 +22,17 @@ from spd.settings import REPO_ROOT
 from spd.utils.compute_utils import (
     GPUS_PER_NODE,
     TrainingJob,
-    create_slurm_array_script,
+    create_slurm_script,
 )
 from spd.utils.git_utils import create_git_snapshot
-from spd.utils.run_utils import apply_nested_updates, generate_grid_combinations
+from spd.utils.run_utils import apply_nested_updates, generate_grid_combinations, generate_run_id
 from spd.utils.slurm import submit_slurm_job
-from spd.utils.wandb_utils import ReportCfg, create_view_and_report, generate_wandb_run_name
+from spd.utils.wandb_utils import (
+    ReportCfg,
+    create_view_and_report,
+    generate_wandb_run_name,
+    get_wandb_run_url,
+)
 
 
 def launch_slurm_run(
@@ -57,8 +62,8 @@ def launch_slurm_run(
         project: W&B project name
     """
 
-    run_id = _generate_run_id()
-    logger.info(f"Run ID: {run_id}")
+    launch_id = _generate_launch_id()
+    logger.info(f"Launch ID: {launch_id}")
 
     experiments_list = _get_experiments(experiments)
     logger.info(f"Experiments: {', '.join(experiments_list)}")
@@ -76,55 +81,69 @@ def launch_slurm_run(
         sweep_params=sweep_params,
     )
 
-    snapshot_branch, commit_hash = create_git_snapshot(run_id=run_id)
+    snapshot_branch, commit_hash = create_git_snapshot(snapshot_id=launch_id)
     logger.info(f"Created git snapshot branch: {snapshot_branch} ({commit_hash[:8]})")
 
-    _wandb_setup(
-        create_report=create_report,
-        report_title=report_title,
-        project=project,
-        run_id=run_id,
-        experiments_list=experiments_list,
-        snapshot_branch=snapshot_branch,
-        commit_hash=commit_hash,
-    )
+    if len(training_jobs) > 1:
+        _create_wandb_views_and_report(
+            create_report=create_report,
+            report_title=report_title,
+            project=project,
+            launch_id=launch_id,
+            experiments_list=experiments_list,
+            snapshot_branch=snapshot_branch,
+            commit_hash=commit_hash,
+        )
 
     slurm_job_name = f"spd-{job_suffix or get_max_expected_runtime(experiments_list)}"
 
-    array_script_content = create_slurm_array_script(
+    wandb_urls = [get_wandb_run_url(project, job.run_id) for job in training_jobs]
+
+    is_array = len(training_jobs) > 1
+
+    script_content = create_slurm_script(
         slurm_job_name=slurm_job_name,
-        run_id=run_id,
+        launch_id=launch_id,
         training_jobs=training_jobs,
         sweep_params=sweep_params,
         snapshot_branch=snapshot_branch,
         n_gpus=n_gpus,
         partition=partition,
         max_concurrent_tasks=n_agents,
+        per_task_comments=wandb_urls,
     )
 
     # Submit script (handles file writing, submission, renaming, and log file creation)
     result = submit_slurm_job(
-        array_script_content,
-        f"run_array_{run_id}",
-        is_array=True,
-        n_array_tasks=len(training_jobs),
+        script_content,
+        f"launch_{launch_id}",
+        is_array=is_array,
+        n_array_tasks=len(training_jobs) if is_array else None,
     )
 
     logger.section("Job submitted successfully!")
-    logger.values(
-        {
-            "Array Job ID": result.job_id,
-            "Total training jobs": len(training_jobs),
-            "Max concurrent tasks": n_agents,
-            "View logs in": result.log_pattern,
-            "Script": str(result.script_path),
-        }
-    )
+    summary: dict[str, str | int | None] = {
+        "Array Job ID" if is_array else "Job ID": result.job_id,
+        "Total training jobs": len(training_jobs),
+        "Max concurrent tasks": n_agents,
+        "View logs in": result.log_pattern,
+        "Script": str(result.script_path),
+    }
+    if len(wandb_urls) <= 10:
+        summary["WandB run URLs"] = (
+            wandb_urls[0]
+            if len(wandb_urls) == 1
+            else "\n" + "\n".join(f"  - {u}" for u in wandb_urls)
+        )
+    logger.values(summary)
 
 
-def _generate_run_id() -> str:
-    """Generate a unique run ID based on timestamp."""
-    return f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+def _generate_launch_id() -> str:
+    """Generate a unique launch ID based on timestamp.
+
+    Prefixed with 'launch-' to prevent Python Fire from parsing the numeric timestamp as an int.
+    """
+    return f"launch-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
 
 def _create_training_jobs(
@@ -161,6 +180,7 @@ def _create_training_jobs(
                     experiment=experiment,
                     script_path=exp_config.decomp_script,
                     config=config_with_overrides,
+                    run_id=generate_run_id("spd"),
                 )
             )
             task_breakdown[experiment] = "1 job"
@@ -185,6 +205,7 @@ def _create_training_jobs(
                         experiment=experiment,
                         script_path=exp_config.decomp_script,
                         config=config_with_overrides,
+                        run_id=generate_run_id("spd"),
                     )
                 )
 
@@ -310,11 +331,11 @@ def _resolve_sweep_params_path(sweep_params_file: str) -> Path:
         return REPO_ROOT / sweep_params_file
 
 
-def _wandb_setup(
+def _create_wandb_views_and_report(
     create_report: bool,
     report_title: str | None,
     project: str,
-    run_id: str,
+    launch_id: str,
     experiments_list: list[str],
     snapshot_branch: str,
     commit_hash: str,
@@ -339,7 +360,7 @@ def _wandb_setup(
 
     create_view_and_report(
         project=project,
-        run_id=run_id,
+        launch_id=launch_id,
         experiments=experiments_list,
         report_cfg=report_cfg,
     )
