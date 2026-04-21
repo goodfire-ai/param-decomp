@@ -15,7 +15,7 @@ from spd.settings import REPO_ROOT
 
 TEST_CONFIG = {
     # --- General ---
-    "seed": 0,
+    "seed": 42,
     "C": 3,
     "n_mask_samples": 1,
     "ci_config": {

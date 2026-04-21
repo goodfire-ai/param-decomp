@@ -723,12 +723,12 @@ class TestPersistentPGDReconLoss:
     def test_basic_forward_and_state_update(self: object) -> None:
         """Test that persistent PGD computes loss and updates state."""
         fc_weight = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
-        model = _make_component_model(weight=fc_weight)
+        model = _make_seq_component_model(weight=fc_weight)
 
-        # Use (batch, seq) shaped data to match PersistentPGD's expectations
-        batch = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
-        target_out = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
-        # CI needs (batch, seq, C) shape for PersistentPGD
+        # Input shape: (batch=1, seq=2, d_in=2)
+        batch = torch.tensor([[[1.0, 2.0], [0.5, 1.5]]], dtype=torch.float32)
+        target_out = torch.tensor([[[1.0, 2.0], [0.5, 1.5]]], dtype=torch.float32)
+        # CI shape: (batch=1, seq=2, C=1)
         ci = {"fc": torch.tensor([[[0.5], [0.5]]], dtype=torch.float32)}
 
         cfg = PersistentPGDReconLossConfig(
@@ -739,7 +739,7 @@ class TestPersistentPGDReconLoss:
         # Initialize state
         state = PersistentPGDState(
             module_to_c=model.module_to_c,
-            batch_dims=(1, 2),
+            batch_dims=batch.shape[:2],
             device="cpu",
             use_delta_component=False,
             cfg=cfg,
@@ -776,11 +776,12 @@ class TestPersistentPGDReconLoss:
     def test_masks_persist_across_calls(self: object) -> None:
         """Test that masks persist and accumulate updates across calls."""
         fc_weight = torch.tensor([[2.0, 0.0], [0.0, 2.0]], dtype=torch.float32)
-        model = _make_component_model(weight=fc_weight)
+        model = _make_seq_component_model(weight=fc_weight)
 
-        batch = torch.tensor([[1.0, 1.0]], dtype=torch.float32)
-        target_out = torch.tensor([[2.0, 2.0]], dtype=torch.float32)
-        # CI needs (batch, seq, C) shape for PersistentPGD
+        # Input shape: (batch=1, seq=2, d_in=2)
+        batch = torch.tensor([[[1.0, 1.0], [0.5, 0.5]]], dtype=torch.float32)
+        target_out = torch.tensor([[[2.0, 2.0], [1.0, 1.0]]], dtype=torch.float32)
+        # CI shape: (batch=1, seq=2, C=1)
         ci = {"fc": torch.tensor([[[0.3], [0.3]]], dtype=torch.float32)}
 
         cfg = PersistentPGDReconLossConfig(
@@ -790,7 +791,7 @@ class TestPersistentPGDReconLoss:
 
         state = PersistentPGDState(
             module_to_c=model.module_to_c,
-            batch_dims=(1, 2),
+            batch_dims=batch.shape[:2],
             device="cpu",
             use_delta_component=False,
             cfg=cfg,
@@ -932,11 +933,12 @@ class TestPersistentPGDReconLoss:
     def test_adam_optimizer_state(self: object) -> None:
         """Test that Adam optimizer path updates internal state."""
         fc_weight = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
-        model = _make_component_model(weight=fc_weight)
+        model = _make_seq_component_model(weight=fc_weight)
 
-        batch = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
-        target_out = torch.tensor([[0.5, 1.5]], dtype=torch.float32)
-        # CI needs (batch, seq, C) shape for PersistentPGD
+        # Input shape: (batch=1, seq=2, d_in=2)
+        batch = torch.tensor([[[1.0, 2.0], [0.5, 1.5]]], dtype=torch.float32)
+        target_out = torch.tensor([[[0.5, 1.5], [0.25, 0.75]]], dtype=torch.float32)
+        # CI shape: (batch=1, seq=2, C=1)
         ci = {"fc": torch.tensor([[[0.4], [0.4]]], dtype=torch.float32)}
 
         cfg = PersistentPGDReconLossConfig(
@@ -948,7 +950,7 @@ class TestPersistentPGDReconLoss:
 
         state = PersistentPGDState(
             module_to_c=model.module_to_c,
-            batch_dims=(1, 2),
+            batch_dims=batch.shape[:2],
             device="cpu",
             use_delta_component=False,
             cfg=cfg,

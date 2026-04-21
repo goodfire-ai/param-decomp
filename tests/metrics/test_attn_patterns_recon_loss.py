@@ -6,7 +6,7 @@ from spd.metrics.attn_patterns_recon_loss import (
     StochasticAttnPatternsReconLoss,
     _compute_attn_patterns,
 )
-from spd.models.batch_and_loss_fns import run_batch_first_element
+from spd.models.batch_and_loss_fns import make_run_batch
 from spd.models.component_model import ComponentModel
 from spd.pretrain.models.gpt2 import GPT2, GPT2Config
 from spd.pretrain.models.gpt2_simple import GPT2Simple, GPT2SimpleConfig
@@ -35,7 +35,7 @@ def _make_gpt2_component_model(n_embd: int = 16, n_head: int = 2) -> ComponentMo
 
     comp_model = ComponentModel(
         target_model=target,
-        run_batch=run_batch_first_element,
+        run_batch=make_run_batch(output_extract=0),
         module_path_info=module_path_info,
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[8]),
         sigmoid_type="leaky_hard",
@@ -63,7 +63,7 @@ def _make_gpt2_c_attn_component_model(n_embd: int = 16, n_head: int = 2) -> Comp
 
     comp_model = ComponentModel(
         target_model=target,
-        run_batch=run_batch_first_element,
+        run_batch=make_run_batch(output_extract=0),
         module_path_info=module_path_info,
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[8]),
         sigmoid_type="leaky_hard",
@@ -294,7 +294,7 @@ def _make_llama_component_model(n_embd: int = 16, n_head: int = 2) -> ComponentM
 
     return ComponentModel(
         target_model=target,
-        run_batch=run_batch_first_element,
+        run_batch=make_run_batch(output_extract=0),
         module_path_info=module_path_info,
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[8]),
         sigmoid_type="leaky_hard",

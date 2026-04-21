@@ -25,7 +25,7 @@ from torch import Tensor
 
 from spd.configs import LayerwiseCiConfig, PGDReconLossConfig
 from spd.metrics.pgd_utils import pgd_masked_recon_loss_update
-from spd.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
+from spd.models.batch_and_loss_fns import recon_loss_mse, run_batch_passthrough
 from spd.models.component_model import ComponentModel
 from spd.routing import AllLayersRouter
 from spd.utils.distributed_utils import (
@@ -56,7 +56,7 @@ def _make_component_model(fc_weight: Tensor) -> ComponentModel:
     target.requires_grad_(False)
     return ComponentModel(
         target_model=target,
-        run_batch=run_batch_first_element,
+        run_batch=run_batch_passthrough,
         module_path_info=[ModulePathInfo(module_path="fc", C=1)],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
