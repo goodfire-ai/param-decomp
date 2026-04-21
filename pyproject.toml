@@ -1,7 +1,7 @@
 [project]
 name = "spd"
 version = "0.0.1"
-description = "Sparse Parameter Decomposition"
+description = "Stochastic Parameter Decomposition"
 requires-python = "==3.13.*"
 urls = { "Homepage" = "https://github.com/goodfire-ai/spd" }
 license = { text = "MIT" }
