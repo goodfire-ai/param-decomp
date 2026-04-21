@@ -1,4 +1,4 @@
-from typing import Any, ClassVar, Literal, override
+from typing import Any, ClassVar, override
 
 import torch
 from jaxtyping import Float, Int
@@ -7,10 +7,10 @@ from torch.distributed import ReduceOp
 
 from spd.metrics.base import Metric
 from spd.metrics.hidden_acts_recon_loss import calc_hidden_acts_mse, compute_per_module_metrics
+from spd.models.batch_and_loss_fns import ReconstructionLoss
 from spd.models.component_model import CIOutputs, ComponentModel
 from spd.persistent_pgd import PPGDSources, get_ppgd_mask_infos
 from spd.utils.distributed_utils import all_reduce
-from spd.utils.general_utils import calc_sum_recon_loss_lm
 
 
 class PPGDReconEval(Metric):
@@ -28,20 +28,18 @@ class PPGDReconEval(Metric):
         device: str,
         effective_sources: PPGDSources,
         use_delta_component: bool,
-        output_loss_type: Literal["mse", "kl"],
+        reconstruction_loss: ReconstructionLoss,
         metric_name: str,
     ) -> None:
         self.model = model
         self.use_delta_component = use_delta_component
-        self.output_loss_type: Literal["mse", "kl"] = output_loss_type
+        self.reconstruction_loss = reconstruction_loss
         self.device = device
         self._effective_sources = effective_sources
         self._metric_name = metric_name
 
         self._module_sum_mse: dict[str, Tensor] = {}
         self._module_n: dict[str, Tensor] = {}
-        self._output_sum_loss = torch.tensor(0.0, device=device)
-        self._output_n = torch.tensor(0, device=device)
 
     @override
     def update(
@@ -76,11 +74,9 @@ class PPGDReconEval(Metric):
             self._module_sum_mse[key] += mse.detach()
             self._module_n[key] += n
 
-        output_loss = calc_sum_recon_loss_lm(
-            pred=comp_output, target=target_out, loss_type=self.output_loss_type
-        )
+        output_loss, n_examples = self.reconstruction_loss(pred=comp_output, target=target_out)
         self._output_sum_loss += output_loss.detach()
-        self._output_n += target_out.numel()
+        self._output_n += n_examples
 
     @override
     def compute(self) -> dict[str, Float[Tensor, ""]]:
@@ -92,6 +88,6 @@ class PPGDReconEval(Metric):
         )
         out.update(per_module)
         sum_loss = all_reduce(self._output_sum_loss, op=ReduceOp.SUM)
-        n_examples = all_reduce(self._output_n.float(), op=ReduceOp.SUM)
+        n_examples = all_reduce(self._output_n, op=ReduceOp.SUM)
         out[f"{self._metric_name}/output_recon"] = sum_loss / n_examples
         return out

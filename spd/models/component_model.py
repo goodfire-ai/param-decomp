@@ -395,6 +395,14 @@ class ComponentModel(LoadableModule):
     def __call__(
         self,
         batch: Any,
+        cache_type: Literal["output"],
+        mask_infos: dict[str, ComponentsMaskInfo] | None = None,
+    ) -> OutputWithCache: ...
+
+    @overload
+    def __call__(
+        self,
+        batch: Any,
         mask_infos: dict[str, ComponentsMaskInfo] | None = None,
         cache_type: Literal["none"] = "none",
     ) -> Tensor: ...

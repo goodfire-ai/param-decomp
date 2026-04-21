@@ -316,7 +316,7 @@ def init_metric(
                 device=device,
                 effective_sources=matching[0].get_effective_sources(),
                 use_delta_component=run_config.use_delta_component,
-                output_loss_type="kl",  # TODO: FIX!
+                reconstruction_loss=reconstruction_loss,
                 metric_name=cfg.classname,
             )
         case PersistentPGDReconSubsetEvalConfig():
@@ -331,7 +331,7 @@ def init_metric(
                 device=device,
                 effective_sources=matching[0].get_effective_sources(),
                 use_delta_component=run_config.use_delta_component,
-                output_loss_type="kl",  # TODO: FIX!
+                reconstruction_loss=reconstruction_loss,
                 metric_name=cfg.classname,
             )
         case CIMaskedAttnPatternsReconLossConfig():

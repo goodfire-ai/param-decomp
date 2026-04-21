@@ -9,7 +9,7 @@ benefit of many PGD steps without the per-step computational cost.
 """
 
 from abc import ABC, abstractmethod
-from typing import Literal, override
+from typing import override
 
 import torch
 from jaxtyping import Float, Int
@@ -27,11 +27,12 @@ from spd.configs import (
     SignPGDConfig,
     SingleSourceScope,
 )
+from spd.models.batch_and_loss_fns import ReconstructionLoss
 from spd.models.component_model import ComponentModel
 from spd.models.components import ComponentsMaskInfo, RoutingMasks, make_mask_infos
 from spd.routing import AllLayersRouter, Router, get_subset_router
 from spd.utils.distributed_utils import all_reduce, broadcast_tensor
-from spd.utils.general_utils import calc_sum_recon_loss_lm, get_scheduled_value
+from spd.utils.general_utils import get_scheduled_value
 
 PPGDSources = dict[str, Float[Tensor, " source_c"]]
 
@@ -131,7 +132,7 @@ class PersistentPGDState:
         device: torch.device | str,
         use_delta_component: bool,
         cfg: PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig,
-        output_loss_type: Literal["mse", "kl"],
+        reconstruction_loss: ReconstructionLoss,
     ) -> None:
         self.optimizer = make_ppgd_optimizer(cfg.optimizer)
         self._skip_all_reduce = isinstance(cfg.scope, PerBatchPerPositionScope)
@@ -139,7 +140,7 @@ class PersistentPGDState:
         self._router = _get_router_for_ppgd_config(cfg, device)
         self._n_warmup_steps = cfg.n_warmup_steps
         self._n_samples = cfg.n_samples
-        self._output_loss_type: Literal["mse", "kl"] = output_loss_type
+        self._reconstruction_loss = reconstruction_loss
         self._lr_schedule = cfg.optimizer.lr_schedule
 
         self.sources: PPGDSources = {}
@@ -252,7 +253,7 @@ class PersistentPGDState:
             loss, n = _compute_ppgd_recon_loss(
                 model=model,
                 ppgd_sources=ppgd_sources,
-                output_loss_type=self._output_loss_type,
+                reconstruction_loss=self._reconstruction_loss,
                 batch=batch,
                 target_out=target_out,
                 ci=ci,
@@ -330,7 +331,7 @@ def _interpolate_component_mask(
 def _compute_ppgd_recon_loss(
     model: ComponentModel,
     ppgd_sources: PPGDSources,
-    output_loss_type: Literal["mse", "kl"],
+    reconstruction_loss: ReconstructionLoss,
     batch: Int[Tensor, "..."] | Float[Tensor, "..."],
     target_out: Float[Tensor, "... vocab"],
     ci: dict[str, Float[Tensor, "... C"]],
@@ -342,7 +343,5 @@ def _compute_ppgd_recon_loss(
 
     mask_infos = get_ppgd_mask_infos(ci, weight_deltas, ppgd_sources, routing_masks, batch_dims)
     out = model(batch, mask_infos=mask_infos)
-    loss = calc_sum_recon_loss_lm(pred=out, target=target_out, loss_type=output_loss_type)
-    n_examples = out.shape.numel() if output_loss_type == "mse" else out.shape[:-1].numel()
-
+    loss, n_examples = reconstruction_loss(pred=out, target=target_out)
     return loss, n_examples
