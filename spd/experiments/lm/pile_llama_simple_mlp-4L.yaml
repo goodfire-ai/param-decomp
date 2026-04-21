@@ -155,6 +155,7 @@ eval_metric_configs:
   mask_scope: shared_across_batch
   classname: PGDReconLoss
 ci_alive_threshold: 0.0
+output_extract: 0
 pretrained_model_class: spd.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
 pretrained_model_path: null
 pretrained_model_name: goodfire/spd/runs/t-9d2b8f02

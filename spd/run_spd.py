@@ -35,7 +35,7 @@ from spd.log import logger
 from spd.losses import compute_losses
 from spd.metrics import faithfulness_loss
 from spd.models.batch_and_loss_fns import ReconstructionLoss, RunBatch
-from spd.models.component_model import ComponentModel, OutputWithCache
+from spd.models.component_model import ComponentModel, OutputWithCache, move_batch_to_device
 from spd.persistent_pgd import PersistentPGDState
 from spd.settings import SPD_OUT_DIR
 from spd.utils.component_utils import calc_ci_l_zero
@@ -258,7 +258,7 @@ def optimize(
 
         batch_log_data: defaultdict[str, float] = defaultdict(float)
 
-        batch = next(train_iterator)
+        batch = move_batch_to_device(next(train_iterator), device)
         with bf16_autocast(enabled=config.autocast_bf16):
             # NOTE: we need to call the wrapped_model at least once each step in order to setup
             # the DDP gradient syncing for all parameters in the component model. Gradients will
