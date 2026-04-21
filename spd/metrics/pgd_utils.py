@@ -108,7 +108,7 @@ def pgd_masked_recon_loss_update(
     """
     batch_dims = next(iter(ci.values())).shape[:-1]
     routing_masks = router.get_masks(module_names=model.target_module_paths, mask_shape=batch_dims)
-    adv_sources = _init_adv_sources(model, batch_dims, batch.device, weight_deltas, pgd_config)
+    adv_sources = _init_adv_sources(model, batch_dims, target_out.device, weight_deltas, pgd_config)
 
     fwd_pass = partial(
         _forward_with_adv_sources,
