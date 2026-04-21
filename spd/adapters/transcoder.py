@@ -7,6 +7,7 @@ from typing import Any, override
 
 import torch
 import wandb
+from torch import Tensor
 from torch.utils.data import DataLoader
 
 from spd.adapters.base import DecompositionAdapter, pretrain_dataloader
@@ -135,5 +136,5 @@ class TranscoderAdapter(DecompositionAdapter):
         )
 
     @override
-    def dataloader(self, batch_size: int) -> DataLoader[torch.Tensor]:
+    def dataloader(self, batch_size: int) -> DataLoader[Tensor]:
         return pretrain_dataloader(self._run_info, batch_size)

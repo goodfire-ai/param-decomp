@@ -43,30 +43,6 @@ from spd.configs import (
     UnmaskedReconLossConfig,
     UVPlotsConfig,
 )
-from spd.metrics import (
-    CI_L0,
-    CEandKLLosses,
-    CIHistograms,
-    CIMaskedReconLayerwiseLoss,
-    CIMaskedReconLoss,
-    CIMaskedReconSubsetLoss,
-    CIMeanPerComponent,
-    ComponentActivationDensity,
-    FaithfulnessLoss,
-    IdentityCIError,
-    ImportanceMinimalityLoss,
-    PermutedCIPlots,
-    PGDReconLayerwiseLoss,
-    PGDReconLoss,
-    PGDReconSubsetLoss,
-    StochasticHiddenActsReconLoss,
-    StochasticReconLayerwiseLoss,
-    StochasticReconLoss,
-    StochasticReconSubsetCEAndKL,
-    StochasticReconSubsetLoss,
-    UnmaskedReconLoss,
-    UVPlots,
-)
 from spd.metrics.attn_patterns_recon_loss import (
     CIMaskedAttnPatternsReconLoss,
     StochasticAttnPatternsReconLoss,
@@ -94,6 +70,7 @@ from spd.metrics.stochastic_recon_layerwise_loss import StochasticReconLayerwise
 from spd.metrics.stochastic_recon_loss import StochasticReconLoss
 from spd.metrics.stochastic_recon_subset_ce_and_kl import StochasticReconSubsetCEAndKL
 from spd.metrics.stochastic_recon_subset_loss import StochasticReconSubsetLoss
+from spd.metrics.unmasked_recon_loss import UnmaskedReconLoss
 from spd.metrics.uv_plots import UVPlots
 from spd.models.batch_and_loss_fns import ReconstructionLoss
 from spd.models.component_model import ComponentModel, OutputWithCache

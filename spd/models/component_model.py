@@ -37,6 +37,16 @@ from spd.utils.general_utils import resolve_class
 from spd.utils.module_utils import ModulePathInfo, expand_module_patterns
 
 
+def _move_batch_to_device(batch: Any, device: torch.device) -> Any:
+    if isinstance(batch, Tensor):
+        return batch.to(device)
+    if isinstance(batch, tuple):
+        return tuple(_move_batch_to_device(x, device) for x in batch)
+    if isinstance(batch, dict):
+        return {k: _move_batch_to_device(v, device) for k, v in batch.items()}
+    return batch
+
+
 def _validate_checkpoint_ci_config_compatibility(
     state_dict: dict[str, Tensor], ci_config: CiConfig
 ) -> None:
@@ -431,6 +441,8 @@ class ComponentModel(LoadableModule):
         Returns:
             OutputWithCache object if cache_type is not "none", otherwise the model output tensor.
         """
+        batch = _move_batch_to_device(batch, next(self.parameters()).device)
+
         if mask_infos is None and cache_type == "none":
             return self._run_batch(self.target_model, batch)
 

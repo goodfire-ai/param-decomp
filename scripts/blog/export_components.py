@@ -100,7 +100,6 @@ def convert_examples(
     return out, round(global_max_act, 4)
 
 
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", type=Path, required=True, help="Output directory")
@@ -276,17 +275,21 @@ def main() -> None:
         sorted_keys = [comp["key"] for comp in comps]
 
         w_kb = weights_path.stat().st_size // 1024
-        print(f"  {canon}: {len(comps)}/{n_total} alive -> weights {w_kb}KB, components {total_comp_kb}KB ({len(bins)} bins)")
+        print(
+            f"  {canon}: {len(comps)}/{n_total} alive -> weights {w_kb}KB, components {total_comp_kb}KB ({len(bins)} bins)"
+        )
 
-        index_entries.append({
-            "canonical": canon,
-            "display": canonical_display_name(canon),
-            "n_components": n_total,
-            "n_exported": len(comps),
-            "weights_file": f"weights/{slug}.json",
-            "bin_size": COMP_BIN_SIZE,
-            "sorted_keys": sorted_keys,
-        })
+        index_entries.append(
+            {
+                "canonical": canon,
+                "display": canonical_display_name(canon),
+                "n_components": n_total,
+                "n_exported": len(comps),
+                "weights_file": f"weights/{slug}.json",
+                "bin_size": COMP_BIN_SIZE,
+                "sorted_keys": sorted_keys,
+            }
+        )
 
     index_path = out_dir / "index.json"
     index_path.write_text(json.dumps(index_entries, indent=2))

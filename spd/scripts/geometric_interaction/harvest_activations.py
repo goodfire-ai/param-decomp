@@ -37,7 +37,7 @@ from torch import Tensor
 from spd.base_config import BaseConfig
 from spd.log import logger
 from spd.models.component_model import ComponentModel
-from spd.utils.general_utils import bf16_autocast, extract_batch_data
+from spd.utils.general_utils import bf16_autocast
 
 if TYPE_CHECKING:
     from spd.adapters.spd import SPDAdapter
@@ -321,7 +321,7 @@ def worker(
         if rank is not None and world_size is not None and batch_idx % world_size != rank:
             continue
 
-        batch = extract_batch_data(batch_item).to(device)
+        batch = batch_item.to(device)
 
         with torch.no_grad(), bf16_autocast():
             activations = compute_component_activations(model, batch)

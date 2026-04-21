@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
+from typing import Any
 
-import torch
+from torch import Tensor
 from torch.utils.data import DataLoader
 
 from spd.autointerp.schemas import ModelMetadata
@@ -29,10 +30,10 @@ class DecompositionAdapter(ABC):
     def model_metadata(self) -> ModelMetadata: ...
 
     @abstractmethod
-    def dataloader(self, batch_size: int) -> DataLoader[torch.Tensor]: ...
+    def dataloader(self, batch_size: int) -> DataLoader[Any]: ...
 
 
-def pretrain_dataloader(run_info: PretrainRunInfo, batch_size: int) -> DataLoader[torch.Tensor]:
+def pretrain_dataloader(run_info: PretrainRunInfo, batch_size: int) -> DataLoader[Tensor]:
     """Build a streaming dataloader from a pretrain run's dataset config."""
     from spd.data import DatasetConfig, create_data_loader
 

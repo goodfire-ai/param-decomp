@@ -280,7 +280,13 @@ def plot_attention_offset_profiles(
 
     logger.info("Computing offset profiles from dataset...")
     dataset_profiles = _compute_offset_profiles_from_loader(
-        target_model, loader, task_config.column_name, seq_len, n_batches, max_offset, device
+        target_model,
+        loader,  # pyright: ignore[reportArgumentType]
+        task_config.column_name,
+        seq_len,
+        n_batches,
+        max_offset,
+        device,
     )
 
     logger.info("Computing offset profiles from random tokens...")
