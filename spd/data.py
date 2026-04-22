@@ -4,7 +4,6 @@ from typing import Any
 import numpy as np
 import torch
 from datasets import Dataset, IterableDataset, load_dataset
-from jaxtyping import Int
 from numpy.typing import NDArray
 from torch import Tensor
 from torch.utils.data import DataLoader, DistributedSampler
@@ -155,7 +154,7 @@ def create_data_loader(
     global_seed: int = 0,
     to_lower: bool = True,
     collate_fn: Callable[..., Any] | None = None,
-) -> tuple[DataLoader[Int[Tensor, "batch seq"]], PreTrainedTokenizer]:
+) -> tuple[DataLoader[Any], PreTrainedTokenizer]:
     """Create a DataLoader for the given dataset.
 
     Uses PyTorch's DistributedSampler to ensure each rank gets the correct
@@ -258,7 +257,7 @@ def create_data_loader(
     generator = torch.Generator(device="cpu")
     generator.manual_seed(seed)
 
-    loader = DataLoader[Int[Tensor, "batch seq"]](
+    loader = DataLoader[Dataset | IterableDataset](
         torch_dataset,  # pyright: ignore[reportArgumentType]
         batch_size=batch_size,
         sampler=sampler,

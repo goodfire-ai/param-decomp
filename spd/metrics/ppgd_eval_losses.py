@@ -77,7 +77,7 @@ class PPGDReconEval(Metric):
             self._module_sum_mse[key] += mse.detach()
             self._module_n[key] += n
 
-        output_loss, n_examples = self.reconstruction_loss(pred=comp_output, target=target_out)
+        output_loss, n_examples = self.reconstruction_loss(comp_output, target_out)
         self._output_sum_loss += output_loss.detach()
         self._output_n += n_examples
 

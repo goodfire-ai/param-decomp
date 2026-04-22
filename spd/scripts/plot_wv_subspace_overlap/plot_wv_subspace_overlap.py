@@ -876,7 +876,7 @@ def plot_wv_subspace_overlap(
     logger.info(f"Collecting post-RMSNorm activations at layer {layer}...")
     activations = _collect_post_rmsnorm_activations(
         target_model,
-        loader,  # pyright: ignore[reportArgumentType]
+        loader,
         task_config.column_name,
         layer,
         n_batches,
@@ -992,7 +992,7 @@ def plot_wv_subspace_overlap(
         )
         filtered_acts = _collect_k_filtered_activations(
             component_model,
-            filtered_loader,  # pyright: ignore[reportArgumentType]
+            filtered_loader,
             task_config.column_name,
             layer,
             task_config.max_seq_len,

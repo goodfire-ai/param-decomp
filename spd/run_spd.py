@@ -265,35 +265,35 @@ def optimize(
             # sync regardless of whether the parameters are used in this call to wrapped_model.
             target_model_output: OutputWithCache = wrapped_model(batch, cache_type="input")
 
-        ci = component_model.calc_causal_importances(
-            pre_weight_acts=target_model_output.cache,
-            detach_inputs=False,
-            sampling=config.sampling,
-        )
-
-        for ppgd_cfg in active_ppgd_configs:
-            ppgd_states[ppgd_cfg].warmup(
-                model=component_model,
-                batch=batch,
-                target_out=target_model_output.output,
-                ci=ci.lower_leaky,
-                weight_deltas=weight_deltas if config.use_delta_component else None,
+            ci = component_model.calc_causal_importances(
+                pre_weight_acts=target_model_output.cache,
+                detach_inputs=False,
+                sampling=config.sampling,
             )
 
-        losses = compute_losses(
-            loss_metric_configs=config.loss_metric_configs,
-            model=component_model,
-            batch=batch,
-            ci=ci,
-            target_out=target_model_output.output,
-            weight_deltas=weight_deltas,
-            current_frac_of_training=step / config.steps,
-            sampling=config.sampling,
-            use_delta_component=config.use_delta_component,
-            n_mask_samples=config.n_mask_samples,
-            ppgd_states=ppgd_states,
-            reconstruction_loss=reconstruction_loss,
-        )
+            for ppgd_cfg in active_ppgd_configs:
+                ppgd_states[ppgd_cfg].warmup(
+                    model=component_model,
+                    batch=batch,
+                    target_out=target_model_output.output,
+                    ci=ci.lower_leaky,
+                    weight_deltas=weight_deltas if config.use_delta_component else None,
+                )
+
+            losses = compute_losses(
+                loss_metric_configs=config.loss_metric_configs,
+                model=component_model,
+                batch=batch,
+                ci=ci,
+                target_out=target_model_output.output,
+                weight_deltas=weight_deltas,
+                current_frac_of_training=step / config.steps,
+                sampling=config.sampling,
+                use_delta_component=config.use_delta_component,
+                n_mask_samples=config.n_mask_samples,
+                ppgd_states=ppgd_states,
+                reconstruction_loss=reconstruction_loss,
+            )
 
         total_loss = torch.tensor(0.0, device=device)
         for loss_cfg, loss_val in losses.items():
