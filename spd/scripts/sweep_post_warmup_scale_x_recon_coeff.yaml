@@ -1,0 +1,9 @@
+global:
+  seed:
+    values: [0, 1, 2]
+  post_warmup_component_scale:
+    values: [3.0e-2, 3.0e-1]
+  loss_metric_configs:
+    - classname: "StochasticReconLoss"
+      coeff:
+        values: [1.0, 3.0, 9.0, 27.0, 81.0, 243.0]
