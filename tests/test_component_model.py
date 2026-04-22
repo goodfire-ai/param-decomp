@@ -1104,6 +1104,10 @@ def test_component_model_global_ci_with_embeddings():
 
 def test_component_model_global_ci_gradient_flow():
     """Test gradient flow through global CI - gradients are non-zero and finite."""
+    # Seed so that pre-sigmoid outputs land in (0, 1] for at least some entries.
+    # leaky_hard has zero gradient outside that range, so unseeded initialization
+    # occasionally produces all-zero gradients and spuriously fails.
+    torch.manual_seed(0)
     target_model = tiny_target()
 
     target_module_paths = ["mlp", "out"]
