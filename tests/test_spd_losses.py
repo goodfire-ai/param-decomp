@@ -24,7 +24,7 @@ from spd.metrics import (
     stochastic_recon_loss,
     stochastic_recon_subset_loss,
 )
-from spd.models.batch_and_loss_fns import recon_loss_mse, run_batch_passthrough
+from spd.models.batch_and_loss_fns import recon_loss_kl, recon_loss_mse, run_batch_passthrough
 from spd.models.component_model import ComponentModel
 from spd.persistent_pgd import PersistentPGDState
 from spd.utils.module_utils import ModulePathInfo
@@ -340,10 +340,7 @@ class TestCIMaskedReconLoss:
         model = _make_component_model(weight=fc_weight)
 
         batch = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
-        # Use log-probs for KL
-        target_out = torch.nn.functional.log_softmax(
-            torch.tensor([[1.0, 2.0]], dtype=torch.float32), dim=-1
-        )
+        target_out = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
 
         ci = {"fc": torch.tensor([[1.0]], dtype=torch.float32)}
 
@@ -352,7 +349,7 @@ class TestCIMaskedReconLoss:
             batch=batch,
             target_out=target_out,
             ci=ci,
-            reconstruction_loss=recon_loss_mse,
+            reconstruction_loss=recon_loss_kl,
         )
 
         assert result >= 0.0

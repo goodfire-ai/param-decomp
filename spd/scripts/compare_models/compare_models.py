@@ -10,7 +10,6 @@ Usage:
 
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
 
 import einops
 import fire
@@ -82,7 +81,6 @@ class ModelComparator:
     def _load_model_and_config(self, model_path: str) -> tuple[ComponentModel, Config]:
         """Load model and config using the standard pattern from existing codebase."""
         run_info = SPDRunInfo.from_path(model_path)
-        # TODO(oli): this should actually be generic (one of the only instances of this I think)
         model = ComponentModel.from_run_info(run_info)
         model.to(self.device)
         model.eval()
@@ -90,11 +88,15 @@ class ModelComparator:
 
         return model, run_info.config
 
-    def create_eval_data_loader(self) -> Iterator[Any]:
-        """Create evaluation data loader using exact same patterns as decomposition scripts."""
+    def create_eval_data_loader(self) -> Iterator[Tensor]:
+        """Create evaluation data loader using exact same patterns as decomposition scripts.
+
+        Each per-task loader yields input tensors directly so downstream code can treat
+        batches uniformly regardless of task type.
+        """
         task_name = self.current_config.task_config.task_name
 
-        data_loader_fns: dict[str, Callable[[], Iterator[Any]]] = {
+        data_loader_fns: dict[str, Callable[[], Iterator[Tensor]]] = {
             "tms": self._create_tms_data_loader,
             "resid_mlp": self._create_resid_mlp_data_loader,
             "lm": self._create_lm_data_loader,
@@ -108,7 +110,7 @@ class ModelComparator:
 
         return data_loader_fns[task_name]()
 
-    def _create_tms_data_loader(self) -> Iterator[Any]:
+    def _create_tms_data_loader(self) -> Iterator[Tensor]:
         """Create data loader for TMS task."""
         from spd.configs import TMSTaskConfig
         from spd.experiments.tms.models import TMSTargetRunInfo
@@ -131,15 +133,14 @@ class ModelComparator:
             value_range=(0.0, 1.0),
             synced_inputs=target_run_info.config.synced_inputs,
         )
-        return iter(
-            DatasetGeneratedDataLoader(
-                dataset,
-                batch_size=self.config.eval_batch_size,
-                shuffle=self.config.shuffle_data,
-            )
+        loader = DatasetGeneratedDataLoader(
+            dataset,
+            batch_size=self.config.eval_batch_size,
+            shuffle=self.config.shuffle_data,
         )
+        return (batch[0] for batch in loader)
 
-    def _create_resid_mlp_data_loader(self) -> Iterator[Any]:
+    def _create_resid_mlp_data_loader(self) -> Iterator[Tensor]:
         """Create data loader for ResidMLP task."""
         from spd.configs import ResidMLPTaskConfig
         from spd.experiments.resid_mlp.models import ResidMLPTargetRunInfo
@@ -165,18 +166,17 @@ class ModelComparator:
             label_fn_seed=None,
             synced_inputs=target_run_info.config.synced_inputs,
         )
-        return iter(
-            DatasetGeneratedDataLoader(
-                dataset,
-                batch_size=self.config.eval_batch_size,
-                shuffle=self.config.shuffle_data,
-            )
+        loader = DatasetGeneratedDataLoader(
+            dataset,
+            batch_size=self.config.eval_batch_size,
+            shuffle=self.config.shuffle_data,
         )
+        return (batch[0] for batch in loader)
 
-    def _create_lm_data_loader(self) -> Iterator[Any]:
+    def _create_lm_data_loader(self) -> Iterator[Tensor]:
         """Create data loader for LM task."""
         from spd.configs import LMTaskConfig
-        from spd.data import DatasetConfig, create_data_loader
+        from spd.data import DatasetConfig, create_data_loader, lm_collate_fn
 
         assert self.current_config.tokenizer_name, "tokenizer_name must be set"
         assert isinstance(self.current_config.task_config, LMTaskConfig)
@@ -198,10 +198,11 @@ class ModelComparator:
             batch_size=self.config.eval_batch_size,
             buffer_size=task_config.buffer_size,
             global_seed=self.current_config.seed + 1,
+            collate_fn=lm_collate_fn,
         )
         return iter(loader)
 
-    def _create_ih_data_loader(self) -> Iterator[Any]:
+    def _create_ih_data_loader(self) -> Iterator[Tensor]:
         """Create data loader for IH task."""
         from spd.configs import IHTaskConfig
         from spd.experiments.ih.model import InductionModelTargetRunInfo
@@ -225,16 +226,15 @@ class ModelComparator:
             or target_run_info.config.ih_model_config.seq_len - 3,
             device=self.device,
         )
-        return iter(
-            DatasetGeneratedDataLoader(
-                dataset,
-                batch_size=self.config.eval_batch_size,
-                shuffle=self.config.shuffle_data,
-            )
+        loader = DatasetGeneratedDataLoader(
+            dataset,
+            batch_size=self.config.eval_batch_size,
+            shuffle=self.config.shuffle_data,
         )
+        return (batch[0] for batch in loader)
 
     def compute_activation_densities(
-        self, model: ComponentModel, eval_iterator: Iterator[Any], n_steps: int
+        self, model: ComponentModel, eval_iterator: Iterator[Tensor], n_steps: int
     ) -> dict[str, Float[Tensor, " C"]]:
         """Compute activation densities using same logic as ComponentActivationDensity."""
 
@@ -251,7 +251,7 @@ class ModelComparator:
         model.eval()
         with torch.no_grad():
             for _step in range(n_steps):
-                batch = next(eval_iterator)["input_ids"].to(self.device)
+                batch = next(eval_iterator).to(self.device)
                 pre_weight_acts = model(batch, cache_type="input").cache
 
                 ci = model.calc_causal_importances(
@@ -359,7 +359,7 @@ class ModelComparator:
         return similarities
 
     def run_comparison(
-        self, eval_iterator: Iterator[Any], n_steps: int | None = None
+        self, eval_iterator: Iterator[Tensor], n_steps: int | None = None
     ) -> dict[str, float]:
         """Run the full comparison pipeline."""
         if n_steps is None:
