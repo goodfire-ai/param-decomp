@@ -35,6 +35,66 @@ from spd.spd_types import LayerwiseCiFnType, ModelPath
 from spd.utils.general_utils import resolve_class
 from spd.utils.module_utils import ModulePathInfo, expand_module_patterns
 
+ComponentInitMode = Literal["random", "neuron_input", "neuron_output"]
+
+
+def _is_mlp_c_fc(path: str) -> bool:
+    return path == "c_fc" or path.endswith(".c_fc")
+
+
+def _is_mlp_down_proj(path: str) -> bool:
+    return path == "down_proj" or path.endswith(".down_proj")
+
+
+def _get_linear_dims(module: nn.Module) -> tuple[int, int]:
+    """Return (d_out, d_in) for a Linear-like module."""
+    match module:
+        case nn.Linear():
+            d_out, d_in = module.weight.shape
+            return d_out, d_in
+        case RadfordConv1D():
+            d_in, d_out = module.weight.shape
+            return d_out, d_in
+        case _:
+            raise ValueError(f"Unsupported module type for neuron-aligned init: {type(module)}")
+
+
+def _get_target_weight(module: nn.Module) -> Tensor:
+    """Return the effective weight (d_out, d_in) for a Linear-like module."""
+    match module:
+        case nn.Linear():
+            return module.weight.data
+        case RadfordConv1D():
+            return module.weight.data.T
+        case _:
+            raise ValueError(f"Unsupported module type for neuron-aligned init: {type(module)}")
+
+
+def _apply_neuron_aligned_init_(
+    component: LinearComponents,
+    init_mode: ComponentInitMode,
+    target_weight: Float[Tensor, "d_out d_in"],
+) -> None:
+    """Initialize V, U to be aligned with neurons, and freeze both. Modifies component in place."""
+    d_out, d_in = target_weight.shape
+    C = component.C
+    with torch.no_grad():
+        match init_mode:
+            case "neuron_input":
+                assert d_out == C, (
+                    f"neuron_input init requires C == d_out, got C={C}, d_out={d_out}"
+                )
+                component.V.data = target_weight.T.to(component.V).clone()
+                component.U.data = torch.eye(C, device=component.U.device, dtype=component.U.dtype)
+            case "neuron_output":
+                assert d_in == C, f"neuron_output init requires C == d_in, got C={C}, d_in={d_in}"
+                component.V.data = torch.eye(C, device=component.V.device, dtype=component.V.dtype)
+                component.U.data = target_weight.T.to(component.U).clone()
+            case "random":
+                return
+    component.V.requires_grad_(False)
+    component.U.requires_grad_(False)
+
 
 def _validate_checkpoint_ci_config_compatibility(
     state_dict: dict[str, Tensor], ci_config: CiConfig
@@ -105,6 +165,7 @@ class ComponentModel(LoadableModule):
         ci_config: CiConfig,
         sigmoid_type: SigmoidType,
         pretrained_model_output_attr: str | None,
+        neuron_aligned_mlp_init: bool = False,
     ):
         super().__init__()
 
@@ -116,12 +177,29 @@ class ComponentModel(LoadableModule):
 
         self.target_model = target_model
         self.pretrained_model_output_attr = pretrained_model_output_attr
-        self.module_to_c = {info.module_path: info.C for info in module_path_info}
+
+        module_init_modes: dict[str, ComponentInitMode] = {}
+        self.module_to_c: dict[str, int] = {}
+        for info in module_path_info:
+            path = info.module_path
+            init_mode: ComponentInitMode = "random"
+            c_value = info.C
+            if neuron_aligned_mlp_init and _is_mlp_c_fc(path):
+                target_module = target_model.get_submodule(path)
+                init_mode = "neuron_input"
+                c_value = _get_linear_dims(target_module)[0]  # d_out = neuron count
+            elif neuron_aligned_mlp_init and _is_mlp_down_proj(path):
+                target_module = target_model.get_submodule(path)
+                init_mode = "neuron_output"
+                c_value = _get_linear_dims(target_module)[1]  # d_in = neuron count
+            self.module_to_c[path] = c_value
+            module_init_modes[path] = init_mode
         self.target_module_paths = list(self.module_to_c.keys())
 
         self.components = ComponentModel._create_components(
             target_model=target_model,
             module_to_c=self.module_to_c,
+            module_init_modes=module_init_modes,
         )
         self._components = nn.ModuleDict(
             {k.replace(".", "-"): self.components[k] for k in sorted(self.components)}
@@ -181,6 +259,7 @@ class ComponentModel(LoadableModule):
     def _create_component(
         target_module: nn.Module,
         C: int,
+        init_mode: ComponentInitMode = "random",
     ) -> Components:
         match target_module:
             case nn.Linear():
@@ -215,18 +294,28 @@ class ComponentModel(LoadableModule):
             case _:
                 raise ValueError(f"Module {target_module} not supported")
 
+        if init_mode != "random":
+            assert isinstance(component, LinearComponents), (
+                f"Neuron-aligned init only supports LinearComponents, got {type(component)}"
+            )
+            _apply_neuron_aligned_init_(component, init_mode, _get_target_weight(target_module))
+
         return component
 
     @staticmethod
     def _create_components(
         target_model: nn.Module,
         module_to_c: dict[str, int],
+        module_init_modes: dict[str, ComponentInitMode] | None = None,
     ) -> dict[str, Components]:
         components: dict[str, Components] = {}
         for target_module_path, target_module_c in module_to_c.items():
             target_module = target_model.get_submodule(target_module_path)
+            init_mode: ComponentInitMode = (
+                module_init_modes[target_module_path] if module_init_modes is not None else "random"
+            )
             components[target_module_path] = ComponentModel._create_component(
-                target_module, target_module_c
+                target_module, target_module_c, init_mode=init_mode
             )
         return components
 
@@ -611,6 +700,7 @@ class ComponentModel(LoadableModule):
             ci_config=config.ci_config,
             sigmoid_type=config.sigmoid_type,
             pretrained_model_output_attr=config.pretrained_model_output_attr,
+            neuron_aligned_mlp_init=config.neuron_aligned_mlp_init,
         )
 
         comp_model_weights = torch.load(

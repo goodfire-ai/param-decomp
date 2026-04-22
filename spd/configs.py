@@ -14,6 +14,7 @@ from pydantic import (
 from spd.base_config import BaseConfig
 from spd.log import logger
 from spd.spd_types import GlobalCiFnType, LayerwiseCiFnType, ModelPath, Probability
+from spd.utils.annealing import linearly_anneal_value
 
 
 class LayerwiseCiConfig(BaseConfig):
@@ -326,6 +327,35 @@ class LossMetricConfig(BaseConfig):
         default=None,
         description="Loss coefficient. Used when metric is in loss_metric_configs.",
     )
+    coeff_anneal_start_frac: Probability = Field(
+        default=1.0,
+        description=(
+            "Fraction of training at which to start linearly annealing the coefficient "
+            "(1.0 = no annealing)."
+        ),
+    )
+    coeff_anneal_final_coeff: float | None = Field(
+        default=None,
+        description="Final coefficient to anneal to (None = no annealing).",
+    )
+    coeff_anneal_end_frac: Probability = Field(
+        default=1.0,
+        description=(
+            "Fraction of training at which annealing ends. The coefficient stays at "
+            "coeff_anneal_final_coeff from this point onward."
+        ),
+    )
+
+    def get_coeff(self, current_frac_of_training: float) -> float:
+        """Return the (possibly annealed) coefficient at the given training fraction."""
+        assert self.coeff is not None, "coeff must be set to compute the annealed coefficient"
+        return linearly_anneal_value(
+            current_frac_of_training=current_frac_of_training,
+            initial_value=self.coeff,
+            start_frac=self.coeff_anneal_start_frac,
+            final_value=self.coeff_anneal_final_coeff,
+            end_frac=self.coeff_anneal_end_frac,
+        )
 
 
 class FaithfulnessLossConfig(LossMetricConfig):
@@ -812,6 +842,15 @@ class Config(BaseConfig):
         default=True,
         description="If True, use an extra component containing the difference between the target "
         "model and component weights. This allows for removing the faithfulness loss.",
+    )
+
+    neuron_aligned_mlp_init: bool = Field(
+        default=False,
+        description="If True, initialize MLP components to be aligned with neurons of the target "
+        "model. For any module matching '*.c_fc' the V matrix is set to target_weight.T and U to "
+        "identity; for '*.down_proj' V is set to identity and U to target_weight.T. V and U for "
+        "these modules are frozen (not trained). C is overridden to equal the neuron (hidden MLP) "
+        "count for these modules.",
     )
 
     loss_metric_configs: list[Annotated[LossMetricConfigType, Field(discriminator="classname")]] = (

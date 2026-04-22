@@ -155,6 +155,7 @@ def optimize(
         ci_config=config.ci_config,
         sigmoid_type=config.sigmoid_type,
         pretrained_model_output_attr=config.pretrained_model_output_attr,
+        neuron_aligned_mlp_init=config.neuron_aligned_mlp_init,
     )
 
     model.to(device)
@@ -196,7 +197,9 @@ def optimize(
 
     component_params: list[torch.nn.Parameter] = []
     for name in component_model.target_module_paths:
-        component_params.extend(component_model.components[name].parameters())
+        component_params.extend(
+            p for p in component_model.components[name].parameters() if p.requires_grad
+        )
 
     ci_fn_params = list(component_model.ci_fn.parameters())
 
@@ -308,10 +311,12 @@ def optimize(
             )
 
         total_loss = torch.tensor(0.0, device=device)
+        current_frac_of_training = step / config.steps
         for loss_cfg, loss_val in losses.items():
-            assert loss_cfg.coeff is not None
-            total_loss = total_loss + loss_cfg.coeff * loss_val
+            coeff = loss_cfg.get_coeff(current_frac_of_training)
+            total_loss = total_loss + coeff * loss_val
             batch_log_data[f"train/loss/{loss_cfg.classname}"] = loss_val.item()
+            batch_log_data[f"train/loss_coeff/{loss_cfg.classname}"] = coeff
 
         batch_log_data["train/loss/total"] = total_loss.item()
 
