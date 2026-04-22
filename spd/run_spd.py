@@ -208,6 +208,13 @@ def optimize(
     if config.faithfulness_warmup_steps > 0:
         run_faithfulness_warmup(component_model, component_params, config)
 
+    if config.post_warmup_component_scale is not None:
+        scale = config.post_warmup_component_scale
+        logger.info(f"Rescaling components: U ← {scale}·U (V unchanged)")
+        with torch.no_grad():
+            for name in component_model.target_module_paths:
+                component_model.components[name].U.mul_(scale)
+
     persistent_pgd_configs: list[
         PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
     ] = [
