@@ -28,7 +28,7 @@ def _stochastic_recon_layerwise_loss_update(
     assert ci, "Empty ci"
     device = get_obj_device(ci)
     sum_loss = torch.tensor(0.0, device=device)
-    sum_n_examples = 0
+    n_examples = 0
 
     stochastic_mask_infos_list = [
         calc_stochastic_component_mask_info(
@@ -45,14 +45,14 @@ def _stochastic_recon_layerwise_loss_update(
             out = model(batch, mask_infos={module_name: mask_info})
             loss, batch_n_examples = reconstruction_loss(out, target_out)
             sum_loss += loss
-            sum_n_examples += batch_n_examples
-    return sum_loss, sum_n_examples
+            n_examples += batch_n_examples
+    return sum_loss, n_examples
 
 
 def _stochastic_recon_layerwise_loss_compute(
-    sum_loss: Float[Tensor, ""], sum_n_examples: Int[Tensor, ""] | int
+    sum_loss: Float[Tensor, ""], n_examples: Int[Tensor, ""] | int
 ) -> Float[Tensor, ""]:
-    return sum_loss / sum_n_examples
+    return sum_loss / n_examples
 
 
 def stochastic_recon_layerwise_loss(
@@ -65,7 +65,7 @@ def stochastic_recon_layerwise_loss(
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
     reconstruction_loss: ReconstructionLoss,
 ) -> Float[Tensor, ""]:
-    sum_loss, sum_n_examples = _stochastic_recon_layerwise_loss_update(
+    sum_loss, n_examples = _stochastic_recon_layerwise_loss_update(
         model=model,
         sampling=sampling,
         n_mask_samples=n_mask_samples,
@@ -75,7 +75,7 @@ def stochastic_recon_layerwise_loss(
         weight_deltas=weight_deltas,
         reconstruction_loss=reconstruction_loss,
     )
-    return _stochastic_recon_layerwise_loss_compute(sum_loss, sum_n_examples)
+    return _stochastic_recon_layerwise_loss_compute(sum_loss, n_examples)
 
 
 class StochasticReconLayerwiseLoss(Metric):
@@ -98,7 +98,7 @@ class StochasticReconLayerwiseLoss(Metric):
         self.n_mask_samples: int = n_mask_samples
         self.reconstruction_loss = reconstruction_loss
         self.sum_loss = torch.tensor(0.0, device=device)
-        self.sum_n_examples = torch.tensor(0, device=device)
+        self.n_examples = torch.tensor(0, device=device)
 
     @override
     def update(
@@ -110,7 +110,7 @@ class StochasticReconLayerwiseLoss(Metric):
         weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
         **_: Any,
     ) -> None:
-        sum_loss, sum_n_examples = _stochastic_recon_layerwise_loss_update(
+        sum_loss, n_examples = _stochastic_recon_layerwise_loss_update(
             model=self.model,
             sampling=self.sampling,
             n_mask_samples=self.n_mask_samples,
@@ -121,10 +121,10 @@ class StochasticReconLayerwiseLoss(Metric):
             reconstruction_loss=self.reconstruction_loss,
         )
         self.sum_loss += sum_loss
-        self.sum_n_examples += sum_n_examples
+        self.n_examples += n_examples
 
     @override
     def compute(self) -> Float[Tensor, ""]:
         sum_loss = all_reduce(self.sum_loss, op=ReduceOp.SUM)
-        sum_n_examples = all_reduce(self.sum_n_examples, op=ReduceOp.SUM)
-        return _stochastic_recon_layerwise_loss_compute(sum_loss, sum_n_examples)
+        n_examples = all_reduce(self.n_examples, op=ReduceOp.SUM)
+        return _stochastic_recon_layerwise_loss_compute(sum_loss, n_examples)

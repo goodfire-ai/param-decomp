@@ -35,7 +35,7 @@ from spd.log import logger
 from spd.losses import compute_losses
 from spd.metrics import faithfulness_loss
 from spd.models.batch_and_loss_fns import ReconstructionLoss, RunBatch
-from spd.models.component_model import ComponentModel, OutputWithCache, move_batch_to_device
+from spd.models.component_model import ComponentModel, OutputWithCache
 from spd.persistent_pgd import PersistentPGDState
 from spd.settings import SPD_OUT_DIR
 from spd.utils.component_utils import calc_ci_l_zero
@@ -174,7 +174,7 @@ def optimize(
             # For CPU, don't pass device_ids or output_device
             wrapped_model = torch.nn.parallel.DistributedDataParallel(model)
         # Access the underlying module for component operations
-        component_model = cast(ComponentModel, wrapped_model.module)  # type: ignore[attr-defined]
+        component_model = cast(ComponentModel, wrapped_model.module)
     else:
         component_model = model
     assert isinstance(component_model, ComponentModel), "component_model is not a ComponentModel"
@@ -225,12 +225,14 @@ def optimize(
         cfg for cfg in eval_metric_configs if cfg not in multibatch_pgd_eval_configs
     ]
 
+    sample_out = model(next(train_iterator))
+    batch_dims = sample_out.shape[:-1]
     ppgd_states: dict[
         PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig, PersistentPGDState
     ] = {
         ppgd_cfg: PersistentPGDState(
             module_to_c=model.module_to_c,
-            batch_dims=model(next(train_iterator)).shape[:-1],
+            batch_dims=batch_dims,
             device=device,
             use_delta_component=config.use_delta_component,
             cfg=ppgd_cfg,
@@ -258,7 +260,7 @@ def optimize(
 
         batch_log_data: defaultdict[str, float] = defaultdict(float)
 
-        batch = move_batch_to_device(next(train_iterator), device)
+        batch = next(train_iterator)
         with bf16_autocast(enabled=config.autocast_bf16):
             # NOTE: we need to call the wrapped_model at least once each step in order to setup
             # the DDP gradient syncing for all parameters in the component model. Gradients will

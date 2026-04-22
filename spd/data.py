@@ -271,7 +271,7 @@ def create_data_loader(
     return loader, tokenizer
 
 
-def lm_collate_fn(batch: list[dict[str, Tensor]]) -> Tensor:
+def input_ids_collate_fn(batch: list[dict[str, Tensor]]) -> Tensor:
     """Collate function that extracts input_ids tensors from HuggingFace dataset dicts."""
     return torch.stack([item["input_ids"] for item in batch])
 
@@ -320,7 +320,7 @@ def train_loader_and_tokenizer(
         batch_size=batch_size,
         buffer_size=task_config.buffer_size,
         global_seed=config.seed,
-        collate_fn=lm_collate_fn,
+        collate_fn=input_ids_collate_fn,
     )
 
     assert isinstance(tokenizer, PreTrainedTokenizerBase)

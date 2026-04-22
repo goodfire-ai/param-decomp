@@ -176,7 +176,7 @@ class ModelComparator:
     def _create_lm_data_loader(self) -> Iterator[Tensor]:
         """Create data loader for LM task."""
         from spd.configs import LMTaskConfig
-        from spd.data import DatasetConfig, create_data_loader, lm_collate_fn
+        from spd.data import DatasetConfig, create_data_loader, input_ids_collate_fn
 
         assert self.current_config.tokenizer_name, "tokenizer_name must be set"
         assert isinstance(self.current_config.task_config, LMTaskConfig)
@@ -198,7 +198,7 @@ class ModelComparator:
             batch_size=self.config.eval_batch_size,
             buffer_size=task_config.buffer_size,
             global_seed=self.current_config.seed + 1,
-            collate_fn=lm_collate_fn,
+            collate_fn=input_ids_collate_fn,
         )
         return iter(loader)
 

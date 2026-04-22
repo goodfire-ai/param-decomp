@@ -3,6 +3,7 @@
 These functions parameterize ComponentModel and training for different target model architectures.
 """
 
+import math
 from typing import Any, Protocol
 
 import torch
@@ -51,17 +52,9 @@ def make_run_batch(output_extract: int | str | None) -> RunBatch:
         case None:
             return run_batch_passthrough
         case int(idx):
-
-            def _run_index(model: nn.Module, batch: Any) -> Tensor:
-                return model(batch)[idx]
-
-            return _run_index
+            return lambda model, batch: model(batch)[idx]
         case str(attr):
-
-            def _run_attr(model: nn.Module, batch: Any) -> Tensor:
-                return getattr(model(batch), attr)
-
-            return _run_attr
+            return lambda model, batch: getattr(model(batch), attr)
 
 
 def recon_loss_mse(
@@ -83,4 +76,4 @@ def recon_loss_kl(
     log_q = torch.log_softmax(pred, dim=-1)  # log Q
     p = torch.softmax(target, dim=-1)  # P
     kl_per_position = F.kl_div(log_q, p, reduction="none").sum(dim=-1)  # P · (log P − log Q)
-    return kl_per_position.sum(), pred[..., 0].numel()
+    return kl_per_position.sum(), math.prod(pred.shape[:-1])

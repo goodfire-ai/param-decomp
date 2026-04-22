@@ -10,7 +10,7 @@ from spd.configs import (
     PersistentPGDReconSubsetLossConfig,
     RepeatAcrossBatchScope,
 )
-from spd.data import DatasetConfig, create_data_loader, lm_collate_fn
+from spd.data import DatasetConfig, create_data_loader, input_ids_collate_fn
 from spd.log import logger
 from spd.models.batch_and_loss_fns import make_run_batch, recon_loss_kl
 from spd.pretrain.run_info import PretrainRunInfo
@@ -115,7 +115,7 @@ def main(
         buffer_size=config.task_config.buffer_size,
         global_seed=config.seed,
         dist_state=dist_state,
-        collate_fn=lm_collate_fn,
+        collate_fn=input_ids_collate_fn,
     )
 
     eval_data_config = DatasetConfig(
@@ -145,7 +145,7 @@ def main(
         buffer_size=config.task_config.buffer_size,
         global_seed=config.seed + 1,
         dist_state=dist_state,
-        collate_fn=lm_collate_fn,
+        collate_fn=input_ids_collate_fn,
     )
 
     run_experiment(

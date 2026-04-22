@@ -15,7 +15,7 @@ from spd.configs import (
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
 )
-from spd.data import DatasetConfig, create_data_loader, lm_collate_fn
+from spd.data import DatasetConfig, create_data_loader, input_ids_collate_fn
 from spd.identity_insertion import insert_identity_operations_
 from spd.models.batch_and_loss_fns import make_run_batch, recon_loss_kl
 from spd.run_spd import optimize
@@ -123,7 +123,7 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         batch_size=config.batch_size,
         buffer_size=config.task_config.buffer_size,
         global_seed=config.seed,
-        collate_fn=lm_collate_fn,
+        collate_fn=input_ids_collate_fn,
     )
 
     eval_data_config = DatasetConfig(
@@ -141,7 +141,7 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         batch_size=config.batch_size,
         buffer_size=config.task_config.buffer_size,
         global_seed=config.seed + 1,
-        collate_fn=lm_collate_fn,
+        collate_fn=input_ids_collate_fn,
     )
 
     # Run optimize function

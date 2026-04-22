@@ -427,7 +427,6 @@ class ComponentModel(LoadableModule):
         batch: Any,
         mask_infos: dict[str, ComponentsMaskInfo] | None = None,
         cache_type: Literal["component_acts", "input", "output", "none"] = "none",
-        **kwargs: Any,
     ) -> Tensor | OutputWithCache:
         """Forward pass with optional component replacement and/or input/output caching.
 

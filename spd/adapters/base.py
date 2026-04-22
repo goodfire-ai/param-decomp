@@ -34,8 +34,15 @@ class DecompositionAdapter(ABC):
 
 
 def pretrain_dataloader(run_info: PretrainRunInfo, batch_size: int) -> DataLoader[Tensor]:
-    """Build a streaming dataloader from a pretrain run's dataset config."""
-    from spd.data import DatasetConfig, create_data_loader
+    """Build a streaming LM dataloader from a pretrain run's dataset config.
+
+    Currently assumes the pretrain dataset is a HuggingFace tokenized dataset yielding
+    ``{"input_ids": Tensor}`` items (as produced by `spd.data.create_data_loader`
+    for LM pretraining) and collates them into stacked token tensors. For non-LM
+    pretrain runs, build the dataloader directly with `create_data_loader` and an
+    appropriate collate_fn.
+    """
+    from spd.data import DatasetConfig, create_data_loader, input_ids_collate_fn
 
     ds_cfg = run_info.config_dict["train_dataset_config"]
     block_size = run_info.model_config_dict["block_size"]
@@ -43,6 +50,9 @@ def pretrain_dataloader(run_info: PretrainRunInfo, batch_size: int) -> DataLoade
         {**ds_cfg, "streaming": True, "n_ctx": block_size}
     )
     loader, _ = create_data_loader(
-        dataset_config=dataset_config, batch_size=batch_size, buffer_size=1000
+        dataset_config=dataset_config,
+        batch_size=batch_size,
+        buffer_size=1000,
+        collate_fn=input_ids_collate_fn,
     )
     return loader

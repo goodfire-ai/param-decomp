@@ -197,8 +197,8 @@ def calc_multibatch_pgd_masked_recon_loss(
                 adv_sources[k].add_(pgd_config.step_size * adv_sources_sum_grads[k].sign())
                 adv_sources[k].clamp_(0.0, 1.0)
 
-    final_loss, final_sum_n_examples, _ = fwd_bwd_fn(data_iter=create_data_iter())
-    return final_loss / final_sum_n_examples
+    final_loss, final_n_examples, _ = fwd_bwd_fn(data_iter=create_data_iter())
+    return final_loss / final_n_examples
 
 
 def _forward_with_adv_sources(
@@ -245,7 +245,7 @@ def _multibatch_pgd_fwd_bwd(
         - The gradients of the adv_sources (dict keyed by module name)
     """
     pgd_step_accum_sum_loss = torch.tensor(0.0, device=device)
-    pgd_step_accum_sum_n_examples = 0
+    pgd_step_accum_n_examples = 0
     pgd_step_accum_sum_grads = {k: torch.zeros_like(v) for k, v in adv_sources.items()}
 
     for microbatch_idx in range(pgd_config.gradient_accumulation_steps):
@@ -272,7 +272,7 @@ def _multibatch_pgd_fwd_bwd(
             module_names=model.target_module_paths, mask_shape=batch_dims
         )
 
-        batch_sum_loss, batch_sum_n_examples = _forward_with_adv_sources(
+        batch_sum_loss, batch_n_examples = _forward_with_adv_sources(
             model=model,
             batch=microbatch,
             adv_sources=adv_sources,
@@ -285,7 +285,7 @@ def _multibatch_pgd_fwd_bwd(
         )
 
         pgd_step_accum_sum_loss += batch_sum_loss
-        pgd_step_accum_sum_n_examples += batch_sum_n_examples
+        pgd_step_accum_n_examples += batch_n_examples
 
         # important: take gradient wrt the UNEXPANDED adv_sources, not the expanded ones
         grads = torch.autograd.grad(batch_sum_loss, list(adv_sources.values()))
@@ -294,7 +294,7 @@ def _multibatch_pgd_fwd_bwd(
 
         del target_model_output, ci
 
-    return pgd_step_accum_sum_loss, pgd_step_accum_sum_n_examples, pgd_step_accum_sum_grads
+    return pgd_step_accum_sum_loss, pgd_step_accum_n_examples, pgd_step_accum_sum_grads
 
 
 def get_pgd_init_tensor(
