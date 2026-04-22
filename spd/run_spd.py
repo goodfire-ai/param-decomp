@@ -203,12 +203,12 @@ def optimize(
 
     ci_fn_params = list(component_model.ci_fn.parameters())
 
-    assert len(component_params) > 0, "No parameters found in components to optimize"
-
     optimized_params = component_params + ci_fn_params
+    assert len(optimized_params) > 0, "No trainable parameters found to optimize"
+
     optimizer = optim.AdamW(optimized_params, lr=config.lr_schedule.start_val, weight_decay=0)
 
-    if config.faithfulness_warmup_steps > 0:
+    if config.faithfulness_warmup_steps > 0 and component_params:
         run_faithfulness_warmup(component_model, component_params, config)
 
     persistent_pgd_configs: list[
@@ -425,7 +425,7 @@ def optimize(
         # Skip gradient step if we are at the last step (last step just for plotting and logging)
         if step != config.steps:
             sync_across_processes()
-            if config.grad_clip_norm_components is not None:
+            if config.grad_clip_norm_components is not None and component_params:
                 clip_grad_norm_(component_params, config.grad_clip_norm_components)
             if config.grad_clip_norm_ci_fns is not None:
                 clip_grad_norm_(ci_fn_params, config.grad_clip_norm_ci_fns)
