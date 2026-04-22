@@ -857,6 +857,15 @@ class Config(BaseConfig):
         default=0.0,
         description="Weight decay for warmup phase optimizer",
     )
+    post_warmup_component_scale: NonNegativeFloat | None = Field(
+        default=None,
+        description=(
+            "If set, multiply each component's U by value in-place right after faithfulness "
+            "warmup (V unchanged). Scales the weight-delta contribution by `value` while "
+            "preserving component inner activations V·x (which feed the CI function under "
+            "fn_type='mlp'). None disables the rescale."
+        ),
+    )
 
     # --- Logging & Saving ---
     train_log_freq: PositiveInt = Field(
