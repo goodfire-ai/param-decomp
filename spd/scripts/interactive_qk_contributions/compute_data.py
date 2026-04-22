@@ -287,8 +287,9 @@ def compute_data(
     multiprompt: bool = False,
     seed: int = 42,
 ) -> None:
-    assert (prompts_file is None) != (dataset_samples is None), \
+    assert (prompts_file is None) != (dataset_samples is None), (
         "Specify exactly one of --prompts_file or --dataset_samples"
+    )
 
     _entity, _project, run_id = parse_wandb_run_path(str(wandb_path))
     run_info = SPDRunInfo.from_path(wandb_path)
@@ -324,9 +325,7 @@ def compute_data(
 
     # Build samples: list of (token_ids, label)
     if prompts_file is not None:
-        samples = _samples_from_prompts_file(
-            prompts_file, tokenizer, task_config.max_seq_len
-        )
+        samples = _samples_from_prompts_file(prompts_file, tokenizer, task_config.max_seq_len)
     else:
         assert dataset_samples is not None
         samples = _samples_from_dataset(
