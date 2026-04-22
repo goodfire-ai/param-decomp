@@ -49,6 +49,8 @@ def get_grad_norms_dict(
     comp_grad_norm_sq_sum: Float[Tensor, ""] = torch.zeros((), device=device)
     for target_module_path, component in component_model.components.items():
         for local_param_name, local_param in component.named_parameters():
+            if local_param.grad is None:
+                continue
             param_grad = runtime_cast(Tensor, local_param.grad)
             param_grad_sum_sq = param_grad.pow(2).sum()
             key = f"components/{target_module_path}.{local_param_name}"
