@@ -132,8 +132,7 @@ def harvest_attributions(
 
         if batch_idx % world_size != rank:
             continue
-        # TODO: Handle generic batch type
-        batch = batch_data["input_ids"].to(device)
+        batch = batch_data.to(device)
         harvester.process_batch(batch)
 
     logger.info(f"Processing complete. Tokens: {harvester.n_tokens:,}")
