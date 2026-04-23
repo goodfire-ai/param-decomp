@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from spd.app.backend.compute import (
     InterventionResult,
     compute_intervention,
+    parse_node_key,
 )
 from spd.app.backend.dependencies import DepDB, DepLoadedRun, DepStateManager
 from spd.app.backend.optim_cis import AdvPGDConfig, LossConfig, MeanKLLossConfig
@@ -48,26 +49,11 @@ router = APIRouter(prefix="/api/intervention", tags=["intervention"])
 DEVICE = get_device()
 
 
-def _parse_node_key(key: str, topology: TransformerTopology) -> tuple[str, int, int]:
-    """Parse canonical node key into (concrete_path, seq_pos, component_idx).
-
-    Translates canonical layer address back to concrete module path for ComponentModel.
-    """
-    parts = key.split(":")
-    assert len(parts) == 3, f"Invalid node key format: {key!r} (expected 'layer:seq:cIdx')"
-    canonical_layer, seq_str, cidx_str = parts
-    assert canonical_layer not in ("embed", "output"), (
-        f"Cannot intervene on {canonical_layer!r} nodes - only internal layers are interventable"
-    )
-    concrete_path = topology.canon_to_target(canonical_layer)
-    return concrete_path, int(seq_str), int(cidx_str)
-
-
 def _parse_and_validate_active_nodes(
     selected_nodes: list[str], topology: TransformerTopology, seq_len: int
 ) -> list[tuple[str, int, int]]:
     """Parse node keys and validate sequence bounds for the current prompt."""
-    active_nodes = [_parse_node_key(key, topology) for key in selected_nodes]
+    active_nodes = [parse_node_key(key, topology) for key in selected_nodes]
     for _, seq_pos, _ in active_nodes:
         if seq_pos >= seq_len:
             raise ValueError(f"seq_pos {seq_pos} out of bounds for text with {seq_len} tokens")

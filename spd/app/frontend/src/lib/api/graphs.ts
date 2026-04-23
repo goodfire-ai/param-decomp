@@ -98,14 +98,21 @@ export async function computeGraphStream(
     url.searchParams.set("prompt_id", String(params.promptId));
     url.searchParams.set("normalize", String(params.normalize));
     url.searchParams.set("ci_threshold", String(params.ciThreshold));
-    if (params.includedNodes !== undefined) {
-        url.searchParams.set("included_nodes", JSON.stringify(params.includedNodes));
-    }
 
-    const response = await fetch(url.toString(), { method: "POST" });
+    const response = await fetch(url.toString(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ included_nodes: params.includedNodes ?? null }),
+    });
     if (!response.ok) {
-        const error = await response.json();
-        throw new ApiError(error.detail || `HTTP ${response.status}`, response.status);
+        const text = await response.text();
+        let detail = text || `HTTP ${response.status}`;
+        try {
+            detail = (JSON.parse(text) as { detail?: string }).detail ?? detail;
+        } catch {
+            // Response body was not JSON (e.g. a bare 431 from the dev proxy) — keep raw text.
+        }
+        throw new ApiError(detail, response.status);
     }
 
     return parseSSEStream(response, (data) => hydrateGraph(data.data as Record<string, unknown>), onProgress);

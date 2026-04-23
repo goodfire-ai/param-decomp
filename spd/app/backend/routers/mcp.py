@@ -25,13 +25,14 @@ from pydantic import BaseModel
 from spd.app.backend.compute import (
     compute_ci_only,
     compute_prompt_attributions_optimized,
+    parse_node_key,
 )
 from spd.app.backend.database import StoredGraph
 from spd.app.backend.optim_cis import CELossConfig, OptimCIConfig
 from spd.app.backend.routers.graphs import _build_out_probs
 from spd.app.backend.routers.pretrain_info import _get_pretrain_info
 from spd.app.backend.state import StateManager
-from spd.configs import ImportanceMinimalityLossConfig
+from spd.configs import ImportanceMinimalityLossConfig, LMTaskConfig
 from spd.harvest import analysis
 from spd.log import logger
 from spd.utils.distributed_utils import get_device
@@ -849,15 +850,7 @@ def _tool_run_ablation(params: dict[str, Any]) -> dict[str, Any]:
     token_ids = loaded.tokenizer.encode(text)
     tokens = torch.tensor([token_ids], dtype=torch.long, device=DEVICE)
 
-    active_nodes = []
-    for key in selected_nodes:
-        parts = key.split(":")
-        if len(parts) != 3:
-            raise ValueError(f"Invalid node key format: {key!r} (expected 'layer:seq:cIdx')")
-        layer, seq_str, cidx_str = parts
-        if layer in ("wte", "embed", "output"):
-            raise ValueError(f"Cannot intervene on {layer!r} nodes - only internal layers allowed")
-        active_nodes.append((layer, int(seq_str), int(cidx_str)))
+    active_nodes = [parse_node_key(key, loaded.topology) for key in selected_nodes]
 
     with manager.gpu_lock():
         result = compute_intervention(
@@ -894,23 +887,38 @@ def _tool_run_ablation(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _tool_search_dataset(params: dict[str, Any]) -> dict[str, Any]:
-    """Search the SimpleStories dataset."""
+    """Search the loaded run's training dataset for rows containing a query string."""
     import time
 
     from datasets import Dataset, load_dataset
+
+    from spd.app.backend.routers.dataset_search import _assert_simplestories
+
+    _, loaded = _get_state()
+    task_config = loaded.config.task_config
+    assert isinstance(task_config, LMTaskConfig), (
+        f"search_dataset requires an LM experiment, got {task_config.task_name}"
+    )
+    _assert_simplestories(task_config)
+    dataset_name = task_config.dataset_name
+    text_column = task_config.column_name
 
     query = params["query"]
     limit = params.get("limit", 20)
     search_query = query.lower()
 
-    _log_event("tool_call", f"search_dataset: '{query}'", {"query": query, "limit": limit})
+    _log_event(
+        "tool_call",
+        f"search_dataset: '{query}' on {dataset_name}",
+        {"query": query, "limit": limit, "dataset": dataset_name},
+    )
 
     start_time = time.time()
-    dataset = load_dataset("lennart-finke/SimpleStories", split="train")
+    dataset = load_dataset(dataset_name, split="train")
     assert isinstance(dataset, Dataset)
 
     filtered = dataset.filter(
-        lambda x: search_query in x["story"].lower(),
+        lambda x: search_query in x[text_column].lower(),
         num_proc=4,
     )
 
@@ -919,16 +927,17 @@ def _tool_search_dataset(params: dict[str, Any]) -> dict[str, Any]:
         if i >= limit:
             break
         item_dict: dict[str, Any] = dict(item)
-        story: str = item_dict["story"]
+        text: str = item_dict[text_column]
         results.append(
             {
-                "story": story[:500] + "..." if len(story) > 500 else story,
-                "occurrence_count": story.lower().count(search_query),
+                "text": text[:500] + "..." if len(text) > 500 else text,
+                "occurrence_count": text.lower().count(search_query),
             }
         )
 
     return {
         "query": query,
+        "dataset_name": dataset_name,
         "total_matches": len(filtered),
         "returned": len(results),
         "search_time_seconds": round(time.time() - start_time, 2),
