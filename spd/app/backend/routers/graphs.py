@@ -545,6 +545,12 @@ def compute_max_abs_subcomp_act(node_subcomp_acts: dict[str, float]) -> float:
     return max(abs(v) for v in node_subcomp_acts.values())
 
 
+class ComputeGraphRequest(BaseModel):
+    """Optional JSON body for POST /api/graphs."""
+
+    included_nodes: list[str] | None = None
+
+
 @router.post("")
 @log_errors
 def compute_graph_stream(
@@ -553,39 +559,23 @@ def compute_graph_stream(
     loaded: DepLoadedRun,
     manager: DepStateManager,
     ci_threshold: Annotated[float, Query()],
-    included_nodes: Annotated[str | None, Query()] = None,
+    body: ComputeGraphRequest | None = None,
 ):
     """Compute attribution graph for a prompt with streaming progress.
 
-    If included_nodes is provided (JSON array of node keys), creates a "manual" graph
-    with only those nodes. Otherwise creates a "standard" graph.
-
-    Args:
-        included_nodes: JSON array of node keys to include (creates manual graph if provided)
+    If body.included_nodes is provided, creates a "manual" graph with only those nodes.
+    Otherwise creates a "standard" graph. Passed via request body (not query string) so
+    large selections don't overflow request-header limits.
     """
-    # Parse and validate included_nodes if provided
+    included_nodes_list = body.included_nodes if body is not None else None
     included_nodes_set: set[str] | None = None
-    included_nodes_list: list[str] | None = None
-    if included_nodes is not None:
-        try:
-            parsed_nodes = json.loads(included_nodes)
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail="Invalid included_nodes JSON") from e
-
-        if not isinstance(parsed_nodes, list):
-            raise HTTPException(status_code=400, detail="included_nodes must be a JSON array")
-
-        if len(parsed_nodes) > 10000:
-            raise HTTPException(status_code=400, detail="Too many nodes (max 10000)")
-
-        for node in parsed_nodes:
-            if not isinstance(node, str):
-                raise HTTPException(status_code=400, detail="All node keys must be strings")
-            if len(node) > 100:  # Node keys follow format "layer:seq:cIdx", 100 chars is generous
-                raise HTTPException(status_code=400, detail=f"Node key too long: {node[:50]}...")
-
-        included_nodes_list = parsed_nodes
-        included_nodes_set = set(parsed_nodes)
+    if included_nodes_list is not None:
+        assert len(included_nodes_list) <= 10000, (
+            f"Too many nodes: {len(included_nodes_list)} (max 10000)"
+        )
+        for node in included_nodes_list:
+            assert len(node) <= 100, f"Node key too long: {node[:50]}..."
+        included_nodes_set = set(included_nodes_list)
 
     is_manual = included_nodes_set is not None
     graph_type: GraphType = "manual" if is_manual else "standard"
