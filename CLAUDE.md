@@ -336,19 +336,23 @@ See `spd/investigate/CLAUDE.md` for details.
 
 ### Unified Postprocessing (`spd-postprocess`)
 
-Run all postprocessing steps for a completed SPD run with a single command:
+Run all postprocessing steps for a completed SPD run with a single command. The CLI takes a
+positional path to a `PostprocessConfig` YAML (the wandb run is specified inside the config):
 
 ```bash
-spd-postprocess <wandb_path>                              # Run everything with default config
-spd-postprocess <wandb_path> --config custom_config.yaml  # Use custom config
+spd-postprocess config.yaml                    # Submit the pipeline defined by this config
+spd-postprocess config.yaml --dependency 123   # Wait for SLURM job 123 before starting
+spd-postprocess config.yaml --dry_run          # Print the resolved config without submitting
 ```
 
-Defaults are defined in `PostprocessConfig` (`spd/postprocess/config.py`). Pass a custom YAML/JSON config to override. Set any section to `null` to skip it:
+The config schema is `PostprocessConfig` in `spd/postprocess/config.py`. Set any optional
+section to `null` to skip it:
 
 - `attributions: null` — skip dataset attributions
 - `autointerp: null` — skip autointerp entirely (interpret + evals)
 - `autointerp.evals: null` — skip evals but still run interpret
 - `intruder: null` — skip intruder eval
+- `graph_interp: null` — skip context-aware graph interpretation (requires `attributions`)
 
 SLURM dependency graph:
 
@@ -360,6 +364,7 @@ harvest (GPU array → merge)
     │   ├── detection (CPU, depends on interpret)
     │   └── fuzzing   (CPU, depends on interpret)
 attributions (GPU array → merge, parallel with harvest)
+graph_interp         (CPU, depends on harvest merge + attributions merge)
 ```
 
 ### Running on SLURM Cluster (`spd-run`)

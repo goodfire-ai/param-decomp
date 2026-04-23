@@ -59,10 +59,10 @@ def _canonical_to_concrete_key(
 
 
 def _parse_subrun_timestamp(subrun_id: str) -> str:
-    """Parse 'a-YYYYMMDD_HHMMSS' into a readable timestamp."""
+    """Parse 'a-YYYYMMDD_HHMMSS_ffffff' into a readable timestamp."""
     raw = subrun_id.removeprefix("a-")
     try:
-        dt = datetime.strptime(raw, "%Y%m%d_%H%M%S")
+        dt = datetime.strptime(raw, "%Y%m%d_%H%M%S_%f")
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     except ValueError:
         return raw

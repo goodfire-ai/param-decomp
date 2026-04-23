@@ -1,6 +1,10 @@
 """Batch handling and reconstruction loss functions for different model types.
 
 These functions parameterize ComponentModel and training for different target model architectures.
+
+Use ``make_run_batch(config.output_extract)`` when the experiment's output extraction is driven
+by config (e.g. LM experiments). Import a concrete helper like ``run_batch_first_element`` or
+``run_batch_passthrough`` when the experiment always runs batches the same way.
 """
 
 import math

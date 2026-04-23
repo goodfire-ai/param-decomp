@@ -1003,6 +1003,7 @@ class Config(BaseConfig):
         # Migrate old pretrained_model_output_attr to output_extract
         if "pretrained_model_output_attr" in config_dict:
             old_val = config_dict.pop("pretrained_model_output_attr")
+            logger.info(f"Migrating pretrained_model_output_attr={old_val!r} to output_extract")
             match old_val:
                 case None:
                     pass

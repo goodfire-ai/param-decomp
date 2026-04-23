@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch import Tensor, nn
 
-from spd.models.batch_and_loss_fns import make_run_batch, recon_loss_kl
+from spd.models.batch_and_loss_fns import make_run_batch, recon_loss_kl, recon_loss_mse
 
 
 class _TensorModel(nn.Module):
@@ -55,6 +55,13 @@ def test_make_run_batch_str_gets_attr() -> None:
     batch = torch.arange(6, dtype=torch.float32).reshape(2, 3)
     out = run_batch(model, batch)
     assert torch.equal(out, batch * 5)
+
+
+def test_recon_loss_mse_shape_mismatch_asserts() -> None:
+    pred = torch.zeros(2, 3)
+    target = torch.zeros(2, 4)
+    with pytest.raises(AssertionError):
+        recon_loss_mse(pred=pred, target=target)
 
 
 def test_recon_loss_kl_identical_logits_is_zero() -> None:
