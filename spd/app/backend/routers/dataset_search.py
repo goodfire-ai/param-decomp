@@ -259,9 +259,9 @@ def get_tokenized_results(
     tokenized_results: list[TokenizedSearchResult] = []
 
     for result in page_results:
-        story: str = result["story"]
+        text: str = result["text"]
 
-        token_ids = tokenizer.encode(story)
+        token_ids = tokenizer.encode(text)
         if len(token_ids) > max_tokens:
             token_ids = token_ids[:max_tokens]
 
@@ -283,15 +283,12 @@ def get_tokenized_results(
 
         token_strings = loaded.tokenizer.get_spans(token_ids)
 
-        # Extract all non-core fields as metadata
-        metadata = {k: str(v) for k, v in result.items() if k not in ["story", "occurrence_count"]}
-
         tokenized_results.append(
             TokenizedSearchResult(
                 tokens=token_strings,
                 next_token_probs=next_token_probs,
                 occurrence_count=result["occurrence_count"],
-                metadata=metadata,
+                metadata=result["metadata"],
             )
         )
 
@@ -318,11 +315,14 @@ class RandomSamplesResult(BaseModel):
 @router.get("/random")
 @log_errors
 def get_random_samples(
+    loaded: DepLoadedRun,
     n_samples: Annotated[int, Query(ge=1, le=200)] = 100,
     seed: Annotated[int, Query(ge=0)] = 42,
     split: Annotated[str, Query(pattern="^(train|test)$")] = "train",
 ) -> RandomSamplesResult:
-    """Get random samples from the SimpleStories dataset.
+    """Get random samples from the loaded run's training dataset.
+
+    Reads dataset_name and column_name from the loaded run's config.
 
     Args:
         n_samples: Number of random samples to return (1-200)
@@ -332,8 +332,12 @@ def get_random_samples(
     Returns:
         Random samples with metadata
     """
-    logger.info(f"Loading SimpleStories dataset (split={split}) for random sampling...")
-    dataset = load_dataset("lennart-finke/SimpleStories", split=split)
+    task_config = _get_lm_task_config(loaded)
+    dataset_name = task_config.dataset_name
+    text_column = task_config.column_name
+
+    logger.info(f"Loading dataset {dataset_name} (split={split}) for random sampling...")
+    dataset = load_dataset(dataset_name, split=split)
     assert isinstance(dataset, Dataset), f"Expected Dataset, got {type(dataset)}"
 
     total_available = len(dataset)
@@ -344,22 +348,24 @@ def get_random_samples(
     indices = rng.sample(range(total_available), actual_samples)
     samples = dataset.select(indices)
 
+    metadata_columns = [c for c in dataset.column_names if c != text_column]
+
     results = []
     for item in samples:
         item_dict: dict[str, Any] = dict(item)
-        # Extract text field (usually "story" for SimpleStories, but could be different)
-        text = item_dict.get("story") or item_dict.get("text", "")
-        # Extract all non-text fields as metadata
-        metadata = {k: str(v) for k, v in item_dict.items() if k not in ["story", "text"]}
+        text: str = item_dict[text_column]
+        row_metadata = {
+            col: str(item_dict[col]) for col in metadata_columns if item_dict.get(col) is not None
+        }
         results.append(
             DatasetSearchResult(
                 text=text,
                 occurrence_count=0,
-                metadata=metadata,
+                metadata=row_metadata,
             )
         )
 
-    logger.info(f"Returned {len(results)} random samples from {total_available} total stories")
+    logger.info(f"Returned {len(results)} random samples from {total_available} total rows")
 
     return RandomSamplesResult(
         results=results,
@@ -407,12 +413,16 @@ def get_random_samples_with_loss(
     Returns:
         Tokenized samples with next-token probability per token
     """
+    task_config = _get_lm_task_config(loaded)
+    dataset_name = task_config.dataset_name
+    text_column = task_config.column_name
+
     device = get_device()
     model = loaded.model
     tokenizer = loaded.tokenizer
 
-    logger.info(f"Loading SimpleStories dataset (split={split}) for random sampling with loss...")
-    dataset = load_dataset("lennart-finke/SimpleStories", split=split)
+    logger.info(f"Loading dataset {dataset_name} (split={split}) for random sampling with loss...")
+    dataset = load_dataset(dataset_name, split=split)
     assert isinstance(dataset, Dataset), f"Expected Dataset, got {type(dataset)}"
 
     total_available = len(dataset)
@@ -422,13 +432,15 @@ def get_random_samples_with_loss(
     indices = rng.sample(range(total_available), actual_samples)
     samples = dataset.select(indices)
 
+    metadata_columns = [c for c in dataset.column_names if c != text_column]
+
     results: list[TokenizedSample] = []
 
     for item in samples:
         item_dict: dict[str, Any] = dict(item)
-        story: str = item_dict["story"]
+        text: str = item_dict[text_column]
 
-        token_ids = tokenizer.encode(story)
+        token_ids = tokenizer.encode(text)
         if len(token_ids) > max_tokens:
             token_ids = token_ids[:max_tokens]
 
@@ -441,7 +453,6 @@ def get_random_samples_with_loss(
             logits = model(tokens_tensor)
             probs = torch.softmax(logits, dim=-1)
 
-        # Get probability of next token at each position
         next_token_probs: list[float | None] = []
         for i in range(len(token_ids) - 1):
             next_token_id = token_ids[i + 1]
@@ -451,19 +462,20 @@ def get_random_samples_with_loss(
 
         token_strings = loaded.tokenizer.get_spans(token_ids)
 
-        # Extract all non-text fields as metadata
-        metadata = {k: str(v) for k, v in item_dict.items() if k not in ["story", "text"]}
+        row_metadata = {
+            col: str(item_dict[col]) for col in metadata_columns if item_dict.get(col) is not None
+        }
 
         results.append(
             TokenizedSample(
                 tokens=token_strings,
                 next_token_probs=next_token_probs,
-                metadata=metadata,
+                metadata=row_metadata,
             )
         )
 
     logger.info(
-        f"Returned {len(results)} tokenized samples with CE loss from {total_available} total stories"
+        f"Returned {len(results)} tokenized samples with CE loss from {total_available} total rows"
     )
 
     return RandomSamplesWithLossResult(

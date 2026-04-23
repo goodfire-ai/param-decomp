@@ -114,6 +114,22 @@ def _get_seq_pos(node_key: str) -> int:
     return int(parts[1])
 
 
+def parse_node_key(key: str, topology: TransformerTopology) -> tuple[str, int, int]:
+    """Parse canonical node key into (concrete_path, seq_pos, component_idx).
+
+    Translates canonical layer address (e.g. "0.mlp.up") back to concrete module path
+    (e.g. "h.0.mlp.c_fc") for ComponentModel. Rejects non-interventable pseudo-layers.
+    """
+    parts = key.split(":")
+    assert len(parts) == 3, f"Invalid node key format: {key!r} (expected 'layer:seq:cIdx')"
+    canonical_layer, seq_str, cidx_str = parts
+    assert canonical_layer not in ("wte", "embed", "output"), (
+        f"Cannot intervene on {canonical_layer!r} nodes - only internal layers are interventable"
+    )
+    concrete_path = topology.canon_to_target(canonical_layer)
+    return concrete_path, int(seq_str), int(cidx_str)
+
+
 @dataclass
 class Edge:
     """Edge in the attribution graph."""
@@ -426,6 +442,7 @@ def compute_edges_from_ci(
 def filter_ci_to_included_nodes(
     ci_lower_leaky: dict[str, Float[Tensor, "1 seq C"]],
     included_nodes: set[str],
+    topology: TransformerTopology,
 ) -> dict[str, Float[Tensor, "1 seq C"]]:
     """Zero out CI values for nodes not in included_nodes.
 
@@ -436,8 +453,11 @@ def filter_ci_to_included_nodes(
     Uses batch tensor operations for efficiency with large node sets.
 
     Args:
-        ci_lower_leaky: Dict mapping layer name to CI tensor [1, seq, C].
-        included_nodes: Set of node keys to include (format: "layer:seq:cIdx").
+        ci_lower_leaky: Dict mapping concrete layer path to CI tensor [1, seq, C].
+        included_nodes: Set of node keys to include (format: "layer:seq:cIdx", where
+            `layer` is a canonical layer address like "0.mlp.up").
+        topology: Used to translate canonical layer addresses to concrete module paths
+            that match the keys of ``ci_lower_leaky``.
 
     Returns:
         New dict with CI values zeroed for non-included nodes.
@@ -445,13 +465,14 @@ def filter_ci_to_included_nodes(
     Raises:
         AssertionError: If any node has invalid format or references invalid layer.
     """
-    # Pre-group nodes by layer: layer -> list of (seq_pos, c_idx)
+    # Pre-group nodes by layer: concrete_path -> list of (seq_pos, c_idx)
     nodes_by_layer: dict[str, list[tuple[int, int]]] = defaultdict(list)
     for node_key in included_nodes:
         parts = node_key.split(":")
         assert len(parts) == 3, f"Invalid node key format: {node_key}"
-        layer, seq_str, c_str = parts
-        nodes_by_layer[layer].append((int(seq_str), int(c_str)))
+        canonical_layer, seq_str, c_str = parts
+        concrete_path = topology.canon_to_target(canonical_layer)
+        nodes_by_layer[concrete_path].append((int(seq_str), int(c_str)))
 
     # Validate all layers exist (Issue 8: fail fast on invalid nodes)
     valid_layers = set(ci_lower_leaky.keys())
@@ -520,7 +541,7 @@ def compute_prompt_attributions(
 
     ci_lower_leaky = ci.lower_leaky
     if included_nodes is not None:
-        ci_lower_leaky = filter_ci_to_included_nodes(ci_lower_leaky, included_nodes)
+        ci_lower_leaky = filter_ci_to_included_nodes(ci_lower_leaky, included_nodes, topology)
 
     return compute_edges_from_ci(
         model=model,
