@@ -1,3 +1,4 @@
+from collections.abc import Callable, Generator
 from typing import Any
 
 import numpy as np
@@ -152,6 +153,7 @@ def create_data_loader(
     dist_state: DistributedState | None = None,
     global_seed: int = 0,
     to_lower: bool = True,
+    collate_fn: Callable[..., Any] | None = None,
 ) -> tuple[DataLoader[Any], PreTrainedTokenizer]:
     """Create a DataLoader for the given dataset.
 
@@ -264,11 +266,17 @@ def create_data_loader(
         ),
         drop_last=True,
         generator=generator,
+        collate_fn=collate_fn,
     )
     return loader, tokenizer
 
 
-def loop_dataloader[T](dl: DataLoader[T]):
+def input_ids_collate_fn(batch: list[dict[str, Tensor]]) -> Tensor:
+    """Collate function that extracts input_ids tensors from HuggingFace dataset dicts."""
+    return torch.stack([item["input_ids"] for item in batch])
+
+
+def loop_dataloader[T](dl: DataLoader[T]) -> Generator[T]:
     """Loop over a dataloader, resetting the iterator when it is exhausted.
 
     Ensures that each epoch gets different data, even when using a distributed sampler.
@@ -312,6 +320,7 @@ def train_loader_and_tokenizer(
         batch_size=batch_size,
         buffer_size=task_config.buffer_size,
         global_seed=config.seed,
+        collate_fn=input_ids_collate_fn,
     )
 
     assert isinstance(tokenizer, PreTrainedTokenizerBase)

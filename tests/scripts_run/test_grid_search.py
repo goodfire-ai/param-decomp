@@ -341,7 +341,6 @@ class TestConfigIntegration:
                     "coeff": 1.0,
                 },
             ],
-            "output_loss_type": "mse",
             "lr": 0.001,
             "steps": 1000,
             "batch_size": 32,
@@ -396,7 +395,6 @@ class TestConfigIntegration:
                     "eps": 1e-12,
                 }
             ],
-            "output_loss_type": "kl",
             "lr": 0.001,
             "steps": 1000,
             "batch_size": 32,
@@ -466,7 +464,6 @@ class TestConfigIntegration:
                     "eps": 1e-12,
                 }
             ],
-            "output_loss_type": "mse",
             "lr": 0.01,  # Will be overridden
             "steps": 1000,
             "batch_size": 32,

@@ -875,7 +875,12 @@ def plot_wv_subspace_overlap(
 
     logger.info(f"Collecting post-RMSNorm activations at layer {layer}...")
     activations = _collect_post_rmsnorm_activations(
-        target_model, loader, task_config.column_name, layer, n_batches, device
+        target_model,
+        loader,
+        task_config.column_name,
+        layer,
+        n_batches,
+        device,
     )
     logger.info(f"Activations shape: {activations.shape}")
 

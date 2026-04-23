@@ -8,7 +8,6 @@ from torch import Tensor
 from spd.adapters.clt import CLTAdapter
 from spd.harvest.harvest_fn.base import HarvestFn
 from spd.harvest.schemas import HarvestBatch
-from spd.utils.general_utils import extract_batch_data
 
 
 class CLTHarvestFn(HarvestFn):
@@ -24,7 +23,7 @@ class CLTHarvestFn(HarvestFn):
         model = self._adapter.base_model
         clt = self._adapter.clt
 
-        batch = extract_batch_data(batch_item).to(self._device)
+        batch = batch_item.to(self._device)
 
         mlp_inputs: dict[int, Tensor] = {}
         hooks: list[torch.utils.hooks.RemovableHandle] = []

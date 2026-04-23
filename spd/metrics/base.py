@@ -6,7 +6,7 @@ compute() methods.
 
 from typing import Any, ClassVar, Protocol
 
-from jaxtyping import Float, Int
+from jaxtyping import Float
 from torch import Tensor
 
 from spd.models.component_model import CIOutputs
@@ -21,12 +21,12 @@ class Metric(Protocol):
     def update(
         self,
         *,
-        batch: Int[Tensor, "..."] | Float[Tensor, "..."],
-        target_out: Float[Tensor, "... vocab"],
+        batch: Any,
+        target_out: Tensor,
         pre_weight_acts: dict[str, Float[Tensor, "..."]],
         ci: CIOutputs,
         current_frac_of_training: float,
-        weight_deltas: dict[str, Float[Tensor, "... C"]],
+        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
     ) -> None:
         """Update metric state with a batch of data."""
         ...

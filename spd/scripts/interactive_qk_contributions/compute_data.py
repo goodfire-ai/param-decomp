@@ -22,7 +22,8 @@ from pathlib import Path
 import fire
 import numpy as np
 import torch
-from transformers import AutoTokenizer, PreTrainedTokenizerBase
+from transformers import AutoTokenizer, PreTrainedTokenizer
+from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from spd.app.backend.app_tokenizer import AppTokenizer
 from spd.configs import LMTaskConfig
@@ -221,14 +222,14 @@ def _make_label(prompt: str) -> str:
 
 def _samples_from_prompts_file(
     prompts_file: str,
-    tokenizer: PreTrainedTokenizerBase,
+    tokenizer: PreTrainedTokenizer,
     max_seq_len: int,
 ) -> list[tuple[list[int], str]]:
     """Load prompts from JSON file, tokenize, return (token_ids, label) pairs."""
     prompts = load_prompts(Path(prompts_file))
     samples = []
     for prompt in prompts:
-        encoded = tokenizer.encode(prompt, add_special_tokens=False)  # pyright: ignore[reportAttributeAccessIssue]
+        encoded = tokenizer.encode(prompt, add_special_tokens=False)
         if len(encoded) > max_seq_len:
             encoded = encoded[:max_seq_len]
         samples.append((encoded, _make_label(prompt)))
@@ -287,8 +288,9 @@ def compute_data(
     multiprompt: bool = False,
     seed: int = 42,
 ) -> None:
-    assert (prompts_file is None) != (dataset_samples is None), \
+    assert (prompts_file is None) != (dataset_samples is None), (
         "Specify exactly one of --prompts_file or --dataset_samples"
+    )
 
     _entity, _project, run_id = parse_wandb_run_path(str(wandb_path))
     run_info = SPDRunInfo.from_path(wandb_path)
@@ -324,9 +326,7 @@ def compute_data(
 
     # Build samples: list of (token_ids, label)
     if prompts_file is not None:
-        samples = _samples_from_prompts_file(
-            prompts_file, tokenizer, task_config.max_seq_len
-        )
+        samples = _samples_from_prompts_file(prompts_file, tokenizer, task_config.max_seq_len)
     else:
         assert dataset_samples is not None
         samples = _samples_from_dataset(
@@ -338,6 +338,7 @@ def compute_data(
     manifest_entries: list[dict[str, object]] = []
     multiprompt_buckets: dict[int, list[dict[str, object]]] = {}
 
+    assert isinstance(tokenizer, PreTrainedTokenizerBase)
     app_tokenizer = AppTokenizer(tokenizer)
 
     for p_idx, (encoded, label) in enumerate(samples):

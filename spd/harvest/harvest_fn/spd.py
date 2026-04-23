@@ -6,7 +6,6 @@ from spd.adapters.spd import SPDAdapter
 from spd.harvest.config import SPDHarvestConfig
 from spd.harvest.harvest_fn.base import HarvestFn
 from spd.harvest.schemas import HarvestBatch
-from spd.utils.general_utils import extract_batch_data
 
 
 class SPDHarvestFn(HarvestFn):
@@ -25,7 +24,7 @@ class SPDHarvestFn(HarvestFn):
     def __call__(self, batch_item: torch.Tensor) -> HarvestBatch:
         model = self._adapter.component_model
 
-        batch = extract_batch_data(batch_item).to(self._device)
+        batch = batch_item.to(self._device)
 
         out = model(batch, cache_type="input")
         probs = torch.softmax(out.output, dim=-1)

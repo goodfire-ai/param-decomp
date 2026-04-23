@@ -44,7 +44,6 @@ loss_metric_configs:
       type: uniform_k_subset
     coeff: 1.0
 
-output_loss_type: kl
 
 # --- Training ---
 batch_size: 256
@@ -95,7 +94,7 @@ eval_metric_configs:
 # --- Pretrained model info ---
 pretrained_model_class: spd.pretrain.models.llama_simple.LlamaSimple
 pretrained_model_name: wandb:goodfire/spd/runs/erq48r3w # 100k steps 4019 tok
-pretrained_model_output_attr: idx_0
+output_extract: 0
 tokenizer_name: SimpleStories/test-SimpleStories-gpt2-1.25M # 4019 tok: TODO: Load from wandb instead
 
 # --- Task Specific ---

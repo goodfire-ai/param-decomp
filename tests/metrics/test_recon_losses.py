@@ -15,6 +15,7 @@ from spd.metrics.hidden_acts_recon_loss import (
     calc_hidden_acts_mse,
 )
 from spd.metrics.ppgd_eval_losses import PPGDReconEval
+from spd.models.batch_and_loss_fns import recon_loss_mse
 from spd.models.component_model import CIOutputs, ComponentModel
 from spd.models.components import make_mask_infos
 from spd.persistent_pgd import PPGDSources, get_ppgd_mask_infos
@@ -38,7 +39,7 @@ def _stochastic(
         model=model,
         sampling="continuous",
         n_mask_samples=4,
-        output_loss_type="mse",
+        reconstruction_loss=recon_loss_mse,
         batch=batch,
         target_out=target_out,
         ci=ci,
@@ -54,7 +55,7 @@ def _ci(
 ) -> Tensor:
     return ci_masked_recon_loss(
         model=model,
-        output_loss_type="mse",
+        reconstruction_loss=recon_loss_mse,
         batch=batch,
         target_out=target_out,
         ci=ci,
@@ -71,7 +72,7 @@ def _pgd(
         model=model,
         batch=batch,
         target_out=target_out,
-        output_loss_type="mse",
+        reconstruction_loss=recon_loss_mse,
         ci=ci,
         weight_deltas=None,
         pgd_config=PGDConfig(
@@ -143,7 +144,7 @@ def test_output_recon_manual_calculation() -> None:
 
     actual_loss = ci_masked_recon_loss(
         model=model,
-        output_loss_type="mse",
+        reconstruction_loss=recon_loss_mse,
         batch=batch,
         target_out=target_out,
         ci=ci,
@@ -243,7 +244,7 @@ def test_ppgd_recon_eval_metric_keys() -> None:
         device="cpu",
         effective_sources=sources,
         use_delta_component=False,
-        output_loss_type="mse",
+        reconstruction_loss=recon_loss_mse,
         metric_name="my_ppgd",
     )
     metric.update(

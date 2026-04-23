@@ -729,7 +729,7 @@ def _normalize_edges(edges: list[Edge], normalize: NormalizeType) -> list[Edge]:
 @log_errors
 def compute_graph_optimized_stream(
     prompt_id: Annotated[int, Query()],
-    imp_min_coeff: Annotated[float, Query(gte=0)],
+    imp_min_coeff: Annotated[float, Query(ge=0)],
     steps: Annotated[int, Query(gt=0)],
     pnorm: Annotated[float, Query(gt=0)],
     beta: Annotated[float, Query(ge=0)],

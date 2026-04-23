@@ -10,8 +10,9 @@ from spd.configs import (
     PersistentPGDReconSubsetLossConfig,
     RepeatAcrossBatchScope,
 )
-from spd.data import DatasetConfig, create_data_loader
+from spd.data import DatasetConfig, create_data_loader, input_ids_collate_fn
 from spd.log import logger
+from spd.models.batch_and_loss_fns import make_run_batch, recon_loss_kl
 from spd.pretrain.run_info import PretrainRunInfo
 from spd.run_spd import run_experiment
 from spd.utils.distributed_utils import (
@@ -114,6 +115,7 @@ def main(
         buffer_size=config.task_config.buffer_size,
         global_seed=config.seed,
         dist_state=dist_state,
+        collate_fn=input_ids_collate_fn,
     )
 
     eval_data_config = DatasetConfig(
@@ -143,6 +145,7 @@ def main(
         buffer_size=config.task_config.buffer_size,
         global_seed=config.seed + 1,
         dist_state=dist_state,
+        collate_fn=input_ids_collate_fn,
     )
 
     run_experiment(
@@ -151,6 +154,8 @@ def main(
         device=device,
         train_loader=train_loader,
         eval_loader=eval_loader,
+        run_batch=make_run_batch(config.output_extract),
+        reconstruction_loss=recon_loss_kl,
         experiment_tag="lm",
         run_id=run_id,
         launch_id=launch_id,

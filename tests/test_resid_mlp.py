@@ -14,6 +14,7 @@ from spd.experiments.resid_mlp.configs import ResidMLPModelConfig
 from spd.experiments.resid_mlp.models import ResidMLP
 from spd.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
 from spd.identity_insertion import insert_identity_operations_
+from spd.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
 from spd.run_spd import optimize
 from spd.utils.data_utils import DatasetGeneratedDataLoader
 from spd.utils.general_utils import set_seed
@@ -62,7 +63,6 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         identity_module_info=[
             ModulePatternInfoConfig(module_pattern="layers.*.mlp_in", C=10),
         ],
-        output_loss_type="mse",
         # Training
         lr_schedule=ScheduleConfig(
             start_val=1e-3, fn_type="cosine", warmup_pct=0.01, final_val_frac=0.0
@@ -82,7 +82,6 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         pretrained_model_class="spd.experiments.resid_mlp.models.ResidMLP",
         pretrained_model_path=None,
         pretrained_model_name=None,
-        pretrained_model_output_attr=None,
         tokenizer_name=None,
         # Task Specific
         task_config=ResidMLPTaskConfig(
@@ -127,7 +126,8 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         device=device,
         train_loader=train_loader,
         eval_loader=eval_loader,
-        n_eval_steps=config.n_eval_steps,
+        run_batch=run_batch_first_element,
+        reconstruction_loss=recon_loss_mse,
         out_dir=tmp_path,
     )
 

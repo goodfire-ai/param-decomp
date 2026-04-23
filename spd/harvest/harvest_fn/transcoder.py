@@ -8,7 +8,6 @@ from torch import Tensor
 from spd.adapters.transcoder import TranscoderAdapter
 from spd.harvest.harvest_fn.base import HarvestFn
 from spd.harvest.schemas import HarvestBatch
-from spd.utils.general_utils import extract_batch_data
 
 
 class TranscoderHarvestFn(HarvestFn):
@@ -24,7 +23,7 @@ class TranscoderHarvestFn(HarvestFn):
     def __call__(self, batch_item: torch.Tensor) -> HarvestBatch:
         model = self._adapter.base_model
 
-        batch = extract_batch_data(batch_item).to(self._device)
+        batch = batch_item.to(self._device)
 
         mlp_inputs: dict[str, Tensor] = {}
         hooks: list[torch.utils.hooks.RemovableHandle] = []

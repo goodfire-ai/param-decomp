@@ -24,6 +24,7 @@ from spd.metrics import (
     stochastic_recon_loss,
     stochastic_recon_subset_loss,
 )
+from spd.models.batch_and_loss_fns import recon_loss_kl, recon_loss_mse, run_batch_passthrough
 from spd.models.component_model import ComponentModel
 from spd.persistent_pgd import PersistentPGDState
 from spd.utils.module_utils import ModulePathInfo
@@ -65,9 +66,9 @@ def _make_component_model(weight: Float[Tensor, "d_out d_in"]) -> ComponentModel
 
     comp_model = ComponentModel(
         target_model=target,
+        run_batch=run_batch_passthrough,
         module_path_info=[ModulePathInfo(module_path="fc", C=1)],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
-        pretrained_model_output_attr=None,
         sigmoid_type="leaky_hard",
     )
 
@@ -84,9 +85,9 @@ def _make_seq_component_model(weight: Float[Tensor, "d_out d_in"]) -> ComponentM
 
     comp_model = ComponentModel(
         target_model=target,
+        run_batch=run_batch_passthrough,
         module_path_info=[ModulePathInfo(module_path="fc", C=1)],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
-        pretrained_model_output_attr=None,
         sigmoid_type="leaky_hard",
     )
 
@@ -323,10 +324,10 @@ class TestCIMaskedReconLoss:
 
         result = ci_masked_recon_loss(
             model=model,
-            output_loss_type="mse",
             batch=batch,
             target_out=target_out,
             ci=ci,
+            reconstruction_loss=recon_loss_mse,
         )
 
         # Since we're using a simple identity-like weight, and CI is 1,
@@ -339,19 +340,16 @@ class TestCIMaskedReconLoss:
         model = _make_component_model(weight=fc_weight)
 
         batch = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
-        # Use log-probs for KL
-        target_out = torch.nn.functional.log_softmax(
-            torch.tensor([[1.0, 2.0]], dtype=torch.float32), dim=-1
-        )
+        target_out = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
 
         ci = {"fc": torch.tensor([[1.0]], dtype=torch.float32)}
 
         result = ci_masked_recon_loss(
             model=model,
-            output_loss_type="kl",
             batch=batch,
             target_out=target_out,
             ci=ci,
+            reconstruction_loss=recon_loss_kl,
         )
 
         assert result >= 0.0
@@ -368,10 +366,18 @@ class TestCIMaskedReconLoss:
         ci_half = {"fc": torch.tensor([[0.5]], dtype=torch.float32)}
 
         loss_full = ci_masked_recon_loss(
-            model=model, output_loss_type="mse", batch=batch, target_out=target_out, ci=ci_full
+            model=model,
+            batch=batch,
+            target_out=target_out,
+            ci=ci_full,
+            reconstruction_loss=recon_loss_mse,
         )
         loss_half = ci_masked_recon_loss(
-            model=model, output_loss_type="mse", batch=batch, target_out=target_out, ci=ci_half
+            model=model,
+            batch=batch,
+            target_out=target_out,
+            ci=ci_half,
+            reconstruction_loss=recon_loss_mse,
         )
 
         # Different CI values should produce different losses
@@ -390,10 +396,10 @@ class TestCIMaskedReconLayerwiseLoss:
 
         result = ci_masked_recon_layerwise_loss(
             model=model,
-            output_loss_type="mse",
             batch=batch,
             target_out=target_out,
             ci=ci,
+            reconstruction_loss=recon_loss_mse,
         )
 
         # Layerwise should produce a valid loss
@@ -410,10 +416,18 @@ class TestCIMaskedReconLayerwiseLoss:
         ci = {"fc": torch.tensor([[1.0]], dtype=torch.float32)}
 
         loss_all = ci_masked_recon_loss(
-            model=model, output_loss_type="mse", batch=batch, target_out=target_out, ci=ci
+            model=model,
+            batch=batch,
+            target_out=target_out,
+            ci=ci,
+            reconstruction_loss=recon_loss_mse,
         )
         loss_layerwise = ci_masked_recon_layerwise_loss(
-            model=model, output_loss_type="mse", batch=batch, target_out=target_out, ci=ci
+            model=model,
+            batch=batch,
+            target_out=target_out,
+            ci=ci,
+            reconstruction_loss=recon_loss_mse,
         )
 
         # For single layer, results should be the same
@@ -432,11 +446,11 @@ class TestCIMaskedReconSubsetLoss:
 
         result = ci_masked_recon_subset_loss(
             model=model,
-            output_loss_type="mse",
             batch=batch,
             target_out=target_out,
             ci=ci,
             routing=UniformKSubsetRoutingConfig(),
+            reconstruction_loss=recon_loss_mse,
         )
 
         # Subset routing should produce a valid loss
@@ -455,11 +469,11 @@ class TestCIMaskedReconSubsetLoss:
         losses = [
             ci_masked_recon_subset_loss(
                 model=model,
-                output_loss_type="mse",
                 batch=batch,
                 target_out=target_out,
                 ci=ci,
                 routing=UniformKSubsetRoutingConfig(),
+                reconstruction_loss=recon_loss_mse,
             )
             for _ in range(3)
         ]
@@ -483,11 +497,11 @@ class TestStochasticReconLoss:
             model=model,
             sampling="continuous",
             n_mask_samples=3,
-            output_loss_type="mse",
             batch=batch,
             target_out=target_out,
             ci=ci,
             weight_deltas=weight_deltas,
+            reconstruction_loss=recon_loss_mse,
         )
 
         assert result >= 0.0
@@ -506,11 +520,11 @@ class TestStochasticReconLoss:
             model=model,
             sampling="binomial",
             n_mask_samples=3,
-            output_loss_type="mse",
             batch=batch,
             target_out=target_out,
             ci=ci,
             weight_deltas=weight_deltas,
+            reconstruction_loss=recon_loss_mse,
         )
 
         assert result >= 0.0
@@ -531,11 +545,11 @@ class TestStochasticReconLoss:
                 model=model,
                 sampling="continuous",
                 n_mask_samples=n_samples,
-                output_loss_type="mse",
                 batch=batch,
                 target_out=target_out,
                 ci=ci,
                 weight_deltas=weight_deltas,
+                reconstruction_loss=recon_loss_mse,
             )
             assert result >= 0.0
 
@@ -553,22 +567,22 @@ class TestStochasticReconLoss:
             model=model,
             sampling="continuous",
             n_mask_samples=3,
-            output_loss_type="mse",
             batch=batch,
             target_out=target_out,
             ci=ci,
             weight_deltas=weight_deltas,
+            reconstruction_loss=recon_loss_mse,
         )
 
         loss_without_delta = stochastic_recon_loss(
             model=model,
             sampling="continuous",
             n_mask_samples=3,
-            output_loss_type="mse",
             batch=batch,
             target_out=target_out,
             ci=ci,
             weight_deltas=None,
+            reconstruction_loss=recon_loss_mse,
         )
 
         # Both should be valid
@@ -591,11 +605,11 @@ class TestStochasticReconLayerwiseLoss:
             model=model,
             sampling="continuous",
             n_mask_samples=2,
-            output_loss_type="mse",
             batch=batch,
             target_out=target_out,
             ci=ci,
             weight_deltas=weight_deltas,
+            reconstruction_loss=recon_loss_mse,
         )
 
         assert result >= 0.0
@@ -615,11 +629,11 @@ class TestStochasticReconLayerwiseLoss:
                 model=model,
                 sampling="continuous",
                 n_mask_samples=n_samples,
-                output_loss_type="mse",
                 batch=batch,
                 target_out=target_out,
                 ci=ci,
                 weight_deltas=weight_deltas,
+                reconstruction_loss=recon_loss_mse,
             )
             assert result >= 0.0
 
@@ -639,12 +653,12 @@ class TestStochasticReconSubsetLoss:
             model=model,
             sampling="continuous",
             n_mask_samples=3,
-            output_loss_type="mse",
             batch=batch,
             target_out=target_out,
             ci=ci,
             weight_deltas=weight_deltas,
             routing=UniformKSubsetRoutingConfig(),
+            reconstruction_loss=recon_loss_mse,
         )
 
         assert result >= 0.0
@@ -663,12 +677,12 @@ class TestStochasticReconSubsetLoss:
             model=model,
             sampling="binomial",
             n_mask_samples=3,
-            output_loss_type="mse",
             batch=batch,
             target_out=target_out,
             ci=ci,
             weight_deltas=weight_deltas,
             routing=UniformKSubsetRoutingConfig(),
+            reconstruction_loss=recon_loss_mse,
         )
 
         assert result >= 0.0
@@ -688,12 +702,12 @@ class TestStochasticReconSubsetLoss:
                 model=model,
                 sampling="continuous",
                 n_mask_samples=2,
-                output_loss_type="mse",
                 batch=batch,
                 target_out=target_out,
                 ci=ci,
                 weight_deltas=weight_deltas,
                 routing=UniformKSubsetRoutingConfig(),
+                reconstruction_loss=recon_loss_mse,
             )
             for _ in range(3)
         ]
@@ -706,12 +720,12 @@ class TestPersistentPGDReconLoss:
     def test_basic_forward_and_state_update(self: object) -> None:
         """Test that persistent PGD computes loss and updates state."""
         fc_weight = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
-        model = _make_component_model(weight=fc_weight)
+        model = _make_seq_component_model(weight=fc_weight)
 
-        # Use (batch, seq) shaped data to match PersistentPGD's expectations
-        batch = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
-        target_out = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
-        # CI needs (batch, seq, C) shape for PersistentPGD
+        # Input shape: (batch=1, seq=2, d_in=2)
+        batch = torch.tensor([[[1.0, 2.0], [0.5, 1.5]]], dtype=torch.float32)
+        target_out = torch.tensor([[[1.0, 2.0], [0.5, 1.5]]], dtype=torch.float32)
+        # CI shape: (batch=1, seq=2, C=1)
         ci = {"fc": torch.tensor([[[0.5], [0.5]]], dtype=torch.float32)}
 
         cfg = PersistentPGDReconLossConfig(
@@ -722,11 +736,11 @@ class TestPersistentPGDReconLoss:
         # Initialize state
         state = PersistentPGDState(
             module_to_c=model.module_to_c,
-            batch_dims=(1, 2),
+            batch_dims=batch.shape[:2],
             device="cpu",
             use_delta_component=False,
             cfg=cfg,
-            output_loss_type="mse",
+            reconstruction_loss=recon_loss_mse,
         )
 
         # Store initial mask values
@@ -759,11 +773,12 @@ class TestPersistentPGDReconLoss:
     def test_masks_persist_across_calls(self: object) -> None:
         """Test that masks persist and accumulate updates across calls."""
         fc_weight = torch.tensor([[2.0, 0.0], [0.0, 2.0]], dtype=torch.float32)
-        model = _make_component_model(weight=fc_weight)
+        model = _make_seq_component_model(weight=fc_weight)
 
-        batch = torch.tensor([[1.0, 1.0]], dtype=torch.float32)
-        target_out = torch.tensor([[2.0, 2.0]], dtype=torch.float32)
-        # CI needs (batch, seq, C) shape for PersistentPGD
+        # Input shape: (batch=1, seq=2, d_in=2)
+        batch = torch.tensor([[[1.0, 1.0], [0.5, 0.5]]], dtype=torch.float32)
+        target_out = torch.tensor([[[2.0, 2.0], [1.0, 1.0]]], dtype=torch.float32)
+        # CI shape: (batch=1, seq=2, C=1)
         ci = {"fc": torch.tensor([[[0.3], [0.3]]], dtype=torch.float32)}
 
         cfg = PersistentPGDReconLossConfig(
@@ -773,11 +788,11 @@ class TestPersistentPGDReconLoss:
 
         state = PersistentPGDState(
             module_to_c=model.module_to_c,
-            batch_dims=(1, 2),
+            batch_dims=batch.shape[:2],
             device="cpu",
             use_delta_component=False,
             cfg=cfg,
-            output_loss_type="mse",
+            reconstruction_loss=recon_loss_mse,
         )
 
         # Run multiple steps
@@ -831,7 +846,7 @@ class TestPersistentPGDReconLoss:
             device="cpu",
             use_delta_component=True,
             cfg=cfg,
-            output_loss_type="mse",
+            reconstruction_loss=recon_loss_mse,
         )
 
         # Masks should have C+1 elements when using delta component
@@ -894,7 +909,7 @@ class TestPersistentPGDReconLoss:
             device="cpu",
             use_delta_component=False,
             cfg=cfg,
-            output_loss_type="mse",
+            reconstruction_loss=recon_loss_mse,
         )
 
         # Masks should have shape (1, 1, C) for single_mask scope - single mask shared across batch
@@ -915,11 +930,12 @@ class TestPersistentPGDReconLoss:
     def test_adam_optimizer_state(self: object) -> None:
         """Test that Adam optimizer path updates internal state."""
         fc_weight = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
-        model = _make_component_model(weight=fc_weight)
+        model = _make_seq_component_model(weight=fc_weight)
 
-        batch = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
-        target_out = torch.tensor([[0.5, 1.5]], dtype=torch.float32)
-        # CI needs (batch, seq, C) shape for PersistentPGD
+        # Input shape: (batch=1, seq=2, d_in=2)
+        batch = torch.tensor([[[1.0, 2.0], [0.5, 1.5]]], dtype=torch.float32)
+        target_out = torch.tensor([[[0.5, 1.5], [0.25, 0.75]]], dtype=torch.float32)
+        # CI shape: (batch=1, seq=2, C=1)
         ci = {"fc": torch.tensor([[[0.4], [0.4]]], dtype=torch.float32)}
 
         cfg = PersistentPGDReconLossConfig(
@@ -931,11 +947,11 @@ class TestPersistentPGDReconLoss:
 
         state = PersistentPGDState(
             module_to_c=model.module_to_c,
-            batch_dims=(1, 2),
+            batch_dims=batch.shape[:2],
             device="cpu",
             use_delta_component=False,
             cfg=cfg,
-            output_loss_type="mse",
+            reconstruction_loss=recon_loss_mse,
         )
 
         loss = state.compute_recon_loss(

@@ -15,8 +15,9 @@ from spd.configs import (
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
 )
-from spd.data import DatasetConfig, create_data_loader
+from spd.data import DatasetConfig, create_data_loader, input_ids_collate_fn
 from spd.identity_insertion import insert_identity_operations_
+from spd.models.batch_and_loss_fns import make_run_batch, recon_loss_kl
 from spd.run_spd import optimize
 from spd.utils.general_utils import resolve_class, set_seed
 
@@ -55,7 +56,6 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
             StochasticReconLossConfig(coeff=1.0),
             FaithfulnessLossConfig(coeff=200),
         ],
-        output_loss_type="kl",
         # Training
         lr_schedule=ScheduleConfig(
             start_val=1e-3, fn_type="cosine", warmup_pct=0.01, final_val_frac=0.0
@@ -78,7 +78,7 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         pretrained_model_class="transformers.GPT2LMHeadModel",
         pretrained_model_path=None,
         pretrained_model_name="SimpleStories/test-SimpleStories-gpt2-1.25M",
-        pretrained_model_output_attr="logits",
+        output_extract="logits",
         tokenizer_name="SimpleStories/test-SimpleStories-gpt2-1.25M",
         # Task Specific
         task_config=LMTaskConfig(
@@ -123,6 +123,7 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         batch_size=config.batch_size,
         buffer_size=config.task_config.buffer_size,
         global_seed=config.seed,
+        collate_fn=input_ids_collate_fn,
     )
 
     eval_data_config = DatasetConfig(
@@ -140,16 +141,19 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         batch_size=config.batch_size,
         buffer_size=config.task_config.buffer_size,
         global_seed=config.seed + 1,
+        collate_fn=input_ids_collate_fn,
     )
 
     # Run optimize function
+    assert config.output_extract is not None
     optimize(
         target_model=target_model,
         config=config,
         device=device,
         train_loader=train_loader,
         eval_loader=eval_loader,
-        n_eval_steps=config.n_eval_steps,
+        run_batch=make_run_batch(config.output_extract),
+        reconstruction_loss=recon_loss_kl,
         out_dir=tmp_path,
     )
 

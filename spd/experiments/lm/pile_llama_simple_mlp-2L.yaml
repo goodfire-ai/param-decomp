@@ -71,7 +71,6 @@ loss_metric_configs:
     type: uniform_k_subset
 - coeff: 1000000.0
   classname: FaithfulnessLoss
-output_loss_type: kl
 lr_schedule:
   start_val: 1.0e-04
   warmup_pct: 0.0
@@ -118,7 +117,7 @@ ci_alive_threshold: 0.0
 pretrained_model_class: spd.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
 pretrained_model_path: null
 pretrained_model_name: wandb:goodfire/spd/t-bd02d372
-pretrained_model_output_attr: idx_0
+output_extract: 0
 tokenizer_name: EleutherAI/gpt-neox-20b
 task_config:
   task_name: lm

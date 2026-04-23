@@ -1,5 +1,5 @@
 import fnmatch
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -14,6 +14,7 @@ from transformers.pytorch_utils import Conv1D as RadfordConv1D
 from spd.configs import CiConfig, Config, GlobalCiConfig, LayerwiseCiConfig, SamplingType
 from spd.identity_insertion import insert_identity_operations_
 from spd.interfaces import LoadableModule, RunInfo
+from spd.models.batch_and_loss_fns import RunBatch, make_run_batch
 from spd.models.components import (
     Components,
     ComponentsMaskInfo,
@@ -34,6 +35,16 @@ from spd.models.sigmoids import SIGMOID_TYPES, SigmoidType
 from spd.spd_types import LayerwiseCiFnType, ModelPath
 from spd.utils.general_utils import resolve_class
 from spd.utils.module_utils import ModulePathInfo, expand_module_patterns
+
+
+def move_batch_to_device(batch: Any, device: str | torch.device) -> Any:
+    if isinstance(batch, Tensor):
+        return batch.to(device)
+    if isinstance(batch, tuple):
+        return tuple(move_batch_to_device(x, device) for x in batch)
+    if isinstance(batch, dict):
+        return {k: move_batch_to_device(v, device) for k, v in batch.items()}
+    return batch
 
 
 def _validate_checkpoint_ci_config_compatibility(
@@ -101,12 +112,13 @@ class ComponentModel(LoadableModule):
     def __init__(
         self,
         target_model: nn.Module,
+        run_batch: RunBatch,
         module_path_info: list[ModulePathInfo],
         ci_config: CiConfig,
         sigmoid_type: SigmoidType,
-        pretrained_model_output_attr: str | None,
     ):
         super().__init__()
+        self._run_batch: RunBatch = run_batch
 
         for name, param in target_model.named_parameters():
             assert not param.requires_grad, (
@@ -115,7 +127,6 @@ class ComponentModel(LoadableModule):
             )
 
         self.target_model = target_model
-        self.pretrained_model_output_attr = pretrained_model_output_attr
         self.module_to_c = {info.module_path: info.C for info in module_path_info}
         self.target_module_paths = list(self.module_to_c.keys())
 
@@ -374,53 +385,36 @@ class ComponentModel(LoadableModule):
                     attn_config=ci_config.transition_attn_config,
                 )
 
-    def _extract_output(self, raw_output: Any) -> Tensor:
-        """Extract the desired output from the model's raw output.
-
-        If pretrained_model_output_attr is None, returns the raw output directly.
-        If pretrained_model_output_attr starts with "idx_", returns the index specified by the
-        second part of the string. E.g. "idx_0" returns the first element of the raw output.
-        Otherwise, returns the specified attribute from the raw output.
-
-        Args:
-            raw_output: The raw output from the model.
-
-        Returns:
-            The extracted output.
-        """
-        if self.pretrained_model_output_attr is None:
-            out = raw_output
-        elif self.pretrained_model_output_attr.startswith("idx_"):
-            idx_val = int(self.pretrained_model_output_attr.split("_")[1])
-            assert isinstance(raw_output, Sequence), (
-                f"raw_output must be a sequence, not {type(raw_output)}"
-            )
-            assert idx_val < len(raw_output), (
-                f"Index {idx_val} out of range for raw_output of length {len(raw_output)}"
-            )
-            out = raw_output[idx_val]
-        else:
-            out = getattr(raw_output, self.pretrained_model_output_attr)
-
-        assert isinstance(out, Tensor), f"Expected tensor output, got {type(out)}"
-        return out
-
     @overload
     def __call__(
         self,
-        *args: Any,
+        batch: Any,
+        cache_type: Literal["component_acts"],
         mask_infos: dict[str, ComponentsMaskInfo] | None = None,
-        cache_type: Literal["component_acts", "input", "output"],
-        **kwargs: Any,
     ) -> OutputWithCache: ...
 
     @overload
     def __call__(
         self,
-        *args: Any,
+        batch: Any,
+        cache_type: Literal["input"],
+        mask_infos: dict[str, ComponentsMaskInfo] | None = None,
+    ) -> OutputWithCache: ...
+
+    @overload
+    def __call__(
+        self,
+        batch: Any,
+        cache_type: Literal["output"],
+        mask_infos: dict[str, ComponentsMaskInfo] | None = None,
+    ) -> OutputWithCache: ...
+
+    @overload
+    def __call__(
+        self,
+        batch: Any,
         mask_infos: dict[str, ComponentsMaskInfo] | None = None,
         cache_type: Literal["none"] = "none",
-        **kwargs: Any,
     ) -> Tensor: ...
 
     @override
@@ -430,10 +424,9 @@ class ComponentModel(LoadableModule):
     @override
     def forward(
         self,
-        *args: Any,
+        batch: Any,
         mask_infos: dict[str, ComponentsMaskInfo] | None = None,
         cache_type: Literal["component_acts", "input", "output", "none"] = "none",
-        **kwargs: Any,
     ) -> Tensor | OutputWithCache:
         """Forward pass with optional component replacement and/or input/output caching.
 
@@ -447,9 +440,10 @@ class ComponentModel(LoadableModule):
         Returns:
             OutputWithCache object if cache_type is not "none", otherwise the model output tensor.
         """
+        batch = move_batch_to_device(batch, next(self.parameters()).device)
+
         if mask_infos is None and cache_type == "none":
-            # No hooks needed. Do a regular forward pass of the target model.
-            return self._extract_output(self.target_model(*args, **kwargs))
+            return self._run_batch(self.target_model, batch)
 
         cache: dict[str, Tensor] = {}
         hooks: dict[str, Callable[..., Any]] = {}
@@ -470,9 +464,8 @@ class ComponentModel(LoadableModule):
             )
 
         with self._attach_forward_hooks(hooks):
-            raw_out = self.target_model(*args, **kwargs)
+            out: Tensor = self._run_batch(self.target_model, batch)
 
-        out = self._extract_output(raw_out)
         match cache_type:
             case "input" | "output" | "component_acts":
                 return OutputWithCache(output=out, cache=cache)
@@ -607,10 +600,10 @@ class ComponentModel(LoadableModule):
 
         comp_model = ComponentModel(
             target_model=target_model,
+            run_batch=make_run_batch(config.output_extract),
             module_path_info=module_path_info,
             ci_config=config.ci_config,
             sigmoid_type=config.sigmoid_type,
-            pretrained_model_output_attr=config.pretrained_model_output_attr,
         )
 
         comp_model_weights = torch.load(

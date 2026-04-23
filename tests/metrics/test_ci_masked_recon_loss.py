@@ -1,6 +1,7 @@
 import torch
 
 from spd.metrics import ci_masked_recon_loss
+from spd.models.batch_and_loss_fns import recon_loss_mse
 from tests.metrics.fixtures import make_one_layer_component_model
 
 
@@ -26,7 +27,11 @@ class TestCIMaskedReconLoss:
 
         # Calculate actual loss
         actual_loss = ci_masked_recon_loss(
-            model=model, output_loss_type="mse", batch=batch, target_out=target_out, ci=ci
+            model=model,
+            batch=batch,
+            target_out=target_out,
+            ci=ci,
+            reconstruction_loss=recon_loss_mse,
         )
 
         assert torch.allclose(actual_loss, expected_loss, rtol=1e-5), (
@@ -45,10 +50,18 @@ class TestCIMaskedReconLoss:
         ci_half = {"fc": torch.tensor([[0.5]], dtype=torch.float32)}
 
         loss_full = ci_masked_recon_loss(
-            model=model, output_loss_type="mse", batch=batch, target_out=target_out, ci=ci_full
+            model=model,
+            batch=batch,
+            target_out=target_out,
+            ci=ci_full,
+            reconstruction_loss=recon_loss_mse,
         )
         loss_half = ci_masked_recon_loss(
-            model=model, output_loss_type="mse", batch=batch, target_out=target_out, ci=ci_half
+            model=model,
+            batch=batch,
+            target_out=target_out,
+            ci=ci_half,
+            reconstruction_loss=recon_loss_mse,
         )
 
         # Different CI values should produce different losses

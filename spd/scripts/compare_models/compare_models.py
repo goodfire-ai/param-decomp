@@ -10,7 +10,6 @@ Usage:
 
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
 
 import einops
 import fire
@@ -25,7 +24,7 @@ from spd.configs import Config
 from spd.log import logger
 from spd.models.component_model import ComponentModel, SPDRunInfo
 from spd.utils.distributed_utils import get_device
-from spd.utils.general_utils import extract_batch_data, get_obj_device
+from spd.utils.general_utils import get_obj_device
 from spd.utils.run_utils import save_file
 
 
@@ -89,11 +88,15 @@ class ModelComparator:
 
         return model, run_info.config
 
-    def create_eval_data_loader(self) -> Iterator[Any]:
-        """Create evaluation data loader using exact same patterns as decomposition scripts."""
+    def create_eval_data_loader(self) -> Iterator[Tensor]:
+        """Create evaluation data loader using exact same patterns as decomposition scripts.
+
+        Each per-task loader yields input tensors directly so downstream code can treat
+        batches uniformly regardless of task type.
+        """
         task_name = self.current_config.task_config.task_name
 
-        data_loader_fns: dict[str, Callable[[], Iterator[Any]]] = {
+        data_loader_fns: dict[str, Callable[[], Iterator[Tensor]]] = {
             "tms": self._create_tms_data_loader,
             "resid_mlp": self._create_resid_mlp_data_loader,
             "lm": self._create_lm_data_loader,
@@ -107,7 +110,7 @@ class ModelComparator:
 
         return data_loader_fns[task_name]()
 
-    def _create_tms_data_loader(self) -> Iterator[Any]:
+    def _create_tms_data_loader(self) -> Iterator[Tensor]:
         """Create data loader for TMS task."""
         from spd.configs import TMSTaskConfig
         from spd.experiments.tms.models import TMSTargetRunInfo
@@ -130,15 +133,14 @@ class ModelComparator:
             value_range=(0.0, 1.0),
             synced_inputs=target_run_info.config.synced_inputs,
         )
-        return iter(
-            DatasetGeneratedDataLoader(
-                dataset,
-                batch_size=self.config.eval_batch_size,
-                shuffle=self.config.shuffle_data,
-            )
+        loader = DatasetGeneratedDataLoader(
+            dataset,
+            batch_size=self.config.eval_batch_size,
+            shuffle=self.config.shuffle_data,
         )
+        return (batch[0] for batch in loader)
 
-    def _create_resid_mlp_data_loader(self) -> Iterator[Any]:
+    def _create_resid_mlp_data_loader(self) -> Iterator[Tensor]:
         """Create data loader for ResidMLP task."""
         from spd.configs import ResidMLPTaskConfig
         from spd.experiments.resid_mlp.models import ResidMLPTargetRunInfo
@@ -164,18 +166,17 @@ class ModelComparator:
             label_fn_seed=None,
             synced_inputs=target_run_info.config.synced_inputs,
         )
-        return iter(
-            DatasetGeneratedDataLoader(
-                dataset,
-                batch_size=self.config.eval_batch_size,
-                shuffle=self.config.shuffle_data,
-            )
+        loader = DatasetGeneratedDataLoader(
+            dataset,
+            batch_size=self.config.eval_batch_size,
+            shuffle=self.config.shuffle_data,
         )
+        return (batch[0] for batch in loader)
 
-    def _create_lm_data_loader(self) -> Iterator[Any]:
+    def _create_lm_data_loader(self) -> Iterator[Tensor]:
         """Create data loader for LM task."""
         from spd.configs import LMTaskConfig
-        from spd.data import DatasetConfig, create_data_loader
+        from spd.data import DatasetConfig, create_data_loader, input_ids_collate_fn
 
         assert self.current_config.tokenizer_name, "tokenizer_name must be set"
         assert isinstance(self.current_config.task_config, LMTaskConfig)
@@ -197,10 +198,11 @@ class ModelComparator:
             batch_size=self.config.eval_batch_size,
             buffer_size=task_config.buffer_size,
             global_seed=self.current_config.seed + 1,
+            collate_fn=input_ids_collate_fn,
         )
         return iter(loader)
 
-    def _create_ih_data_loader(self) -> Iterator[Any]:
+    def _create_ih_data_loader(self) -> Iterator[Tensor]:
         """Create data loader for IH task."""
         from spd.configs import IHTaskConfig
         from spd.experiments.ih.model import InductionModelTargetRunInfo
@@ -224,16 +226,15 @@ class ModelComparator:
             or target_run_info.config.ih_model_config.seq_len - 3,
             device=self.device,
         )
-        return iter(
-            DatasetGeneratedDataLoader(
-                dataset,
-                batch_size=self.config.eval_batch_size,
-                shuffle=self.config.shuffle_data,
-            )
+        loader = DatasetGeneratedDataLoader(
+            dataset,
+            batch_size=self.config.eval_batch_size,
+            shuffle=self.config.shuffle_data,
         )
+        return (batch[0] for batch in loader)
 
     def compute_activation_densities(
-        self, model: ComponentModel, eval_iterator: Iterator[Any], n_steps: int
+        self, model: ComponentModel, eval_iterator: Iterator[Tensor], n_steps: int
     ) -> dict[str, Float[Tensor, " C"]]:
         """Compute activation densities using same logic as ComponentActivationDensity."""
 
@@ -250,8 +251,7 @@ class ModelComparator:
         model.eval()
         with torch.no_grad():
             for _step in range(n_steps):
-                batch = extract_batch_data(next(eval_iterator))
-                batch = batch.to(self.device)
+                batch = next(eval_iterator).to(self.device)
                 pre_weight_acts = model(batch, cache_type="input").cache
 
                 ci = model.calc_causal_importances(
@@ -359,7 +359,7 @@ class ModelComparator:
         return similarities
 
     def run_comparison(
-        self, eval_iterator: Iterator[Any], n_steps: int | None = None
+        self, eval_iterator: Iterator[Tensor], n_steps: int | None = None
     ) -> dict[str, float]:
         """Run the full comparison pipeline."""
         if n_steps is None:

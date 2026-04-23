@@ -47,7 +47,6 @@ loss_metric_configs:
     type: uniform_k_subset
 - classname: FaithfulnessLoss
   coeff: 1000000
-output_loss_type: kl
 steps: 400000
 batch_size: 128
 faithfulness_warmup_steps: 200
@@ -92,7 +91,7 @@ ci_alive_threshold: 0
 pretrained_model_class: spd.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
 pretrained_model_path: null
 pretrained_model_name: wandb:goodfire/spd/runs/gf6rbga0
-pretrained_model_output_attr: idx_0
+output_extract: 0
 tokenizer_name: SimpleStories/test-SimpleStories-gpt2-1.25M
 task_config:
   buffer_size: 1000

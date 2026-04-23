@@ -29,7 +29,6 @@ from spd.log import logger
 from spd.models.component_model import ComponentModel, SPDRunInfo
 from spd.topology import TransformerTopology, get_sources_by_target
 from spd.utils.distributed_utils import get_device
-from spd.utils.general_utils import extract_batch_data
 from spd.utils.wandb_utils import parse_wandb_run_path
 
 
@@ -133,8 +132,7 @@ def harvest_attributions(
 
         if batch_idx % world_size != rank:
             continue
-
-        batch = extract_batch_data(batch_data).to(device)
+        batch = batch_data.to(device)
         harvester.process_batch(batch)
 
     logger.info(f"Processing complete. Tokens: {harvester.n_tokens:,}")

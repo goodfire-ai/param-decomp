@@ -632,6 +632,7 @@ def create_view_and_report(
 _n_try_wandb_comm_errors = 0
 
 
+# this exists to stop infra issues from crashing training runs
 def try_wandb[**P, T](wandb_fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T | None:
     """Attempts to call `wandb_fn` and if it fails with a wandb CommError, logs a warning and returns
     None. The choice of wandb CommError is to catch issues communicating with the wandb server but

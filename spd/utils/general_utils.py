@@ -2,7 +2,7 @@ import importlib
 import random
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 
 import einops
 import numpy as np
@@ -167,45 +167,6 @@ def resolve_class(path: str) -> type[nn.Module]:
     return getattr(module, class_name)
 
 
-def extract_batch_data(
-    batch_item: dict[str, Any] | tuple[Tensor, "..."] | Tensor,
-    input_key: str = "input_ids",
-) -> Tensor:
-    """Extract input data from various batch formats.
-
-    This utility function handles different batch formats commonly used across the codebase:
-    1. Dictionary format: {"input_ids": Tensor, "..."} - common in LM tasks
-    2. Tuple format: (input_tensor, labels) - common in SPD optimization
-    3. Direct tensor: when batch is already the input tensor
-
-    Args:
-        batch_item: The batch item from a data loader
-        input_key: Key to use for dictionary format (default: "input_ids")
-
-    Returns:
-        The input tensor extracted from the batch
-    """
-    assert isinstance(batch_item, dict | tuple | Tensor), (
-        f"Unsupported batch format: {type(batch_item)}. Must be a dictionary, tuple, or tensor."
-    )
-    if isinstance(batch_item, dict):
-        # Dictionary format: extract the specified key
-        if input_key not in batch_item:
-            available_keys = list(batch_item.keys())
-            raise KeyError(
-                f"Key '{input_key}' not found in batch. Available keys: {available_keys}"
-            )
-        tensor = batch_item[input_key]
-    elif isinstance(batch_item, tuple):
-        # Assume input is the first element
-        tensor = batch_item[0]
-    else:
-        # Direct tensor format
-        tensor = batch_item
-
-    return tensor
-
-
 def calc_kl_divergence_lm(
     pred: Float[Tensor, "... vocab"],
     target: Float[Tensor, "... vocab"],
@@ -219,22 +180,6 @@ def calc_kl_divergence_lm(
     p = torch.softmax(target, dim=-1)  # P
     n_positions = pred.numel() // pred.shape[-1]
     return F.kl_div(log_q, p, reduction="sum") / n_positions
-
-
-def calc_sum_recon_loss_lm(
-    pred: Float[Tensor, "... vocab"],
-    target: Float[Tensor, "... vocab"],
-    loss_type: Literal["mse", "kl"],
-) -> Float[Tensor, ""]:
-    """Calculate the reconstruction loss for a language model without reduction."""
-    match loss_type:
-        case "mse":
-            loss = ((pred - target) ** 2).sum()
-        case "kl":
-            log_q = torch.log_softmax(pred, dim=-1)
-            p = torch.softmax(target, dim=-1)
-            loss = F.kl_div(log_q, p, reduction="sum")
-    return loss
 
 
 def runtime_cast[T](type_: type[T], obj: Any) -> T:

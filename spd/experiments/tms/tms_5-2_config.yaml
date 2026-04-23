@@ -28,7 +28,6 @@ loss_metric_configs:
     coeff: 1.0
   - classname: "StochasticReconLayerwiseLoss"
     coeff: 1.0
-output_loss_type: mse
 
 # --- Training ---
 batch_size: 4096

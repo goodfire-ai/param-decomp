@@ -823,11 +823,6 @@ class Config(BaseConfig):
             ),
         )
     )
-    output_loss_type: Literal["mse", "kl"] = Field(
-        ...,
-        description="Metric used to measure recon error between model outputs and targets",
-    )
-
     # --- Training ---
     lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule configuration")
     steps: NonNegativeInt = Field(..., description="Total number of optimisation steps")
@@ -917,9 +912,10 @@ class Config(BaseConfig):
         default=None,
         description="hf model identifier. E.g. 'SimpleStories/SimpleStories-1.25M'",
     )
-    pretrained_model_output_attr: str | None = Field(
+    output_extract: int | str | None = Field(
         default=None,
-        description="Name of the attribute on the forward output that contains logits or activations",
+        description="How to extract tensor from model output. None = raw output, int = index into "
+        "output tuple, str = attribute name.",
     )
     tokenizer_name: str | None = Field(
         default=None,
@@ -958,6 +954,7 @@ class Config(BaseConfig):
         "lr_exponential_halflife",
         "out_dir",
         "n_examples_until_dead",
+        "output_loss_type",
         "gradient_accumulation_steps",
     ]
     RENAMED_CONFIG_KEYS: ClassVar[dict[str, str]] = {
@@ -1002,6 +999,20 @@ class Config(BaseConfig):
             config_dict["pretrained_model_class"] = pmc.replace(
                 "simple_stories_train.models.", "spd.pretrain.models.", 1
             )
+
+        # Migrate old pretrained_model_output_attr to output_extract
+        if "pretrained_model_output_attr" in config_dict:
+            old_val = config_dict.pop("pretrained_model_output_attr")
+            logger.info(f"Migrating pretrained_model_output_attr={old_val!r} to output_extract")
+            match old_val:
+                case None:
+                    pass
+                case "idx_0":
+                    config_dict["output_extract"] = 0
+                case "logits":
+                    config_dict["output_extract"] = "logits"
+                case _:
+                    raise ValueError(f"Unknown pretrained_model_output_attr: {old_val!r}")
 
         if "eval_batch_size" not in config_dict:
             config_dict["eval_batch_size"] = config_dict["batch_size"]

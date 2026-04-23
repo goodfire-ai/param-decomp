@@ -210,7 +210,7 @@ class InductionTransformer(LoadableModule):
         self.unembed = nn.Linear(cfg.d_model, adjusted_vocab_size, bias=False)
 
     @override
-    def forward(self, tokens: Float[Tensor, "B S"], **_):
+    def forward(self, tokens: Float[Tensor, "B S"]) -> Float[Tensor, "B S V"]:
         x = self.token_embed(tokens)
 
         for block in self.blocks:

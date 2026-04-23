@@ -30,9 +30,10 @@ class UVPlots(Metric):
         self.batch_shape: tuple[int, ...] | None = None
 
     @override
-    def update(self, *, batch: Tensor, **_: Any) -> None:
+    def update(self, *, batch: Tensor | tuple[Tensor, ...], **_: Any) -> None:
         if self.batch_shape is None:
-            self.batch_shape = tuple(batch.shape)
+            input_tensor = batch[0] if isinstance(batch, tuple) else batch
+            self.batch_shape = tuple(input_tensor.shape)
 
     @override
     def compute(self) -> dict[str, Image.Image]:

@@ -38,7 +38,6 @@ loss_metric_configs:
     coeff: 2.0
   - classname: "StochasticReconLoss"
     coeff: 0.2
-output_loss_type: kl
 
 # --- Training ---
 batch_size: 48
@@ -95,7 +94,7 @@ eval_metric_configs:
 # --- Pretrained model info ---
 pretrained_model_class: spd.pretrain.models.gpt2_simple.GPT2Simple
 pretrained_model_name: wandb:goodfire/spd/runs/xi36b9az # No ln
-pretrained_model_output_attr: idx_0
+output_extract: 0
 tokenizer_name: SimpleStories/test-SimpleStories-gpt2-1.25M # We'll load this from wandb in future
 
 # --- Task Specific ---

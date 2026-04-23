@@ -49,7 +49,6 @@ loss_metric_configs:
     type: uniform_k_subset
 - coeff: 1000000.0
   classname: FaithfulnessLoss
-output_loss_type: kl
 lr_schedule:
   start_val: 0.0002
   fn_type: cosine
@@ -93,7 +92,7 @@ ci_alive_threshold: 0.0
 # --- Pretrained model info ---
 pretrained_model_class: spd.pretrain.models.gpt2_simple.GPT2Simple
 pretrained_model_name: wandb:goodfire/spd/runs/wr1su18m # 100k steps. 4019 tokenizer
-pretrained_model_output_attr: idx_0
+output_extract: 0
 tokenizer_name: SimpleStories/test-SimpleStories-gpt2-1.25M # 4019 tok:  TODO: Load from wandb instead
 
 # --- Task Specific ---

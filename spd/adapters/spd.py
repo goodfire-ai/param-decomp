@@ -1,7 +1,7 @@
 from functools import cached_property
 from typing import override
 
-import torch
+from torch import Tensor
 from torch.utils.data import DataLoader
 
 from spd.adapters.base import DecompositionAdapter
@@ -46,7 +46,7 @@ class SPDAdapter(DecompositionAdapter):
         return list(cm.module_to_c.items())
 
     @override
-    def dataloader(self, batch_size: int) -> DataLoader[torch.Tensor]:
+    def dataloader(self, batch_size: int) -> DataLoader[Tensor]:
         return train_loader_and_tokenizer(self.spd_run_info.config, batch_size)[0]
 
     @property

@@ -243,6 +243,19 @@
             }
         },
         {
+            "name": "vpd pile llama",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/spd/experiments/lm/lm_decomposition.py",
+            "args": "${workspaceFolder}/spd/experiments/lm/pile_llama_simple_mlp-4L.yaml",
+            "python": "${command:python.interpreterPath}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYDEVD_DISABLE_FILE_VALIDATION": "1"
+            }
+        },
+        {
             "name": "run_clustering example",
             "type": "debugpy",
             "request": "launch",

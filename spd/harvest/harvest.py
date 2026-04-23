@@ -77,7 +77,7 @@ def harvest(
 
     for batch_idx in tqdm.tqdm(batch_range, desc="Harvesting", disable=rank_world_size is not None):
         try:
-            batch_item = next(train_iter)
+            batch = next(train_iter)
         except StopIteration:
             logger.info(f"Dataset exhausted at batch {batch_idx}. Processing complete.")
             break
@@ -88,7 +88,7 @@ def harvest(
                 continue
 
         with torch.no_grad(), bf16_autocast():
-            hb = harvest_fn(batch_item)
+            hb = harvest_fn(batch)
             harvester.process_batch(hb.tokens, hb.firings, hb.activations, hb.output_probs)
 
         batches_processed += 1

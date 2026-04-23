@@ -66,7 +66,6 @@ loss_metric_configs:
     type: uniform_k_subset
 - coeff: 1000000.0
   classname: FaithfulnessLoss
-output_loss_type: kl
 lr_schedule:
   start_val: 0.0005
   warmup_pct: 0.0
@@ -111,7 +110,7 @@ ci_alive_threshold: 0.0
 pretrained_model_class: simple_stories_train.models.llama_simple_mlp.LlamaSimpleMLP
 pretrained_model_path: null
 pretrained_model_name: wandb:goodfire/spd/runs/gf6rbga0
-pretrained_model_output_attr: idx_0
+output_extract: 0
 tokenizer_name: SimpleStories/test-SimpleStories-gpt2-1.25M
 task_config:
   task_name: lm

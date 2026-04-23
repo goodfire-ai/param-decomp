@@ -7,6 +7,7 @@ import fire
 from spd.configs import IHTaskConfig
 from spd.experiments.ih.model import InductionModelTargetRunInfo, InductionTransformer
 from spd.log import logger
+from spd.models.batch_and_loss_fns import recon_loss_kl, run_batch_first_element
 from spd.run_spd import run_experiment
 from spd.utils.data_utils import DatasetGeneratedDataLoader, InductionDataset
 from spd.utils.distributed_utils import get_device
@@ -61,6 +62,8 @@ def main(
         evals_id=evals_id,
         sweep_params=parse_sweep_params(sweep_params_json),
         target_model_train_config=target_run_info.config,
+        run_batch=run_batch_first_element,
+        reconstruction_loss=recon_loss_kl,
     )
 
 

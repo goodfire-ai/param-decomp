@@ -9,7 +9,10 @@ from jaxtyping import Float
 from PIL import Image
 from torch import Tensor
 
-from spd.experiments.resid_mlp.models import MLP, ResidMLP
+from spd.experiments.resid_mlp.models import (
+    MLP,
+    ResidMLP,
+)
 from spd.experiments.tms.models import TMSModel
 from spd.log import logger
 from spd.models.component_model import ComponentModel, SPDRunInfo

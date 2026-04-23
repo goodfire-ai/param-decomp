@@ -3,7 +3,7 @@
 from functools import cached_property
 from typing import override
 
-import torch
+from torch import Tensor
 from torch.utils.data import DataLoader
 
 from spd.adapters.base import DecompositionAdapter, pretrain_dataloader
@@ -74,5 +74,5 @@ class CLTAdapter(DecompositionAdapter):
         )
 
     @override
-    def dataloader(self, batch_size: int) -> DataLoader[torch.Tensor]:
+    def dataloader(self, batch_size: int) -> DataLoader[Tensor]:
         return pretrain_dataloader(self._run_info, batch_size)

@@ -1,4 +1,4 @@
-from typing import Any, ClassVar, Literal, override
+from typing import Any, ClassVar, override
 
 import torch
 from jaxtyping import Float, Int
@@ -7,22 +7,23 @@ from torch.distributed import ReduceOp
 
 from spd.configs import SamplingType
 from spd.metrics.base import Metric
+from spd.models.batch_and_loss_fns import ReconstructionLoss
 from spd.models.component_model import CIOutputs, ComponentModel
 from spd.routing import AllLayersRouter
 from spd.utils.component_utils import calc_stochastic_component_mask_info
 from spd.utils.distributed_utils import all_reduce
-from spd.utils.general_utils import calc_sum_recon_loss_lm, get_obj_device
+from spd.utils.general_utils import get_obj_device
 
 
 def _stochastic_recon_layerwise_loss_update(
     model: ComponentModel,
     sampling: SamplingType,
     n_mask_samples: int,
-    output_loss_type: Literal["mse", "kl"],
-    batch: Int[Tensor, "..."] | Float[Tensor, "..."],
-    target_out: Float[Tensor, "... vocab"],
+    batch: Any,
+    target_out: Tensor,
     ci: dict[str, Float[Tensor, "... C"]],
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
+    reconstruction_loss: ReconstructionLoss,
 ) -> tuple[Float[Tensor, ""], int]:
     assert ci, "Empty ci"
     device = get_obj_device(ci)
@@ -42,10 +43,9 @@ def _stochastic_recon_layerwise_loss_update(
     for stochastic_mask_infos in stochastic_mask_infos_list:
         for module_name, mask_info in stochastic_mask_infos.items():
             out = model(batch, mask_infos={module_name: mask_info})
-            loss = calc_sum_recon_loss_lm(pred=out, target=target_out, loss_type=output_loss_type)
-
-            n_examples += out.shape.numel() if output_loss_type == "mse" else out.shape[:-1].numel()
+            loss, batch_n_examples = reconstruction_loss(out, target_out)
             sum_loss += loss
+            n_examples += batch_n_examples
     return sum_loss, n_examples
 
 
@@ -59,21 +59,21 @@ def stochastic_recon_layerwise_loss(
     model: ComponentModel,
     sampling: SamplingType,
     n_mask_samples: int,
-    output_loss_type: Literal["mse", "kl"],
-    batch: Int[Tensor, "..."] | Float[Tensor, "..."],
-    target_out: Float[Tensor, "... vocab"],
+    batch: Any,
+    target_out: Tensor,
     ci: dict[str, Float[Tensor, "... C"]],
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
+    reconstruction_loss: ReconstructionLoss,
 ) -> Float[Tensor, ""]:
     sum_loss, n_examples = _stochastic_recon_layerwise_loss_update(
         model=model,
         sampling=sampling,
         n_mask_samples=n_mask_samples,
-        output_loss_type=output_loss_type,
         batch=batch,
         target_out=target_out,
         ci=ci,
         weight_deltas=weight_deltas,
+        reconstruction_loss=reconstruction_loss,
     )
     return _stochastic_recon_layerwise_loss_compute(sum_loss, n_examples)
 
@@ -90,13 +90,13 @@ class StochasticReconLayerwiseLoss(Metric):
         sampling: SamplingType,
         use_delta_component: bool,
         n_mask_samples: int,
-        output_loss_type: Literal["mse", "kl"],
+        reconstruction_loss: ReconstructionLoss,
     ) -> None:
         self.model = model
         self.sampling: SamplingType = sampling
         self.use_delta_component: bool = use_delta_component
         self.n_mask_samples: int = n_mask_samples
-        self.output_loss_type: Literal["mse", "kl"] = output_loss_type
+        self.reconstruction_loss = reconstruction_loss
         self.sum_loss = torch.tensor(0.0, device=device)
         self.n_examples = torch.tensor(0, device=device)
 
@@ -104,8 +104,8 @@ class StochasticReconLayerwiseLoss(Metric):
     def update(
         self,
         *,
-        batch: Int[Tensor, "..."] | Float[Tensor, "..."],
-        target_out: Float[Tensor, "... vocab"],
+        batch: Any,
+        target_out: Tensor,
         ci: CIOutputs,
         weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
         **_: Any,
@@ -114,11 +114,11 @@ class StochasticReconLayerwiseLoss(Metric):
             model=self.model,
             sampling=self.sampling,
             n_mask_samples=self.n_mask_samples,
-            output_loss_type=self.output_loss_type,
             batch=batch,
             target_out=target_out,
             ci=ci.lower_leaky,
             weight_deltas=weight_deltas if self.use_delta_component else None,
+            reconstruction_loss=self.reconstruction_loss,
         )
         self.sum_loss += sum_loss
         self.n_examples += n_examples

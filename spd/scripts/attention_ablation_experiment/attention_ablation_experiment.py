@@ -44,6 +44,7 @@ from torch import Tensor
 from spd.configs import LMTaskConfig, PGDConfig, SamplingType
 from spd.data import DatasetConfig, create_data_loader
 from spd.log import logger
+from spd.models.batch_and_loss_fns import recon_loss_kl
 from spd.models.component_model import ComponentModel, OutputWithCache, SPDRunInfo
 from spd.models.components import ComponentsMaskInfo, make_mask_infos
 from spd.pretrain.models.llama_simple_mlp import CausalSelfAttention, LlamaSimpleMLP
@@ -667,7 +668,7 @@ def _build_adversarial_masks(
     router = AllLayersRouter()
 
     baseline_sum_loss, baseline_n = pgd_masked_recon_loss_update(
-        model, batch, ci, None, target_out, "kl", router, pgd_config
+        model, batch, ci, None, target_out, router, pgd_config, recon_loss_kl
     )
 
     ablated_ci = {k: v.clone() for k, v in ci.items()}
@@ -676,7 +677,7 @@ def _build_adversarial_masks(
         ablated_ci[module_name][..., comp_idx] = 0.0
 
     ablated_sum_loss, ablated_n = pgd_masked_recon_loss_update(
-        model, batch, ablated_ci, None, target_out, "kl", router, pgd_config
+        model, batch, ablated_ci, None, target_out, router, pgd_config, recon_loss_kl
     )
 
     return baseline_sum_loss / baseline_n, ablated_sum_loss / ablated_n

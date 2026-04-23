@@ -11,16 +11,6 @@ from spd.models.component_model import ComponentModel, SPDRunInfo
 from spd.registry import EXPERIMENT_REGISTRY
 from spd.utils.wandb_utils import parse_wandb_run_path
 
-
-def from_run_info(canonical_run: str) -> ComponentModel:
-    run_info = SPDRunInfo.from_path(canonical_run)
-    return ComponentModel.from_run_info(run_info)
-
-
-def from_pretrained(canonical_run: str) -> ComponentModel:
-    return ComponentModel.from_pretrained(canonical_run)
-
-
 CANONICAL_EXPS = [
     (exp_name, exp_config.canonical_run)
     for exp_name, exp_config in EXPERIMENT_REGISTRY.items()
@@ -32,17 +22,11 @@ CANONICAL_EXPS = [
 @pytest.mark.slow
 @pytest.mark.parametrize("exp_name, canonical_run", CANONICAL_EXPS)
 def test_loading_from_wandb(exp_name: str, canonical_run: str) -> None:
-    # We put both from_run_info and from_pretrained in the same test to avoid distributed read
-    # errors from the same wandb cache
     try:
-        from_run_info(canonical_run)
+        run_info = SPDRunInfo.from_path(canonical_run)
+        ComponentModel.from_run_info(run_info)
     except Exception as e:
-        e.add_note(f"Error with from_run_info for {exp_name} from {canonical_run}")
-        raise e
-    try:
-        from_pretrained(canonical_run)
-    except Exception as e:
-        e.add_note(f"Error with from_pretrained for {exp_name} from {canonical_run}")
+        e.add_note(f"Error loading {exp_name} from {canonical_run}")
         raise e
 
 

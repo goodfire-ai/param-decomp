@@ -35,7 +35,6 @@ loss_metric_configs:
     mask_scope: shared_across_batch
   - classname: "FaithfulnessLoss"
     coeff: 0.0
-output_loss_type: mse
 
 # --- Training ---
 batch_size: 2048

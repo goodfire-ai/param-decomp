@@ -27,7 +27,6 @@ loss_metric_configs:
     p_anneal_end_frac: 1.0
   - classname: "StochasticReconLayerwiseLoss"
     coeff: 2.0
-output_loss_type: kl
 
 # --- Training ---
 batch_size: 2
@@ -65,7 +64,7 @@ eval_metric_configs:
 # --- Pretrained model info ---
 pretrained_model_class: transformers.GPT2LMHeadModel
 pretrained_model_name: openai-community/gpt2
-pretrained_model_output_attr: logits
+output_extract: logits
 tokenizer_name: openai-community/gpt2
 
 # --- Task Specific ---

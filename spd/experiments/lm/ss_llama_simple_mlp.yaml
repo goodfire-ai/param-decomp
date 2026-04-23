@@ -43,7 +43,6 @@ loss_metric_configs:
   classname: PGDReconSubsetLoss
 - coeff: 100000.0
   classname: FaithfulnessLoss
-output_loss_type: kl
 steps: 400000
 batch_size: 128
 grad_clip_norm_components: 0.01
@@ -115,7 +114,7 @@ ci_alive_threshold: 0.0
 pretrained_model_class: spd.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
 pretrained_model_path: null
 pretrained_model_name: wandb:goodfire/spd/runs/9de1zu65 # 100k steps
-pretrained_model_output_attr: idx_0
+output_extract: 0
 tokenizer_name: SimpleStories/test-SimpleStories-gpt2-1.25M
 task_config:
   task_name: lm

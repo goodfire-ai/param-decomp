@@ -11,6 +11,7 @@ from spd.experiments.resid_mlp.models import (
 )
 from spd.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
 from spd.log import logger
+from spd.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
 from spd.run_spd import run_experiment
 from spd.settings import SPD_OUT_DIR
 from spd.utils.data_utils import DatasetGeneratedDataLoader
@@ -73,6 +74,8 @@ def main(
         device=device,
         train_loader=train_loader,
         eval_loader=eval_loader,
+        run_batch=run_batch_first_element,
+        reconstruction_loss=recon_loss_mse,
         experiment_tag="resid_mlp",
         run_id=run_id,
         launch_id=launch_id,
