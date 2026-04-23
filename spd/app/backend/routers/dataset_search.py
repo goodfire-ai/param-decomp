@@ -3,6 +3,8 @@
 Provides search functionality for the training dataset of the loaded run.
 The dataset name and text column are read from the run's config.
 Results are cached in memory for pagination.
+
+Currently restricted to SimpleStories runs (see `_assert_simplestories`).
 """
 
 import random
@@ -88,6 +90,20 @@ def _get_lm_task_config(loaded: DepLoadedRun) -> LMTaskConfig:
     return task_config
 
 
+def _assert_simplestories(task_config: LMTaskConfig) -> None:
+    """Raise 400 unless the run's dataset_name is a SimpleStories variant.
+
+    The dataset explorer currently relies on SimpleStories's text format and
+    full-in-memory load; other datasets (e.g. pile-tokenized-streaming) aren't
+    supported.
+    """
+    if "simplestories" not in task_config.dataset_name.lower():
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Currently only simplestories is supported; got {task_config.dataset_name}"),
+        )
+
+
 @router.post("/search")
 @log_errors
 def search_dataset(
@@ -109,6 +125,7 @@ def search_dataset(
         Search metadata (query, split, dataset_name, total results, search time)
     """
     task_config = _get_lm_task_config(loaded)
+    _assert_simplestories(task_config)
     dataset_name = task_config.dataset_name
     text_column = task_config.column_name
 
@@ -333,6 +350,7 @@ def get_random_samples(
         Random samples with metadata
     """
     task_config = _get_lm_task_config(loaded)
+    _assert_simplestories(task_config)
     dataset_name = task_config.dataset_name
     text_column = task_config.column_name
 
@@ -414,6 +432,7 @@ def get_random_samples_with_loss(
         Tokenized samples with next-token probability per token
     """
     task_config = _get_lm_task_config(loaded)
+    _assert_simplestories(task_config)
     dataset_name = task_config.dataset_name
     text_column = task_config.column_name
 

@@ -892,11 +892,14 @@ def _tool_search_dataset(params: dict[str, Any]) -> dict[str, Any]:
 
     from datasets import Dataset, load_dataset
 
+    from spd.app.backend.routers.dataset_search import _assert_simplestories
+
     _, loaded = _get_state()
     task_config = loaded.config.task_config
     assert isinstance(task_config, LMTaskConfig), (
         f"search_dataset requires an LM experiment, got {task_config.task_name}"
     )
+    _assert_simplestories(task_config)
     dataset_name = task_config.dataset_name
     text_column = task_config.column_name
 
