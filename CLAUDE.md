@@ -41,7 +41,6 @@ The codebase supports three experimental domains: TMS (Toy Model of Superpositio
   - `ss_gpt2`, `ss_gpt2_simple`, `ss_gpt2_simple_noln` - Simple Stories GPT-2 variants
   - `ss_gpt2_simple-1L`, `ss_gpt2_simple-2L` - GPT-2 simple layer variants
   - `pile_llama_simple_mlp-2L`, `pile_llama_simple_mlp-4L`, `pile_llama_simple_mlp-12L` - Pile Llama MLP-only variants
-  - `pile_gpt2_simple-2L_global_reverse` - Pile GPT-2 with global reverse
   - `gpt2` - Standard GPT-2
   - `ts` - TinyStories
 

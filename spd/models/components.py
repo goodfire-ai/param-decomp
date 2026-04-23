@@ -11,7 +11,6 @@ from torch import Tensor, nn
 from spd.utils.module_utils import _NonlinearityType, init_param_
 
 if TYPE_CHECKING:
-    from spd.configs import AttnConfig
     from spd.spd_types import LayerwiseCiFnType
 
 
@@ -364,162 +363,6 @@ class GlobalSharedTransformerCiFn(nn.Module):
         return outputs
 
 
-class GlobalReverseResidualCiFn(nn.Module):
-    """Global CI function that processes blocks in reverse order with a residual stream.
-
-    Architecture:
-    1. Initialize residual stream to zeros (batch..., d_resid_ci_fn)
-    2. Process blocks in order (typically: unembed → layer N MLP → layer N attn → ... → embed)
-    3. For each block:
-       - Concat relevant activations from all modules in the block
-       - Project to d_resid_ci_fn and add to residual stream
-       - RMSNorm → Reader MLP outputs CI values for all modules in block
-       - Transition updates residual stream for next block (except after last block):
-         - If attn_config is provided: RMSNorm → attn → add → RMSNorm → MLP(GeLU) → add
-         - Otherwise: RMSNorm → MLP(GeLU) → add
-         - If transition_hidden_dim is provided: MLP d_resid → hidden → d_resid with GeLU
-         - Otherwise: linear d_resid → d_resid
-
-    """
-
-    def __init__(
-        self,
-        block_configs: list[tuple[str, list[str], list[int], list[int]]],
-        d_resid_ci_fn: int,
-        reader_hidden_dims: list[int],
-        transition_hidden_dim: int | None,
-        attn_config: "AttnConfig | None" = None,
-    ):
-        """Initialize the reverse residual CI function.
-
-        Args:
-            block_configs: List of (block_name, module_names, input_dims, c_values) tuples.
-                Ordered in processing order (first block processed first).
-            d_resid_ci_fn: Dimension of the residual stream.
-            reader_hidden_dims: Hidden dimensions for reader MLPs.
-            transition_hidden_dim: Hidden dimension for transition MLPs.
-            attn_config: Optional config for self-attention in transitions. If provided,
-                transitions use a transformer block (attention → residual → MLP → residual).
-        """
-        super().__init__()
-
-        if attn_config is not None:
-            assert d_resid_ci_fn % attn_config.n_heads == 0, (
-                f"d_resid_ci_fn ({d_resid_ci_fn}) must be divisible by "
-                f"attn_config.n_heads ({attn_config.n_heads})"
-            )
-            d_head = d_resid_ci_fn // attn_config.n_heads
-            assert d_head % 2 == 0, (
-                f"d_head ({d_head}) must be even for RoPE. "
-                f"d_resid_ci_fn={d_resid_ci_fn}, n_heads={attn_config.n_heads}"
-            )
-        self.d_resid_ci_fn = d_resid_ci_fn
-        self.n_blocks = len(block_configs)
-        self.block_safe_names = [name.replace(".", "-") for name, _, _, _ in block_configs]
-        self.block_module_names = [modules for _, modules, _, _ in block_configs]
-        self.block_input_dims = [dims for _, _, dims, _ in block_configs]
-        self.block_c_values = [cs for _, _, _, cs in block_configs]
-
-        self._inp_projectors = nn.ModuleDict()
-        self._readers = nn.ModuleDict()
-        self._reader_norms = nn.ModuleDict()
-        self._transitions = nn.ModuleDict()
-        self._transition_norms = nn.ModuleDict()
-        self._attn_transitions: nn.ModuleDict | None = (
-            nn.ModuleDict() if attn_config is not None else None
-        )
-        self._attn_norms: nn.ModuleDict | None = (
-            nn.ModuleDict() if attn_config is not None else None
-        )
-
-        for block_idx, (_, _, input_dims, c_values) in enumerate(block_configs):
-            safe_name = self.block_safe_names[block_idx]
-            total_input_dim = sum(input_dims)
-            total_c = sum(c_values)
-
-            self._inp_projectors[safe_name] = Linear(
-                total_input_dim, d_resid_ci_fn, nonlinearity="relu"
-            )
-
-            reader_layers = nn.Sequential()
-            for i in range(len(reader_hidden_dims)):
-                in_dim = d_resid_ci_fn if i == 0 else reader_hidden_dims[i - 1]
-                out_dim = reader_hidden_dims[i]
-                reader_layers.append(Linear(in_dim, out_dim, nonlinearity="relu"))
-                reader_layers.append(nn.GELU())
-            final_dim = reader_hidden_dims[-1] if len(reader_hidden_dims) > 0 else d_resid_ci_fn
-            reader_layers.append(Linear(final_dim, total_c, nonlinearity="linear"))
-            self._readers[safe_name] = reader_layers
-            self._reader_norms[safe_name] = nn.RMSNorm(d_resid_ci_fn)
-
-            if block_idx < self.n_blocks - 1:
-                if transition_hidden_dim is not None:
-                    transition = nn.Sequential(
-                        Linear(d_resid_ci_fn, transition_hidden_dim, nonlinearity="relu"),
-                        nn.GELU(),
-                        Linear(transition_hidden_dim, d_resid_ci_fn, nonlinearity="relu"),
-                    )
-                else:
-                    transition = Linear(d_resid_ci_fn, d_resid_ci_fn, nonlinearity="relu")
-                self._transitions[safe_name] = transition
-                self._transition_norms[safe_name] = nn.RMSNorm(d_resid_ci_fn)
-                if attn_config is not None:
-                    assert self._attn_transitions is not None
-                    self._attn_transitions[safe_name] = SelfAttention(
-                        d_model=d_resid_ci_fn,
-                        n_heads=attn_config.n_heads,
-                        max_len=attn_config.max_len,
-                        rope_base=attn_config.rope_base,
-                    )
-                    assert self._attn_norms is not None
-                    self._attn_norms[safe_name] = nn.RMSNorm(d_resid_ci_fn)
-
-    @override
-    def forward(
-        self,
-        input_acts: dict[str, Float[Tensor, "... d_in"]],
-    ) -> dict[str, Float[Tensor, "... C"]]:
-        first_tensor = next(iter(input_acts.values()))
-        batch_shape = first_tensor.shape[:-1]
-        device = first_tensor.device
-        dtype = first_tensor.dtype
-
-        residual = torch.zeros(*batch_shape, self.d_resid_ci_fn, device=device, dtype=dtype)
-
-        all_outputs: dict[str, Float[Tensor, "... C"]] = {}
-
-        for block_idx in range(self.n_blocks):
-            safe_name = self.block_safe_names[block_idx]
-            module_names = self.block_module_names[block_idx]
-            c_values = self.block_c_values[block_idx]
-
-            block_acts = [input_acts[name] for name in module_names]
-            concat_acts = torch.cat(block_acts, dim=-1)
-
-            projection = self._inp_projectors[safe_name](concat_acts)
-            residual = residual + projection
-
-            if block_idx < self.n_blocks - 1:
-                # With attention: norm → attn → residual add → norm → MLP → residual add
-                # Without attention: norm → MLP → residual add
-                if self._attn_transitions is not None:
-                    assert self._attn_norms is not None
-                    attn_out = self._attn_transitions[safe_name](
-                        self._attn_norms[safe_name](residual)
-                    )
-                    residual = residual + attn_out
-
-                mlp_out = self._transitions[safe_name](self._transition_norms[safe_name](residual))
-                residual = residual + mlp_out
-            ci_output = self._readers[safe_name](self._reader_norms[safe_name](residual))
-
-            split_outputs = torch.split(ci_output, c_values, dim=-1)
-            for module_name, module_ci in zip(module_names, split_outputs, strict=True):
-                all_outputs[module_name] = module_ci
-
-        return all_outputs
-
-
 WeightDeltaAndMask = tuple[Float[Tensor, "d_out d_in"], Float[Tensor, "..."]]
 
 
@@ -825,7 +668,7 @@ class GlobalCiFnWrapper(nn.Module):
 
     def __init__(
         self,
-        global_ci_fn: GlobalSharedMLPCiFn | GlobalSharedTransformerCiFn | GlobalReverseResidualCiFn,
+        global_ci_fn: GlobalSharedMLPCiFn | GlobalSharedTransformerCiFn,
         components: dict[str, Components],
     ):
         super().__init__()

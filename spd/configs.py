@@ -28,20 +28,6 @@ class LayerwiseCiConfig(BaseConfig):
     )
 
 
-class BlockGroupConfig(BaseConfig):
-    """Defines a group of modules processed together in global reverse residual CI.
-
-    Modules within a block have their activations concatenated, projected to the residual
-    stream dimension, and processed together by a single reader network.
-    """
-
-    name: str = Field(..., description="Block identifier (e.g. 'unembed', 'layer_2_mlp')")
-    patterns: list[str] = Field(
-        ...,
-        description="Module patterns for this block (fnmatch-style, e.g. ['layers.2.mlp_*'])",
-    )
-
-
 class AttnConfig(BaseConfig):
     """Configuration for self-attention.
 
@@ -90,7 +76,6 @@ class GlobalCiConfig(BaseConfig):
     """Configuration for global CI function (single function for all layers).
 
     For fn_type='global_shared_mlp': Concatenates all activations, processes through MLP.
-    For fn_type='global_reverse_residual': Processes blocks in reverse order with residual stream.
     For fn_type='global_shared_transformer': Concatenates activations, projects to shared d_model,
     and applies transformer blocks over the sequence dimension.
     """
@@ -98,68 +83,19 @@ class GlobalCiConfig(BaseConfig):
     mode: Literal["global"] = "global"
     fn_type: GlobalCiFnType = Field(
         ...,
-        description="Type of global CI function: global_shared_mlp, "
-        "global_reverse_residual, or global_shared_transformer",
+        description="Type of global CI function: global_shared_mlp or global_shared_transformer",
     )
     hidden_dims: list[NonNegativeInt] | None = Field(
         default=None,
-        description="Hidden dimensions for global_shared_mlp CI function. "
-        "Use reader_hidden_dims for global_reverse_residual.",
-    )
-    reader_hidden_dims: list[NonNegativeInt] | None = Field(
-        default=None,
-        description="Hidden dimensions for reader MLPs in global_reverse_residual. "
-        "Required when fn_type='global_reverse_residual', ignored otherwise.",
-    )
-    d_resid_ci_fn: PositiveInt | None = Field(
-        default=None,
-        description="Residual stream dimension for global_reverse_residual. "
-        "Required when fn_type='global_reverse_residual', ignored otherwise.",
-    )
-    block_groups: list[BlockGroupConfig] | None = Field(
-        default=None,
-        description="Ordered list of block groups for global_reverse_residual. "
-        "Order determines processing sequence (first = processed first, typically unembed). "
-        "Required when fn_type='global_reverse_residual', ignored otherwise.",
-    )
-    transition_attn_config: AttnConfig | None = Field(
-        default=None,
-        description="Self-attention config for transitions in global_reverse_residual. "
-        "If None, uses MLP-only transitions (original behavior). "
-        "Only applies when fn_type='global_reverse_residual'.",
-    )
-    transition_hidden_dim: PositiveInt | None = Field(
-        default=None,
-        description="Hidden dimension for transition MLP in global_reverse_residual. "
-        "MLP structure: d_resid_ci_fn -> transition_hidden_dim -> d_resid_ci_fn with GeLU. "
-        "Required when fn_type='global_reverse_residual', ignored otherwise.",
+        description="Hidden dimensions for global_shared_mlp CI function.",
     )
     simple_transformer_ci_cfg: GlobalSharedTransformerCiConfig | None = None
 
     @model_validator(mode="after")
     def validate_ci_config(self) -> Self:
-        if self.fn_type == "global_reverse_residual":
-            assert self.d_resid_ci_fn is not None, (
-                "d_resid_ci_fn must be specified when fn_type='global_reverse_residual'"
-            )
-            assert self.block_groups is not None and len(self.block_groups) > 0, (
-                "block_groups must be specified with at least one block when "
-                "fn_type='global_reverse_residual'"
-            )
-            assert self.reader_hidden_dims is not None, (
-                "reader_hidden_dims must be specified when fn_type='global_reverse_residual'"
-            )
-            if self.transition_attn_config is not None:
-                assert self.d_resid_ci_fn % self.transition_attn_config.n_heads == 0, (
-                    f"d_resid_ci_fn ({self.d_resid_ci_fn}) must be divisible by "
-                    f"transition_attn_config.n_heads ({self.transition_attn_config.n_heads})"
-                )
-        elif self.fn_type == "global_shared_mlp":
+        if self.fn_type == "global_shared_mlp":
             assert self.hidden_dims is not None, (
                 "hidden_dims must be specified when fn_type='global_shared_mlp'"
-            )
-            assert self.transition_attn_config is None, (
-                "transition_attn_config is only valid for global_reverse_residual"
             )
         elif self.fn_type == "global_shared_transformer":
             assert self.simple_transformer_ci_cfg is not None, (

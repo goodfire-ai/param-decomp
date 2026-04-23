@@ -8,11 +8,6 @@ ci_config:
   mode: global
   fn_type: global_shared_transformer
   hidden_dims: null
-  reader_hidden_dims: null
-  d_resid_ci_fn: null
-  block_groups: null
-  transition_attn_config: null
-  transition_hidden_dim: null
   simple_transformer_ci_cfg:
     d_model: 2048
     n_blocks: 8

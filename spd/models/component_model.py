@@ -1,4 +1,3 @@
-import fnmatch
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -20,7 +19,6 @@ from spd.models.components import (
     ComponentsMaskInfo,
     EmbeddingComponents,
     GlobalCiFnWrapper,
-    GlobalReverseResidualCiFn,
     GlobalSharedMLPCiFn,
     GlobalSharedTransformerCiFn,
     Identity,
@@ -288,7 +286,7 @@ class ComponentModel(LoadableModule):
         module_to_c: dict[str, int],
         components: dict[str, Components],
         ci_config: GlobalCiConfig,
-    ) -> GlobalSharedMLPCiFn | GlobalSharedTransformerCiFn | GlobalReverseResidualCiFn:
+    ) -> GlobalSharedMLPCiFn | GlobalSharedTransformerCiFn:
         """Create a global CI function that takes all layer activations as input."""
         ci_fn_type = ci_config.fn_type
         ci_fn_hidden_dims = ci_config.hidden_dims
@@ -330,59 +328,6 @@ class ComponentModel(LoadableModule):
                     mlp_hidden_dims=transformer_cfg.mlp_hidden_dim,
                     max_len=transformer_cfg.attn_config.max_len,
                     rope_base=transformer_cfg.attn_config.rope_base,
-                )
-            case "global_reverse_residual":
-                # block_groups, d_resid_ci_fn, reader_hidden_dims, transition_hidden_dim
-                # are validated by Pydantic
-                block_groups = ci_config.block_groups
-                d_resid_ci_fn = ci_config.d_resid_ci_fn
-                reader_hidden_dims = ci_config.reader_hidden_dims
-                transition_hidden_dim = ci_config.transition_hidden_dim
-                assert block_groups is not None  # for type narrowing
-                assert d_resid_ci_fn is not None  # for type narrowing
-                assert reader_hidden_dims is not None  # for type narrowing
-
-                # Build block_configs from block_groups
-                block_configs: list[tuple[str, list[str], list[int], list[int]]] = []
-                all_matched_modules: set[str] = set()
-
-                for block_group in block_groups:
-                    matched_modules: list[str] = []
-                    for pattern in block_group.patterns:
-                        matches = [name for name in module_to_c if fnmatch.fnmatch(name, pattern)]
-                        assert matches, (
-                            f"Block pattern '{pattern}' in block '{block_group.name}' "
-                            f"matched no modules. Available: {list(module_to_c.keys())}"
-                        )
-                        for match in matches:
-                            assert match not in matched_modules, (
-                                f"Module '{match}' matched multiple patterns in block "
-                                f"'{block_group.name}'"
-                            )
-                        matched_modules.extend(matches)
-
-                    for module in matched_modules:
-                        assert module not in all_matched_modules, (
-                            f"Module '{module}' matched multiple block groups"
-                        )
-                        all_matched_modules.add(module)
-
-                    input_dims = [layer_configs[m][0] for m in matched_modules]
-                    c_values = [layer_configs[m][1] for m in matched_modules]
-
-                    block_configs.append((block_group.name, matched_modules, input_dims, c_values))
-
-                assert all_matched_modules == set(module_to_c.keys()), (
-                    f"Some modules not in any block group. "
-                    f"Missing: {set(module_to_c.keys()) - all_matched_modules}"
-                )
-
-                return GlobalReverseResidualCiFn(
-                    block_configs=block_configs,
-                    d_resid_ci_fn=d_resid_ci_fn,
-                    reader_hidden_dims=reader_hidden_dims,
-                    transition_hidden_dim=transition_hidden_dim,
-                    attn_config=ci_config.transition_attn_config,
                 )
 
     @overload
