@@ -432,6 +432,59 @@ def compute_edges_from_ci(
     )
 
 
+def _translate_canonical_to_concrete_layer(canonical_layer: str, concrete_layers: set[str]) -> str:
+    """Translate a canonical layer name to its concrete equivalent.
+    
+    Args:
+        canonical_layer: Canonical layer name (e.g. "0.mlp.up")
+        concrete_layers: Set of concrete layer names available in the model
+        
+    Returns:
+        Concrete layer name (e.g. "h.0.mlp.up_proj")
+        
+    Raises:
+        AssertionError: If no matching concrete layer is found
+    """
+    # Handle different canonical formats by parsing layer number and module parts
+    if canonical_layer.count('.') >= 2:
+        parts = canonical_layer.split('.')
+        layer_num = parts[0]
+        module_type = parts[1]
+        sub_module = '.'.join(parts[2:]) if len(parts) > 2 else None
+        
+        # Try to find matching concrete layer in available layers
+        for concrete in concrete_layers:
+            # Check if this concrete layer matches the canonical pattern
+            if f".{layer_num}." in concrete and f".{module_type}." in concrete:
+                # For MLP modules, handle the canonical->concrete mapping
+                if sub_module and module_type == "mlp":
+                    # Common mappings for MLP submodules
+                    mlp_mappings = {
+                        "up": ["up_proj", "c_fc"],
+                        "gate": ["gate_proj"],
+                        "down": ["down_proj", "c_proj"],
+                    }
+                    
+                    if sub_module in mlp_mappings:
+                        for concrete_suffix in mlp_mappings[sub_module]:
+                            if concrete.endswith(f".{concrete_suffix}"):
+                                return concrete
+                else:
+                    # For non-MLP modules or exact matches, return the first match
+                    return concrete
+    
+    # If no translation found, the canonical layer might already be concrete
+    if canonical_layer in concrete_layers:
+        return canonical_layer
+        
+    # Fallback: try to find any layer that contains the canonical name
+    for concrete in concrete_layers:
+        if canonical_layer in concrete:
+            return concrete
+            
+    assert False, f"Cannot translate canonical layer '{canonical_layer}' to concrete layer. Available: {sorted(concrete_layers)}"
+
+
 def filter_ci_to_included_nodes(
     ci_lower_leaky: dict[str, Float[Tensor, "1 seq C"]],
     included_nodes: set[str],
@@ -447,6 +500,7 @@ def filter_ci_to_included_nodes(
     Args:
         ci_lower_leaky: Dict mapping layer name to CI tensor [1, seq, C].
         included_nodes: Set of node keys to include (format: "layer:seq:cIdx").
+                       Layer names can be canonical (e.g. "0.mlp.up") or concrete (e.g. "h.0.mlp.up_proj").
 
     Returns:
         New dict with CI values zeroed for non-included nodes.
@@ -454,25 +508,25 @@ def filter_ci_to_included_nodes(
     Raises:
         AssertionError: If any node has invalid format or references invalid layer.
     """
-    # Pre-group nodes by layer: layer -> list of (seq_pos, c_idx)
-    nodes_by_layer: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    concrete_layers = set(ci_lower_leaky.keys())
+    
+    # Pre-group nodes by concrete layer: layer -> list of (seq_pos, c_idx)
+    nodes_by_concrete_layer: dict[str, list[tuple[int, int]]] = defaultdict(list)
     for node_key in included_nodes:
         parts = node_key.split(":")
         assert len(parts) == 3, f"Invalid node key format: {node_key}"
-        layer, seq_str, c_str = parts
-        nodes_by_layer[layer].append((int(seq_str), int(c_str)))
-
-    # Validate all layers exist (Issue 8: fail fast on invalid nodes)
-    valid_layers = set(ci_lower_leaky.keys())
-    invalid_layers = set(nodes_by_layer.keys()) - valid_layers
-    assert not invalid_layers, f"Nodes reference invalid layers: {invalid_layers}"
+        canonical_layer, seq_str, c_str = parts
+        
+        # Translate canonical to concrete layer name
+        concrete_layer = _translate_canonical_to_concrete_layer(canonical_layer, concrete_layers)
+        nodes_by_concrete_layer[concrete_layer].append((int(seq_str), int(c_str)))
 
     filtered = {}
     for layer_name, ci_tensor in ci_lower_leaky.items():
         new_ci = torch.zeros_like(ci_tensor)
         n_seq, n_components = ci_tensor.shape[1], ci_tensor.shape[2]
 
-        coords = nodes_by_layer.get(layer_name, [])
+        coords = nodes_by_concrete_layer.get(layer_name, [])
         if coords:
             # Validate bounds
             for seq_pos, c_idx in coords:
