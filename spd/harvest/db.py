@@ -1,6 +1,7 @@
 """SQLite database for component-level harvest data. NFS-hosted, write-once then read-only."""
 
 import sqlite3
+import threading
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -75,45 +76,55 @@ def _deserialize_component(row: sqlite3.Row) -> ComponentData:
 
 
 class HarvestDB:
+    # Python's sqlite3 connection is not thread-safe even with check_same_thread=False
+    # (module threadsafety=1: "Threads may share the module, but not connections"). The app
+    # serves concurrent reads from FastAPI's thread pool, so without this lock interleaved
+    # execute/fetch calls corrupt each other's rows (e.g. mean_activations coming back as
+    # None, producing orjson "Input must be bytes..." errors).
     def __init__(self, db_path: Path, readonly: bool = False) -> None:
         self._conn = open_nfs_sqlite(db_path, readonly)
+        self._lock = threading.Lock()
         if not readonly:
             self._conn.executescript(_SCHEMA)
 
     def save_component(self, comp: ComponentData) -> None:
         row = _serialize_component(comp)
-        self._conn.execute(
-            "INSERT OR REPLACE INTO components VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            row,
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO components VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                row,
+            )
+            self._conn.commit()
 
     def save_components_iter(self, components: Iterable[ComponentData]) -> int:
         """Save components from an iterable, one at a time (constant memory)."""
         n = 0
-        for comp in components:
-            self._conn.execute(
-                "INSERT OR REPLACE INTO components VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                _serialize_component(comp),
-            )
-            n += 1
-        self._conn.commit()
+        with self._lock:
+            for comp in components:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO components VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    _serialize_component(comp),
+                )
+                n += 1
+            self._conn.commit()
         return n
 
     def save_config(self, config: HarvestConfig) -> None:
         data = config.model_dump()
         rows = [(k, orjson.dumps(v).decode()) for k, v in data.items()]
-        self._conn.executemany(
-            "INSERT OR REPLACE INTO config VALUES (?, ?)",
-            rows,
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO config VALUES (?, ?)",
+                rows,
+            )
+            self._conn.commit()
 
     def get_component(self, component_key: str) -> ComponentData | None:
-        row = self._conn.execute(
-            "SELECT * FROM components WHERE component_key = ?",
-            (component_key,),
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM components WHERE component_key = ?",
+                (component_key,),
+            ).fetchone()
         if row is None:
             return None
         return _deserialize_component(row)
@@ -122,16 +133,18 @@ class HarvestDB:
         if not keys:
             return {}
         placeholders = ",".join("?" for _ in keys)
-        rows = self._conn.execute(
-            f"SELECT * FROM components WHERE component_key IN ({placeholders})",
-            keys,
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM components WHERE component_key IN ({placeholders})",
+                keys,
+            ).fetchall()
         return {row["component_key"]: _deserialize_component(row) for row in rows}
 
     def get_summary(self) -> dict[str, ComponentSummary]:
-        rows = self._conn.execute(
-            "SELECT component_key, layer, component_idx, firing_density, mean_activations FROM components"
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT component_key, layer, component_idx, firing_density, mean_activations FROM components"
+            ).fetchall()
         return {
             row["component_key"]: ComponentSummary(
                 layer=row["layer"],
@@ -143,59 +156,69 @@ class HarvestDB:
         }
 
     def get_config_dict(self) -> dict[str, object]:
-        rows = self._conn.execute("SELECT key, value FROM config").fetchall()
+        with self._lock:
+            rows = self._conn.execute("SELECT key, value FROM config").fetchall()
         return {row["key"]: orjson.loads(row["value"]) for row in rows}
 
     def get_activation_threshold(self) -> float:
-        row = self._conn.execute(
-            "SELECT value FROM config WHERE key = 'activation_threshold'"
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM config WHERE key = 'activation_threshold'"
+            ).fetchone()
         assert row is not None, "activation_threshold not found in config table"
         return orjson.loads(row["value"])
 
     def has_data(self) -> bool:
-        row = self._conn.execute("SELECT EXISTS(SELECT 1 FROM components LIMIT 1)").fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT EXISTS(SELECT 1 FROM components LIMIT 1)").fetchone()
         assert row is not None
         return bool(row[0])
 
     def get_component_count(self) -> int:
-        row = self._conn.execute("SELECT COUNT(*) FROM components").fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) FROM components").fetchone()
         assert row is not None
         return row[0]
 
     def get_all_components(self) -> list[ComponentData]:
         """Load all components. SLOW (~minutes for large DBs) — prefer get_component_keys()
         + get_components_bulk() when you don't need every component's full data."""
-        rows = self._conn.execute("SELECT * FROM components").fetchall()
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM components").fetchall()
         return [_deserialize_component(row) for row in rows]
 
     def get_component_keys(self) -> list[str]:
         """Return all component keys (fast — no blob deserialization)."""
-        rows = self._conn.execute("SELECT component_key FROM components").fetchall()
+        with self._lock:
+            rows = self._conn.execute("SELECT component_key FROM components").fetchall()
         return [row["component_key"] for row in rows]
 
     def get_eligible_component_keys(self, min_examples: int) -> list[str]:
-        rows = self._conn.execute(
-            "SELECT component_key FROM components WHERE n_activation_examples >= ?",
-            (min_examples,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT component_key FROM components WHERE n_activation_examples >= ?",
+                (min_examples,),
+            ).fetchall()
         return [row["component_key"] for row in rows]
 
     # -- Scores (e.g. intruder eval) ------------------------------------------
 
     def save_score(self, component_key: str, score_type: str, score: float, details: str) -> None:
-        self._conn.execute(
-            "INSERT OR REPLACE INTO scores VALUES (?, ?, ?, ?)",
-            (component_key, score_type, score, details),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO scores VALUES (?, ?, ?, ?)",
+                (component_key, score_type, score, details),
+            )
+            self._conn.commit()
 
     def get_scores(self, score_type: str) -> dict[str, float]:
-        rows = self._conn.execute(
-            "SELECT component_key, score FROM scores WHERE score_type = ?",
-            (score_type,),
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT component_key, score FROM scores WHERE score_type = ?",
+                (score_type,),
+            ).fetchall()
         return {row["component_key"]: row["score"] for row in rows}
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
