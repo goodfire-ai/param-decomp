@@ -73,7 +73,7 @@ from spd.metrics.stochastic_recon_subset_loss import StochasticReconSubsetLoss
 from spd.metrics.unmasked_recon_loss import UnmaskedReconLoss
 from spd.metrics.uv_plots import UVPlots
 from spd.models.batch_and_loss_fns import ReconstructionLoss
-from spd.models.component_model import ComponentModel, OutputWithCache
+from spd.models.component_model import ComponentModel, OutputWithCache, move_batch_to_device
 from spd.persistent_pgd import PersistentPGDState
 from spd.routing import AllLayersRouter, get_subset_router
 from spd.utils.distributed_utils import avg_metrics_across_ranks, is_distributed
@@ -396,7 +396,7 @@ def evaluate(
     weight_deltas = model.calc_weight_deltas()
 
     for _ in range(n_eval_steps):
-        batch = next(eval_iterator)
+        batch = move_batch_to_device(next(eval_iterator), device)
 
         target_output: OutputWithCache = model(batch, cache_type="input")
         ci = model.calc_causal_importances(
