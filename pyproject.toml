@@ -1,7 +1,7 @@
 [project]
 name = "spd"
 version = "0.0.1"
-description = "Stochastic Parameter Decomposition"
+description = "Stochastic/adVersarial Parameter Decomposition"
 requires-python = "==3.13.*"
 urls = { "Homepage" = "https://github.com/goodfire-ai/spd" }
 license = { text = "MIT" }
@@ -76,7 +76,7 @@ include = ["spd*"]
 [tool.ruff]
 line-length = 100
 fix = true
-extend-exclude = ["spd/app/frontend", "scribe-internal-old", "scripts/analyze_cluster_quality.py", "scripts/inspect_merge_3698.py", "scripts/inspect_merge_3698_10m.py"]
+extend-exclude = ["spd/app/frontend"]
 
 [tool.ruff.lint]
 ignore = [
