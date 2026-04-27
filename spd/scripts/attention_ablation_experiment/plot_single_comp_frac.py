@@ -330,10 +330,15 @@ def _plot_grid(
     n_samples: int,
     out_dir: Path,
     plot_type: str,
+    effect_threshold: float = 0.05,
 ) -> None:
     """3x2 grid version of the single-component ablation plots.
 
     plot_type: "attn" (raw attention), "diff" (ablated - baseline), "frac" (fractional change).
+
+    For "attn": components whose max |mean(ablated) - mean(baseline)| over offsets exceeds
+    effect_threshold are highlighted in tab10 colors; the rest are drawn as a faded gray
+    bundle. The baseline is drawn last so it's always visible on top.
     """
     offsets = list(range(max_offset_show + 1))
     cmap = plt.get_cmap("tab10")
@@ -356,26 +361,58 @@ def _plot_grid(
         all_axes_list.append(ax)
 
         if plot_type == "attn":
-            # Baseline
-            bl_means = [float(np.mean(baseline_accum[h][o])) for o in offsets]
-            bl_stds = [float(np.std(baseline_accum[h][o])) for o in offsets]
-            bl_means_arr = np.array(bl_means)
-            bl_stds_arr = np.array(bl_stds)
-            ax.plot(offsets, bl_means_arr, color="black", linewidth=2, label="Baseline")
-            ax.fill_between(
-                offsets,
-                bl_means_arr - bl_stds_arr,
-                bl_means_arr + bl_stds_arr,
-                alpha=0.15,
-                color="gray",
-            )
-            # Ablated components
-            for ci_idx, comp_idx in enumerate(component_indices):
+            bl_means = np.array([float(np.mean(baseline_accum[h][o])) for o in offsets])
+            bl_stds = np.array([float(np.std(baseline_accum[h][o])) for o in offsets])
+
+            comp_means_list: list[np.ndarray] = []
+            comp_stds_list: list[np.ndarray] = []
+            max_devs: list[float] = []
+            for ci_idx in range(len(component_indices)):
                 means = np.array([float(np.mean(comp_accums[ci_idx][h][o])) for o in offsets])
                 stds = np.array([float(np.std(comp_accums[ci_idx][h][o])) for o in offsets])
+                comp_means_list.append(means)
+                comp_stds_list.append(stds)
+                max_devs.append(float(np.max(np.abs(means - bl_means))))
+
+            impactful = sorted(
+                [i for i, d in enumerate(max_devs) if d > effect_threshold],
+                key=lambda i: max_devs[i],
+            )
+            impactful_set = set(impactful)
+
+            # Faded gray bundle: components whose ablation barely moves attention
+            # (no band — overlapping bands were the original clutter problem)
+            for ci_idx in range(len(component_indices)):
+                if ci_idx in impactful_set:
+                    continue
+                ax.plot(
+                    offsets,
+                    comp_means_list[ci_idx],
+                    color="0.7",
+                    linewidth=0.6,
+                    alpha=0.5,
+                )
+
+            # Highlighted impactful components, largest deviation drawn last
+            for ci_idx in impactful:
+                comp_idx = component_indices[ci_idx]
                 color = cmap(ci_idx % 10)
-                ax.plot(offsets, means, color=color, linewidth=1, label=f"C{comp_idx}")
-                ax.fill_between(offsets, means - stds, means + stds, alpha=0.1, color=color)
+                means = comp_means_list[ci_idx]
+                stds = comp_stds_list[ci_idx]
+                ax.fill_between(offsets, means - stds, means + stds, alpha=0.15, color=color)
+                ax.plot(
+                    offsets,
+                    means,
+                    color=color,
+                    linewidth=1.4,
+                    label=f"C{comp_idx}",
+                )
+
+            # Baseline drawn last so it sits on top of the bundle
+            ax.fill_between(
+                offsets, bl_means - bl_stds, bl_means + bl_stds, alpha=0.15, color="gray"
+            )
+            ax.plot(offsets, bl_means, color="black", linewidth=2, label="Baseline")
 
         elif plot_type == "diff":
             for ci_idx, comp_idx in enumerate(component_indices):
@@ -437,7 +474,25 @@ def _plot_grid(
         ax.set_ylim(ymin, ymax)
 
     # Legend in first subplot
-    axes[0, 0].legend(fontsize=7, loc="upper right", ncol=2)
+    if plot_type == "attn":
+        # Impactful components may differ across heads, so collect across subplots
+        seen: dict[str, object] = {}
+        for ax in all_axes_list:
+            handles, labels = ax.get_legend_handles_labels()
+            for handle, label in zip(handles, labels, strict=True):
+                if label not in seen:
+                    seen[label] = handle
+        ordered = ["Baseline"] + sorted(k for k in seen if k != "Baseline")
+        ordered = [k for k in ordered if k in seen]
+        axes[0, 0].legend(
+            [seen[k] for k in ordered],
+            ordered,
+            fontsize=7,
+            loc="upper right",
+            ncol=2,
+        )
+    else:
+        axes[0, 0].legend(fontsize=7, loc="upper right", ncol=2)
 
     fig.tight_layout(h_pad=2.0)
     path = (
@@ -457,6 +512,7 @@ def plot_single_comp_frac(
     n_samples: int = 256,
     max_offset_show: int = 20,
     seed: int = 42,
+    effect_threshold: float = 0.02,
 ) -> None:
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -527,7 +583,7 @@ def plot_single_comp_frac(
     _plot_diff(*plot_args_q)
     _plot_frac(*plot_args_q)
     for pt in ("attn", "diff", "frac"):
-        _plot_grid(*plot_args_q, plot_type=pt)
+        _plot_grid(*plot_args_q, plot_type=pt, effect_threshold=effect_threshold)
 
     # K components
     logger.section(f"K component ablations (top {top_n}, k_offset={k_offset})")
@@ -560,7 +616,7 @@ def plot_single_comp_frac(
     _plot_diff(*plot_args_k)
     _plot_frac(*plot_args_k)
     for pt in ("attn", "diff", "frac"):
-        _plot_grid(*plot_args_k, plot_type=pt)
+        _plot_grid(*plot_args_k, plot_type=pt, effect_threshold=effect_threshold)
 
 
 if __name__ == "__main__":
