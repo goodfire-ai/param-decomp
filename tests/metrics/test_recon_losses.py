@@ -7,7 +7,13 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from spd.configs import PGDConfig
+from spd.configs import (
+    PersistentPGDReconLossConfig,
+    PGDConfig,
+    ScheduleConfig,
+    SignPGDConfig,
+    SingleSourceScope,
+)
 from spd.metrics import ci_masked_recon_loss, pgd_recon_loss, stochastic_recon_loss
 from spd.metrics.hidden_acts_recon_loss import (
     CIHiddenActsReconLoss,
@@ -18,7 +24,7 @@ from spd.metrics.ppgd_eval_losses import PPGDReconEval
 from spd.models.batch_and_loss_fns import recon_loss_mse
 from spd.models.component_model import CIOutputs, ComponentModel
 from spd.models.components import make_mask_infos
-from spd.persistent_pgd import PPGDSources, get_ppgd_mask_infos
+from spd.persistent_pgd import PersistentPGDState, PPGDSources, get_ppgd_mask_infos
 from tests.metrics.fixtures import (
     OneLayerLinearModel,
     TwoLayerLinearModel,
@@ -237,12 +243,24 @@ def test_ppgd_recon_eval_metric_keys() -> None:
     batch = torch.randn(2, 2)
     target_out = model.target_model(batch)
     ci = {"fc1": torch.ones(2, 1), "fc2": torch.ones(2, 1)}
-    sources: PPGDSources = {k: torch.zeros(1, v.shape[-1]) for k, v in ci.items()}
+
+    ppgd_cfg = PersistentPGDReconLossConfig(
+        optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+        scope=SingleSourceScope(),
+    )
+    ppgd_state = PersistentPGDState(
+        module_to_c=model.module_to_c,
+        batch_dims=batch.shape[:1],
+        device="cpu",
+        use_delta_component=False,
+        cfg=ppgd_cfg,
+        reconstruction_loss=recon_loss_mse,
+    )
 
     metric = PPGDReconEval(
         model=model,
         device="cpu",
-        effective_sources=sources,
+        ppgd_state=ppgd_state,
         use_delta_component=False,
         reconstruction_loss=recon_loss_mse,
         metric_name="my_ppgd",

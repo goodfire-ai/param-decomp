@@ -81,7 +81,13 @@ def _compute_attn_patterns(
     B, S, D = q.shape
     head_dim = D // n_heads
     q = q.view(B, S, n_heads, head_dim).transpose(1, 2)
-    k = k.view(B, S, n_heads, head_dim).transpose(1, 2)
+    n_kv_heads = k.shape[-1] // head_dim
+    assert n_heads % n_kv_heads == 0, (
+        f"n_heads ({n_heads}) must be a multiple of n_kv_heads ({n_kv_heads})"
+    )
+    k = k.view(B, S, n_kv_heads, head_dim).transpose(1, 2)
+    if n_kv_heads != n_heads:
+        k = k.repeat_interleave(n_heads // n_kv_heads, dim=1)
 
     if attn_module is not None:
         position_ids = torch.arange(S, device=q.device).unsqueeze(0)

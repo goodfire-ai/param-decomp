@@ -9,7 +9,7 @@ from spd.metrics.base import Metric
 from spd.metrics.hidden_acts_recon_loss import calc_hidden_acts_mse, compute_per_module_metrics
 from spd.models.batch_and_loss_fns import ReconstructionLoss
 from spd.models.component_model import CIOutputs, ComponentModel
-from spd.persistent_pgd import PPGDSources, get_ppgd_mask_infos
+from spd.persistent_pgd import PersistentPGDState, get_ppgd_mask_infos
 from spd.utils.distributed_utils import all_reduce
 
 
@@ -26,7 +26,7 @@ class PPGDReconEval(Metric):
         self,
         model: ComponentModel,
         device: str,
-        effective_sources: PPGDSources,
+        ppgd_state: PersistentPGDState,
         use_delta_component: bool,
         reconstruction_loss: ReconstructionLoss,
         metric_name: str,
@@ -35,7 +35,7 @@ class PPGDReconEval(Metric):
         self.use_delta_component = use_delta_component
         self.reconstruction_loss = reconstruction_loss
         self.device = device
-        self._effective_sources = effective_sources
+        self._ppgd_state = ppgd_state
         self._metric_name = metric_name
 
         self._module_sum_mse: dict[str, Tensor] = {}
@@ -60,7 +60,7 @@ class PPGDReconEval(Metric):
         mask_infos = get_ppgd_mask_infos(
             ci=ci.lower_leaky,
             weight_deltas=weight_deltas if self.use_delta_component else None,
-            ppgd_sources=self._effective_sources,
+            ppgd_sources=self._ppgd_state.get_effective_sources(),
             routing_masks="all",
             batch_dims=batch_dims,
         )

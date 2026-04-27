@@ -291,7 +291,7 @@ def init_metric(
             metric = PPGDReconEval(
                 model=model,
                 device=device,
-                effective_sources=matching[0].get_effective_sources(),
+                ppgd_state=matching[0],
                 use_delta_component=run_config.use_delta_component,
                 reconstruction_loss=reconstruction_loss,
                 metric_name=cfg.classname,
@@ -306,7 +306,7 @@ def init_metric(
             metric = PPGDReconEval(
                 model=model,
                 device=device,
-                effective_sources=matching[0].get_effective_sources(),
+                ppgd_state=matching[0],
                 use_delta_component=run_config.use_delta_component,
                 reconstruction_loss=reconstruction_loss,
                 metric_name=cfg.classname,
