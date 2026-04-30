@@ -22,6 +22,7 @@ import fire
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from matplotlib.colors import LinearSegmentedColormap
 from numpy.typing import NDArray
 
 from spd.harvest.repo import HarvestRepo
@@ -33,6 +34,8 @@ from spd.utils.wandb_utils import parse_wandb_run_path
 
 SCRIPT_DIR = Path(__file__).parent
 MIN_MEAN_CI = 0.001
+
+BURNT_ORANGE_CMAP = LinearSegmentedColormap.from_list("burnt_orange", ["white", "#BF5700"])
 
 
 def _get_alive_indices(summary: dict[str, ComponentSummary], module_path: str) -> list[int]:
@@ -122,13 +125,13 @@ def _plot_heatmap(
     layer_idx: int,
     run_id: str,
     metric_name: str,
-    cmap: str,
+    cmap: str | LinearSegmentedColormap,
     vmin: float | None,
     vmax: float | None,
     out_dir: Path,
 ) -> None:
     n_v, n_k = data.shape
-    fig, ax = plt.subplots(figsize=(max(8, n_k * 0.25), max(6, n_v * 0.25)))
+    fig, ax = plt.subplots(figsize=(max(8, n_k * 0.25), max(4, n_v * 0.18)))
 
     im = ax.imshow(data, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
     fig.colorbar(im, ax=ax, shrink=0.8, pad=0.02, label=metric_name)
@@ -154,6 +157,43 @@ def _plot_heatmap(
     logger.info(f"Saved {path}")
 
 
+def _plot_pkv_combined(
+    p_v_given_k: NDArray[np.floating],
+    p_k_given_v: NDArray[np.floating],
+    k_alive: list[int],
+    v_alive: list[int],
+    layer_idx: int,
+    out_dir: Path,
+) -> None:
+    """Side-by-side P(V|K) and P(K|V) heatmaps, sharing one row axis."""
+    n_v, n_k = p_v_given_k.shape
+    fig, (ax_left, ax_right) = plt.subplots(
+        1,
+        2,
+        figsize=(max(8, n_k * 0.25), max(4, n_v * 0.12)),
+        constrained_layout=True,
+    )
+
+    im = ax_left.imshow(p_v_given_k, aspect="auto", cmap=BURNT_ORANGE_CMAP, vmin=0, vmax=1)
+    ax_right.imshow(p_k_given_v, aspect="auto", cmap=BURNT_ORANGE_CMAP, vmin=0, vmax=1)
+
+    for ax, title in [(ax_left, r"$P(V_c \mid K_c)$"), (ax_right, r"$P(K_c \mid V_c)$")]:
+        ax.set_xticks(range(n_k))
+        ax.set_xticklabels([f"C{idx}" for idx in k_alive], fontsize=7, rotation=90)
+        ax.set_xlabel("k_proj component (sorted by CI)")
+        ax.set_yticks(range(n_v))
+        ax.set_yticklabels([f"C{idx}" for idx in v_alive], fontsize=7)
+        ax.set_ylabel("v_proj component (sorted by CI)")
+        ax.set_title(title, fontsize=12, fontweight="bold")
+
+    fig.colorbar(im, ax=[ax_left, ax_right], shrink=0.8, pad=0.02, label="probability")
+
+    path = out_dir / f"layer{layer_idx}.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Saved {path}")
+
+
 def _get_n_layers(summary: dict[str, ComponentSummary]) -> int:
     """Infer number of layers from summary keys like 'h.0.attn.k_proj'."""
     layer_indices = {
@@ -172,7 +212,8 @@ def plot_kv_coactivation(wandb_path: ModelPath) -> None:
     jaccard_dir = out_base / "jaccard"
     p_v_given_k_dir = out_base / "p_v_given_k"
     p_k_given_v_dir = out_base / "p_k_given_v"
-    for d in (raw_dir, phi_dir, jaccard_dir, p_v_given_k_dir, p_k_given_v_dir):
+    p_kv_combined_dir = out_base / "p_kv_combined"
+    for d in (raw_dir, phi_dir, jaccard_dir, p_v_given_k_dir, p_k_given_v_dir, p_kv_combined_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     repo = HarvestRepo.open_most_recent(run_id)
@@ -210,7 +251,7 @@ def plot_kv_coactivation(wandb_path: ModelPath) -> None:
             layer_idx,
             run_id,
             "CI co-occurrence",
-            "Purples",
+            BURNT_ORANGE_CMAP,
             0,
             None,
             raw_dir,
@@ -243,7 +284,7 @@ def plot_kv_coactivation(wandb_path: ModelPath) -> None:
             layer_idx,
             run_id,
             "Jaccard similarity",
-            "Purples",
+            BURNT_ORANGE_CMAP,
             0,
             None,
             jaccard_dir,
@@ -260,7 +301,7 @@ def plot_kv_coactivation(wandb_path: ModelPath) -> None:
             layer_idx,
             run_id,
             "P(V | K)",
-            "Purples",
+            BURNT_ORANGE_CMAP,
             0,
             None,
             p_v_given_k_dir,
@@ -277,10 +318,20 @@ def plot_kv_coactivation(wandb_path: ModelPath) -> None:
             layer_idx,
             run_id,
             "P(K | V)",
-            "Purples",
+            BURNT_ORANGE_CMAP,
             0,
             None,
             p_k_given_v_dir,
+        )
+
+        # Combined P(V | K) + P(K | V)
+        _plot_pkv_combined(
+            p_v_given_k,
+            p_k_given_v,
+            k_alive,
+            v_alive,
+            layer_idx,
+            p_kv_combined_dir,
         )
 
     logger.info(f"All plots saved to {out_base}")
