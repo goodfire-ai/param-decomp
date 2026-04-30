@@ -55,6 +55,18 @@ canvas { display: block; }
         <button id="select-all">Select all</button>
         <button id="select-none">Clear</button>
       </div>
+      <h2>CI Markers</h2>
+      <div style="font-size:12px;color:#555;margin-bottom:6px">
+        Orange ticks beside token labels show where the row's Q/K component has CI &gt; threshold.
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:4px">
+        <input type="checkbox" id="ci-toggle" checked>
+        Show CI markers
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px">
+        Threshold:
+        <input type="number" id="ci-threshold" value="0.01" min="0" max="1" step="0.001" style="width:80px">
+      </label>
       <h2>Pairs (q_c → k_c)</h2>
       <div class="pair-list" id="pair-list"></div>
     </div>
@@ -105,6 +117,9 @@ let manifest = null;
 let fileMap = {};      // filename -> File object
 let layerData = null;  // currently loaded layer data
 let selectedPairs = new Set();
+let ciShow = true;
+let ciThreshold = 0.01;
+const CI_TICK_COLOR = [255, 140, 0];  // orange
 
 // --- DOM refs ---
 const folderInput = document.getElementById('folder-input');
@@ -178,6 +193,14 @@ function initUI() {
   layerSelect.addEventListener('change', onLayerChange);
   document.getElementById('select-all').addEventListener('click', selectAll);
   document.getElementById('select-none').addEventListener('click', selectNone);
+
+  const ciToggle = document.getElementById('ci-toggle');
+  const ciThreshInput = document.getElementById('ci-threshold');
+  ciToggle.addEventListener('change', () => { ciShow = ciToggle.checked; render(); });
+  ciThreshInput.addEventListener('change', () => {
+    const v = parseFloat(ciThreshInput.value);
+    if (!isNaN(v)) { ciThreshold = v; render(); }
+  });
 
   onPromptChange();
 }
@@ -350,7 +373,7 @@ function measureTokenLabelWidth(ctx, tokens, fontSize) {
   return maxW;
 }
 
-function drawHeatmap(container, matrix, tokens, cmap, vmin, vmax, label) {
+function drawHeatmap(container, matrix, tokens, cmap, vmin, vmax, label, qCi, kCi) {
   const T = tokens.length;
   const cellPx = Math.max(4, Math.min(8, Math.floor(600 / T)));
   const gridW = T * cellPx;
@@ -363,8 +386,11 @@ function drawHeatmap(container, matrix, tokens, cmap, vmin, vmax, label) {
   const tmpCtx = tmpCanvas.getContext('2d');
   tmpCtx.font = `${fontSize * dpr}px monospace`;
   const maxLabelW = measureTokenLabelWidth(tmpCtx, tokens, fontSize * dpr) / dpr;
-  const yLabelMargin = maxLabelW + 4;
-  const xLabelMargin = Math.round(maxLabelW * 0.707) + 4;
+  const showCi = ciShow && (qCi || kCi);
+  const ciTickW = showCi ? Math.max(3, Math.floor(cellPx * 0.7)) : 0;
+  const ciGap = showCi ? 2 : 0;
+  const yLabelMargin = maxLabelW + 4 + ciTickW + ciGap;
+  const xLabelMargin = Math.round(maxLabelW * 0.707) + 4 + ciTickW + ciGap;
 
   const canvasW = yLabelMargin + gridW;
   const canvasH = gridH + xLabelMargin;
@@ -434,20 +460,37 @@ function drawHeatmap(container, matrix, tokens, cmap, vmin, vmax, label) {
   ctx.fillStyle = '#333';
   ctx.font = `${fontSize}px monospace`;
 
-  // Y-axis
+  // Y-axis labels (leave room for CI ticks if present)
+  const yLabelEnd = yLabelMargin - 3 - (showCi ? ciTickW + ciGap : 0);
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
   for (let q = 0; q < T; q++) {
     const y = q * cellPx + cellPx / 2;
-    ctx.fillText(tokens[q], yLabelMargin - 3, y);
+    ctx.fillText(tokens[q], yLabelEnd, y);
   }
 
-  // X-axis: rotated -45°
+  // CI tick column on Y axis (between labels and grid)
+  if (showCi && qCi) {
+    const tickX = yLabelMargin - ciTickW;
+    for (let q = 0; q < T; q++) {
+      const ci = qCi[q] ?? 0;
+      if (ci > ciThreshold) {
+        const intensity = Math.min(1, ci / 0.5);
+        const alpha = 0.3 + 0.7 * intensity;
+        ctx.fillStyle = `rgba(${CI_TICK_COLOR[0]},${CI_TICK_COLOR[1]},${CI_TICK_COLOR[2]},${alpha})`;
+        ctx.fillRect(tickX, q * cellPx + 1, ciTickW - 1, cellPx - 2);
+      }
+    }
+    ctx.fillStyle = '#333';
+  }
+
+  // X-axis: rotated -45° (labels offset to leave room for CI ticks)
+  const xLabelStart = gridH + 3 + (showCi ? ciTickW + ciGap : 0);
   ctx.textAlign = 'right';
   ctx.textBaseline = 'top';
   for (let k = 0; k < T; k++) {
     const x = yLabelMargin + k * cellPx + cellPx / 2;
-    const y = gridH + 3;
+    const y = xLabelStart;
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(-Math.PI / 4);
@@ -455,10 +498,25 @@ function drawHeatmap(container, matrix, tokens, cmap, vmin, vmax, label) {
     ctx.restore();
   }
 
+  // CI tick row on X axis (between grid and labels)
+  if (showCi && kCi) {
+    const tickY = gridH + 1;
+    for (let k = 0; k < T; k++) {
+      const ci = kCi[k] ?? 0;
+      if (ci > ciThreshold) {
+        const intensity = Math.min(1, ci / 0.5);
+        const alpha = 0.3 + 0.7 * intensity;
+        ctx.fillStyle = `rgba(${CI_TICK_COLOR[0]},${CI_TICK_COLOR[1]},${CI_TICK_COLOR[2]},${alpha})`;
+        ctx.fillRect(yLabelMargin + k * cellPx + 1, tickY, cellPx - 2, ciTickW - 1);
+      }
+    }
+    ctx.fillStyle = '#333';
+  }
+
   container.appendChild(wrapper);
 }
 
-function addRow(parent, title, matrices, tokens, cmap, vmin, vmax) {
+function addRow(parent, title, matrices, tokens, cmap, vmin, vmax, qCi, kCi) {
   const section = document.createElement('div');
   section.className = 'row-section';
 
@@ -468,9 +526,16 @@ function addRow(parent, title, matrices, tokens, cmap, vmin, vmax) {
 
   const row = document.createElement('div');
   row.className = 'heatmap-row';
-  matrices.forEach((mat, h) => drawHeatmap(row, mat, tokens, cmap, vmin, vmax, `H${h}`));
+  matrices.forEach((mat, h) =>
+    drawHeatmap(row, mat, tokens, cmap, vmin, vmax, `H${h}`, qCi, kCi)
+  );
   section.appendChild(row);
   parent.appendChild(section);
+}
+
+function getColumn(matrix, idx) {
+  if (!matrix) return null;
+  return matrix.map(row => row[idx]);
 }
 
 function render() {
@@ -506,7 +571,7 @@ function render() {
     addRow(heatmapsDiv, `Sum of ${pairs.length} pairs (softmax attention)`, attn, tokens, VIRIDIS, 0, 1);
     addRow(heatmapsDiv, `Sum of ${pairs.length} pairs (pre-softmax logits)`, logits, tokens, RDBU, -maxAbs, maxAbs);
 
-    // Individual pair rows
+    // Individual pair rows (with CI tick markers when CI data is available)
     for (const [qi, ki] of pairs) {
       const qOrig = ld.alive_q[qi];
       const kOrig = ld.alive_k[ki];
@@ -516,7 +581,14 @@ function render() {
         for (let q = 0; q < T; q++)
           for (let k = 0; k <= q; k++)
             sMaxAbs = Math.max(sMaxAbs, Math.abs(singleLogits[h][q][k]));
-      addRow(heatmapsDiv, `q.${qOrig} → k.${kOrig} (pre-softmax)`, singleLogits, tokens, RDBU, -sMaxAbs, sMaxAbs);
+      const qCiCol = getColumn(ld.q_ci, qi);
+      const kCiCol = getColumn(ld.k_ci, ki);
+      addRow(
+        heatmapsDiv,
+        `q.${qOrig} → k.${kOrig} (pre-softmax)`,
+        singleLogits, tokens, RDBU, -sMaxAbs, sMaxAbs,
+        qCiCol, kCiCol
+      );
     }
 
     // Compute max error if all pairs selected

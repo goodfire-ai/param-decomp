@@ -127,6 +127,15 @@ def _compute_layer_data(
     q_acts_alive = q_acts_all[:, q_alive].detach().cpu().numpy()  # (seq_len, n_q_alive)
     k_acts_alive = k_acts_all[:, k_alive].detach().cpu().numpy()  # (seq_len, n_k_alive)
 
+    # Per-token causal importance (lower-leaky branch) for the alive components.
+    # Reuses the same input cache, so no extra forward pass.
+    with torch.no_grad():
+        ci_outputs = model.calc_causal_importances(
+            pre_weight_acts=out.cache, sampling="continuous", detach_inputs=True
+        )
+    q_ci_alive = ci_outputs.lower_leaky[q_path][0][:, q_alive].detach().cpu().numpy()
+    k_ci_alive = ci_outputs.lower_leaky[k_path][0][:, k_alive].detach().cpu().numpy()
+
     q_component = model.components[q_path]
     k_component = model.components[k_path]
     assert isinstance(q_component, LinearComponents)
@@ -194,6 +203,8 @@ def _compute_layer_data(
         w_out = W[:, :, used_qi, :][:, :, :, used_ki]
         q_acts_alive = q_acts_alive[:, used_qi]
         k_acts_alive = k_acts_alive[:, used_ki]
+        q_ci_alive = q_ci_alive[:, used_qi]
+        k_ci_alive = k_ci_alive[:, used_ki]
     else:
         top_pairs = top_pairs_full
         w_out = W
@@ -208,6 +219,10 @@ def _compute_layer_data(
         "W": w_out.tolist(),
         "q_acts": q_acts_alive.tolist(),
         "k_acts": k_acts_alive.tolist(),
+        # CI values are in [0, 1]; quantize to ~3 decimal places to keep JSON small
+        # (file sizes for layer 2 can otherwise grow well past 60MB)
+        "q_ci": np.round(q_ci_alive, 3).tolist(),
+        "k_ci": np.round(k_ci_alive, 3).tolist(),
         "component_model_attn": component_attn.tolist(),
         "top_pairs": top_pairs,
     }
