@@ -37,7 +37,7 @@ from spd.utils.wandb_utils import parse_wandb_run_path
 
 SCRIPT_DIR = Path(__file__).parent
 MIN_MEAN_CI = 0.001
-DEFAULT_OFFSETS = tuple(range(17))
+DEFAULT_OFFSETS = tuple(range(33))
 
 
 def _get_alive_indices(
@@ -721,9 +721,6 @@ def _plot_pair_lines_combined(
             label=f"q.{q_alive[qi]} \u2192 k.{k_alive[ki]}",
         )
 
-    total_mean = W_mean.sum(axis=(1, 2))
-    ax_mean.plot(x, total_mean, color="black", linewidth=2)
-
     ax_mean.axhline(0, color="black", linewidth=0.5, linestyle="--", alpha=0.4)
     ax_mean.set_xlabel("Offset")
     ax_mean.set_ylabel("Standardized Static Interaction Strength")
@@ -731,17 +728,12 @@ def _plot_pair_lines_combined(
     ax_mean.set_xticks(x)
     ax_mean.set_xticklabels([str(v) if v % 2 == 0 else "" for v in x])
 
-    # Legend in dedicated cell (0, 1): reorder so "other" is last, add "sum" entry
+    # Legend in dedicated cell (0, 1): reorder so "other" is last
     handles, labels = ax_mean.get_legend_handles_labels()
     pair_entries = [(ha, la) for ha, la in zip(handles, labels, strict=True) if la != "Other"]
     other_entries = [(ha, la) for ha, la in zip(handles, labels, strict=True) if la == "Other"]
-    sum_handle = plt.Line2D([0], [0], color="black", linewidth=2)
-    ordered_handles = (
-        [ha for ha, _ in pair_entries] + [ha for ha, _ in other_entries] + [sum_handle]
-    )
-    ordered_labels = (
-        [la for _, la in pair_entries] + [la for _, la in other_entries] + ["Sum of All Pairs"]
-    )
+    ordered_handles = [ha for ha, _ in pair_entries] + [ha for ha, _ in other_entries]
+    ordered_labels = [la for _, la in pair_entries] + [la for _, la in other_entries]
     ax_legend.axis("off")
     ax_legend.legend(ordered_handles, ordered_labels, fontsize=11, loc="center left", frameon=False)
 
@@ -764,9 +756,6 @@ def _plot_pair_lines_combined(
                 markersize=3,
             )
 
-        total = W_h.sum(axis=(1, 2))
-        ax.plot(x, total, color="black", linewidth=2, label="sum (all pairs)")
-
         ax.axhline(0, color="black", linewidth=0.5, linestyle="--", alpha=0.4)
         ax.set_title(f"H{h}", fontsize=11, fontweight="bold")
         ax.set_xticks(x)
@@ -788,6 +777,8 @@ def _plot_pair_lines_combined(
     ymax = max(hi for _, hi in all_ylims)
     for ax in all_axes:
         ax.set_ylim(ymin, ymax)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
 
     lines_dir = out_dir / "lines_combined"
     lines_dir.mkdir(parents=True, exist_ok=True)
