@@ -13,7 +13,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import anthropic
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -202,7 +201,9 @@ def label_emoticon_examples(
             snippets.append(f'"{snippet}" ["{fire_tok}"→"{next_tok}"]')
         contexts.append(f"{i}: {'; '.join(snippets)}")
 
-    client = anthropic.Anthropic()  # pyright: ignore[reportAttributeAccessIssue]
+    import anthropic
+
+    client = anthropic.Anthropic()
     resp = client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=4096,
@@ -217,7 +218,7 @@ Return ONLY a JSON object mapping id to true/false.
             }
         ],
     )
-    text: str = resp.content[0].text
+    text: str = resp.content[0].text  # pyright: ignore[reportAttributeAccessIssue]
     labels = json.loads(text[text.index("{") : text.rindex("}") + 1])
     emo = [int(k) for k, v in labels.items() if v]
     non_emo = [int(k) for k, v in labels.items() if not v]

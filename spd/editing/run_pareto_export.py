@@ -188,7 +188,7 @@ for ax, idx, xlabel in [(ax_s, 0, "Surrounding KL"), (ax_g, 2, "Global KL")]:
         color=color,
         linewidth=2,
         markersize=7,
-        label="SPD analytical (sweep α)",
+        label="VPD analytical (sweep α)",
         zorder=5,
     )
     for a, x, y in zip(sa, spd_kl, spd_p, strict=True):
@@ -247,7 +247,6 @@ for ax, idx, xlabel in [(ax_s, 0, "Surrounding KL"), (ax_g, 2, "Global KL")]:
     ax.set_ylabel("P('o') at fire positions")
     ax.legend(fontsize=8)
 
-fig.suptitle("Pareto: SPD vs LoRA baseline", fontsize=13)
 fig.tight_layout()
 fig.savefig(OUT_DIR / "pareto.png", dpi=150, bbox_inches="tight")
 fig.savefig(OUT_DIR / "pareto.pdf", bbox_inches="tight")
@@ -273,7 +272,7 @@ ax_s.hist(
     color="#58a6ff",
     histtype="step",
     linewidth=1.5,
-    label=f"SPD α={best_alpha} (P('o')={np.mean(spd_p):.0%})",
+    label=f"VPD α={best_alpha} (P('o')={np.mean(spd_p):.0%})",
 )
 ax_s.hist(
     lora_kl_s,
@@ -291,7 +290,7 @@ ax_g.hist(
     color="#58a6ff",
     histtype="step",
     linewidth=1.5,
-    label=f"SPD α={best_alpha}",
+    label=f"VPD α={best_alpha}",
 )
 ax_g.hist(
     lora_kl_g,
