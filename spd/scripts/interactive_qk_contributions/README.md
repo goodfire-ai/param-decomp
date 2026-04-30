@@ -136,30 +136,31 @@ contribution(i, j, q, k) = (1/sqrt(d))  *  W_ij(delta)  *  a_i^Q(q)  *  a_j^K(k)
 
 ```bash
 python -m spd.scripts.interactive_qk_contributions.compute_data \
-    wandb:goodfire/spd/runs/<run_id> \
+    wandb:goodfire/spd/runs/<run_id> --layer 1 \
     --prompts_file path/to/prompts.json
 ```
 
+Or sample from the dataset:
+
+```bash
+python -m spd.scripts.interactive_qk_contributions.compute_data \
+    wandb:goodfire/spd/runs/<run_id> --layer 1 \
+    --dataset_samples 30 --seq_len 24
+```
+
 Options:
-- `--layers '[0,1,3]'` -- compute only specific layers (default: all)
-- `--min_density 0.001` -- firing density threshold for alive components (default: 0.001)
+- `--layer N` -- which layer to compute (single int, required)
+- `--min_density 0.001` -- firing density threshold for alive components
+- `--top_k N` -- keep only the top-N pairs by peak contribution and slice `alive_q`/`alive_k`/`W` to the components involved in those pairs (shrinks files for layers with many alive components)
+- `--output path/to/file.json` -- override output path (default: `out/<run_id>/prompts.json`)
 
-This produces one JSON file per (prompt, layer) combination in `out/<run_id>/`, plus a `manifest.json` index.
+### Step 2: View
 
-### Step 2: Open the Viewer
-
-Open `viewer.html` in a browser. Click "Load output folder" and select the `out/<run_id>/` directory. The viewer loads the manifest, then fetches individual JSON files on demand when you select a prompt/layer.
+Drop the JSON into the blog repo's `data/attention/` and reference it from `post.md` via a `` ```attention ``-fenced block. The renderer (`vpd-blog-replit/js/attention_heatmap.js`) loads the file and renders heatmaps with a prompt selector.
 
 ### Prompts
 
-Edit `handwritten_prompts.json` to add custom prompts. To sample from the training dataset instead:
-
-```bash
-python -m spd.scripts.plot_prompt_attention.sample_dataset_prompts \
-    wandb:goodfire/spd/runs/<run_id> --n_samples 20
-```
-
-Then pass the generated `dataset_prompts.json` as `--prompts_file`.
+Edit `handwritten_prompts.json` to add custom prompts. To sample from the training dataset instead, use `--dataset_samples N --seq_len T` directly.
 
 ## File Structure
 
@@ -167,29 +168,33 @@ Then pass the generated `dataset_prompts.json` as `--prompts_file`.
 interactive_qk_contributions/
     README.md                  # This file
     compute_data.py            # Precompute JSON data
-    viewer.html                # Interactive browser viewer
     handwritten_prompts.json   # Editable prompt list
-    out/<run_id>/              # Precomputed data
-        manifest.json          # Index of available (prompt, layer) files
-        prompt_0_layer_0.json  # Data for prompt 0, layer 0
-        prompt_0_layer_1.json  # etc.
+    out/<run_id>/prompts.json  # Default output path
 ```
 
 ### JSON Data Format
 
-Each `prompt_X_layer_Y.json` contains:
+```
+{
+  "prompts": [
+    {
+      "tokens": [...],          // [T]
+      "label": "...",
+      "layer_idx": 1,
+      "n_heads": 6, "head_dim": 128, "scale": 0.0884,
+      "alive_q": [...],         // [n_q_alive]
+      "alive_k": [...],         // [n_k_alive]
+      "W": [...],               // [n_heads, n_offsets, n_q_alive, n_k_alive]
+      "q_acts": [...],          // [T, n_q_alive]
+      "k_acts": [...],          // [T, n_k_alive]
+      "component_model_attn": [...],  // [n_heads, T, T]
+      "top_pairs": [[qi, ki, score], ...]
+    }
+  ]
+}
+```
 
-| Field | Shape | Description |
-|-------|-------|-------------|
-| `tokens` | `[T]` | Decoded token strings |
-| `W` | `[n_heads, n_offsets, n_q_alive, n_k_alive]` | Interaction strengths indexed by offset delta=0..T-1 (W[h][delta][qi][ki]) |
-| `q_acts` | `[T, n_q_alive]` | Q component activations at each position |
-| `k_acts` | `[T, n_k_alive]` | K component activations at each position |
-| `alive_q` | `[n_q_alive]` | Original component indices for alive Q components |
-| `alive_k` | `[n_k_alive]` | Original component indices for alive K components |
-| `component_model_attn` | `[n_heads, T, T]` | Alive-only model attention (softmax) |
-| `top_pairs` | `[[qi, ki, score], ...]` | Pairs ranked by peak contribution |
-| `scale` | scalar | `1/sqrt(head_dim)` |
+Each prompt entry is flat. `layer_idx` is repeated per prompt but identical across all prompts in a single file -- the file is single-layer.
 
 The viewer assembles heatmaps client-side (causal: only for `q >= k`):
 ```

@@ -1,17 +1,17 @@
 """Precompute QK component contribution data for the interactive viewer.
 
 Computes the W tensor (weight-only QK scores at all offsets), component activations,
-pair rankings, and ComponentModel attention patterns. Outputs a JSON blob that the
-standalone HTML viewer can load.
+pair rankings, and ComponentModel attention patterns for a single layer. Outputs
+a JSON file shaped {prompts: [{tokens, label, layer_idx, ...layer fields}]}.
 
 Usage:
     python -m spd.scripts.interactive_qk_contributions.compute_data \
-        wandb:goodfire/spd/runs/<run_id> \
+        wandb:goodfire/spd/runs/<run_id> --layer 1 \
         --prompts_file path/to/prompts.json
 
     python -m spd.scripts.interactive_qk_contributions.compute_data \
-        wandb:goodfire/spd/runs/<run_id> \
-        --dataset_samples 30 --seq_len 12
+        wandb:goodfire/spd/runs/<run_id> --layer 1 \
+        --dataset_samples 30 --seq_len_min 20 --seq_len_max 40
 """
 
 import json
@@ -103,16 +103,15 @@ def _compute_alive_only_attention(
     return attn_weights[0].float().cpu().numpy()  # (n_heads, seq_len, seq_len)
 
 
-def _compute_layer_data(
+def _compute_qk_tensors(
     model: ComponentModel,
     target_model: LlamaSimpleMLP,
     input_ids: torch.Tensor,
     layer_idx: int,
-    q_alive: list[int],
-    k_alive: list[int],
-    top_k: int | None = None,
+    q_idxs: list[int],
+    k_idxs: list[int],
 ) -> dict[str, object]:
-    """Compute W tensor, activations, and pair rankings for one layer."""
+    """Compute W (n_heads, seq, n_q, n_k), per-component activations, and alive-only attention."""
     q_path = f"h.{layer_idx}.attn.q_proj"
     k_path = f"h.{layer_idx}.attn.k_proj"
 
@@ -120,21 +119,16 @@ def _compute_layer_data(
         out = model(input_ids, cache_type="input")
 
     component_acts = model.get_all_component_acts(out.cache)
-    q_acts_all = component_acts[q_path][0].float()  # (seq_len, C_q)
-    k_acts_all = component_acts[k_path][0].float()  # (seq_len, C_k)
+    q_acts = component_acts[q_path][0].float()[:, q_idxs].detach().cpu().numpy()
+    k_acts = component_acts[k_path][0].float()[:, k_idxs].detach().cpu().numpy()
 
-    # Filter to alive components
-    q_acts_alive = q_acts_all[:, q_alive].detach().cpu().numpy()  # (seq_len, n_q_alive)
-    k_acts_alive = k_acts_all[:, k_alive].detach().cpu().numpy()  # (seq_len, n_k_alive)
-
-    # Per-token causal importance (lower-leaky branch) for the alive components.
-    # Reuses the same input cache, so no extra forward pass.
+    # Per-token causal importance (lower-leaky branch). Reuses the input cache.
     with torch.no_grad():
         ci_outputs = model.calc_causal_importances(
             pre_weight_acts=out.cache, sampling="continuous", detach_inputs=True
         )
-    q_ci_alive = ci_outputs.lower_leaky[q_path][0][:, q_alive].detach().cpu().numpy()
-    k_ci_alive = ci_outputs.lower_leaky[k_path][0][:, k_alive].detach().cpu().numpy()
+    q_ci = ci_outputs.lower_leaky[q_path][0][:, q_idxs].detach().cpu().numpy()
+    k_ci = ci_outputs.lower_leaky[k_path][0][:, k_idxs].detach().cpu().numpy()
 
     q_component = model.components[q_path]
     k_component = model.components[k_path]
@@ -148,11 +142,8 @@ def _compute_layer_data(
     g = n_q_heads // n_kv_heads
     scale = 1.0 / math.sqrt(head_dim)
 
-    # Reshape U vectors for alive components only
-    U_q_all = q_component.U.float()  # (C_q, d_out)
-    U_k_all = k_component.U.float()  # (C_k, d_out)
-    U_q = U_q_all[q_alive].reshape(len(q_alive), n_q_heads, head_dim)
-    U_k = U_k_all[k_alive].reshape(len(k_alive), n_kv_heads, head_dim)
+    U_q = q_component.U.float()[q_idxs].reshape(len(q_idxs), n_q_heads, head_dim)
+    U_k = k_component.U.float()[k_idxs].reshape(len(k_idxs), n_kv_heads, head_dim)
     U_k_expanded = U_k.repeat_interleave(g, dim=1)
 
     rotary_cos = block.attn.rotary_cos
@@ -163,15 +154,56 @@ def _compute_layer_data(
     seq_len = input_ids.shape[1]
     offsets = tuple(range(seq_len))
 
-    # Compute W at all offsets for each head
     W_all_heads = []
     for h in range(n_q_heads):
         A, B = compute_qk_rope_coefficients(U_q[:, h, :], U_k_expanded[:, h, :])
         W_h = evaluate_qk_at_offsets(A, B, rotary_cos, rotary_sin, offsets)
-        W_all_heads.append(W_h)  # (n_offsets, n_q_alive, n_k_alive)
+        W_all_heads.append(W_h)
 
-    # (n_q_heads, seq_len, n_q_alive, n_k_alive)
     W = torch.stack(W_all_heads).detach().cpu().numpy()
+
+    component_attn = _compute_alive_only_attention(
+        model, target_model, input_ids, layer_idx, q_idxs, k_idxs
+    )
+
+    return {
+        "W": W,
+        "q_acts": q_acts,
+        "k_acts": k_acts,
+        "q_ci": q_ci,
+        "k_ci": k_ci,
+        "component_attn": component_attn,
+        "n_heads": n_q_heads,
+        "head_dim": head_dim,
+        "scale": scale,
+    }
+
+
+def _compute_layer_data(
+    model: ComponentModel,
+    target_model: LlamaSimpleMLP,
+    input_ids: torch.Tensor,
+    layer_idx: int,
+    q_alive: list[int],
+    k_alive: list[int],
+    top_k: int | None = None,
+) -> dict[str, object]:
+    """Compute W tensor, activations, and pair rankings for one layer."""
+    tensors = _compute_qk_tensors(model, target_model, input_ids, layer_idx, q_alive, k_alive)
+    W = tensors["W"]
+    q_acts_alive = tensors["q_acts"]
+    k_acts_alive = tensors["k_acts"]
+    q_ci_alive = tensors["q_ci"]
+    k_ci_alive = tensors["k_ci"]
+    component_attn = tensors["component_attn"]
+    scale = tensors["scale"]
+    assert isinstance(W, np.ndarray)
+    assert isinstance(q_acts_alive, np.ndarray)
+    assert isinstance(k_acts_alive, np.ndarray)
+    assert isinstance(q_ci_alive, np.ndarray)
+    assert isinstance(k_ci_alive, np.ndarray)
+    assert isinstance(component_attn, np.ndarray)
+    assert isinstance(scale, float)
 
     # Rank pairs by peak absolute contribution across all heads and positions
     # Approximate: use W * max(|q_act|) * max(|k_act|) as proxy for peak contribution
@@ -185,11 +217,6 @@ def _compute_layer_data(
     for flat_idx in flat_order[:100]:
         qi, ki = divmod(int(flat_idx), len(k_alive))
         top_pairs_full.append([qi, ki, float(pair_scores[qi, ki])])
-
-    # Alive-only attention for validation
-    component_attn = _compute_alive_only_attention(
-        model, target_model, input_ids, layer_idx, q_alive, k_alive
-    )
 
     if top_k is not None:
         top_pairs_full = top_pairs_full[:top_k]
@@ -211,8 +238,8 @@ def _compute_layer_data(
 
     return {
         "layer_idx": layer_idx,
-        "n_heads": n_q_heads,
-        "head_dim": head_dim,
+        "n_heads": tensors["n_heads"],
+        "head_dim": tensors["head_dim"],
         "scale": scale,
         "alive_q": q_alive,
         "alive_k": k_alive,
@@ -230,9 +257,9 @@ def _compute_layer_data(
 
 def _make_label(prompt: str) -> str:
     text = prompt.strip().replace("\n", " ")
-    if len(text) <= 50:
+    if len(text) <= 200:
         return text
-    return text[:50].rstrip() + "\u2026"
+    return text[:200].rstrip() + "\u2026"
 
 
 def _samples_from_prompts_file(
@@ -255,10 +282,15 @@ def _samples_from_dataset(
     task_config: LMTaskConfig,
     tokenizer_name: str,
     n_samples: int,
-    seq_len: int,
+    seq_len_min: int,
+    seq_len_max: int,
     seed: int = 42,
 ) -> list[tuple[list[int], str]]:
-    """Sample random subsequences from the training dataset."""
+    """Sample random subsequences from the training dataset.
+
+    Each sample's length is drawn uniformly from [seq_len_min, seq_len_max].
+    """
+    assert seq_len_min <= seq_len_max
     dataset_config = DatasetConfig(
         name=task_config.dataset_name,
         hf_tokenizer_path=tokenizer_name,
@@ -282,6 +314,7 @@ def _samples_from_dataset(
         if len(samples) >= n_samples:
             break
         ids = batch[task_config.column_name][0].tolist()
+        seq_len = rng.randint(seq_len_min, seq_len_max)
         if len(ids) < seq_len:
             continue
         start = rng.randint(0, len(ids) - seq_len)
@@ -294,13 +327,14 @@ def _samples_from_dataset(
 
 def compute_data(
     wandb_path: ModelPath,
+    layer: int,
     prompts_file: str | None = None,
     dataset_samples: int | None = None,
-    seq_len: int = 12,
-    layers: list[int] | None = None,
+    seq_len_min: int = 12,
+    seq_len_max: int | None = None,
     min_density: float = MIN_DENSITY,
     top_k: int | None = None,
-    multiprompt: bool = False,
+    output: str | None = None,
     seed: int = 42,
 ) -> None:
     assert (prompts_file is None) != (dataset_samples is None), (
@@ -311,8 +345,8 @@ def compute_data(
     run_info = SPDRunInfo.from_path(wandb_path)
     config = run_info.config
 
-    out_dir = SCRIPT_DIR / "out" / run_id
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = Path(output) if output is not None else SCRIPT_DIR / "out" / run_id / "prompts.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     model = ComponentModel.from_run_info(run_info)
     model.eval()
@@ -330,100 +364,52 @@ def compute_data(
     task_config = config.task_config
     assert isinstance(task_config, LMTaskConfig)
 
-    # Harvest data for alive filtering
     repo = HarvestRepo.open_most_recent(run_id)
     assert repo is not None, f"No harvest data found for {run_id}"
     summary = repo.get_summary()
 
-    n_layers = len(target_model._h)
-    if layers is None:
-        layers = list(range(n_layers))
+    assert 0 <= layer < len(target_model._h), f"layer {layer} out of range"
 
-    # Build samples: list of (token_ids, label)
     if prompts_file is not None:
         samples = _samples_from_prompts_file(prompts_file, tokenizer, task_config.max_seq_len)
     else:
         assert dataset_samples is not None
         samples = _samples_from_dataset(
-            task_config, config.tokenizer_name, dataset_samples, seq_len, seed
+            task_config,
+            config.tokenizer_name,
+            dataset_samples,
+            seq_len_min,
+            seq_len_max if seq_len_max is not None else seq_len_min,
+            seed,
         )
 
-    logger.info(f"Loaded {len(samples)} samples, computing for layers {layers}")
-
-    manifest_entries: list[dict[str, object]] = []
-    multiprompt_buckets: dict[int, list[dict[str, object]]] = {}
+    logger.info(f"Loaded {len(samples)} samples, computing for layer {layer}")
 
     assert isinstance(tokenizer, PreTrainedTokenizerBase)
     app_tokenizer = AppTokenizer(tokenizer)
 
+    q_path = f"h.{layer}.attn.q_proj"
+    k_path = f"h.{layer}.attn.k_proj"
+    q_alive = _get_alive_indices(summary, q_path, min_density)
+    k_alive = _get_alive_indices(summary, k_path, min_density)
+    assert q_alive and k_alive, f"No alive components at layer {layer}"
+    logger.info(f"Layer {layer}: {len(q_alive)} q components, {len(k_alive)} k components")
+
+    prompts_out: list[dict[str, object]] = []
     for p_idx, (encoded, label) in enumerate(samples):
         input_ids = torch.tensor([encoded], device=device)
         tokens = app_tokenizer.get_spans(encoded)
 
-        for layer_idx in layers:
-            q_path = f"h.{layer_idx}.attn.q_proj"
-            k_path = f"h.{layer_idx}.attn.k_proj"
-
-            q_alive = _get_alive_indices(summary, q_path, min_density)
-            k_alive = _get_alive_indices(summary, k_path, min_density)
-            logger.info(
-                f"Prompt {p_idx}, Layer {layer_idx}: "
-                f"{len(q_alive)} q components, {len(k_alive)} k components"
-            )
-
-            if not q_alive or not k_alive:
-                logger.warning(f"Skipping layer {layer_idx}: no alive components")
-                continue
-
-            layer_data = _compute_layer_data(
-                model, target_model, input_ids, layer_idx, q_alive, k_alive, top_k
-            )
-            layer_data["tokens"] = tokens
-
-            if multiprompt:
-                layer_data["label"] = label
-                multiprompt_buckets.setdefault(layer_idx, []).append(layer_data)
-            else:
-                filename = f"prompt_{p_idx}_layer_{layer_idx}.json"
-                layer_path = out_dir / filename
-                with open(layer_path, "w") as f:
-                    json.dump(layer_data, f)
-
-                manifest_entries.append(
-                    {
-                        "prompt_idx": p_idx,
-                        "text": label,
-                        "n_tokens": len(tokens),
-                        "layer_idx": layer_idx,
-                        "n_q_alive": len(q_alive),
-                        "n_k_alive": len(k_alive),
-                        "file": filename,
-                    }
-                )
-
-                size_mb = layer_path.stat().st_size / 1024 / 1024
-                logger.info(f"  Saved {filename} ({size_mb:.1f} MB)")
-
+        layer_data = _compute_layer_data(
+            model, target_model, input_ids, layer, q_alive, k_alive, top_k
+        )
+        prompts_out.append({"tokens": tokens, "label": label, **layer_data})
         logger.info(f"[{p_idx + 1}/{len(samples)}] {len(tokens)} tokens: {label}")
 
-    for layer_idx, entries in multiprompt_buckets.items():
-        filename = f"layer_{layer_idx}.json"
-        layer_path = out_dir / filename
-        with open(layer_path, "w") as f:
-            json.dump({"prompts": entries}, f)
-        size_mb = layer_path.stat().st_size / 1024 / 1024
-        logger.info(f"Saved {filename} ({len(entries)} prompts, {size_mb:.1f} MB)")
-        manifest_entries.append(
-            {"layer_idx": layer_idx, "n_prompts": len(entries), "file": filename}
-        )
-
-    # Save manifest
-    manifest = {"run_id": run_id, "entries": manifest_entries}
-    manifest_path = out_dir / "manifest.json"
-    with open(manifest_path, "w") as f:
-        json.dump(manifest, f, indent=2)
-
-    logger.info(f"Saved manifest with {len(manifest_entries)} entries to {manifest_path}")
+    with open(out_path, "w") as f:
+        json.dump({"prompts": prompts_out}, f)
+    size_mb = out_path.stat().st_size / 1024 / 1024
+    logger.info(f"Saved {out_path} ({len(prompts_out)} prompts, {size_mb:.1f} MB)")
 
 
 if __name__ == "__main__":
