@@ -191,26 +191,25 @@ def _compute_layer_data(
     """Compute W tensor, activations, and pair rankings for one layer."""
     tensors = _compute_qk_tensors(model, target_model, input_ids, layer_idx, q_alive, k_alive)
     W = tensors["W"]
-    q_acts_alive = tensors["q_acts"]
-    k_acts_alive = tensors["k_acts"]
-    q_ci_alive = tensors["q_ci"]
-    k_ci_alive = tensors["k_ci"]
+    q_acts = tensors["q_acts"]
+    k_acts = tensors["k_acts"]
+    q_ci = tensors["q_ci"]
+    k_ci = tensors["k_ci"]
     component_attn = tensors["component_attn"]
     scale = tensors["scale"]
     assert isinstance(W, np.ndarray)
-    assert isinstance(q_acts_alive, np.ndarray)
-    assert isinstance(k_acts_alive, np.ndarray)
-    assert isinstance(q_ci_alive, np.ndarray)
-    assert isinstance(k_ci_alive, np.ndarray)
+    assert isinstance(q_acts, np.ndarray)
+    assert isinstance(k_acts, np.ndarray)
+    assert isinstance(q_ci, np.ndarray)
+    assert isinstance(k_ci, np.ndarray)
     assert isinstance(component_attn, np.ndarray)
     assert isinstance(scale, float)
 
     # Rank pairs by peak absolute contribution across all heads and positions
     # Approximate: use W * max(|q_act|) * max(|k_act|) as proxy for peak contribution
-    q_act_max = np.abs(q_acts_alive).max(axis=0)  # (n_q_alive,)
-    k_act_max = np.abs(k_acts_alive).max(axis=0)  # (n_k_alive,)
-    # Peak W across heads and offsets
-    W_peak = np.abs(W).max(axis=(0, 1))  # (n_q_alive, n_k_alive)
+    q_act_max = np.abs(q_acts).max(axis=0)
+    k_act_max = np.abs(k_acts).max(axis=0)
+    W_peak = np.abs(W).max(axis=(0, 1))
     pair_scores = scale * W_peak * q_act_max[:, None] * k_act_max[None, :]
     flat_order = np.argsort(pair_scores.ravel())[::-1]
     top_pairs_full = []
@@ -228,10 +227,10 @@ def _compute_layer_data(
         q_alive = [q_alive[i] for i in used_qi]
         k_alive = [k_alive[i] for i in used_ki]
         w_out = W[:, :, used_qi, :][:, :, :, used_ki]
-        q_acts_alive = q_acts_alive[:, used_qi]
-        k_acts_alive = k_acts_alive[:, used_ki]
-        q_ci_alive = q_ci_alive[:, used_qi]
-        k_ci_alive = k_ci_alive[:, used_ki]
+        q_acts = q_acts[:, used_qi]
+        k_acts = k_acts[:, used_ki]
+        q_ci = q_ci[:, used_qi]
+        k_ci = k_ci[:, used_ki]
     else:
         top_pairs = top_pairs_full
         w_out = W
@@ -244,12 +243,12 @@ def _compute_layer_data(
         "alive_q": q_alive,
         "alive_k": k_alive,
         "W": w_out.tolist(),
-        "q_acts": q_acts_alive.tolist(),
-        "k_acts": k_acts_alive.tolist(),
+        "q_acts": q_acts.tolist(),
+        "k_acts": k_acts.tolist(),
         # CI values are in [0, 1]; quantize to ~3 decimal places to keep JSON small
         # (file sizes for layer 2 can otherwise grow well past 60MB)
-        "q_ci": np.round(q_ci_alive, 3).tolist(),
-        "k_ci": np.round(k_ci_alive, 3).tolist(),
+        "q_ci": np.round(q_ci, 3).tolist(),
+        "k_ci": np.round(k_ci, 3).tolist(),
         "component_model_attn": component_attn.tolist(),
         "top_pairs": top_pairs,
     }

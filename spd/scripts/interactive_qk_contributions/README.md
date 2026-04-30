@@ -132,7 +132,12 @@ contribution(i, j, q, k) = (1/sqrt(d))  *  W_ij(delta)  *  a_i^Q(q)  *  a_j^K(k)
 
 ## Usage
 
-### Step 1: Precompute Data
+There are two precompute entrypoints, picked by who consumes the output:
+
+- **`compute_data.py`** — full alive×alive sweep + ranked `top_pairs`, for the local `viewer.html` research tool.
+- **`compute_pair_data.py`** — explicit `(q, k)` pairs from a YAML config, for the blog widget (`vpd-blog-replit/js/attention_qk_grid.js`).
+
+### `compute_data.py` — full sweep
 
 ```bash
 python -m spd.scripts.interactive_qk_contributions.compute_data \
@@ -150,26 +155,57 @@ python -m spd.scripts.interactive_qk_contributions.compute_data \
 
 Options:
 - `--layer N` -- which layer to compute (single int, required)
-- `--min_density 0.001` -- firing density threshold for alive components
+- `--min_density 0.001` -- firing density threshold for alive components (read from harvest)
 - `--top_k N` -- keep only the top-N pairs by peak contribution and slice `alive_q`/`alive_k`/`W` to the components involved in those pairs (shrinks files for layers with many alive components)
 - `--output path/to/file.json` -- override output path (default: `out/<run_id>/prompts.json`)
 
-### Step 2: View
+Open the resulting JSON in `viewer.html`.
 
-Drop the JSON into the blog repo's `data/attention/` and reference it from `post.md` via a `` ```attention ``-fenced block. The renderer (`vpd-blog-replit/js/attention_heatmap.js`) loads the file and renders heatmaps with a prompt selector.
+### `compute_pair_data.py` — explicit pairs
+
+```bash
+python -m spd.scripts.interactive_qk_contributions.compute_pair_data path/to/config.yaml
+```
+
+Config schema (`PairDataConfig`):
+```yaml
+wandb_path: wandb:goodfire/spd/runs/<run_id>
+layer: 1
+prompts:
+  - "..."
+pairs:
+  - [<q_idx>, <k_idx>]
+```
+
+Output goes to `out/<run_id>/pairs.json` by default; override with `--output path/to/file.json`. No harvest dependency, no ranking — `alive_q`/`alive_k` are derived from the unique component indices in `pairs`. The output shape matches `compute_data.py` minus `q_ci`/`k_ci`/`top_pairs` (the blog widget doesn't read them).
+
+### `build_targeted_prompts.py` — generate prompts from harvest examples
+
+```bash
+python -m spd.scripts.interactive_qk_contributions.build_targeted_prompts \
+    wandb:goodfire/spd/runs/<run_id> \
+    --components 'h.1.attn.q_proj:308,h.1.attn.k_proj:218'
+```
+
+Pulls reservoir-sampled activation examples for the listed components from harvest and decodes them into a `targeted_prompts.json` flat list. Pipe into `compute_data.py --prompts_file`.
 
 ### Prompts
 
-Edit `handwritten_prompts.json` to add custom prompts. To sample from the training dataset instead, use `--dataset_samples N --seq_len T` directly.
+Edit `handwritten_prompts.json` for curated prompts (consumed by `compute_data.py --prompts_file`). To sample from the training dataset instead, use `--dataset_samples N --seq_len T`. To target specific components, use `build_targeted_prompts.py`.
 
 ## File Structure
 
 ```
 interactive_qk_contributions/
-    README.md                  # This file
-    compute_data.py            # Precompute JSON data
-    handwritten_prompts.json   # Editable prompt list
-    out/<run_id>/prompts.json  # Default output path
+    README.md                       # This file
+    compute_data.py                 # Full sweep, output for viewer.html
+    compute_pair_data.py            # Explicit pairs, output for blog widget
+    build_targeted_prompts.py       # Harvest examples → prompts.json
+    viewer.html                     # Local research viewer (reads compute_data.py output)
+    handwritten_prompts.json        # Curated prompt list
+    targeted_prompts.json           # Output of build_targeted_prompts.py
+    out/<run_id>/prompts.json       # compute_data.py default output
+    out/<run_id>/pairs.json         # compute_pair_data.py default output
 ```
 
 ### JSON Data Format
@@ -182,13 +218,16 @@ interactive_qk_contributions/
       "label": "...",
       "layer_idx": 1,
       "n_heads": 6, "head_dim": 128, "scale": 0.0884,
-      "alive_q": [...],         // [n_q_alive]
-      "alive_k": [...],         // [n_k_alive]
-      "W": [...],               // [n_heads, n_offsets, n_q_alive, n_k_alive]
-      "q_acts": [...],          // [T, n_q_alive]
-      "k_acts": [...],          // [T, n_k_alive]
+      "alive_q": [...],         // [n_q]
+      "alive_k": [...],         // [n_k]
+      "W": [...],               // [n_heads, n_offsets, n_q, n_k]
+      "q_acts": [...],          // [T, n_q]
+      "k_acts": [...],          // [T, n_k]
+      "q_ci": [...],            // [T, n_q]   — compute_data.py only
+      "k_ci": [...],            // [T, n_k]   — compute_data.py only
       "component_model_attn": [...],  // [n_heads, T, T]
-      "top_pairs": [[qi, ki, score], ...]
+      "top_pairs": [[qi, ki, score], ...],   // compute_data.py only
+      "pairs": [[q_idx, k_idx], ...]         // compute_pair_data.py only (echoes config)
     }
   ]
 }
