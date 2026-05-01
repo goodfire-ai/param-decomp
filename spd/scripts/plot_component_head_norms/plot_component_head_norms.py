@@ -104,29 +104,34 @@ def _plot_heatmap(
     logger.info(f"Saved {path}")
 
 
-def _plot_qk_combined(
-    q_norms: NDArray[np.floating],
-    k_norms: NDArray[np.floating],
-    q_alive: list[int],
-    k_alive: list[int],
+def _plot_proj_pair_combined(
+    left_norms: NDArray[np.floating],
+    right_norms: NDArray[np.floating],
+    left_alive: list[int],
+    right_alive: list[int],
     n_heads: int,
     layer_idx: int,
     out_dir: Path,
+    left_proj_short: str,
+    right_proj_short: str,
+    left_title: str,
+    right_title: str,
+    pair_name: str,
 ) -> None:
-    max_rows = max(len(q_alive), len(k_alive))
-    fig, (ax_q, ax_k) = plt.subplots(
+    max_rows = max(len(left_alive), len(right_alive))
+    fig, (ax_left, ax_right) = plt.subplots(
         1,
         2,
         figsize=(max(5, n_heads * 0.6) * 2 + 1, max(4, max_rows * 0.18)),
         sharey=False,
     )
 
-    vmax = max(q_norms.max(), k_norms.max())
+    vmax = max(left_norms.max(), right_norms.max())
     im = None
 
     for ax, norms, alive, proj_short, subtitle in [
-        (ax_q, q_norms, q_alive, "q", r"$W_Q$"),
-        (ax_k, k_norms, k_alive, "k", r"$W_K$"),
+        (ax_left, left_norms, left_alive, left_proj_short, left_title),
+        (ax_right, right_norms, right_alive, right_proj_short, right_title),
     ]:
         im = ax.imshow(norms, aspect="auto", cmap="Purples", vmin=0, vmax=vmax)
 
@@ -136,14 +141,14 @@ def _plot_qk_combined(
 
         ax.set_yticks(range(len(alive)))
         ax.set_yticklabels([f"{proj_short}.{idx}" for idx in alive], fontsize=7)
-        if ax is ax_q:
-            ax.set_ylabel("Component ID (sorted by mean CI)")
+        if ax is ax_left:
+            ax.set_ylabel("Subcomponent ID (sorted by mean CI)")
         ax.set_title(subtitle, fontsize=11)
 
     fig.tight_layout(w_pad=4)
     assert im is not None
-    fig.colorbar(im, ax=[ax_q, ax_k], shrink=0.8, pad=0.01, label="Frobenius norm")
-    path = out_dir / f"layer{layer_idx}_qk_combined.png"
+    fig.colorbar(im, ax=[ax_left, ax_right], shrink=0.8, pad=0.01, label="Frobenius norm")
+    path = out_dir / f"layer{layer_idx}_{pair_name}_combined.png"
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info(f"Saved {path}")
@@ -249,7 +254,37 @@ def plot_component_head_norms(wandb_path: ModelPath) -> None:
 
             q_norms, q_alive, n_heads = layer_data["q_proj"]
             k_norms, k_alive, _ = layer_data["k_proj"]
-            _plot_qk_combined(q_norms, k_norms, q_alive, k_alive, n_heads, layer_idx, out_dir)
+            _plot_proj_pair_combined(
+                q_norms,
+                k_norms,
+                q_alive,
+                k_alive,
+                n_heads,
+                layer_idx,
+                out_dir,
+                left_proj_short="q",
+                right_proj_short="k",
+                left_title=r"$W_Q$",
+                right_title=r"$W_K$",
+                pair_name="qk",
+            )
+
+            v_norms, v_alive, n_heads = layer_data["v_proj"]
+            o_norms, o_alive, _ = layer_data["o_proj"]
+            _plot_proj_pair_combined(
+                v_norms,
+                o_norms,
+                v_alive,
+                o_alive,
+                n_heads,
+                layer_idx,
+                out_dir,
+                left_proj_short="v",
+                right_proj_short="o",
+                left_title=r"$W_V$",
+                right_title=r"$W_O$",
+                pair_name="vo",
+            )
 
             v_norms, v_alive, _ = layer_data["v_proj"]
             o_norms, o_alive, _ = layer_data["o_proj"]
