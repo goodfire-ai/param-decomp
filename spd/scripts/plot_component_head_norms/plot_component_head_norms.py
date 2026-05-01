@@ -154,51 +154,6 @@ def _plot_proj_pair_combined(
     logger.info(f"Saved {path}")
 
 
-def _plot_vo_combined(
-    v_norms: NDArray[np.floating],
-    o_norms: NDArray[np.floating],
-    v_alive: list[int],
-    o_alive: list[int],
-    n_heads: int,
-    layer_idx: int,
-    out_dir: Path,
-) -> None:
-    max_rows = max(len(v_alive), len(o_alive))
-    fig, (ax_v, ax_o) = plt.subplots(
-        1,
-        2,
-        figsize=(max(5, n_heads * 0.6) * 2 + 1, max(4, max_rows * 0.18)),
-        sharey=False,
-    )
-
-    vmax = max(v_norms.max(), o_norms.max())
-    im = None
-
-    for ax, norms, alive, proj_short, subtitle in [
-        (ax_v, v_norms, v_alive, "v", r"$W_V$"),
-        (ax_o, o_norms, o_alive, "o", r"$W_O$"),
-    ]:
-        im = ax.imshow(norms, aspect="auto", cmap="Purples", vmin=0, vmax=vmax)
-
-        ax.set_xticks(range(n_heads))
-        ax.set_xticklabels([f"H{h}" for h in range(n_heads)], fontsize=8)
-        ax.set_xlabel("Head")
-
-        ax.set_yticks(range(len(alive)))
-        ax.set_yticklabels([f"{proj_short}.{idx}" for idx in alive], fontsize=7)
-        if ax is ax_v:
-            ax.set_ylabel("Component ID (sorted by mean CI)")
-        ax.set_title(subtitle, fontsize=11)
-
-    fig.tight_layout(w_pad=4)
-    assert im is not None
-    fig.colorbar(im, ax=[ax_v, ax_o], shrink=0.8, pad=0.01, label="Frobenius norm")
-    path = out_dir / f"layer{layer_idx}_vo_combined.png"
-    fig.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    logger.info(f"Saved {path}")
-
-
 def plot_component_head_norms(wandb_path: ModelPath) -> None:
     _entity, _project, run_id = parse_wandb_run_path(str(wandb_path))
     run_info = SPDRunInfo.from_path(wandb_path)
@@ -285,10 +240,6 @@ def plot_component_head_norms(wandb_path: ModelPath) -> None:
                 right_title=r"$W_O$",
                 pair_name="vo",
             )
-
-            v_norms, v_alive, _ = layer_data["v_proj"]
-            o_norms, o_alive, _ = layer_data["o_proj"]
-            _plot_vo_combined(v_norms, o_norms, v_alive, o_alive, n_heads, layer_idx, out_dir)
 
     logger.info(f"All plots saved to {out_dir}")
 
