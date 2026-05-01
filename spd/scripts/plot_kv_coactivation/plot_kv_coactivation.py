@@ -180,10 +180,10 @@ def _plot_pkv_combined(
     for ax, title in [(ax_left, r"$P(V_c \mid K_c)$"), (ax_right, r"$P(K_c \mid V_c)$")]:
         ax.set_xticks(range(n_k))
         ax.set_xticklabels([f"C{idx}" for idx in k_alive], fontsize=7, rotation=90)
-        ax.set_xlabel("k_proj component (sorted by CI)")
+        ax.set_xlabel("k_proj subcomponent (sorted by CI)")
         ax.set_yticks(range(n_v))
         ax.set_yticklabels([f"C{idx}" for idx in v_alive], fontsize=7)
-        ax.set_ylabel("v_proj component (sorted by CI)")
+        ax.set_ylabel("v_proj subcomponent (sorted by CI)")
         ax.set_title(title, fontsize=12, fontweight="bold")
 
     fig.colorbar(im, ax=[ax_left, ax_right], shrink=0.8, pad=0.02, label="probability")
