@@ -5,8 +5,8 @@ Multi-GPU pipeline for computing component-to-component attribution strengths ag
 ## Usage (SLURM)
 
 ```bash
-param-decomp-attributions <wandb_path> --n_batches 1000 --n_gpus 8
-param-decomp-attributions <wandb_path> --n_gpus 24  # whole dataset
+pd-attributions <wandb_path> --n_batches 1000 --n_gpus 8
+pd-attributions <wandb_path> --n_gpus 24  # whole dataset
 ```
 
 The command:
@@ -90,7 +90,7 @@ Orchestrates the pipeline: loads model, builds gradient connectivity, runs batch
 - `scripts/run_worker.py` — worker entrypoint (single GPU)
 - `scripts/run_merge.py` — merge entrypoint (CPU only, needs ~200G RAM)
 - `scripts/run_slurm.py` — SLURM launcher (array + merge jobs)
-- `scripts/run_slurm_cli.py` — CLI wrapper for `param-decomp-attributions`
+- `scripts/run_slurm_cli.py` — CLI wrapper for `pd-attributions`
 
 ### Config (`config.py`)
 

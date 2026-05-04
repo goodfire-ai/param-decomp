@@ -1,4 +1,4 @@
-spd/scripts/sweep_params.yaml
+param_decomp/scripts/sweep_params.yaml
 docs/coverage/**
 notebooks/**
 scratch/

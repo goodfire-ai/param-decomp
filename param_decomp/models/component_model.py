@@ -67,7 +67,7 @@ def _validate_checkpoint_ci_config_compatibility(
 
 @dataclass
 class ParamDecompRunInfo(RunInfo[Config]):
-    """Run info from training a ComponentModel (i.e. from an SPD run)."""
+    """Run info from training a ComponentModel (i.e. from a PD run)."""
 
     config_class = Config
     config_filename = "final_config.yaml"
@@ -89,7 +89,7 @@ class CIOutputs:
 
 
 class ComponentModel(LoadableModule):
-    """Wrapper around an arbitrary pytorch model for running SPD.
+    """Wrapper around an arbitrary pytorch model for running PD.
 
     The underlying *base model* can be any subclass of `nn.Module` (e.g.
     `LlamaForCausalLM`, `AutoModelForCausalLM`) as long as its sub-module names

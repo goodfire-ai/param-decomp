@@ -1,4 +1,4 @@
-"""Unified FastAPI server for the SPD app.
+"""Unified FastAPI server for the PD app.
 
 Merges the main app backend with the prompt attributions server.
 Supports multiple runs, on-demand attribution graph computation,
@@ -91,7 +91,7 @@ async def lifespan(app: FastAPI):  # pyright: ignore[reportUnusedParameter]
     manager.close()
 
 
-app = FastAPI(title="SPD App API", lifespan=lifespan, debug=True)
+app = FastAPI(title="PD App API", lifespan=lifespan, debug=True)
 
 # Middleware
 app.add_middleware(

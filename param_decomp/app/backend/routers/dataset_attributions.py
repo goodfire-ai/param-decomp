@@ -47,7 +47,7 @@ class AllMetricAttributions(BaseModel):
 router = APIRouter(prefix="/api/dataset_attributions", tags=["dataset_attributions"])
 
 NOT_AVAILABLE_MSG = (
-    "Dataset attributions not available. Run: param-decomp-attributions <wandb_path> --n_batches N"
+    "Dataset attributions not available. Run: pd-attributions <wandb_path> --n_batches N"
 )
 
 

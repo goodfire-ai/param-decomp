@@ -1,6 +1,6 @@
 # Autointerp Module
 
-LLM-based automated interpretation of SPD components. Consumes pre-harvested data from `param_decomp/harvest/` (see `param_decomp/harvest/CLAUDE.md`).
+LLM-based automated interpretation of PD components. Consumes pre-harvested data from `param_decomp/harvest/` (see `param_decomp/harvest/CLAUDE.md`).
 
 ## Usage
 
@@ -12,8 +12,8 @@ python -m param_decomp.autointerp.scripts.run_interpret <wandb_path> --config_pa
 python -m param_decomp.autointerp.scripts.run_interpret <wandb_path> --config_json '{"model": "google/gemini-3-flash-preview", "reasoning_effort": null}'
 
 # Or via SLURM
-param-decomp-autointerp <wandb_path>
-param-decomp-autointerp <wandb_path> --model google/gemini-3-flash-preview --reasoning_effort medium
+pd-autointerp <wandb_path>
+pd-autointerp <wandb_path> --model google/gemini-3-flash-preview --reasoning_effort medium
 ```
 
 Requires the API key for your chosen provider (e.g. `OPENROUTER_API_KEY`, or `GEMINI_API_KEY` when `llm.type` is `google_ai` — key from [Google AI Studio](https://aistudio.google.com/app/apikey)).

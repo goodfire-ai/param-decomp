@@ -1,4 +1,4 @@
-"""Run SPD on a model."""
+"""Run PD on a model."""
 
 import gc
 import os
@@ -441,7 +441,7 @@ def run_experiment(
     target_model_train_config: BaseConfig | None = None,
     tied_weights: list[tuple[str, str]] | None = None,
 ) -> None:
-    """Run a full SPD experiment: setup, optimize, cleanup.
+    """Run a full PD experiment: setup, optimize, cleanup.
 
     All ranks call this function. Only the main process does wandb/logging setup.
     """

@@ -274,7 +274,7 @@ def _build_legacy_examples(
 def _fmt_ann(activations: dict[str, float]) -> str:
     """Format activation annotations for a single firing token.
 
-    For SPD: (ci:0.82, act:-0.05)
+    For PD: (ci:0.82, act:-0.05)
     For other methods: just the activation value, e.g. (act:3.21)
     """
     parts: list[str] = []

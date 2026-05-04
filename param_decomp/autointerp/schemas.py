@@ -11,7 +11,7 @@ AUTOINTERP_DATA_DIR = PARAM_DECOMP_OUT_DIR / "autointerp"
 
 
 def get_autointerp_dir(decomposition_id: str) -> Path:
-    """Get the top-level autointerp directory for an SPD run."""
+    """Get the top-level autointerp directory for a PD run."""
     return AUTOINTERP_DATA_DIR / decomposition_id
 
 
@@ -20,12 +20,12 @@ def get_autointerp_subrun_dir(decomposition_id: str, autointerp_run_id: str) -> 
     return get_autointerp_dir(decomposition_id) / autointerp_run_id
 
 
-DecompositionMethod = Literal["spd", "clt", "transcoder"]
+DecompositionMethod = Literal["param_decomp", "clt", "transcoder"]
 
 DECOMPOSITION_DESCRIPTIONS: dict[DecompositionMethod, str] = {
-    "spd": (
-        "Each component is a rank-1 parameter vector learned by Stochastic Parameter "
-        "Decomposition (SPD). A weight matrix W is decomposed as a sum of outer products "
+    "param_decomp": (
+        "Each component is a rank-1 parameter vector learned by PD. "
+        "A weight matrix W is decomposed as a sum of outer products "
         "W ≈ Σ u_i v_i^T. Each component has a causal importance (CI) value predicted per "
         "token position: CI near 1 means the component is essential at that position, CI near "
         "0 means it can be ablated without affecting output. A component 'fires' when its CI "

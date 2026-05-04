@@ -300,9 +300,9 @@ def main(
 
 
 def cli():
-    """CLI for param-decomp-clustering command."""
+    """CLI for pd-clustering command."""
     parser = argparse.ArgumentParser(
-        prog="param-decomp-clustering",
+        prog="pd-clustering",
         description="Submit clustering runs to SLURM. Arguments specified here will override the "
         "corresponding value in the config file.",
     )

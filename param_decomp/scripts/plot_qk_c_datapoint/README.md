@@ -12,7 +12,7 @@ This script does something different: it uses the **actual component activations
 
 ### The Decomposition
 
-SPD decomposes each linear projection `W` as `V @ U`, where:
+PD decomposes each linear projection `W` as `V @ U`, where:
 - `V` is `(d_in, C)` — the input-side matrix
 - `U` is `(C, d_out)` — the output-side matrix
 - `C` is the number of components
@@ -149,7 +149,7 @@ python -m param_decomp.scripts.plot_qk_c_datapoint.plot_qk_c_datapoint \
 
 ### Prerequisites
 
-- The SPD run must have harvest data available (run `param-decomp-harvest` first)
+- The PD run must have harvest data available (run `pd-harvest` first)
 - Currently supports `LlamaSimpleMLP` target models only
 
 ### Output Location

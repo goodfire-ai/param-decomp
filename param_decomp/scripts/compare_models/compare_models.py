@@ -1,6 +1,6 @@
 """Model comparison script for geometric similarity analysis.
 
-This script compares two SPD models by computing geometric similarities between
+This script compares two PD models by computing geometric similarities between
 their learned subcomponents. It's designed for post-hoc analysis of completed runs.
 
 Usage:
@@ -56,7 +56,7 @@ class CompareModelsConfig(BaseConfig):
 
 
 class ModelComparator:
-    """Compare two SPD models for geometric similarity between subcomponents."""
+    """Compare two PD models for geometric similarity between subcomponents."""
 
     def __init__(self, config: CompareModelsConfig):
         """Initialize the model comparator.

@@ -1,4 +1,4 @@
-"""Local SPD experiment runner"""
+"""Local PD experiment runner"""
 
 import subprocess
 import sys
@@ -15,7 +15,7 @@ def main(
     cpu: bool = False,
     dp: int | None = None,
 ) -> None:
-    """Run a single SPD experiment locally.
+    """Run a single PD experiment locally.
 
     Args:
         experiment: Experiment name from registry (e.g., 'tms_5-2', 'resid_mlp1')
@@ -23,9 +23,9 @@ def main(
         dp: Number of GPUs for single-node data parallelism (requires 2+)
 
     Examples:
-        param-decomp-local tms_5-2           # Single GPU (default)
-        param-decomp-local tms_5-2 --cpu     # CPU only
-        param-decomp-local tms_5-2 --dp 4    # 4 GPUs on single node
+        pd-local tms_5-2           # Single GPU (default)
+        pd-local tms_5-2 --cpu     # CPU only
+        pd-local tms_5-2 --dp 4    # 4 GPUs on single node
     """
     if experiment not in EXPERIMENT_REGISTRY:
         available = ", ".join(sorted(EXPERIMENT_REGISTRY.keys()))

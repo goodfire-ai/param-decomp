@@ -1,5 +1,5 @@
 /**
- * Canonical SPD runs for the run picker.
+ * Canonical PD runs for the run picker.
  *
  * Static data (name, notes) renders instantly in the UI.
  * Dynamic data (architecture, availability) is hydrated from the backend.

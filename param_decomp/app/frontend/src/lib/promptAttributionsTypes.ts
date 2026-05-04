@@ -44,8 +44,8 @@ export function topEdgeAttributions(
 }
 
 export type OutputProbability = {
-    prob: number; // CI-masked (SPD model) probability
-    logit: number; // CI-masked (SPD model) raw logit
+    prob: number; // CI-masked (PD model) probability
+    logit: number; // CI-masked (PD model) raw logit
     target_prob: number; // Target model probability
     target_logit: number; // Target model raw logit
     token: string;

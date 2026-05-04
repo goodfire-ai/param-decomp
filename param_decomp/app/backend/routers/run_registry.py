@@ -1,6 +1,6 @@
 """Run registry endpoint.
 
-Returns architecture and data availability for requested SPD runs.
+Returns architecture and data availability for requested PD runs.
 The canonical run list lives in the frontend; the backend just hydrates it.
 """
 

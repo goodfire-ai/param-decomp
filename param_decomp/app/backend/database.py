@@ -127,7 +127,7 @@ class PromptAttrDB:
     """SQLite database for storing and querying prompt attribution data.
 
     Schema:
-    - runs: One row per SPD run (keyed by wandb_path)
+    - runs: One row per PD run (keyed by wandb_path)
     - prompts: One row per stored prompt (token sequence), keyed by run_id
     - graphs: Attribution graphs for prompts
 

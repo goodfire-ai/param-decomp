@@ -1,4 +1,4 @@
-"""FastAPI routers for the SPD backend API."""
+"""FastAPI routers for the PD backend API."""
 
 from param_decomp.app.backend.routers.activation_contexts import (
     router as activation_contexts_router,

@@ -146,8 +146,8 @@ class PromptAttributionResult:
 
     edges: list[Edge]
     edges_abs: list[Edge]  # absolute-target variant: ∂|y|/∂x · x
-    ci_masked_out_probs: Float[Tensor, "seq vocab"]  # CI-masked (SPD model) softmax probabilities
-    ci_masked_out_logits: Float[Tensor, "seq vocab"]  # CI-masked (SPD model) raw logits
+    ci_masked_out_probs: Float[Tensor, "seq vocab"]  # CI-masked (PD model) softmax probabilities
+    ci_masked_out_logits: Float[Tensor, "seq vocab"]  # CI-masked (PD model) raw logits
     target_out_probs: Float[Tensor, "seq vocab"]  # Target model softmax probabilities
     target_out_logits: Float[Tensor, "seq vocab"]  # Target model raw logits
     node_ci_vals: dict[str, float]  # layer:seq:c_idx -> ci_val
@@ -160,8 +160,8 @@ class OptimizedPromptAttributionResult:
 
     edges: list[Edge]
     edges_abs: list[Edge]  # absolute-target variant: ∂|y|/∂x · x
-    ci_masked_out_probs: Float[Tensor, "seq vocab"]  # CI-masked (SPD model) softmax probabilities
-    ci_masked_out_logits: Float[Tensor, "seq vocab"]  # CI-masked (SPD model) raw logits
+    ci_masked_out_probs: Float[Tensor, "seq vocab"]  # CI-masked (PD model) softmax probabilities
+    ci_masked_out_logits: Float[Tensor, "seq vocab"]  # CI-masked (PD model) raw logits
     target_out_probs: Float[Tensor, "seq vocab"]  # Target model softmax probabilities
     target_out_logits: Float[Tensor, "seq vocab"]  # Target model raw logits
     node_ci_vals: dict[str, float]  # layer:seq:c_idx -> ci_val

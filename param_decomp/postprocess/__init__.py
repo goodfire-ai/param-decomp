@@ -4,9 +4,9 @@ Submits all postprocessing steps to SLURM with proper dependency chaining.
 All steps always run — data accumulates (harvest upserts, autointerp resumes).
 
 Dependency graph:
-    harvest             (GPU array -> merge, GPU, SPD-only)
+    harvest             (GPU array -> merge, GPU, PD-only)
     ├── intruder eval   (CPU, depends on harvest merge, label-free)
-    ├── attributions    (GPU array -> merge, depends on harvest merge, SPD-only)
+    ├── attributions    (GPU array -> merge, depends on harvest merge, PD-only)
     └── autointerp      (CPU, LLM calls, resumes via completed keys)
         ├── detection   (CPU, label-dependent)
         └── fuzzing     (CPU, label-dependent)
@@ -76,7 +76,7 @@ def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None)
         )
 
         intruder_slurm = SlurmConfig(
-            job_name="param-decomp-intruder-eval",
+            job_name="pd-intruder-eval",
             partition=config.intruder.partition,
             n_gpus=2,
             time=config.intruder.time,
@@ -95,7 +95,7 @@ def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None)
             }
         )
 
-    # === 4. Attributions (depends on harvest merge, SPD-only) ===
+    # === 4. Attributions (depends on harvest merge, PD-only) ===
     attr_result = None
     if config.attributions is not None:
         assert isinstance(decomp_cfg, ParamDecompHarvestConfig)

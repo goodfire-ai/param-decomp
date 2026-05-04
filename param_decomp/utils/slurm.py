@@ -8,7 +8,7 @@ It handles:
 - Virtual environment activation
 - Job submission with script renaming and log file creation
 
-For SPD-specific training jobs with multi-node DDP, see compute_utils.py which
+For PD training jobs with multi-node DDP, see compute_utils.py which
 uses this module internally.
 """
 

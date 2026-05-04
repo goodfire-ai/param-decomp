@@ -214,10 +214,10 @@ def compute_spd_weight_neuron_contributions(
     components: dict[str, Components],
     n_features: int | None = None,
 ) -> Float[Tensor, "n_layers n_features C d_mlp"]:
-    """Compute per-neuron contribution strengths for the *SPD* factorisation.
+    """Compute per-neuron contribution strengths for the PD factorisation.
 
     Returns a tensor of shape ``(n_layers, n_features, C, d_mlp)`` where *C* is
-    the number of sub-components in the SPD decomposition.
+    the number of sub-components in the PD decomposition.
     """
 
     n_layers: int = model.config.n_layers
@@ -335,7 +335,7 @@ def plot_spd_feature_contributions_truncated(
     )
     axes1[1].set_ylabel("Neuron contribution")
     axes1[1].set_xlabel("Subcomponent index")
-    axes1[1].set_title("Individual SPD subcomponents")
+    axes1[1].set_title("Individual PD subcomponents")
     axes1[1].set_xticks(range(n_features))
 
     # Set the same y-axis limits for both plots
@@ -355,11 +355,11 @@ def plot_neuron_contribution_pairs(
     components: dict[str, Components],
     n_features: int | None = 50,
 ) -> plt.Figure:
-    """Create a scatter plot comparing target model and SPD component neuron contributions.
+    """Create a scatter plot comparing target model and PD component neuron contributions.
 
     Each point represents a (component, input_feature, neuron) combination across all layers.
     X-axis: neuron contribution from the target model
-    Y-axis: neuron contribution from the SPD component
+    Y-axis: neuron contribution from the PD component
     """
     n_layers = model.config.n_layers
     n_features = model.config.n_features if n_features is None else n_features

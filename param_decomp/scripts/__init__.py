@@ -1,1 +1,1 @@
-"""Scripts package for SPD command-line tools."""
+"""Scripts package for PD command-line tools."""

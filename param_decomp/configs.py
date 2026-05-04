@@ -159,7 +159,7 @@ def migrate_to_lr_schedule_config(config_dict: dict[str, Any]) -> None:
     }
 
 
-# Task configs - these define task-specific parameters for SPD decomposition
+# Task configs - these define task-specific parameters for PD
 class TMSTaskConfig(BaseConfig):
     task_name: Literal["tms"] = Field(
         default="tms",
@@ -746,7 +746,7 @@ class Config(BaseConfig):
 
     init_spd_checkpoint: str | None = Field(
         default=None,
-        description="Path to a .pth checkpoint from a prior SPD run for component/CI initialization",
+        description="Path to a .pth checkpoint from a prior PD run for component/CI initialization",
     )
 
     use_delta_component: bool = Field(

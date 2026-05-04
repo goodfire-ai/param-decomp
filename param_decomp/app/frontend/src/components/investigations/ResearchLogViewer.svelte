@@ -2,10 +2,11 @@
     /**
      * Research log viewer that renders markdown with inline graph artifacts.
      *
-     * Supports the ```spd:graph syntax:
-     * ```spd:graph
+     * Supports the ```param_decomp:graph syntax:
+     * ```param_decomp:graph
      * artifact: graph_001
      * ```
+     * Existing ```spd:graph blocks remain supported for saved investigation logs.
      *
      * This block is replaced with an interactive ArtifactGraph component.
      */
@@ -25,18 +26,18 @@
     // Content block type: either rendered markdown HTML or a graph artifact
     type ContentBlock = { type: "html"; content: string } | { type: "graph"; artifactId: string };
 
-    // Parse markdown and extract spd:graph blocks
+    // Parse markdown and extract PD graph blocks
     const contentBlocks = $derived.by(() => {
         const blocks: ContentBlock[] = [];
 
-        // Pattern to find ```spd:graph blocks with artifact reference
-        const spdGraphPattern = /```spd:graph\s*\n\s*artifact:\s*(\S+)\s*\n```/g;
+        // Pattern to find ```param_decomp:graph blocks with artifact reference.
+        const graphPattern = /```(?:param_decomp|spd):graph\s*\n\s*artifact:\s*(\S+)\s*\n```/g;
 
-        // Split markdown by spd:graph blocks
+        // Split markdown by graph blocks
         let lastIndex = 0;
         let match;
 
-        while ((match = spdGraphPattern.exec(markdown)) !== null) {
+        while ((match = graphPattern.exec(markdown)) !== null) {
             // Add markdown before this block
             if (match.index > lastIndex) {
                 const mdContent = markdown.slice(lastIndex, match.index);
@@ -60,7 +61,7 @@
             }
         }
 
-        // If no blocks parsed at all (no spd:graph), parse everything as markdown
+        // If no graph blocks were parsed, parse everything as markdown
         if (blocks.length === 0 && markdown.trim()) {
             blocks.push({ type: "html", content: marked.parse(markdown) as string });
         }

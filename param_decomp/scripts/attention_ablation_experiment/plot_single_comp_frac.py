@@ -232,7 +232,7 @@ def _plot_raw_attention(
         ax = axes[h, 0]
         # Baseline
         baseline_means = [np.mean(baseline_accum[h][o]) for o in offsets]
-        ax.plot(offsets, baseline_means, color="k", linewidth=1.5, label="SPD baseline")
+        ax.plot(offsets, baseline_means, color="k", linewidth=1.5, label="PD baseline")
         # Each ablated component
         for ci_idx, comp_idx in enumerate(component_indices):
             means = [np.mean(comp_accums[ci_idx][h][o]) for o in offsets]

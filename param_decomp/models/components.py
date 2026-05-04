@@ -407,7 +407,7 @@ class Components(ABC, nn.Module):
 
 
 class LinearComponents(Components):
-    """A floating point linear component. The basic building block of SPD."""
+    """A floating point linear component. The basic building block of PD."""
 
     bias: Float[Tensor, "... d_out"] | None
 
@@ -422,7 +422,7 @@ class LinearComponents(Components):
         self.d_in = d_in
         self.d_out = d_out
 
-        # We don't train biases in SPD
+        # We don't train biases in PD.
         self.register_buffer("bias", bias)
 
     @property

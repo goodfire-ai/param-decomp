@@ -211,7 +211,7 @@ async def request_component_interpretation(
             path: loaded.topology.target_to_canon(path) for path in loaded.model.target_module_paths
         },
         seq_len=task_config.max_seq_len,
-        decomposition_method="spd",
+        decomposition_method="param_decomp",
     )
 
     harvest_config = loaded.harvest.get_config()

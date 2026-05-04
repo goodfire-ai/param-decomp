@@ -1,4 +1,4 @@
-# SPD App
+# PD App
 
 Web-based visualization and analysis tool for exploring neural network component decompositions.
 

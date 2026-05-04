@@ -21,7 +21,7 @@ from param_decomp.utils.general_utils import set_seed
 
 
 def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
-    """Test that SPD decomposition works on a 2-layer ResidMLP model."""
+    """Test that PD works on a 2-layer ResidMLP model."""
     set_seed(0)
     device = "cpu"
 

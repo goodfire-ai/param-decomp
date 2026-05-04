@@ -16,7 +16,7 @@ def submit_intruder(
     cmd = get_command(decomposition_id, slurm_config.config, harvest_subrun_id)
 
     slurm = SlurmConfig(
-        job_name=f"param-decomp-intruder-{decomposition_id}",
+        job_name=f"pd-intruder-{decomposition_id}",
         partition=slurm_config.partition,
         n_gpus=0,
         time=slurm_config.time,

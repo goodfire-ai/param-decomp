@@ -1,6 +1,6 @@
 """Canon interpretation strategy.
 
-Detailed SPD-specific prompt with full decomposition explanation, sign convention,
+Detailed PD prompt with full decomposition explanation, sign convention,
 CI-vs-act guidance, output PMI, and XML dual-view examples (raw + annotated).
 """
 
@@ -42,17 +42,17 @@ def format_prompt(
     )
     md = Md()
 
-    # --- SPD method explanation ---
+    # --- PD method explanation ---
     md.h(3, "Context")
     md.p(
         "Below you will be presented with data about a component of a neural network as "
-        'isolated by a Mechanistic Interpretability technique called "Stochastic Parameter '
-        'Decomposition". You will be tasked with describing what the component does based on '
+        'isolated by a Mechanistic Interpretability technique called "PD". '
+        "You will be tasked with describing what the component does based on "
         "the evidence provided below."
     )
     md.p(
-        "In Stochastic Parameter Decomposition, each weight matrix of a network is decomposed "
-        'into C rank-1 parts, called "subcomponents", where C is usually greater than the rank '
+        "In PD, each weight matrix of a network is decomposed into C rank-1 parts, "
+        'called "subcomponents", where C is usually greater than the rank '
         "of the weight matrix. These are parameterised as U \u2022 V (dimensions `d_out` \u00d7 "
         "`d_in`). Each subcomponent represents a one-dimensional slice of the computation the "
         "weight matrix performs."

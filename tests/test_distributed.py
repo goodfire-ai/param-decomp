@@ -85,7 +85,7 @@ def _parse_run_id_from_output(stderr: str) -> str:
 @pytest.mark.slow
 class TestDistributedDeterminicity:
     def test_distributed_determinicity(self):
-        """Test DDP determinicity for SPD runs which don't use stochastic masks.
+        """Test DDP determinicity for PD runs which don't use stochastic masks.
 
         Runs DDP with 1 and 2 processes on CPU and shows that training metrics, eval metrics, and
         the updated model weights are consistent between the two runs.

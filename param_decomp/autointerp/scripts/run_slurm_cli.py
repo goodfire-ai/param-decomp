@@ -3,8 +3,8 @@
 Thin wrapper for fast --help. Heavy imports deferred to run_slurm.py.
 
 Usage:
-    param-decomp-autointerp <wandb_path>
-    param-decomp-autointerp <wandb_path> --config autointerp_config.yaml
+    pd-autointerp <wandb_path>
+    pd-autointerp <wandb_path> --config autointerp_config.yaml
 """
 
 import fire

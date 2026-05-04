@@ -15,7 +15,7 @@ Repo requires `.env` file with WandB credentials (see `.env.example`)
 
 ## Project Overview
 
-SPD (Stochastic Parameter Decomposition) is a research framework for analyzing neural network components and their interactions through sparse parameter decomposition techniques.
+PD is a research framework for analyzing neural network components and their interactions through sparse parameter decomposition techniques.
 
 - Target model parameters are decomposed as a sum of `parameter components`
 - Parameter components approximate target model outputs despite differentiable stochastic masks
@@ -95,32 +95,32 @@ This repository implements methods from two key research papers on parameter dec
 
 **Running the App:**
 
-- `make app` - Launch the SPD visualization app (backend + frontend)
+- `make app` - Launch the PD visualization app (backend + frontend)
 
 ## Architecture Overview
 
-**Core SPD Framework:**
+**Core PD Framework:**
 
-- `param_decomp/run_param_decomp.py` - Main SPD optimization logic called by all experiments
+- `param_decomp/run_param_decomp.py` - Main PD optimization logic called by all experiments
 - `param_decomp/configs.py` - Pydantic config classes for all experiment types
 - `param_decomp/registry.py` - Centralized experiment registry with all experiment configurations
 - `param_decomp/models/component_model.py` - Core ComponentModel that wraps target models
 - `param_decomp/models/components.py` - Component types (LinearComponent, EmbeddingComponent, etc.)
-- `param_decomp/losses.py` - SPD loss functions (faithfulness, reconstruction, importance minimality)
+- `param_decomp/losses.py` - PD loss functions (faithfulness, reconstruction, importance minimality)
 - `param_decomp/metrics.py` - Metrics for logging to WandB (e.g. CI-L0, KL divergence, etc.)
 - `param_decomp/figures.py` - Figures for logging to WandB (e.g. CI histograms, Identity plots, etc.)
 
 **Terminology: Sources vs Masks:**
 
 - **Sources** (`adv_sources`, `PPGDSources`, `self.sources`): The raw values that PGD optimizes adversarially. These are interpolated with CI to produce component masks: `mask = ci + (1 - ci) * source`. Used in both regular PGD (`param_decomp/metrics/pgd_utils.py`) and persistent PGD (`param_decomp/persistent_pgd.py`).
-- **Masks** (`component_masks`, `RoutingMasks`, `make_mask_infos`, `n_mask_samples`): The materialized per-component masks used during forward passes. These are produced from sources (in PGD) or from stochastic sampling, and are a general SPD concept across the whole codebase.
+- **Masks** (`component_masks`, `RoutingMasks`, `make_mask_infos`, `n_mask_samples`): The materialized per-component masks used during forward passes. These are produced from sources (in PGD) or from stochastic sampling, and are a general PD concept across the whole codebase.
 
 **Experiment Structure:**
 
 Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
 - `models.py` - Experiment-specific model classes and pretrained loading
-- `*_decomposition.py` - Main SPD execution script
+- `*_decomposition.py` - Main PD execution script
 - `train_*.py` - Training script for target models
 - `*_config.yaml` - Configuration files
 - `plotting.py` - Visualization utilities
@@ -129,7 +129,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
 1. Experiments load pretrained target models via WandB or local paths
 2. Target models are wrapped in ComponentModel with specified target modules
-3. SPD optimization runs via `param_decomp.run_param_decomp.optimize()` with config-driven loss combination
+3. PD optimization runs via `param_decomp.run_param_decomp.optimize()` with config-driven loss combination
 4. Results include component masks, causal importance scores, and visualizations
 
 **Configuration System:**
@@ -187,7 +187,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 │   ├── models/
 │   │   ├── component_model.py       # ComponentModel, ParamDecompRunInfo, from_pretrained()
 │   │   └── components.py            # LinearComponent, EmbeddingComponent, etc.
-│   ├── scripts/                     # CLI entry points (param-decomp-run, param-decomp-local)
+│   ├── scripts/                     # CLI entry points (pd-run, pd-local)
 │   ├── utils/
 │   │   └── slurm.py                 # SlurmConfig, submit functions
 │   ├── configs.py                   # Pydantic configs (Config, ModuleInfo, etc.)
@@ -206,18 +206,18 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
 | Command | Entry Point | Description |
 |---------|-------------|-------------|
-| `param-decomp-run` | `param_decomp/scripts/run.py` | SLURM-based experiment runner |
-| `param-decomp-local` | `param_decomp/scripts/run_local.py` | Local experiment runner |
-| `param-decomp-harvest` | `param_decomp/harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
-| `param-decomp-autointerp` | `param_decomp/autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
-| `param-decomp-attributions` | `param_decomp/dataset_attributions/scripts/run_slurm_cli.py` | Submit dataset attribution SLURM job |
-| `param-decomp-postprocess` | `param_decomp/postprocess/cli.py` | Unified postprocessing pipeline (harvest + attributions + interpret + evals) |
-| `param-decomp-graph-interp` | `param_decomp/graph_interp/scripts/run_slurm_cli.py` | Submit graph interpretation SLURM job |
-| `param-decomp-clustering` | `param_decomp/clustering/scripts/run_pipeline.py` | Clustering ensemble pipeline |
-| `param-decomp-cluster-harvest` | `param_decomp/clustering/scripts/run_harvest.py` | Harvest activations → membership snapshot |
-| `param-decomp-cluster-merge` | `param_decomp/clustering/scripts/run_merge.py` | Merge from snapshot (CPU-only) |
-| `param-decomp-pretrain` | `param_decomp/pretrain/scripts/run_slurm_cli.py` | Pretrain target models |
-| `param-decomp-investigate` | `param_decomp/investigate/scripts/run_slurm_cli.py` | Launch investigation agent |
+| `pd-run` | `param_decomp/scripts/run.py` | SLURM-based experiment runner |
+| `pd-local` | `param_decomp/scripts/run_local.py` | Local experiment runner |
+| `pd-harvest` | `param_decomp/harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
+| `pd-autointerp` | `param_decomp/autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
+| `pd-attributions` | `param_decomp/dataset_attributions/scripts/run_slurm_cli.py` | Submit dataset attribution SLURM job |
+| `pd-postprocess` | `param_decomp/postprocess/cli.py` | Unified postprocessing pipeline (harvest + attributions + interpret + evals) |
+| `pd-graph-interp` | `param_decomp/graph_interp/scripts/run_slurm_cli.py` | Submit graph interpretation SLURM job |
+| `pd-clustering` | `param_decomp/clustering/scripts/run_pipeline.py` | Clustering ensemble pipeline |
+| `pd-cluster-harvest` | `param_decomp/clustering/scripts/run_harvest.py` | Harvest activations → membership snapshot |
+| `pd-cluster-merge` | `param_decomp/clustering/scripts/run_merge.py` | Merge from snapshot (CPU-only) |
+| `pd-pretrain` | `param_decomp/pretrain/scripts/run_slurm_cli.py` | Pretrain target models |
+| `pd-investigate` | `param_decomp/investigate/scripts/run_slurm_cli.py` | Launch investigation agent |
 
 ### Files to Skip When Searching
 
@@ -242,46 +242,46 @@ Use `param_decomp/` as the search root (not repo root) to avoid noise.
 
 **Running Experiments:**
 
-- `param-decomp-run` → `param_decomp/scripts/run.py` → `param_decomp/utils/slurm.py` → SLURM → `param_decomp/run_param_decomp.py`
-- `param-decomp-local` → `param_decomp/scripts/run_local.py` → `param_decomp/run_param_decomp.py` directly
+- `pd-run` → `param_decomp/scripts/run.py` → `param_decomp/utils/slurm.py` → SLURM → `param_decomp/run_param_decomp.py`
+- `pd-local` → `param_decomp/scripts/run_local.py` → `param_decomp/run_param_decomp.py` directly
 
 **Harvest Pipeline:**
 
-- `param-decomp-harvest` → `param_decomp/harvest/scripts/run_slurm_cli.py` → `param_decomp/utils/slurm.py` → SLURM array → `param_decomp/harvest/scripts/run.py` → `param_decomp/harvest/harvest.py`
+- `pd-harvest` → `param_decomp/harvest/scripts/run_slurm_cli.py` → `param_decomp/utils/slurm.py` → SLURM array → `param_decomp/harvest/scripts/run.py` → `param_decomp/harvest/harvest.py`
 
 **Autointerp Pipeline:**
 
-- `param-decomp-autointerp` → `param_decomp/autointerp/scripts/run_slurm_cli.py` → `param_decomp/utils/slurm.py` → `param_decomp/autointerp/interpret.py`
+- `pd-autointerp` → `param_decomp/autointerp/scripts/run_slurm_cli.py` → `param_decomp/utils/slurm.py` → `param_decomp/autointerp/interpret.py`
 
 **Dataset Attributions Pipeline:**
 
-- `param-decomp-attributions` → `param_decomp/dataset_attributions/scripts/run_slurm_cli.py` → `param_decomp/utils/slurm.py` → SLURM array → `param_decomp/dataset_attributions/harvest.py`
+- `pd-attributions` → `param_decomp/dataset_attributions/scripts/run_slurm_cli.py` → `param_decomp/utils/slurm.py` → SLURM array → `param_decomp/dataset_attributions/harvest.py`
 
 **Clustering Pipeline:**
 
-- `param-decomp-clustering` → `param_decomp/clustering/scripts/run_pipeline.py` → `param_decomp/utils/slurm.py` → `param_decomp/clustering/scripts/run_clustering.py`
+- `pd-clustering` → `param_decomp/clustering/scripts/run_pipeline.py` → `param_decomp/utils/slurm.py` → `param_decomp/clustering/scripts/run_clustering.py`
 
 **Investigation Pipeline:**
 
-- `param-decomp-investigate` → `param_decomp/investigate/scripts/run_slurm_cli.py` → `param_decomp/utils/slurm.py` → SLURM → `param_decomp/investigate/scripts/run_agent.py` → Claude Code
+- `pd-investigate` → `param_decomp/investigate/scripts/run_slurm_cli.py` → `param_decomp/utils/slurm.py` → SLURM → `param_decomp/investigate/scripts/run_agent.py` → Claude Code
 
 ## Common Usage Patterns
 
-### Running Experiments Locally (`param-decomp-local`)
+### Running Experiments Locally (`pd-local`)
 
-For collaborators and simple local execution, use `param-decomp-local`:
+For collaborators and simple local execution, use `pd-local`:
 
 ```bash
-param-decomp-local tms_5-2           # Run on single GPU (default)
-param-decomp-local tms_5-2 --cpu     # Run on CPU
-param-decomp-local tms_5-2 --dp 4    # Run on 4 GPUs (single node DDP)
+pd-local tms_5-2           # Run on single GPU (default)
+pd-local tms_5-2 --cpu     # Run on CPU
+pd-local tms_5-2 --dp 4    # Run on 4 GPUs (single node DDP)
 ```
 
 This runs experiments directly without SLURM, git snapshots, or W&B views/reports.
 
 ### Web App for Visualization
 
-The SPD app provides interactive visualization of component decompositions and attributions:
+The PD app provides interactive visualization of component decompositions and attributions:
 
 ```bash
 make app              # Launch backend + frontend dev servers
@@ -291,40 +291,40 @@ python -m param_decomp.app.run_app
 
 The app has its own detailed documentation in `param_decomp/app/CLAUDE.md` and `param_decomp/app/README.md`.
 
-### Harvesting Component Statistics (`param-decomp-harvest`)
+### Harvesting Component Statistics (`pd-harvest`)
 
 Collect component statistics (activation examples, correlations, token stats) for a run:
 
 ```bash
-param-decomp-harvest <wandb_path> --n_batches 1000 --n_gpus 8    # Submit SLURM job to harvest statistics
+pd-harvest <wandb_path> --n_batches 1000 --n_gpus 8    # Submit SLURM job to harvest statistics
 ```
 
 See `param_decomp/harvest/CLAUDE.md` for details.
 
-### Automated Component Interpretation (`param-decomp-autointerp`)
+### Automated Component Interpretation (`pd-autointerp`)
 
 Generate LLM interpretations for harvested components:
 
 ```bash
-param-decomp-autointerp <wandb_path>            # Submit SLURM job to interpret components
+pd-autointerp <wandb_path>            # Submit SLURM job to interpret components
 ```
 
 Requires `OPENROUTER_API_KEY` env var. See `param_decomp/autointerp/CLAUDE.md` for details.
 
-### Agent Investigation (`param-decomp-investigate`)
+### Agent Investigation (`pd-investigate`)
 
-Launch a Claude Code agent to investigate a specific question about an SPD model:
+Launch a Claude Code agent to investigate a specific question about a PD model:
 
 ```bash
-param-decomp-investigate <wandb_path> "How does the model handle gendered pronouns?"
-param-decomp-investigate <wandb_path> "What components are involved in verb agreement?" --time 4:00:00
+pd-investigate <wandb_path> "How does the model handle gendered pronouns?"
+pd-investigate <wandb_path> "What components are involved in verb agreement?" --time 4:00:00
 ```
 
 Each investigation:
 
 - Runs in its own SLURM job with 1 GPU
 - Starts an isolated app backend instance
-- Investigates the specific research question using SPD tools via MCP
+- Investigates the specific research question using PD tools via MCP
 - Writes findings to append-only JSONL files
 
 Output: `PARAM_DECOMP_OUT_DIR/investigations/<inv_id>/`
@@ -333,15 +333,15 @@ For parallel investigations, run the command multiple times with different promp
 
 See `param_decomp/investigate/CLAUDE.md` for details.
 
-### Unified Postprocessing (`param-decomp-postprocess`)
+### Unified Postprocessing (`pd-postprocess`)
 
-Run all postprocessing steps for a completed SPD run with a single command. The CLI takes a
+Run all postprocessing steps for a completed PD run with a single command. The CLI takes a
 positional path to a `PostprocessConfig` YAML (the wandb run is specified inside the config):
 
 ```bash
-param-decomp-postprocess config.yaml                    # Submit the pipeline defined by this config
-param-decomp-postprocess config.yaml --dependency 123   # Wait for SLURM job 123 before starting
-param-decomp-postprocess config.yaml --dry_run          # Print the resolved config without submitting
+pd-postprocess config.yaml                    # Submit the pipeline defined by this config
+pd-postprocess config.yaml --dependency 123   # Wait for SLURM job 123 before starting
+pd-postprocess config.yaml --dry_run          # Print the resolved config without submitting
 ```
 
 The config schema is `PostprocessConfig` in `param_decomp/postprocess/config.py`. Set any optional
@@ -366,17 +366,17 @@ attributions (GPU array → merge, parallel with harvest)
 graph_interp         (CPU, depends on harvest merge + attributions merge)
 ```
 
-### Running on SLURM Cluster (`param-decomp-run`)
+### Running on SLURM Cluster (`pd-run`)
 
-For the core team, `param-decomp-run` provides full-featured SLURM orchestration:
+For the core team, `pd-run` provides full-featured SLURM orchestration:
 
 ```bash
-param-decomp-run --experiments tms_5-2                    # Run a specific experiment
-param-decomp-run --experiments tms_5-2,resid_mlp1         # Run multiple experiments
-param-decomp-run                                          # Run all experiments
+pd-run --experiments tms_5-2                    # Run a specific experiment
+pd-run --experiments tms_5-2,resid_mlp1         # Run multiple experiments
+pd-run                                          # Run all experiments
 ```
 
-All `param-decomp-run` executions:
+All `pd-run` executions:
 
 - Submit jobs to SLURM
 - Create a git snapshot for reproducibility
@@ -394,19 +394,19 @@ Metrics and figures are defined in `param_decomp/metrics.py` and `param_decomp/f
 Run hyperparameter sweeps on the GPU cluster:
 
 ```bash
-param-decomp-run --experiments <experiment_name> --sweep --n_agents <n-agents> [--cpu]
+pd-run --experiments <experiment_name> --sweep --n_agents <n-agents> [--cpu]
 ```
 
 Examples:
 
 ```bash
-param-decomp-run --experiments tms_5-2 --sweep --n_agents 4            # Run TMS 5-2 sweep with 4 GPU agents
-param-decomp-run --experiments resid_mlp2 --sweep --n_agents 3 --cpu   # Run ResidualMLP2 sweep with 3 CPU agents
-param-decomp-run --sweep --n_agents 10                                 # Sweep all experiments with 10 agents
-param-decomp-run --experiments tms_5-2 --sweep custom.yaml --n_agents 2 # Use custom sweep params file
+pd-run --experiments tms_5-2 --sweep --n_agents 4            # Run TMS 5-2 sweep with 4 GPU agents
+pd-run --experiments resid_mlp2 --sweep --n_agents 3 --cpu   # Run ResidualMLP2 sweep with 3 CPU agents
+pd-run --sweep --n_agents 10                                 # Sweep all experiments with 10 agents
+pd-run --experiments tms_5-2 --sweep custom.yaml --n_agents 2 # Use custom sweep params file
 ```
 
-**Supported Experiments:** All experiments in `param_decomp/registry.py` (run `param-decomp-local --help` to see available options)
+**Supported Experiments:** All experiments in `param_decomp/registry.py` (run `pd-local --help` to see available options)
 
 **How It Works:**
 
@@ -443,7 +443,7 @@ param-decomp-run --experiments tms_5-2 --sweep custom.yaml --n_agents 2 # Use cu
 
 ### Loading Models from WandB
 
-Load trained SPD models from wandb or local paths using these methods:
+Load trained PD models from wandb or local paths using these methods:
 
 ```python
 from param_decomp.models.component_model import ComponentModel, ParamDecompRunInfo

@@ -1,4 +1,4 @@
-"""Application state management for the SPD backend.
+"""Application state management for the PD backend.
 
 Contains:
 - RunState: Runtime state for a loaded run (model, tokenizer, repos)

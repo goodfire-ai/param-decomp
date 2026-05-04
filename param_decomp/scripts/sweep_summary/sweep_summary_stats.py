@@ -326,7 +326,7 @@ def _compute_recovered_pct(target_info: TargetModelInfo, spd_ce: float) -> float
 
     Smooths the target model's val loss history with a bidirectional EMA, then
     interpolates to find the step where loss equals spd_ce.
-    Returns None if the SPD CE is worse than the earliest logged val loss.
+    Returns None if the PD CE is worse than the earliest logged val loss.
     """
     curve = target_info.val_loss_curve
     assert len(curve) >= 2
@@ -334,11 +334,11 @@ def _compute_recovered_pct(target_info: TargetModelInfo, spd_ce: float) -> float
 
     steps, smoothed = _smooth_val_curve(curve)
 
-    # If SPD is better than final target, return 100%
+    # If PD is better than final target, return 100%
     if spd_ce <= smoothed[-1]:
         return 100.0
 
-    # If SPD is worse than the very first checkpoint, return None
+    # If PD is worse than the very first checkpoint, return None
     if spd_ce >= smoothed[0]:
         return None
 
@@ -357,7 +357,7 @@ def _compute_recovered_pct(target_info: TargetModelInfo, spd_ce: float) -> float
 
 @dataclass
 class ParamDecompConfig:
-    """Relevant SPD run config fields."""
+    """Relevant PD run config fields."""
 
     module_info: list[dict[str, Any]]  # [{module_pattern, C}, ...]
 
@@ -471,7 +471,7 @@ def _render_latex_summary(
         "```latex",
         r"\begin{table}[h]",
         r"\centering",
-        r"\caption{SPD decomposition quality by masking mode.}",
+        r"\caption{PD quality by masking mode.}",
         r"\begin{tabular}{lcc}",
         r"\toprule",
         r"Masking mode & CE loss & Training compute recovered (\%) \\",
@@ -749,7 +749,7 @@ def generate_report(
     # 7. Training compute recovered
     sections.append("\n## Training Compute Recovered\n")
     sections.append(
-        "Percentage through target model training where target val loss equals SPD model CE.\n"
+        "Percentage through target model training where target val loss equals PD model CE.\n"
     )
     recovered_headers = ["seed"] + MASKING_MODES
     recovered_rows: list[list[str]] = []

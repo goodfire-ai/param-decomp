@@ -5,8 +5,8 @@ that runs after all workers complete. Creates a git snapshot to ensure consisten
 code across all workers even if jobs are queued.
 
 Usage:
-    param-decomp-attributions <wandb_path> --n_gpus 24
-    param-decomp-attributions <wandb_path> --n_batches 1000 --n_gpus 8
+    pd-attributions <wandb_path> --n_gpus 24
+    pd-attributions <wandb_path> --n_batches 1000 --n_gpus 8
 """
 
 import secrets
@@ -62,7 +62,7 @@ def submit_attributions(
     subrun_id = "da-" + datetime.now().strftime("%Y%m%d_%H%M%S")
 
     suffix = f"-{job_suffix}" if job_suffix else ""
-    array_job_name = f"param-decomp-attr{suffix}"
+    array_job_name = f"pd-attr{suffix}"
 
     config_json = config.config.model_dump_json(exclude_none=True)
 
@@ -101,7 +101,7 @@ def submit_attributions(
     # Submit merge job with dependency on array completion
     merge_cmd = run_merge.get_command(wandb_path, subrun_id)
     merge_config = SlurmConfig(
-        job_name="param-decomp-attr-merge",
+        job_name="pd-attr-merge",
         partition=partition,
         n_gpus=0,
         time=config.merge_time,

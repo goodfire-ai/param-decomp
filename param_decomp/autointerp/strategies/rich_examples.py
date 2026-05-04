@@ -18,9 +18,9 @@ from param_decomp.harvest.schemas import ComponentData
 from param_decomp.utils.markdown import Md
 
 _DECOMPOSITION_DESCRIPTIONS: dict[DecompositionMethod, str] = {
-    "spd": (
-        "Each component is a rank-1 parameter matrix learned by Stochastic Parameter "
-        "Decomposition (SPD). A weight matrix W is decomposed as W ≈ Σ u_i v_i^T. "
+    "param_decomp": (
+        "Each component is a rank-1 parameter matrix learned by PD. "
+        "A weight matrix W is decomposed as W ≈ Σ u_i v_i^T. "
         "When the model processes a token, each component computes an activation: the inner "
         "product of the residual stream with its read direction v_i. This value can be "
         "positive or negative depending on how the input aligns with v_i — the sign is an "

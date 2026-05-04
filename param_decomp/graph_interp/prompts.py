@@ -48,10 +48,10 @@ UNIFIED_LABEL_SCHEMA: dict[str, object] = {
 # ---------------------------------------------------------------------------
 
 
-def _spd_preamble() -> Md:
+def _pd_preamble() -> Md:
     md = Md()
     md.p(
-        "In Stochastic Parameter Decomposition, each weight matrix is decomposed into "
+        "In PD, each weight matrix is decomposed into "
         "rank-1 subcomponents parameterised as U \u2022 V (dimensions `d_out` \u00d7 `d_in`). "
         "Each represents a one-dimensional slice of the computation the weight matrix performs."
     )
@@ -165,7 +165,7 @@ def format_output_prompt(
         "You are labeling a neural network component's **output function** \u2014 "
         "what it contributes to the model's predictions when it fires."
     )
-    md.extend(_spd_preamble())
+    md.extend(_pd_preamble())
     md.extend(_component_header(component, model_metadata))
 
     md.h(2, "Evidence")
@@ -227,7 +227,7 @@ def format_input_prompt(
         "You are labeling a neural network component's **input function** \u2014 "
         "what tokens and contexts it responds to."
     )
-    md.extend(_spd_preamble())
+    md.extend(_pd_preamble())
     md.extend(_component_header(component, model_metadata))
 
     md.h(2, "Evidence")
@@ -288,7 +288,7 @@ def format_unification_prompt(
 ) -> str:
     md = Md()
     md.p("A neural network component has been analyzed from two perspectives.")
-    md.extend(_spd_preamble())
+    md.extend(_pd_preamble())
     md.extend(_component_header(component, model_metadata))
 
     md.h(2, "Evidence")

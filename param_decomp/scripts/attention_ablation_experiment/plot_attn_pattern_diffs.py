@@ -2,13 +2,13 @@
 
 Compares four conditions at layer 1:
   - Target model baseline
-  - SPD model baseline (all-ones masks)
+  - PD model baseline (all-ones masks)
   - Full component ablation (q/k components zeroed at t/t-1)
   - Per-head component ablation (restricted to specific heads)
 
 Produces plots:
   - Raw attention distributions at query position t, averaged over samples
-  - Attention differences (ablated - SPD baseline)
+  - Attention differences (ablated - PD baseline)
   - Fractional attention change ((ablated - baseline) / baseline per offset)
   - Per-sample versions of all three (up to 10 individual samples)
 
@@ -189,7 +189,7 @@ def plot_attn_pattern_diffs(
     # --- Plot 1: Raw attention values ---
     styles = {
         "target_baseline": ("k", "-", 1.5, "Target baseline"),
-        "spd_baseline": ("b", "-", 1.5, "SPD baseline"),
+        "spd_baseline": ("b", "-", 1.5, "PD baseline"),
         "full_comp": ("r", "-", 1.5, "Full comp ablation"),
         "perhead_comp": ("g", "--", 1.5, f"Per-head comp ({restrict_label})"),
     }
@@ -233,10 +233,10 @@ def plot_attn_pattern_diffs(
     plt.close(fig)
     logger.info(f"Saved {path}")
 
-    # --- Plot 2: Differences from SPD baseline ---
+    # --- Plot 2: Differences from PD baseline ---
     diff_styles = {
-        "full_comp": ("r", "-", 1.5, "Full comp - SPD baseline"),
-        "perhead_comp": ("g", "--", 1.5, "Per-head comp - SPD baseline"),
+        "full_comp": ("r", "-", 1.5, "Full comp - PD baseline"),
+        "perhead_comp": ("g", "--", 1.5, "Per-head comp - PD baseline"),
     }
 
     all_diff_means = []
@@ -293,7 +293,7 @@ def plot_attn_pattern_diffs(
     plt.close(fig)
     logger.info(f"Saved {path}")
 
-    # --- Plot 3: Fractional change from SPD baseline ---
+    # --- Plot 3: Fractional change from PD baseline ---
     # Normalize by mean baseline attention at each offset across all heads (more stable)
     frac_offsets = list(range(max_offset_frac + 1))
     frac_styles = {
@@ -381,7 +381,7 @@ def plot_attn_pattern_diffs(
         fig.savefig(path, dpi=150, bbox_inches="tight")
         plt.close(fig)
 
-        # Differences from SPD baseline
+        # Differences from PD baseline
         fig, axes = plt.subplots(n_heads, 1, figsize=(14, n_heads * 1.8), squeeze=False)
         for h in range(n_heads):
             ax = axes[h, 0]
@@ -405,7 +405,7 @@ def plot_attn_pattern_diffs(
         fig.savefig(path, dpi=150, bbox_inches="tight")
         plt.close(fig)
 
-        # Fractional change from SPD baseline (limited to recent offsets)
+        # Fractional change from PD baseline (limited to recent offsets)
         frac_tok_labels = tok_labels[: max_offset_frac + 1]
         fig, axes = plt.subplots(n_heads, 1, figsize=(14, n_heads * 1.8), squeeze=False)
         for h in range(n_heads):

@@ -67,7 +67,7 @@ def get_cluster_mapping(
 
 
 def get_spd_run_path(run_dir: Path) -> str:
-    """Extract the SPD run path from the clustering run's merge config.
+    """Extract the PD run path from the clustering run's merge config.
 
     Follows: merge_config.json → snapshot_path → harvest_config.json → model_path
     """

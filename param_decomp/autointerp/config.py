@@ -113,7 +113,7 @@ class RichExamplesConfig(BaseConfig):
 
 
 class CanonConfig(BaseConfig):
-    """Canon strategy: detailed SPD explanation, sign convention, CI-vs-act guidance,
+    """Canon strategy: detailed PD explanation, sign convention, CI-vs-act guidance,
     output PMI, and XML dual-view examples.
 
     Uses a fixed XML rendering (brackets, activation annotations, no sanitization).

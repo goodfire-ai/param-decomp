@@ -391,7 +391,7 @@ def _plot_component_head_amplification(
 
     Args:
         v_weight_per_head: (n_heads, head_dim, d_model)
-        component_V: (d_model, n_components) — right vectors from SPD decomposition
+        component_V: (d_model, n_components) — right vectors from PD
     """
     n_heads = v_weight_per_head.shape[0]
 
@@ -907,8 +907,8 @@ def plot_wv_subspace_overlap(
         o_h = o_weight[:, h * head_dim : (h + 1) * head_dim]  # (d_model, head_dim)
         ov_weight_per_head[h] = o_h @ v_weight_per_head[h]  # (d_model, d_model)
 
-    # 4. Load SPD component model
-    logger.info("Loading SPD component model...")
+    # 4. Load PD component model
+    logger.info("Loading PD component model...")
     component_model = ComponentModel.from_pretrained(wandb_path)
     component_model.to(device).eval()
     v_component = component_model.components[f"h.{layer}.attn.v_proj"]

@@ -50,7 +50,7 @@ class PretrainInfoResponse(BaseModel):
 
 
 def _load_spd_config_lightweight(wandb_path: str) -> Config:
-    """Load just the SPD config YAML without downloading checkpoints."""
+    """Load just the PD config YAML without downloading checkpoints."""
     entity, project, run_id = parse_wandb_run_path(wandb_path)
 
     # Check local cache first
@@ -188,7 +188,7 @@ def _get_dataset_short(pretrain_config: dict[str, Any] | None) -> str | None:
 
 
 def _get_pretrain_info(spd_config: Config) -> PretrainInfoResponse:
-    """Extract pretrain info from an SPD config."""
+    """Extract pretrain info from a PD config."""
     model_class_name = spd_config.pretrained_model_class
     model_type = model_class_name.split(".")[-1]
 
@@ -232,7 +232,7 @@ def _get_pretrain_info(spd_config: Config) -> PretrainInfoResponse:
 @router.get("")
 @log_errors
 def get_pretrain_info_for_run(wandb_path: str) -> PretrainInfoResponse:
-    """Get pretrained model architecture info for an SPD run.
+    """Get pretrained model architecture info for a PD run.
 
     Fetches only config files (no checkpoints) for efficiency.
     """

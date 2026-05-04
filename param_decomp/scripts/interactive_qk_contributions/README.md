@@ -1,10 +1,10 @@
 # Interactive QK Contribution Heatmaps
 
-This tool visualizes how individual SPD parameter components contribute to attention patterns. It decomposes the attention score between any query and key position into contributions from specific (q_component, k_component) pairs, letting you see which components drive attention between which tokens.
+This tool visualizes how individual PD components contribute to attention patterns. It decomposes the attention score between any query and key position into contributions from specific (q_component, k_component) pairs, letting you see which components drive attention between which tokens.
 
-## Background: SPD Component Decomposition
+## Background: PD Component Decomposition
 
-In SPD, each linear layer's weight matrix `W` (shape `d_out x d_in`, matching `nn.Linear` convention) is decomposed as a sum of rank-1 terms:
+In PD, each linear layer's weight matrix `W` (shape `d_out x d_in`, matching `nn.Linear` convention) is decomposed as a sum of rank-1 terms:
 
 ```
 W = sum_c  u_c @ v_c^T
@@ -35,7 +35,7 @@ where `RoPE(.)` applies rotary position embeddings and `d` is the head dimension
 
 ### Decomposed Attention
 
-With SPD, `W_Q` and `W_K` are each decomposed into components. The query vector at position `q` becomes:
+With PD, `W_Q` and `W_K` are each decomposed into components. The query vector at position `q` becomes:
 
 ```
 query(q) = W_Q x_q = sum_i  u_i^Q * a_i^Q(q)

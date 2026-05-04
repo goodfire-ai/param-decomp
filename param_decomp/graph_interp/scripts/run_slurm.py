@@ -37,7 +37,7 @@ def submit_graph_interp(
     dependency_str = ":".join(dependency_job_ids) if dependency_job_ids else None
 
     slurm_config = SlurmConfig(
-        job_name="param-decomp-graph-interp",
+        job_name="pd-graph-interp",
         partition=config.partition,
         n_gpus=0,
         cpus_per_task=16,
@@ -48,7 +48,7 @@ def submit_graph_interp(
         comment=decomposition_id,
     )
     script_content = generate_script(slurm_config, cmd)
-    result = submit_slurm_job(script_content, "param-decomp-graph-interp")
+    result = submit_slurm_job(script_content, "pd-graph-interp")
 
     logger.section("Graph interp job submitted")
     logger.values(

@@ -1,6 +1,6 @@
 """Harvest method adapters: method-specific logic for the generic harvest pipeline.
 
-Each decomposition method (SPD, CLT, MOLT, Transcoder) provides an adapter that knows how to:
+Each decomposition method (PD, CLT, MOLT, Transcoder) provides an adapter that knows how to:
 - Load the model and build a dataloader
 - Compute firings and activations from a batch (harvest_fn)
 - Report layer structure and vocab size
@@ -37,7 +37,7 @@ def adapter_from_config(method_config: DecompositionMethodHarvestConfig) -> Deco
 def adapter_from_id(decomposition_id: str) -> DecompositionAdapter:
     """Construct an adapter from a decomposition ID (e.g. "s-abc123", "tc-1a2b3c4d").
 
-    For SPD runs, the ID is sufficient. For other methods, recovers the full
+    For PD runs, the ID is sufficient. For other methods, recovers the full
     method config from the harvest DB (which is always populated before downstream
     steps like autointerp run).
     """
@@ -57,7 +57,7 @@ def _load_method_config(decomposition_id: str) -> DecompositionMethodHarvestConf
     repo = HarvestRepo.open_most_recent(decomposition_id)
     assert repo is not None, (
         f"No harvest data found for {decomposition_id!r}. "
-        f"Run param-decomp-harvest first to populate the method config."
+        f"Run pd-harvest first to populate the method config."
     )
     config_dict = repo.get_config()
     method_config_raw = config_dict["method_config"]

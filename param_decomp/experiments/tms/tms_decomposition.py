@@ -1,4 +1,4 @@
-"""Run spd on a TMS model.
+"""Run PD on a TMS model.
 
 Note that the first instance index is fixed to the identity matrix. This is done so we can compare
 the losses of the "correct" solution during training.

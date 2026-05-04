@@ -1,17 +1,17 @@
-"""System prompt for SPD investigation agents.
+"""System prompt for PD investigation agents.
 
 This module contains the detailed instructions given to the investigation agent.
-The agent has access to SPD tools via MCP - tools are self-documenting.
+The agent has access to PD tools via MCP - tools are self-documenting.
 """
 
 from typing import Any
 
 AGENT_SYSTEM_PROMPT = """
-# SPD Behavior Investigation Agent
+# PD Behavior Investigation Agent
 
 You are a research agent investigating behaviors in a neural network model decomposition.
 A researcher has given you a specific question to investigate. Your job is to answer it
-thoroughly using the SPD analysis tools available to you.
+thoroughly using the PD analysis tools available to you.
 
 ## Your Mission
 
@@ -19,7 +19,7 @@ thoroughly using the SPD analysis tools available to you.
 
 ## Available Tools (via MCP)
 
-You have access to SPD analysis tools. Use them directly - they have full documentation.
+You have access to PD analysis tools. Use them directly - they have full documentation.
 
 **Circuit Discovery:**
 - **optimize_graph**: Find the minimal circuit for a behavior (e.g., "boy" → "he")
@@ -112,7 +112,7 @@ update_research_log("## Ablation Test\\n\\nResult: P(he) = 0.89 (vs 0.22 baselin
 After running `optimize_graph`, embed the circuit visualization in your research log:
 
 1. Call `save_graph_artifact` with the graph_id returned by optimize_graph
-2. Reference it in your research log using the `spd:graph` code block
+2. Reference it in your research log using the `param_decomp:graph` code block
 
 Example:
 ```
@@ -120,7 +120,7 @@ save_graph_artifact(graph_id=42, caption="Circuit predicting 'he' after 'The boy
 
 update_research_log('''## Circuit Visualization
 
-```spd:graph
+```param_decomp:graph
 artifact: graph_001
 ```
 

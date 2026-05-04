@@ -15,7 +15,7 @@ def main(
     n_gpus: int = 1,
     partition: str = DEFAULT_PARTITION_NAME,
     time: str = "72:00:00",
-    job_name: str = "param-decomp-pretrain",
+    job_name: str = "pd-pretrain",
     local: bool = False,
 ) -> None:
     """Submit pretraining job to SLURM or run locally.
@@ -89,7 +89,7 @@ def _submit_slurm(
 
 
 def cli() -> None:
-    """CLI entry point for param-decomp-pretrain command."""
+    """CLI entry point for pd-pretrain command."""
     import fire
 
     fire.Fire(main)

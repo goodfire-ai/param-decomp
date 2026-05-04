@@ -24,7 +24,7 @@ from param_decomp.utils.general_utils import resolve_class, set_seed
 
 @pytest.mark.slow
 def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
-    """Test that SPD decomposition works on for GPT-2"""
+    """Test that PD works for GPT-2"""
     set_seed(0)
     device = "cpu"
 

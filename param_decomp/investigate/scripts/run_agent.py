@@ -3,7 +3,7 @@
 This script:
 1. Reads the research question from the investigation metadata
 2. Starts the app backend with an isolated database
-3. Loads the SPD run and fetches model architecture info
+3. Loads the PD run and fetches model architecture info
 4. Configures MCP server for Claude Code
 5. Launches Claude Code with the investigation question
 6. Handles cleanup on exit

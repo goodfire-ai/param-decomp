@@ -181,7 +181,7 @@ def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
     """Parse various W&B run reference formats into (entity, project, run_id).
 
     Accepts:
-    - "s-xxxxxxxx" (bare SPD run ID, assumes goodfire/spd)
+    - "s-xxxxxxxx" (bare PD run ID, assumes goodfire/spd)
     - "entity/project/runId" (compact form)
     - "entity/project/runs/runId" (with /runs/)
     - "wandb:entity/project/runId" (with wandb: prefix)
@@ -613,7 +613,7 @@ def create_view_and_report(
     report_url: str | None = None
     if report_cfg is not None and len(experiments) > 1:
         report_url = create_wandb_report(
-            report_title=report_cfg.report_title or f"SPD Launch Report - {launch_id}",
+            report_title=report_cfg.report_title or f"PD Launch Report - {launch_id}",
             launch_id=launch_id,
             branch_name=report_cfg.branch,
             commit_hash=report_cfg.commit_hash,

@@ -1,9 +1,9 @@
 """CLI entry point for investigation SLURM launcher.
 
 Usage:
-    param-decomp-investigate <wandb_path> "<prompt>"
-    param-decomp-investigate <wandb_path> @prompt.txt
-    param-decomp-investigate <wandb_path> "<prompt>" --max_turns 30
+    pd-investigate <wandb_path> "<prompt>"
+    pd-investigate <wandb_path> @prompt.txt
+    pd-investigate <wandb_path> "<prompt>" --max_turns 30
 """
 
 from pathlib import Path
@@ -31,7 +31,7 @@ def main(
     """Launch a single investigation agent for a specific question.
 
     Args:
-        wandb_path: WandB run path for the SPD decomposition to investigate.
+        wandb_path: WandB run path for the PD decomposition to investigate.
         prompt: The research question, or @filepath to read from a file.
         context_length: Context length for prompts (default 128).
         max_turns: Maximum agentic turns (default 50, prevents runaway).

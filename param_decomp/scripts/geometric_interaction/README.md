@@ -4,7 +4,7 @@ Analyses how much components within the same module geometrically interfere with
 
 ## Background
 
-In SPD, each component in a module has a U matrix (shape `[C, d_out]`) and V matrix (shape `[d_in, C]`). The weight contribution of component `i` is the rank-one outer product `V_i @ U_i`. When two components are simultaneously active, their U vectors both contribute to the output — so if `|U_i|` and `|U_j|` point in similar directions, component `i`'s activation will bleed into the subspace that component `j` occupies.
+In PD, each component in a module has a U matrix (shape `[C, d_out]`) and V matrix (shape `[d_in, C]`). The weight contribution of component `i` is the rank-one outer product `V_i @ U_i`. When two components are simultaneously active, their U vectors both contribute to the output — so if `|U_i|` and `|U_j|` point in similar directions, component `i`'s activation will bleed into the subspace that component `j` occupies.
 
 This script quantifies that overlap (Geometric Interaction Strength) and compares it against empirical coactivation statistics from harvest data.
 
@@ -107,5 +107,5 @@ python param_decomp/scripts/geometric_interaction/geometric_interaction.py \
 ## Prerequisites
 
 - The model checkpoint must be cached locally (download happens automatically for wandb paths)
-- Harvest must have been run on the model (`param-decomp-harvest`) with correlation data present
+- Harvest must have been run on the model (`pd-harvest`) with correlation data present
 - No GPU required — everything runs on CPU

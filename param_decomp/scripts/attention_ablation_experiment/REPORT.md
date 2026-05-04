@@ -3,8 +3,8 @@
 ## Overview
 
 The script runs two types of experiments:
-1. **Head ablation**: Zero out specific attention heads in the *target model* (no SPD involved)
-2. **Component ablation**: Zero out specific SPD parameter components within attention projections (q/k/v/o\_proj)
+1. **Head ablation**: Zero out specific attention heads in the *target model* (no PD involved)
+2. **Component ablation**: Zero out specific PD components within attention projections (q/k/v/o\_proj)
 
 For each, it does a baseline forward pass and an ablated forward pass, captures attention patterns from both, and compares logits.
 
@@ -12,7 +12,7 @@ For each, it does a baseline forward pass and an ablated forward pass, captures 
 
 ## Head Ablation
 
-**Model used:** The raw pretrained `LlamaSimpleMLP` target model, loaded independently — no SPD model involved.
+**Model used:** The raw pretrained `LlamaSimpleMLP` target model, loaded independently — no PD model involved.
 
 **Mechanism:** The `patched_attention_forward` context manager monkey-patches every `CausalSelfAttention.forward` method. The patched forward:
 
@@ -34,11 +34,11 @@ For each, it does a baseline forward pass and an ablated forward pass, captures 
 
 ## Component Ablation — Deterministic Mode
 
-**Models used:** The SPD `ComponentModel` wrapping the target model. `target_model = spd_model.target_model` — same instance.
+**Models used:** The PD `ComponentModel` wrapping the target model. `target_model = spd_model.target_model` — same instance.
 
 **Mechanism:**
 
-1. **Mask construction**: For every module in the SPD model, creates a mask tensor of shape `(batch, C)` where `C` is the number of components. Baseline: all ones. Ablated: all ones except the target component indices are set to 0.
+1. **Mask construction**: For every module in the PD model, creates a mask tensor of shape `(batch, C)` where `C` is the number of components. Baseline: all ones. Ablated: all ones except the target component indices are set to 0.
 
 2. These are wrapped via `make_mask_infos()` into `ComponentsMaskInfo` objects (containing `component_mask` and `routing_mask="all"`).
 
@@ -47,7 +47,7 @@ For each, it does a baseline forward pass and an ablated forward pass, captures 
    - Instead of using the original module output, it calls `components(x, mask=component_mask)` which computes: **`output = sum_c(mask[c] * outer(U[c], V[:, c]) @ x)`** — i.e. the reconstructed output is a masked sum of rank-1 component contributions
    - With `routing_mask="all"`, *all positions* use the component reconstruction (not the original module)
 
-4. The `patched_attention_forward` context manager is also active on `target_model` (same instance), so it captures attention patterns from within the attention block. The q/k/v projections fire through SPD's hooks (producing component-masked outputs), then the patched attention forward computes softmax attention manually.
+4. The `patched_attention_forward` context manager is also active on `target_model` (same instance), so it captures attention patterns from within the attention block. The q/k/v projections fire through PD hooks (producing component-masked outputs), then the patched attention forward computes softmax attention manually.
 
 **What "ablating a component" means here**: Setting `mask[c] = 0` removes that component's rank-1 contribution from the module's reconstructed weight matrix. With all-ones mask: `W_recon = sum_c(U[c] V[c]^T)`. With component `c` zeroed: `W_recon = sum_{i!=c}(U[i] V[i]^T)`.
 
@@ -121,4 +121,4 @@ This is `sum_pos sum_vocab p_baseline * log(p_baseline / p_ablated) / n_position
 
 5. **Head ablation zeros post-attention, not pre-attention**: The head still computes QKV and attention weights. Only its contribution to the residual stream (via `o_proj`) is zeroed. This is a standard choice (same as what TransformerLens does) but worth noting.
 
-6. **Component ablation in deterministic mode uses all-ones baseline**: This means the baseline is the SPD reconstruction `W = sum_c(U[c]V[c]^T)`, not the original target model weights. If the reconstruction isn't perfect, the baseline already differs from the original model.
+6. **Component ablation in deterministic mode uses all-ones baseline**: This means the baseline is the PD reconstruction `W = sum_c(U[c]V[c]^T)`, not the original target model weights. If the reconstruction isn't perfect, the baseline already differs from the original model.

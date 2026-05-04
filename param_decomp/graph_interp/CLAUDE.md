@@ -6,7 +6,7 @@ Context-aware component labeling using network graph structure. Unlike standard 
 
 ```bash
 # Via SLURM (standalone)
-param-decomp-graph-interp <decomposition_id> --config config.yaml
+pd-graph-interp <decomposition_id> --config config.yaml
 
 # Direct execution
 python -m param_decomp.graph_interp.scripts.run <decomposition_id> --config_json '{...}'
@@ -55,7 +55,7 @@ PARAM_DECOMP_OUT_DIR/graph_interp/<decomposition_id>/
 | `repo.py` | `GraphInterpRepo` — read-only access to results |
 | `scripts/run.py` | CLI entry point (called by SLURM) |
 | `scripts/run_slurm.py` | SLURM submission |
-| `scripts/run_slurm_cli.py` | Thin CLI wrapper for `param-decomp-graph-interp` |
+| `scripts/run_slurm_cli.py` | Thin CLI wrapper for `pd-graph-interp` |
 
 ## Dependencies
 
@@ -68,4 +68,4 @@ PARAM_DECOMP_OUT_DIR/graph_interp/<decomposition_id>/
 
 - 0 GPUs, 16 CPUs, 240GB memory (CPU-only, LLM API calls)
 - Depends on both harvest merge AND attribution merge jobs
-- Entry point: `param-decomp-graph-interp`
+- Entry point: `pd-graph-interp`

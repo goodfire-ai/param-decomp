@@ -1,6 +1,6 @@
-# SPD Visualization App
+# PD Visualization App
 
-A lightweight web app for visualizing SPD decomposition results. Built with Svelte 5 and FastAPI.
+A lightweight web app for visualizing PD results. Built with Svelte 5 and FastAPI.
 
 ## Quick Start
 

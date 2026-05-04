@@ -22,7 +22,7 @@ from param_decomp.utils.wandb_utils import (
 
 @dataclass
 class RunInfo[T]:
-    """Base class for run information from a training run of a target model or SPD.
+    """Base class for run information from a training run of a target model or PD.
 
     Subclasses should set the following class variables:
         - config_class: The pydantic config class to instantiate

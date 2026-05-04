@@ -1,6 +1,6 @@
-# Contributing to SPD
+# Contributing to PD
 
-Thank you for your interest in contributing to the SPD project! Please follow these guidelines to ensure a smooth contribution process.
+Thank you for your interest in contributing to PD! Please follow these guidelines to ensure a smooth contribution process.
 
 ## Pull Request Guidelines
 

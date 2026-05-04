@@ -26,7 +26,7 @@ from param_decomp.utils.general_utils import set_seed
 
 @pytest.mark.slow
 def test_ih_transformer_decomposition_happy_path(tmp_path: Path) -> None:
-    """Test that SPD decomposition works on a 2-layer, 1 head attention-only Transformer model"""
+    """Test that PD works on a 2-layer, 1 head attention-only Transformer model"""
     set_seed(0)
     device = "cpu"
 

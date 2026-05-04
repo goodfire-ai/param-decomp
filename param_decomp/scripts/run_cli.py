@@ -15,7 +15,7 @@ def main(
     dp: int | None = None,
     project: str = DEFAULT_PROJECT_NAME,
 ) -> None:
-    """Run SPD experiments on SLURM cluster with optional sweeps.
+    """Run PD experiments on SLURM cluster with optional sweeps.
 
     Available experiments:
     - tms_5-2
@@ -35,28 +35,28 @@ def main(
     Examples:
 
     # Run subset of experiments (no sweep)
-    param-decomp-run --experiments tms_5-2,resid_mlp1
+    pd-run --experiments tms_5-2,resid_mlp1
 
     # Run parameter sweep on a subset of experiments with default sweep_params.yaml
-    param-decomp-run --experiments tms_5-2,resid_mlp2 --sweep
+    pd-run --experiments tms_5-2,resid_mlp2 --sweep
 
     # Run parameter sweep on an experiment with custom sweep params at param_decomp/scripts/my_sweep.yaml
-    param-decomp-run --experiments tms_5-2 --sweep my_sweep.yaml
+    pd-run --experiments tms_5-2 --sweep my_sweep.yaml
 
     # Run all experiments (no sweep)
-    param-decomp-run
+    pd-run
 
     # Use custom W&B project
-    param-decomp-run --experiments tms_5-2 --project my-spd-project
+    pd-run --experiments tms_5-2 --project my-pd-project
 
     # Run all experiments on CPU
-    param-decomp-run --experiments tms_5-2 --cpu
+    pd-run --experiments tms_5-2 --cpu
 
     # Run with data parallelism over 4 GPUs (single node)
-    param-decomp-run --experiments ss_llama_simple --dp 4
+    pd-run --experiments ss_llama_simple --dp 4
 
     # Run with multi-node training over 16 GPUs (2 nodes x 8 GPUs each)
-    param-decomp-run --experiments ss_llama_simple --dp 16
+    pd-run --experiments ss_llama_simple --dp 16
 
     """
     from param_decomp.scripts.run import launch_slurm_run

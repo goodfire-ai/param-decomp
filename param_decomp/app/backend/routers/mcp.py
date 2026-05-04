@@ -1,7 +1,7 @@
 """MCP (Model Context Protocol) endpoint for Claude Code integration.
 
 This router implements the MCP JSON-RPC protocol over HTTP, allowing Claude Code
-to use SPD tools directly with proper schemas and streaming progress.
+to use PD tools directly with proper schemas and streaming progress.
 
 MCP Spec: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports
 """
@@ -396,9 +396,9 @@ explaining what you investigated and what you found.""",
         description="""Save a graph as an artifact for inclusion in your research report.
 
 After calling optimize_graph and getting a graph_id, call this to save the graph
-as an artifact. Then reference it in your research log using the spd:graph syntax:
+as an artifact. Then reference it in your research log using the param_decomp:graph syntax:
 
-```spd:graph
+```param_decomp:graph
 artifact: graph_001
 ```
 
@@ -1357,7 +1357,7 @@ def _handle_initialize(_params: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "protocolVersion": MCP_PROTOCOL_VERSION,
         "capabilities": {"tools": {}},
-        "serverInfo": {"name": "param-decomp-app", "version": "1.0.0"},
+        "serverInfo": {"name": "pd-app", "version": "1.0.0"},
     }
 
 
@@ -1408,7 +1408,7 @@ async def mcp_endpoint(request: Request):
             result = _handle_initialize(mcp_request.params)
             return JSONResponse(
                 content=MCPResponse(id=mcp_request.id, result=result).model_dump(exclude_none=True),
-                headers={"Mcp-Session-Id": "param-decomp-session"},
+                headers={"Mcp-Session-Id": "pd-session"},
             )
 
         elif mcp_request.method == "notifications/initialized":

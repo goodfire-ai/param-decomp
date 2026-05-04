@@ -156,7 +156,7 @@ def plot_multi_pair_frac(
             t = rng.randint(max_offset_show, min(sample_seq_len, 128) - 1)
             bs = (input_ids.shape[0], input_ids.shape[1])
 
-            # SPD baseline (shared across all pairs)
+            # PD baseline (shared across all pairs)
             baseline_components = parse_components(f"{q_path}:0,{k_path}:0")
             cp_baseline = _build_prev_token_component_positions(baseline_components, t)
             baseline_masks, _ = _build_deterministic_masks_multi_pos(

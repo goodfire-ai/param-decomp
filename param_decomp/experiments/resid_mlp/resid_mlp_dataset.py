@@ -25,7 +25,7 @@ class ResidMLPDataset(SparseFeatureDataset):
         ] = "at_least_zero_active",
         synced_inputs: list[list[int]] | None = None,
     ):
-        """Sparse feature dataset for use in training a resid_mlp model or running SPD on it.
+        """Sparse feature dataset for use in training a resid_mlp model or running PD on it.
 
         If calc_labels is True, labels are of the form `act_fn(coeffs*x) + x` or `abs(coeffs*x)`,
         depending on label_type, act_fn_name, and label_fn_seed.

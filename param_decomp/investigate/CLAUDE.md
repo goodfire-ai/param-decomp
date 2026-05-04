@@ -1,12 +1,12 @@
 # Investigation Module
 
-Launch a Claude Code agent to investigate a specific research question about an SPD model decomposition.
+Launch a Claude Code agent to investigate a specific research question about a PD model decomposition.
 
 ## Usage
 
 ```bash
-param-decomp-investigate <wandb_path> "How does the model handle gendered pronouns?"
-param-decomp-investigate <wandb_path> "What circuit handles verb agreement?" --max_turns 30 --time 4:00:00
+pd-investigate <wandb_path> "How does the model handle gendered pronouns?"
+pd-investigate <wandb_path> "What circuit handles verb agreement?" --max_turns 30 --time 4:00:00
 ```
 
 For parallel investigations, run the command multiple times with different prompts.
@@ -21,17 +21,17 @@ param_decomp/investigate/
 ├── agent_prompt.py       # System prompt template with model info injection
 └── scripts/
     ├── __init__.py
-    ├── run_slurm_cli.py  # CLI entry point (param-decomp-investigate)
+    ├── run_slurm_cli.py  # CLI entry point (pd-investigate)
     ├── run_slurm.py      # SLURM submission logic
     └── run_agent.py      # Worker script (runs in SLURM job)
 ```
 
 ## How It Works
 
-1. `param-decomp-investigate` creates output dir, metadata, git snapshot, and submits a single SLURM job
+1. `pd-investigate` creates output dir, metadata, git snapshot, and submits a single SLURM job
 2. The SLURM job runs `run_agent.py` which:
    - Starts an isolated FastAPI backend with MCP support
-   - Loads the SPD run onto GPU
+   - Loads the PD run onto GPU
    - Fetches model architecture info
    - Generates the agent prompt (research question + model context + methodology)
    - Launches Claude Code with MCP tools
@@ -39,7 +39,7 @@ param_decomp/investigate/
 
 ## MCP Tools
 
-The agent accesses all SPD functionality via MCP at `/mcp`:
+The agent accesses all PD functionality via MCP at `/mcp`:
 
 **Circuit Discovery:**
 - `optimize_graph` — Find minimal circuit for a behavior (streams progress)
@@ -93,7 +93,7 @@ The backend runs with `PARAM_DECOMP_INVESTIGATION_DIR` set to the investigation 
 ## Configuration
 
 CLI arguments:
-- `wandb_path` — Required. WandB run path for the SPD decomposition.
+- `wandb_path` — Required. WandB run path for the PD decomposition.
 - `prompt` — Required. Research question or investigation directive.
 - `--context_length` — Token context length (default: 128)
 - `--max_turns` — Max Claude turns (default: 50, prevents runaway)

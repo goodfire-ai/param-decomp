@@ -3,8 +3,8 @@
 Thin wrapper for fast --help. Heavy imports deferred to run_slurm.py.
 
 Usage:
-    param-decomp-harvest <wandb_path> --n_gpus 8
-    param-decomp-harvest <wandb_path> --config harvest_config.yaml
+    pd-harvest <wandb_path> --n_gpus 8
+    pd-harvest <wandb_path> --config harvest_config.yaml
 """
 
 import fire
@@ -19,7 +19,7 @@ def harvest(
     Args:
         wandb_path: WandB run path for the target decomposition run.
         config: Path to HarvestSlurmConfig YAML/JSON. Uses built-in defaults if omitted.
-        job_suffix: Optional suffix for SLURM job names (e.g., "v2" -> "param-decomp-harvest-v2").
+        job_suffix: Optional suffix for SLURM job names (e.g., "v2" -> "pd-harvest-v2").
     """
     from param_decomp.harvest.config import HarvestSlurmConfig
     from param_decomp.harvest.scripts.run_slurm import submit_harvest

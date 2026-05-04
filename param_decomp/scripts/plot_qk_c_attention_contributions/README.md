@@ -1,10 +1,10 @@
 # QK Component Static Interaction Strengths
 
-Analyzes how SPD components in query and key projections interact to produce attention patterns, using only learned weights (no activations needed at inference time). The central output is a **standardized static interaction strength** metric that quantifies, for each (query component, key component) pair, how strongly they contribute to the attention logit at each relative position offset.
+Analyzes how PD components in query and key projections interact to produce attention patterns, using only learned weights (no activations needed at inference time). The central output is a **standardized static interaction strength** metric that quantifies, for each (query component, key component) pair, how strongly they contribute to the attention logit at each relative position offset.
 
 ## Motivation
 
-In an SPD-decomposed attention layer, the query and key projections are each split into components. Each component has an input-side vector V (which determines *when* it activates) and an output-side vector U (which determines *what* it writes to the query/key space). By taking dot products between Q-component U vectors and K-component U vectors -- accounting for RoPE rotations -- we can measure pairwise static interaction strengths purely from weights.
+In a PD attention layer, the query and key projections are each split into components. Each component has an input-side vector V (which determines *when* it activates) and an output-side vector U (which determines *what* it writes to the query/key space). By taking dot products between Q-component U vectors and K-component U vectors -- accounting for RoPE rotations -- we can measure pairwise static interaction strengths purely from weights.
 
 This is useful for understanding:
 - Which component pairs have strong interaction at specific relative positions
@@ -89,7 +89,7 @@ python -m param_decomp.scripts.plot_qk_c_attention_contributions.plot_qk_c_atten
 | `plots` | `all` | Comma-separated subset of plot types (see below), or `all` |
 | `recompute` | `False` | Force recomputation even if cached results exist |
 
-**Prerequisites:** The run must have harvest data available (run `param-decomp-harvest` first). The model must be a `LlamaSimpleMLP` with non-adjacent-pairs RoPE layout.
+**Prerequisites:** The run must have harvest data available (run `pd-harvest` first). The model must be a `LlamaSimpleMLP` with non-adjacent-pairs RoPE layout.
 
 ## Plot Types
 

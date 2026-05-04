@@ -1,6 +1,6 @@
 """Worker script for dataset attribution computation.
 
-Called by SLURM jobs submitted via param-decomp-attributions.
+Called by SLURM jobs submitted via pd-attributions.
 
 Usage:
     python -m param_decomp.dataset_attributions.scripts.run_worker <wandb_path> \

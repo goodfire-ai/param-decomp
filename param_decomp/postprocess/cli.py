@@ -6,15 +6,15 @@ Uses argparse instead of Fire because SLURM job IDs like "311644_1" get
 parsed by Fire as integers (underscore is a numeric separator in Python).
 
 Usage:
-    param-decomp-postprocess config.yaml
-    param-decomp-postprocess config.yaml --dependency 311644_1
+    pd-postprocess config.yaml
+    pd-postprocess config.yaml --dependency 311644_1
 """
 
 import argparse
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Submit all postprocessing jobs for an SPD run.")
+    parser = argparse.ArgumentParser(description="Submit all postprocessing jobs for a PD run.")
     parser.add_argument("config", help="Path to PostprocessConfig YAML.")
     parser.add_argument(
         "--dependency",

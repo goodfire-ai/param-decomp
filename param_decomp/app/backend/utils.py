@@ -1,4 +1,4 @@
-"""Shared utilities for the SPD backend."""
+"""Shared utilities for the PD backend."""
 
 import functools
 import time

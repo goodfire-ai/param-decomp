@@ -1,4 +1,4 @@
-"""Measure effects of ablating attention heads or SPD parameter components.
+"""Measure effects of ablating attention heads or PD components.
 
 Supports three ablation modes for components:
   - deterministic: all-ones masks as baseline, zero out target components
@@ -1098,7 +1098,7 @@ def _run_prev_token_head_restricted_component_ablation(
     )
     batch_shape = (input_ids.shape[0], input_ids.shape[1])
 
-    # All-ones baseline masks (SPD model reconstructs original output)
+    # All-ones baseline masks (PD model reconstructs original output)
     baseline_masks, _ = _build_deterministic_masks(spd_model, [], batch_shape, input_ids.device, t)
     val_all = [(layer, t - 1)]
     val_specific = [(layer, head, t - 1) for layer, head in value_heads]

@@ -1,6 +1,6 @@
 """Geometric interaction strength vs coactivation analysis.
 
-For each module in an SPD model, this script computes:
+For each module in a PD model, this script computes:
 1. Geometric interaction strength (GIS): how much each component's activation
    geometrically interferes with others, based on the absolute left singular
    vectors (U matrices). GIS(i→j) = |U_i|^T|U_j| / ||U_i||^2
@@ -40,7 +40,7 @@ from param_decomp.utils.run_utils import save_file
 class GeometricInteractionConfig(BaseConfig):
     """Configuration for geometric interaction analysis."""
 
-    model_path: str = Field(..., description="Path to SPD model (wandb: or local)")
+    model_path: str = Field(..., description="Path to PD model (wandb: or local)")
     harvest_id: str | None = Field(
         None,
         description="Harvest ID (e.g. 'h-20260319_121635'). Uses latest if None.",

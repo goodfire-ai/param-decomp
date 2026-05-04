@@ -39,7 +39,7 @@ NONLINEAR_MODULE_PATTERNS = ["down_proj", "o_proj"]
 
 
 class InteractionAnalysisConfig(BaseConfig):
-    model_path: str = Field(..., description="wandb: or local path to SPD model")
+    model_path: str = Field(..., description="wandb: or local path to PD model")
     harvest_id: str | None = Field(None, description="CI harvest ID for alive filtering")
     alive_density_threshold: float = Field(default=0.001)
     module_filter: list[str] = Field(

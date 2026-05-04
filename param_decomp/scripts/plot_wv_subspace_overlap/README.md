@@ -34,7 +34,7 @@ python -m param_decomp.scripts.plot_wv_subspace_overlap.plot_wv_subspace_overlap
 
 ### `analyze_ov_subspace_semantics.py` — Semantic analysis
 
-Identifies which SPD V and O components most align with each head's OV subspace. Requires `plot_wv_subspace_overlap.py` to have been run first (uses saved `.npy` files). Auto-discovers any K-filtered SVD data and produces a variant for each.
+Identifies which PD V and O components most align with each head's OV subspace. Requires `plot_wv_subspace_overlap.py` to have been run first (uses saved `.npy` files). Auto-discovers any K-filtered SVD data and produces a variant for each.
 
 ```bash
 python -m param_decomp.scripts.plot_wv_subspace_overlap.analyze_ov_subspace_semantics \
@@ -45,7 +45,7 @@ python -m param_decomp.scripts.plot_wv_subspace_overlap.analyze_ov_subspace_sema
 
 ### Step 1: Collect activations
 
-Run the pretrained target model (not the SPD decomposition) on dataset batches and collect the post-RMSNorm residual stream activations at the target layer. These are the inputs that the attention layer sees. Shape: `(total_tokens, d_model)`.
+Run the pretrained target model (not the PD model) on dataset batches and collect the post-RMSNorm residual stream activations at the target layer. These are the inputs that the attention layer sees. Shape: `(total_tokens, d_model)`.
 
 ### Step 2: Compute data SVDs
 
@@ -128,7 +128,7 @@ The data weighting in Step 5 uses all tokens. But the OV circuit reads from key/
 
 To filter:
 
-1. Run the SPD ComponentModel on the data with `cache_type="input"`
+1. Run the PD ComponentModel on the data with `cache_type="input"`
 2. Compute causal importance (CI) for the specified K component (using `sampling="continuous"`)
 3. Keep only tokens where the K component has CI > 0.5
 4. Compute PCA on the filtered activations
@@ -138,13 +138,13 @@ This produces a separate set of OV overlap figures and saves filtered SVD data f
 
 ### Step 8: Component-head amplification
 
-For each SPD value component `c` and head `h`, compute `||W_OV^h v_hat_c||` where `v_hat_c = V[:, c] / ||V[:, c]||` — how much the head's OV circuit amplifies the component's read direction (normalized to unit length). Plotted as a `(n_components x n_heads)` heatmap sorted by max amplification.
+For each PD value component `c` and head `h`, compute `||W_OV^h v_hat_c||` where `v_hat_c = V[:, c] / ||V[:, c]||` — how much the head's OV circuit amplifies the component's read direction (normalized to unit length). Plotted as a `(n_components x n_heads)` heatmap sorted by max amplification.
 
 Note: the plot function is named `_plot_component_head_amplification` with a `v_weight_per_head` parameter name (a legacy from when it only analyzed W_V), but at runtime it receives `ov_weight_per_head`.
 
 ### Step 9: Subspace semantics (`analyze_ov_subspace_semantics.py`)
 
-For each head, identifies which SPD components are most aligned with its OV subspace.
+For each head, identifies which PD components are most aligned with its OV subspace.
 
 **Read-side** (V components): Each v_proj component has weight `U_v[c] @ V_v[c]^T`. Since U and V are unnormalized, we scale the read vector by the norm of the other factor to reflect the component's true contribution:
 ```

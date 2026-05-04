@@ -26,7 +26,7 @@ from param_decomp.utils.general_utils import set_seed
 
 
 def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
-    """Test that SPD decomposition works on a TMS model."""
+    """Test that PD works on a TMS model."""
     set_seed(0)
     device = "cpu"
 
@@ -139,7 +139,7 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
     )
 
     # The test passes if optimize runs without errors
-    print("TMS SPD optimization completed successfully")
+    print("TMS PD optimization completed successfully")
 
     # Basic assertion to ensure the test ran
     assert True, "Test completed successfully"

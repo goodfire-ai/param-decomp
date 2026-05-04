@@ -1,1 +1,1 @@
-"""Auto-interpretation pipeline for SPD components."""
+"""Auto-interpretation pipeline for PD components."""

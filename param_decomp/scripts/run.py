@@ -1,6 +1,6 @@
-"""SPD launcher for experiments with sweeps and SLURM orchestration.
+"""PD launcher for experiments with sweeps and SLURM orchestration.
 
-Provides a full-featured entry point for launching SPD experiments on the cluster, supporting
+Provides a full-featured entry point for launching PD experiments on the cluster, supporting
 parameter sweeps, multi-node training, git snapshots, and W&B workspace views/reports.
 
 For simpler local execution without SLURM, use simple.py instead.
@@ -51,7 +51,7 @@ def launch_slurm_run(
     dp: int | None,
     project: str,
 ) -> None:
-    """Run SPD experiments on SLURM cluster with optional sweeps.
+    """Run PD experiments on SLURM cluster with optional sweeps.
 
     Args:
         experiments: Comma-separated experiment names (default: all experiments)
@@ -99,7 +99,7 @@ def launch_slurm_run(
             commit_hash=commit_hash,
         )
 
-    slurm_job_name = f"param-decomp-{job_suffix or get_max_expected_runtime(experiments_list)}"
+    slurm_job_name = f"pd-{job_suffix or get_max_expected_runtime(experiments_list)}"
 
     wandb_urls = [get_wandb_run_url(project, job.run_id) for job in training_jobs]
 

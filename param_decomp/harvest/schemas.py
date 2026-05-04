@@ -32,7 +32,7 @@ class HarvestBatch:
     which returns one of these. The harvest loop then feeds it to the Harvester.
 
     firings/activations are keyed by layer name. activations values are keyed by
-    activation type (e.g. "causal_importance", "component_activation" for SPD;
+    activation type (e.g. "causal_importance", "component_activation" for PD;
     just "activation" for SAEs).
     """
 

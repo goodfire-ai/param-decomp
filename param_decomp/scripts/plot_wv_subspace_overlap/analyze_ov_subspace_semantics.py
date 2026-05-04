@@ -1,7 +1,7 @@
 """Identify which V and O components align with each head's OV read/write subspaces.
 
 Loads saved W_OV matrices from plot_wv_subspace_overlap and computes alignment scores
-between each head's OV circuit and the SPD component decomposition vectors. Outputs
+between each head's OV circuit and the PD component vectors. Outputs
 markdown files listing the top-aligned components per head with their autointerp labels.
 
 Produces variants:

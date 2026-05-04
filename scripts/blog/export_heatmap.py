@@ -1,6 +1,6 @@
 """Export editing KL heatmap data for the VPD blog post.
 
-Compares SPD analytical editing (0 training examples) vs LoRA baseline
+Compares PD analytical editing (0 training examples) vs LoRA baseline
 (rank-1, all training examples, lambda=10 KL regularization, 300 steps).
 
 Run from ~/spd:
@@ -98,7 +98,7 @@ def main() -> None:
     eval_tokens = [torch.tensor(ex.token_ids, device="cuda") for ex in eval_examples]
     baselines = get_probs(model, eval_tokens)
 
-    # SPD analytical edit
+    # PD analytical edit
     lm_head = model.target_model.lm_head
     assert isinstance(lm_head, torch.nn.Linear)
     unembed = lm_head.weight[HEATMAP_TARGET_TOKEN].detach().float()
@@ -106,7 +106,7 @@ def main() -> None:
 
     with u_replaced(model, HEATMAP_MODULE, HEATMAP_U_IDX, new_u) as spd_forward:
         spd_examples = export_diffs(spd_forward, baselines, eval_tokens, eval_examples, tok)
-    print(f"SPD: {len(spd_examples)} examples")
+    print(f"PD: {len(spd_examples)} examples")
 
     # LoRA baseline
     train_seqs = make_train_seqs(train_pool)
@@ -132,7 +132,7 @@ def main() -> None:
             "editing-kl-heatmap.json",
             {
                 "component": f"{HEATMAP_MODULE}:{HEATMAP_U_IDX}",
-                "method": "SPD analytical (alpha=3, 0 training examples)",
+                "method": "PD analytical (alpha=3, 0 training examples)",
                 "target_token": "o",
                 "examples": spd_examples,
             },

@@ -1,25 +1,25 @@
 # param_decomp/pretrain - Language Model Pretraining
 
 This module provides infrastructure for pretraining language models that can
-later be decomposed using SPD.
+later be decomposed using PD.
 
 ## Overview
 
 - **Purpose**: Train GPT-2 and Llama variants on SimpleStories or Pile datasets
 - **Output**: Models saved to `PARAM_DECOMP_OUT_DIR/target_models/`
-- **CLI**: `param-decomp-pretrain`
+- **CLI**: `pd-pretrain`
 
 ## CLI Usage
 
 ```bash
 # Submit to SLURM (default)
-param-decomp-pretrain --config_path param_decomp/pretrain/configs/pile_llama_simple_mlp_4L.yaml
+pd-pretrain --config_path param_decomp/pretrain/configs/pile_llama_simple_mlp_4L.yaml
 
 # Run locally
-param-decomp-pretrain --config_path ... --local
+pd-pretrain --config_path ... --local
 
 # Multi-GPU DDP training
-param-decomp-pretrain --config_path ... --n_gpus 4
+pd-pretrain --config_path ... --n_gpus 4
 
 ```
 
@@ -88,9 +88,9 @@ PARAM_DECOMP_OUT_DIR/target_models/
         └── ...
 ```
 
-## Integration with SPD
+## Integration with PD
 
-After training, models can be decomposed using SPD:
+After training, models can be decomposed using PD:
 
 ```yaml
 # In param_decomp/experiments/lm/*.yaml

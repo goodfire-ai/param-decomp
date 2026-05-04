@@ -103,7 +103,7 @@ def _build_baseline_mask_infos(
     spd_model: ComponentModel,
     device: torch.device,
 ) -> dict[str, ComponentsMaskInfo]:
-    """All-ones masks so the SPD model uses component reconstruction (not target passthrough)."""
+    """All-ones masks so the PD model uses component reconstruction."""
     masks = {name: torch.ones(1, c, device=device) for name, c in spd_model.module_to_c.items()}
     return make_mask_infos(masks)
 
@@ -166,14 +166,14 @@ def _build_conditions(
     seq_len = prompt_ids.shape[1]
     conditions: list[ConditionResult] = []
     TARGET = "Target model"
-    SPD = "SPD baseline"
+    PARAM_DECOMP = "PD baseline"
 
     def predict(**kwargs: Any) -> Prediction:
         return _predict_next_token(target_model, prompt_ids, **kwargs)
 
     # --- Baselines ---
     conditions.append((TARGET, predict(), TARGET))
-    conditions.append((SPD, predict(spd_model=spd_model), SPD))
+    conditions.append((PARAM_DECOMP, predict(spd_model=spd_model), PARAM_DECOMP))
 
     # --- Head ablation: zero head output at t ---
     if parsed_heads:
@@ -245,7 +245,7 @@ def _build_conditions(
             (
                 f"Full comp ({set_name})",
                 predict(spd_model=spd_model, mask_infos=ablated_masks),
-                SPD,
+                PARAM_DECOMP,
             )
         )
         if parsed_restrict_heads:
@@ -254,7 +254,7 @@ def _build_conditions(
                 (
                     f"Per-head {_head_label(parsed_restrict_heads)} ({set_name})",
                     predict(spd_model=spd_model, component_head_ablations=cha),
-                    SPD,
+                    PARAM_DECOMP,
                 )
             )
 

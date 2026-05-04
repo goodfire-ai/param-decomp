@@ -278,7 +278,7 @@
                     </button>
                 {:else}
                     <p class="empty-message">
-                        No investigations found. Run <code>param-decomp-investigate</code> to create one.
+                        No investigations found. Run <code>pd-investigate</code> to create one.
                     </p>
                 {/each}
             </div>

@@ -1,4 +1,4 @@
-"""Plot subcomponent-to-head Frobenius norm heatmaps from an SPD run.
+"""Plot subcomponent-to-head Frobenius norm heatmaps from a PD run.
 
 For each layer and attention projection (q/k/v/o_proj), produces a heatmap where:
   - x-axis: attention head index

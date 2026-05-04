@@ -72,7 +72,7 @@
             {#if username}
                 Hello, {username}
             {:else}
-                SPD Explorer
+                PD Explorer
             {/if}
         </h1>
 

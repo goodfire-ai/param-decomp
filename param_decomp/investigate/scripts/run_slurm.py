@@ -34,7 +34,7 @@ def launch_investigation(
 ) -> InvestigationResult:
     """Launch a single investigation agent via SLURM.
 
-    Creates a SLURM job that starts an isolated app backend, loads the SPD run,
+    Creates a SLURM job that starts an isolated app backend, loads the PD run,
     and launches a Claude Code agent with the given research question.
     """
     # Normalize wandb_path to canonical form (entity/project/run_id)
@@ -48,7 +48,7 @@ def launch_investigation(
     snapshot_branch, commit_hash = create_git_snapshot(inv_id)
 
     suffix = f"-{job_suffix}" if job_suffix else ""
-    job_name = f"param-decomp-investigate{suffix}"
+    job_name = f"pd-investigate{suffix}"
 
     metadata = {
         "inv_id": inv_id,

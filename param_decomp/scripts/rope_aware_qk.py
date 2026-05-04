@@ -1,4 +1,4 @@
-"""RoPE-aware Q-K dot product helpers for SPD component analysis scripts.
+"""RoPE-aware Q-K dot product helpers for PD component analysis scripts.
 
 Decomposes the RoPE-modulated dot product into content-aligned and cross-half
 coefficients, allowing evaluation at arbitrary relative position offsets:

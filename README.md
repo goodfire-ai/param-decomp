@@ -1,4 +1,4 @@
-# SPD - Stochastic Parameter Decomposition
+# PD
 
 **Note: The [spd-paper](https://github.com/goodfire-ai/param-decomp/tree/spd-paper) branch contains code used in the paper [Stochastic Parameter Decomposition](https://arxiv.org/abs/2506.20790). The main branch contains active work from Goodfire and collaborators since this paper's release. This is now an open source
 research project. Please feel free to view the issues (or add to them) and make a PR!**
@@ -16,7 +16,7 @@ make install  # To install the package (runs `pip install -e .`) and create user
 ## Usage
 Place your wandb information in a .env file. See .env.example for an example.
 
-The repository consists of several `experiments`, each of which containing scripts to run SPD,
+The repository consists of several `experiments`, each of which contains scripts to run PD,
 analyse results, and optionally a train a target model:
 - `param_decomp/experiments/tms` - Toy model of superposition
 - `param_decomp/experiments/resid_mlp` - Toy model of compressed computation and toy model of distributed
@@ -26,7 +26,7 @@ analyse results, and optionally a train a target model:
 - There is also a toy MLP memorization experiment at `feature/memorization-experiments` which has
   not been merged to `main` (much less effort has gone in to validating it).
 
-Note that the `lm` experiment allows for running SPD on any model from huggingface or that is
+Note that the `lm` experiment allows for running PD on any model from huggingface or that is
 accessible to the environment, provided that you only need to decompose `nn.Linear`, `nn.Embedding`
 or `transformers.modeling_utils.Conv1D` layers (other layer types are not yet supported, though
 these should cover most modules). See `param_decomp/experiments/lm/ss_gpt2_config.yaml` for an example which
@@ -38,32 +38,32 @@ wandb).
 
 The following CLI commands are available after installation:
 
-### `param-decomp-local` - Local Execution
+### `pd-local` - Local Execution
 
-Run a single SPD experiment locally without SLURM:
+Run a single PD experiment locally without SLURM:
 
 ```bash
-param-decomp-local tms_5-2           # Run on single GPU (default)
-param-decomp-local tms_5-2 --cpu     # Run on CPU
-param-decomp-local tms_5-2 --dp 4    # Run on 4 GPUs (single node DDP)
+pd-local tms_5-2           # Run on single GPU (default)
+pd-local tms_5-2 --cpu     # Run on CPU
+pd-local tms_5-2 --dp 4    # Run on 4 GPUs (single node DDP)
 ```
 
-### `param-decomp-run` - SLURM Cluster Execution
+### `pd-run` - SLURM Cluster Execution
 
 Run experiments on a SLURM cluster with git snapshots and W&B integration:
 
 ```bash
-param-decomp-run --experiments tms_5-2                    # Run a specific experiment
-param-decomp-run --experiments tms_5-2,resid_mlp1         # Run multiple experiments
-param-decomp-run                                          # Run all experiments
-param-decomp-run --experiments tms_5-2 --cpu              # Run on CPU
-param-decomp-run --experiments ss_llama_simple --dp 4     # Data parallelism (4 GPUs)
+pd-run --experiments tms_5-2                    # Run a specific experiment
+pd-run --experiments tms_5-2,resid_mlp1         # Run multiple experiments
+pd-run                                          # Run all experiments
+pd-run --experiments tms_5-2 --cpu              # Run on CPU
+pd-run --experiments ss_llama_simple --dp 4     # Data parallelism (4 GPUs)
 ```
 
 For running hyperparameter sweeps:
 
 ```bash
-param-decomp-run --experiments <experiment_name> --sweep --n_agents <n-agents> [--cpu]
+pd-run --experiments <experiment_name> --sweep --n_agents <n-agents> [--cpu]
 ```
 
 **Sweep parameters:**
@@ -91,7 +91,7 @@ param-decomp-run --experiments <experiment_name> --sweep --n_agents <n-agents> [
 
 ## Post-Processing Pipeline
 
-After training an SPD model, you can run several post-processing steps which create artifacts
+After training a PD model, you can run several post-processing steps which create artifacts
 that can be viewed in the app.
 
 Note, the default batch size for harvest and dataset attributions is 256, which works well for
@@ -103,7 +103,7 @@ configure `--n_gpus` based on how many gpus you have available. You can use any 
 First, collect component statistics (activation examples, correlations, token stats):
 
 ```bash
-param-decomp-harvest goodfire/spd/runs/abc123 --n_gpus 24
+pd-harvest goodfire/spd/runs/abc123 --n_gpus 24
 ```
 
 ### 2. Automated Interpretation
@@ -111,7 +111,7 @@ param-decomp-harvest goodfire/spd/runs/abc123 --n_gpus 24
 After harvesting, generate LLM interpretations of components:
 
 ```bash
-param-decomp-autointerp goodfire/spd/runs/abc123
+pd-autointerp goodfire/spd/runs/abc123
 ```
 
 Requires `OPENROUTER_API_KEY` env var.
@@ -121,7 +121,7 @@ Requires `OPENROUTER_API_KEY` env var.
 Compute component-to-component attribution strengths:
 
 ```bash
-param-decomp-attributions goodfire/spd/runs/abc123 --n_gpus 24
+pd-attributions goodfire/spd/runs/abc123 --n_gpus 24
 ```
 
 Can be run independently of harvest/autointerp.
@@ -132,7 +132,7 @@ Component clustering analysis is under development.
 
 ### Direct Script Execution
 
-SPD can also be run by executing any of the `*_decomposition.py` scripts defined in the experiment
+PD can also be run by executing any of the `*_decomposition.py` scripts defined in the experiment
 subdirectories, along with a corresponding config file:
 
 ```bash
@@ -156,7 +156,7 @@ settings, copy `.vscode/settings-example.json` to `.vscode/settings.json`.
 
 ## App
 
-This project contains an app for visualising and interpreting SPD decompositions. See the [README](./param_decomp/app/README.md).
+This project contains an app for visualising and interpreting PD decompositions. See the [README](./param_decomp/app/README.md).
 
 ### Contributing
 

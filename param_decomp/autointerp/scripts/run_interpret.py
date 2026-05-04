@@ -2,7 +2,7 @@
 
 Usage:
     python -m param_decomp.autointerp.scripts.run_interpret <wandb_path> --config_json '...'
-    param-decomp-autointerp <wandb_path>  # SLURM submission
+    pd-autointerp <wandb_path>  # SLURM submission
 """
 
 from datetime import datetime
