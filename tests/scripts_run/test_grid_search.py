@@ -5,8 +5,8 @@ All tests use realistic sweep parameters with discriminated lists (loss_metric_c
 
 import json
 
-from spd.configs import Config, ImportanceMinimalityLossConfig, LMTaskConfig, TMSTaskConfig
-from spd.utils.run_utils import apply_nested_updates, generate_grid_combinations
+from param_decomp.configs import Config, ImportanceMinimalityLossConfig, LMTaskConfig, TMSTaskConfig
+from param_decomp.utils.run_utils import apply_nested_updates, generate_grid_combinations
 
 
 class TestGenerateGridCombinations:
@@ -350,7 +350,7 @@ class TestConfigIntegration:
             "eval_freq": 100,
             "slow_eval_freq": 100,
             "ci_alive_threshold": 0.1,
-            "pretrained_model_class": "spd.experiments.tms.models.TMSModel",
+            "pretrained_model_class": "param_decomp.experiments.tms.models.TMSModel",
             "task_config": {
                 "task_name": "tms",
                 "feature_probability": 0.05,
@@ -473,7 +473,7 @@ class TestConfigIntegration:
             "eval_freq": 100,
             "slow_eval_freq": 100,
             "ci_alive_threshold": 0.1,
-            "pretrained_model_class": "spd.experiments.tms.models.TMSModel",
+            "pretrained_model_class": "param_decomp.experiments.tms.models.TMSModel",
             "task_config": {
                 "task_name": "tms",
                 "feature_probability": 0.2,  # Will be overridden

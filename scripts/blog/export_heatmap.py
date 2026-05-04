@@ -14,18 +14,21 @@ from collections.abc import Callable
 from pathlib import Path
 
 import torch
-from spd.editing.component_trainer import u_replaced
-from spd.editing.generate_pareto_plots import (
+from param_decomp.editing.component_trainer import u_replaced
+from param_decomp.editing.generate_pareto_plots import (
     get_examples,
     get_probs,
     kl_per_token,
     make_train_seqs,
     pad_train_seqs,
 )
-from spd.editing.lora_baseline import LoRATrainer
-from spd.editing.utils import load_model
+from param_decomp.editing.lora_baseline import LoRATrainer
+from param_decomp.editing.utils import load_model
 from torch import Tensor
 
+from param_decomp.app.backend.app_tokenizer import AppTokenizer
+from param_decomp.harvest.repo import HarvestRepo
+from param_decomp.harvest.schemas import ActivationExample
 from scripts.blog.constants import (
     HEATMAP_MODULE,
     HEATMAP_TARGET_TOKEN,
@@ -33,9 +36,6 @@ from scripts.blog.constants import (
     RUN_ID,
     WANDB_PATH,
 )
-from spd.app.backend.app_tokenizer import AppTokenizer
-from spd.harvest.repo import HarvestRepo
-from spd.harvest.schemas import ActivationExample
 
 ForwardFn = Callable[[Tensor], Tensor]
 

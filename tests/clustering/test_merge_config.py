@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from spd.clustering.merge_config import MergeConfig
+from param_decomp.clustering.merge_config import MergeConfig
 
 
 class TestMergeConfigSampling:

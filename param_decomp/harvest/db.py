@@ -1,0 +1,256 @@
+"""SQLite database for component-level harvest data. NFS-hosted, write-once then read-only."""
+
+import sqlite3
+import threading
+from collections.abc import Iterable
+from pathlib import Path
+
+import orjson
+
+from param_decomp.harvest.config import HarvestConfig
+from param_decomp.harvest.schemas import (
+    ActivationExample,
+    ComponentData,
+    ComponentSummary,
+    ComponentTokenPMI,
+)
+from param_decomp.utils.sqlite import open_nfs_sqlite
+
+_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS components (
+    component_key TEXT PRIMARY KEY,
+    layer TEXT NOT NULL,
+    component_idx INTEGER NOT NULL,
+    firing_density REAL NOT NULL,
+    n_activation_examples INTEGER NOT NULL DEFAULT 0,
+    mean_activations TEXT NOT NULL,
+    activation_examples TEXT NOT NULL,
+    input_token_pmi TEXT NOT NULL,
+    output_token_pmi TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scores (
+    component_key TEXT NOT NULL,
+    score_type TEXT NOT NULL,
+    score REAL NOT NULL,
+    details TEXT NOT NULL,
+    PRIMARY KEY (component_key, score_type)
+);
+
+CREATE TABLE IF NOT EXISTS intruder_prompts (
+    trial_key TEXT PRIMARY KEY,
+    prompt TEXT NOT NULL
+);
+"""
+
+
+def _serialize_component(
+    comp: ComponentData,
+) -> tuple[str, str, int, float, int, bytes, bytes, bytes, bytes]:
+    return (
+        comp.component_key,
+        comp.layer,
+        comp.component_idx,
+        comp.firing_density,
+        len(comp.activation_examples),
+        orjson.dumps(comp.mean_activations),
+        orjson.dumps([ex.model_dump() for ex in comp.activation_examples]),
+        orjson.dumps(comp.input_token_pmi.model_dump()),
+        orjson.dumps(comp.output_token_pmi.model_dump()),
+    )
+
+
+def _deserialize_component(row: sqlite3.Row) -> ComponentData:
+    return ComponentData(
+        component_key=row["component_key"],
+        layer=row["layer"],
+        component_idx=row["component_idx"],
+        firing_density=row["firing_density"],
+        mean_activations=orjson.loads(row["mean_activations"]),
+        activation_examples=[
+            ActivationExample(**ex) for ex in orjson.loads(row["activation_examples"])
+        ],
+        input_token_pmi=ComponentTokenPMI(**orjson.loads(row["input_token_pmi"])),
+        output_token_pmi=ComponentTokenPMI(**orjson.loads(row["output_token_pmi"])),
+    )
+
+
+class HarvestDB:
+    # Python's sqlite3 connection is not thread-safe even with check_same_thread=False
+    # (module threadsafety=1: "Threads may share the module, but not connections"). The app
+    # serves concurrent reads from FastAPI's thread pool, so without this lock interleaved
+    # execute/fetch calls corrupt each other's rows (e.g. mean_activations coming back as
+    # None, producing orjson "Input must be bytes..." errors).
+    def __init__(self, db_path: Path, readonly: bool = False) -> None:
+        self._conn = open_nfs_sqlite(db_path, readonly)
+        self._lock = threading.Lock()
+        if not readonly:
+            self._conn.executescript(_SCHEMA)
+
+    def save_component(self, comp: ComponentData) -> None:
+        row = _serialize_component(comp)
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO components VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                row,
+            )
+            self._conn.commit()
+
+    def save_components_iter(self, components: Iterable[ComponentData]) -> int:
+        """Save components from an iterable, one at a time (constant memory)."""
+        n = 0
+        with self._lock:
+            for comp in components:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO components VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    _serialize_component(comp),
+                )
+                n += 1
+            self._conn.commit()
+        return n
+
+    def save_config(self, config: HarvestConfig) -> None:
+        data = config.model_dump()
+        rows = [(k, orjson.dumps(v).decode()) for k, v in data.items()]
+        with self._lock:
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO config VALUES (?, ?)",
+                rows,
+            )
+            self._conn.commit()
+
+    def get_component(self, component_key: str) -> ComponentData | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM components WHERE component_key = ?",
+                (component_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        return _deserialize_component(row)
+
+    def get_components_bulk(self, keys: list[str]) -> dict[str, ComponentData]:
+        if not keys:
+            return {}
+        placeholders = ",".join("?" for _ in keys)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM components WHERE component_key IN ({placeholders})",
+                keys,
+            ).fetchall()
+        return {row["component_key"]: _deserialize_component(row) for row in rows}
+
+    def get_summary(self) -> dict[str, ComponentSummary]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT component_key, layer, component_idx, firing_density, mean_activations FROM components"
+            ).fetchall()
+        return {
+            row["component_key"]: ComponentSummary(
+                layer=row["layer"],
+                component_idx=row["component_idx"],
+                firing_density=row["firing_density"],
+                mean_activations=orjson.loads(row["mean_activations"]),
+            )
+            for row in rows
+        }
+
+    def get_config_dict(self) -> dict[str, object]:
+        with self._lock:
+            rows = self._conn.execute("SELECT key, value FROM config").fetchall()
+        return {row["key"]: orjson.loads(row["value"]) for row in rows}
+
+    def get_activation_threshold(self) -> float:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM config WHERE key = 'activation_threshold'"
+            ).fetchone()
+        assert row is not None, "activation_threshold not found in config table"
+        return orjson.loads(row["value"])
+
+    def has_data(self) -> bool:
+        with self._lock:
+            row = self._conn.execute("SELECT EXISTS(SELECT 1 FROM components LIMIT 1)").fetchone()
+        assert row is not None
+        return bool(row[0])
+
+    def get_component_count(self) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) FROM components").fetchone()
+        assert row is not None
+        return row[0]
+
+    def get_all_components(self) -> list[ComponentData]:
+        """Load all components. SLOW (~minutes for large DBs) — prefer get_component_keys()
+        + get_components_bulk() when you don't need every component's full data."""
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM components").fetchall()
+        return [_deserialize_component(row) for row in rows]
+
+    def get_component_keys(self) -> list[str]:
+        """Return all component keys (fast — no blob deserialization)."""
+        with self._lock:
+            rows = self._conn.execute("SELECT component_key FROM components").fetchall()
+        return [row["component_key"] for row in rows]
+
+    def get_eligible_component_keys(self, min_examples: int) -> list[str]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT component_key FROM components WHERE n_activation_examples >= ?",
+                (min_examples,),
+            ).fetchall()
+        return [row["component_key"] for row in rows]
+
+    def get_component_densities(self, min_examples: int) -> list[tuple[str, float]]:
+        """Return (component_key, firing_density) for eligible components. Fast — no blob deserialization."""
+        if self._has_column("components", "n_activation_examples"):
+            rows = self._conn.execute(
+                "SELECT component_key, firing_density FROM components WHERE n_activation_examples >= ?",
+                (min_examples,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT component_key, firing_density FROM components WHERE json_array_length(activation_examples) >= ?",
+                (min_examples,),
+            ).fetchall()
+        return [(row["component_key"], row["firing_density"]) for row in rows]
+
+    def _has_column(self, table: str, column: str) -> bool:
+        cols = [r[1] for r in self._conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        return column in cols
+
+    # -- Scores (e.g. intruder eval) ------------------------------------------
+
+    def save_score(self, component_key: str, score_type: str, score: float, details: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO scores VALUES (?, ?, ?, ?)",
+                (component_key, score_type, score, details),
+            )
+            self._conn.commit()
+
+    def get_scores(self, score_type: str) -> dict[str, float]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT component_key, score FROM scores WHERE score_type = ?",
+                (score_type,),
+            ).fetchall()
+        return {row["component_key"]: row["score"] for row in rows}
+
+    # -- Intruder prompts ------------------------------------------------------
+
+    def save_intruder_prompt(self, trial_key: str, prompt: str) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO intruder_prompts VALUES (?, ?)",
+            (trial_key, prompt),
+        )
+        self._conn.commit()
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()

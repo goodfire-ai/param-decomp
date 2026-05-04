@@ -18,19 +18,19 @@ Place your wandb information in a .env file. See .env.example for an example.
 
 The repository consists of several `experiments`, each of which containing scripts to run SPD,
 analyse results, and optionally a train a target model:
-- `spd/experiments/tms` - Toy model of superposition
-- `spd/experiments/resid_mlp` - Toy model of compressed computation and toy model of distributed
+- `param_decomp/experiments/tms` - Toy model of superposition
+- `param_decomp/experiments/resid_mlp` - Toy model of compressed computation and toy model of distributed
   representations
-- `spd/experiments/ih` - Small model trained on a toy induction head task.
-- `spd/experiments/lm` - Language model loaded from huggingface.
+- `param_decomp/experiments/ih` - Small model trained on a toy induction head task.
+- `param_decomp/experiments/lm` - Language model loaded from huggingface.
 - There is also a toy MLP memorization experiment at `feature/memorization-experiments` which has
   not been merged to `main` (much less effort has gone in to validating it).
 
 Note that the `lm` experiment allows for running SPD on any model from huggingface or that is
 accessible to the environment, provided that you only need to decompose `nn.Linear`, `nn.Embedding`
 or `transformers.modeling_utils.Conv1D` layers (other layer types are not yet supported, though
-these should cover most modules). See `spd/experiments/lm/ss_gpt2_config.yaml` for an example which
-loads from huggingface and `spd/experiments/lm/ss_gpt2_simple_config.yaml` for an example which
+these should cover most modules). See `param_decomp/experiments/lm/ss_gpt2_config.yaml` for an example which
+loads from huggingface and `param_decomp/experiments/lm/ss_gpt2_simple_config.yaml` for an example which
 loads from https://github.com/goodfire-ai/simple_stories_train (with the model weights saved on
 wandb).
 
@@ -67,7 +67,7 @@ param-decomp-run --experiments <experiment_name> --sweep --n_agents <n-agents> [
 ```
 
 **Sweep parameters:**
-- Default sweep parameters are loaded from `spd/scripts/sweep_params.yaml`
+- Default sweep parameters are loaded from `param_decomp/scripts/sweep_params.yaml`
 - You can specify a custom sweep parameters file by passing its path to `--sweep`
 - Sweep parameters support both experiment-specific and global configurations:
   ```yaml
@@ -136,7 +136,7 @@ SPD can also be run by executing any of the `*_decomposition.py` scripts defined
 subdirectories, along with a corresponding config file:
 
 ```bash
-python spd/experiments/tms/tms_decomposition.py spd/experiments/tms/tms_5-2_config.yaml
+python param_decomp/experiments/tms/tms_decomposition.py param_decomp/experiments/tms/tms_5-2_config.yaml
 ```
 
 ### Model Comparison
@@ -144,10 +144,10 @@ python spd/experiments/tms/tms_decomposition.py spd/experiments/tms/tms_5-2_conf
 Use the model comparison script to analyse (post hoc) the geometric similarities between subcomponents of two different models:
 
 ```bash
-python spd/scripts/compare_models/compare_models.py spd/scripts/compare_models/compare_models_config.yaml
+python param_decomp/scripts/compare_models/compare_models.py param_decomp/scripts/compare_models/compare_models_config.yaml
 ```
 
-See `spd/scripts/compare_models/README.md` for detailed usage instructions.
+See `param_decomp/scripts/compare_models/README.md` for detailed usage instructions.
 
 ## Development
 
@@ -156,7 +156,7 @@ settings, copy `.vscode/settings-example.json` to `.vscode/settings.json`.
 
 ## App
 
-This project contains an app for visualising and interpreting SPD decompositions. See the [README](./app/README.md).
+This project contains an app for visualising and interpreting SPD decompositions. See the [README](./param_decomp/app/README.md).
 
 ### Contributing
 

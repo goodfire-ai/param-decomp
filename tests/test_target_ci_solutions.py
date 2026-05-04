@@ -1,6 +1,6 @@
 import torch
 
-from spd.utils.target_ci_solutions import (
+from param_decomp.utils.target_ci_solutions import (
     DenseCIPattern,
     IdentityCIPattern,
     TargetCISolution,

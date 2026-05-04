@@ -7,9 +7,9 @@ import torch
 import torch.nn as nn
 from torch.testing import assert_close
 
-from spd.configs import ModulePatternInfoConfig
-from spd.identity_insertion import insert_identity_operations_
-from spd.models.components import Identity
+from param_decomp.configs import ModulePatternInfoConfig
+from param_decomp.identity_insertion import insert_identity_operations_
+from param_decomp.models.components import Identity
 
 
 class SimpleModel(nn.Module):

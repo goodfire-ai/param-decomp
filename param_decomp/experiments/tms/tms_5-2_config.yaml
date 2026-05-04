@@ -1,0 +1,81 @@
+# TMS 5-2 (Non-identity)
+# --- WandB ---
+wandb_project: param-decomp
+wandb_run_name: null
+wandb_run_name_prefix: ""
+
+# --- General ---
+seed: 0
+n_mask_samples: 1
+ci_config:
+  mode: layerwise
+  fn_type: mlp
+  hidden_dims: [16]
+sigmoid_type: "leaky_hard"
+module_info:
+  - module_pattern: "linear1"
+    C: 20
+  - module_pattern: "linear2"
+    C: 20
+use_delta_component: true
+
+loss_metric_configs:
+  - classname: "ImportanceMinimalityLoss"
+    coeff: 3e-3
+    pnorm: 1.0
+    beta: 0
+  - classname: "StochasticReconLoss"
+    coeff: 1.0
+  - classname: "StochasticReconLayerwiseLoss"
+    coeff: 1.0
+
+# --- Training ---
+batch_size: 4096
+eval_batch_size: 4096
+steps: 10_000
+lr_schedule:
+  start_val: 1e-3
+  fn_type: cosine
+  warmup_pct: 0.0
+  final_val_frac: 0.0
+
+# --- Faithfulness Warmup ---
+faithfulness_warmup_steps: 200
+faithfulness_warmup_lr: 0.01
+faithfulness_warmup_weight_decay: 0.1
+
+# --- Logging & Saving ---
+train_log_freq: 100
+eval_freq: 1000
+n_eval_steps: 100
+slow_eval_freq: 5_000
+save_freq: null
+ci_alive_threshold: 0.1
+eval_metric_configs:
+  - classname: "CIHistograms"
+    n_batches_accum: 5
+  - classname: "ComponentActivationDensity"
+  - classname: "PermutedCIPlots"
+    identity_patterns: ["linear1", "linear2"]
+    dense_patterns: null
+  - classname: "IdentityCIError"
+    identity_ci:
+      - layer_pattern: "linear1"
+        n_features: 5
+      - layer_pattern: "linear2"
+        n_features: 5
+    dense_ci: null
+  - classname: "CI_L0"
+    groups: null
+  - classname: "CIMeanPerComponent"
+  - classname: "StochasticHiddenActsReconLoss"
+
+# --- Pretrained model info ---
+pretrained_model_class: "param_decomp.experiments.tms.models.TMSModel"
+pretrained_model_path: "wandb:goodfire/spd-pre-Sep-2025/runs/0hsp07o4"
+
+# --- Task Specific ---
+task_config:
+  task_name: tms
+  feature_probability: 0.05
+  data_generation_type: "at_least_zero_active"

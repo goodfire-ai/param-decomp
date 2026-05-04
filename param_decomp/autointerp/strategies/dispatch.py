@@ -1,0 +1,91 @@
+"""Strategy dispatch: routes AutointerpConfig variants to their implementations."""
+
+from param_decomp.app.backend.app_tokenizer import AppTokenizer
+from param_decomp.autointerp.config import (
+    CanonConfig,
+    CompactSkepticalConfig,
+    DualViewConfig,
+    RichExamplesConfig,
+    StrategyConfig,
+)
+from param_decomp.autointerp.schemas import ModelMetadata
+from param_decomp.autointerp.strategies.canon import (
+    format_prompt as canon_prompt,
+)
+from param_decomp.autointerp.strategies.compact_skeptical import (
+    format_prompt as compact_skeptical_prompt,
+)
+from param_decomp.autointerp.strategies.dual_view import (
+    format_prompt as dual_view_prompt,
+)
+from param_decomp.autointerp.strategies.rich_examples import (
+    format_prompt as rich_examples_prompt,
+)
+from param_decomp.harvest.analysis import TokenPRLift
+from param_decomp.harvest.schemas import ComponentData
+
+INTERPRETATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "label": {"type": "string"},
+        "reasoning": {"type": "string"},
+    },
+    "required": ["label", "reasoning"],
+    "additionalProperties": False,
+}
+
+
+def format_prompt(
+    strategy: StrategyConfig,
+    component: ComponentData,
+    model_metadata: ModelMetadata,
+    app_tok: AppTokenizer,
+    input_token_stats: TokenPRLift | None,
+    output_token_stats: TokenPRLift | None,
+    context_tokens_per_side: int,
+    activation_threshold: float,
+) -> str:
+    match strategy:
+        case CompactSkepticalConfig():
+            assert input_token_stats is not None and output_token_stats is not None
+            return compact_skeptical_prompt(
+                strategy,
+                component,
+                model_metadata,
+                app_tok,
+                input_token_stats,
+                output_token_stats,
+                context_tokens_per_side,
+            )
+        case DualViewConfig():
+            assert input_token_stats is not None and output_token_stats is not None
+            return dual_view_prompt(
+                strategy,
+                component,
+                model_metadata,
+                app_tok,
+                input_token_stats,
+                output_token_stats,
+                context_tokens_per_side,
+            )
+        case RichExamplesConfig():
+            assert output_token_stats is not None
+            return rich_examples_prompt(
+                strategy,
+                component,
+                model_metadata,
+                app_tok,
+                output_token_stats,
+                context_tokens_per_side,
+            )
+        case CanonConfig():
+            return canon_prompt(
+                strategy,
+                component,
+                model_metadata,
+                app_tok,
+                input_token_stats,
+                output_token_stats,
+                context_tokens_per_side,
+                activation_threshold,
+            )

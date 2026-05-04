@@ -1,4 +1,4 @@
-"""API endpoint tests for spd.app.backend.server.
+"""API endpoint tests for param_decomp.app.backend.server.
 
 These tests bypass slow operations (W&B model loading, large data loaders) by:
 1. Manually constructing app state with a fresh randomly-initialized model
@@ -13,25 +13,25 @@ from unittest import mock
 import pytest
 from fastapi.testclient import TestClient
 
-from spd.app.backend.app_tokenizer import AppTokenizer
-from spd.app.backend.database import PromptAttrDB
-from spd.app.backend.routers import graphs as graphs_router
-from spd.app.backend.routers import intervention as intervention_router
-from spd.app.backend.routers import runs as runs_router
-from spd.app.backend.server import app
-from spd.app.backend.state import RunState, StateManager
-from spd.configs import (
+from param_decomp.app.backend.app_tokenizer import AppTokenizer
+from param_decomp.app.backend.database import PromptAttrDB
+from param_decomp.app.backend.routers import graphs as graphs_router
+from param_decomp.app.backend.routers import intervention as intervention_router
+from param_decomp.app.backend.routers import runs as runs_router
+from param_decomp.app.backend.server import app
+from param_decomp.app.backend.state import RunState, StateManager
+from param_decomp.configs import (
     Config,
     LayerwiseCiConfig,
     LMTaskConfig,
     ModulePatternInfoConfig,
     ScheduleConfig,
 )
-from spd.models.batch_and_loss_fns import make_run_batch
-from spd.models.component_model import ComponentModel
-from spd.pretrain.models.gpt2_simple import GPT2Simple, GPT2SimpleConfig
-from spd.topology import TransformerTopology, get_sources_by_target
-from spd.utils.module_utils import expand_module_patterns
+from param_decomp.models.batch_and_loss_fns import make_run_batch
+from param_decomp.models.component_model import ComponentModel
+from param_decomp.pretrain.models.gpt2_simple import GPT2Simple, GPT2SimpleConfig
+from param_decomp.topology import TransformerTopology, get_sources_by_target
+from param_decomp.utils.module_utils import expand_module_patterns
 
 DEVICE = "cpu"
 
@@ -97,7 +97,7 @@ def app_with_state():
             module_info=[
                 ModulePatternInfoConfig(module_pattern=p, C=C) for p in target_module_patterns
             ],
-            pretrained_model_class="spd.pretrain.models.gpt2_simple.GPT2Simple",
+            pretrained_model_class="param_decomp.pretrain.models.gpt2_simple.GPT2Simple",
             output_extract=0,
             tokenizer_name="SimpleStories/test-SimpleStories-gpt2-1.25M",
             lr_schedule=ScheduleConfig(start_val=1e-3),

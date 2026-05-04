@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 from torch import Tensor
 
-from spd.dataset_attributions.storage import DatasetAttributionStorage
+from param_decomp.dataset_attributions.storage import DatasetAttributionStorage
 
 VOCAB_SIZE = 4
 D_MODEL = 4

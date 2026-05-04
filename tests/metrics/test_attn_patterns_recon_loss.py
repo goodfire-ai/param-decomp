@@ -1,17 +1,17 @@
 import torch
 
-from spd.configs import LayerwiseCiConfig
-from spd.metrics.attn_patterns_recon_loss import (
+from param_decomp.configs import LayerwiseCiConfig
+from param_decomp.metrics.attn_patterns_recon_loss import (
     CIMaskedAttnPatternsReconLoss,
     StochasticAttnPatternsReconLoss,
     _compute_attn_patterns,
 )
-from spd.models.batch_and_loss_fns import make_run_batch
-from spd.models.component_model import ComponentModel
-from spd.pretrain.models.gpt2 import GPT2, GPT2Config
-from spd.pretrain.models.gpt2_simple import GPT2Simple, GPT2SimpleConfig
-from spd.pretrain.models.llama_simple import LlamaSimple, LlamaSimpleConfig
-from spd.utils.module_utils import ModulePathInfo
+from param_decomp.models.batch_and_loss_fns import make_run_batch
+from param_decomp.models.component_model import ComponentModel
+from param_decomp.pretrain.models.gpt2 import GPT2, GPT2Config
+from param_decomp.pretrain.models.gpt2_simple import GPT2Simple, GPT2SimpleConfig
+from param_decomp.pretrain.models.llama_simple import LlamaSimple, LlamaSimpleConfig
+from param_decomp.utils.module_utils import ModulePathInfo
 
 
 def _make_gpt2_component_model(n_embd: int = 16, n_head: int = 2) -> ComponentModel:

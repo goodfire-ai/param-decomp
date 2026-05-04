@@ -11,7 +11,7 @@ import pytest
 import torch
 import yaml
 
-from spd.settings import REPO_ROOT
+from param_decomp.settings import REPO_ROOT
 
 TEST_CONFIG = {
     # --- General ---

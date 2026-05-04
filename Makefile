@@ -32,9 +32,9 @@ install-ci:
 
 .PHONY: copy-templates
 copy-templates:
-	@if [ ! -f spd/scripts/sweep_params.yaml ]; then \
-		cp spd/scripts/sweep_params.yaml.example spd/scripts/sweep_params.yaml; \
-		echo "Created spd/scripts/sweep_params.yaml from template"; \
+	@if [ ! -f param_decomp/scripts/sweep_params.yaml ]; then \
+		cp param_decomp/scripts/sweep_params.yaml.example param_decomp/scripts/sweep_params.yaml; \
+		echo "Created param_decomp/scripts/sweep_params.yaml from template"; \
 	fi
 
 
@@ -73,7 +73,7 @@ COVERAGE_DIR=docs/coverage
 
 .PHONY: coverage
 coverage:
-	uv run pytest tests/ --cov=spd --runslow
+	uv run pytest tests/ --cov=param_decomp --runslow
 	mkdir -p $(COVERAGE_DIR)
 	uv run python -m coverage report -m > $(COVERAGE_DIR)/coverage.txt
 	uv run python -m coverage html --directory=$(COVERAGE_DIR)/html/
@@ -89,12 +89,12 @@ clean:
 
 .PHONY: app
 app:
-	@uv run python spd/app/run_app.py
+	@uv run python param_decomp/app/run_app.py
 
 .PHONY: install-app
 install-app:
-	(cd spd/app/frontend && npm install)
+	(cd param_decomp/app/frontend && npm install)
 
 .PHONY: check-app
 check-app:
-	(cd spd/app/frontend && npm run format && npm run check && npm run lint)
+	(cd param_decomp/app/frontend && npm run format && npm run check && npm run lint)

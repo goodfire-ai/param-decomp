@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from transformers import PreTrainedModel
 
-from spd.configs import (
+from param_decomp.configs import (
     CI_L0Config,
     Config,
     FaithfulnessLossConfig,
@@ -15,11 +15,11 @@ from spd.configs import (
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
 )
-from spd.data import DatasetConfig, create_data_loader, input_ids_collate_fn
-from spd.identity_insertion import insert_identity_operations_
-from spd.models.batch_and_loss_fns import make_run_batch, recon_loss_kl
-from spd.run_spd import optimize
-from spd.utils.general_utils import resolve_class, set_seed
+from param_decomp.data import DatasetConfig, create_data_loader, input_ids_collate_fn
+from param_decomp.identity_insertion import insert_identity_operations_
+from param_decomp.models.batch_and_loss_fns import make_run_batch, recon_loss_kl
+from param_decomp.run_param_decomp import optimize
+from param_decomp.utils.general_utils import resolve_class, set_seed
 
 
 @pytest.mark.slow

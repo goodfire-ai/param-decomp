@@ -5,7 +5,7 @@ import torch.nn as nn
 from jaxtyping import Float
 from torch import Tensor
 
-from spd.configs import (
+from param_decomp.configs import (
     AdamPGDConfig,
     LayerwiseCiConfig,
     PersistentPGDReconLossConfig,
@@ -14,7 +14,7 @@ from spd.configs import (
     SingleSourceScope,
     UniformKSubsetRoutingConfig,
 )
-from spd.metrics import (
+from param_decomp.metrics import (
     ci_masked_recon_layerwise_loss,
     ci_masked_recon_loss,
     ci_masked_recon_subset_loss,
@@ -24,10 +24,14 @@ from spd.metrics import (
     stochastic_recon_loss,
     stochastic_recon_subset_loss,
 )
-from spd.models.batch_and_loss_fns import recon_loss_kl, recon_loss_mse, run_batch_passthrough
-from spd.models.component_model import ComponentModel
-from spd.persistent_pgd import PersistentPGDState
-from spd.utils.module_utils import ModulePathInfo
+from param_decomp.models.batch_and_loss_fns import (
+    recon_loss_kl,
+    recon_loss_mse,
+    run_batch_passthrough,
+)
+from param_decomp.models.component_model import ComponentModel
+from param_decomp.persistent_pgd import PersistentPGDState
+from param_decomp.utils.module_utils import ModulePathInfo
 
 
 class TinyLinearModel(nn.Module):

@@ -4,7 +4,7 @@ import math
 
 import torch
 
-from spd.harvest.sampling import compute_pmi, sample_at_most_n_per_group, top_k_pmi
+from param_decomp.harvest.sampling import compute_pmi, sample_at_most_n_per_group, top_k_pmi
 
 
 class TestSampleAtMostNPerGroup:

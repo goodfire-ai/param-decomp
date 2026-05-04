@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from spd.utils.distributed_utils import (
+from param_decomp.utils.distributed_utils import (
     cleanup_distributed,
     gather_all_tensors,
     get_distributed_state,

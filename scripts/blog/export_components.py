@@ -20,6 +20,12 @@ from typing import Any
 
 import numpy as np
 
+from param_decomp.app.backend.app_tokenizer import AppTokenizer
+from param_decomp.autointerp.repo import InterpRepo
+from param_decomp.harvest.schemas import get_harvest_dir
+from param_decomp.models.component_model import ComponentModel, ParamDecompRunInfo
+from param_decomp.topology import TransformerTopology
+from param_decomp.topology.canonical import CanonicalWeight, Embed, LayerWeight, Unembed
 from scripts.blog.constants import (
     ACTIVATION_WINDOW,
     ALIVE_CI_THRESHOLD,
@@ -29,12 +35,6 @@ from scripts.blog.constants import (
     SHOWCASE_N_PER_MATRIX,
     WEIGHT_TILE_SIZE,
 )
-from spd.app.backend.app_tokenizer import AppTokenizer
-from spd.autointerp.repo import InterpRepo
-from spd.harvest.schemas import get_harvest_dir
-from spd.models.component_model import ComponentModel, SPDRunInfo
-from spd.topology import TransformerTopology
-from spd.topology.canonical import CanonicalWeight, Embed, LayerWeight, Unembed
 
 _SUBLAYER_DISPLAY = {"attn": "Attn", "attn_fused": "Attn", "mlp": "MLP", "glu": "MLP"}
 
@@ -112,7 +112,7 @@ def main() -> None:
     tile = WEIGHT_TILE_SIZE
 
     print("Loading run info...")
-    run_info = SPDRunInfo.from_path(f"goodfire/spd/runs/{RUN_ID}")
+    run_info = ParamDecompRunInfo.from_path(f"goodfire/spd/runs/{RUN_ID}")
     assert run_info.config.tokenizer_name
     tokenizer = AppTokenizer.from_pretrained(run_info.config.tokenizer_name)
 

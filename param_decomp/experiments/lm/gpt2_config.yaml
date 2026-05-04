@@ -1,0 +1,87 @@
+# --- WandB ---
+wandb_project: param-decomp
+wandb_run_name: null
+wandb_run_name_prefix: ""
+
+# --- General ---
+seed: 0
+n_mask_samples: 1
+ci_config:
+  mode: layerwise
+  fn_type: vector_mlp
+  hidden_dims: [12]
+sigmoid_type: "leaky_hard"
+module_info:
+  - module_pattern: "transformer.h.1.attn.c_attn"
+    C: 768
+identity_module_info: null
+sampling: "continuous"
+use_delta_component: true
+loss_metric_configs:
+  - classname: "ImportanceMinimalityLoss"
+    coeff: 0.0003
+    pnorm: 2.0
+    beta: 0
+    p_anneal_start_frac: 0.0
+    p_anneal_final_p: 0.3
+    p_anneal_end_frac: 1.0
+  - classname: "StochasticReconLayerwiseLoss"
+    coeff: 2.0
+
+# --- Training ---
+batch_size: 2
+steps: 50_000
+lr_schedule:
+  start_val: 3e-4
+  fn_type: cosine
+  warmup_pct: 0.01
+  final_val_frac: 0.1
+
+# --- Faithfulness Warmup ---
+faithfulness_warmup_steps: 200
+faithfulness_warmup_lr: 0.01
+faithfulness_warmup_weight_decay: 0.1
+
+# --- Logging & Saving ---
+train_log_freq: 100
+eval_freq: 1000
+slow_eval_freq: 5000
+slow_eval_on_first_step: true
+n_eval_steps: 5
+save_freq: null
+ci_alive_threshold: 0.0
+eval_metric_configs:
+  - classname: "CIHistograms"
+    n_batches_accum: 5
+  - classname: "ComponentActivationDensity"
+  - classname: "CI_L0"
+    groups: null
+  - classname: "CEandKLLosses"
+    rounding_threshold: 0.0
+  - classname: "CIMeanPerComponent"
+  - classname: "StochasticHiddenActsReconLoss"
+
+# --- Pretrained model info ---
+pretrained_model_class: transformers.GPT2LMHeadModel
+pretrained_model_name: openai-community/gpt2
+output_extract: logits
+tokenizer_name: openai-community/gpt2
+
+# --- Task Specific ---
+task_config:
+  task_name: lm 
+  max_seq_len: 1024
+  dataset_name: "apollo-research/Skylion007-openwebtext-tokenizer-gpt2"
+  is_tokenized: True
+  column_name: "input_ids"
+  train_data_split: "train"
+  eval_data_split: "train"  # TODO: handle different seeding for train and eval
+
+
+# Config details for the target model taken from https://github.com/danbraunai/simple_stories_train/blob/main/simple_stories_train/train_gpt2.py#L165
+  # class GPTConfig:
+  #     block_size: int = 1024
+  #     vocab_size: int = 50257
+  #     n_layer: int = 12
+  #     n_head: int = 12
+  #     n_embd: int = 768

@@ -4,10 +4,10 @@ from typing import Any
 
 import pytest
 
-from spd.clustering.clustering_run_config import ClusteringRunConfig
-from spd.clustering.harvest_config import HarvestConfig
-from spd.clustering.merge_config import MergeConfig
-from spd.clustering.scripts.run_clustering import main
+from param_decomp.clustering.clustering_run_config import ClusteringRunConfig
+from param_decomp.clustering.harvest_config import HarvestConfig
+from param_decomp.clustering.merge_config import MergeConfig
+from param_decomp.clustering.scripts.run_clustering import main
 
 
 @pytest.mark.slow
@@ -15,8 +15,8 @@ def test_run_clustering_happy_path(monkeypatch: Any):
     """Test that run_clustering.py runs without errors."""
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
-        monkeypatch.setattr("spd.settings.SPD_OUT_DIR", temp_path)
-        monkeypatch.setattr("spd.utils.run_utils.SPD_OUT_DIR", temp_path)
+        monkeypatch.setattr("param_decomp.settings.PARAM_DECOMP_OUT_DIR", temp_path)
+        monkeypatch.setattr("param_decomp.utils.run_utils.PARAM_DECOMP_OUT_DIR", temp_path)
 
         config = ClusteringRunConfig(
             harvest=HarvestConfig(

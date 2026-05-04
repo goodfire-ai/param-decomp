@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from spd.clustering.math.merge_pair_samplers import (
+from param_decomp.clustering.math.merge_pair_samplers import (
     MERGE_PAIR_SAMPLERS,
     mcmc_sampler,
     range_sampler,

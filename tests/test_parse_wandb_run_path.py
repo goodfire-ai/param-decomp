@@ -1,6 +1,6 @@
 import pytest
 
-from spd.utils.wandb_utils import parse_wandb_run_path
+from param_decomp.utils.wandb_utils import parse_wandb_run_path
 
 
 @pytest.mark.parametrize(

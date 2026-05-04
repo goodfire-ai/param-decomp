@@ -1,0 +1,8 @@
+clustering_run_config_path: "param_decomp/clustering/configs/crc/pile_llama_simple_mlp-4L.json"
+n_runs: 2
+distances_methods: ["perm_invariant_hamming"]
+slurm_job_name_prefix: "pd"
+slurm_partition: "h200-reserved"
+wandb_project: "param-decomp"
+wandb_entity: "goodfire"
+create_git_snapshot: true

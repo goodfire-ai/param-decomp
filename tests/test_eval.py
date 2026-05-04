@@ -5,10 +5,10 @@ from unittest.mock import Mock
 import pytest
 import torch
 
-from spd.configs import Config
-from spd.metrics import CIHistograms
-from spd.models.component_model import CIOutputs, ComponentModel
-from spd.models.sigmoids import lower_leaky_hard_sigmoid, upper_leaky_hard_sigmoid
+from param_decomp.configs import Config
+from param_decomp.metrics import CIHistograms
+from param_decomp.models.component_model import CIOutputs, ComponentModel
+from param_decomp.models.sigmoids import lower_leaky_hard_sigmoid, upper_leaky_hard_sigmoid
 
 
 class TestCIHistograms:

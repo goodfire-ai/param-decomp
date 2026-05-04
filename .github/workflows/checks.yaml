@@ -71,7 +71,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: spd/app/frontend
+        working-directory: param_decomp/app/frontend
     steps:
       - name: Checkout
         uses: actions/checkout@v6

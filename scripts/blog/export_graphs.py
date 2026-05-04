@@ -15,6 +15,14 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from param_decomp.app.backend.app_tokenizer import AppTokenizer
+from param_decomp.autointerp.repo import InterpRepo
+from param_decomp.dataset_attributions import AttributionRepo
+from param_decomp.harvest.schemas import get_harvest_dir
+from param_decomp.models.component_model import ComponentModel, ParamDecompRunInfo
+from param_decomp.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp.topology import TransformerTopology
+from param_decomp.topology.canonical import CanonicalWeight, Embed, LayerWeight, Unembed
 from scripts.blog.constants import (
     ACTIVATION_WINDOW,
     CLUSTER_MAPPING_PATH,
@@ -23,16 +31,8 @@ from scripts.blog.constants import (
     N_ACTIVATION_EXAMPLES,
     RUN_ID,
 )
-from spd.app.backend.app_tokenizer import AppTokenizer
-from spd.autointerp.repo import InterpRepo
-from spd.dataset_attributions import AttributionRepo
-from spd.harvest.schemas import get_harvest_dir
-from spd.models.component_model import ComponentModel, SPDRunInfo
-from spd.settings import SPD_OUT_DIR
-from spd.topology import TransformerTopology
-from spd.topology.canonical import CanonicalWeight, Embed, LayerWeight, Unembed
 
-PROMPT_ATTR_DB = SPD_OUT_DIR / "app" / "prompt_attr.db"
+PROMPT_ATTR_DB = PARAM_DECOMP_OUT_DIR / "app" / "prompt_attr.db"
 
 _SUBLAYER_DISPLAY = {"attn": "Attn", "attn_fused": "Attn", "mlp": "MLP", "glu": "MLP"}
 
@@ -387,7 +387,7 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("Loading run info...")
-    run_info = SPDRunInfo.from_path(f"goodfire/spd/runs/{RUN_ID}")
+    run_info = ParamDecompRunInfo.from_path(f"goodfire/spd/runs/{RUN_ID}")
     assert run_info.config.tokenizer_name
     tokenizer = AppTokenizer.from_pretrained(run_info.config.tokenizer_name)
 
