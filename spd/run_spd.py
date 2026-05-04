@@ -443,7 +443,7 @@ def run_experiment(
     """
     if is_main_process():
         run_id = run_id or generate_run_id("spd")
-        out_dir = SPD_OUT_DIR / "spd" / run_id
+        out_dir = SPD_OUT_DIR / "decompositions" / run_id
         out_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info(f"Run ID: {run_id}")

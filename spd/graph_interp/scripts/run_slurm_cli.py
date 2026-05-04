@@ -3,7 +3,7 @@
 Thin wrapper for fast --help. Heavy imports deferred to run_slurm.py.
 
 Usage:
-    spd-graph-interp <decomposition_id> --config graph_interp_config.yaml
+    param-decomp-graph-interp <decomposition_id> --config graph_interp_config.yaml
 """
 
 import fire

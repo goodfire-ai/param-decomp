@@ -1,9 +1,9 @@
 """CLI entry point for investigation SLURM launcher.
 
 Usage:
-    spd-investigate <wandb_path> "<prompt>"
-    spd-investigate <wandb_path> @prompt.txt
-    spd-investigate <wandb_path> "<prompt>" --max_turns 30
+    param-decomp-investigate <wandb_path> "<prompt>"
+    param-decomp-investigate <wandb_path> @prompt.txt
+    param-decomp-investigate <wandb_path> "<prompt>" --max_turns 30
 """
 
 from pathlib import Path

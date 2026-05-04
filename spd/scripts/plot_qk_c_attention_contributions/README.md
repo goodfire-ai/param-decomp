@@ -89,7 +89,7 @@ python -m spd.scripts.plot_qk_c_attention_contributions.plot_qk_c_attention_cont
 | `plots` | `all` | Comma-separated subset of plot types (see below), or `all` |
 | `recompute` | `False` | Force recomputation even if cached results exist |
 
-**Prerequisites:** The run must have harvest data available (run `spd-harvest` first). The model must be a `LlamaSimpleMLP` with non-adjacent-pairs RoPE layout.
+**Prerequisites:** The run must have harvest data available (run `param-decomp-harvest` first). The model must be a `LlamaSimpleMLP` with non-adjacent-pairs RoPE layout.
 
 ## Plot Types
 

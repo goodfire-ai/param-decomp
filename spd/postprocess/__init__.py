@@ -76,7 +76,7 @@ def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None)
         )
 
         intruder_slurm = SlurmConfig(
-            job_name="spd-intruder-eval",
+            job_name="param-decomp-intruder-eval",
             partition=config.intruder.partition,
             n_gpus=2,
             time=config.intruder.time,

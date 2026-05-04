@@ -6,8 +6,8 @@ Uses argparse instead of Fire because SLURM job IDs like "311644_1" get
 parsed by Fire as integers (underscore is a numeric separator in Python).
 
 Usage:
-    spd-postprocess config.yaml
-    spd-postprocess config.yaml --dependency 311644_1
+    param-decomp-postprocess config.yaml
+    param-decomp-postprocess config.yaml --dependency 311644_1
 """
 
 import argparse

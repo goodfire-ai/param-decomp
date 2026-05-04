@@ -109,11 +109,11 @@ class TestDistributedDeterminicity:
                 yaml.dump(TEST_CONFIG, f)
 
             # ports should be globally unique in tests to allow test parallelization
-            # see discussion at: https://github.com/goodfire-ai/spd/pull/186
+            # see discussion at: https://github.com/goodfire-ai/param-decomp/pull/186
             dp1_run_id = self._run_experiment(
-                config_path_dp1, n_processes=1, port=29501, spd_out_dir=tmpdir
+                config_path_dp1, n_processes=1, port=29501, param_decomp_out_dir=tmpdir
             )
-            dp1_out_dir = tmpdir / "spd" / dp1_run_id
+            dp1_out_dir = tmpdir / "decompositions" / dp1_run_id
 
             # Run with dp=2
             config_path_dp2 = tmpdir / "test_config_dp2.yaml"
@@ -121,11 +121,11 @@ class TestDistributedDeterminicity:
                 yaml.dump(TEST_CONFIG, f)
 
             # ports should be globally unique in tests to allow test parallelization
-            # see discussion at: https://github.com/goodfire-ai/spd/pull/186
+            # see discussion at: https://github.com/goodfire-ai/param-decomp/pull/186
             dp2_run_id = self._run_experiment(
-                config_path_dp2, n_processes=2, port=29502, spd_out_dir=tmpdir
+                config_path_dp2, n_processes=2, port=29502, param_decomp_out_dir=tmpdir
             )
-            dp2_out_dir = tmpdir / "spd" / dp2_run_id
+            dp2_out_dir = tmpdir / "decompositions" / dp2_run_id
 
             # Load and compare metrics from metrics.jsonl files
             dp1_metrics = self._load_metrics(dp1_out_dir / "metrics.jsonl")
@@ -142,7 +142,7 @@ class TestDistributedDeterminicity:
         config_path: Path,
         n_processes: int,
         port: int,
-        spd_out_dir: Path,
+        param_decomp_out_dir: Path,
     ) -> str:
         """Run the experiment using torchrun. Returns the run_id."""
         script_path = REPO_ROOT / "spd" / "experiments" / "lm" / "lm_decomposition.py"
@@ -158,10 +158,10 @@ class TestDistributedDeterminicity:
             str(config_path),
         ]
 
-        # disable cuda so we run on cpu, and set SPD_OUT_DIR to temp directory
+        # disable cuda so we run on cpu, and set PARAM_DECOMP_OUT_DIR to temp directory
         new_env = os.environ.copy()
         new_env["CUDA_VISIBLE_DEVICES"] = ""
-        new_env["SPD_OUT_DIR"] = str(spd_out_dir)
+        new_env["PARAM_DECOMP_OUT_DIR"] = str(param_decomp_out_dir)
 
         result = subprocess.run(cmd, env=new_env, capture_output=True, text=True, timeout=300)
 

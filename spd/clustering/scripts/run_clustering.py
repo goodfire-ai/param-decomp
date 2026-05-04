@@ -1,6 +1,6 @@
 """Perform a single clustering run: harvest → merge with wandb logging.
 
-Called standalone or via `spd-clustering` (run_pipeline.py) for ensemble runs.
+Called standalone or via `param-decomp-clustering` (run_pipeline.py) for ensemble runs.
 The pipeline pre-assigns run IDs and creates the git snapshot;
 each SLURM task checks out that snapshot and receives its run ID via --run-id.
 

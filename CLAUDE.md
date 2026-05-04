@@ -146,14 +146,14 @@ Each experiment (`spd/experiments/{tms,resid_mlp,lm}/`) contains:
 - `spd/autointerp/` - LLM-based automated interpretation of components
 - `spd/dataset_attributions/` - Multi-GPU pipeline for computing component-to-component attribution strengths aggregated over training data
 - `spd/graph_interp/` - Context-aware component labeling using graph structure (attributions + correlations)
-- Data stored at `SPD_OUT_DIR/{harvest,autointerp,dataset_attributions,graph_interp}/<run_id>/`
+- Data stored at `PARAM_DECOMP_OUT_DIR/{harvest,autointerp,dataset_attributions,graph_interp}/<run_id>/`
 - See `spd/harvest/CLAUDE.md`, `spd/autointerp/CLAUDE.md`, `spd/dataset_attributions/CLAUDE.md`, and `spd/graph_interp/CLAUDE.md` for details
 
-**Output Directory (`SPD_OUT_DIR`):**
+**Output Directory (`PARAM_DECOMP_OUT_DIR`):**
 
 - Defined in `spd/settings.py`
-- On cluster: `/mnt/polished-lake/artifacts/mechanisms/spd/`
-- Off cluster: `~/spd_out/`
+- On cluster: `/mnt/polished-lake/artifacts/mechanisms/param-decomp/`
+- Off cluster: `~/param_decomp_out/`
 - Contains: runs, SLURM logs, sbatch scripts, clustering outputs, harvest data, autointerp results
 
 **Experiment Logging:**
@@ -187,7 +187,7 @@ Each experiment (`spd/experiments/{tms,resid_mlp,lm}/`) contains:
 │   ├── models/
 │   │   ├── component_model.py       # ComponentModel, SPDRunInfo, from_pretrained()
 │   │   └── components.py            # LinearComponent, EmbeddingComponent, etc.
-│   ├── scripts/                     # CLI entry points (spd-run, spd-local)
+│   ├── scripts/                     # CLI entry points (param-decomp-run, param-decomp-local)
 │   ├── utils/
 │   │   └── slurm.py                 # SlurmConfig, submit functions
 │   ├── configs.py                   # Pydantic configs (Config, ModuleInfo, etc.)
@@ -195,7 +195,7 @@ Each experiment (`spd/experiments/{tms,resid_mlp,lm}/`) contains:
 │   ├── run_spd.py                   # Main optimization loop
 │   ├── losses.py                    # Loss functions (faithfulness, reconstruction, etc.)
 │   ├── figures.py                   # WandB figure generation
-│   └── settings.py                  # SPD_OUT_DIR, SLURM_LOGS_DIR, SBATCH_SCRIPTS_DIR
+│   └── settings.py                  # PARAM_DECOMP_OUT_DIR, SLURM_LOGS_DIR, SBATCH_SCRIPTS_DIR
 ├── Makefile                         # Dev commands (make check, make test)
 └── pyproject.toml                   # Package config
 ```
@@ -206,18 +206,18 @@ Each experiment (`spd/experiments/{tms,resid_mlp,lm}/`) contains:
 
 | Command | Entry Point | Description |
 |---------|-------------|-------------|
-| `spd-run` | `spd/scripts/run.py` | SLURM-based experiment runner |
-| `spd-local` | `spd/scripts/run_local.py` | Local experiment runner |
-| `spd-harvest` | `spd/harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
-| `spd-autointerp` | `spd/autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
-| `spd-attributions` | `spd/dataset_attributions/scripts/run_slurm_cli.py` | Submit dataset attribution SLURM job |
-| `spd-postprocess` | `spd/postprocess/cli.py` | Unified postprocessing pipeline (harvest + attributions + interpret + evals) |
-| `spd-graph-interp` | `spd/graph_interp/scripts/run_slurm_cli.py` | Submit graph interpretation SLURM job |
-| `spd-clustering` | `spd/clustering/scripts/run_pipeline.py` | Clustering ensemble pipeline |
-| `spd-cluster-harvest` | `spd/clustering/scripts/run_harvest.py` | Harvest activations → membership snapshot |
-| `spd-cluster-merge` | `spd/clustering/scripts/run_merge.py` | Merge from snapshot (CPU-only) |
-| `spd-pretrain` | `spd/pretrain/scripts/run_slurm_cli.py` | Pretrain target models |
-| `spd-investigate` | `spd/investigate/scripts/run_slurm_cli.py` | Launch investigation agent |
+| `param-decomp-run` | `spd/scripts/run.py` | SLURM-based experiment runner |
+| `param-decomp-local` | `spd/scripts/run_local.py` | Local experiment runner |
+| `param-decomp-harvest` | `spd/harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
+| `param-decomp-autointerp` | `spd/autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
+| `param-decomp-attributions` | `spd/dataset_attributions/scripts/run_slurm_cli.py` | Submit dataset attribution SLURM job |
+| `param-decomp-postprocess` | `spd/postprocess/cli.py` | Unified postprocessing pipeline (harvest + attributions + interpret + evals) |
+| `param-decomp-graph-interp` | `spd/graph_interp/scripts/run_slurm_cli.py` | Submit graph interpretation SLURM job |
+| `param-decomp-clustering` | `spd/clustering/scripts/run_pipeline.py` | Clustering ensemble pipeline |
+| `param-decomp-cluster-harvest` | `spd/clustering/scripts/run_harvest.py` | Harvest activations → membership snapshot |
+| `param-decomp-cluster-merge` | `spd/clustering/scripts/run_merge.py` | Merge from snapshot (CPU-only) |
+| `param-decomp-pretrain` | `spd/pretrain/scripts/run_slurm_cli.py` | Pretrain target models |
+| `param-decomp-investigate` | `spd/investigate/scripts/run_slurm_cli.py` | Launch investigation agent |
 
 ### Files to Skip When Searching
 
@@ -242,39 +242,39 @@ Use `spd/` as the search root (not repo root) to avoid noise.
 
 **Running Experiments:**
 
-- `spd-run` → `spd/scripts/run.py` → `spd/utils/slurm.py` → SLURM → `spd/run_spd.py`
-- `spd-local` → `spd/scripts/run_local.py` → `spd/run_spd.py` directly
+- `param-decomp-run` → `spd/scripts/run.py` → `spd/utils/slurm.py` → SLURM → `spd/run_spd.py`
+- `param-decomp-local` → `spd/scripts/run_local.py` → `spd/run_spd.py` directly
 
 **Harvest Pipeline:**
 
-- `spd-harvest` → `spd/harvest/scripts/run_slurm_cli.py` → `spd/utils/slurm.py` → SLURM array → `spd/harvest/scripts/run.py` → `spd/harvest/harvest.py`
+- `param-decomp-harvest` → `spd/harvest/scripts/run_slurm_cli.py` → `spd/utils/slurm.py` → SLURM array → `spd/harvest/scripts/run.py` → `spd/harvest/harvest.py`
 
 **Autointerp Pipeline:**
 
-- `spd-autointerp` → `spd/autointerp/scripts/run_slurm_cli.py` → `spd/utils/slurm.py` → `spd/autointerp/interpret.py`
+- `param-decomp-autointerp` → `spd/autointerp/scripts/run_slurm_cli.py` → `spd/utils/slurm.py` → `spd/autointerp/interpret.py`
 
 **Dataset Attributions Pipeline:**
 
-- `spd-attributions` → `spd/dataset_attributions/scripts/run_slurm_cli.py` → `spd/utils/slurm.py` → SLURM array → `spd/dataset_attributions/harvest.py`
+- `param-decomp-attributions` → `spd/dataset_attributions/scripts/run_slurm_cli.py` → `spd/utils/slurm.py` → SLURM array → `spd/dataset_attributions/harvest.py`
 
 **Clustering Pipeline:**
 
-- `spd-clustering` → `spd/clustering/scripts/run_pipeline.py` → `spd/utils/slurm.py` → `spd/clustering/scripts/run_clustering.py`
+- `param-decomp-clustering` → `spd/clustering/scripts/run_pipeline.py` → `spd/utils/slurm.py` → `spd/clustering/scripts/run_clustering.py`
 
 **Investigation Pipeline:**
 
-- `spd-investigate` → `spd/investigate/scripts/run_slurm_cli.py` → `spd/utils/slurm.py` → SLURM → `spd/investigate/scripts/run_agent.py` → Claude Code
+- `param-decomp-investigate` → `spd/investigate/scripts/run_slurm_cli.py` → `spd/utils/slurm.py` → SLURM → `spd/investigate/scripts/run_agent.py` → Claude Code
 
 ## Common Usage Patterns
 
-### Running Experiments Locally (`spd-local`)
+### Running Experiments Locally (`param-decomp-local`)
 
-For collaborators and simple local execution, use `spd-local`:
+For collaborators and simple local execution, use `param-decomp-local`:
 
 ```bash
-spd-local tms_5-2           # Run on single GPU (default)
-spd-local tms_5-2 --cpu     # Run on CPU
-spd-local tms_5-2 --dp 4    # Run on 4 GPUs (single node DDP)
+param-decomp-local tms_5-2           # Run on single GPU (default)
+param-decomp-local tms_5-2 --cpu     # Run on CPU
+param-decomp-local tms_5-2 --dp 4    # Run on 4 GPUs (single node DDP)
 ```
 
 This runs experiments directly without SLURM, git snapshots, or W&B views/reports.
@@ -291,33 +291,33 @@ python -m spd.app.run_app
 
 The app has its own detailed documentation in `spd/app/CLAUDE.md` and `spd/app/README.md`.
 
-### Harvesting Component Statistics (`spd-harvest`)
+### Harvesting Component Statistics (`param-decomp-harvest`)
 
 Collect component statistics (activation examples, correlations, token stats) for a run:
 
 ```bash
-spd-harvest <wandb_path> --n_batches 1000 --n_gpus 8    # Submit SLURM job to harvest statistics
+param-decomp-harvest <wandb_path> --n_batches 1000 --n_gpus 8    # Submit SLURM job to harvest statistics
 ```
 
 See `spd/harvest/CLAUDE.md` for details.
 
-### Automated Component Interpretation (`spd-autointerp`)
+### Automated Component Interpretation (`param-decomp-autointerp`)
 
 Generate LLM interpretations for harvested components:
 
 ```bash
-spd-autointerp <wandb_path>            # Submit SLURM job to interpret components
+param-decomp-autointerp <wandb_path>            # Submit SLURM job to interpret components
 ```
 
 Requires `OPENROUTER_API_KEY` env var. See `spd/autointerp/CLAUDE.md` for details.
 
-### Agent Investigation (`spd-investigate`)
+### Agent Investigation (`param-decomp-investigate`)
 
 Launch a Claude Code agent to investigate a specific question about an SPD model:
 
 ```bash
-spd-investigate <wandb_path> "How does the model handle gendered pronouns?"
-spd-investigate <wandb_path> "What components are involved in verb agreement?" --time 4:00:00
+param-decomp-investigate <wandb_path> "How does the model handle gendered pronouns?"
+param-decomp-investigate <wandb_path> "What components are involved in verb agreement?" --time 4:00:00
 ```
 
 Each investigation:
@@ -327,21 +327,21 @@ Each investigation:
 - Investigates the specific research question using SPD tools via MCP
 - Writes findings to append-only JSONL files
 
-Output: `SPD_OUT_DIR/investigations/<inv_id>/`
+Output: `PARAM_DECOMP_OUT_DIR/investigations/<inv_id>/`
 
 For parallel investigations, run the command multiple times with different prompts.
 
 See `spd/investigate/CLAUDE.md` for details.
 
-### Unified Postprocessing (`spd-postprocess`)
+### Unified Postprocessing (`param-decomp-postprocess`)
 
 Run all postprocessing steps for a completed SPD run with a single command. The CLI takes a
 positional path to a `PostprocessConfig` YAML (the wandb run is specified inside the config):
 
 ```bash
-spd-postprocess config.yaml                    # Submit the pipeline defined by this config
-spd-postprocess config.yaml --dependency 123   # Wait for SLURM job 123 before starting
-spd-postprocess config.yaml --dry_run          # Print the resolved config without submitting
+param-decomp-postprocess config.yaml                    # Submit the pipeline defined by this config
+param-decomp-postprocess config.yaml --dependency 123   # Wait for SLURM job 123 before starting
+param-decomp-postprocess config.yaml --dry_run          # Print the resolved config without submitting
 ```
 
 The config schema is `PostprocessConfig` in `spd/postprocess/config.py`. Set any optional
@@ -366,17 +366,17 @@ attributions (GPU array → merge, parallel with harvest)
 graph_interp         (CPU, depends on harvest merge + attributions merge)
 ```
 
-### Running on SLURM Cluster (`spd-run`)
+### Running on SLURM Cluster (`param-decomp-run`)
 
-For the core team, `spd-run` provides full-featured SLURM orchestration:
+For the core team, `param-decomp-run` provides full-featured SLURM orchestration:
 
 ```bash
-spd-run --experiments tms_5-2                    # Run a specific experiment
-spd-run --experiments tms_5-2,resid_mlp1         # Run multiple experiments
-spd-run                                          # Run all experiments
+param-decomp-run --experiments tms_5-2                    # Run a specific experiment
+param-decomp-run --experiments tms_5-2,resid_mlp1         # Run multiple experiments
+param-decomp-run                                          # Run all experiments
 ```
 
-All `spd-run` executions:
+All `param-decomp-run` executions:
 
 - Submit jobs to SLURM
 - Create a git snapshot for reproducibility
@@ -394,19 +394,19 @@ Metrics and figures are defined in `spd/metrics.py` and `spd/figures.py`. These 
 Run hyperparameter sweeps on the GPU cluster:
 
 ```bash
-spd-run --experiments <experiment_name> --sweep --n_agents <n-agents> [--cpu]
+param-decomp-run --experiments <experiment_name> --sweep --n_agents <n-agents> [--cpu]
 ```
 
 Examples:
 
 ```bash
-spd-run --experiments tms_5-2 --sweep --n_agents 4            # Run TMS 5-2 sweep with 4 GPU agents
-spd-run --experiments resid_mlp2 --sweep --n_agents 3 --cpu   # Run ResidualMLP2 sweep with 3 CPU agents
-spd-run --sweep --n_agents 10                                 # Sweep all experiments with 10 agents
-spd-run --experiments tms_5-2 --sweep custom.yaml --n_agents 2 # Use custom sweep params file
+param-decomp-run --experiments tms_5-2 --sweep --n_agents 4            # Run TMS 5-2 sweep with 4 GPU agents
+param-decomp-run --experiments resid_mlp2 --sweep --n_agents 3 --cpu   # Run ResidualMLP2 sweep with 3 CPU agents
+param-decomp-run --sweep --n_agents 10                                 # Sweep all experiments with 10 agents
+param-decomp-run --experiments tms_5-2 --sweep custom.yaml --n_agents 2 # Use custom sweep params file
 ```
 
-**Supported Experiments:** All experiments in `spd/registry.py` (run `spd-local --help` to see available options)
+**Supported Experiments:** All experiments in `spd/registry.py` (run `param-decomp-local --help` to see available options)
 
 **How It Works:**
 
@@ -465,7 +465,7 @@ model = ComponentModel.from_pretrained("/path/to/checkpoint.pt")
 - WandB: `wandb:entity/project/run_id` or `wandb:entity/project/runs/run_id`
 - Local: Direct path to checkpoint file (config must be in same directory as `final_config.yaml`)
 
-Downloaded runs are cached in `SPD_OUT_DIR/runs/<project>-<run_id>/`.
+Downloaded runs are cached in `PARAM_DECOMP_OUT_DIR/runs/<project>-<run_id>/`.
 
 ### Cluster Usage Guidelines
 

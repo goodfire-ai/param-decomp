@@ -1,8 +1,8 @@
 """CLI entry point for intruder eval SLURM launcher.
 
 Usage:
-    spd-intruder <decomposition_id> <harvest_subrun_id>
-    spd-intruder <decomposition_id> <harvest_subrun_id> --config intruder_config.yaml
+    param-decomp-intruder <decomposition_id> <harvest_subrun_id>
+    param-decomp-intruder <decomposition_id> <harvest_subrun_id> --config intruder_config.yaml
 """
 
 import fire

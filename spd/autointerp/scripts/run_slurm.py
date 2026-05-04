@@ -70,7 +70,7 @@ def submit_autointerp(
     )
 
     interpret_slurm = SlurmConfig(
-        job_name="spd-interpret",
+        job_name="param-decomp-interpret",
         partition=config.partition,
         n_gpus=2,
         time=config.time,
@@ -79,7 +79,7 @@ def submit_autointerp(
         comment=decomposition_id,
     )
     script_content = generate_script(interpret_slurm, interpret_cmd)
-    interpret_result = submit_slurm_job(script_content, "spd-interpret")
+    interpret_result = submit_slurm_job(script_content, "param-decomp-interpret")
 
     logger.section("Interpret job submitted")
     logger.values(
@@ -111,7 +111,7 @@ def submit_autointerp(
             autointerp_subrun_id=autointerp_subrun_id,
         )
         eval_slurm = SlurmConfig(
-            job_name=f"spd-{scorer}",
+            job_name=f"param-decomp-{scorer}",
             partition=config.partition,
             n_gpus=2,
             time=config.evals_time,
@@ -119,7 +119,7 @@ def submit_autointerp(
             dependency_job_id=interpret_result.job_id,
         )
         eval_script = generate_script(eval_slurm, scoring_cmd)
-        scoring_result = submit_slurm_job(eval_script, f"spd-{scorer}")
+        scoring_result = submit_slurm_job(eval_script, f"param-decomp-{scorer}")
         scoring_results[scorer] = scoring_result
 
         logger.section(f"{scorer.capitalize()} scoring job submitted")

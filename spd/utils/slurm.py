@@ -330,7 +330,7 @@ def _setup_section(config: SlurmConfig, is_array: bool) -> str:
         workspace_suffix = "$SLURM_JOB_ID"
 
     if config.snapshot_branch is not None:
-        work_dir = f"/tmp/spd/workspace-{config.job_name}-{workspace_suffix}"
+        work_dir = f"/tmp/param-decomp/workspace-{config.job_name}-{workspace_suffix}"
         return generate_git_snapshot_setup(work_dir, config.snapshot_branch)
     else:
         return f"""\
