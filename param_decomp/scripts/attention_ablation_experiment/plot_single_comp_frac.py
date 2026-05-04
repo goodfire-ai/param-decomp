@@ -63,7 +63,7 @@ def _load_top_components(run_id: str, layer: int, top_n: int) -> tuple[list[int]
 
 
 def _run_ablation_loop(
-    spd_model: ComponentModel,
+    pd_model: ComponentModel,
     target_model: LlamaSimpleMLP,
     loader: Iterable[dict[str, Tensor]],
     task_config: LMTaskConfig,
@@ -113,28 +113,28 @@ def _run_ablation_loop(
             # Baseline (shared)
             dummy_cp = [(module_path, 0, comp_pos)]
             baseline_masks, _ = _build_deterministic_masks_multi_pos(
-                spd_model, dummy_cp, bs, input_ids.device
+                pd_model, dummy_cp, bs, input_ids.device
             )
 
             with patched_attention_forward(target_model) as d:
-                spd_model(input_ids, mask_infos=baseline_masks)
-            spd_pat = d.patterns
+                pd_model(input_ids, mask_infos=baseline_masks)
+            pd_pat = d.patterns
 
             for h in range(n_heads):
                 for o in offsets:
                     kp = t - o
                     if kp >= 0:
-                        baseline_accum[h][o].append(spd_pat[layer][h, t, kp].item())
+                        baseline_accum[h][o].append(pd_pat[layer][h, t, kp].item())
 
             # Ablate each component
             for ci_idx, comp_idx in enumerate(component_indices):
                 cp = [(module_path, comp_idx, comp_pos)]
                 _, ablated_masks = _build_deterministic_masks_multi_pos(
-                    spd_model, cp, bs, input_ids.device
+                    pd_model, cp, bs, input_ids.device
                 )
 
                 with patched_attention_forward(target_model) as d:
-                    spd_model(input_ids, mask_infos=ablated_masks)
+                    pd_model(input_ids, mask_infos=ablated_masks)
                 abl_pat = d.patterns
 
                 for h in range(n_heads):
@@ -470,11 +470,11 @@ def plot_single_comp_frac(
     run_info = ParamDecompRunInfo.from_path(wandb_path)
     config = run_info.config
 
-    spd_model = ComponentModel.from_run_info(run_info)
-    spd_model.eval()
+    pd_model = ComponentModel.from_run_info(run_info)
+    pd_model.eval()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    spd_model = spd_model.to(device)
-    target_model = spd_model.target_model
+    pd_model = pd_model.to(device)
+    target_model = pd_model.target_model
     assert isinstance(target_model, LlamaSimpleMLP)
     for block in target_model._h:
         block.attn.flash_attention = False
@@ -500,7 +500,7 @@ def plot_single_comp_frac(
     logger.section(f"Q component ablations (top {top_n})")
     loader_q, _ = create_data_loader(dataset_config=dataset_config, batch_size=1, buffer_size=1000)
     q_baseline, q_accums = _run_ablation_loop(
-        spd_model,
+        pd_model,
         target_model,
         loader_q,
         task_config,
@@ -533,7 +533,7 @@ def plot_single_comp_frac(
     logger.section(f"K component ablations (top {top_n}, k_offset={k_offset})")
     loader_k, _ = create_data_loader(dataset_config=dataset_config, batch_size=1, buffer_size=1000)
     k_baseline, k_accums = _run_ablation_loop(
-        spd_model,
+        pd_model,
         target_model,
         loader_k,
         task_config,

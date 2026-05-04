@@ -42,8 +42,8 @@ class PostprocessConfig(BaseConfig):
     @override
     def model_post_init(self, __context: Any) -> None:
         expects_attributions = self.attributions is not None
-        is_not_spd = not isinstance(self.harvest.config.method_config, ParamDecompHarvestConfig)
-        if expects_attributions and is_not_spd:
+        is_not_pd = not isinstance(self.harvest.config.method_config, ParamDecompHarvestConfig)
+        if expects_attributions and is_not_pd:
             raise ValueError("Attributions only work for PD decompositions")
         if self.graph_interp is not None and self.attributions is None:
             raise ValueError("Graph interp requires attributions")

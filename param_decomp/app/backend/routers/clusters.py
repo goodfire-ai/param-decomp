@@ -2,9 +2,10 @@
 
 import json
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import ValidationError
+from pydantic import ValidationError, model_validator
 
 from param_decomp.app.backend.state import StateManager
 from param_decomp.app.backend.utils import log_errors
@@ -29,9 +30,16 @@ class ClusterMappingFile(BaseConfig):
 
     clustering_run_id: str
     notes: str
-    spd_run: str
+    pd_run: str
     iteration: int
     clusters: dict[str, int | None]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_keys(cls, data: dict[str, Any]) -> dict[str, Any]:
+        if "spd_run" in data:
+            data["pd_run"] = data.pop("spd_run")
+        return data
 
 
 @router.post("/load")
@@ -44,7 +52,7 @@ def load_cluster_mapping(file_path: str) -> ClusterMapping:
     The file should contain a JSON object with:
     - clustering_run_id: string
     - notes: string
-    - spd_run: wandb path (must match currently loaded run)
+    - pd_run: wandb path (must match currently loaded run)
     - clusters: dict mapping component keys to cluster IDs
     """
     state = StateManager.get()
@@ -80,10 +88,10 @@ def load_cluster_mapping(file_path: str) -> ClusterMapping:
             },
         ) from exc
 
-    if parsed.spd_run != run_state.run.wandb_path:
+    if parsed.pd_run != run_state.run.wandb_path:
         raise HTTPException(
             status_code=409,
-            detail=f"Run ID mismatch: cluster file is for '{parsed.spd_run}', "
+            detail=f"Run ID mismatch: cluster file is for '{parsed.pd_run}', "
             f"but loaded run is '{run_state.run.wandb_path}'",
         )
 

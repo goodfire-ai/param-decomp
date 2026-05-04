@@ -744,7 +744,7 @@ class Config(BaseConfig):
 
         return result
 
-    init_spd_checkpoint: str | None = Field(
+    init_pd_checkpoint: str | None = Field(
         default=None,
         description="Path to a .pth checkpoint from a prior PD run for component/CI initialization",
     )
@@ -847,7 +847,7 @@ class Config(BaseConfig):
     pretrained_model_path: ModelPath | None = Field(
         default=None,
         description="Model identifier. Local path or wandb reference "
-        "(e.g. 'wandb:goodfire/spd/runs/otxwx80v' or 'mnt/my_model/checkpoint.pth')",
+        "(e.g. 'wandb:goodfire/param-decomp/runs/otxwx80v' or 'mnt/my_model/checkpoint.pth')",
     )
     pretrained_model_name: str | None = Field(
         default=None,
@@ -904,6 +904,7 @@ class Config(BaseConfig):
         "pretrained_model_name_hf": "pretrained_model_name",
         "recon_coeff": "ci_recon_coeff",
         "recon_layerwise_coeff": "ci_recon_layerwise_coeff",
+        "init_spd_checkpoint": "init_pd_checkpoint",
     }
 
     @model_validator(mode="before")

@@ -35,9 +35,9 @@ def harvest(config: HarvestConfig) -> Path:
     config.to_file(out / "harvest_config.json")
 
     device = get_device()
-    spd_run = ParamDecompRunInfo.from_path(config.model_path)
-    task_name = spd_run.config.task_config.task_name
-    model = ComponentModel.from_run_info(spd_run).to(device)
+    pd_run = ParamDecompRunInfo.from_path(config.model_path)
+    task_name = pd_run.config.task_config.task_name
+    model = ComponentModel.from_run_info(pd_run).to(device)
     dataloader = create_clustering_dataloader(
         model_path=config.model_path,
         task_name=task_name,

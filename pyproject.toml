@@ -1,7 +1,7 @@
 [project]
 name = "param-decomp"
 version = "0.0.1"
-description = "Stochastic/adVersarial Parameter Decomposition"
+description = "Parameter Decomposition"
 requires-python = "==3.13.*"
 urls = { "Homepage" = "https://github.com/goodfire-ai/param-decomp" }
 license = { text = "MIT" }

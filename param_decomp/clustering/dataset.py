@@ -50,8 +50,8 @@ def create_clustering_dataloader(
 
 def _create_lm_dataloader(model_path: str, batch_size: int, seed: int) -> DataLoader[Any]:
     """Create a dataloader for language model task."""
-    spd_run = ParamDecompRunInfo.from_path(model_path)
-    cfg = spd_run.config
+    pd_run = ParamDecompRunInfo.from_path(model_path)
+    cfg = pd_run.config
 
     assert isinstance(cfg.task_config, LMTaskConfig), (
         f"Expected task_config to be of type LMTaskConfig, but got {type(cfg.task_config) = }"
@@ -83,9 +83,9 @@ def _create_resid_mlp_dataloader(model_path: str, batch_size: int, seed: int) ->
     from param_decomp.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
     from param_decomp.utils.data_utils import DatasetGeneratedDataLoader
 
-    spd_run = ParamDecompRunInfo.from_path(model_path)
-    cfg = spd_run.config
-    component_model = ComponentModel.from_run_info(spd_run)
+    pd_run = ParamDecompRunInfo.from_path(model_path)
+    cfg = pd_run.config
+    component_model = ComponentModel.from_run_info(pd_run)
 
     assert isinstance(cfg.task_config, ResidMLPTaskConfig), (
         f"Expected task_config to be of type ResidMLPTaskConfig, but got {type(cfg.task_config) = }"

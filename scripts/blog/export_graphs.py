@@ -4,7 +4,7 @@ Writes per-graph JSON pairs (graph + details) to an output directory.
 Component details include activation examples and dataset attribution
 labels (top-10 incoming/outgoing, all labels resolved at export time).
 
-Run from ~/spd:
+Run from ~/param-decomp:
   uv run python scripts/blog/export_graphs.py --out-dir ../vpd-blog-replit/data/graphs
 """
 

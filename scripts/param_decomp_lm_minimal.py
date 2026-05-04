@@ -1,11 +1,12 @@
 """Minimal single-file Stochastic Parameter Decomposition (SPD) for language models.
 
 Reproduces the method used in `param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml`
-from the SPD paper. The SPD method itself has zero dependencies on the `spd`
-package — only `load_paper_target_model()` imports from `spd` to fetch the
-specific 4-layer pretrained LlamaSimpleMLP used in the paper (from WandB).
-Skip that helper if you want to plug in your own target model. The file is structured
-for paper readers — everything the method needs is here:
+from the SPD paper. The SPD method itself has zero dependencies on the
+`param_decomp` package — only `load_paper_target_model()` imports from
+`param_decomp` to fetch the specific 4-layer pretrained LlamaSimpleMLP used
+in the paper (from WandB). Skip that helper if you want to plug in your own
+target model. The file is structured for paper readers — everything the
+method needs is here:
 
   A. Config (method hyperparameters)
   B. Leaky-hard sigmoids (straight-through for `lower_leaky`)
@@ -41,10 +42,10 @@ whose `forward(input_ids)` returns logits `[B, S, vocab]`. The 4L LlamaSimpleMLP
 lives in `param_decomp/pretrain/models/llama_simple_mlp.py` in the full repo.
 
 Launch (8-GPU single-node):
-    torchrun --nproc_per_node=8 scripts/spd_lm_minimal.py
+    torchrun --nproc_per_node=8 scripts/param_decomp_lm_minimal.py
 
 Single-GPU smoke test:
-    python scripts/spd_lm_minimal.py
+    python scripts/param_decomp_lm_minimal.py
 """
 
 import math
@@ -902,9 +903,10 @@ def train(target_model: nn.Module, cfg: Config) -> None:
 # =============================================================================
 # Section K: Eval metrics (matches `eval_metric_configs` in the 4L YAML)
 # =============================================================================
-# Metrics are re-implemented inline (no new spd imports) and run on a single eval
+# Metrics are re-implemented inline (no new param_decomp imports) and run on a single eval
 # batch per call (n_eval_steps=1, n_batches_accum=1 in the YAML — no cross-batch
-# accumulation needed). DDP reduction is AVG across ranks, matching the spd code.
+# accumulation needed). DDP reduction is AVG across ranks, matching the
+# param_decomp code.
 # Each function returns a `dict[str, float | Tensor]`. 1D tensors are converted to
 # `wandb.Histogram` at log time; scalars are logged as floats.
 
@@ -964,7 +966,7 @@ def eval_ce_kl_losses(
     for each. Returns 16 scalar entries matching `param_decomp.metrics.ce_and_kl_losses`.
 
     Delta-component handling: only `stoch_masked` routes through the weight delta (with U(0,1) mask);
-    the other 5 strategies pass `delta_mask=0` to match `make_mask_infos(mask)` in the spd code
+    the other 5 strategies pass `delta_mask=0` to match `make_mask_infos(mask)` in the param_decomp code
     (which leaves `weight_deltas_and_masks=None`).
     """
     B, S = input_ids.shape
@@ -1301,10 +1303,10 @@ def load_paper_target_model(
 ) -> nn.Module:
     """Load the specific 4-layer pretrained LlamaSimpleMLP used in the SPD paper.
 
-    This is the ONLY place we touch the `spd` package — we import the target model class
-    and its W&B loader so the script can reproduce the paper's decomposition. If you want to
-    plug in a different target LM, pass your own `nn.Module` to `train()` and use a
-    `Config(C_per_module=...)` that matches your module paths.
+    This is the ONLY place we touch the `param_decomp` package — we import the target
+    model class and its W&B loader so the script can reproduce the paper's decomposition.
+    If you want to plug in a different target LM, pass your own `nn.Module` to `train()`
+    and use a `Config(C_per_module=...)` that matches your module paths.
 
     Requires a `.env` with WandB credentials; the model is cached at
     `PARAM_DECOMP_OUT_DIR/pretrain_cache/<project>-<run_id>/` on first download.
@@ -1330,10 +1332,10 @@ def load_paper_target_model(
 
 if __name__ == "__main__":
     # Reproduce paper's decomposition (requires 8 GPUs):
-    #   torchrun --nproc_per_node=8 scripts/spd_lm_minimal.py
+    #   torchrun --nproc_per_node=8 scripts/param_decomp_lm_minimal.py
     cfg = Config(
         C_per_module=C_PER_MODULE_4L,
         use_wandb=True,
-        wandb_run_name="spd_lm_minimal",
+        wandb_run_name="param_decomp_lm_minimal",
     )
     train(load_paper_target_model(), cfg)

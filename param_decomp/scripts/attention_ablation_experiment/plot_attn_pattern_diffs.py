@@ -74,11 +74,11 @@ def plot_attn_pattern_diffs(
     run_info = ParamDecompRunInfo.from_path(wandb_path)
     config = run_info.config
 
-    spd_model = ComponentModel.from_run_info(run_info)
-    spd_model.eval()
+    pd_model = ComponentModel.from_run_info(run_info)
+    pd_model.eval()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    spd_model = spd_model.to(device)
-    target_model = spd_model.target_model
+    pd_model = pd_model.to(device)
+    target_model = pd_model.target_model
     assert isinstance(target_model, LlamaSimpleMLP)
     for block in target_model._h:
         block.attn.flash_attention = False
@@ -104,7 +104,7 @@ def plot_attn_pattern_diffs(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     n_heads = target_model.config.n_head
-    conditions = ["target_baseline", "spd_baseline", "full_comp", "perhead_comp"]
+    conditions = ["target_baseline", "pd_baseline", "full_comp", "perhead_comp"]
     accum: dict[str, dict[int, dict[int, list[float]]]] = {
         c: {h: {o: [] for o in range(max_offset_show + 1)} for h in range(n_heads)}
         for c in conditions
@@ -144,10 +144,10 @@ def plot_attn_pattern_diffs(
             bs = (input_ids.shape[0], input_ids.shape[1])
             cp = _build_prev_token_component_positions(parsed_components, t)
             baseline_masks, full_ablated_masks = _build_deterministic_masks_multi_pos(
-                spd_model, cp, bs, input_ids.device
+                pd_model, cp, bs, input_ids.device
             )
             comp_head_abls = _build_component_head_ablations(
-                spd_model, parsed_components, parsed_restrict_heads, t
+                pd_model, parsed_components, parsed_restrict_heads, t
             )
 
             with patched_attention_forward(target_model) as d:
@@ -155,22 +155,22 @@ def plot_attn_pattern_diffs(
             target_pat = d.patterns
 
             with patched_attention_forward(target_model) as d:
-                spd_model(input_ids, mask_infos=baseline_masks)
-            spd_pat = d.patterns
+                pd_model(input_ids, mask_infos=baseline_masks)
+            pd_pat = d.patterns
 
             with patched_attention_forward(target_model) as d:
-                spd_model(input_ids, mask_infos=full_ablated_masks)
+                pd_model(input_ids, mask_infos=full_ablated_masks)
             full_pat = d.patterns
 
             with patched_attention_forward(
                 target_model, component_head_ablations=comp_head_abls
             ) as d:
-                spd_model(input_ids, mask_infos=baseline_masks)
+                pd_model(input_ids, mask_infos=baseline_masks)
             perhead_pat = d.patterns
 
             pats = {
                 "target_baseline": target_pat,
-                "spd_baseline": spd_pat,
+                "pd_baseline": pd_pat,
                 "full_comp": full_pat,
                 "perhead_comp": perhead_pat,
             }
@@ -189,7 +189,7 @@ def plot_attn_pattern_diffs(
     # --- Plot 1: Raw attention values ---
     styles = {
         "target_baseline": ("k", "-", 1.5, "Target baseline"),
-        "spd_baseline": ("b", "-", 1.5, "PD baseline"),
+        "pd_baseline": ("b", "-", 1.5, "PD baseline"),
         "full_comp": ("r", "-", 1.5, "Full comp ablation"),
         "perhead_comp": ("g", "--", 1.5, f"Per-head comp ({restrict_label})"),
     }
@@ -245,7 +245,7 @@ def plot_attn_pattern_diffs(
             for o in offsets:
                 diffs = [
                     a - b
-                    for a, b in zip(accum[cond][h][o], accum["spd_baseline"][h][o], strict=True)
+                    for a, b in zip(accum[cond][h][o], accum["pd_baseline"][h][o], strict=True)
                 ]
                 all_diff_means.append(np.mean(diffs))
     diff_ymin = min(all_diff_means) * 1.15
@@ -259,7 +259,7 @@ def plot_attn_pattern_diffs(
             for o in offsets:
                 sample_diffs = [
                     a - b
-                    for a, b in zip(accum[cond][h][o], accum["spd_baseline"][h][o], strict=True)
+                    for a, b in zip(accum[cond][h][o], accum["pd_baseline"][h][o], strict=True)
                 ]
                 diffs_by_offset.append(sample_diffs)
             means = [np.mean(d) for d in diffs_by_offset]
@@ -302,7 +302,7 @@ def plot_attn_pattern_diffs(
     }
 
     mean_baseline_by_offset = {
-        o: np.mean([v for h in range(n_heads) for v in accum["spd_baseline"][h][o]])
+        o: np.mean([v for h in range(n_heads) for v in accum["pd_baseline"][h][o]])
         for o in frac_offsets
     }
 
@@ -315,7 +315,7 @@ def plot_attn_pattern_diffs(
                 norm = mean_baseline_by_offset[o]
                 sample_fracs = [
                     (a - b) / norm if norm > 1e-8 else 0.0
-                    for a, b in zip(accum[cond][h][o], accum["spd_baseline"][h][o], strict=True)
+                    for a, b in zip(accum[cond][h][o], accum["pd_baseline"][h][o], strict=True)
                 ]
                 fracs_by_offset.append(sample_fracs)
             means = [np.mean(f) for f in fracs_by_offset]
@@ -386,7 +386,7 @@ def plot_attn_pattern_diffs(
         for h in range(n_heads):
             ax = axes[h, 0]
             for cond, (color, ls, lw, label) in diff_styles.items():
-                vals = [accum[cond][h][o][si] - accum["spd_baseline"][h][o][si] for o in offsets]
+                vals = [accum[cond][h][o][si] - accum["pd_baseline"][h][o][si] for o in offsets]
                 ax.plot(offsets, vals, color=color, linestyle=ls, linewidth=lw, label=label)
             ax.axhline(y=0, color="gray", linewidth=0.5, linestyle=":")
             ax.set_ylabel(f"H{h}", fontsize=10, fontweight="bold")
@@ -412,7 +412,7 @@ def plot_attn_pattern_diffs(
             ax = axes[h, 0]
             for cond, (color, ls, lw, label) in frac_styles.items():
                 vals = [
-                    (accum[cond][h][o][si] - accum["spd_baseline"][h][o][si])
+                    (accum[cond][h][o][si] - accum["pd_baseline"][h][o][si])
                     / mean_baseline_by_offset[o]
                     if mean_baseline_by_offset[o] > 1e-8
                     else 0.0

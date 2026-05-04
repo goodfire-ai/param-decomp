@@ -21,7 +21,7 @@ activation renderer:
       ]
     }
 
-Run from ~/spd:
+Run from ~/param-decomp:
   uv run python -m scripts.blog.export_manual_prompts \
       --component 1.attn.q:308 \
       --prompts-file ../vpd-blog-replit/my-prompts.json \

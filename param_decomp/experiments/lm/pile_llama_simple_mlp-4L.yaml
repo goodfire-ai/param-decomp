@@ -33,7 +33,7 @@ module_info:
 - module_pattern: h.*.attn.o_proj
   C: 1024
 identity_module_info: null
-init_spd_checkpoint: null
+init_pd_checkpoint: null
 use_delta_component: true
 loss_metric_configs:
 - coeff: 0.0002

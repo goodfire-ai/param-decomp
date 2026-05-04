@@ -18,19 +18,12 @@ from param_decomp.registry import EXPERIMENT_REGISTRY
 from param_decomp.settings import DEFAULT_PROJECT_NAME, REPO_ROOT
 from param_decomp.utils.general_utils import fetch_latest_checkpoint_name
 
-# TODO: replace placeholders below with workspace IDs created in the new
-# `goodfire/param-decomp` project (workspaces don't migrate when the project name
-# changes; recreate the views in the wandb UI and copy the `?nw=...` IDs here).
-WORKSPACE_TEMPLATES = {
-    "default": "https://wandb.ai/goodfire/param-decomp?nw=PLACEHOLDER",
-    "tms_5-2": "https://wandb.ai/goodfire/param-decomp?nw=PLACEHOLDER",
-    "tms_40-10": "https://wandb.ai/goodfire/param-decomp?nw=PLACEHOLDER",
-    "tms_5-2-id": "https://wandb.ai/goodfire/nathu-spd-test-proj?nw=iytdd13y9d0",
-    "tms_40-10-id": "https://wandb.ai/goodfire/nathu-spd-test-proj?nw=iytdd13y9d0",
-    "resid_mlp1": "https://wandb.ai/goodfire/nathu-spd?nw=5im20fd95rg",
-    "resid_mlp2": "https://wandb.ai/goodfire/nathu-spd?nw=5im20fd95rg",
-    "resid_mlp3": "https://wandb.ai/goodfire/nathu-spd?nw=5im20fd95rg",
-}
+# Per-experiment workspace template URLs (in `goodfire/param-decomp`). The view
+# created from each template is renamed and re-projected to the current run's
+# project. Add an entry by creating the workspace in the wandb UI and copying
+# the `?nw=...` ID here. Experiments without an entry skip workspace view
+# creation cleanly (see `create_workspace_view`).
+WORKSPACE_TEMPLATES: dict[str, str] = {}
 
 # Regex patterns for parsing W&B run references
 # Run IDs can be 8 chars (e.g., "d2ec3bfe") or prefixed with char-dash (e.g., "s-d2ec3bfe")
@@ -181,7 +174,7 @@ def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
     """Parse various W&B run reference formats into (entity, project, run_id).
 
     Accepts:
-    - "s-xxxxxxxx" (bare PD run ID, assumes goodfire/spd)
+    - "s-xxxxxxxx" (bare PD run ID, defaults to goodfire/param-decomp)
     - "entity/project/runId" (compact form)
     - "entity/project/runs/runId" (with /runs/)
     - "wandb:entity/project/runId" (with wandb: prefix)
@@ -369,10 +362,15 @@ def ensure_project_exists(project: str) -> None:
         logger.info(f"Project '{project}' created successfully")
 
 
-def create_workspace_view(launch_id: str, experiment_name: str, project: str) -> str:
-    """Create a wandb workspace view for an experiment."""
-    # Use experiment-specific template if available
-    template_url: str = WORKSPACE_TEMPLATES.get(experiment_name, WORKSPACE_TEMPLATES["default"])
+def create_workspace_view(launch_id: str, experiment_name: str, project: str) -> str | None:
+    """Create a wandb workspace view for an experiment.
+
+    Returns None if no template URL is configured for `experiment_name` in
+    `WORKSPACE_TEMPLATES`.
+    """
+    template_url = WORKSPACE_TEMPLATES.get(experiment_name)
+    if template_url is None:
+        return None
     workspace: ws.Workspace = ws.Workspace.from_url(template_url)
 
     # Override the project to match what we're actually using
@@ -602,11 +600,14 @@ def create_view_and_report(
     # Ensure the W&B project exists
     ensure_project_exists(project)
 
-    # Create workspace views for each experiment
+    # Create workspace views for each experiment that has a configured template.
     logger.section("Creating workspace views...")
     workspace_urls: dict[str, str] = {}
     for experiment in experiments:
         workspace_url = create_workspace_view(launch_id, experiment, project)
+        if workspace_url is None:
+            logger.info(f"No workspace template for {experiment}; skipping view creation.")
+            continue
         workspace_urls[experiment] = workspace_url
 
     # Create report if requested

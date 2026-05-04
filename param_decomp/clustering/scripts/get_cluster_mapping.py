@@ -8,7 +8,7 @@ Output format:
     {
         "clustering_run_id": "cr-5f228e5f",
         "notes": "",
-        "spd_run": "goodfire/spd/5cr21lbs",
+        "pd_run": "goodfire/param-decomp/5cr21lbs",
         "clusters": {"h.0.mlp.down_proj:1": 0, "h.0.mlp.down_proj:2": null, ...}
     }
 
@@ -66,7 +66,7 @@ def get_cluster_mapping(
     return mapping, labels
 
 
-def get_spd_run_path(run_dir: Path) -> str:
+def get_pd_run_path(run_dir: Path) -> str:
     """Extract the PD run path from the clustering run's merge config.
 
     Follows: merge_config.json → snapshot_path → harvest_config.json → model_path
@@ -107,12 +107,12 @@ def main(
     clusters, _ = get_cluster_mapping(run_dir=run_path, iteration=iteration)
 
     clustering_run_id = run_path.name
-    spd_run = get_spd_run_path(run_path)
+    pd_run = get_pd_run_path(run_path)
 
     result = {
         "clustering_run_id": clustering_run_id,
         "notes": notes,
-        "spd_run": spd_run,
+        "pd_run": pd_run,
         "iteration": iteration,
         "clusters": clusters,
     }

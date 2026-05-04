@@ -8,20 +8,20 @@ Supports three ablation modes for components:
 Usage:
     # Head ablation
     python -m param_decomp.scripts.attention_ablation_experiment.attention_ablation_experiment \
-        wandb:goodfire/spd/runs/<run_id> --heads L0H3,L1H5
+        wandb:goodfire/param-decomp/runs/<run_id> --heads L0H3,L1H5
 
     # Component ablation (deterministic)
     python -m param_decomp.scripts.attention_ablation_experiment.attention_ablation_experiment \
-        wandb:goodfire/spd/runs/<run_id> --components "h.0.attn.q_proj:3,h.1.attn.k_proj:7"
+        wandb:goodfire/param-decomp/runs/<run_id> --components "h.0.attn.q_proj:3,h.1.attn.k_proj:7"
 
     # Component ablation (stochastic)
     python -m param_decomp.scripts.attention_ablation_experiment.attention_ablation_experiment \
-        wandb:goodfire/spd/runs/<run_id> --components "h.0.attn.q_proj:3" \
+        wandb:goodfire/param-decomp/runs/<run_id> --components "h.0.attn.q_proj:3" \
         --ablation_mode stochastic --n_mask_samples 10
 
     # Component ablation (adversarial / PGD)
     python -m param_decomp.scripts.attention_ablation_experiment.attention_ablation_experiment \
-        wandb:goodfire/spd/runs/<run_id> --components "h.0.attn.q_proj:3" \
+        wandb:goodfire/param-decomp/runs/<run_id> --components "h.0.attn.q_proj:3" \
         --ablation_mode adversarial --pgd_steps 50 --pgd_step_size 0.01
 """
 
@@ -71,12 +71,12 @@ class ComponentHeadAblation:
 
 
 def _extract_component_vectors(
-    spd_model: ComponentModel,
+    pd_model: ComponentModel,
     module_name: str,
     comp_idx: int,
 ) -> tuple[Tensor, Tensor]:
     """Return (V_col, U_row) for a specific component. Both detached."""
-    components = spd_model.components[module_name]
+    components = pd_model.components[module_name]
     return components.V[:, comp_idx].detach(), components.U[comp_idx, :].detach()
 
 
@@ -602,7 +602,7 @@ def _build_prev_token_component_positions(
 
 
 def _build_component_head_ablations(
-    spd_model: ComponentModel,
+    pd_model: ComponentModel,
     parsed_components: list[tuple[str, int]],
     heads: list[tuple[int, int]],
     t: int,
@@ -610,7 +610,7 @@ def _build_component_head_ablations(
     """Build per-head component ablations: q components at t, k components at t-1."""
     ablations: list[ComponentHeadAblation] = []
     for module_name, comp_idx in parsed_components:
-        v_col, u_row = _extract_component_vectors(spd_model, module_name, comp_idx)
+        v_col, u_row = _extract_component_vectors(pd_model, module_name, comp_idx)
         if "q_proj" in module_name:
             qk: Literal["q", "k"] = "q"
             pos = t
@@ -761,7 +761,7 @@ def _run_head_ablation(
 
 
 def _run_component_ablation(
-    spd_model: ComponentModel,
+    pd_model: ComponentModel,
     target_model: LlamaSimpleMLP,
     input_ids: Int[Tensor, "batch pos"],
     parsed_components: list[tuple[str, int]],
@@ -774,15 +774,15 @@ def _run_component_ablation(
     match ablation_mode:
         case "deterministic":
             return _run_deterministic_component_ablation(
-                spd_model, target_model, input_ids, parsed_components, ablation_pos
+                pd_model, target_model, input_ids, parsed_components, ablation_pos
             )
         case "stochastic":
             return _run_stochastic_component_ablation(
-                spd_model, target_model, input_ids, parsed_components, n_mask_samples, ablation_pos
+                pd_model, target_model, input_ids, parsed_components, n_mask_samples, ablation_pos
             )
         case "adversarial":
             return _run_adversarial_component_ablation(
-                spd_model,
+                pd_model,
                 target_model,
                 input_ids,
                 parsed_components,
@@ -793,7 +793,7 @@ def _run_component_ablation(
 
 
 def _run_deterministic_component_ablation(
-    spd_model: ComponentModel,
+    pd_model: ComponentModel,
     target_model: LlamaSimpleMLP,
     input_ids: Int[Tensor, "batch pos"],
     parsed_components: list[tuple[str, int]],
@@ -801,15 +801,15 @@ def _run_deterministic_component_ablation(
 ) -> SampleResult:
     batch_shape = (input_ids.shape[0], input_ids.shape[1])
     baseline_mask_infos, ablated_mask_infos = _build_deterministic_masks(
-        spd_model, parsed_components, batch_shape, input_ids.device, ablation_pos
+        pd_model, parsed_components, batch_shape, input_ids.device, ablation_pos
     )
 
     with patched_attention_forward(target_model) as baseline_data:
-        baseline_out = spd_model(input_ids, mask_infos=baseline_mask_infos)
+        baseline_out = pd_model(input_ids, mask_infos=baseline_mask_infos)
     assert isinstance(baseline_out, Tensor)
 
     with patched_attention_forward(target_model) as ablated_data:
-        ablated_out = spd_model(input_ids, mask_infos=ablated_mask_infos)
+        ablated_out = pd_model(input_ids, mask_infos=ablated_mask_infos)
     assert isinstance(ablated_out, Tensor)
 
     return SampleResult(
@@ -825,16 +825,16 @@ def _run_deterministic_component_ablation(
 
 
 def _run_stochastic_component_ablation(
-    spd_model: ComponentModel,
+    pd_model: ComponentModel,
     target_model: LlamaSimpleMLP,
     input_ids: Int[Tensor, "batch pos"],
     parsed_components: list[tuple[str, int]],
     n_mask_samples: int,
     ablation_pos: int,
 ) -> SampleResult:
-    output_with_cache = spd_model(input_ids, cache_type="input")
+    output_with_cache = pd_model(input_ids, cache_type="input")
     assert isinstance(output_with_cache, OutputWithCache)
-    ci = spd_model.calc_causal_importances(output_with_cache.cache, "continuous").lower_leaky
+    ci = pd_model.calc_causal_importances(output_with_cache.cache, "continuous").lower_leaky
 
     baseline_logits_accum: Tensor | None = None
     ablated_logits_accum: Tensor | None = None
@@ -848,15 +848,15 @@ def _run_stochastic_component_ablation(
     stoch_seq_len = input_ids.shape[1]
     for _s in range(n_mask_samples):
         baseline_mask_infos, ablated_mask_infos = _build_stochastic_masks(
-            spd_model, ci, parsed_components, "continuous", ablation_pos, stoch_seq_len
+            pd_model, ci, parsed_components, "continuous", ablation_pos, stoch_seq_len
         )
 
         with patched_attention_forward(target_model) as b_data:
-            b_out = spd_model(input_ids, mask_infos=baseline_mask_infos)
+            b_out = pd_model(input_ids, mask_infos=baseline_mask_infos)
         assert isinstance(b_out, Tensor)
 
         with patched_attention_forward(target_model) as a_data:
-            a_out = spd_model(input_ids, mask_infos=ablated_mask_infos)
+            a_out = pd_model(input_ids, mask_infos=ablated_mask_infos)
         assert isinstance(a_out, Tensor)
 
         if baseline_logits_accum is None:
@@ -888,7 +888,7 @@ def _run_stochastic_component_ablation(
 
 
 def _run_adversarial_component_ablation(
-    spd_model: ComponentModel,
+    pd_model: ComponentModel,
     target_model: LlamaSimpleMLP,
     input_ids: Int[Tensor, "batch pos"],
     parsed_components: list[tuple[str, int]],
@@ -896,9 +896,9 @@ def _run_adversarial_component_ablation(
     pgd_step_size: float,
     ablation_pos: int,
 ) -> SampleResult:
-    output_with_cache = spd_model(input_ids, cache_type="input")
+    output_with_cache = pd_model(input_ids, cache_type="input")
     assert isinstance(output_with_cache, OutputWithCache)
-    ci = spd_model.calc_causal_importances(output_with_cache.cache, "continuous").lower_leaky
+    ci = pd_model.calc_causal_importances(output_with_cache.cache, "continuous").lower_leaky
 
     target_out = output_with_cache.output
 
@@ -910,7 +910,7 @@ def _run_adversarial_component_ablation(
     )
 
     baseline_loss, ablated_loss = _build_adversarial_masks(
-        spd_model, input_ids, ci, target_out, parsed_components, pgd_config
+        pd_model, input_ids, ci, target_out, parsed_components, pgd_config
     )
     logger.info(
         f"PGD losses — baseline: {baseline_loss.item():.4f}, ablated: {ablated_loss.item():.4f}"
@@ -919,15 +919,15 @@ def _run_adversarial_component_ablation(
     # Capture attention patterns with deterministic masks for visualization
     batch_shape = (input_ids.shape[0], input_ids.shape[1])
     baseline_mask_infos, ablated_mask_infos = _build_deterministic_masks(
-        spd_model, parsed_components, batch_shape, input_ids.device, ablation_pos
+        pd_model, parsed_components, batch_shape, input_ids.device, ablation_pos
     )
 
     with patched_attention_forward(target_model) as baseline_data:
-        baseline_out = spd_model(input_ids, mask_infos=baseline_mask_infos)
+        baseline_out = pd_model(input_ids, mask_infos=baseline_mask_infos)
     assert isinstance(baseline_out, Tensor)
 
     with patched_attention_forward(target_model) as ablated_data:
-        ablated_out = spd_model(input_ids, mask_infos=ablated_mask_infos)
+        ablated_out = pd_model(input_ids, mask_infos=ablated_mask_infos)
     assert isinstance(ablated_out, Tensor)
 
     return SampleResult(
@@ -954,7 +954,7 @@ def _capture_attn_outputs(
     value_pos_ablations: list[tuple[int, int]] | None = None,
     value_head_pos_ablations: list[tuple[int, int, int]] | None = None,
     component_head_ablations: list[ComponentHeadAblation] | None = None,
-    spd_model: ComponentModel | None = None,
+    pd_model: ComponentModel | None = None,
     mask_infos: dict[str, ComponentsMaskInfo] | None = None,
 ) -> tuple[AttnOutputs, Tensor]:
     """Run a forward pass capturing attention outputs and logits."""
@@ -965,8 +965,8 @@ def _capture_attn_outputs(
         value_head_pos_ablations,
         component_head_ablations,
     ) as data:
-        if spd_model is not None:
-            out = spd_model(input_ids, mask_infos=mask_infos)
+        if pd_model is not None:
+            out = pd_model(input_ids, mask_infos=mask_infos)
             assert isinstance(out, Tensor)
         else:
             out, _ = target_model(input_ids)
@@ -1016,7 +1016,7 @@ def _run_prev_token_head_ablation(
 
 
 def _run_prev_token_component_ablation(
-    spd_model: ComponentModel,
+    pd_model: ComponentModel,
     target_model: LlamaSimpleMLP,
     input_ids: Int[Tensor, "batch pos"],
     parsed_components: list[tuple[str, int]],
@@ -1028,43 +1028,43 @@ def _run_prev_token_component_ablation(
     batch_shape = (input_ids.shape[0], input_ids.shape[1])
 
     baseline_masks, ablated_masks = _build_deterministic_masks_multi_pos(
-        spd_model, component_positions, batch_shape, input_ids.device
+        pd_model, component_positions, batch_shape, input_ids.device
     )
     val_all = [(layer, t - 1)]
     val_specific = [(layer, head, t - 1) for layer, head in value_heads]
 
     baseline_outs, baseline_logits = _capture_attn_outputs(
-        target_model, input_ids, spd_model=spd_model, mask_infos=baseline_masks
+        target_model, input_ids, pd_model=pd_model, mask_infos=baseline_masks
     )
     a_outs, a_logits = _capture_attn_outputs(
-        target_model, input_ids, spd_model=spd_model, mask_infos=ablated_masks
+        target_model, input_ids, pd_model=pd_model, mask_infos=ablated_masks
     )
     b_all_outs, _b_all_logits = _capture_attn_outputs(
         target_model,
         input_ids,
         value_pos_ablations=val_all,
-        spd_model=spd_model,
+        pd_model=pd_model,
         mask_infos=baseline_masks,
     )
     b_spec_outs, _b_spec_logits = _capture_attn_outputs(
         target_model,
         input_ids,
         value_head_pos_ablations=val_specific,
-        spd_model=spd_model,
+        pd_model=pd_model,
         mask_infos=baseline_masks,
     )
     ab_all_outs, a_b_all_logits = _capture_attn_outputs(
         target_model,
         input_ids,
         value_pos_ablations=val_all,
-        spd_model=spd_model,
+        pd_model=pd_model,
         mask_infos=ablated_masks,
     )
     ab_spec_outs, a_b_spec_logits = _capture_attn_outputs(
         target_model,
         input_ids,
         value_head_pos_ablations=val_specific,
-        spd_model=spd_model,
+        pd_model=pd_model,
         mask_infos=ablated_masks,
     )
 
@@ -1083,7 +1083,7 @@ def _run_prev_token_component_ablation(
 
 
 def _run_prev_token_head_restricted_component_ablation(
-    spd_model: ComponentModel,
+    pd_model: ComponentModel,
     target_model: LlamaSimpleMLP,
     input_ids: Int[Tensor, "batch pos"],
     parsed_components: list[tuple[str, int]],
@@ -1093,38 +1093,36 @@ def _run_prev_token_head_restricted_component_ablation(
 ) -> PrevTokenSampleResult:
     """Per-head component ablation: subtract component contributions from specific heads only."""
     layer = _infer_layer_from_components(parsed_components)
-    comp_head_abls = _build_component_head_ablations(
-        spd_model, parsed_components, restrict_heads, t
-    )
+    comp_head_abls = _build_component_head_ablations(pd_model, parsed_components, restrict_heads, t)
     batch_shape = (input_ids.shape[0], input_ids.shape[1])
 
     # All-ones baseline masks (PD model reconstructs original output)
-    baseline_masks, _ = _build_deterministic_masks(spd_model, [], batch_shape, input_ids.device, t)
+    baseline_masks, _ = _build_deterministic_masks(pd_model, [], batch_shape, input_ids.device, t)
     val_all = [(layer, t - 1)]
     val_specific = [(layer, head, t - 1) for layer, head in value_heads]
 
     baseline_outs, baseline_logits = _capture_attn_outputs(
-        target_model, input_ids, spd_model=spd_model, mask_infos=baseline_masks
+        target_model, input_ids, pd_model=pd_model, mask_infos=baseline_masks
     )
     a_outs, a_logits = _capture_attn_outputs(
         target_model,
         input_ids,
         component_head_ablations=comp_head_abls,
-        spd_model=spd_model,
+        pd_model=pd_model,
         mask_infos=baseline_masks,
     )
     b_all_outs, _b_all_logits = _capture_attn_outputs(
         target_model,
         input_ids,
         value_pos_ablations=val_all,
-        spd_model=spd_model,
+        pd_model=pd_model,
         mask_infos=baseline_masks,
     )
     b_spec_outs, _b_spec_logits = _capture_attn_outputs(
         target_model,
         input_ids,
         value_head_pos_ablations=val_specific,
-        spd_model=spd_model,
+        pd_model=pd_model,
         mask_infos=baseline_masks,
     )
     ab_all_outs, a_b_all_logits = _capture_attn_outputs(
@@ -1132,7 +1130,7 @@ def _run_prev_token_head_restricted_component_ablation(
         input_ids,
         component_head_ablations=comp_head_abls,
         value_pos_ablations=val_all,
-        spd_model=spd_model,
+        pd_model=pd_model,
         mask_infos=baseline_masks,
     )
     ab_spec_outs, a_b_spec_logits = _capture_attn_outputs(
@@ -1140,7 +1138,7 @@ def _run_prev_token_head_restricted_component_ablation(
         input_ids,
         component_head_ablations=comp_head_abls,
         value_head_pos_ablations=val_specific,
-        spd_model=spd_model,
+        pd_model=pd_model,
         mask_infos=baseline_masks,
     )
 
@@ -1165,7 +1163,7 @@ def _run_prev_token_head_restricted_component_ablation(
 
 def _run_offset_sweep(
     target_model: LlamaSimpleMLP,
-    spd_model: ComponentModel | None,
+    pd_model: ComponentModel | None,
     loader: Iterable[dict[str, Tensor]],
     is_head_ablation: bool,
     parsed_heads: list[tuple[int, int]],
@@ -1213,36 +1211,36 @@ def _run_offset_sweep(
                     target_model, input_ids, head_pos_ablations=head_abl
                 )
             elif parsed_restrict_heads:
-                assert spd_model is not None
+                assert pd_model is not None
                 comp_head_abls = _build_component_head_ablations(
-                    spd_model, parsed_components, parsed_restrict_heads, t
+                    pd_model, parsed_components, parsed_restrict_heads, t
                 )
                 batch_shape = (input_ids.shape[0], input_ids.shape[1])
                 baseline_masks, _ = _build_deterministic_masks(
-                    spd_model, [], batch_shape, input_ids.device, t
+                    pd_model, [], batch_shape, input_ids.device, t
                 )
                 baseline_outs, _ = _capture_attn_outputs(
-                    target_model, input_ids, spd_model=spd_model, mask_infos=baseline_masks
+                    target_model, input_ids, pd_model=pd_model, mask_infos=baseline_masks
                 )
                 a_outs, _ = _capture_attn_outputs(
                     target_model,
                     input_ids,
                     component_head_ablations=comp_head_abls,
-                    spd_model=spd_model,
+                    pd_model=pd_model,
                     mask_infos=baseline_masks,
                 )
             else:
-                assert spd_model is not None
+                assert pd_model is not None
                 component_positions = _build_prev_token_component_positions(parsed_components, t)
                 batch_shape = (input_ids.shape[0], input_ids.shape[1])
                 baseline_masks, ablated_masks = _build_deterministic_masks_multi_pos(
-                    spd_model, component_positions, batch_shape, input_ids.device
+                    pd_model, component_positions, batch_shape, input_ids.device
                 )
                 baseline_outs, _ = _capture_attn_outputs(
-                    target_model, input_ids, spd_model=spd_model, mask_infos=baseline_masks
+                    target_model, input_ids, pd_model=pd_model, mask_infos=baseline_masks
                 )
                 a_outs, _ = _capture_attn_outputs(
-                    target_model, input_ids, spd_model=spd_model, mask_infos=ablated_masks
+                    target_model, input_ids, pd_model=pd_model, mask_infos=ablated_masks
                 )
 
             base_vs_a_nip, base_vs_a_cos = compute_ablation_metrics_at_pos(baseline_outs, a_outs, t)
@@ -1263,32 +1261,30 @@ def _run_offset_sweep(
                         value_pos_ablations=val_all,
                     )
                 elif parsed_restrict_heads:
-                    assert spd_model is not None
+                    assert pd_model is not None
                     cha = _build_component_head_ablations(
-                        spd_model, parsed_components, parsed_restrict_heads, t
+                        pd_model, parsed_components, parsed_restrict_heads, t
                     )
                     bs = (input_ids.shape[0], input_ids.shape[1])
-                    bm, _ = _build_deterministic_masks(spd_model, [], bs, input_ids.device, t)
+                    bm, _ = _build_deterministic_masks(pd_model, [], bs, input_ids.device, t)
                     ab_outs, _ = _capture_attn_outputs(
                         target_model,
                         input_ids,
                         component_head_ablations=cha,
                         value_pos_ablations=val_all,
-                        spd_model=spd_model,
+                        pd_model=pd_model,
                         mask_infos=bm,
                     )
                 else:
-                    assert spd_model is not None
+                    assert pd_model is not None
                     cp = _build_prev_token_component_positions(parsed_components, t)
                     bs = (input_ids.shape[0], input_ids.shape[1])
-                    _, am = _build_deterministic_masks_multi_pos(
-                        spd_model, cp, bs, input_ids.device
-                    )
+                    _, am = _build_deterministic_masks_multi_pos(pd_model, cp, bs, input_ids.device)
                     ab_outs, _ = _capture_attn_outputs(
                         target_model,
                         input_ids,
                         value_pos_ablations=val_all,
-                        spd_model=spd_model,
+                        pd_model=pd_model,
                         mask_infos=am,
                     )
 
@@ -1394,7 +1390,7 @@ def _accum_comparison(
 
 def _run_prev_token_loop(
     target_model: LlamaSimpleMLP,
-    spd_model: ComponentModel | None,
+    pd_model: ComponentModel | None,
     loader: Iterable[dict[str, Tensor]],
     is_head_ablation: bool,
     parsed_heads: list[tuple[int, int]],
@@ -1438,9 +1434,9 @@ def _run_prev_token_loop(
                     target_model, input_ids, parsed_heads, parsed_value_heads, t
                 )
             elif parsed_restrict_heads:
-                assert spd_model is not None
+                assert pd_model is not None
                 result = _run_prev_token_head_restricted_component_ablation(
-                    spd_model,
+                    pd_model,
                     target_model,
                     input_ids,
                     parsed_components,
@@ -1449,9 +1445,9 @@ def _run_prev_token_loop(
                     t,
                 )
             else:
-                assert spd_model is not None
+                assert pd_model is not None
                 result = _run_prev_token_component_ablation(
-                    spd_model, target_model, input_ids, parsed_components, parsed_value_heads, t
+                    pd_model, target_model, input_ids, parsed_components, parsed_value_heads, t
                 )
 
             b = result.baseline_attn_outputs
@@ -1580,7 +1576,7 @@ def run_attention_ablation(
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    spd_model: ComponentModel | None = None
+    pd_model: ComponentModel | None = None
     if is_head_ablation:
         assert config.pretrained_model_name is not None
         target_model = LlamaSimpleMLP.from_pretrained(config.pretrained_model_name)
@@ -1590,10 +1586,10 @@ def run_attention_ablation(
             block.attn.flash_attention = False
         target_model = target_model.to(device)
     else:
-        spd_model = ComponentModel.from_run_info(run_info)
-        spd_model.eval()
-        spd_model = spd_model.to(device)
-        target_model = spd_model.target_model
+        pd_model = ComponentModel.from_run_info(run_info)
+        pd_model.eval()
+        pd_model = pd_model.to(device)
+        target_model = pd_model.target_model
         assert isinstance(target_model, LlamaSimpleMLP)
         for block in target_model._h:
             block.attn.flash_attention = False
@@ -1640,7 +1636,7 @@ def run_attention_ablation(
     if offset_sweep > 0:
         _run_offset_sweep(
             target_model=target_model,
-            spd_model=spd_model,
+            pd_model=pd_model,
             loader=loader,
             is_head_ablation=is_head_ablation,
             parsed_heads=parsed_heads,
@@ -1661,7 +1657,7 @@ def run_attention_ablation(
     if prev_token_test:
         _run_prev_token_loop(
             target_model=target_model,
-            spd_model=spd_model,
+            pd_model=pd_model,
             loader=loader,
             is_head_ablation=is_head_ablation,
             parsed_heads=parsed_heads,
@@ -1702,9 +1698,9 @@ def run_attention_ablation(
             if is_head_ablation:
                 result = _run_head_ablation(target_model, input_ids, parsed_heads, ablation_pos)
             else:
-                assert spd_model is not None
+                assert pd_model is not None
                 result = _run_component_ablation(
-                    spd_model,
+                    pd_model,
                     target_model,
                     input_ids,
                     parsed_components,

@@ -321,11 +321,11 @@ def _smooth_val_curve(
     return steps, smoothed
 
 
-def _compute_recovered_pct(target_info: TargetModelInfo, spd_ce: float) -> float | None:
-    """Find what % through target training had the same val loss as spd_ce.
+def _compute_recovered_pct(target_info: TargetModelInfo, pd_ce: float) -> float | None:
+    """Find what % through target training had the same val loss as pd_ce.
 
     Smooths the target model's val loss history with a bidirectional EMA, then
-    interpolates to find the step where loss equals spd_ce.
+    interpolates to find the step where loss equals pd_ce.
     Returns None if the PD CE is worse than the earliest logged val loss.
     """
     curve = target_info.val_loss_curve
@@ -335,20 +335,20 @@ def _compute_recovered_pct(target_info: TargetModelInfo, spd_ce: float) -> float
     steps, smoothed = _smooth_val_curve(curve)
 
     # If PD is better than final target, return 100%
-    if spd_ce <= smoothed[-1]:
+    if pd_ce <= smoothed[-1]:
         return 100.0
 
     # If PD is worse than the very first checkpoint, return None
-    if spd_ce >= smoothed[0]:
+    if pd_ce >= smoothed[0]:
         return None
 
     # Interpolate on the smoothed monotone curve
     for i in range(len(steps) - 1):
-        if smoothed[i] >= spd_ce >= smoothed[i + 1]:
+        if smoothed[i] >= pd_ce >= smoothed[i + 1]:
             if smoothed[i] == smoothed[i + 1]:
                 step = float(steps[i])
             else:
-                frac = (smoothed[i] - spd_ce) / (smoothed[i] - smoothed[i + 1])
+                frac = (smoothed[i] - pd_ce) / (smoothed[i] - smoothed[i + 1])
                 step = float(steps[i] + frac * (steps[i + 1] - steps[i]))
             return step / total_steps * 100.0
 
@@ -440,9 +440,9 @@ def fetch_runs(
         tokenizer_name=str(first_config["tokenizer_name"]),
         project=project,
     )
-    spd_config = ParamDecompConfig(module_info=first_config["module_info"])
+    pd_config = ParamDecompConfig(module_info=first_config["module_info"])
     n_alive = _fetch_n_alive_from_harvest(first_run_id)
-    return seeds, data, target_info, spd_config, n_alive
+    return seeds, data, target_info, pd_config, n_alive
 
 
 def _per_module_keys(prefix: str) -> list[str]:
@@ -462,7 +462,7 @@ def _render_latex_summary(
     data: dict[int, dict[str, float]],
     target_info: TargetModelInfo,
     per_mode_pcts: dict[str, list[float]],
-    spd_config: ParamDecompConfig,
+    pd_config: ParamDecompConfig,
     n_alive: dict[str, int] | None,
 ) -> str:
     modes = ["unmasked", "stoch_masked", "ci_masked", "rounded_masked"]
@@ -527,7 +527,7 @@ def _render_latex_summary(
     lines.append("```")
 
     # L0 and component counts table
-    layer_c = spd_config.layer_component_counts()
+    layer_c = pd_config.layer_component_counts()
     has_alive = n_alive is not None
     # Group n_alive by layer
     layer_alive: dict[int, int] = defaultdict(int)
@@ -654,7 +654,7 @@ def generate_report(
     seeds: list[int],
     data: dict[int, dict[str, float]],
     target_info: TargetModelInfo,
-    spd_config: ParamDecompConfig,
+    pd_config: ParamDecompConfig,
     n_alive: dict[str, int] | None,
 ) -> str:
     sections: list[str] = []
@@ -724,9 +724,9 @@ def generate_report(
         for mode in MASKING_MODES:
             ce_diff = data[s].get(f"eval/ce_kl/ce_difference_{mode}")
             if ce_diff is not None:
-                spd_ce = target_info.val_loss + ce_diff
-                row.append(_fmt(spd_ce))
-                per_mode_ces[mode].append(spd_ce)
+                pd_ce = target_info.val_loss + ce_diff
+                row.append(_fmt(pd_ce))
+                per_mode_ces[mode].append(pd_ce)
             else:
                 row.append("—")
         ce_rows.append(row)
@@ -759,8 +759,8 @@ def generate_report(
         for mode in MASKING_MODES:
             ce_diff = data[s].get(f"eval/ce_kl/ce_difference_{mode}")
             if ce_diff is not None:
-                spd_ce = target_info.val_loss + ce_diff
-                pct = _compute_recovered_pct(target_info, spd_ce)
+                pd_ce = target_info.val_loss + ce_diff
+                pct = _compute_recovered_pct(target_info, pd_ce)
                 if pct is not None:
                     row.append(f"{pct:.1f}%")
                     per_mode_pcts[mode].append(pct)
@@ -805,7 +805,7 @@ def generate_report(
 
     # 9. LaTeX summary table
     sections.append(
-        _render_latex_summary(seeds, data, target_info, per_mode_pcts, spd_config, n_alive)
+        _render_latex_summary(seeds, data, target_info, per_mode_pcts, pd_config, n_alive)
     )
 
     return "\n".join(sections) + "\n"
@@ -839,7 +839,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate sweep summary report")
     parser.add_argument("run_ids", nargs="+", help="WandB run IDs")
-    parser.add_argument("--project", default="goodfire/spd")
+    parser.add_argument("--project", default="goodfire/param-decomp")
     parser.add_argument(
         "--name",
         default=None,
@@ -858,10 +858,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    seeds, data, target_info, spd_config, n_alive = fetch_runs(args.run_ids, args.project)
+    seeds, data, target_info, pd_config, n_alive = fetch_runs(args.run_ids, args.project)
     if args.harvest_run:
         n_alive = _fetch_n_alive_from_harvest(args.harvest_run)
-    report = generate_report(seeds, data, target_info, spd_config, n_alive)
+    report = generate_report(seeds, data, target_info, pd_config, n_alive)
 
     if args.stdout:
         print(report)

@@ -238,7 +238,9 @@ def main() -> None:
         labels: list[str] = args.labels or []
         results: dict[str, list[float]] = {}
         for i, run_id in enumerate(args.run_ids):
-            wandb_path: ModelPath = run_id if ":" in run_id else f"wandb:goodfire/spd/runs/{run_id}"
+            wandb_path: ModelPath = (
+                run_id if ":" in run_id else f"wandb:goodfire/param-decomp/runs/{run_id}"
+            )
             rid, ce_losses = run_r_sweep(wandb_path, r_vals, args.n_batches, args.device)
             label = labels[i] if i < len(labels) else rid
             results[label] = ce_losses

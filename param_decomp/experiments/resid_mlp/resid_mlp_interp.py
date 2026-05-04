@@ -209,7 +209,7 @@ def compute_patched_weight_neuron_contributions(
     return relu_conns[:, :n_features, :]
 
 
-def compute_spd_weight_neuron_contributions(
+def compute_pd_weight_neuron_contributions(
     model: ResidMLP,
     components: dict[str, Components],
     n_features: int | None = None,
@@ -226,7 +226,7 @@ def compute_spd_weight_neuron_contributions(
     W_E: Float[Tensor, "n_features d_embed"] = model.W_E
 
     # Build the *virtual* input weight matrices (V @ U) for every layer
-    W_in_spd: Float[Tensor, "n_layers d_embed C d_mlp"] = torch.stack(
+    W_in_pd: Float[Tensor, "n_layers d_embed C d_mlp"] = torch.stack(
         [
             einops.einsum(
                 components[f"layers.{i}.mlp_in"].V,
@@ -239,32 +239,32 @@ def compute_spd_weight_neuron_contributions(
     )
 
     # Output weights for every layer
-    W_out_spd: Float[Tensor, "n_layers d_embed d_mlp"] = torch.stack(
+    W_out_pd: Float[Tensor, "n_layers d_embed d_mlp"] = torch.stack(
         [components[f"layers.{i}.mlp_out"].weight for i in range(n_layers)],
         dim=0,
     )
 
     # Connection strengths
-    in_conns_spd: Float[Tensor, "n_layers n_features C d_mlp"] = einops.einsum(
+    in_conns_pd: Float[Tensor, "n_layers n_features C d_mlp"] = einops.einsum(
         W_E,
-        W_in_spd,
+        W_in_pd,
         "n_features d_embed, n_layers d_embed C d_mlp -> n_layers n_features C d_mlp",
     )
-    out_conns_spd: Float[Tensor, "n_layers d_mlp n_features"] = einops.einsum(
-        W_out_spd,
+    out_conns_pd: Float[Tensor, "n_layers d_mlp n_features"] = einops.einsum(
+        W_out_pd,
         W_E,
         "n_layers d_embed d_mlp, n_features d_embed -> n_layers d_mlp n_features",
     )
-    relu_conns_spd: Float[Tensor, "n_layers n_features C d_mlp"] = einops.einsum(
-        in_conns_spd,
-        out_conns_spd,
+    relu_conns_pd: Float[Tensor, "n_layers n_features C d_mlp"] = einops.einsum(
+        in_conns_pd,
+        out_conns_pd,
         "n_layers n_features C d_mlp, n_layers d_mlp n_features -> n_layers n_features C d_mlp",
     )
 
-    return relu_conns_spd[:, :n_features, :, :]
+    return relu_conns_pd[:, :n_features, :, :]
 
 
-def plot_spd_feature_contributions_truncated(
+def plot_pd_feature_contributions_truncated(
     model: ResidMLP,
     components: dict[str, Components],
     n_features: int | None = 50,
@@ -286,8 +286,8 @@ def plot_spd_feature_contributions_truncated(
         )
     )
 
-    relu_conns_spd: Float[Tensor, "n_layers n_features C d_mlp"] = (
-        compute_spd_weight_neuron_contributions(
+    relu_conns_pd: Float[Tensor, "n_layers n_features C d_mlp"] = (
+        compute_pd_weight_neuron_contributions(
             model=model,
             components=components,
             n_features=n_features,
@@ -297,11 +297,11 @@ def plot_spd_feature_contributions_truncated(
     max_component_indices = []
     for i in range(n_layers):
         # For each feature, find the C component with the largest max value over d_mlp
-        max_component_indices.append(relu_conns_spd[i].max(dim=-1).values.argmax(dim=-1))
+        max_component_indices.append(relu_conns_pd[i].max(dim=-1).values.argmax(dim=-1))
     # For each feature, use the C values based on the max_component_indices
     max_component_contributions: Float[Tensor, "n_layers n_features d_mlp"] = torch.stack(
         [
-            relu_conns_spd[i, torch.arange(n_features), max_component_indices[i], :]
+            relu_conns_pd[i, torch.arange(n_features), max_component_indices[i], :]
             for i in range(n_layers)
         ],
         dim=0,
@@ -377,8 +377,8 @@ def plot_neuron_contribution_pairs(
         )
     )
 
-    relu_conns_spd: Float[Tensor, "n_layers n_features C d_mlp"] = (
-        compute_spd_weight_neuron_contributions(
+    relu_conns_pd: Float[Tensor, "n_layers n_features C d_mlp"] = (
+        compute_pd_weight_neuron_contributions(
             model=model,
             components=components,
             n_features=n_features,
@@ -389,18 +389,18 @@ def plot_neuron_contribution_pairs(
     max_component_indices = []
     for i in range(n_layers):
         # For each feature, find the C component with the largest max value over d_mlp
-        max_component_indices.append(relu_conns_spd[i].max(dim=-1).values.argmax(dim=-1))
+        max_component_indices.append(relu_conns_pd[i].max(dim=-1).values.argmax(dim=-1))
 
     # For each feature, use the C values based on the max_component_indices
     max_component_contributions: Float[Tensor, "n_layers n_features d_mlp"] = torch.stack(
         [
-            relu_conns_spd[i, torch.arange(n_features), max_component_indices[i], :]
+            relu_conns_pd[i, torch.arange(n_features), max_component_indices[i], :]
             for i in range(n_layers)
         ],
         dim=0,
     )
 
-    # Define colors for different layers (same as in plot_spd_feature_contributions_truncated)
+    # Define colors for different layers (same as in plot_pd_feature_contributions_truncated)
     assert n_layers in [1, 2, 3]
     layer_colors = ["blue", "red", "green"]  # Always use same colors regardless of n_layers
 
@@ -488,7 +488,7 @@ def main(out_dir: Path, device: str):
 
         n_layers = model.target_model.config.n_layers
 
-        fig = plot_spd_feature_contributions_truncated(
+        fig = plot_pd_feature_contributions_truncated(
             model.target_model, model.components, n_features=10
         )
         fname_weights = out_dir / f"resid_mlp_weights_{n_layers}layers_{wandb_id}.png"

@@ -23,7 +23,7 @@ def adapter_from_config(method_config: DecompositionMethodHarvestConfig) -> Deco
         case ParamDecompHarvestConfig():
             from param_decomp.adapters.param_decomp import ParamDecompAdapter
 
-            return ParamDecompAdapter(method_config.id)
+            return ParamDecompAdapter(method_config.wandb_path)
         case TranscoderHarvestConfig():
             from param_decomp.adapters.transcoder import TranscoderAdapter
 
@@ -37,15 +37,9 @@ def adapter_from_config(method_config: DecompositionMethodHarvestConfig) -> Deco
 def adapter_from_id(decomposition_id: str) -> DecompositionAdapter:
     """Construct an adapter from a decomposition ID (e.g. "s-abc123", "tc-1a2b3c4d").
 
-    For PD runs, the ID is sufficient. For other methods, recovers the full
-    method config from the harvest DB (which is always populated before downstream
-    steps like autointerp run).
+    Recovers the full method config from the harvest DB (which is always populated
+    before downstream steps like autointerp run).
     """
-    if decomposition_id.startswith("s-"):
-        from param_decomp.adapters.param_decomp import ParamDecompAdapter
-
-        return ParamDecompAdapter(decomposition_id)
-
     return adapter_from_config(_load_method_config(decomposition_id))
 
 

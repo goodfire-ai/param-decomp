@@ -100,11 +100,11 @@ CRAFTED_PROMPTS = [
 
 
 def _build_baseline_mask_infos(
-    spd_model: ComponentModel,
+    pd_model: ComponentModel,
     device: torch.device,
 ) -> dict[str, ComponentsMaskInfo]:
     """All-ones masks so the PD model uses component reconstruction."""
-    masks = {name: torch.ones(1, c, device=device) for name, c in spd_model.module_to_c.items()}
+    masks = {name: torch.ones(1, c, device=device) for name, c in pd_model.module_to_c.items()}
     return make_mask_infos(masks)
 
 
@@ -122,13 +122,13 @@ def _predict_next_token(
     **ablation_kwargs: Any,
 ) -> Prediction:
     """Run one forward pass with ablation and return the greedy next token + logits."""
-    spd_model: ComponentModel | None = ablation_kwargs.pop("spd_model", None)
+    pd_model: ComponentModel | None = ablation_kwargs.pop("pd_model", None)
     mask_infos: dict[str, ComponentsMaskInfo] | None = ablation_kwargs.pop("mask_infos", None)
 
     with patched_attention_forward(target_model, **ablation_kwargs):
-        if spd_model is not None:
-            baseline = _build_baseline_mask_infos(spd_model, prompt_ids.device)
-            out = spd_model(prompt_ids, mask_infos=mask_infos or baseline)
+        if pd_model is not None:
+            baseline = _build_baseline_mask_infos(pd_model, prompt_ids.device)
+            out = pd_model(prompt_ids, mask_infos=mask_infos or baseline)
             assert isinstance(out, Tensor)
             logits = out
         else:
@@ -153,7 +153,7 @@ ConditionResult = tuple[str, Prediction, str]  # (name, prediction, baseline_nam
 
 def _build_conditions(
     target_model: LlamaSimpleMLP,
-    spd_model: ComponentModel,
+    pd_model: ComponentModel,
     prompt_ids: Int[Tensor, "1 seq_len"],
     t: int,
     parsed_heads: list[tuple[int, int]],
@@ -173,7 +173,7 @@ def _build_conditions(
 
     # --- Baselines ---
     conditions.append((TARGET, predict(), TARGET))
-    conditions.append((PARAM_DECOMP, predict(spd_model=spd_model), PARAM_DECOMP))
+    conditions.append((PARAM_DECOMP, predict(pd_model=pd_model), PARAM_DECOMP))
 
     # --- Head ablation: zero head output at t ---
     if parsed_heads:
@@ -238,22 +238,20 @@ def _build_conditions(
     for set_name, comps in comp_sets.items():
         cp = _build_prev_token_component_positions(comps, t)
         bs = (prompt_ids.shape[0], prompt_ids.shape[1])
-        _, ablated_masks = _build_deterministic_masks_multi_pos(
-            spd_model, cp, bs, prompt_ids.device
-        )
+        _, ablated_masks = _build_deterministic_masks_multi_pos(pd_model, cp, bs, prompt_ids.device)
         conditions.append(
             (
                 f"Full comp ({set_name})",
-                predict(spd_model=spd_model, mask_infos=ablated_masks),
+                predict(pd_model=pd_model, mask_infos=ablated_masks),
                 PARAM_DECOMP,
             )
         )
         if parsed_restrict_heads:
-            cha = _build_component_head_ablations(spd_model, comps, parsed_restrict_heads, t)
+            cha = _build_component_head_ablations(pd_model, comps, parsed_restrict_heads, t)
             conditions.append(
                 (
                     f"Per-head {_head_label(parsed_restrict_heads)} ({set_name})",
-                    predict(spd_model=spd_model, component_head_ablations=cha),
+                    predict(pd_model=pd_model, component_head_ablations=cha),
                     PARAM_DECOMP,
                 )
             )
@@ -423,10 +421,10 @@ def generate_with_ablation(
     config = run_info.config
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    spd_model = ComponentModel.from_run_info(run_info)
-    spd_model.eval()
-    spd_model = spd_model.to(device)
-    target_model = spd_model.target_model
+    pd_model = ComponentModel.from_run_info(run_info)
+    pd_model.eval()
+    pd_model = pd_model.to(device)
+    target_model = pd_model.target_model
     assert isinstance(target_model, LlamaSimpleMLP)
     for block in target_model._h:
         block.attn.flash_attention = False
@@ -459,7 +457,7 @@ def generate_with_ablation(
         prompt_tokens = [decode_tok([tid]) for tid in prompt_ids[0].tolist()]
         conditions = _build_conditions(
             target_model,
-            spd_model,
+            pd_model,
             prompt_ids,
             t,
             parsed_heads,

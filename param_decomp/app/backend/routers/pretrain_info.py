@@ -49,7 +49,7 @@ class PretrainInfoResponse(BaseModel):
     topology: TopologyInfo | None
 
 
-def _load_spd_config_lightweight(wandb_path: str) -> Config:
+def _load_pd_config_lightweight(wandb_path: str) -> Config:
     """Load just the PD config YAML without downloading checkpoints."""
     entity, project, run_id = parse_wandb_run_path(wandb_path)
 
@@ -187,14 +187,14 @@ def _get_dataset_short(pretrain_config: dict[str, Any] | None) -> str | None:
     return None
 
 
-def _get_pretrain_info(spd_config: Config) -> PretrainInfoResponse:
+def _get_pretrain_info(pd_config: Config) -> PretrainInfoResponse:
     """Extract pretrain info from a PD config."""
-    model_class_name = spd_config.pretrained_model_class
+    model_class_name = pd_config.pretrained_model_class
     model_type = model_class_name.split(".")[-1]
 
     # Determine the pretrain wandb path
-    pretrain_path = spd_config.pretrained_model_name or (
-        str(spd_config.pretrained_model_path) if spd_config.pretrained_model_path else None
+    pretrain_path = pd_config.pretrained_model_name or (
+        str(pd_config.pretrained_model_path) if pd_config.pretrained_model_path else None
     )
 
     target_model_config: dict[str, Any] | None = None
@@ -236,8 +236,8 @@ def get_pretrain_info_for_run(wandb_path: str) -> PretrainInfoResponse:
 
     Fetches only config files (no checkpoints) for efficiency.
     """
-    spd_config = _load_spd_config_lightweight(wandb_path)
-    return _get_pretrain_info(spd_config)
+    pd_config = _load_pd_config_lightweight(wandb_path)
+    return _get_pretrain_info(pd_config)
 
 
 @router.get("/loaded")

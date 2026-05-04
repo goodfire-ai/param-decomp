@@ -242,10 +242,8 @@ def load_model_and_dataloader(
     wandb_path: str, batch_size: int
 ) -> tuple["ParamDecompAdapter", torch.utils.data.DataLoader[Any]]:
     from param_decomp.adapters.param_decomp import ParamDecompAdapter  # noqa: F811
-    from param_decomp.utils.wandb_utils import parse_wandb_run_path
 
-    _, _, run_id = parse_wandb_run_path(wandb_path)
-    adapter = ParamDecompAdapter(run_id)
+    adapter = ParamDecompAdapter(wandb_path)
     dataloader = adapter.dataloader(batch_size)
     return adapter, dataloader
 

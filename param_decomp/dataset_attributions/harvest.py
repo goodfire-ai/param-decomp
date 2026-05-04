@@ -72,21 +72,21 @@ def harvest_attributions(
     device = torch.device(get_device())
     logger.info(f"Loading model on {device}")
 
-    _, _, run_id = parse_wandb_run_path(config.spd_run_wandb_path)
+    _, _, run_id = parse_wandb_run_path(config.wandb_path)
 
-    run_info = ParamDecompRunInfo.from_path(config.spd_run_wandb_path)
+    run_info = ParamDecompRunInfo.from_path(config.wandb_path)
     model = ComponentModel.from_run_info(run_info).to(device)
     model.eval()
 
-    spd_config = run_info.config
-    train_loader, _ = train_loader_and_tokenizer(spd_config, config.batch_size)
+    pd_config = run_info.config
+    train_loader, _ = train_loader_and_tokenizer(pd_config, config.batch_size)
 
     # Get gradient connectivity
     logger.info("Computing sources_by_target...")
     topology = TransformerTopology(model.target_model)
     embed_path = topology.path_schema.embedding_path
     unembed_path = topology.path_schema.unembed_path
-    sources_by_target_raw = get_sources_by_target(model, topology, str(device), spd_config.sampling)
+    sources_by_target_raw = get_sources_by_target(model, topology, str(device), pd_config.sampling)
 
     # Filter to valid source/target pairs:
     # - Valid sources: embedding + component layers
@@ -112,7 +112,7 @@ def harvest_attributions(
         topology=topology,
         sources_by_target=sources_by_target,
         component_alive=component_alive,
-        sampling=spd_config.sampling,
+        sampling=pd_config.sampling,
     )
 
     # Process batches

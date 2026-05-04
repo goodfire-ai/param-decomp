@@ -7,7 +7,7 @@ Produces normalized data files:
   components/{slug}.json    — metadata + columnar activation examples {t,c,a}
   ../components.json        — carousel showcase (full data for top components)
 
-Run from ~/spd:
+Run from ~/param-decomp:
   uv run python -m scripts.blog.export_components --out-dir ../vpd-blog-replit/data/model-overview
 """
 

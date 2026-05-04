@@ -108,17 +108,17 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
     model.eval()
 
     # Load tokenizer
-    spd_config = run_info.config
-    assert spd_config.tokenizer_name is not None
-    logger.info(f"[API] Loading tokenizer for run {run.id}: {spd_config.tokenizer_name}")
-    app_tokenizer = AppTokenizer.from_pretrained(spd_config.tokenizer_name)
+    pd_config = run_info.config
+    assert pd_config.tokenizer_name is not None
+    logger.info(f"[API] Loading tokenizer for run {run.id}: {pd_config.tokenizer_name}")
+    app_tokenizer = AppTokenizer.from_pretrained(pd_config.tokenizer_name)
 
     # Build topology and sources_by_target mapping
     logger.info(f"[API] Building topology for run {run.id}")
     topology = TransformerTopology(model.target_model)
 
     logger.info(f"[API] Building sources_by_target mapping for run {run.id}")
-    sources_by_target = get_sources_by_target(model, topology, DEVICE, spd_config.sampling)
+    sources_by_target = get_sources_by_target(model, topology, DEVICE, pd_config.sampling)
 
     manager.run_state = RunState(
         run=run,
@@ -126,7 +126,7 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
         topology=topology,
         tokenizer=app_tokenizer,
         sources_by_target=sources_by_target,
-        config=spd_config,
+        config=pd_config,
         context_length=context_length,
         harvest=HarvestRepo.open_most_recent(run_id),
         interp=InterpRepo.open(run_id),

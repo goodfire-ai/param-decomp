@@ -29,7 +29,7 @@ def main(
     _, _, run_id = parse_wandb_run_path(wandb_path)
 
     config = DatasetAttributionConfig.model_validate(config_json)
-    assert config.spd_run_wandb_path == wandb_path
+    assert config.wandb_path == wandb_path
     output_dir = get_attributions_subrun_dir(run_id, subrun_id)
 
     harvest_attributions(

@@ -98,11 +98,11 @@ def plot_multi_pair_frac(
     run_info = ParamDecompRunInfo.from_path(wandb_path)
     config = run_info.config
 
-    spd_model = ComponentModel.from_run_info(run_info)
-    spd_model.eval()
+    pd_model = ComponentModel.from_run_info(run_info)
+    pd_model.eval()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    spd_model = spd_model.to(device)
-    target_model = spd_model.target_model
+    pd_model = pd_model.to(device)
+    target_model = pd_model.target_model
     assert isinstance(target_model, LlamaSimpleMLP)
     for block in target_model._h:
         block.attn.flash_attention = False
@@ -160,18 +160,18 @@ def plot_multi_pair_frac(
             baseline_components = parse_components(f"{q_path}:0,{k_path}:0")
             cp_baseline = _build_prev_token_component_positions(baseline_components, t)
             baseline_masks, _ = _build_deterministic_masks_multi_pos(
-                spd_model, cp_baseline, bs, input_ids.device
+                pd_model, cp_baseline, bs, input_ids.device
             )
 
             with patched_attention_forward(target_model) as d:
-                spd_model(input_ids, mask_infos=baseline_masks)
-            spd_pat = d.patterns
+                pd_model(input_ids, mask_infos=baseline_masks)
+            pd_pat = d.patterns
 
             for h in range(n_heads):
                 for o in offsets:
                     kp = t - o
                     if kp >= 0:
-                        baseline_accum[h][o].append(spd_pat[layer][h, t, kp].item())
+                        baseline_accum[h][o].append(pd_pat[layer][h, t, kp].item())
 
             # Ablate each pair
             for pi, (q_idx, k_idx) in enumerate(pairs):
@@ -179,11 +179,11 @@ def plot_multi_pair_frac(
                 parsed = parse_components(components_str)
                 cp = _build_prev_token_component_positions(parsed, t)
                 _, ablated_masks = _build_deterministic_masks_multi_pos(
-                    spd_model, cp, bs, input_ids.device
+                    pd_model, cp, bs, input_ids.device
                 )
 
                 with patched_attention_forward(target_model) as d:
-                    spd_model(input_ids, mask_infos=ablated_masks)
+                    pd_model(input_ids, mask_infos=ablated_masks)
                 abl_pat = d.patterns
 
                 for h in range(n_heads):

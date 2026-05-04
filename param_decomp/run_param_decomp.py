@@ -466,7 +466,7 @@ def run_experiment(
         save_pre_run_info(
             save_to_wandb=config.wandb_project is not None,
             out_dir=out_dir,
-            spd_config=config,
+            pd_config=config,
             sweep_params=sweep_params,
             target_model=target_model if target_model_train_config is not None else None,
             train_config=target_model_train_config,

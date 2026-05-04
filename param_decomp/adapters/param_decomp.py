@@ -11,19 +11,21 @@ from param_decomp.data import train_loader_and_tokenizer
 from param_decomp.models.component_model import ComponentModel, ParamDecompRunInfo
 from param_decomp.topology import TransformerTopology
 from param_decomp.utils.general_utils import runtime_cast
+from param_decomp.utils.wandb_utils import parse_wandb_run_path
 
 
 class ParamDecompAdapter(DecompositionAdapter):
-    def __init__(self, run_id: str):
-        self._run_id = run_id
+    def __init__(self, wandb_path: str):
+        self._wandb_path = wandb_path
+        _, _, self._run_id = parse_wandb_run_path(wandb_path)
 
     @cached_property
-    def spd_run_info(self):
-        return ParamDecompRunInfo.from_path(f"goodfire/spd/runs/{self._run_id}")
+    def pd_run_info(self):
+        return ParamDecompRunInfo.from_path(self._wandb_path)
 
     @cached_property
     def component_model(self):
-        return ComponentModel.from_run_info(self.spd_run_info)
+        return ComponentModel.from_run_info(self.pd_run_info)
 
     @cached_property
     def _topology(self) -> TransformerTopology:
@@ -47,19 +49,19 @@ class ParamDecompAdapter(DecompositionAdapter):
 
     @override
     def dataloader(self, batch_size: int) -> DataLoader[Tensor]:
-        return train_loader_and_tokenizer(self.spd_run_info.config, batch_size)[0]
+        return train_loader_and_tokenizer(self.pd_run_info.config, batch_size)[0]
 
     @property
     @override
     def tokenizer_name(self) -> str:
-        cfg = self.spd_run_info.config
+        cfg = self.pd_run_info.config
         assert cfg.tokenizer_name is not None
         return cfg.tokenizer_name
 
     @property
     @override
     def model_metadata(self) -> ModelMetadata:
-        cfg = self.spd_run_info.config
+        cfg = self.pd_run_info.config
         task_cfg = runtime_cast(LMTaskConfig, cfg.task_config)
         return ModelMetadata(
             n_blocks=self._topology.n_blocks,
