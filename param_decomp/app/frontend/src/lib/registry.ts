@@ -20,7 +20,7 @@ export const CANONICAL_RUNS: RegistryEntry[] = [
     {
         name: "Jose",
         wandbRunId: "goodfire/spd/s-55ea3f9b",
-        notes: "pile_llama_simple_mlp-4L",
+        notes: "VPD paper run: pile_llama_simple_mlp-4L",
         clusterMappings: [
             {
                 path: "/mnt/polished-lake/artifacts/mechanisms/param-decomp/clustering/runs/c-70b28465/cluster_mapping.json",
@@ -48,25 +48,8 @@ export const CANONICAL_RUNS: RegistryEntry[] = [
         ],
     },
     {
-        name: "finetune",
-        wandbRunId: "goodfire/spd/s-17805b61",
-        notes: "finetune",
-    },
-    {
-        wandbRunId: "goodfire/spd/s-275c8f21",
-        notes: "Lucius' pile run Feb 11",
-    },
-    {
         wandbRunId: "goodfire/spd/s-eab2ace8",
-        notes: "Oli's PPGD run, great metrics",
-    },
-    {
-        wandbRunId: "goodfire/spd/s-892f140b",
-        notes: "Lucius run, Jan 22",
-    },
-    {
-        wandbRunId: "goodfire/spd/s-7884efcc",
-        notes: "Lucius' new run, Jan 8",
+        notes: "Oli's simplestories PPGD run Feb 5, great metrics",
     },
 ];
 
