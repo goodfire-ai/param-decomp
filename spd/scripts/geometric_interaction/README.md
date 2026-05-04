@@ -107,5 +107,5 @@ python spd/scripts/geometric_interaction/geometric_interaction.py \
 ## Prerequisites
 
 - The model checkpoint must be cached locally (download happens automatically for wandb paths)
-- Harvest must have been run on the model (`spd-harvest`) with correlation data present
+- Harvest must have been run on the model (`param-decomp-harvest`) with correlation data present
 - No GPU required — everything runs on CPU

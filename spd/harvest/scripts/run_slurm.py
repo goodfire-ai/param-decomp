@@ -4,8 +4,8 @@ Harvest is a functional unit: GPU workers -> merge. This module submits all
 jobs in the unit with proper dependency chaining.
 
 Usage:
-    spd-harvest <wandb_path> --n_gpus 24
-    spd-harvest <wandb_path> --n_batches 1000 --n_gpus 8  # Only process 1000 batches
+    param-decomp-harvest <wandb_path> --n_gpus 24
+    param-decomp-harvest <wandb_path> --n_batches 1000 --n_gpus 8  # Only process 1000 batches
 """
 
 import secrets
@@ -59,7 +59,7 @@ def submit_harvest(
     subrun_id = "h-" + datetime.now().strftime("%Y%m%d_%H%M%S")
 
     suffix = f"-{job_suffix}" if job_suffix else ""
-    array_job_name = f"spd-harvest{suffix}"
+    array_job_name = f"param-decomp-harvest{suffix}"
 
     worker_commands = []
     for rank in range(n_gpus):
@@ -93,7 +93,7 @@ def submit_harvest(
         config.config,
     )
     merge_config = SlurmConfig(
-        job_name="spd-harvest-merge",
+        job_name="param-decomp-harvest-merge",
         partition=partition,
         n_gpus=0,
         time=config.merge_time,

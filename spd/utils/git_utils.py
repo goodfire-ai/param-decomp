@@ -64,7 +64,7 @@ def create_git_snapshot(snapshot_id: str) -> tuple[str, str]:
 
     # Create temporary worktree path
     with tempfile.TemporaryDirectory() as temp_dir:
-        worktree_path = Path(temp_dir) / f"spd-snapshot-{snapshot_id}"
+        worktree_path = Path(temp_dir) / f"param-decomp-snapshot-{snapshot_id}"
 
         try:
             # Create worktree with new branch

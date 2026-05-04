@@ -44,7 +44,7 @@ def main(
 
     # Domain-specific: save label coefficients to out_dir
     run_id = run_id or generate_run_id("spd")
-    out_dir = SPD_OUT_DIR / "spd" / run_id
+    out_dir = SPD_OUT_DIR / "decompositions" / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
     save_file(target_run_info.label_coeffs.detach().cpu().tolist(), out_dir / "label_coeffs.json")
 

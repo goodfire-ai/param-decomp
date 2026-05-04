@@ -20,7 +20,7 @@ install-all: install-dev install-app
 #    - we want to kill the cache after installing before we run the tests
 #  > `--extra-index-url` to get cpu-only pytorch wheels. installing with just `uv sync` will download a bunch of cuda stuff we cannot use anyway, since there are no GPUs anyways. takes up a lot of space and makes the install take 5x as long
 #  > `--index-strategy unsafe-best-match` because pytorch index won't have every version of each package we need. markupsafe is a particular pain point
-# Note: explored the `--compile-bytecode` option for test speedups, nothing came of it. see https://github.com/goodfire-ai/spd/pull/187/commits/740f6a28f4d3378078c917125356b6466f155e71
+# Note: explored the `--compile-bytecode` option for test speedups, nothing came of it. see https://github.com/goodfire-ai/param-decomp/pull/187/commits/740f6a28f4d3378078c917125356b6466f155e71
 .PHONY: install-ci
 install-ci:
 	uv venv --python 3.13 --clear

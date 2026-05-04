@@ -7,19 +7,19 @@ later be decomposed using SPD.
 
 - **Purpose**: Train GPT-2 and Llama variants on SimpleStories or Pile datasets
 - **Output**: Models saved to `SPD_OUT_DIR/target_models/`
-- **CLI**: `spd-pretrain`
+- **CLI**: `param-decomp-pretrain`
 
 ## CLI Usage
 
 ```bash
 # Submit to SLURM (default)
-spd-pretrain --config_path spd/pretrain/configs/pile_llama_simple_mlp_4L.yaml
+param-decomp-pretrain --config_path spd/pretrain/configs/pile_llama_simple_mlp_4L.yaml
 
 # Run locally
-spd-pretrain --config_path ... --local
+param-decomp-pretrain --config_path ... --local
 
 # Multi-GPU DDP training
-spd-pretrain --config_path ... --n_gpus 4
+param-decomp-pretrain --config_path ... --n_gpus 4
 
 ```
 

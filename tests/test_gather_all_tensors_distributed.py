@@ -226,7 +226,7 @@ class TestGatherAllTensors:
         script_path = Path(__file__).resolve()
 
         # ports should be globally unique in tests to allow test parallelization
-        # see discussion at: https://github.com/goodfire-ai/spd/pull/186
+        # see discussion at: https://github.com/goodfire-ai/param-decomp/pull/186
         cmd = [
             "torchrun",
             "--standalone",

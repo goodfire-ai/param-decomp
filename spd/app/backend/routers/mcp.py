@@ -1357,7 +1357,7 @@ def _handle_initialize(_params: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "protocolVersion": MCP_PROTOCOL_VERSION,
         "capabilities": {"tools": {}},
-        "serverInfo": {"name": "spd-app", "version": "1.0.0"},
+        "serverInfo": {"name": "param-decomp-app", "version": "1.0.0"},
     }
 
 
@@ -1408,7 +1408,7 @@ async def mcp_endpoint(request: Request):
             result = _handle_initialize(mcp_request.params)
             return JSONResponse(
                 content=MCPResponse(id=mcp_request.id, result=result).model_dump(exclude_none=True),
-                headers={"Mcp-Session-Id": "spd-session"},
+                headers={"Mcp-Session-Id": "param-decomp-session"},
             )
 
         elif mcp_request.method == "notifications/initialized":

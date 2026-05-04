@@ -1,6 +1,6 @@
 # SPD - Stochastic Parameter Decomposition
 
-**Note: The [spd-paper](https://github.com/goodfire-ai/spd/tree/spd-paper) branch contains code used in the paper [Stochastic Parameter Decomposition](https://arxiv.org/abs/2506.20790). The main branch contains active work from Goodfire and collaborators since this paper's release. This is now an open source
+**Note: The [spd-paper](https://github.com/goodfire-ai/param-decomp/tree/spd-paper) branch contains code used in the paper [Stochastic Parameter Decomposition](https://arxiv.org/abs/2506.20790). The main branch contains active work from Goodfire and collaborators since this paper's release. This is now an open source
 research project. Please feel free to view the issues (or add to them) and make a PR!**
 
 Weights and Bias [report](https://wandb.ai/goodfire/spd-tms/reports/SPD-paper-report--VmlldzoxMzE3NzU0MQ) accompanying the paper.
@@ -38,32 +38,32 @@ wandb).
 
 The following CLI commands are available after installation:
 
-### `spd-local` - Local Execution
+### `param-decomp-local` - Local Execution
 
 Run a single SPD experiment locally without SLURM:
 
 ```bash
-spd-local tms_5-2           # Run on single GPU (default)
-spd-local tms_5-2 --cpu     # Run on CPU
-spd-local tms_5-2 --dp 4    # Run on 4 GPUs (single node DDP)
+param-decomp-local tms_5-2           # Run on single GPU (default)
+param-decomp-local tms_5-2 --cpu     # Run on CPU
+param-decomp-local tms_5-2 --dp 4    # Run on 4 GPUs (single node DDP)
 ```
 
-### `spd-run` - SLURM Cluster Execution
+### `param-decomp-run` - SLURM Cluster Execution
 
 Run experiments on a SLURM cluster with git snapshots and W&B integration:
 
 ```bash
-spd-run --experiments tms_5-2                    # Run a specific experiment
-spd-run --experiments tms_5-2,resid_mlp1         # Run multiple experiments
-spd-run                                          # Run all experiments
-spd-run --experiments tms_5-2 --cpu              # Run on CPU
-spd-run --experiments ss_llama_simple --dp 4     # Data parallelism (4 GPUs)
+param-decomp-run --experiments tms_5-2                    # Run a specific experiment
+param-decomp-run --experiments tms_5-2,resid_mlp1         # Run multiple experiments
+param-decomp-run                                          # Run all experiments
+param-decomp-run --experiments tms_5-2 --cpu              # Run on CPU
+param-decomp-run --experiments ss_llama_simple --dp 4     # Data parallelism (4 GPUs)
 ```
 
 For running hyperparameter sweeps:
 
 ```bash
-spd-run --experiments <experiment_name> --sweep --n_agents <n-agents> [--cpu]
+param-decomp-run --experiments <experiment_name> --sweep --n_agents <n-agents> [--cpu]
 ```
 
 **Sweep parameters:**
@@ -103,7 +103,7 @@ configure `--n_gpus` based on how many gpus you have available. You can use any 
 First, collect component statistics (activation examples, correlations, token stats):
 
 ```bash
-spd-harvest goodfire/spd/runs/abc123 --n_gpus 24
+param-decomp-harvest goodfire/spd/runs/abc123 --n_gpus 24
 ```
 
 ### 2. Automated Interpretation
@@ -111,7 +111,7 @@ spd-harvest goodfire/spd/runs/abc123 --n_gpus 24
 After harvesting, generate LLM interpretations of components:
 
 ```bash
-spd-autointerp goodfire/spd/runs/abc123
+param-decomp-autointerp goodfire/spd/runs/abc123
 ```
 
 Requires `OPENROUTER_API_KEY` env var.
@@ -121,7 +121,7 @@ Requires `OPENROUTER_API_KEY` env var.
 Compute component-to-component attribution strengths:
 
 ```bash
-spd-attributions goodfire/spd/runs/abc123 --n_gpus 24
+param-decomp-attributions goodfire/spd/runs/abc123 --n_gpus 24
 ```
 
 Can be run independently of harvest/autointerp.

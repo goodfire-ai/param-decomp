@@ -21,7 +21,7 @@ class ModulePathInfo:
 
 
 # This is equivalent to `torch.nn.init._NonlinearityType`, but for some reason this is not always
-# importable. see https://github.com/goodfire-ai/spd/actions/runs/16927877557/job/47967138342
+# importable. see https://github.com/goodfire-ai/param-decomp/actions/runs/16927877557/job/47967138342
 _NonlinearityType = Literal[
     "linear",
     "conv1d",

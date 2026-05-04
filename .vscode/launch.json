@@ -22,7 +22,7 @@
             }
         },
         {
-            "name": "spd-tms_5-2-sweep",
+            "name": "param-decomp-tms_5-2-sweep",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/spd/scripts/run.py",

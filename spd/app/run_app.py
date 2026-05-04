@@ -149,7 +149,7 @@ class AppRunner:
         self.startup_timeout_seconds = startup_timeout_seconds
 
         self._session = requests.Session()
-        self._session.headers.update({"User-Agent": "spd-dev-launcher/1.0"})
+        self._session.headers.update({"User-Agent": "param-decomp-dev-launcher/1.0"})
 
     def _kill_process_group(self, proc: subprocess.Popen[str], sig: int) -> None:
         if proc.poll() is not None:

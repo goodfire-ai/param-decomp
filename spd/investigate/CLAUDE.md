@@ -5,8 +5,8 @@ Launch a Claude Code agent to investigate a specific research question about an 
 ## Usage
 
 ```bash
-spd-investigate <wandb_path> "How does the model handle gendered pronouns?"
-spd-investigate <wandb_path> "What circuit handles verb agreement?" --max_turns 30 --time 4:00:00
+param-decomp-investigate <wandb_path> "How does the model handle gendered pronouns?"
+param-decomp-investigate <wandb_path> "What circuit handles verb agreement?" --max_turns 30 --time 4:00:00
 ```
 
 For parallel investigations, run the command multiple times with different prompts.
@@ -21,14 +21,14 @@ spd/investigate/
 ├── agent_prompt.py       # System prompt template with model info injection
 └── scripts/
     ├── __init__.py
-    ├── run_slurm_cli.py  # CLI entry point (spd-investigate)
+    ├── run_slurm_cli.py  # CLI entry point (param-decomp-investigate)
     ├── run_slurm.py      # SLURM submission logic
     └── run_agent.py      # Worker script (runs in SLURM job)
 ```
 
 ## How It Works
 
-1. `spd-investigate` creates output dir, metadata, git snapshot, and submits a single SLURM job
+1. `param-decomp-investigate` creates output dir, metadata, git snapshot, and submits a single SLURM job
 2. The SLURM job runs `run_agent.py` which:
    - Starts an isolated FastAPI backend with MCP support
    - Loads the SPD run onto GPU

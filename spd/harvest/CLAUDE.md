@@ -6,13 +6,13 @@ Offline GPU pipeline that collects component statistics in a single pass over tr
 
 ```bash
 # Process specific number of batches
-spd-harvest <wandb_path> --n_batches 2000 --n_gpus 24
+param-decomp-harvest <wandb_path> --n_batches 2000 --n_gpus 24
 
 # Process entire training dataset (omit --n_batches)
-spd-harvest <wandb_path> --n_gpus 24
+param-decomp-harvest <wandb_path> --n_gpus 24
 
 # With optional parameters
-spd-harvest <wandb_path> --n_batches 1000 --n_gpus 8 \
+param-decomp-harvest <wandb_path> --n_batches 1000 --n_gpus 8 \
     --batch_size 256 --ci_threshold 1e-6 --time 24:00:00 --job_suffix 30m
 ```
 
@@ -72,9 +72,9 @@ Legacy layout (pre sub-run, `activation_contexts/` + `correlations/`) is no long
 
 ### SLURM Launcher (`scripts/run_slurm.py`, `scripts/run_slurm_cli.py`)
 
-Entry point via `spd-harvest`. Submits array job + dependent merge job.
+Entry point via `param-decomp-harvest`. Submits array job + dependent merge job.
 
-**Intruder evaluation** (`spd/harvest/intruder.py`) evaluates the quality of the *decomposition itself* — whether component activation patterns are coherent — without relying on LLM-generated labels. Intruder scores are stored in `harvest.db`, not `interp.db`. Intruder eval is submitted as a top-level postprocess stage (via `spd-postprocess`), not as part of the harvest pipeline.
+**Intruder evaluation** (`spd/harvest/intruder.py`) evaluates the quality of the *decomposition itself* — whether component activation patterns are coherent — without relying on LLM-generated labels. Intruder scores are stored in `harvest.db`, not `interp.db`. Intruder eval is submitted as a top-level postprocess stage (via `param-decomp-postprocess`), not as part of the harvest pipeline.
 
 ### Worker Script (`scripts/run.py`)
 

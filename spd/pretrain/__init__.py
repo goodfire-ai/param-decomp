@@ -5,13 +5,13 @@ language models that can later be decomposed using SPD.
 
 Usage:
     # Submit training job to SLURM
-    spd-pretrain --config_path spd/pretrain/configs/pile_llama_simple_mlp_4L.yaml
+    param-decomp-pretrain --config_path spd/pretrain/configs/pile_llama_simple_mlp_4L.yaml
 
     # Run locally
-    spd-pretrain --config_path ... --local
+    param-decomp-pretrain --config_path ... --local
 
     # Multi-GPU training
-    spd-pretrain --config_path ... --n_gpus 4
+    param-decomp-pretrain --config_path ... --n_gpus 4
 
 Available model types:
     - GPT2: Full GPT-2 implementation

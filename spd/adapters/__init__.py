@@ -57,7 +57,7 @@ def _load_method_config(decomposition_id: str) -> DecompositionMethodHarvestConf
     repo = HarvestRepo.open_most_recent(decomposition_id)
     assert repo is not None, (
         f"No harvest data found for {decomposition_id!r}. "
-        f"Run spd-harvest first to populate the method config."
+        f"Run param-decomp-harvest first to populate the method config."
     )
     config_dict = repo.get_config()
     method_config_raw = config_dict["method_config"]

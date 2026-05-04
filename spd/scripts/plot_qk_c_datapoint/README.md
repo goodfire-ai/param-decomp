@@ -149,7 +149,7 @@ python -m spd.scripts.plot_qk_c_datapoint.plot_qk_c_datapoint \
 
 ### Prerequisites
 
-- The SPD run must have harvest data available (run `spd-harvest` first)
+- The SPD run must have harvest data available (run `param-decomp-harvest` first)
 - Currently supports `LlamaSimpleMLP` target models only
 
 ### Output Location

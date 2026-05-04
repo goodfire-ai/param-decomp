@@ -95,7 +95,7 @@ def launch_slurm_run(
             commit_hash=commit_hash,
         )
 
-    slurm_job_name = f"spd-{job_suffix or get_max_expected_runtime(experiments_list)}"
+    slurm_job_name = f"param-decomp-{job_suffix or get_max_expected_runtime(experiments_list)}"
 
     wandb_urls = [get_wandb_run_url(project, job.run_id) for job in training_jobs]
 

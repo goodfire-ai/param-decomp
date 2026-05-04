@@ -48,7 +48,7 @@ def launch_investigation(
     snapshot_branch, commit_hash = create_git_snapshot(inv_id)
 
     suffix = f"-{job_suffix}" if job_suffix else ""
-    job_name = f"spd-investigate{suffix}"
+    job_name = f"param-decomp-investigate{suffix}"
 
     metadata = {
         "inv_id": inv_id,

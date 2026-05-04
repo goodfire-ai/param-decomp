@@ -7,12 +7,17 @@ REPO_ROOT = (
     else Path(__file__).parent.parent
 )
 
-CLUSTER_BASE_PATH = Path("/mnt/polished-lake/artifacts/mechanisms/spd")
+CLUSTER_BASE_PATH = Path("/mnt/polished-lake/artifacts/mechanisms/param-decomp")
 ON_CLUSTER = CLUSTER_BASE_PATH.exists()
 
-# Base directory for SPD outputs (runs, logs, scripts, etc.)
-_default_out_dir = CLUSTER_BASE_PATH if ON_CLUSTER else Path.home() / "spd_out"
-SPD_OUT_DIR = Path(os.environ.get("SPD_OUT_DIR", _default_out_dir))
+# Base directory for outputs (runs, logs, scripts, etc.).
+_default_out_dir = CLUSTER_BASE_PATH if ON_CLUSTER else Path.home() / "param_decomp_out"
+PARAM_DECOMP_OUT_DIR = Path(
+    os.environ.get("PARAM_DECOMP_OUT_DIR", os.environ.get("SPD_OUT_DIR", _default_out_dir))
+)
+
+# Backwards-compatible internal alias. Prefer PARAM_DECOMP_OUT_DIR in user-facing docs/configs.
+SPD_OUT_DIR = PARAM_DECOMP_OUT_DIR
 SPD_OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # SLURM directories

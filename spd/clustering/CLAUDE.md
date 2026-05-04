@@ -10,13 +10,13 @@ Separate GPU-heavy activation collection from CPU-only merging. Harvest once, me
 
 ```bash
 # 1. Harvest activations into a compressed membership snapshot (GPU, ~2h for 2M tokens)
-spd-cluster-harvest harvest_config.json
+param-decomp-cluster-harvest harvest_config.json
 # → SPD_OUT_DIR/clustering/harvests/ch-<id>/
 
 # 2. Merge with different configs (CPU-only, ~30min each)
-spd-cluster-merge /path/to/ch-<id>/ merge_alpha_1.json
-spd-cluster-merge /path/to/ch-<id>/ merge_alpha_5.json
-spd-cluster-merge /path/to/ch-<id>/ merge_alpha_10.json
+param-decomp-cluster-merge /path/to/ch-<id>/ merge_alpha_1.json
+param-decomp-cluster-merge /path/to/ch-<id>/ merge_alpha_5.json
+param-decomp-cluster-merge /path/to/ch-<id>/ merge_alpha_10.json
 # → SPD_OUT_DIR/clustering/runs/c-<id>/ (one per merge)
 ```
 
@@ -25,16 +25,16 @@ spd-cluster-merge /path/to/ch-<id>/ merge_alpha_10.json
 
 ### Ensemble pipeline (for stability analysis)
 
-**`spd-clustering` / `run_pipeline.py`**: Runs multiple clustering runs (ensemble) with different seeds, then runs `calc_distances` to compute pairwise distances between results. Use this for ensemble experiments.
+**`param-decomp-clustering` / `run_pipeline.py`**: Runs multiple clustering runs (ensemble) with different seeds, then runs `calc_distances` to compute pairwise distances between results. Use this for ensemble experiments.
 
 **`run_clustering.py`**: Runs a single monolithic clustering run (harvest + merge together). Usually called by the pipeline.
 
 ```bash
 # Run clustering pipeline via SLURM (ensemble of runs + distance calculation)
-spd-clustering --config spd/clustering/configs/pipeline_config.yaml
+param-decomp-clustering --config spd/clustering/configs/pipeline_config.yaml
 
 # Run locally instead of SLURM
-spd-clustering --config spd/clustering/configs/pipeline_config.yaml --local
+param-decomp-clustering --config spd/clustering/configs/pipeline_config.yaml --local
 
 # Single clustering run (usually called by pipeline)
 python -m spd.clustering.scripts.run_clustering --config <clustering_run_config.json>
@@ -46,11 +46,11 @@ Data is stored in `SPD_OUT_DIR/clustering/` (see `spd/settings.py`):
 
 ```
 SPD_OUT_DIR/clustering/
-├── harvests/<harvest_id>/               # Membership snapshots (from spd-cluster-harvest)
+├── harvests/<harvest_id>/               # Membership snapshots (from param-decomp-cluster-harvest)
 │   ├── harvest_config.json
 │   ├── memberships.npz                  # Sparse CSC matrix (scipy)
 │   └── metadata.json                    # labels, n_samples, n_components
-├── runs/<run_id>/                       # Merge outputs (from spd-cluster-merge or run_clustering)
+├── runs/<run_id>/                       # Merge outputs (from param-decomp-cluster-merge or run_clustering)
 │   ├── clustering_run_config.json       # or merge_config.json
 │   └── history.zip                      # MergeHistory (group assignments per iteration)
 ├── ensembles/<pipeline_run_id>/         # Pipeline/ensemble outputs
@@ -67,7 +67,7 @@ SPD_OUT_DIR/clustering/
 
 ### Pipeline (`scripts/run_pipeline.py`)
 
-Entry point via `spd-clustering`. Submits clustering runs as SLURM job array, then calculates distances between results. Key steps:
+Entry point via `param-decomp-clustering`. Submits clustering runs as SLURM job array, then calculates distances between results. Key steps:
 1. Creates `ExecutionStamp` for pipeline
 2. Generates commands for each clustering run (with different dataset seeds)
 3. Submits clustering array job to SLURM
