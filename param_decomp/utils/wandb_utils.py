@@ -342,7 +342,7 @@ def init_wandb(
     )
     assert wandb.run is not None
     wandb.run.log_code(
-        root=str(REPO_ROOT / "spd"), exclude_fn=lambda path: "out" in Path(path).parts
+        root=str(REPO_ROOT / "param_decomp"), exclude_fn=lambda path: "out" in Path(path).parts
     )
 
     config_dict = config.model_dump(mode="json")

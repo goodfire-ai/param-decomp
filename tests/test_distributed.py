@@ -77,7 +77,7 @@ TEST_CONFIG = {
 
 def _parse_run_id_from_output(stderr: str) -> str:
     """Parse the run_id from the subprocess stderr output."""
-    match = re.search(r"Run ID: (s-[a-f0-9]+)", stderr)
+    match = re.search(r"Run ID: (p-[a-f0-9]+)", stderr)
     assert match, f"Could not find run_id in output:\n{stderr}"
     return match.group(1)
 
@@ -145,7 +145,7 @@ class TestDistributedDeterminicity:
         param_decomp_out_dir: Path,
     ) -> str:
         """Run the experiment using torchrun. Returns the run_id."""
-        script_path = REPO_ROOT / "spd" / "experiments" / "lm" / "lm_decomposition.py"
+        script_path = REPO_ROOT / "param_decomp" / "experiments" / "lm" / "lm_decomposition.py"
         assert script_path.exists(), f"{script_path} not found"
 
         cmd = [

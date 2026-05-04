@@ -32,7 +32,7 @@ from param_decomp.log import logger
 def write_mcp_config(inv_dir: Path, port: int) -> Path:
     mcp_config = {
         "mcpServers": {
-            "spd": {
+            "param_decomp": {
                 "type": "http",
                 "url": f"http://localhost:{port}/mcp",
             }
@@ -46,7 +46,7 @@ def write_mcp_config(inv_dir: Path, port: int) -> Path:
 def write_claude_settings(inv_dir: Path) -> None:
     claude_dir = inv_dir / ".claude"
     claude_dir.mkdir(exist_ok=True)
-    settings = {"permissions": {"allow": ["mcp__spd__*"]}}
+    settings = {"permissions": {"allow": ["mcp__param_decomp__*"]}}
     (claude_dir / "settings.json").write_text(json.dumps(settings, indent=2))
 
 
@@ -221,7 +221,7 @@ def run_agent(inv_id: str) -> None:
             "--permission-mode",
             "dontAsk",
             "--allowedTools",
-            "mcp__spd__*",
+            "mcp__param_decomp__*",
             # Isolation: skip all user/project settings (no plugins, no inherited config)
             "--setting-sources",
             "",
