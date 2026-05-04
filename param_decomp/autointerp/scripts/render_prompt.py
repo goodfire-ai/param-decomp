@@ -174,7 +174,7 @@ DUMMY_MODEL_METADATA = ModelMetadata(
     dataset_name="danbraunai/pile-uncopyrighted-tok-shuffled",
     layer_descriptions={"h.2.attn.v_proj": "2.attn.v"},
     seq_len=512,
-    decomposition_method="param_decomp",
+    decomposition_method="pd",
 )
 
 DUMMY_CONFIG = RichExamplesConfig(

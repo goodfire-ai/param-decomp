@@ -18,7 +18,7 @@ from param_decomp.harvest.schemas import ComponentData
 from param_decomp.utils.markdown import Md
 
 _DECOMPOSITION_DESCRIPTIONS: dict[DecompositionMethod, str] = {
-    "param_decomp": (
+    "pd": (
         "Each component is a rank-1 parameter matrix learned by PD. "
         "A weight matrix W is decomposed as W ≈ Σ u_i v_i^T. "
         "When the model processes a token, each component computes an activation: the inner "
