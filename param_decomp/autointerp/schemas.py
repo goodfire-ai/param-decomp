@@ -20,10 +20,10 @@ def get_autointerp_subrun_dir(decomposition_id: str, autointerp_run_id: str) -> 
     return get_autointerp_dir(decomposition_id) / autointerp_run_id
 
 
-DecompositionMethod = Literal["param_decomp", "clt", "transcoder"]
+DecompositionMethod = Literal["pd", "clt", "transcoder"]
 
 DECOMPOSITION_DESCRIPTIONS: dict[DecompositionMethod, str] = {
-    "param_decomp": (
+    "pd": (
         "Each component is a rank-1 parameter vector learned by PD. "
         "A weight matrix W is decomposed as a sum of outer products "
         "W ≈ Σ u_i v_i^T. Each component has a causal importance (CI) value predicted per "
