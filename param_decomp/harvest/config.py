@@ -6,7 +6,7 @@ HarvestSlurmConfig: HarvestConfig + SLURM submission params.
 
 from typing import Annotated, Any, Literal, override
 
-from pydantic import Field, PositiveInt
+from pydantic import Field, PositiveInt, model_validator
 
 from param_decomp.autointerp.providers import LLMConfig, OpenRouterLLMConfig
 from param_decomp.base_config import BaseConfig
@@ -93,6 +93,14 @@ class HarvestConfig(BaseConfig):
     activation_context_tokens_per_side: int = 20
     pmi_token_top_k: int = 40
     max_examples_per_batch_per_component: int = 5
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_keys(cls, data: dict[str, Any]) -> dict[str, Any]:
+        method = data.get("method_config")
+        if isinstance(method, dict) and method.get("type") == "SPDHarvestConfig":
+            method["type"] = "ParamDecompHarvestConfig"
+        return data
 
 
 class HarvestSlurmConfig(BaseConfig):

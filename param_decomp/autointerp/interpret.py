@@ -123,7 +123,9 @@ def run_interpret(
             remaining_keys = [k for k in eligible_keys if k not in completed]
             logger.info(f"Interpreting {len(remaining_keys)} components")
 
-            raw_threshold = harvest_config["activation_threshold"]
+            method_config = harvest_config["method_config"]
+            assert isinstance(method_config, dict)
+            raw_threshold = method_config["activation_threshold"]
             assert isinstance(raw_threshold, int | float)
             activation_threshold = float(raw_threshold)
 
