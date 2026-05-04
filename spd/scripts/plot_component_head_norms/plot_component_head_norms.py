@@ -32,7 +32,7 @@ from spd.utils.wandb_utils import parse_wandb_run_path
 
 SCRIPT_DIR = Path(__file__).parent
 PROJ_NAMES = ("q_proj", "k_proj", "v_proj", "o_proj")
-MIN_MEAN_CI = 0.01
+MIN_MEAN_CI = 0.001
 
 
 def _get_alive_indices(
