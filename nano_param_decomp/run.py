@@ -27,21 +27,19 @@ The file is structured for paper readers — everything the method needs is here
   G. LR schedule
   H. Distributed setup + SPDModule container
   I. Training loop (faithfulness warmup + main loop)
-  J. Eval metrics (matches the YAML's `eval_metric_configs`)
+  J. Eval metrics (CI L0, CE/KL with various mask strategies, hidden-acts recon, PGD recon)
 
 The `decompose` entry point takes a target model plus train and eval data iterators
 (yielding `[B, S]` int64 tensors of token ids); the entry-point files own the
 dataset/tokenization specifics.
 
-What this file deliberately does NOT support (all present in the paper's
-framework but not needed to read the method):
+What this file deliberately does NOT support:
 
   - checkpointing, W&B workspace views
   - alternative PPGD scopes, routing types, sigmoid types, CI fn types
   - loss classes other than the four used by the 4L run
   - YAML parsing / experiment registry / sweep machinery
-  - backwards compatibility with existing checkpoints
-  - Models that don't use a sequence of tokens as input
+  - models that don't take a sequence of tokens as input
 
 LM-specific assumptions: the target takes integer `input_ids` and returns
 logits over a vocab; reconstruction loss is KL on logits and the eval reports
@@ -51,9 +49,7 @@ input, so any sequential target would work in principle — but the eval metrics
 are written for tokenized LM data.
 """
 
-# Suppress issues stemming from nn.Module buffer attribute access (typed as
-# `Tensor | Module` by basedpyright) — see param_decomp/pretrain/models/llama_simple_mlp.py
-# for the same workaround.
+# nn.Module buffer attribute access is typed as `Tensor | Module` by basedpyright; suppress.
 # pyright: reportIndexIssue=false, reportArgumentType=false, reportOperatorIssue=false, reportUnnecessaryComparison=false
 
 import math
@@ -78,11 +74,11 @@ from torch.nn.parallel import DistributedDataParallel
 class Config:
     """Configuration for the Parameter Decomposition method.
 
-    Defaults are set to match the pile-4L decomposition used in the VPD paper.
+    Defaults are set to the values used by the pile-4L decomposition in the VPD paper.
     """
 
-    # Which `nn.Linear` submodules to decompose, and how many components each. Required; tied to
-    # the specific target model — see `C_PER_MODULE_4L` for the paper's choice.
+    # Maps each `nn.Linear` submodule path to its component count. Required; tied to the
+    # specific target model.
     C_per_module: dict[str, int]
 
     # Training schedule
@@ -99,7 +95,7 @@ class Config:
     faithfulness_warmup_steps: int = 400
     faithfulness_warmup_lr: float = 1e-3
 
-    # Loss coefficients (from YAML)
+    # Loss coefficients
     coeff_faith: float = 1e7
     coeff_imp: float = 2e-4
     coeff_stoch: float = 0.5
@@ -128,12 +124,12 @@ class Config:
     ppgd_beta1: float = 0.5
     ppgd_beta2: float = 0.99
     ppgd_eps: float = 1e-8
-    ppgd_inner_steps: int = 2  # n_warmup_steps in the YAML
+    ppgd_inner_steps: int = 2
 
     # Gradient clipping
     grad_clip_components: float = 0.01
 
-    # Evaluation (from YAML eval block)
+    # Evaluation
     eval_freq: int = 1000
     slow_eval_freq: int = 10000
     slow_eval_on_first_step: bool = True
@@ -161,8 +157,6 @@ class _LowerLeakyHardSigmoid(torch.autograd.Function):
     increase — this can 'resurrect' a dead component). When `grad_output >= 0` in that
     region, return 0 — no point pushing `x` further negative when `y` is already saturated.
     Above 1, gradient is blocked.
-
-    This one-way leak matches `param_decomp/models/sigmoids.py::LowerLeakyHardSigmoidFunction` exactly.
     """
 
     @staticmethod
@@ -221,9 +215,9 @@ class ComponentLinear(nn.Module):
     and optionally `self.routing_mask` ([B, S], bool). `None` routing_mask means "component
     everywhere".
 
-    The weight delta is `W_target - (V @ U).T`; it is re-routed per-position using the
-    scalar `delta_mask`. This lets the model preserve target behavior during warmup when
-    `V @ U` is still near zero.
+    The weight delta is `W_target - (V @ U).T`; it is masked per-position by the scalar
+    `delta_mask`. The delta acts as an extra "spillover" component that absorbs whatever
+    `V @ U` doesn't yet explain.
     """
 
     def __init__(self, linear: nn.Linear, C: int) -> None:
@@ -236,19 +230,14 @@ class ComponentLinear(nn.Module):
         self.register_buffer(
             "bias", linear_bias.detach().clone() if linear_bias is not None else None
         )
-        # V Kaiming-initialized, U zero-initialized so V@U starts at zero — faithfulness
-        # warmup then concentrates all target behavior in the delta component.
-        self.V = nn.Parameter(torch.empty(d_in, C))
-        self.U = nn.Parameter(torch.zeros(C, d_out))
-        nn.init.kaiming_uniform_(self.V, a=math.sqrt(5))
+        self.V = nn.Parameter(torch.empty(d_in, C).normal_(0.0, 1.0 / math.sqrt(d_in)))
+        self.U = nn.Parameter(torch.empty(C, d_out).normal_(0.0, 1.0 / math.sqrt(C)))
         # Transient state set per forward from the training loop
         self.mode: Literal["target", "component"] = "target"
         self.mask: Tensor | None = None
         self.delta_mask: Tensor | None = None
         self.routing_mask: Tensor | None = None
         self.last_input: Tensor | None = None
-        # `last_output` is only cached when `cache_output=True`; used by hidden-acts-recon eval
-        # metrics to compare component-mode outputs against target-mode outputs per module.
         self.cache_output: bool = False
         self.last_output: Tensor | None = None
 
@@ -297,18 +286,6 @@ def install_components(model: nn.Module, module_to_c: dict[str, int]) -> dict[st
 # =============================================================================
 # Section D: CI transformer (global_shared_transformer)
 # =============================================================================
-
-
-class RMSNorm(nn.Module):
-    def __init__(self, d: int, eps: float = 1e-6) -> None:
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(d))
-        self.eps = eps
-
-    @override
-    def forward(self, x: Tensor) -> Tensor:
-        rms = x.float().pow(2).mean(dim=-1, keepdim=True).add(self.eps).rsqrt()
-        return (x.float() * rms).to(x.dtype) * self.weight
 
 
 def precompute_rope(
@@ -360,9 +337,7 @@ class CIAttention(nn.Module):
 class CIBlock(nn.Module):
     def __init__(self, cfg: Config) -> None:
         super().__init__()
-        self.norm1 = RMSNorm(cfg.ci_d_model)
         self.attn = CIAttention(cfg.ci_d_model, cfg.ci_n_heads)
-        self.norm2 = RMSNorm(cfg.ci_d_model)
         self.mlp = nn.Sequential(
             nn.Linear(cfg.ci_d_model, cfg.ci_mlp_hidden),
             nn.GELU(),
@@ -371,8 +346,8 @@ class CIBlock(nn.Module):
 
     @override
     def forward(self, x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
-        x = x + self.attn(self.norm1(x), cos, sin)
-        x = x + self.mlp(self.norm2(x))
+        x = x + self.attn(F.rms_norm(x, (x.shape[-1],)), cos, sin)
+        x = x + self.mlp(F.rms_norm(x, (x.shape[-1],)))
         return x
 
 
@@ -380,21 +355,21 @@ class CITransformer(nn.Module):
     """The causal-importance function: a shared transformer that sees all layers at once.
 
     Inputs: dict of pre-weight activations (one entry per target module, shape [B, S, d_in_m]).
-    Each is RMS-normed (per-module norm) and concatenated along the feature dim; a linear
+    Each is RMS-normed (no learned scale) and concatenated along the feature dim; a linear
     projection maps the concatenation to d_model, `n_blocks` transformer blocks run over the
     sequence, and a second linear projection maps back to the total component dimension.
     The output is split per module and passed through the two leaky-hard sigmoids.
+
+    Modules are concatenated in alphabetical-path order (see `module_order`), so the layout
+    of `proj_in` columns / `proj_out` rows is independent of the input dict's iteration order.
     """
 
     def __init__(
         self, d_in_per_module: dict[str, int], c_per_module: dict[str, int], cfg: Config
     ) -> None:
         super().__init__()
-        self.module_order = list(d_in_per_module.keys())
+        self.module_order = sorted(d_in_per_module.keys())
         self.cfg = cfg
-        self.in_norms = nn.ModuleDict(
-            {_path_to_key(name): RMSNorm(d_in) for name, d_in in d_in_per_module.items()}
-        )
         total_in = sum(d_in_per_module.values())
         total_C = sum(c_per_module[name] for name in self.module_order)
         self.proj_in = nn.Linear(total_in, cfg.ci_d_model)
@@ -410,7 +385,7 @@ class CITransformer(nn.Module):
     def forward(
         self, acts: dict[str, Tensor]
     ) -> tuple[dict[str, Tensor], dict[str, Tensor], dict[str, Tensor]]:
-        normed = [self.in_norms[_path_to_key(n)](acts[n]) for n in self.module_order]
+        normed = [F.rms_norm(acts[n], (acts[n].shape[-1],)) for n in self.module_order]
         x = torch.cat(normed, dim=-1)
         x = self.proj_in(x)
         S = x.shape[1]
@@ -423,11 +398,6 @@ class CITransformer(nn.Module):
         ci_lower = {n: lower_leaky(v, alpha) for n, v in per_module.items()}
         ci_upper = {n: upper_leaky(v, alpha) for n, v in per_module.items()}
         return ci_lower, ci_upper, per_module
-
-
-def _path_to_key(path: str) -> str:
-    """ModuleDict keys can't contain '.' — map module paths to valid keys."""
-    return path.replace(".", "_")
 
 
 # =============================================================================
@@ -662,11 +632,15 @@ class PersistentPGD:
 def cosine_lr(
     step: int, total: int, start: float, final_frac: float, warmup_pct: float = 0.0
 ) -> float:
-    """Linear warmup over `warmup_pct * total`, then cosine decay to `start * final_frac`."""
+    """Linear warmup from 0 to `start` over `warmup_pct * total` steps, then half-period cosine
+    decay from `start` to `start * final_frac`. `progress` reaches 1 at `step == total - 1`."""
     warmup_steps = int(warmup_pct * total)
+    decay_steps = total - warmup_steps
     if warmup_steps > 0 and step < warmup_steps:
-        return start * (step + 1) / warmup_steps
-    progress = (step - warmup_steps) / max(1, total - warmup_steps)
+        return start * (step / warmup_steps)
+    if decay_steps <= 1:
+        return start
+    progress = (step - warmup_steps) / (decay_steps - 1)
     progress = min(max(progress, 0.0), 1.0)
     final = start * final_frac
     return final + 0.5 * (start - final) * (1 + math.cos(math.pi * progress))
@@ -836,12 +810,13 @@ def decompose(
             )
             loss_ppgd = ppgd.recon_loss(target_model, wrappers, input_ids, target_logits, ci_lower)
 
-            total = (
-                cfg.coeff_faith * loss_faith
-                + cfg.coeff_imp * loss_imp
-                + cfg.coeff_stoch * loss_stoch
-                + cfg.coeff_ppgd * loss_ppgd
-            )
+        # Total-loss summation runs outside autocast so the coeff*loss sum stays in fp32.
+        total = (
+            cfg.coeff_faith * loss_faith
+            + cfg.coeff_imp * loss_imp
+            + cfg.coeff_stoch * loss_stoch
+            + cfg.coeff_ppgd * loss_ppgd
+        )
 
         # Extract PPGD source grads before the main backward. Per-rank, no all-reduce.
         ppgd_grads = torch.autograd.grad(loss_ppgd, list(ppgd.sources.values()), retain_graph=True)
@@ -869,7 +844,6 @@ def decompose(
             if rank == 0 and cfg.use_wandb:
                 import wandb  # type: ignore[import-untyped]
 
-                # Convert 1D tensors (density / mean / histograms) to wandb.Histogram.
                 to_log: dict[str, Any] = {}
                 for k, v in eval_metrics.items():
                     to_log[k] = wandb.Histogram(v.tolist()) if isinstance(v, Tensor) else v
@@ -903,14 +877,12 @@ def decompose(
 
 
 # =============================================================================
-# Section J: Eval metrics (matches `eval_metric_configs` in the 4L YAML)
+# Section J: Eval metrics
 # =============================================================================
-# Metrics are re-implemented inline (no new param_decomp imports) and run on a single eval
-# batch per call (n_eval_steps=1, n_batches_accum=1 in the YAML — no cross-batch
-# accumulation needed). DDP reduction is AVG across ranks, matching the
-# param_decomp code.
-# Each function returns a `dict[str, float | Tensor]`. 1D tensors are converted to
-# `wandb.Histogram` at log time; scalars are logged as floats.
+# Each function runs on a single eval batch and returns a `dict[str, float | Tensor]`.
+# 1D tensors are converted to `wandb.Histogram` at log time; scalars are logged as floats.
+# Cross-rank reduction is `dist.ReduceOp.AVG` for scalar metrics and `all_gather` for
+# histograms.
 
 
 def _all_reduce_mean(t: Tensor, world_size: int) -> Tensor:
@@ -921,8 +893,8 @@ def _all_reduce_mean(t: Tensor, world_size: int) -> Tensor:
 
 
 def _ce_next_token(logits: Tensor, input_ids: Tensor) -> float:
-    """CE loss over shifted next-token targets. Masks first position of each batch item with -100
-    so cross-batch boundaries don't contribute (matches `param_decomp.metrics.ce_and_kl_losses`)."""
+    """CE loss over shifted next-token targets. Masks the first position of each batch item with
+    -100 so the boundary between batch items does not contribute a fake transition."""
     masked = input_ids.clone()
     masked[:, 0] = -100
     flat_logits = logits.reshape(-1, logits.shape[-1])
@@ -964,12 +936,9 @@ def eval_ce_kl_losses(
     rounding_threshold: float,
     world_size: int,
 ) -> dict[str, float]:
-    """Six forward passes with different mask strategies; compute KL (vs target) and CE (vs next-token)
-    for each. Returns 16 scalar entries matching `param_decomp.metrics.ce_and_kl_losses`.
-
-    Delta-component handling: only `stoch_masked` routes through the weight delta (with U(0,1) mask);
-    the other 5 strategies pass `delta_mask=0` to match `make_mask_infos(mask)` in the param_decomp code
-    (which leaves `weight_deltas_and_masks=None`).
+    """Six forward passes with different mask strategies; compute KL (vs target) and CE (vs
+    next-token) for each. Only the `stoch_masked` strategy routes through the weight delta
+    (with U(0,1) mask); the other five pass `delta_mask=0` to disable the delta component.
     """
     B, S = input_ids.shape
     device = input_ids.device
@@ -1045,11 +1014,9 @@ def eval_pgd_recon(
     n_steps: int,
     world_size: int,
 ) -> dict[str, float]:
-    """Adversarially find high-loss masks via PGD, then report the resulting recon loss.
-
-    Scope is `shared_across_batch`: one source of shape [1, 1, C+1] per module, broadcast from rank 0
-    at init and gradient-averaged across ranks before each sign-SGD step. Matches
-    `param_decomp.metrics.pgd_utils._run_pgd_loop` (sign-SGD, `all_reduce(AVG)` before step, final forward).
+    """Adversarially find high-loss masks via sign-SGD PGD, then report the resulting recon
+    loss. One source of shape [1, 1, C+1] per module is shared across the batch — broadcast
+    from rank 0 at init and gradient-averaged across ranks before each step.
     """
     B, S = input_ids.shape
     device = input_ids.device
@@ -1150,13 +1117,11 @@ def eval_hidden_acts_recon(
     plus a `/total` average.
 
     Requires `cache_output=True` on wrappers (set and cleared by `run_eval`)."""
-    # Step 1: target-mode forward — records `last_output` per wrapper.
     for w in wrappers.values():
         w.mode = "target"
     _ = target_model(input_ids)
     target_acts = {n: _require(w.last_output) for n, w in wrappers.items()}
 
-    # Step 2: component-mode forward with masks.
     if stochastic:
         masks, delta_masks = sample_continuous_masks(ci_lower)
     else:

@@ -29,6 +29,11 @@ make app           # Launch backend + frontend dev servers
 See the app's [README](param_decomp/app/README.md) and
 [CLAUDE.md](param_decomp/app/CLAUDE.md) for details.
 
+## Nano Parameter Decomposition
+
+[`nano_param_decomp/`](nano_param_decomp/) is a self-contained, single-file implementation of the
+whole method. It deliberately omits alternative loss/CI/sigmoid types and various logging for brevity.
+
 ## Installation
 
 From the root of the repository, run one of:

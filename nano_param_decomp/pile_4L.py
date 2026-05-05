@@ -1,10 +1,8 @@
-"""Pile 4-layer LlamaSimpleMLP entry point — reproduces the SPD paper's
-`pile_llama_simple_mlp-4L.yaml` decomposition using `nano_param_decomp/run.py`.
+"""Pile 4-layer LlamaSimpleMLP entry point — reproduces the VPD paper's pile-4L
+decomposition using `nano_param_decomp/run.py`.
 
-`C_PER_MODULE_4L` is copied verbatim from the 4L YAML's `module_info` and pins
-the per-module component counts to the paper's choice. `load_paper_target_model`
-is the only place that touches the `param_decomp` package — it fetches the
-specific 4-layer pretrained LlamaSimpleMLP from W&B.
+`C_PER_MODULE_4L` pins the per-module component counts. `load_paper_target_model`
+fetches the pretrained 4-layer LlamaSimpleMLP from W&B.
 
 Launch from the repo root (relative imports require `-m`):
 
@@ -28,7 +26,6 @@ from param_decomp.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
 
 from .run import Config, decompose
 
-# Per-module component count, copied verbatim from the 4L YAML `module_info`.
 C_PER_MODULE_4L: dict[str, int] = {
     "h.0.attn.q_proj": 512,
     "h.0.attn.k_proj": 512,
@@ -60,14 +57,11 @@ C_PER_MODULE_4L: dict[str, int] = {
 def load_paper_target_model(
     run_path: str = "goodfire/spd/runs/t-9d2b8f02",
 ) -> nn.Module:
-    """Load the specific 4-layer pretrained LlamaSimpleMLP used in the SPD paper.
-
-    Requires a `.env` with WandB credentials; the model is cached at
-    `PARAM_DECOMP_OUT_DIR/pretrain_cache/<project>-<run_id>/` on first download.
-    """
+    """Load the 4-layer pretrained LlamaSimpleMLP used in the VPD paper. Requires a `.env`
+    with WandB credentials."""
     model = LlamaSimpleMLP.from_pretrained(run_path)
     # LlamaSimpleMLP.forward returns (logits, loss); our training loop expects bare logits.
-    # Monkey-patch the bound forward — submodule structure is untouched so C_PER_MODULE_4L
+    # Monkey-patch the bound forward, leaving the submodule structure intact so component
     # paths like `h.0.mlp.c_fc` still resolve via `get_submodule`.
     original_forward = model.forward
 
@@ -80,14 +74,18 @@ def load_paper_target_model(
     return model
 
 
-def make_loader(batch_size: int, seq_len: int, rank: int, world_size: int) -> Iterator[Tensor]:
-    """Stream pre-tokenized Pile shards, sharded across ranks. Each example's `input_ids` is
-    already at least `seq_len` long, so we just truncate and stack."""
+def make_loader(
+    batch_size: int, seq_len: int, rank: int, world_size: int, split: str, seed: int
+) -> Iterator[Tensor]:
+    """Stream pre-tokenized Pile shards. The dataset is sharded by rank, then a per-rank
+    buffered shuffle is layered on top of the on-disk pre-shuffle. Each example's
+    `input_ids` is already at least `seq_len` long, so we just truncate and stack."""
     ds = datasets.load_dataset(
-        "danbraunai/pile-uncopyrighted-tok-shuffled", split="train", streaming=True
+        "danbraunai/pile-uncopyrighted-tok-shuffled", split=split, streaming=True
     )
     if world_size > 1:
         ds = ds.shard(num_shards=world_size, index=rank)
+    ds = ds.shuffle(seed=seed, buffer_size=1000)
     ds = ds.map(lambda ex: {"input_ids": ex["input_ids"][:seq_len]}).with_format("torch")
     local_B = batch_size // world_size
     while True:
@@ -110,6 +108,6 @@ if __name__ == "__main__":
     decompose(
         load_paper_target_model(),
         cfg,
-        make_loader(cfg.batch_size, cfg.seq_len, rank, world_size),
-        make_loader(cfg.eval_batch_size, cfg.seq_len, rank, world_size),
+        make_loader(cfg.batch_size, cfg.seq_len, rank, world_size, "train", cfg.seed),
+        make_loader(cfg.eval_batch_size, cfg.seq_len, rank, world_size, "val", cfg.seed + 1),
     )
