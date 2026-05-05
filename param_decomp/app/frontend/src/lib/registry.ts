@@ -48,6 +48,7 @@ export const CANONICAL_RUNS: RegistryEntry[] = [
         ],
     },
     {
+        name: "Kim",
         wandbRunId: "goodfire/spd/s-eab2ace8",
         notes: "Oli's simplestories PPGD run Feb 5, great metrics",
     },
