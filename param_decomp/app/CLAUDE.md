@@ -46,11 +46,18 @@ backend/
 ├── optim_cis.py           # Sparse CI optimization, loss configs, PGD
 └── routers/
     ├── runs.py            # Load W&B runs + GET /api/model_info
+    ├── run_registry.py    # Architecture + data-availability lookups for the frontend run list
     ├── graphs.py          # Compute attribution graphs
+    ├── graph_interp.py    # Context-aware labels + prompt-edge graph from graph_interp pipeline
     ├── prompts.py         # Prompt management
     ├── activation_contexts.py  # Serves pre-harvested activation contexts
     ├── intervention.py    # Selective component activation
     ├── correlations.py    # Component correlations + token stats + interpretations
+    ├── autointerp_compare.py   # List autointerp subruns + serve interpretations from each
+    ├── dataset_attributions.py # Precomputed dataset-aggregated component attributions
+    ├── data_sources.py    # Provenance: subrun IDs, configs, counts (harvest/autointerp/attributions)
+    ├── pretrain_info.py   # Target-model architecture lookups without loading checkpoints
+    ├── investigations.py  # List and serve investigation outputs
     ├── clusters.py        # Component clustering
     ├── dataset_search.py  # Dataset search (reads dataset from run config)
     ├── agents.py          # Various useful endpoints that AI agents should look at when helping
@@ -68,10 +75,17 @@ frontend/src/
 │   ├── api/                      # Modular API client (one file per router)
 │   │   ├── index.ts              # Re-exports all API modules
 │   │   ├── runs.ts               # Run loading
+│   │   ├── runRegistry.ts        # Run-list metadata + data availability
 │   │   ├── graphs.ts             # Attribution graph computation
+│   │   ├── graphInterp.ts        # Context-aware graph_interp labels
 │   │   ├── prompts.ts            # Prompt management
 │   │   ├── activationContexts.ts # Activation contexts
 │   │   ├── correlations.ts       # Correlations + interpretations
+│   │   ├── autointerpCompare.ts  # Autointerp subrun comparison
+│   │   ├── datasetAttributions.ts # Dataset-aggregated attributions
+│   │   ├── dataSources.ts        # Data provenance
+│   │   ├── pretrainInfo.ts       # Target-model architecture
+│   │   ├── investigations.ts     # Investigation outputs
 │   │   ├── intervention.ts       # Selective activation
 │   │   ├── dataset.ts            # Dataset search
 │   │   └── clusters.ts           # Component clustering

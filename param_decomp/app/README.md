@@ -1,145 +1,97 @@
 # PD Visualization App
 
-A lightweight web app for visualizing PD results. Built with Svelte 5 and FastAPI.
+A web app for exploring PD decompositions: attribution graphs, component activations,
+correlations, dataset search, autointerp labels, interventions, and clustering. Built
+with Svelte 5 (frontend) and FastAPI (backend).
 
 ## Quick Start
 
-**installation**
-
 ```bash
-make install # install python project dependicies for backend
-make install-app # install frontend dependencies
+make install      # Backend Python deps
+make install-app  # Frontend npm deps (one-time)
+make app          # Launch backend + frontend dev servers (recommended)
 ```
 
-**Option 1: All-in-one launcher (recommended)**
+To run the servers separately:
 
 ```bash
-make app
+# Backend
+python -m param_decomp.app.run_app  # also starts frontend; pass --no-frontend for backend-only
+
+# Frontend
+cd param_decomp/app/frontend && npm run dev
 ```
-
-This automatically starts both backend and frontend with health checks and port detection.
-
-**Option 2: Manual startup**
-
-```bash
-# in one terminal (backend)
-uv run app/backend/server.py
-
-# in another terminal (frontend)
-cd app/frontend
-npm run dev
-```
-
-## For ML Engineers/Researchers: Web Dev Basics
-
-### JavaScript/Node.js Ecosystem
-
-**package.json**: The Python equivalent of `pyproject.toml` or `requirements.txt`. Defines:
-
-- Dependencies (like `numpy`, `torch` in Python)
-- Scripts (like `make` commands)
-- Metadata about the project
-
-**npm** (Node Package Manager): Like `pip` or `uv` for Python packages.
-
-**Common commands**:
-
-```bash
-npm install          # Install dependencies (like pip install -r requirements.txt)
-npm run dev          # Start development server
-npm run check        # Type check (like mypy or basedpyright)
-npm run lint         # Check code for errors/style issues with ESLint (like ruff lint)
-npm run format       # Auto-format code with Prettier (like ruff format)
-```
-
-### Svelte 5
-
-**Key Svelte 5 features used in this app**:
-
-- `$state(value)` - reactive state (replaces `let` variables)
-- `$derived(expression)` - computed values (replaces `$:` statements)
-- `$effect(() => {})` - side effects (replaces `onMount`, `afterUpdate`)
-- `bind:value={variable}` - two-way binding
-- `onclick={handler}` - event handlers (replaces `on:click`)
-- `{#if condition}...{/if}` - conditional rendering
-
-## Architecture
-
-### Data Flow (End-to-End Example)
-
-As an example, let's trace how loading a W&B run works:
-
-1. **User Input** ([App.svelte](frontend/src/App.svelte))
-
-   - User enters W&B run path in input field
-   - Clicks "Load Run" button
-   - `loadRun()` function is called
-2. **Frontend API Call** ([api.ts:16-25](frontend/src/lib/api.ts))
-
-   ```typescript
-   export async function loadRun(wandbRunPath: string): Promise<void> {
-     const url = new URL(`${API_URL}/runs/load`);
-     // url-encode the wandb run path because it contains slashes
-     const encodedWandbRunPath = encodeURIComponent(wandbRunPath);
-     url.searchParams.set("wandb_run_path", encodedWandbRunPath);
-     const response = await fetch(url.toString(), { method: "POST" });
-     if (!response.ok) {
-       const error = await response.json();
-       throw new Error(error.detail || "Failed to load run");
-     }
-   }
-   ```
-
-3. **Backend Endpoint** ([server.py](backend/server.py))
-
-   ```python
-   @app.post("/runs/load")
-   def load_run(wandb_run_path: str):
-       run_context_service.load_run(unquote(wandb_run_path))
-   ```
-
-4. **Service Layer** ([run_context_service.py::RunContextService.load_run](backend/services/run_context_service.py))
-
-   - Downloads ComponentModel from W&B
-   - Loads model onto GPU
-   - Creates data loader with tokenizer
-   - Stores in `RunContextService` singleton
-
-
-5. **UI Renders** ([App.svelte](frontend/src/App.svelte))
-   - Sidebar shows config YAML
-   - "Activation Contexts" tab becomes available
 
 ## Project Structure
 
 ```
-app/
-├── run_app.py                 # All-in-one launcher
-├── run_backend.py             # Backend-only launcher
+param_decomp/app/
+├── run_app.py                # All-in-one launcher (backend + frontend)
 ├── backend/
-│   ├── server.py              # FastAPI routes
-│   ├── schemas.py             # Pydantic models (API contracts)
-│   ├── services/              # Business logic
-│   └── lib/                   # Utilities
+│   ├── server.py             # FastAPI app, CORS, exception handlers, router registration
+│   ├── state.py              # StateManager singleton + HarvestRepo (lazy-loaded)
+│   ├── compute.py            # Attribution + intervention computation
+│   ├── optim_cis.py          # Sparse-CI optimisation, PGD
+│   ├── app_tokenizer.py      # AppTokenizer wrapper for HF tokenizers
+│   ├── database.py           # SQLite schema + access (NFS-safe)
+│   ├── schemas.py            # Pydantic API models
+│   ├── dependencies.py       # FastAPI dependency injection helpers
+│   ├── utils.py              # Logging/timing utilities
+│   └── routers/              # One router per feature area (see CLAUDE.md)
 └── frontend/
-    ├── package.json           # Dependencies & scripts
-    ├── vite.config.ts         # Build tool config (minimal Vite setup)
-    ├── svelte.config.js       # Svelte compiler config
-    ├── index.html             # SPA entry point
+    ├── package.json
+    ├── vite.config.ts
+    ├── svelte.config.js
+    ├── index.html
     └── src/
-        ├── main.ts            # TypeScript entry point
-        ├── App.svelte         # Root component
-        └── lib/
-            ├── api.ts         # Backend API client
-            └── index.ts       # Utility functions
-        └── components/    # Svelte components
+        ├── main.ts
+        ├── App.svelte
+        ├── lib/
+        │   ├── api/          # Modular API client (one file per backend router)
+        │   ├── *.svelte.ts   # Reactive run/display/cluster state (Svelte 5 runes)
+        │   └── *.ts          # Shared types and utilities
+        └── components/       # Svelte components (see CLAUDE.md for breakdown)
 ```
 
-## Type Safety
+See `CLAUDE.md` for the full router list, frontend file map, data structures, core
+computations, and database schema.
 
-Both frontend and backend use TypeScript/Python type annotations. However, the interface between them (API schemas) must be manually kept in sync:
+## For ML Researchers: Web Dev Cheatsheet
 
-- Backend: [schemas.py](backend/schemas.py) (Pydantic models)
-- Frontend: [api.ts](frontend/src/lib/api.ts) (TypeScript types)
+### npm
 
-When you change the API, update both files.
+`package.json` is the JS equivalent of `pyproject.toml`; `npm` is the package manager.
+
+```bash
+npm install      # Install deps
+npm run dev      # Dev server
+npm run check    # Svelte type check
+npm run lint     # ESLint
+npm run format   # Prettier
+```
+
+### Svelte 5 idioms used here
+
+- `$state(value)` — reactive state (replaces `let`)
+- `$derived(expr)` — computed value (replaces `$:`)
+- `$effect(() => {})` — side effect (replaces `onMount`)
+- `bind:value={x}` — two-way binding
+- `onclick={handler}` — event handler (replaces `on:click`)
+- Use `SvelteSet` / `SvelteMap` from `svelte/reactivity` for reactive collections
+
+## Data Flow Example: Loading a W&B Run
+
+1. **User input** (`App.svelte`): user enters a wandb path and submits.
+2. **Frontend API call** (`lib/api/runs.ts`): `POST /api/runs/load`.
+3. **Backend route** (`backend/routers/runs.py::load_run`): downloads the
+   `ComponentModel`, builds `sources_by_target`, and stores it in the singleton
+   `StateManager` (`backend/state.py`).
+4. **Lazy harvest data** (`HarvestRepo` on `StateManager`): pre-harvested correlations,
+   token stats, activation contexts, and interpretations load on first access.
+5. **UI**: dependent tabs (Activation Contexts, Prompt Attributions, etc.) become
+   available once the run is loaded.
+
+## API Type Safety
+
+Backend (`backend/schemas.py`) and frontend (`frontend/src/lib/api/*.ts`) types must be
+kept in sync manually. When adding or changing an endpoint, update both.

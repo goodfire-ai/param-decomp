@@ -5,50 +5,38 @@ Offline GPU pipeline that collects component statistics in a single pass over tr
 ## Usage (SLURM)
 
 ```bash
-# Process specific number of batches
-pd-harvest <wandb_path> --n_batches 2000 --n_gpus 24
-
-# Process entire training dataset (omit --n_batches)
-pd-harvest <wandb_path> --n_gpus 24
-
-# With optional parameters
-pd-harvest <wandb_path> --n_batches 1000 --n_gpus 8 \
-    --batch_size 256 --ci_threshold 1e-6 --time 24:00:00 --job_suffix 30m
+pd-harvest path/to/harvest_slurm_config.yaml
+pd-harvest path/to/harvest_slurm_config.yaml --job_suffix v2
 ```
 
-The command:
-1. Creates a git snapshot branch for reproducibility (jobs may be queued)
-2. Submits a SLURM job array with N tasks (one per GPU)
-3. Each task processes batches where `batch_idx % world_size == rank`
-4. Submits a merge job (depends on array completion) that combines all worker results
+`HarvestSlurmConfig` (`config.py`) wraps a `HarvestConfig` plus SLURM knobs (`n_gpus`,
+`partition`, `time`, `merge_time`, `merge_mem`). The decomposition target is specified
+inside `config.method_config.wandb_path` — there is no separate positional
+`<wandb_path>` argument anymore.
 
-**Note**: `--n_batches` is optional. If omitted, the pipeline processes the entire training dataset.
+The launcher:
+1. Creates a git snapshot branch for reproducibility
+2. Submits a SLURM array (one task per GPU); each task runs `run_worker.py` and processes
+   batches where `batch_idx % world_size == rank`
+3. Submits a merge job (`run_merge.py`) that depends on the array
+
+`HarvestConfig.n_batches` may be `"whole_dataset"` to consume the entire training set.
 
 ## Usage (non-SLURM)
 
-For environments without SLURM, run the worker script directly:
-
 ```bash
-# Single GPU (defaults from HarvestConfig, auto-generates subrun ID)
-python -m param_decomp.harvest.scripts.run <wandb_path>
+# Single GPU (auto-generates subrun ID)
+python -m param_decomp.harvest.scripts.run_worker --config_json '{"method_config": {...}, "n_batches": 1000}'
 
-# Single GPU with config file
-python -m param_decomp.harvest.scripts.run <wandb_path> --config_path path/to/config.yaml
-
-# Multi-GPU (run in parallel via shell, tmux, etc.)
-# All workers and the merge step must share the same --subrun_id
+# Multi-GPU: all workers + merge must share the same --subrun_id
 SUBRUN="h-$(date +%Y%m%d_%H%M%S)"
-python -m param_decomp.harvest.scripts.run <path> --config_json '{"n_batches": 1000}' --rank 0 --world_size 4 --subrun_id $SUBRUN &
-python -m param_decomp.harvest.scripts.run <path> --config_json '{"n_batches": 1000}' --rank 1 --world_size 4 --subrun_id $SUBRUN &
-python -m param_decomp.harvest.scripts.run <path> --config_json '{"n_batches": 1000}' --rank 2 --world_size 4 --subrun_id $SUBRUN &
-python -m param_decomp.harvest.scripts.run <path> --config_json '{"n_batches": 1000}' --rank 3 --world_size 4 --subrun_id $SUBRUN &
+CFG='{"method_config": {...}, "n_batches": 1000}'
+for r in 0 1 2 3; do
+  python -m param_decomp.harvest.scripts.run_worker --config_json "$CFG" --rank $r --world_size 4 --subrun_id $SUBRUN &
+done
 wait
-
-# Merge results after all workers complete
-python -m param_decomp.harvest.scripts.run <path> --merge --subrun_id $SUBRUN
+python -m param_decomp.harvest.scripts.run_merge --subrun_id $SUBRUN --config_json "$CFG"
 ```
-
-Each worker processes batches where `batch_idx % world_size == rank`, then the merge step combines all partial results.
 
 ## Data Storage
 
@@ -76,23 +64,28 @@ Entry point via `pd-harvest`. Submits array job + dependent merge job.
 
 **Intruder evaluation** (`param_decomp/harvest/intruder.py`) evaluates the quality of the *decomposition itself* — whether component activation patterns are coherent — without relying on LLM-generated labels. Intruder scores are stored in `harvest.db`, not `interp.db`. Intruder eval is submitted as a top-level postprocess stage (via `pd-postprocess`), not as part of the harvest pipeline.
 
-### Worker Script (`scripts/run.py`)
+### Worker Script (`scripts/run_worker.py`)
 
-Internal script called by SLURM jobs. Accepts config via `--config_path` (file) or `--config_json` (inline JSON). Supports:
-- `--config_path`/`--config_json`: Provide `HarvestConfig` (defaults used if neither given)
-- `--rank R --world_size N`: Process subset of batches
-- `--merge`: Combine per-rank results into final files
-- `--subrun_id`: Sub-run identifier (auto-generated if not provided)
+Internal worker invoked per SLURM array task. Args:
+- `--config_json`: Inline JSON of `HarvestConfig` (required)
+- `--rank R --world_size N`: Process the batches where `batch_idx % N == R`
+- `--subrun_id`: Sub-run identifier (auto-generated `h-YYYYMMDD_HHMMSS` if omitted)
+
+### Merge Script (`scripts/run_merge.py`)
+
+Combines `worker_states/*.pt` from each rank into the final harvest artefacts. Args:
+- `--config_json`, `--subrun_id` (must match the workers').
 
 ### Config (`config.py`)
 
-`HarvestConfig` (tuning params) and `HarvestSlurmConfig` (HarvestConfig + SLURM params). `wandb_path` is a runtime arg, not part of config.
+`HarvestConfig` (tuning params, plus a `method_config` discriminated union that carries
+`wandb_path` and method-specific options) and `HarvestSlurmConfig` (HarvestConfig + SLURM
+params).
 
 ### Harvest Logic (`harvest.py`)
 
-Main harvesting functions:
-- `harvest_activation_contexts(wandb_path, config, output_dir, ...)`: Process batches for a single rank
-- `merge_activation_contexts(output_dir)`: Combine worker results from `output_dir/worker_states/` into `output_dir`
+- `harvest(...)`: Run a single rank's pass over a dataloader, writing partial state.
+- `merge_harvest(output_dir, config)`: Combine all `worker_states/` into the final outputs.
 
 ### Harvester (`harvester.py`)
 

@@ -35,14 +35,13 @@ The codebase supports three experimental domains: TMS (Toy Model of Superpositio
   - `resid_mlp1` - 1 layer
   - `resid_mlp2` - 2 layers
   - `resid_mlp3` - 3 layers
-- **Language Models**:
-  - `ss_llama_simple`, `ss_llama_simple-1L`, `ss_llama_simple-2L` - Simple Stories Llama variants
-  - `ss_llama_simple_mlp`, `ss_llama_simple_mlp-1L`, `ss_llama_simple_mlp-2L` - Llama MLP-only variants
-  - `ss_gpt2`, `ss_gpt2_simple`, `ss_gpt2_simple_noln` - Simple Stories GPT-2 variants
-  - `ss_gpt2_simple-1L`, `ss_gpt2_simple-2L` - GPT-2 simple layer variants
-  - `pile_llama_simple_mlp-2L`, `pile_llama_simple_mlp-4L`, `pile_llama_simple_mlp-12L` - Pile Llama MLP-only variants
-  - `gpt2` - Standard GPT-2
-  - `ts` - TinyStories
+- **Language Models** (MLP-only Llama variants):
+  - `ss_llama_simple_mlp-2L` - 2-layer Llama on SimpleStories
+  - `pile_llama_simple_mlp-4L` - 4-layer Llama on the Pile (the VPD-paper run)
+  - `pile_llama_simple_mlp-12L` - 12-layer Llama on the Pile
+
+The `lm` experiment can decompose any HuggingFace-loadable model whose target modules are
+`nn.Linear`, `nn.Embedding`, or `transformers.modeling_utils.Conv1D`.
 
 ## Research Papers
 
@@ -247,7 +246,7 @@ Use `param_decomp/` as the search root (not repo root) to avoid noise.
 
 **Harvest Pipeline:**
 
-- `pd-harvest` → `param_decomp/harvest/scripts/run_slurm_cli.py` → `param_decomp/utils/slurm.py` → SLURM array → `param_decomp/harvest/scripts/run.py` → `param_decomp/harvest/harvest.py`
+- `pd-harvest` → `param_decomp/harvest/scripts/run_slurm_cli.py` → `param_decomp/utils/slurm.py` → SLURM array → `param_decomp/harvest/scripts/run_worker.py` → `param_decomp/harvest/harvest.py`, then merge job → `param_decomp/harvest/scripts/run_merge.py`
 
 **Autointerp Pipeline:**
 
