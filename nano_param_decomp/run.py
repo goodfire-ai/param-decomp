@@ -1,12 +1,8 @@
-"""Minimal single-file Stochastic Parameter Decomposition (SPD) for language models.
+"""Minimal single-file Parameter Decomposition implementation.
 
-Reproduces the method used in `param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml`
-from the SPD paper. The SPD method itself has zero dependencies on the
-`param_decomp` package — only `load_paper_target_model()` imports from
-`param_decomp` to fetch the specific 4-layer pretrained LlamaSimpleMLP used
-in the paper (from WandB). Skip that helper if you want to plug in your own
-target model. The file is structured for paper readers — everything the
-method needs is here:
+The method itself has zero dependencies on the `param_decomp` package.
+Use `pile_4L.py` (sibling) for the VPD paper's 4-layer target model.
+The file is structured for paper readers — everything the method needs is here:
 
   A. Config (method hyperparameters)
   B. Leaky-hard sigmoids (straight-through for `lower_leaky`)
@@ -19,7 +15,6 @@ method needs is here:
   I. Streaming dataloader
   J. Training loop (faithfulness warmup + main loop)
   K. Eval metrics (matches the YAML's `eval_metric_configs`)
-  L. Paper 4L target model + `C_PER_MODULE_4L`, plus `__main__` entry
 
 What this file deliberately does NOT support (all present in the paper's
 framework but not needed to read the method):
@@ -36,16 +31,6 @@ next-token CE. The rest of the method (ComponentLinear, CI transformer, PPGD,
 losses) only requires that each decomposed `nn.Linear` sees a `[B, S, d_in]`
 input, so any sequential target would work in principle — but the dataloader
 and eval metrics are written for tokenized LM data.
-
-Paper reproduction: the target model is user-supplied as a frozen `nn.Module`
-whose `forward(input_ids)` returns logits `[B, S, vocab]`. The 4L LlamaSimpleMLP
-lives in `param_decomp/pretrain/models/llama_simple_mlp.py` in the full repo.
-
-Launch (8-GPU single-node):
-    torchrun --nproc_per_node=8 scripts/param_decomp_lm_minimal.py
-
-Single-GPU smoke test:
-    python scripts/param_decomp_lm_minimal.py
 """
 
 import math
@@ -737,7 +722,7 @@ def make_loader(cfg: Config, rank: int, world_size: int) -> Iterator[Tensor]:
 # =============================================================================
 
 
-def train(target_model: nn.Module, cfg: Config) -> None:
+def decompose(target_model: nn.Module, cfg: Config) -> None:
     """Decompose `target_model` using SPD. `cfg.C_per_module` names the `nn.Linear` submodules to
     decompose; `target_model.forward(input_ids)` must return logits."""
     rank, world_size, local_rank, device = init_dist()
@@ -1260,82 +1245,3 @@ def run_eval(
             w.last_output = None
         clear_wrapper_masks(wrappers)
     return metrics
-
-
-# =============================================================================
-# Section L: Paper 4L target model — hardcoded constants + loader + __main__
-# =============================================================================
-# Everything below is specific to the `pile_llama_simple_mlp-4L.yaml` run. If you
-# want to decompose a different model, skip this section and call `train(...)`
-# directly with your own `nn.Module` and a `Config(C_per_module=...)`.
-
-# Per-module component count, copied verbatim from the 4L YAML `module_info`.
-C_PER_MODULE_4L: dict[str, int] = {
-    "h.0.attn.q_proj": 256,
-    "h.0.attn.k_proj": 256,
-    "h.0.attn.v_proj": 512,
-    "h.0.attn.o_proj": 512,
-    "h.0.mlp.c_fc": 1536,
-    "h.0.mlp.down_proj": 1536,
-    "h.1.attn.q_proj": 128,
-    "h.1.attn.k_proj": 128,
-    "h.1.attn.v_proj": 256,
-    "h.1.attn.o_proj": 256,
-    "h.1.mlp.c_fc": 512,
-    "h.1.mlp.down_proj": 512,
-    "h.2.attn.q_proj": 128,
-    "h.2.attn.k_proj": 256,
-    "h.2.attn.v_proj": 640,
-    "h.2.attn.o_proj": 640,
-    "h.2.mlp.c_fc": 512,
-    "h.2.mlp.down_proj": 512,
-    "h.3.attn.q_proj": 128,
-    "h.3.attn.k_proj": 128,
-    "h.3.attn.v_proj": 512,
-    "h.3.attn.o_proj": 512,
-    "h.3.mlp.c_fc": 1536,
-    "h.3.mlp.down_proj": 2560,
-}
-
-
-def load_paper_target_model(
-    run_path: str = "goodfire/spd/runs/t-9d2b8f02",
-) -> nn.Module:
-    """Load the specific 4-layer pretrained LlamaSimpleMLP used in the SPD paper.
-
-    This is the ONLY place we touch the `param_decomp` package — we import the target
-    model class and its W&B loader so the script can reproduce the paper's decomposition.
-    If you want to plug in a different target LM, pass your own `nn.Module` to `train()`
-    and use a `Config(C_per_module=...)` that matches your module paths.
-
-    Requires a `.env` with WandB credentials; the model is cached at
-    `PARAM_DECOMP_OUT_DIR/pretrain_cache/<project>-<run_id>/` on first download.
-    """
-    import types
-
-    from param_decomp.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
-
-    model = LlamaSimpleMLP.from_pretrained(run_path)
-    # LlamaSimpleMLP.forward returns (logits, loss); our training loop expects bare logits.
-    # Monkey-patch the bound forward — submodule structure is untouched so C_PER_MODULE_4L
-    # paths like `h.0.mlp.c_fc` still resolve via `get_submodule`.
-    original_forward = model.forward
-
-    def forward_logits_only(_self: nn.Module, idx: Tensor) -> Tensor:
-        logits, _loss = original_forward(idx)
-        assert logits is not None
-        return logits
-
-    model.forward = types.MethodType(forward_logits_only, model)
-    return model
-
-
-if __name__ == "__main__":
-    # Reproduce paper's decomposition (requires 8 GPUs):
-    #   torchrun --nproc_per_node=8 scripts/param_decomp_lm_minimal.py
-    cfg = Config(
-        C_per_module=C_PER_MODULE_4L,
-        use_wandb=True,
-        wandb_run_name="param_decomp_lm_minimal",
-    )
-    train(load_paper_target_model(), cfg)
