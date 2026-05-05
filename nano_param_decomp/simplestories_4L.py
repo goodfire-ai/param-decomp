@@ -7,25 +7,35 @@ types × 2 layers). `load_simplestories_target_model` is the only place that
 touches the `param_decomp` package — it fetches the pretrained 2-layer
 LlamaSimpleMLP from W&B.
 
-Note on tokenization: the YAML sets `is_tokenized: false` and tokenizes
+Tokenization: the YAML sets `is_tokenized: false` and tokenizes
 `SimpleStories/SimpleStories` on the fly with `SimpleStories/test-SimpleStories-gpt2-1.25M`.
-The nano dataloader assumes the dataset column already contains token id lists
-(matching pile-4L's `danbraunai/pile-uncopyrighted-tok-shuffled`), so a
-pre-tokenized SimpleStories variant is required for this entry point.
+The local `make_loader` below does the same: tokenize each story (lowercased to match the main
+path's SimpleStories handling) and EOS-pack into fixed-length `seq_len` chunks.
 
-Launch (8-GPU single-node):
-    torchrun --nproc_per_node=8 nano_param_decomp/simplestories_4L.py
+Launch from the repo root (relative imports require `-m`):
 
-Single-GPU smoke test:
-    python nano_param_decomp/simplestories_4L.py
+    # 8-GPU single-node
+    torchrun --standalone --nproc_per_node=8 -m nano_param_decomp.simplestories_4L
+
+    # Single-GPU smoke test
+    python -m nano_param_decomp.simplestories_4L
 """
 
-import types
+# HF tokenizer / dataset stubs are loose; suppress the resulting noise.
+# pyright: reportAttributeAccessIssue=false, reportArgumentType=false, reportCallIssue=false
 
+import os
+import types
+from collections.abc import Iterator
+
+import datasets
+import torch
 import torch.nn as nn
 from torch import Tensor
+from transformers import AutoTokenizer
 
 from param_decomp.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
+from param_decomp.pretrain.run_info import PretrainRunInfo
 
 from .run import Config, decompose
 
@@ -49,8 +59,13 @@ def load_simplestories_target_model(
     run_path: str = "goodfire/spd/runs/gf6rbga0",
 ) -> nn.Module:
     """Load the pretrained 2-layer SimpleStories LlamaSimpleMLP referenced by
-    `pretrained_model_name` in the YAML."""
-    model = LlamaSimpleMLP.from_pretrained(run_path)
+    `pretrained_model_name` in the YAML.
+
+    The cached `model_config.yaml` for this run predates the `model_type` field, so we
+    inject it before instantiating — same patch the main `lm_decomposition.py` applies."""
+    run_info = PretrainRunInfo.from_path(run_path)
+    run_info.model_config_dict.setdefault("model_type", "LlamaSimpleMLP")
+    model = LlamaSimpleMLP.from_run_info(run_info)
     original_forward = model.forward
 
     def forward_logits_only(_self: nn.Module, idx: Tensor) -> Tensor:
@@ -60,6 +75,33 @@ def load_simplestories_target_model(
 
     model.forward = types.MethodType(forward_logits_only, model)
     return model
+
+
+def make_loader(
+    batch_size: int, seq_len: int, rank: int, world_size: int, seed: int
+) -> Iterator[Tensor]:
+    """Tokenize the raw `SimpleStories/SimpleStories` dataset on the fly and EOS-pack into
+    fixed `seq_len` chunks. Mirrors `param_decomp/data.py::tokenize_and_concatenate` (simplified)
+    with `to_lower=True` to match the main path's SimpleStories handling."""
+    ds = datasets.load_dataset("SimpleStories/SimpleStories", split="train", streaming=False)
+    if world_size > 1:
+        ds = ds.shard(num_shards=world_size, index=rank)
+    ds = ds.shuffle(seed=seed)
+    tok = AutoTokenizer.from_pretrained("SimpleStories/test-SimpleStories-gpt2-1.25M")
+    eos = tok.eos_token_id
+    local_B = batch_size // world_size
+    while True:
+        buf: list[int] = []
+        batch: list[Tensor] = []
+        for ex in ds:
+            buf.extend(tok.encode(ex["story"].lower(), add_special_tokens=False))
+            buf.append(eos)
+            while len(buf) >= seq_len:
+                batch.append(torch.tensor(buf[:seq_len], dtype=torch.long))
+                buf = buf[seq_len:]
+                if len(batch) == local_B:
+                    yield torch.stack(batch, dim=0)
+                    batch = []
 
 
 if __name__ == "__main__":
@@ -86,10 +128,14 @@ if __name__ == "__main__":
         batch_size=24,
         # Logging
         log_every=50,
-        # Dataset (must be pre-tokenized — see module docstring)
-        dataset_name="SimpleStories/SimpleStories",
-        dataset_column="story",
         use_wandb=True,
         wandb_run_name="nano_param_decomp_simplestories_2L",
     )
-    decompose(load_simplestories_target_model(), cfg)
+    rank = int(os.environ.get("RANK", "0"))
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    decompose(
+        load_simplestories_target_model(),
+        cfg,
+        make_loader(cfg.batch_size, cfg.seq_len, rank, world_size, cfg.seed),
+        make_loader(cfg.eval_batch_size, cfg.seq_len, rank, world_size, cfg.seed + 1),
+    )

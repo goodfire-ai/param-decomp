@@ -1,7 +1,21 @@
 """Minimal single-file Parameter Decomposition implementation.
 
 The method itself has zero dependencies on the `param_decomp` package.
-Use `pile_4L.py` (sibling) for the VPD paper's 4-layer target model.
+Sibling entry points wire it up to specific target models:
+
+  - `pile_4L.py`         — VPD paper's 4-layer LlamaSimpleMLP on the Pile
+  - `simplestories_4L.py` — 2-layer LlamaSimpleMLP on SimpleStories
+
+Launch via `torchrun -m` (the entry points use relative imports, so they
+must be run as modules from the repo root, not as scripts):
+
+    # 8-GPU single-node
+    torchrun --standalone --nproc_per_node=8 -m nano_param_decomp.pile_4L
+    torchrun --standalone --nproc_per_node=8 -m nano_param_decomp.simplestories_4L
+
+    # Single-GPU smoke test
+    python -m nano_param_decomp.pile_4L
+
 The file is structured for paper readers — everything the method needs is here:
 
   A. Config (method hyperparameters)
@@ -12,9 +26,12 @@ The file is structured for paper readers — everything the method needs is here
   F. Persistent PGD (adversarial sources persisted across steps)
   G. LR schedule
   H. Distributed setup + SPDModule container
-  I. Streaming dataloader
-  J. Training loop (faithfulness warmup + main loop)
-  K. Eval metrics (matches the YAML's `eval_metric_configs`)
+  I. Training loop (faithfulness warmup + main loop)
+  J. Eval metrics (matches the YAML's `eval_metric_configs`)
+
+The `decompose` entry point takes a target model plus train and eval data iterators
+(yielding `[B, S]` int64 tensors of token ids); the entry-point files own the
+dataset/tokenization specifics.
 
 What this file deliberately does NOT support (all present in the paper's
 framework but not needed to read the method):
@@ -24,13 +41,14 @@ framework but not needed to read the method):
   - loss classes other than the four used by the 4L run
   - YAML parsing / experiment registry / sweep machinery
   - backwards compatibility with existing checkpoints
+  - Models that don't use a sequence of tokens as input
 
 LM-specific assumptions: the target takes integer `input_ids` and returns
 logits over a vocab; reconstruction loss is KL on logits and the eval reports
 next-token CE. The rest of the method (ComponentLinear, CI transformer, PPGD,
 losses) only requires that each decomposed `nn.Linear` sees a `[B, S, d_in]`
-input, so any sequential target would work in principle — but the dataloader
-and eval metrics are written for tokenized LM data.
+input, so any sequential target would work in principle — but the eval metrics
+are written for tokenized LM data.
 """
 
 # Suppress issues stemming from nn.Module buffer attribute access (typed as
@@ -41,10 +59,9 @@ and eval metrics are written for tokenized LM data.
 import math
 import os
 from collections.abc import Iterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Literal, cast, override
 
-import datasets
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -115,11 +132,6 @@ class Config:
 
     # Gradient clipping
     grad_clip_components: float = 0.01
-
-    # Data
-    dataset_name: str = "danbraunai/pile-uncopyrighted-tok-shuffled"
-    dataset_split: str = "train"
-    dataset_column: str = "input_ids"
 
     # Evaluation (from YAML eval block)
     eval_freq: int = 1000
@@ -715,34 +727,23 @@ def _require(x: Tensor | None) -> Tensor:
 
 
 # =============================================================================
-# Section I: Streaming dataloader
+# Section I: Training loop
 # =============================================================================
 
 
-def make_loader(cfg: Config, rank: int, world_size: int) -> Iterator[Tensor]:
-    ds = datasets.load_dataset(cfg.dataset_name, split=cfg.dataset_split, streaming=True)
-    if world_size > 1:
-        ds = ds.shard(num_shards=world_size, index=rank)
-    ds = ds.map(lambda ex: {cfg.dataset_column: ex[cfg.dataset_column][: cfg.seq_len]})
-    ds = ds.with_format("torch")
-    local_B = cfg.batch_size // world_size
-    while True:
-        batch: list[Tensor] = []
-        for ex in ds:
-            batch.append(ex[cfg.dataset_column])
-            if len(batch) == local_B:
-                yield torch.stack(batch, dim=0)
-                batch = []
+def decompose(
+    target_model: nn.Module,
+    cfg: Config,
+    train_loader: Iterator[Tensor],
+    eval_loader: Iterator[Tensor],
+) -> None:
+    """Decompose `target_model` using SPD. `cfg.C_per_module` names the `nn.Linear` submodules
+    to decompose; `target_model.forward(input_ids)` must return logits.
 
-
-# =============================================================================
-# Section J: Training loop
-# =============================================================================
-
-
-def decompose(target_model: nn.Module, cfg: Config) -> None:
-    """Decompose `target_model` using SPD. `cfg.C_per_module` names the `nn.Linear` submodules to
-    decompose; `target_model.forward(input_ids)` must return logits."""
+    Currently assumes that `train_loader` / `eval_loader` yield `[local_B, seq_len]` int64 token-id
+    tensors, where `local_B = (batch_size or eval_batch_size) // world_size`. They must be sharded
+    across rank by the caller — see the entry-point files for the reference Pile / SimpleStories
+    loaders."""
     rank, world_size, local_rank, device = init_dist()
     assert cfg.batch_size % world_size == 0, "global batch size must be divisible by world size"
     local_B = cfg.batch_size // world_size
@@ -797,8 +798,6 @@ def decompose(target_model: nn.Module, cfg: Config) -> None:
     ppgd = PersistentPGD(wrappers, local_B, cfg.seq_len, device, cfg)
     ci_params = list(ci_fn.parameters())
     opt = torch.optim.AdamW(component_params + ci_params, lr=cfg.main_lr, weight_decay=0.0)
-    loader = make_loader(cfg, rank, world_size)
-    eval_loader = make_loader(replace(cfg, batch_size=cfg.eval_batch_size), rank, world_size)
     _log("PPGD, optimizer, dataloader ready")
 
     if rank == 0 and cfg.use_wandb:
@@ -815,7 +814,7 @@ def decompose(target_model: nn.Module, cfg: Config) -> None:
         for g in opt.param_groups:
             g["lr"] = main_lr
 
-        input_ids = next(loader).to(device)
+        input_ids = next(train_loader).to(device)
 
         with torch.autocast(
             device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"
@@ -904,7 +903,7 @@ def decompose(target_model: nn.Module, cfg: Config) -> None:
 
 
 # =============================================================================
-# Section K: Eval metrics (matches `eval_metric_configs` in the 4L YAML)
+# Section J: Eval metrics (matches `eval_metric_configs` in the 4L YAML)
 # =============================================================================
 # Metrics are re-implemented inline (no new param_decomp imports) and run on a single eval
 # batch per call (n_eval_steps=1, n_batches_accum=1 in the YAML — no cross-batch

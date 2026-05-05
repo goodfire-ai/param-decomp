@@ -6,15 +6,21 @@ the per-module component counts to the paper's choice. `load_paper_target_model`
 is the only place that touches the `param_decomp` package — it fetches the
 specific 4-layer pretrained LlamaSimpleMLP from W&B.
 
-Launch (8-GPU single-node):
-    torchrun --nproc_per_node=8 nano_param_decomp/pile_4L.py
+Launch from the repo root (relative imports require `-m`):
 
-Single-GPU smoke test:
-    python nano_param_decomp/pile_4L.py
+    # 8-GPU single-node
+    torchrun --standalone --nproc_per_node=8 -m nano_param_decomp.pile_4L
+
+    # Single-GPU smoke test
+    python -m nano_param_decomp.pile_4L
 """
 
+import os
 import types
+from collections.abc import Iterator
 
+import datasets
+import torch
 import torch.nn as nn
 from torch import Tensor
 
@@ -74,10 +80,36 @@ def load_paper_target_model(
     return model
 
 
+def make_loader(batch_size: int, seq_len: int, rank: int, world_size: int) -> Iterator[Tensor]:
+    """Stream pre-tokenized Pile shards, sharded across ranks. Each example's `input_ids` is
+    already at least `seq_len` long, so we just truncate and stack."""
+    ds = datasets.load_dataset(
+        "danbraunai/pile-uncopyrighted-tok-shuffled", split="train", streaming=True
+    )
+    if world_size > 1:
+        ds = ds.shard(num_shards=world_size, index=rank)
+    ds = ds.map(lambda ex: {"input_ids": ex["input_ids"][:seq_len]}).with_format("torch")
+    local_B = batch_size // world_size
+    while True:
+        batch: list[Tensor] = []
+        for ex in ds:
+            batch.append(ex["input_ids"])
+            if len(batch) == local_B:
+                yield torch.stack(batch, dim=0)
+                batch = []
+
+
 if __name__ == "__main__":
     cfg = Config(
         C_per_module=C_PER_MODULE_4L,
         use_wandb=True,
         wandb_run_name="nano_param_decomp_pile_4L",
     )
-    decompose(load_paper_target_model(), cfg)
+    rank = int(os.environ.get("RANK", "0"))
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    decompose(
+        load_paper_target_model(),
+        cfg,
+        make_loader(cfg.batch_size, cfg.seq_len, rank, world_size),
+        make_loader(cfg.eval_batch_size, cfg.seq_len, rank, world_size),
+    )
