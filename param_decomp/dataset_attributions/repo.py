@@ -39,16 +39,16 @@ class AttributionRepo:
         base_dir = get_attributions_dir(run_id)
         if not base_dir.exists():
             return None
-        candidates = sorted(
-            [d for d in base_dir.iterdir() if d.is_dir() and d.name.startswith("da-")],
-            key=lambda d: d.name,
-            reverse=True,
-        )
-        for subrun_dir in candidates:
-            path = subrun_dir / "dataset_attributions.pt"
-            if path.exists():
-                return cls(DatasetAttributionStorage.load(path), subrun_id=subrun_dir.name)
-        return None
+        candidates = [
+            subrun_dir / "dataset_attributions.pt"
+            for subrun_dir in base_dir.iterdir()
+            if subrun_dir.is_dir() and subrun_dir.name.startswith("da-")
+        ]
+        existing = [p for p in candidates if p.exists()]
+        if not existing:
+            return None
+        latest = max(existing, key=lambda p: p.stat().st_mtime)
+        return cls(DatasetAttributionStorage.load(latest), subrun_id=latest.parent.name)
 
     def get_attributions(self) -> DatasetAttributionStorage:
         return self._storage
