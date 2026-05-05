@@ -108,7 +108,7 @@ docstring-code-format = true
 known-third-party = ["wandb"]
 
 [tool.pyright]
-include = ["param_decomp", "tests"]
+include = ["param_decomp", "tests", "nano_param_decomp"]
 exclude = ["**/wandb/**", "param_decomp/utils/linear_sum_assignment.py", "param_decomp/app/frontend"]
 stubPath = "typings" # Having type stubs for transformers shaves 10 seconds off basedpyright calls
 

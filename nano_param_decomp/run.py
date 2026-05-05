@@ -33,11 +33,16 @@ input, so any sequential target would work in principle — but the dataloader
 and eval metrics are written for tokenized LM data.
 """
 
+# Suppress issues stemming from nn.Module buffer attribute access (typed as
+# `Tensor | Module` by basedpyright) — see param_decomp/pretrain/models/llama_simple_mlp.py
+# for the same workaround.
+# pyright: reportIndexIssue=false, reportArgumentType=false, reportOperatorIssue=false, reportUnnecessaryComparison=false
+
 import math
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
-from typing import Any, Literal, cast
+from typing import Any, Literal, cast, override
 
 import datasets
 import torch
@@ -54,6 +59,11 @@ from torch.nn.parallel import DistributedDataParallel
 
 @dataclass
 class Config:
+    """Configuration for the Parameter Decomposition method.
+
+    Defaults are set to match the pile-4L decomposition used in the VPD paper.
+    """
+
     # Which `nn.Linear` submodules to decompose, and how many components each. Required; tied to
     # the specific target model — see `C_PER_MODULE_4L` for the paper's choice.
     C_per_module: dict[str, int]
@@ -144,12 +154,14 @@ class _LowerLeakyHardSigmoid(torch.autograd.Function):
     """
 
     @staticmethod
+    @override
     def forward(ctx: Any, x: Tensor, alpha: float) -> Tensor:  # type: ignore[override]
         ctx.save_for_backward(x)
         ctx.alpha = alpha
         return x.clamp(0.0, 1.0)
 
     @staticmethod
+    @override
     def backward(ctx: Any, *grad_outputs: Tensor) -> tuple[Tensor, None]:  # type: ignore[override]
         grad_output = grad_outputs[0]
         (x,) = ctx.saved_tensors
@@ -206,11 +218,11 @@ class ComponentLinear(nn.Module):
         super().__init__()
         d_out, d_in = linear.weight.shape
         self.C = C
-        self.W_target = nn.Buffer(linear.weight.detach().clone())
+        self.register_buffer("W_target", linear.weight.detach().clone())
         # Stubs type `nn.Linear.bias` as `Parameter`, but at runtime it is None when `bias=False`.
         linear_bias = cast(Tensor | None, linear.bias)
-        self.bias: Tensor | None = (
-            nn.Buffer(linear_bias.detach().clone()) if linear_bias is not None else None
+        self.register_buffer(
+            "bias", linear_bias.detach().clone() if linear_bias is not None else None
         )
         # V Kaiming-initialized, U zero-initialized so V@U starts at zero — faithfulness
         # warmup then concentrates all target behavior in the delta component.
@@ -231,6 +243,7 @@ class ComponentLinear(nn.Module):
     def weight_delta(self) -> Tensor:
         return self.W_target - (self.V @ self.U).T
 
+    @override
     def forward(self, x: Tensor) -> Tensor:
         if self.mode == "target":
             self.last_input = x.detach()
@@ -280,6 +293,7 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(d))
         self.eps = eps
 
+    @override
     def forward(self, x: Tensor) -> Tensor:
         rms = x.float().pow(2).mean(dim=-1, keepdim=True).add(self.eps).rsqrt()
         return (x.float() * rms).to(x.dtype) * self.weight
@@ -318,6 +332,7 @@ class CIAttention(nn.Module):
         self.v_proj = nn.Linear(d_model, d_model, bias=False)
         self.o_proj = nn.Linear(d_model, d_model, bias=False)
 
+    @override
     def forward(self, x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
         B, S, _ = x.shape
         q = self.q_proj(x).view(B, S, self.n_heads, self.head_dim).transpose(1, 2)
@@ -342,6 +357,7 @@ class CIBlock(nn.Module):
             nn.Linear(cfg.ci_mlp_hidden, cfg.ci_d_model),
         )
 
+    @override
     def forward(self, x: Tensor, cos: Tensor, sin: Tensor) -> Tensor:
         x = x + self.attn(self.norm1(x), cos, sin)
         x = x + self.mlp(self.norm2(x))
@@ -375,9 +391,10 @@ class CITransformer(nn.Module):
         self.c_splits: list[int] = [c_per_module[n] for n in self.module_order]
         head_dim = cfg.ci_d_model // cfg.ci_n_heads
         cos, sin = precompute_rope(cfg.seq_len, head_dim, cfg.ci_rope_base, torch.device("cpu"))
-        self.rope_cos = nn.Buffer(cos, persistent=False)
-        self.rope_sin = nn.Buffer(sin, persistent=False)
+        self.register_buffer("rope_cos", cos, persistent=False)
+        self.register_buffer("rope_sin", sin, persistent=False)
 
+    @override
     def forward(
         self, acts: dict[str, Tensor]
     ) -> tuple[dict[str, Tensor], dict[str, Tensor], dict[str, Tensor]]:
@@ -681,6 +698,7 @@ class SPDModule(nn.Module):
         self.ci_fn = ci_fn
         self._wrappers = wrappers
 
+    @override
     def forward(
         self, input_ids: Tensor
     ) -> tuple[Tensor, dict[str, Tensor], dict[str, Tensor], dict[str, Tensor]]:
