@@ -6,6 +6,7 @@ This repo is for running parameter decomposition on neural networks.
 - Paper: https://www.goodfire.ai/research/interpreting-lm-parameters
 - Branch: main
 - Wandb for run in paper: https://wandb.ai/goodfire/spd/runs/s-55ea3f9b
+- Comparison CLTs/PLTs: https://github.com/bartbussmann/nn_decompositions/tree/vpd_paper
 
 **SPD paper (June 2025)**
 - Paper: https://arxiv.org/abs/2506.20790
