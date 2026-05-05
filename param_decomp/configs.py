@@ -936,6 +936,7 @@ class Config(BaseConfig):
 
         cls._migrate_to_module_info(config_dict)
         cls._migrate_to_ci_config(config_dict)
+        cls._strip_deprecated_global_ci_fields(config_dict)
         migrate_to_lr_schedule_config(config_dict)
 
         for key in list(config_dict.keys()):
@@ -1047,6 +1048,28 @@ class Config(BaseConfig):
                 "fn_type": ci_fn_type,
                 "hidden_dims": ci_fn_hidden_dims,
             }
+
+    @classmethod
+    def _strip_deprecated_global_ci_fields(cls, config_dict: dict[str, Any]) -> None:
+        """Drop fields from the deleted GlobalReverseResidualCiFn architecture (commit f869a6d5)."""
+        ci_config = config_dict.get("ci_config")
+        if not isinstance(ci_config, dict) or ci_config.get("mode") != "global":
+            return
+        deprecated = (
+            "reader_hidden_dims",
+            "d_resid_ci_fn",
+            "block_groups",
+            "transition_attn_config",
+            "transition_hidden_dim",
+        )
+        for key in deprecated:
+            if key in ci_config:
+                val = ci_config.pop(key)
+                if val is not None:
+                    logger.warning(
+                        f"Dropping deprecated ci_config.{key}={val} "
+                        "(GlobalReverseResidualCiFn was removed)"
+                    )
 
     @model_validator(mode="after")
     def validate_model(self) -> Self:
