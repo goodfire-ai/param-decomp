@@ -139,11 +139,11 @@
             }
         },
         {
-            "name": "ss_emb",
+            "name": "ss_llama_simple_mlp-2L",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/param_decomp/experiments/lm/lm_decomposition.py",
-            "args": "${workspaceFolder}/param_decomp/experiments/lm/ss_emb_config.yaml",
+            "args": "${workspaceFolder}/param_decomp/experiments/lm/ss_llama_simple_mlp-2L.yaml",
             "python": "${command:python.interpreterPath}",
             "console": "integratedTerminal",
             "justMyCode": true,
@@ -152,11 +152,11 @@
             }
         },
         {
-            "name": "ss_llama_simple",
+            "name": "pile_llama_simple_mlp-4L",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/param_decomp/experiments/lm/lm_decomposition.py",
-            "args": "${workspaceFolder}/param_decomp/experiments/lm/ss_llama_simple_config.yaml",
+            "args": "${workspaceFolder}/param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml",
             "python": "${command:python.interpreterPath}",
             "console": "integratedTerminal",
             "justMyCode": true,
@@ -165,63 +165,11 @@
             }
         },
         {
-            "name": "ss_llama_simple_mlp",
+            "name": "pile_llama_simple_mlp-12L",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/param_decomp/experiments/lm/lm_decomposition.py",
-            "args": "${workspaceFolder}/param_decomp/experiments/lm/ss_llama_simple_mlp.yaml",
-            "python": "${command:python.interpreterPath}",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "PYDEVD_DISABLE_FILE_VALIDATION": "1"
-            }
-        },
-        {
-            "name": "ss_llama_simple_mlp-1L",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/param_decomp/experiments/lm/lm_decomposition.py",
-            "args": "${workspaceFolder}/param_decomp/experiments/lm/ss_llama_simple_mlp-1L.yaml",
-            "python": "${command:python.interpreterPath}",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "PYDEVD_DISABLE_FILE_VALIDATION": "1"
-            }
-        },
-        {
-            "name": "ss_gpt2",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/param_decomp/experiments/lm/lm_decomposition.py",
-            "args": "${workspaceFolder}/param_decomp/experiments/lm/ss_gpt2_config.yaml",
-            "python": "${command:python.interpreterPath}",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "PYDEVD_DISABLE_FILE_VALIDATION": "1"
-            }
-        },
-        {
-            "name": "ss_gpt2_simple",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/param_decomp/experiments/lm/lm_decomposition.py",
-            "args": "${workspaceFolder}/param_decomp/experiments/lm/ss_gpt2_simple_config.yaml",
-            "python": "${command:python.interpreterPath}",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "PYDEVD_DISABLE_FILE_VALIDATION": "1"
-            }
-        },
-        {
-            "name": "ss_gpt2_simple_noln",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/param_decomp/experiments/lm/lm_decomposition.py",
-            "args": "${workspaceFolder}/param_decomp/experiments/lm/ss_gpt2_simple_noln_config.yaml",
+            "args": "${workspaceFolder}/param_decomp/experiments/lm/pile_llama_simple_mlp-12L.yaml",
             "python": "${command:python.interpreterPath}",
             "console": "integratedTerminal",
             "justMyCode": true,
@@ -235,19 +183,6 @@
             "request": "launch",
             "program": "${workspaceFolder}/param_decomp/experiments/lm/lm_decomposition.py",
             "args": "${workspaceFolder}/param_decomp/experiments/lm/gpt2_config.yaml",
-            "python": "${command:python.interpreterPath}",
-            "console": "integratedTerminal",
-            "justMyCode": true,
-            "env": {
-                "PYDEVD_DISABLE_FILE_VALIDATION": "1"
-            }
-        },
-        {
-            "name": "vpd pile llama",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/param_decomp/experiments/lm/lm_decomposition.py",
-            "args": "${workspaceFolder}/param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml",
             "python": "${command:python.interpreterPath}",
             "console": "integratedTerminal",
             "justMyCode": true,
