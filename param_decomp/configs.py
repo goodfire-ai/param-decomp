@@ -96,6 +96,26 @@ class GlobalCiConfig(BaseConfig):
     )
     simple_transformer_ci_cfg: GlobalSharedTransformerCiConfig | None = None
 
+    _DELETED_GLOBAL_REVERSE_RESIDUAL_KEYS: ClassVar[list[str]] = [
+        "reader_hidden_dims",
+        "d_resid_ci_fn",
+        "block_groups",
+        "transition_attn_config",
+        "transition_hidden_dim",
+    ]
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_deleted_global_reverse_residual_keys(cls, data: dict[str, Any]) -> dict[str, Any]:
+        for key in cls._DELETED_GLOBAL_REVERSE_RESIDUAL_KEYS:
+            if key in data:
+                assert data[key] is None, (
+                    f"{key} was removed with the global_reverse_residual CI fn; "
+                    f"got non-None value {data[key]!r}"
+                )
+                del data[key]
+        return data
+
     @model_validator(mode="after")
     def validate_ci_config(self) -> Self:
         if self.fn_type == "global_shared_mlp":
