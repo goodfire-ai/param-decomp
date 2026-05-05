@@ -25,6 +25,7 @@ class TestPDRun:
         with pytest.raises(ValueError, match=f"Invalid experiments.*{fake_exp_name}"):
             _get_experiments(f"{fake_exp_name},tms_5-2")
 
+    @patch("param_decomp.scripts.run.get_wandb_run_url")
     @patch("param_decomp.scripts.run.submit_slurm_job")
     @patch("param_decomp.scripts.run.create_slurm_script")
     @patch("param_decomp.scripts.run.create_git_snapshot")
@@ -35,6 +36,7 @@ class TestPDRun:
         mock_create_git_snapshot,
         mock_create_slurm_script,
         mock_submit_slurm_job,
+        mock_get_wandb_run_url,
     ):
         """Test that sweep runs create SLURM array jobs with sweep params."""
         from pathlib import Path
@@ -49,6 +51,7 @@ class TestPDRun:
             script_path=Path("/tmp/test.sh"),
             log_pattern="~/slurm_logs/slurm-12345_*.out",
         )
+        mock_get_wandb_run_url.return_value = "https://wandb.ai/test/test/runs/test"
 
         main(
             experiments="tms_5-2",

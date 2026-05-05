@@ -11,6 +11,7 @@ from param_decomp.clustering.scripts.run_clustering import main
 
 
 @pytest.mark.slow
+@pytest.mark.requires_wandb
 def test_run_clustering_happy_path(monkeypatch: Any):
     """Test that run_clustering.py runs without errors."""
     with tempfile.TemporaryDirectory() as temp_dir:
