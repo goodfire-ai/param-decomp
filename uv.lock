@@ -1334,6 +1334,97 @@ wheels = [
 ]
 
 [[package]]
+name = "param-decomp"
+version = "0.0.1"
+source = { editable = "." }
+dependencies = [
+    { name = "aiolimiter" },
+    { name = "datasets" },
+    { name = "einops" },
+    { name = "fastapi" },
+    { name = "fire" },
+    { name = "httpx" },
+    { name = "ipykernel" },
+    { name = "jaxtyping" },
+    { name = "kaleido" },
+    { name = "matplotlib" },
+    { name = "numba" },
+    { name = "numpy" },
+    { name = "openrouter" },
+    { name = "orjson" },
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+    { name = "scipy" },
+    { name = "streamlit" },
+    { name = "streamlit-antd-components" },
+    { name = "sympy" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "tqdm" },
+    { name = "transformers" },
+    { name = "uvicorn" },
+    { name = "wandb" },
+    { name = "wandb-workspaces" },
+    { name = "zstandard" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "basedpyright" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-testmon" },
+    { name = "pytest-xdist" },
+    { name = "ruff" },
+    { name = "scikit-learn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiolimiter", specifier = ">=1.2" },
+    { name = "datasets", specifier = ">=2.21.0" },
+    { name = "einops" },
+    { name = "fastapi" },
+    { name = "fire" },
+    { name = "httpx", specifier = ">=0.28.0" },
+    { name = "ipykernel" },
+    { name = "jaxtyping" },
+    { name = "kaleido", specifier = "==0.2.1" },
+    { name = "matplotlib" },
+    { name = "numba", specifier = ">=0.64.0" },
+    { name = "numpy" },
+    { name = "openrouter", specifier = ">=0.1.1" },
+    { name = "orjson" },
+    { name = "pydantic", specifier = "<2.12" },
+    { name = "python-dotenv" },
+    { name = "scipy", specifier = ">=1.14.1" },
+    { name = "streamlit" },
+    { name = "streamlit-antd-components" },
+    { name = "sympy" },
+    { name = "torch", specifier = ">=2.6" },
+    { name = "torchvision", specifier = ">=0.23,<0.24" },
+    { name = "tqdm" },
+    { name = "transformers" },
+    { name = "uvicorn" },
+    { name = "wandb", specifier = ">=0.20.1" },
+    { name = "wandb-workspaces", specifier = "==0.1.12" },
+    { name = "zstandard" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "basedpyright", specifier = "<1.32.0" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-testmon" },
+    { name = "pytest-xdist" },
+    { name = "ruff" },
+    { name = "scikit-learn" },
+]
+
+[[package]]
 name = "parso"
 version = "0.8.5"
 source = { registry = "https://pypi.org/simple" }
@@ -2011,97 +2102,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/44/cd/a040c4b3119bbe532e5b0732286f805445375489fceaec1f48306068ee3b/smmap-5.0.2.tar.gz", hash = "sha256:26ea65a03958fa0c8a1c7e8c7a58fdc77221b8910f6be2131affade476898ad5", size = 22329, upload-time = "2025-01-02T07:14:40.909Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/04/be/d09147ad1ec7934636ad912901c5fd7667e1c858e19d355237db0d0cd5e4/smmap-5.0.2-py3-none-any.whl", hash = "sha256:b30115f0def7d7531d22a0fb6502488d879e75b260a9db4d0819cfb25403af5e", size = 24303, upload-time = "2025-01-02T07:14:38.724Z" },
-]
-
-[[package]]
-name = "spd"
-version = "0.0.1"
-source = { editable = "." }
-dependencies = [
-    { name = "aiolimiter" },
-    { name = "datasets" },
-    { name = "einops" },
-    { name = "fastapi" },
-    { name = "fire" },
-    { name = "httpx" },
-    { name = "ipykernel" },
-    { name = "jaxtyping" },
-    { name = "kaleido" },
-    { name = "matplotlib" },
-    { name = "numba" },
-    { name = "numpy" },
-    { name = "openrouter" },
-    { name = "orjson" },
-    { name = "pydantic" },
-    { name = "python-dotenv" },
-    { name = "scipy" },
-    { name = "streamlit" },
-    { name = "streamlit-antd-components" },
-    { name = "sympy" },
-    { name = "torch" },
-    { name = "torchvision" },
-    { name = "tqdm" },
-    { name = "transformers" },
-    { name = "uvicorn" },
-    { name = "wandb" },
-    { name = "wandb-workspaces" },
-    { name = "zstandard" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "basedpyright" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-testmon" },
-    { name = "pytest-xdist" },
-    { name = "ruff" },
-    { name = "scikit-learn" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiolimiter", specifier = ">=1.2" },
-    { name = "datasets", specifier = ">=2.21.0" },
-    { name = "einops" },
-    { name = "fastapi" },
-    { name = "fire" },
-    { name = "httpx", specifier = ">=0.28.0" },
-    { name = "ipykernel" },
-    { name = "jaxtyping" },
-    { name = "kaleido", specifier = "==0.2.1" },
-    { name = "matplotlib" },
-    { name = "numba", specifier = ">=0.64.0" },
-    { name = "numpy" },
-    { name = "openrouter", specifier = ">=0.1.1" },
-    { name = "orjson" },
-    { name = "pydantic", specifier = "<2.12" },
-    { name = "python-dotenv" },
-    { name = "scipy", specifier = ">=1.14.1" },
-    { name = "streamlit" },
-    { name = "streamlit-antd-components" },
-    { name = "sympy" },
-    { name = "torch", specifier = ">=2.6" },
-    { name = "torchvision", specifier = ">=0.23,<0.24" },
-    { name = "tqdm" },
-    { name = "transformers" },
-    { name = "uvicorn" },
-    { name = "wandb", specifier = ">=0.20.1" },
-    { name = "wandb-workspaces", specifier = "==0.1.12" },
-    { name = "zstandard" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "basedpyright", specifier = "<1.32.0" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-testmon" },
-    { name = "pytest-xdist" },
-    { name = "ruff" },
-    { name = "scikit-learn" },
 ]
 
 [[package]]

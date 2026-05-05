@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from spd.configs import (
+from param_decomp.configs import (
     Config,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
@@ -10,18 +10,18 @@ from spd.configs import (
     ScheduleConfig,
     StochasticReconLossConfig,
 )
-from spd.experiments.resid_mlp.configs import ResidMLPModelConfig
-from spd.experiments.resid_mlp.models import ResidMLP
-from spd.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
-from spd.identity_insertion import insert_identity_operations_
-from spd.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
-from spd.run_spd import optimize
-from spd.utils.data_utils import DatasetGeneratedDataLoader
-from spd.utils.general_utils import set_seed
+from param_decomp.experiments.resid_mlp.configs import ResidMLPModelConfig
+from param_decomp.experiments.resid_mlp.models import ResidMLP
+from param_decomp.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
+from param_decomp.identity_insertion import insert_identity_operations_
+from param_decomp.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
+from param_decomp.run_param_decomp import optimize
+from param_decomp.utils.data_utils import DatasetGeneratedDataLoader
+from param_decomp.utils.general_utils import set_seed
 
 
 def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
-    """Test that SPD decomposition works on a 2-layer ResidMLP model."""
+    """Test that PD works on a 2-layer ResidMLP model."""
     set_seed(0)
     device = "cpu"
 
@@ -79,7 +79,7 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         save_freq=None,
         ci_alive_threshold=0.1,
         # Pretrained model info
-        pretrained_model_class="spd.experiments.resid_mlp.models.ResidMLP",
+        pretrained_model_class="param_decomp.experiments.resid_mlp.models.ResidMLP",
         pretrained_model_path=None,
         pretrained_model_name=None,
         tokenizer_name=None,

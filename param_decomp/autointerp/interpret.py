@@ -1,0 +1,233 @@
+import asyncio
+import json
+from collections.abc import Iterable
+from pathlib import Path
+
+from param_decomp.app.backend.app_tokenizer import AppTokenizer
+from param_decomp.autointerp.config import CanonConfig, RichExamplesConfig, StrategyConfig
+from param_decomp.autointerp.db import InterpDB
+from param_decomp.autointerp.llm_api import (
+    LLMError,
+    LLMJob,
+    LLMResult,
+    map_llm_calls,
+)
+from param_decomp.autointerp.providers import LLMProvider
+from param_decomp.autointerp.schemas import InterpretationResult, ModelMetadata
+from param_decomp.autointerp.strategies.dispatch import INTERPRETATION_SCHEMA, format_prompt
+from param_decomp.harvest.analysis import TokenPRLift, get_input_token_stats, get_output_token_stats
+from param_decomp.harvest.repo import HarvestRepo
+from param_decomp.harvest.schemas import ComponentData, ComponentSummary
+from param_decomp.log import logger
+
+
+def resolve_target_component_keys(
+    summary: dict[str, ComponentSummary],
+    limit: int | None,
+    component_keys: list[str] | None,
+) -> list[str]:
+    if component_keys is not None:
+        missing = [key for key in component_keys if key not in summary]
+        assert not missing, f"Component keys not found in harvest: {missing[:10]}"
+        ordered = component_keys
+    else:
+        ordered = sorted(summary, key=lambda k: summary[k].firing_density, reverse=True)
+
+    if limit is not None:
+        ordered = ordered[:limit]
+    return ordered
+
+
+async def interpret_component(
+    provider: LLMProvider,
+    strategy: StrategyConfig,
+    component: ComponentData,
+    model_metadata: ModelMetadata,
+    app_tok: AppTokenizer,
+    input_token_stats: TokenPRLift | None,
+    output_token_stats: TokenPRLift | None,
+    context_tokens_per_side: int,
+    activation_threshold: float,
+) -> InterpretationResult:
+    """Interpret a single component. Used by the app for on-demand interpretation."""
+    prompt = format_prompt(
+        strategy=strategy,
+        component=component,
+        model_metadata=model_metadata,
+        app_tok=app_tok,
+        input_token_stats=input_token_stats,
+        output_token_stats=output_token_stats,
+        context_tokens_per_side=context_tokens_per_side,
+        activation_threshold=activation_threshold,
+    )
+
+    response = await provider.chat(
+        prompt=prompt,
+        max_tokens=8000,
+        response_schema=INTERPRETATION_SCHEMA,
+        timeout_ms=120_000,
+    )
+
+    raw = response.content
+    parsed = json.loads(raw)
+
+    assert len(parsed) == 2, f"Expected 2 fields, got {parsed}"
+    label = parsed["label"]
+    reasoning_text = parsed["reasoning"]
+    assert isinstance(label, str) and isinstance(reasoning_text, str)
+
+    return InterpretationResult(
+        component_key=component.component_key,
+        label=label,
+        reasoning=reasoning_text,
+        raw_response=raw,
+        prompt=prompt,
+    )
+
+
+def run_interpret(
+    provider: LLMProvider,
+    limit: int | None,
+    component_keys: list[str] | None,
+    cost_limit_usd: float | None,
+    max_requests_per_minute: int,
+    max_concurrent: int,
+    model_metadata: ModelMetadata,
+    template_strategy: StrategyConfig,
+    harvest: HarvestRepo,
+    db_path: Path,
+    tokenizer_name: str,
+) -> list[InterpretationResult]:
+    summary = harvest.get_summary()
+    logger.info(f"Loaded summary for {len(summary)} components")
+
+    token_stats = harvest.get_token_stats()
+    assert token_stats is not None, "token_stats.pt not found. Run harvest first."
+
+    harvest_config = harvest.get_config()
+    raw = harvest_config["activation_context_tokens_per_side"]
+    assert isinstance(raw, int), f"expected int, got {type(raw)}"
+    context_tokens_per_side = raw
+
+    app_tok = AppTokenizer.from_pretrained(tokenizer_name)
+    eligible_keys = resolve_target_component_keys(summary, limit, component_keys)
+
+    async def _run() -> list[InterpretationResult]:
+        db = InterpDB(db_path)
+
+        try:
+            completed = db.get_completed_keys()
+            if completed:
+                logger.info(f"Resuming: {len(completed)} already completed")
+
+            remaining_keys = [k for k in eligible_keys if k not in completed]
+            logger.info(f"Interpreting {len(remaining_keys)} components")
+
+            method_config = harvest_config["method_config"]
+            assert isinstance(method_config, dict)
+            raw_threshold = method_config["activation_threshold"]
+            assert isinstance(raw_threshold, int | float)
+            activation_threshold = float(raw_threshold)
+
+            def build_jobs() -> Iterable[LLMJob]:
+                for key in remaining_keys:
+                    component = harvest.get_component(key)
+                    assert component is not None, f"Component {key} not found in harvest"
+                    match template_strategy:
+                        case RichExamplesConfig(output_pmi_min_count=pmi_min_count):
+                            input_stats = None
+                            output_stats = get_output_token_stats(
+                                token_stats,
+                                key,
+                                app_tok,
+                                top_k=20,
+                                pmi_min_count=pmi_min_count,
+                            )
+                            assert output_stats is not None
+                        case CanonConfig():
+                            input_stats = get_input_token_stats(token_stats, key, app_tok, top_k=20)
+                            output_stats = get_output_token_stats(
+                                token_stats,
+                                key,
+                                app_tok,
+                                top_k=20,
+                                pmi_min_count=2.0,
+                            )
+                            assert input_stats is not None
+                            assert output_stats is not None
+                        case _:
+                            input_stats = get_input_token_stats(token_stats, key, app_tok, top_k=20)
+                            output_stats = get_output_token_stats(
+                                token_stats, key, app_tok, top_k=50
+                            )
+                            assert input_stats is not None
+                            assert output_stats is not None
+
+                    prompt = format_prompt(
+                        strategy=template_strategy,
+                        component=component,
+                        model_metadata=model_metadata,
+                        app_tok=app_tok,
+                        input_token_stats=input_stats,
+                        output_token_stats=output_stats,
+                        context_tokens_per_side=context_tokens_per_side,
+                        activation_threshold=activation_threshold,
+                    )
+                    yield LLMJob(prompt=prompt, key=key)
+
+            results: list[InterpretationResult] = []
+            n_errors = 0
+
+            async for outcome in map_llm_calls(
+                provider=provider,
+                jobs=build_jobs(),
+                max_tokens=8000,
+                max_concurrent=max_concurrent,
+                max_requests_per_minute=max_requests_per_minute,
+                cost_limit_usd=cost_limit_usd,
+                response_schema=INTERPRETATION_SCHEMA,
+                n_total=len(remaining_keys),
+            ):
+                match outcome:
+                    case LLMResult(job=job, parsed=parsed, raw=raw):
+                        assert len(parsed) == 2, f"Expected 2 fields, got {len(parsed)}"
+                        label = parsed["label"]
+                        reasoning_text = parsed["reasoning"]
+                        assert isinstance(label, str) and isinstance(reasoning_text, str)
+                        result = InterpretationResult(
+                            component_key=job.key,
+                            label=label,
+                            reasoning=reasoning_text,
+                            raw_response=raw,
+                            prompt=job.prompt,
+                        )
+                        results.append(result)
+                        db.save_interpretation(result)
+                    case LLMError(job=job, error=e):
+                        n_errors += 1
+                        logger.error(f"Skipping {job.key}: {type(e).__name__}: {e}")
+
+                error_rate = n_errors / (n_errors + len(results))
+                # 10 is a magic number - just trying to avoid low sample size causing this to false alarm
+                if error_rate > 0.2 and n_errors > 10:
+                    raise RuntimeError(
+                        f"Error rate {error_rate:.0%} ({n_errors}/{len(remaining_keys)}) exceeds 20% threshold"
+                    )
+
+            completed_now = completed | {result.component_key for result in results}
+            missing = [key for key in eligible_keys if key not in completed_now]
+            if component_keys is not None and missing:
+                logger.warning(
+                    "Interpreted a partial target subset: "
+                    f"{len(completed_now)}/{len(eligible_keys)} complete; "
+                    f"missing {missing[:10]}"
+                )
+
+        finally:
+            db.close()
+
+        db.mark_done()
+        logger.info(f"Completed {len(results)} interpretations -> {db_path}")
+        return results
+
+    return asyncio.run(_run())

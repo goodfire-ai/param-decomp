@@ -1,7 +1,7 @@
 import torch
 
-from spd.metrics import faithfulness_loss
-from spd.models.component_model import ComponentModel
+from param_decomp.metrics import faithfulness_loss
+from param_decomp.models.component_model import ComponentModel
 from tests.metrics.fixtures import make_one_layer_component_model
 
 

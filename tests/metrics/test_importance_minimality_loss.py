@@ -1,6 +1,6 @@
 import torch
 
-from spd.metrics import importance_minimality_loss
+from param_decomp.metrics import importance_minimality_loss
 
 
 class TestImportanceMinimalityLoss:

@@ -1,7 +1,7 @@
 [project]
-name = "spd"
+name = "param-decomp"
 version = "0.0.1"
-description = "Stochastic/adVersarial Parameter Decomposition"
+description = "Parameter Decomposition"
 requires-python = "==3.13.*"
 urls = { "Homepage" = "https://github.com/goodfire-ai/param-decomp" }
 license = { text = "MIT" }
@@ -52,19 +52,19 @@ dev = [
 ]
 
 [project.scripts]
-param-decomp-run = "spd.scripts.run_cli:cli"
-param-decomp-local = "spd.scripts.run_local:cli"
-param-decomp-pretrain = "spd.pretrain.scripts.run_slurm:cli"
-param-decomp-clustering = "spd.clustering.scripts.run_pipeline:cli"
-param-decomp-cluster-harvest = "spd.clustering.scripts.run_harvest:cli"
-param-decomp-cluster-merge = "spd.clustering.scripts.run_merge:cli"
-param-decomp-harvest = "spd.harvest.scripts.run_slurm_cli:cli"
-param-decomp-intruder = "spd.harvest.scripts.run_intruder_slurm_cli:cli"
-param-decomp-autointerp = "spd.autointerp.scripts.run_slurm_cli:cli"
-param-decomp-attributions = "spd.dataset_attributions.scripts.run_slurm_cli:cli"
-param-decomp-investigate = "spd.investigate.scripts.run_slurm_cli:cli"
-param-decomp-postprocess = "spd.postprocess.cli:cli"
-param-decomp-graph-interp = "spd.graph_interp.scripts.run_slurm_cli:cli"
+pd-run = "param_decomp.scripts.run_cli:cli"
+pd-local = "param_decomp.scripts.run_local:cli"
+pd-pretrain = "param_decomp.pretrain.scripts.run_slurm:cli"
+pd-clustering = "param_decomp.clustering.scripts.run_pipeline:cli"
+pd-cluster-harvest = "param_decomp.clustering.scripts.run_harvest:cli"
+pd-cluster-merge = "param_decomp.clustering.scripts.run_merge:cli"
+pd-harvest = "param_decomp.harvest.scripts.run_slurm_cli:cli"
+pd-intruder = "param_decomp.harvest.scripts.run_intruder_slurm_cli:cli"
+pd-autointerp = "param_decomp.autointerp.scripts.run_slurm_cli:cli"
+pd-attributions = "param_decomp.dataset_attributions.scripts.run_slurm_cli:cli"
+pd-investigate = "param_decomp.investigate.scripts.run_slurm_cli:cli"
+pd-postprocess = "param_decomp.postprocess.cli:cli"
+pd-graph-interp = "param_decomp.graph_interp.scripts.run_slurm_cli:cli"
 
 [build-system]
 requires = ["setuptools", "wheel"]
@@ -72,12 +72,12 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["spd*"]
+include = ["param_decomp*"]
 
 [tool.ruff]
 line-length = 100
 fix = true
-extend-exclude = ["spd/app/frontend"]
+extend-exclude = ["param_decomp/app/frontend"]
 
 [tool.ruff.lint]
 ignore = [
@@ -108,8 +108,8 @@ docstring-code-format = true
 known-third-party = ["wandb"]
 
 [tool.pyright]
-include = ["spd", "tests"]
-exclude = ["**/wandb/**", "spd/utils/linear_sum_assignment.py", "spd/app/frontend"]
+include = ["param_decomp", "tests"]
+exclude = ["**/wandb/**", "param_decomp/utils/linear_sum_assignment.py", "param_decomp/app/frontend"]
 stubPath = "typings" # Having type stubs for transformers shaves 10 seconds off basedpyright calls
 
 strictListInference = true

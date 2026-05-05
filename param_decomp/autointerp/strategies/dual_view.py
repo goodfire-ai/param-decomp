@@ -1,0 +1,153 @@
+"""Dual-view interpretation strategy.
+
+Key differences from compact_skeptical:
+- Output token data presented first
+- Two example sections: "fires on" (current token) and "produces" (next token)
+- Human-readable layer descriptions with position context
+- Task framing asks for functional description, not detection label
+"""
+
+from param_decomp.app.backend.app_tokenizer import AppTokenizer
+from param_decomp.autointerp.config import DualViewConfig
+from param_decomp.autointerp.prompt_helpers import (
+    DATASET_DESCRIPTIONS,
+    build_annotated_examples,
+    build_data_presentation,
+    build_input_section,
+    build_output_section,
+    density_note,
+    describe_example_rendering,
+    human_layer_desc,
+    layer_position_note,
+)
+from param_decomp.autointerp.schemas import ModelMetadata
+from param_decomp.harvest.analysis import TokenPRLift
+from param_decomp.harvest.schemas import ComponentData
+from param_decomp.utils.markdown import Md
+
+
+def format_prompt(
+    config: DualViewConfig,
+    component: ComponentData,
+    model_metadata: ModelMetadata,
+    app_tok: AppTokenizer,
+    input_token_stats: TokenPRLift,
+    output_token_stats: TokenPRLift,
+    context_tokens_per_side: int,
+) -> str:
+    input_pmi: list[tuple[str, float]] | None = None
+    output_pmi: list[tuple[str, float]] | None = None
+
+    if config.include_pmi:
+        input_pmi = [
+            (app_tok.get_tok_display(tid), pmi) for tid, pmi in component.input_token_pmi.top
+        ]
+        output_pmi = [
+            (app_tok.get_tok_display(tid), pmi) for tid, pmi in component.output_token_pmi.top
+        ]
+
+    output_section = build_output_section(output_token_stats, output_pmi)
+    input_section = build_input_section(input_token_stats, input_pmi)
+    fires_on_examples = build_annotated_examples(
+        component,
+        app_tok,
+        config.max_examples,
+        rendering=config.example_rendering,
+        shift_firings=False,
+    )
+    says_examples = build_annotated_examples(
+        component,
+        app_tok,
+        config.max_examples,
+        rendering=config.example_rendering,
+        shift_firings=True,
+    )
+
+    rate_str = (
+        f"~1 in {int(1 / component.firing_density)} tokens"
+        if component.firing_density > 0.0
+        else "extremely rare"
+    )
+
+    canonical = model_metadata.layer_descriptions.get(component.layer, component.layer)
+    layer_desc = human_layer_desc(canonical, model_metadata.n_blocks)
+    position_note = layer_position_note(canonical, model_metadata.n_blocks)
+    dens_note = density_note(component.firing_density)
+
+    context_notes = " ".join(filter(None, [position_note, dens_note]))
+
+    dataset_line = ""
+    if config.include_dataset_description:
+        dataset_desc = DATASET_DESCRIPTIONS.get(
+            model_metadata.dataset_name, model_metadata.dataset_name
+        )
+        dataset_line = f", dataset: {dataset_desc}"
+
+    forbidden_sentence = (
+        "FORBIDDEN vague words: " + ", ".join(config.forbidden_words) + ". "
+        if config.forbidden_words
+        else ""
+    )
+
+    md = Md()
+    md.p("Describe what this neural network component does.")
+    md.p(
+        "Each component has an input function (what causes it to fire) and an output "
+        "function (what tokens it causes the model to produce). These are often different "
+        "— a component might fire on periods but produce sentence-opening words, or "
+        "fire on prepositions but produce abstract nouns."
+    )
+    md.p(
+        "Consider all of the evidence below critically. Token statistics can be noisy, "
+        "especially for high-density components. The activation examples are sampled "
+        "and may not be representative. Look for patterns that are consistent across "
+        "multiple sources of evidence."
+    )
+
+    md.h(2, "Context")
+    md.bullets(
+        [
+            f"Model: {model_metadata.model_class} ({model_metadata.n_blocks} blocks){dataset_line}",
+            f"Component location: {layer_desc}",
+            f"Component firing rate: {component.firing_density * 100:.2f}% ({rate_str})",
+        ]
+    )
+    if context_notes:
+        md.p(context_notes)
+
+    md.h(2, "Data presentation")
+    md.extend(
+        build_data_presentation(
+            model_metadata.seq_len, context_tokens_per_side, model_metadata.decomposition_method
+        )
+    )
+
+    md.h(2, "Output tokens (what the model produces when this component fires)")
+    md.extend(output_section)
+
+    md.h(2, "Input tokens (what causes this component to fire)")
+    md.extend(input_section)
+
+    md.h(2, "Activation examples — where the component fires")
+    md.p(describe_example_rendering(config.example_rendering))
+    md.extend(fires_on_examples)
+
+    md.h(2, "Activation examples — what the model produces")
+    md.p(
+        "Same examples with the marked positions shifted right by one token, "
+        "showing the token that follows each firing position."
+    )
+    md.extend(says_examples)
+
+    md.h(2, "Task")
+    md.p(
+        f"Give a {config.label_max_words}-word-or-fewer label describing this component's "
+        "function. The label should read like a short description of the job this component "
+        "does in the network. Use both the input and output evidence."
+    )
+    md.p(
+        f"Be epistemically honest — express uncertainty in the label "
+        f"when the evidence is weak or ambiguous. {forbidden_sentence}Lowercase only."
+    )
+
+    return md.build()

@@ -1,6 +1,6 @@
-"""Tests for the main() function in spd/scripts/run.py.
+"""Tests for the main() function in param_decomp/scripts/run.py.
 
-This file contains tests for param-decomp-run, which always submits jobs to SLURM.
+This file contains tests for pd-run, which always submits jobs to SLURM.
 For local execution tests, see tests/scripts_simple/.
 """
 
@@ -10,11 +10,11 @@ from unittest.mock import patch
 
 import pytest
 
-from spd.scripts.run import _create_training_jobs, _get_experiments
+from param_decomp.scripts.run import _create_training_jobs, _get_experiments
 
 
-class TestSPDRun:
-    """Test param-decomp-run command execution."""
+class TestPDRun:
+    """Test pd-run command execution."""
 
     def test_invalid_experiment_name(self):
         """Test that invalid experiment names raise an error."""
@@ -25,10 +25,10 @@ class TestSPDRun:
         with pytest.raises(ValueError, match=f"Invalid experiments.*{fake_exp_name}"):
             _get_experiments(f"{fake_exp_name},tms_5-2")
 
-    @patch("spd.scripts.run.submit_slurm_job")
-    @patch("spd.scripts.run.create_slurm_script")
-    @patch("spd.scripts.run.create_git_snapshot")
-    @patch("spd.scripts.run._create_wandb_views_and_report")
+    @patch("param_decomp.scripts.run.submit_slurm_job")
+    @patch("param_decomp.scripts.run.create_slurm_script")
+    @patch("param_decomp.scripts.run.create_git_snapshot")
+    @patch("param_decomp.scripts.run._create_wandb_views_and_report")
     def test_sweep_creates_slurm_array(
         self,
         mock_create_wandb_views_and_report,
@@ -39,8 +39,8 @@ class TestSPDRun:
         """Test that sweep runs create SLURM array jobs with sweep params."""
         from pathlib import Path
 
-        from spd.scripts.run_cli import main
-        from spd.utils.slurm import SubmitResult
+        from param_decomp.scripts.run_cli import main
+        from param_decomp.utils.slurm import SubmitResult
 
         mock_create_git_snapshot.return_value = ("test-branch", "12345678")
         mock_create_slurm_script.return_value = "#!/bin/bash\necho test"

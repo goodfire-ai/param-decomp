@@ -3,7 +3,7 @@ from itertools import permutations
 import numpy as np
 import pytest
 
-from spd.clustering.math.perm_invariant_hamming import perm_invariant_hamming_matrix
+from param_decomp.clustering.math.perm_invariant_hamming import perm_invariant_hamming_matrix
 
 # pyright complains about the types when calling perm_invariant_hamming
 # pyright: reportCallIssue=false

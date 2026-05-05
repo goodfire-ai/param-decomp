@@ -1,0 +1,53 @@
+wandb_project: spd-induction-heads
+wandb_run_name: null
+
+pretrained_model_path: wandb:induction-heads/runs/xaji0y6d # Example
+
+seed: 0
+
+batch_size: 16
+steps: 1000000
+lr_schedule:
+  start_val: 1e-3
+  fn_type: constant
+n_eval_steps: 200
+
+task_config:
+  task_name: ih
+
+n_mask_samples: 1
+module_info:
+  - module_pattern: "blocks.*.attn.q_proj"
+    C: 100
+  - module_pattern: "blocks.*.attn.k_proj"
+    C: 100
+  - module_pattern: "blocks.*.attn.v_proj"
+    C: 100
+  - module_pattern: "blocks.*.attn.out_proj"
+    C: 100
+
+faithfulness_coeff: 100
+ci_recon_coeff: 1
+stochastic_recon_coeff: 1
+ci_recon_layerwise_coeff: null
+stochastic_recon_layerwise_coeff: 1
+importance_minimality_coeff: 1e-2
+pnorm: 0.1
+ci_config:
+  mode: layerwise
+  fn_type: vector_mlp
+  hidden_dims: [128]
+
+
+# --- Faithfulness Warmup ---
+faithfulness_warmup_steps: 200
+faithfulness_warmup_lr: 0.01
+faithfulness_warmup_weight_decay: 0.1
+
+# --- Logging & Saving ---
+image_freq: 500
+image_on_first_step: true
+print_freq: 100
+save_freq: null
+
+pretrained_model_class: param_decomp.experiments.ih.model.InductionTransformer

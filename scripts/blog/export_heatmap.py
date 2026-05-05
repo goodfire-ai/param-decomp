@@ -1,9 +1,9 @@
 """Export editing KL heatmap data for the VPD blog post.
 
-Compares SPD analytical editing (0 training examples) vs LoRA baseline
+Compares PD analytical editing (0 training examples) vs LoRA baseline
 (rank-1, all training examples, lambda=10 KL regularization, 300 steps).
 
-Run from ~/spd:
+Run from ~/param-decomp:
   uv run python scripts/blog/export_heatmap.py --out-dir ../vpd-blog-replit/data
 """
 
@@ -14,18 +14,21 @@ from collections.abc import Callable
 from pathlib import Path
 
 import torch
-from spd.editing.component_trainer import u_replaced
-from spd.editing.generate_pareto_plots import (
+from param_decomp.editing.component_trainer import u_replaced
+from param_decomp.editing.generate_pareto_plots import (
     get_examples,
     get_probs,
     kl_per_token,
     make_train_seqs,
     pad_train_seqs,
 )
-from spd.editing.lora_baseline import LoRATrainer
-from spd.editing.utils import load_model
+from param_decomp.editing.lora_baseline import LoRATrainer
+from param_decomp.editing.utils import load_model
 from torch import Tensor
 
+from param_decomp.app.backend.app_tokenizer import AppTokenizer
+from param_decomp.harvest.repo import HarvestRepo
+from param_decomp.harvest.schemas import ActivationExample
 from scripts.blog.constants import (
     HEATMAP_MODULE,
     HEATMAP_TARGET_TOKEN,
@@ -33,9 +36,6 @@ from scripts.blog.constants import (
     RUN_ID,
     WANDB_PATH,
 )
-from spd.app.backend.app_tokenizer import AppTokenizer
-from spd.harvest.repo import HarvestRepo
-from spd.harvest.schemas import ActivationExample
 
 ForwardFn = Callable[[Tensor], Tensor]
 
@@ -98,15 +98,15 @@ def main() -> None:
     eval_tokens = [torch.tensor(ex.token_ids, device="cuda") for ex in eval_examples]
     baselines = get_probs(model, eval_tokens)
 
-    # SPD analytical edit
+    # PD analytical edit
     lm_head = model.target_model.lm_head
     assert isinstance(lm_head, torch.nn.Linear)
     unembed = lm_head.weight[HEATMAP_TARGET_TOKEN].detach().float()
     new_u = (-3.0 * unembed / unembed.norm()).to(torch.bfloat16)
 
-    with u_replaced(model, HEATMAP_MODULE, HEATMAP_U_IDX, new_u) as spd_forward:
-        spd_examples = export_diffs(spd_forward, baselines, eval_tokens, eval_examples, tok)
-    print(f"SPD: {len(spd_examples)} examples")
+    with u_replaced(model, HEATMAP_MODULE, HEATMAP_U_IDX, new_u) as pd_forward:
+        pd_examples = export_diffs(pd_forward, baselines, eval_tokens, eval_examples, tok)
+    print(f"PD: {len(pd_examples)} examples")
 
     # LoRA baseline
     train_seqs = make_train_seqs(train_pool)
@@ -132,9 +132,9 @@ def main() -> None:
             "editing-kl-heatmap.json",
             {
                 "component": f"{HEATMAP_MODULE}:{HEATMAP_U_IDX}",
-                "method": "SPD analytical (alpha=3, 0 training examples)",
+                "method": "PD analytical (alpha=3, 0 training examples)",
                 "target_token": "o",
-                "examples": spd_examples,
+                "examples": pd_examples,
             },
         ),
         (

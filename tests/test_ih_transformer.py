@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from spd.configs import (
+from param_decomp.configs import (
     CI_L0Config,
     Config,
     FaithfulnessLossConfig,
@@ -15,18 +15,18 @@ from spd.configs import (
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
 )
-from spd.experiments.ih.configs import InductionModelConfig
-from spd.experiments.ih.model import InductionTransformer
-from spd.identity_insertion import insert_identity_operations_
-from spd.models.batch_and_loss_fns import recon_loss_kl, run_batch_first_element
-from spd.run_spd import optimize
-from spd.utils.data_utils import DatasetGeneratedDataLoader, InductionDataset
-from spd.utils.general_utils import set_seed
+from param_decomp.experiments.ih.configs import InductionModelConfig
+from param_decomp.experiments.ih.model import InductionTransformer
+from param_decomp.identity_insertion import insert_identity_operations_
+from param_decomp.models.batch_and_loss_fns import recon_loss_kl, run_batch_first_element
+from param_decomp.run_param_decomp import optimize
+from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, InductionDataset
+from param_decomp.utils.general_utils import set_seed
 
 
 @pytest.mark.slow
 def test_ih_transformer_decomposition_happy_path(tmp_path: Path) -> None:
-    """Test that SPD decomposition works on a 2-layer, 1 head attention-only Transformer model"""
+    """Test that PD works on a 2-layer, 1 head attention-only Transformer model"""
     set_seed(0)
     device = "cpu"
 
@@ -92,7 +92,7 @@ def test_ih_transformer_decomposition_happy_path(tmp_path: Path) -> None:
             StochasticHiddenActsReconLossConfig(),
         ],
         # Pretrained model info
-        pretrained_model_class="spd.experiments.ih.model.InductionTransformer",
+        pretrained_model_class="param_decomp.experiments.ih.model.InductionTransformer",
         pretrained_model_path=None,
         pretrained_model_name=None,
         tokenizer_name=None,

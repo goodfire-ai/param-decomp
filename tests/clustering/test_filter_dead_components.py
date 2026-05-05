@@ -4,8 +4,8 @@ import pytest
 import torch
 from torch import Tensor
 
-from spd.clustering.activations import FilteredActivations, filter_dead_components
-from spd.clustering.consts import ComponentLabels
+from param_decomp.clustering.activations import FilteredActivations, filter_dead_components
+from param_decomp.clustering.consts import ComponentLabels
 
 
 @pytest.mark.parametrize(

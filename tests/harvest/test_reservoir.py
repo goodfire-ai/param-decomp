@@ -5,7 +5,7 @@ import random
 import pytest
 import torch
 
-from spd.harvest.reservoir import (
+from param_decomp.harvest.reservoir import (
     WINDOW_PAD_SENTINEL,
     ActivationExamplesReservoir,
     ActivationWindows,

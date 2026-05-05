@@ -8,7 +8,7 @@ from jaxtyping import Float, Int
 from torch import Tensor, nn
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
-from spd.configs import (
+from param_decomp.configs import (
     Config,
     GlobalCiConfig,
     ImportanceMinimalityLossConfig,
@@ -17,14 +17,14 @@ from spd.configs import (
     ScheduleConfig,
     TMSTaskConfig,
 )
-from spd.identity_insertion import insert_identity_operations_
-from spd.interfaces import LoadableModule, RunInfo
-from spd.models.batch_and_loss_fns import run_batch_passthrough
-from spd.models.component_model import (
+from param_decomp.identity_insertion import insert_identity_operations_
+from param_decomp.interfaces import LoadableModule, RunInfo
+from param_decomp.models.batch_and_loss_fns import run_batch_passthrough
+from param_decomp.models.component_model import (
     ComponentModel,
-    SPDRunInfo,
+    ParamDecompRunInfo,
 )
-from spd.models.components import (
+from param_decomp.models.components import (
     ComponentsMaskInfo,
     EmbeddingComponents,
     GlobalCiFnWrapper,
@@ -38,9 +38,9 @@ from spd.models.components import (
     VectorSharedMLPCiFn,
     make_mask_infos,
 )
-from spd.spd_types import ModelPath
-from spd.utils.module_utils import ModulePathInfo, expand_module_patterns
-from spd.utils.run_utils import save_file
+from param_decomp.param_decomp_types import ModelPath
+from param_decomp.utils.module_utils import ModulePathInfo, expand_module_patterns
+from param_decomp.utils.run_utils import save_file
 
 
 class SimpleTestModel(LoadableModule):
@@ -184,7 +184,7 @@ def test_from_run_info():
         save_file(cm.state_dict(), comp_model_dir / "model.pth")
         save_file(config.model_dump(mode="json"), comp_model_dir / "final_config.yaml")
 
-        cm_run_info = SPDRunInfo.from_path(comp_model_dir / "model.pth")
+        cm_run_info = ParamDecompRunInfo.from_path(comp_model_dir / "model.pth")
         cm_loaded = ComponentModel.from_run_info(cm_run_info)
 
         assert config == cm_run_info.config
@@ -610,7 +610,7 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
         # Override the checkpoint path and config in the directory
         save_file(config_layerwise.model_dump(mode="json"), comp_model_dir / "final_config.yaml")
 
-        cm_run_info = SPDRunInfo.from_path(global_checkpoint_path)
+        cm_run_info = ParamDecompRunInfo.from_path(global_checkpoint_path)
         # Update config to layerwise after loading run_info
         cm_run_info.config = config_layerwise
 
@@ -708,7 +708,7 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
         # Override the checkpoint path and config in the directory
         save_file(config_global.model_dump(mode="json"), comp_model_dir / "final_config.yaml")
 
-        cm_run_info = SPDRunInfo.from_path(layerwise_checkpoint_path)
+        cm_run_info = ParamDecompRunInfo.from_path(layerwise_checkpoint_path)
         # Update config to global after loading run_info
         cm_run_info.config = config_global
 
@@ -1344,7 +1344,7 @@ def test_global_ci_save_and_load():
         save_file(config.model_dump(mode="json"), comp_model_dir / "final_config.yaml")
 
         # Load and verify
-        cm_run_info = SPDRunInfo.from_path(comp_model_dir / "model.pth")
+        cm_run_info = ParamDecompRunInfo.from_path(comp_model_dir / "model.pth")
         cm_loaded = ComponentModel.from_run_info(cm_run_info)
 
         assert isinstance(cm_loaded.ci_fn, GlobalCiFnWrapper)

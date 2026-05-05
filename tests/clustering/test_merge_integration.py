@@ -2,12 +2,12 @@
 
 import torch
 
-from spd.clustering.compute_costs import recompute_coacts_merge_pair_memberships
-from spd.clustering.consts import ComponentLabels, MergePair
-from spd.clustering.math.merge_matrix import GroupMerge
-from spd.clustering.merge import merge_iteration_memberships
-from spd.clustering.merge_config import MergeConfig
-from spd.clustering.sample_membership import (
+from param_decomp.clustering.compute_costs import recompute_coacts_merge_pair_memberships
+from param_decomp.clustering.consts import ComponentLabels, MergePair
+from param_decomp.clustering.math.merge_matrix import GroupMerge
+from param_decomp.clustering.merge import merge_iteration_memberships
+from param_decomp.clustering.merge_config import MergeConfig
+from param_decomp.clustering.sample_membership import (
     CompressedMembership,
     compute_coactivation_matrix,
     memberships_to_sample_component_csr,

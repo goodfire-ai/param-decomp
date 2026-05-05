@@ -4,7 +4,7 @@ from typing import cast
 import torch
 from torch import nn
 
-from spd.configs import (
+from param_decomp.configs import (
     Config,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
@@ -15,18 +15,18 @@ from spd.configs import (
     StochasticReconLossConfig,
     TMSTaskConfig,
 )
-from spd.experiments.tms.configs import TMSModelConfig, TMSTrainConfig
-from spd.experiments.tms.models import TMSModel
-from spd.experiments.tms.train_tms import get_model_and_dataloader, train
-from spd.identity_insertion import insert_identity_operations_
-from spd.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
-from spd.run_spd import optimize
-from spd.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
-from spd.utils.general_utils import set_seed
+from param_decomp.experiments.tms.configs import TMSModelConfig, TMSTrainConfig
+from param_decomp.experiments.tms.models import TMSModel
+from param_decomp.experiments.tms.train_tms import get_model_and_dataloader, train
+from param_decomp.identity_insertion import insert_identity_operations_
+from param_decomp.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
+from param_decomp.run_param_decomp import optimize
+from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
+from param_decomp.utils.general_utils import set_seed
 
 
 def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
-    """Test that SPD decomposition works on a TMS model."""
+    """Test that PD works on a TMS model."""
     set_seed(0)
     device = "cpu"
 
@@ -88,7 +88,7 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
         eval_freq=10,
         slow_eval_freq=10,
         # Pretrained model info
-        pretrained_model_class="spd.experiments.tms.models.TMSModel",
+        pretrained_model_class="param_decomp.experiments.tms.models.TMSModel",
         pretrained_model_path=None,
         pretrained_model_name=None,
         tokenizer_name=None,
@@ -139,7 +139,7 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
     )
 
     # The test passes if optimize runs without errors
-    print("TMS SPD optimization completed successfully")
+    print("TMS PD optimization completed successfully")
 
     # Basic assertion to ensure the test ran
     assert True, "Test completed successfully"

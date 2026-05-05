@@ -1,0 +1,9 @@
+n_runs: 2
+distances_methods: ["matching_dist"]
+# base_output_dir: "tests/.temp/clustering"
+slurm_job_name_prefix: null
+slurm_partition: null
+wandb_project: "param-decomp"
+wandb_entity: "goodfire"
+create_git_snapshot: false
+clustering_run_config_path: "param_decomp/clustering/configs/crc/ss_llama_simple_mlp.json"

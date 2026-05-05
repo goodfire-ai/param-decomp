@@ -11,7 +11,7 @@ import pytest
 import torch
 import yaml
 
-from spd.settings import REPO_ROOT
+from param_decomp.settings import REPO_ROOT
 
 TEST_CONFIG = {
     # --- General ---
@@ -77,7 +77,7 @@ TEST_CONFIG = {
 
 def _parse_run_id_from_output(stderr: str) -> str:
     """Parse the run_id from the subprocess stderr output."""
-    match = re.search(r"Run ID: (s-[a-f0-9]+)", stderr)
+    match = re.search(r"Run ID: (p-[a-f0-9]+)", stderr)
     assert match, f"Could not find run_id in output:\n{stderr}"
     return match.group(1)
 
@@ -85,7 +85,7 @@ def _parse_run_id_from_output(stderr: str) -> str:
 @pytest.mark.slow
 class TestDistributedDeterminicity:
     def test_distributed_determinicity(self):
-        """Test DDP determinicity for SPD runs which don't use stochastic masks.
+        """Test DDP determinicity for PD runs which don't use stochastic masks.
 
         Runs DDP with 1 and 2 processes on CPU and shows that training metrics, eval metrics, and
         the updated model weights are consistent between the two runs.
@@ -145,7 +145,7 @@ class TestDistributedDeterminicity:
         param_decomp_out_dir: Path,
     ) -> str:
         """Run the experiment using torchrun. Returns the run_id."""
-        script_path = REPO_ROOT / "spd" / "experiments" / "lm" / "lm_decomposition.py"
+        script_path = REPO_ROOT / "param_decomp" / "experiments" / "lm" / "lm_decomposition.py"
         assert script_path.exists(), f"{script_path} not found"
 
         cmd = [

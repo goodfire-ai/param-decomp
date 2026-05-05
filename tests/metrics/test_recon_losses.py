@@ -7,24 +7,24 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from spd.configs import (
+from param_decomp.configs import (
     PersistentPGDReconLossConfig,
     PGDConfig,
     ScheduleConfig,
     SignPGDConfig,
     SingleSourceScope,
 )
-from spd.metrics import ci_masked_recon_loss, pgd_recon_loss, stochastic_recon_loss
-from spd.metrics.hidden_acts_recon_loss import (
+from param_decomp.metrics import ci_masked_recon_loss, pgd_recon_loss, stochastic_recon_loss
+from param_decomp.metrics.hidden_acts_recon_loss import (
     CIHiddenActsReconLoss,
     _sum_per_module_mse,
     calc_hidden_acts_mse,
 )
-from spd.metrics.ppgd_eval_losses import PPGDReconEval
-from spd.models.batch_and_loss_fns import recon_loss_mse
-from spd.models.component_model import CIOutputs, ComponentModel
-from spd.models.components import make_mask_infos
-from spd.persistent_pgd import PersistentPGDState, PPGDSources, get_ppgd_mask_infos
+from param_decomp.metrics.ppgd_eval_losses import PPGDReconEval
+from param_decomp.models.batch_and_loss_fns import recon_loss_mse
+from param_decomp.models.component_model import CIOutputs, ComponentModel
+from param_decomp.models.components import make_mask_infos
+from param_decomp.persistent_pgd import PersistentPGDState, PPGDSources, get_ppgd_mask_infos
 from tests.metrics.fixtures import (
     OneLayerLinearModel,
     TwoLayerLinearModel,

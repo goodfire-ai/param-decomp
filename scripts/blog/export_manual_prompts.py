@@ -21,7 +21,7 @@ activation renderer:
       ]
     }
 
-Run from ~/spd:
+Run from ~/param-decomp:
   uv run python -m scripts.blog.export_manual_prompts \
       --component 1.attn.q:308 \
       --prompts-file ../vpd-blog-replit/my-prompts.json \
@@ -38,16 +38,16 @@ from typing import Any
 
 import torch
 
+from param_decomp.app.backend.app_tokenizer import AppTokenizer
+from param_decomp.app.backend.compute import compute_ci_only
+from param_decomp.autointerp.repo import InterpRepo
+from param_decomp.configs import LMTaskConfig
+from param_decomp.models.component_model import ComponentModel, ParamDecompRunInfo
+from param_decomp.scripts.prompt_utils import load_prompts
+from param_decomp.topology import TransformerTopology
+from param_decomp.utils.distributed_utils import get_device
+from param_decomp.utils.wandb_utils import parse_wandb_run_path
 from scripts.blog.constants import WANDB_PATH
-from spd.app.backend.app_tokenizer import AppTokenizer
-from spd.app.backend.compute import compute_ci_only
-from spd.autointerp.repo import InterpRepo
-from spd.configs import LMTaskConfig
-from spd.models.component_model import ComponentModel, SPDRunInfo
-from spd.scripts.prompt_utils import load_prompts
-from spd.topology import TransformerTopology
-from spd.utils.distributed_utils import get_device
-from spd.utils.wandb_utils import parse_wandb_run_path
 
 ROUND_DIGITS = 4
 
@@ -149,7 +149,7 @@ def export_manual_prompts(
     prompts: Sequence[str],
 ) -> dict[str, Any]:
     """Compute CI/activation values for one component across manual prompts."""
-    run_info = SPDRunInfo.from_path(run_path)
+    run_info = ParamDecompRunInfo.from_path(run_path)
     model = ComponentModel.from_run_info(run_info).to(get_device())
     model.eval()
 
