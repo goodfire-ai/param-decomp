@@ -12,9 +12,10 @@ scoring a compact seam that can be moved to Rust.
 
 from __future__ import annotations
 
+import importlib
 import os
 from collections.abc import Sequence
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, cast
 
 import numpy as np
 
@@ -23,6 +24,24 @@ Backend = Literal["auto", "python", "rust"]
 
 class AccelBackendUnavailable(RuntimeError):
     """Raised when an explicitly requested acceleration backend cannot run."""
+
+
+class _RustAccelModule(Protocol):
+    def score_rank_one_linear_components(
+        self,
+        inputs: np.ndarray,
+        labels: np.ndarray,
+        reference_logits: np.ndarray,
+        metric_reference_logits: np.ndarray,
+        components_u: np.ndarray,
+        components_v: np.ndarray,
+        component_ids: Sequence[str],
+        row_indices: np.ndarray,
+        slice_names: Sequence[str],
+        slice_offsets: np.ndarray,
+        slice_indices: np.ndarray,
+        rust_threads: int,
+    ) -> list[dict[str, Any]]: ...
 
 
 def score_rank_one_linear_components(
@@ -90,7 +109,7 @@ def score_rank_one_linear_components(
 
     if selected_backend in ("auto", "rust"):
         try:
-            import param_decomp_accel as rust_accel
+            rust_accel = cast(_RustAccelModule, cast(object, importlib.import_module("param_decomp_accel")))
         except ImportError as exc:
             if selected_backend == "rust":
                 raise AccelBackendUnavailable(
@@ -131,9 +150,13 @@ def score_rank_one_linear_components(
 
 def _resolve_backend(backend: Backend | None) -> Backend:
     raw = backend or os.environ.get("PARAM_DECOMP_ACCEL", "python")
-    if raw not in {"auto", "python", "rust"}:
-        raise ValueError(f"Unsupported acceleration backend: {raw!r}")
-    return raw  # type: ignore[return-value]
+    if raw == "auto":
+        return "auto"
+    if raw == "python":
+        return "python"
+    if raw == "rust":
+        return "rust"
+    raise ValueError(f"Unsupported acceleration backend: {raw!r}")
 
 
 def _coerce_inputs(**kwargs: Any) -> dict[str, np.ndarray]:

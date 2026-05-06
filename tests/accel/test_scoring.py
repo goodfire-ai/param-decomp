@@ -1,10 +1,20 @@
+import importlib.util
+from collections.abc import Sequence
+from typing import Any
+
 import numpy as np
 import pytest
+from numpy.typing import NDArray
+from pytest import MonkeyPatch
 
 from param_decomp.accel import AccelBackendUnavailable, score_rank_one_linear_components
+from param_decomp.accel.scoring import Backend
+
+FloatArray = NDArray[np.float32]
+IntArray = NDArray[np.int64]
 
 
-def _fixture():
+def _fixture() -> tuple[FloatArray, IntArray, FloatArray, FloatArray, FloatArray]:
     inputs = np.array([[1.0, 2.0], [0.5, -1.0], [1.5, 0.0]], dtype=np.float32)
     labels = np.array([0, 1, 0], dtype=np.int64)
     weights = np.array([[1.0, 0.25], [-0.5, 1.0]], dtype=np.float32)
@@ -15,10 +25,47 @@ def _fixture():
     return inputs, labels, reference_logits, components_u, components_v
 
 
-def test_python_rank_one_linear_component_scoring_has_expected_shape():
+def _rust_extension_available() -> bool:
+    return importlib.util.find_spec("param_decomp_accel") is not None
+
+
+def _score(
+    *,
+    inputs: FloatArray,
+    labels: IntArray,
+    reference_logits: FloatArray,
+    components_u: FloatArray,
+    components_v: FloatArray,
+    component_ids: Sequence[str] | None = None,
+    metric_reference_logits: FloatArray | None = None,
+    row_indices: IntArray | None = None,
+    slice_names: Sequence[str] | None = None,
+    slice_offsets: IntArray | None = None,
+    slice_indices: IntArray | None = None,
+    backend: Backend = "python",
+    rust_threads: int | None = None,
+) -> list[dict[str, Any]]:
+    return score_rank_one_linear_components(
+        inputs=inputs,
+        labels=labels,
+        reference_logits=reference_logits,
+        metric_reference_logits=metric_reference_logits,
+        components_u=components_u,
+        components_v=components_v,
+        component_ids=component_ids,
+        row_indices=row_indices,
+        slice_names=slice_names,
+        slice_offsets=slice_offsets,
+        slice_indices=slice_indices,
+        backend=backend,
+        rust_threads=rust_threads,
+    )
+
+
+def test_python_rank_one_linear_component_scoring_has_expected_shape() -> None:
     inputs, labels, reference_logits, components_u, components_v = _fixture()
 
-    records = score_rank_one_linear_components(
+    records = _score(
         inputs=inputs,
         labels=labels,
         reference_logits=reference_logits,
@@ -36,7 +83,7 @@ def test_python_rank_one_linear_component_scoring_has_expected_shape():
     assert records[0]["slice_metrics"] == {}
 
 
-def test_default_backend_is_python_even_if_rust_is_installed(monkeypatch):
+def test_default_backend_is_python_even_if_rust_is_installed(monkeypatch: MonkeyPatch) -> None:
     inputs, labels, reference_logits, components_u, components_v = _fixture()
     monkeypatch.delenv("PARAM_DECOMP_ACCEL", raising=False)
 
@@ -61,10 +108,10 @@ def test_default_backend_is_python_even_if_rust_is_installed(monkeypatch):
     assert default_records == python_records
 
 
-def test_python_rank_one_linear_component_scoring_emits_slice_metrics_with_global_rows():
+def test_python_rank_one_linear_component_scoring_emits_slice_metrics_with_global_rows() -> None:
     inputs, labels, reference_logits, components_u, components_v = _fixture()
 
-    records = score_rank_one_linear_components(
+    records = _score(
         inputs=inputs,
         labels=labels,
         reference_logits=reference_logits,
@@ -85,27 +132,35 @@ def test_python_rank_one_linear_component_scoring_emits_slice_metrics_with_globa
     assert slice_metrics["last"]["global_rows"] == [22]
 
 
-def test_metric_reference_logits_can_differ_from_base_logits():
+def test_metric_reference_logits_can_differ_from_base_logits() -> None:
     inputs, labels, reference_logits, components_u, components_v = _fixture()
     metric_reference_logits = reference_logits + np.array([[0.25, 0.0], [0.0, -0.5], [0.5, 0.0]], dtype=np.float32)
 
-    kwargs = {
-        "inputs": inputs,
-        "labels": labels,
-        "reference_logits": reference_logits,
-        "metric_reference_logits": metric_reference_logits,
-        "components_u": components_u,
-        "components_v": components_v,
-        "component_ids": ["layer:0", "layer:1"],
-    }
-    python_records = score_rank_one_linear_components(**kwargs, backend="python")
+    python_records = _score(
+        inputs=inputs,
+        labels=labels,
+        reference_logits=reference_logits,
+        metric_reference_logits=metric_reference_logits,
+        components_u=components_u,
+        components_v=components_v,
+        component_ids=["layer:0", "layer:1"],
+        backend="python",
+    )
 
-    try:
-        import param_decomp_accel  # noqa: F401
-    except ImportError:
+    if not _rust_extension_available():
         return
 
-    rust_records = score_rank_one_linear_components(**kwargs, backend="rust", rust_threads=2)
+    rust_records = _score(
+        inputs=inputs,
+        labels=labels,
+        reference_logits=reference_logits,
+        metric_reference_logits=metric_reference_logits,
+        components_u=components_u,
+        components_v=components_v,
+        component_ids=["layer:0", "layer:1"],
+        backend="rust",
+        rust_threads=2,
+    )
     for rust_record, python_record in zip(rust_records, python_records, strict=True):
         assert rust_record["ablated_behavior_mse"] == pytest.approx(
             python_record["ablated_behavior_mse"],
@@ -113,7 +168,7 @@ def test_metric_reference_logits_can_differ_from_base_logits():
         )
 
 
-def test_python_rank_one_linear_component_scoring_validates_shapes():
+def test_python_rank_one_linear_component_scoring_validates_shapes() -> None:
     inputs, labels, reference_logits, components_u, components_v = _fixture()
 
     with pytest.raises(ValueError, match="component_ids"):
@@ -128,14 +183,12 @@ def test_python_rank_one_linear_component_scoring_validates_shapes():
         )
 
 
-def test_explicit_rust_backend_fails_cleanly_when_extension_missing():
+def test_explicit_rust_backend_fails_cleanly_when_extension_missing() -> None:
     inputs, labels, reference_logits, components_u, components_v = _fixture()
 
-    try:
-        import param_decomp_accel  # noqa: F401
-    except ImportError:
+    if not _rust_extension_available():
         with pytest.raises(AccelBackendUnavailable):
-            score_rank_one_linear_components(
+            _score(
                 inputs=inputs,
                 labels=labels,
                 reference_logits=reference_logits,
@@ -144,7 +197,7 @@ def test_explicit_rust_backend_fails_cleanly_when_extension_missing():
                 backend="rust",
             )
     else:
-        records = score_rank_one_linear_components(
+        records = _score(
             inputs=inputs,
             labels=labels,
             reference_logits=reference_logits,
@@ -155,29 +208,42 @@ def test_explicit_rust_backend_fails_cleanly_when_extension_missing():
         assert len(records) == 2
 
 
-def test_rust_backend_matches_python_when_installed():
+def test_rust_backend_matches_python_when_installed() -> None:
     inputs, labels, reference_logits, components_u, components_v = _fixture()
 
-    try:
-        import param_decomp_accel  # noqa: F401
-    except ImportError:
+    if not _rust_extension_available():
         pytest.skip("param_decomp_accel is not installed")
 
-    kwargs = {
-        "inputs": inputs,
-        "labels": labels,
-        "reference_logits": reference_logits,
-        "components_u": components_u,
-        "components_v": components_v,
-        "component_ids": ["layer:0", "layer:1"],
-        "row_indices": np.array([20, 21, 22], dtype=np.int64),
-        "slice_names": ["first_two", "last"],
-        "slice_offsets": np.array([0, 2, 3], dtype=np.int64),
-        "slice_indices": np.array([0, 1, 2], dtype=np.int64),
-    }
-
-    python_records = score_rank_one_linear_components(**kwargs, backend="python")
-    rust_records = score_rank_one_linear_components(**kwargs, backend="rust", rust_threads=2)
+    row_indices = np.array([20, 21, 22], dtype=np.int64)
+    slice_offsets = np.array([0, 2, 3], dtype=np.int64)
+    slice_indices = np.array([0, 1, 2], dtype=np.int64)
+    python_records = _score(
+        inputs=inputs,
+        labels=labels,
+        reference_logits=reference_logits,
+        components_u=components_u,
+        components_v=components_v,
+        component_ids=["layer:0", "layer:1"],
+        row_indices=row_indices,
+        slice_names=["first_two", "last"],
+        slice_offsets=slice_offsets,
+        slice_indices=slice_indices,
+        backend="python",
+    )
+    rust_records = _score(
+        inputs=inputs,
+        labels=labels,
+        reference_logits=reference_logits,
+        components_u=components_u,
+        components_v=components_v,
+        component_ids=["layer:0", "layer:1"],
+        row_indices=row_indices,
+        slice_names=["first_two", "last"],
+        slice_offsets=slice_offsets,
+        slice_indices=slice_indices,
+        backend="rust",
+        rust_threads=2,
+    )
 
     assert len(rust_records) == len(python_records)
     for rust_record, python_record in zip(rust_records, python_records, strict=True):
