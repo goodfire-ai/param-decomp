@@ -1,0 +1,18 @@
+[package]
+name = "param_decomp_accel"
+version = "0.1.0"
+edition = "2024"
+description = "Optional Rust acceleration kernels for Goodfire param-decomp scoring"
+license = "MIT"
+
+[lib]
+name = "param_decomp_accel"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+numpy = "0.23"
+pyo3 = { version = "0.23", features = ["extension-module"] }
+rayon = "1.10"
+
+[dev-dependencies]
+approx = "0.5"

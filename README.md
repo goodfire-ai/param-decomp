@@ -36,6 +36,11 @@ whole method. It deliberately omits alternative loss/CI/sigmoid types and variou
 
 ## Installation
 
+This fork includes an optional, opt-in Rust/PyO3 acceleration seam for
+rank-one linear component scoring. The default backend remains Python; see
+[`docs/rust_accel_scoring.md`](docs/rust_accel_scoring.md) for build and
+benchmark instructions.
+
 From the root of the repository, run one of:
 
 ```bash

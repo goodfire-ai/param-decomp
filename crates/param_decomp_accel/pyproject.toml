@@ -1,0 +1,13 @@
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[project]
+name = "param-decomp-accel"
+version = "0.1.0"
+description = "Optional Rust acceleration kernels for Goodfire param-decomp"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+[tool.maturin]
+module-name = "param_decomp_accel"
