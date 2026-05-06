@@ -30,6 +30,7 @@ def score_rank_one_linear_components(
     inputs: np.ndarray,
     labels: np.ndarray,
     reference_logits: np.ndarray,
+    metric_reference_logits: np.ndarray | None = None,
     components_u: np.ndarray,
     components_v: np.ndarray,
     component_ids: Sequence[str] | None = None,
@@ -45,7 +46,11 @@ def score_rank_one_linear_components(
     Args:
         inputs: Float array with shape ``[n_rows, in_dim]``.
         labels: Int array with shape ``[n_rows]``.
-        reference_logits: Float array with shape ``[n_rows, out_dim]``.
+        reference_logits: Float array with shape ``[n_rows, out_dim]`` used as
+            the base logits for subtracting each rank-one contribution.
+        metric_reference_logits: Optional float array with shape
+            ``[n_rows, out_dim]`` used for behavior-MSE and original-prediction
+            match metrics. Defaults to ``reference_logits``.
         components_u: Float array with shape ``[n_components, out_dim]``.
         components_v: Float array with shape ``[n_components, in_dim]``.
         component_ids: Stable component IDs. Defaults to stringified indices.
@@ -61,6 +66,7 @@ def score_rank_one_linear_components(
         inputs=inputs,
         labels=labels,
         reference_logits=reference_logits,
+        metric_reference_logits=metric_reference_logits,
         components_u=components_u,
         components_v=components_v,
         row_indices=row_indices,
@@ -72,6 +78,7 @@ def score_rank_one_linear_components(
         arrays["inputs"],
         arrays["labels"],
         arrays["reference_logits"],
+        arrays["metric_reference_logits"],
         arrays["components_u"],
         arrays["components_v"],
         ids,
@@ -96,6 +103,7 @@ def score_rank_one_linear_components(
                 arrays["inputs"],
                 arrays["labels"],
                 arrays["reference_logits"],
+                arrays["metric_reference_logits"],
                 arrays["components_u"],
                 arrays["components_v"],
                 ids,
@@ -110,6 +118,7 @@ def score_rank_one_linear_components(
         inputs=arrays["inputs"],
         labels=arrays["labels"],
         reference_logits=arrays["reference_logits"],
+        metric_reference_logits=arrays["metric_reference_logits"],
         components_u=arrays["components_u"],
         components_v=arrays["components_v"],
         component_ids=ids,
@@ -132,6 +141,11 @@ def _coerce_inputs(**kwargs: Any) -> dict[str, np.ndarray]:
         "inputs": np.asarray(kwargs["inputs"], dtype=np.float32, order="C"),
         "labels": np.asarray(kwargs["labels"], dtype=np.int64, order="C"),
         "reference_logits": np.asarray(kwargs["reference_logits"], dtype=np.float32, order="C"),
+        "metric_reference_logits": np.asarray(
+            kwargs["reference_logits"] if kwargs["metric_reference_logits"] is None else kwargs["metric_reference_logits"],
+            dtype=np.float32,
+            order="C",
+        ),
         "components_u": np.asarray(kwargs["components_u"], dtype=np.float32, order="C"),
         "components_v": np.asarray(kwargs["components_v"], dtype=np.float32, order="C"),
         "row_indices": np.asarray(
@@ -148,6 +162,7 @@ def _validate_bundle(
     inputs: np.ndarray,
     labels: np.ndarray,
     reference_logits: np.ndarray,
+    metric_reference_logits: np.ndarray,
     components_u: np.ndarray,
     components_v: np.ndarray,
     component_ids: Sequence[str],
@@ -164,6 +179,8 @@ def _validate_bundle(
         raise ValueError("component factors must be rank-2 arrays")
     if reference_logits.shape != (inputs.shape[0], components_u.shape[1]):
         raise ValueError("reference_logits must have shape [n_rows, out_dim]")
+    if metric_reference_logits.shape != reference_logits.shape:
+        raise ValueError("metric_reference_logits must have the same shape as reference_logits")
     if components_u.shape[0] != components_v.shape[0] or components_v.shape[1] != inputs.shape[1]:
         raise ValueError("component factors must have shapes [n_components, out_dim] and [n_components, in_dim]")
     if len(component_ids) != components_u.shape[0]:
@@ -187,6 +204,7 @@ def _score_rank_one_linear_components_python(
     inputs: np.ndarray,
     labels: np.ndarray,
     reference_logits: np.ndarray,
+    metric_reference_logits: np.ndarray,
     components_u: np.ndarray,
     components_v: np.ndarray,
     component_ids: Sequence[str],
@@ -195,12 +213,12 @@ def _score_rank_one_linear_components_python(
     slice_offsets: np.ndarray,
     slice_indices: np.ndarray,
 ) -> list[dict[str, Any]]:
-    ref_pred = np.argmax(reference_logits, axis=1)
+    ref_pred = np.argmax(metric_reference_logits, axis=1)
     records: list[dict[str, Any]] = []
     for component_index, component_id in enumerate(component_ids):
         contribution_scale = inputs @ components_v[component_index]
         ablated_logits = reference_logits - contribution_scale[:, None] * components_u[component_index][None, :]
-        metrics = _metrics(reference_logits, ablated_logits, labels, ref_pred)
+        metrics = _metrics(metric_reference_logits, ablated_logits, labels, ref_pred)
         record: dict[str, Any] = {
             "component_id": component_id,
             "component_index": component_index,
@@ -209,7 +227,7 @@ def _score_rank_one_linear_components_python(
         }
         if slice_names:
             record["slice_metrics"] = _slice_metrics(
-                reference_logits,
+                metric_reference_logits,
                 ablated_logits,
                 labels,
                 ref_pred,

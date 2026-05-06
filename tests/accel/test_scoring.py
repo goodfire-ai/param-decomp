@@ -85,6 +85,34 @@ def test_python_rank_one_linear_component_scoring_emits_slice_metrics_with_globa
     assert slice_metrics["last"]["global_rows"] == [22]
 
 
+def test_metric_reference_logits_can_differ_from_base_logits():
+    inputs, labels, reference_logits, components_u, components_v = _fixture()
+    metric_reference_logits = reference_logits + np.array([[0.25, 0.0], [0.0, -0.5], [0.5, 0.0]], dtype=np.float32)
+
+    kwargs = {
+        "inputs": inputs,
+        "labels": labels,
+        "reference_logits": reference_logits,
+        "metric_reference_logits": metric_reference_logits,
+        "components_u": components_u,
+        "components_v": components_v,
+        "component_ids": ["layer:0", "layer:1"],
+    }
+    python_records = score_rank_one_linear_components(**kwargs, backend="python")
+
+    try:
+        import param_decomp_accel  # noqa: F401
+    except ImportError:
+        return
+
+    rust_records = score_rank_one_linear_components(**kwargs, backend="rust", rust_threads=2)
+    for rust_record, python_record in zip(rust_records, python_records, strict=True):
+        assert rust_record["ablated_behavior_mse"] == pytest.approx(
+            python_record["ablated_behavior_mse"],
+            abs=1e-6,
+        )
+
+
 def test_python_rank_one_linear_component_scoring_validates_shapes():
     inputs, labels, reference_logits, components_u, components_v = _fixture()
 

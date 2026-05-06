@@ -38,6 +38,7 @@ fn score_rank_one_linear_components(
     inputs: PyReadonlyArray2<'_, f32>,
     labels: PyReadonlyArray1<'_, i64>,
     reference_logits: PyReadonlyArray2<'_, f32>,
+    metric_reference_logits: PyReadonlyArray2<'_, f32>,
     components_u: PyReadonlyArray2<'_, f32>,
     components_v: PyReadonlyArray2<'_, f32>,
     component_ids: Vec<String>,
@@ -52,6 +53,7 @@ fn score_rank_one_linear_components(
     let inputs = inputs.as_array();
     let labels = labels.as_array();
     let reference_logits = reference_logits.as_array();
+    let metric_reference_logits = metric_reference_logits.as_array();
     let components_u = components_u.as_array();
     let components_v = components_v.as_array();
     let row_indices = row_indices.as_array();
@@ -62,6 +64,7 @@ fn score_rank_one_linear_components(
         inputs.shape(),
         labels.shape(),
         reference_logits.shape(),
+        metric_reference_logits.shape(),
         components_u.shape(),
         components_v.shape(),
         component_ids.len(),
@@ -79,12 +82,15 @@ fn score_rank_one_linear_components(
     let reference_slice = reference_logits
         .as_slice()
         .expect("contiguous reference logits");
+    let metric_reference_slice = metric_reference_logits
+        .as_slice()
+        .expect("contiguous metric reference logits");
     let u_slice = components_u.as_slice().expect("contiguous components_u");
     let v_slice = components_v.as_slice().expect("contiguous components_v");
     let row_indices_slice = row_indices.as_slice().expect("contiguous row indices");
     let slice_offsets_vec = slice_offsets.to_vec();
     let slice_indices_vec = slice_indices.to_vec();
-    let ref_pred = argmax_rows(reference_slice, n_rows, out_dim);
+    let ref_pred = argmax_rows(metric_reference_slice, n_rows, out_dim);
 
     let records: Vec<ScoreRecord> = py.allow_threads(|| {
         component_ids
@@ -97,6 +103,7 @@ fn score_rank_one_linear_components(
                     inputs_slice,
                     labels_slice,
                     reference_slice,
+                    metric_reference_slice,
                     u_slice,
                     v_slice,
                     &ref_pred,
@@ -131,6 +138,7 @@ fn validate_shapes(
     inputs_shape: &[usize],
     labels_shape: &[usize],
     reference_shape: &[usize],
+    metric_reference_shape: &[usize],
     u_shape: &[usize],
     v_shape: &[usize],
     component_id_count: usize,
@@ -151,6 +159,11 @@ fn validate_shapes(
     if reference_shape != [inputs_shape[0], u_shape[1]] {
         return Err(value_error(
             "reference_logits must have shape [n_rows, out_dim]",
+        ));
+    }
+    if metric_reference_shape != reference_shape {
+        return Err(value_error(
+            "metric_reference_logits must have the same shape as reference_logits",
         ));
     }
     if u_shape[0] != v_shape[0] || v_shape[1] != inputs_shape[1] {
@@ -198,6 +211,7 @@ fn score_component(
     inputs: &[f32],
     labels: &[i64],
     reference_logits: &[f32],
+    metric_reference_logits: &[f32],
     components_u: &[f32],
     components_v: &[f32],
     ref_pred: &[usize],
@@ -220,7 +234,7 @@ fn score_component(
         out_dim,
     );
     let metrics = metrics_for_rows(
-        reference_logits,
+        metric_reference_logits,
         &ablated,
         labels,
         ref_pred,
@@ -250,7 +264,7 @@ fn score_component(
                 count: local_rows.len(),
                 global_rows,
                 metrics: metrics_for_rows(
-                    reference_logits,
+                    metric_reference_logits,
                     &ablated,
                     labels,
                     ref_pred,
@@ -442,6 +456,7 @@ mod tests {
             "c0",
             &inputs,
             &labels,
+            &reference,
             &reference,
             &u,
             &v,
