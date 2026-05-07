@@ -39,14 +39,12 @@ module_info:
 identity_module_info: null
 use_delta_component: true
 loss_metric_configs:
-- coeff: 1000000.0
-  classname: FaithfulnessLoss
 - coeff: 0.003
   classname: ImportanceMinimalityLoss
   pnorm: 2.0
-  beta: 0.1
+  beta: 0.5
   p_anneal_start_frac: 0.0
-  p_anneal_final_p: 0.5
+  p_anneal_final_p: 0.4
   p_anneal_end_frac: 1.0
   eps: 1.0e-12
 - coeff: 0.5
@@ -54,35 +52,41 @@ loss_metric_configs:
   routing:
     type: uniform_k_subset
 - coeff: 0.5
-  classname: PersistentPGDReconSubsetLoss
   optimizer:
     type: adam
-    lr: 0.01
     beta1: 0.8
     beta2: 0.99
     eps: 1.0e-08
-  scope: unique_per_batch_per_token
-  routing:
-    type: uniform_k_subset
+    lr_schedule:
+      start_val: 0.01
+      warmup_pct: 0.025
+      final_val_frac: 1.0
+      fn_type: constant
+  scope:
+    type: per_batch_per_position
+  use_sigmoid_parameterization: false
+  n_warmup_steps: 2
+  classname: PersistentPGDReconLoss
+- coeff: 10000000.0
+  classname: FaithfulnessLoss
 output_loss_type: kl
 lr_schedule:
-  start_val: 0.0003
+  start_val: 3e-4
   warmup_pct: 0.0
   final_val_frac: 0.1
   fn_type: cosine
 steps: 400000
-batch_size: 24
-gradient_accumulation_steps: 1
+batch_size: 32
 grad_clip_norm_components: 0.01
 grad_clip_norm_ci_fns: null
-faithfulness_warmup_steps: 200
+faithfulness_warmup_steps: 400
 faithfulness_warmup_lr: 0.001
 faithfulness_warmup_weight_decay: 0.0
-train_log_freq: 50
+train_log_freq: 200
 eval_freq: 1000
 eval_batch_size: 128
 slow_eval_freq: 10000
-n_eval_steps: 5
+n_eval_steps: 3
 slow_eval_on_first_step: true
 save_freq: null
 eval_metric_configs:
@@ -109,10 +113,10 @@ eval_metric_configs:
   mask_scope: shared_across_batch
   classname: PGDReconLoss
 ci_alive_threshold: 0.0
-pretrained_model_class: simple_stories_train.models.llama_simple_mlp.LlamaSimpleMLP
+pretrained_model_class: param_decomp.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
 pretrained_model_path: null
-pretrained_model_name: wandb:goodfire/spd/runs/gf6rbga0
-pretrained_model_output_attr: idx_0
+pretrained_model_name: goodfire/spd/runs/gf6rbga0
+output_extract: 0
 tokenizer_name: SimpleStories/test-SimpleStories-gpt2-1.25M
 task_config:
   task_name: lm

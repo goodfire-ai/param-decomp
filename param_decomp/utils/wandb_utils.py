@@ -21,9 +21,10 @@ from param_decomp.utils.general_utils import fetch_latest_checkpoint_name
 # Per-experiment workspace template URLs (in `goodfire/param-decomp`). The view
 # created from each template is renamed and re-projected to the current run's
 # project. Add an entry by creating the workspace in the wandb UI and copying
-# the `?nw=...` ID here. Experiments without an entry skip workspace view
-# creation cleanly (see `create_workspace_view`).
+# the `?nw=...` ID here. Experiments without an entry fall back to
+# `DEFAULT_WORKSPACE_TEMPLATE` (see `create_workspace_view`).
 WORKSPACE_TEMPLATES: dict[str, str] = {}
+DEFAULT_WORKSPACE_TEMPLATE = "https://wandb.ai/goodfire/param-decomp?nw=u55zie0f6q"
 
 # Regex patterns for parsing W&B run references
 # Run IDs can be 8 chars (e.g., "d2ec3bfe") or prefixed with char-dash (e.g., "s-d2ec3bfe")
@@ -362,15 +363,13 @@ def ensure_project_exists(project: str) -> None:
         logger.info(f"Project '{project}' created successfully")
 
 
-def create_workspace_view(launch_id: str, experiment_name: str, project: str) -> str | None:
+def create_workspace_view(launch_id: str, experiment_name: str, project: str) -> str:
     """Create a wandb workspace view for an experiment.
 
-    Returns None if no template URL is configured for `experiment_name` in
-    `WORKSPACE_TEMPLATES`.
+    Falls back to `DEFAULT_WORKSPACE_TEMPLATE` when no per-experiment template
+    is configured in `WORKSPACE_TEMPLATES`.
     """
-    template_url = WORKSPACE_TEMPLATES.get(experiment_name)
-    if template_url is None:
-        return None
+    template_url = WORKSPACE_TEMPLATES.get(experiment_name, DEFAULT_WORKSPACE_TEMPLATE)
     workspace: ws.Workspace = ws.Workspace.from_url(template_url)
 
     # Override the project to match what we're actually using
@@ -600,15 +599,12 @@ def create_view_and_report(
     # Ensure the W&B project exists
     ensure_project_exists(project)
 
-    # Create workspace views for each experiment that has a configured template.
+    # Create workspace views for each experiment.
     logger.section("Creating workspace views...")
-    workspace_urls: dict[str, str] = {}
-    for experiment in experiments:
-        workspace_url = create_workspace_view(launch_id, experiment, project)
-        if workspace_url is None:
-            logger.info(f"No workspace template for {experiment}; skipping view creation.")
-            continue
-        workspace_urls[experiment] = workspace_url
+    workspace_urls: dict[str, str] = {
+        experiment: create_workspace_view(launch_id, experiment, project)
+        for experiment in experiments
+    }
 
     # Create report if requested
     report_url: str | None = None
