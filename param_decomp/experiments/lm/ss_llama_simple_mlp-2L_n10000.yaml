@@ -115,7 +115,7 @@ eval_metric_configs:
 ci_alive_threshold: 0.0
 pretrained_model_class: param_decomp.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
 pretrained_model_path: null
-pretrained_model_name: goodfire/spd/runs/gf6rbga0
+pretrained_model_name: goodfire/param-decomp/runs/t-e7b15a2e
 output_extract: 0
 tokenizer_name: SimpleStories/test-SimpleStories-gpt2-1.25M
 task_config:

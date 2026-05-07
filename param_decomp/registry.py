@@ -87,6 +87,36 @@ EXPERIMENT_REGISTRY: dict[str, ExperimentConfig] = {
         config_path=Path("param_decomp/experiments/lm/ss_llama_simple_mlp-2L.yaml"),
         expected_runtime=240,
     ),
+    "ss_llama_simple_mlp-2L_n10": ExperimentConfig(
+        task_name="lm",
+        decomp_script=Path("param_decomp/experiments/lm/lm_decomposition.py"),
+        config_path=Path("param_decomp/experiments/lm/ss_llama_simple_mlp-2L_n10.yaml"),
+        expected_runtime=240,
+    ),
+    "ss_llama_simple_mlp-2L_n100": ExperimentConfig(
+        task_name="lm",
+        decomp_script=Path("param_decomp/experiments/lm/lm_decomposition.py"),
+        config_path=Path("param_decomp/experiments/lm/ss_llama_simple_mlp-2L_n100.yaml"),
+        expected_runtime=240,
+    ),
+    "ss_llama_simple_mlp-2L_n1000": ExperimentConfig(
+        task_name="lm",
+        decomp_script=Path("param_decomp/experiments/lm/lm_decomposition.py"),
+        config_path=Path("param_decomp/experiments/lm/ss_llama_simple_mlp-2L_n1000.yaml"),
+        expected_runtime=240,
+    ),
+    "ss_llama_simple_mlp-2L_n10000": ExperimentConfig(
+        task_name="lm",
+        decomp_script=Path("param_decomp/experiments/lm/lm_decomposition.py"),
+        config_path=Path("param_decomp/experiments/lm/ss_llama_simple_mlp-2L_n10000.yaml"),
+        expected_runtime=240,
+    ),
+    "ss_llama_simple_mlp-2L_n100000": ExperimentConfig(
+        task_name="lm",
+        decomp_script=Path("param_decomp/experiments/lm/lm_decomposition.py"),
+        config_path=Path("param_decomp/experiments/lm/ss_llama_simple_mlp-2L_n100000.yaml"),
+        expected_runtime=240,
+    ),
     "pile_llama_simple_mlp-4L": ExperimentConfig(
         task_name="lm",
         decomp_script=Path("param_decomp/experiments/lm/lm_decomposition.py"),
