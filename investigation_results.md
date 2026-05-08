@@ -128,9 +128,85 @@ gradient checkpointing more critical than the report implied.
 
 ---
 
+## Phase 2: ZeRO-1 measurement
+
+**Setup:** same per-rank conditions as Phase 1 (per-rank batch=8, all other knobs
+unchanged) at world size N ∈ {2, 4, 8}, comparing `optimizer_strategy=adamw` vs
+`zero_adamw`. Six runs, 8 H200s shared across them, profile each at step 30.
+
+| N | global batch | DDP peak | ZeRO-1 peak | Δ measured | Δ predicted = (N−1)/N × 8T | match |
+|---:|---:|---:|---:|---:|---:|:---:|
+| 2 | 16 | 37.24 GB | 34.61 GB | 2.63 GB | 2.64 GB | ✅ |
+| 4 | 32 | 37.25 GB | 33.27 GB | 3.98 GB | 3.96 GB | ✅ |
+| 8 | 64 | _pending_ | _pending_ | _pending_ | 4.62 GB | _pending_ |
+
+(`8T = 8 × trainable_params_GB = 8 × 0.66 = 5.28 GB`, the optimizer state Adam
+keeps in fp32. ZeRO-1 shards only that state, not params or grads.)
+
+The **ZeRO-1 saving formula `8·T·(N−1)/N` per rank from §3 of the report holds
+to <1% at N∈{2,4}**. At Jose this is a modest win (~5 GB freed at N=8); at the
+report's hypothetical 1B target the trainable bumps to ~3 B params and the
+saving per rank scales to ~21 GB at N=8 — meaningful headroom.
+
+The DDP peak is essentially flat across N=2/4 because per-rank conditions are
+identical (only the global batch grows). ZeRO-1 reduces peak monotonically as
+predicted.
+
+The manual LR-schedule loop at `run_param_decomp.py:254–255` and `clip_grad_norm_`
+both worked unchanged under ZeRO-1; no save path is exercised in the profiling
+runs (`save_freq=null`), so `consolidate_state_dict` wasn't tested but doesn't
+affect runtime memory.
+
+---
+
+## Phase 4: weight-delta rewrite
+
+**Tests** (`tests/test_components.py`): 6 unit tests verify `forward_with_target_weight`
+matches `forward(weight_delta_and_mask=...)` on output and on V/U gradients,
+across with/without mask and with/without bias. All pass.
+
+**Microbenchmark** (`scripts/bench_weight_delta_rewrite.py`): runs both paths
+through every Jose-shaped decomposed module (24 modules: 6 per layer × 4 layers,
+at the *measured* dims n_embd=768 etc.) on 1×H200, fp32, with backward,
+measuring `torch.cuda.max_memory_allocated`.
+
+| batch (S=512) | materialize peak | rewrite peak | Δ memory | Δ time |
+|---:|---:|---:|---:|---:|
+| 8 | 1.518 GB | 1.609 GB | **+91 MB (+6.0%)** | +15.6% |
+| 16 | 1.872 GB | 2.064 GB | +192 MB (+10.2%) | +22.5% |
+| 32 | 2.575 GB | 2.969 GB | +393 MB (+15.3%) | +26.6% |
+| 64 | 3.988 GB | 4.784 GB | +796 MB (+20.0%) | +29.1% |
+
+**The rewrite is worse on memory and time at every batch size, and the gap
+*scales with batch*.** This contradicts the report's §7d "strict win" claim.
+
+The reason is the autograd retention pattern, not the matmul count:
+
+- The *materialize* path saves one `[batch, seq, d_out]` activation
+  (`unmasked_delta_out`) plus the materialized `[d_out, d_in]` weight delta
+  (a constant ~9 MB per Jose module).
+- The *rewrite* path saves two `[batch, seq, d_out]` activations
+  (`target_out` and `unmasked_recon_out`), needed to backprop through
+  `target_out − unmasked_recon_out`.
+
+So per module, the rewrite adds `[batch, seq, d_out] − [d_out, d_in]` extra
+retained memory. At Jose dims (worst module: d_out=3072, d_in=768) this is
+about `3.1 MB × batch − 9.4 MB`, crossing zero around batch=3 and growing
+linearly above it.
+
+**Implication for the report:** §7d should be deleted or reversed. The
+materialization is small and amortizable; the proposed rewrite makes things
+worse. A genuine fix for the FSDP friction in §5c is `summon_full_params`
+around `calc_weight_deltas`, accepting the per-step gather cost — *not* this
+rewrite.
+
+The hook integration is intentionally not landed: the math is verified, the
+benchmark says don't ship it, and §5c's actual problem (FSDP-sharded V/U
+during `calc_weight_deltas`) needs a different solution.
+
+---
+
 ## Pending phases
 
-- Phase 2 — ZeRO-1 measurement (code ready, awaiting submission)
-- Phase 3 — gradient checkpointing
-- Phase 4 — weight-delta rewrite
+- Phase 3 — gradient checkpointing on the CI fn (code committed, run pending in queue)
 - Phase 5 (stretch) — 1B-target stress test (will use random-init target per Oli's note)
