@@ -61,6 +61,12 @@ class GlobalSharedTransformerCiConfig(BaseConfig):
         "If None, defaults to [4 * d_model].",
     )
     attn_config: AttnConfig
+    gradient_checkpointing: bool = Field(
+        default=False,
+        description="If True, apply torch.utils.checkpoint to each transformer block in the CI fn. "
+        "Trades a re-forward of each block during backward for halved activation memory across "
+        "the block list. Useful at scale where the CI transformer dominates activation memory.",
+    )
 
     @model_validator(mode="after")
     def validate_config(self) -> Self:

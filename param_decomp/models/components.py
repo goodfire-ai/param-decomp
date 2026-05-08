@@ -298,6 +298,7 @@ class GlobalSharedTransformerCiFn(nn.Module):
         mlp_hidden_dims: list[int] | None = None,
         max_len: int = 2048,
         rope_base: float = 10000.0,
+        gradient_checkpointing: bool = False,
     ):
         super().__init__()
 
@@ -307,6 +308,7 @@ class GlobalSharedTransformerCiFn(nn.Module):
         self.d_model = d_model
         self.n_transformer_layers = n_layers
         self.n_heads = n_heads
+        self.gradient_checkpointing = gradient_checkpointing
 
         if mlp_hidden_dims is None:
             mlp_hidden_dims = [4 * d_model]
@@ -349,8 +351,14 @@ class GlobalSharedTransformerCiFn(nn.Module):
             added_seq_dim = True
 
         x = projected
-        for block in self._blocks:
-            x = block(x)
+        if self.gradient_checkpointing and self.training:
+            from torch.utils.checkpoint import checkpoint
+
+            for block in self._blocks:
+                x = checkpoint(block, x, use_reentrant=False)
+        else:
+            for block in self._blocks:
+                x = block(x)
 
         output = self._output_head(x)
 

@@ -328,6 +328,7 @@ class ComponentModel(LoadableModule):
                     mlp_hidden_dims=transformer_cfg.mlp_hidden_dim,
                     max_len=transformer_cfg.attn_config.max_len,
                     rope_base=transformer_cfg.attn_config.rope_base,
+                    gradient_checkpointing=transformer_cfg.gradient_checkpointing,
                 )
 
     @overload
