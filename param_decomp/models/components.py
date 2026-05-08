@@ -469,10 +469,8 @@ class LinearComponents(Components):
             component_acts = component_acts.detach().requires_grad_(True)
             component_acts_cache["post_detach"] = component_acts
 
-        if mask is not None:
-            component_acts = component_acts * mask
-
-        out = einops.einsum(component_acts, self.U, "... C, C d_out -> ... d_out")
+        masked_component_acts = component_acts * mask if mask is not None else component_acts
+        out = einops.einsum(masked_component_acts, self.U, "... C, C d_out -> ... d_out")
 
         if weight_delta_and_mask is not None:
             weight_delta, weight_delta_mask = weight_delta_and_mask
@@ -484,6 +482,48 @@ class LinearComponents(Components):
 
         if self.bias is not None:
             out += self.bias
+
+        return out
+
+    def forward_with_target_weight(
+        self,
+        x: Float[Tensor, "... d_in"],
+        target_weight: Float[Tensor, "d_out d_in"],
+        mask: Float[Tensor, "... C"] | None = None,
+        weight_delta_mask: Float[Tensor, "..."] | None = None,
+        component_acts_cache: dict[str, Float[Tensor, "... C"]] | None = None,
+    ) -> Float[Tensor, "... d_out"]:
+        """Equivalent to `forward` with `weight_delta_and_mask=(target_weight - V@U, weight_delta_mask)`,
+        but never materializes the (d_out, d_in) delta tensor.
+
+        Uses the algebraic identity
+            x @ (W_target − V@U) = x @ W_target − (x @ V) @ U
+        to compute the delta path with two matmuls instead of materializing the delta. Trades
+        an O(d_in · d_out) intermediate for two O(batch · d_in · d_out) matmuls — strict win
+        for memory at typical SPD scales (the report estimates ~320 MB saved at Jose).
+        """
+        component_acts = self.get_component_acts(x)
+        if component_acts_cache is not None:
+            component_acts_cache["pre_detach"] = component_acts
+            component_acts = component_acts.detach().requires_grad_(True)
+            component_acts_cache["post_detach"] = component_acts
+
+        masked_component_acts = component_acts * mask if mask is not None else component_acts
+        out = einops.einsum(masked_component_acts, self.U, "... C, C d_out -> ... d_out")
+
+        if weight_delta_mask is not None:
+            target_out = einops.einsum(x, target_weight, "... d_in, d_out d_in -> ... d_out")
+            unmasked_recon_out = einops.einsum(
+                component_acts, self.U, "... C, C d_out -> ... d_out"
+            )
+            assert target_out.shape[:-1] == weight_delta_mask.shape
+            delta_out = einops.einsum(
+                weight_delta_mask, target_out - unmasked_recon_out, "..., ... d_out -> ... d_out"
+            )
+            out = out + delta_out
+
+        if self.bias is not None:
+            out = out + self.bias
 
         return out
 
