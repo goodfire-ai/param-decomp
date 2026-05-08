@@ -2,12 +2,16 @@ wandb_project: param-decomp
 wandb_run_name: null
 wandb_run_name_prefix: ''
 seed: 0
-autocast_bf16: true
 n_mask_samples: 1
 ci_config:
   mode: global
   fn_type: global_shared_transformer
   hidden_dims: null
+  reader_hidden_dims: null
+  d_resid_ci_fn: null
+  block_groups: null
+  transition_attn_config: null
+  transition_hidden_dim: null
   simple_transformer_ci_cfg:
     d_model: 512
     n_blocks: 4
@@ -50,7 +54,7 @@ loss_metric_configs:
 - coeff: 0.5
   optimizer:
     type: adam
-    beta1: 0.5
+    beta1: 0.8
     beta2: 0.99
     eps: 1.0e-08
     lr_schedule:
@@ -72,7 +76,7 @@ lr_schedule:
   final_val_frac: 0.1
   fn_type: cosine
 steps: 400000
-batch_size: 64
+batch_size: 32
 grad_clip_norm_components: 0.01
 grad_clip_norm_ci_fns: null
 faithfulness_warmup_steps: 400
@@ -82,12 +86,12 @@ train_log_freq: 200
 eval_freq: 1000
 eval_batch_size: 128
 slow_eval_freq: 10000
-n_eval_steps: 1
+n_eval_steps: 3
 slow_eval_on_first_step: true
 save_freq: null
 eval_metric_configs:
 - classname: CIHistograms
-  n_batches_accum: 1
+  n_batches_accum: 5
 - classname: ComponentActivationDensity
 - classname: CI_L0
   groups:
@@ -102,7 +106,6 @@ eval_metric_configs:
 - classname: CIMeanPerComponent
 - coeff: null
   classname: StochasticHiddenActsReconLoss
-- classname: CIHiddenActsReconLoss
 - coeff: null
   init: random
   step_size: 0.1
@@ -110,10 +113,10 @@ eval_metric_configs:
   mask_scope: shared_across_batch
   classname: PGDReconLoss
 ci_alive_threshold: 0.0
-output_extract: 0
 pretrained_model_class: param_decomp.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
 pretrained_model_path: null
-pretrained_model_name: goodfire/spd/runs/gf6rbga0
+pretrained_model_name: goodfire/param-decomp/runs/t-24e55b3b
+output_extract: 0
 tokenizer_name: SimpleStories/test-SimpleStories-gpt2-1.25M
 task_config:
   task_name: lm
