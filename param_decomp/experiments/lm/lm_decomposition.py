@@ -10,7 +10,12 @@ from param_decomp.configs import (
     PersistentPGDReconSubsetLossConfig,
     RepeatAcrossBatchScope,
 )
-from param_decomp.data import DatasetConfig, create_data_loader, input_ids_collate_fn
+from param_decomp.data import (
+    DatasetConfig,
+    create_data_loader,
+    input_ids_collate_fn,
+    make_synthetic_loader,
+)
 from param_decomp.log import logger
 from param_decomp.models.batch_and_loss_fns import make_run_batch, recon_loss_kl
 from param_decomp.pretrain.run_info import PretrainRunInfo
@@ -76,6 +81,11 @@ def main(
     # --- Load Data --- #
     if is_main_process():
         logger.info("Loading dataset...")
+    if config.task_config.synthetic_data and is_main_process():
+        logger.info(
+            f"Using synthetic random-token dataloader (vocab_size="
+            f"{config.task_config.synthetic_vocab_size}, seq_len={config.task_config.max_seq_len})"
+        )
     train_data_config = DatasetConfig(
         name=config.task_config.dataset_name,
         hf_tokenizer_path=config.tokenizer_name,
@@ -109,14 +119,23 @@ def main(
                 f"{train_rank_batch_size}"
             )
 
-    train_loader, _tokenizer = create_data_loader(
-        dataset_config=train_data_config,
-        batch_size=train_rank_batch_size,
-        buffer_size=config.task_config.buffer_size,
-        global_seed=config.seed,
-        dist_state=dist_state,
-        collate_fn=input_ids_collate_fn,
-    )
+    if config.task_config.synthetic_data:
+        per_rank_seed = config.seed + (dist_state.rank if dist_state is not None else 0)
+        train_loader = make_synthetic_loader(
+            batch_size=train_rank_batch_size,
+            seq_len=config.task_config.max_seq_len,
+            vocab_size=config.task_config.synthetic_vocab_size,
+            seed=per_rank_seed,
+        )
+    else:
+        train_loader, _tokenizer = create_data_loader(
+            dataset_config=train_data_config,
+            batch_size=train_rank_batch_size,
+            buffer_size=config.task_config.buffer_size,
+            global_seed=config.seed,
+            dist_state=dist_state,
+            collate_fn=input_ids_collate_fn,
+        )
 
     eval_data_config = DatasetConfig(
         name=config.task_config.dataset_name,
@@ -139,14 +158,23 @@ def main(
         case None:
             eval_rank_batch_size = config.eval_batch_size
 
-    eval_loader, _ = create_data_loader(
-        dataset_config=eval_data_config,
-        batch_size=eval_rank_batch_size,
-        buffer_size=config.task_config.buffer_size,
-        global_seed=config.seed + 1,
-        dist_state=dist_state,
-        collate_fn=input_ids_collate_fn,
-    )
+    if config.task_config.synthetic_data:
+        per_rank_eval_seed = config.seed + 1 + (dist_state.rank if dist_state is not None else 0)
+        eval_loader = make_synthetic_loader(
+            batch_size=eval_rank_batch_size,
+            seq_len=config.task_config.max_seq_len,
+            vocab_size=config.task_config.synthetic_vocab_size,
+            seed=per_rank_eval_seed,
+        )
+    else:
+        eval_loader, _ = create_data_loader(
+            dataset_config=eval_data_config,
+            batch_size=eval_rank_batch_size,
+            buffer_size=config.task_config.buffer_size,
+            global_seed=config.seed + 1,
+            dist_state=dist_state,
+            collate_fn=input_ids_collate_fn,
+        )
 
     run_experiment(
         target_model=target_model,

@@ -1,5 +1,5 @@
 from collections.abc import Callable, Generator
-from typing import Any
+from typing import Any, override
 
 import numpy as np
 import torch
@@ -274,6 +274,52 @@ def create_data_loader(
 def input_ids_collate_fn(batch: list[dict[str, Tensor]]) -> Tensor:
     """Collate function that extracts input_ids tensors from HuggingFace dataset dicts."""
     return torch.stack([item["input_ids"] for item in batch])
+
+
+class _SyntheticTokenDataset(torch.utils.data.IterableDataset[Tensor]):
+    """Yields random-token tensors of shape `[seq_len]` for memory/throughput profiling.
+
+    Bypasses HuggingFace entirely. Per-rank seeding gives different streams across ranks,
+    matching the production data pattern.
+    """
+
+    def __init__(self, seq_len: int, vocab_size: int, seed: int) -> None:
+        self.seq_len = seq_len
+        self.vocab_size = vocab_size
+        self.seed = seed
+
+    def set_epoch(self, epoch: int) -> None:
+        self.seed = self.seed + epoch * 1_000_003
+
+    @override
+    def __iter__(self):
+        gen = torch.Generator(device="cpu")
+        gen.manual_seed(self.seed)
+        while True:
+            yield torch.randint(0, self.vocab_size, (self.seq_len,), generator=gen)
+
+
+def make_synthetic_loader(
+    batch_size: int,
+    seq_len: int,
+    vocab_size: int,
+    seed: int,
+) -> DataLoader[Tensor]:
+    """DataLoader of random tokens, shape-compatible with the real Pile loader."""
+    dataset = _SyntheticTokenDataset(seq_len=seq_len, vocab_size=vocab_size, seed=seed)
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(seed)
+
+    def _collate(batch: list[Tensor]) -> Tensor:
+        return torch.stack(batch)
+
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        collate_fn=_collate,
+        num_workers=0,
+        generator=generator,
+    )
 
 
 def loop_dataloader[T](dl: DataLoader[T]) -> Generator[T]:

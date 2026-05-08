@@ -260,6 +260,17 @@ class LMTaskConfig(BaseConfig):
         description="Whether to reshuffle data at each epoch. Set False in tests to keep fixed "
         "order across dp modes.",
     )
+    synthetic_data: bool = Field(
+        default=False,
+        description="If True, bypass `dataset_name` and feed random-token batches instead. "
+        "Used by the scaling investigation: profiling memory/throughput doesn't need real text, "
+        "and removes the HF Hub as a flaky dependency.",
+    )
+    synthetic_vocab_size: PositiveInt = Field(
+        default=50277,
+        description="Vocab size used when generating synthetic random-token batches. "
+        "Should match the target model's vocab.",
+    )
     is_tokenized: bool = Field(
         default=False,
         description="Whether the dataset is already tokenized",
