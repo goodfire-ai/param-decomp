@@ -1,7 +1,9 @@
 """Run PD on a model."""
 
 import gc
+import json
 import os
+import time
 from collections import defaultdict
 from collections.abc import Iterator
 from pathlib import Path
@@ -60,6 +62,21 @@ from param_decomp.utils.logging_utils import get_grad_norms_dict, local_log
 from param_decomp.utils.module_utils import expand_module_patterns
 from param_decomp.utils.run_utils import generate_run_id, save_file
 from param_decomp.utils.wandb_utils import init_wandb, try_wandb
+
+
+def _log_param_breakdown(component_model: ComponentModel) -> None:
+    """Log a parameter-count breakdown at run start. Used by the scaling investigation."""
+    target_p = sum(p.numel() for p in component_model.target_model.parameters())
+    component_p = sum(
+        p.numel()
+        for n in component_model.target_module_paths
+        for p in component_model.components[n].parameters()
+    )
+    ci_p = sum(p.numel() for p in component_model.ci_fn.parameters())
+    logger.info(f"target_params:    {target_p:>14,}  ({target_p * 4 / 1e9:.2f} GB fp32)")
+    logger.info(f"component_params: {component_p:>14,}  ({component_p * 4 / 1e9:.2f} GB fp32)")
+    logger.info(f"ci_fn_params:     {ci_p:>14,}  ({ci_p * 4 / 1e9:.2f} GB fp32)")
+    logger.info(f"trainable total:  {component_p + ci_p:>14,}")
 
 
 def run_faithfulness_warmup(
@@ -206,6 +223,10 @@ def optimize(
     optimized_params = component_params + ci_fn_params
     optimizer = optim.AdamW(optimized_params, lr=config.lr_schedule.start_val, weight_decay=0)
 
+    if config.profile_memory and is_main_process():
+        _log_param_breakdown(component_model)
+        torch.cuda.memory._record_memory_history(max_entries=200_000)
+
     if config.faithfulness_warmup_steps > 0:
         run_faithfulness_warmup(component_model, component_params, config)
 
@@ -245,7 +266,13 @@ def optimize(
         for ppgd_cfg in persistent_pgd_configs
     }
 
+    step_times: list[float] = []
+    step_start = 0.0
     for step in tqdm(range(config.steps + 1), ncols=0, disable=not is_main_process()):
+        if config.profile_memory:
+            torch.cuda.synchronize()
+            step_start = time.perf_counter()
+
         optimizer.zero_grad()
 
         step_lr = get_scheduled_value(
@@ -420,6 +447,37 @@ def optimize(
             if config.grad_clip_norm_ci_fns is not None:
                 clip_grad_norm_(ci_fn_params, config.grad_clip_norm_ci_fns)
             optimizer.step()
+
+        if config.profile_memory:
+            torch.cuda.synchronize()
+            step_times.append(time.perf_counter() - step_start)
+
+        if config.profile_memory and step == config.profile_memory_step and is_main_process():
+            assert out_dir is not None
+            snap_path = out_dir / "memory_snapshot.pickle"
+            torch.cuda.memory._dump_snapshot(str(snap_path))
+            torch.cuda.memory._record_memory_history(enabled=None)
+            peak_gb = torch.cuda.max_memory_allocated() / 1e9
+            logger.info(f"Memory snapshot dumped to {snap_path}")
+            logger.info(f"Peak memory: {peak_gb:.2f} GB")
+            logger.info(f"\n{torch.cuda.memory_summary(abbreviated=True)}")
+
+    if config.profile_memory and is_main_process() and out_dir is not None:
+        warmup_steps = 5
+        warmed = step_times[warmup_steps:]
+        avg_ms = 1000 * sum(warmed) / len(warmed) if warmed else 0.0
+        peak_gb = torch.cuda.max_memory_allocated() / 1e9
+        summary = {
+            "step_times_ms": [t * 1000 for t in step_times],
+            "avg_step_time_ms_post_warmup": avg_ms,
+            "warmup_steps_skipped": warmup_steps,
+            "peak_memory_gb": peak_gb,
+            "world_size": dist_state.world_size if dist_state is not None else 1,
+            "batch_size": config.batch_size,
+        }
+        (out_dir / "profile_summary.json").write_text(json.dumps(summary, indent=2))
+        logger.info(f"Avg step time (post-warmup): {avg_ms:.1f} ms")
+        logger.info(f"Peak memory: {peak_gb:.2f} GB")
 
     if is_main_process():
         logger.info("Finished training loop.")

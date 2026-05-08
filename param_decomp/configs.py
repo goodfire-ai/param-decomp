@@ -851,6 +851,18 @@ class Config(BaseConfig):
         )
     )
 
+    # --- Memory Profiling ---
+    profile_memory: bool = Field(
+        default=False,
+        description="If True, dump a torch CUDA memory snapshot at `profile_memory_step` and log "
+        "a parameter-count breakdown at startup. Used by the scaling investigation; off in regular runs.",
+    )
+    profile_memory_step: PositiveInt = Field(
+        default=30,
+        description="Step at which to dump the CUDA memory snapshot (only used when "
+        "`profile_memory=True`).",
+    )
+
     # --- Component Tracking ---
     ci_alive_threshold: Probability = Field(
         default=0.0,
