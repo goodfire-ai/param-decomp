@@ -14,8 +14,9 @@ from param_decomp.experiments.resid_mlp.models import (
     ResidMLP,
 )
 from param_decomp.experiments.tms.models import TMSModel
+from param_decomp.load import load_pd, load_target_from_experiment_config
 from param_decomp.log import logger
-from param_decomp.models.component_model import ComponentModel, ParamDecompRunInfo
+from param_decomp.models.component_model import PDRunInfo
 from param_decomp.models.components import Components
 from param_decomp.plotting import plot_causal_importance_vals
 from param_decomp.registry import EXPERIMENT_REGISTRY
@@ -37,8 +38,10 @@ def extract_ci_val_figures(
     Returns:
         Dictionary containing causal importances data and metadata
     """
-    run_info = ParamDecompRunInfo.from_path(run_id)
-    model = ComponentModel.from_run_info(run_info)
+    run_info = PDRunInfo.from_path(run_id)
+    assert run_info.experiment_config is not None
+    target = load_target_from_experiment_config(run_info.experiment_config)
+    model = load_pd(run_id, target=target)
     model.to(device)
 
     config = run_info.config
@@ -480,8 +483,10 @@ def main(out_dir: Path, device: str):
         assert path is not None
         wandb_id = path.split("/")[-1]
 
-        run_info = ParamDecompRunInfo.from_path(path)
-        model = ComponentModel.from_run_info(run_info)
+        run_info = PDRunInfo.from_path(path)
+        assert run_info.experiment_config is not None
+        target = load_target_from_experiment_config(run_info.experiment_config)
+        model = load_pd(path, target=target)
         config = run_info.config
         assert isinstance(model.target_model, ResidMLP)
         model.target_model.to(device)

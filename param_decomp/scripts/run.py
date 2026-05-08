@@ -15,7 +15,6 @@ from typing import Any
 
 import yaml
 
-from param_decomp.configs import Config
 from param_decomp.log import logger
 from param_decomp.registry import EXPERIMENT_REGISTRY, get_max_expected_runtime
 from param_decomp.settings import REPO_ROOT
@@ -170,20 +169,21 @@ def _create_training_jobs(
     for experiment in experiments:
         exp_config = EXPERIMENT_REGISTRY[experiment]
 
-        # Load base config
-        base_config = Config.from_file(exp_config.config_path)
+        # Load base config as a raw dict — each experiment's decomposition script validates
+        # against its own ExperimentConfig (LMExperimentConfig, TMSExperimentConfig, etc).
+        with open(REPO_ROOT / exp_config.config_path) as f:
+            base_config_dict: dict[str, Any] = yaml.safe_load(f)
 
         if sweep_params is None:
-            # Fixed configuration run - still use JSON to ensure project override works
-            base_config_dict = base_config.model_dump(mode="json")
-            base_config_dict["wandb_project"] = project
-            config_with_overrides = Config(**base_config_dict)
+            # Fixed configuration run - apply project override under the nested `pd:` block
+            config_dict_with_overrides = copy.deepcopy(base_config_dict)
+            config_dict_with_overrides.setdefault("pd", {})["wandb_project"] = project
 
             training_jobs.append(
                 TrainingJob(
                     experiment=experiment,
                     script_path=exp_config.decomp_script,
-                    config=config_with_overrides,
+                    config_dict=config_dict_with_overrides,
                     run_id=generate_run_id("param_decomp"),
                 )
             )
@@ -197,18 +197,16 @@ def _create_training_jobs(
 
             for i, param_combo in enumerate(combinations):
                 # Apply parameter overrides
-                base_config_dict = base_config.model_dump(mode="json")
                 config_dict_with_overrides = apply_nested_updates(base_config_dict, param_combo)
-                config_dict_with_overrides["wandb_project"] = project
+                config_dict_with_overrides.setdefault("pd", {})["wandb_project"] = project
                 wandb_run_name = f"{experiment}-{generate_wandb_run_name(param_combo)}"
-                config_dict_with_overrides["wandb_run_name"] = wandb_run_name
-                config_with_overrides = Config(**config_dict_with_overrides)
+                config_dict_with_overrides["pd"]["wandb_run_name"] = wandb_run_name
 
                 training_jobs.append(
                     TrainingJob(
                         experiment=experiment,
                         script_path=exp_config.decomp_script,
-                        config=config_with_overrides,
+                        config_dict=config_dict_with_overrides,
                         run_id=generate_run_id("param_decomp"),
                     )
                 )

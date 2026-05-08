@@ -13,7 +13,7 @@ from typing import Any, Final, Literal, NamedTuple
 import torch
 import yaml
 
-from param_decomp.configs import Config
+from param_decomp.configs import PDConfig
 from param_decomp.log import logger
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp.utils.git_utils import (
@@ -107,26 +107,40 @@ def apply_nested_updates(base_dict: dict[str, Any], updates: dict[str, Any]) -> 
         if "." in key:
             keys = key.split(".")
 
-            # Check if this is a discriminator-based list key
-            # Format: "list_field.discriminator_value.field_name..."
-            if len(keys) >= 3 and keys[0] in _DISCRIMINATED_LIST_FIELDS:
-                list_field = keys[0]
-                discriminator_value = keys[1]
-                field_path = keys[2:]  # Remaining path after discriminator
+            # Find a discriminated-list segment anywhere in the path. Format example:
+            # "pd.loss_metric_configs.ImportanceMinimalityLoss.coeff" → list_idx=1.
+            list_idx: int | None = None
+            for i, seg in enumerate(keys):
+                if seg in _DISCRIMINATED_LIST_FIELDS and i + 2 < len(keys):
+                    list_idx = i
+                    break
 
-                # Ensure the list exists
-                if list_field not in result:
-                    result[list_field] = []
+            if list_idx is not None:
+                # Navigate to the parent dict that holds the discriminated list.
+                parent: dict[str, Any] = result
+                for k in keys[:list_idx]:
+                    if k not in parent:
+                        parent[k] = {}
+                    assert isinstance(parent[k], dict)
+                    parent = parent[k]
 
-                if not isinstance(result[list_field], list):
+                list_field = keys[list_idx]
+                discriminator_value = keys[list_idx + 1]
+                field_path = keys[list_idx + 2 :]
+
+                # Ensure the list exists on the navigated parent
+                if list_field not in parent:
+                    parent[list_field] = []
+
+                if not isinstance(parent[list_field], list):
                     raise ValueError(
-                        f"Expected '{list_field}' to be a list, got {type(result[list_field])}"
+                        f"Expected '{list_field}' to be a list, got {type(parent[list_field])}"
                     )
 
                 # Find or create the item with matching discriminator
                 discriminator_field = _DISCRIMINATED_LIST_FIELDS[list_field]
                 target_item = None
-                for item in result[list_field]:
+                for item in parent[list_field]:
                     if item.get(discriminator_field) == discriminator_value:
                         target_item = item
                         break
@@ -134,7 +148,7 @@ def apply_nested_updates(base_dict: dict[str, Any], updates: dict[str, Any]) -> 
                 if target_item is None:
                     # Create new item with discriminator
                     target_item = {discriminator_field: discriminator_value}
-                    result[list_field].append(target_item)
+                    parent[list_field].append(target_item)
 
                 # Navigate the remaining path within the item
                 current_item: dict[str, Any] = target_item
@@ -337,15 +351,15 @@ def generate_run_id(run_type: RunType) -> str:
     return f"{type_abbr}-{secrets.token_hex(4)}"
 
 
-def parse_config(config_path: Path | str | None, config_json: str | None) -> Config:
-    """Parse a Config from either a file path or a JSON string. Exactly one must be provided."""
+def parse_config(config_path: Path | str | None, config_json: str | None) -> PDConfig:
+    """Parse a PDConfig from either a file path or a JSON string. Exactly one must be provided."""
     assert (config_path is not None) != (config_json is not None), (
         "Need exactly one of config_path and config_json"
     )
     if config_path is not None:
-        return Config.from_file(config_path)
+        return PDConfig.from_file(config_path)
     assert config_json is not None
-    return Config(**json.loads(config_json.removeprefix("json:")))
+    return PDConfig(**json.loads(config_json.removeprefix("json:")))
 
 
 def parse_sweep_params(sweep_params_json: str | None) -> dict[str, Any] | None:

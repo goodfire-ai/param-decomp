@@ -24,10 +24,12 @@ import torch.nn.functional as F
 from jaxtyping import Float, Int
 from torch import Tensor
 
-from param_decomp.configs import LMTaskConfig, SamplingType
+from param_decomp.configs import SamplingType
 from param_decomp.data import DatasetConfig, create_data_loader
+from param_decomp.experiments.lm.configs import LMExperimentConfig
+from param_decomp.load import load_pd, load_target_from_experiment_config
 from param_decomp.log import logger
-from param_decomp.models.component_model import ComponentModel, ParamDecompRunInfo
+from param_decomp.models.component_model import ComponentModel, PDRunInfo
 from param_decomp.models.components import make_mask_infos
 from param_decomp.param_decomp_types import ModelPath
 
@@ -75,32 +77,34 @@ def run_r_sweep(
     device: str,
 ) -> tuple[str, list[float]]:
     """Run r sweep for a single model. Returns (run_id, ce_losses)."""
-    run_info = ParamDecompRunInfo.from_path(wandb_path)
+    run_info = PDRunInfo.from_path(wandb_path)
     config = run_info.config
+    exp = run_info.experiment_config
+    assert isinstance(exp, LMExperimentConfig)
+    data = exp.data
     run_id = str(wandb_path).split("/")[-1]
 
     logger.info(f"Loading model {run_id}...")
-    model = ComponentModel.from_run_info(run_info).to(device)
+    target = load_target_from_experiment_config(exp)
+    model = load_pd(wandb_path, target=target).to(device)
     model.eval()
 
     logger.info("Creating validation data loader...")
-    task_config = config.task_config
-    assert isinstance(task_config, LMTaskConfig)
     eval_dataset_config = DatasetConfig(
-        name=task_config.dataset_name,
-        hf_tokenizer_path=config.tokenizer_name,
-        split=task_config.eval_data_split,
-        n_ctx=task_config.max_seq_len,
-        is_tokenized=task_config.is_tokenized,
-        streaming=task_config.streaming,
-        column_name=task_config.column_name,
+        name=data.dataset_name,
+        hf_tokenizer_path=data.tokenizer_name,
+        split=data.eval_split,
+        n_ctx=data.max_seq_len,
+        is_tokenized=data.is_tokenized,
+        streaming=data.streaming,
+        column_name=data.column_name,
         shuffle_each_epoch=False,
-        seed=task_config.dataset_seed,
+        seed=data.dataset_seed,
     )
     eval_loader, _tokenizer = create_data_loader(
         dataset_config=eval_dataset_config,
         batch_size=config.eval_batch_size,
-        buffer_size=task_config.buffer_size,
+        buffer_size=data.buffer_size,
     )
 
     logger.info(f"Collecting {n_batches} validation batches...")

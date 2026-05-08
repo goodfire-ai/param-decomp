@@ -16,7 +16,6 @@ from param_decomp.log import logger
 from param_decomp.param_decomp_types import (
     GlobalCiFnType,
     LayerwiseCiFnType,
-    ModelPath,
     Probability,
 )
 
@@ -177,95 +176,6 @@ def migrate_to_lr_schedule_config(config_dict: dict[str, Any]) -> None:
         "warmup_pct": old_warmup_pct,
         "final_val_frac": final_val_frac,
     }
-
-
-# Task configs - these define task-specific parameters for PD
-class TMSTaskConfig(BaseConfig):
-    task_name: Literal["tms"] = Field(
-        default="tms",
-        description="Task identifier for TMS",
-    )
-    feature_probability: Probability = Field(
-        ...,
-        description="Probability that a given feature is active in generated data",
-    )
-    data_generation_type: Literal["exactly_one_active", "at_least_zero_active"] = Field(
-        default="at_least_zero_active",
-        description="Strategy for generating synthetic data for TMS training",
-    )
-
-
-class ResidMLPTaskConfig(BaseConfig):
-    task_name: Literal["resid_mlp"] = Field(
-        default="resid_mlp",
-        description="Identifier for the residual-MLP decomposition task",
-    )
-    feature_probability: Probability = Field(
-        ...,
-        description="Probability that a given feature is active in generated data",
-    )
-    data_generation_type: Literal[
-        "exactly_one_active", "exactly_two_active", "at_least_zero_active"
-    ] = Field(
-        default="at_least_zero_active",
-        description="Strategy for generating synthetic data for residual-MLP training",
-    )
-
-
-class IHTaskConfig(BaseConfig):
-    task_name: Literal["ih"]
-    prefix_window: PositiveInt | None = Field(
-        default=None,
-        description="Number of tokens to use as a prefix window for the induction head. If none, uses the full sequence length.",
-    )
-
-
-class LMTaskConfig(BaseConfig):
-    task_name: Literal["lm"] = Field(
-        default="lm",
-        description="Identifier for the language-model decomposition task",
-    )
-    max_seq_len: PositiveInt = Field(
-        default=512,
-        description="Maximum sequence length to truncate or pad inputs to",
-    )
-    buffer_size: PositiveInt = Field(
-        default=1000,
-        description="Buffered sample count for streaming dataset shuffling",
-    )
-    dataset_name: str = Field(
-        default="lennart-finke/SimpleStories",
-        description="HuggingFace dataset identifier to use for the LM task",
-    )
-    column_name: str = Field(
-        default="story",
-        description="Dataset column that contains the text to train on",
-    )
-    train_data_split: str = Field(
-        default="train",
-        description="Name of the dataset split used for training",
-    )
-    eval_data_split: str = Field(
-        default="test",
-        description="Name of the dataset split used for evaluation",
-    )
-    shuffle_each_epoch: bool = Field(
-        default=True,
-        description="Whether to reshuffle data at each epoch. Set False in tests to keep fixed "
-        "order across dp modes.",
-    )
-    is_tokenized: bool = Field(
-        default=False,
-        description="Whether the dataset is already tokenized",
-    )
-    streaming: bool = Field(
-        default=False,
-        description="Whether to use a streaming dataset",
-    )
-    dataset_seed: int | None = Field(
-        default=None,
-        description="Seed for dataset shuffling/sampling. When None, uses the global `seed`.",
-    )
 
 
 class ModulePatternInfoConfig(BaseConfig):
@@ -688,12 +598,11 @@ EvalOnlyMetricConfigType = (
 )
 MetricConfigType = LossMetricConfigType | EvalOnlyMetricConfigType
 
-TaskConfig = TMSTaskConfig | ResidMLPTaskConfig | LMTaskConfig | IHTaskConfig
 
 SamplingType = Literal["continuous", "binomial"]
 
 
-class Config(BaseConfig):
+class PDConfig(BaseConfig):
     # --- WandB
     wandb_project: str | None = Field(
         default=None,
@@ -857,39 +766,6 @@ class Config(BaseConfig):
         description="Causal importance threshold above which a component is considered 'firing'",
     )
 
-    # --- Pretrained model info ---
-    pretrained_model_class: str = Field(
-        ...,
-        description="Fully-qualified class name of the pretrained model to load. Can be defined "
-        "locally or an in external package (e.g. 'transformers.LlamaForCausalLM' or "
-        "'param_decomp.experiments.resid_mlp.models.ResidMLP').",
-    )
-    pretrained_model_path: ModelPath | None = Field(
-        default=None,
-        description="Model identifier. Local path or wandb reference "
-        "(e.g. 'wandb:goodfire/param-decomp/runs/otxwx80v' or 'mnt/my_model/checkpoint.pth')",
-    )
-    pretrained_model_name: str | None = Field(
-        default=None,
-        description="hf model identifier. E.g. 'SimpleStories/SimpleStories-1.25M'",
-    )
-    output_extract: int | str | None = Field(
-        default=None,
-        description="How to extract tensor from model output. None = raw output, int = index into "
-        "output tuple, str = attribute name.",
-    )
-    tokenizer_name: str | None = Field(
-        default=None,
-        description="Name or path of the tokenizer to use when loading an LM",
-    )
-
-    # --- Task Specific ---
-    task_config: TaskConfig = Field(
-        ...,
-        discriminator="task_name",
-        description="Nested task-specific configuration selected by the `task_name` discriminator",
-    )
-
     DEPRECATED_CONFIG_KEYS: ClassVar[list[str]] = [
         "image_on_first_step",
         "image_freq",
@@ -955,30 +831,6 @@ class Config(BaseConfig):
                 # configs with it
                 new_vals = [cfg for cfg in val if "extra_init_kwargs" not in cfg]
                 config_dict[key] = new_vals
-
-        # Remap simple_stories_train → param_decomp.pretrain (models moved in-tree)
-        pmc = config_dict.get("pretrained_model_class", "")
-        if pmc.startswith("simple_stories_train.models."):
-            pmc = pmc.replace("simple_stories_train.models.", "param_decomp.pretrain.models.", 1)
-            config_dict["pretrained_model_class"] = pmc
-
-        # Remap legacy spd.X → param_decomp.X for configs saved before the package rename
-        if pmc.startswith("spd."):
-            config_dict["pretrained_model_class"] = "param_decomp." + pmc[len("spd.") :]
-
-        # Migrate old pretrained_model_output_attr to output_extract
-        if "pretrained_model_output_attr" in config_dict:
-            old_val = config_dict.pop("pretrained_model_output_attr")
-            logger.info(f"Migrating pretrained_model_output_attr={old_val!r} to output_extract")
-            match old_val:
-                case None:
-                    pass
-                case "idx_0":
-                    config_dict["output_extract"] = 0
-                case "logits":
-                    config_dict["output_extract"] = "logits"
-                case _:
-                    raise ValueError(f"Unknown pretrained_model_output_attr: {old_val!r}")
 
         if "eval_batch_size" not in config_dict:
             config_dict["eval_batch_size"] = config_dict["batch_size"]
@@ -1082,13 +934,5 @@ class Config(BaseConfig):
 
         for cfg in self.loss_metric_configs:
             assert cfg.coeff is not None, "All loss_metric_configs must have a coeff"
-
-        if any(
-            isinstance(cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig)
-            for cfg in self.loss_metric_configs
-        ):
-            assert isinstance(self.task_config, LMTaskConfig), (
-                "Persistent PGD losses are only supported with LM tasks"
-            )
 
         return self

@@ -19,7 +19,6 @@ from pydantic import BaseModel
 from param_decomp.app.backend.dependencies import DepLoadedRun, DepStateManager
 from param_decomp.app.backend.state import DatasetSearchState
 from param_decomp.app.backend.utils import log_errors
-from param_decomp.configs import LMTaskConfig
 from param_decomp.log import logger
 from param_decomp.utils.distributed_utils import get_device
 
@@ -79,28 +78,17 @@ class TokenizedSearchPage(BaseModel):
 router = APIRouter(prefix="/api/dataset", tags=["dataset"])
 
 
-def _get_lm_task_config(loaded: DepLoadedRun) -> LMTaskConfig:
-    """Extract LMTaskConfig from the loaded run, or raise 400."""
-    task_config = loaded.config.task_config
-    if not isinstance(task_config, LMTaskConfig):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Dataset search requires an LM experiment, got {task_config.task_name}",
-        )
-    return task_config
-
-
-def _assert_simplestories(task_config: LMTaskConfig) -> None:
+def _assert_simplestories(dataset_name: str) -> None:
     """Raise 400 unless the run's dataset_name is a SimpleStories variant.
 
     The dataset explorer currently relies on SimpleStories's text format and
     full-in-memory load; other datasets (e.g. pile-tokenized-streaming) aren't
     supported.
     """
-    if "simplestories" not in task_config.dataset_name.lower():
+    if "simplestories" not in dataset_name.lower():
         raise HTTPException(
             status_code=400,
-            detail=(f"Currently only simplestories is supported; got {task_config.dataset_name}"),
+            detail=(f"Currently only simplestories is supported; got {dataset_name}"),
         )
 
 
@@ -124,10 +112,9 @@ def search_dataset(
     Returns:
         Search metadata (query, split, dataset_name, total results, search time)
     """
-    task_config = _get_lm_task_config(loaded)
-    _assert_simplestories(task_config)
-    dataset_name = task_config.dataset_name
-    text_column = task_config.column_name
+    dataset_name = loaded.experiment_config.data.dataset_name
+    text_column = loaded.experiment_config.data.column_name
+    _assert_simplestories(dataset_name)
 
     start_time = time.time()
     search_query = query.lower()
@@ -349,10 +336,9 @@ def get_random_samples(
     Returns:
         Random samples with metadata
     """
-    task_config = _get_lm_task_config(loaded)
-    _assert_simplestories(task_config)
-    dataset_name = task_config.dataset_name
-    text_column = task_config.column_name
+    dataset_name = loaded.experiment_config.data.dataset_name
+    text_column = loaded.experiment_config.data.column_name
+    _assert_simplestories(dataset_name)
 
     logger.info(f"Loading dataset {dataset_name} (split={split}) for random sampling...")
     dataset = load_dataset(dataset_name, split=split)
@@ -431,10 +417,9 @@ def get_random_samples_with_loss(
     Returns:
         Tokenized samples with next-token probability per token
     """
-    task_config = _get_lm_task_config(loaded)
-    _assert_simplestories(task_config)
-    dataset_name = task_config.dataset_name
-    text_column = task_config.column_name
+    dataset_name = loaded.experiment_config.data.dataset_name
+    text_column = loaded.experiment_config.data.column_name
+    _assert_simplestories(dataset_name)
 
     device = get_device()
     model = loaded.model

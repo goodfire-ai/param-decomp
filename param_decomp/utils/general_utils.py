@@ -220,21 +220,24 @@ def save_pre_run_info(
     out_dir: Path,
     pd_config: BaseConfig,
     sweep_params: dict[str, Any] | None,
+    experiment_config: BaseConfig | None,
     target_model: nn.Module | None,
-    train_config: BaseConfig | None,
-    task_name: str | None,
+    target_train_config: BaseConfig | None,
 ) -> None:
     """Save run information locally and optionally to wandb."""
 
-    files_to_save = {
-        "final_config.yaml": pd_config.model_dump(mode="json"),
+    files_to_save: dict[str, Any] = {
+        "pd_config.yaml": pd_config.model_dump(mode="json"),
     }
 
-    if target_model is not None:
-        files_to_save[f"{task_name}.pth"] = target_model.state_dict()
+    if experiment_config is not None:
+        files_to_save["experiment_config.yaml"] = experiment_config.model_dump(mode="json")
 
-    if train_config is not None:
-        files_to_save[f"{task_name}_train_config.yaml"] = train_config.model_dump(mode="json")
+    if target_model is not None:
+        files_to_save["target_model.pth"] = target_model.state_dict()
+
+    if target_train_config is not None:
+        files_to_save["target_train_config.yaml"] = target_train_config.model_dump(mode="json")
 
     if sweep_params is not None:
         files_to_save["sweep_params.yaml"] = sweep_params

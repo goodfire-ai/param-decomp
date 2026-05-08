@@ -6,9 +6,9 @@ from pathlib import Path
 import torch
 from transformers import AutoTokenizer
 
-from param_decomp.configs import LMTaskConfig
 from param_decomp.data import DatasetConfig, create_data_loader
-from param_decomp.models.component_model import ParamDecompRunInfo
+from param_decomp.experiments.lm.configs import LMExperimentConfig
+from param_decomp.models.component_model import PDRunInfo
 
 
 def load_prompts(path: Path) -> list[str]:
@@ -19,22 +19,22 @@ def load_prompts(path: Path) -> list[str]:
     return prompts
 
 
-def sample_prompts_from_dataset(run_info: ParamDecompRunInfo, n_samples: int) -> list[str]:
+def sample_prompts_from_dataset(run_info: PDRunInfo, n_samples: int) -> list[str]:
     """Sample n_samples sequences from the dataset and decode to strings."""
-    config = run_info.config
-    task_config = config.task_config
-    assert isinstance(task_config, LMTaskConfig)
+    exp = run_info.experiment_config
+    assert isinstance(exp, LMExperimentConfig), "Run is not an LM experiment"
+    data = exp.data
 
-    tokenizer = AutoTokenizer.from_pretrained(config.tokenizer_name)
+    tokenizer = AutoTokenizer.from_pretrained(data.tokenizer_name)
 
     dataset_config = DatasetConfig(
-        name=task_config.dataset_name,
-        hf_tokenizer_path=config.tokenizer_name,
-        split=task_config.eval_data_split,
-        n_ctx=task_config.max_seq_len,
-        is_tokenized=task_config.is_tokenized,
-        streaming=task_config.streaming,
-        column_name=task_config.column_name,
+        name=data.dataset_name,
+        hf_tokenizer_path=data.tokenizer_name,
+        split=data.eval_split,
+        n_ctx=data.max_seq_len,
+        is_tokenized=data.is_tokenized,
+        streaming=data.streaming,
+        column_name=data.column_name,
         shuffle_each_epoch=False,
     )
     loader, _ = create_data_loader(
@@ -48,7 +48,7 @@ def sample_prompts_from_dataset(run_info: ParamDecompRunInfo, n_samples: int) ->
         for i, batch in enumerate(loader):
             if i >= n_samples:
                 break
-            input_ids = batch[task_config.column_name][0]
+            input_ids = batch[data.column_name][0]
             text = tokenizer.decode(input_ids, skip_special_tokens=False)  # pyright: ignore[reportAttributeAccessIssue]
             prompts.append(text)
 

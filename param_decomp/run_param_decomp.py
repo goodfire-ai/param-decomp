@@ -19,9 +19,9 @@ from tqdm import tqdm
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import (
-    Config,
     LossMetricConfigType,
     MetricConfigType,
+    PDConfig,
     PersistentPGDReconLossConfig,
     PersistentPGDReconSubsetLossConfig,
     PGDMultiBatchConfig,
@@ -34,7 +34,7 @@ from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.log import logger
 from param_decomp.losses import compute_losses
 from param_decomp.metrics import faithfulness_loss
-from param_decomp.models.batch_and_loss_fns import ReconstructionLoss, RunBatch
+from param_decomp.models.batch_and_loss_fns import PDTarget, ReconstructionLoss, RunBatch
 from param_decomp.models.component_model import (
     ComponentModel,
     OutputWithCache,
@@ -65,7 +65,7 @@ from param_decomp.utils.wandb_utils import init_wandb, try_wandb
 def run_faithfulness_warmup(
     component_model: ComponentModel,
     component_params: list[torch.nn.Parameter],
-    config: Config,
+    config: PDConfig,
 ) -> None:
     """Run faithfulness warmup phase to improve initialization."""
     logger.info("Starting faithfulness warmup phase...")
@@ -116,7 +116,7 @@ def get_unique_metric_configs(
 
 def optimize(
     target_model: nn.Module,
-    config: Config,
+    config: PDConfig,
     device: str,
     train_loader: DataLoader[Any],
     eval_loader: DataLoader[Any],
@@ -425,26 +425,26 @@ def optimize(
         logger.info("Finished training loop.")
 
 
-def run_experiment(
-    target_model: nn.Module,
-    config: Config,
-    device: str,
+def run_pd(
+    config: PDConfig,
+    target: PDTarget,
     train_loader: DataLoader[Any],
     eval_loader: DataLoader[Any],
-    run_batch: RunBatch,
-    reconstruction_loss: ReconstructionLoss,
-    experiment_tag: str,
+    device: str,
+    *,
     run_id: str | None = None,
-    launch_id: str | None = None,
-    evals_id: str | None = None,
     sweep_params: dict[str, Any] | None = None,
-    target_model_train_config: BaseConfig | None = None,
-    tied_weights: list[tuple[str, str]] | None = None,
-) -> None:
-    """Run a full PD experiment: setup, optimize, cleanup.
+    experiment_config: BaseConfig | None = None,
+    experiment_tag: str | None = None,
+    wandb_tags: list[str] | None = None,
+    target_train_config: BaseConfig | None = None,
+) -> Path | None:
+    """Run a full PD decomposition: setup, optimize, cleanup.
 
     All ranks call this function. Only the main process does wandb/logging setup.
+    Returns the output directory on the main process and None on other ranks.
     """
+    out_dir: Path | None
     if is_main_process():
         run_id = run_id or generate_run_id("param_decomp")
         out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
@@ -453,7 +453,8 @@ def run_experiment(
         logger.info(f"Run ID: {run_id}")
         logger.info(f"Output directory: {out_dir}")
 
-        tags = [str(i) for i in [experiment_tag, evals_id, launch_id] if i is not None]
+        effective_tag = experiment_tag if experiment_tag is not None else target.name
+        tags = [effective_tag, *(wandb_tags or [])]
         slurm_array_job_id = os.getenv("SLURM_ARRAY_JOB_ID")
         if slurm_array_job_id is not None:
             tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
@@ -468,24 +469,26 @@ def run_experiment(
             out_dir=out_dir,
             pd_config=config,
             sweep_params=sweep_params,
-            target_model=target_model if target_model_train_config is not None else None,
-            train_config=target_model_train_config,
-            task_name=getattr(config.task_config, "task_name", None),
+            experiment_config=experiment_config,
+            target_model=target.model if target_train_config is not None else None,
+            target_train_config=target_train_config,
         )
     else:
         out_dir = None
 
     optimize(
-        target_model=target_model,
+        target_model=target.model,
         config=config,
         device=device,
         train_loader=train_loader,
         eval_loader=eval_loader,
-        run_batch=run_batch,
-        reconstruction_loss=reconstruction_loss,
+        run_batch=target.run_batch,
+        reconstruction_loss=target.reconstruction_loss,
         out_dir=out_dir,
-        tied_weights=tied_weights,
+        tied_weights=target.tied_weights,
     )
 
     if is_main_process() and config.wandb_project:
         wandb.finish()
+
+    return out_dir

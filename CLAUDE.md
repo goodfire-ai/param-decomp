@@ -43,6 +43,60 @@ The codebase supports three experimental domains: TMS (Toy Model of Superpositio
 The `lm` experiment can decompose any HuggingFace-loadable model whose target modules are
 `nn.Linear`, `nn.Embedding`, or `transformers.modeling_utils.Conv1D`.
 
+## Public API
+
+The core PD framework exposes four entrypoints, re-exported from `param_decomp/__init__.py`:
+
+```python
+from param_decomp import run_pd, load_pd, PDConfig, PDTarget
+```
+
+- `run_pd(config, target, train_loader, eval_loader, device, ..., experiment_config=None)`:
+  trains a parameter decomposition. `config: PDConfig` carries algorithm/training settings;
+  `target: PDTarget` bundles the target model + its `run_batch` + reconstruction loss +
+  optional tied weights. `experiment_config` (optional) is the registered experiment's
+  `*ExperimentConfig` — it's persisted as `experiment_config.yaml` so post-processing
+  tooling can reload the target and dataloader without the user re-supplying them.
+- `load_pd(path, *, target)`: reload a saved run as a `ComponentModel`. The user supplies a
+  `PDTarget` (the experiment-specific target loaders — `load_lm_target`, `load_tms_target`,
+  etc — can build one).
+- `PDConfig`: subset of fields needed for decomposition (loss configs, sigmoid, sampling,
+  ci_config, schedules, logging). Has no LM/TMS-specific knowledge.
+- `PDTarget`: `(model, run_batch, reconstruction_loss, tied_weights, name)` — frozen dataclass.
+
+A custom-model user writes ~10 lines of glue (build their own model + dataloaders + a
+`run_batch` callable) and calls `run_pd` directly — no need to extend any registry or
+discriminated union.
+
+### Per-experiment configs
+
+Each registered experiment has its own `*ExperimentConfig` under
+`param_decomp/experiments/{name}/configs.py`. Each carries a `kind: Literal[...]` field
+that doubles as the discriminator for the `ExperimentConfig` discriminated union in
+`param_decomp/experiment_config.py`:
+
+- `LMExperimentConfig(kind="lm", pd, target: LMTargetConfig, data: LMDataConfig)`
+- `TMSExperimentConfig(kind="tms", pd, target, data)`
+- `ResidMLPExperimentConfig(kind="resid_mlp", pd, target, data)`
+- `IHExperimentConfig(kind="ih", pd, target, data)`
+
+YAML configs in `experiments/*/` are nested under `pd:`, `target:`, `data:` keys.
+Post-processing dispatch sites pattern-match on the union variant rather than looking up
+a string `kind`, so basedpyright exhaustively flags every site that needs a new `case`
+when a new experiment is added.
+
+### Saved run layout
+
+```
+PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/
+  pd_config.yaml           # PDConfig
+  experiment_config.yaml   # ExperimentConfig variant (kind + pd + target + data)
+  model_<step>.pth         # PD checkpoints
+  target_model.pth         # target weights (TMS/ResidMLP/IH only)
+  target_train_config.yaml # target train config (TMS/ResidMLP/IH only)
+  sweep_params.yaml        # if a sweep
+```
+
 ## Research Papers
 
 This repository implements methods from two key research papers on parameter decomposition:

@@ -21,10 +21,9 @@ from param_decomp.app.backend.routers import runs as runs_router
 from param_decomp.app.backend.server import app
 from param_decomp.app.backend.state import RunState, StateManager
 from param_decomp.configs import (
-    Config,
     LayerwiseCiConfig,
-    LMTaskConfig,
     ModulePatternInfoConfig,
+    PDConfig,
     ScheduleConfig,
 )
 from param_decomp.models.batch_and_loss_fns import make_run_batch
@@ -89,7 +88,7 @@ def app_with_state():
         ]
         C = 8
 
-        config = Config(
+        config = PDConfig(
             n_mask_samples=1,
             ci_config=LayerwiseCiConfig(fn_type="shared_mlp", hidden_dims=[16]),
             sampling="continuous",
@@ -97,9 +96,6 @@ def app_with_state():
             module_info=[
                 ModulePatternInfoConfig(module_pattern=p, C=C) for p in target_module_patterns
             ],
-            pretrained_model_class="param_decomp.pretrain.models.gpt2_simple.GPT2Simple",
-            output_extract=0,
-            tokenizer_name="SimpleStories/test-SimpleStories-gpt2-1.25M",
             lr_schedule=ScheduleConfig(start_val=1e-3),
             steps=1,
             batch_size=1,
@@ -108,19 +104,11 @@ def app_with_state():
             eval_freq=1,
             slow_eval_freq=1,
             train_log_freq=1,
-            task_config=LMTaskConfig(
-                task_name="lm",
-                max_seq_len=3,  # Short sequences
-                dataset_name="SimpleStories/SimpleStories",
-                column_name="story",
-                train_data_split="test[:20]",  # Only 20 samples
-                eval_data_split="test[:20]",
-            ),
         )
         module_path_info = expand_module_patterns(target_model, config.module_info)
         model = ComponentModel(
             target_model=target_model,
-            run_batch=make_run_batch(config.output_extract),
+            run_batch=make_run_batch(0),
             module_path_info=module_path_info,
             ci_config=config.ci_config,
             sigmoid_type=config.sigmoid_type,
@@ -138,6 +126,33 @@ def app_with_state():
         assert isinstance(hf_tokenizer, PreTrainedTokenizerBase)
         tokenizer = AppTokenizer(hf_tokenizer)
 
+        from param_decomp.experiments.lm.configs import (
+            LMDataConfig,
+            LMExperimentConfig,
+            LMTargetConfig,
+        )
+
+        lm_exp = LMExperimentConfig(
+            pd=config,
+            target=LMTargetConfig(
+                model_class="param_decomp.pretrain.models.gpt2_simple.GPT2Simple",
+                model_name=None,
+                model_path=None,
+            ),
+            data=LMDataConfig(
+                tokenizer_name="SimpleStories/test-SimpleStories-gpt2-1.25M",
+                dataset_name="SimpleStories/SimpleStories",
+                column_name="story",
+                max_seq_len=3,
+                train_split="test[:20]",
+                eval_split="test[:20]",
+                is_tokenized=False,
+                streaming=False,
+                buffer_size=1000,
+                shuffle_each_epoch=True,
+                dataset_seed=None,
+            ),
+        )
         run_state = RunState(
             run=run,
             model=model,
@@ -146,6 +161,7 @@ def app_with_state():
             tokenizer=tokenizer,
             sources_by_target=sources_by_target,
             config=config,
+            experiment_config=lm_exp,
             harvest=None,
             interp=None,
             attributions=None,

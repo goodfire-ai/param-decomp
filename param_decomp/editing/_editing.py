@@ -32,7 +32,7 @@ from param_decomp.app.backend.compute import OptimizedPromptAttributionResult
 from param_decomp.autointerp.repo import InterpRepo
 from param_decomp.harvest.repo import HarvestRepo
 from param_decomp.harvest.schemas import ComponentData
-from param_decomp.models.component_model import ComponentModel, ParamDecompRunInfo
+from param_decomp.models.component_model import ComponentModel, PDRunInfo
 from param_decomp.models.components import make_mask_infos
 from param_decomp.topology.topology import TransformerTopology
 
@@ -273,10 +273,15 @@ class EditableModel:
         cls, wandb_path: str, device: str = "cuda"
     ) -> tuple["EditableModel", AppTokenizer]:
         """Load from wandb path. Returns (editable_model, tokenizer)."""
-        run_info = ParamDecompRunInfo.from_path(wandb_path)
-        model = ComponentModel.from_run_info(run_info).to(device).eval()
-        assert run_info.config.tokenizer_name is not None
-        tokenizer = AppTokenizer.from_pretrained(run_info.config.tokenizer_name)
+        from param_decomp.experiments.lm.configs import LMExperimentConfig
+        from param_decomp.load import load_pd, load_target_from_experiment_config
+
+        run_info = PDRunInfo.from_path(wandb_path)
+        exp = run_info.experiment_config
+        assert isinstance(exp, LMExperimentConfig)
+        target = load_target_from_experiment_config(exp)
+        model = load_pd(wandb_path, target=target).to(device).eval()
+        tokenizer = AppTokenizer.from_pretrained(exp.data.tokenizer_name)
         return cls(model), tokenizer
 
     def __call__(self, tokens: Int[Tensor, " seq"]) -> Float[Tensor, "seq vocab"]:

@@ -19,8 +19,10 @@ from param_decomp.clustering.dataset import create_clustering_dataloader
 from param_decomp.clustering.harvest_config import HarvestConfig
 from param_decomp.clustering.memberships import collect_memberships
 from param_decomp.clustering.paths import clustering_harvest_dir, new_harvest_id
+from param_decomp.load import load_pd, load_target_from_experiment_config
 from param_decomp.log import logger
-from param_decomp.models.component_model import ComponentModel, ParamDecompRunInfo
+from param_decomp.models.component_model import PDRunInfo
+from param_decomp.param_decomp_types import TaskName
 from param_decomp.utils.distributed_utils import get_device
 
 os.environ["WANDB_QUIET"] = "true"
@@ -35,9 +37,12 @@ def harvest(config: HarvestConfig) -> Path:
     config.to_file(out / "harvest_config.json")
 
     device = get_device()
-    pd_run = ParamDecompRunInfo.from_path(config.model_path)
-    task_name = pd_run.config.task_config.task_name
-    model = ComponentModel.from_run_info(pd_run).to(device)
+    pd_run = PDRunInfo.from_path(config.model_path)
+    exp = pd_run.experiment_config
+    assert exp is not None, "Run has no experiment_config.yaml"
+    task_name: TaskName = exp.kind
+    target = load_target_from_experiment_config(exp)
+    model = load_pd(config.model_path, target=target).to(device)
     dataloader = create_clustering_dataloader(
         model_path=config.model_path,
         task_name=task_name,

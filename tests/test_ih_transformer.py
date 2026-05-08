@@ -4,12 +4,11 @@ import pytest
 
 from param_decomp.configs import (
     CI_L0Config,
-    Config,
     FaithfulnessLossConfig,
-    IHTaskConfig,
     ImportanceMinimalityLossConfig,
     LayerwiseCiConfig,
     ModulePatternInfoConfig,
+    PDConfig,
     ScheduleConfig,
     StochasticHiddenActsReconLossConfig,
     StochasticReconLayerwiseLossConfig,
@@ -43,13 +42,10 @@ def test_ih_transformer_decomposition_happy_path(tmp_path: Path) -> None:
         ff_fanout=4,
     )
 
-    # Create config similar to the induction_head transformer config in ih_config.yaml
-    config = Config(
-        # WandB
-        wandb_project=None,  # Disable wandb for testing
+    config = PDConfig(
+        wandb_project=None,
         wandb_run_name=None,
         wandb_run_name_prefix="",
-        # General
         seed=0,
         n_mask_samples=1,
         ci_config=LayerwiseCiConfig(fn_type="vector_mlp", hidden_dims=[128]),
@@ -60,7 +56,6 @@ def test_ih_transformer_decomposition_happy_path(tmp_path: Path) -> None:
         identity_module_info=[
             ModulePatternInfoConfig(module_pattern="blocks.*.attn.q_proj", C=10),
         ],
-        # Loss Coefficients
         loss_metric_configs=[
             ImportanceMinimalityLossConfig(
                 coeff=1e-2,
@@ -72,15 +67,13 @@ def test_ih_transformer_decomposition_happy_path(tmp_path: Path) -> None:
             StochasticReconLossConfig(coeff=1.0),
             FaithfulnessLossConfig(coeff=200),
         ],
-        # Training
         lr_schedule=ScheduleConfig(
             start_val=1e-3, fn_type="cosine", warmup_pct=0.01, final_val_frac=0.0
         ),
         batch_size=4,
         steps=2,
         n_eval_steps=1,
-        # Logging & Saving
-        train_log_freq=50,  # Print at step 0, 50, and 100
+        train_log_freq=50,
         eval_freq=500,
         eval_batch_size=1,
         slow_eval_freq=500,
@@ -91,15 +84,6 @@ def test_ih_transformer_decomposition_happy_path(tmp_path: Path) -> None:
             CI_L0Config(groups=None),
             StochasticHiddenActsReconLossConfig(),
         ],
-        # Pretrained model info
-        pretrained_model_class="param_decomp.experiments.ih.model.InductionTransformer",
-        pretrained_model_path=None,
-        pretrained_model_name=None,
-        tokenizer_name=None,
-        # Task Specific
-        task_config=IHTaskConfig(
-            task_name="ih",
-        ),
     )
 
     # Create a pretrained model

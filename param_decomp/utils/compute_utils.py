@@ -7,7 +7,6 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from param_decomp.configs import Config
 from param_decomp.utils.slurm import (
     SlurmArrayConfig,
     SlurmConfig,
@@ -33,7 +32,9 @@ class Command:
 class TrainingJob:
     experiment: str
     script_path: Path
-    config: Config
+    config_dict: dict[str, Any]
+    """Raw experiment config dict (the per-experiment ExperimentConfig as a JSON-serializable dict).
+    Passed directly to the decomposition script as `--config_json`."""
     run_id: str  # Pre-generated unique run identifier (e.g. "s-a1b2c3d4")
 
 
@@ -55,7 +56,7 @@ def _build_script_args(
     sweep_params: dict[str, Any] | None,
 ) -> str:
     """Build the common script arguments for training jobs."""
-    json_tagged_config = f"json:{json.dumps(job.config.model_dump(mode='json'))}"
+    json_tagged_config = f"json:{json.dumps(job.config_dict)}"
     args = (
         f"--config_json {shlex.quote(json_tagged_config)} "
         f"--launch_id {launch_id} "

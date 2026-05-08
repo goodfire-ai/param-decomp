@@ -8,20 +8,16 @@ to show topology and raw pretrain config.
 from typing import Any
 
 import wandb
-import yaml
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from param_decomp.app.backend.dependencies import DepLoadedRun
 from param_decomp.app.backend.utils import log_errors
-from param_decomp.configs import Config
+from param_decomp.experiments.lm.configs import LMExperimentConfig
 from param_decomp.log import logger
+from param_decomp.models.component_model import PDRunInfo
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
-from param_decomp.utils.wandb_utils import (
-    download_wandb_file,
-    fetch_wandb_run_dir,
-    parse_wandb_run_path,
-)
+from param_decomp.utils.wandb_utils import parse_wandb_run_path
 
 router = APIRouter(prefix="/api/pretrain_info", tags=["pretrain_info"])
 
@@ -49,27 +45,19 @@ class PretrainInfoResponse(BaseModel):
     topology: TopologyInfo | None
 
 
-def _load_pd_config_lightweight(wandb_path: str) -> Config:
-    """Load just the PD config YAML without downloading checkpoints."""
-    entity, project, run_id = parse_wandb_run_path(wandb_path)
-
-    # Check local cache first
-    run_dir = PARAM_DECOMP_OUT_DIR / "runs" / f"{project}-{run_id}"
-    config_path = run_dir / "final_config.yaml"
-
-    if not config_path.exists():
-        logger.info(f"[pretrain_info] Downloading config for {entity}/{project}/{run_id}")
-        api = wandb.Api()
-        run = api.run(f"{entity}/{project}/{run_id}")
-        run_dir = fetch_wandb_run_dir(run_id)
-        config_path = download_wandb_file(run, run_dir, "final_config.yaml")
-
-    with open(config_path) as f:
-        return Config(**yaml.safe_load(f))
+def _load_lm_experiment_config_lightweight(wandb_path: str) -> LMExperimentConfig | None:
+    """Load just the experiment config YAML for an LM run, without downloading checkpoints."""
+    run_info = PDRunInfo.from_path(wandb_path)
+    exp = run_info.experiment_config
+    if not isinstance(exp, LMExperimentConfig):
+        return None
+    return exp
 
 
 def _load_pretrain_configs(pretrain_path: str) -> tuple[dict[str, Any], dict[str, Any]]:
     """Load model config and training config from a pretrain run, config files only."""
+    import yaml
+
     entity, project, run_id = parse_wandb_run_path(pretrain_path)
 
     cache_dir = PARAM_DECOMP_OUT_DIR / "pretrain_cache" / f"{project}-{run_id}"
@@ -187,14 +175,24 @@ def _get_dataset_short(pretrain_config: dict[str, Any] | None) -> str | None:
     return None
 
 
-def _get_pretrain_info(pd_config: Config) -> PretrainInfoResponse:
-    """Extract pretrain info from a PD config."""
-    model_class_name = pd_config.pretrained_model_class
-    model_type = model_class_name.split(".")[-1]
+def _get_pretrain_info(lm_exp: LMExperimentConfig | None) -> PretrainInfoResponse:
+    """Extract pretrain info from an LM experiment config."""
+    if lm_exp is None:
+        return PretrainInfoResponse(
+            model_type="unknown",
+            summary="unknown",
+            dataset_short=None,
+            target_model_config=None,
+            pretrain_config=None,
+            pretrain_wandb_path=None,
+            topology=None,
+        )
 
-    # Determine the pretrain wandb path
-    pretrain_path = pd_config.pretrained_model_name or (
-        str(pd_config.pretrained_model_path) if pd_config.pretrained_model_path else None
+    model_class_name = lm_exp.target.model_class
+    model_type = model_class_name.rsplit(".", 1)[-1]
+
+    pretrain_path = lm_exp.target.model_name or (
+        str(lm_exp.target.model_path) if lm_exp.target.model_path is not None else None
     )
 
     target_model_config: dict[str, Any] | None = None
@@ -205,7 +203,6 @@ def _get_pretrain_info(pd_config: Config) -> PretrainInfoResponse:
         try:
             pretrain_wandb_path = pretrain_path
             target_model_config, pretrain_config = _load_pretrain_configs(pretrain_path)
-            # Use model_type from config if available
             if "model_type" in target_model_config:
                 model_type = target_model_config["model_type"]
         except Exception:
@@ -236,8 +233,7 @@ def get_pretrain_info_for_run(wandb_path: str) -> PretrainInfoResponse:
 
     Fetches only config files (no checkpoints) for efficiency.
     """
-    pd_config = _load_pd_config_lightweight(wandb_path)
-    return _get_pretrain_info(pd_config)
+    return _get_pretrain_info(_load_lm_experiment_config_lightweight(wandb_path))
 
 
 @router.get("/loaded")
@@ -245,6 +241,6 @@ def get_pretrain_info_for_run(wandb_path: str) -> PretrainInfoResponse:
 def get_pretrain_info_for_loaded_run(loaded: DepLoadedRun) -> PretrainInfoResponse:
     """Get pretrained model architecture info for the currently loaded run.
 
-    Uses the already-loaded config (no additional wandb downloads).
+    Uses the already-loaded LM metadata (no additional wandb downloads).
     """
-    return _get_pretrain_info(loaded.config)
+    return _get_pretrain_info(loaded.experiment_config)

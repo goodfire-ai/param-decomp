@@ -16,8 +16,9 @@ from fastapi import HTTPException
 from param_decomp.app.backend.app_tokenizer import AppTokenizer
 from param_decomp.app.backend.database import PromptAttrDB, Run
 from param_decomp.autointerp.repo import InterpRepo
-from param_decomp.configs import Config
+from param_decomp.configs import PDConfig
 from param_decomp.dataset_attributions.repo import AttributionRepo
+from param_decomp.experiments.lm.configs import LMExperimentConfig
 from param_decomp.graph_interp.repo import GraphInterpRepo
 from param_decomp.harvest.repo import HarvestRepo
 from param_decomp.models.component_model import ComponentModel
@@ -33,7 +34,8 @@ class RunState:
     topology: TransformerTopology
     tokenizer: AppTokenizer
     sources_by_target: dict[str, list[str]]
-    config: Config
+    config: PDConfig
+    experiment_config: LMExperimentConfig  # The token-based app only loads LM runs.
     context_length: int
     harvest: HarvestRepo | None
     interp: InterpRepo | None

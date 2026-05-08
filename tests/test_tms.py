@@ -5,15 +5,14 @@ import torch
 from torch import nn
 
 from param_decomp.configs import (
-    Config,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     LayerwiseCiConfig,
     ModulePatternInfoConfig,
+    PDConfig,
     ScheduleConfig,
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
-    TMSTaskConfig,
 )
 from param_decomp.experiments.tms.configs import TMSModelConfig, TMSTrainConfig
 from param_decomp.experiments.tms.models import TMSModel
@@ -41,12 +40,10 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
     )
 
     # Create config similar to tms_config.yaml
-    config = Config(
-        # WandB
-        wandb_project=None,  # Disable wandb for testing
+    config = PDConfig(
+        wandb_project=None,
         wandb_run_name=None,
         wandb_run_name_prefix="",
-        # General
         seed=0,
         n_mask_samples=1,
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[8]),
@@ -69,51 +66,34 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
             StochasticReconLossConfig(coeff=1.0),
             FaithfulnessLossConfig(coeff=1.0),
         ],
-        # Training
         lr_schedule=ScheduleConfig(
             start_val=1e-3, fn_type="cosine", warmup_pct=0.0, final_val_frac=0.0
         ),
         batch_size=4,
-        steps=3,  # Run only a few steps for the test
+        steps=3,
         n_eval_steps=1,
-        # Faithfulness Warmup
         faithfulness_warmup_steps=2,
         faithfulness_warmup_lr=0.001,
         faithfulness_warmup_weight_decay=0.0,
-        # Logging & Saving
         train_log_freq=2,
         save_freq=None,
         ci_alive_threshold=0.1,
         eval_batch_size=4,
         eval_freq=10,
         slow_eval_freq=10,
-        # Pretrained model info
-        pretrained_model_class="param_decomp.experiments.tms.models.TMSModel",
-        pretrained_model_path=None,
-        pretrained_model_name=None,
-        tokenizer_name=None,
-        # Task Specific
-        task_config=TMSTaskConfig(
-            task_name="tms",
-            feature_probability=0.05,
-            data_generation_type="at_least_zero_active",
-        ),
     )
 
-    # Create a pretrained model
     target_model = TMSModel(config=tms_model_config).to(device)
     target_model.eval()
 
     if config.identity_module_info is not None:
         insert_identity_operations_(target_model, identity_module_info=config.identity_module_info)
 
-    assert isinstance(config.task_config, TMSTaskConfig)
-    # Create dataset
     dataset = SparseFeatureDataset(
         n_features=target_model.config.n_features,
-        feature_probability=config.task_config.feature_probability,
+        feature_probability=0.05,
         device=device,
-        data_generation_type=config.task_config.data_generation_type,
+        data_generation_type="at_least_zero_active",
         value_range=(0.0, 1.0),
         synced_inputs=None,
     )

@@ -3,7 +3,8 @@ from typing import Any, Literal, Self
 from pydantic import Field, PositiveFloat, PositiveInt, model_validator
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.configs import ScheduleConfig, migrate_to_lr_schedule_config
+from param_decomp.configs import PDConfig, ScheduleConfig, migrate_to_lr_schedule_config
+from param_decomp.param_decomp_types import Probability
 
 
 class ResidMLPModelConfig(BaseConfig):
@@ -62,3 +63,28 @@ class ResidMLPTrainConfig(BaseConfig):
             if len(all_indices) != len(set(all_indices)):
                 raise ValueError("Synced inputs must be non-overlapping")
         return self
+
+
+class ResidMLPTargetConfig(BaseConfig):
+    """Path to the trained ResidMLP target run."""
+
+    run_path: str = Field(
+        ...,
+        description="Local or wandb path to a ResidMLP pretrain run.",
+    )
+
+
+class ResidMLPDataConfig(BaseConfig):
+    """Synthetic-feature dataset settings for ResidMLP PD."""
+
+    feature_probability: Probability
+    data_generation_type: Literal[
+        "exactly_one_active", "exactly_two_active", "at_least_zero_active"
+    ] = "at_least_zero_active"
+
+
+class ResidMLPExperimentConfig(BaseConfig):
+    kind: Literal["resid_mlp"] = "resid_mlp"
+    pd: PDConfig
+    target: ResidMLPTargetConfig
+    data: ResidMLPDataConfig

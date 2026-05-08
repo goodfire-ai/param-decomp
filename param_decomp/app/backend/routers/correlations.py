@@ -12,11 +12,9 @@ from pydantic import BaseModel
 from param_decomp.app.backend.dependencies import DepLoadedRun
 from param_decomp.app.backend.utils import log_errors
 from param_decomp.autointerp.schemas import ModelMetadata
-from param_decomp.configs import LMTaskConfig
 from param_decomp.harvest import analysis
 from param_decomp.log import logger
 from param_decomp.topology import TransformerTopology
-from param_decomp.utils.general_utils import runtime_cast
 
 
 def _canonical_to_concrete_key(
@@ -202,15 +200,14 @@ async def request_component_interpretation(
             detail=f"Token stats not available for component {component_key}",
         )
 
-    task_config = runtime_cast(LMTaskConfig, loaded.config.task_config)
     model_metadata = ModelMetadata(
         n_blocks=loaded.topology.n_blocks,
         model_class=loaded.model.__class__.__name__,
-        dataset_name=task_config.dataset_name,
+        dataset_name=loaded.experiment_config.data.dataset_name,
         layer_descriptions={
             path: loaded.topology.target_to_canon(path) for path in loaded.model.target_module_paths
         },
-        seq_len=task_config.max_seq_len,
+        seq_len=loaded.experiment_config.data.max_seq_len,
         decomposition_method="pd",
     )
 

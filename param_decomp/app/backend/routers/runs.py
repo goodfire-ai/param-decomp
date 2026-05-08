@@ -5,7 +5,7 @@ from urllib.parse import unquote
 
 import torch
 import yaml
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from param_decomp.app.backend.app_tokenizer import AppTokenizer
@@ -13,12 +13,14 @@ from param_decomp.app.backend.dependencies import DepStateManager
 from param_decomp.app.backend.state import RunState
 from param_decomp.app.backend.utils import log_errors
 from param_decomp.autointerp.repo import InterpRepo
-from param_decomp.configs import LMTaskConfig
 from param_decomp.dataset_attributions.repo import AttributionRepo
+from param_decomp.experiments.lm.configs import LMExperimentConfig
 from param_decomp.graph_interp.repo import GraphInterpRepo
 from param_decomp.harvest.repo import HarvestRepo
+from param_decomp.load import load_pd
 from param_decomp.log import logger
-from param_decomp.models.component_model import ComponentModel, ParamDecompRunInfo
+from param_decomp.models.component_model import PDRunInfo
+from param_decomp.target_loaders import load_target_from_experiment_config
 from param_decomp.topology import TransformerTopology, get_sources_by_target
 from param_decomp.utils.distributed_utils import get_device
 from param_decomp.utils.wandb_utils import parse_wandb_run_path
@@ -72,7 +74,24 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
     clean_wandb_path = f"{entity}/{project}/{run_id}"
 
     logger.info(f"[API] Loading {clean_wandb_path}")
-    run_info = ParamDecompRunInfo.from_path(clean_wandb_path)
+    run_info = PDRunInfo.from_path(clean_wandb_path)
+    exp = run_info.experiment_config
+    if exp is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Run {clean_wandb_path} has no `experiment_config.yaml`. The token-based "
+                "app requires a registered LM experiment run."
+            ),
+        )
+    if not isinstance(exp, LMExperimentConfig):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"This run is a `{exp.kind}` PD run and is not compatible with "
+                "the token-based app. Use an LM run."
+            ),
+        )
 
     run = db.get_run_by_wandb_path(clean_wandb_path)
     if run is None:
@@ -101,17 +120,16 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
         torch.cuda.empty_cache()
         manager.run_state = None
 
-    # Load the model
+    # Load the target + ComponentModel
     logger.info(f"[API] Loading model for run {run.id}: {run.wandb_path}")
-    model = ComponentModel.from_run_info(run_info)
+    target = load_target_from_experiment_config(exp)
+    model = load_pd(clean_wandb_path, target=target)
     model = model.to(DEVICE)
     model.eval()
 
-    # Load tokenizer
     pd_config = run_info.config
-    assert pd_config.tokenizer_name is not None
-    logger.info(f"[API] Loading tokenizer for run {run.id}: {pd_config.tokenizer_name}")
-    app_tokenizer = AppTokenizer.from_pretrained(pd_config.tokenizer_name)
+    logger.info(f"[API] Loading tokenizer for run {run.id}: {exp.data.tokenizer_name}")
+    app_tokenizer = AppTokenizer.from_pretrained(exp.data.tokenizer_name)
 
     # Build topology and sources_by_target mapping
     logger.info(f"[API] Building topology for run {run.id}")
@@ -127,6 +145,7 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
         tokenizer=app_tokenizer,
         sources_by_target=sources_by_target,
         config=pd_config,
+        experiment_config=exp,
         context_length=context_length,
         harvest=HarvestRepo.open_most_recent(run_id),
         interp=InterpRepo.open(run_id),
@@ -154,9 +173,8 @@ def get_status(manager: DepStateManager) -> LoadedRun | None:
 
     prompt_count = manager.db.get_prompt_count(run.id, context_length)
 
-    task_config = manager.run_state.config.task_config
     dataset_search_enabled = (
-        isinstance(task_config, LMTaskConfig) and task_config.dataset_name in _SEARCHABLE_DATASETS
+        manager.run_state.experiment_config.data.dataset_name in _SEARCHABLE_DATASETS
     )
 
     return LoadedRun(

@@ -8,6 +8,7 @@ by config (e.g. LM experiments). Import a concrete helper like ``run_batch_first
 """
 
 import math
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 import torch
@@ -28,6 +29,23 @@ class ReconstructionLoss(Protocol):
     """Protocol for computing reconstruction loss between predictions and targets."""
 
     def __call__(self, pred: Tensor, target: Tensor) -> tuple[Float[Tensor, ""], int]: ...
+
+
+@dataclass(frozen=True)
+class PDTarget:
+    """Target model bundle for PD.
+
+    Bundles the model with everything needed to run a forward pass through it
+    and compare its output to the component model's output. `reconstruction_loss`
+    lives here (not separately) because it's coupled to `run_batch`'s output type:
+    KL only makes sense for logits; MSE only makes sense for everything else.
+    """
+
+    model: nn.Module
+    run_batch: RunBatch
+    reconstruction_loss: ReconstructionLoss
+    tied_weights: list[tuple[str, str]] | None = None
+    name: str = "custom"
 
 
 def run_batch_passthrough(model: nn.Module, batch: Any) -> Tensor:

@@ -1,16 +1,15 @@
 from pathlib import Path
 
 import pytest
-from transformers import PreTrainedModel
+from transformers import GPT2LMHeadModel
 
 from param_decomp.configs import (
     CI_L0Config,
-    Config,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     LayerwiseCiConfig,
-    LMTaskConfig,
     ModulePatternInfoConfig,
+    PDConfig,
     ScheduleConfig,
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
@@ -19,7 +18,7 @@ from param_decomp.data import DatasetConfig, create_data_loader, input_ids_colla
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.models.batch_and_loss_fns import make_run_batch, recon_loss_kl
 from param_decomp.run_param_decomp import optimize
-from param_decomp.utils.general_utils import resolve_class, set_seed
+from param_decomp.utils.general_utils import set_seed
 
 
 @pytest.mark.slow
@@ -28,13 +27,10 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
     set_seed(0)
     device = "cpu"
 
-    # Create config similar to the gpt-2 config in gpt2_config.yaml
-    config = Config(
-        # WandB
-        wandb_project=None,  # Disable wandb for testing
+    config = PDConfig(
+        wandb_project=None,
         wandb_run_name=None,
         wandb_run_name_prefix="",
-        # General
         seed=0,
         n_mask_samples=1,
         ci_config=LayerwiseCiConfig(fn_type="vector_mlp", hidden_dims=[128]),
@@ -56,15 +52,13 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
             StochasticReconLossConfig(coeff=1.0),
             FaithfulnessLossConfig(coeff=200),
         ],
-        # Training
         lr_schedule=ScheduleConfig(
             start_val=1e-3, fn_type="cosine", warmup_pct=0.01, final_val_frac=0.0
         ),
         batch_size=4,
         steps=2,
         n_eval_steps=1,
-        # Logging & Saving
-        train_log_freq=50,  # Print at step 0, 50, and 100
+        train_log_freq=50,
         eval_freq=500,
         eval_batch_size=1,
         slow_eval_freq=500,
@@ -74,88 +68,61 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         eval_metric_configs=[
             CI_L0Config(groups=None),
         ],
-        # Pretrained model info
-        pretrained_model_class="transformers.GPT2LMHeadModel",
-        pretrained_model_path=None,
-        pretrained_model_name="SimpleStories/test-SimpleStories-gpt2-1.25M",
-        output_extract="logits",
-        tokenizer_name="SimpleStories/test-SimpleStories-gpt2-1.25M",
-        # Task Specific
-        task_config=LMTaskConfig(
-            task_name="lm",
-            max_seq_len=16,
-            buffer_size=1000,
-            dataset_name="SimpleStories/SimpleStories",
-            column_name="story",
-            train_data_split="train[:100]",
-            eval_data_split="test[100:200]",
-        ),
     )
 
-    assert isinstance(config.task_config, LMTaskConfig), "task_config not LMTaskConfig"
-
-    # Create a GPT-2 model
-    hf_model_class = resolve_class(config.pretrained_model_class)
-    assert issubclass(hf_model_class, PreTrainedModel), (
-        f"Model class {hf_model_class} should be a subclass of PreTrainedModel which "
-        "defines a `from_pretrained` method"
-    )
-    assert config.pretrained_model_name is not None
-    target_model = hf_model_class.from_pretrained(config.pretrained_model_name)
+    model_name = "SimpleStories/test-SimpleStories-gpt2-1.25M"
+    target_model = GPT2LMHeadModel.from_pretrained(model_name)
     target_model.eval()
 
     if config.identity_module_info is not None:
         insert_identity_operations_(target_model, identity_module_info=config.identity_module_info)
 
     train_data_config = DatasetConfig(
-        name=config.task_config.dataset_name,
-        hf_tokenizer_path=config.pretrained_model_name,
-        split=config.task_config.train_data_split,
-        n_ctx=config.task_config.max_seq_len,
-        is_tokenized=config.task_config.is_tokenized,
-        streaming=config.task_config.streaming,
-        column_name=config.task_config.column_name,
+        name="SimpleStories/SimpleStories",
+        hf_tokenizer_path=model_name,
+        split="train[:100]",
+        n_ctx=16,
+        is_tokenized=False,
+        streaming=False,
+        column_name="story",
         seed=None,
     )
 
     train_loader, _tokenizer = create_data_loader(
         dataset_config=train_data_config,
         batch_size=config.batch_size,
-        buffer_size=config.task_config.buffer_size,
+        buffer_size=1000,
         global_seed=config.seed,
         collate_fn=input_ids_collate_fn,
     )
 
     eval_data_config = DatasetConfig(
-        name=config.task_config.dataset_name,
-        hf_tokenizer_path=config.pretrained_model_name,
-        split=config.task_config.eval_data_split,
-        n_ctx=config.task_config.max_seq_len,
-        is_tokenized=config.task_config.is_tokenized,
-        streaming=config.task_config.streaming,
-        column_name=config.task_config.column_name,
+        name="SimpleStories/SimpleStories",
+        hf_tokenizer_path=model_name,
+        split="test[100:200]",
+        n_ctx=16,
+        is_tokenized=False,
+        streaming=False,
+        column_name="story",
         seed=None,
     )
     eval_loader, _ = create_data_loader(
         dataset_config=eval_data_config,
         batch_size=config.batch_size,
-        buffer_size=config.task_config.buffer_size,
+        buffer_size=1000,
         global_seed=config.seed + 1,
         collate_fn=input_ids_collate_fn,
     )
 
-    # Run optimize function
-    assert config.output_extract is not None
     optimize(
         target_model=target_model,
         config=config,
         device=device,
         train_loader=train_loader,
         eval_loader=eval_loader,
-        run_batch=make_run_batch(config.output_extract),
+        run_batch=make_run_batch("logits"),
         reconstruction_loss=recon_loss_kl,
         out_dir=tmp_path,
     )
 
-    # Basic assertion to ensure the test ran
     assert True, "Test completed successfully"

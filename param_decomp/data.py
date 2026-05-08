@@ -8,10 +8,8 @@ from numpy.typing import NDArray
 from torch import Tensor
 from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoTokenizer, PreTrainedTokenizer
-from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.configs import Config, LMTaskConfig
 from param_decomp.log import logger
 from param_decomp.utils.distributed_utils import DistributedState
 
@@ -295,33 +293,3 @@ def loop_dataloader[T](dl: DataLoader[T]) -> Generator[T]:
                 dl.dataset.set_epoch(epoch)
             dl_iter = iter(dl)
             yield next(dl_iter)
-
-
-def train_loader_and_tokenizer(
-    config: Config, batch_size: int
-) -> tuple[DataLoader[Any], PreTrainedTokenizerBase]:
-    task_config = config.task_config
-    assert isinstance(task_config, LMTaskConfig)
-
-    train_data_config = DatasetConfig(
-        name=task_config.dataset_name,
-        hf_tokenizer_path=config.tokenizer_name,
-        split=task_config.train_data_split,
-        n_ctx=task_config.max_seq_len,
-        is_tokenized=task_config.is_tokenized,
-        streaming=task_config.streaming,
-        column_name=task_config.column_name,
-        shuffle_each_epoch=task_config.shuffle_each_epoch,
-        seed=task_config.dataset_seed,
-    )
-
-    train_loader, tokenizer = create_data_loader(
-        dataset_config=train_data_config,
-        batch_size=batch_size,
-        buffer_size=task_config.buffer_size,
-        global_seed=config.seed,
-        collate_fn=input_ids_collate_fn,
-    )
-
-    assert isinstance(tokenizer, PreTrainedTokenizerBase)
-    return train_loader, tokenizer

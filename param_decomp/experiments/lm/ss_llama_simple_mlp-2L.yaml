@@ -1,128 +1,128 @@
-wandb_project: param-decomp
-wandb_run_name: null
-wandb_run_name_prefix: ''
-seed: 0
-autocast_bf16: true
-n_mask_samples: 1
-ci_config:
-  mode: global
-  fn_type: global_shared_transformer
-  hidden_dims: null
-  simple_transformer_ci_cfg:
-    d_model: 512
-    n_blocks: 4
-    mlp_hidden_dim:
-    - 2048
-    attn_config:
-      n_heads: 8
-      max_len: 1024
-      rope_base: 10000.0
-sampling: continuous
-sigmoid_type: leaky_hard
-module_info:
-- module_pattern: h.*.mlp.c_fc
-  C: 1152
-- module_pattern: h.*.mlp.down_proj
-  C: 960
-- module_pattern: h.*.attn.q_proj
-  C: 288
-- module_pattern: h.*.attn.k_proj
-  C: 288
-- module_pattern: h.*.attn.v_proj
-  C: 384
-- module_pattern: h.*.attn.o_proj
-  C: 480
-identity_module_info: null
-use_delta_component: true
-loss_metric_configs:
-- coeff: 0.001
-  classname: ImportanceMinimalityLoss
-  pnorm: 2.0
-  beta: 0.5
-  p_anneal_start_frac: 0.0
-  p_anneal_final_p: 0.4
-  p_anneal_end_frac: 1.0
-  eps: 1.0e-12
-- coeff: 0.5
-  classname: StochasticReconSubsetLoss
-  routing:
-    type: uniform_k_subset
-- coeff: 0.5
-  optimizer:
-    type: adam
-    beta1: 0.5
-    beta2: 0.99
-    eps: 1.0e-08
-    lr_schedule:
-      start_val: 0.01
-      warmup_pct: 0.025
-      final_val_frac: 1.0
-      fn_type: constant
-  scope:
-    type: per_batch_per_position
-  use_sigmoid_parameterization: false
-  n_warmup_steps: 2
-  classname: PersistentPGDReconLoss
-- coeff: 10000000.0
-  classname: FaithfulnessLoss
-output_loss_type: kl
-lr_schedule:
-  start_val: 3e-4
-  warmup_pct: 0.0
-  final_val_frac: 0.1
-  fn_type: cosine
-steps: 400000
-batch_size: 64
-grad_clip_norm_components: 0.01
-grad_clip_norm_ci_fns: null
-faithfulness_warmup_steps: 400
-faithfulness_warmup_lr: 0.001
-faithfulness_warmup_weight_decay: 0.0
-train_log_freq: 200
-eval_freq: 1000
-eval_batch_size: 128
-slow_eval_freq: 10000
-n_eval_steps: 1
-slow_eval_on_first_step: true
-save_freq: null
-eval_metric_configs:
-- classname: CIHistograms
-  n_batches_accum: 1
-- classname: ComponentActivationDensity
-- classname: CI_L0
-  groups:
-    layer_0:
-    - h.0.*
-    layer_1:
-    - h.1.*
-    total:
-    - '*'
-- classname: CEandKLLosses
-  rounding_threshold: 0.0
-- classname: CIMeanPerComponent
-- coeff: null
-  classname: StochasticHiddenActsReconLoss
-- classname: CIHiddenActsReconLoss
-- coeff: null
-  init: random
-  step_size: 0.1
-  n_steps: 20
-  mask_scope: shared_across_batch
-  classname: PGDReconLoss
-ci_alive_threshold: 0.0
-output_extract: 0
-pretrained_model_class: param_decomp.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
-pretrained_model_path: null
-pretrained_model_name: goodfire/spd/runs/gf6rbga0
-tokenizer_name: SimpleStories/test-SimpleStories-gpt2-1.25M
-task_config:
-  task_name: lm
+pd:
+  wandb_project: param-decomp
+  wandb_run_name: null
+  wandb_run_name_prefix: ''
+  seed: 0
+  autocast_bf16: true
+  n_mask_samples: 1
+  ci_config:
+    mode: global
+    fn_type: global_shared_transformer
+    hidden_dims: null
+    simple_transformer_ci_cfg:
+      d_model: 512
+      n_blocks: 4
+      mlp_hidden_dim:
+      - 2048
+      attn_config:
+        n_heads: 8
+        max_len: 1024
+        rope_base: 10000.0
+  sampling: continuous
+  sigmoid_type: leaky_hard
+  module_info:
+  - module_pattern: h.*.mlp.c_fc
+    C: 1152
+  - module_pattern: h.*.mlp.down_proj
+    C: 960
+  - module_pattern: h.*.attn.q_proj
+    C: 288
+  - module_pattern: h.*.attn.k_proj
+    C: 288
+  - module_pattern: h.*.attn.v_proj
+    C: 384
+  - module_pattern: h.*.attn.o_proj
+    C: 480
+  identity_module_info: null
+  use_delta_component: true
+  loss_metric_configs:
+  - coeff: 0.001
+    classname: ImportanceMinimalityLoss
+    pnorm: 2.0
+    beta: 0.5
+    p_anneal_start_frac: 0.0
+    p_anneal_final_p: 0.4
+    p_anneal_end_frac: 1.0
+    eps: 1.0e-12
+  - coeff: 0.5
+    classname: StochasticReconSubsetLoss
+    routing:
+      type: uniform_k_subset
+  - coeff: 0.5
+    optimizer:
+      type: adam
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        start_val: 0.01
+        warmup_pct: 0.025
+        final_val_frac: 1.0
+        fn_type: constant
+    scope:
+      type: per_batch_per_position
+    use_sigmoid_parameterization: false
+    n_warmup_steps: 2
+    classname: PersistentPGDReconLoss
+  - coeff: 10000000.0
+    classname: FaithfulnessLoss
+  lr_schedule:
+    start_val: 3e-4
+    warmup_pct: 0.0
+    final_val_frac: 0.1
+    fn_type: cosine
+  steps: 400000
+  batch_size: 64
+  grad_clip_norm_components: 0.01
+  grad_clip_norm_ci_fns: null
+  faithfulness_warmup_steps: 400
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_weight_decay: 0.0
+  train_log_freq: 200
+  eval_freq: 1000
+  eval_batch_size: 128
+  slow_eval_freq: 10000
+  n_eval_steps: 1
+  slow_eval_on_first_step: true
+  save_freq: null
+  eval_metric_configs:
+  - classname: CIHistograms
+    n_batches_accum: 1
+  - classname: ComponentActivationDensity
+  - classname: CI_L0
+    groups:
+      layer_0:
+      - h.0.*
+      layer_1:
+      - h.1.*
+      total:
+      - '*'
+  - classname: CEandKLLosses
+    rounding_threshold: 0.0
+  - classname: CIMeanPerComponent
+  - coeff: null
+    classname: StochasticHiddenActsReconLoss
+  - classname: CIHiddenActsReconLoss
+  - coeff: null
+    init: random
+    step_size: 0.1
+    n_steps: 20
+    mask_scope: shared_across_batch
+    classname: PGDReconLoss
+  ci_alive_threshold: 0.0
+target:
+  model_class: param_decomp.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
+  model_name: goodfire/spd/runs/gf6rbga0
+  model_path: null
+  output_extract: 0
+data:
+  tokenizer_name: SimpleStories/test-SimpleStories-gpt2-1.25M
   max_seq_len: 512
   buffer_size: 1000
   dataset_name: SimpleStories/SimpleStories
   column_name: story
-  train_data_split: train
-  eval_data_split: test
+  train_split: train
+  eval_split: test
   shuffle_each_epoch: true
   is_tokenized: false
   streaming: false

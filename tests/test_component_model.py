@@ -9,20 +9,18 @@ from torch import Tensor, nn
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
 from param_decomp.configs import (
-    Config,
     GlobalCiConfig,
     ImportanceMinimalityLossConfig,
     LayerwiseCiConfig,
     ModulePatternInfoConfig,
+    PDConfig,
     ScheduleConfig,
-    TMSTaskConfig,
 )
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.interfaces import LoadableModule, RunInfo
 from param_decomp.models.batch_and_loss_fns import run_batch_passthrough
 from param_decomp.models.component_model import (
     ComponentModel,
-    ParamDecompRunInfo,
 )
 from param_decomp.models.components import (
     ComponentsMaskInfo,
@@ -120,7 +118,7 @@ def test_correct_parameters_require_grad():
             assert not target_module.weight.requires_grad
 
 
-def test_from_run_info():
+def test_from_checkpoint():
     target_model = SimpleTestModel()
 
     target_model.eval()
@@ -128,18 +126,10 @@ def test_from_run_info():
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         base_dir = Path(tmp_dir)
-        base_model_dir = base_dir / "test_model"
-        base_model_dir.mkdir(parents=True, exist_ok=True)
         comp_model_dir = base_dir / "comp_model"
         comp_model_dir.mkdir(parents=True, exist_ok=True)
 
-        base_model_path = base_model_dir / "model.pth"
-        save_file(target_model.state_dict(), base_model_path)
-
-        config = Config(
-            pretrained_model_class="tests.test_component_model.SimpleTestModel",
-            pretrained_model_path=base_model_path,
-            pretrained_model_name=None,
+        config = PDConfig(
             module_info=[
                 ModulePatternInfoConfig(module_pattern="linear1", C=4),
                 ModulePatternInfoConfig(module_pattern="linear2", C=4),
@@ -159,11 +149,6 @@ def test_from_run_info():
             loss_metric_configs=[ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)],
             train_log_freq=1,
             n_mask_samples=1,
-            task_config=TMSTaskConfig(
-                task_name="tms",
-                feature_probability=0.5,
-                data_generation_type="exactly_one_active",
-            ),
         )
 
         if config.identity_module_info is not None:
@@ -181,13 +166,22 @@ def test_from_run_info():
             sigmoid_type=config.sigmoid_type,
         )
 
-        save_file(cm.state_dict(), comp_model_dir / "model.pth")
-        save_file(config.model_dump(mode="json"), comp_model_dir / "final_config.yaml")
+        checkpoint_path = comp_model_dir / "model.pth"
+        save_file(cm.state_dict(), checkpoint_path)
+        save_file(config.model_dump(mode="json"), comp_model_dir / "pd_config.yaml")
 
-        cm_run_info = ParamDecompRunInfo.from_path(comp_model_dir / "model.pth")
-        cm_loaded = ComponentModel.from_run_info(cm_run_info)
+        # Reload via from_checkpoint with a fresh target. We need a fresh target
+        # because identity ops mutate the model in-place.
+        fresh_target = SimpleTestModel()
+        fresh_target.eval()
+        fresh_target.requires_grad_(False)
+        cm_loaded = ComponentModel.from_checkpoint(
+            config=config,
+            checkpoint_path=checkpoint_path,
+            target_model=fresh_target,
+            run_batch=run_batch_passthrough,
+        )
 
-        assert config == cm_run_info.config
         for k, v in cm_loaded.state_dict().items():
             torch.testing.assert_close(v, cm.state_dict()[k])
 
@@ -540,10 +534,7 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
         save_file(target_model.state_dict(), base_model_path)
 
         # Create and save a component model with GLOBAL CI
-        config_global = Config(
-            pretrained_model_class="tests.test_component_model.SimpleTestModel",
-            pretrained_model_path=base_model_path,
-            pretrained_model_name=None,
+        config_global = PDConfig(
             module_info=[
                 ModulePatternInfoConfig(module_pattern="linear1", C=4),
                 ModulePatternInfoConfig(module_pattern="linear2", C=4),
@@ -559,11 +550,6 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             loss_metric_configs=[ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)],
             train_log_freq=1,
             n_mask_samples=1,
-            task_config=TMSTaskConfig(
-                task_name="tms",
-                feature_probability=0.5,
-                data_generation_type="exactly_one_active",
-            ),
         )
 
         module_path_info = expand_module_patterns(target_model, config_global.all_module_info)
@@ -578,13 +564,10 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
         # Save global CI checkpoint
         global_checkpoint_path = comp_model_dir / "global_model.pth"
         save_file(cm_global.state_dict(), global_checkpoint_path)
-        save_file(config_global.model_dump(mode="json"), comp_model_dir / "final_config.yaml")
+        save_file(config_global.model_dump(mode="json"), comp_model_dir / "pd_config.yaml")
 
         # Now try to load it with LAYERWISE config - should fail
-        config_layerwise = Config(
-            pretrained_model_class="tests.test_component_model.SimpleTestModel",
-            pretrained_model_path=base_model_path,
-            pretrained_model_name=None,
+        config_layerwise = PDConfig(
             module_info=[
                 ModulePatternInfoConfig(module_pattern="linear1", C=4),
                 ModulePatternInfoConfig(module_pattern="linear2", C=4),
@@ -600,25 +583,21 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             loss_metric_configs=[ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)],
             train_log_freq=1,
             n_mask_samples=1,
-            task_config=TMSTaskConfig(
-                task_name="tms",
-                feature_probability=0.5,
-                data_generation_type="exactly_one_active",
-            ),
         )
 
         # Override the checkpoint path and config in the directory
-        save_file(config_layerwise.model_dump(mode="json"), comp_model_dir / "final_config.yaml")
-
-        cm_run_info = ParamDecompRunInfo.from_path(global_checkpoint_path)
-        # Update config to layerwise after loading run_info
-        cm_run_info.config = config_layerwise
+        save_file(config_layerwise.model_dump(mode="json"), comp_model_dir / "pd_config.yaml")
 
         with pytest.raises(
             AssertionError,
             match="Config specifies layerwise CI but checkpoint has no ci_fn._ci_fns keys",
         ):
-            ComponentModel.from_run_info(cm_run_info)
+            ComponentModel.from_checkpoint(
+                config=config_layerwise,
+                checkpoint_path=global_checkpoint_path,
+                target_model=SimpleTestModel(),
+                run_batch=run_batch_passthrough,
+            )
 
 
 def test_checkpoint_ci_config_mismatch_layerwise_to_global():
@@ -638,10 +617,7 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
         save_file(target_model.state_dict(), base_model_path)
 
         # Create and save a component model with LAYERWISE CI
-        config_layerwise = Config(
-            pretrained_model_class="tests.test_component_model.SimpleTestModel",
-            pretrained_model_path=base_model_path,
-            pretrained_model_name=None,
+        config_layerwise = PDConfig(
             module_info=[
                 ModulePatternInfoConfig(module_pattern="linear1", C=4),
                 ModulePatternInfoConfig(module_pattern="linear2", C=4),
@@ -657,11 +633,6 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             loss_metric_configs=[ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)],
             train_log_freq=1,
             n_mask_samples=1,
-            task_config=TMSTaskConfig(
-                task_name="tms",
-                feature_probability=0.5,
-                data_generation_type="exactly_one_active",
-            ),
         )
 
         module_path_info = expand_module_patterns(target_model, config_layerwise.all_module_info)
@@ -676,13 +647,10 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
         # Save layerwise CI checkpoint
         layerwise_checkpoint_path = comp_model_dir / "layerwise_model.pth"
         save_file(cm_layerwise.state_dict(), layerwise_checkpoint_path)
-        save_file(config_layerwise.model_dump(mode="json"), comp_model_dir / "final_config.yaml")
+        save_file(config_layerwise.model_dump(mode="json"), comp_model_dir / "pd_config.yaml")
 
         # Now try to load it with GLOBAL config - should fail
-        config_global = Config(
-            pretrained_model_class="tests.test_component_model.SimpleTestModel",
-            pretrained_model_path=base_model_path,
-            pretrained_model_name=None,
+        config_global = PDConfig(
             module_info=[
                 ModulePatternInfoConfig(module_pattern="linear1", C=4),
                 ModulePatternInfoConfig(module_pattern="linear2", C=4),
@@ -698,25 +666,21 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             loss_metric_configs=[ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)],
             train_log_freq=1,
             n_mask_samples=1,
-            task_config=TMSTaskConfig(
-                task_name="tms",
-                feature_probability=0.5,
-                data_generation_type="exactly_one_active",
-            ),
         )
 
         # Override the checkpoint path and config in the directory
-        save_file(config_global.model_dump(mode="json"), comp_model_dir / "final_config.yaml")
-
-        cm_run_info = ParamDecompRunInfo.from_path(layerwise_checkpoint_path)
-        # Update config to global after loading run_info
-        cm_run_info.config = config_global
+        save_file(config_global.model_dump(mode="json"), comp_model_dir / "pd_config.yaml")
 
         with pytest.raises(
             AssertionError,
             match="Config specifies global CI but checkpoint has no ci_fn._global_ci_fn keys",
         ):
-            ComponentModel.from_run_info(cm_run_info)
+            ComponentModel.from_checkpoint(
+                config=config_global,
+                checkpoint_path=layerwise_checkpoint_path,
+                target_model=SimpleTestModel(),
+                run_batch=run_batch_passthrough,
+            )
 
 
 # =============================================================================
@@ -1303,10 +1267,7 @@ def test_global_ci_save_and_load():
         base_model_path = base_model_dir / "model.pth"
         save_file(target_model.state_dict(), base_model_path)
 
-        config = Config(
-            pretrained_model_class="tests.test_component_model.SimpleTestModel",
-            pretrained_model_path=base_model_path,
-            pretrained_model_name=None,
+        config = PDConfig(
             module_info=[
                 ModulePatternInfoConfig(module_pattern="linear1", C=4),
                 ModulePatternInfoConfig(module_pattern="linear2", C=4),
@@ -1322,11 +1283,6 @@ def test_global_ci_save_and_load():
             loss_metric_configs=[ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)],
             train_log_freq=1,
             n_mask_samples=1,
-            task_config=TMSTaskConfig(
-                task_name="tms",
-                feature_probability=0.5,
-                data_generation_type="exactly_one_active",
-            ),
         )
 
         module_path_info = expand_module_patterns(target_model, config.all_module_info)
@@ -1340,12 +1296,17 @@ def test_global_ci_save_and_load():
 
         assert isinstance(cm.ci_fn, GlobalCiFnWrapper)
 
-        save_file(cm.state_dict(), comp_model_dir / "model.pth")
-        save_file(config.model_dump(mode="json"), comp_model_dir / "final_config.yaml")
+        checkpoint_path = comp_model_dir / "model.pth"
+        save_file(cm.state_dict(), checkpoint_path)
+        save_file(config.model_dump(mode="json"), comp_model_dir / "pd_config.yaml")
 
         # Load and verify
-        cm_run_info = ParamDecompRunInfo.from_path(comp_model_dir / "model.pth")
-        cm_loaded = ComponentModel.from_run_info(cm_run_info)
+        cm_loaded = ComponentModel.from_checkpoint(
+            config=config,
+            checkpoint_path=checkpoint_path,
+            target_model=SimpleTestModel(),
+            run_batch=run_batch_passthrough,
+        )
 
         assert isinstance(cm_loaded.ci_fn, GlobalCiFnWrapper)
 

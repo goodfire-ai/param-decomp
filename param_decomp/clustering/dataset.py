@@ -7,10 +7,12 @@ from typing import Any
 
 from torch.utils.data import DataLoader
 
-from param_decomp.configs import LMTaskConfig, ResidMLPTaskConfig
 from param_decomp.data import DatasetConfig, create_data_loader
-from param_decomp.experiments.resid_mlp.models import ResidMLP
-from param_decomp.models.component_model import ComponentModel, ParamDecompRunInfo
+from param_decomp.experiments.lm.configs import LMExperimentConfig
+from param_decomp.experiments.resid_mlp.configs import ResidMLPExperimentConfig
+from param_decomp.experiments.resid_mlp.models import ResidMLP, ResidMLPTargetRunInfo
+from param_decomp.load import load_pd, load_target_from_experiment_config
+from param_decomp.models.component_model import ComponentModel, PDRunInfo
 from param_decomp.param_decomp_types import TaskName
 
 
@@ -50,29 +52,29 @@ def create_clustering_dataloader(
 
 def _create_lm_dataloader(model_path: str, batch_size: int, seed: int) -> DataLoader[Any]:
     """Create a dataloader for language model task."""
-    pd_run = ParamDecompRunInfo.from_path(model_path)
-    cfg = pd_run.config
-
-    assert isinstance(cfg.task_config, LMTaskConfig), (
-        f"Expected task_config to be of type LMTaskConfig, but got {type(cfg.task_config) = }"
+    pd_run = PDRunInfo.from_path(model_path)
+    exp = pd_run.experiment_config
+    assert isinstance(exp, LMExperimentConfig), (
+        f"Expected LM experiment, got {exp.kind if exp is not None else None!r}"
     )
+    data = exp.data
 
     dataset_config = DatasetConfig(
-        name=cfg.task_config.dataset_name,
-        hf_tokenizer_path=cfg.tokenizer_name,
-        split=cfg.task_config.train_data_split,
-        n_ctx=cfg.task_config.max_seq_len,
+        name=data.dataset_name,
+        hf_tokenizer_path=data.tokenizer_name,
+        split=data.train_split,
+        n_ctx=data.max_seq_len,
         seed=seed,  # Use run-specific seed
-        column_name=cfg.task_config.column_name,
-        is_tokenized=cfg.task_config.is_tokenized,
-        streaming=cfg.task_config.streaming,
+        column_name=data.column_name,
+        is_tokenized=data.is_tokenized,
+        streaming=data.streaming,
     )
 
     dataloader, _ = create_data_loader(
         dataset_config=dataset_config,
         batch_size=batch_size,
-        buffer_size=cfg.task_config.buffer_size,
-        global_seed=seed,  # Use run-specific seed
+        buffer_size=data.buffer_size,
+        global_seed=seed,
     )
 
     return dataloader
@@ -83,28 +85,30 @@ def _create_resid_mlp_dataloader(model_path: str, batch_size: int, seed: int) ->
     from param_decomp.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
     from param_decomp.utils.data_utils import DatasetGeneratedDataLoader
 
-    pd_run = ParamDecompRunInfo.from_path(model_path)
-    cfg = pd_run.config
-    component_model = ComponentModel.from_run_info(pd_run)
-
-    assert isinstance(cfg.task_config, ResidMLPTaskConfig), (
-        f"Expected task_config to be of type ResidMLPTaskConfig, but got {type(cfg.task_config) = }"
+    pd_run = PDRunInfo.from_path(model_path)
+    exp = pd_run.experiment_config
+    assert isinstance(exp, ResidMLPExperimentConfig), (
+        f"Expected ResidMLP experiment, got {exp.kind if exp is not None else None!r}"
     )
+    target = load_target_from_experiment_config(exp)
+    component_model: ComponentModel = load_pd(model_path, target=target)
+
     assert isinstance(component_model.target_model, ResidMLP), (
-        f"Expected target_model to be of type ResidMLP, but got {type(component_model.target_model) = }"
+        f"Expected target_model to be of type ResidMLP, got {type(component_model.target_model)}"
     )
+    target_run_info = ResidMLPTargetRunInfo.from_path(exp.target.run_path)
 
-    # Create dataset with run-specific seed
     dataset = ResidMLPDataset(
         n_features=component_model.target_model.config.n_features,
-        feature_probability=cfg.task_config.feature_probability,
+        feature_probability=exp.data.feature_probability,
         device="cpu",
         calc_labels=False,
         label_type=None,
         act_fn_name=None,
-        label_fn_seed=seed,  # Use run-specific seed
+        label_fn_seed=seed,
         label_coeffs=None,
-        data_generation_type=cfg.task_config.data_generation_type,
+        data_generation_type=exp.data.data_generation_type,
+        synced_inputs=target_run_info.config.synced_inputs,
     )
 
     dataloader = DatasetGeneratedDataLoader(dataset, batch_size=batch_size, shuffle=False)

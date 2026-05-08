@@ -1,9 +1,10 @@
 from typing import Any, Literal, Self
 
-from pydantic import NonNegativeInt, PositiveInt, model_validator
+from pydantic import Field, NonNegativeInt, PositiveInt, model_validator
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.configs import ScheduleConfig, migrate_to_lr_schedule_config
+from param_decomp.configs import PDConfig, ScheduleConfig, migrate_to_lr_schedule_config
+from param_decomp.param_decomp_types import Probability
 
 
 class TMSModelConfig(BaseConfig):
@@ -46,3 +47,28 @@ class TMSTrainConfig(BaseConfig):
             if len(all_indices) != len(set(all_indices)):
                 raise ValueError("Synced inputs must be non-overlapping")
         return self
+
+
+class TMSTargetConfig(BaseConfig):
+    """Path to the trained TMS target run."""
+
+    run_path: str = Field(
+        ...,
+        description="Local or wandb path to a TMS pretrain run (used by TMSTargetRunInfo).",
+    )
+
+
+class TMSDataConfig(BaseConfig):
+    """Synthetic-feature dataset settings for TMS PD."""
+
+    feature_probability: Probability
+    data_generation_type: Literal["exactly_one_active", "at_least_zero_active"] = (
+        "at_least_zero_active"
+    )
+
+
+class TMSExperimentConfig(BaseConfig):
+    kind: Literal["tms"] = "tms"
+    pd: PDConfig
+    target: TMSTargetConfig
+    data: TMSDataConfig

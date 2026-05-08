@@ -22,7 +22,6 @@ from torch import Tensor
 
 from param_decomp.experiments.tms.models import TMSModel
 from param_decomp.log import logger
-from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import Components
 from param_decomp.settings import REPO_ROOT
 
@@ -981,7 +980,13 @@ def main():
         out_dir.mkdir(parents=True, exist_ok=True)
 
         # Load models
-        model = ComponentModel.from_pretrained(run_id)
+        from param_decomp.load import load_pd, load_target_from_experiment_config
+        from param_decomp.models.component_model import PDRunInfo
+
+        run_info_obj = PDRunInfo.from_path(run_id)
+        assert run_info_obj.experiment_config is not None
+        target = load_target_from_experiment_config(run_info_obj.experiment_config)
+        model = load_pd(run_id, target=target)
         assert isinstance(model.target_model, TMSModel)
 
         # Get custom config and name for this run

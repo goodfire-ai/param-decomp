@@ -20,13 +20,16 @@ import tqdm
 from jaxtyping import Bool
 from torch import Tensor
 
-from param_decomp.data import train_loader_and_tokenizer
 from param_decomp.dataset_attributions.config import DatasetAttributionConfig
 from param_decomp.dataset_attributions.harvester import AttributionHarvester
 from param_decomp.dataset_attributions.storage import DatasetAttributionStorage
+from param_decomp.experiments.lm.configs import LMExperimentConfig
+from param_decomp.experiments.lm.data import build_lm_dataloaders
 from param_decomp.harvest.repo import HarvestRepo
+from param_decomp.load import load_pd
 from param_decomp.log import logger
-from param_decomp.models.component_model import ComponentModel, ParamDecompRunInfo
+from param_decomp.models.component_model import ComponentModel, PDRunInfo
+from param_decomp.target_loaders import load_target_from_experiment_config
 from param_decomp.topology import TransformerTopology, get_sources_by_target
 from param_decomp.utils.distributed_utils import get_device
 from param_decomp.utils.wandb_utils import parse_wandb_run_path
@@ -74,12 +77,24 @@ def harvest_attributions(
 
     _, _, run_id = parse_wandb_run_path(config.wandb_path)
 
-    run_info = ParamDecompRunInfo.from_path(config.wandb_path)
-    model = ComponentModel.from_run_info(run_info).to(device)
+    run_info = PDRunInfo.from_path(config.wandb_path)
+    exp = run_info.experiment_config
+    assert isinstance(exp, LMExperimentConfig), (
+        f"Dataset attributions currently only support LM runs, got "
+        f"{exp.kind if exp is not None else None!r}"
+    )
+    target = load_target_from_experiment_config(exp)
+    model = load_pd(config.wandb_path, target=target).to(device)
     model.eval()
 
     pd_config = run_info.config
-    train_loader, _ = train_loader_and_tokenizer(pd_config, config.batch_size)
+    train_loader, _ = build_lm_dataloaders(
+        exp.data,
+        seed=pd_config.seed,
+        train_batch_size=config.batch_size,
+        eval_batch_size=config.batch_size,
+        dist_state=None,
+    )
 
     # Get gradient connectivity
     logger.info("Computing sources_by_target...")

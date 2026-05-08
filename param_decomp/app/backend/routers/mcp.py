@@ -32,7 +32,7 @@ from param_decomp.app.backend.optim_cis import CELossConfig, OptimCIConfig
 from param_decomp.app.backend.routers.graphs import _build_out_probs
 from param_decomp.app.backend.routers.pretrain_info import _get_pretrain_info
 from param_decomp.app.backend.state import StateManager
-from param_decomp.configs import ImportanceMinimalityLossConfig, LMTaskConfig
+from param_decomp.configs import ImportanceMinimalityLossConfig
 from param_decomp.harvest import analysis
 from param_decomp.log import logger
 from param_decomp.utils.distributed_utils import get_device
@@ -895,13 +895,9 @@ def _tool_search_dataset(params: dict[str, Any]) -> dict[str, Any]:
     from param_decomp.app.backend.routers.dataset_search import _assert_simplestories
 
     _, loaded = _get_state()
-    task_config = loaded.config.task_config
-    assert isinstance(task_config, LMTaskConfig), (
-        f"search_dataset requires an LM experiment, got {task_config.task_name}"
-    )
-    _assert_simplestories(task_config)
-    dataset_name = task_config.dataset_name
-    text_column = task_config.column_name
+    dataset_name = loaded.experiment_config.data.dataset_name
+    text_column = loaded.experiment_config.data.column_name
+    _assert_simplestories(dataset_name)
 
     query = params["query"]
     limit = params.get("limit", 20)
@@ -1323,7 +1319,7 @@ def _tool_get_model_info(_params: dict[str, Any]) -> dict[str, Any]:
 
     _log_event("tool_call", "get_model_info", {})
 
-    info = _get_pretrain_info(loaded.config)
+    info = _get_pretrain_info(loaded.experiment_config)
     return info.model_dump()
 
 

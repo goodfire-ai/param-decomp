@@ -1,12 +1,11 @@
 from pathlib import Path
 
 from param_decomp.configs import (
-    Config,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     LayerwiseCiConfig,
     ModulePatternInfoConfig,
-    ResidMLPTaskConfig,
+    PDConfig,
     ScheduleConfig,
     StochasticReconLossConfig,
 )
@@ -36,13 +35,10 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         out_bias=True,
     )
 
-    # Create config similar to the 2-layer config in resid_mlp2_config.yaml
-    config = Config(
-        # WandB
-        wandb_project=None,  # Disable wandb for testing
+    config = PDConfig(
+        wandb_project=None,
         wandb_run_name=None,
         wandb_run_name_prefix="",
-        # General
         seed=0,
         n_mask_samples=1,
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[8]),
@@ -63,35 +59,20 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         identity_module_info=[
             ModulePatternInfoConfig(module_pattern="layers.*.mlp_in", C=10),
         ],
-        # Training
         lr_schedule=ScheduleConfig(
             start_val=1e-3, fn_type="cosine", warmup_pct=0.01, final_val_frac=0.0
         ),
         batch_size=4,
-        steps=3,  # Run more steps to see improvement
+        steps=3,
         n_eval_steps=1,
         eval_freq=10,
         eval_batch_size=4,
         slow_eval_freq=10,
         slow_eval_on_first_step=True,
-        # Logging & Saving
-        train_log_freq=50,  # Print at step 0, 50, and 100
+        train_log_freq=50,
         save_freq=None,
         ci_alive_threshold=0.1,
-        # Pretrained model info
-        pretrained_model_class="param_decomp.experiments.resid_mlp.models.ResidMLP",
-        pretrained_model_path=None,
-        pretrained_model_name=None,
-        tokenizer_name=None,
-        # Task Specific
-        task_config=ResidMLPTaskConfig(
-            task_name="resid_mlp",
-            feature_probability=0.01,
-            data_generation_type="at_least_zero_active",
-        ),
     )
-
-    # Create a pretrained model
 
     target_model = ResidMLP(config=resid_mlp_model_config).to(device)
     target_model.requires_grad_(False)
@@ -99,18 +80,16 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
     if config.identity_module_info is not None:
         insert_identity_operations_(target_model, identity_module_info=config.identity_module_info)
 
-    assert isinstance(config.task_config, ResidMLPTaskConfig)
-    # Create dataset
     dataset = ResidMLPDataset(
         n_features=resid_mlp_model_config.n_features,
-        feature_probability=config.task_config.feature_probability,
+        feature_probability=0.01,
         device=device,
-        calc_labels=False,  # Our labels will be the output of the target model
+        calc_labels=False,
         label_type=None,
         act_fn_name=None,
         label_fn_seed=None,
         label_coeffs=None,
-        data_generation_type=config.task_config.data_generation_type,
+        data_generation_type="at_least_zero_active",
         synced_inputs=None,
     )
 

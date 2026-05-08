@@ -8,7 +8,7 @@ Usage:
     python param_decomp/scripts/compare_models/compare_models.py --current_model_path="wandb:..." --reference_model_path="wandb:..."
 """
 
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 
 import einops
@@ -20,9 +20,15 @@ from pydantic import Field
 from torch import Tensor
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.configs import Config
+from param_decomp.configs import PDConfig
+from param_decomp.experiment_config import ExperimentConfig
+from param_decomp.experiments.ih.configs import IHExperimentConfig
+from param_decomp.experiments.lm.configs import LMExperimentConfig
+from param_decomp.experiments.resid_mlp.configs import ResidMLPExperimentConfig
+from param_decomp.experiments.tms.configs import TMSExperimentConfig
+from param_decomp.load import load_pd, load_target_from_experiment_config
 from param_decomp.log import logger
-from param_decomp.models.component_model import ComponentModel, ParamDecompRunInfo
+from param_decomp.models.component_model import ComponentModel, PDRunInfo
 from param_decomp.utils.distributed_utils import get_device
 from param_decomp.utils.general_utils import get_obj_device
 from param_decomp.utils.run_utils import save_file
@@ -69,67 +75,60 @@ class ModelComparator:
         self.device = get_device()
 
         logger.info(f"Loading current model from: {config.current_model_path}")
-        self.current_model, self.current_config = self._load_model_and_config(
-            config.current_model_path
-        )
+        (
+            self.current_model,
+            self.current_config,
+            self.current_experiment,
+            _,
+        ) = self._load_model_and_config(config.current_model_path)
 
         logger.info(f"Loading reference model from: {config.reference_model_path}")
-        self.reference_model, self.reference_config = self._load_model_and_config(
-            config.reference_model_path
-        )
+        (
+            self.reference_model,
+            self.reference_config,
+            self.reference_experiment,
+            _,
+        ) = self._load_model_and_config(config.reference_model_path)
 
-    def _load_model_and_config(self, model_path: str) -> tuple[ComponentModel, Config]:
-        """Load model and config using the standard pattern from existing codebase."""
-        run_info = ParamDecompRunInfo.from_path(model_path)
-        model = ComponentModel.from_run_info(run_info)
+    def _load_model_and_config(
+        self, model_path: str
+    ) -> tuple[ComponentModel, PDConfig, ExperimentConfig, str]:
+        """Load model and config. Returns (model, pd_config, experiment_config, model_path)."""
+        run_info = PDRunInfo.from_path(model_path)
+        exp = run_info.experiment_config
+        assert exp is not None, "Run has no experiment_config.yaml"
+        target = load_target_from_experiment_config(exp)
+        model = load_pd(model_path, target=target)
         model.to(self.device)
         model.eval()
         model.requires_grad_(False)
 
-        return model, run_info.config
+        return model, run_info.config, exp, model_path
 
     def create_eval_data_loader(self) -> Iterator[Tensor]:
-        """Create evaluation data loader using exact same patterns as decomposition scripts.
+        """Create evaluation data loader, dispatching on the experiment-config variant."""
+        match self.current_experiment:
+            case TMSExperimentConfig() as exp:
+                return self._create_tms_data_loader(exp)
+            case ResidMLPExperimentConfig() as exp:
+                return self._create_resid_mlp_data_loader(exp)
+            case LMExperimentConfig() as exp:
+                return self._create_lm_data_loader(exp)
+            case IHExperimentConfig() as exp:
+                return self._create_ih_data_loader(exp)
 
-        Each per-task loader yields input tensors directly so downstream code can treat
-        batches uniformly regardless of task type.
-        """
-        task_name = self.current_config.task_config.task_name
-
-        data_loader_fns: dict[str, Callable[[], Iterator[Tensor]]] = {
-            "tms": self._create_tms_data_loader,
-            "resid_mlp": self._create_resid_mlp_data_loader,
-            "lm": self._create_lm_data_loader,
-            "ih": self._create_ih_data_loader,
-        }
-
-        if task_name not in data_loader_fns:
-            raise ValueError(
-                f"Unsupported task type: {task_name}. Supported types: {', '.join(data_loader_fns.keys())}"
-            )
-
-        return data_loader_fns[task_name]()
-
-    def _create_tms_data_loader(self) -> Iterator[Tensor]:
+    def _create_tms_data_loader(self, exp: TMSExperimentConfig) -> Iterator[Tensor]:
         """Create data loader for TMS task."""
-        from param_decomp.configs import TMSTaskConfig
         from param_decomp.experiments.tms.models import TMSTargetRunInfo
         from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
 
-        assert isinstance(self.current_config.task_config, TMSTaskConfig)
-        task_config = self.current_config.task_config
-
-        assert self.current_config.pretrained_model_path, (
-            "pretrained_model_path must be set for TMS models"
-        )
-
-        target_run_info = TMSTargetRunInfo.from_path(self.current_config.pretrained_model_path)
+        target_run_info = TMSTargetRunInfo.from_path(exp.target.run_path)
 
         dataset = SparseFeatureDataset(
             n_features=target_run_info.config.tms_model_config.n_features,
-            feature_probability=task_config.feature_probability,
+            feature_probability=exp.data.feature_probability,
             device=self.device,
-            data_generation_type=task_config.data_generation_type,
+            data_generation_type=exp.data.data_generation_type,
             value_range=(0.0, 1.0),
             synced_inputs=target_run_info.config.synced_inputs,
         )
@@ -140,25 +139,17 @@ class ModelComparator:
         )
         return (batch[0] for batch in loader)
 
-    def _create_resid_mlp_data_loader(self) -> Iterator[Tensor]:
+    def _create_resid_mlp_data_loader(self, exp: ResidMLPExperimentConfig) -> Iterator[Tensor]:
         """Create data loader for ResidMLP task."""
-        from param_decomp.configs import ResidMLPTaskConfig
         from param_decomp.experiments.resid_mlp.models import ResidMLPTargetRunInfo
         from param_decomp.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
         from param_decomp.utils.data_utils import DatasetGeneratedDataLoader
 
-        assert isinstance(self.current_config.task_config, ResidMLPTaskConfig)
-        task_config = self.current_config.task_config
-
-        assert self.current_config.pretrained_model_path, (
-            "pretrained_model_path must be set for ResidMLP models"
-        )
-
-        target_run_info = ResidMLPTargetRunInfo.from_path(self.current_config.pretrained_model_path)
+        target_run_info = ResidMLPTargetRunInfo.from_path(exp.target.run_path)
 
         dataset = ResidMLPDataset(
             n_features=target_run_info.config.resid_mlp_model_config.n_features,
-            feature_probability=task_config.feature_probability,
+            feature_probability=exp.data.feature_probability,
             device=self.device,
             calc_labels=False,
             label_type=None,
@@ -173,56 +164,42 @@ class ModelComparator:
         )
         return (batch[0] for batch in loader)
 
-    def _create_lm_data_loader(self) -> Iterator[Tensor]:
+    def _create_lm_data_loader(self, exp: LMExperimentConfig) -> Iterator[Tensor]:
         """Create data loader for LM task."""
-        from param_decomp.configs import LMTaskConfig
         from param_decomp.data import DatasetConfig, create_data_loader, input_ids_collate_fn
 
-        assert self.current_config.tokenizer_name, "tokenizer_name must be set"
-        assert isinstance(self.current_config.task_config, LMTaskConfig)
-        task_config = self.current_config.task_config
-
+        data = exp.data
         dataset_config = DatasetConfig(
-            name=task_config.dataset_name,
-            hf_tokenizer_path=self.current_config.tokenizer_name,
-            split=task_config.eval_data_split,
-            n_ctx=task_config.max_seq_len,
-            is_tokenized=task_config.is_tokenized,
-            streaming=task_config.streaming,
-            column_name=task_config.column_name,
-            shuffle_each_epoch=task_config.shuffle_each_epoch,
+            name=data.dataset_name,
+            hf_tokenizer_path=data.tokenizer_name,
+            split=data.eval_split,
+            n_ctx=data.max_seq_len,
+            is_tokenized=data.is_tokenized,
+            streaming=data.streaming,
+            column_name=data.column_name,
+            shuffle_each_epoch=data.shuffle_each_epoch,
             seed=None,
         )
         loader, _ = create_data_loader(
             dataset_config=dataset_config,
             batch_size=self.config.eval_batch_size,
-            buffer_size=task_config.buffer_size,
+            buffer_size=data.buffer_size,
             global_seed=self.current_config.seed + 1,
             collate_fn=input_ids_collate_fn,
         )
         return iter(loader)
 
-    def _create_ih_data_loader(self) -> Iterator[Tensor]:
+    def _create_ih_data_loader(self, exp: IHExperimentConfig) -> Iterator[Tensor]:
         """Create data loader for IH task."""
-        from param_decomp.configs import IHTaskConfig
         from param_decomp.experiments.ih.model import InductionModelTargetRunInfo
         from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, InductionDataset
 
-        assert isinstance(self.current_config.task_config, IHTaskConfig)
-        task_config = self.current_config.task_config
-
-        assert self.current_config.pretrained_model_path, (
-            "pretrained_model_path must be set for Induction Head models"
-        )
-
-        target_run_info = InductionModelTargetRunInfo.from_path(
-            self.current_config.pretrained_model_path
-        )
+        target_run_info = InductionModelTargetRunInfo.from_path(exp.target.run_path)
 
         dataset = InductionDataset(
             vocab_size=target_run_info.config.ih_model_config.vocab_size,
             seq_len=target_run_info.config.ih_model_config.seq_len,
-            prefix_window=task_config.prefix_window
+            prefix_window=exp.data.prefix_window
             or target_run_info.config.ih_model_config.seq_len - 3,
             device=self.device,
         )

@@ -2,18 +2,32 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import Any, Literal, NamedTuple, overload, override
 
 import torch
+import wandb
+import yaml
 from jaxtyping import Float, Int
 from torch import Tensor, nn
 from torch.utils.hooks import RemovableHandle
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
-from param_decomp.configs import CiConfig, Config, GlobalCiConfig, LayerwiseCiConfig, SamplingType
+from param_decomp.configs import (
+    CiConfig,
+    GlobalCiConfig,
+    LayerwiseCiConfig,
+    PDConfig,
+    SamplingType,
+)
+from param_decomp.experiment_config import (
+    EXPERIMENT_CONFIG_FILENAME,
+    ExperimentConfig,
+    parse_experiment_config,
+)
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.interfaces import LoadableModule, RunInfo
-from param_decomp.models.batch_and_loss_fns import RunBatch, make_run_batch
+from param_decomp.models.batch_and_loss_fns import RunBatch
 from param_decomp.models.components import (
     Components,
     ComponentsMaskInfo,
@@ -31,7 +45,6 @@ from param_decomp.models.components import (
 )
 from param_decomp.models.sigmoids import SIGMOID_TYPES, SigmoidType
 from param_decomp.param_decomp_types import LayerwiseCiFnType, ModelPath
-from param_decomp.utils.general_utils import resolve_class
 from param_decomp.utils.module_utils import ModulePathInfo, expand_module_patterns
 
 
@@ -66,12 +79,46 @@ def _validate_checkpoint_ci_config_compatibility(
 
 
 @dataclass
-class ParamDecompRunInfo(RunInfo[Config]):
+class PDRunInfo(RunInfo[PDConfig]):
     """Run info from training a ComponentModel (i.e. from a PD run)."""
 
-    config_class = Config
-    config_filename = "final_config.yaml"
+    config_class = PDConfig
+    config_filename = "pd_config.yaml"
     checkpoint_prefix = "model"
+
+    experiment_config: ExperimentConfig | None = None
+
+    @classmethod
+    @override
+    def from_path(cls, path: Any) -> "PDRunInfo":
+        info = super().from_path(path)
+        info.experiment_config = _load_experiment_config(info.checkpoint_path.parent, str(path))
+        return info
+
+
+def _load_experiment_config(local_dir: Path, original_path: str) -> ExperimentConfig | None:
+    """Load `experiment_config.yaml` if present locally, downloading from W&B if needed."""
+    from param_decomp.utils.wandb_utils import download_wandb_file, parse_wandb_run_path
+
+    config_path = local_dir / EXPERIMENT_CONFIG_FILENAME
+
+    if not config_path.exists():
+        try:
+            entity, project, run_id = parse_wandb_run_path(original_path)
+        except ValueError:
+            return None
+        try:
+            api = wandb.Api()
+            run = api.run(f"{entity}/{project}/{run_id}")
+            download_wandb_file(run, local_dir, EXPERIMENT_CONFIG_FILENAME)
+        except Exception:
+            return None
+
+    if not config_path.exists():
+        return None
+
+    with open(config_path) as f:
+        return parse_experiment_config(yaml.safe_load(f))
 
 
 class OutputWithCache(NamedTuple):
@@ -502,36 +549,51 @@ class ComponentModel(LoadableModule):
 
     @classmethod
     @override
-    def from_run_info(cls, run_info: RunInfo[Config]) -> "ComponentModel":
-        """Load a trained ComponentModel checkpoint from a run info object."""
-        config = run_info.config
+    def from_run_info(cls, run_info: RunInfo[PDConfig]) -> "ComponentModel":
+        """Load a `ComponentModel` from saved run info via the experiment-config dispatcher.
 
-        # Load the target model
-        model_class = resolve_class(config.pretrained_model_class)
-        if config.pretrained_model_name is not None:
-            assert hasattr(model_class, "from_pretrained"), (
-                f"Model class {model_class} should have a `from_pretrained` method"
-            )
-            # Handle param_decomp.pretrain models: patch missing model_type in old pretrain runs
-            if config.pretrained_model_class.startswith("param_decomp.pretrain.models."):
-                from param_decomp.pretrain.run_info import PretrainRunInfo
+        Convenience wrapper around `from_checkpoint` for callers that already have a
+        `PDRunInfo`. New code should prefer `load_pd(path, target=...)` with an
+        explicit `PDTarget`.
+        """
+        from param_decomp.target_loaders import load_target_from_experiment_config
 
-                pretrain_run_info = PretrainRunInfo.from_path(config.pretrained_model_name)
-                if "model_type" not in pretrain_run_info.model_config_dict:
-                    pretrain_run_info.model_config_dict["model_type"] = (
-                        config.pretrained_model_class.split(".")[-1]
-                    )
-                target_model = model_class.from_run_info(pretrain_run_info)  # pyright: ignore[reportAttributeAccessIssue]
-            else:
-                target_model = model_class.from_pretrained(config.pretrained_model_name)  # pyright: ignore[reportAttributeAccessIssue]
-        else:
-            assert issubclass(model_class, LoadableModule), (
-                f"Model class {model_class} should be a subclass of LoadableModule which "
-                "defines a `from_pretrained` method"
-            )
-            assert run_info.config.pretrained_model_path is not None
-            target_model = model_class.from_pretrained(run_info.config.pretrained_model_path)
+        assert isinstance(run_info, PDRunInfo), f"Expected PDRunInfo, got {type(run_info).__name__}"
+        assert run_info.experiment_config is not None, (
+            f"Run at {run_info.checkpoint_path} has no `experiment_config.yaml`; cannot reload "
+            "target. Use `load_pd(path, target=...)` with an explicit `PDTarget` instead."
+        )
 
+        target = load_target_from_experiment_config(run_info.experiment_config)
+        return cls.from_checkpoint(
+            config=run_info.config,
+            checkpoint_path=run_info.checkpoint_path,
+            target_model=target.model,
+            run_batch=target.run_batch,
+            tied_weights=target.tied_weights,
+        )
+
+    @classmethod
+    @override
+    def from_pretrained(cls, path: ModelPath) -> "ComponentModel":
+        """Load a `ComponentModel` from a local or wandb path via metadata dispatch."""
+        run_info = PDRunInfo.from_path(path)
+        return cls.from_run_info(run_info)
+
+    @classmethod
+    def from_checkpoint(
+        cls,
+        config: PDConfig,
+        checkpoint_path: Path,
+        target_model: nn.Module,
+        run_batch: RunBatch,
+        tied_weights: list[tuple[str, str]] | None = None,
+    ) -> "ComponentModel":
+        """Rebuild a ComponentModel from a saved PD checkpoint and a user-supplied target.
+
+        The caller owns target loading (HF, in-repo pretrain runs, custom user models),
+        so this method takes the already-instantiated target plus its run_batch function.
+        """
         target_model.eval()
         target_model.requires_grad_(False)
 
@@ -543,31 +605,30 @@ class ComponentModel(LoadableModule):
 
         module_path_info = expand_module_patterns(target_model, config.all_module_info)
 
-        comp_model = ComponentModel(
+        comp_model = cls(
             target_model=target_model,
-            run_batch=make_run_batch(config.output_extract),
+            run_batch=run_batch,
             module_path_info=module_path_info,
             ci_config=config.ci_config,
             sigmoid_type=config.sigmoid_type,
         )
 
-        comp_model_weights = torch.load(
-            run_info.checkpoint_path, map_location="cpu", weights_only=True
-        )
-
+        comp_model_weights = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
         handle_deprecated_state_dict_keys_(comp_model_weights)
-
         _validate_checkpoint_ci_config_compatibility(comp_model_weights, config.ci_config)
-
         comp_model.load_state_dict(comp_model_weights)
-        return comp_model
 
-    @classmethod
-    @override
-    def from_pretrained(cls, path: ModelPath) -> "ComponentModel":
-        """Load a trained ComponentModel checkpoint from a local or wandb path."""
-        run_info = ParamDecompRunInfo.from_path(path)
-        return cls.from_run_info(run_info)
+        if tied_weights is not None:
+            for src_name, tgt_name in tied_weights:
+                tgt = comp_model.components[tgt_name]
+                src = comp_model.components[src_name]
+                assert tgt is not None and src is not None, (
+                    f"Cannot tie weights between {src_name} and {tgt_name} - one or both are None"
+                )
+                tgt.U.data = src.V.data.T
+                tgt.V.data = src.U.data.T
+
+        return comp_model
 
     def calc_causal_importances(
         self,

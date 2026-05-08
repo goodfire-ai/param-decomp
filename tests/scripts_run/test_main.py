@@ -74,20 +74,22 @@ class TestPDRun:
         jobs with params swept correctly"""
 
         sweep_params = {
-            "global": {"lr_schedule": {"start_val": {"values": [1, 2]}}},
+            "global": {"pd": {"lr_schedule": {"start_val": {"values": [1, 2]}}}},
             "tms_5-2": {
-                "steps": {"values": [100, 200]},
-                "module_info": {
-                    "values": [
-                        [
-                            {"module_pattern": "linear1", "C": 10},
-                            {"module_pattern": "linear2", "C": 10},
-                        ],
-                        [
-                            {"module_pattern": "linear1", "C": 20},
-                            {"module_pattern": "linear2", "C": 20},
-                        ],
-                    ]
+                "pd": {
+                    "steps": {"values": [100, 200]},
+                    "module_info": {
+                        "values": [
+                            [
+                                {"module_pattern": "linear1", "C": 10},
+                                {"module_pattern": "linear2", "C": 10},
+                            ],
+                            [
+                                {"module_pattern": "linear1", "C": 20},
+                                {"module_pattern": "linear2", "C": 20},
+                            ],
+                        ]
+                    },
                 },
             },
         }
@@ -98,16 +100,16 @@ class TestPDRun:
             sweep_params=sweep_params,
         )
 
-        configs = [j.config for j in training_jobs]
+        configs = [j.config_dict["pd"] for j in training_jobs]
 
         def there_is_one_with(start_val: int, steps: int, c: int) -> bool:
             matching = [
                 cfg
                 for cfg in configs
-                if cfg.lr_schedule.start_val == start_val
-                and cfg.steps == steps
-                and c == cfg.module_info[0].C
-                and c == cfg.module_info[1].C
+                if cfg["lr_schedule"]["start_val"] == start_val
+                and cfg["steps"] == steps
+                and c == cfg["module_info"][0]["C"]
+                and c == cfg["module_info"][1]["C"]
             ]
             return len(matching) == 1
 
@@ -129,16 +131,18 @@ class TestPDRun:
 
         sweep_params = {
             "tms_5-2": {
-                "module_info": {
-                    "values": [
-                        [
-                            {"module_pattern": "linear1", "C": 10},
-                            {"module_pattern": "linear2", "C": 10},
-                        ],
-                    ]
+                "pd": {
+                    "module_info": {
+                        "values": [
+                            [
+                                {"module_pattern": "linear1", "C": 10},
+                                {"module_pattern": "linear2", "C": 10},
+                            ],
+                        ]
+                    },
                 },
             },
-            "tms_40-10": {"steps": {"values": [100, 200]}},
+            "tms_40-10": {"pd": {"steps": {"values": [100, 200]}}},
         }
 
         training_jobs = _create_training_jobs(
@@ -147,15 +151,15 @@ class TestPDRun:
             sweep_params=sweep_params,
         )
 
-        configs = [j.config for j in training_jobs]
+        configs = [j.config_dict["pd"] for j in training_jobs]
 
         def there_is_one_with(c: int | None = None, steps: int | None = None) -> bool:
             matching = []
             for cfg in configs:
                 match = True
-                if c is not None and c != cfg.module_info[0].C:
+                if c is not None and c != cfg["module_info"][0]["C"]:
                     match = False
-                if steps is not None and cfg.steps != steps:
+                if steps is not None and cfg["steps"] != steps:
                     match = False
                 if match:
                     matching.append(cfg)

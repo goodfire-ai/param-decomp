@@ -1,8 +1,9 @@
 from typing import Literal
 
-from pydantic import PositiveInt
+from pydantic import Field, PositiveInt
 
 from param_decomp.base_config import BaseConfig
+from param_decomp.configs import PDConfig
 
 
 class InductionModelConfig(BaseConfig):
@@ -30,3 +31,28 @@ class InductionHeadsTrainConfig(BaseConfig):
     seed: int = 0
     attention_maps_n_steps: PositiveInt
     prefix_window: PositiveInt
+
+
+class IHTargetConfig(BaseConfig):
+    """Path to the trained induction head target run."""
+
+    run_path: str = Field(..., description="Local or wandb path to an IH pretrain run.")
+
+
+class IHDataConfig(BaseConfig):
+    """Synthetic induction-pattern dataset settings."""
+
+    prefix_window: PositiveInt | None = Field(
+        default=None,
+        description=(
+            "Number of tokens to use as a prefix window for the induction head. If None, "
+            "uses the full sequence length minus 3."
+        ),
+    )
+
+
+class IHExperimentConfig(BaseConfig):
+    kind: Literal["ih"] = "ih"
+    pd: PDConfig
+    target: IHTargetConfig
+    data: IHDataConfig

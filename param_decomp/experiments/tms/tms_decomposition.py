@@ -8,15 +8,33 @@ from pathlib import Path
 
 import fire
 
-from param_decomp.configs import TMSTaskConfig
-from param_decomp.experiments.tms.models import TMSModel, TMSTargetRunInfo
+from param_decomp import run_pd
+from param_decomp.experiments.tms.configs import TMSExperimentConfig
+from param_decomp.experiments.tms.data import build_tms_dataloaders
+from param_decomp.experiments.tms.target import load_tms_target
 from param_decomp.log import logger
-from param_decomp.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
-from param_decomp.run_param_decomp import run_experiment
-from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
 from param_decomp.utils.distributed_utils import get_device
 from param_decomp.utils.general_utils import set_seed
-from param_decomp.utils.run_utils import parse_config, parse_sweep_params
+from param_decomp.utils.run_utils import parse_sweep_params
+
+
+def _parse_tms_config(
+    config_path: Path | str | None, config_json: str | None
+) -> TMSExperimentConfig:
+    import json
+
+    import yaml
+
+    assert (config_path is None) != (config_json is None), (
+        "Exactly one of config_path or config_json must be provided"
+    )
+    if config_path is not None:
+        with open(Path(config_path)) as f:
+            data = yaml.safe_load(f)
+    else:
+        assert config_json is not None
+        data = json.loads(config_json.removeprefix("json:"))
+    return TMSExperimentConfig.model_validate(data)
 
 
 def main(
@@ -27,55 +45,39 @@ def main(
     sweep_params_json: str | None = None,
     run_id: str | None = None,
 ) -> None:
-    config = parse_config(config_path, config_json)
+    exp = _parse_tms_config(config_path, config_json)
 
     device = get_device()
     logger.info(f"Using device: {device}")
 
-    set_seed(config.seed)
+    set_seed(exp.pd.seed)
 
-    task_config = config.task_config
-    assert isinstance(task_config, TMSTaskConfig)
+    target, target_run_info = load_tms_target(exp.target)
+    target.model.to(device)
 
-    assert config.pretrained_model_path, "pretrained_model_path must be set"
-    target_run_info = TMSTargetRunInfo.from_path(config.pretrained_model_path)
-    target_model = TMSModel.from_run_info(target_run_info)
-    target_model = target_model.to(device)
-    target_model.eval()
-
-    synced_inputs = target_run_info.config.synced_inputs
-    dataset = SparseFeatureDataset(
-        n_features=target_model.config.n_features,
-        feature_probability=task_config.feature_probability,
+    train_loader, eval_loader = build_tms_dataloaders(
+        exp.data,
+        target_model=target.model,  # pyright: ignore[reportArgumentType]
+        target_run_info=target_run_info,
+        train_batch_size=exp.pd.batch_size,
+        eval_batch_size=exp.pd.eval_batch_size,
         device=device,
-        data_generation_type=task_config.data_generation_type,
-        value_range=(0.0, 1.0),
-        synced_inputs=synced_inputs,
-    )
-    train_loader = DatasetGeneratedDataLoader(dataset, batch_size=config.batch_size, shuffle=False)
-    eval_loader = DatasetGeneratedDataLoader(
-        dataset, batch_size=config.eval_batch_size, shuffle=False
     )
 
-    tied_weights = None
-    if target_model.config.tied_weights:
-        tied_weights = [("linear1", "linear2")]
+    wandb_tags = [t for t in [evals_id, launch_id] if t is not None]
 
-    run_experiment(
-        target_model=target_model,
-        config=config,
-        device=device,
+    run_pd(
+        config=exp.pd,
+        target=target,
         train_loader=train_loader,
         eval_loader=eval_loader,
-        run_batch=run_batch_first_element,
-        reconstruction_loss=recon_loss_mse,
-        experiment_tag="tms",
+        device=device,
         run_id=run_id,
-        launch_id=launch_id,
-        evals_id=evals_id,
         sweep_params=parse_sweep_params(sweep_params_json),
-        target_model_train_config=target_model.config,
-        tied_weights=tied_weights,
+        experiment_config=exp,
+        experiment_tag="tms",
+        wandb_tags=wandb_tags,
+        target_train_config=target_run_info.config,
     )
 
 
