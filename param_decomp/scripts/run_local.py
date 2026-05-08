@@ -53,16 +53,19 @@ def main(
         experiment: Experiment name from registry (e.g., 'tms_5-2', 'resid_mlp1')
         cpu: Run on CPU instead of GPU
         dp: Number of GPUs for single-node data parallelism (requires 2+)
-        override: One or more `key=value` overrides applied on top of the experiment YAML.
-            Values are parsed as YAML so `null`, `true`, `false`, `1.0` and lists work.
+        override: Comma-separated `key=value` overrides applied on top of the experiment YAML.
+            Values are parsed as YAML so `null`, `true`, `false`, `1.0` work.
             Dots in `key` traverse nested dicts (e.g. `lr_schedule.start_val=0.0001`).
-            Pass repeatedly: `--override steps=10 --override profile_memory=true`.
+            Commas separate entries; values containing commas aren't supported here — if you
+            need them, edit the YAML or pass a list-style argument
+            (`--override='[a=1,b="x,y"]'`).
 
     Examples:
         pd-local tms_5-2           # Single GPU (default)
         pd-local tms_5-2 --cpu     # CPU only
         pd-local tms_5-2 --dp 4    # 4 GPUs on single node
-        pd-local pile_llama_simple_mlp-4L --override steps=50 --override profile_memory=true
+        pd-local pile_llama_simple_mlp-4L \\
+            --override 'steps=50,profile_memory=true,profile_memory_step=30'
     """
     if experiment not in EXPERIMENT_REGISTRY:
         available = ", ".join(sorted(EXPERIMENT_REGISTRY.keys()))
@@ -75,8 +78,10 @@ def main(
         raise ValueError("Cannot use both --cpu and --dp")
 
     overrides: list[str] = []
-    if override is not None:
-        overrides = [override] if isinstance(override, str) else list(override)
+    if isinstance(override, str):
+        overrides = [s.strip() for s in override.split(",") if s.strip()]
+    elif override is not None:
+        overrides = list(override)
 
     exp_config = EXPERIMENT_REGISTRY[experiment]
     script_path = REPO_ROOT / exp_config.decomp_script
