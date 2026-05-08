@@ -799,6 +799,12 @@ class Config(BaseConfig):
         default=None,
         description="If set, apply grad norm clipping to the parameters of the CI functions",
     )
+    optimizer_strategy: Literal["adamw", "zero_adamw"] = Field(
+        default="adamw",
+        description="Optimizer wrapper strategy. 'adamw' is the default replicated AdamW; "
+        "'zero_adamw' shards optimizer state across ranks via ZeroRedundancyOptimizer (ZeRO-1) "
+        "and requires a distributed run with world_size > 1.",
+    )
 
     # --- Faithfulness Warmup ---
     faithfulness_warmup_steps: NonNegativeInt = Field(

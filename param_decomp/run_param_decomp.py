@@ -221,7 +221,24 @@ def optimize(
     assert len(component_params) > 0, "No parameters found in components to optimize"
 
     optimized_params = component_params + ci_fn_params
-    optimizer = optim.AdamW(optimized_params, lr=config.lr_schedule.start_val, weight_decay=0)
+    optimizer: optim.Optimizer
+    match config.optimizer_strategy:
+        case "adamw":
+            optimizer = optim.AdamW(
+                optimized_params, lr=config.lr_schedule.start_val, weight_decay=0
+            )
+        case "zero_adamw":
+            from torch.distributed.optim import ZeroRedundancyOptimizer
+
+            assert dist_state is not None and dist_state.world_size > 1, (
+                "optimizer_strategy='zero_adamw' requires a distributed run with world_size > 1"
+            )
+            optimizer = ZeroRedundancyOptimizer(
+                optimized_params,
+                optimizer_class=optim.AdamW,
+                lr=config.lr_schedule.start_val,
+                weight_decay=0,
+            )
 
     if config.profile_memory and is_main_process():
         _log_param_breakdown(component_model)
