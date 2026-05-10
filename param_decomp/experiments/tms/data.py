@@ -3,13 +3,12 @@
 from torch import Tensor
 
 from param_decomp.experiments.tms.configs import TMSDataConfig
-from param_decomp.experiments.tms.models import TMSModel, TMSTargetRunInfo
+from param_decomp.experiments.tms.models import TMSTargetRunInfo
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
 
 
 def build_tms_dataloaders(
     data_cfg: TMSDataConfig,
-    target_model: TMSModel,
     target_run_info: TMSTargetRunInfo,
     *,
     train_batch_size: int,
@@ -20,7 +19,7 @@ def build_tms_dataloaders(
     DatasetGeneratedDataLoader[tuple[Tensor, Tensor]],
 ]:
     dataset = SparseFeatureDataset(
-        n_features=target_model.config.n_features,
+        n_features=target_run_info.config.tms_model_config.n_features,
         feature_probability=data_cfg.feature_probability,
         device=device,
         data_generation_type=data_cfg.data_generation_type,

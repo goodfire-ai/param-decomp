@@ -31,6 +31,27 @@ class ReconstructionLoss(Protocol):
     def __call__(self, pred: Tensor, target: Tensor) -> tuple[Float[Tensor, ""], int]: ...
 
 
+class ToDevice(Protocol):
+    """Protocol for moving (and optionally pruning) a batch from the dataloader onto a device."""
+
+    def __call__(self, batch: Any, device: str | torch.device) -> Any: ...
+
+
+def move_batch_to_device(batch: Any, device: str | torch.device) -> Any:
+    """Recursively move every Tensor in a (possibly nested) batch to `device`.
+
+    Default `PDTarget.to_device`. Override on `PDTarget` for batches where only some fields
+    belong on device (e.g. dict batches with large unused keys).
+    """
+    if isinstance(batch, Tensor):
+        return batch.to(device)
+    if isinstance(batch, tuple):
+        return tuple(move_batch_to_device(x, device) for x in batch)
+    if isinstance(batch, dict):
+        return {k: move_batch_to_device(v, device) for k, v in batch.items()}
+    return batch
+
+
 @dataclass(frozen=True)
 class PDTarget:
     """Target model bundle for PD.
@@ -39,6 +60,11 @@ class PDTarget:
     and compare its output to the component model's output. `reconstruction_loss`
     lives here (not separately) because it's coupled to `run_batch`'s output type:
     KL only makes sense for logits; MSE only makes sense for everything else.
+
+    `to_device` is called once on each raw dataloader batch at the train/eval boundary,
+    and its return value is what `run_batch` and every downstream loss/metric sees.
+    Override the default `move_batch_to_device` if your dataloader yields a structure
+    where only some fields belong on device (e.g. a dict with large unused keys).
     """
 
     model: nn.Module
@@ -46,6 +72,7 @@ class PDTarget:
     reconstruction_loss: ReconstructionLoss
     tied_weights: list[tuple[str, str]] | None = None
     name: str = "custom"
+    to_device: ToDevice = move_batch_to_device
 
 
 def run_batch_passthrough(model: nn.Module, batch: Any) -> Tensor:

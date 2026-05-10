@@ -7,7 +7,7 @@ the canonical configs, and update the registry with your new run(s).
 
 import pytest
 
-from param_decomp.load import load_pd, load_target_from_experiment_config
+from param_decomp.load import load_pd
 from param_decomp.models.component_model import PDRunInfo
 from param_decomp.registry import EXPERIMENT_REGISTRY
 from param_decomp.utils.wandb_utils import parse_wandb_run_path
@@ -25,8 +25,7 @@ CANONICAL_EXPS = [
 def test_loading_from_wandb(exp_name: str, canonical_run: str) -> None:
     try:
         run_info = PDRunInfo.from_path(canonical_run)
-        assert run_info.experiment_config is not None
-        target = load_target_from_experiment_config(run_info.experiment_config)
+        target = run_info.config.load_target().target
         load_pd(canonical_run, target=target)
     except Exception as e:
         e.add_note(f"Error loading {exp_name} from {canonical_run}")

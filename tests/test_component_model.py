@@ -168,7 +168,6 @@ def test_from_checkpoint():
 
         checkpoint_path = comp_model_dir / "model.pth"
         save_file(cm.state_dict(), checkpoint_path)
-        save_file(config.model_dump(mode="json"), comp_model_dir / "pd_config.yaml")
 
         # Reload via from_checkpoint with a fresh target. We need a fresh target
         # because identity ops mutate the model in-place.
@@ -564,7 +563,6 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
         # Save global CI checkpoint
         global_checkpoint_path = comp_model_dir / "global_model.pth"
         save_file(cm_global.state_dict(), global_checkpoint_path)
-        save_file(config_global.model_dump(mode="json"), comp_model_dir / "pd_config.yaml")
 
         # Now try to load it with LAYERWISE config - should fail
         config_layerwise = PDConfig(
@@ -586,7 +584,6 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
         )
 
         # Override the checkpoint path and config in the directory
-        save_file(config_layerwise.model_dump(mode="json"), comp_model_dir / "pd_config.yaml")
 
         with pytest.raises(
             AssertionError,
@@ -647,7 +644,6 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
         # Save layerwise CI checkpoint
         layerwise_checkpoint_path = comp_model_dir / "layerwise_model.pth"
         save_file(cm_layerwise.state_dict(), layerwise_checkpoint_path)
-        save_file(config_layerwise.model_dump(mode="json"), comp_model_dir / "pd_config.yaml")
 
         # Now try to load it with GLOBAL config - should fail
         config_global = PDConfig(
@@ -669,7 +665,6 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
         )
 
         # Override the checkpoint path and config in the directory
-        save_file(config_global.model_dump(mode="json"), comp_model_dir / "pd_config.yaml")
 
         with pytest.raises(
             AssertionError,
@@ -1298,7 +1293,6 @@ def test_global_ci_save_and_load():
 
         checkpoint_path = comp_model_dir / "model.pth"
         save_file(cm.state_dict(), checkpoint_path)
-        save_file(config.model_dump(mode="json"), comp_model_dir / "pd_config.yaml")
 
         # Load and verify
         cm_loaded = ComponentModel.from_checkpoint(

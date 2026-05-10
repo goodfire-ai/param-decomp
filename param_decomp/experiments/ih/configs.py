@@ -1,9 +1,10 @@
+"""Induction Head data classes — leaf module within the `ih` subpackage."""
+
 from typing import Literal
 
 from pydantic import Field, PositiveInt
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.configs import PDConfig
 
 
 class InductionModelConfig(BaseConfig):
@@ -49,10 +50,3 @@ class IHDataConfig(BaseConfig):
             "uses the full sequence length minus 3."
         ),
     )
-
-
-class IHExperimentConfig(BaseConfig):
-    kind: Literal["ih"] = "ih"
-    pd: PDConfig
-    target: IHTargetConfig
-    data: IHDataConfig

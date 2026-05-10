@@ -30,16 +30,18 @@ from param_decomp.configs import (
 )
 from param_decomp.data import loop_dataloader
 from param_decomp.eval import evaluate, evaluate_multibatch_pgd
+from param_decomp.experiments._base import BaseExperimentConfig
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.log import logger
 from param_decomp.losses import compute_losses
 from param_decomp.metrics import faithfulness_loss
-from param_decomp.models.batch_and_loss_fns import PDTarget, ReconstructionLoss, RunBatch
-from param_decomp.models.component_model import (
-    ComponentModel,
-    OutputWithCache,
-    move_batch_to_device,
+from param_decomp.models.batch_and_loss_fns import (
+    PDTarget,
+    ReconstructionLoss,
+    RunBatch,
+    ToDevice,
 )
+from param_decomp.models.component_model import ComponentModel, OutputWithCache
 from param_decomp.persistent_pgd import PersistentPGDState
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp.utils.component_utils import calc_ci_l_zero
@@ -122,6 +124,7 @@ def optimize(
     eval_loader: DataLoader[Any],
     run_batch: RunBatch,
     reconstruction_loss: ReconstructionLoss,
+    to_device: ToDevice,
     out_dir: Path | None,
     tied_weights: list[tuple[str, str]] | None = None,
 ) -> None:
@@ -133,7 +136,7 @@ def optimize(
     def create_pgd_data_iter() -> Iterator[Any]:
         assert hasattr(train_loader, "generator") and train_loader.generator is not None
         train_loader.generator.manual_seed(config.seed)
-        return iter(train_loader)
+        return (to_device(batch, device) for batch in train_loader)
 
     if is_main_process():
         logger.info(f"Train+eval logs saved to directory: {out_dir}")
@@ -229,7 +232,7 @@ def optimize(
         cfg for cfg in eval_metric_configs if cfg not in multibatch_pgd_eval_configs
     ]
 
-    sample_out = model(next(train_iterator))
+    sample_out = model(to_device(next(train_iterator), device))
     batch_dims = sample_out.shape[:-1]
     ppgd_states: dict[
         PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig, PersistentPGDState
@@ -264,7 +267,7 @@ def optimize(
 
         batch_log_data: defaultdict[str, float] = defaultdict(float)
 
-        batch = move_batch_to_device(next(train_iterator), device)
+        batch = to_device(next(train_iterator), device)
         with bf16_autocast(enabled=config.autocast_bf16):
             # NOTE: we need to call the wrapped_model at least once each step in order to setup
             # the DDP gradient syncing for all parameters in the component model. Gradients will
@@ -373,6 +376,7 @@ def optimize(
                     n_eval_steps=config.n_eval_steps,
                     current_frac_of_training=step / config.steps,
                     reconstruction_loss=reconstruction_loss,
+                    to_device=to_device,
                     ppgd_states=ppgd_states,
                 )
 
@@ -432,9 +436,9 @@ def run_pd(
     eval_loader: DataLoader[Any],
     device: str,
     *,
+    experiment_config: BaseExperimentConfig,
     run_id: str | None = None,
     sweep_params: dict[str, Any] | None = None,
-    experiment_config: BaseConfig | None = None,
     experiment_tag: str | None = None,
     wandb_tags: list[str] | None = None,
     target_train_config: BaseConfig | None = None,
@@ -467,7 +471,6 @@ def run_pd(
         save_pre_run_info(
             save_to_wandb=config.wandb_project is not None,
             out_dir=out_dir,
-            pd_config=config,
             sweep_params=sweep_params,
             experiment_config=experiment_config,
             target_model=target.model if target_train_config is not None else None,
@@ -484,6 +487,7 @@ def run_pd(
         eval_loader=eval_loader,
         run_batch=target.run_batch,
         reconstruction_loss=target.reconstruction_loss,
+        to_device=target.to_device,
         out_dir=out_dir,
         tied_weights=target.tied_weights,
     )

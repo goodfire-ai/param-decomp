@@ -15,11 +15,10 @@ from pathlib import Path
 
 import torch
 
-from param_decomp.clustering.dataset import create_clustering_dataloader
 from param_decomp.clustering.harvest_config import HarvestConfig
 from param_decomp.clustering.memberships import collect_memberships
 from param_decomp.clustering.paths import clustering_harvest_dir, new_harvest_id
-from param_decomp.load import load_pd, load_target_from_experiment_config
+from param_decomp.load import load_pd
 from param_decomp.log import logger
 from param_decomp.models.component_model import PDRunInfo
 from param_decomp.param_decomp_types import TaskName
@@ -38,16 +37,14 @@ def harvest(config: HarvestConfig) -> Path:
 
     device = get_device()
     pd_run = PDRunInfo.from_path(config.model_path)
-    exp = pd_run.experiment_config
-    assert exp is not None, "Run has no experiment_config.yaml"
+    exp = pd_run.config
     task_name: TaskName = exp.kind
-    target = load_target_from_experiment_config(exp)
+    target = exp.load_target().target
     model = load_pd(config.model_path, target=target).to(device)
-    dataloader = create_clustering_dataloader(
-        model_path=config.model_path,
-        task_name=task_name,
-        batch_size=config.batch_size,
+    dataloader, _ = exp.build_dataloaders(
         seed=config.dataset_seed,
+        train_batch_size=config.batch_size,
+        eval_batch_size=config.batch_size,
     )
 
     processed = collect_memberships(model, dataloader, task_name, device, config)

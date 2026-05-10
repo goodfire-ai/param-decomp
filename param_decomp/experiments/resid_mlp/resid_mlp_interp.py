@@ -14,7 +14,7 @@ from param_decomp.experiments.resid_mlp.models import (
     ResidMLP,
 )
 from param_decomp.experiments.tms.models import TMSModel
-from param_decomp.load import load_pd, load_target_from_experiment_config
+from param_decomp.load import load_pd
 from param_decomp.log import logger
 from param_decomp.models.component_model import PDRunInfo
 from param_decomp.models.components import Components
@@ -39,12 +39,11 @@ def extract_ci_val_figures(
         Dictionary containing causal importances data and metadata
     """
     run_info = PDRunInfo.from_path(run_id)
-    assert run_info.experiment_config is not None
-    target = load_target_from_experiment_config(run_info.experiment_config)
+    target = run_info.config.load_target().target
     model = load_pd(run_id, target=target)
     model.to(device)
 
-    config = run_info.config
+    config = run_info.pd_config
     assert isinstance(model.target_model, ResidMLP | TMSModel), (
         "model must be a ResidMLP or TMSModel"
     )
@@ -484,10 +483,9 @@ def main(out_dir: Path, device: str):
         wandb_id = path.split("/")[-1]
 
         run_info = PDRunInfo.from_path(path)
-        assert run_info.experiment_config is not None
-        target = load_target_from_experiment_config(run_info.experiment_config)
+        target = run_info.config.load_target().target
         model = load_pd(path, target=target)
-        config = run_info.config
+        config = run_info.pd_config
         assert isinstance(model.target_model, ResidMLP)
         model.target_model.to(device)
 

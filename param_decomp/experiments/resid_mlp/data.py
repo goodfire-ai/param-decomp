@@ -3,14 +3,13 @@
 from torch import Tensor
 
 from param_decomp.experiments.resid_mlp.configs import ResidMLPDataConfig
-from param_decomp.experiments.resid_mlp.models import ResidMLP, ResidMLPTargetRunInfo
+from param_decomp.experiments.resid_mlp.models import ResidMLPTargetRunInfo
 from param_decomp.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader
 
 
 def build_resid_mlp_dataloaders(
     data_cfg: ResidMLPDataConfig,
-    target_model: ResidMLP,
     target_run_info: ResidMLPTargetRunInfo,
     *,
     train_batch_size: int,
@@ -21,7 +20,7 @@ def build_resid_mlp_dataloaders(
     DatasetGeneratedDataLoader[tuple[Tensor, Tensor]],
 ]:
     dataset = ResidMLPDataset(
-        n_features=target_model.config.n_features,
+        n_features=target_run_info.config.resid_mlp_model_config.n_features,
         feature_probability=data_cfg.feature_probability,
         device=device,
         calc_labels=False,  # labels come from the target model output

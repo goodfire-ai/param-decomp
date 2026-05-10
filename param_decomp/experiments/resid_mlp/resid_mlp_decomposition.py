@@ -5,9 +5,8 @@ from pathlib import Path
 import fire
 
 from param_decomp import run_pd
-from param_decomp.experiments.resid_mlp.configs import ResidMLPExperimentConfig
-from param_decomp.experiments.resid_mlp.data import build_resid_mlp_dataloaders
-from param_decomp.experiments.resid_mlp.target import load_resid_mlp_target
+from param_decomp.experiments.resid_mlp.experiment import ResidMLPExperimentConfig
+from param_decomp.experiments.resid_mlp.models import ResidMLPTargetRunInfo
 from param_decomp.log import logger
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp.utils.distributed_utils import get_device
@@ -49,19 +48,18 @@ def main(
     device = get_device()
     logger.info(f"Using device: {device}")
 
-    target, target_run_info = load_resid_mlp_target(exp.target)
-    target.model.to(device)
+    loaded = exp.load_target()
+    loaded.target.model.to(device)
 
     # Pre-create the run dir so we can save the domain-specific label_coeffs alongside the run.
     run_id = run_id or generate_run_id("param_decomp")
     out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
+    target_run_info = ResidMLPTargetRunInfo.from_path(exp.target.run_path)
     save_file(target_run_info.label_coeffs.detach().cpu().tolist(), out_dir / "label_coeffs.json")
 
-    train_loader, eval_loader = build_resid_mlp_dataloaders(
-        exp.data,
-        target_model=target.model,  # pyright: ignore[reportArgumentType]
-        target_run_info=target_run_info,
+    train_loader, eval_loader = exp.build_dataloaders(
+        seed=exp.pd.seed,
         train_batch_size=exp.pd.batch_size,
         eval_batch_size=exp.pd.eval_batch_size,
         device=device,
@@ -71,7 +69,7 @@ def main(
 
     run_pd(
         config=exp.pd,
-        target=target,
+        target=loaded.target,
         train_loader=train_loader,
         eval_loader=eval_loader,
         device=device,
@@ -80,7 +78,7 @@ def main(
         experiment_config=exp,
         experiment_tag="resid_mlp",
         wandb_tags=wandb_tags,
-        target_train_config=target_run_info.config,
+        target_train_config=loaded.target_train_config,
     )
 
 

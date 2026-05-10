@@ -6,8 +6,6 @@ from pathlib import Path
 from typing import Any, Literal, NamedTuple, overload, override
 
 import torch
-import wandb
-import yaml
 from jaxtyping import Float, Int
 from torch import Tensor, nn
 from torch.utils.hooks import RemovableHandle
@@ -23,7 +21,6 @@ from param_decomp.configs import (
 from param_decomp.experiment_config import (
     EXPERIMENT_CONFIG_FILENAME,
     ExperimentConfig,
-    parse_experiment_config,
 )
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.interfaces import LoadableModule, RunInfo
@@ -48,16 +45,6 @@ from param_decomp.param_decomp_types import LayerwiseCiFnType, ModelPath
 from param_decomp.utils.module_utils import ModulePathInfo, expand_module_patterns
 
 
-def move_batch_to_device(batch: Any, device: str | torch.device) -> Any:
-    if isinstance(batch, Tensor):
-        return batch.to(device)
-    if isinstance(batch, tuple):
-        return tuple(move_batch_to_device(x, device) for x in batch)
-    if isinstance(batch, dict):
-        return {k: move_batch_to_device(v, device) for k, v in batch.items()}
-    return batch
-
-
 def _validate_checkpoint_ci_config_compatibility(
     state_dict: dict[str, Tensor], ci_config: CiConfig
 ) -> None:
@@ -79,46 +66,16 @@ def _validate_checkpoint_ci_config_compatibility(
 
 
 @dataclass
-class PDRunInfo(RunInfo[PDConfig]):
+class PDRunInfo(RunInfo[ExperimentConfig]):
     """Run info from training a ComponentModel (i.e. from a PD run)."""
 
-    config_class = PDConfig
-    config_filename = "pd_config.yaml"
+    config_class = ExperimentConfig
+    config_filename = EXPERIMENT_CONFIG_FILENAME
     checkpoint_prefix = "model"
 
-    experiment_config: ExperimentConfig | None = None
-
-    @classmethod
-    @override
-    def from_path(cls, path: Any) -> "PDRunInfo":
-        info = super().from_path(path)
-        info.experiment_config = _load_experiment_config(info.checkpoint_path.parent, str(path))
-        return info
-
-
-def _load_experiment_config(local_dir: Path, original_path: str) -> ExperimentConfig | None:
-    """Load `experiment_config.yaml` if present locally, downloading from W&B if needed."""
-    from param_decomp.utils.wandb_utils import download_wandb_file, parse_wandb_run_path
-
-    config_path = local_dir / EXPERIMENT_CONFIG_FILENAME
-
-    if not config_path.exists():
-        try:
-            entity, project, run_id = parse_wandb_run_path(original_path)
-        except ValueError:
-            return None
-        try:
-            api = wandb.Api()
-            run = api.run(f"{entity}/{project}/{run_id}")
-            download_wandb_file(run, local_dir, EXPERIMENT_CONFIG_FILENAME)
-        except Exception:
-            return None
-
-    if not config_path.exists():
-        return None
-
-    with open(config_path) as f:
-        return parse_experiment_config(yaml.safe_load(f))
+    @property
+    def pd_config(self) -> PDConfig:
+        return self.config.pd
 
 
 class OutputWithCache(NamedTuple):
@@ -432,8 +389,6 @@ class ComponentModel(LoadableModule):
         Returns:
             OutputWithCache object if cache_type is not "none", otherwise the model output tensor.
         """
-        batch = move_batch_to_device(batch, next(self.parameters()).device)
-
         if mask_infos is None and cache_type == "none":
             return self._run_batch(self.target_model, batch)
 
@@ -549,24 +504,18 @@ class ComponentModel(LoadableModule):
 
     @classmethod
     @override
-    def from_run_info(cls, run_info: RunInfo[PDConfig]) -> "ComponentModel":
+    def from_run_info(cls, run_info: RunInfo[Any]) -> "ComponentModel":
         """Load a `ComponentModel` from saved run info via the experiment-config dispatcher.
 
         Convenience wrapper around `from_checkpoint` for callers that already have a
         `PDRunInfo`. New code should prefer `load_pd(path, target=...)` with an
         explicit `PDTarget`.
         """
-        from param_decomp.target_loaders import load_target_from_experiment_config
-
         assert isinstance(run_info, PDRunInfo), f"Expected PDRunInfo, got {type(run_info).__name__}"
-        assert run_info.experiment_config is not None, (
-            f"Run at {run_info.checkpoint_path} has no `experiment_config.yaml`; cannot reload "
-            "target. Use `load_pd(path, target=...)` with an explicit `PDTarget` instead."
-        )
 
-        target = load_target_from_experiment_config(run_info.experiment_config)
+        target = run_info.config.load_target().target
         return cls.from_checkpoint(
-            config=run_info.config,
+            config=run_info.pd_config,
             checkpoint_path=run_info.checkpoint_path,
             target_model=target.model,
             run_batch=target.run_batch,

@@ -218,20 +218,16 @@ def fetch_latest_local_checkpoint(run_dir: Path, prefix: str | None = None) -> P
 def save_pre_run_info(
     save_to_wandb: bool,
     out_dir: Path,
-    pd_config: BaseConfig,
     sweep_params: dict[str, Any] | None,
-    experiment_config: BaseConfig | None,
+    experiment_config: BaseConfig,
     target_model: nn.Module | None,
     target_train_config: BaseConfig | None,
 ) -> None:
     """Save run information locally and optionally to wandb."""
 
     files_to_save: dict[str, Any] = {
-        "pd_config.yaml": pd_config.model_dump(mode="json"),
+        "experiment_config.yaml": experiment_config.model_dump(mode="json"),
     }
-
-    if experiment_config is not None:
-        files_to_save["experiment_config.yaml"] = experiment_config.model_dump(mode="json")
 
     if target_model is not None:
         files_to_save["target_model.pth"] = target_model.state_dict()

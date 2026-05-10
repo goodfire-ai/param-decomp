@@ -1,9 +1,11 @@
+"""Residual MLP data classes — leaf module within the `resid_mlp` subpackage."""
+
 from typing import Any, Literal, Self
 
 from pydantic import Field, PositiveFloat, PositiveInt, model_validator
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.configs import PDConfig, ScheduleConfig, migrate_to_lr_schedule_config
+from param_decomp.configs import ScheduleConfig, migrate_to_lr_schedule_config
 from param_decomp.param_decomp_types import Probability
 
 
@@ -81,10 +83,3 @@ class ResidMLPDataConfig(BaseConfig):
     data_generation_type: Literal[
         "exactly_one_active", "exactly_two_active", "at_least_zero_active"
     ] = "at_least_zero_active"
-
-
-class ResidMLPExperimentConfig(BaseConfig):
-    kind: Literal["resid_mlp"] = "resid_mlp"
-    pd: PDConfig
-    target: ResidMLPTargetConfig
-    data: ResidMLPDataConfig

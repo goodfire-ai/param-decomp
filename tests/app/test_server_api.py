@@ -126,11 +126,8 @@ def app_with_state():
         assert isinstance(hf_tokenizer, PreTrainedTokenizerBase)
         tokenizer = AppTokenizer(hf_tokenizer)
 
-        from param_decomp.experiments.lm.configs import (
-            LMDataConfig,
-            LMExperimentConfig,
-            LMTargetConfig,
-        )
+        from param_decomp.experiments.lm.configs import LMDataConfig, LMTargetConfig
+        from param_decomp.experiments.lm.experiment import LMExperimentConfig
 
         lm_exp = LMExperimentConfig(
             pd=config,

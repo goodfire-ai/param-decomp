@@ -980,12 +980,11 @@ def main():
         out_dir.mkdir(parents=True, exist_ok=True)
 
         # Load models
-        from param_decomp.load import load_pd, load_target_from_experiment_config
+        from param_decomp.load import load_pd
         from param_decomp.models.component_model import PDRunInfo
 
         run_info_obj = PDRunInfo.from_path(run_id)
-        assert run_info_obj.experiment_config is not None
-        target = load_target_from_experiment_config(run_info_obj.experiment_config)
+        target = run_info_obj.config.load_target().target
         model = load_pd(run_id, target=target)
         assert isinstance(model.target_model, TMSModel)
 

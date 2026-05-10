@@ -75,12 +75,8 @@ from param_decomp.metrics.stochastic_recon_subset_ce_and_kl import StochasticRec
 from param_decomp.metrics.stochastic_recon_subset_loss import StochasticReconSubsetLoss
 from param_decomp.metrics.unmasked_recon_loss import UnmaskedReconLoss
 from param_decomp.metrics.uv_plots import UVPlots
-from param_decomp.models.batch_and_loss_fns import ReconstructionLoss
-from param_decomp.models.component_model import (
-    ComponentModel,
-    OutputWithCache,
-    move_batch_to_device,
-)
+from param_decomp.models.batch_and_loss_fns import ReconstructionLoss, ToDevice
+from param_decomp.models.component_model import ComponentModel, OutputWithCache
 from param_decomp.persistent_pgd import PersistentPGDState
 from param_decomp.routing import AllLayersRouter, get_subset_router
 from param_decomp.utils.distributed_utils import avg_metrics_across_ranks, is_distributed
@@ -372,6 +368,7 @@ def evaluate(
     n_eval_steps: int,
     current_frac_of_training: float,
     reconstruction_loss: ReconstructionLoss,
+    to_device: ToDevice,
     ppgd_states: dict[
         PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig, PersistentPGDState
     ],
@@ -403,7 +400,7 @@ def evaluate(
     weight_deltas = model.calc_weight_deltas()
 
     for _ in range(n_eval_steps):
-        batch = move_batch_to_device(next(eval_iterator), device)
+        batch = to_device(next(eval_iterator), device)
 
         target_output: OutputWithCache = model(batch, cache_type="input")
         ci = model.calc_causal_importances(

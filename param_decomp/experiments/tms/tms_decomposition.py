@@ -9,9 +9,7 @@ from pathlib import Path
 import fire
 
 from param_decomp import run_pd
-from param_decomp.experiments.tms.configs import TMSExperimentConfig
-from param_decomp.experiments.tms.data import build_tms_dataloaders
-from param_decomp.experiments.tms.target import load_tms_target
+from param_decomp.experiments.tms.experiment import TMSExperimentConfig
 from param_decomp.log import logger
 from param_decomp.utils.distributed_utils import get_device
 from param_decomp.utils.general_utils import set_seed
@@ -52,13 +50,11 @@ def main(
 
     set_seed(exp.pd.seed)
 
-    target, target_run_info = load_tms_target(exp.target)
-    target.model.to(device)
+    loaded = exp.load_target()
+    loaded.target.model.to(device)
 
-    train_loader, eval_loader = build_tms_dataloaders(
-        exp.data,
-        target_model=target.model,  # pyright: ignore[reportArgumentType]
-        target_run_info=target_run_info,
+    train_loader, eval_loader = exp.build_dataloaders(
+        seed=exp.pd.seed,
         train_batch_size=exp.pd.batch_size,
         eval_batch_size=exp.pd.eval_batch_size,
         device=device,
@@ -68,7 +64,7 @@ def main(
 
     run_pd(
         config=exp.pd,
-        target=target,
+        target=loaded.target,
         train_loader=train_loader,
         eval_loader=eval_loader,
         device=device,
@@ -77,7 +73,7 @@ def main(
         experiment_config=exp,
         experiment_tag="tms",
         wandb_tags=wandb_tags,
-        target_train_config=target_run_info.config,
+        target_train_config=loaded.target_train_config,
     )
 
 

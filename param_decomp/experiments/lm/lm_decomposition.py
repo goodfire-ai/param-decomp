@@ -10,9 +10,7 @@ from param_decomp.configs import (
     PersistentPGDReconSubsetLossConfig,
     RepeatAcrossBatchScope,
 )
-from param_decomp.experiments.lm.configs import LMExperimentConfig
-from param_decomp.experiments.lm.data import build_lm_dataloaders
-from param_decomp.experiments.lm.target import load_lm_target
+from param_decomp.experiments.lm.experiment import LMExperimentConfig
 from param_decomp.log import logger
 from param_decomp.utils.distributed_utils import (
     DistributedState,
@@ -63,7 +61,7 @@ def main(
     if is_main_process():
         logger.info("Loading target model and dataset...")
 
-    target = load_lm_target(exp.target)
+    loaded = exp.load_target()
 
     # Validate PersistentPGD scope compatibility with per-rank batch size.
     match dist_state:
@@ -81,8 +79,7 @@ def main(
                 f"repeat_across_batch n_sources={n} must divide per-rank batch_size={train_rank_bs}"
             )
 
-    train_loader, eval_loader = build_lm_dataloaders(
-        exp.data,
+    train_loader, eval_loader = exp.build_dataloaders(
         seed=exp.pd.seed,
         train_batch_size=exp.pd.batch_size,
         eval_batch_size=exp.pd.eval_batch_size,
@@ -93,7 +90,7 @@ def main(
 
     run_pd(
         config=exp.pd,
-        target=target,
+        target=loaded.target,
         train_loader=train_loader,
         eval_loader=eval_loader,
         device=device,
@@ -102,6 +99,7 @@ def main(
         experiment_config=exp,
         experiment_tag="lm",
         wandb_tags=wandb_tags,
+        target_train_config=loaded.target_train_config,
     )
 
 

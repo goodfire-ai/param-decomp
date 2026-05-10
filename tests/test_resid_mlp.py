@@ -13,7 +13,11 @@ from param_decomp.experiments.resid_mlp.configs import ResidMLPModelConfig
 from param_decomp.experiments.resid_mlp.models import ResidMLP
 from param_decomp.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
 from param_decomp.identity_insertion import insert_identity_operations_
-from param_decomp.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
+from param_decomp.models.batch_and_loss_fns import (
+    move_batch_to_device,
+    recon_loss_mse,
+    run_batch_first_element,
+)
 from param_decomp.run_param_decomp import optimize
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader
 from param_decomp.utils.general_utils import set_seed
@@ -107,6 +111,7 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         eval_loader=eval_loader,
         run_batch=run_batch_first_element,
         reconstruction_loss=recon_loss_mse,
+        to_device=move_batch_to_device,
         out_dir=tmp_path,
     )
 

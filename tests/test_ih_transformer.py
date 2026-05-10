@@ -17,7 +17,11 @@ from param_decomp.configs import (
 from param_decomp.experiments.ih.configs import InductionModelConfig
 from param_decomp.experiments.ih.model import InductionTransformer
 from param_decomp.identity_insertion import insert_identity_operations_
-from param_decomp.models.batch_and_loss_fns import recon_loss_kl, run_batch_first_element
+from param_decomp.models.batch_and_loss_fns import (
+    move_batch_to_device,
+    recon_loss_kl,
+    run_batch_first_element,
+)
 from param_decomp.run_param_decomp import optimize
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, InductionDataset
 from param_decomp.utils.general_utils import set_seed
@@ -114,6 +118,7 @@ def test_ih_transformer_decomposition_happy_path(tmp_path: Path) -> None:
         eval_loader=eval_loader,
         run_batch=run_batch_first_element,
         reconstruction_loss=recon_loss_kl,
+        to_device=move_batch_to_device,
         out_dir=tmp_path,
     )
 

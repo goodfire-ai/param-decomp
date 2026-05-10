@@ -1,9 +1,11 @@
+"""TMS data classes — leaf module within the `tms` subpackage."""
+
 from typing import Any, Literal, Self
 
 from pydantic import Field, NonNegativeInt, PositiveInt, model_validator
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.configs import PDConfig, ScheduleConfig, migrate_to_lr_schedule_config
+from param_decomp.configs import ScheduleConfig, migrate_to_lr_schedule_config
 from param_decomp.param_decomp_types import Probability
 
 
@@ -65,10 +67,3 @@ class TMSDataConfig(BaseConfig):
     data_generation_type: Literal["exactly_one_active", "at_least_zero_active"] = (
         "at_least_zero_active"
     )
-
-
-class TMSExperimentConfig(BaseConfig):
-    kind: Literal["tms"] = "tms"
-    pd: PDConfig
-    target: TMSTargetConfig
-    data: TMSDataConfig

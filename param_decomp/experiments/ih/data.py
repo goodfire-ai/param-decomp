@@ -3,13 +3,13 @@
 from torch import Tensor
 
 from param_decomp.experiments.ih.configs import IHDataConfig
-from param_decomp.experiments.ih.model import InductionTransformer
+from param_decomp.experiments.ih.model import InductionModelTargetRunInfo
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, InductionDataset
 
 
 def build_ih_dataloaders(
     data_cfg: IHDataConfig,
-    target_model: InductionTransformer,
+    target_run_info: InductionModelTargetRunInfo,
     *,
     train_batch_size: int,
     eval_batch_size: int,
@@ -18,10 +18,11 @@ def build_ih_dataloaders(
     DatasetGeneratedDataLoader[tuple[Tensor, Tensor]],
     DatasetGeneratedDataLoader[tuple[Tensor, Tensor]],
 ]:
-    prefix_window = data_cfg.prefix_window or target_model.config.seq_len - 3
+    seq_len = target_run_info.config.ih_model_config.seq_len
+    prefix_window = data_cfg.prefix_window or seq_len - 3
     dataset = InductionDataset(
-        vocab_size=target_model.config.vocab_size,
-        seq_len=target_model.config.seq_len,
+        vocab_size=target_run_info.config.ih_model_config.vocab_size,
+        seq_len=seq_len,
         prefix_window=prefix_window,
         device=device,
     )

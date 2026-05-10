@@ -22,11 +22,7 @@ from torch import Tensor
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import PDConfig
 from param_decomp.experiment_config import ExperimentConfig
-from param_decomp.experiments.ih.configs import IHExperimentConfig
-from param_decomp.experiments.lm.configs import LMExperimentConfig
-from param_decomp.experiments.resid_mlp.configs import ResidMLPExperimentConfig
-from param_decomp.experiments.tms.configs import TMSExperimentConfig
-from param_decomp.load import load_pd, load_target_from_experiment_config
+from param_decomp.load import load_pd
 from param_decomp.log import logger
 from param_decomp.models.component_model import ComponentModel, PDRunInfo
 from param_decomp.utils.distributed_utils import get_device
@@ -95,120 +91,25 @@ class ModelComparator:
     ) -> tuple[ComponentModel, PDConfig, ExperimentConfig, str]:
         """Load model and config. Returns (model, pd_config, experiment_config, model_path)."""
         run_info = PDRunInfo.from_path(model_path)
-        exp = run_info.experiment_config
-        assert exp is not None, "Run has no experiment_config.yaml"
-        target = load_target_from_experiment_config(exp)
+        exp = run_info.config
+        target = exp.load_target().target
         model = load_pd(model_path, target=target)
         model.to(self.device)
         model.eval()
         model.requires_grad_(False)
 
-        return model, run_info.config, exp, model_path
+        return model, run_info.pd_config, exp, model_path
 
     def create_eval_data_loader(self) -> Iterator[Tensor]:
-        """Create evaluation data loader, dispatching on the experiment-config variant."""
-        match self.current_experiment:
-            case TMSExperimentConfig() as exp:
-                return self._create_tms_data_loader(exp)
-            case ResidMLPExperimentConfig() as exp:
-                return self._create_resid_mlp_data_loader(exp)
-            case LMExperimentConfig() as exp:
-                return self._create_lm_data_loader(exp)
-            case IHExperimentConfig() as exp:
-                return self._create_ih_data_loader(exp)
-
-    def _create_tms_data_loader(self, exp: TMSExperimentConfig) -> Iterator[Tensor]:
-        """Create data loader for TMS task."""
-        from param_decomp.experiments.tms.models import TMSTargetRunInfo
-        from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
-
-        target_run_info = TMSTargetRunInfo.from_path(exp.target.run_path)
-
-        dataset = SparseFeatureDataset(
-            n_features=target_run_info.config.tms_model_config.n_features,
-            feature_probability=exp.data.feature_probability,
-            device=self.device,
-            data_generation_type=exp.data.data_generation_type,
-            value_range=(0.0, 1.0),
-            synced_inputs=target_run_info.config.synced_inputs,
-        )
-        loader = DatasetGeneratedDataLoader(
-            dataset,
-            batch_size=self.config.eval_batch_size,
-            shuffle=self.config.shuffle_data,
-        )
-        return (batch[0] for batch in loader)
-
-    def _create_resid_mlp_data_loader(self, exp: ResidMLPExperimentConfig) -> Iterator[Tensor]:
-        """Create data loader for ResidMLP task."""
-        from param_decomp.experiments.resid_mlp.models import ResidMLPTargetRunInfo
-        from param_decomp.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
-        from param_decomp.utils.data_utils import DatasetGeneratedDataLoader
-
-        target_run_info = ResidMLPTargetRunInfo.from_path(exp.target.run_path)
-
-        dataset = ResidMLPDataset(
-            n_features=target_run_info.config.resid_mlp_model_config.n_features,
-            feature_probability=exp.data.feature_probability,
-            device=self.device,
-            calc_labels=False,
-            label_type=None,
-            act_fn_name=None,
-            label_fn_seed=None,
-            synced_inputs=target_run_info.config.synced_inputs,
-        )
-        loader = DatasetGeneratedDataLoader(
-            dataset,
-            batch_size=self.config.eval_batch_size,
-            shuffle=self.config.shuffle_data,
-        )
-        return (batch[0] for batch in loader)
-
-    def _create_lm_data_loader(self, exp: LMExperimentConfig) -> Iterator[Tensor]:
-        """Create data loader for LM task."""
-        from param_decomp.data import DatasetConfig, create_data_loader, input_ids_collate_fn
-
-        data = exp.data
-        dataset_config = DatasetConfig(
-            name=data.dataset_name,
-            hf_tokenizer_path=data.tokenizer_name,
-            split=data.eval_split,
-            n_ctx=data.max_seq_len,
-            is_tokenized=data.is_tokenized,
-            streaming=data.streaming,
-            column_name=data.column_name,
-            shuffle_each_epoch=data.shuffle_each_epoch,
-            seed=None,
-        )
-        loader, _ = create_data_loader(
-            dataset_config=dataset_config,
-            batch_size=self.config.eval_batch_size,
-            buffer_size=data.buffer_size,
-            global_seed=self.current_config.seed + 1,
-            collate_fn=input_ids_collate_fn,
-        )
-        return iter(loader)
-
-    def _create_ih_data_loader(self, exp: IHExperimentConfig) -> Iterator[Tensor]:
-        """Create data loader for IH task."""
-        from param_decomp.experiments.ih.model import InductionModelTargetRunInfo
-        from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, InductionDataset
-
-        target_run_info = InductionModelTargetRunInfo.from_path(exp.target.run_path)
-
-        dataset = InductionDataset(
-            vocab_size=target_run_info.config.ih_model_config.vocab_size,
-            seq_len=target_run_info.config.ih_model_config.seq_len,
-            prefix_window=exp.data.prefix_window
-            or target_run_info.config.ih_model_config.seq_len - 3,
+        """Create evaluation data loader by delegating to the experiment config."""
+        _, eval_loader = self.current_experiment.build_dataloaders(
+            seed=self.current_config.seed + 1,
+            train_batch_size=self.config.eval_batch_size,
+            eval_batch_size=self.config.eval_batch_size,
             device=self.device,
         )
-        loader = DatasetGeneratedDataLoader(
-            dataset,
-            batch_size=self.config.eval_batch_size,
-            shuffle=self.config.shuffle_data,
-        )
-        return (batch[0] for batch in loader)
+        # Synthetic loaders yield (input, label) tuples; LM yields token tensors directly.
+        return (batch[0] if isinstance(batch, tuple | list) else batch for batch in eval_loader)
 
     def compute_activation_densities(
         self, model: ComponentModel, eval_iterator: Iterator[Tensor], n_steps: int

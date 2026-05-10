@@ -7,10 +7,9 @@ from torch.utils.data import DataLoader
 from param_decomp.adapters.base import DecompositionAdapter
 from param_decomp.autointerp.schemas import ModelMetadata
 from param_decomp.experiment_config import ExperimentConfig
-from param_decomp.experiments.lm.configs import LMExperimentConfig
+from param_decomp.experiments.lm.experiment import LMExperimentConfig
 from param_decomp.load import load_pd
 from param_decomp.models.component_model import ComponentModel, PDRunInfo
-from param_decomp.target_loaders import load_target_from_experiment_config
 from param_decomp.topology import TransformerTopology
 from param_decomp.utils.wandb_utils import parse_wandb_run_path
 
@@ -26,16 +25,11 @@ class PDAdapter(DecompositionAdapter):
 
     @cached_property
     def experiment_config(self) -> ExperimentConfig:
-        exp = self.pd_run_info.experiment_config
-        assert exp is not None, (
-            f"Run {self._wandb_path} has no `experiment_config.yaml`. Re-train with "
-            "`run_pd(experiment_config=...)` before using post-processing tools."
-        )
-        return exp
+        return self.pd_run_info.config
 
     @cached_property
     def component_model(self) -> ComponentModel:
-        target = load_target_from_experiment_config(self.experiment_config)
+        target = self.experiment_config.load_target().target
         return load_pd(self._wandb_path, target=target)
 
     @cached_property
@@ -60,18 +54,10 @@ class PDAdapter(DecompositionAdapter):
 
     @override
     def dataloader(self, batch_size: int) -> DataLoader[Tensor]:
-        exp = self.experiment_config
-        assert isinstance(exp, LMExperimentConfig), (
-            f"`dataloader()` is not implemented for kind={exp.kind!r}"
-        )
-        from param_decomp.experiments.lm.data import build_lm_dataloaders
-
-        train_loader, _ = build_lm_dataloaders(
-            exp.data,
-            seed=self.pd_run_info.config.seed,
+        train_loader, _ = self.experiment_config.build_dataloaders(
+            seed=self.pd_run_info.pd_config.seed,
             train_batch_size=batch_size,
             eval_batch_size=batch_size,
-            dist_state=None,
         )
         return train_loader
 

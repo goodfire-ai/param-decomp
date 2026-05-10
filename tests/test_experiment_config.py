@@ -4,23 +4,18 @@ import pytest
 from pydantic import ValidationError
 
 from param_decomp.configs import LayerwiseCiConfig, PDConfig, ScheduleConfig
-from param_decomp.experiment_config import display_name, parse_experiment_config
-from param_decomp.experiments.ih.configs import IHDataConfig, IHExperimentConfig, IHTargetConfig
-from param_decomp.experiments.lm.configs import (
-    LMDataConfig,
-    LMExperimentConfig,
-    LMTargetConfig,
-)
+from param_decomp.experiment_config import parse_experiment_config
+from param_decomp.experiments.ih.configs import IHDataConfig, IHTargetConfig
+from param_decomp.experiments.ih.experiment import IHExperimentConfig
+from param_decomp.experiments.lm.configs import LMDataConfig, LMTargetConfig
+from param_decomp.experiments.lm.experiment import LMExperimentConfig
 from param_decomp.experiments.resid_mlp.configs import (
     ResidMLPDataConfig,
-    ResidMLPExperimentConfig,
     ResidMLPTargetConfig,
 )
-from param_decomp.experiments.tms.configs import (
-    TMSDataConfig,
-    TMSExperimentConfig,
-    TMSTargetConfig,
-)
+from param_decomp.experiments.resid_mlp.experiment import ResidMLPExperimentConfig
+from param_decomp.experiments.tms.configs import TMSDataConfig, TMSTargetConfig
+from param_decomp.experiments.tms.experiment import TMSExperimentConfig
 
 
 def _pd_config() -> PDConfig:
@@ -71,8 +66,8 @@ def test_lm_experiment_round_trip():
     )
     assert exp.kind == "lm"
     _round_trip(exp)
-    assert "GPT2LMHeadModel" in display_name(exp)
-    assert "SimpleStories" in display_name(exp)
+    assert "GPT2LMHeadModel" in exp.display_name()
+    assert "SimpleStories" in exp.display_name()
 
 
 def test_tms_experiment_round_trip():

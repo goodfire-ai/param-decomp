@@ -6,6 +6,7 @@ from typing import Any, ClassVar, Self
 import torch.nn as nn
 import wandb
 import yaml
+from pydantic import TypeAdapter
 from wandb.apis.public import Run
 
 from param_decomp.log import logger
@@ -37,8 +38,9 @@ class RunInfo[T]:
     checkpoint_path: Path
     config: T
 
-    # Subclasses must set these
-    config_class: ClassVar[type]
+    # Subclasses must set these. `config_class` is parsed via pydantic's `TypeAdapter`,
+    # so it can be a Pydantic model class or a discriminated-union `Annotated[...]` alias.
+    config_class: ClassVar[Any]
     config_filename: ClassVar[str]
 
     # Set one of these for checkpoint resolution
@@ -87,7 +89,7 @@ class RunInfo[T]:
                 file_paths = cls._download_from_wandb(f"{entity}/{project}/{run_id}")
 
         with open(file_paths["config"]) as f:
-            config = cls.config_class(**yaml.safe_load(f))
+            config = TypeAdapter(cls.config_class).validate_python(yaml.safe_load(f))
 
         init_kwargs: dict[str, Any] = {
             "checkpoint_path": file_paths["checkpoint"],

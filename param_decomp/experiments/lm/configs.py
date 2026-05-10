@@ -1,15 +1,8 @@
-"""LM experiment config.
-
-Wraps the core `PDConfig` with the LM-specific target and data fields previously held
-on the monolithic `Config`.
-"""
-
-from typing import Literal
+"""LM data classes — leaf module within the `lm` subpackage."""
 
 from pydantic import Field, PositiveInt
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.configs import PDConfig
 from param_decomp.param_decomp_types import ModelPath
 
 
@@ -64,10 +57,3 @@ class LMDataConfig(BaseConfig):
     dataset_seed: int | None = Field(
         default=None, description="Dataset seed (falls back to `pd.seed` when None)"
     )
-
-
-class LMExperimentConfig(BaseConfig):
-    kind: Literal["lm"] = "lm"
-    pd: PDConfig
-    target: LMTargetConfig
-    data: LMDataConfig
