@@ -12,6 +12,7 @@ import argparse
 import gc
 import os
 from pathlib import Path
+from typing import cast
 
 import torch
 
@@ -37,11 +38,11 @@ def harvest(config: HarvestConfig) -> Path:
 
     device = get_device()
     pd_run = PDRunInfo.from_path(config.model_path)
-    exp = pd_run.config
-    task_name: TaskName = exp.kind
-    target = exp.load_target().target
+    exp = pd_run.spec
+    task_name = cast(TaskName, exp.kind)
+    target = pd_run.load_target()
     model = load_pd(config.model_path, target=target).to(device)
-    dataloader, _ = exp.build_dataloaders(
+    dataloader, _ = pd_run.build_dataloaders(
         seed=config.dataset_seed,
         train_batch_size=config.batch_size,
         eval_batch_size=config.batch_size,

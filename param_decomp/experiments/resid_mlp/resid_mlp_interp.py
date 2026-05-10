@@ -39,7 +39,7 @@ def extract_ci_val_figures(
         Dictionary containing causal importances data and metadata
     """
     run_info = PDRunInfo.from_path(run_id)
-    target = run_info.config.load_target().target
+    target = run_info.load_target()
     model = load_pd(run_id, target=target)
     model.to(device)
 
@@ -483,7 +483,7 @@ def main(out_dir: Path, device: str):
         wandb_id = path.split("/")[-1]
 
         run_info = PDRunInfo.from_path(path)
-        target = run_info.config.load_target().target
+        target = run_info.load_target()
         model = load_pd(path, target=target)
         config = run_info.pd_config
         assert isinstance(model.target_model, ResidMLP)

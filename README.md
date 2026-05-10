@@ -61,6 +61,13 @@ listed in [`param_decomp/registry.py`](param_decomp/registry.py). The `lm` exper
 any HuggingFace-loadable model whose target modules are `nn.Linear`, `nn.Embedding`, or
 `transformers.modeling_utils.Conv1D`.
 
+Custom experiments do not need to edit the core package. Provide a driver object with a Pydantic
+spec and run it with:
+
+```bash
+pd-experiment --driver my_pkg.my_exp:DRIVER --config_path my_config.yaml
+```
+
 ## Post-Processing Pipeline
 
 After a decomposition has finished training, post-processing produces the artifacts the app reads:

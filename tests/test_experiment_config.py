@@ -1,20 +1,25 @@
-"""Round-trip tests for the `ExperimentConfig` discriminated union."""
+"""Round-trip tests for open-world experiment manifests."""
 
 import pytest
 from pydantic import ValidationError
 
 from param_decomp.configs import LayerwiseCiConfig, PDConfig, ScheduleConfig
-from param_decomp.experiment_config import parse_experiment_config
+from param_decomp.experiment_config import parse_driver_spec, parse_experiment_config
+from param_decomp.experiments.driver import ExperimentManifest, ExperimentSpec
 from param_decomp.experiments.ih.configs import IHDataConfig, IHTargetConfig
+from param_decomp.experiments.ih.driver import DRIVER as IH_DRIVER
 from param_decomp.experiments.ih.experiment import IHExperimentConfig
 from param_decomp.experiments.lm.configs import LMDataConfig, LMTargetConfig
+from param_decomp.experiments.lm.driver import DRIVER as LM_DRIVER
 from param_decomp.experiments.lm.experiment import LMExperimentConfig
 from param_decomp.experiments.resid_mlp.configs import (
     ResidMLPDataConfig,
     ResidMLPTargetConfig,
 )
+from param_decomp.experiments.resid_mlp.driver import DRIVER as RESID_MLP_DRIVER
 from param_decomp.experiments.resid_mlp.experiment import ResidMLPExperimentConfig
 from param_decomp.experiments.tms.configs import TMSDataConfig, TMSTargetConfig
+from param_decomp.experiments.tms.driver import DRIVER as TMS_DRIVER
 from param_decomp.experiments.tms.experiment import TMSExperimentConfig
 
 
@@ -40,13 +45,12 @@ def _pd_config() -> PDConfig:
     )
 
 
-def _round_trip(
-    exp: LMExperimentConfig | TMSExperimentConfig | ResidMLPExperimentConfig | IHExperimentConfig,
-) -> None:
-    """Dump and re-parse via the discriminated union, asserting equality."""
-    parsed = parse_experiment_config(exp.model_dump(mode="json"))
-    assert type(parsed) is type(exp)
-    assert parsed == exp
+def _round_trip(exp: ExperimentSpec, driver_path: str) -> ExperimentSpec:
+    manifest = ExperimentManifest.from_spec(exp, driver=driver_path)
+    parsed = parse_experiment_config(manifest.model_dump(mode="json"))
+    assert parsed.kind == exp.kind
+    assert parsed.driver == driver_path
+    return parse_driver_spec(parsed)
 
 
 def test_lm_experiment_round_trip():
@@ -64,10 +68,11 @@ def test_lm_experiment_round_trip():
             max_seq_len=128,
         ),
     )
-    assert exp.kind == "lm"
-    _round_trip(exp)
-    assert "GPT2LMHeadModel" in exp.display_name()
-    assert "SimpleStories" in exp.display_name()
+    parsed = _round_trip(exp, LM_DRIVER.driver_path)
+    assert type(parsed) is LMExperimentConfig
+    assert parsed == exp
+    assert "GPT2LMHeadModel" in LM_DRIVER.display_name(exp)
+    assert "SimpleStories" in LM_DRIVER.display_name(exp)
 
 
 def test_tms_experiment_round_trip():
@@ -76,8 +81,9 @@ def test_tms_experiment_round_trip():
         target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc"),
         data=TMSDataConfig(feature_probability=0.05),
     )
-    assert exp.kind == "tms"
-    _round_trip(exp)
+    parsed = _round_trip(exp, TMS_DRIVER.driver_path)
+    assert type(parsed) is TMSExperimentConfig
+    assert parsed == exp
 
 
 def test_resid_mlp_experiment_round_trip():
@@ -86,8 +92,9 @@ def test_resid_mlp_experiment_round_trip():
         target=ResidMLPTargetConfig(run_path="wandb:foo/bar/runs/abc"),
         data=ResidMLPDataConfig(feature_probability=0.05),
     )
-    assert exp.kind == "resid_mlp"
-    _round_trip(exp)
+    parsed = _round_trip(exp, RESID_MLP_DRIVER.driver_path)
+    assert type(parsed) is ResidMLPExperimentConfig
+    assert parsed == exp
 
 
 def test_ih_experiment_round_trip():
@@ -96,10 +103,23 @@ def test_ih_experiment_round_trip():
         target=IHTargetConfig(run_path="wandb:foo/bar/runs/abc"),
         data=IHDataConfig(prefix_window=8),
     )
-    assert exp.kind == "ih"
-    _round_trip(exp)
+    parsed = _round_trip(exp, IH_DRIVER.driver_path)
+    assert type(parsed) is IHExperimentConfig
+    assert parsed == exp
 
 
-def test_unknown_kind_rejected():
+def test_manual_manifest_does_not_need_registered_driver():
+    manifest = ExperimentManifest.from_pd_config(_pd_config(), kind="custom")
+    parsed = parse_experiment_config(manifest.model_dump(mode="json"))
+    spec = parse_driver_spec(parsed)
+    assert spec.kind == "custom"
+    assert spec.pd == _pd_config()
+
+
+def test_lm_target_requires_exactly_one_location():
     with pytest.raises(ValidationError):
-        parse_experiment_config({"kind": "bogus", "pd": {}, "target": {}, "data": {}})
+        LMTargetConfig(
+            model_class="transformers.GPT2LMHeadModel",
+            model_name=None,
+            model_path=None,
+        )

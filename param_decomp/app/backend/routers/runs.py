@@ -74,7 +74,7 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
 
     logger.info(f"[API] Loading {clean_wandb_path}")
     run_info = PDRunInfo.from_path(clean_wandb_path)
-    exp = run_info.config
+    exp = run_info.spec
     if not isinstance(exp, LMExperimentConfig):
         raise HTTPException(
             status_code=400,
@@ -113,7 +113,7 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
 
     # Load the target + ComponentModel
     logger.info(f"[API] Loading model for run {run.id}: {run.wandb_path}")
-    target = exp.load_target().target
+    target = run_info.load_target()
     model = load_pd(clean_wandb_path, target=target)
     model = model.to(DEVICE)
     model.eval()

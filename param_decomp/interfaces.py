@@ -77,13 +77,29 @@ class RunInfo[T]:
             entity, project, run_id = parse_wandb_run_path(str(path))
         except ValueError:
             # Direct path to checkpoint file
-            file_paths = cls._resolve_from_checkpoint_path(Path(path))
+            path_obj = Path(path)
+            if path_obj.is_dir():
+                file_paths = cls._resolve_from_run_dir(path_obj)
+            else:
+                file_paths = cls._resolve_from_checkpoint_path(path_obj)
         else:
             # Wandb path - check cache first
             run_dir = PARAM_DECOMP_OUT_DIR / "runs" / f"{project}-{run_id}"
             if run_dir.exists():
                 logger.info(f"Loading run from {run_dir}")
-                file_paths = cls._resolve_from_run_dir(run_dir)
+                try:
+                    file_paths = cls._resolve_from_run_dir(run_dir)
+                except (FileNotFoundError, ValueError):
+                    logger.info(
+                        f"Cached run is incomplete, downloading from wandb: {entity}/{project}/{run_id}"
+                    )
+                    file_paths = cls._download_from_wandb(f"{entity}/{project}/{run_id}")
+                else:
+                    if any(not path.exists() for path in file_paths.values()):
+                        logger.info(
+                            f"Cached run is missing files, downloading from wandb: {entity}/{project}/{run_id}"
+                        )
+                        file_paths = cls._download_from_wandb(f"{entity}/{project}/{run_id}")
             else:
                 logger.info(f"Downloading run from wandb: {entity}/{project}/{run_id}")
                 file_paths = cls._download_from_wandb(f"{entity}/{project}/{run_id}")
@@ -97,6 +113,34 @@ class RunInfo[T]:
         }
         cls._process_extra_files(file_paths, init_kwargs)
         return cls(**init_kwargs)
+
+    @classmethod
+    def config_from_path(cls, path: ModelPath) -> T:
+        """Load only a run's config file, without resolving or downloading checkpoints."""
+        config_path = cls._resolve_config_path(path)
+        with open(config_path) as f:
+            return TypeAdapter(cls.config_class).validate_python(yaml.safe_load(f))
+
+    @classmethod
+    def _resolve_config_path(cls, path: ModelPath) -> Path:
+        try:
+            entity, project, run_id = parse_wandb_run_path(str(path))
+        except ValueError:
+            path_obj = Path(path)
+            if path_obj.is_dir():
+                return path_obj / cls.config_filename
+            return path_obj.parent / cls.config_filename
+
+        run_dir = PARAM_DECOMP_OUT_DIR / "runs" / f"{project}-{run_id}"
+        config_path = run_dir / cls.config_filename
+        if config_path.exists():
+            return config_path
+
+        logger.info(f"Downloading config from wandb: {entity}/{project}/{run_id}")
+        api = wandb.Api()
+        run: Run = api.run(f"{entity}/{project}/{run_id}")
+        run_dir = fetch_wandb_run_dir(run.id)
+        return download_wandb_file(run, run_dir, cls.config_filename)
 
     @classmethod
     def _resolve_from_checkpoint_path(cls, checkpoint_path: Path) -> dict[str, Path]:

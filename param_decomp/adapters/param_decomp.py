@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 
 from param_decomp.adapters.base import DecompositionAdapter
 from param_decomp.autointerp.schemas import ModelMetadata
-from param_decomp.experiment_config import ExperimentConfig
+from param_decomp.experiments.driver import ExperimentSpec
 from param_decomp.experiments.lm.experiment import LMExperimentConfig
 from param_decomp.load import load_pd
 from param_decomp.models.component_model import ComponentModel, PDRunInfo
@@ -24,12 +24,12 @@ class PDAdapter(DecompositionAdapter):
         return PDRunInfo.from_path(self._wandb_path)
 
     @cached_property
-    def experiment_config(self) -> ExperimentConfig:
-        return self.pd_run_info.config
+    def experiment_config(self) -> ExperimentSpec:
+        return self.pd_run_info.spec
 
     @cached_property
     def component_model(self) -> ComponentModel:
-        target = self.experiment_config.load_target().target
+        target = self.pd_run_info.load_target()
         return load_pd(self._wandb_path, target=target)
 
     @cached_property
@@ -54,7 +54,7 @@ class PDAdapter(DecompositionAdapter):
 
     @override
     def dataloader(self, batch_size: int) -> DataLoader[Tensor]:
-        train_loader, _ = self.experiment_config.build_dataloaders(
+        train_loader, _ = self.pd_run_info.build_dataloaders(
             seed=self.pd_run_info.pd_config.seed,
             train_batch_size=batch_size,
             eval_batch_size=batch_size,

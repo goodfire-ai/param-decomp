@@ -53,6 +53,7 @@ dev = [
 
 [project.scripts]
 pd-run = "param_decomp.scripts.run_cli:cli"
+pd-experiment = "param_decomp.experiments.runner:cli"
 pd-local = "param_decomp.scripts.run_local:cli"
 pd-pretrain = "param_decomp.pretrain.scripts.run_slurm:cli"
 pd-clustering = "param_decomp.clustering.scripts.run_pipeline:cli"

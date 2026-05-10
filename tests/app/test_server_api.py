@@ -133,7 +133,7 @@ def app_with_state():
             pd=config,
             target=LMTargetConfig(
                 model_class="param_decomp.pretrain.models.gpt2_simple.GPT2Simple",
-                model_name=None,
+                model_name="test-target",
                 model_path=None,
             ),
             data=LMDataConfig(

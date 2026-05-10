@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from param_decomp.app.backend.dependencies import DepLoadedRun
 from param_decomp.app.backend.utils import log_errors
+from param_decomp.experiment_config import parse_driver_spec
 from param_decomp.experiments.lm.experiment import LMExperimentConfig
 from param_decomp.log import logger
 from param_decomp.models.component_model import PDRunInfo
@@ -47,8 +48,8 @@ class PretrainInfoResponse(BaseModel):
 
 def _load_lm_experiment_config_lightweight(wandb_path: str) -> LMExperimentConfig | None:
     """Load just the experiment config YAML for an LM run, without downloading checkpoints."""
-    run_info = PDRunInfo.from_path(wandb_path)
-    exp = run_info.config
+    manifest = PDRunInfo.config_from_path(wandb_path)
+    exp = parse_driver_spec(manifest)
     if not isinstance(exp, LMExperimentConfig):
         return None
     return exp

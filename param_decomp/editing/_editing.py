@@ -277,9 +277,9 @@ class EditableModel:
         from param_decomp.load import load_pd
 
         run_info = PDRunInfo.from_path(wandb_path)
-        exp = run_info.config
+        exp = run_info.spec
         assert isinstance(exp, LMExperimentConfig)
-        target = exp.load_target().target
+        target = run_info.load_target()
         model = load_pd(wandb_path, target=target).to(device).eval()
         tokenizer = AppTokenizer.from_pretrained(exp.data.tokenizer_name)
         return cls(model), tokenizer

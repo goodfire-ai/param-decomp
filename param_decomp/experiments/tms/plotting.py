@@ -984,7 +984,7 @@ def main():
         from param_decomp.models.component_model import PDRunInfo
 
         run_info_obj = PDRunInfo.from_path(run_id)
-        target = run_info_obj.config.load_target().target
+        target = run_info_obj.load_target()
         model = load_pd(run_id, target=target)
         assert isinstance(model.target_model, TMSModel)
 

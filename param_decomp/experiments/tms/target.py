@@ -8,9 +8,8 @@ from param_decomp.models.batch_and_loss_fns import PDTarget, recon_loss_mse, run
 def load_tms_target(target_cfg: TMSTargetConfig) -> tuple[PDTarget, TMSTargetRunInfo]:
     """Load TMS target weights, build `PDTarget`, return both target and run_info.
 
-    The `TMSTargetRunInfo` is returned so the caller can pass `target_train_config=run_info.config`
-    to `run_pd` (preserves the existing behavior of saving target weights/config alongside the
-    PD checkpoint).
+    The `TMSTargetRunInfo` is returned so the TMS driver can build dataloaders and persist
+    self-contained target artifacts beside the PD checkpoint.
     """
     run_info = TMSTargetRunInfo.from_path(target_cfg.run_path)
     target_model = TMSModel.from_run_info(run_info)

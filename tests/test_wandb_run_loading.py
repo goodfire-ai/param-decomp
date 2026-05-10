@@ -25,7 +25,7 @@ CANONICAL_EXPS = [
 def test_loading_from_wandb(exp_name: str, canonical_run: str) -> None:
     try:
         run_info = PDRunInfo.from_path(canonical_run)
-        target = run_info.config.load_target().target
+        target = run_info.load_target()
         load_pd(canonical_run, target=target)
     except Exception as e:
         e.add_note(f"Error loading {exp_name} from {canonical_run}")

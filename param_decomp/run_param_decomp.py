@@ -3,7 +3,7 @@
 import gc
 import os
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -17,7 +17,6 @@ from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from param_decomp.base_config import BaseConfig
 from param_decomp.configs import (
     LossMetricConfigType,
     MetricConfigType,
@@ -30,7 +29,7 @@ from param_decomp.configs import (
 )
 from param_decomp.data import loop_dataloader
 from param_decomp.eval import evaluate, evaluate_multibatch_pgd
-from param_decomp.experiments._base import BaseExperimentConfig
+from param_decomp.experiments.driver import ExperimentManifest, RunArtifact
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.log import logger
 from param_decomp.losses import compute_losses
@@ -436,12 +435,12 @@ def run_pd(
     eval_loader: DataLoader[Any],
     device: str,
     *,
-    experiment_config: BaseExperimentConfig,
     run_id: str | None = None,
     sweep_params: dict[str, Any] | None = None,
+    manifest: ExperimentManifest | None = None,
+    artifacts: Sequence[RunArtifact] = (),
     experiment_tag: str | None = None,
     wandb_tags: list[str] | None = None,
-    target_train_config: BaseConfig | None = None,
 ) -> Path | None:
     """Run a full PD decomposition: setup, optimize, cleanup.
 
@@ -468,13 +467,14 @@ def run_pd(
 
         logger.info(config)
 
+        if manifest is None:
+            manifest = ExperimentManifest.from_pd_config(config, kind=target.name)
         save_pre_run_info(
             save_to_wandb=config.wandb_project is not None,
             out_dir=out_dir,
             sweep_params=sweep_params,
-            experiment_config=experiment_config,
-            target_model=target.model if target_train_config is not None else None,
-            target_train_config=target_train_config,
+            manifest=manifest,
+            artifacts=artifacts,
         )
     else:
         out_dir = None

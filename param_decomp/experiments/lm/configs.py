@@ -1,6 +1,8 @@
 """LM data classes — leaf module within the `lm` subpackage."""
 
-from pydantic import Field, PositiveInt
+from typing import Self
+
+from pydantic import Field, PositiveInt, model_validator
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.param_decomp_types import ModelPath
@@ -39,6 +41,13 @@ class LMTargetConfig(BaseConfig):
             "int = index into output tuple, str = attribute name."
         ),
     )
+
+    @model_validator(mode="after")
+    def validate_location(self) -> Self:
+        assert (self.model_name is None) != (self.model_path is None), (
+            "Specify exactly one of `model_name` or `model_path`."
+        )
+        return self
 
 
 class LMDataConfig(BaseConfig):

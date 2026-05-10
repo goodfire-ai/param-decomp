@@ -33,7 +33,7 @@ class TrainingJob:
     experiment: str
     script_path: Path
     config_dict: dict[str, Any]
-    """Raw experiment config dict (the per-experiment ExperimentConfig as a JSON-serializable dict).
+    """Raw experiment spec dict (the per-experiment Pydantic spec as a JSON-serializable dict).
     Passed directly to the decomposition script as `--config_json`."""
     run_id: str  # Pre-generated unique run identifier (e.g. "s-a1b2c3d4")
 

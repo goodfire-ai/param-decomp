@@ -21,7 +21,7 @@ def load_prompts(path: Path) -> list[str]:
 
 def sample_prompts_from_dataset(run_info: PDRunInfo, n_samples: int) -> list[str]:
     """Sample n_samples sequences from the dataset and decode to strings."""
-    exp = run_info.config
+    exp = run_info.spec
     assert isinstance(exp, LMExperimentConfig), "Run is not an LM experiment"
     data = exp.data
 

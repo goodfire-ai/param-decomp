@@ -21,7 +21,7 @@ from torch import Tensor
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import PDConfig
-from param_decomp.experiment_config import ExperimentConfig
+from param_decomp.experiments.driver import ExperimentSpec
 from param_decomp.load import load_pd
 from param_decomp.log import logger
 from param_decomp.models.component_model import ComponentModel, PDRunInfo
@@ -75,7 +75,7 @@ class ModelComparator:
             self.current_model,
             self.current_config,
             self.current_experiment,
-            _,
+            self.current_run_info,
         ) = self._load_model_and_config(config.current_model_path)
 
         logger.info(f"Loading reference model from: {config.reference_model_path}")
@@ -83,26 +83,26 @@ class ModelComparator:
             self.reference_model,
             self.reference_config,
             self.reference_experiment,
-            _,
+            self.reference_run_info,
         ) = self._load_model_and_config(config.reference_model_path)
 
     def _load_model_and_config(
         self, model_path: str
-    ) -> tuple[ComponentModel, PDConfig, ExperimentConfig, str]:
+    ) -> tuple[ComponentModel, PDConfig, ExperimentSpec, PDRunInfo]:
         """Load model and config. Returns (model, pd_config, experiment_config, model_path)."""
         run_info = PDRunInfo.from_path(model_path)
-        exp = run_info.config
-        target = exp.load_target().target
+        exp = run_info.spec
+        target = run_info.load_target()
         model = load_pd(model_path, target=target)
         model.to(self.device)
         model.eval()
         model.requires_grad_(False)
 
-        return model, run_info.pd_config, exp, model_path
+        return model, run_info.pd_config, exp, run_info
 
     def create_eval_data_loader(self) -> Iterator[Tensor]:
         """Create evaluation data loader by delegating to the experiment config."""
-        _, eval_loader = self.current_experiment.build_dataloaders(
+        _, eval_loader = self.current_run_info.build_dataloaders(
             seed=self.current_config.seed + 1,
             train_batch_size=self.config.eval_batch_size,
             eval_batch_size=self.config.eval_batch_size,

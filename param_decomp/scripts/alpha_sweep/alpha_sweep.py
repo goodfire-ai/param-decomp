@@ -79,13 +79,13 @@ def run_r_sweep(
     """Run r sweep for a single model. Returns (run_id, ce_losses)."""
     run_info = PDRunInfo.from_path(wandb_path)
     config = run_info.pd_config
-    exp = run_info.config
+    exp = run_info.spec
     assert isinstance(exp, LMExperimentConfig)
     data = exp.data
     run_id = str(wandb_path).split("/")[-1]
 
     logger.info(f"Loading model {run_id}...")
-    target = exp.load_target().target
+    target = run_info.load_target()
     model = load_pd(wandb_path, target=target).to(device)
     model.eval()
 

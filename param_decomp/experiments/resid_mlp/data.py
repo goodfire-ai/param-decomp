@@ -2,15 +2,14 @@
 
 from torch import Tensor
 
-from param_decomp.experiments.resid_mlp.configs import ResidMLPDataConfig
-from param_decomp.experiments.resid_mlp.models import ResidMLPTargetRunInfo
+from param_decomp.experiments.resid_mlp.configs import ResidMLPDataConfig, ResidMLPTrainConfig
 from param_decomp.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader
 
 
 def build_resid_mlp_dataloaders(
     data_cfg: ResidMLPDataConfig,
-    target_run_info: ResidMLPTargetRunInfo,
+    target_train_config: ResidMLPTrainConfig,
     *,
     train_batch_size: int,
     eval_batch_size: int,
@@ -20,7 +19,7 @@ def build_resid_mlp_dataloaders(
     DatasetGeneratedDataLoader[tuple[Tensor, Tensor]],
 ]:
     dataset = ResidMLPDataset(
-        n_features=target_run_info.config.resid_mlp_model_config.n_features,
+        n_features=target_train_config.resid_mlp_model_config.n_features,
         feature_probability=data_cfg.feature_probability,
         device=device,
         calc_labels=False,  # labels come from the target model output
@@ -29,7 +28,7 @@ def build_resid_mlp_dataloaders(
         label_fn_seed=None,
         label_coeffs=None,
         data_generation_type=data_cfg.data_generation_type,
-        synced_inputs=target_run_info.config.synced_inputs,
+        synced_inputs=target_train_config.synced_inputs,
     )
     train_loader = DatasetGeneratedDataLoader(dataset, batch_size=train_batch_size, shuffle=False)
     eval_loader = DatasetGeneratedDataLoader(dataset, batch_size=eval_batch_size, shuffle=False)

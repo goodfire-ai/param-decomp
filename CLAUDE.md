@@ -45,55 +45,69 @@ The `lm` experiment can decompose any HuggingFace-loadable model whose target mo
 
 ## Public API
 
-The core PD framework exposes four entrypoints, re-exported from `param_decomp/__init__.py`:
+The core PD framework exposes these entrypoints, re-exported from `param_decomp/__init__.py`:
 
 ```python
 from param_decomp import run_pd, load_pd, PDConfig, PDTarget
 ```
 
-- `run_pd(config, target, train_loader, eval_loader, device, *, experiment_config, ...)`:
-  trains a parameter decomposition. `config: PDConfig` carries algorithm/training settings;
-  `target: PDTarget` bundles the target model + its `run_batch` + reconstruction loss +
-  optional tied weights. `experiment_config: BaseExperimentConfig` is required and is
-  persisted as `experiment_config.yaml`; post-processing tooling reloads the target and
-  dataloader from it without the user re-supplying them.
-- `load_pd(path, *, target)`: reload a saved run as a `ComponentModel`. The user supplies a
-  `PDTarget` (the experiment-specific target loaders — `load_lm_target`, `load_tms_target`,
-  etc — can build one).
-- `PDConfig`: subset of fields needed for decomposition (loss configs, sigmoid, sampling,
-  ci_config, schedules, logging). Has no LM/TMS-specific knowledge.
-- `PDTarget`: `(model, run_batch, reconstruction_loss, tied_weights, name)` — frozen dataclass.
+- `run_pd(config, target, train_loader, eval_loader, device, *, manifest=None, artifacts=...)`:
+  trains a decomposition. `PDConfig` carries algorithm/training settings; `PDTarget` bundles the
+  target model + `run_batch` + reconstruction loss + optional tied weights. Core PD does not know
+  about LM/TMS/etc.
+- `load_pd(path, *, target)`: reload a saved run as a `ComponentModel` with an explicit
+  user-supplied `PDTarget`.
+- `PDRunInfo.from_path(path)`: reads a saved run manifest/checkpoint. If the manifest has a driver,
+  `run_info.load_target()` and `run_info.build_dataloaders(...)` reconstruct built-in/custom
+  runtime objects.
 
-A custom-model user adds a new variant to the `ExperimentConfig` discriminated union by
-subclassing `BaseExperimentConfig` (`load_target` / `build_dataloaders` / `display_name`)
-and registering it in `param_decomp/experiment_config.py`, then calls `run_pd` with that
-config.
+### Experiment Drivers
 
-### Per-experiment configs
+Experiments are open-world drivers, not a closed discriminated union in core code. A driver owns a
+pure Pydantic spec and converts it to runtime objects:
 
-Each registered experiment has its own `*ExperimentConfig` under
-`param_decomp/experiments/{name}/configs.py`. Each carries a `kind: Literal[...]` field
-that doubles as the discriminator for the `ExperimentConfig` discriminated union in
-`param_decomp/experiment_config.py`:
+```python
+class MyDriver:
+    kind = "my_exp"
+    spec_model = MyExperimentConfig
+    driver_path = "my_pkg.my_exp:DRIVER"
+
+    def prepare(self, spec, *, device, dist_state=None) -> PreparedExperiment: ...
+    def load_target(self, spec, *, run_dir=None) -> PDTarget: ...
+    def build_dataloaders(self, spec, *, seed, train_batch_size, eval_batch_size, ...): ...
+```
+
+Built-in drivers live in `param_decomp/experiments/{lm,tms,resid_mlp,ih}/driver.py`. Custom users
+can run without editing core code via:
+
+```bash
+pd-experiment --driver my_pkg.my_exp:DRIVER --config_path my_config.yaml
+```
+
+They can also bypass drivers entirely and call `run_pd` directly with their own `PDTarget` and
+dataloaders; those runs reload with `load_pd(path, target=...)`.
+
+### Per-experiment Specs
+
+Built-in YAML configs are pure specs nested under `pd:`, `target:`, and `data:`:
 
 - `LMExperimentConfig(kind="lm", pd, target: LMTargetConfig, data: LMDataConfig)`
 - `TMSExperimentConfig(kind="tms", pd, target, data)`
 - `ResidMLPExperimentConfig(kind="resid_mlp", pd, target, data)`
 - `IHExperimentConfig(kind="ih", pd, target, data)`
 
-YAML configs in `experiments/*/` are nested under `pd:`, `target:`, `data:` keys.
-Post-processing dispatch sites pattern-match on the union variant rather than looking up
-a string `kind`, so basedpyright exhaustively flags every site that needs a new `case`
-when a new experiment is added.
+Specs should not perform I/O. Put target loading, dataloader construction, and artifact selection
+in the driver.
 
 ### Saved run layout
 
 ```
 PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/
-  experiment_config.yaml   # ExperimentConfig variant (kind + pd + target + data)
+  experiment_config.yaml   # ExperimentManifest (kind + driver path + raw spec + artifact names)
   model_<step>.pth         # PD checkpoints
   target_model.pth         # target weights (TMS/ResidMLP/IH only)
   target_train_config.yaml # target train config (TMS/ResidMLP/IH only)
+  label_coeffs.json        # ResidMLP only
   sweep_params.yaml        # if a sweep
 ```
 
@@ -155,7 +169,9 @@ This repository implements methods from two key research papers on parameter dec
 **Core PD Framework:**
 
 - `param_decomp/run_param_decomp.py` - Main PD optimization logic called by all experiments
-- `param_decomp/configs.py` - Pydantic config classes for all experiment types
+- `param_decomp/configs.py` - Core PD config and loss/metric config classes
+- `param_decomp/experiments/*/driver.py` - Experiment drivers that prepare targets,
+  dataloaders, manifests, and artifacts
 - `param_decomp/registry.py` - Centralized experiment registry with all experiment configurations
 - `param_decomp/models/component_model.py` - Core ComponentModel that wraps target models
 - `param_decomp/models/components.py` - Component types (LinearComponent, EmbeddingComponent, etc.)
@@ -170,28 +186,33 @@ This repository implements methods from two key research papers on parameter dec
 
 **Experiment Structure:**
 
-Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
+Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm,ih}/`) contains:
 
 - `models.py` - Experiment-specific model classes and pretrained loading
-- `*_decomposition.py` - Main PD execution script
+- `experiment.py` - Pure Pydantic experiment spec
+- `driver.py` - Runtime preparation (target loading, dataloaders, saved artifacts)
+- `*_decomposition.py` - Thin built-in wrapper around the generic driver runner
 - `train_*.py` - Training script for target models
 - `*_config.yaml` - Configuration files
 - `plotting.py` - Visualization utilities
 
 **Key Data Flow:**
 
-1. Experiments load pretrained target models via WandB or local paths
-2. Target models are wrapped in ComponentModel with specified target modules
+1. A driver parses a pure experiment spec and prepares `PDTarget`, train loader, eval loader,
+   manifest, and artifacts
+2. `run_pd` saves the manifest/artifacts and trains a `ComponentModel` with specified target modules
 3. PD optimization runs via `param_decomp.run_param_decomp.optimize()` with config-driven loss combination
-4. Results include component masks, causal importance scores, and visualizations
+4. Post-processing reloads registered runs through `PDRunInfo.load_target()` and
+   `PDRunInfo.build_dataloaders(...)`
 
 **Configuration System:**
 
-- YAML configs define all experiment parameters
+- YAML specs define experiment parameters under `pd:`, `target:`, and `data:`
 - Pydantic models provide type safety and validation
 - WandB integration for experiment tracking and model storage
 - Supports both local paths and `wandb:project/runs/run_id` format for model loading
-- Centralized experiment registry (`param_decomp/registry.py`) manages all experiment configurations
+- The built-in experiment registry (`param_decomp/registry.py`) names standard configs; custom
+  experiments can use `pd-experiment --driver module:DRIVER --config_path config.yaml`
 
 **Harvest, Autointerp & Dataset Attributions Modules:**
 
@@ -238,12 +259,12 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 │   │   └── ih/                      # Induction heads
 │   ├── metrics/                     # Metrics - both for use as losses and as eval metrics
 │   ├── models/
-│   │   ├── component_model.py       # ComponentModel, ParamDecompRunInfo, from_pretrained()
+│   │   ├── component_model.py       # ComponentModel, PDRunInfo, from_pretrained()
 │   │   └── components.py            # LinearComponent, EmbeddingComponent, etc.
 │   ├── scripts/                     # CLI entry points (pd-run, pd-local)
 │   ├── utils/
 │   │   └── slurm.py                 # SlurmConfig, submit functions
-│   ├── configs.py                   # Pydantic configs (Config, ModuleInfo, etc.)
+│   ├── configs.py                   # Core PD configs (PDConfig, ModuleInfo, loss configs, etc.)
 │   ├── registry.py                  # Experiment registry (name → config)
 │   ├── run_param_decomp.py                   # Main optimization loop
 │   ├── losses.py                    # Loss functions (faithfulness, reconstruction, etc.)
@@ -260,6 +281,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 | Command | Entry Point | Description |
 |---------|-------------|-------------|
 | `pd-run` | `param_decomp/scripts/run.py` | SLURM-based experiment runner |
+| `pd-experiment` | `param_decomp/experiments/runner.py` | Generic local runner for a driver + spec |
 | `pd-local` | `param_decomp/scripts/run_local.py` | Local experiment runner |
 | `pd-harvest` | `param_decomp/harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
 | `pd-autointerp` | `param_decomp/autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
@@ -295,8 +317,9 @@ Use `param_decomp/` as the search root (not repo root) to avoid noise.
 
 **Running Experiments:**
 
-- `pd-run` → `param_decomp/scripts/run.py` → `param_decomp/utils/slurm.py` → SLURM → `param_decomp/run_param_decomp.py`
-- `pd-local` → `param_decomp/scripts/run_local.py` → `param_decomp/run_param_decomp.py` directly
+- `pd-run` → `param_decomp/scripts/run.py` → `param_decomp/utils/slurm.py` → SLURM → built-in decomposition wrapper → `param_decomp/experiments/runner.py` → `run_pd`
+- `pd-local` → `param_decomp/scripts/run_local.py` → built-in decomposition wrapper → `param_decomp/experiments/runner.py` → `run_pd`
+- `pd-experiment` → `param_decomp/experiments/runner.py` → custom/built-in driver → `run_pd`
 
 **Harvest Pipeline:**
 
@@ -477,17 +500,19 @@ pd-run --experiments tms_5-2 --sweep custom.yaml --n_agents 2 # Use custom sweep
   ```yaml
   # Global parameters applied to all experiments
   global:
-    seed:
-      values: [0, 1, 2]
-    lr_schedule:
-      start_val:
-        values: [0.001, 0.01]
+    pd:
+      seed:
+        values: [0, 1, 2]
+      lr_schedule:
+        start_val:
+          values: [0.001, 0.01]
 
   # Experiment-specific parameters (override global)
   tms_5-2:
-    seed:
-      values: [100, 200] # Overrides global seed
-    task_config:
+    pd:
+      seed:
+        values: [100, 200] # Overrides global seed
+    data:
       feature_probability:
         values: [0.05, 0.1]
   ```
@@ -499,14 +524,16 @@ pd-run --experiments tms_5-2 --sweep custom.yaml --n_agents 2 # Use custom sweep
 Load trained PD models from wandb or local paths using these methods:
 
 ```python
-from param_decomp.models.component_model import ComponentModel, ParamDecompRunInfo
+from param_decomp import load_pd
+from param_decomp.models.component_model import ComponentModel, PDRunInfo
 
-# Option 1: Load model directly (simplest)
-model = ComponentModel.from_pretrained("wandb:entity/project/runs/run_id")
+# Option 1: Explicit target (works for custom/manual runs)
+target = ...
+model = load_pd("wandb:entity/project/runs/run_id", target=target)
 
-# Option 2: Load run info first, then model (access config before loading)
-run_info = ParamDecompRunInfo.from_path("wandb:entity/project/runs/run_id")
-print(run_info.config)  # Inspect config before loading model
+# Option 2: Registered manifest driver reconstructs the target
+run_info = PDRunInfo.from_path("wandb:entity/project/runs/run_id")
+print(run_info.spec)  # Parsed experiment spec
 model = ComponentModel.from_run_info(run_info)
 
 # Local paths work too

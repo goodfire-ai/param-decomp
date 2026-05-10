@@ -15,7 +15,6 @@ from pydantic import BaseModel
 from pydantic.v1.utils import deep_update
 from torch import Tensor
 
-from param_decomp.base_config import BaseConfig
 from param_decomp.configs import ScheduleConfig
 from param_decomp.utils.run_utils import save_file
 
@@ -219,24 +218,21 @@ def save_pre_run_info(
     save_to_wandb: bool,
     out_dir: Path,
     sweep_params: dict[str, Any] | None,
-    experiment_config: BaseConfig,
-    target_model: nn.Module | None,
-    target_train_config: BaseConfig | None,
+    manifest: Any,
+    artifacts: Sequence[Any],
 ) -> None:
     """Save run information locally and optionally to wandb."""
 
+    manifest = manifest.with_artifacts([artifact.filename for artifact in artifacts])
     files_to_save: dict[str, Any] = {
-        "experiment_config.yaml": experiment_config.model_dump(mode="json"),
+        "experiment_config.yaml": manifest.model_dump(mode="json"),
     }
-
-    if target_model is not None:
-        files_to_save["target_model.pth"] = target_model.state_dict()
-
-    if target_train_config is not None:
-        files_to_save["target_train_config.yaml"] = target_train_config.model_dump(mode="json")
 
     if sweep_params is not None:
         files_to_save["sweep_params.yaml"] = sweep_params
+
+    for artifact in artifacts:
+        files_to_save[artifact.filename] = artifact.data
 
     for filename, data in files_to_save.items():
         filepath = out_dir / filename

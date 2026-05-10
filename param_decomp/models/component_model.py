@@ -1,13 +1,14 @@
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from functools import partial
+from functools import cached_property, partial
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, overload, override
 
 import torch
 from jaxtyping import Float, Int
 from torch import Tensor, nn
+from torch.utils.data import DataLoader
 from torch.utils.hooks import RemovableHandle
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
@@ -20,11 +21,14 @@ from param_decomp.configs import (
 )
 from param_decomp.experiment_config import (
     EXPERIMENT_CONFIG_FILENAME,
-    ExperimentConfig,
+    ExperimentManifest,
+    ExperimentSpec,
+    parse_driver_spec,
 )
+from param_decomp.experiments.driver import ExperimentDriver, load_driver
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.interfaces import LoadableModule, RunInfo
-from param_decomp.models.batch_and_loss_fns import RunBatch
+from param_decomp.models.batch_and_loss_fns import PDTarget, RunBatch
 from param_decomp.models.components import (
     Components,
     ComponentsMaskInfo,
@@ -66,16 +70,89 @@ def _validate_checkpoint_ci_config_compatibility(
 
 
 @dataclass
-class PDRunInfo(RunInfo[ExperimentConfig]):
+class PDRunInfo(RunInfo[ExperimentManifest]):
     """Run info from training a ComponentModel (i.e. from a PD run)."""
 
-    config_class = ExperimentConfig
+    config_class = ExperimentManifest
     config_filename = EXPERIMENT_CONFIG_FILENAME
     checkpoint_prefix = "model"
 
+    @classmethod
+    @override
+    def _resolve_from_run_dir(cls, run_dir: Path) -> dict[str, Path]:
+        file_paths = super()._resolve_from_run_dir(run_dir)
+        manifest = ExperimentManifest.from_file(run_dir / cls.config_filename)
+        file_paths.update({f: run_dir / f for f in manifest.artifact_filenames})
+        return file_paths
+
+    @classmethod
+    @override
+    def _download_from_wandb(cls, wandb_path: str) -> dict[str, Path]:
+        import wandb
+
+        from param_decomp.utils.wandb_utils import (
+            download_wandb_file,
+            fetch_latest_wandb_checkpoint,
+            fetch_wandb_run_dir,
+        )
+
+        api = wandb.Api()
+        run = api.run(wandb_path)
+        run_dir = fetch_wandb_run_dir(run.id)
+        config_path = download_wandb_file(run, run_dir, cls.config_filename)
+        manifest = ExperimentManifest.from_file(config_path)
+        checkpoint = fetch_latest_wandb_checkpoint(run, prefix=cls.checkpoint_prefix)
+        return {
+            "config": config_path,
+            "checkpoint": download_wandb_file(run, run_dir, checkpoint.name),
+            **{
+                filename: download_wandb_file(run, run_dir, filename)
+                for filename in manifest.artifact_filenames
+            },
+        }
+
+    @cached_property
+    def spec(self) -> ExperimentSpec:
+        return parse_driver_spec(self.config)
+
+    @cached_property
+    def driver(self) -> ExperimentDriver[Any] | None:
+        if self.config.driver is None:
+            return None
+        return load_driver(self.config.driver)
+
     @property
     def pd_config(self) -> PDConfig:
-        return self.config.pd
+        return self.spec.pd
+
+    def load_target(self) -> PDTarget:
+        assert self.driver is not None, (
+            "This run manifest has no driver. Use load_pd(path, target=...) with an explicit "
+            "PDTarget."
+        )
+        return self.driver.load_target(self.spec, run_dir=self.checkpoint_path.parent)
+
+    def build_dataloaders(
+        self,
+        *,
+        seed: int,
+        train_batch_size: int,
+        eval_batch_size: int,
+        dist_state: Any = None,
+        device: str = "cpu",
+    ) -> tuple[DataLoader[Any], DataLoader[Any]]:
+        assert self.driver is not None, (
+            "This run manifest has no driver. Build dataloaders explicitly for custom runs."
+        )
+        return self.driver.build_dataloaders(
+            self.spec,
+            seed=seed,
+            train_batch_size=train_batch_size,
+            eval_batch_size=eval_batch_size,
+            dist_state=dist_state,
+            device=device,
+            run_dir=self.checkpoint_path.parent,
+        )
 
 
 class OutputWithCache(NamedTuple):
@@ -513,7 +590,7 @@ class ComponentModel(LoadableModule):
         """
         assert isinstance(run_info, PDRunInfo), f"Expected PDRunInfo, got {type(run_info).__name__}"
 
-        target = run_info.config.load_target().target
+        target = run_info.load_target()
         return cls.from_checkpoint(
             config=run_info.pd_config,
             checkpoint_path=run_info.checkpoint_path,
