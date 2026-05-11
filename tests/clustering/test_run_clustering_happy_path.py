@@ -21,7 +21,7 @@ def test_run_clustering_happy_path(monkeypatch: Any):
 
         config = ClusteringRunConfig(
             harvest=HarvestConfig(
-                model_path="wandb:goodfire/spd/runs/s-a9ad193d",
+                model_path="wandb:goodfire/spd/runs/p-e944d8a4",
                 batch_size=4,
                 activation_threshold=0.01,
             ),

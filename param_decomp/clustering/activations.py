@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import torch
 from jaxtyping import Bool, Float
@@ -13,19 +13,20 @@ from param_decomp.clustering.consts import (
     ComponentLabels,
 )
 from param_decomp.clustering.util import DeadComponentFilterStat, ModuleFilterFunc
+from param_decomp.models.batch_and_loss_fns import move_batch_to_device
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
 
 
 def component_activations(
     model: ComponentModel,
     device: torch.device | str,
-    batch: Tensor,
+    batch: Any,
 ) -> dict[str, ActivationsTensor]:
     """Get the component activations over a **single** batch."""
     causal_importances: dict[str, ActivationsTensor]
     with torch.no_grad():
         model_output: OutputWithCache = model(
-            batch.to(device),
+            move_batch_to_device(batch, device),
             cache_type="input",
         )
 

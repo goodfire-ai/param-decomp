@@ -460,7 +460,7 @@ def collect_memberships_resid_mlp(
     pbar = tqdm(dataloader, desc="Collecting activations", unit="batch")
     for batch_data in pbar:
         batch, _ = batch_data
-        activations = component_activations(model=model, batch=batch, device=device)
+        activations = component_activations(model=model, batch=batch_data, device=device)
         batch_take = min(batch.shape[0], n_samples - n_collected)
         builder.add_batch({key: act[:batch_take] for key, act in activations.items()})
 
