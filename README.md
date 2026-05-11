@@ -63,11 +63,14 @@ HuggingFace-loadable model whose target modules are `nn.Linear`, `nn.Embedding`,
 
 Custom experiments do not need to edit the core package. The built-in runtime definitions live in
 one file per experiment, e.g. [`param_decomp/experiments/lm/experiment.py`](param_decomp/experiments/lm/experiment.py).
-Replicate that shape with a Pydantic spec and driver object, then run it with:
+Replicate that shape with a Pydantic experiment config and driver class, then run it with:
 
 ```bash
-pd-experiment --driver my_pkg.my_exp:DRIVER --config_path my_config.yaml
+pd-experiment --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml
 ```
+
+Runs save an `experiment_manifest.yaml` beside the checkpoint. The manifest contains the parsed
+experiment config plus the driver import path and artifact filenames needed to reload the run.
 
 ## Post-Processing Pipeline
 

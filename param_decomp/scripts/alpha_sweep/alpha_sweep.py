@@ -79,7 +79,7 @@ def run_r_sweep(
     """Run r sweep for a single model. Returns (run_id, ce_losses)."""
     run_info = PDRunInfo.from_path(wandb_path)
     config = run_info.pd_config
-    exp = run_info.spec
+    exp = run_info.experiment_config
     assert isinstance(exp, LMExperimentConfig)
     data = exp.data
     run_id = str(wandb_path).split("/")[-1]

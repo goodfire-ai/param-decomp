@@ -389,7 +389,7 @@ def main() -> None:
 
     print("Loading run info...")
     run_info = PDRunInfo.from_path(f"goodfire/spd/runs/{RUN_ID}")
-    exp = run_info.spec
+    exp = run_info.experiment_config
     assert isinstance(exp, LMExperimentConfig), "graph export only supports LM runs"
     tokenizer = AppTokenizer.from_pretrained(exp.data.tokenizer_name)
 

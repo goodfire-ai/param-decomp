@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, override
+from typing import Literal, override
 
 import einops
 import torch
@@ -8,10 +8,8 @@ import torch.nn.functional as F
 from jaxtyping import Bool, Float, Int
 from torch import Tensor, nn
 
+from param_decomp.param_decomp_types import LayerwiseCiFnType
 from param_decomp.utils.module_utils import _NonlinearityType, init_param_
-
-if TYPE_CHECKING:
-    from param_decomp.param_decomp_types import LayerwiseCiFnType
 
 
 class ParallelLinear(nn.Module):

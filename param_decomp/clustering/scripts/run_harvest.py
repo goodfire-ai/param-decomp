@@ -38,7 +38,7 @@ def harvest(config: HarvestConfig) -> Path:
 
     device = get_device()
     pd_run = PDRunInfo.from_path(config.model_path)
-    exp = pd_run.spec
+    exp = pd_run.experiment_config
     task_name = cast(TaskName, exp.kind)
     target = pd_run.load_target()
     model = load_pd(config.model_path, target=target).to(device)

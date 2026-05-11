@@ -74,7 +74,7 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
 
     logger.info(f"[API] Loading {clean_wandb_path}")
     run_info = PDRunInfo.from_path(clean_wandb_path)
-    exp = run_info.spec
+    exp = run_info.experiment_config
     if not isinstance(exp, LMExperimentConfig):
         raise HTTPException(
             status_code=400,

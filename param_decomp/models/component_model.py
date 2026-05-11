@@ -19,11 +19,11 @@ from param_decomp.configs import (
     PDConfig,
     SamplingType,
 )
-from param_decomp.experiment_config import (
-    EXPERIMENT_CONFIG_FILENAME,
+from param_decomp.experiment_manifest import (
+    EXPERIMENT_MANIFEST_FILENAME,
+    ExperimentConfig,
     ExperimentManifest,
-    ExperimentSpec,
-    parse_driver_spec,
+    parse_manifest_experiment_config,
 )
 from param_decomp.experiments.driver import ExperimentDriver, load_driver
 from param_decomp.identity_insertion import insert_identity_operations_
@@ -74,7 +74,7 @@ class PDRunInfo(RunInfo[ExperimentManifest]):
     """Run info from training a ComponentModel (i.e. from a PD run)."""
 
     config_class = ExperimentManifest
-    config_filename = EXPERIMENT_CONFIG_FILENAME
+    config_filename = EXPERIMENT_MANIFEST_FILENAME
     checkpoint_prefix = "model"
 
     @classmethod
@@ -112,8 +112,12 @@ class PDRunInfo(RunInfo[ExperimentManifest]):
         }
 
     @cached_property
-    def spec(self) -> ExperimentSpec:
-        return parse_driver_spec(self.config)
+    def manifest(self) -> ExperimentManifest:
+        return self.config
+
+    @cached_property
+    def experiment_config(self) -> ExperimentConfig:
+        return parse_manifest_experiment_config(self.manifest)
 
     @cached_property
     def driver(self) -> ExperimentDriver[Any] | None:
@@ -123,14 +127,14 @@ class PDRunInfo(RunInfo[ExperimentManifest]):
 
     @property
     def pd_config(self) -> PDConfig:
-        return self.spec.pd
+        return self.experiment_config.pd
 
     def load_target(self) -> PDTarget:
         assert self.driver is not None, (
             "This run manifest has no driver. Use load_pd(path, target=...) with an explicit "
             "PDTarget."
         )
-        return self.driver.load_target(self.spec, run_dir=self.checkpoint_path.parent)
+        return self.driver.load_target(self.experiment_config, run_dir=self.checkpoint_path.parent)
 
     def build_dataloaders(
         self,
@@ -145,7 +149,7 @@ class PDRunInfo(RunInfo[ExperimentManifest]):
             "This run manifest has no driver. Build dataloaders explicitly for custom runs."
         )
         return self.driver.build_dataloaders(
-            self.spec,
+            self.experiment_config,
             seed=seed,
             train_batch_size=train_batch_size,
             eval_batch_size=eval_batch_size,

@@ -1,11 +1,21 @@
 """Round-trip tests for open-world experiment manifests."""
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from param_decomp.configs import LayerwiseCiConfig, PDConfig, ScheduleConfig
-from param_decomp.experiment_config import parse_driver_spec, parse_experiment_config
-from param_decomp.experiments.driver import ExperimentManifest, ExperimentSpec
+from param_decomp.experiment_manifest import (
+    EXPERIMENT_MANIFEST_FILENAME,
+    parse_experiment_manifest,
+    parse_manifest_experiment_config,
+)
+from param_decomp.experiments.driver import (
+    ExperimentConfig,
+    ExperimentManifest,
+    load_driver,
+)
 from param_decomp.experiments.lm.data import LMDataConfig
 from param_decomp.experiments.lm.experiment import (
     LMDriver,
@@ -24,6 +34,10 @@ from param_decomp.experiments.tms.experiment import (
     TMSExperimentConfig,
     TMSTargetConfig,
 )
+
+LM_DRIVER_PATH = "param_decomp.experiments.lm.experiment:LMDriver"
+TMS_DRIVER_PATH = "param_decomp.experiments.tms.experiment:TMSDriver"
+RESID_MLP_DRIVER_PATH = "param_decomp.experiments.resid_mlp.experiment:ResidMLPDriver"
 
 
 def _pd_config() -> PDConfig:
@@ -48,12 +62,16 @@ def _pd_config() -> PDConfig:
     )
 
 
-def _round_trip(exp: ExperimentSpec, driver_path: str) -> ExperimentSpec:
-    manifest = ExperimentManifest.from_spec(exp, driver=driver_path)
-    parsed = parse_experiment_config(manifest.model_dump(mode="json"))
-    assert parsed.kind == exp.kind
+def _round_trip(experiment_config: ExperimentConfig, driver_path: str) -> ExperimentConfig:
+    manifest = ExperimentManifest(
+        kind=experiment_config.kind,
+        driver=driver_path,
+        experiment_config=experiment_config.model_dump(mode="json"),
+    )
+    parsed = parse_experiment_manifest(manifest.model_dump(mode="json"))
+    assert parsed.kind == experiment_config.kind
     assert parsed.driver == driver_path
-    return parse_driver_spec(parsed)
+    return parse_manifest_experiment_config(parsed)
 
 
 def test_lm_experiment_round_trip():
@@ -72,7 +90,7 @@ def test_lm_experiment_round_trip():
         ),
     )
     lm_driver = LMDriver()
-    parsed = _round_trip(exp, LMDriver.driver_path)
+    parsed = _round_trip(exp, LM_DRIVER_PATH)
     assert type(parsed) is LMExperimentConfig
     assert parsed == exp
     assert "GPT2LMHeadModel" in lm_driver.display_name(exp)
@@ -85,7 +103,7 @@ def test_tms_experiment_round_trip():
         target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc"),
         data=TMSDataConfig(feature_probability=0.05),
     )
-    parsed = _round_trip(exp, TMSDriver.driver_path)
+    parsed = _round_trip(exp, TMS_DRIVER_PATH)
     assert type(parsed) is TMSExperimentConfig
     assert parsed == exp
 
@@ -96,17 +114,38 @@ def test_resid_mlp_experiment_round_trip():
         target=ResidMLPTargetConfig(run_path="wandb:foo/bar/runs/abc"),
         data=ResidMLPDataConfig(feature_probability=0.05),
     )
-    parsed = _round_trip(exp, ResidMLPDriver.driver_path)
+    parsed = _round_trip(exp, RESID_MLP_DRIVER_PATH)
     assert type(parsed) is ResidMLPExperimentConfig
     assert parsed == exp
 
 
+def test_driver_class_paths_load():
+    assert isinstance(load_driver(LM_DRIVER_PATH), LMDriver)
+    assert isinstance(load_driver(TMS_DRIVER_PATH), TMSDriver)
+    assert isinstance(load_driver(RESID_MLP_DRIVER_PATH), ResidMLPDriver)
+
+
 def test_manual_manifest_does_not_need_registered_driver():
     manifest = ExperimentManifest.from_pd_config(_pd_config(), kind="custom")
-    parsed = parse_experiment_config(manifest.model_dump(mode="json"))
-    spec = parse_driver_spec(parsed)
-    assert spec.kind == "custom"
-    assert spec.pd == _pd_config()
+    parsed = parse_experiment_manifest(manifest.model_dump(mode="json"))
+    experiment_config = parse_manifest_experiment_config(parsed)
+    assert experiment_config.kind == "custom"
+    assert experiment_config.pd == _pd_config()
+
+
+def test_save_pre_run_info_writes_experiment_manifest(tmp_path: Path):
+    from param_decomp.utils.general_utils import save_pre_run_info
+
+    manifest = ExperimentManifest.from_pd_config(_pd_config(), kind="custom")
+    save_pre_run_info(
+        save_to_wandb=False,
+        out_dir=tmp_path,
+        sweep_params=None,
+        manifest=manifest,
+        artifacts=(),
+    )
+
+    assert (tmp_path / EXPERIMENT_MANIFEST_FILENAME).exists()
 
 
 def test_lm_target_requires_exactly_one_location():

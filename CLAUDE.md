@@ -64,45 +64,47 @@ from param_decomp import run_pd, load_pd, PDConfig, PDTarget
 ### Experiment Drivers
 
 Experiments are open-world drivers, not a closed discriminated union in core code. A driver owns a
-pure Pydantic spec and converts it to runtime objects:
+pure Pydantic experiment config and converts it to runtime objects:
 
 ```python
 class MyDriver:
     kind = "my_exp"
-    spec_model = MyExperimentConfig
-    driver_path = "my_pkg.my_exp:DRIVER"
+    config_model = MyExperimentConfig
 
-    def prepare(self, spec, *, device, dist_state=None) -> PreparedExperiment: ...
-    def load_target(self, spec, *, run_dir=None) -> PDTarget: ...
-    def build_dataloaders(self, spec, *, seed, train_batch_size, eval_batch_size, ...): ...
+    def prepare(self, experiment_config, *, device, dist_state=None) -> PreparedExperiment: ...
+    def load_target(self, experiment_config, *, run_dir=None) -> PDTarget: ...
+    def build_dataloaders(self, experiment_config, *, seed, train_batch_size, eval_batch_size, ...): ...
 ```
 
 Built-in runtime definitions live in `param_decomp/experiments/{lm,tms,resid_mlp}/experiment.py`.
 Custom users can run without editing core code via:
 
 ```bash
-pd-experiment --driver my_pkg.my_exp:DRIVER --config_path my_config.yaml
+pd-experiment --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml
 ```
+
+The runner records the supplied driver import path in the saved manifest; drivers should not build
+their own `ExperimentManifest` in `prepare`.
 
 They can also bypass drivers entirely and call `run_pd` directly with their own `PDTarget` and
 dataloaders; those runs reload with `load_pd(path, target=...)`.
 
-### Per-experiment Specs
+### Per-experiment Configs
 
-Built-in YAML configs are pure specs nested under `pd:`, `target:`, and `data:`:
+Built-in YAML configs are pure experiment configs nested under `pd:`, `target:`, and `data:`:
 
 - `LMExperimentConfig(kind="lm", pd, target: LMTargetConfig, data: LMDataConfig)`
 - `TMSExperimentConfig(kind="tms", pd, target, data)`
 - `ResidMLPExperimentConfig(kind="resid_mlp", pd, target, data)`
 
-Specs should not perform I/O. Put target loading, dataloader construction, and artifact selection
-in the driver.
+Experiment configs should not perform I/O. Put target loading, dataloader construction, and
+artifact selection in the driver.
 
 ### Saved run layout
 
 ```
 PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/
-  experiment_config.yaml   # ExperimentManifest (kind + driver path + raw spec + artifact names)
+  experiment_manifest.yaml   # ExperimentManifest (kind + driver path + raw config + artifact names)
   model_<step>.pth         # PD checkpoints
   target_model.pth         # target weights (TMS/ResidMLP only)
   target_train_config.yaml # target train config (TMS/ResidMLP only)
@@ -169,8 +171,8 @@ This repository implements methods from two key research papers on parameter dec
 
 - `param_decomp/run_param_decomp.py` - Main PD optimization logic called by all experiments
 - `param_decomp/configs.py` - Core PD config and loss/metric config classes
-- `param_decomp/experiments/*/experiment.py` - Experiment specs and drivers that prepare targets,
-  dataloaders, manifests, and artifacts
+- `param_decomp/experiments/*/experiment.py` - Experiment configs and drivers that prepare targets,
+  dataloaders, and artifacts
 - `param_decomp/registry.py` - Centralized experiment registry with all experiment configurations
 - `param_decomp/models/component_model.py` - Core ComponentModel that wraps target models
 - `param_decomp/models/components.py` - Component types (LinearComponent, EmbeddingComponent, etc.)
@@ -188,28 +190,29 @@ This repository implements methods from two key research papers on parameter dec
 Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
 - `models.py` - Experiment-specific model classes and pretrained loading
-- `experiment.py` - Pydantic spec, target/data builders, driver, and CLI entrypoint
+- `experiment.py` - Pydantic experiment config, target/data builders, and driver
 - `train_*.py` - Training script for target models
 - `*_config.yaml` - Configuration files
 - `plotting.py` - Visualization utilities
 
 **Key Data Flow:**
 
-1. A driver parses a pure experiment spec and prepares `PDTarget`, train loader, eval loader,
-   manifest, and artifacts
-2. `run_pd` saves the manifest/artifacts and trains a `ComponentModel` with specified target modules
-3. PD optimization runs via `param_decomp.run_param_decomp.optimize()` with config-driven loss combination
-4. Post-processing reloads registered runs through `PDRunInfo.load_target()` and
+1. The generic runner parses a pure experiment config with the selected driver
+2. The driver prepares `PDTarget`, train loader, eval loader, and optional artifacts
+3. The runner builds the manifest from the parsed config and supplied driver import path
+4. `run_pd` saves the manifest/artifacts and trains a `ComponentModel` with specified target modules
+5. PD optimization runs via `param_decomp.run_param_decomp.optimize()` with config-driven loss combination
+6. Post-processing reloads registered runs through `PDRunInfo.load_target()` and
    `PDRunInfo.build_dataloaders(...)`
 
 **Configuration System:**
 
-- YAML specs define experiment parameters under `pd:`, `target:`, and `data:`
+- YAML experiment configs define parameters under `pd:`, `target:`, and `data:`
 - Pydantic models provide type safety and validation
 - WandB integration for experiment tracking and model storage
 - Supports both local paths and `wandb:project/runs/run_id` format for model loading
 - The built-in experiment registry (`param_decomp/registry.py`) names standard configs; custom
-  experiments can use `pd-experiment --driver module:DRIVER --config_path config.yaml`
+  experiments can use `pd-experiment --driver module:MyDriver --config_path config.yaml`
 
 **Harvest, Autointerp & Dataset Attributions Modules:**
 
@@ -277,7 +280,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 | Command | Entry Point | Description |
 |---------|-------------|-------------|
 | `pd-run` | `param_decomp/scripts/run.py` | SLURM-based experiment runner |
-| `pd-experiment` | `param_decomp/experiments/runner.py` | Generic local runner for a driver + spec |
+| `pd-experiment` | `param_decomp/experiments/runner.py` | Generic local runner for a driver + config |
 | `pd-local` | `param_decomp/scripts/run_local.py` | Local experiment runner |
 | `pd-harvest` | `param_decomp/harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
 | `pd-autointerp` | `param_decomp/autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
@@ -529,7 +532,7 @@ model = load_pd("wandb:entity/project/runs/run_id", target=target)
 
 # Option 2: Registered manifest driver reconstructs the target
 run_info = PDRunInfo.from_path("wandb:entity/project/runs/run_id")
-print(run_info.spec)  # Parsed experiment spec
+print(run_info.experiment_config)  # Parsed experiment config
 model = ComponentModel.from_run_info(run_info)
 
 # Local paths work too
@@ -539,7 +542,7 @@ model = ComponentModel.from_pretrained("/path/to/checkpoint.pt")
 **Path Formats:**
 
 - WandB: `wandb:entity/project/run_id` or `wandb:entity/project/runs/run_id`
-- Local: Direct path to checkpoint file (config must be in same directory as `experiment_config.yaml`)
+- Local: Direct path to checkpoint file (config must be in same directory as `experiment_manifest.yaml`)
 
 Downloaded runs are cached in `PARAM_DECOMP_OUT_DIR/runs/<project>-<run_id>/`.
 

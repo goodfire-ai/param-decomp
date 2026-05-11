@@ -21,7 +21,7 @@ from torch import Tensor
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import PDConfig
-from param_decomp.experiments.driver import ExperimentSpec
+from param_decomp.experiments.driver import ExperimentConfig
 from param_decomp.load import load_pd
 from param_decomp.log import logger
 from param_decomp.models.component_model import ComponentModel, PDRunInfo
@@ -88,10 +88,10 @@ class ModelComparator:
 
     def _load_model_and_config(
         self, model_path: str
-    ) -> tuple[ComponentModel, PDConfig, ExperimentSpec, PDRunInfo]:
+    ) -> tuple[ComponentModel, PDConfig, ExperimentConfig, PDRunInfo]:
         """Load model and config. Returns (model, pd_config, experiment_config, model_path)."""
         run_info = PDRunInfo.from_path(model_path)
-        exp = run_info.spec
+        exp = run_info.experiment_config
         target = run_info.load_target()
         model = load_pd(model_path, target=target)
         model.to(self.device)

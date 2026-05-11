@@ -9,6 +9,12 @@ import yaml
 from param_decomp.param_decomp_types import TaskName
 from param_decomp.settings import REPO_ROOT
 
+DRIVER_CLASS_BY_TASK: dict[TaskName, str] = {
+    "lm": "LMDriver",
+    "resid_mlp": "ResidMLPDriver",
+    "tms": "TMSDriver",
+}
+
 
 @dataclass
 class RegisteredExperiment:
@@ -30,7 +36,8 @@ class RegisteredExperiment:
 
     @property
     def driver_path(self) -> str:
-        return f"param_decomp.experiments.{self.task_name}.experiment:DRIVER"
+        driver_class = DRIVER_CLASS_BY_TASK[self.task_name]
+        return f"param_decomp.experiments.{self.task_name}.experiment:{driver_class}"
 
 
 EXPERIMENT_REGISTRY: dict[str, RegisteredExperiment] = {

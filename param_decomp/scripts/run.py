@@ -169,8 +169,8 @@ def _create_training_jobs(
     for experiment in experiments:
         exp_config = EXPERIMENT_REGISTRY[experiment]
 
-        # Load base spec as a raw dict — each experiment's driver validates against its own
-        # Pydantic spec (LMExperimentConfig, TMSExperimentConfig, etc).
+        # Load base config as a raw dict; each experiment's driver validates against its own
+        # Pydantic config (LMExperimentConfig, TMSExperimentConfig, etc.).
         with open(REPO_ROOT / exp_config.config_path) as f:
             base_config_dict: dict[str, Any] = yaml.safe_load(f)
 

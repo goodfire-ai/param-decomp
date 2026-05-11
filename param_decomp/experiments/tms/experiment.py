@@ -1,7 +1,7 @@
 """TMS PD experiment.
 
 This file is the full runtime definition for the TMS experiment: serializable config,
-target loading, dataloaders, driver registration, and the CLI entrypoint.
+target loading, dataloaders, and driver registration.
 """
 
 from __future__ import annotations
@@ -16,12 +16,10 @@ from torch.utils.data import DataLoader
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.experiments.driver import (
-    ExperimentManifest,
-    ExperimentSpec,
+    ExperimentConfig,
     PreparedExperiment,
     RunArtifact,
 )
-from param_decomp.experiments.runner import main as run_with_driver
 from param_decomp.experiments.tms.models import (
     TMSModel,
     TMSTargetRunInfo,
@@ -58,13 +56,10 @@ class TMSDataConfig(BaseConfig):
     )
 
 
-class TMSExperimentConfig(ExperimentSpec):
+class TMSExperimentConfig(ExperimentConfig):
     kind: str = "tms"
     target: TMSTargetConfig
     data: TMSDataConfig
-
-
-# Target and data builders
 
 
 def _tied_weight_edges(target_model: TMSModel) -> list[tuple[str, str]] | None:
@@ -130,54 +125,47 @@ def _load_train_config(target_cfg: TMSTargetConfig, run_dir: Path | None = None)
     return TMSTargetRunInfo.from_path(target_cfg.run_path).config
 
 
-# Driver and CLI
-
-
 class TMSDriver:
     kind: ClassVar[str] = "tms"
-    spec_model: ClassVar[type[TMSExperimentConfig]] = TMSExperimentConfig
-    driver_path: ClassVar[str] = "param_decomp.experiments.tms.experiment:DRIVER"
+    config_model: ClassVar[type[TMSExperimentConfig]] = TMSExperimentConfig
 
     def prepare(
         self,
-        spec: TMSExperimentConfig,
+        experiment_config: TMSExperimentConfig,
         *,
         device: str,
         dist_state: DistributedState | None = None,
     ) -> PreparedExperiment:
         _ = dist_state
-        target, run_info = load_tms_target(spec.target)
+        target, run_info = load_tms_target(experiment_config.target)
         target.model.to(device)
         train_loader, eval_loader = build_tms_dataloaders(
-            spec.data,
+            experiment_config.data,
             run_info.config,
-            train_batch_size=spec.pd.batch_size,
-            eval_batch_size=spec.pd.eval_batch_size,
+            train_batch_size=experiment_config.pd.batch_size,
+            eval_batch_size=experiment_config.pd.eval_batch_size,
             device=device,
         )
         artifacts = (
             RunArtifact(TARGET_MODEL_FILENAME, target.model.state_dict()),
             RunArtifact(TARGET_TRAIN_CONFIG_FILENAME, run_info.config.model_dump(mode="json")),
         )
-        manifest = ExperimentManifest.from_spec(
-            spec,
-            driver=self.driver_path,
-        )
         return PreparedExperiment(
-            pd=spec.pd,
+            pd=experiment_config.pd,
             target=target,
             train_loader=train_loader,
             eval_loader=eval_loader,
-            manifest=manifest,
             artifacts=artifacts,
             tags=(self.kind,),
         )
 
-    def load_target(self, spec: TMSExperimentConfig, *, run_dir: Path | None = None) -> PDTarget:
+    def load_target(
+        self, experiment_config: TMSExperimentConfig, *, run_dir: Path | None = None
+    ) -> PDTarget:
         if run_dir is None or not (run_dir / TARGET_MODEL_FILENAME).exists():
-            return load_tms_target(spec.target)[0]
+            return load_tms_target(experiment_config.target)[0]
 
-        train_config = _load_train_config(spec.target, run_dir)
+        train_config = _load_train_config(experiment_config.target, run_dir)
         target_model = TMSModel(train_config.tms_model_config)
         target_model.load_state_dict(
             torch.load(run_dir / TARGET_MODEL_FILENAME, weights_only=True, map_location="cpu")
@@ -196,7 +184,7 @@ class TMSDriver:
 
     def build_dataloaders(
         self,
-        spec: TMSExperimentConfig,
+        experiment_config: TMSExperimentConfig,
         *,
         seed: int | None = None,
         train_batch_size: int,
@@ -206,42 +194,14 @@ class TMSDriver:
         run_dir: Path | None = None,
     ) -> tuple[DataLoader[Any], DataLoader[Any]]:
         _ = seed, dist_state
-        train_config = _load_train_config(spec.target, run_dir)
+        train_config = _load_train_config(experiment_config.target, run_dir)
         return build_tms_dataloaders(
-            spec.data,
+            experiment_config.data,
             train_config,
             train_batch_size=train_batch_size,
             eval_batch_size=eval_batch_size,
             device=device,
         )
 
-    def display_name(self, spec: TMSExperimentConfig) -> str:
-        return f"TMS: {spec.target.run_path}"
-
-
-DRIVER = TMSDriver()
-
-
-def main(
-    config_path: Path | str | None = None,
-    config_json: str | None = None,
-    evals_id: str | None = None,
-    launch_id: str | None = None,
-    sweep_params_json: str | None = None,
-    run_id: str | None = None,
-) -> None:
-    run_with_driver(
-        config_path=config_path,
-        config_json=config_json,
-        driver=DRIVER.driver_path,
-        evals_id=evals_id,
-        launch_id=launch_id,
-        sweep_params_json=sweep_params_json,
-        run_id=run_id,
-    )
-
-
-if __name__ == "__main__":
-    import fire
-
-    fire.Fire(main)
+    def display_name(self, experiment_config: TMSExperimentConfig) -> str:
+        return f"TMS: {experiment_config.target.run_path}"

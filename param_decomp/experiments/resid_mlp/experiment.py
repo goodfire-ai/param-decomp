@@ -1,7 +1,7 @@
 """Residual MLP PD experiment.
 
 This file is the full runtime definition for the ResidMLP experiment: serializable config,
-target loading, dataloaders, driver registration, and the CLI entrypoint.
+target loading, dataloaders, and driver registration.
 """
 
 from __future__ import annotations
@@ -16,8 +16,7 @@ from torch.utils.data import DataLoader
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.experiments.driver import (
-    ExperimentManifest,
-    ExperimentSpec,
+    ExperimentConfig,
     PreparedExperiment,
     RunArtifact,
 )
@@ -27,7 +26,6 @@ from param_decomp.experiments.resid_mlp.models import (
     ResidMLPTrainConfig,
 )
 from param_decomp.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
-from param_decomp.experiments.runner import main as run_with_driver
 from param_decomp.models.batch_and_loss_fns import (
     PDTarget,
     recon_loss_mse,
@@ -60,13 +58,10 @@ class ResidMLPDataConfig(BaseConfig):
     ] = "at_least_zero_active"
 
 
-class ResidMLPExperimentConfig(ExperimentSpec):
+class ResidMLPExperimentConfig(ExperimentConfig):
     kind: str = "resid_mlp"
     target: ResidMLPTargetConfig
     data: ResidMLPDataConfig
-
-
-# Target and data builders
 
 
 def load_resid_mlp_target(
@@ -133,29 +128,25 @@ def _load_train_config(
     return ResidMLPTargetRunInfo.from_path(target_cfg.run_path).config
 
 
-# Driver and CLI
-
-
 class ResidMLPDriver:
     kind: ClassVar[str] = "resid_mlp"
-    spec_model: ClassVar[type[ResidMLPExperimentConfig]] = ResidMLPExperimentConfig
-    driver_path: ClassVar[str] = "param_decomp.experiments.resid_mlp.experiment:DRIVER"
+    config_model: ClassVar[type[ResidMLPExperimentConfig]] = ResidMLPExperimentConfig
 
     def prepare(
         self,
-        spec: ResidMLPExperimentConfig,
+        experiment_config: ResidMLPExperimentConfig,
         *,
         device: str,
         dist_state: DistributedState | None = None,
     ) -> PreparedExperiment:
         _ = dist_state
-        target, run_info = load_resid_mlp_target(spec.target)
+        target, run_info = load_resid_mlp_target(experiment_config.target)
         target.model.to(device)
         train_loader, eval_loader = build_resid_mlp_dataloaders(
-            spec.data,
+            experiment_config.data,
             run_info.config,
-            train_batch_size=spec.pd.batch_size,
-            eval_batch_size=spec.pd.eval_batch_size,
+            train_batch_size=experiment_config.pd.batch_size,
+            eval_batch_size=experiment_config.pd.eval_batch_size,
             device=device,
         )
         artifacts = (
@@ -163,27 +154,22 @@ class ResidMLPDriver:
             RunArtifact(TARGET_TRAIN_CONFIG_FILENAME, run_info.config.model_dump(mode="json")),
             RunArtifact(LABEL_COEFFS_FILENAME, run_info.label_coeffs.detach().cpu().tolist()),
         )
-        manifest = ExperimentManifest.from_spec(
-            spec,
-            driver=self.driver_path,
-        )
         return PreparedExperiment(
-            pd=spec.pd,
+            pd=experiment_config.pd,
             target=target,
             train_loader=train_loader,
             eval_loader=eval_loader,
-            manifest=manifest,
             artifacts=artifacts,
             tags=(self.kind,),
         )
 
     def load_target(
-        self, spec: ResidMLPExperimentConfig, *, run_dir: Path | None = None
+        self, experiment_config: ResidMLPExperimentConfig, *, run_dir: Path | None = None
     ) -> PDTarget:
         if run_dir is None or not (run_dir / TARGET_MODEL_FILENAME).exists():
-            return load_resid_mlp_target(spec.target)[0]
+            return load_resid_mlp_target(experiment_config.target)[0]
 
-        train_config = _load_train_config(spec.target, run_dir)
+        train_config = _load_train_config(experiment_config.target, run_dir)
         target_model = ResidMLP(train_config.resid_mlp_model_config)
         target_model.load_state_dict(
             torch.load(run_dir / TARGET_MODEL_FILENAME, weights_only=True, map_location="cpu")
@@ -198,7 +184,7 @@ class ResidMLPDriver:
 
     def build_dataloaders(
         self,
-        spec: ResidMLPExperimentConfig,
+        experiment_config: ResidMLPExperimentConfig,
         *,
         seed: int | None = None,
         train_batch_size: int,
@@ -208,42 +194,14 @@ class ResidMLPDriver:
         run_dir: Path | None = None,
     ) -> tuple[DataLoader[Any], DataLoader[Any]]:
         _ = seed, dist_state
-        train_config = _load_train_config(spec.target, run_dir)
+        train_config = _load_train_config(experiment_config.target, run_dir)
         return build_resid_mlp_dataloaders(
-            spec.data,
+            experiment_config.data,
             train_config,
             train_batch_size=train_batch_size,
             eval_batch_size=eval_batch_size,
             device=device,
         )
 
-    def display_name(self, spec: ResidMLPExperimentConfig) -> str:
-        return f"ResidMLP: {spec.target.run_path}"
-
-
-DRIVER = ResidMLPDriver()
-
-
-def main(
-    config_path: Path | str | None = None,
-    config_json: str | None = None,
-    evals_id: str | None = None,
-    launch_id: str | None = None,
-    sweep_params_json: str | None = None,
-    run_id: str | None = None,
-) -> None:
-    run_with_driver(
-        config_path=config_path,
-        config_json=config_json,
-        driver=DRIVER.driver_path,
-        evals_id=evals_id,
-        launch_id=launch_id,
-        sweep_params_json=sweep_params_json,
-        run_id=run_id,
-    )
-
-
-if __name__ == "__main__":
-    import fire
-
-    fire.Fire(main)
+    def display_name(self, experiment_config: ResidMLPExperimentConfig) -> str:
+        return f"ResidMLP: {experiment_config.target.run_path}"

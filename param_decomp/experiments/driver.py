@@ -1,7 +1,7 @@
 """Open-world experiment driver interface.
 
 The core PD optimizer only needs a target model bundle plus train/eval dataloaders.
-Experiment drivers are the boundary layer that turns a serializable experiment spec
+Experiment drivers are the boundary layer that turns a serializable experiment config
 into those runtime objects.
 """
 
@@ -22,11 +22,9 @@ if TYPE_CHECKING:
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import PDConfig
 
-EXPERIMENT_CONFIG_FILENAME = "experiment_config.yaml"
 
-
-class ExperimentSpec(BaseConfig):
-    """Pure-data config shared by all experiment specs."""
+class ExperimentConfig(BaseConfig):
+    """Pure-data config shared by all experiment configs."""
 
     kind: str
     pd: PDConfig
@@ -38,26 +36,13 @@ class ExperimentManifest(BaseConfig):
 
     `driver` is optional so direct/custom users can still save a run with an explicit target and
     reload via `load_pd(path, target=...)`. Registered runs set `driver`, enabling tooling to
-    reconstruct the target and dataloaders from the saved spec.
+    reconstruct the target and dataloaders from the saved experiment config.
     """
 
     kind: str
-    spec: dict[str, Any]
+    experiment_config: dict[str, Any]
     driver: str | None = None
     artifact_filenames: list[str] = []
-
-    @classmethod
-    def from_spec(
-        cls,
-        spec: ExperimentSpec,
-        *,
-        driver: str | None,
-    ) -> ExperimentManifest:
-        return cls(
-            kind=spec.kind,
-            driver=driver,
-            spec=spec.model_dump(mode="json"),
-        )
 
     @classmethod
     def from_pd_config(
@@ -68,16 +53,17 @@ class ExperimentManifest(BaseConfig):
         driver: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> ExperimentManifest:
-        spec: dict[str, Any] = {
+        """Build a manifest for direct `run_pd` callers without a full experiment config."""
+        experiment_config: dict[str, Any] = {
             "kind": kind,
             "pd": pd_config.model_dump(mode="json"),
         }
         if metadata is not None:
-            spec["metadata"] = metadata
+            experiment_config["metadata"] = metadata
         return cls(
             kind=kind,
             driver=driver,
-            spec=spec,
+            experiment_config=experiment_config,
         )
 
     def with_artifacts(self, artifact_filenames: Sequence[str]) -> ExperimentManifest:
@@ -100,31 +86,31 @@ class PreparedExperiment:
     target: PDTarget
     train_loader: DataLoader[Any]
     eval_loader: DataLoader[Any]
-    manifest: ExperimentManifest
     artifacts: Sequence[RunArtifact] = ()
     tags: Sequence[str] = ()
 
 
-class ExperimentDriver[SpecT: ExperimentSpec](Protocol):
-    """Converts a serializable experiment spec into runtime PD objects."""
+class ExperimentDriver[ConfigT: ExperimentConfig](Protocol):
+    """Converts a serializable experiment config into runtime PD objects."""
 
     kind: str
-    spec_model: type[SpecT]
-    driver_path: str
+    config_model: type[ConfigT]
 
     def prepare(
         self,
-        spec: SpecT,
+        experiment_config: ConfigT,
         *,
         device: str,
         dist_state: DistributedState | None = None,
     ) -> PreparedExperiment: ...
 
-    def load_target(self, spec: SpecT, *, run_dir: Path | None = None) -> PDTarget: ...
+    def load_target(
+        self, experiment_config: ConfigT, *, run_dir: Path | None = None
+    ) -> PDTarget: ...
 
     def build_dataloaders(
         self,
-        spec: SpecT,
+        experiment_config: ConfigT,
         *,
         seed: int | None = None,
         train_batch_size: int,
@@ -134,7 +120,7 @@ class ExperimentDriver[SpecT: ExperimentSpec](Protocol):
         run_dir: Path | None = None,
     ) -> tuple[DataLoader[Any], DataLoader[Any]]: ...
 
-    def display_name(self, spec: SpecT) -> str: ...
+    def display_name(self, experiment_config: ConfigT) -> str: ...
 
 
 def load_driver(driver_path: str) -> ExperimentDriver[Any]:
@@ -149,9 +135,9 @@ def load_driver(driver_path: str) -> ExperimentDriver[Any]:
     return driver
 
 
-def parse_driver_spec(manifest: ExperimentManifest) -> ExperimentSpec:
-    """Parse a manifest's raw spec with its registered driver."""
+def parse_manifest_experiment_config(manifest: ExperimentManifest) -> ExperimentConfig:
+    """Parse a manifest's raw experiment config with its registered driver."""
     if manifest.driver is None:
-        return ExperimentSpec.model_validate(manifest.spec)
+        return ExperimentConfig.model_validate(manifest.experiment_config)
     driver = load_driver(manifest.driver)
-    return driver.spec_model.model_validate(manifest.spec)
+    return driver.config_model.model_validate(manifest.experiment_config)

@@ -32,7 +32,9 @@ class TrainingJob:
     experiment: str
     driver_path: str
     config_dict: dict[str, Any]
-    """Raw experiment spec dict (the per-experiment Pydantic spec as a JSON-serializable dict).
+    """Raw experiment config dict.
+
+    This is the per-experiment Pydantic config as a JSON-serializable dict.
     Passed directly to the experiment runner as `--config_json`."""
     run_id: str  # Pre-generated unique run identifier (e.g. "s-a1b2c3d4")
 

@@ -1,7 +1,7 @@
 """Language-model PD experiment.
 
 This file is the runtime definition for the LM experiment: serializable config,
-target loading, driver registration, and the CLI entrypoint.
+target loading, and driver registration.
 """
 
 from pathlib import Path
@@ -11,15 +11,12 @@ from pydantic import Field, model_validator
 from torch.utils.data import DataLoader
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.experiments.driver import ExperimentManifest, ExperimentSpec, PreparedExperiment
+from param_decomp.experiments.driver import ExperimentConfig, PreparedExperiment
 from param_decomp.experiments.lm.data import LMDataConfig, build_lm_dataloaders
-from param_decomp.experiments.runner import main as run_with_driver
 from param_decomp.models.batch_and_loss_fns import PDTarget, make_run_batch, recon_loss_kl
 from param_decomp.param_decomp_types import ModelPath
 from param_decomp.utils.distributed_utils import DistributedState, ensure_cached_and_call
 from param_decomp.utils.general_utils import resolve_class
-
-# Config schema
 
 
 class LMTargetConfig(BaseConfig):
@@ -64,13 +61,10 @@ class LMTargetConfig(BaseConfig):
         return self
 
 
-class LMExperimentConfig(ExperimentSpec):
+class LMExperimentConfig(ExperimentConfig):
     kind: str = "lm"
     target: LMTargetConfig
     data: LMDataConfig
-
-
-# Target and data builders
 
 
 def load_lm_target(target_cfg: LMTargetConfig) -> PDTarget:
@@ -113,47 +107,43 @@ def load_lm_target(target_cfg: LMTargetConfig) -> PDTarget:
     )
 
 
-# Driver and CLI
-
-
 class LMDriver:
     kind: ClassVar[str] = "lm"
-    spec_model: ClassVar[type[LMExperimentConfig]] = LMExperimentConfig
-    driver_path: ClassVar[str] = "param_decomp.experiments.lm.experiment:DRIVER"
+    config_model: ClassVar[type[LMExperimentConfig]] = LMExperimentConfig
 
     def prepare(
         self,
-        spec: LMExperimentConfig,
+        experiment_config: LMExperimentConfig,
         *,
         device: str,
         dist_state: DistributedState | None = None,
     ) -> PreparedExperiment:
-        target = self.load_target(spec)
+        target = self.load_target(experiment_config)
         train_loader, eval_loader = self.build_dataloaders(
-            spec,
+            experiment_config,
             seed=None,
-            train_batch_size=spec.pd.batch_size,
-            eval_batch_size=spec.pd.eval_batch_size,
+            train_batch_size=experiment_config.pd.batch_size,
+            eval_batch_size=experiment_config.pd.eval_batch_size,
             dist_state=dist_state,
             device=device,
         )
-        manifest = ExperimentManifest.from_spec(spec, driver=self.driver_path)
         return PreparedExperiment(
-            pd=spec.pd,
+            pd=experiment_config.pd,
             target=target,
             train_loader=train_loader,
             eval_loader=eval_loader,
-            manifest=manifest,
             tags=(self.kind,),
         )
 
-    def load_target(self, spec: LMExperimentConfig, *, run_dir: Path | None = None) -> PDTarget:
+    def load_target(
+        self, experiment_config: LMExperimentConfig, *, run_dir: Path | None = None
+    ) -> PDTarget:
         _ = run_dir
-        return load_lm_target(spec.target)
+        return load_lm_target(experiment_config.target)
 
     def build_dataloaders(
         self,
-        spec: LMExperimentConfig,
+        experiment_config: LMExperimentConfig,
         *,
         seed: int | None = None,
         train_batch_size: int,
@@ -164,41 +154,16 @@ class LMDriver:
     ) -> tuple[DataLoader[Any], DataLoader[Any]]:
         _ = device, run_dir
         return build_lm_dataloaders(
-            spec.data,
+            experiment_config.data,
             seed=seed,
-            default_seed=spec.pd.seed,
+            default_seed=experiment_config.pd.seed,
             train_batch_size=train_batch_size,
             eval_batch_size=eval_batch_size,
             dist_state=dist_state,
         )
 
-    def display_name(self, spec: LMExperimentConfig) -> str:
-        return f"LM: {spec.target.model_class.rsplit('.', 1)[-1]} on {spec.data.dataset_name}"
-
-
-DRIVER = LMDriver()
-
-
-def main(
-    config_path: Path | str | None = None,
-    config_json: str | None = None,
-    evals_id: str | None = None,
-    launch_id: str | None = None,
-    sweep_params_json: str | None = None,
-    run_id: str | None = None,
-) -> None:
-    run_with_driver(
-        config_path=config_path,
-        config_json=config_json,
-        driver=DRIVER.driver_path,
-        evals_id=evals_id,
-        launch_id=launch_id,
-        sweep_params_json=sweep_params_json,
-        run_id=run_id,
-    )
-
-
-if __name__ == "__main__":
-    import fire
-
-    fire.Fire(main)
+    def display_name(self, experiment_config: LMExperimentConfig) -> str:
+        return (
+            f"LM: {experiment_config.target.model_class.rsplit('.', 1)[-1]} "
+            f"on {experiment_config.data.dataset_name}"
+        )

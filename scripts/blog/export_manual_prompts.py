@@ -150,7 +150,7 @@ def export_manual_prompts(
 ) -> dict[str, Any]:
     """Compute CI/activation values for one component across manual prompts."""
     run_info = PDRunInfo.from_path(run_path)
-    exp = run_info.spec
+    exp = run_info.experiment_config
     assert isinstance(exp, LMExperimentConfig), "manual prompt export only supports LM runs"
     model = ComponentModel.from_run_info(run_info).to(get_device())
     model.eval()

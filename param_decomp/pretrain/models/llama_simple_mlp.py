@@ -9,7 +9,7 @@ from __future__ import annotations
 import inspect
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, override
+from typing import Literal, override
 
 import torch
 import torch.nn as nn
@@ -20,10 +20,8 @@ from torch.nn import functional as F
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.interfaces import LoadableModule
+from param_decomp.pretrain.run_info import PretrainRunInfo
 from param_decomp.utils.distributed_utils import log0
-
-if TYPE_CHECKING:
-    from param_decomp.pretrain.run_info import PretrainRunInfo
 
 # Suppress issues with nn.Module buffer access and @torch.no_grad() decorator
 # pyright: reportIndexIssue=false, reportUntypedFunctionDecorator=false

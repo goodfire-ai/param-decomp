@@ -277,7 +277,7 @@ class EditableModel:
         from param_decomp.load import load_pd
 
         run_info = PDRunInfo.from_path(wandb_path)
-        exp = run_info.spec
+        exp = run_info.experiment_config
         assert isinstance(exp, LMExperimentConfig)
         target = run_info.load_target()
         model = load_pd(wandb_path, target=target).to(device).eval()

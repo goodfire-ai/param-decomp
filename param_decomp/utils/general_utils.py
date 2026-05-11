@@ -223,9 +223,11 @@ def save_pre_run_info(
 ) -> None:
     """Save run information locally and optionally to wandb."""
 
+    from param_decomp.experiments.constants import EXPERIMENT_MANIFEST_FILENAME
+
     manifest = manifest.with_artifacts([artifact.filename for artifact in artifacts])
     files_to_save: dict[str, Any] = {
-        "experiment_config.yaml": manifest.model_dump(mode="json"),
+        EXPERIMENT_MANIFEST_FILENAME: manifest.model_dump(mode="json"),
     }
 
     if sweep_params is not None:

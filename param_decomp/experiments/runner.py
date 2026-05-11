@@ -14,9 +14,9 @@ from param_decomp.configs import (
     RepeatAcrossBatchScope,
 )
 from param_decomp.experiments.driver import (
+    ExperimentConfig,
     ExperimentDriver,
     ExperimentManifest,
-    ExperimentSpec,
     PreparedExperiment,
     load_driver,
 )
@@ -43,16 +43,16 @@ def _load_config_data(config_path: Path | str | None, config_json: str | None) -
     return json.loads(config_json.removeprefix("json:"))
 
 
-def _parse_spec(
+def _load_experiment_config(
     driver: ExperimentDriver[Any],
     config_path: Path | str | None,
     config_json: str | None,
-) -> ExperimentSpec:
+) -> ExperimentConfig:
     data = _load_config_data(config_path, config_json)
-    if "spec" in data and "kind" in data:
+    if "experiment_config" in data and "kind" in data:
         manifest = ExperimentManifest.model_validate(data)
-        return driver.spec_model.model_validate(manifest.spec)
-    return driver.spec_model.model_validate(data)
+        return driver.config_model.model_validate(manifest.experiment_config)
+    return driver.config_model.model_validate(data)
 
 
 def _per_rank_batch_size(total_batch_size: int, dist_state: DistributedState | None) -> int:
@@ -80,7 +80,7 @@ def _validate_prepared_experiment(
 
 
 def run_experiment(
-    driver: ExperimentDriver[Any],
+    driver_path: str,
     *,
     config_path: Path | str | None = None,
     config_json: str | None = None,
@@ -92,18 +92,24 @@ def run_experiment(
     dist_state = init_distributed()
     logger.info(f"Distributed state: {dist_state}")
 
-    spec = _parse_spec(driver, config_path, config_json)
-    set_seed(spec.pd.seed)
+    driver = load_driver(driver_path)
+    experiment_config = _load_experiment_config(driver, config_path, config_json)
+    set_seed(experiment_config.pd.seed)
     device = get_device()
 
     if is_main_process():
-        logger.info(f"Preparing experiment: {driver.display_name(spec)}")
+        logger.info(f"Preparing experiment: {driver.display_name(experiment_config)}")
         logger.info(f"Using device: {device}")
 
-    prepared = driver.prepare(spec, device=device, dist_state=dist_state)
+    prepared = driver.prepare(experiment_config, device=device, dist_state=dist_state)
     _validate_prepared_experiment(prepared, dist_state)
 
     extra_tags = [t for t in [evals_id, launch_id] if t is not None]
+    manifest = ExperimentManifest(
+        kind=experiment_config.kind,
+        driver=driver_path,
+        experiment_config=experiment_config.model_dump(mode="json"),
+    )
     run_pd(
         config=prepared.pd,
         target=prepared.target,
@@ -112,7 +118,7 @@ def run_experiment(
         device=device,
         run_id=run_id,
         sweep_params=parse_sweep_params(sweep_params_json),
-        manifest=prepared.manifest,
+        manifest=manifest,
         artifacts=prepared.artifacts,
         experiment_tag=prepared.tags[0] if prepared.tags else prepared.target.name,
         wandb_tags=[*prepared.tags[1:], *extra_tags],
@@ -133,10 +139,10 @@ def main(
     if data_driver is None:
         data = _load_config_data(config_path, config_json)
         manifest = ExperimentManifest.model_validate(data)
-        assert manifest.driver is not None, "Config manifest has no driver; pass --driver"
+        assert manifest.driver is not None, "Experiment manifest has no driver; pass --driver"
         data_driver = manifest.driver
     run_experiment(
-        load_driver(data_driver),
+        data_driver,
         config_path=config_path,
         config_json=config_json,
         evals_id=evals_id,
