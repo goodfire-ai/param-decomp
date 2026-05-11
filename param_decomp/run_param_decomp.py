@@ -27,7 +27,6 @@ from param_decomp.configs import (
     PGDMultiBatchReconLossConfig,
     PGDMultiBatchReconSubsetLossConfig,
 )
-from param_decomp.data import loop_dataloader
 from param_decomp.eval import evaluate, evaluate_multibatch_pgd
 from param_decomp.experiments.driver import ExperimentManifest, RunArtifact
 from param_decomp.identity_insertion import insert_identity_operations_
@@ -44,6 +43,7 @@ from param_decomp.models.component_model import ComponentModel, OutputWithCache
 from param_decomp.persistent_pgd import PersistentPGDState
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp.utils.component_utils import calc_ci_l_zero
+from param_decomp.utils.data_utils import loop_dataloader
 from param_decomp.utils.distributed_utils import (
     avg_metrics_across_ranks,
     get_distributed_state,
