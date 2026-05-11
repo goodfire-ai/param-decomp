@@ -291,7 +291,10 @@ def optimize(
         cfg for cfg in eval_metric_configs if cfg not in multibatch_pgd_eval_configs
     ]
 
-    sample_out = model(next(train_iterator))
+    # Route the sample forward through `wrapped_model` rather than the underlying `model` —
+    # under FSDP, the bare `model` has only its local parameter shards, so forwarding through
+    # it directly returns a 1-D FlatParameter where the embedding expected 2-D.
+    sample_out = wrapped_model(next(train_iterator))
     batch_dims = sample_out.shape[:-1]
     ppgd_states: dict[
         PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig, PersistentPGDState
