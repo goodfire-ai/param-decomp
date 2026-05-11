@@ -52,6 +52,7 @@ from param_decomp.utils.distributed_utils import (
     seed_per_rank,
     sync_across_processes,
 )
+from param_decomp.utils.fsdp import calc_weight_deltas_full
 from param_decomp.utils.general_utils import (
     bf16_autocast,
     dict_safe_update_,
@@ -212,9 +213,10 @@ def optimize(
                     device_id=dist_state.local_rank,
                     autocast_bf16=config.autocast_bf16,
                 )
-                # With use_orig_params=True, FSDP keeps the original module tree accessible.
-                # `component_model` still points at the underlying ComponentModel; FSDP's
-                # forward hooks gather params on entry to each FSDP unit.
+                # FSDP2 mutates the module in place rather than wrapping it — `wrapped_model`
+                # and `model` are the same Python object after `fsdp_wrap`. We keep the
+                # `component_model` / `wrapped_model` naming for symmetry with the DDP path
+                # and to make sites where we'd want a "pre-FSDP" handle obvious.
                 component_model = model
     else:
         component_model = model
@@ -331,26 +333,47 @@ def optimize(
         for ppgd_cfg in active_ppgd_configs:
             ppgd_states[ppgd_cfg].update_lr(step, config.steps)
 
-        weight_deltas = component_model.calc_weight_deltas()
+        # Under FSDP2, V/U are sharded DTensors outside any forward. The full-tensor
+        # gather here detaches before materializing, so faithfulness backward won't flow
+        # into V/U (known correctness regression under FSDP — proper fix is to compute
+        # delta-norms inside each site's forward).
+        if config.parallel_strategy == "fsdp":
+            weight_deltas = calc_weight_deltas_full(component_model)
+        else:
+            weight_deltas = component_model.calc_weight_deltas()
 
         batch_log_data: defaultdict[str, float] = defaultdict(float)
 
         batch = move_batch_to_device(next(train_iterator), device)
-        with bf16_autocast(enabled=config.autocast_bf16):
+        # FSDP MixedPrecision (configured in fsdp_wrap) already casts activations to bf16; doing
+        # autocast on top can leave dangling bf16 buffers across the gather/reshard boundary,
+        # which manifested as CUDA illegal memory access during backward. Disable autocast
+        # under FSDP and let MixedPrecision handle bf16 casts.
+        autocast_active = config.autocast_bf16 and config.parallel_strategy != "fsdp"
+        with bf16_autocast(enabled=autocast_active):
             # NOTE: we need to call the wrapped_model at least once each step in order to setup
             # the DDP gradient syncing for all parameters in the component model. Gradients will
             # sync regardless of whether the parameters are used in this call to wrapped_model.
             target_model_output: OutputWithCache = wrapped_model(batch, cache_type="input")
 
+            # `GlobalSharedTransformerCiFn` is itself an FSDP unit (see fsdp.py auto-wrap
+            # policy), so `ci_fn(layer_acts)` self-gathers its own params + lets nested
+            # TransformerBlocks self-gather. No external summon_full_params needed here.
             ci = component_model.calc_causal_importances(
                 pre_weight_acts=target_model_output.cache,
                 detach_inputs=False,
                 sampling=config.sampling,
             )
 
+            # `wrapped_model` is the forward target for loss/PPGD code — under FSDP it's the
+            # FSDP-wrapped ComponentModel (which gathers params on each forward), under DDP it
+            # is the DDP-wrapped ComponentModel. `component_model` stays available for
+            # attribute access that doesn't trigger a forward.
+            forward_model = cast(ComponentModel, wrapped_model)
+
             for ppgd_cfg in active_ppgd_configs:
                 ppgd_states[ppgd_cfg].warmup(
-                    model=component_model,
+                    model=forward_model,
                     batch=batch,
                     target_out=target_model_output.output,
                     ci=ci.lower_leaky,
@@ -359,7 +382,7 @@ def optimize(
 
             losses = compute_losses(
                 loss_metric_configs=config.loss_metric_configs,
-                model=component_model,
+                model=forward_model,
                 batch=batch,
                 ci=ci,
                 target_out=target_model_output.output,
@@ -472,21 +495,14 @@ def optimize(
         ) or step == config.steps
         if should_save:
             if config.parallel_strategy == "fsdp":
-                # Under FSDP each rank owns only a shard of every parameter. Use the
-                # full-state-dict context (with CPU offload + rank0_only) so rank 0 ends up
-                # with a complete, unsharded state dict it can save the normal way.
-                from torch.distributed.fsdp import FullStateDictConfig, StateDictType
-                from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-
-                with FSDP.state_dict_type(
-                    wrapped_model,
-                    StateDictType.FULL_STATE_DICT,
-                    FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
-                ):
-                    full_state = wrapped_model.state_dict()
-                    if is_main_process():
-                        assert out_dir is not None
-                        save_file(full_state, out_dir / f"model_{step}.pth")
+                # FSDP2 stores params as DTensors; a proper full-state-dict save needs
+                # `torch.distributed.checkpoint.state_dict.get_model_state_dict` with
+                # `StateDictOptions(full_state_dict=True, cpu_offload=True)`. Out of scope for
+                # the current FSDP-fit derisk — assert save_freq is null so we don't silently
+                # write a sharded state dict.
+                assert config.save_freq is None, (
+                    "FSDP2 checkpoint save is not implemented yet; set save_freq=null."
+                )
             elif is_main_process():
                 assert out_dir is not None
                 # Save the state dict of the underlying module (not DDP wrapper)
@@ -507,20 +523,17 @@ def optimize(
         if step != config.steps:
             sync_across_processes()
             if config.parallel_strategy == "fsdp":
-                from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-
-                assert isinstance(wrapped_model, FSDP)
-                # Under FSDP, gradients are sharded and a true global norm needs a cross-rank
-                # reduce that lives on `FSDP.clip_grad_norm_`. The wrapper clips ALL trainable
-                # params with a single threshold; the legacy two-group clip (components vs ci_fn)
-                # can't be reproduced exactly. We use `grad_clip_norm_components` as the global
-                # threshold and require `grad_clip_norm_ci_fns` to be unset.
+                # FSDP2 stores grads as DTensors; `torch.nn.utils.clip_grad_norm_` handles
+                # them correctly (computes a cross-rank norm internally).
                 assert config.grad_clip_norm_ci_fns is None, (
                     "grad_clip_norm_ci_fns is not supported under parallel_strategy='fsdp' — "
-                    "FSDP.clip_grad_norm_ applies a single threshold to all trainable params."
+                    "the FSDP2 clip applies a single threshold to all trainable params."
                 )
                 if config.grad_clip_norm_components is not None:
-                    wrapped_model.clip_grad_norm_(config.grad_clip_norm_components)
+                    clip_grad_norm_(
+                        [p for p in wrapped_model.parameters() if p.requires_grad],
+                        config.grad_clip_norm_components,
+                    )
             else:
                 if config.grad_clip_norm_components is not None:
                     clip_grad_norm_(component_params, config.grad_clip_norm_components)

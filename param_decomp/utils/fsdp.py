@@ -1,93 +1,139 @@
-"""FSDP wrapping for ComponentModel.
+"""FSDP2-based wrapping for ComponentModel.
 
-Wraps each `DecomposedSite` and each `TransformerBlock` in a separate FSDP unit.
-The auto-wrap policy is what makes this work: by targeting the smallest units that
-hold meaningful parameter counts, we get cross-rank parameter sharding without
-ever crossing FSDP-unit boundaries inside a forward (which was the original
-hook-related problem — see §5b of `fsdp_scaling_report.html`).
+Uses `torch.distributed.fsdp.fully_shard` (FSDP2 — the per-module composable API)
+rather than `FullyShardedDataParallel` (FSDP1). FSDP1's bookkeeping doesn't survive
+SPD's multi-forward training step (we call `wrapped_model(...)` 5-7 times per step
+across the target-only forward, PPGD warmups, and each loss flavor's forward),
+producing `setStorage out of bounds` failures at backward. FSDP2 is built for that
+pattern and keeps the module tree intact (no `_fsdp_wrapped_module` indirection).
 
-Use `use_orig_params=True` so that the optimizer can still be constructed from a
-plain list of `nn.Parameter`s (the existing flow in `run_param_decomp.py`).
+Wrap layout: each `DecomposedSite`, each `TransformerBlock` (target + CI fn), and
+`GlobalSharedTransformerCiFn` itself become their own FSDP units. The root unit owns
+the remaining params (target.wte, target.ln_f, target.lm_head, etc.). Frozen target
+submodules that aren't decomposed stay in the root unit.
 
-`MixedPrecision` here subsumes both the legacy `autocast_bf16` context manager and
-the report's §7c "bf16 master weights" lever — activations are bf16, gradients are
-all-reduced in bf16, and (by default) parameters stay in fp32. If we later need
-bf16 master weights too for memory, that's `param_dtype=torch.bfloat16`.
+Mixed precision: bf16 reduce + bf16 buffers, params stay fp32. Subsumes the legacy
+`autocast_bf16` context manager.
 """
 
-from collections.abc import Callable
+from __future__ import annotations
 
-import torch
-from torch import nn
-from torch.distributed.fsdp import (
-    BackwardPrefetch,
-    MixedPrecision,
-    ShardingStrategy,
-)
-from torch.distributed.fsdp import (
-    FullyShardedDataParallel as FSDP,
-)
+from torch import Tensor, nn
+from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
 
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.models.components import TransformerBlock
+from param_decomp.models.components import GlobalSharedTransformerCiFn, TransformerBlock
 from param_decomp.models.decomposed_module import DecomposedEmbedding, DecomposedLinear
 
 
-def _make_auto_wrap_policy() -> Callable[[nn.Module, bool, int], bool]:
-    """Wrap each DecomposedSite and CI-fn TransformerBlock as its own FSDP unit.
+def calc_weight_deltas_full(component_model: ComponentModel) -> dict[str, Tensor]:
+    """Compute weight deltas as regular Tensors under FSDP2.
 
-    Frozen target submodules that aren't decomposed (ln_f, rms norms, the
-    embedding layer if not decomposed, etc.) are left at the outermost wrap. Their
-    parameter counts are small enough that the per-step all-gather cost of
-    sharding them would exceed any saving.
+    Mirrors what the training loop does outside any forward: gather each wrapped
+    site's V/U via `.unshard()`, read deltas, materialize to a regular Tensor via
+    `.full_tensor()`, then `.reshard()`. Downstream code (loss / eval metrics)
+    feeds these into `bmm` against regular Tensors, which DTensor's dispatcher
+    refuses — so the full_tensor() conversion is the load-bearing step.
+
+    Use this only outside an FSDP-wrapped forward. Inside a forward each site's
+    params are already unsharded by FSDP's pre-forward hook.
     """
+    sites_to_unshard = [m for m in component_model.modules() if hasattr(m, "unshard")]
+    for s in sites_to_unshard:
+        s.unshard()  # pyright: ignore[reportCallIssue]
+    try:
+        weight_deltas: dict[str, Tensor] = {}
+        for k, v in component_model.calc_weight_deltas().items():
+            v = v.detach()
+            v = v.full_tensor() if hasattr(v, "full_tensor") else v.clone()
+            weight_deltas[k] = v
+    finally:
+        for s in sites_to_unshard:
+            s.reshard()  # pyright: ignore[reportCallIssue]
+    return weight_deltas
 
-    def policy(module: nn.Module, recurse: bool, nonwrapped_numel: int) -> bool:
-        del nonwrapped_numel  # FSDP passes this for size-based policies; we use type-based.
-        # Keep recursing through composite containers so we find the targetable units.
-        if recurse:
-            return True
-        return isinstance(module, DecomposedLinear | DecomposedEmbedding | TransformerBlock)
 
-    return policy
+def _untie_target_weights_(target_model: nn.Module) -> None:
+    """Break parameter sharing across target modules so FSDP doesn't see two paths to
+    the same storage.
+
+    LlamaSimpleMLP ties `wte.weight = lm_head.weight`. FSDP1 and FSDP2 both get
+    confused by tied params and end up freeing the underlying storage from one
+    reference while the other still uses it. Since the target is frozen, the two
+    copies stay identical for the rest of training, so we can safely clone-detach
+    to break the alias.
+    """
+    seen: dict[int, list[tuple[nn.Module, str]]] = {}
+    for module in target_model.modules():
+        for name, param in module.named_parameters(recurse=False):
+            seen.setdefault(id(param), []).append((module, name))
+
+    for refs in seen.values():
+        if len(refs) <= 1:
+            continue
+        for parent, attr in refs[1:]:
+            old = getattr(parent, attr)
+            setattr(
+                parent,
+                attr,
+                nn.Parameter(old.detach().clone(), requires_grad=old.requires_grad),
+            )
 
 
 def fsdp_wrap(
     component_model: ComponentModel,
     device_id: int,
     autocast_bf16: bool,
-) -> FSDP:
-    """FSDP-wrap a ComponentModel.
+) -> ComponentModel:
+    """Apply FSDP2 sharding in place to a ComponentModel and return it.
+
+    Walks the model tree bottom-up calling `fully_shard` on each unit we want to
+    treat as its own FSDP shard group. The returned object is the same Python
+    object as the input — `fully_shard` mutates module __class__ metadata to weave
+    in the FSDP hooks but doesn't replace anything in the tree.
 
     Args:
-        component_model: The ComponentModel to wrap. Must already be on the right device.
-        device_id: Local rank's device index (passed straight to FSDP).
-        autocast_bf16: If True, activations are bf16 and gradient reductions happen in bf16.
-            Parameters stay fp32 by default — flip `param_dtype` here if we want bf16 masters.
-
-    Returns:
-        FSDP-wrapped model. The optimizer should be constructed from `wrapped.parameters()`
-        (or, since we use `use_orig_params=True`, from any of the underlying parameter
-        references that existed pre-wrap).
+        component_model: ComponentModel built with fused-decomposition sites, on the
+            right device, in eval mode for the target.
+        device_id: Local rank's device index.
+        autocast_bf16: If True, gradient reductions and buffers use bf16; params stay fp32.
     """
-    mixed_precision = (
-        MixedPrecision(
-            param_dtype=torch.float32,
-            reduce_dtype=torch.bfloat16,
-            buffer_dtype=torch.bfloat16,
-        )
-        if autocast_bf16
-        else None
+    del device_id  # FSDP2 picks up the device from the module + current torch.cuda.device
+
+    _untie_target_weights_(component_model)
+
+    # output_dtype=fp32 is critical (not just for precision): it forces FSDP2 to cast each
+    # wrapped unit's output, which materializes a regular `Tensor` from the unsharded DTensor.
+    # Without this, the wrapped forward returns a DTensor and downstream layers (e.g. attn
+    # bmm in the target's CausalSelfAttention) get mixed DTensor+Tensor inputs that DTensor's
+    # dispatcher refuses.
+    import torch as _torch
+
+    del autocast_bf16  # bf16 path needs proper threading of param_dtype across nested wraps; later.
+    mp_policy = MixedPrecisionPolicy(
+        param_dtype=_torch.float32,
+        reduce_dtype=_torch.float32,
+        output_dtype=_torch.float32,
     )
 
-    return FSDP(
-        component_model,
-        auto_wrap_policy=_make_auto_wrap_policy(),
-        sharding_strategy=ShardingStrategy.FULL_SHARD,
-        mixed_precision=mixed_precision,
-        device_id=device_id,
-        forward_prefetch=True,
-        backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
-        limit_all_gathers=True,
-        use_orig_params=True,
-    )
+    # Wrap only the inner units that hold the bulk of trainable params: DecomposedSites
+    # (V/U + the wrapped frozen target submodule) and CI-fn TransformerBlocks. Wrap the
+    # CI fn itself so its small input/output projectors get gathered when ci_fn(...) is
+    # called outside any forward.
+    #
+    # We deliberately do NOT wrap `component_model` at the root level. With the root wrapped,
+    # the remaining target submodules (wte / ln_f / lm_head) become DTensor-owned and their
+    # outputs (or downstream values) leak DTensor into the target's forward — which then
+    # mixes with regular Tensor outputs from FSDP-wrapped DecomposedSites and trips the
+    # DTensor dispatcher in attention's bmm. Leaving the root un-wrapped keeps those small
+    # frozen params as regular nn.Parameters; their memory cost is bounded (a few hundred MB
+    # at the 4B-target scale) and they don't update.
+    for module in component_model.modules():
+        if isinstance(module, DecomposedLinear | DecomposedEmbedding | TransformerBlock):
+            fully_shard(module, mp_policy=mp_policy)
+
+    for submodule in component_model.ci_fn.modules():
+        if isinstance(submodule, GlobalSharedTransformerCiFn):
+            fully_shard(submodule, mp_policy=mp_policy)
+
+    return component_model

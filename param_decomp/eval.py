@@ -84,6 +84,7 @@ from param_decomp.models.component_model import (
 from param_decomp.persistent_pgd import PersistentPGDState
 from param_decomp.routing import AllLayersRouter, get_subset_router
 from param_decomp.utils.distributed_utils import avg_metrics_across_ranks, is_distributed
+from param_decomp.utils.fsdp import calc_weight_deltas_full
 from param_decomp.utils.general_utils import dict_safe_update_
 
 MetricOutType = dict[str, str | Number | Image.Image | CustomChart]
@@ -399,8 +400,13 @@ def evaluate(
             continue
         metrics.append(metric)
 
-    # Weight deltas can be computed once per eval since params are frozen
-    weight_deltas = model.calc_weight_deltas()
+    # Weight deltas can be computed once per eval since params are frozen.
+    # Under FSDP2, V/U live as sharded DTensors outside any forward; gather them so
+    # downstream bmm against regular Tensors doesn't trip DTensor's dispatcher.
+    if run_config.parallel_strategy == "fsdp":
+        weight_deltas = calc_weight_deltas_full(model)
+    else:
+        weight_deltas = model.calc_weight_deltas()
 
     for _ in range(n_eval_steps):
         batch = move_batch_to_device(next(eval_iterator), device)
@@ -446,7 +452,14 @@ def evaluate_multibatch_pgd(
     reconstruction_loss: ReconstructionLoss,
 ) -> dict[str, float]:
     """Calculate multibatch PGD metrics."""
-    weight_deltas = model.calc_weight_deltas() if config.use_delta_component else None
+    if config.use_delta_component:
+        weight_deltas = (
+            calc_weight_deltas_full(model)
+            if config.parallel_strategy == "fsdp"
+            else model.calc_weight_deltas()
+        )
+    else:
+        weight_deltas = None
 
     metrics: dict[str, float] = {}
     for multibatch_pgd_config in multibatch_pgd_eval_configs:
