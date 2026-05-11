@@ -121,7 +121,10 @@ def test_membership_builder_matches_dense_thresholded_path(
     )
 
 
-def test_collect_memberships_lm_all_tokens_matches_dense(monkeypatch: Any) -> None:
+@pytest.mark.parametrize("batch_as_dict", [True, False])
+def test_collect_memberships_lm_all_tokens_matches_dense(
+    monkeypatch: Any, batch_as_dict: bool
+) -> None:
     activation_threshold = 0.1
     filter_dead_threshold = 0.1
 
@@ -152,7 +155,8 @@ def test_collect_memberships_lm_all_tokens_matches_dense(monkeypatch: Any) -> No
         fake_component_activations,
     )
 
-    batch = {"input_ids": torch.tensor([[0, 1, 2, 3], [4, 5, 6, 7]])}
+    input_ids = torch.tensor([[0, 1, 2, 3], [4, 5, 6, 7]])
+    batch = {"input_ids": input_ids} if batch_as_dict else input_ids
     processed_memberships = collect_memberships_lm(
         model=None,  # pyright: ignore[reportArgumentType]
         dataloader=[batch],  # pyright: ignore[reportArgumentType]
@@ -168,7 +172,7 @@ def test_collect_memberships_lm_all_tokens_matches_dense(monkeypatch: Any) -> No
         use_all_tokens_per_seq=True,
     )
 
-    raw_activations = fake_component_activations(None, "cpu", batch["input_ids"])
+    raw_activations = fake_component_activations(None, "cpu", input_ids)
     dense_activations = {
         key: tensor.reshape(-1, tensor.shape[-1])[:6] for key, tensor in raw_activations.items()
     }

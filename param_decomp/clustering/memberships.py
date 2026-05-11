@@ -402,7 +402,7 @@ def collect_memberships_lm(
 
     pbar = tqdm(dataloader, desc="Collecting activations", unit="batch")
     for batch_data in pbar:
-        input_ids = batch_data["input_ids"]
+        input_ids = batch_data["input_ids"] if isinstance(batch_data, dict) else batch_data
         batch_size, n_ctx = input_ids.shape
         activations = component_activations(model=model, batch=input_ids, device=device)
 

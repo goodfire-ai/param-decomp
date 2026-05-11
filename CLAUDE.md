@@ -543,7 +543,7 @@ model = ComponentModel.from_pretrained("/path/to/checkpoint.pt")
 **Path Formats:**
 
 - WandB: `wandb:entity/project/run_id` or `wandb:entity/project/runs/run_id`
-- Local: Direct path to checkpoint file (config must be in same directory as `final_config.yaml`)
+- Local: Direct path to checkpoint file (config must be in same directory as `experiment_config.yaml`)
 
 Downloaded runs are cached in `PARAM_DECOMP_OUT_DIR/runs/<project>-<run_id>/`.
 

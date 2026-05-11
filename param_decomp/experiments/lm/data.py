@@ -19,7 +19,7 @@ def _dataset_config(data_cfg: LMDataConfig, *, split: str, seed: int) -> Dataset
         streaming=data_cfg.streaming,
         column_name=data_cfg.column_name,
         shuffle_each_epoch=data_cfg.shuffle_each_epoch,
-        seed=data_cfg.dataset_seed if data_cfg.dataset_seed is not None else seed,
+        seed=seed,
     )
 
 

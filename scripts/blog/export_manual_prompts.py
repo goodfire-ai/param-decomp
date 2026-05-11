@@ -41,8 +41,8 @@ import torch
 from param_decomp.app.backend.app_tokenizer import AppTokenizer
 from param_decomp.app.backend.compute import compute_ci_only
 from param_decomp.autointerp.repo import InterpRepo
-from param_decomp.configs import LMTaskConfig
-from param_decomp.models.component_model import ComponentModel, ParamDecompRunInfo
+from param_decomp.experiments.lm.experiment import LMExperimentConfig
+from param_decomp.models.component_model import ComponentModel, PDRunInfo
 from param_decomp.scripts.prompt_utils import load_prompts
 from param_decomp.topology import TransformerTopology
 from param_decomp.utils.distributed_utils import get_device
@@ -149,18 +149,18 @@ def export_manual_prompts(
     prompts: Sequence[str],
 ) -> dict[str, Any]:
     """Compute CI/activation values for one component across manual prompts."""
-    run_info = ParamDecompRunInfo.from_path(run_path)
+    run_info = PDRunInfo.from_path(run_path)
+    exp = run_info.spec
+    assert isinstance(exp, LMExperimentConfig), "manual prompt export only supports LM runs"
     model = ComponentModel.from_run_info(run_info).to(get_device())
     model.eval()
 
-    tokenizer_name = run_info.config.tokenizer_name
+    tokenizer_name = exp.data.tokenizer_name
     assert tokenizer_name is not None, "run config missing tokenizer_name"
     tokenizer = AppTokenizer.from_pretrained(tokenizer_name)
     topology = TransformerTopology(model.target_model)
 
-    task_config = run_info.config.task_config
-    assert isinstance(task_config, LMTaskConfig), "manual prompt export only supports LM task runs"
-    context_length = task_config.max_seq_len
+    context_length = exp.data.max_seq_len
 
     canonical_layer, component_idx_str = component_key.rsplit(":", 1)
     component_idx = int(component_idx_str)
@@ -185,7 +185,7 @@ def export_manual_prompts(
 
         tokens_tensor = torch.tensor([token_ids], device=device)
         result = compute_ci_only(
-            model=model, tokens=tokens_tensor, sampling=run_info.config.sampling
+            model=model, tokens=tokens_tensor, sampling=run_info.pd_config.sampling
         )
 
         ci_tensor = result.ci_lower_leaky[concrete_layer]

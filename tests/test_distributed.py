@@ -14,64 +14,64 @@ import yaml
 from param_decomp.settings import REPO_ROOT
 
 TEST_CONFIG = {
-    # --- General ---
-    "seed": 0,
-    "C": 3,
-    "n_mask_samples": 1,
-    "ci_config": {
-        "mode": "layerwise",
-        "fn_type": "vector_mlp",
-        "hidden_dims": [2],
-    },
-    "sigmoid_type": "leaky_hard",
-    "target_module_patterns": ["model.layers.0.mlp.gate_proj"],
-    # --- Loss metrics ---
-    "loss_metric_configs": [
-        {
-            "classname": "ImportanceMinimalityLoss",
-            "coeff": 0.1,
-            "pnorm": 2.0,
-            "eps": 1e-12,
+    "kind": "lm",
+    "pd": {
+        # --- General ---
+        "seed": 0,
+        "autocast_bf16": False,
+        "n_mask_samples": 1,
+        "ci_config": {
+            "mode": "layerwise",
+            "fn_type": "vector_mlp",
+            "hidden_dims": [2],
         },
-        # Disable stochastic terms for deterministic dp test; keep a simple layerwise recon if needed
-        {"classname": "CIMaskedReconLayerwiseLoss", "coeff": 1.0},
-        {"classname": "CIMaskedReconLoss", "coeff": 1.0},
-    ],
-    # --- Training ---
-    "batch_size": 2,
-    "steps": 20,
-    "lr_schedule": {"start_val": 1e-2, "fn_type": "constant"},
-    # --- Logging & Saving ---
-    "train_log_freq": 9999,
-    "eval_freq": 5,  # Eval at steps 0, 5, 10
-    "slow_eval_freq": 5,
-    "slow_eval_on_first_step": True,
-    "n_eval_steps": 2,
-    "save_freq": None,  # Just save at the end
-    "eval_metrics": [
-        {"classname": "CI_L0"},
-        {"classname": "CEandKLLosses", "rounding_threshold": 0.1},
-    ],
-    # --- Pretrained model info ---
-    "pretrained_model_class": "transformers.LlamaForCausalLM",
-    "pretrained_model_name": "SimpleStories/SimpleStories-1.25M",
-    "output_extract": "logits",
-    "tokenizer_name": "SimpleStories/SimpleStories-1.25M",
-    # --- Task Specific ---
-    "task_config": {
-        "task_name": "lm",
+        "sigmoid_type": "leaky_hard",
+        "module_info": [{"module_pattern": "model.layers.0.mlp.gate_proj", "C": 3}],
+        # --- Loss metrics ---
+        "loss_metric_configs": [
+            {
+                "classname": "ImportanceMinimalityLoss",
+                "coeff": 0.1,
+                "pnorm": 2.0,
+                "beta": 0.0,
+                "eps": 1e-12,
+            },
+            # Disable stochastic terms for deterministic dp test; keep a simple layerwise recon if needed
+            {"classname": "CIMaskedReconLayerwiseLoss", "coeff": 1.0},
+            {"classname": "CIMaskedReconLoss", "coeff": 1.0},
+        ],
+        # --- Training ---
+        "batch_size": 2,
+        "eval_batch_size": 2,
+        "steps": 20,
+        "lr_schedule": {"start_val": 1e-2, "fn_type": "constant"},
+        # --- Logging & Saving ---
+        "train_log_freq": 9999,
+        "eval_freq": 5,  # Eval at steps 0, 5, 10
+        "slow_eval_freq": 5,
+        "slow_eval_on_first_step": True,
+        "n_eval_steps": 2,
+        "save_freq": None,  # Just save at the end
+        "eval_metric_configs": [
+            {"classname": "CI_L0", "groups": None},
+            {"classname": "CEandKLLosses", "rounding_threshold": 0.1},
+        ],
+    },
+    "target": {
+        "model_class": "transformers.LlamaForCausalLM",
+        "model_name": "SimpleStories/SimpleStories-1.25M",
+        "output_extract": "logits",
+    },
+    "data": {
+        "tokenizer_name": "SimpleStories/SimpleStories-1.25M",
         "max_seq_len": 5,
         "buffer_size": 100,
         "dataset_name": "SimpleStories/SimpleStories",
         "column_name": "story",
-        "train_data_split": "train[:100]",
-        "eval_data_split": "test[:100]",
+        "train_split": "train[:100]",
+        "eval_split": "test[:100]",
         "shuffle_each_epoch": False,  # Need False in order to maintain determinicity
     },
-    # --- Distributed ---
-    "dist_backend": "gloo",  # Want to run this test on CPU
-    # We use float32 to avoid precision difference accumulations
-    "autocast_bf16": False,
 }
 
 
