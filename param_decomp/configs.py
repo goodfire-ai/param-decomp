@@ -822,6 +822,13 @@ class Config(BaseConfig):
         "'zero_adamw' shards optimizer state across ranks via ZeroRedundancyOptimizer (ZeRO-1) "
         "and requires a distributed run with world_size > 1.",
     )
+    parallel_strategy: Literal["ddp", "fsdp"] = Field(
+        default="ddp",
+        description="Distributed data parallelism strategy. 'ddp' replicates the model on every "
+        "rank (works with any optimizer_strategy). 'fsdp' fully shards parameters, gradients, "
+        "and optimizer state across ranks (only compatible with optimizer_strategy='adamw'). "
+        "FSDP requires world_size > 1 and assumes the fused-decomposition-sites model layout.",
+    )
 
     # --- Faithfulness Warmup ---
     faithfulness_warmup_steps: NonNegativeInt = Field(

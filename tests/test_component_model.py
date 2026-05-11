@@ -232,10 +232,11 @@ def test_patch_modules_unsupported_component_type_raises() -> None:
     from param_decomp.models.decomposed_module import install_decomposed_sites
 
     model = tiny_target()
-    wrong_module_path = "other_layer"
+    nonexistent_module_path = "other_layer"
 
-    with pytest.raises(ValueError):
-        install_decomposed_sites(model, {wrong_module_path: 2})
+    # `get_submodule` raises AttributeError for paths that don't exist on the model.
+    with pytest.raises(AttributeError):
+        install_decomposed_sites(model, {nonexistent_module_path: 2})
 
 
 def test_parallel_linear_shapes_and_forward():

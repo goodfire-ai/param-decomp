@@ -178,24 +178,44 @@ def optimize(
     # Diverge global RNG per rank so stochastic masks/sources differ across DP workers.
     seed_per_rank(config.seed)
 
-    # Wrap model with DDP if distributed
+    # Wrap model with DDP or FSDP if distributed.
     dist_state = get_distributed_state()
     wrapped_model: nn.Module = model
 
     component_model: ComponentModel
     if dist_state is not None:
-        if dist_state.backend == "nccl":
-            device_id = dist_state.local_rank
-            wrapped_model = torch.nn.parallel.DistributedDataParallel(
-                model,
-                device_ids=[device_id],
-                output_device=device_id,
-            )
-        else:
-            # For CPU, don't pass device_ids or output_device
-            wrapped_model = torch.nn.parallel.DistributedDataParallel(model)
-        # Access the underlying module for component operations
-        component_model = cast(ComponentModel, wrapped_model.module)
+        match config.parallel_strategy:
+            case "ddp":
+                if dist_state.backend == "nccl":
+                    device_id = dist_state.local_rank
+                    wrapped_model = torch.nn.parallel.DistributedDataParallel(
+                        model,
+                        device_ids=[device_id],
+                        output_device=device_id,
+                    )
+                else:
+                    # For CPU, don't pass device_ids or output_device
+                    wrapped_model = torch.nn.parallel.DistributedDataParallel(model)
+                # Access the underlying module for component operations
+                component_model = cast(ComponentModel, wrapped_model.module)
+            case "fsdp":
+                from param_decomp.utils.fsdp import fsdp_wrap
+
+                assert dist_state.world_size > 1, "FSDP requires world_size > 1"
+                assert dist_state.backend == "nccl", "FSDP requires NCCL backend"
+                assert config.optimizer_strategy == "adamw", (
+                    "FSDP shards optimizer state itself; set optimizer_strategy='adamw' "
+                    "(not 'zero_adamw') when parallel_strategy='fsdp'."
+                )
+                wrapped_model = fsdp_wrap(
+                    model,
+                    device_id=dist_state.local_rank,
+                    autocast_bf16=config.autocast_bf16,
+                )
+                # With use_orig_params=True, FSDP keeps the original module tree accessible.
+                # `component_model` still points at the underlying ComponentModel; FSDP's
+                # forward hooks gather params on entry to each FSDP unit.
+                component_model = model
     else:
         component_model = model
     assert isinstance(component_model, ComponentModel), "component_model is not a ComponentModel"
@@ -444,29 +464,65 @@ def optimize(
                 gc.collect()
 
         # --- Saving Checkpoint --- #
-        if (
-            (config.save_freq is not None and step % config.save_freq == 0 and step > 0)
-            or step == config.steps
-        ) and is_main_process():
-            assert out_dir is not None
-            # Save the state dict of the underlying module (not DDP wrapper)
-            save_file(component_model.state_dict(), out_dir / f"model_{step}.pth")
-            logger.info(f"Saved model, optimizer, and out_dir to {out_dir}")
-            if config.wandb_project:
-                try_wandb(
-                    wandb.save,
-                    str(out_dir / f"model_{step}.pth"),
-                    base_path=str(out_dir),
-                    policy="now",
-                )
+        should_save = (
+            config.save_freq is not None and step % config.save_freq == 0 and step > 0
+        ) or step == config.steps
+        if should_save:
+            if config.parallel_strategy == "fsdp":
+                # Under FSDP each rank owns only a shard of every parameter. Use the
+                # full-state-dict context (with CPU offload + rank0_only) so rank 0 ends up
+                # with a complete, unsharded state dict it can save the normal way.
+                from torch.distributed.fsdp import FullStateDictConfig, StateDictType
+                from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+                with FSDP.state_dict_type(
+                    wrapped_model,
+                    StateDictType.FULL_STATE_DICT,
+                    FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
+                ):
+                    full_state = wrapped_model.state_dict()
+                    if is_main_process():
+                        assert out_dir is not None
+                        save_file(full_state, out_dir / f"model_{step}.pth")
+            elif is_main_process():
+                assert out_dir is not None
+                # Save the state dict of the underlying module (not DDP wrapper)
+                save_file(component_model.state_dict(), out_dir / f"model_{step}.pth")
+
+            if is_main_process():
+                assert out_dir is not None
+                logger.info(f"Saved model, optimizer, and out_dir to {out_dir}")
+                if config.wandb_project:
+                    try_wandb(
+                        wandb.save,
+                        str(out_dir / f"model_{step}.pth"),
+                        base_path=str(out_dir),
+                        policy="now",
+                    )
 
         # Skip gradient step if we are at the last step (last step just for plotting and logging)
         if step != config.steps:
             sync_across_processes()
-            if config.grad_clip_norm_components is not None:
-                clip_grad_norm_(component_params, config.grad_clip_norm_components)
-            if config.grad_clip_norm_ci_fns is not None:
-                clip_grad_norm_(ci_fn_params, config.grad_clip_norm_ci_fns)
+            if config.parallel_strategy == "fsdp":
+                from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+                assert isinstance(wrapped_model, FSDP)
+                # Under FSDP, gradients are sharded and a true global norm needs a cross-rank
+                # reduce that lives on `FSDP.clip_grad_norm_`. The wrapper clips ALL trainable
+                # params with a single threshold; the legacy two-group clip (components vs ci_fn)
+                # can't be reproduced exactly. We use `grad_clip_norm_components` as the global
+                # threshold and require `grad_clip_norm_ci_fns` to be unset.
+                assert config.grad_clip_norm_ci_fns is None, (
+                    "grad_clip_norm_ci_fns is not supported under parallel_strategy='fsdp' — "
+                    "FSDP.clip_grad_norm_ applies a single threshold to all trainable params."
+                )
+                if config.grad_clip_norm_components is not None:
+                    wrapped_model.clip_grad_norm_(config.grad_clip_norm_components)
+            else:
+                if config.grad_clip_norm_components is not None:
+                    clip_grad_norm_(component_params, config.grad_clip_norm_components)
+                if config.grad_clip_norm_ci_fns is not None:
+                    clip_grad_norm_(ci_fn_params, config.grad_clip_norm_ci_fns)
             optimizer.step()
 
         if config.profile_memory:
