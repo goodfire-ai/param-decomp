@@ -1,33 +1,30 @@
-from collections.abc import Callable, Generator
-from contextlib import contextmanager
+from contextlib import ExitStack
 from dataclasses import dataclass
-from functools import partial
 from typing import Any, Literal, NamedTuple, overload, override
 
 import torch
 from jaxtyping import Float, Int
 from torch import Tensor, nn
-from torch.utils.hooks import RemovableHandle
-from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
 from param_decomp.configs import CiConfig, Config, GlobalCiConfig, LayerwiseCiConfig, SamplingType
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.interfaces import LoadableModule, RunInfo
 from param_decomp.models.batch_and_loss_fns import RunBatch, make_run_batch
 from param_decomp.models.components import (
-    Components,
     ComponentsMaskInfo,
-    EmbeddingComponents,
     GlobalCiFnWrapper,
     GlobalSharedMLPCiFn,
     GlobalSharedTransformerCiFn,
-    Identity,
     LayerwiseCiFnWrapper,
-    LinearComponents,
     MLPCiFn,
     TargetLayerConfig,
     VectorMLPCiFn,
     VectorSharedMLPCiFn,
+)
+from param_decomp.models.decomposed_module import (
+    DecomposedEmbedding,
+    DecomposedSite,
+    install_decomposed_sites,
 )
 from param_decomp.models.sigmoids import SIGMOID_TYPES, SigmoidType
 from param_decomp.param_decomp_types import LayerwiseCiFnType, ModelPath
@@ -128,19 +125,22 @@ class ComponentModel(LoadableModule):
         self.module_to_c = {info.module_path: info.C for info in module_path_info}
         self.target_module_paths = list(self.module_to_c.keys())
 
-        self.components = ComponentModel._create_components(
-            target_model=target_model,
-            module_to_c=self.module_to_c,
-        )
-        self._components = nn.ModuleDict(
-            {k.replace(".", "-"): self.components[k] for k in sorted(self.components)}
+        # Replace each decomposed submodule in target_model with a DecomposedSite in place.
+        # After this call:
+        #   - target_model.<path> is a DecomposedSite (DecomposedLinear or DecomposedEmbedding)
+        #   - The site owns its own V, U parameters (trainable, requires_grad=True)
+        #   - The site's `.linear` (or `.embedding`) is the frozen original module
+        # `self.components` is the canonical dict mapping site_name -> site; it shares storage
+        # with the sites that now live in target_model.
+        self.components: dict[str, DecomposedSite] = install_decomposed_sites(
+            target_model, self.module_to_c
         )
 
         match ci_config:
             case LayerwiseCiConfig():
                 raw_layerwise_ci_fns = {
                     path: ComponentModel._create_layerwise_ci_fn(
-                        target_module=target_model.get_submodule(path),
+                        site=self.components[path],
                         C=C,
                         ci_fn_type=ci_config.fn_type,
                         ci_fn_hidden_dims=ci_config.hidden_dims,
@@ -149,19 +149,17 @@ class ComponentModel(LoadableModule):
                 }
                 self.ci_fn = LayerwiseCiFnWrapper(
                     ci_fns=raw_layerwise_ci_fns,
-                    components=self.components,
+                    sites=self.components,
                     ci_fn_type=ci_config.fn_type,
                 )
             case GlobalCiConfig():
                 raw_global_ci_fn = ComponentModel._create_global_ci_fn(
-                    target_model=target_model,
-                    module_to_c=self.module_to_c,
-                    components=self.components,
+                    sites=self.components,
                     ci_config=ci_config,
                 )
                 self.ci_fn = GlobalCiFnWrapper(
                     global_ci_fn=raw_global_ci_fn,
-                    components=self.components,
+                    sites=self.components,
                 )
 
         if sigmoid_type == "leaky_hard":
@@ -173,106 +171,37 @@ class ComponentModel(LoadableModule):
             self.upper_leaky_fn = SIGMOID_TYPES[sigmoid_type]
 
     def target_weight(self, module_name: str) -> Float[Tensor, "rows cols"]:
-        target_module = self.target_model.get_submodule(module_name)
-
-        match target_module:
-            case RadfordConv1D():
-                return target_module.weight.T
-            case nn.Linear() | nn.Embedding():
-                return target_module.weight
-            case Identity():
-                p = next(self.parameters())
-                return torch.eye(target_module.d, device=p.device, dtype=p.dtype)
-            case _:
-                raise ValueError(f"Module {target_module} not supported")
+        """Target weight at the named decomposition site, shape (d_out, d_in)."""
+        return self.components[module_name].target_weight
 
     @staticmethod
-    def _create_component(
-        target_module: nn.Module,
-        C: int,
-    ) -> Components:
-        match target_module:
-            case nn.Linear():
-                d_out, d_in = target_module.weight.shape
-                component = LinearComponents(
-                    C=C,
-                    d_in=d_in,
-                    d_out=d_out,
-                    bias=target_module.bias.data if target_module.bias is not None else None,  # pyright: ignore[reportUnnecessaryComparison]
-                )
-            case RadfordConv1D():
-                d_in, d_out = target_module.weight.shape
-                component = LinearComponents(
-                    C=C,
-                    d_in=d_in,
-                    d_out=d_out,
-                    bias=target_module.bias.data if target_module.bias is not None else None,  # pyright: ignore[reportUnnecessaryComparison]
-                )
-            case Identity():
-                component = LinearComponents(
-                    C=C,
-                    d_in=target_module.d,
-                    d_out=target_module.d,
-                    bias=None,
-                )
-            case nn.Embedding():
-                component = EmbeddingComponents(
-                    C=C,
-                    vocab_size=target_module.num_embeddings,
-                    embedding_dim=target_module.embedding_dim,
-                )
-            case _:
-                raise ValueError(f"Module {target_module} not supported")
+    def _site_input_dim(site: DecomposedSite, for_global_ci: bool) -> int:
+        """Input dim feeding the CI fn for a given site.
 
-        return component
-
-    @staticmethod
-    def _create_components(
-        target_model: nn.Module,
-        module_to_c: dict[str, int],
-    ) -> dict[str, Components]:
-        components: dict[str, Components] = {}
-        for target_module_path, target_module_c in module_to_c.items():
-            target_module = target_model.get_submodule(target_module_path)
-            components[target_module_path] = ComponentModel._create_component(
-                target_module, target_module_c
-            )
-        return components
-
-    @staticmethod
-    def _get_module_input_dim(target_module: nn.Module) -> int:
-        """Extract input dimension from a Linear-like module.
-
-        For embedding layers, this should not be called - handle them separately.
+        For DecomposedLinear, that's the raw activation dim (d_in). For
+        DecomposedEmbedding, the CI fn sees component activations (V[idx]),
+        which are C-dimensional — but only under global CI; under layerwise
+        MLP CI we use the same convention via `get_component_acts`.
         """
-        match target_module:
-            case nn.Linear():
-                return target_module.weight.shape[1]
-            case RadfordConv1D():
-                return target_module.weight.shape[0]
-            case Identity():
-                return target_module.d
-            case _:
-                raise ValueError(
-                    f"Module {type(target_module)} not supported. "
-                    "Embedding modules should be handled separately."
-                )
+        if isinstance(site, DecomposedEmbedding):
+            return site.C if for_global_ci else site.d_embed
+        return site.d_in
 
     @staticmethod
     def _create_layerwise_ci_fn(
-        target_module: nn.Module,
+        site: DecomposedSite,
         C: int,
         ci_fn_type: LayerwiseCiFnType,
         ci_fn_hidden_dims: list[int],
     ) -> nn.Module:
-        """Helper to create a single layerwise CI function based on ci_fn_type and module type."""
-        if isinstance(target_module, nn.Embedding):
+        """Helper to create a single layerwise CI function based on ci_fn_type and site type."""
+        if isinstance(site, DecomposedEmbedding):
             assert ci_fn_type == "mlp", "Embedding modules only supported for ci_fn_type='mlp'"
 
         if ci_fn_type == "mlp":
             return MLPCiFn(C=C, hidden_dims=ci_fn_hidden_dims)
 
-        input_dim = ComponentModel._get_module_input_dim(target_module)
+        input_dim = ComponentModel._site_input_dim(site, for_global_ci=False)
 
         match ci_fn_type:
             case "vector_mlp":
@@ -282,30 +211,20 @@ class ComponentModel(LoadableModule):
 
     @staticmethod
     def _create_global_ci_fn(
-        target_model: nn.Module,
-        module_to_c: dict[str, int],
-        components: dict[str, Components],
+        sites: dict[str, DecomposedSite],
         ci_config: GlobalCiConfig,
     ) -> GlobalSharedMLPCiFn | GlobalSharedTransformerCiFn:
         """Create a global CI function that takes all layer activations as input."""
         ci_fn_type = ci_config.fn_type
         ci_fn_hidden_dims = ci_config.hidden_dims
 
-        # Build layer_configs: layer_name -> (input_dim, C)
-        layer_configs: dict[str, tuple[int, int]] = {}
-        for target_module_path, target_module_c in module_to_c.items():
-            target_module = target_model.get_submodule(target_module_path)
-            component = components[target_module_path]
-
-            # For embeddings, global CI uses component acts (C dimensions)
-            # For linear-like modules, use the actual input dimension
-            if isinstance(target_module, nn.Embedding):
-                assert isinstance(component, EmbeddingComponents)
-                input_dim = component.C
-            else:
-                input_dim = ComponentModel._get_module_input_dim(target_module)
-
-            layer_configs[target_module_path] = (input_dim, target_module_c)
+        layer_configs: dict[str, tuple[int, int]] = {
+            site_name: (
+                ComponentModel._site_input_dim(site, for_global_ci=True),
+                site.C,
+            )
+            for site_name, site in sites.items()
+        }
 
         match ci_fn_type:
             case "global_shared_mlp":
@@ -377,11 +296,12 @@ class ComponentModel(LoadableModule):
         """Forward pass with optional component replacement and/or input/output caching.
 
         Args:
-            mask_infos: Dictionary mapping module names to ComponentsMaskInfo.
-                If provided, those modules will be replaced with their components.
-            cache_type: What to cache for each hooked module. "input" caches pre-weight
-                activations, "output" caches post-weight activations, "component_acts" caches
-                per-component activations, "none" disables caching.
+            mask_infos: Dictionary mapping module names to ComponentsMaskInfo. If provided,
+                those sites use the decomposed path; sites not in this dict (or if it's None)
+                use the wrapped target's forward.
+            cache_type: What to cache. "input" caches pre-weight activations,
+                "output" caches post-weight activations, "component_acts" caches per-component
+                activations, "none" disables caching.
 
         Returns:
             OutputWithCache object if cache_type is not "none", otherwise the model output tensor.
@@ -392,24 +312,14 @@ class ComponentModel(LoadableModule):
             return self._run_batch(self.target_model, batch)
 
         cache: dict[str, Tensor] = {}
-        hooks: dict[str, Callable[..., Any]] = {}
+        bound_cache: dict[str, Tensor] | None = cache if cache_type != "none" else None
+        bound_cache_type = cache_type if cache_type != "none" else None
 
-        hook_module_names = list(mask_infos.keys()) if mask_infos else self.target_module_paths
-
-        for module_name in hook_module_names:
-            mask_info = mask_infos[module_name] if mask_infos else None
-            components = self.components[module_name] if mask_info else None
-
-            hooks[module_name] = partial(
-                self._components_and_cache_hook,
-                module_name=module_name,
-                components=components,
-                mask_info=mask_info,
-                cache_type=cache_type,
-                cache=cache,
-            )
-
-        with self._attach_forward_hooks(hooks):
+        # Bind per-site mask_info + cache slots, run forward, unbind on exit.
+        with ExitStack() as stack:
+            for site_name, site in self.components.items():
+                mask_info = mask_infos.get(site_name) if mask_infos is not None else None
+                stack.enter_context(site.bind(mask_info, bound_cache, bound_cache_type))
             out: Tensor = self._run_batch(self.target_model, batch)
 
         match cache_type:
@@ -417,89 +327,6 @@ class ComponentModel(LoadableModule):
                 return OutputWithCache(output=out, cache=cache)
             case "none":
                 return out
-
-    def _components_and_cache_hook(
-        self,
-        _module: nn.Module,
-        args: list[Any],
-        kwargs: dict[Any, Any],
-        output: Any,
-        module_name: str,
-        components: Components | None,
-        mask_info: ComponentsMaskInfo | None,
-        cache_type: Literal["component_acts", "input", "output", "none"],
-        cache: dict[str, Tensor],
-    ) -> Any | None:
-        """Unified hook function that handles both component replacement and caching.
-
-        Args:
-            module: The module being hooked
-            args: Module forward args
-            kwargs: Module forward kwargs
-            output: Module forward output
-            module_name: Name of the module in the target model
-            components: Component replacement (if using components)
-            mask_info: Mask information (if using components)
-            cache_type: Whether to cache the component acts, input, or none
-            cache: Cache dictionary to populate (if cache_type is not None)
-
-        Returns:
-            If using components: modified output (or None to keep original)
-            If not using components: None (keeps original output)
-        """
-        assert len(args) == 1, "Expected 1 argument"
-        assert len(kwargs) == 0, "Expected no keyword arguments"
-        x = args[0]
-        assert isinstance(x, Tensor), "Expected input tensor"
-
-        if cache_type == "input":
-            cache[module_name] = x
-
-        if components is not None and mask_info is not None:
-            assert isinstance(output, Tensor), (
-                f"Only supports single-tensor outputs, got {type(output)}"
-            )
-
-            component_acts_cache = {} if cache_type == "component_acts" else None
-            components_out = components(
-                x,
-                mask=mask_info.component_mask,
-                weight_delta_and_mask=mask_info.weight_delta_and_mask,
-                component_acts_cache=component_acts_cache,
-            )
-            if component_acts_cache is not None:
-                for k, v in component_acts_cache.items():
-                    cache[f"{module_name}_{k}"] = v
-
-            final_out = (
-                components_out
-                if mask_info.routing_mask == "all"
-                else torch.where(mask_info.routing_mask[..., None], components_out, output)
-            )
-
-            if cache_type == "output":
-                cache[module_name] = final_out
-            return final_out
-
-        # No component replacement - keep original output
-        if cache_type == "output":
-            assert isinstance(output, Tensor)
-            cache[module_name] = output
-        return None
-
-    @contextmanager
-    def _attach_forward_hooks(self, hooks: dict[str, Callable[..., Any]]) -> Generator[None]:
-        """Context manager to temporarily attach forward hooks to the target model."""
-        handles: list[RemovableHandle] = []
-        for module_name, hook in hooks.items():
-            target_module = self.target_model.get_submodule(module_name)
-            handle = target_module.register_forward_hook(hook, with_kwargs=True)
-            handles.append(handle)
-        try:
-            yield
-        finally:
-            for handle in handles:
-                handle.remove()
 
     @classmethod
     @override
@@ -630,26 +457,25 @@ class ComponentModel(LoadableModule):
         self,
         pre_weight_acts: dict[str, Float[Tensor, "... d_in"] | Int[Tensor, "..."]],
     ) -> dict[str, Float[Tensor, "... C"]]:
-        """Compute component activations (v_i^T @ x) for all layers.
+        """Compute pre-mask component activations (x @ V or V[idx]) for all sites.
 
         Args:
-            pre_weight_acts: Dict mapping layer name to input activations.
+            pre_weight_acts: Dict mapping site name to input activations (or token ids for
+                embedding sites).
 
         Returns:
-            Dict mapping layer name to component activations tensor.
+            Dict mapping site name to component activations tensor.
         """
         return {
-            layer: self.components[layer].get_component_acts(acts)
-            for layer, acts in pre_weight_acts.items()
-            if layer in self.components
+            site_name: self.components[site_name].get_component_acts(acts)
+            for site_name, acts in pre_weight_acts.items()
+            if site_name in self.components
         }
 
     def calc_weight_deltas(self) -> dict[str, Float[Tensor, "d_out d_in"]]:
-        """Calculate the weight differences between the target and component weights (V@U) for each layer."""
-        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] = {}
-        for comp_name, components in self.components.items():
-            weight_deltas[comp_name] = self.target_weight(comp_name) - components.weight
-        return weight_deltas
+        """Calculate `W_target - V@U` per site. Each site materializes its own delta
+        (so under FSDP both V/U and the target weight are gathered at the site)."""
+        return {site_name: site.calc_weight_delta() for site_name, site in self.components.items()}
 
 
 def handle_deprecated_state_dict_keys_(state_dict: dict[str, Tensor]) -> None:

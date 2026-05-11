@@ -26,11 +26,9 @@ from param_decomp.models.component_model import (
 )
 from param_decomp.models.components import (
     ComponentsMaskInfo,
-    EmbeddingComponents,
     GlobalCiFnWrapper,
     GlobalSharedMLPCiFn,
     GlobalSharedTransformerCiFn,
-    LinearComponents,
     MLPCiFn,
     ParallelLinear,
     TargetLayerConfig,
@@ -101,23 +99,30 @@ def test_correct_parameters_require_grad():
         sigmoid_type="leaky_hard",
     )
 
-    for module_path, components in component_model.components.items():
-        assert components.U.requires_grad
-        assert components.V.requires_grad
+    from param_decomp.models.decomposed_module import DecomposedEmbedding, DecomposedLinear
 
-        target_module = component_model.target_model.get_submodule(module_path)
+    for module_path, site in component_model.components.items():
+        assert site.U.requires_grad
+        assert site.V.requires_grad
 
-        if isinstance(target_module, nn.Linear | RadfordConv1D):
-            assert not target_module.weight.requires_grad
-            if target_module.bias is not None:  # pyright: ignore [reportUnnecessaryComparison]
-                assert not target_module.bias.requires_grad
-            assert isinstance(components, LinearComponents)
-            if components.bias is not None:
-                assert not components.bias.requires_grad
+        # After the fused-site refactor, target_model.<module_path> is a Decomposed*
+        # site (not the original nn.Linear / nn.Embedding / Conv1D). The original target
+        # module is wrapped as .linear or .embedding on the site.
+        site_module = component_model.target_model.get_submodule(module_path)
+
+        if isinstance(site, DecomposedLinear):
+            assert site_module is site
+            wrapped = site.linear
+            assert isinstance(wrapped, nn.Linear | RadfordConv1D)
+            assert not wrapped.weight.requires_grad
+            if wrapped.bias is not None:  # pyright: ignore [reportUnnecessaryComparison]
+                assert not wrapped.bias.requires_grad
         else:
-            assert isinstance(target_module, nn.Embedding), "sanity check"
-            assert isinstance(components, EmbeddingComponents)
-            assert not target_module.weight.requires_grad
+            assert isinstance(site, DecomposedEmbedding), "sanity check"
+            assert site_module is site
+            wrapped = site.embedding
+            assert isinstance(wrapped, nn.Embedding)
+            assert not wrapped.weight.requires_grad
 
 
 def test_from_run_info():
@@ -147,7 +152,7 @@ def test_from_run_info():
                 ModulePatternInfoConfig(module_pattern="conv1d1", C=4),
                 ModulePatternInfoConfig(module_pattern="conv1d2", C=4),
             ],
-            identity_module_info=[ModulePatternInfoConfig(module_pattern="linear1", C=4)],
+            identity_module_info=None,
             ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[4]),
             batch_size=1,
             steps=1,
@@ -224,14 +229,13 @@ BATCH_SIZE = 2
 
 
 def test_patch_modules_unsupported_component_type_raises() -> None:
+    from param_decomp.models.decomposed_module import install_decomposed_sites
+
     model = tiny_target()
     wrong_module_path = "other_layer"
 
-    with pytest.raises(AttributeError):
-        ComponentModel._create_components(
-            target_model=model,
-            module_to_c={wrong_module_path: 2},
-        )
+    with pytest.raises(ValueError):
+        install_decomposed_sites(model, {wrong_module_path: 2})
 
 
 def test_parallel_linear_shapes_and_forward():
@@ -356,7 +360,7 @@ def test_weight_deltas():
     deltas = cm.calc_weight_deltas()
     for name in target_module_paths:
         target_w = cm.target_weight(name)
-        comp_w = cm.components[name].weight
+        comp_w = cm.components[name].component_weight
         torch.testing.assert_close(target_w, comp_w + deltas[name])
 
 
@@ -386,8 +390,16 @@ def test_replacement_effects_fwd_pass():
         sigmoid_type="leaky_hard",
     )
 
-    # WHEN we set the target model weights to be UV
-    model.linear.weight.copy_(cm.components["linear"].weight)
+    # WHEN we set the target model weights to be UV.
+    # NB: `model.linear` is the *wrapped target* after ComponentModel install — it is now a
+    # DecomposedLinear instance whose `.linear` is the original nn.Linear (frozen).
+    from param_decomp.models.decomposed_module import DecomposedLinear
+
+    site = cm.components["linear"]
+    assert isinstance(site, DecomposedLinear)
+    wrapped_linear = site.linear
+    assert isinstance(wrapped_linear, nn.Linear)
+    wrapped_linear.weight.copy_(site.component_weight)
 
     # AND we use all components
     input = torch.randn(BATCH_SIZE, d_in)
@@ -399,7 +411,7 @@ def test_replacement_effects_fwd_pass():
     torch.testing.assert_close(model_out, cm_out_with_all_components)
 
     # however, WHEN we double the values of the model weights
-    model.linear.weight.mul_(2)
+    wrapped_linear.weight.mul_(2)
 
     # THEN the component-only output should be 1/2 the model output
     new_model_out = model(input)
@@ -407,6 +419,11 @@ def test_replacement_effects_fwd_pass():
     torch.testing.assert_close(new_model_out, new_cm_out_with_all_components * 2)
 
 
+@pytest.mark.skip(
+    reason="Identity-shim decomposition path is dropped under the fused-decomposition-sites "
+    "refactor (see fsdp_implementation_plan.md). The feature wasn't used by Jose/Thomas; "
+    "revisit if a real consumer surfaces."
+)
 def test_replacing_identity():
     d = 10
     C = 20

@@ -214,7 +214,11 @@ def optimize(
 
     component_params: list[torch.nn.Parameter] = []
     for name in component_model.target_module_paths:
-        component_params.extend(component_model.components[name].parameters())
+        # DecomposedLinear/Embedding sites also own the frozen wrapped target submodule;
+        # filter on requires_grad so we get only V/U for the optimizer.
+        component_params.extend(
+            p for p in component_model.components[name].parameters() if p.requires_grad
+        )
 
     ci_fn_params = list(component_model.ci_fn.parameters())
 

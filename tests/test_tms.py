@@ -55,9 +55,8 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
             ModulePatternInfoConfig(module_pattern="linear2", C=10),
             ModulePatternInfoConfig(module_pattern="hidden_layers.0", C=10),
         ],
-        identity_module_info=[
-            ModulePatternInfoConfig(module_pattern="linear1", C=10),
-        ],
+        # identity_module_info dropped: see fsdp_implementation_plan.md.
+        identity_module_info=None,
         loss_metric_configs=[
             ImportanceMinimalityLossConfig(
                 coeff=3e-3,

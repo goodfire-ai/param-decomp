@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -16,7 +17,6 @@ from param_decomp.experiments.resid_mlp.models import (
 from param_decomp.experiments.tms.models import TMSModel
 from param_decomp.log import logger
 from param_decomp.models.component_model import ComponentModel, ParamDecompRunInfo
-from param_decomp.models.components import Components
 from param_decomp.plotting import plot_causal_importance_vals
 from param_decomp.registry import EXPERIMENT_REGISTRY
 from param_decomp.utils.distributed_utils import get_device
@@ -211,7 +211,7 @@ def compute_patched_weight_neuron_contributions(
 
 def compute_pd_weight_neuron_contributions(
     model: ResidMLP,
-    components: dict[str, Components],
+    components: "Mapping[str, Any]",  # DecomposedSite or legacy Components,
     n_features: int | None = None,
 ) -> Float[Tensor, "n_layers n_features C d_mlp"]:
     """Compute per-neuron contribution strengths for the PD factorisation.
@@ -266,7 +266,7 @@ def compute_pd_weight_neuron_contributions(
 
 def plot_pd_feature_contributions_truncated(
     model: ResidMLP,
-    components: dict[str, Components],
+    components: "Mapping[str, Any]",  # DecomposedSite or legacy Components,
     n_features: int | None = 50,
 ):
     n_layers = model.config.n_layers
@@ -352,7 +352,7 @@ def plot_pd_feature_contributions_truncated(
 
 def plot_neuron_contribution_pairs(
     model: ResidMLP,
-    components: dict[str, Components],
+    components: "Mapping[str, Any]",  # DecomposedSite or legacy Components,
     n_features: int | None = 50,
 ) -> plt.Figure:
     """Create a scatter plot comparing target model and PD component neuron contributions.

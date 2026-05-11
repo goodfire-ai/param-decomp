@@ -1,13 +1,26 @@
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, override
+from typing import TYPE_CHECKING, Protocol, override
 
 import einops
 import torch
 import torch.nn.functional as F
-from jaxtyping import Bool, Float, Int
+from jaxtyping import Float, Int
 from torch import Tensor, nn
 
+from param_decomp.models.mask_info import (
+    ComponentsMaskInfo as ComponentsMaskInfo,  # re-export for backward compat
+)
+from param_decomp.models.mask_info import (
+    RoutingMasks as RoutingMasks,  # re-export for backward compat
+)
+from param_decomp.models.mask_info import (
+    WeightDeltaAndMask as WeightDeltaAndMask,  # re-export for backward compat
+)
+from param_decomp.models.mask_info import (
+    make_mask_infos as make_mask_infos,  # re-export for backward compat
+)
 from param_decomp.utils.module_utils import _NonlinearityType, init_param_
 
 if TYPE_CHECKING:
@@ -371,7 +384,14 @@ class GlobalSharedTransformerCiFn(nn.Module):
         return outputs
 
 
-WeightDeltaAndMask = tuple[Float[Tensor, "d_out d_in"], Float[Tensor, "..."]]
+class SiteWithComponentActs(Protocol):
+    """Duck-typed interface CI fn wrappers need from each decomposition site.
+
+    The runtime concrete types are `DecomposedLinear` / `DecomposedEmbedding`; this Protocol
+    keeps `components.py` from having to import them (which would create a cycle).
+    """
+
+    def get_component_acts(self, x: Tensor, /) -> Tensor: ...
 
 
 class Components(ABC, nn.Module):
@@ -606,63 +626,6 @@ class Identity(nn.Module):
         return x
 
 
-@dataclass
-class ComponentsMaskInfo:
-    """Specifies the mask information that will be applied to a ComponentOrModule object."""
-
-    component_mask: Float[Tensor, "... C"]
-    """when components are routed to, this specifies which subcomponents to use"""
-
-    routing_mask: Bool[Tensor, "..."] | Literal["all"] = "all"
-    """Which (batch,) or (batch, seq_len) positions to route to components vs target modules.
-    If "all", all positions are routed to components."""
-
-    weight_delta_and_mask: WeightDeltaAndMask | None = None
-
-
-RoutingMasks = dict[str, Bool[Tensor, "..."]] | Literal["all"]
-
-
-def make_mask_infos(
-    component_masks: dict[str, Float[Tensor, "... C"]],
-    routing_masks: RoutingMasks = "all",
-    weight_deltas_and_masks: dict[str, WeightDeltaAndMask] | None = None,
-) -> dict[str, ComponentsMaskInfo]:
-    """Create ComponentsMaskInfo dict from dicts of component masks, and optionally routing masks,
-    weight deltas, and weight delta masks.
-    Keys of all dicts must be the same.
-
-    Args:
-        component_masks: Dict mapping module names to component masks. routing_masks: Dict mapping
-        module names to routing masks. weight_deltas_and_masks: Dict mapping module names to tuples
-        of weight deltas and masks for each module to be decomposed. Defaults to None (disable
-        weight delta component) if not provided.
-    Returns:
-        Dict mapping module names to ComponentsMaskInfo objects.
-    """
-    if isinstance(routing_masks, dict):
-        assert set(routing_masks) == set(component_masks)
-
-    if weight_deltas_and_masks is not None:
-        assert set(weight_deltas_and_masks) == set(component_masks)
-
-    result: dict[str, ComponentsMaskInfo] = {}
-    for name in component_masks:
-        routing_mask = routing_masks[name] if isinstance(routing_masks, dict) else "all"
-
-        weight_delta_and_mask = (
-            weight_deltas_and_masks[name] if weight_deltas_and_masks is not None else None
-        )
-
-        result[name] = ComponentsMaskInfo(
-            component_mask=component_masks[name],
-            routing_mask=routing_mask,
-            weight_delta_and_mask=weight_delta_and_mask,
-        )
-
-    return result
-
-
 class LayerwiseCiFnWrapper(nn.Module):
     """Wraps a dict of per-layer CI functions with a unified interface.
 
@@ -672,12 +635,14 @@ class LayerwiseCiFnWrapper(nn.Module):
     def __init__(
         self,
         ci_fns: dict[str, nn.Module],
-        components: dict[str, Components],
+        sites: Mapping[str, SiteWithComponentActs],
         ci_fn_type: "LayerwiseCiFnType",
     ):
         super().__init__()
         self.layer_names = sorted(ci_fns.keys())
-        self.components = components
+        # `sites` is a plain dict of references into target_model — not registered as a
+        # submodule of the wrapper. Used only for `get_component_acts` and embedding checks.
+        self.sites = sites
         self.ci_fn_type = ci_fn_type
 
         # Store as ModuleDict with "." replaced by "-" for state dict compatibility
@@ -698,7 +663,7 @@ class LayerwiseCiFnWrapper(nn.Module):
 
             # MLPCiFn expects component activations, others take raw input
             if self.ci_fn_type == "mlp":
-                ci_fn_input = self.components[layer_name].get_component_acts(input_acts)
+                ci_fn_input = self.sites[layer_name].get_component_acts(input_acts)
             else:
                 ci_fn_input = input_acts
 
@@ -717,11 +682,12 @@ class GlobalCiFnWrapper(nn.Module):
     def __init__(
         self,
         global_ci_fn: GlobalSharedMLPCiFn | GlobalSharedTransformerCiFn,
-        components: dict[str, Components],
+        sites: Mapping[str, SiteWithComponentActs],
     ):
         super().__init__()
         self._global_ci_fn = global_ci_fn
-        self.components = components
+        # See LayerwiseCiFnWrapper.sites — plain dict of references, not a submodule.
+        self.sites = sites
 
     @override
     def forward(
@@ -730,11 +696,13 @@ class GlobalCiFnWrapper(nn.Module):
     ) -> dict[str, Float[Tensor, "... C"]]:
         transformed: dict[str, Float[Tensor, ...]] = {}
 
+        from param_decomp.models.decomposed_module import DecomposedEmbedding
+
         for layer_name, acts in layer_acts.items():
-            component = self.components[layer_name]
-            if isinstance(component, EmbeddingComponents):
-                # Embeddings pass token IDs; convert to component activations
-                transformed[layer_name] = component.get_component_acts(acts)
+            site = self.sites[layer_name]
+            if isinstance(site, DecomposedEmbedding):
+                # Embedding sites pass token IDs; convert to component activations.
+                transformed[layer_name] = site.get_component_acts(acts)
             else:
                 transformed[layer_name] = acts
 

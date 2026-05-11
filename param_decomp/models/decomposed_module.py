@@ -34,7 +34,7 @@ from jaxtyping import Float
 from torch import Tensor, nn
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
-from param_decomp.models.components import ComponentsMaskInfo
+from param_decomp.models.mask_info import ComponentsMaskInfo, WeightDeltaAndMask
 from param_decomp.utils.module_utils import init_param_
 
 CacheType = Literal["component_acts", "input", "output"]
@@ -98,6 +98,20 @@ class DecomposedLinear(nn.Module):
             case RadfordConv1D():
                 return self.linear.weight.T
 
+    # Aliases so callers that used to introspect `target_model.<path>.in_features` /
+    # `.out_features` (back when that path was a plain `nn.Linear`) keep working.
+    # NOTE: deliberately NOT exposing `.weight` — under the legacy `Components` API
+    # `components[name].weight` meant `V @ U`, but `target_model.<path>.weight`
+    # meant the target weight. Disambiguate by using `target_weight` or
+    # `component_weight` explicitly.
+    @property
+    def in_features(self) -> int:
+        return self.d_in
+
+    @property
+    def out_features(self) -> int:
+        return self.d_out
+
     @property
     def bias(self) -> Tensor | None:
         # nn.Linear.bias and Conv1D.bias are typed as Tensor in torch's stubs but can be
@@ -113,6 +127,10 @@ class DecomposedLinear(nn.Module):
         """W_target - V@U, materialized in the site (so FSDP has both gathered)."""
         return self.target_weight - self.component_weight
 
+    def get_component_acts(self, x: Float[Tensor, "... d_in"]) -> Float[Tensor, "... C"]:
+        """x @ V — the pre-mask component activations. Used by MLP-type CI fns."""
+        return einops.einsum(x.to(self.V.dtype), self.V, "... d_in, d_in C -> ... C")
+
     @override
     def forward(self, x: Float[Tensor, "... d_in"]) -> Float[Tensor, "... d_out"]:
         if self._cache is not None and self._cache_type == "input":
@@ -127,6 +145,27 @@ class DecomposedLinear(nn.Module):
             self._cache[self.site_name] = out
 
         return out
+
+    def apply_decomposed(
+        self,
+        x: Float[Tensor, "... d_in"],
+        mask: Float[Tensor, "... C"] | None = None,
+        weight_delta_and_mask: "WeightDeltaAndMask | None" = None,
+    ) -> Float[Tensor, "... d_out"]:
+        """Run the decomposed path directly with explicit mask args.
+
+        Used by metric/loss code that wants component output without going through
+        the site's bound `_mask_info` slot (e.g. computing target vs. masked outputs
+        side-by-side inside a single forward).
+        """
+        info = ComponentsMaskInfo(
+            component_mask=mask
+            if mask is not None
+            else torch.ones((), device=self.V.device, dtype=self.V.dtype),
+            routing_mask="all",
+            weight_delta_and_mask=weight_delta_and_mask,
+        )
+        return self._decomposed_forward(x, info)
 
     def _decomposed_forward(
         self,
@@ -188,6 +227,17 @@ class DecomposedEmbedding(nn.Module):
         self._cache: dict[str, Tensor] | None = None
         self._cache_type: CacheType | None = None
 
+    # Aliases so callers that used to access `target_model.embed.num_embeddings` etc. (back
+    # when `target_model.embed` was a plain `nn.Embedding`) keep working — we are now a fused
+    # site sitting at that path.
+    @property
+    def num_embeddings(self) -> int:
+        return self.vocab_size
+
+    @property
+    def embedding_dim(self) -> int:
+        return self.d_embed
+
     @contextmanager
     def bind(
         self,
@@ -217,6 +267,10 @@ class DecomposedEmbedding(nn.Module):
     def calc_weight_delta(self) -> Float[Tensor, "vocab d_embed"]:
         return self.target_weight - self.component_weight
 
+    def get_component_acts(self, idx: Tensor) -> Float[Tensor, "... C"]:
+        """V[idx] — the pre-mask component activations for embedding sites."""
+        return self.V[idx]
+
     @override
     def forward(self, idx: Tensor) -> Float[Tensor, "... d_embed"]:
         if self._cache is not None and self._cache_type == "input":
@@ -231,6 +285,26 @@ class DecomposedEmbedding(nn.Module):
             self._cache[self.site_name] = out
 
         return out
+
+    def apply_decomposed(
+        self,
+        idx: Tensor,
+        mask: Float[Tensor, "... C"] | None = None,
+        weight_delta_and_mask: WeightDeltaAndMask | None = None,
+    ) -> Float[Tensor, "... d_embed"]:
+        """Run the decomposed path directly with explicit mask args.
+
+        Used by metric/loss code that wants component output without going through
+        the site's bound `_mask_info` slot.
+        """
+        info = ComponentsMaskInfo(
+            component_mask=mask
+            if mask is not None
+            else torch.ones((), device=self.V.device, dtype=self.V.dtype),
+            routing_mask="all",
+            weight_delta_and_mask=weight_delta_and_mask,
+        )
+        return self._decomposed_forward(idx, info)
 
     def _decomposed_forward(
         self, idx: Tensor, info: ComponentsMaskInfo
@@ -272,7 +346,11 @@ def _wrap_target_module(base: nn.Module, C: int, site_name: str) -> DecomposedSi
         case nn.Embedding():
             return DecomposedEmbedding(base, C=C, site_name=site_name)
         case _:
-            raise ValueError(f"_wrap_target_module: unsupported base {type(base)}")
+            raise ValueError(
+                f"_wrap_target_module: unsupported base {type(base)}. "
+                f"The legacy `identity_module_info` / Identity shim path is not supported "
+                f"under the fused-decomposition-sites architecture."
+            )
 
 
 def install_decomposed_sites(
@@ -283,16 +361,36 @@ def install_decomposed_sites(
     Returns a dict of `{site_name: DecomposedSite}` for callers that want direct
     handles (loss code, harvest, etc.); the canonical reference is the site's
     position in the target_model tree.
+
+    Lookups happen up front so that nested decomposition paths
+    (e.g. `linear1` and `linear1.pre_identity` both decomposed) resolve against
+    the *original* tree shape — replacing `linear1` first would hide its
+    `pre_identity` child.
     """
-    sites: dict[str, DecomposedSite] = {}
+    resolved: list[tuple[str, str, str, nn.Module, int]] = []
     for site_name, C in module_to_c.items():
         base = target_model.get_submodule(site_name)
-        site = _wrap_target_module(base, C=C, site_name=site_name)
         parent_path, _, child_name = site_name.rpartition(".")
         parent = target_model.get_submodule(parent_path) if parent_path else target_model
+        resolved.append((site_name, parent_path, child_name, base, C))
+
+    # Deepest path first so the parent's `setattr` doesn't clobber an already-wrapped child
+    # (e.g. `linear1.pre_identity` must be installed before `linear1`).
+    resolved.sort(key=lambda entry: entry[0].count("."), reverse=True)
+
+    sites: dict[str, DecomposedSite] = {}
+    for site_name, _parent_path, child_name, base, c in resolved:
+        # Re-resolve the parent against the current tree state — a deeper sibling may
+        # have rewritten an ancestor's attribute to a Decomposed* site, but we still
+        # want to attach our new site at the same name on the same parent.
+        parent_path, _, _ = site_name.rpartition(".")
+        parent = target_model.get_submodule(parent_path) if parent_path else target_model
+        site = _wrap_target_module(base, C=c, site_name=site_name)
         setattr(parent, child_name, site)
         sites[site_name] = site
-    return sites
+
+    # Restore the dict in the original key order so iteration matches user-provided order.
+    return {name: sites[name] for name in module_to_c}
 
 
 def get_site(target_model: nn.Module, site_name: str) -> DecomposedSite:

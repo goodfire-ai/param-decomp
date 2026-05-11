@@ -60,9 +60,9 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
             ModulePatternInfoConfig(module_pattern="layers.*.mlp_in", C=10),
             ModulePatternInfoConfig(module_pattern="layers.*.mlp_out", C=10),
         ],
-        identity_module_info=[
-            ModulePatternInfoConfig(module_pattern="layers.*.mlp_in", C=10),
-        ],
+        # identity_module_info dropped: the Identity-shim decomposition path is not supported
+        # under the fused-decomposition-sites refactor (see fsdp_implementation_plan.md).
+        identity_module_info=None,
         # Training
         lr_schedule=ScheduleConfig(
             start_val=1e-3, fn_type="cosine", warmup_pct=0.01, final_val_frac=0.0

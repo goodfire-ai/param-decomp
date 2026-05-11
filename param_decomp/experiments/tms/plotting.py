@@ -4,10 +4,10 @@ This module provides visualization functions for analyzing TMS models and their
 sparse decompositions, including vector plots, network diagrams, and weight heatmaps.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from itertools import zip_longest
-from typing import cast
+from typing import Any, cast
 
 import matplotlib.collections as mc
 import matplotlib.pyplot as plt
@@ -60,7 +60,7 @@ class TMSAnalyzer:
     def __init__(
         self,
         model: TMSModel,
-        components: dict[str, Components],
+        components: "Mapping[str, Any]",  # DecomposedSite or legacy Components,
         config: PlotConfig | None = None,
     ):
         self.model = model
@@ -403,7 +403,7 @@ class FullNetworkDiagramPlotter:
     def plot(
         self,
         model: TMSModel,
-        components: dict[str, Components],
+        components: "Mapping[str, Any]",  # DecomposedSite or legacy Components,
     ) -> Figure:
         """Plot full network architecture with all layers."""
         # Extract all layer weights
@@ -711,7 +711,11 @@ class HiddenLayerPlotter:
     def __init__(self, config: PlotConfig):
         self.config = config
 
-    def plot(self, model: TMSModel, components: dict[str, Components]) -> Figure:
+    def plot(
+        self,
+        model: TMSModel,
+        components: "Mapping[str, Any]",  # DecomposedSite or legacy Components
+    ) -> Figure:
         """Plot hidden layer weights as heatmaps."""
         # Extract weights
         hidden_weights, target_weights, subnets_order = self._extract_hidden_weights(
@@ -748,7 +752,9 @@ class HiddenLayerPlotter:
         return fig
 
     def _extract_hidden_weights(
-        self, model: TMSModel, components: dict[str, Components]
+        self,
+        model: TMSModel,
+        components: "Mapping[str, Any]",  # DecomposedSite or legacy Components
     ) -> tuple[Tensor, Tensor, Tensor]:
         """Extract and sort hidden layer weights."""
         if model.hidden_layers is None:
@@ -824,7 +830,7 @@ class TMSPlotter:
     def __init__(
         self,
         model: TMSModel,
-        components: dict[str, Components],
+        components: "Mapping[str, Any]",  # DecomposedSite or legacy Components,
         config: PlotConfig | None = None,
     ):
         self.config = config or PlotConfig()

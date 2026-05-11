@@ -103,7 +103,7 @@ class TestOutputReconLoss:
         model = make_one_layer_component_model(weight=weight, C=d)
 
         assert isinstance(model.target_model, OneLayerLinearModel)
-        target_weight = model.target_model.fc.weight.data
+        target_weight = model.target_weight("fc").data
         with torch.no_grad():
             model.components["fc"].V.copy_(target_weight.T)
             model.components["fc"].U.copy_(torch.eye(d))
@@ -177,8 +177,8 @@ def test_per_module_recon_manual_calculation() -> None:
 
     # Target activations (output of each layer through the target model)
     assert isinstance(model.target_model, TwoLayerLinearModel)
-    target_fc1 = batch @ model.target_model.fc1.weight.data.T
-    target_fc2 = target_fc1 @ model.target_model.fc2.weight.data.T
+    target_fc1 = batch @ model.target_weight("fc1").data.T
+    target_fc2 = target_fc1 @ model.target_weight("fc2").data.T
 
     # Component activations with CI as masks (fc2 input is fc1's component output, not target)
     comp_fc1 = batch @ (V1 * ci["fc1"]) @ U1
@@ -304,8 +304,8 @@ def test_ppgd_recon_eval_manual_calculation() -> None:
 
     # Target activations
     assert isinstance(model.target_model, TwoLayerLinearModel)
-    target_fc1 = batch @ model.target_model.fc1.weight.data.T
-    target_fc2 = target_fc1 @ model.target_model.fc2.weight.data.T
+    target_fc1 = batch @ model.target_weight("fc1").data.T
+    target_fc2 = target_fc1 @ model.target_weight("fc2").data.T
 
     # Component activations with PPGD masks
     comp_fc1 = batch @ (V1 * mask_fc1) @ U1

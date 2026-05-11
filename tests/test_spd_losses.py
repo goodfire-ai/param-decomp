@@ -130,7 +130,7 @@ class TestCalcWeightDeltas:
 
         component = model.components["fc"]
         assert component is not None
-        expected_fc = model.target_weight("fc") - component.weight
+        expected_fc = model.target_weight("fc") - component.component_weight
         assert torch.allclose(deltas["fc"], expected_fc)
 
 

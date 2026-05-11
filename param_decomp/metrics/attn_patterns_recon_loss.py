@@ -126,11 +126,11 @@ def _attn_patterns_recon_loss_update(
     for i, (q_path, k_path) in enumerate(zip(q_paths, k_paths, strict=True)):
         if is_combined:
             assert q_path == k_path
-            target_out = model.components[q_path](pre_weight_acts[q_path])
+            target_out = model.components[q_path].apply_decomposed(pre_weight_acts[q_path])
             target_q, target_k = _split_combined_qkv(target_out)
         else:
-            target_q = model.components[q_path](pre_weight_acts[q_path])
-            target_k = model.components[k_path](pre_weight_acts[k_path])
+            target_q = model.components[q_path].apply_decomposed(pre_weight_acts[q_path])
+            target_k = model.components[k_path].apply_decomposed(pre_weight_acts[k_path])
         target_patterns.append(
             _compute_attn_patterns(target_q, target_k, n_heads, attn_modules[i]).detach()
         )
@@ -146,19 +146,19 @@ def _attn_patterns_recon_loss_update(
         for i, (q_path, k_path) in enumerate(zip(q_paths, k_paths, strict=True)):
             if is_combined:
                 assert q_path == k_path
-                masked_out = model.components[q_path](
+                masked_out = model.components[q_path].apply_decomposed(
                     comp_cache[q_path],
                     mask=mask_infos[q_path].component_mask,
                     weight_delta_and_mask=mask_infos[q_path].weight_delta_and_mask,
                 )
                 masked_q, masked_k = _split_combined_qkv(masked_out)
             else:
-                masked_q = model.components[q_path](
+                masked_q = model.components[q_path].apply_decomposed(
                     comp_cache[q_path],
                     mask=mask_infos[q_path].component_mask,
                     weight_delta_and_mask=mask_infos[q_path].weight_delta_and_mask,
                 )
-                masked_k = model.components[k_path](
+                masked_k = model.components[k_path].apply_decomposed(
                     comp_cache[k_path],
                     mask=mask_infos[k_path].component_mask,
                     weight_delta_and_mask=mask_infos[k_path].weight_delta_and_mask,

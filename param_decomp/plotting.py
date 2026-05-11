@@ -1,6 +1,7 @@
 import fnmatch
 import io
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from typing import Any
 
 import numpy as np
 import torch
@@ -11,7 +12,6 @@ from torch import Tensor
 
 from param_decomp.configs import SamplingType
 from param_decomp.models.component_model import CIOutputs, ComponentModel
-from param_decomp.models.components import Components
 from param_decomp.utils.general_utils import get_obj_device
 from param_decomp.utils.target_ci_solutions import permute_to_dense, permute_to_identity
 
@@ -304,7 +304,8 @@ def plot_causal_importance_vals(
 
 
 def plot_UV_matrices(
-    components: dict[str, Components],
+    # Accepts the new DecomposedSite dict via duck-typing on .V / .U.
+    components: "Mapping[str, Any]",
     all_perm_indices: dict[str, Float[Tensor, " C"]] | None = None,
 ) -> Image.Image:
     """Plot V and U matrices for each instance, grouped by layer."""
