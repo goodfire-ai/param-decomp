@@ -56,21 +56,30 @@ two main language-model decompositions:
   [SimpleStories](https://arxiv.org/abs/2504.09184); smaller and faster
   ([config](param_decomp/experiments/lm/ss_llama_simple_mlp-2L.yaml)).
 
-Other registered experiments (TMS, ResidualMLP, and larger Llama variants) are listed in
-[`param_decomp/registry.py`](param_decomp/registry.py). The `lm` experiment can decompose any
-HuggingFace-loadable model whose target modules are `nn.Linear`, `nn.Embedding`, or
-`transformers.modeling_utils.Conv1D`.
+Other built-in experiments (TMS, ResidualMLP, and larger Llama variants) live as YAML configs
+under [`param_decomp/experiments/<kind>/`](param_decomp/experiments) and are auto-discovered.
+The `lm` experiment can decompose any HuggingFace-loadable model whose target modules are
+`nn.Linear`, `nn.Embedding`, or `transformers.modeling_utils.Conv1D`.
 
-Custom experiments do not need to edit the core package. The built-in runtime definitions live in
-one file per experiment, e.g. [`param_decomp/experiments/lm/experiment.py`](param_decomp/experiments/lm/experiment.py).
-Replicate that shape with a Pydantic experiment config and driver class, then run it with:
+### Custom experiments
 
-```bash
-pd-experiment --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml
-```
+Two routes, neither needing core-package edits:
 
-Runs save an `experiment_manifest.yaml` beside the checkpoint. The manifest contains the parsed
-experiment config plus the driver import path and artifact filenames needed to reload the run.
+- **Call `run_pd` directly** — build a `PDTarget` (model + `run_batch` + reconstruction loss;
+  helpers in [`batch_and_loss_fns.py`](param_decomp/models/batch_and_loss_fns.py)) and call
+  `run_pd(config, target, train_loader, eval_loader, device)`. Reload with
+  `load_pd(path, target=...)`. Best for notebooks/scripts.
+- **Package it as a YAML-driven experiment** — define your experiment as a Pydantic
+  `ExperimentConfig` plus an `ExperimentDriver` class (a small adapter that turns the config into
+  a `PDTarget` and dataloaders; see
+  [`driver.py`](param_decomp/experiments/driver.py) for the interface and
+  [`tms/experiment.py`](param_decomp/experiments/tms/experiment.py) for the smallest example),
+  then run `pd-experiment --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml`. This is
+  what built-in experiments do, and is needed for sweeps and for self-reloading runs via
+  `PDRunInfo.from_path(...)`.
+
+Runs save an `experiment_manifest.yaml` beside the checkpoint with the parsed config and (if
+applicable) the driver's import path.
 
 ## Post-Processing Pipeline
 

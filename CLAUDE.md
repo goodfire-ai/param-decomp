@@ -24,7 +24,7 @@ PD is a research framework for analyzing neural network components and their int
 
 The codebase supports three experimental domains: TMS (Toy Model of Superposition), ResidualMLP (residual MLP analysis), and Language Models.
 
-**Available experiments** (defined in `param_decomp/registry.py`):
+**Available experiments** (auto-discovered from YAML configs under `param_decomp/experiments/<kind>/`):
 
 - **TMS (Toy Model of Superposition)**:
   - `tms_5-2` - TMS with 5 features, 2 hidden dimensions
@@ -54,12 +54,16 @@ from param_decomp import run_pd, load_pd, PDConfig, PDTarget
 - `run_pd(config, target, train_loader, eval_loader, device, *, manifest=None, artifacts=...)`:
   trains a decomposition. `PDConfig` carries algorithm/training settings; `PDTarget` bundles the
   target model + `run_batch` + reconstruction loss + optional tied weights. Core PD does not know
-  about LM/TMS/etc.
+  about LM/TMS/etc. Helpers for the two `PDTarget` callables live in
+  `param_decomp/models/batch_and_loss_fns.py`: `run_batch_passthrough`,
+  `run_batch_first_element`, `make_run_batch(output_extract)`; and `recon_loss_mse`,
+  `recon_loss_kl`. Callers can pass their own functions instead.
 - `load_pd(path, *, target)`: reload a saved run as a `ComponentModel` with an explicit
-  user-supplied `PDTarget`.
+  user-supplied `PDTarget`. Use this when the run was produced via direct `run_pd` (no driver).
 - `PDRunInfo.from_path(path)`: reads a saved run manifest/checkpoint. If the manifest has a driver,
   `run_info.load_target()` and `run_info.build_dataloaders(...)` reconstruct built-in/custom
-  runtime objects.
+  runtime objects, and `ComponentModel.from_run_info(run_info)` skips the explicit `target=...`
+  hand-off entirely.
 
 ### Experiment Drivers
 
@@ -87,7 +91,9 @@ The runner records the supplied driver import path in the saved manifest; driver
 their own `ExperimentManifest` in `prepare`.
 
 They can also bypass drivers entirely and call `run_pd` directly with their own `PDTarget` and
-dataloaders; those runs reload with `load_pd(path, target=...)`.
+dataloaders — the right choice for notebook/script-driven use where `pd-experiment`, sweeps, and
+post-processing tooling are not needed. Those runs reload with `load_pd(path, target=...)`. The
+README's "Custom experiments" section walks through both routes side-by-side.
 
 ### Per-experiment Configs
 
@@ -173,7 +179,7 @@ This repository implements methods from two key research papers on parameter dec
 - `param_decomp/configs.py` - Core PD config and loss/metric config classes
 - `param_decomp/experiments/*/experiment.py` - Experiment configs and drivers that prepare targets,
   dataloaders, and artifacts
-- `param_decomp/registry.py` - Centralized experiment registry with all experiment configurations
+- `param_decomp/experiments/discovery.py` - Auto-discovery of built-in experiments from `experiments/<kind>/*.yaml`
 - `param_decomp/models/component_model.py` - Core ComponentModel that wraps target models
 - `param_decomp/models/components.py` - Component types (LinearComponent, EmbeddingComponent, etc.)
 - `param_decomp/losses.py` - PD loss functions (faithfulness, reconstruction, importance minimality)
@@ -211,7 +217,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 - Pydantic models provide type safety and validation
 - WandB integration for experiment tracking and model storage
 - Supports both local paths and `wandb:project/runs/run_id` format for model loading
-- The built-in experiment registry (`param_decomp/registry.py`) names standard configs; custom
+- Built-in experiments are auto-discovered from YAML configs in `param_decomp/experiments/<kind>/`; custom
   experiments can use `pd-experiment --driver module:MyDriver --config_path config.yaml`
 
 **Harvest, Autointerp & Dataset Attributions Modules:**
@@ -264,7 +270,6 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 │   ├── utils/
 │   │   └── slurm.py                 # SlurmConfig, submit functions
 │   ├── configs.py                   # Core PD configs (PDConfig, ModuleInfo, loss configs, etc.)
-│   ├── registry.py                  # Experiment registry (name → config)
 │   ├── run_param_decomp.py                   # Main optimization loop
 │   ├── losses.py                    # Loss functions (faithfulness, reconstruction, etc.)
 │   ├── figures.py                   # WandB figure generation
@@ -481,7 +486,7 @@ pd-run --sweep --n_agents 10                                 # Sweep all experim
 pd-run --experiments tms_5-2 --sweep custom.yaml --n_agents 2 # Use custom sweep params file
 ```
 
-**Supported Experiments:** All experiments in `param_decomp/registry.py` (run `pd-local --help` to see available options)
+**Supported Experiments:** Any experiment auto-discovered from YAML configs under `param_decomp/experiments/<kind>/` (run `pd-local --help` to see available options)
 
 **How It Works:**
 
