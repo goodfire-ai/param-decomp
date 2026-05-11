@@ -128,7 +128,7 @@ def _load_train_config(
     return ResidMLPTargetRunInfo.from_path(target_cfg.run_path).config
 
 
-class ResidMLPDriver:
+class Driver:
     kind: ClassVar[str] = "resid_mlp"
     config_model: ClassVar[type[ResidMLPExperimentConfig]] = ResidMLPExperimentConfig
 

@@ -5,8 +5,8 @@ import sys
 
 import fire
 
+from param_decomp.experiments.discovery import discover_experiments
 from param_decomp.log import logger
-from param_decomp.registry import EXPERIMENT_REGISTRY
 from param_decomp.settings import REPO_ROOT
 
 RUNNER_MODULE = "param_decomp.experiments.runner"
@@ -29,8 +29,9 @@ def main(
         pd-local tms_5-2 --cpu     # CPU only
         pd-local tms_5-2 --dp 4    # 4 GPUs on single node
     """
-    if experiment not in EXPERIMENT_REGISTRY:
-        available = ", ".join(sorted(EXPERIMENT_REGISTRY.keys()))
+    discovered = discover_experiments()
+    if experiment not in discovered:
+        available = ", ".join(sorted(discovered.keys()))
         raise ValueError(f"Unknown experiment '{experiment}'. Available: {available}")
 
     if dp is not None and dp < 2:
@@ -39,7 +40,7 @@ def main(
     if cpu and dp is not None:
         raise ValueError("Cannot use both --cpu and --dp")
 
-    exp_config = EXPERIMENT_REGISTRY[experiment]
+    exp_config = discovered[experiment]
     config_path = REPO_ROOT / exp_config.config_path
 
     logger.info(f"Running experiment: {experiment}")

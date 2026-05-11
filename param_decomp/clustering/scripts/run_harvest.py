@@ -12,7 +12,6 @@ import argparse
 import gc
 import os
 from pathlib import Path
-from typing import cast
 
 import torch
 
@@ -22,7 +21,6 @@ from param_decomp.clustering.paths import clustering_harvest_dir, new_harvest_id
 from param_decomp.load import load_pd
 from param_decomp.log import logger
 from param_decomp.models.component_model import PDRunInfo
-from param_decomp.param_decomp_types import TaskName
 from param_decomp.utils.distributed_utils import get_device
 
 os.environ["WANDB_QUIET"] = "true"
@@ -39,7 +37,7 @@ def harvest(config: HarvestConfig) -> Path:
     device = get_device()
     pd_run = PDRunInfo.from_path(config.model_path)
     exp = pd_run.experiment_config
-    task_name = cast(TaskName, exp.kind)
+    task_name = exp.kind
     target = pd_run.load_target()
     model = load_pd(config.model_path, target=target).to(device)
     dataloader, _ = pd_run.build_dataloaders(

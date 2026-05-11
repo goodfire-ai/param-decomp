@@ -13,8 +13,8 @@ from dotenv import load_dotenv
 from wandb.apis.public import File, Run
 
 from param_decomp.base_config import BaseConfig
+from param_decomp.experiments.discovery import discover_experiments
 from param_decomp.log import logger
-from param_decomp.registry import EXPERIMENT_REGISTRY
 from param_decomp.settings import DEFAULT_PROJECT_NAME, REPO_ROOT
 from param_decomp.utils.general_utils import fetch_latest_checkpoint_name
 
@@ -413,8 +413,9 @@ def create_wandb_report(
     )
 
     # Create separate panel grids for each experiment
+    discovered = discover_experiments()
     for experiment in experiments:
-        task_name: str = EXPERIMENT_REGISTRY[experiment].task_name
+        task_name = discovered[experiment].kind
 
         # Use launch_id and experiment name tags for filtering
         combined_filter = (

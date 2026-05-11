@@ -153,7 +153,7 @@ class TestDistributedDeterminicity:
             "param_decomp.experiments.runner",
             str(config_path),
             "--driver",
-            "param_decomp.experiments.lm.experiment:LMDriver",
+            "param_decomp.experiments.lm.experiment:Driver",
         ]
 
         # disable cuda so we run on cpu, and set PARAM_DECOMP_OUT_DIR to temp directory

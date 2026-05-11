@@ -125,7 +125,7 @@ def _load_train_config(target_cfg: TMSTargetConfig, run_dir: Path | None = None)
     return TMSTargetRunInfo.from_path(target_cfg.run_path).config
 
 
-class TMSDriver:
+class Driver:
     kind: ClassVar[str] = "tms"
     config_model: ClassVar[type[TMSExperimentConfig]] = TMSExperimentConfig
 

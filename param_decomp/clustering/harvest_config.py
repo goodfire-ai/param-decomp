@@ -1,8 +1,6 @@
 """Configuration for harvesting component activations into membership snapshots."""
 
-from typing import Any
-
-from pydantic import PositiveInt, field_validator, model_validator
+from pydantic import PositiveInt, field_validator
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.clustering.util import (
@@ -11,7 +9,6 @@ from param_decomp.clustering.util import (
     ModuleFilterSource,
 )
 from param_decomp.param_decomp_types import Probability
-from param_decomp.registry import EXPERIMENT_REGISTRY
 
 
 def _to_module_filter(source: ModuleFilterSource) -> ModuleFilterFunc:
@@ -37,16 +34,6 @@ class HarvestConfig(BaseConfig):
     filter_dead_threshold: float = 0.001
     filter_dead_stat: DeadComponentFilterStat = "max"
     module_name_filter: ModuleFilterSource = None
-
-    @model_validator(mode="before")
-    def process_experiment_key(cls, values: dict[str, Any]) -> dict[str, Any]:
-        experiment_key: str | None = values.get("experiment_key")
-        if experiment_key:
-            model_path = EXPERIMENT_REGISTRY[experiment_key].canonical_run
-            assert model_path is not None
-            values["model_path"] = model_path
-            del values["experiment_key"]
-        return values
 
     @field_validator("model_path")
     def validate_model_path(cls, v: str) -> str:

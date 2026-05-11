@@ -19,10 +19,14 @@ from param_decomp.log import logger
 from param_decomp.models.component_model import PDRunInfo
 from param_decomp.models.components import Components
 from param_decomp.plotting import plot_causal_importance_vals
-from param_decomp.registry import EXPERIMENT_REGISTRY
 from param_decomp.utils.distributed_utils import get_device
 from param_decomp.utils.general_utils import set_seed
 from param_decomp.utils.run_utils import ExecutionStamp
+
+CANONICAL_RUNS: dict[str, str] = {
+    "resid_mlp1": "wandb:goodfire/spd/runs/s-62fce8c4",
+    "resid_mlp2": "wandb:goodfire/spd/runs/s-a9ad193d",
+}
 
 
 def extract_ci_val_figures(
@@ -472,14 +476,7 @@ def plot_neuron_contribution_pairs(
 
 
 def main(out_dir: Path, device: str):
-    canonical_runs = [
-        EXPERIMENT_REGISTRY["resid_mlp1"].canonical_run,
-        EXPERIMENT_REGISTRY["resid_mlp2"].canonical_run,
-        EXPERIMENT_REGISTRY["resid_mlp3"].canonical_run,
-    ]
-
-    for path in canonical_runs:
-        assert path is not None
+    for path in CANONICAL_RUNS.values():
         wandb_id = path.split("/")[-1]
 
         run_info = PDRunInfo.from_path(path)

@@ -107,7 +107,7 @@ def load_lm_target(target_cfg: LMTargetConfig) -> PDTarget:
     )
 
 
-class LMDriver:
+class Driver:
     kind: ClassVar[str] = "lm"
     config_model: ClassVar[type[LMExperimentConfig]] = LMExperimentConfig
 

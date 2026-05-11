@@ -18,26 +18,32 @@ from param_decomp.experiments.driver import (
 )
 from param_decomp.experiments.lm.data import LMDataConfig
 from param_decomp.experiments.lm.experiment import (
-    LMDriver,
+    Driver as LMDriver,
+)
+from param_decomp.experiments.lm.experiment import (
     LMExperimentConfig,
     LMTargetConfig,
 )
 from param_decomp.experiments.resid_mlp.experiment import (
+    Driver as ResidMLPDriver,
+)
+from param_decomp.experiments.resid_mlp.experiment import (
     ResidMLPDataConfig,
-    ResidMLPDriver,
     ResidMLPExperimentConfig,
     ResidMLPTargetConfig,
 )
 from param_decomp.experiments.tms.experiment import (
+    Driver as TMSDriver,
+)
+from param_decomp.experiments.tms.experiment import (
     TMSDataConfig,
-    TMSDriver,
     TMSExperimentConfig,
     TMSTargetConfig,
 )
 
-LM_DRIVER_PATH = "param_decomp.experiments.lm.experiment:LMDriver"
-TMS_DRIVER_PATH = "param_decomp.experiments.tms.experiment:TMSDriver"
-RESID_MLP_DRIVER_PATH = "param_decomp.experiments.resid_mlp.experiment:ResidMLPDriver"
+LM_DRIVER_PATH = "param_decomp.experiments.lm.experiment:Driver"
+TMS_DRIVER_PATH = "param_decomp.experiments.tms.experiment:Driver"
+RESID_MLP_DRIVER_PATH = "param_decomp.experiments.resid_mlp.experiment:Driver"
 
 
 def _pd_config() -> PDConfig:

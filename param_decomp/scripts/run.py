@@ -15,8 +15,8 @@ from typing import Any
 
 import yaml
 
+from param_decomp.experiments.discovery import discover_experiments
 from param_decomp.log import logger
-from param_decomp.registry import EXPERIMENT_REGISTRY, get_max_expected_runtime
 from param_decomp.settings import REPO_ROOT
 from param_decomp.utils.compute_utils import (
     GPUS_PER_NODE,
@@ -98,7 +98,7 @@ def launch_slurm_run(
             commit_hash=commit_hash,
         )
 
-    slurm_job_name = f"pd-{job_suffix or get_max_expected_runtime(experiments_list)}"
+    slurm_job_name = f"pd-{job_suffix}" if job_suffix else "pd"
 
     wandb_urls = [get_wandb_run_url(project, job.run_id) for job in training_jobs]
 
@@ -166,8 +166,9 @@ def _create_training_jobs(
     logger.info("Task breakdown by experiment:")
     task_breakdown: dict[str, str] = {}
 
+    discovered = discover_experiments()
     for experiment in experiments:
-        exp_config = EXPERIMENT_REGISTRY[experiment]
+        exp_config = discovered[experiment]
 
         # Load base config as a raw dict; each experiment's driver validates against its own
         # Pydantic config (LMExperimentConfig, TMSExperimentConfig, etc.).
@@ -268,16 +269,18 @@ def _get_experiments(
         List of experiment names to run.
     """
 
+    discovered = discover_experiments()
+
     # Determine experiment list
     if experiments_input is None:
-        experiments = list(EXPERIMENT_REGISTRY.keys())
+        experiments = list(discovered.keys())
     elif isinstance(experiments_input, tuple):
         experiments = [exp.strip() for exp in experiments_input]
     else:
         experiments = [exp.strip() for exp in experiments_input.split(",")]
 
     # Validate experiment names
-    invalid_experiments = [exp for exp in experiments if exp not in EXPERIMENT_REGISTRY]
+    invalid_experiments = [exp for exp in experiments if exp not in discovered]
     if invalid_experiments:
         raise ValueError(f"Invalid experiments: {invalid_experiments}")
 
