@@ -103,7 +103,7 @@ class ModelComparator:
     def create_eval_data_loader(self) -> Iterator[Tensor]:
         """Create evaluation data loader by delegating to the experiment config."""
         _, eval_loader = self.current_run_info.build_dataloaders(
-            seed=self.current_config.seed + 1,
+            seed=None,
             train_batch_size=self.config.eval_batch_size,
             eval_batch_size=self.config.eval_batch_size,
             device=self.device,

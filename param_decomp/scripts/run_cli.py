@@ -25,12 +25,9 @@ def main(
     - resid_mlp1
     - resid_mlp2
     - resid_mlp3
-    - ss_llama_simple
-    - ss_gpt2
-    - ss_gpt2_simple
-    - ss_gpt2_simple_noln
-    - gpt2
-    - ts
+    - ss_llama_simple_mlp-2L
+    - pile_llama_simple_mlp-4L
+    - pile_llama_simple_mlp-12L
 
     Examples:
 
@@ -53,10 +50,10 @@ def main(
     pd-run --experiments tms_5-2 --cpu
 
     # Run with data parallelism over 4 GPUs (single node)
-    pd-run --experiments ss_llama_simple --dp 4
+    pd-run --experiments ss_llama_simple_mlp-2L --dp 4
 
     # Run with multi-node training over 16 GPUs (2 nodes x 8 GPUs each)
-    pd-run --experiments ss_llama_simple --dp 16
+    pd-run --experiments ss_llama_simple_mlp-2L --dp 16
 
     """
     from param_decomp.scripts.run import launch_slurm_run

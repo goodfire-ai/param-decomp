@@ -88,7 +88,8 @@ def harvest_attributions(
     pd_config = run_info.pd_config
     train_loader, _ = build_lm_dataloaders(
         exp.data,
-        seed=pd_config.seed,
+        seed=None,
+        default_seed=pd_config.seed,
         train_batch_size=config.batch_size,
         eval_batch_size=config.batch_size,
         dist_state=None,

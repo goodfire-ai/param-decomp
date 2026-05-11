@@ -79,29 +79,6 @@ def _validate_prepared_experiment(
             )
 
 
-def run_prepared_experiment(
-    prepared: PreparedExperiment,
-    *,
-    device: str,
-    run_id: str | None = None,
-    sweep_params: dict[str, Any] | None = None,
-    wandb_tags: list[str] | None = None,
-) -> None:
-    run_pd(
-        config=prepared.pd,
-        target=prepared.target,
-        train_loader=prepared.train_loader,
-        eval_loader=prepared.eval_loader,
-        device=device,
-        run_id=run_id,
-        sweep_params=sweep_params,
-        manifest=prepared.manifest,
-        artifacts=prepared.artifacts,
-        experiment_tag=prepared.tags[0] if prepared.tags else prepared.target.name,
-        wandb_tags=[*prepared.tags[1:], *(wandb_tags or [])],
-    )
-
-
 def run_experiment(
     driver: ExperimentDriver[Any],
     *,
@@ -126,13 +103,19 @@ def run_experiment(
     prepared = driver.prepare(spec, device=device, dist_state=dist_state)
     _validate_prepared_experiment(prepared, dist_state)
 
-    wandb_tags = [t for t in [evals_id, launch_id] if t is not None]
-    run_prepared_experiment(
-        prepared,
+    extra_tags = [t for t in [evals_id, launch_id] if t is not None]
+    run_pd(
+        config=prepared.pd,
+        target=prepared.target,
+        train_loader=prepared.train_loader,
+        eval_loader=prepared.eval_loader,
         device=device,
         run_id=run_id,
         sweep_params=parse_sweep_params(sweep_params_json),
-        wandb_tags=wandb_tags,
+        manifest=prepared.manifest,
+        artifacts=prepared.artifacts,
+        experiment_tag=prepared.tags[0] if prepared.tags else prepared.target.name,
+        wandb_tags=[*prepared.tags[1:], *extra_tags],
     )
 
 

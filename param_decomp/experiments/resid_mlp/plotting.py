@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from param_decomp.experiments.resid_mlp.configs import ResidMLPModelConfig
+from param_decomp.experiments.resid_mlp.models import ResidMLPModelConfig
 
 
 def plot_individual_feature_response(

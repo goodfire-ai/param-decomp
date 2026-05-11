@@ -1,6 +1,8 @@
 from pathlib import Path
 
 import pytest
+import torch
+from torch import Tensor
 from transformers import GPT2LMHeadModel
 
 from param_decomp.configs import (
@@ -14,7 +16,10 @@ from param_decomp.configs import (
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
 )
-from param_decomp.data import DatasetConfig, create_data_loader, input_ids_collate_fn
+from param_decomp.experiments.lm.data import (
+    LMDataLoaderConfig,
+    create_lm_data_loader,
+)
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.models.batch_and_loss_fns import (
     make_run_batch,
@@ -81,7 +86,7 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
     if config.identity_module_info is not None:
         insert_identity_operations_(target_model, identity_module_info=config.identity_module_info)
 
-    train_data_config = DatasetConfig(
+    train_data_config = LMDataLoaderConfig(
         name="SimpleStories/SimpleStories",
         hf_tokenizer_path=model_name,
         split="train[:100]",
@@ -92,15 +97,25 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         seed=None,
     )
 
-    train_loader, _tokenizer = create_data_loader(
-        dataset_config=train_data_config,
+    def collate_input_ids(batch: list[dict[str, Tensor]]) -> Tensor:
+        return torch.stack([item["input_ids"] for item in batch])
+
+    train_loader, _tokenizer = create_lm_data_loader(
+        dataset_name=train_data_config.name,
+        tokenizer_name=train_data_config.hf_tokenizer_path,
+        split=train_data_config.split,
+        max_seq_len=train_data_config.n_ctx,
+        is_tokenized=train_data_config.is_tokenized,
+        streaming=train_data_config.streaming,
+        column_name=train_data_config.column_name,
         batch_size=config.batch_size,
         buffer_size=1000,
-        global_seed=config.seed,
-        collate_fn=input_ids_collate_fn,
+        seed=train_data_config.seed if train_data_config.seed is not None else config.seed,
+        shuffle_each_epoch=train_data_config.shuffle_each_epoch,
+        collate_fn=collate_input_ids,
     )
 
-    eval_data_config = DatasetConfig(
+    eval_data_config = LMDataLoaderConfig(
         name="SimpleStories/SimpleStories",
         hf_tokenizer_path=model_name,
         split="test[100:200]",
@@ -110,12 +125,19 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         column_name="story",
         seed=None,
     )
-    eval_loader, _ = create_data_loader(
-        dataset_config=eval_data_config,
+    eval_loader, _ = create_lm_data_loader(
+        dataset_name=eval_data_config.name,
+        tokenizer_name=eval_data_config.hf_tokenizer_path,
+        split=eval_data_config.split,
+        max_seq_len=eval_data_config.n_ctx,
+        is_tokenized=eval_data_config.is_tokenized,
+        streaming=eval_data_config.streaming,
+        column_name=eval_data_config.column_name,
         batch_size=config.batch_size,
         buffer_size=1000,
-        global_seed=config.seed + 1,
-        collate_fn=input_ids_collate_fn,
+        seed=eval_data_config.seed if eval_data_config.seed is not None else config.seed + 1,
+        shuffle_each_epoch=eval_data_config.shuffle_each_epoch,
+        collate_fn=collate_input_ids,
     )
 
     optimize(

@@ -11,12 +11,11 @@ from param_decomp.settings import REPO_ROOT
 
 
 @dataclass
-class ExperimentConfig:
-    """Configuration for a single experiment.
+class RegisteredExperiment:
+    """Metadata for a built-in experiment.
 
     Attributes:
         task_name: Name of the task the experiment is for.
-        decomp_script: Path to the decomposition script
         config_path: Path to the configuration YAML file
         expected_runtime: Expected runtime of the experiment in minutes. Used for SLURM job names.
         canonical_run: Wandb path (i.e. prefixed with "wandb:") to a canonical run of the experiment.
@@ -25,77 +24,70 @@ class ExperimentConfig:
     """
 
     task_name: TaskName
-    decomp_script: Path
     config_path: Path
     expected_runtime: int
     canonical_run: str | None = None
 
+    @property
+    def driver_path(self) -> str:
+        return f"param_decomp.experiments.{self.task_name}.experiment:DRIVER"
 
-EXPERIMENT_REGISTRY: dict[str, ExperimentConfig] = {
-    "tms_5-2": ExperimentConfig(
+
+EXPERIMENT_REGISTRY: dict[str, RegisteredExperiment] = {
+    "tms_5-2": RegisteredExperiment(
         task_name="tms",
-        decomp_script=Path("param_decomp/experiments/tms/tms_decomposition.py"),
         config_path=Path("param_decomp/experiments/tms/tms_5-2_config.yaml"),
         expected_runtime=4,
         canonical_run="wandb:goodfire/spd/runs/s-38e1a3e2",
     ),
-    "tms_5-2-id": ExperimentConfig(
+    "tms_5-2-id": RegisteredExperiment(
         task_name="tms",
-        decomp_script=Path("param_decomp/experiments/tms/tms_decomposition.py"),
         config_path=Path("param_decomp/experiments/tms/tms_5-2-id_config.yaml"),
         expected_runtime=4,
         canonical_run="wandb:goodfire/spd/runs/s-a1c0e9e2",
     ),
-    "tms_40-10": ExperimentConfig(
+    "tms_40-10": RegisteredExperiment(
         task_name="tms",
-        decomp_script=Path("param_decomp/experiments/tms/tms_decomposition.py"),
         config_path=Path("param_decomp/experiments/tms/tms_40-10_config.yaml"),
         expected_runtime=5,
         canonical_run="wandb:goodfire/spd/runs/s-7387fc20",
     ),
-    "tms_40-10-id": ExperimentConfig(
+    "tms_40-10-id": RegisteredExperiment(
         task_name="tms",
-        decomp_script=Path("param_decomp/experiments/tms/tms_decomposition.py"),
         config_path=Path("param_decomp/experiments/tms/tms_40-10-id_config.yaml"),
         expected_runtime=5,
         canonical_run="wandb:goodfire/spd/runs/s-2a2b5a57",
     ),
-    "resid_mlp1": ExperimentConfig(
+    "resid_mlp1": RegisteredExperiment(
         task_name="resid_mlp",
-        decomp_script=Path("param_decomp/experiments/resid_mlp/resid_mlp_decomposition.py"),
         config_path=Path("param_decomp/experiments/resid_mlp/resid_mlp1_config.yaml"),
         expected_runtime=3,
         canonical_run="wandb:goodfire/spd/runs/s-62fce8c4",
     ),
-    "resid_mlp2": ExperimentConfig(
+    "resid_mlp2": RegisteredExperiment(
         task_name="resid_mlp",
-        decomp_script=Path("param_decomp/experiments/resid_mlp/resid_mlp_decomposition.py"),
         config_path=Path("param_decomp/experiments/resid_mlp/resid_mlp2_config.yaml"),
         expected_runtime=5,
         canonical_run="wandb:goodfire/spd/runs/s-a9ad193d",
     ),
-    "resid_mlp3": ExperimentConfig(
+    "resid_mlp3": RegisteredExperiment(
         task_name="resid_mlp",
-        decomp_script=Path("param_decomp/experiments/resid_mlp/resid_mlp_decomposition.py"),
         config_path=Path("param_decomp/experiments/resid_mlp/resid_mlp3_config.yaml"),
         expected_runtime=60,
         canonical_run=None,
     ),
-    "ss_llama_simple_mlp-2L": ExperimentConfig(
+    "ss_llama_simple_mlp-2L": RegisteredExperiment(
         task_name="lm",
-        decomp_script=Path("param_decomp/experiments/lm/lm_decomposition.py"),
         config_path=Path("param_decomp/experiments/lm/ss_llama_simple_mlp-2L.yaml"),
         expected_runtime=240,
     ),
-    "pile_llama_simple_mlp-4L": ExperimentConfig(
+    "pile_llama_simple_mlp-4L": RegisteredExperiment(
         task_name="lm",
-        decomp_script=Path("param_decomp/experiments/lm/lm_decomposition.py"),
         config_path=Path("param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml"),
         expected_runtime=1440,
     ),
-    "pile_llama_simple_mlp-12L": ExperimentConfig(
+    "pile_llama_simple_mlp-12L": RegisteredExperiment(
         task_name="lm",
-        decomp_script=Path("param_decomp/experiments/lm/lm_decomposition.py"),
         config_path=Path("param_decomp/experiments/lm/pile_llama_simple_mlp-12L.yaml"),
         expected_runtime=2880,
     ),

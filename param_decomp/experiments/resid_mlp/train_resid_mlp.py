@@ -8,8 +8,11 @@ from torch import Tensor, nn
 from tqdm import tqdm
 
 from param_decomp.configs import ScheduleConfig
-from param_decomp.experiments.resid_mlp.configs import ResidMLPModelConfig, ResidMLPTrainConfig
-from param_decomp.experiments.resid_mlp.models import ResidMLP
+from param_decomp.experiments.resid_mlp.models import (
+    ResidMLP,
+    ResidMLPModelConfig,
+    ResidMLPTrainConfig,
+)
 from param_decomp.experiments.resid_mlp.resid_mlp_dataset import (
     ResidMLPDataset,
 )

@@ -182,7 +182,7 @@ def _create_training_jobs(
             training_jobs.append(
                 TrainingJob(
                     experiment=experiment,
-                    script_path=exp_config.decomp_script,
+                    driver_path=exp_config.driver_path,
                     config_dict=config_dict_with_overrides,
                     run_id=generate_run_id("param_decomp"),
                 )
@@ -205,7 +205,7 @@ def _create_training_jobs(
                 training_jobs.append(
                     TrainingJob(
                         experiment=experiment,
-                        script_path=exp_config.decomp_script,
+                        driver_path=exp_config.driver_path,
                         config_dict=config_dict_with_overrides,
                         run_id=generate_run_id("param_decomp"),
                     )

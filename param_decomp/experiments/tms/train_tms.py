@@ -14,8 +14,7 @@ from torch import Tensor, nn
 from tqdm import tqdm, trange
 
 from param_decomp.configs import ScheduleConfig
-from param_decomp.experiments.tms.configs import TMSModelConfig, TMSTrainConfig
-from param_decomp.experiments.tms.models import TMSModel
+from param_decomp.experiments.tms.models import TMSModel, TMSModelConfig, TMSTrainConfig
 from param_decomp.log import logger
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
 from param_decomp.utils.distributed_utils import get_device

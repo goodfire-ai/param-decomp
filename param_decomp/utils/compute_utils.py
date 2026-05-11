@@ -4,7 +4,6 @@ import json
 import shlex
 from dataclasses import dataclass
 from hashlib import sha256
-from pathlib import Path
 from typing import Any
 
 from param_decomp.utils.slurm import (
@@ -31,10 +30,10 @@ class Command:
 @dataclass(frozen=True, slots=True)
 class TrainingJob:
     experiment: str
-    script_path: Path
+    driver_path: str
     config_dict: dict[str, Any]
     """Raw experiment spec dict (the per-experiment Pydantic spec as a JSON-serializable dict).
-    Passed directly to the decomposition script as `--config_json`."""
+    Passed directly to the experiment runner as `--config_json`."""
     run_id: str  # Pre-generated unique run identifier (e.g. "s-a1b2c3d4")
 
 
@@ -59,6 +58,7 @@ def _build_script_args(
     json_tagged_config = f"json:{json.dumps(job.config_dict)}"
     args = (
         f"--config_json {shlex.quote(json_tagged_config)} "
+        f"--driver {shlex.quote(job.driver_path)} "
         f"--launch_id {launch_id} "
         f"--evals_id {job.experiment} "
         f"--run_id {job.run_id}"
@@ -95,12 +95,12 @@ def get_command(
 
     match n_gpus:
         case None | 1:
-            command = f"python {job.script_path} {script_args}"
+            command = f"python -m param_decomp.experiments.runner {script_args}"
 
         case n if n <= GPUS_PER_NODE:
             command = (
                 f"torchrun --standalone --nproc_per_node={n} --master_port={port} "
-                f"{job.script_path} {script_args}"
+                f"-m param_decomp.experiments.runner {script_args}"
             )
 
         case _:
@@ -114,7 +114,7 @@ def get_command(
                 f"--nproc_per_node={GPUS_PER_NODE} "
                 f'--master_addr=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1) '
                 f"--master_port={port} "
-                f"{job.script_path} {script_args}"
+                f"-m param_decomp.experiments.runner {script_args}"
             )
 
             # Each node needs its own /tmp workspace since /tmp is node-local

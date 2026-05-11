@@ -11,8 +11,6 @@ import pytest
 import torch
 import yaml
 
-from param_decomp.settings import REPO_ROOT
-
 TEST_CONFIG = {
     "kind": "lm",
     "pd": {
@@ -145,17 +143,17 @@ class TestDistributedDeterminicity:
         param_decomp_out_dir: Path,
     ) -> str:
         """Run the experiment using torchrun. Returns the run_id."""
-        script_path = REPO_ROOT / "param_decomp" / "experiments" / "lm" / "lm_decomposition.py"
-        assert script_path.exists(), f"{script_path} not found"
-
         cmd = [
             "torchrun",
             "--standalone",
             f"--nproc_per_node={n_processes}",
             "--master_port",
             str(port),
-            str(script_path),
+            "-m",
+            "param_decomp.experiments.runner",
             str(config_path),
+            "--driver",
+            "param_decomp.experiments.lm.experiment:DRIVER",
         ]
 
         # disable cuda so we run on cpu, and set PARAM_DECOMP_OUT_DIR to temp directory

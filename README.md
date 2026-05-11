@@ -56,13 +56,14 @@ two main language-model decompositions:
   [SimpleStories](https://arxiv.org/abs/2504.09184); smaller and faster
   ([config](param_decomp/experiments/lm/ss_llama_simple_mlp-2L.yaml)).
 
-Other registered experiments (TMS, ResidualMLP, GPT-2 / TinyStories variants) are
-listed in [`param_decomp/registry.py`](param_decomp/registry.py). The `lm` experiment can decompose
-any HuggingFace-loadable model whose target modules are `nn.Linear`, `nn.Embedding`, or
+Other registered experiments (TMS, ResidualMLP, and larger Llama variants) are listed in
+[`param_decomp/registry.py`](param_decomp/registry.py). The `lm` experiment can decompose any
+HuggingFace-loadable model whose target modules are `nn.Linear`, `nn.Embedding`, or
 `transformers.modeling_utils.Conv1D`.
 
-Custom experiments do not need to edit the core package. Provide a driver object with a Pydantic
-spec and run it with:
+Custom experiments do not need to edit the core package. The built-in runtime definitions live in
+one file per experiment, e.g. [`param_decomp/experiments/lm/experiment.py`](param_decomp/experiments/lm/experiment.py).
+Replicate that shape with a Pydantic spec and driver object, then run it with:
 
 ```bash
 pd-experiment --driver my_pkg.my_exp:DRIVER --config_path my_config.yaml

@@ -847,7 +847,7 @@ def decompose(
 
 
 # --- Section J: Eval metrics ---
-# Key naming matches `param_decomp/experiments/lm/lm_decomposition.py` so nano and main runs
+# Key naming matches `param_decomp/experiments/lm/experiment.py` so nano and main runs
 # can be overlaid in the same W&B dashboard.
 
 

@@ -14,8 +14,7 @@ from param_decomp.configs import (
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
 )
-from param_decomp.experiments.tms.configs import TMSModelConfig, TMSTrainConfig
-from param_decomp.experiments.tms.models import TMSModel
+from param_decomp.experiments.tms.models import TMSModel, TMSModelConfig, TMSTrainConfig
 from param_decomp.experiments.tms.train_tms import get_model_and_dataloader, train
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.models.batch_and_loss_fns import (

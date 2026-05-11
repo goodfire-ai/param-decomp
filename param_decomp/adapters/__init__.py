@@ -40,10 +40,6 @@ def adapter_from_id(decomposition_id: str) -> DecompositionAdapter:
     Recovers the full method config from the harvest DB (which is always populated
     before downstream steps like autointerp run).
     """
-    return adapter_from_config(_load_method_config(decomposition_id))
-
-
-def _load_method_config(decomposition_id: str) -> DecompositionMethodHarvestConfig:
     from pydantic import TypeAdapter
 
     from param_decomp.harvest.repo import HarvestRepo
@@ -53,7 +49,6 @@ def _load_method_config(decomposition_id: str) -> DecompositionMethodHarvestConf
         f"No harvest data found for {decomposition_id!r}. "
         f"Run pd-harvest first to populate the method config."
     )
-    config_dict = repo.get_config()
-    method_config_raw = config_dict["method_config"]
-    ta = TypeAdapter(DecompositionMethodHarvestConfig)
-    return ta.validate_python(method_config_raw)
+    method_config_raw = repo.get_config()["method_config"]
+    method_config = TypeAdapter(DecompositionMethodHarvestConfig).validate_python(method_config_raw)
+    return adapter_from_config(method_config)

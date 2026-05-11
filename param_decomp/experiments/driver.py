@@ -52,13 +52,11 @@ class ExperimentManifest(BaseConfig):
         spec: ExperimentSpec,
         *,
         driver: str | None,
-        artifact_filenames: Sequence[str] = (),
     ) -> ExperimentManifest:
         return cls(
             kind=spec.kind,
             driver=driver,
             spec=spec.model_dump(mode="json"),
-            artifact_filenames=list(artifact_filenames),
         )
 
     @classmethod
@@ -69,7 +67,6 @@ class ExperimentManifest(BaseConfig):
         kind: str = "manual",
         driver: str | None = None,
         metadata: dict[str, Any] | None = None,
-        artifact_filenames: Sequence[str] = (),
     ) -> ExperimentManifest:
         spec: dict[str, Any] = {
             "kind": kind,
@@ -81,7 +78,6 @@ class ExperimentManifest(BaseConfig):
             kind=kind,
             driver=driver,
             spec=spec,
-            artifact_filenames=list(artifact_filenames),
         )
 
     def with_artifacts(self, artifact_filenames: Sequence[str]) -> ExperimentManifest:
@@ -130,7 +126,7 @@ class ExperimentDriver[SpecT: ExperimentSpec](Protocol):
         self,
         spec: SpecT,
         *,
-        seed: int,
+        seed: int | None = None,
         train_batch_size: int,
         eval_batch_size: int,
         dist_state: DistributedState | None = None,
@@ -142,12 +138,14 @@ class ExperimentDriver[SpecT: ExperimentSpec](Protocol):
 
 
 def load_driver(driver_path: str) -> ExperimentDriver[Any]:
-    """Load a driver from `module:attr`."""
+    """Load a driver object or no-arg driver class from `module:attr`."""
     module_path, sep, attr = driver_path.partition(":")
     if sep == "":
         raise ValueError(f"Driver path must be of the form 'module:attr', got {driver_path!r}")
     module = import_module(module_path)
     driver = getattr(module, attr)
+    if isinstance(driver, type):
+        driver = driver()
     return driver
 
 

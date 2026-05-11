@@ -6,18 +6,24 @@ from pydantic import ValidationError
 from param_decomp.configs import LayerwiseCiConfig, PDConfig, ScheduleConfig
 from param_decomp.experiment_config import parse_driver_spec, parse_experiment_config
 from param_decomp.experiments.driver import ExperimentManifest, ExperimentSpec
-from param_decomp.experiments.lm.configs import LMDataConfig, LMTargetConfig
-from param_decomp.experiments.lm.driver import DRIVER as LM_DRIVER
-from param_decomp.experiments.lm.experiment import LMExperimentConfig
-from param_decomp.experiments.resid_mlp.configs import (
+from param_decomp.experiments.lm.data import LMDataConfig
+from param_decomp.experiments.lm.experiment import (
+    LMDriver,
+    LMExperimentConfig,
+    LMTargetConfig,
+)
+from param_decomp.experiments.resid_mlp.experiment import (
     ResidMLPDataConfig,
+    ResidMLPDriver,
+    ResidMLPExperimentConfig,
     ResidMLPTargetConfig,
 )
-from param_decomp.experiments.resid_mlp.driver import DRIVER as RESID_MLP_DRIVER
-from param_decomp.experiments.resid_mlp.experiment import ResidMLPExperimentConfig
-from param_decomp.experiments.tms.configs import TMSDataConfig, TMSTargetConfig
-from param_decomp.experiments.tms.driver import DRIVER as TMS_DRIVER
-from param_decomp.experiments.tms.experiment import TMSExperimentConfig
+from param_decomp.experiments.tms.experiment import (
+    TMSDataConfig,
+    TMSDriver,
+    TMSExperimentConfig,
+    TMSTargetConfig,
+)
 
 
 def _pd_config() -> PDConfig:
@@ -65,11 +71,12 @@ def test_lm_experiment_round_trip():
             max_seq_len=128,
         ),
     )
-    parsed = _round_trip(exp, LM_DRIVER.driver_path)
+    lm_driver = LMDriver()
+    parsed = _round_trip(exp, LMDriver.driver_path)
     assert type(parsed) is LMExperimentConfig
     assert parsed == exp
-    assert "GPT2LMHeadModel" in LM_DRIVER.display_name(exp)
-    assert "SimpleStories" in LM_DRIVER.display_name(exp)
+    assert "GPT2LMHeadModel" in lm_driver.display_name(exp)
+    assert "SimpleStories" in lm_driver.display_name(exp)
 
 
 def test_tms_experiment_round_trip():
@@ -78,7 +85,7 @@ def test_tms_experiment_round_trip():
         target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc"),
         data=TMSDataConfig(feature_probability=0.05),
     )
-    parsed = _round_trip(exp, TMS_DRIVER.driver_path)
+    parsed = _round_trip(exp, TMSDriver.driver_path)
     assert type(parsed) is TMSExperimentConfig
     assert parsed == exp
 
@@ -89,7 +96,7 @@ def test_resid_mlp_experiment_round_trip():
         target=ResidMLPTargetConfig(run_path="wandb:foo/bar/runs/abc"),
         data=ResidMLPDataConfig(feature_probability=0.05),
     )
-    parsed = _round_trip(exp, RESID_MLP_DRIVER.driver_path)
+    parsed = _round_trip(exp, ResidMLPDriver.driver_path)
     assert type(parsed) is ResidMLPExperimentConfig
     assert parsed == exp
 

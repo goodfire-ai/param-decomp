@@ -77,8 +77,8 @@ class MyDriver:
     def build_dataloaders(self, spec, *, seed, train_batch_size, eval_batch_size, ...): ...
 ```
 
-Built-in drivers live in `param_decomp/experiments/{lm,tms,resid_mlp,ih}/driver.py`. Custom users
-can run without editing core code via:
+Built-in runtime definitions live in `param_decomp/experiments/{lm,tms,resid_mlp}/experiment.py`.
+Custom users can run without editing core code via:
 
 ```bash
 pd-experiment --driver my_pkg.my_exp:DRIVER --config_path my_config.yaml
@@ -94,7 +94,6 @@ Built-in YAML configs are pure specs nested under `pd:`, `target:`, and `data:`:
 - `LMExperimentConfig(kind="lm", pd, target: LMTargetConfig, data: LMDataConfig)`
 - `TMSExperimentConfig(kind="tms", pd, target, data)`
 - `ResidMLPExperimentConfig(kind="resid_mlp", pd, target, data)`
-- `IHExperimentConfig(kind="ih", pd, target, data)`
 
 Specs should not perform I/O. Put target loading, dataloader construction, and artifact selection
 in the driver.
@@ -105,8 +104,8 @@ in the driver.
 PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/
   experiment_config.yaml   # ExperimentManifest (kind + driver path + raw spec + artifact names)
   model_<step>.pth         # PD checkpoints
-  target_model.pth         # target weights (TMS/ResidMLP/IH only)
-  target_train_config.yaml # target train config (TMS/ResidMLP/IH only)
+  target_model.pth         # target weights (TMS/ResidMLP only)
+  target_train_config.yaml # target train config (TMS/ResidMLP only)
   label_coeffs.json        # ResidMLP only
   sweep_params.yaml        # if a sweep
 ```
@@ -170,7 +169,7 @@ This repository implements methods from two key research papers on parameter dec
 
 - `param_decomp/run_param_decomp.py` - Main PD optimization logic called by all experiments
 - `param_decomp/configs.py` - Core PD config and loss/metric config classes
-- `param_decomp/experiments/*/driver.py` - Experiment drivers that prepare targets,
+- `param_decomp/experiments/*/experiment.py` - Experiment specs and drivers that prepare targets,
   dataloaders, manifests, and artifacts
 - `param_decomp/registry.py` - Centralized experiment registry with all experiment configurations
 - `param_decomp/models/component_model.py` - Core ComponentModel that wraps target models
@@ -186,12 +185,10 @@ This repository implements methods from two key research papers on parameter dec
 
 **Experiment Structure:**
 
-Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm,ih}/`) contains:
+Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
 - `models.py` - Experiment-specific model classes and pretrained loading
-- `experiment.py` - Pure Pydantic experiment spec
-- `driver.py` - Runtime preparation (target loading, dataloaders, saved artifacts)
-- `*_decomposition.py` - Thin built-in wrapper around the generic driver runner
+- `experiment.py` - Pydantic spec, target/data builders, driver, and CLI entrypoint
 - `train_*.py` - Training script for target models
 - `*_config.yaml` - Configuration files
 - `plotting.py` - Visualization utilities
@@ -255,8 +252,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm,ih}/`) contains:
 │   ├── experiments/                 # Experiment implementations
 │   │   ├── tms/                     # Toy Model of Superposition
 │   │   ├── resid_mlp/               # Residual MLP
-│   │   ├── lm/                      # Language models
-│   │   └── ih/                      # Induction heads
+│   │   └── lm/                      # Language models
 │   ├── metrics/                     # Metrics - both for use as losses and as eval metrics
 │   ├── models/
 │   │   ├── component_model.py       # ComponentModel, PDRunInfo, from_pretrained()
@@ -317,8 +313,8 @@ Use `param_decomp/` as the search root (not repo root) to avoid noise.
 
 **Running Experiments:**
 
-- `pd-run` → `param_decomp/scripts/run.py` → `param_decomp/utils/slurm.py` → SLURM → built-in decomposition wrapper → `param_decomp/experiments/runner.py` → `run_pd`
-- `pd-local` → `param_decomp/scripts/run_local.py` → built-in decomposition wrapper → `param_decomp/experiments/runner.py` → `run_pd`
+- `pd-run` → `param_decomp/scripts/run.py` → `param_decomp/utils/slurm.py` → SLURM → `param_decomp/experiments/runner.py` + driver path → `run_pd`
+- `pd-local` → `param_decomp/scripts/run_local.py` → `param_decomp/experiments/runner.py` + driver path → `run_pd`
 - `pd-experiment` → `param_decomp/experiments/runner.py` → custom/built-in driver → `run_pd`
 
 **Harvest Pipeline:**

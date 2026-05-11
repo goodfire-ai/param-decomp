@@ -620,7 +620,10 @@ class PDConfig(BaseConfig):
     # --- General ---
     seed: int = Field(
         default=0,
-        description="Random seed for reproducibility. Does not affect dataset shuffling if dataset_seed is set in TaskConfig.",
+        description=(
+            "Random seed for reproducibility. LM dataset shuffling uses data.dataset_seed when "
+            "that field is set."
+        ),
     )
     autocast_bf16: bool = Field(
         default=True,

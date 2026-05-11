@@ -9,6 +9,8 @@ from param_decomp.log import logger
 from param_decomp.registry import EXPERIMENT_REGISTRY
 from param_decomp.settings import REPO_ROOT
 
+RUNNER_MODULE = "param_decomp.experiments.runner"
+
 
 def main(
     experiment: str,
@@ -38,11 +40,11 @@ def main(
         raise ValueError("Cannot use both --cpu and --dp")
 
     exp_config = EXPERIMENT_REGISTRY[experiment]
-    script_path = REPO_ROOT / exp_config.decomp_script
     config_path = REPO_ROOT / exp_config.config_path
 
     logger.info(f"Running experiment: {experiment}")
     logger.info(f"Config: {exp_config.config_path}")
+    logger.info(f"Driver: {exp_config.driver_path}")
 
     if dp is not None:
         # Multi-GPU: use torchrun
@@ -53,15 +55,21 @@ def main(
             "--standalone",
             "--nproc_per_node",
             str(dp),
-            str(script_path),
+            "-m",
+            RUNNER_MODULE,
             str(config_path),
+            "--driver",
+            exp_config.driver_path,
         ]
     else:
         # Single GPU or CPU
         cmd = [
             sys.executable,
-            str(script_path),
+            "-m",
+            RUNNER_MODULE,
             str(config_path),
+            "--driver",
+            exp_config.driver_path,
         ]
 
     if cpu:

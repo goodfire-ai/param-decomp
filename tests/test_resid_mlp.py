@@ -9,8 +9,7 @@ from param_decomp.configs import (
     ScheduleConfig,
     StochasticReconLossConfig,
 )
-from param_decomp.experiments.resid_mlp.configs import ResidMLPModelConfig
-from param_decomp.experiments.resid_mlp.models import ResidMLP
+from param_decomp.experiments.resid_mlp.models import ResidMLP, ResidMLPModelConfig
 from param_decomp.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.models.batch_and_loss_fns import (

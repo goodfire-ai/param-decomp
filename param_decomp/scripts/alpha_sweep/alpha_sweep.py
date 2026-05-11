@@ -25,7 +25,7 @@ from jaxtyping import Float, Int
 from torch import Tensor
 
 from param_decomp.configs import SamplingType
-from param_decomp.data import DatasetConfig, create_data_loader
+from param_decomp.experiments.lm.data import create_lm_data_loader
 from param_decomp.experiments.lm.experiment import LMExperimentConfig
 from param_decomp.load import load_pd
 from param_decomp.log import logger
@@ -90,30 +90,28 @@ def run_r_sweep(
     model.eval()
 
     logger.info("Creating validation data loader...")
-    eval_dataset_config = DatasetConfig(
-        name=data.dataset_name,
-        hf_tokenizer_path=data.tokenizer_name,
+    eval_loader, _tokenizer = create_lm_data_loader(
+        dataset_name=data.dataset_name,
+        tokenizer_name=data.tokenizer_name,
         split=data.eval_split,
-        n_ctx=data.max_seq_len,
+        max_seq_len=data.max_seq_len,
         is_tokenized=data.is_tokenized,
         streaming=data.streaming,
         column_name=data.column_name,
-        shuffle_each_epoch=False,
-        seed=data.dataset_seed,
-    )
-    eval_loader, _tokenizer = create_data_loader(
-        dataset_config=eval_dataset_config,
         batch_size=config.eval_batch_size,
         buffer_size=data.buffer_size,
+        seed=data.dataset_seed if data.dataset_seed is not None else config.seed,
+        shuffle_each_epoch=False,
     )
 
     logger.info(f"Collecting {n_batches} validation batches...")
     batches: list[Int[Tensor, "batch seq"]] = []
+    token_column = data.column_name if data.is_tokenized else "input_ids"
     for i, batch in enumerate(eval_loader):
         if i >= n_batches:
             break
         if isinstance(batch, dict):
-            batch = batch["input_ids"]
+            batch = batch[token_column]
         batches.append(batch)
 
     ce_losses: list[float] = []

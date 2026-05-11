@@ -135,7 +135,7 @@ class PDRunInfo(RunInfo[ExperimentManifest]):
     def build_dataloaders(
         self,
         *,
-        seed: int,
+        seed: int | None = None,
         train_batch_size: int,
         eval_batch_size: int,
         dist_state: Any = None,
