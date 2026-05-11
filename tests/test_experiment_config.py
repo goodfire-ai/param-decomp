@@ -6,9 +6,6 @@ from pydantic import ValidationError
 from param_decomp.configs import LayerwiseCiConfig, PDConfig, ScheduleConfig
 from param_decomp.experiment_config import parse_driver_spec, parse_experiment_config
 from param_decomp.experiments.driver import ExperimentManifest, ExperimentSpec
-from param_decomp.experiments.ih.configs import IHDataConfig, IHTargetConfig
-from param_decomp.experiments.ih.driver import DRIVER as IH_DRIVER
-from param_decomp.experiments.ih.experiment import IHExperimentConfig
 from param_decomp.experiments.lm.configs import LMDataConfig, LMTargetConfig
 from param_decomp.experiments.lm.driver import DRIVER as LM_DRIVER
 from param_decomp.experiments.lm.experiment import LMExperimentConfig
@@ -94,17 +91,6 @@ def test_resid_mlp_experiment_round_trip():
     )
     parsed = _round_trip(exp, RESID_MLP_DRIVER.driver_path)
     assert type(parsed) is ResidMLPExperimentConfig
-    assert parsed == exp
-
-
-def test_ih_experiment_round_trip():
-    exp = IHExperimentConfig(
-        pd=_pd_config(),
-        target=IHTargetConfig(run_path="wandb:foo/bar/runs/abc"),
-        data=IHDataConfig(prefix_window=8),
-    )
-    parsed = _round_trip(exp, IH_DRIVER.driver_path)
-    assert type(parsed) is IHExperimentConfig
     assert parsed == exp
 
 

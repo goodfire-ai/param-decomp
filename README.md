@@ -56,7 +56,7 @@ two main language-model decompositions:
   [SimpleStories](https://arxiv.org/abs/2504.09184); smaller and faster
   ([config](param_decomp/experiments/lm/ss_llama_simple_mlp-2L.yaml)).
 
-Other registered experiments (TMS, ResidualMLP, induction heads, GPT-2 / TinyStories variants) are
+Other registered experiments (TMS, ResidualMLP, GPT-2 / TinyStories variants) are
 listed in [`param_decomp/registry.py`](param_decomp/registry.py). The `lm` experiment can decompose
 any HuggingFace-loadable model whose target modules are `nn.Linear`, `nn.Embedding`, or
 `transformers.modeling_utils.Conv1D`.
