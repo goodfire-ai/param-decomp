@@ -46,7 +46,10 @@ class FaithfulnessLoss(Metric):
         self.total_params = torch.tensor(0, device=device)
 
     @override
-    def update(self, *, weight_deltas: dict[str, Float[Tensor, "d_out d_in"]], **_: Any) -> None:
+    def update(
+        self, *, weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None, **_: Any
+    ) -> None:
+        assert weight_deltas is not None, "FaithfulnessLoss requires precomputed weight deltas"
         sum_loss, total_params = _faithfulness_loss_update(weight_deltas)
         self.sum_loss += sum_loss
         self.total_params += total_params

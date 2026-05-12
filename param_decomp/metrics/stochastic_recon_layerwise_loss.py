@@ -22,7 +22,7 @@ def _stochastic_recon_layerwise_loss_update(
     batch: Any,
     target_out: Tensor,
     ci: dict[str, Float[Tensor, "... C"]],
-    weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
+    use_delta_component: bool,
     reconstruction_loss: ReconstructionLoss,
 ) -> tuple[Float[Tensor, ""], int]:
     assert ci, "Empty ci"
@@ -34,7 +34,7 @@ def _stochastic_recon_layerwise_loss_update(
         calc_stochastic_component_mask_info(
             causal_importances=ci,
             component_mask_sampling=sampling,
-            weight_deltas=weight_deltas,
+            use_delta_component=use_delta_component,
             router=AllLayersRouter(),
         )
         for _ in range(n_mask_samples)
@@ -62,7 +62,7 @@ def stochastic_recon_layerwise_loss(
     batch: Any,
     target_out: Tensor,
     ci: dict[str, Float[Tensor, "... C"]],
-    weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
+    use_delta_component: bool,
     reconstruction_loss: ReconstructionLoss,
 ) -> Float[Tensor, ""]:
     sum_loss, n_examples = _stochastic_recon_layerwise_loss_update(
@@ -72,7 +72,7 @@ def stochastic_recon_layerwise_loss(
         batch=batch,
         target_out=target_out,
         ci=ci,
-        weight_deltas=weight_deltas,
+        use_delta_component=use_delta_component,
         reconstruction_loss=reconstruction_loss,
     )
     return _stochastic_recon_layerwise_loss_compute(sum_loss, n_examples)
@@ -107,7 +107,6 @@ class StochasticReconLayerwiseLoss(Metric):
         batch: Any,
         target_out: Tensor,
         ci: CIOutputs,
-        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
         **_: Any,
     ) -> None:
         sum_loss, n_examples = _stochastic_recon_layerwise_loss_update(
@@ -117,7 +116,7 @@ class StochasticReconLayerwiseLoss(Metric):
             batch=batch,
             target_out=target_out,
             ci=ci.lower_leaky,
-            weight_deltas=weight_deltas if self.use_delta_component else None,
+            use_delta_component=self.use_delta_component,
             reconstruction_loss=self.reconstruction_loss,
         )
         self.sum_loss += sum_loss

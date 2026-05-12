@@ -48,8 +48,8 @@ class TestStochasticReconSubsetLoss:
         def mock_calc_stochastic_component_mask_info(
             causal_importances: dict[str, Tensor],  # pyright: ignore[reportUnusedParameter]
             component_mask_sampling: SamplingType,  # pyright: ignore[reportUnusedParameter]
+            use_delta_component: bool,  # pyright: ignore[reportUnusedParameter]
             router: Router,  # pyright: ignore[reportUnusedParameter]
-            weight_deltas: dict[str, Tensor] | None,  # pyright: ignore[reportUnusedParameter]
         ) -> dict[str, ComponentsMaskInfo]:
             idx = call_count[0] % len(sample_data)
             call_count[0] += 1
@@ -58,7 +58,6 @@ class TestStochasticReconSubsetLoss:
             return make_mask_infos(
                 component_masks={"fc": data["component_mask"]},
                 routing_masks={"fc": data["routing_mask"]},
-                weight_deltas_and_masks=None,
             )
 
         with patch(
@@ -96,7 +95,7 @@ class TestStochasticReconSubsetLoss:
                 batch=batch,
                 target_out=target_out,
                 ci=ci,
-                weight_deltas=None,
+                use_delta_component=False,
                 routing=UniformKSubsetRoutingConfig(),
                 reconstruction_loss=recon_loss_mse,
             )

@@ -11,6 +11,11 @@ from jaxtyping import Bool, Float
 from torch import Tensor
 
 WeightDeltaAndMask = tuple[Float[Tensor, "d_out d_in"], Float[Tensor, "..."]]
+"""Legacy tuple used by the old standalone Components classes.
+
+Fused decomposed sites use `ComponentsMaskInfo.delta_mask` instead so training-time
+delta math stays local to each site and does not materialize a full weight-delta dict.
+"""
 
 
 @dataclass
@@ -24,7 +29,13 @@ class ComponentsMaskInfo:
     """Which (batch,) or (batch, seq_len) positions are routed through the decomposed
     path vs. the wrapped target module. If "all", every position uses the decomposed path."""
 
-    weight_delta_and_mask: WeightDeltaAndMask | None = None
+    delta_mask: Float[Tensor, "..."] | None = None
+    """Optional source mask for the residual target-minus-components path.
+
+    The residual itself is computed inside each decomposition site as
+    `target_site_output - full_components_output`, where FSDP has already gathered
+    only that site's target and component parameters.
+    """
 
 
 RoutingMasks = dict[str, Bool[Tensor, "..."]] | Literal["all"]
@@ -33,30 +44,28 @@ RoutingMasks = dict[str, Bool[Tensor, "..."]] | Literal["all"]
 def make_mask_infos(
     component_masks: dict[str, Float[Tensor, "... C"]],
     routing_masks: RoutingMasks = "all",
-    weight_deltas_and_masks: dict[str, WeightDeltaAndMask] | None = None,
+    delta_masks: dict[str, Float[Tensor, "..."]] | None = None,
 ) -> dict[str, ComponentsMaskInfo]:
-    """Build a ComponentsMaskInfo dict from per-site masks, routing masks, and weight deltas.
+    """Build a ComponentsMaskInfo dict from per-site component, routing, and delta masks.
 
     All input dicts must share the same set of keys.
     """
     if isinstance(routing_masks, dict):
         assert set(routing_masks) == set(component_masks)
 
-    if weight_deltas_and_masks is not None:
-        assert set(weight_deltas_and_masks) == set(component_masks)
+    if delta_masks is not None:
+        assert set(delta_masks) == set(component_masks)
 
     result: dict[str, ComponentsMaskInfo] = {}
     for name in component_masks:
         routing_mask = routing_masks[name] if isinstance(routing_masks, dict) else "all"
 
-        weight_delta_and_mask = (
-            weight_deltas_and_masks[name] if weight_deltas_and_masks is not None else None
-        )
+        delta_mask = delta_masks[name] if delta_masks is not None else None
 
         result[name] = ComponentsMaskInfo(
             component_mask=component_masks[name],
             routing_mask=routing_mask,
-            weight_delta_and_mask=weight_delta_and_mask,
+            delta_mask=delta_mask,
         )
 
     return result

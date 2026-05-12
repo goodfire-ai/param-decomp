@@ -48,7 +48,7 @@ def compute_losses(
     batch: Any,
     ci: CIOutputs,
     target_out: Tensor,
-    weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
+    faithfulness_weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
     current_frac_of_training: float,
     sampling: SamplingType,
     use_delta_component: bool,
@@ -65,7 +65,11 @@ def compute_losses(
         assert cfg.coeff is not None, "All loss metric configs must have a coeff"
         match cfg:
             case FaithfulnessLossConfig():
-                loss = faithfulness_loss(weight_deltas=weight_deltas)
+                assert faithfulness_weight_deltas is not None, (
+                    "FaithfulnessLossConfig requires full weight deltas. This loss is not "
+                    "compatible with FSDP-scale site-local delta math."
+                )
+                loss = faithfulness_loss(weight_deltas=faithfulness_weight_deltas)
             case ImportanceMinimalityLossConfig():
                 loss = importance_minimality_loss(
                     ci_upper_leaky=ci.upper_leaky,
@@ -117,7 +121,7 @@ def compute_losses(
                     batch=batch,
                     target_out=target_out,
                     ci=ci.lower_leaky,
-                    weight_deltas=weight_deltas if use_delta_component else None,
+                    use_delta_component=use_delta_component,
                     reconstruction_loss=reconstruction_loss,
                 )
             case StochasticReconLossConfig():
@@ -128,7 +132,7 @@ def compute_losses(
                     batch=batch,
                     target_out=target_out,
                     ci=ci.lower_leaky,
-                    weight_deltas=weight_deltas if use_delta_component else None,
+                    use_delta_component=use_delta_component,
                     reconstruction_loss=reconstruction_loss,
                 )
             case StochasticReconSubsetLossConfig():
@@ -139,7 +143,7 @@ def compute_losses(
                     batch=batch,
                     target_out=target_out,
                     ci=ci.lower_leaky,
-                    weight_deltas=weight_deltas if use_delta_component else None,
+                    use_delta_component=use_delta_component,
                     routing=cfg.routing,
                     reconstruction_loss=reconstruction_loss,
                 )
@@ -149,7 +153,7 @@ def compute_losses(
                     batch=batch,
                     target_out=target_out,
                     ci=ci.lower_leaky,
-                    weight_deltas=weight_deltas if use_delta_component else None,
+                    use_delta_component=use_delta_component,
                     pgd_config=cfg,
                     reconstruction_loss=reconstruction_loss,
                 )
@@ -159,7 +163,7 @@ def compute_losses(
                     batch=batch,
                     target_out=target_out,
                     ci=ci.lower_leaky,
-                    weight_deltas=weight_deltas if use_delta_component else None,
+                    use_delta_component=use_delta_component,
                     pgd_config=cfg,
                     routing=cfg.routing,
                     reconstruction_loss=reconstruction_loss,
@@ -170,7 +174,7 @@ def compute_losses(
                     batch=batch,
                     target_out=target_out,
                     ci=ci.lower_leaky,
-                    weight_deltas=weight_deltas if use_delta_component else None,
+                    use_delta_component=use_delta_component,
                     pgd_config=cfg,
                     reconstruction_loss=reconstruction_loss,
                 )
@@ -181,7 +185,7 @@ def compute_losses(
                     n_mask_samples=n_mask_samples,
                     batch=batch,
                     ci=ci.lower_leaky,
-                    weight_deltas=weight_deltas if use_delta_component else None,
+                    use_delta_component=use_delta_component,
                 )
             case PersistentPGDReconLossConfig() | PersistentPGDReconSubsetLossConfig():
                 if current_frac_of_training < cfg.start_frac:
@@ -191,7 +195,6 @@ def compute_losses(
                     batch=batch,
                     target_out=target_out,
                     ci=ci.lower_leaky,
-                    weight_deltas=weight_deltas if use_delta_component else None,
                 )
 
         losses[cfg] = loss

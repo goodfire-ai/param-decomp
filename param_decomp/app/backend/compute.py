@@ -331,13 +331,10 @@ def compute_edges_from_ci(
     embed_hook, embed_cache = _setup_embed_hook()
     embed_handle = topology.embedding_module.register_forward_hook(embed_hook, with_kwargs=True)
 
-    weight_deltas = model.calc_weight_deltas()
-    weight_deltas_and_masks = {
-        k: (v, torch.ones(tokens.shape, device=device)) for k, v in weight_deltas.items()
-    }
+    delta_masks = {k: torch.ones(tokens.shape, device=device) for k in ci_lower_leaky}
     unmasked_masks = make_mask_infos(
         component_masks={k: torch.ones_like(v) for k, v in ci_lower_leaky.items()},
-        weight_deltas_and_masks=weight_deltas_and_masks,
+        delta_masks=delta_masks,
     )
     with torch.enable_grad(), bf16_autocast():
         comp_output_with_cache: OutputWithCache = model(
@@ -956,12 +953,9 @@ def compute_intervention(
                 ts_masks[layer_name] = torch.ones_like(ci_masks[layer_name])
             for layer, seq_pos, c_idx in nodes_to_ablate:
                 ts_masks[layer][0, seq_pos, c_idx] = 0.0
-            weight_deltas = model.calc_weight_deltas()
-            ts_wd = {
-                k: (v, torch.ones(tokens.shape, device=device)) for k, v in weight_deltas.items()
-            }
+            ts_delta_masks = {k: torch.ones(tokens.shape, device=device) for k in ts_masks}
             ts_mask_infos = make_mask_infos(
-                ts_masks, routing_masks="all", weight_deltas_and_masks=ts_wd
+                ts_masks, routing_masks="all", delta_masks=ts_delta_masks
             )
             ts_logits = model(tokens, mask_infos=ts_mask_infos)
 

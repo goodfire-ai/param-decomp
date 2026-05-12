@@ -138,6 +138,7 @@ class PersistentPGDState:
         self._skip_all_reduce = isinstance(cfg.scope, PerBatchPerPositionScope)
         self._use_sigmoid_parameterization = cfg.use_sigmoid_parameterization
         self._router = _get_router_for_ppgd_config(cfg, device)
+        self._use_delta_component = use_delta_component
         self._n_warmup_steps = cfg.n_warmup_steps
         self._n_samples = cfg.n_samples
         self._reconstruction_loss = reconstruction_loss
@@ -214,7 +215,6 @@ class PersistentPGDState:
         batch: Int[Tensor, "..."] | Float[Tensor, "..."],
         target_out: Float[Tensor, "... vocab"],
         ci: dict[str, Float[Tensor, "... C"]],
-        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
     ) -> None:
         """Run extra PGD steps to refine adversarial sources before the final loss computation.
 
@@ -223,9 +223,7 @@ class PersistentPGDState:
         """
         all_layers = AllLayersRouter()
         for _ in range(self._n_warmup_steps):
-            loss = self.compute_recon_loss(
-                model, batch, target_out, ci, weight_deltas, router=all_layers
-            )
+            loss = self.compute_recon_loss(model, batch, target_out, ci, router=all_layers)
             grads = self.get_grads(loss, retain_graph=False)
             self.step(grads)
 
@@ -235,7 +233,6 @@ class PersistentPGDState:
         batch: Int[Tensor, "..."] | Float[Tensor, "..."],
         target_out: Float[Tensor, "... vocab"],
         ci: dict[str, Float[Tensor, "... C"]],
-        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
         router: Router | None = None,
     ) -> Float[Tensor, ""]:
         """Pure forward pass that returns the PPGD reconstruction loss. No source mutation."""
@@ -257,7 +254,7 @@ class PersistentPGDState:
                 batch=batch,
                 target_out=target_out,
                 ci=ci,
-                weight_deltas=weight_deltas,
+                use_delta_component=self._use_delta_component,
                 routing_masks=routing_masks,
             )
             sum_loss = sum_loss + loss
@@ -278,7 +275,7 @@ def _get_router_for_ppgd_config(
 
 def get_ppgd_mask_infos(
     ci: dict[str, Float[Tensor, "... C"]],
-    weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
+    use_delta_component: bool,
     ppgd_sources: dict[str, Float[Tensor, "*batch_dims source_c"]],
     routing_masks: RoutingMasks,
     batch_dims: tuple[int, ...],
@@ -296,26 +293,20 @@ def get_ppgd_mask_infos(
             repeat_dims = (B // N,) + (1,) * (source.ndim - 1)
             expanded_adv_sources[module_name] = source.repeat(*repeat_dims)
 
-    # Split into component sources and weight delta sources
+    # Split into component sources and site-local delta sources.
     adv_sources_components: dict[str, Float[Tensor, "*batch_dims C"]]
-    weight_deltas_and_masks: (
-        dict[str, tuple[Float[Tensor, "d_out d_in"], Float[Tensor, ...]]] | None
-    )
-    match weight_deltas:
-        case None:
-            weight_deltas_and_masks = None
-            adv_sources_components = expanded_adv_sources
-        case dict():
-            weight_deltas_and_masks = {
-                k: (weight_deltas[k], expanded_adv_sources[k][..., -1]) for k in weight_deltas
-            }
-            adv_sources_components = {k: v[..., :-1] for k, v in expanded_adv_sources.items()}
+    if use_delta_component:
+        delta_masks = {k: v[..., -1] for k, v in expanded_adv_sources.items()}
+        adv_sources_components = {k: v[..., :-1] for k, v in expanded_adv_sources.items()}
+    else:
+        delta_masks = None
+        adv_sources_components = expanded_adv_sources
 
     component_masks = _interpolate_component_mask(ci, adv_sources_components)
 
     return make_mask_infos(
         component_masks=component_masks,
-        weight_deltas_and_masks=weight_deltas_and_masks,
+        delta_masks=delta_masks,
         routing_masks=routing_masks,
     )
 
@@ -335,13 +326,15 @@ def _compute_ppgd_recon_loss(
     batch: Int[Tensor, "..."] | Float[Tensor, "..."],
     target_out: Float[Tensor, "... vocab"],
     ci: dict[str, Float[Tensor, "... C"]],
-    weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
+    use_delta_component: bool,
     routing_masks: RoutingMasks,
 ) -> tuple[Float[Tensor, ""], int]:
     assert ci, "Empty ci"
     batch_dims = next(iter(ci.values())).shape[:-1]
 
-    mask_infos = get_ppgd_mask_infos(ci, weight_deltas, ppgd_sources, routing_masks, batch_dims)
+    mask_infos = get_ppgd_mask_infos(
+        ci, use_delta_component, ppgd_sources, routing_masks, batch_dims
+    )
     out = model(batch, mask_infos=mask_infos)
     loss, n_examples = reconstruction_loss(pred=out, target=target_out)
     return loss, n_examples

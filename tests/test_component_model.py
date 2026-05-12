@@ -296,13 +296,10 @@ def test_full_weight_delta_matches_target_behaviour():
         low=0, high=target_model.embed.num_embeddings, size=(BATCH_SIZE,), dtype=torch.long
     )
 
-    # WHEN we forward the component model with weight deltas and a weight delta mask of all 1s
-    weight_deltas = cm.calc_weight_deltas()
+    # WHEN we forward with the site-local delta mask enabled everywhere
     component_masks = {name: torch.ones(BATCH_SIZE, C) for name in target_module_paths}
-    weight_deltas_and_masks = {
-        name: (weight_deltas[name], torch.ones(BATCH_SIZE)) for name in target_module_paths
-    }
-    mask_infos = make_mask_infos(component_masks, weight_deltas_and_masks=weight_deltas_and_masks)
+    delta_masks = {name: torch.ones(BATCH_SIZE) for name in target_module_paths}
+    mask_infos = make_mask_infos(component_masks, delta_masks=delta_masks)
     out = cm(token_ids, mask_infos=mask_infos)
 
     # THEN the output matches the target model's output
@@ -1216,26 +1213,16 @@ def test_component_model_global_ci_masking_zeros():
         low=0, high=target_model.embed.num_embeddings, size=(BATCH_SIZE,), dtype=torch.long
     )
 
-    weight_deltas = cm.calc_weight_deltas()
-
     # All ones mask - should match target
     all_ones_masks = {name: torch.ones(BATCH_SIZE, C) for name in target_module_paths}
-    weight_deltas_and_masks_ones = {
-        name: (weight_deltas[name], torch.ones(BATCH_SIZE)) for name in target_module_paths
-    }
-    mask_infos_ones = make_mask_infos(
-        all_ones_masks, weight_deltas_and_masks=weight_deltas_and_masks_ones
-    )
+    delta_masks_ones = {name: torch.ones(BATCH_SIZE) for name in target_module_paths}
+    mask_infos_ones = make_mask_infos(all_ones_masks, delta_masks=delta_masks_ones)
     out_ones = cm(token_ids, mask_infos=mask_infos_ones)
 
     # All zeros mask - should be different from all ones
     all_zeros_masks = {name: torch.zeros(BATCH_SIZE, C) for name in target_module_paths}
-    weight_deltas_and_masks_zeros = {
-        name: (weight_deltas[name], torch.ones(BATCH_SIZE)) for name in target_module_paths
-    }
-    mask_infos_zeros = make_mask_infos(
-        all_zeros_masks, weight_deltas_and_masks=weight_deltas_and_masks_zeros
-    )
+    delta_masks_zeros = {name: torch.ones(BATCH_SIZE) for name in target_module_paths}
+    mask_infos_zeros = make_mask_infos(all_zeros_masks, delta_masks=delta_masks_zeros)
     out_zeros = cm(token_ids, mask_infos=mask_infos_zeros)
 
     # Outputs should differ
@@ -1262,14 +1249,10 @@ def test_component_model_global_ci_partial_masking():
         low=0, high=target_model.embed.num_embeddings, size=(BATCH_SIZE,), dtype=torch.long
     )
 
-    weight_deltas = cm.calc_weight_deltas()
-
     # Partial mask (0.5 for all)
     partial_masks = {name: torch.full((BATCH_SIZE, C), 0.5) for name in target_module_paths}
-    weight_deltas_and_masks = {
-        name: (weight_deltas[name], torch.ones(BATCH_SIZE)) for name in target_module_paths
-    }
-    mask_infos = make_mask_infos(partial_masks, weight_deltas_and_masks=weight_deltas_and_masks)
+    delta_masks = {name: torch.ones(BATCH_SIZE) for name in target_module_paths}
+    mask_infos = make_mask_infos(partial_masks, delta_masks=delta_masks)
     out_partial = cm(token_ids, mask_infos=mask_infos)
 
     # Should produce valid output
@@ -1294,12 +1277,9 @@ def test_component_model_global_ci_weight_deltas_all_ones_matches_target():
         low=0, high=target_model.embed.num_embeddings, size=(BATCH_SIZE,), dtype=torch.long
     )
 
-    weight_deltas = cm.calc_weight_deltas()
     component_masks = {name: torch.ones(BATCH_SIZE, C) for name in target_module_paths}
-    weight_deltas_and_masks = {
-        name: (weight_deltas[name], torch.ones(BATCH_SIZE)) for name in target_module_paths
-    }
-    mask_infos = make_mask_infos(component_masks, weight_deltas_and_masks=weight_deltas_and_masks)
+    delta_masks = {name: torch.ones(BATCH_SIZE) for name in target_module_paths}
+    mask_infos = make_mask_infos(component_masks, delta_masks=delta_masks)
     out = cm(token_ids, mask_infos=mask_infos)
 
     torch.testing.assert_close(out, target_model(token_ids))

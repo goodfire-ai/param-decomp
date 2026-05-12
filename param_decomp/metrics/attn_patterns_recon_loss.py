@@ -121,48 +121,47 @@ def _attn_patterns_recon_loss_update(
     attn_modules: list[nn.Module | None],
 ) -> tuple[Float[Tensor, ""], int]:
     """Shared update logic for both CI-masked and stochastic variants."""
-    # 1. Compute target attention patterns from pre_weight_acts
+    del pre_weight_acts  # kept in the public metric update path for API symmetry
+
+    # 1. Compute unmasked-component attention patterns through a normal forward so FSDP hooks run.
+    pattern_paths = sorted(set(q_paths + k_paths))
+    full_component_masks = {
+        path: torch.ones_like(mask_infos_list[0][path].component_mask) for path in pattern_paths
+    }
+    target_cache = model(
+        batch,
+        mask_infos=make_mask_infos(full_component_masks),
+        cache_type="output",
+    ).cache
     target_patterns: list[Float[Tensor, "batch n_heads seq seq"]] = []
     for i, (q_path, k_path) in enumerate(zip(q_paths, k_paths, strict=True)):
         if is_combined:
             assert q_path == k_path
-            target_out = model.components[q_path].apply_decomposed(pre_weight_acts[q_path])
+            target_out = target_cache[q_path]
             target_q, target_k = _split_combined_qkv(target_out)
         else:
-            target_q = model.components[q_path].apply_decomposed(pre_weight_acts[q_path])
-            target_k = model.components[k_path].apply_decomposed(pre_weight_acts[k_path])
+            target_q = target_cache[q_path]
+            target_k = target_cache[k_path]
         target_patterns.append(
             _compute_attn_patterns(target_q, target_k, n_heads, attn_modules[i]).detach()
         )
 
     # 2. Compute masked attention patterns and KL divergence
-    device = get_obj_device(pre_weight_acts)
+    device = get_obj_device(target_cache)
     sum_kl = torch.tensor(0.0, device=device)
     n_distributions = 0
 
     for mask_infos in mask_infos_list:
-        comp_cache = model(batch, mask_infos=mask_infos, cache_type="input").cache
+        output_cache = model(batch, mask_infos=mask_infos, cache_type="output").cache
 
         for i, (q_path, k_path) in enumerate(zip(q_paths, k_paths, strict=True)):
             if is_combined:
                 assert q_path == k_path
-                masked_out = model.components[q_path].apply_decomposed(
-                    comp_cache[q_path],
-                    mask=mask_infos[q_path].component_mask,
-                    weight_delta_and_mask=mask_infos[q_path].weight_delta_and_mask,
-                )
+                masked_out = output_cache[q_path]
                 masked_q, masked_k = _split_combined_qkv(masked_out)
             else:
-                masked_q = model.components[q_path].apply_decomposed(
-                    comp_cache[q_path],
-                    mask=mask_infos[q_path].component_mask,
-                    weight_delta_and_mask=mask_infos[q_path].weight_delta_and_mask,
-                )
-                masked_k = model.components[k_path].apply_decomposed(
-                    comp_cache[k_path],
-                    mask=mask_infos[k_path].component_mask,
-                    weight_delta_and_mask=mask_infos[k_path].weight_delta_and_mask,
-                )
+                masked_q = output_cache[q_path]
+                masked_k = output_cache[k_path]
 
             masked_patterns = _compute_attn_patterns(masked_q, masked_k, n_heads, attn_modules[i])
             # KL(target || masked): sum over attention distribution dimension
@@ -220,7 +219,7 @@ class CIMaskedAttnPatternsReconLoss(Metric):
         ci: CIOutputs,
         **_: Any,
     ) -> None:
-        mask_infos = make_mask_infos(ci.lower_leaky, weight_deltas_and_masks=None)
+        mask_infos = make_mask_infos(ci.lower_leaky)
         sum_kl, n_distributions = _attn_patterns_recon_loss_update(
             model=self.model,
             batch=batch,
@@ -281,14 +280,13 @@ class StochasticAttnPatternsReconLoss(Metric):
         batch: Int[Tensor, "..."] | Float[Tensor, "..."],
         pre_weight_acts: dict[str, Float[Tensor, "..."]],
         ci: CIOutputs,
-        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
         **_: Any,
     ) -> None:
         mask_infos_list = [
             calc_stochastic_component_mask_info(
                 causal_importances=ci.lower_leaky,
                 component_mask_sampling=self.sampling,
-                weight_deltas=weight_deltas if self.use_delta_component else None,
+                use_delta_component=self.use_delta_component,
                 router=AllLayersRouter(),
             )
             for _ in range(self.n_mask_samples)

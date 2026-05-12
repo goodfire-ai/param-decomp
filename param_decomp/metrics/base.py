@@ -26,7 +26,7 @@ class Metric(Protocol):
         pre_weight_acts: dict[str, Float[Tensor, "..."]],
         ci: CIOutputs,
         current_frac_of_training: float,
-        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
+        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
     ) -> None:
         """Update metric state with a batch of data."""
         ...

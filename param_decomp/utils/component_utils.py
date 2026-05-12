@@ -3,14 +3,14 @@ from jaxtyping import Float
 from torch import Tensor
 
 from param_decomp.configs import SamplingType
-from param_decomp.models.components import ComponentsMaskInfo, WeightDeltaAndMask, make_mask_infos
+from param_decomp.models.components import ComponentsMaskInfo, make_mask_infos
 from param_decomp.routing import Router
 
 
 def calc_stochastic_component_mask_info(
     causal_importances: dict[str, Float[Tensor, "... C"]],
     component_mask_sampling: SamplingType,
-    weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
+    use_delta_component: bool,
     router: Router,
 ) -> dict[str, ComponentsMaskInfo]:
     ci_sample = next(iter(causal_importances.values()))
@@ -27,14 +27,11 @@ def calc_stochastic_component_mask_info(
                 stochastic_source = torch.rand_like(ci)
         component_masks[layer] = ci + (1 - ci) * stochastic_source
 
-    weight_deltas_and_masks: dict[str, WeightDeltaAndMask] | None = None
-    if weight_deltas is not None:
-        weight_deltas_and_masks = {}
+    delta_masks: dict[str, Float[Tensor, ...]] | None = None
+    if use_delta_component:
+        delta_masks = {}
         for layer in causal_importances:
-            weight_deltas_and_masks[layer] = (
-                weight_deltas[layer],
-                torch.rand(leading_dims, device=device, dtype=dtype),
-            )
+            delta_masks[layer] = torch.rand(leading_dims, device=device, dtype=dtype)
 
     routing_masks = router.get_masks(
         module_names=list(causal_importances.keys()),
@@ -43,7 +40,7 @@ def calc_stochastic_component_mask_info(
 
     return make_mask_infos(
         component_masks=component_masks,
-        weight_deltas_and_masks=weight_deltas_and_masks,
+        delta_masks=delta_masks,
         routing_masks=routing_masks,
     )
 

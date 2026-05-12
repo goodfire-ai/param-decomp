@@ -22,6 +22,7 @@ from tqdm import tqdm
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import (
     Config,
+    FaithfulnessLossConfig,
     LossMetricConfigType,
     MetricConfigType,
     PersistentPGDReconLossConfig,
@@ -52,7 +53,6 @@ from param_decomp.utils.distributed_utils import (
     seed_per_rank,
     sync_across_processes,
 )
-from param_decomp.utils.fsdp import calc_weight_deltas_full
 from param_decomp.utils.general_utils import (
     bf16_autocast,
     dict_safe_update_,
@@ -232,6 +232,23 @@ def optimize(
         component_model = model
     assert isinstance(component_model, ComponentModel), "component_model is not a ComponentModel"
 
+    uses_faithfulness_loss = any(
+        isinstance(cfg, FaithfulnessLossConfig) for cfg in config.loss_metric_configs
+    )
+    uses_faithfulness_metric = any(
+        isinstance(cfg, FaithfulnessLossConfig)
+        for cfg in [*config.loss_metric_configs, *config.eval_metric_configs]
+    )
+    if config.parallel_strategy == "fsdp":
+        assert config.faithfulness_warmup_steps == 0, (
+            "faithfulness_warmup_steps materializes full weight deltas and is not compatible "
+            "with FSDP-scale site-local delta math."
+        )
+        assert not uses_faithfulness_metric, (
+            "FaithfulnessLossConfig materializes full weight deltas and is not compatible "
+            "with FSDP-scale site-local delta math."
+        )
+
     if tied_weights is not None:
         # Tie component weights. Assume that the first element is a transpose of the second element
         # NOTE: Tying weights will make your training nondeterministic
@@ -343,14 +360,9 @@ def optimize(
         for ppgd_cfg in active_ppgd_configs:
             ppgd_states[ppgd_cfg].update_lr(step, config.steps)
 
-        # Under FSDP2, V/U are sharded DTensors outside any forward. The full-tensor
-        # gather here detaches before materializing, so faithfulness backward won't flow
-        # into V/U (known correctness regression under FSDP — proper fix is to compute
-        # delta-norms inside each site's forward).
-        if config.parallel_strategy == "fsdp":
-            weight_deltas = calc_weight_deltas_full(component_model)
-        else:
-            weight_deltas = component_model.calc_weight_deltas()
+        faithfulness_weight_deltas = (
+            component_model.calc_weight_deltas() if uses_faithfulness_loss else None
+        )
 
         batch_log_data: defaultdict[str, float] = defaultdict(float)
 
@@ -387,7 +399,6 @@ def optimize(
                     batch=batch,
                     target_out=target_model_output.output,
                     ci=ci.lower_leaky,
-                    weight_deltas=weight_deltas if config.use_delta_component else None,
                 )
 
             losses = compute_losses(
@@ -396,7 +407,7 @@ def optimize(
                 batch=batch,
                 ci=ci,
                 target_out=target_model_output.output,
-                weight_deltas=weight_deltas,
+                faithfulness_weight_deltas=faithfulness_weight_deltas,
                 current_frac_of_training=step / config.steps,
                 sampling=config.sampling,
                 use_delta_component=config.use_delta_component,

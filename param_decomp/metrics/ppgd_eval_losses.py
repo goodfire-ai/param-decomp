@@ -53,7 +53,6 @@ class PPGDReconEval(Metric):
         *,
         batch: Int[Tensor, "..."] | Float[Tensor, "..."],
         ci: CIOutputs,
-        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
         target_out: Float[Tensor, "..."],
         **_: Any,
     ) -> None:
@@ -62,7 +61,7 @@ class PPGDReconEval(Metric):
 
         mask_infos = get_ppgd_mask_infos(
             ci=ci.lower_leaky,
-            weight_deltas=weight_deltas if self.use_delta_component else None,
+            use_delta_component=self.use_delta_component,
             ppgd_sources=self._ppgd_state.get_effective_sources(),
             routing_masks="all",
             batch_dims=batch_dims,

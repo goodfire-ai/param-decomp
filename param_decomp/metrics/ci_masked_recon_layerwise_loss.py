@@ -22,7 +22,7 @@ def _ci_masked_recon_layerwise_loss_update(
 ) -> tuple[Float[Tensor, ""], int]:
     sum_loss = torch.tensor(0.0, device=get_obj_device(model))
     n_examples = 0
-    mask_infos = make_mask_infos(ci, weight_deltas_and_masks=None)
+    mask_infos = make_mask_infos(ci)
     for module_name, mask_info in mask_infos.items():
         out = model(batch, mask_infos={module_name: mask_info})
         loss, batch_n_examples = reconstruction_loss(out, target_out)

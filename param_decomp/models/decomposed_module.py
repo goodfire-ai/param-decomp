@@ -12,7 +12,7 @@ follows the same math the legacy hook-based path used:
   - `component_acts = x @ V`
   - optional mask: `component_acts *= mask`
   - `out = component_acts @ U`
-  - optional delta term: `out += delta_mask * (x @ weight_delta)`
+  - optional delta term: `out += delta_mask * (target_out - full_components_out)`
   - bias (if any): `out += bias`
   - optional routing mask: `where(routing_mask, out, target_out)`
 
@@ -34,7 +34,7 @@ from jaxtyping import Float
 from torch import Tensor, nn
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
-from param_decomp.models.mask_info import ComponentsMaskInfo, WeightDeltaAndMask
+from param_decomp.models.mask_info import ComponentsMaskInfo
 from param_decomp.utils.module_utils import init_param_
 
 CacheType = Literal["component_acts", "input", "output"]
@@ -150,7 +150,7 @@ class DecomposedLinear(nn.Module):
         self,
         x: Float[Tensor, "... d_in"],
         mask: Float[Tensor, "... C"] | None = None,
-        weight_delta_and_mask: "WeightDeltaAndMask | None" = None,
+        delta_mask: Float[Tensor, "..."] | None = None,
     ) -> Float[Tensor, "... d_out"]:
         """Run the decomposed path directly with explicit mask args.
 
@@ -163,7 +163,7 @@ class DecomposedLinear(nn.Module):
             if mask is not None
             else torch.ones((), device=self.V.device, dtype=self.V.dtype),
             routing_mask="all",
-            weight_delta_and_mask=weight_delta_and_mask,
+            delta_mask=delta_mask,
         )
         return self._decomposed_forward(x, info)
 
@@ -184,12 +184,19 @@ class DecomposedLinear(nn.Module):
             masked_component_acts, self.U, "... C, C d_out -> ... d_out"
         )
 
-        if info.weight_delta_and_mask is not None:
-            weight_delta, weight_delta_mask = info.weight_delta_and_mask
-            delta_out = einops.einsum(x, weight_delta, "... d_in, d_out d_in -> ... d_out")
-            assert delta_out.shape[:-1] == weight_delta_mask.shape
+        target_out: Tensor | None = None
+        if info.delta_mask is not None:
+            full_components_out = einops.einsum(
+                component_acts, self.U, "... C, C d_out -> ... d_out"
+            )
+            site_target_out: Tensor = self.linear(x)
+            target_out = site_target_out
+            if self.bias is not None:
+                full_components_out = full_components_out + self.bias
+            delta_out = site_target_out - full_components_out
+            assert delta_out.shape[:-1] == info.delta_mask.shape
             components_out = components_out + einops.einsum(
-                weight_delta_mask, delta_out, "..., ... d_out -> ... d_out"
+                info.delta_mask, delta_out, "..., ... d_out -> ... d_out"
             )
 
         if self.bias is not None:
@@ -198,8 +205,8 @@ class DecomposedLinear(nn.Module):
         if info.routing_mask == "all":
             return components_out
         else:
-            target_out = self.linear(x)
-            return torch.where(info.routing_mask[..., None], components_out, target_out)
+            routing_target_out: Tensor = target_out if target_out is not None else self.linear(x)
+            return torch.where(info.routing_mask[..., None], components_out, routing_target_out)
 
 
 class DecomposedEmbedding(nn.Module):
@@ -290,7 +297,7 @@ class DecomposedEmbedding(nn.Module):
         self,
         idx: Tensor,
         mask: Float[Tensor, "... C"] | None = None,
-        weight_delta_and_mask: WeightDeltaAndMask | None = None,
+        delta_mask: Float[Tensor, "..."] | None = None,
     ) -> Float[Tensor, "... d_embed"]:
         """Run the decomposed path directly with explicit mask args.
 
@@ -302,7 +309,7 @@ class DecomposedEmbedding(nn.Module):
             if mask is not None
             else torch.ones((), device=self.V.device, dtype=self.V.dtype),
             routing_mask="all",
-            weight_delta_and_mask=weight_delta_and_mask,
+            delta_mask=delta_mask,
         )
         return self._decomposed_forward(idx, info)
 
@@ -321,18 +328,26 @@ class DecomposedEmbedding(nn.Module):
             masked_component_acts, self.U, "... C, C d_embed -> ... d_embed"
         )
 
-        if info.weight_delta_and_mask is not None:
-            weight_delta, weight_delta_mask = info.weight_delta_and_mask
-            delta_out = weight_delta[idx]  # (..., d_embed)
+        target_out: Tensor | None = None
+        if info.delta_mask is not None:
+            full_components_out = einops.einsum(
+                component_acts, self.U, "... C, C d_embed -> ... d_embed"
+            )
+            site_target_out: Tensor = self.embedding(idx)
+            target_out = site_target_out
+            delta_out = site_target_out - full_components_out
+            assert delta_out.shape[:-1] == info.delta_mask.shape
             components_out = components_out + einops.einsum(
-                weight_delta_mask, delta_out, "..., ... d_embed -> ... d_embed"
+                info.delta_mask, delta_out, "..., ... d_embed -> ... d_embed"
             )
 
         if info.routing_mask == "all":
             return components_out
         else:
-            target_out = self.embedding(idx)
-            return torch.where(info.routing_mask[..., None], components_out, target_out)
+            routing_target_out: Tensor = (
+                target_out if target_out is not None else self.embedding(idx)
+            )
+            return torch.where(info.routing_mask[..., None], components_out, routing_target_out)
 
 
 DecomposedSite = DecomposedLinear | DecomposedEmbedding
