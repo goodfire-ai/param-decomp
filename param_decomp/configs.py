@@ -268,6 +268,26 @@ class LMTaskConfig(BaseConfig):
     )
 
 
+class DeepLinearTaskConfig(BaseConfig):
+    task_name: Literal["deep_linear"] = Field(
+        default="deep_linear",
+        description="Identifier for the deep-linear decomposition task",
+    )
+    D: PositiveInt = Field(..., description="Dimension of each weight matrix and the input/output")
+    L: PositiveInt = Field(..., description="Number of identity weight matrices stacked in series")
+    k: PositiveInt = Field(
+        ..., description="Number of active features per input (k-sparse inputs from [0, 1])"
+    )
+    beta: PositiveFloat = Field(
+        ..., description="Softmax temperature applied to the final pre-softmax logits"
+    )
+
+    @model_validator(mode="after")
+    def validate_model(self) -> Self:
+        assert self.k <= self.D, f"k ({self.k}) must be <= D ({self.D})"
+        return self
+
+
 class ModulePatternInfoConfig(BaseConfig):
     """Configuration for a module pattern with its number of components.
 
@@ -638,6 +658,14 @@ class PermutedCIPlotsConfig(BaseConfig):
         return config_dict
 
 
+class OneHotCIPlotsConfig(BaseConfig):
+    classname: Literal["OneHotCIPlots"] = "OneHotCIPlots"
+    input_magnitude: PositiveFloat = Field(
+        default=0.5,
+        description="Magnitude of the single active entry in each one-hot input.",
+    )
+
+
 class StochasticReconSubsetCEAndKLConfig(BaseConfig):
     classname: Literal["StochasticReconSubsetCEAndKL"] = "StochasticReconSubsetCEAndKL"
     include_patterns: dict[str, list[str]] | None
@@ -679,6 +707,7 @@ EvalOnlyMetricConfigType = (
     | PersistentPGDReconEvalConfig
     | PersistentPGDReconSubsetEvalConfig
     | PermutedCIPlotsConfig
+    | OneHotCIPlotsConfig
     | UVPlotsConfig
     | StochasticReconSubsetCEAndKLConfig
     | PGDMultiBatchReconLossConfig
@@ -688,7 +717,9 @@ EvalOnlyMetricConfigType = (
 )
 MetricConfigType = LossMetricConfigType | EvalOnlyMetricConfigType
 
-TaskConfig = TMSTaskConfig | ResidMLPTaskConfig | LMTaskConfig | IHTaskConfig
+TaskConfig = (
+    TMSTaskConfig | ResidMLPTaskConfig | LMTaskConfig | IHTaskConfig | DeepLinearTaskConfig
+)
 
 SamplingType = Literal["continuous", "binomial"]
 
@@ -1087,8 +1118,8 @@ class Config(BaseConfig):
             isinstance(cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig)
             for cfg in self.loss_metric_configs
         ):
-            assert isinstance(self.task_config, LMTaskConfig), (
-                "Persistent PGD losses are only supported with LM tasks"
+            assert isinstance(self.task_config, LMTaskConfig | DeepLinearTaskConfig), (
+                "Persistent PGD losses are only supported with LM or deep_linear tasks"
             )
 
         return self
