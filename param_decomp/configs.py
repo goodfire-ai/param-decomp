@@ -195,7 +195,7 @@ class ModulePatternInfoConfig(BaseConfig):
 class LossMetricConfig(BaseConfig):
     coeff: float | None = Field(
         default=None,
-        description="Loss coefficient. Used when metric is in loss_metric_configs.",
+        description="Loss coefficient. Required when set under `loss_metrics`; ignored under `eval_metrics`.",
     )
 
 
@@ -599,6 +599,78 @@ EvalOnlyMetricConfigType = (
 MetricConfigType = LossMetricConfigType | EvalOnlyMetricConfigType
 
 
+class LossMetricsConfig(BaseConfig):
+    """Container of training-loss metric configs.
+
+    Each field is a named, nullable metric config. Setting a field selects that metric for both
+    training (weighted by `coeff`) and evaluation. Fields left as None are omitted.
+    """
+
+    faithfulness: FaithfulnessLossConfig | None = None
+    importance_minimality: ImportanceMinimalityLossConfig | None = None
+    unmasked_recon: UnmaskedReconLossConfig | None = None
+    ci_masked_recon: CIMaskedReconLossConfig | None = None
+    ci_masked_recon_subset: CIMaskedReconSubsetLossConfig | None = None
+    ci_masked_recon_layerwise: CIMaskedReconLayerwiseLossConfig | None = None
+    stochastic_recon: StochasticReconLossConfig | None = None
+    stochastic_recon_subset: StochasticReconSubsetLossConfig | None = None
+    stochastic_recon_layerwise: StochasticReconLayerwiseLossConfig | None = None
+    stochastic_hidden_acts_recon: StochasticHiddenActsReconLossConfig | None = None
+    pgd_recon: PGDReconLossConfig | None = None
+    pgd_recon_subset: PGDReconSubsetLossConfig | None = None
+    pgd_recon_layerwise: PGDReconLayerwiseLossConfig | None = None
+    persistent_pgd_recon: PersistentPGDReconLossConfig | None = None
+    persistent_pgd_recon_subset: PersistentPGDReconSubsetLossConfig | None = None
+
+    def active(self) -> list[LossMetricConfigType]:
+        return [v for _, v in self if v is not None]
+
+
+class EvalMetricsConfig(BaseConfig):
+    """Container of *additional* eval-only metric configs.
+
+    Metrics set in `LossMetricsConfig` are automatically also evaluated; this container is for
+    metrics that should only run at eval time. Includes recon-loss classes shared with
+    `LossMetricsConfig` (used here when the user wants eval-only computation, no training-loss
+    contribution).
+    """
+
+    # Eval-only
+    ce_and_kl: CEandKLLossesConfig | None = None
+    ci_hidden_acts_recon: CIHiddenActsReconLossConfig | None = None
+    ci_histograms: CIHistogramsConfig | None = None
+    ci_l0: CI_L0Config | None = None
+    ci_mean_per_component: CIMeanPerComponentConfig | None = None
+    component_activation_density: ComponentActivationDensityConfig | None = None
+    identity_ci_error: IdentityCIErrorConfig | None = None
+    persistent_pgd_recon_eval: PersistentPGDReconEvalConfig | None = None
+    persistent_pgd_recon_subset_eval: PersistentPGDReconSubsetEvalConfig | None = None
+    permuted_ci_plots: PermutedCIPlotsConfig | None = None
+    uv_plots: UVPlotsConfig | None = None
+    stochastic_recon_subset_ce_and_kl: StochasticReconSubsetCEAndKLConfig | None = None
+    pgd_multibatch_recon: PGDMultiBatchReconLossConfig | None = None
+    pgd_multibatch_recon_subset: PGDMultiBatchReconSubsetLossConfig | None = None
+    ci_masked_attn_patterns_recon: CIMaskedAttnPatternsReconLossConfig | None = None
+    stochastic_attn_patterns_recon: StochasticAttnPatternsReconLossConfig | None = None
+    # Shared with LossMetricsConfig (use here for eval-only; coeff is ignored)
+    faithfulness: FaithfulnessLossConfig | None = None
+    importance_minimality: ImportanceMinimalityLossConfig | None = None
+    unmasked_recon: UnmaskedReconLossConfig | None = None
+    ci_masked_recon: CIMaskedReconLossConfig | None = None
+    ci_masked_recon_subset: CIMaskedReconSubsetLossConfig | None = None
+    ci_masked_recon_layerwise: CIMaskedReconLayerwiseLossConfig | None = None
+    stochastic_recon: StochasticReconLossConfig | None = None
+    stochastic_recon_subset: StochasticReconSubsetLossConfig | None = None
+    stochastic_recon_layerwise: StochasticReconLayerwiseLossConfig | None = None
+    stochastic_hidden_acts_recon: StochasticHiddenActsReconLossConfig | None = None
+    pgd_recon: PGDReconLossConfig | None = None
+    pgd_recon_subset: PGDReconSubsetLossConfig | None = None
+    pgd_recon_layerwise: PGDReconLayerwiseLossConfig | None = None
+
+    def active(self) -> list[MetricConfigType]:
+        return [v for _, v in self if v is not None]
+
+
 SamplingType = Literal["continuous", "binomial"]
 
 
@@ -687,14 +759,12 @@ class PDConfig(BaseConfig):
         "model and component weights. This allows for removing the faithfulness loss.",
     )
 
-    loss_metric_configs: list[Annotated[LossMetricConfigType, Field(discriminator="classname")]] = (
-        Field(
-            default=[],
-            description=(
-                "List of configs for loss metrics to compute (used for both training logs and eval); "
-                "coefficients provided here are also used for weighting the training loss and eval loss/total."
-            ),
-        )
+    loss_metrics: LossMetricsConfig = Field(
+        default_factory=LossMetricsConfig,
+        description=(
+            "Training-loss metrics. Each non-None field selects a loss; its `coeff` weights the "
+            "training loss. Active loss metrics are automatically also evaluated."
+        ),
     )
     # --- Training ---
     lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule configuration")
@@ -756,11 +826,12 @@ class PDConfig(BaseConfig):
         description="Interval (in steps) at which to save model checkpoints (None disables saving "
         "until the end of training).",
     )
-    eval_metric_configs: list[Annotated[MetricConfigType, Field(discriminator="classname")]] = (
-        Field(
-            default=[],
-            description="List of configs for metrics to use for evaluation",
-        )
+    eval_metrics: EvalMetricsConfig = Field(
+        default_factory=EvalMetricsConfig,
+        description=(
+            "Additional eval-only metrics. Metrics already set in `loss_metrics` are evaluated "
+            "automatically and should not be repeated here."
+        ),
     )
 
     # --- Component Tracking ---
@@ -810,8 +881,11 @@ class PDConfig(BaseConfig):
     def handle_deprecated_config_keys(cls, config_dict: dict[str, Any]) -> dict[str, Any]:
         """Remove deprecated config keys and change names of any keys that have been renamed."""
 
-        # We don't bother mapping the old ``eval_metrics`` to the new ``eval_metric_configs``.
-        config_dict.pop("eval_metrics", None)
+        for old_key in ("loss_metric_configs", "eval_metric_configs"):
+            assert old_key not in config_dict, (
+                f"`{old_key}` was replaced by `{old_key.removesuffix('_configs') + 's'}` "
+                f"(a dict of named loss configs). Update your config to the new format."
+            )
 
         cls._migrate_to_module_info(config_dict)
         cls._migrate_to_ci_config(config_dict)
@@ -828,12 +902,6 @@ class PDConfig(BaseConfig):
                 logger.info(f"Renaming {key} to {cls.RENAMED_CONFIG_KEYS[key]}")
                 config_dict[cls.RENAMED_CONFIG_KEYS[key]] = val
                 del config_dict[key]
-
-            elif key in ("loss_metric_configs", "eval_metric_configs"):
-                # We used to have an extra_init_kwargs field. This is hard to map. Just remove all
-                # configs with it
-                new_vals = [cfg for cfg in val if "extra_init_kwargs" not in cfg]
-                config_dict[key] = new_vals
 
         if "eval_batch_size" not in config_dict:
             config_dict["eval_batch_size"] = config_dict["batch_size"]
@@ -935,7 +1003,16 @@ class PDConfig(BaseConfig):
             "slow_eval_freq must be at least eval_freq"
         )
 
-        for cfg in self.loss_metric_configs:
-            assert cfg.coeff is not None, "All loss_metric_configs must have a coeff"
+        for cfg in self.loss_metrics.active():
+            assert cfg.coeff is not None, f"loss_metrics.{type(cfg).__name__} must have a coeff"
+
+        loss_names = {name for name, val in self.loss_metrics if val is not None}
+        eval_names = {name for name, val in self.eval_metrics if val is not None}
+        overlap = loss_names & eval_names
+        assert not overlap, (
+            f"The same metric was set under both loss_metrics and eval_metrics: {sorted(overlap)}. "
+            "Loss metrics are automatically evaluated; remove the eval_metrics entry, or move it "
+            "out of loss_metrics if you want eval-only."
+        )
 
         return self

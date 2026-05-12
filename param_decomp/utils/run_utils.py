@@ -23,12 +23,6 @@ from param_decomp.utils.git_utils import (
     repo_is_clean,
 )
 
-# Fields that use discriminated union merging: field_name -> discriminator_field
-_DISCRIMINATED_LIST_FIELDS: dict[str, str] = {
-    "loss_metric_configs": "classname",
-    "eval_metric_configs": "classname",
-}
-
 
 def _save_json(data: Any, path: Path | str, **kwargs: Any) -> None:
     with open(path, "w") as f:
@@ -85,14 +79,10 @@ def save_file(data: dict[str, Any] | Any, path: Path | str, **kwargs: Any) -> No
 
 
 def apply_nested_updates(base_dict: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
-    """Apply nested updates to a dictionary with flattened keys.
+    """Apply nested updates to a dictionary with dot-flattened keys.
 
-    Supports dot notation for all fields:
-        - Regular: "task_config.max_seq_len"
-        - Discriminated lists: "loss_metric_configs.Loss1.coeff"
-
-    For discriminated list fields, matches items by discriminator value in the path.
-    Preserves base items not mentioned in updates and adds new items from updates.
+    Example: `{"pd.loss_metrics.importance_minimality.coeff": 0.1}` deep-merges into
+    `base_dict["pd"]["loss_metrics"]["importance_minimality"]["coeff"] = 0.1`.
 
     Args:
         base_dict: The base configuration dictionary
@@ -106,75 +96,14 @@ def apply_nested_updates(base_dict: dict[str, Any], updates: dict[str, Any]) -> 
     for key, value in updates.items():
         if "." in key:
             keys = key.split(".")
-
-            # Find a discriminated-list segment anywhere in the path. Format example:
-            # "pd.loss_metric_configs.ImportanceMinimalityLoss.coeff" → list_idx=1.
-            list_idx: int | None = None
-            for i, seg in enumerate(keys):
-                if seg in _DISCRIMINATED_LIST_FIELDS and i + 2 < len(keys):
-                    list_idx = i
-                    break
-
-            if list_idx is not None:
-                # Navigate to the parent dict that holds the discriminated list.
-                parent: dict[str, Any] = result
-                for k in keys[:list_idx]:
-                    if k not in parent:
-                        parent[k] = {}
-                    assert isinstance(parent[k], dict)
-                    parent = parent[k]
-
-                list_field = keys[list_idx]
-                discriminator_value = keys[list_idx + 1]
-                field_path = keys[list_idx + 2 :]
-
-                # Ensure the list exists on the navigated parent
-                if list_field not in parent:
-                    parent[list_field] = []
-
-                if not isinstance(parent[list_field], list):
-                    raise ValueError(
-                        f"Expected '{list_field}' to be a list, got {type(parent[list_field])}"
-                    )
-
-                # Find or create the item with matching discriminator
-                discriminator_field = _DISCRIMINATED_LIST_FIELDS[list_field]
-                target_item = None
-                for item in parent[list_field]:
-                    if item.get(discriminator_field) == discriminator_value:
-                        target_item = item
-                        break
-
-                if target_item is None:
-                    # Create new item with discriminator
-                    target_item = {discriminator_field: discriminator_value}
-                    parent[list_field].append(target_item)
-
-                # Navigate the remaining path within the item
-                current_item: dict[str, Any] = target_item
-                for k in field_path[:-1]:
-                    if k not in current_item:
-                        current_item[k] = {}
-                    assert isinstance(current_item[k], dict)
-                    current_item = current_item[k]
-
-                # Set the final value
-                current_item[field_path[-1]] = value
-            else:
-                # Regular dot notation (non-discriminated)
-                current: dict[str, Any] = result
-
-                # Navigate to the parent of the final key
-                for k in keys[:-1]:
-                    if k not in current:
-                        current[k] = {}
-                    assert isinstance(current[k], dict)
-                    current = current[k]
-
-                # Set the final value
-                current[keys[-1]] = value
+            current: dict[str, Any] = result
+            for k in keys[:-1]:
+                if k not in current:
+                    current[k] = {}
+                assert isinstance(current[k], dict)
+                current = current[k]
+            current[keys[-1]] = value
         else:
-            # Simple key replacement (no dot notation)
             result[key] = value
 
     return result
@@ -185,89 +114,31 @@ def _extract_value_specs_from_sweep_params(
     path: list[str],
     value_specs: list[tuple[str, list[Any]]],
 ) -> None:
-    """Recursively extract all {"values": [...]} specs with flattened paths."""
-    if isinstance(obj, dict):
-        if "values" in obj and len(obj) == 1:
-            # This is a value spec - create flattened key
-            flattened_key = ".".join(path)
-            value_specs.append((flattened_key, obj["values"]))
-        else:
-            # Regular dict, recurse
-            for key, value in obj.items():
-                _extract_value_specs_from_sweep_params(value, path + [key], value_specs)
-    elif isinstance(obj, list):
-        # All lists must be discriminated
-        if len(path) == 0:
-            raise ValueError("Cannot have a list at the root level of sweep parameters")
+    """Recursively extract all {"values": [...]} specs with flattened paths.
 
-        parent_key = path[-1]
-        if parent_key not in _DISCRIMINATED_LIST_FIELDS:
-            raise ValueError(
-                f"List field '{parent_key}' is not in _DISCRIMINATED_LIST_FIELDS. "
-                f"All list fields must be discriminated unions. "
-                f"Known discriminated fields: {list(_DISCRIMINATED_LIST_FIELDS.keys())}"
-            )
-
-        discriminator_field = _DISCRIMINATED_LIST_FIELDS[parent_key]
-        seen_discriminators: set[str] = set()
-
-        for item in obj:
-            if not isinstance(item, dict):
-                raise ValueError(
-                    f"All items in discriminated list '{parent_key}' must be dicts, got {type(item)}"
-                )
-            if discriminator_field not in item:
-                raise ValueError(
-                    f"Item in discriminated list '{parent_key}' missing discriminator field '{discriminator_field}': {item}"
-                )
-
-            disc_value = item[discriminator_field]
-            if not isinstance(disc_value, str):
-                raise ValueError(
-                    f"Discriminator field '{discriminator_field}' must be a string, got {type(disc_value)}: {disc_value}"
-                )
-
-            if disc_value in seen_discriminators:
-                raise ValueError(
-                    f"Duplicate discriminator value '{disc_value}' in list field '{parent_key}'"
-                )
-            seen_discriminators.add(disc_value)
-
-            # Recurse into item's fields with discriminator in path
-            for field_key, field_value in item.items():
-                if field_key == discriminator_field:
-                    # Skip the discriminator field - it's already in the path
-                    continue
-                field_path = path + [disc_value, field_key]
-                _extract_value_specs_from_sweep_params(field_value, field_path, value_specs)
+    Non-dict leaves are ignored here; `_validate_sweep_params_have_values` is responsible
+    for rejecting them.
+    """
+    if not isinstance(obj, dict):
+        return
+    if "values" in obj and len(obj) == 1:
+        flattened_key = ".".join(path)
+        value_specs.append((flattened_key, obj["values"]))
+        return
+    for key, value in obj.items():
+        _extract_value_specs_from_sweep_params(value, path + [key], value_specs)
 
 
-def _validate_sweep_params_have_values(
-    obj: Any,
-    path: list[str],
-    parent_list_key: str | None = None,
-) -> None:
-    """Validate that all leaves have {"values": [...]}, except discriminator fields."""
+def _validate_sweep_params_have_values(obj: Any, path: list[str]) -> None:
+    """Validate that all leaves have {"values": [...]}."""
     if isinstance(obj, dict):
         if "values" in obj:
-            return  # This is a value spec
+            return
         if not obj:
-            return  # Empty dict is ok
+            return
         for key, value in obj.items():
-            _validate_sweep_params_have_values(value, path + [key], parent_list_key)
-    elif isinstance(obj, list):
-        # Track that we're inside a discriminated list
-        list_field = path[-1] if path else None
-        for item in obj:
-            _validate_sweep_params_have_values(item, path, parent_list_key=list_field)
+            _validate_sweep_params_have_values(value, path + [key])
     else:
-        # Primitive value - check if it's a discriminator field
-        if parent_list_key and parent_list_key in _DISCRIMINATED_LIST_FIELDS:
-            discriminator_field = _DISCRIMINATED_LIST_FIELDS[parent_list_key]
-            if path and path[-1] == discriminator_field:
-                return  # This is a discriminator field, it's allowed to be a primitive
-
-        # Otherwise, this is an error
         path_str = ".".join(path) if path else "(root)"
         raise ValueError(
             f'All leaf values in sweep parameters must be {{"values": [...]}}, '
@@ -278,39 +149,36 @@ def _validate_sweep_params_have_values(
 def generate_grid_combinations(parameters: dict[str, Any]) -> list[dict[str, Any]]:
     """Generate all combinations for a grid search from parameter specifications.
 
-    All leaf values (except discriminator fields) must be {"values": [...]}.
-    Discriminated lists use discriminator values in flattened keys instead of indices.
+    All leaf values must be {"values": [...]}.
 
     Args:
-        parameters: Nested dict/list structure where all leaves are {"values": [...]}
+        parameters: Nested dict structure where all leaves are {"values": [...]}
 
     Returns:
-        List of parameter combinations with flattened keys (e.g., "loss_metric_configs.Loss1.coeff")
+        List of parameter combinations with flattened keys (e.g.,
+        "loss_metrics.importance_minimality.coeff")
 
     Example:
         >>> params = {
         ...     "seed": {"values": [0, 1]},
-        ...     "loss_metric_configs": [
-        ...         {
-        ...             "classname": "ImportanceMinimalityLoss",
-        ...             "coeff": {"values": [0.1, 0.2]},
-        ...         }
-        ...     ],
+        ...     "loss_metrics": {
+        ...         "importance_minimality": {"coeff": {"values": [0.1, 0.2]}},
+        ...     },
         ... }
         >>> combos = generate_grid_combinations(params)
         >>> len(combos)
         4
         >>> combos[0]["seed"]
         0
-        >>> combos[0]["loss_metric_configs.ImportanceMinimalityLoss.coeff"]
+        >>> combos[0]["loss_metrics.importance_minimality.coeff"]
         0.1
     """
+    # Validate all leaves have {"values": [...]} before extracting
+    _validate_sweep_params_have_values(parameters, [])
+
     # Extract all value specs with their flattened paths
     value_specs: list[tuple[str, list[Any]]] = []
     _extract_value_specs_from_sweep_params(parameters, [], value_specs)
-
-    # Validate all non-discriminator leaves have {"values": [...]}
-    _validate_sweep_params_have_values(parameters, [])
 
     if not value_specs:
         # No value specs found, return single empty combination

@@ -10,6 +10,7 @@ from param_decomp.configs import (
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     LossMetricConfigType,
+    LossMetricsConfig,
     PersistentPGDReconLossConfig,
     PersistentPGDReconSubsetLossConfig,
     PGDReconLayerwiseLossConfig,
@@ -43,7 +44,7 @@ from param_decomp.persistent_pgd import PersistentPGDState
 
 
 def compute_losses(
-    loss_metric_configs: list[LossMetricConfigType],
+    loss_metrics: LossMetricsConfig,
     model: ComponentModel,
     batch: Any,
     ci: CIOutputs,
@@ -58,10 +59,10 @@ def compute_losses(
     ],
     reconstruction_loss: ReconstructionLoss,
 ) -> dict[LossMetricConfigType, Float[Tensor, ""]]:
-    """Compute losses for each config and return a dict mapping config to loss tensor."""
+    """Compute losses for each active loss metric and return a dict mapping config to loss tensor."""
     losses: dict[LossMetricConfigType, Float[Tensor, ""]] = {}
 
-    for cfg in loss_metric_configs:
+    for cfg in loss_metrics.active():
         assert cfg.coeff is not None, "All loss metric configs must have a coeff"
         match cfg:
             case FaithfulnessLossConfig():
