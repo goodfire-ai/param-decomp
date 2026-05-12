@@ -17,6 +17,7 @@ from jaxtyping import Float, Int
 from torch import Tensor
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.interfaces import LoadableModule
@@ -49,6 +50,7 @@ class LlamaSimpleMLPConfig(BaseConfig):
     use_grouped_query_attention: bool = True
     flash_attention: bool = True
     rms_norm_eps: float = 1e-6
+    gradient_checkpointing: bool = False
 
 
 class CausalSelfAttention(nn.Module):
@@ -361,7 +363,10 @@ class LlamaSimpleMLP(LoadableModule):
         tok_emb = self.wte(idx)
         x = tok_emb
         for block in self._h:
-            x = block(x)
+            if self.config.gradient_checkpointing:
+                x = checkpoint(block, x, use_reentrant=False)
+            else:
+                x = block(x)
         x = self.ln_f(x)
         logits = self.lm_head(x)
         loss = None

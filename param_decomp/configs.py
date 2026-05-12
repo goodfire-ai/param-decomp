@@ -829,6 +829,12 @@ class Config(BaseConfig):
         "and optimizer state across ranks (only compatible with optimizer_strategy='adamw'). "
         "FSDP requires world_size > 1 and assumes the fused-decomposition-sites model layout.",
     )
+    target_gradient_checkpointing: bool = Field(
+        default=False,
+        description="If True, apply gradient checkpointing to each transformer block of the "
+        "target model (currently only supported for LlamaSimpleMLP targets). Reduces activation "
+        "memory at the cost of one additional forward pass per block per backward step.",
+    )
 
     # --- Faithfulness Warmup ---
     faithfulness_warmup_steps: NonNegativeInt = Field(

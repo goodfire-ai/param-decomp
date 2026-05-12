@@ -114,14 +114,11 @@ def main() -> None:
     # 4. Forward + backward through the wrapped model.
     optimizer = torch.optim.AdamW([p for p in wrapped.parameters() if p.requires_grad], lr=1e-5)
 
-    rprint("\nrun #1: target-only forward (no mask_infos)")
+    rprint("\nrun #1: target-only forward (no mask_infos, no backward — target is frozen)")
     torch.cuda.reset_peak_memory_stats(device)
     idx = torch.randint(0, 50000, (args.batch, args.seq), device=device)
-    out = wrapped(idx)
-    loss = out.float().pow(2).mean()  # arbitrary scalar
-    loss.backward()
-    optimizer.step()
-    optimizer.zero_grad()
+    with torch.no_grad():
+        wrapped(idx)
     torch.cuda.synchronize()
     rprint(f"  peak: {torch.cuda.max_memory_allocated(device) / 1e9:.2f} GB")
 

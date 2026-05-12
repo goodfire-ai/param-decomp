@@ -96,7 +96,8 @@ def fsdp_wrap(
         component_model: ComponentModel built with fused-decomposition sites, on the
             right device, in eval mode for the target.
         device_id: Local rank's device index.
-        autocast_bf16: If True, gradient reductions and buffers use bf16; params stay fp32.
+        autocast_bf16: If True, params are stored as bf16 shards and reductions use bf16;
+            outputs remain fp32. Halves sharded-param memory and allreduce bandwidth.
     """
     del device_id  # FSDP2 picks up the device from the module + current torch.cuda.device
 
@@ -107,12 +108,17 @@ def fsdp_wrap(
     # Without this, the wrapped forward returns a DTensor and downstream layers (e.g. attn
     # bmm in the target's CausalSelfAttention) get mixed DTensor+Tensor inputs that DTensor's
     # dispatcher refuses.
+    #
+    # When autocast_bf16=True: store and reduce params as bf16 (halves sharded param memory
+    # and allreduce bandwidth) while keeping outputs fp32. This avoids the dtype-mismatch
+    # that afflicts output_dtype=bfloat16 (frozen target layers expect fp32 inputs). Compute
+    # inside each FSDP unit runs in mixed precision (bf16 param × fp32 input → fp32 accum).
     import torch as _torch
 
-    del autocast_bf16  # bf16 path needs proper threading of param_dtype across nested wraps; later.
+    param_dtype = _torch.bfloat16 if autocast_bf16 else _torch.float32
     mp_policy = MixedPrecisionPolicy(
-        param_dtype=_torch.float32,
-        reduce_dtype=_torch.float32,
+        param_dtype=param_dtype,
+        reduce_dtype=param_dtype,
         output_dtype=_torch.float32,
     )
 

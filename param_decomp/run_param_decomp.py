@@ -164,6 +164,16 @@ def optimize(
 
     target_model.requires_grad_(False)
 
+    if config.target_gradient_checkpointing:
+        assert hasattr(target_model, "config") and hasattr(
+            target_model.config, "gradient_checkpointing"
+        ), (
+            "target_gradient_checkpointing=True requires target model to have "
+            "config.gradient_checkpointing (currently only LlamaSimpleMLP supports this)"
+        )
+        target_cfg: Any = target_model.config  # type: ignore[attr-defined]
+        target_model.config = target_cfg.model_copy(update={"gradient_checkpointing": True})  # type: ignore[attr-defined]
+
     module_path_info = expand_module_patterns(target_model, config.all_module_info)
 
     model = ComponentModel(
