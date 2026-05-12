@@ -115,85 +115,50 @@ def main() -> None:
 
     step("decomposed forward + backward", decomposed_forward)
 
-    def decomposed_with_weight_deltas():
-        # Mirror the training loop: gather V/U via unshard, materialize deltas as regular
-        # Tensors via full_tensor, then run a forward+backward that exercises the
-        # weight_delta path in _decomposed_forward (the failure site in Jose runs).
-        sites_to_unshard = [s for s in cm.modules() if hasattr(s, "unshard")]
-        for s in sites_to_unshard:
-            s.unshard()
-        try:
-            weight_deltas = {}
-            for k, v in cm.calc_weight_deltas().items():
-                v = v.detach()
-                v = v.full_tensor() if hasattr(v, "full_tensor") else v.clone()
-                weight_deltas[k] = v
-        finally:
-            for s in sites_to_unshard:
-                s.reshard()
-
+    def decomposed_with_delta_masks():
+        # Exercise site-local delta math: each decomposed site computes
+        # target_output - full_component_output while its own params are gathered.
         masks = {
             site_name: torch.ones(2, 64, site.C, device=device)
             for site_name, site in cm.components.items()
         }
         delta_mask = {name: torch.ones(2, 64, device=device) for name in cm.components}
-        weight_deltas_and_masks = {
-            name: (weight_deltas[name], delta_mask[name]) for name in cm.components
-        }
-        infos = make_mask_infos(masks, weight_deltas_and_masks=weight_deltas_and_masks)
+        infos = make_mask_infos(masks, delta_masks=delta_mask)
         out = wrapped(idx, mask_infos=infos)
         loss = out.float().pow(2).mean()
         loss.backward()
 
-    step("decomposed forward + backward (with weight_deltas)", decomposed_with_weight_deltas)
+    step("decomposed forward + backward (with delta masks)", decomposed_with_delta_masks)
 
     def jose_like_step():
         """Mimic Jose's pattern: target-only forward, then multiple decomposed forwards
         for different loss flavors, then ONE backward at the end."""
-        # 1. compute weight_deltas
-        sites_to_unshard = [s for s in cm.modules() if hasattr(s, "unshard")]
-        for s in sites_to_unshard:
-            s.unshard()
-        try:
-            weight_deltas = {}
-            for k, v in cm.calc_weight_deltas().items():
-                v = v.detach()
-                weight_deltas[k] = v.full_tensor() if hasattr(v, "full_tensor") else v.clone()
-        finally:
-            for s in sites_to_unshard:
-                s.reshard()
-
-        # 2. target-only forward with cache (like the start of Jose's step)
+        # 1. target-only forward with cache (like the start of Jose's step)
         target_out = wrapped(idx, cache_type="input")
         target_logits = target_out.output
         cache = target_out.cache
 
-        # 3. CI fn forward (uses cache)
+        # 2. CI fn forward (uses cache)
         ci = cm.calc_causal_importances(
             pre_weight_acts=cache, detach_inputs=False, sampling="continuous"
         )
 
-        # 4. multiple decomposed forwards with different masks (mimicking compute_losses)
+        # 3. multiple decomposed forwards with different masks (mimicking compute_losses)
         delta_masks = {name: torch.ones(2, 64, device=device) for name in cm.components}
         masks_a = ci.lower_leaky
-        infos_a = make_mask_infos(
-            masks_a,
-            weight_deltas_and_masks={n: (weight_deltas[n], delta_masks[n]) for n in cm.components},
-        )
+        infos_a = make_mask_infos(masks_a, delta_masks=delta_masks)
         out_a = wrapped(idx, mask_infos=infos_a)
 
         masks_b = {n: torch.ones_like(v) for n, v in ci.lower_leaky.items()}
-        infos_b = make_mask_infos(
-            masks_b,
-            weight_deltas_and_masks={n: (weight_deltas[n], delta_masks[n]) for n in cm.components},
-        )
+        infos_b = make_mask_infos(masks_b, delta_masks=delta_masks)
         out_b = wrapped(idx, mask_infos=infos_b)
 
-        # 5. combined loss
+        # 4. combined loss, including FSDP-registered faithfulness terms
+        faith_sum, faith_numel = cm.calc_faithfulness_terms()
         loss = (
             (out_a - target_logits).pow(2).mean()
             + (out_b - target_logits).pow(2).mean()
-            + sum(v.pow(2).sum() for v in weight_deltas.values()) * 1e-3
+            + (faith_sum / faith_numel) * 1e-3
         )
         loss.backward()
 

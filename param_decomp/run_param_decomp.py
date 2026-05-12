@@ -22,7 +22,6 @@ from tqdm import tqdm
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import (
     Config,
-    FaithfulnessLossConfig,
     LossMetricConfigType,
     MetricConfigType,
     PersistentPGDReconLossConfig,
@@ -98,8 +97,7 @@ def run_faithfulness_warmup(
 
     for faithfulness_warmup_step in range(config.faithfulness_warmup_steps):
         faithfulness_warmup_optimizer.zero_grad()
-        weight_deltas = component_model.calc_weight_deltas()
-        loss = faithfulness_loss(weight_deltas)
+        loss = faithfulness_loss(component_model)
         loss.backward()
         faithfulness_warmup_optimizer.step()
 
@@ -232,23 +230,6 @@ def optimize(
         component_model = model
     assert isinstance(component_model, ComponentModel), "component_model is not a ComponentModel"
 
-    uses_faithfulness_loss = any(
-        isinstance(cfg, FaithfulnessLossConfig) for cfg in config.loss_metric_configs
-    )
-    uses_faithfulness_metric = any(
-        isinstance(cfg, FaithfulnessLossConfig)
-        for cfg in [*config.loss_metric_configs, *config.eval_metric_configs]
-    )
-    if config.parallel_strategy == "fsdp":
-        assert config.faithfulness_warmup_steps == 0, (
-            "faithfulness_warmup_steps materializes full weight deltas and is not compatible "
-            "with FSDP-scale site-local delta math."
-        )
-        assert not uses_faithfulness_metric, (
-            "FaithfulnessLossConfig materializes full weight deltas and is not compatible "
-            "with FSDP-scale site-local delta math."
-        )
-
     if tied_weights is not None:
         # Tie component weights. Assume that the first element is a transpose of the second element
         # NOTE: Tying weights will make your training nondeterministic
@@ -360,10 +341,6 @@ def optimize(
         for ppgd_cfg in active_ppgd_configs:
             ppgd_states[ppgd_cfg].update_lr(step, config.steps)
 
-        faithfulness_weight_deltas = (
-            component_model.calc_weight_deltas() if uses_faithfulness_loss else None
-        )
-
         batch_log_data: defaultdict[str, float] = defaultdict(float)
 
         batch = move_batch_to_device(next(train_iterator), device)
@@ -407,7 +384,6 @@ def optimize(
                 batch=batch,
                 ci=ci,
                 target_out=target_model_output.output,
-                faithfulness_weight_deltas=faithfulness_weight_deltas,
                 current_frac_of_training=step / config.steps,
                 sampling=config.sampling,
                 use_delta_component=config.use_delta_component,

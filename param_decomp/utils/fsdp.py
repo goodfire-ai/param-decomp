@@ -19,7 +19,7 @@ Mixed precision: bf16 reduce + bf16 buffers, params stay fp32. Subsumes the lega
 from __future__ import annotations
 
 from torch import nn
-from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
+from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard, register_fsdp_forward_method
 
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import GlobalSharedTransformerCiFn, TransformerBlock
@@ -108,7 +108,10 @@ def fsdp_wrap(
     # frozen params as regular nn.Parameters; their memory cost is bounded (a few hundred MB
     # at the 4B-target scale) and they don't update.
     for module in component_model.modules():
-        if isinstance(module, DecomposedLinear | DecomposedEmbedding | TransformerBlock):
+        if isinstance(module, DecomposedLinear | DecomposedEmbedding):
+            fully_shard(module, mp_policy=mp_policy)
+            register_fsdp_forward_method(module, "faithfulness_terms")
+        elif isinstance(module, TransformerBlock):
             fully_shard(module, mp_policy=mp_policy)
 
     for submodule in component_model.ci_fn.modules():

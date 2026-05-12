@@ -400,14 +400,6 @@ def evaluate(
             continue
         metrics.append(metric)
 
-    needs_faithfulness_deltas = any(isinstance(metric, FaithfulnessLoss) for metric in metrics)
-    if run_config.parallel_strategy == "fsdp":
-        assert not needs_faithfulness_deltas, (
-            "FaithfulnessLoss materializes full weight deltas and is not compatible "
-            "with FSDP-scale site-local delta math."
-        )
-    faithfulness_weight_deltas = model.calc_weight_deltas() if needs_faithfulness_deltas else None
-
     for _ in range(n_eval_steps):
         batch = move_batch_to_device(next(eval_iterator), device)
 
@@ -425,7 +417,6 @@ def evaluate(
                 pre_weight_acts=target_output.cache,
                 ci=ci,
                 current_frac_of_training=current_frac_of_training,
-                weight_deltas=faithfulness_weight_deltas,
             )
 
     outputs: MetricOutType = {}

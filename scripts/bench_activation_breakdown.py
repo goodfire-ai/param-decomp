@@ -156,22 +156,19 @@ def main() -> None:
     results.append(measure("[fwd+bwd] target + CI fn", f4, device))
 
     # Full component forward through one of the modules' components (no PPGD warmup).
-    from param_decomp.models.components import make_mask_infos
+    from param_decomp.models.mask_info import make_mask_infos
 
     def f5():
         out_cache = cm(idx, cache_type="input")
         ci = cm.calc_causal_importances(
             pre_weight_acts=out_cache.cache, detach_inputs=False, sampling="continuous"
         )
-        weight_deltas = cm.calc_weight_deltas()
         delta_masks = {
             name: torch.ones(idx.shape, device=device) for name in cm.target_module_paths
         }
         mask_infos = make_mask_infos(
             component_masks=ci.lower_leaky,
-            weight_deltas_and_masks={
-                name: (weight_deltas[name], delta_masks[name]) for name in cm.target_module_paths
-            },
+            delta_masks=delta_masks,
         )
         out_components = cm(idx, mask_infos=mask_infos)
         loss = out_components.sum() + sum(v.sum() for v in ci.lower_leaky.values())

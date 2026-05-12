@@ -342,8 +342,7 @@ def test_input_cache_captures_pre_weight_input():
     torch.testing.assert_close(cache["mlp"], embed_out)
 
 
-def test_weight_deltas():
-    # GIVEN a component model
+def test_faithfulness_terms():
     target_model = tiny_target()
     target_module_paths = ["embed", "mlp", "out"]
     cm = ComponentModel(
@@ -354,12 +353,16 @@ def test_weight_deltas():
         sigmoid_type="leaky_hard",
     )
 
-    # THEN the weight deltas match the target weight
-    deltas = cm.calc_weight_deltas()
+    expected_sum_sq = torch.tensor(0.0)
+    expected_numel = 0
     for name in target_module_paths:
-        target_w = cm.target_weight(name)
-        comp_w = cm.components[name].component_weight
-        torch.testing.assert_close(target_w, comp_w + deltas[name])
+        delta = cm.target_weight(name) - cm.components[name].component_weight
+        expected_sum_sq = expected_sum_sq + delta.pow(2).sum()
+        expected_numel += delta.numel()
+
+    sum_sq, numel = cm.calc_faithfulness_terms()
+    assert numel == expected_numel
+    torch.testing.assert_close(sum_sq, expected_sum_sq)
 
 
 def test_replacement_effects_fwd_pass():

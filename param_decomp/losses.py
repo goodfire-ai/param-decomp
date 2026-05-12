@@ -48,7 +48,6 @@ def compute_losses(
     batch: Any,
     ci: CIOutputs,
     target_out: Tensor,
-    faithfulness_weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
     current_frac_of_training: float,
     sampling: SamplingType,
     use_delta_component: bool,
@@ -65,11 +64,7 @@ def compute_losses(
         assert cfg.coeff is not None, "All loss metric configs must have a coeff"
         match cfg:
             case FaithfulnessLossConfig():
-                assert faithfulness_weight_deltas is not None, (
-                    "FaithfulnessLossConfig requires full weight deltas. This loss is not "
-                    "compatible with FSDP-scale site-local delta math."
-                )
-                loss = faithfulness_loss(weight_deltas=faithfulness_weight_deltas)
+                loss = faithfulness_loss(model=model)
             case ImportanceMinimalityLossConfig():
                 loss = importance_minimality_loss(
                     ci_upper_leaky=ci.upper_leaky,

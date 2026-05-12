@@ -78,7 +78,11 @@ class DecomposedLinear(nn.Module):
 
         ComponentModel uses this on every site before invoking `target_model(x)`.
         """
-        prev_mask, prev_cache, prev_type = self._mask_info, self._cache, self._cache_type
+        prev_mask, prev_cache, prev_type = (
+            self._mask_info,
+            self._cache,
+            self._cache_type,
+        )
         self._mask_info = mask_info
         self._cache = cache
         self._cache_type = cache_type
@@ -123,9 +127,10 @@ class DecomposedLinear(nn.Module):
         """V @ U transposed to nn.Linear convention (d_out, d_in)."""
         return einops.einsum(self.V, self.U, "d_in C, C d_out -> d_out d_in")
 
-    def calc_weight_delta(self) -> Float[Tensor, "d_out d_in"]:
-        """W_target - V@U, materialized in the site (so FSDP has both gathered)."""
-        return self.target_weight - self.component_weight
+    def faithfulness_terms(self) -> tuple[Float[Tensor, ""], int]:
+        """Squared-error sum and parameter count for `W_target - V@U`."""
+        delta = self.target_weight - self.component_weight
+        return delta.pow(2).sum(), delta.numel()
 
     def get_component_acts(self, x: Float[Tensor, "... d_in"]) -> Float[Tensor, "... C"]:
         """x @ V — the pre-mask component activations. Used by MLP-type CI fns."""
@@ -252,7 +257,11 @@ class DecomposedEmbedding(nn.Module):
         cache: dict[str, Tensor] | None,
         cache_type: CacheType | None,
     ):
-        prev_mask, prev_cache, prev_type = self._mask_info, self._cache, self._cache_type
+        prev_mask, prev_cache, prev_type = (
+            self._mask_info,
+            self._cache,
+            self._cache_type,
+        )
         self._mask_info = mask_info
         self._cache = cache
         self._cache_type = cache_type
@@ -271,8 +280,10 @@ class DecomposedEmbedding(nn.Module):
     def component_weight(self) -> Float[Tensor, "vocab d_embed"]:
         return einops.einsum(self.V, self.U, "vocab C, C d_embed -> vocab d_embed")
 
-    def calc_weight_delta(self) -> Float[Tensor, "vocab d_embed"]:
-        return self.target_weight - self.component_weight
+    def faithfulness_terms(self) -> tuple[Float[Tensor, ""], int]:
+        """Squared-error sum and parameter count for `W_target - V@U`."""
+        delta = self.target_weight - self.component_weight
+        return delta.pow(2).sum(), delta.numel()
 
     def get_component_acts(self, idx: Tensor) -> Float[Tensor, "... C"]:
         """V[idx] — the pre-mask component activations for embedding sites."""
