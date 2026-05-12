@@ -599,12 +599,8 @@ EvalOnlyMetricConfigType = (
 MetricConfigType = LossMetricConfigType | EvalOnlyMetricConfigType
 
 
-class LossMetricsConfig(BaseConfig):
-    """Container of training-loss metric configs.
-
-    Each field is a named, nullable metric config. Setting a field selects that metric for both
-    training (weighted by `coeff`) and evaluation. Fields left as None are omitted.
-    """
+class _LossCapableMetricsConfig(BaseConfig):
+    """Shared loss-capable metric fields used by both `LossMetricsConfig` and `EvalMetricsConfig`."""
 
     faithfulness: FaithfulnessLossConfig | None = None
     importance_minimality: ImportanceMinimalityLossConfig | None = None
@@ -622,20 +618,25 @@ class LossMetricsConfig(BaseConfig):
     persistent_pgd_recon: PersistentPGDReconLossConfig | None = None
     persistent_pgd_recon_subset: PersistentPGDReconSubsetLossConfig | None = None
 
+
+class LossMetricsConfig(_LossCapableMetricsConfig):
+    """Container of training-loss metric configs.
+
+    Each field is a named, nullable metric config. Setting a field selects that metric for both
+    training (weighted by `coeff`) and evaluation. Fields left as None are omitted.
+    """
+
     def active(self) -> list[LossMetricConfigType]:
         return [v for _, v in self if v is not None]
 
 
-class EvalMetricsConfig(BaseConfig):
-    """Container of *additional* eval-only metric configs.
+class EvalMetricsConfig(_LossCapableMetricsConfig):
+    """Container of eval metric configs.
 
-    Metrics set in `LossMetricsConfig` are automatically also evaluated; this container is for
-    metrics that should only run at eval time. Includes recon-loss classes shared with
-    `LossMetricsConfig` (used here when the user wants eval-only computation, no training-loss
-    contribution).
+    Includes all loss-capable metrics (set them here for eval-only computation; `coeff` is ignored)
+    and additional eval-only metric fields.
     """
 
-    # Eval-only
     ce_and_kl: CEandKLLossesConfig | None = None
     ci_hidden_acts_recon: CIHiddenActsReconLossConfig | None = None
     ci_histograms: CIHistogramsConfig | None = None
@@ -652,20 +653,6 @@ class EvalMetricsConfig(BaseConfig):
     pgd_multibatch_recon_subset: PGDMultiBatchReconSubsetLossConfig | None = None
     ci_masked_attn_patterns_recon: CIMaskedAttnPatternsReconLossConfig | None = None
     stochastic_attn_patterns_recon: StochasticAttnPatternsReconLossConfig | None = None
-    # Shared with LossMetricsConfig (use here for eval-only; coeff is ignored)
-    faithfulness: FaithfulnessLossConfig | None = None
-    importance_minimality: ImportanceMinimalityLossConfig | None = None
-    unmasked_recon: UnmaskedReconLossConfig | None = None
-    ci_masked_recon: CIMaskedReconLossConfig | None = None
-    ci_masked_recon_subset: CIMaskedReconSubsetLossConfig | None = None
-    ci_masked_recon_layerwise: CIMaskedReconLayerwiseLossConfig | None = None
-    stochastic_recon: StochasticReconLossConfig | None = None
-    stochastic_recon_subset: StochasticReconSubsetLossConfig | None = None
-    stochastic_recon_layerwise: StochasticReconLayerwiseLossConfig | None = None
-    stochastic_hidden_acts_recon: StochasticHiddenActsReconLossConfig | None = None
-    pgd_recon: PGDReconLossConfig | None = None
-    pgd_recon_subset: PGDReconSubsetLossConfig | None = None
-    pgd_recon_layerwise: PGDReconLayerwiseLossConfig | None = None
 
     def active(self) -> list[MetricConfigType]:
         return [v for _, v in self if v is not None]
