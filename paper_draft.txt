@@ -1,0 +1,1338 @@
+\documentclass{article}
+
+% if you need to pass options to natbib, use, e.g.:
+%     \PassOptionsToPackage{numbers, compress}{natbib}
+% before loading neurips_2024
+
+
+% ready for submission
+% \usepackage{neurips_2024}
+
+
+% to compile a preprint version, e.g., for submission to arXiv, add add the
+% [preprint] option:
+\usepackage[preprint]{neurips_2024}
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\MDL}{\mathcal{L}_{\text{MDL}}}
+\newcommand{\frob}[1]{\lVert #1 \rVert_F}
+\newcommand{\tr}{\operatorname{tr}}
+
+
+
+% to compile a camera-ready version, add the [final] option, e.g.:
+%     \usepackage[final]{neurips_2024}
+
+
+% to avoid loading the natbib package, add option nonatbib:
+%    \usepackage[nonatbib]{neurips_2024}
+
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{bm}
+\usepackage{amsthm}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+%\usepackage{cleveref}%
+
+
+
+
+\title{Interpreting language model parameters}
+
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to LaTeX to determine where to break the
+% lines. Using \AND forces a line break at that point. So, if LaTeX puts 3 of 4
+% authors names on the first line, and the last on the second line, try using
+% \AND instead of \And before the third author name.
+
+
+\author{%
+  TODO authors\thanks{affiliations} \\
+   institutions\\
+  \texttt{tbd@tbd.com} \\
+  % examples of more authors
+  % \And
+  % Coauthor \\
+  % Affiliation \\
+  % Address \\
+  % \texttt{email} \\
+  % \AND
+  % Coauthor \\
+  % Affiliation \\
+  % Address \\
+  % \texttt{email} \\
+  % \And
+  % Coauthor \\
+  % Affiliation \\
+  % Address \\
+  % \texttt{email} \\
+  % \And
+  % Coauthor \\
+  % Affiliation \\
+  % Address \\
+  % \texttt{email} \\
+}
+
+
+\begin{document}
+
+\definecolor{codegray}{gray}{0.9}
+\newcommand{\code}[1]{\colorbox{codegray}{\texttt{\vphantom{Ap}#1}}}
+
+\maketitle
+
+
+\begin{abstract}
+TODO abstract
+\end{abstract}
+
+
+\section{Introduction} 
+
+% Structure in the parameters of language models is responsible for their remarkable intelligence. The trainable parameters of these neural networks, in interaction with the architecture and dataset, learn to implement algorithms that we do not know how to design directly.
+Language models' trainable parameters, in interaction with their architecture and dataset, are responsible for their remarkable intelligence. Through training, their parameters learn to implement neural algorithms that we do not know how to design directly.
+Deep learning thus lets us build machines that can solve tasks that otherwise resist engineering solutions. And, incidentally, it creates objects that are of great scientific interest in their own right. However, since we did not design these neural algorithms ourselves, it also means that an increasing portion of our daily lives depend on increasingly capable systems that we do not deeply understand \cite{Bengio2026InternationalAISafety}.
+
+Mechanistic interpretability aims to reverse engineer neural networks so that we can understand networks such as language models. 
+But reverse engineering typically involves breaking up a system into its constituent parts in order to understand those parts and their interactions in relative isolation. A key barrier to reverse engineering neural networks is that it is not obvious how best to decompose them into simpler parts that we can study in this way \cite{mueller2024questrightmediatorhistory, sharkey2025openproblemsmechanisticinterpretability}. 
+Unfortunately, naive choices of these parts---such as neurons, attention heads, or whole layers---don't always map to individual, interpretable computations \cite{hinton1981parallel, wei2015understandingintraclassknowledgeinside, nguyen2016multifacetedfeaturevisualizationuncovering, olah2017feature, janiak2023polysemantic, jermyn2023attention, yun2021sparse, lindsey2024crosscoders}. 
+
+Alternative approaches to decomposition, such as transcoders \cite{dunefsky2024transcodersinterpretablellmfeature, ameisen2025circuit} or mixtures of linear transforms  \cite{oldfield2025towards, lindsey2025molts}, typically involve fitting a set of simple functions to the transitions between activations at different layers in the network, and linearly combining the outputs of these simple functions.
+The idea here is to approximate the complex, nonlinear function implemented by the network's layers using a simpler, easier to understand function. These methods, sometimes called \textit{activation-based decomposition} methods, have led to significant advances in our understanding of the intermediate representations inside neural networks when computing their outputs \cite{dunefsky2024transcodersinterpretablellmfeature, ameisen2025circuit}. 
+
+But identifying representations is not the same as understanding the computations that use those representations as their inputs and outputs. Unfortunately, because the simpler functions that these methods use are of a different functional form to the original network, it is hard to relate their accounts of network function to the actual objects that are doing the computations---the network's parameters and its nonlinearities. This is not just a theoretical issue; it prevents us from achieving practical engineering goals. For example, it makes it challenging to know how to make edits to a model's parameters that change its neural algorithm in a predictable, desirable way (while also avoiding unpredictable side effects). It also makes it hard to predict how the model's neural algorithm will perform on a different distribution than the one on which it was studied. This mismatch of functional form between models and their activation-based decompositions decompositions is an important issue, but it is not the only one: Activation-based methods have not yet yielded decompositions that exhibit a fully satisfactory level of mechanistic faithfulness \cite{ameisen2025circuit}, and suffer from a number of other issues (See \cite{sharkey2025openproblemsmechanisticinterpretability} for review).
+
+%Consequently, methods such as sparse dictionary learning \cite{yun2021sparse, Sharkey_2022, cunningham2023sparse, cunningham2023sparseautoencodershighlyinterpretable, bricken2023monosemanticity}, transcoders \cite{dunefsky2024transcodersinterpretablellmfeature, ameisen2025circuit}, and mixtures of linear transforms (MOLTs) \cite{oldfield2025towards, lindsey2025molts} were introduced to decompose datasets of neural activations, with the hope that they would identify units that approximate the network's underlying computational units. These methods, sometimes called \textit{activation-based decomposition} methods, unfortunately suffer from a range of issues, including feature splitting \cite{bricken2023monosemanticity, chanin2024absorptionstudyingfeaturesplitting} and unreliable level of mechanistic faithfulness \cite{ameisen2025circuit} (See \cite{sharkey2025openproblemsmechanisticinterpretability} for a more comprehensive review of these methods). Mechanistic unfaithfulness is suboptimal for activation-based methods' use in mechanistic analysis, and arises in part because these methods do not optimize for it. They approximate parts of the original network using functions of a different functional form as parts of the network. Their accounts of networks' computations are therefore not given in terms of the actual objects that are doing the computations---the network's parameters and its nonlinearities. 
+
+These issues motivate alternative approaches to mechanistic decomposition, including parameter decomposition methods \cite{braun2025interpretabilityparameterspaceminimizing, bushnaq2025spd, chrisman2025identifyingsparselyactivecircuits}, which give accounts of network function in terms of \textit{parameter components} that the network uses on each datapoint. \textit{Ablation-based parameter decomposition methods} \cite{braun2025interpretabilityparameterspaceminimizing, bushnaq2025spd} identify a set of parameter components where as few components as possible are `necessary' to perform the same computations original network on any datapoint, where `necessary' means that they cannot be ablated (including, crucially, partial ablations) on a given datapoint without adversely affecting output reconstruction error. Simultaneously, the parameter components are selected to implement as simple computations as possible and to sum collectively to the target network's parameters. If parameter components exhibit all these properties, then they are strong candidates for the network's `ground truth mechanisms' (though one would first need to accept philosophically that such mechanisms can be said to exist in networks trained on real data!).
+
+Parameter decomposition methods can identify known ground truth mechanisms in toy models that: are not aligned to e.g. neurons, individual attention heads, or layers; operate on representations in superposition; or are multidimensional. And, due to the requirement that components sum to the target model, parameter decomposition methods do not exhibit feature splitting. Notably, parameter decomposition methods are also architecture-agnostic and can readily be applied to any architecture, unlike activation-based methods, where it has been challenging to use the same decomposition methods to decompose both attention layers and MLPs \cite{kamath2025tracing, ameisen2025circuit, wynroe2024decomposing, ge2024localglobal}. In demonstration of this ability, previous work has used ablation-based parameter decomposition to identify induction heads in a transformer trained on a toy model of induction \cite{christensen2025decomposition}. 
+
+Ablation-based parameter decomposition methods thus promise solutions to many of the issues of activation-based decomposition methods. However, prior parameter decomposition proposals have several important shortcomings: 
+\begin{itemize}
+    \item \textbf{No application to full language models} While the most recent parameter decomposition method, Stochastic Parameter Decomposition (SPD)\cite{bushnaq2025spd} is more scalable than its predecessor (Attribution-based Parameter Decomposition \cite{braun2024identifying}), it has not yet been applied to full language models. 
+    \item \textbf{No demonstration of robustness to adversarial ablations}: While some work has applied SPD to a single layer of GPT2-small \cite{christensen2025decomposition}, no application of SPD so far has measured key metrics that would be necessary to ensure mechanistic faithfulness, such as output reconstruction under adversarial ablations (rather than only stochastic ablations).
+    \item \textbf{Partial incompleteness}: Previous implementations of SPD have also been partially incomplete: Attribution-based parameter decomposition \cite{braun2025interpretabilityparameterspaceminimizing} decomposed networks into full vectors in parameter space, which span all parameters in the model. But SPD decomposes them into rank-one matrices, which are limited only to single parameter matrices. A full implementation of SPD requires a \textit{post hoc} clustering step to combine multiple rank-one matrices into full vectors in parameter space, but previous work left this clustering step implicit \cite{bushnaq2025spd}.
+    \item \textbf{No analysis of nonlinear interactions between components}: Previous work omitted analyses of the nonlinear interactions between parameter components, which would be crucial for assessing how useful parameter decomposition methods are for interpretability.  
+\end{itemize}
+
+In this work, we resolve all of these issues and introduce a method called \textit{ad\textbf{V}ersarial \textbf{P}arameter \textbf{D}ecomposition} (\textbf{VPD}). 
+
+VPD builds heavily on the SPD method introduced by \cite{bushnaq2025spd} but has several important modifications, which together make it more mechanistically faithful and scalable to larger models than decomposed in previous work (cref section). The primary difference between VPD and SPD is the way ablations are done. On each datapoint, both SPD and VPD sample from the space of possible partial ablations of parameter components in order to check whether those parameter components can be partially ablated in any combination, thus identifying whether they are `necessary' for that datapoint. But SPD samples from the space of partial ablations using \textit{stochastic} samples from the space, whereas VPD uses \textit{adversarially chosen samples}. Both approaches are nonetheless designed to approximate what would happen if we could check \textit{all} potential partial ablations.
+
+Here, we use VPD to decompose a small language model ($67$M parameters) trained on the Pile \cite{gao2020pile}. We find parameter components that are highly interpretable (cref section), both in terms of the dataset examples that they activate on (cref section) and how they interact with other components to produce specific behaviors (cref section). We compare the parameter components that we find to the objects found by other decomposition methods, such as sparse autoencoder (SAE) latents and cross-layer transcoder (CLT) latents and find that they explain more of the target model's performance using an equivalent number of active components (cref section); exhibit less feature splitting (cref section); have comparable or greater interpretability (cref section); and are more mechanistically faithful (cref section). Furthermore, we analyze the nonlinear interactions between parameter components (cref section). We demonstrate that complex nonlinear interactions are much rarer than would be expected by chance, despite not being a property our method optimizes for directly, suggesting that it reflects an underlying computational simplicity in the target model itself. Finally, we demonstrate that our method identifies network components that [[[have better practical utility than alternative methods, such as `are better for steering according to benchmarks', `can be used to remove memorized datapoints', and `even permit direct editing of the model parameters in interpretable ways' todo]]]  (cref section).
+\section{Method - Ad\underline{V}ersarial \underline{P}arameter \underline{D}ecomposition}
+\label{sec:method}
+
+Our method, VPD, builds heavily on SPD \cite{bushnaq2025spd}. Our explanation of VPD does not assume familiarity with SPD \cite{bushnaq2025spd} or its predecessor \cite{braun2025interpretabilityparameterspaceminimizing}. In this section, we introduce ablation-based parameter decomposition methods from scratch and highlight key differences between VPD and prior methods in this class.
+
+Our goal is to decompose a neural network into the \textit{mechanisms} that it uses to compute its behavior---the things that it uses to take input activations, compute its hidden activations, and finally compute its output. We don't approach this goal with strong presuppositions of what a `mechanism' is. But we take for granted that a typical network doesn't use all of its mechanisms on every input (or, at least, it doesn't use all of its mechanisms by the same amount). If that were not the case, then networks could not be said to be \textit{modular}, having distinct parts that do different things on different inputs. Without modularity, networks simply couldn't be decomposed into distinct functional units.  
+
+One candidate here for the network's mechanisms is the network's parameters. Like mechanisms, networks appear not to use all of their parameters simultaneously on every datapoint \cite{veit2016residual, zhang2022moefication, dong2023attention}. This happens, for instance, when a network's parameters `read from' activation subspaces that are orthogonal to the activations on that datapoint, thus projecting the activations to zero, thereafter having no downstream causal effect. Alternatively, if the activations fail to `activate' a given ReLU neuron, the activation of that neuron is zero, thereafter having no downstream causal effect. However, the network's parameters are in fact a single vector in the network's parameter space, and do not have an obvious decomposition into parts. How should they be decomposed into parts that comprise the network's mechanisms?
+
+On a high level, parameter decomposition methods use the idea that it should be possible, for a given datapoint, to identify the `subset' of the network's parameters that are necessary and sufficient for computing its output on that datapoint. That `subset' of parameters should contain all the mechanisms used by the network on that datapoint. If particular `subsets' of the networks parameters are repeatedly used together by different datapoints, then they may be part of the same mechanism. Parameter decomposition methods therefore aim to find particular `subsets' of the networks parameters that tend to be used together, where as few of them as possible are necessary and sufficient for computing the network's output on any input.
+
+More concretely: If particular parameters are unused by the network on a particular datapoint, then we should be able to ablate them (including partially) on that datapoint without adversely affecting the network's output. Ablation-based parameter decomposition methods thus aim to decompose network parameters into a set of vectors in parameter space called \textit{parameter components}, which are trained to exhibit a number of specific properties such that, if parameter components exhibit those properties, they would be good candidates for the networks `mechanisms'. They are trained such that they are:
+\begin{itemize}
+    \item \textbf{Parameter-faithful}: They sum to the network's total parameter vector;
+    \item \textbf{Minimal}: As few components as possible are causally important for computing the network's output on any particular input;
+    \item \textbf{Mechanistically faithful}: Every subset of components that includes the causally important components is sufficient to compute the network's output;
+    \item \textbf{Simple}: Components should each involve as little computational machinery as possible.
+\end{itemize}
+
+In the following sections, we define parameter components concretely and define how they are optimized to exhibit each of these four properties. 
+
+\subsection{Parameter components are vectors in parameter space and consist of subcomponents}\label{sec:method_components}
+Suppose we have a neural network $f(x;\theta)$ with parameters $\theta$. We would like to decompose this parameter vector into a sum of \textit{parameter components} $\theta = \sum_i \theta_i$ with the above properties. 
+
+It would be computationally expensive to decompose models into whole parameter vectors, since each such vector would have a memory cost equivalent to the whole target model. Therefore, as in \cite{bushnaq2025spd}, we use a less expensive way to parameterize parameter components. Although its parameters $\theta$ can be expressed as a single large vector, they are more commonly conceptualized as a set of matrices $\theta = \{W_1, \dots , W_L\}$. We further decompose individual matrices into sums of rank-one matrices called \textit{subcomponents}, each parametrized as an outer products of two vectors: $W_l \approx \sum_{c} \vec{U^l_c} \vec{V_c^{l  \top}} = U_l V_l^\top $, where there may be more subcomponents than rows and columns in the matrix. Although a single subcomponent explicitly parameterizes only a single weight matrix, it implicitly parametrises a full parameter vector if we assume it takes values of $0$ in every other weight matrix. It is therefore possible to combine these subcomponents into full parameter components by adding them together in the right way. We identify these components using a subcomponent clustering method. Previous work left this clustering step implicit, but in this paper we introduce an explicit method (\ref{app:clustering} appendix clustering method). 
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1.0\linewidth]{figures/Sum of components.pdf}
+    \caption{Caption todo}
+    \label{fig:sum_components}
+\end{figure}
+
+\subsection{Enforcing parameter faithfulness with a $\Delta$-component}
+
+To ensure the components collectively sum to the parameter vector of the target model, we define additional Delta-components $\Delta^l$ that parametrize the difference between our subcomponents and the original model's matrices:
+\begin{equation}
+\Delta^l_{i,j}:=W^{l}_{i,j}- \sum^C_{c=1} U^l_{i,c} V^l_{c,j} 
+\end{equation}
+Additionally, we encourage Delta-components to be approximately zero with an auxiliary MSE loss between the sum of the parameter subcomponents and each target model matrix, see Appendix \ref{app:delta_l2}.
+
+%Optimizing for faithfulness is straightforward. As in \cite{bushnaq2025spd} and \cite{braun2025interpretabilityparameterspaceminimizing}, we simply penalize the mean-squared error between the target model parameters and the sum of the subcomponents: 
+
+
+\subsection{Optimizing for minimality}
+
+For minimality, we want as few components as possible to be causally important for computing the network's output on any particular input. We therefore need some way to estimate which parameter components are `required' for computing the network's output on a given datapoint. We also require a notion of how well the `required' subcomponents have reconstructed the network's output.
+
+Ablation-based parameter decomposition methods contend that a parameter component is `required' if it cannot be ablated without affecting the model's output on that datapoint. As in \cite{bushnaq2025spd}, we train a \textit{causal importance function} $\Gamma: X \rightarrow [0,1]^{C \times L}$ to predict how ablatable each subcomponent is on a given datapoint. Like \cite{bushnaq2025spd}, we implement $\Gamma$ as a neural network, though we use a different architecture (Appendix \ref{app:ci_function}). 
+
+We want our causal importance function to output \textit{causal importance values} $g^l_c(x,t)\in[0,1]$ for each subcomponent $(c)$ of weight matrix $l$ on a given datapoint $x$ at sequence position $t$. If $g^l_c(x,t) = 0$, then that subcomponent should be fully or partially ablatable without affecting the output. If $g^l_c(x,t) = 1$, then it should not be possible to ablate that component without affecting the model's output on that datapoint. 
+
+We also want our causal importance values to predict the maximal extent of the ablatability of each subcomponent. Otherwise, the causal importance function could output a value of $1$ for every subcomponent on every input. We must therefore train the causal importance values $g^l_c(x,t)$ to take minimal values. 
+
+Together, this leads to our \textit{importance minimality loss}:
+
+\begin{equation}\label{eq:minimal}
+\begin{aligned}
+\mathcal{L}_{\text{importance-minimality}}=\sum_{x,t}\sum^L_{l=1}\sum^C_{c=1} \vert g^l_c(x,t) \vert^p\,,
+\end{aligned}
+\end{equation}
+where $p>0$. 
+
+The Delta-components $\Delta^l$ are defined always to have causal importance values of zero, since they should never be required to compute the model output. 
+
+
+\subsection{Optimizing for mechanistic faithfulness}
+
+A component is considered causally important on a datapoint if it cannot be ablated out of the model parameters without affecting the model output. But what should this mean exactly? 
+
+Suppose two components $\theta_1, \theta_2$ can be jointly ablated on a data point $x_1$ without affecting the final output, but not individually. One way this could happen is if the two parameter components influence the final model output vector in opposite directions, canceling each other out. Should these two parameter components be considered ablatable?
+
+% Lucius version (old - delete if you are happy with the above version): 
+% For the purposes of our parameter decomposition technique: No. It is not enough for the parameter components to be ablatable jointly. We also require them to be ablatable individually and in any other possible combination of subset ablations. This stricter definition ensures that the computation performed by the causally important parameter components on a data point is mechanistically faithful to the computation the original model performed on that data point. More specifically, it ensures mechanistic faithfulness in the sense that local explanations of the model's behavior on single data points or small data subsets involving  subsets of parameter components can aggregate into more global explanations of the network's behavior over larger subsets of the data in the way we expect.
+
+For the purposes of our parameter decomposition technique: No. It is not enough for the parameter components to be ablatable jointly. We also require them to be ablatable individually, as well as for all other possible combinations of ablations of other components. This requirement avoids the possibility that some combination of ablations of other components could be carefully chosen such that the ablated network computes the same output as the unablated model, but in a different way. This stricter definition thus ensures that the computation performed by the causally important parameter components (on a data point) is mechanistically faithful to the computations performed by the original model on that data point. 
+
+More specifically, and extremely importantly for goals of interpretability practitioners, it ensures mechanistic faithfulness in the sense that \textit{local explanations} of the model's behavior on single data points (or small subsets of the dataset) involving subsets of parameter components can aggregate into more \textit{global explanations} of the network's behavior over larger subsets of the data in the way we expect. 
+
+Continuing our example above: Suppose we develop an explanation of the network's behavior on a data point $x_1$, based on some subset of parameter components $S_1$, and then later develop an explanation of the network's behavior on some other data point $x_2$, using some other subset of parameter components $S_2$ which includes $\theta_1$, but does not include $\theta_2$. We want the union of both subsets $S_1 \cup S_2$ to still produce the same behavior on $x_1$ and $x_2$. Otherwise, our explanations have failed to capture how a single parameter vector can produce the observed outputs on both data points. If $S_1$ did not include both $\theta_1$ and $\theta_2$, this criterion would not be satisfied, because then $S_1 \cup S_2$ would contain $\theta_1$ but not $\theta_2$, breaking the cancellation between them. Thus, we conclude that $\theta_1$ and $\theta_2$ should both be considered causally important on $x_1$. 
+
+More generally, we want the union of $S_1$ with any other subset of parameter components to produce roughly the same output as the original model on data point $x_1$. This way, we can be sure that our local explanation did not miss any computationally relevant behavior that would cause it to not aggregate with other local explanations in the way we expect. 
+
+Formally, we define ablation masks $m^l_c(x,t,r)\in[0,1]$ for each subcomponent at each sequence position $t$ on each data point $x$. These masks define new weight matrices $W'^l(x,t,m)$ which can take the place of the original model matrices $W^l$:
+\begin{equation}\label{eq:masked_params}
+\begin{aligned}
+&W'^l_{i,j}(x,m):=\sum^C_{c=1} U^l_{i,c} m^l_c(x,t,r) V^l_{c,j}  \\
+\end{aligned}
+\end{equation}
+The masks are given by 
+\begin{equation}
+m^l_c(x,t,r) :=g^l_c(x,t)+(1-g^l_c(x,t))r^l_c(x,t)
+\end{equation}
+Where $g^l_c(x,t)$ is the causal importance, and $r^l_c(x,t) \in [0, 1]$. So, if a subcomponent's causal importance is $1$, the only possible value of $m^l_c(x,t)$ is $1$, whereas if the causal importance is $0$, $m^l_c(x,t,r)$ can take any value between $0$ and $1$. In the idealised setting, we then demand that, for all possible joint combinations of possible masks $m^l_c(x,t,r)$  for all the model's parameter components, the resulting masked weight matrices $W'^l_{i,j}(x,t,m)$ yield the same final output as the original model on that data point:
+\begin{equation}\label{eq:subcomponents}
+\begin{aligned}
+&W'^l_{i,j}(x,t,m):=\sum^C_{c=1} U^l_{i,c} m^l_c(x,t,r) V^l_{c,j}  \\
+&\forall r: f(x\vert W'^1(x,t,r),\dots,W'^L(x,t, r))\approx f(x\vert W^1,\dots,W^L)\,.
+\end{aligned}
+\end{equation}
+This definition of ablatability lies at the heart of how VPD and other ablation-based parameter decomposition methods ensure that the causal importances they provide are mechanistically faithful to the original network and do not suffer from problems like 'feature' splitting. For more discussion, see \cite{braun2025interpretabilityparameterspaceminimizing}.
+
+
+
+
+%We cannot simply use causal importance values as masks to ablate our subcomponents. They must satisfy a much stricter criterion: We should be able to use our causal importance values to create a continuous set of masks such that we can completely or partially mask our subcomponents while leaving the output unaffected. 
+
+
+
+
+\subsubsection{Stochastic reconstruction}
+We can use an output reconstruction loss to train the masked model $f(x\vert W'^1(x,t,r),\dots,W'^L(x, t, r))$ to approximate the target model's output $f(x\vert W^1,\dots,W^L)$. Unfortunately, to ensure we satisfy Equation \ref{eq:subcomponents}, we would need to do this for all possible values of $r\in {[0,1]}^{C\times L},$ which is a high dimensional continuous interval, making such a loss impossible to compute exactly. However, a key insight of \cite{bushnaq2025spd} is that it is possible to \textit{approximately} minimize reconstruction loss on all values in that interval. 
+
+The approximation can be achieved by taking a finite number $S$ of uniform random samples $r^{l,(s)}_{c}(x) \sim \mathcal{U}(0,1)$ for every data point $x$, use those samples to create stochastic masks $m^l_c(x, g^l_c(x)) \sim \mathcal{U}(g^l_c(x), 1)$, and minimize reconstruction loss on that finite number of samples. This leads to the \textit{stochastic reconstruction loss}:
+
+\begin{equation}\label{eq:random_recon}
+\begin{aligned}
+\mathcal{L}_{\text{stochastic-recon}}&=\frac{1}{S}\sum^S_{s=1}D \left( f(x\vert W'(x,r^{(s)})),f(x\vert W) \right)\,\\
+\end{aligned}
+\end{equation}
+
+where $D$ is an appropriate divergence measure in the space of model outputs, such as KL-divergence or mean squared error. In practice, we train by sampling masks for randomly chosen subsets of the model's matrices instead of all layers simultaneously, see Appendix \ref{app:subset_recon}.
+
+Together, the importance minimality loss and stochastic reconstruction should optimize parameter components to be able to replicate the target model's outputs while using as few parameter components as possible. We use these losses in our work. However, scaling ablation-based parameter decompositions to language models revealed several pathologies that were missed by \cite{bushnaq2025spd}. In the next sections, we introduce several other constraints to the optimization to address these issues.
+
+\subsubsection{Adversarial reconstruction}\label{sec:methods_adv}
+VPD optimizes for an even stricter criterion that SPD missed: Adversarial ablatability.
+The stochastic reconstruction loss from the previous subsection does, in the limit of infinite samples and perfect reconstruction, approximate our desired condition from Equation \ref{eq:subcomponents}. However, equation \ref{eq:subcomponents} requires that the masked model approximates the target model well for all possible values of $r$, not just on average. Thus, if the reconstruction loss isn't exactly zero, which will essentially never happen in practice, stochastic sampling can greatly underestimate the worst-case reconstruction error for values of $r$ sampled adversarially to maximize reconstruction loss. Empirically, we find that training using stochastic reconstruction loss (and the other losses discussed so far) produces decompositions for which adversarial sampling can find values of $r$ that have very high reconstruction loss (cref experiment figure TODO), which is not permitted under Equation \ref{eq:subcomponents}. VPD therefore introduces an adversarial loss to help ensure this property: 
+\begin{equation}\label{eq:adv_recon} 
+\begin{aligned}
+\mathcal{L}_{\text{adversarial-recon}}&=\frac{1}{S} \max_{r^{(s)}(x)} D \left( f(x\vert W'(x,r^{(s)}(x))),f(x\vert W) \right)\,\\
+\end{aligned}
+\end{equation}
+However, we find that if the adversarial sampler were completely unconstrained, it would actually be too strict. Some decompositions we would intuitively regard as valid would be effectively excluded by it. For example, in many theoretical toy models of circuits in superposition \cite{hänni2024mathematicalmodelscomputationsuperposition}, \cite{bushnaq2024circuits}, \cite{linsefors2025circuits} models can contain more circuits than neurons, only some of which are used by the model on any given forward pass. However, the inactive circuits each still contribute some small interference "noise" to the computation. Since this noise is uncorrelated between circuits, its overall size remains small enough to not break the computation. We would like to consider these inactive circuits to not be causally important, since the model is in some sense not really using them to compute the output. But if we chose the absolute worst-case $r^{(s)}(x)$ on every data point in such a model, we could for example ablate away all inactive circuits which contribute noise with a negative sign, but keep all inactive circuits which contribute noise with a positive sign. This would vastly increase the overall size of the noise and break the computation. 
+More generally, we want the adversarial sampler to penalise systematic defects in the decomposition, but we do not want it to exploit random noise by overly fine-tuning its choice of ablations to particular data points. 
+
+In order to force the adversarial sampler to rely on systematic flaws in the decomposition instead of fine-tuning to every data point, we restrict it to use the same $r^{(s)}$ on all elements in a batch. Ideally, we would like to use the same sources for the whole data set, but this would be much more computationally expensive.
+
+In practice, we actually only use this shared source scheme for evaluation. In training, we further save on cost by adversarially sampling $r^{(s)}(x)$ independently for different elements in a batch, but keeping the same persistent $r^{(s)}(x)$ across batches. For more details on how adversarial sampling is performed in practice, see Appendix \ref{app:methods}.
+
+
+
+\subsection{Optimising for simplicity}
+VPD better optimizes for simplicity than SPD. One of the reported benefits of SPD \cite{bushnaq2025spd} over APD \cite{braun2025interpretabilityparameterspaceminimizing} was that SPD used rank-one subcomponents, and where as few of these rank-one subcomponents are necessary to reconstruct the output. The authors believed this meant that SPD did not need dedicated losses to optimize for `simplicity' (defined earlier as `using as little computational machinery as possible'), whereas \cite{braun2025interpretabilityparameterspaceminimizing} did. Their optimism was misplaced. Some rank-one solutions are `simpler' than others. To see how this is possible, reflect on the possibility that it is possible to add multiple rank-one mechanisms together and for their sum also to be rank-one as long as either their right or left singular vectors are equal (TODO potentially a diagram/figure illustrating the point). A theoretically clean motivating example of such a is the toy model of ping pong superposition \cite{gibson2025}. In the ping pong superposition construction, $64$ superposed rank $1$ circuits can be implemented in layers of width $21$. Only one circuit is ever active at a time, and groups of eight circuits each share the exact same origin or target neurons. Components for circuits in the same group can then be summed, and the result will again be exactly representable as a rank $1$ matrix, which is causally important for computing the output exactly when any of the circuits in the group are causally important for computing the output. Hence if we apply VPD to this toy model, the minimality penalty will provide no incentive to further separate the eight rank $1$ matrices for the eight circuit groups into $64$ rank $1$ matrices for the $64$ individual circuits, leaving us with components that activate polysemantically and contain more computational machinery than they need to.
+
+We observed indications that some SPD decompositions suffered from this failure mode: Sometimes subcomponents seemed to be involved in multiple (usually two) unrelated computations, which depended on whether the activations had strong positive or negative inner products with subcomponents' right singular vectors (see Appendix cref section). 
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.65\linewidth]{figures/simplicity.pdf}
+    \caption{Caption todo}
+    \label{fig:simplicity}
+\end{figure}
+
+
+
+% This resembled the phenomenon of `polysemantic neurons' in activation-based interpretability, but with some differences. In our case, when activations had a strong positive inner product with the right singular
+
+We therefore need a `simplicity' loss to incentivize parameter components to be involved in as few separable computations as possible (beyond the extent to which the importance minimality loss and rank-one constraint already encourage aspects of `simplicity', as outlined in \cite{bushnaq2025spd}). To achieve this, we use: 
+
+\begin{equation}\label{eq:freq_minimality} 
+\begin{aligned}
+\mathcal{L}_{\text{frequency-minimality}}=\sum^L_{l=1}\sum^C_{c=1} \vert g^l_c(x) \vert^p\log_2(1+\sum_{x'} \vert g^l_c(x') \vert^p)\,,
+\end{aligned}
+\end{equation}
+Conceptually, the $\log_2(1+\sum_{x'} \vert g^l_c(x') \vert^p)$ term can be thought of as quantifying the bits of precision needed to specify a component well enough to obtain low loss. The more often a component is causally important, the more precisely we need to define it to obtain low total reconstruction over $X$ data points. If it is always causally important, every bit of precision in the component's definition we get wrong can hurt out loss on every data point. If it is rarely causally important, every bit we get wrong will only hurt our reconstruction loss on some fraction $\frac{\sum_{x} \vert g^l_c(x)\vert^0}{X}$ of the data. Thus, we can afford to store it to fewer bits of precision without increasing reconstruction KL divergence too much. Under some simplifying modeling assumptions, this trade-off scales with $\log_2(\frac{\sum_{x} \vert g^l_c(x)\vert^0}{X})$. We approximate the $L^0$ norm with an $L^P$ norm, and add $1.0$ to the argument for stability, since $p$-norms with $0<p$ can otherwise take values below $1.0$ and turn the $\log_2$ term negative. See Appendix \ref{app:frequency_penalty} for details of the derivation.
+
+
+
+Although we are not confident that our choices of loss function are optimal for achieving minimality and simplicity, we remark that the new frequency-minimality loss function has an interesting symmetry with the existing importance minimality loss: Where $\mathcal{L}_{\text{importance-minimality}}$ encourages datapoint in the training dataset to activate as few subcomponents as possible, the new loss encourages subcomponents to activate on as few datapoints in the training dataset as possible. This difference is subtle but important. It creates a new tradeoff during training: The importance minimality coefficient encourages the decomposition to have few components overall (while still being able to reconstruct the output), while the frequency minimality encourages it to have more components. We note that this tradeoff avoids creating the same problem as `feature splitting' due to the tradeoffs between the output reconstruction, importance minimality, and frequency minimality losses (section cref xxresults-todo).
+
+
+
+\textit{(TODO potentially: figure illustrating the effects of the two losses on causal importances)(TODO experiment: showing CIs on real data, where y axis is C and data index is on X axis, where the C activations are they're hierarchically clustered - should show that each component activates on fewer parameter components and there are fewer 'bias-like' components).}
+
+These two losses represent the key differences in our approach compared with \cite{bushnaq2025spd}. However, there are several other, smaller differences that do not fundamentally change the method but that we found helpful for decomposing language models. For full details of our method, see Appendix \ref{app:methods}.
+\subsection{Graph post-processing}
+VPD base training yields a set of components which sum to the target model weights, and a causal importance function that tries to predict which components can be ablated without changing the final output of the model on any particular data point. To understand the target model's behavior, we also make use of additional tools: We further prune the number of components on particular prompts down to only those involved in some particular behavior we are interested in by optimizing new causal importances to reconstruct only some aspects of the target model's output. We also compute gradient attributions between components to obtain interaction graphs that visualize how components interact with each other on the forward pass.
+\paragraph{Post-hoc causal importance optimization}
+We can further reduce the number of components we need to analyse by keeping only those components involved in computing some particular aspect of the model output we are interested in. For example, on the prompt \code{The} \code{ princess} \code{ lost} \code{ her} \code{ crown} \code{.}, we will analyse how the model successfully predicts \code{ her}. We are thus only interested in components that were involved in computing this specific predicition at this specific sequence position. So we can optimise new causal importances using a cross-entropy reconstruction loss against the label \code{ her} on the sequence position for \code{ lost}, instead of a KL-divergence to all the target model's output probabilities on all sequence positions of the prompt. This allows us to further reduce the number of components we need to analyse to understand some behavior of the target model. As in VPD base training, causal importances are optimised under stochastic and adversarial sampling for the masks. For details, see Appendix section \ref{app:posthoc_ci}.
+\paragraph{Gradient attributions}
+We compute gradient attributions todo cite between pairs of causally important components in adjacent layers. Many works have pointed out issues that can cause gradient attributions to be unfaithful, such as saturated softmax functions in attention layers. We use them here merely as a supplementary tool to identify some qualitative relationships between components. For more details on the gradient attributions, see Appendix section \ref{app:gradient_attributions}.
+\section{Results}
+\label{sec:results}
+
+\subsection{The language model that we decomposed}
+\label{sec:langauge-model-details}
+
+% We trained a two-layer XXM parameter decoder-only transformer language model on The Pile \cite{gao2020pile}. It uses standard multihead attention layers \cite{vaswani2017attention} and uses MLPs with a GELU activation function \cite{hendrycks2016gelu}, RMSNorm \cite{zhang2019rootmeansquarelayer} applied to the inputs of the attention and MLP layers \cite{xiong2020layernormalization} and before the final unembedding layer. It was trained for XTODO steps using the Adam optimizer \cite{kingma2017adam}. It achieves a final loss of XTODO which is similar to TODO-reference-model. The residual stream width and other hyperparameter choices can be found in table TODO. 
+
+% \begin{table}[ht] % [ht] helps place it 'here' or at the 'top'
+%   \caption{Hyperparameters for our XXM Parameter Language Model}
+%   \label{model-hyperparams}
+%   \centering
+%   \begin{tabular}{ll}
+%     \toprule
+%     \textbf{Hyperparameter} & \textbf{Value} \\
+%     \midrule
+%     Residual stream $d_{\text{model}}$             & XXM             \\
+%     Layers                 & 2               \\
+%     Number of attention heads             & todo             \\
+%     Attention head dimension                  & todo               \\
+%     Learning rate               & $Xe-3$ todo        \\
+%     Adam $\beta_1$              & [TODO]          \\
+%     Adam $\beta_2$              & [TODO]          \\
+%     todo                  & todo              \\
+%     \bottomrule
+%   \end{tabular}
+% \end{table}
+We trained a four-layer, 67M parameter decoder-only transformer model on an uncopyrighted subset of The Pile \cite{gao2020pile}. It uses standard multihead attention layers \cite{vaswani2017attention} with RoPE positional encoding \cite{su2024roformer} and MLPs with a GELU activation function \cite{hendrycks2016gelu}. RMSNorm \cite{zhang2019rootmeansquarelayer} is applied to the inputs of the attention and MLP layers \cite{xiong2020layernormalization} and before the final unembedding layer. The token embedding and LM head weights are tied, giving the model approximately 28M non-embedding parameters and 67M total parameters. The model achieves a final validation cross-entropy loss of approximately 2.71. The model architecture is summarized in Table~\ref{model-hyperparams}; full training details can be found in Appendix~\ref{app:training-details}.
+
+% --- Table (replaces lines 235-253) ---
+
+\begin{table}[ht]
+  \caption{Architecture of our target language model.}
+  \label{model-hyperparams}
+  \centering
+  \begin{tabular}{ll}
+    \toprule
+    \textbf{Property} & \textbf{Value} \\
+    \midrule
+    Layers                                         & 4               \\
+    Residual stream $d_{\text{model}}$              & 768             \\
+    MLP intermediate dimension                      & 3072            \\
+    Attention heads                                 & 6               \\
+    Attention head dimension                        & 128             \\
+    Context length                                  & 512             \\
+    Vocabulary size                                 & 50{,}277        \\
+    Positional encoding                             & RoPE            \\
+    Normalization                                   & RMSNorm         \\
+    Activation function                             & GELU            \\
+    Tied embeddings                                 & Yes             \\
+    Total parameters (inc embedding)                & ${\sim}$67M     \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Although most of the results in this paper focus on our decomposition of this language model, we show that VPD achieves canonical decompositions of the toy models decomposed in \cite{braun2025interpretabilityparameterspaceminimizing} and \cite{bushnaq2025spd} in the appendix. 
+
+It is worth noting that, even though transformer models share parameters at each sequence index, they usually perform different computations at each sequence index because different sequence indices can have different activations. Our causal importance functions therefore output different causal importance values for each sequence position, thus activating different sets of parameter components at different points in the sequence. 
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.95\linewidth]{figures/archi.pdf}
+    \caption{Caption todo }
+    \label{fig:placeholder}
+\end{figure}
+
+\subsection{Decomposing our language model: A recipe for VPD}
+% Training recipe: Which metrics matter and what (relative/absolute) values they should have
+TODO. Outline:
+\begin{itemize}
+\item{What evaluation metrics to track: Recon loss for masks adversarially sampled over many steps (PGD recon loss), recon loss for stochastically sampled masks (stochastic recon loss), $L_0$ per data point. To a lesser extent, recon loss under causal importance masking, unmasked masking (so all masks 1.0 except for delta components(, and layer-wise causal importance masking. The last three are only meaningful because we don't directly optimise for them in training, so don't overindex on them. For the adversarial masks sampled with PGD, more steps are needed for deeper models. We use $20$ here. If using more steps, you want lower learning rate so the optimiser can fine-tune harder. A rough heuristic we use is $n_{\text{adv}}\text{lr}_{\text{adv}}=2$. For the $L_0$, track how large it is relative to the rank of the original weight matrix to tell how well you are doing. E.g. in a transformer, mlp matrices usually have rank $d_{\text{resid}}$. Your $L_0$ should be significantly smaller than this. Note that $L_0$ tends to start off very high and drop steadily over the course of training because of the p-annealing. So, if checking runs early, look at the importance minimality score to guess what the final $L_0$ might be.}
+\item{What losses to train on: 1) Recon loss with adversarial masking (PPGD loss). Making this cheap yet effective can be difficult. Would recommend sticking to the defaults for the adversarial optimiser described in the appendix. On smaller models, one can do fewer adversarial steps, one larger models, especially deeper ones, one might need more steps, which may involve tuning the adversarial learning rate as well. 2) Recon loss with some form of stochastic masking. This is mostly there to keep the network from getting stuck at the start of training, and to a lesser extent to keep the optimization from privileging worst cases too hard. Coefficients for these two losses are usually the same for us, we like to keep them normalised to $\frac{1}{2}$. 3) Importance minimality loss. The p-annealing schedule for this should usually be kept as it is in the appendix. The coefficient can take a lot of tuning. 4) Frequency penalty. Coefficient can take some tuning. Beware that increasing it effectively increases sparsity pressure as well, so you might need to lower importance minimality. As a guideline to the conversion factor between the two, consider how large the term in the log will tend to be for a typical component in the decomposition you expect at the end. $0.5$ the size of the importance minimality loss coefficient might be a good default to stick with unless you notice problems. Too low a coefficient here tends to result in fewer, overly polysemantic components. 5) Delta component L2 penalty. The coefficient for this is usually not very sensitive. Just increase it by factors of $10$ until unmasked loss becomes negligibly low. It's fine to overshoot the coefficient by quite a lot, though making it way too large can still hurt the optimization.}
+\item{Component count $C$ is not extremely sensitive. You should make it large enough for the optimisation to capture all the components that are there. If you don't know yet, err on the side of overdoing it, and observe the spectrum of the logarithms of the mean causal importances of the components, taken over a batch, at the end of your exploratory run. You should tend to see how many components are actually used in the spectrum, because there is often a sharp cutoff past some point. OThe optimisation does tend to go best if $C$ is larger than needed, but not too much larger. Maybe roughly within a factor of $2$.}
+\item{Overall, the hyperparameters which typically take the most tuning are the learning rate and the importance minimality loss coefficient. In deeper models, number of adversarial steps and adversarial learning rate may need tuning as well.}
+\end{itemize}
+
+
+
+
+\subsection{Parameter components approximate the target model relatively well}
+% Some summary statistics of the trained decomposition
+
+
+
+
+\subsubsection{Comparison with activation-based decompositions}
+% TODO: Match the colours/styles between the two figures
+% TODO: More details about transcoder/CLT training
+% TODO: Appendix table with all the properties (e.g alive components etc)
+
+
+
+If a decomposition method has correctly identified the mechanisms underlying a model's computation, then activating only the mechanisms that the method identifies as important on a given input should approximately reproduce the model's behavior on that input. Conversely, if a replacement model fails to reproduce the model's behavior, then the decomposition has either missed important mechanisms or identified spurious ones. Reconstruction quality is therefore a necessary (though not sufficient) condition for a decomposition to be mechanistically faithful.
+
+
+
+
+In this section, we compare VPD's reconstruction quality against two families of activation-based decomposition methods: transcoders \cite{dunefsky2024transcodersinterpretablellmfeature} and cross-layer transcoders (CLTs) \cite{lindsey2024crosscoders}.
+
+\paragraph{Experimental setup}
+All methods are evaluated by replacing the MLP layers of our target model with their sparse reconstructions and measuring the resulting increase in cross-entropy loss relative to the unmodified target model. We simultaneously replace all 4 MLP layers unless otherwise noted. For VPD, sparsity is determined by the causal importance threshold: subcomponents with causal importance below the threshold are ablated. We report results at thresholds $0$ (retaining all subcomponents with any nonzero causal importance) and $0.5$. For transcoders and CLTs, sparsity is controlled by the number of active features $k$ per module, with BatchTopK training at $k \in \{8, 16, 32, 64\}$.
+
+Comparing sparsity across methods requires care, because the methods have structurally different notions of what constitutes a single active component. A CLT feature writes to the residual stream at every layer simultaneously, while a transcoder feature affects only one layer. VPD subcomponents are scoped to individual weight matrices, and each MLP layer has two such matrices (up-projection and down-projection). To ensure our conclusions are not artifacts of how we count components, we show results under three formulations of sparsity: (1)~ average active components per module (active encoder features for transcoders/CLTs; active components per weight matrix for VPD), (2)~active components per MLP output reconstruction (adjusting for the fact that a CLT feature affects all layers and that VPD uses two modules per MLP), and (3)~total active parameters (VPD's rank-one subcomponents have more parameters than a transcoder feature and a single CLT feature has multiple decoder vectors).
+
+\paragraph{VPD achieves a better sparsity--accuracy tradeoff}
+
+We first compare VPD against per-layer transcoders and CLTs trained with MSE reconstruction loss on intermediate activations, which is the standard training objective for these methods. Figure~\ref{fig:pareto-mse} shows CE degradation as a function of sparsity under all three normalizations. VPD achieves lower CE degradation than both transcoders and CLTs at comparable sparsity levels, and the ordering is consistent across all three normalizations. Even with the more lenient CI$>$0 threshold (which retains more subcomponents), VPD's CE degradation remains well below the activation-based methods at matched component counts.
+
+This advantage may stem from a difference in training signal: VPD is trained end-to-end on the model's output distribution, while the MSE-trained transcoders and CLTs optimize a local, layer-wise objective. To control for this, we next train all activation-based methods end-to-end with KL divergence on the output logits, matching VPD's training objective.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/pareto_ce_reconstruction.png}
+  \caption{CE degradation when simultaneously replacing all 4 MLP layers with sparse reconstructions from each method. \textbf{(a)}~Active components per module (raw L0). \textbf{(b)}~Active components per MLP reconstruction, adjusting for CLT's cross-layer writes and VPD's paired modules. \textbf{(c)}~Total active parameters. VPD (purple markers) Pareto-dominates the activation-based methods under all three sparsity measures. The dashed line indicates zero-ablation (all MLP outputs set to zero). Lower is better.}
+  \label{fig:pareto-mse}
+\end{figure}
+
+\paragraph{End-to-end activation-based methods overfit to their training mode}
+\label{sec:mode-mismatch}
+
+When we replace all MLP layers simultaneously, there is an important design choice: should each layer's encoder see the \emph{clean} residual stream (as computed by the original model) or the \emph{modified} residual stream (which includes reconstruction errors from earlier layers)? We call these the ``\textit{\textbf{parallel}}'' and ``\textit{\textbf{cascading}}'' evaluation protocols, respectively. A third option, ``\textit{\textbf{independent}},'' replaces only one MLP at a time, with all other layers left unmodified. For a perfectly faithful reconstruction---one that exactly replicates each MLP's computation---these three protocols would produce similar results, since the modified residual stream would contain all the necessary information for computation in later layers.
+
+We train separate sweeps of BatchTopK transcoders ($k \in \{8, 16, 32, 64\}$) and CLTs in cascading and parallel mode, as well as independently-trained per-layer transcoders. All use KL divergence on the output logits as the training loss, matching VPD. Each model is then evaluated under all three protocols. Figure~\ref{fig:pareto-e2e} shows the results.
+
+The activation-based methods exhibit severe brittleness to evaluation mode mismatch. In the matched setting, cascading-trained transcoders achieve CE degradation as low as $\delta = 0.32$ (Figure~\ref{fig:pareto-e2e}a), and parallel-trained transcoders reach $\delta = 0.14$ at $k=64$ (Figure~\ref{fig:pareto-e2e}b). But when evaluated in the \emph{mismatched} setting, these same models degrade catastrophically: parallel-trained models evaluated in cascading mode suffer $\delta \approx 2.9$--$3.5$, roughly an order of magnitude worse, and comparable to the zero-ablation baseline. The pattern is symmetric: cascading-trained models fail in parallel evaluation ($\delta \approx 1.7$--$2.3$). CLTs exhibit the same pattern. The gap between matched and mismatched performance is a factor of $3$--$20\times$.
+
+This brittleness reveals that e.g. a transcoder trained in cascading mode does not simply learn to approximate each MLP's input-output function. Instead, it learns a replacement model that \emph{jointly} accounts for both the MLP's true computation and the systematic reconstruction errors introduced by the transcoders in earlier layers. This is a compensatory strategy rather than a faithful approximation of the original target model.
+
+Independently-trained transcoders, which each see only the clean residual stream for their own layer, are the most robust of the activation-based methods (Figure~\ref{fig:pareto-e2e}c, green triangles), and perform best in the single-MLP replacement setting ($\delta \approx 0.13$--$0.20$). However, when all four independently-trained transcoders are inserted simultaneously, they still exhibit meaningful degradation ($\delta \approx 0.60$--$0.98$), because each was trained in isolation and cannot account for reconstruction errors accumulating from other layers.
+
+VPD's CE degradation, by contrast, is relatively consistent across all three evaluation protocols. At CI$>$0, VPD achieves $\delta \approx 0.32$--$0.40$ regardless of whether it is evaluated in cascading, parallel, or single-MLP mode. This arises because VPD's stochastic and adversarial masking during training already exposes the decomposition to a rich diversity of partial ablation patterns: on each training step, a random subset of subcomponents across random subsets of weight matrices are partially masked, which naturally covers patterns resembling both cascading and parallel replacement as special cases. More fundamentally, VPD's subcomponents sum to the original weight matrices, and the masked forward pass uses the same architecture and nonlinearities as the target model. A VPD reconstruction is therefore not a different function approximating the MLP; it is a subset of the MLP's computations.
+
+VPD does not achieve the lowest CE degradation in each individual evaluation setting: in matched-mode evaluation, the best activation-based models outperform VPD (e.g., parallel-trained transcoders at $k=64$ achieve $\delta \approx 0.14$ vs.\ VPD's $\delta \approx 0.32$ in parallel evaluation). But we view this as the expected cost of a more faithful decomposition. A model that has been specifically optimized to compensate for a particular pattern of errors will naturally outperform one that has not learned to compensate for that specific error pattern.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/pareto_e2e.png}
+  \caption{CE degradation vs.\ L0 (active features per module) for end-to-end KL-trained methods under three evaluation protocols. \textbf{(a)}~All-replace cascading: each encoder sees the modified residual stream. \textbf{(b)}~All-replace parallel: each encoder sees the clean residual stream. \textbf{(c)}~Single-MLP replacement, averaged over layers. Activation-based methods (solid: transcoders, dashed: CLTs) perform well in their training mode but degrade by $5$--$20\times$ in the mismatched mode. VPD (purple markers) is relatively stable across all three protocols. TC = transcoder; CLT = cross-layer transcoder.}
+  \label{fig:pareto-e2e}
+\end{figure}
+
+
+
+
+
+\subsection{The decomposition model behaves similarly to the target model}
+% Some generations from the spd model vs the dataset.
+
+\subsection{Decompositions are consistent across seeds}
+% Geometric consistency across seeds
+
+
+\subsection{Parameter components are highly interpretable}
+% interp of some individual components
+
+
+
+
+
+\subsection{Case studies: Interpretability in language model parameter space}
+% Circuits: Biology of a small LM examples
+\subsubsection{Case study 1: Gender for possessive pronoun}
+\begin{figure}
+    \centering
+    \includegraphics[width=0.7\linewidth]{figures/princess_graph.png}
+    \caption[]{Attribution graph for predicting " her" on the prompt "The princess lost her crown.", pruned with adversarial sampling.\protect\footnotemark There are 150 active components in total. The probability on " her" is $1.000$ with ci masking , $0.999$ with stochastic masking and $0.443$ with adversarial masking under $4$ PGD optimisation steps with step size $1$. The target model assigned $0.586$ probability to " her", indicating that this graph still isn't quite capturing all the relevant computation going on. Though without adversarial the sampling we would be blind to this fact. Compare to Figure \ref{graph:bracket_ci} for a graph on the same prompt pruned without adversarial sampling.}
+    \label{graph:princess}
+\end{figure}
+\footnotetext{coefficient $0.5$ for cross-entropy reconstruction with stochastic sampling, coefficient $0.5$ for cross entropy with $4$ steps of PGD, lr $1$, importance minimality coefficient $0.09$, $p=0.3$, $2000$ optimisation steps.}
+\begin{figure}
+    \centering
+    
+    \includegraphics[width=0.7\linewidth]{figures/princess_graph_ci_masked.png}
+    \caption[]{Attribution graph for predicting " her" on the prompt "The princess lost her crown.", pruned with causal importance masking.\protect\footnotemark There are 6 active components in total. The probability on " her" is $0.895$ with ci masking , $0.969$ with stochastic masking and $<0.0005$ with adversarial masking under $4$ PGD optimisation steps with step size $1$. Without adversarial sampling, we might falsely think that these 6 components comprise all the relevant computation in the target model. The set of components agrees well with the core causal story suggested by our incomplete interpretation of the base graph. But it is clear that if we simply ask for a set of components that are sufficient and necessary to produce the output " her", we are missing most of the relevant computation going on in the model to determine this output. Answering correctly doesn't just require a circuit that computes \code{ her}, but also the suppression of other circuits in the model that predict different outputs. If we didn't use adversarial sampling to prune the graphs, we might have been blind to this fact. Stochastic sampling does slightly better, but isn't sufficient either. A graph pruned with stochastic sampling can contain only $14$ components and still assign $0.549$ probability to " her" under stochastic masking and $0.984$ with ci masking, compared to the $0.586$ assigned by the target model. Under adversarial masking, the probability is $<0.0005$.}
+    \label{graph:princess_ci_masked}
+\end{figure}
+\footnotetext{coefficient $1.0$ for cross-entropy reconstruction with causal importance masking, importance minimality coefficient $1.0$, $p=0.3$, $2000$ optimization steps.}
+On the prompt \code{The} \code{ princess} \code{ lost} \code{ her} \code{ crown} \code{.} the target model correctly predicts that \code{ her} follows \code{ lost}, assigning probability $0.586$. This requires recognizing that a possessive pronoun is coming up, remembering that the previous token was \code{ princess}, and realizing that princesses use feminine-gendered pronouns. How does the model perform this task? Can we use the SPD decomposition to follow the flow of information and see what information is processed where?
+
+Figure \ref{graph:princess} shows the attribution graph for this prompt after adversarial pruning, keeping only the components that matter for predicting \code{ her}. The graph has a total of $150$ active components. Working backward from the output, we see that the top two positive attributions to the output are from
+\begin{enumerate}
+\item{A layer 3 attention output matrix component labeled "female health and pregnancy". Ablating it causes the model to predict \code{ his} as the top continuation instead of \code{ her}. Looking at activating examples for the component suggests that the autointerp may be overly narrow in its labeling, and this is really more of an abstract femaleness component. In turn, this component receives the most attribution from a key component in attention layer 3 active on \code{ princess} which fires on every token, and a value component, likewise active on  \code{ princess}, labeled "female pronouns, nouns, and related vocabulary". This value component, in turn, has its top attribution to a layer 0 down projection component that seems to fire on words and sentences about women, though also on a range of scientific contexts, suggesting it is polysemantic. Its top attribution comes from an mlp layer 0 input component that also fires for women and female contexts and also polysemantically activates in some other contexts, though to a lesser extent than the mlp output component. This component then connects straight to the princess embedding. In summary, this computational pathway seems to carry femaleness information from \code{ princess} over to \code{ lost}. Since the relevant key (and query) components for the first almost always fire, this seems to be done by default, rather than due to any particular conditional computation.}
+\item{A layer 2 mlp down projection matrix component labeled "object pronouns and fixed phrases after prepositions". The strongest attribution to this component by far comes from an mlp input component "fires on verbs", which in turn receives attribution from a diverse set of layer 0 mlp components, which connect directly to the \code{ lost} embedding in the input.}
+\end{enumerate}
+This would seem to suggest two core mechanisms: One which moves the femaleness attribute of \code{ princess} over to the next token in attention layer 3, and another which suggests that a possessive pronoun might follow the verb \code{ lost}. 
+
+Indeed, if we optimise for high probability on \code{ her} under causal importance masking only, neglecting adversarial robustness, we recover a graph of just six components, see figure \ref{graph:princess_ci_masked}, which corresponds almost exactly to the most attributed components in these two pathways. The femaleness components in attention 3 output and value as well as MLP 0 down and up, leading to the \code{ princess} embedding for one pathway, "object pronouns and fixed phrases after prepositions" connecting to "fires on verbs" connecting to the  \code{ lost} embedding for the other. This smaller graph even generalises somewhat to other prompts: On the input \code{The} \code{ lady} \code{ lost} \code{ her} \code{ crown} \code{.}, these same six components on the same sequence positions also predict \code{ her} with output probability $0.895$ under causal importance masking, and $0.275$ under stochastic masking. However, they do not at all produce the correct output under adversarial masking. 
+
+Ultimately, all the components in figure \ref{graph:princess} likely play some important role in the computation, otherwise the optimization process would have pruned them from the graph. This suggests that while these six components suffice to put high output probability on \code{ her}, they fail to suppress the outputs of other computational pathways in the model that would predict different outputs. 
+
+We do not aspire to understand the graph in Figure \ref{graph:princess} in full. For example, the top negative attribution to the output \code{ her} comes from an mlp layer 3 down projection component labeled "third-person pronouns". Looking at other activating examples for this component, it indeed seems to be causally important whenever the model is predicting that a pronoun is coming up, but its role in the computation is variable: It occurs both with positive activation, in which case it increases the probability the model assigns to pronoun predictions, and with negative activation, such as on this prompt, in which case ablating it out of the target model decreases the probability the model assigns to pronoun predictions. There is also strong negative attribution to the ouput \code{ her} from an attention layer 3 output component labeled "broad bias" that seems to be essentially always active.
+
+
+
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.7\linewidth]{figures/prince_graph.png}
+    \caption[]{Attribution graph for predicting \code{  his} on the prompt \code{The} \code{ prince} \code{ lost} \code{ his} \code{ crown} \code{.}, pruned with adversarial sampling.\protect\footnotemark There are 160 active components in total. The probability on \code{  his} is $1.000$ with ci masking , $0.998$ with stochastic masking and $0.383$ with adversarial masking under $4$ PGD optimisation steps with step size $1$. The target model assigned $0.512$ probability to \code{  his}, indicating that this graph still isn't quite capturing all the relevant computation going on. Comparing to Figure \ref{graph:princess} for the \code{ princess}, some nodes, e.g. "third-person pronouns" in the layer 3 down projection matrix and "object pronouns and fixed phrases after prepositions" in the mlp layer 2 down projection matrix appear in both graphs and have similar attributions to the output pronoun (\code{  his}/\code{  her}). }
+\end{figure}
+\footnotetext{Coefficient $0.5$ for cross-entropy reconstruction with stochastic sampling, coefficient $0.5$ for cross entropy with $4$ steps of PGD, lr $1$, importance minimality coefficient $0.05$, $p=0.3$, $2000$ optimisation steps.}
+\begin{figure}
+    \centering
+    
+    \includegraphics[width=0.7\linewidth]{figures/princess_graph_ci_masked.png}
+    \caption[]{Attribution graph for predicting \code{  his} on the prompt \code{The} \code{ prince} \code{ lost} \code{ his} \code{ crown} \code{.}, pruned down to six components. The two components on \code{ lost}, in mlp layer 2 are the same ones as in the graph for \code{ princess}, see Figure \ref{graph:princess}. The other four nodes occur in the adversarially masked princess graph as well, but not in the princess graph pruned with causal importance masking. They activate on both male and female dataset examples, though male activations are more common, suggesting that they form general "person pathway", with people assumed male by default. Consistent with this hypothesis, using the six components in this graph for a forward pass on "the princess lost" predicts \code{  his} as the top logit.}
+    \label{graph:prince}
+\end{figure}
+We find similar results on the prompt \code{The} \code{ prince} \code{ lost} \code{ his} \code{ crown} \code{.}. Figure \ref{graph:prince} shows an attribution graph for this prompt after adversarial pruning, keeping only the components that matter for predicting \code{ his}. The graph has a total of $160$ components, similar to the one for the female case. Again, a subset of $6$ components in this graph proves sufficient to compute the correct answer. This graph is very similar in character to the $6$ component graph from the princess prompt, with one computational pathway on \code{ lost} which uses the same two components as the one in the princess case, and another computational pathway of four components routing from \code{  prince} through the layer $0$ mlp and then the layer $3$ attention. However, this pathway consists of different components than the ones in the princess example. They seem to fire in both male and female related contexts, though more often male ones. We speculate that this suggests a mechanism under which male pronoun prediction is the default unless actively contradicted. Further reinforcing this hypothesis, if we run a forward pass on the princess prompt using the six components from the prince prompt, the model predicts \code{ his} rather than \code{ her}.
+
+We stress again that the above is far from a complete account of the meaningful computation going on in the model for these input prompts. We have merely traced out the flow of information between a subset of components that are sufficient for computing the output, which is much smaller than the subset of components that are actually involved in computing the output.
+
+
+\subsubsection{Case study 2: Parameter components can identify attention behaviors that are distributed across attention heads}
+
+In the previous example, we have seen that the parameter components found by VPD can be used to explain how attention computes the network's behavior. Notably, we did not make reference to individual attention heads in our analysis, even though attention heads are perhaps of the primary units of analysis that have been used in previous work to study attention behaviors in transformers \citep{vig2019multiscalevis, clark2019doesbertlookat, elhage2021mathematical, olsson2022incontextlearninginductionheads, wang2022interpretability, janiak2023polysemantic, nam2025causalheadgatingframework}. Unfortunately for interpretability, it is possible for attention blocks to implement behaviors using computations that are distributed across multiple heads \cite{jermyn2023attention, jermyn2025attention}. 
+
+% Good text: And even in cases where behaviors seem mostly localized to individual heads, these heads were not the only heads involved in that behavior, such as `previous token behavior' in `previous token heads' \cite{elhage2021mathematical, olsson2022incontextlearninginductionheads, wang2022interpretability}. Complicating matters even further, individual heads might perform multiple roles, in addition to roles being distributed across multiple heads \cite{janiak2023polysemantic}.
+
+Upon deeper reflection, this should perhaps have been unsurprising. Like individual neurons---which may `privilege' computations that align with unit basis in their input space while not enforcing enforcing it---the nonlinearities implemented by individual attention heads might merely `privilege' head-aligned attention computations without strictly enforcing them. 
+
+It would therefore be ideal if our decomposition methods could cope with attention computations that are distributed across heads. So far, it has been difficult to find satisfactory activation-based decomposition methods that can do this \cite{jermyn2025attention}. Fortunately, parameter decomposition methods offer some hope: Parameter components are vectors in parameter space, and therefore may span multiple attention heads. In fact, the parameter components found by VPD \textit{usually} span multiple attention heads! 
+
+In this section, we study a behavior that probably every transformer language model exhibits: `\textit{previous token behavior}', in which attention from timestep $t$ to $t-1$ carries forward information from the immediate past to the present. This behavior is typically associated with a particular type of attention head called a `\textit{previous token head}' \cite{clark-etal-2019-bert,elhage2021mathematical, olsson2022incontextlearninginductionheads, wang2022interpretability}. We show that such a head exists in our model, but show that previous token behavior is distributed across multiple heads. We find that a single pair of rank-one components, whose components span all heads in that layer, is responsible for a greater amount of previous token behavior than the network's `previous token head'. We explore how `previous token behavior' is actually implemented in the model, and demonstrate through a combination of static analysis and interventions that `previous token behavior' is distributed across multiple attention heads.
+
+\paragraph{Identifying the model's `Previous Token Head'} 
+Like many language models, our model has a head that, on average, places the majority of its attention on the previous timestep (cref figure of attention scores for random tokens, appendix for attention scores for dataset tokens and for Wang et al. figure for comparison). In our model, this head is head 1 in layer 1, called \textbf{L1H1}. However, L1H1 is not the only head to assign substantial probability to the previous token; many other heads do too, including heads in the same layer as L1H1. We'll focus our analysis on the attention block in layer 1 for now.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1.0\linewidth]{figures/prev_token_scores_combined.png}
+    \caption{Identifying the previous token head: Mean attention across multiple inputs on position $t-1$. \textbf{Left:} Average over sequences of random tokens. \textbf{Right:} Average over sequences sampled from the dataset. The plots reveal L1H1 is the most canonical `previous token head'. But note other heads place substantial average attention on sequence position $t-1$.}
+    \label{fig:prev_token_scores}
+\end{figure}
+
+\paragraph{Looking at parameter components in attention block 1} Let's take a look at a few parameter components in the layer where our previous token head lives. We'll focus on the components of the $W_Q$ and $W_K$ matrices. There are many interesting components that correspond to easily interpretable behaviors:
+\begin{itemize}
+    \item Component XYZ activates on ABC todo
+    \item Component ZYX activates on GHJ todo
+    \item Component etc. 
+\end{itemize}
+
+TODO graphs for multiple components
+
+
+These findings are encouraging, because it suggests that our decomposition is finding parts of the network that are specialized for particular functional roles. There are two components, however, that seem not to be especially specialized. In fact, they have a mean CI of 0.9XX, meaning that they activate for almost every input!
+
+TODO graphs for these two attention components specifically.
+
+One of these is a component of the $W_Q$ matrix, and the other a component of the $W_K$ matrix. Interestingly, both seem to have the largest norm in L1H1, but have substantial weight norm in other heads, suggesting neither are exclusively `located' (i.e. have high weight norm) in any particular head (Figure \ref{fig:qk_comp_weight_norm}). Since they are almost always active, they will therefore have an effect on the attention patterns at every sequence index at every head in layer 1.  
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1.0\linewidth]{figures/layer1_qk_combined.png}
+    \caption{Caption todo}
+    \label{fig:qk_comp_weight_norm}
+\end{figure}
+
+It is possible to study the interaction between these components using a component-specific `QK circuit' \cite{elhage2021mathematical}, which will give us a window to understanding their typical effect on the attention patterns of each head. If, within a head, they have a high inner product relative to other component pairs within that head, it indicates they will contribute a lot to that head's attention pattern. We can measure this quantitatively using a metric we call the `standardized attention contribution' between these two components:  
+
+\begin{multline}\label{eq:attn_contribution_head}
+\text{AttentionContribution}(c, c', \tau, h) = \\
+\Big(\text{sign}(\mathbb{E}_x\left[V_{Q,c}^\top x\right]) \cdot \lVert V_{Q,c} \rVert \cdot U_{Q,c}^h\Big)^\top \boldsymbol{R}_{\tau} \Big(\text{sign}(\mathbb{E}_x\left[V_{K,c'}^\top x\right]) \cdot \lVert V_{K,c'} \rVert \cdot U_{K,c'}^h\Big)
+\end{multline}
+
+
+Here $\boldsymbol{R}_{\tau}$ is the RoPE rotation matrix for offset $\tau$, which lets us understand the attention contribution between these components at different sequence position offsets. The attention contribution is a scalar that gives us a static indication (i.e. using almost no information about the data) of what effect a pair of components have on the attention pattern. These are not directly comparable across heads, which may have different scales and averages that nevertheless become irrelevant thanks to the Softmax. We therefore standardize the attention contribution:
+
+\begin{equation}\label{eq:stand_attn_contr}
+\text{StandardizedAttentionContribution}(c, c', \tau, h)= \frac{W(c, c', h, \tau) - \mu_h}{\sigma_h}
+\end{equation}
+
+where $\mu_h$ and $\sigma_h$ are the mean and standard deviation of the attention contributions across all $(c, c', \tau)$ for head $h$. 
+This standardization permits meaningful averages across heads.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1.0\linewidth]{figures/layer1_qk_pair_lines_combined.png}
+    \caption{Caption todo}
+    \label{fig:attn_contrib_grid}
+\end{figure}
+
+We can see by comparing the sum of the attention contributions between all pairs (Figure \ref{fig:attn_contrib_grid} -- black lines) that it closely corresponds to the shape of the model's actual average attention logits (Figure \ref{fig:attn_patterns_layer1_random}; see appdx todo for average attention plots on real data, which tell a similar story). This supports the idea that component interactions are a good way to decompose how attention at this layer actually works in the average case.
+
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1.0\linewidth]{figures/layer1_attention_offset_profiles_random.png}
+    \caption{Caption todo}
+    \label{fig:attn_patterns_layer1_random}
+\end{figure}
+
+The QK component pair that is always on (components \textit{q.316} and \textit{k.329}) has a high attention contribution in the first few timesteps of most of the six heads (Figure \ref{fig:attn_contrib_grid}). Taken together means that this single component pair looks responsible for the majority of the attention to the recent sequence positions across all heads. This is borne out by the effects of interventions on the attention patterns: When we ablate only component \textit{q.316}, the attention to the recent past is greatly reduced, whereas ablations of other Q components has minimal effect on average (Figure \ref{fig:attn_patterns_q_intv})
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1.0\linewidth]{figures/attn_q_L1_top10_n256_grid.png}
+    \caption{Caption todo}
+    \label{fig:attn_patterns_q_intv}
+\end{figure}
+
+Given that components \textit{q.316} and \textit{k.329} seem to be involved in generating most of the attention to the recent past, it begs the question: What are the attention \textit{values} that their attention is carrying forward in time from the recent past? Are the different heads carrying forward distinct subspaces in the residual stream? After all, each head can carry only a small subspace of the full residual stream, and maybe it distributes previous token behavior across heads in order to carry forward a larger subspace of the residual stream. 
+
+We can quantify the extent to which $W_V^h$ matrices from different heads `read' from the same subspace using a metric we call the \textbf{subspace overlap} between the input spaces of the two matrices. To get the subspace overlap metric, we first calculate the Gram matrix for each head $h$: 
+
+\[
+    M_h = {W_V^h}^\top W_V^h \in \mathbb{R}^{d_{\text{model}} \times d_{\text{model}}}.
+\]
+
+Intuitively, this matrix defines $W^h_V$'s `receptive field', since for any input vector $x$, the quantity $x^\top M_h x = \lVert W_V^h x \rVert^2$ measures how strongly $W^h_V$ amplifies that direction. We can leverage the fact that, for our Gram matrices,
+
+\[
+    \tr(M_a\, M_b) = \sum_{i,j} \lambda_i^a\, \lambda_j^b\, \bigl(\textbf{u}_i^a \cdot \textbf{u}_j^b\bigr)^2,
+\]
+(where $\lambda_i^a$ are eigenvalues of $M_a$, i.e. the squared singular values of $W_V^a$) to give us a metric that is large when both heads have large eigenvalues in aligned directions. This quantity is unnormalized. We can normalize it using the Frobenius norm of both matrices, thus making the  Frobenius cosine similarity between the two matrices (which is equivalent to the cosine similarity between the two Gram matrices viewed as vectors in $\mathbb{R}^{d_{\text{model}}^2}$). We can see that the different value projection matrices appear to read from different subspaces (Figure \ref{fig:attn_wv_overlap} -- Left). 
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1.0\linewidth]{figures/layer1_wv_overlap_combined.png}
+    \caption{Caption todo}
+    \label{fig:attn_wv_overlap}
+\end{figure}
+
+However, not all directions in the residual stream are equally important! Data do not necessarily exist in all subspaces, or vary more in some than in others. We should therefore weight different dimensions according to the amount of data variance that exists along that axis. To do this, we form the \textbf{data-weighted} value matrix for each head. First, we mean-center the data and perform SVD to get the principal axes of variation:
+
+\[
+\bar{X} = X - \bm{1} \bm{\mu}^\top, \qquad \bar{X} = \bar{U}\, \bar{S}\, \bar{Z}^\top,
+\]
+where $\bm{\mu} = \frac{1}{N}\sum_n \bm{x}_n$. We then rotate $W_V^h$ into the data's principal axes of variation and scale each axis by the corresponding singular value, yielding the data-weighted value projection matrix for head $h$:
+
+\[
+    {W_V^h}_{\text{data}} = W_V^h\, \bar{Z}\, \bar{S} \in \mathbb{R}^{d_{\text{head}} \times d_{\text{model}}}.
+\]
+
+We can apply the Frobenius cosine similarity in the same way. This metric suggests that, in general, value matrices in fact read from more similar subspaces, when the activations are taken into account (Figure \ref{fig:attn_wv_overlap} -- Right). In particular, L1H0, L1H1 (our previous token head), L1H2, and to some extent L1H3, all appear to attend to largely overlapping data subspaces. This may suggest some redundancy in the residual stream information being carried forward in time by the recent token behavior in these heads, though the fact that there is incomplete overlap suggests that some unique information is being carried forward. We did not notice any obvious semantic distinction between value components that tended to be activated by one head over another, and thus leave deeper investigation of this multi-head attention behavior, and others, to future work. 
+
+
+
+\subsubsection{Case study 3: Bracket closing}
+\begin{figure}
+    \centering
+    
+    \includegraphics[width=0.7\linewidth]{figures/angled_brace_graph.png}
+    \caption[]{Attribution graph for predicting \code{>} after \code{v} on the prompt \code{<} \code{u} \code{,} \code{v} \code{>}, pruned with adversarial sampling.\protect\footnotemark There are 158 active components in total. The probability on \code{>} is $1.000$ with ci masking , $0.997$ with stochastic masking and $0.363$ with adversarial masking under 4 PGD optimisation steps with step size 1. The target model assigned $0.547$ probability to \code{>}, indicating that this graph still isn’t quite capturing all the relevant computation going on. Though without adversarial the sampling we would be blind to this fact.}
+    \label{graph:bracket}
+\end{figure}
+\footnotetext{coefficient $0.5$ for cross-entropy reconstruction with stochastic sampling, coefficient $0.5$ for cross entropy with $4$ steps of PGD, lr $1$, importance minimality coefficient $0.05$, $p=0.3$, $4000$ optimisation steps.}
+On the prompt \code{<} \code{u} \code{,} \code{v} \code{>} the target model correctly predicts that \code{>} follows \code{v}, assigning probability $0.538$. This requires remembering that there was an open angled brace earlier in the sentence that might be likely to close now. How does the model perform this task?
+
+Figure \ref{graph:bracket} shows an attribution graph for this prompt after adversarial pruning. We can see that information is carried over from the \code{<} sequence position to the \code{v} sequence position in the attention at layers $1,2$ and $3$. Here, we will first examine a single small computational pathway through the model on this prompt, much as we did for the princess example in the first case study. Then, we will slightly broaden our scope, and briefly survey all the attention components in the Figure \ref{graph:bracket} graph that seem to be involved in transferring information about the opening bracket from the beginning of the prompt to the \code{v} sequence position.
+
+\begin{figure}
+    \centering
+    
+    \includegraphics[width=0.7\linewidth]{figures/angled_brace_ci_masked.png}
+    \caption[]{Attribution graph for predicting \code{>} on the prompt \code{<} \code{u} \code{,} \code{v} \code{>}, pruned with causal importance masking.\protect\footnotemark There are 14 active components in total. The probability on \code{>} is $0.973$ with causal importance masking , $0.001$ with stochastic masking and $<0.001$ with adversarial masking under 4 PGD optimisation steps with step size 1. This indicates that the graph provides a very incomplete picture of the target model's computation for predicting \code{>}. Nevertheless, it may serve as a starting point for understanding the more complete graph in Figure \ref{graph:bracket}.}
+    \label{graph:bracket_ci}
+\end{figure}
+\footnotetext{coefficient $1.0$ for cross-entropy reconstruction with causal importance masking, importance minimality coefficient $0.1$, $p=0.3$, $2000$ optimisation steps.}
+\paragraph{An oversimplified story}
+Figure \ref{graph:bracket_ci} shows a much smaller pruned graph of just $14$ nodes for this prompt. It correctly predicts \code{>} after \code{v} with very even higher probability than the target model on a causal importance masked forward pass, but fails completely under stochastic or adversarial masking. So it is clearly giving a very incomplete account of how the original model actually computes the bracket closing prediction on this prompt. Nevertheless, it might make for a good starting point for understanding the more complete graph in Figure \ref{graph:bracket}.
+
+Starting from the output, the largest direct positive attributions to \code{>} come from 
+\begin{enumerate}
+    \item A layer 3 mlp down projection component labeled "produces right angle brackets and related closing symbols". Looking at its activating examples and dataset attributions, it indeed seems to activate strongly primarily in contexts where the model may expect a right angle bracket to close at the next sequence position. Notably the component is sometimes not marked when it activates strongly. We speculate that this is because the component does not always end up influencing the model's final output prediction strongly even when it is active. This component in turn receives attribution from two components in the mlp input matrix labeled "predicts closing tags and formatting symbols in xml/html" and "predicts closing punctuation/syntax for expressions", with the latter appearing to fire on predictions for a more general set of closing delimiters.
+    \item {A layer 2 mlp down projection component labeled "fires globally in diverse uncopyrighted texts". It connects strongly to the two layer 3 mlp input components in addition to the output, suggesting that the layer 2 and 3 mlp components are not independent parallel pathways, but rather somewhat interlinked in series. Looking at the component's activating examples, it actually seems to primarily fire in contexts where the model may expect some sort of delimiter to close, such as \code{>}, \code{)}, \code{,}, \code{*}, \code{/}, \code{:}, or \code{.}, though the last one only in the context of abbreviations, not full stops in sentences. There are also some activations that superficially do not seem to fit this pattern, but might simply be due to the model predicting delimiters mistakenly. Similar to the mlp 3 down projection component, it is also not always marked as causally important on all tokens between two brackets or other delimiters even when the component's activations are large in magnitude. The component is in turn attributed to by an mlp up projection matrix component labeled "fires on punctuation/symbols, outputs formatting".}
+\end{enumerate}
+These two mlp down projection matrix components also contribute the highest direct attribution to the output prediction \code{>} in the more complete graph in Figure \ref{graph:bracket_ci}, and also in the original graph obtained from the SPD causal importance functions. Ablating them out of the target model itself, either independently or jointly, severely degrades performance on the \code{>} prediction, lowering the probability the model assigns from $0.538$ to $0.158$, $0.243$ for individual ablations and to $0.046$ for joint ablation. The model instead reassigns probability mass to other delimiters such as \code{)}, \code{\_}, \code{,} or \code{)\$}, suggesting that they are important for singling out a right angled bracket delimter in particular.
+
+The mlp components in turn seem to receive the information indicating that there is an open angled bracket from the layer 2 attention output matrix components labeled "fires within xml/html tags and closing tags", and "fires on xml/html syntax patterns", which receive it from a layer 2 attention value matrix component labeled "fires on punctuation, outputs code and markup tokens" active on the \code{<} sequence position. This component in turn seems to receive the information directly from the \code{<} input embedding, as well as from a pathway routing through three layer 0 mlp components: "fires on xml/html tags and brackets", "processes angular brackets in xml and code" and "fires after \code{<} to output xml/html tags".
+\paragraph{A brief survey of the attention in the real graph}
+The story told by the graph in Figure Figure \ref{graph:bracket_ci} might tempt us to think that the computation the model uses to predict the angled bracket closing is an extremely simple, perhaps even linear routing of information from input to output using a very small number of components specialized for this purpose. But a look at the graph in Figure \ref{graph:bracket} obtained with adversarial pruning makes it clear that the actual computation is more intricate than that. While most of the components involved indeed appear to be quite specialised for predicting delimiter closing, or even angled bracket closing in particular, there are far more such components, spanning large subspaces within the model, than the simplified picture painted by Figure \ref{graph:bracket_ci} might suggest.
+
+We will not attempt to fully understand this graph here. But we will at least briefly survey the attention blocks which transmit the information from the \code{<} sequence position to the \code{v} sequence position: 
+
+The \textbf{layer 1 attention} has 
+\begin{itemize}
+\item {A single query component active on \code{v}, a generic bias which is causally important almost all of the time. This indicates that the relevant query at this layer is triggered as part of generic previous token behavior, not for any particular reason.}
+\item{Two key components active on \code{<}. One is labeled "punctuation, formatting boundaries, and newlines", the other is a broad bias that is almost always active. This indicates that the key information at this layer is sent from \code{<} partially as part of generic previous token behavior, and partially because \code{<} is a kind of formatting boundary.}
+\item{Eight value components active on \code{<}. Two are "punctuation, delimiters, and symbols" and "punctuation, symbols, and whitespace tokens", both part of a rank 32 component cluster spread over the whole model. The components in it seem to fire on or predict punctuation, formatting, delimiters, newlines, symbols like \code{=}, various braces, white spaces, latex arrows and such. Notably, these same two components are also active on the \code{,} position. There's also "tokens following opening angle brackets" and "irc usernames and html tags after angle brackets", both part of a rank 18 component cluster that fires on various left angle brackets, \code{<}, \code{></ }, \code{\} <} etc. Notably, all the components in it are part of value, key, and mlp matrices, never query or attention output matrices, which fits with the role of these two components in the graph as the source rather than destination of delimiter information. It also fits with the components in the cluster firing mostly on left angle brackets and comparably little on right angle brackets. There's also a component "ubuntu irc usernames after chat delimiters" which is similarly left angle bracket heavy, and one for "LaTeX packages and macro arguments after braces". The \code{,} also has a value component "tokens that strictly follow commas" active.}
+\item{Five components in the attention output active on \code{v}. One is "completes html tags, latex macros, and irc usernames", which seems active when there's open left angled brackets \code{<}, or slashes in the sentence before, another "predicts next items in lists and enumerations", another "latex packages and math closing braces", another "code syntax, punctuation, and formatting" and finally one "structural delimiters in technical, mathematical and legal documents". The last of these is somewhat difficult to make sense of, it fires on short text passages in succession, as if it is predicting something from the moment some left delimeter is seen until some other right delimiter is hit, but we could not determine from the examples what those delimiters are.}
+\end{itemize}
+Ablating the attention output components on \code{v} out of the target model degrades performance on the task severely, with the model now assigning $0.015$ probability on \code{<}. Its top logit instead becomes \code{<|endoftext|>} at $0.056$. Similarly, ablating the components out of the graph shown in figure \ref{graph:bracket} reduces the probability on the \code{<} prediction down to $0.021$ under adversarial sampling. But the probability stays at $\approx 1.000$ under causal importance masking. This once again indicates that using naive masking schemes to infer causality can be very misleading, and adversarial sampling can help us avoid underestimating the number of components involved in the target model's computation.
+
+The \textbf{layer 2 attention} has 
+\begin{itemize}
+    \item {Two query components active on \code{v}, "predicts syntax after nouns, numbers, and variables" and "word stem completion (stems to suffixes)". They receive high positive attribution from both the layer 0 MLP down projection components and the layer 1 attention output components. Specifically, the latter receives high attribution from layer 1 attention output "completes html tags, latex macros, and irc usernames" and a little from layer 1 attention output "latex packages and math closing braces", suggesting it is triggered by the attention mechanism in the previous layer. The former receives most positive attribution from the mlp 0 down projection, especially from "word completion (stems to suffixes)" and "word stem completion (stems -> suffixes)", which suggests that this query is partially triggered by the received closed angled bracket information from the layer 1 attention.}
+    \item{Four key components active on \code{<}. Two are part of a rank 15 "opening delimiter" cluster that fires on left braces like  \code{<}, \code{(} and \code{[}, opening quotation marks, latex delimiters \code{\$}, \code{**} and variations of these created by the tokeniser, like \code{[@}, \code{(*}, \code{\_\{}, \code{![ } and such. Another fires only on the first sequence position in prompts, and on \code{<|endoftext|>}. The final one appears to be almost always active. }
+    \item{Nine value components active on \code{<}. Two are part of the same "left angled brackets" rank 18 component cluster that is also active in the layer 1 attention value matrix at the same sequence position. Two others are part of another rank 15 component cluster that seems to fire on more general opening delimiters like left angled braces, left curly braces, opening quotation markers, and the start of links. Another, "latex math packages in technical text", belongs to the same broad rank 32 "punctuation and other delimiters" cluster that also had two active components in the attention layer 1 values. The other four likewise variously fire on left angled brackets,  left brackets in general, left delimiters in general, and in one case both left and right delimiters. Some of them are also causally important on the tokens after left delimiters as well, as though they are responding to the delimiters information being carried forward from the previous sequence position.}
+    \item{Fourteen attention output components active on \code{v}. Four of them are part of a rank 33 cluster that has 32 members in the layer 2 attention output and one in the attention layer 1 output. The components in this cluster seem to fire whenever there are unclosed left delimiters, particularly many variations on left angled braces, but also variations on left round, curly or boxy braces. Three are part of a rank seven component that has five subcomponents locaslised to this attention output layer. They seem to fire more on closing angled brackets in particular, though also on some other markup and xml related closing and syntax elements like \code{","}. Six of the remaining seven components fire on angled braces as well as double colons, latex, math and code contexts and the like. The final one is a broad bias that seems to always be active.}
+\end{itemize} 
+Ablating the attention layer 2 output out of the target model on the \code{v} sequence position severely degrades performance on the task, just as in attention layer 1. The model then still expects some kind of bracket, but not an angled bracket in particular. For example the probability on \code{)} goes up from $0.079$ to $0.279$, the probability on \code{ ] } goes up from $0.015$ to $0.075$ and the probability on \code{);} goes up from $0.004$ to $0.052$. The probability on \code{>} goes down to $0.02$. This indicates that the information carried by the components in this attention layer is important for distinguishing which specific left bracket came before with sufficient confidence. As in attention layer 1, performance on the causal masked graph depicted in Figure \ref{graph:bracket} remains essentially perfect even if we ablate these components. But performance is destroyed under adversarial masking, again confirming that finding a subset of components that is sufficient to compute the output is too permissive a criterion and can exclude component that play a significant computational role. 
+
+The \textbf{layer 3 attention} has
+\begin{itemize}
+\item{One query component, which seems to be another "bias" that fires on more than $70\%$ of tokens.}
+\item{Two value components. One is active on the \code{<} sequence position and seems to be causally important more than $25\%$ of the time, firing mostly on delimiters, common words like \code{ and}, \code{ the}, \code{ a}, \code{ is}, \code{ would}, \code{ of}, \code{ on}, \code{ to} and to a lesser extent text following right after delimiters and these connective words. The other value component is active on the \code{v} sequence position, indicating that it is part of a self-attention mechanism in the graph. It is labeled "mathematical notation and formula component detector" and seems to be almost exclusively active on latex notation, though it also fires for some tokens that seem related to text that may typically feature latex, such as \code{ Eq}, \code{ Appendix}, \code{ proof}, and \code{ Newton}. }
+\item{Three attention output components. One is labeled "non-english text and utf-8 continuation bytes", another "latex math mode commands and symbols", and the third seems to be another "bias", causally important on more than ninety percent of sequence positions.}
+\end{itemize} 
+This attention layer seems perhaps less crucial to the overall computation, though it still plays a role. Ablating two of the three attention output components out of the target model but keeping the bias component only lowers the probability it assigns to the \code{>} prediction down to $0.498$ from the original $0.547$. However, ablating the output bias component essentially destroys performance. We hypothesize that this is more due to the central role of this component in setting typical activation sizes, since it has very high attributions to many downstream nodes, than any sophisticated computational role. Notably, the same is not true of the layer two attention. Ablating the layer two attention output nodes out of the graph in Figure \ref{graph:bracket} while keeping its bias node still reduces the probability on \code{>} under adversarial sampling down to less than $0.001$.  
+
+
+Notably, the query components used in layer 1 was a generic bias that is always active, and those used in layer 2 were "predicts syntax after nouns, numbers, and variables" and "word stem completion (stems to suffixes)". This somewhat begs the question of why the model would not predict \code{>} after \code{u} as well as after \code{v}. It turns out that it does in fact predict a closing angled bracket \code{>} as its top logit after \code{u} as well, though with lower confidence ($0.119$, whereas it assigns $0.547$ after \code{v}). Figure \ref{graph:bracket_u} shows a graph of components involved in predicting \code{>} after \code{u}, generated with adversarial pruning. It is structurally similar to the graph in figure \ref{graph:bracket}, with many of the same components being active. However, it is of course missing the components the latter graph has active in the attention layers on \code{u} and \code{,}, like "punctuation, symbols, and whitespace tokens" in the layer 1 value matrix on \code{,}. This suggests that the increased confidence of the model's prediction on \code{v} is due to the longer context further 'reinforcing' the possibility that the current context is about math and that a closing angled bracket is thus likely. Interestingly, the model does not predict a closing bracket after \code{,}, suggesting that it is aware that the comma suggests the statement in the bracket is not complete yet. We do not investigate the mechanisms underlying this heuristic here.
+\begin{figure}
+    \centering
+    
+    \includegraphics[width=0.7\linewidth]{figures/angled_brace_u_graph.png}
+    \caption[]{Attribution graph for predicting "\code{>}" on the prompt \code{<} \code{u} \code{,} \code{v} \code{>} after "\code{u}" , pruned with adversarial sampling.\protect\footnotemark There are 162 active components in total. The probability on "\code{>}" is $0.996$ with ci masking , $0.997$ with stochastic masking and $0.092$ with adversarial masking under 4 PGD optimisation steps with step size 1. The target model assigned $0.119$ probability to "\code{>}". Comparing to Figure \ref{graph:bracket}, many components occur in both graphs, particularly in the attention layers, suggesting similar computations occure in both graphs, though there are also substantial differences. This graph is of course lacking the components on "\code{u}" and "\code{,}" that seem to route additional information reinforcing the math context to "\code{v}" in Figure \ref{graph:bracket}, which may account for the model's lower confidence in the "\code{>}" prediction earlier in the prompt.}
+    \label{graph:bracket_u}
+\end{figure}
+\footnotetext{coefficient $0.5$ for cross-entropy reconstruction with stochastic sampling, coefficient $0.5$ for cross entropy with $4$ steps of PGD, lr $1$, importance minimality coefficient $0.1$, $p=0.3$, $4000$ optimisation steps.}
+
+
+%\subsection{Parameter components interact nonlinearly, but in an interpretable way}
+% Component interactions: geometry wrt neurons and coactivations. 
+\subsection{Early exploration: Characterizing nonlinear component interactions}
+In our case studies, we have tried to trace out the relationships between component activations in particular computations using attributions. This is not a complete account of how the model outputs are produced, since attributions only attempt to measure how strongly one component activation influences another. To fully reverse engineering neural networks with VPD, we will need some account of how component activations are actually computed from upstream component activations. In the case of MLP up projection matrices, as well as query, key and value matrices, we believe that this should not be difficult, because the connections to their preceding component activations in the graph are linear save for the layernorms. So we should be able to understand them almost entirely as linear combinations of preceding component activations.
+
+In the case of MLP down projection and attention output matrices however, there are nonlinearities in the computational graph separating them from preceding component activations, neurons in the case of the MLP down projection and attention heads in the case of the attention output matrices. In the case of the MLP down projection components in particular, every component activation is a linear combination of many MLP neurons, each of which potentially connects to all MLP input component activations. One might thus worry that the nonlinear interactions between the input component activations that produce the output component activations could be inherently very complicated. At present, we cannot exclude this possibility, but we believe there are theoretical and empirical reasons to think that the interactions are much simpler than the raw number of nonlinearities in the neural network might suggest.
+\subsubsection{}
+
+\subsection{Parameter decompositions are an especially useful decomposition}
+% Mundane utility demo (e.g. steering, intervention, rewriting, editing in a conditional steering vector or unlearning memorized data, something else)  
+
+
+\section{Discussion}
+\label{sec:discussion}
+Things to maybe bring up here
+\begin{itemize}
+    \item It might be possible to train other causal importance functions for different levels of sparsity on the same components, allowing us to move to different points on the simplicty-reconstruction pareto frontier while keeping the same set of components. This might allow us to progressively understand models and model components at higher levels of detail, starting with very sparse causal importances that give simple but incomplete pictures of the forward pass, then moving to less simple but more accurate pictures of the same forward pass while retaining what we have already learned about the components. This way, we could understand the role of components incrementally, starting with the most crucial effect pathways on the output and slowly working our way up to a more complete understanding.
+    \item How much adversarial robustness is enough?
+    \item VPD and other ablation-based parameter decomposition methods obey a principle of correspondence of mechanistic interventions: Ablations in the interpreter model have exactly corresponding ablations in the original model, making it straightforward to use insights gained from the decomposition for model editing. E.g. we can remove any component from the original model by subtracting it from the total parameter vector and obtain a new baked model on the original architecture.
+\end{itemize}
+
+\subsection{Related work}
+
+\subsection{Limitations}
+Things to maybe bring up here
+\begin{itemize}
+    \item Our simplicity measures are imperfect and ad-hoc. 
+    \item We only show attribution graphs, not computational graphs. Attributions have a lot of issues and do not capture the full structure of non-linear interactions.
+\end{itemize}
+
+\subsection{Future work}
+
+\subsection{Conclusion}
+
+\newpage
+
+
+
+
+
+
+
+
+
+
+
+\bibliographystyle{plain} % or 'unsrt', or the specific neurips style
+\bibliography{bibliography}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\appendix
+
+\section{Appendix}
+
+\input{appendix/clustering}
+
+
+\section{VPD Method Details}
+\label{app:methods}
+\todo{frequency penalty derivation}
+% TODO: Full discussion of training details
+% - Adversarial reconstruction loss
+% - Importance function architecture
+% - P-annealing schedule
+% - Frequency penalty
+% TODO: Full discussion of attributions
+
+% TODO: Some discussion of autointerp
+\subsection{Losses}
+\subsubsection{Auxiliary delta component L2 penalty }\label{app:delta_l2}
+The Delta-components are different from normal subcomponents we train. Their rank can be greater than $1$, meaning they can be more complicated objects than regular subcomponents. We thus have a particular interest in ensuring that they are not used to compute the model's outputs. Theoretically, since we define the causal importances of Delta-components to always be zero, the stochastic and adversarial losses should ensure that this is the case. But in practice our reconstruction losses are not perfect, so we additionally encourage the Delta-components to be exactly zero with an auxiliary loss
+\begin{equation}
+\mathcal{L}_{\text{Delta-L2}}=\frac{1}{N}\sum^L_{l=1}\sum_{i,j}\left(\Delta^l_{i,j}\right)^2=\frac{1}{N}\sum^L_{l=1}\sum_{i,j}{\left( W^{l}_{i,j}- \sum^C_{c=1} U^l_{i,c} V^l_{c,j}\right)}^2 \,.
+\end{equation}
+\subsubsection{Stochastic subset reconstruction loss}\label{app:subset_recon}
+\cite{bushnaq2025spd} found that using both stochastic reconstruction loss
+\begin{equation}
+\begin{aligned}
+\mathcal{L}_{\text{stochastic-recon}}&=\frac{1}{S}\sum^S_{s=1}D \left( f(x\vert W'(x,r^{(s)})),f(x\vert W) \right)\,\\
+\end{aligned}
+\end{equation}
+and layer-wise stochastic reconstruction loss 
+\begin{equation}\label{eq:layerwise_random_recon}
+\begin{aligned}
+\mathcal{L}_{\text{stochastic-recon-layerwise}}=\frac{1}{LS}\sum^L_{l=1}\sum^S_{s=1}D \left( f(x\vert W^1,\dots,W'^l(x,r^{l, (s)}),\dots,W^L),f(x\vert W) \right)\,
+\end{aligned}
+\end{equation}
+together performed better than training on stochastic reconstruction loss alone, due to covering a somewhat more structurally diverse set of ablation. However, layer-wise reconstruction loss requires one forward-pass for every matrix in the model we decompose, which is expensive. For VPD training, we unify stochastic reconstruction loss and layerwise stochastic reconstruction loss into subset reconstruction loss, which uniformly samples some subset of the model's matrices and applies stochastic masking to only those. This is no more computationally expensive than stochastic reconstruction loss, and covers more structurally diverse ablations than layer-wise stochastic reconstruction losses, since it includes subsets of single matrices as well as the whole set as special cases.
+\subsubsection{Adversarial reconstruction losses}
+We adversarially optimise masks
+\begin{equation}
+m^l_c(x,s,r) :=g^l_c(x,s)+(1-g^l_c(x,s))r^{l,\text{adv}}_c(x,s)
+\end{equation}
+for components $c$ of matrix $l$ on data point $x$ at sequence position $s$ via projected gradient ascent on the adversarial sources $r^l_c(x)$ on the masked forward pass:
+\begin{equation}
+\begin{aligned}
+\sum_x D \left( f\left(x\vert W'^1(x,r^l),\dots,W'^L(x,r^{L})\right),f(x\vert W^1,\dots, W^L) \right)\,
+\end{aligned}
+\end{equation}
+The sources are clamped to the interval $[0,1]$ at every update step. Sources for the masks of the Delta components $\Delta^l$ (see Section \ref{sec:method_components}) are adversarially optimised the same way as those for the masks of regular subcomponents.
+\paragraph{PPGD adversarial reconstruction losses for training}
+For training, we use projected gradient ascent with AdamW, keeping a single persistent set of sources  $r^{l,\text{adv}}$ across batches. Every training step, the VPD optimiser performs one gradient descent update on the components and their causal importance functions, and the adversarial optimiser performs $n_{\text{adv}}$ steps of projected gradient ascent on the adversarial sources $r^l(x)$. 
+\begin{equation}\label{eq:PPGD_recon}
+\begin{aligned}
+\mathcal{L}_{\text{PPGD recon}}&=\sum_x D \left( f\left(x\vert W'(x,s,r^{l, \text{adv}}\right),f(x\vert W) \right)\,\\
+\end{aligned}
+\end{equation}
+The adversarial optimiser supports different scopes for the sources $r^l(x,s)$. \code{per\_batch\_per\_position} uses one unique source for every batch element and sequence position, \code{repeat\_across\_batch} uses the same source $r^l(x)$ for every batch element, but different sources for different sequence positions, and \code{single\_source} uses one unique source $r^l$ for every component. In our experiments, we find that \code{per\_batch\_per\_position} works best for training.
+\paragraph{PGD adversarial reconstruction loss for evaluation}
+Continuously updating a single set of persistent adversarial sources is more computationally efficient, but not principled. Hypothetically, the VPD optimiser might trap the adversarial optimiser in some local extremum at some point during training, rendering the adversarial loss useless. Thus, for evaluation, we instead use a new randomly set of adversarial sources $r^{l, \text{adv}}$ for every batch, but increase the number of adversarial optimisation steps $n_{\text{adv}}$:
+\begin{equation}\label{eq:PGD_recon}
+\begin{aligned}
+\mathcal{L}_{\text{PGD recon}}&=\sum_x D \left( f\left(x\vert W'(x,t, r^{l, \text{adv}})\right),f(x\vert W) \right)\,\\
+\end{aligned}
+\end{equation}
+Just as with the PPGD loss, the code supports \code{per\_batch\_per\_position}, \code{repeat\_across\_batch} and \code{single\_source} scope. We use \code{single\_source} for evaluation to prevent the adversarial optimiser from fine-tuning to noise on particular data points. See section \ref{sec:methods_adv} for more discussion. 
+\subsection{Frequency penalty motivation}\label{app:frequency_penalty}
+TODO
+
+Our components are supposed to provide a fixed description of the network across the whole dataset to good precision. The more bits a component contributes to that description, the more "complex" it is. Here, we argue that components that activate more frequently are effectively more complex, because quantising them to lower precision increases the loss more than quantising a component that activates less frequently. 
+
+Suppose a component $c$ is causally important with some frequency $f_c<1$. As a simplified toy model, let us assume that ablating the component on data points where it is causally unimportant does not change the loss at all, whereas ablating it on data points on which it is causally important increases the loss by some $\mathcal{O}(1)$ that is approximately the same for each such data point. Further, we assume that a perturbation 
+
+Now, suppose we quantize the floating point numbers comprising the $U$ and $V$ vectors of the component to $b_c$ bits of precision, where $b_c$ is lower than the original precision $B_c$. For each missing bit of precision, we
+%I think I've figured out a little more what our frequency penalty term (the beta term in importance minimality) actually means. In Singular Learning Theory, a free direction doesn't contribute to the free energy.A non-free direction contributes log(N), where N is the total number of data points so far.And, if I didn't make a mistake, it turns out a direction that's non-free only some of the time, with some frequency $f$, contributes about $\log(fN)$ (ignoring some constant terms).
+
+In other words, the more often a component is causally important, the more precisely you need to define it to get low loss over many data points. If it's always causally important, every bit of the component you get wrong will hurt your loss on every data point. If it's rarely causally important, every bit you get wrong will only sometimes hurt your loss. So, you can afford to store it with fewer bits of precision. Under some simplifying modelling assumptions, the scaling of this trade-off goes as $\log_2(fN)$, though this is ignoring some constant offset terms.
+
+So, the effective complexity of our components mildly scales with how often they activate, as $\log_2(fN)$ where N is the size of the dataset we care about and f is component activation frequency. Our average complexity used per data point then scales with an additional term $\sum_c f_c \log(f_cN)$. Make $N$ the batch size X, and this can be rewritten as $\sum_c \sum_x I\vert g_c(x)\vert^0/X \log_2(\sum_x \vert g_c(x)\vert^0)$. Approximate the $L_0$ with an $L_p$ and add a $1.0$ to the $\log_2$ for regularisation, to account for components with $\sum_x \vert g_c(x)\vert^p<1$, and this becomes $\frac{1}{X} \sum_c \sum_x \vert g_c(x)\vert^0 \log_2(1+\sum_x \vert g_c(x)\vert^p)$
+
+That's our beta term.
+\subsection{Causal Importance Function Architecture}\label{app:ci_function}
+
+The causal importance function $\Gamma$ maps the target model's hidden activations to
+per-component causal importances. It is a single, shared network that jointly computes causal
+importances for all components across all weight matrices in the target model.
+
+\paragraph{Inputs.}
+Let $L$ denote the number of weight matrices being decomposed, and let $a^l(x,t) \in
+\mathbb{R}^{d_l}$ denote the input hidden activation to weight matrix $l$ of the target model at batch element $x$ and
+sequence position $t$. Each activation vector is independently RMS-normalized, and the
+normalized vectors are concatenated to form the input:
+\begin{equation}
+  a(x, t) = \left[
+    \operatorname{RMSNorm}(a^1(x,t)) \;\|\; \cdots \;\|\;
+    \operatorname{RMSNorm}(a^L(x,t))
+  \right] \in \mathbb{R}^{D},
+  \quad D = \sum_{l=1}^{L} d_l.
+\end{equation}
+
+\paragraph{Input projection.}
+The concatenated activation vector is linearly projected to the transformer's model dimension:
+\begin{equation}
+  h^{(0)}(x, t) = W_{\mathrm{in}} \, a(x, t) + b_{\mathrm{in}},
+  \quad W_{\mathrm{in}} \in \mathbb{R}^{d_{\mathrm{model}} \times D}, \;
+  b_{\mathrm{in}} \in \mathbb{R}^{d_{\mathrm{model}}}.
+\end{equation}
+
+\paragraph{Transformer blocks.}
+The projected activations are processed by $N$ pre-norm transformer blocks. Each block $n \in
+\{1, \ldots, N\}$ applies bidirectional multi-head self-attention followed by a feedforward
+network, each with a residual connection:
+\begin{align}
+  \hat{h}^{(n)}(x, t) &= h^{(n-1)}(x, t) +
+    \operatorname{Attn}\!\left(
+      \operatorname{RMSNorm}\!\left(h^{(n-1)}(x, \cdot)\right)
+    \right)\!(t), \\
+  h^{(n)}(x, t) &= \hat{h}^{(n)}(x, t) +
+    \operatorname{FFN}\!\left(
+      \operatorname{RMSNorm}\!\left(\hat{h}^{(n)}(x, t)\right)
+    \right),
+\end{align}
+where $\operatorname{Attn}$ denotes multi-head scaled dot-product attention with Rotary
+Position Embeddings (RoPE)~\cite{su2024roformer}, applied bidirectionally (i.e., without a
+causal mask) across all $T$ sequence positions; and $\operatorname{FFN}$ is a two-layer
+feedforward network with GELU activation:
+\begin{equation}
+  \operatorname{FFN}(z) = W_2 \, \operatorname{GELU}(W_1 z + b_1) + b_2,
+  \quad W_1 \in \mathbb{R}^{d_{\mathrm{ff}} \times d_{\mathrm{model}}}, \;
+  W_2 \in \mathbb{R}^{d_{\mathrm{model}} \times d_{\mathrm{ff}}}.
+\end{equation}
+
+\paragraph{Output head.}
+After the final transformer block, a linear output head projects back to the total number of
+components:
+\begin{equation}
+  \Gamma(a(x,t)) = W_{\mathrm{out}} \, h^{(N)}(x,t) + b_{\mathrm{out}},
+  \quad W_{\mathrm{out}} \in \mathbb{R}^{C_{\mathrm{total}} \times d_{\mathrm{model}}}, \;
+  C_{\mathrm{total}} = \sum_{l=1}^{L} C_l.
+\end{equation}
+The output is partitioned according to each matrix's component count $C_l$, and the causal
+importance for component $c$ in matrix $l$ is obtained by applying a leaky hard sigmoid
+activation:
+\begin{equation}
+  g^l_c(x, t) = \sigma_{\mathrm{lh}}\!\left(\Gamma(a(x,t))^l_c\right),
+  \quad \sigma_{\mathrm{lh}}(z) = \mathrm{clamp}(z, 0, 1),
+\end{equation}
+with a straight-through gradient estimator that passes gradients through for $z \leq 0$ scaled
+by a leak coefficient $\alpha = 0.01$ when the incoming gradient is negative, preventing
+components from becoming permanently deactivated.
+
+\paragraph{Hyperparameters.}
+Table~\ref{tab:ci-hyperparams} lists the hyperparameters used for $\Gamma$ in our experiments.
+The target model is a 4-layer Llama-style transformer with $d_{\mathrm{model}} = 768$ and
+$d_{\mathrm{intermediate}} = 3072$, decomposed across $L = 24$ weight matrices
+(6 per layer: \texttt{c\_fc}, \texttt{down\_proj}, \texttt{q\_proj}, \texttt{k\_proj},
+\texttt{v\_proj}, \texttt{o\_proj}), yielding a total of $C_{\mathrm{total}} = 39{,}936$
+components and an input dimension of $D = 27{,}648$.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+CI model dimension ($d_{\mathrm{model}}$) & 2048 \\
+Transformer blocks ($N$)                  & 8 \\
+Attention heads                           & 16 \\
+Head dimension                            & 128 \\
+FFN hidden dimension ($d_{\mathrm{ff}}$)  & 8192 \\
+Positional encoding                       & RoPE (base $= 10{,}000$, max length $= 512$) \\
+Attention                                 & Bidirectional (no causal mask) \\
+Activation function                       & Leaky hard sigmoid ($\alpha = 0.01$) \\
+\bottomrule
+\end{tabular}
+\caption{Hyperparameters for the causal importance function $\Gamma$.}
+\label{tab:ci-hyperparams}
+\end{table}
+
+\subsection{p-annealing}
+The $\ell_p$ quasi-norm in Equations \eqref{eq:minimal} and \eqref{eq:freq_minimality} serves as a
+smooth surrogate for $\ell_0$ counting, with smaller $p$ yielding a tighter approximation.
+However, \cite{bushnaq2025spd} found that optimization is substantially easier at larger $p$
+values like $p = 2$. We therefore linearly anneal $p$ over the
+course of training, starting from the easy-to-optimize $p_0 = 2.0$ and decreasing to
+$p_{\mathrm{final}} = 0.4$:
+\begin{equation}
+  p(t) = p_0 + (p_{\mathrm{final}} - p_0) \cdot \frac{t}{t_{\max}}\,,
+\end{equation}
+where $t$ is the current training step and $t_{\max}$ is the total number of steps.
+In our experiments, annealing begins at the start of training and proceeds linearly
+over the full run ($t \in [0, t_{\max}]$).
+\section{Interaction graphs}
+                                                                                                     
+  \subsection{Gradient attributions}
+  \label{app:gradient_attributions}
+                                                                                                       
+  To understand how components interact with each other during the forward pass, we compute gradient   
+  attributions between pairs of subcomponents at adjacent layers in the computational graph. These     
+  attributions form the edges of an interaction graph that visualizes the flow of information through  
+  the decomposed model on a given prompt or aggregated over the dataset.
+
+  Recall that each subcomponent $c$ at layer $l$ has a \textit{component activation} $a^l_c(x,t) =     
+  {V^l_c}^\top h^l(x,t)$, where $h^l(x,t)$ is the pre-weight activation at layer $l$ on datapoint $x$
+  at sequence position $t$. This is the projection of the input onto the right singular vector of the  
+  rank-one subcomponent, and it determines how strongly the subcomponent contributes to the layer's
+  output.
+
+  For a source subcomponent $c_s$ at layer $l_s$ and a target subcomponent $c_t$ at layer $l_t$ (where 
+  $l_s$ feeds into $l_t$ in the computational graph), we define the \textit{gradient attribution} on
+  datapoint $x$ at source position $t_s$ and target position $t_t$ as:                                 
+  \begin{equation}                                                
+      \alpha(c_s \to c_t;\, x, t_s, t_t) = \frac{\partial a^{l_t}_{c_t}(x,t_t)}{\partial               
+  a^{l_s}_{c_s}(x,t_s)} \cdot a^{l_s}_{c_s}(x,t_s) \cdot g^{l_s}_{c_s}(x,t_s)                          
+  \end{equation}                                                                                       
+  where $g^{l_s}_{c_s}(x,t_s)$ is the causal importance of the source subcomponent. The gradient       
+  $\times$ activation product $\frac{\partial a^{l_t}_{c_t}}{\partial a^{l_s}_{c_s}} \cdot             
+  a^{l_s}_{c_s}$ gives a first-order estimate of how much the source subcomponent's activation
+  contributes to the target subcomponent's activation. Weighting by the causal importance              
+  $g^{l_s}_{c_s}(x,t_s)$ ensures that subcomponents which are not causally important on a given
+  datapoint (i.e., those that can be ablated without affecting the output) do not contribute to the
+  attribution, even if they happen to have nonzero activations and gradients.
+
+  For most adjacent layer pairs, source and target positions coincide ($t_s = t_t$), since MLP and     
+  attention projection layers operate position-wise. However, for edges from key or value subcomponents
+   to attention output subcomponents within the same attention block, the source position $t_s$ can be 
+  any position up to and including the target position $t_t$ (i.e., $t_s \leq t_t$, respecting the
+  causal attention mask). This reflects the fact that key and value activations at earlier positions
+  influence the attention output at later positions.
+
+  \paragraph{Dataset-aggregated attributions.}
+  To obtain a summary of how components interact across the dataset, we aggregate attributions over all
+   datapoints and all valid position pairs:                                                            
+  \begin{equation}
+      A(c_s \to c_t) = \sum_{x \in \mathcal{D}} \sum_{t_s, t_t} \frac{\partial                         
+  a^{l_t}_{c_t}(x,t_t)}{\partial a^{l_s}_{c_s}(x,t_s)} \cdot a^{l_s}_{c_s}(x,t_s) \cdot                
+  g^{l_s}_{c_s}(x,t_s)
+  \end{equation}                                                                                       
+  where the sum over $(t_s, t_t)$ ranges over $t_s = t_t$ for position-wise layers and $t_s \leq t_t$  
+  for key/value-to-output edges in attention. In practice, we compute this sum over the training       
+  dataset using a distributed pipeline across multiple GPUs. To make attributions comparable across    
+  components with different activation scales and different frequencies of causal importance, we       
+  normalize by the total causal importance of the source and the root-mean-square activation of the
+  target:
+  \begin{equation}\label{eq:normalized_attr}
+      \hat{A}(c_s \to c_t) = \frac{A(c_s \to c_t)}{\left(\sum_{x,t} g^{l_s}_{c_s}(x,t)\right) \cdot
+  \text{RMS}(a^{l_t}_{c_t})}                                                                           
+  \end{equation}
+  where $\text{RMS}(a^{l_t}_{c_t}) = \sqrt{\frac{1}{|\mathcal{D}|} \sum_{x,t} (a^{l_t}_{c_t}(x,t))^2}$ 
+  and $|\mathcal{D}|$ is the total number of tokens processed. Dividing by the source's cumulative     
+  causal importance puts the attribution on a per-occurrence scale (analogous to averaging over only   
+  the datapoints where the source is active), while dividing by the target's RMS activation accounts   
+  for the target's overall magnitude. Together, these normalizations allow meaningful comparison of
+  attribution strengths across edges in the graph.
+
+  We also compute an absolute-value variant $A_{\text{abs}}(c_s \to c_t)$, which replaces the target   
+  activation $a^{l_t}_{c_t}$ with its absolute value $|a^{l_t}_{c_t}|$ in the backward pass. This
+  variant captures the total magnitude of influence irrespective of sign, and is useful for identifying
+   strong interactions where the signed attribution may cancel across datapoints.
+
+  \paragraph{Prompt-level attributions.}
+  For analyzing individual prompts, we compute position-aware attributions without aggregation. Given a
+   prompt and a set of ``alive'' subcomponents (those with nonzero causal importance at each position),
+   we compute the gradient attribution for each pair of alive source and target subcomponents at each
+  valid combination of source and target positions. The resulting position-aware graph enables detailed
+   analysis of how the model processes a specific input.          
+
+  The main changes are: separate $t_s$ and $t_t$ indices throughout, an explicit paragraph explaining  
+  when they differ (K/V to O edges within an attention block), and the dataset sum now ranges over
+  valid position pairs rather than a single shared position.    
+\subsection{Post-hoc causal importance optimization}                                                 
+  \label{app:posthoc_ci}                                                                               
+During VPD base training, the causal importance function $\Gamma$ is trained to predict which subcomponents are necessary to reconstruct the target model's \textit{full output distribution across all sequence positions}. However, when analyzing a specific behavior---such as the model's prediction of a particular token at a particular position---many causally important subcomponents will be irrelevant to that specific behavior, even though they are necessary for reconstructing the full output. To isolate only the subcomponents involved in a behavior of interest, we optimize new causal importance values \textit{post hoc} on a single prompt, using a reconstruction loss that targets only the specific aspect of the output we wish to study.                                     
+\subsubsection{Setup}                                  Given a trained VPD model and a prompt $x$, we first run the model's trained causal importance       
+  function to obtain the base causal importance values $g^l_c(x,t)$ for all subcomponents on that
+  prompt. We then identify the set of \textit{alive} subcomponents for the prompt: those for which $g^l_c(x,t) > 0$ at any position $t$. Only alive subcomponents are eligible for inclusion in the post-hoc optimization, though masks for the other components can still be sampled stochastically to ensure they remain ablatable. We parameterize the new causal importances using pre-sigmoid parameters $\phi^l_c(t)$, one per alive subcomponent at each position. The causal importance values are obtained by passing these parameters through the same leaky hard sigmoid function $\sigma$ used during base training:                     
+  \begin{equation}                                                
+      \tilde{g}^l_c(x,t) = \sigma(\phi^l_c(t))                                                         
+  \end{equation}                                                                                       
+  The parameters $\phi^l_c(t)$ are initialized to the pre-sigmoid values produced by the base causal   
+  importance function on this prompt, providing a warm start. Non-alive subcomponents have their causal
+   importance fixed at zero throughout optimization.                                                   
+                                                                                                       
+\subsubsection{Loss function}                        
+The post-hoc optimization minimizes a combination of a reconstruction loss and an importance minimality loss: 
+\begin{equation}                                     \mathcal{L}_{\text{post-hoc}} =\lambda_{\text{recon}} \cdot\mathcal{L}_{\text{recon}} + \lambda_{\text{min}} \cdot\mathcal{L}_{\text{importance-minimality}}      \end{equation}                                      
+The reconstruction loss $\mathcal{L}_{\text{recon}}$ is chosen to target the specific behavior of interest. For example, to study how the model predicts token $y$ at position $t^*$, we use a cross-entropy loss at that position:                                                                 
+\begin{equation}                                                
+\mathcal{L}_{\text{recon}} = -\log p_{\text{masked}}(y \mid x, t^*)                              
+\end{equation}                                                                                       
+where $p_{\text{masked}}$ denotes the output distribution of the model with masks applied according to the post-hoc causal importances. Alternatively, if we wish to reconstruct the model's full output distribution at a specific position rather than targeting a particular token, we can use a KL-divergence loss:                                     \begin{equation}                                                
+\mathcal{L}_{\text{recon}} = D_{\text{KL}}\!\left(p_{\text{target}}(\cdot \mid x, t^*) \;\|\;    
+p_{\text{masked}}(\cdot \mid x, t^*)\right)                                                          
+\end{equation}                                                                                       
+The importance minimality loss $\mathcal{L}_{\text{importance-minimality}}$ has the same form as in base training (Equations~\ref{eq:minimal} and~\ref{eq:freq_minimality}), applied to the post-hoc causal importances $\tilde{g}^l_c(x,t)$. This loss encourages the optimization to find the sparsest set of subcomponents that can still reconstruct the targeted behavior. The coefficient $\lambda_{\text{min}}$ controls the sparsity--fidelity trade-off: larger values yield sparser graphs with fewer active subcomponents, potentially at the cost of reconstruction quality.
+\subsubsection{Masking during optimization}                                                          
+As in base training, the post-hoc causal importances define masks on the subcomponents via:          
+\begin{equation}                                                
+m^l_c(x,t,r) = \tilde{g}^l_c(x,t) + (1 - \tilde{g}^l_c(x,t)) \, r^l_c(x,t)                       
+\end{equation}                                                                                       
+where $r^l_c(x,t) \in [0,1]$. On each optimization step, we sample masks by drawing $r^l_c(x,t)$, either stochastically uniformly or adversarially, and compute the reconstruction loss under those masks. This ensures that the optimization satisfies the same mechanistic faithfulness criterion as base training: subcomponents marked as unimportant must be ablatable in any combination without affecting the targeted output. 
+\begin{equation}
+\mathcal{L}_{\text{post-hoc}} = \lambda_{\text{recon}} \cdot \mathcal{L}_{\text{recon}} 
++\lambda_{\text{min}} \cdot \mathcal{L}_{\text{importance-minimality}} 
++ \lambda_{\text{recon}} \cdot \mathcal{L}_{\text{adversarial-recon}}
+\end{equation}                                                                                       
+where $\mathcal{L}_{\text{adversarial-recon}}$ is computed similarly to Equation~\ref{eq:adv_recon}, but using the post-hoc causal importances and the targeted reconstruction loss. There is also one additional constraint imposed on the adversarial sampler compared to  VPD base training: Only alive subcomponents on the prompt have their masks adversarially optimised, other subcomponents have their masks drawn stochastically. This is because we want to prevent the adversary from finetuning on data dependent noise inside the many inactive components of the model, see Section \ref{sec:methods_adv}. In base training, this is accomplished by forcing the adversary to use the same $r^l_c$ for many data points. For post-hoc optimisation we cannot do this, because we only have a single prompt available. But the causal importance function has already pre-filtered the components to exclude those that were not involved in computing the prompt at all, so we attempt to sidestep this issue by restricting the adversary to components that were alive on the original prompt.                                     
+\subsubsection{Optimization procedure}                                                               
+We optimize the pre-sigmoid parameters $\phi^l_c(t)$ using AdamW with a cosine learning rate schedule and brief linear warmup. The model weights and subcomponent parameters ($U$, $V$) are frozen throughout; only the post-hoc causal importance parameters are updated. The optimization typically converges within a few hundred steps, since it starts from a good initialization and optimizes over a single prompt rather than a dataset. The result is a set of refined causal importance values $\tilde{g}^l_c(x,t)$ that are sparser than the base values: many subcomponents that were causally important for the full output are driven to zero importance when only a specific behavior is targeted. The surviving subcomponents---those with $\tilde{g}^l_c(x,t) > 0$---form the nodes of the interaction graph for that behavior, and gradient attributions (Section~\ref{app:gradient_attributions}) are then computed between them.
+
+\section{Misc}
+\subsection{Jacobian agreement does not measure mechanistic faithfulness}
+TODO. Below is an early sketch.
+
+Some people like measuring mechanistic faithfulness of interpreter models through agreement of the interpreter model's Jacobians with the original model's Jacobians \citep{lindsey2025molts} (TODO more citations). We do not think this measures mechanistic faithfulness in the sense we care about.
+\paragraph{Jacobians can be mismatched even if a decomposition is mechanistically faithful} 
+Jacobians with respect to layer inputs can change under ablation even if the decomposition is mechanistically faithful in the sense we care about. As an example, consider a scalar, linear neural network 
+\begin{equation}
+y(x)= \begin{pmatrix}
+w_{1} & w_{2}\\
+\end{pmatrix}\begin{pmatrix}
+\mathbf{x}_1 \\
+\mathbf{x}_2
+\end{pmatrix}
+\end{equation}
+On an input $\mathbf{x}=\begin{pmatrix}
+1 \\
+0\end{pmatrix}$, weight $w_{1,2}$ can be ablated without changing the network output $y$. But this ablation will change the derivative $\frac{\partial\mathbf{y}(\mathbf{x})}{\partial\mathbf{x}_2}$ on that input to equal $0$ instead of $w_2$. 
+
+Jacobians with respect to network weights have similar problems. For example, consider a network:
+\begin{equation}
+\mathbf{y}=
+\begin{pmatrix}
+w_{2,1} & w_{2,2}\\
+\end{pmatrix} \begin{pmatrix}
+w_{1,11} & w_{1,12}\\
+w_{1,21} & w_{1,22}
+\end{pmatrix} \begin{pmatrix}
+x_1 \\
+x_2 
+\end{pmatrix} 
+\end{equation}
+with $w_{1,12}=0$. The weight $w_{2,2}$ can be ablated on inputs with $\mathbf{x}_1=0$, but doing so will change the derivative $\frac{\partial y}{\partial w_{1,12}}$ to equal $0$ instead of $w_{2,2} \mathbf{x}_2$.
+
+\paragraph{Jacobians can show good agreement even if an interpreter model is not mechanistically faithful}
+Consider a ReLU MOLT \citep{lindsey2025molts}:
+\begin{equation}
+\mathbf{y}=\sum^T_{t=1}\text{ReLU}(\mathbf{e}^T_t \mathbf{x}+b_t) U_t V_t \mathbf{x}
+\end{equation}
+where $\mathbf{x}$ is the input residual stream activation, t indexes linear transforms, $\mathbf{e}_t, \mathbf{b}_t$ are the embedding vector and bias for each gate, and $U_t$ and $V_t$ are matrices of dimensions $d_{\text{model}} \times k_t$, $k_t \times d_{\text{model}}$ respectively. This MOLT is supposed to be an interpreter model for an MLP
+\begin{equation}
+\mathbf{y}=W_{\text{out}}\text{ReLU}(W_{\text{in}}\mathbf{x})\,.
+\end{equation}
+If the MOLT dictionary is large enough, it can implement a single unique gated unit for every data point in a training set $\{\mathbf{x}_1,\dots, \mathbf{x}_T\}$, such that 
+\begin{equation}
+\mathbf{y}_t=\text{ReLU}(\mathbf{e}^T_t \mathbf{x}_t+b_t)U_t V_t\mathbf{x}_t\,,
+\end{equation}
+with 
+\begin{equation}
+\text{ReLU}(\mathbf{e}^T_t \mathbf{x}_{t'}+b_t)=(\vert\vert\mathbf{x}_{t'}\vert\vert_2+b_t)\delta_{t,t'}\,,
+\end{equation}
+and 
+\begin{equation}
+U_t V_t\mathbf{x}_t=\frac{1}{(\vert\vert\mathbf{x}_{t'}\vert\vert_2+b_t)}W_{\text{out}}\text{ReLU}(W_{\text{in}}\mathbf{x}_t)\,,
+\end{equation}
+The Jacobians of the original model on our data are\footnote{Defining, in an abuse of notation, $W_{\text{out}}\frac{\text{ReLU}(W_{\text{in}}\mathbf{x}_t)}{W_{\text{in}} \mathbf{x}_t}=0$ if the input to a $\text{ReLU}$-neuron is $0$.}
+\begin{equation}
+\frac{d\mathbf{y}}{d\mathbf{x}}\vert_{\mathbf{x}=\mathbf{x}_t}=W_{\text{out}}\frac{\text{ReLU}(W_{\text{in}}\mathbf{x}_t)}{W_{\text{in}}\mathbf{x}_t} W_{\text{in}}\,.
+\end{equation}
+The Jacobians of the interpreter model on our data are
+\begin{equation}
+\begin{aligned}
+\frac{\partial\mathbf{y'}}{\partial\mathbf{x}}\vert_{\mathbf{x}=\mathbf{x}_t}&=\text{ReLU}(\mathbf{e}_t \mathbf{x}_t+b_t)U_t V_t+(U_t V_t\mathbf{x}_t) \mathbf{e}^T_t\\
+&=(\vert\vert\mathbf{x}_{t}\vert\vert_2+b_t)U_t V_t+\frac{1}{(\vert\vert\mathbf{x}_{t}\vert\vert_2+b_t)}\mathbf{y}_t \mathbf{e}^T_t
+\end{aligned}
+\end{equation}
+If we choose $U_t, V_t$ such that $(\vert\vert\mathbf{x}_{t}\vert\vert_2+b_t)U_t V_t=W_{\text{out}}\frac{\text{ReLU}(W_{\text{in}}\mathbf{x}_t)}{W_{\text{in}}\mathbf{x}_t} W_{\text{in}}$, the Jacobians $\frac{\partial\mathbf{y'}}{\partial\mathbf{x}}\vert_{\mathbf{x}=\mathbf{x}_t}$ and $\frac{\partial\mathbf{y}}{\partial\mathbf{x}}\vert_{\mathbf{x}=\mathbf{x}_t}$ will be identical along all $d^2_{\text{model}}-1$ directions in parameter space orthogonal to $\mathbf{y}_t \mathbf{e}^T_t$. Along direction $\mathbf{y}_t \mathbf{e}^T_t$, they will differ by a term of size $\frac{\vert\vert\mathbf{y}_t\vert\vert_2}{(\vert\vert\mathbf{x}_{t}\vert\vert_2+b_t)}$. If the original Jacobian had entries of size $\mathcal{O}(1)$, the cosine similarity between $\frac{\partial\mathbf{y'}}{\partial\mathbf{x}}\vert_{\mathbf{x}=\mathbf{x}_t}$ and $\frac{\partial\mathbf{y}}{\partial\mathbf{x}}\vert_{\mathbf{x}=\mathbf{x}_t}$ will have size ???$1-\mathcal{O}(\frac{1}{\sqrt{d_{\text{model}}}})$???... (TODO)
+Since we can freely choose $b_t$ so long as the gated unit remains inactive for other inputs, we can increase $b_t$ to make that term smaller as well... (TODO)
+
+
+\section{Training Details and Hyperparameters}
+\label{app:training-details}
+
+\paragraph{Target model training.}
+The target model architecture is described in Section~\ref{sec:langauge-model-details} and Table~\ref{model-hyperparams}.
+It was trained on a subset of The Pile \citep{gao2020pile} for $100{,}000$ steps with batch size $1024$ and context length $512$.
+We used Adam~\cite{kingma2017adam} with learning rate $3 \times 10^{-4}$ (cosine decay to $10\%$), weight decay $0.1$, gradient clipping at $1.0$, and $600$ warmup steps.
+Training used \texttt{bfloat16} mixed precision and \texttt{torch.compile}.
+
+
+\paragraph{VPD training.}
+VPD decomposes 24 weight matrices (6 per layer: \texttt{c\_fc}, \texttt{down\_proj}, \texttt{q\_proj}, \texttt{k\_proj}, \texttt{v\_proj}, \texttt{o\_proj}) into rank-one subcomponents with delta components enabled.
+Training ran for $400{,}000$ steps with batch size $64$ on the same Pile dataset with context length $512$.
+The component and CI function parameters were jointly optimized with AdamW (weight decay $0$), initial learning rate $5 \times 10^{-5}$ with cosine decay to $10\%$ of the initial value.
+Component gradients were clipped at norm $0.01$.
+One stochastic mask sample ($S=1$) was drawn per step.
+Faithfulness warmup ran for $400$ steps (AdamW, lr $= 10^{-3}$, weight decay $0$), optimizing only the component parameters against $\mathcal{L}_{\mathrm{faithfulness}}$ before the main training loop.
+The output divergence measure $D$ is KL divergence throughout.
+
+The causal importance function $\Gamma$ is a shared bidirectional transformer (architecture described in Table~\ref{tab:ci-hyperparams}).
+It takes RMS-normalized concatenations of all 24 pre-weight activations (total input dimension $D = 27{,}648$) and outputs $C_{\mathrm{total}} = 39{,}936$ causal importance values via a leaky hard sigmoid ($\alpha = 0.01$).
+
+The $p$-norm exponent in both $\mathcal{L}_{\mathrm{importance\text{-}minimality}}$ and $\mathcal{L}_{\mathrm{frequency\text{-}minimality}}$ is linearly annealed from $p_0 = 2.0$ to $p_{\mathrm{final}} = 0.4$ over the full training run (see Section~\ref{app:methods} for details).
+
+\paragraph{Adversarial reconstruction.}
+To optimizes the persistent sources in the persistent PGD adversarial loss, an Adam optimizer was used with $\beta_1 = 0.5$, $\beta_2 = 0.99$, learning rate $0.01$ (constant schedule with $2.5\%$ warmup).
+Sources are scoped per batch element per sequence position (i.e. each individual batch element and sequence position has its own source), and each source receives $2$ warmup PGD steps per training step before the final loss computation.
+Stochastic and adversarial reconstruction losses both use uniform-$k$-subset routing, where a random subset of the 24 weight matrices is masked on each step.
+
+\paragraph{Loss terms and coefficients.}
+Table~\ref{tab:vpd-loss-coefficients} lists all loss terms and their coefficients.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{llr}
+\toprule
+\textbf{Loss term} & \textbf{Reference} & \textbf{Coefficient} \\
+\midrule
+$\mathcal{L}_{\mathrm{faithfulness}}$ (component--weight MSE) & Eq.\todo{?} & $10^{7}$ \\
+$\mathcal{L}_{\mathrm{stochastic\text{-}recon\text{-}subset}}$ (stochastic KL) & Eq.~\ref{eq:random_recon} & $0.5$ \\
+$\mathcal{L}_{\mathrm{adversarial\text{-}recon\text{-}subset}}$ (persistent PGD KL) & Eq.~\ref{eq:adv_recon} & $0.5$ \\
+$\mathcal{L}_{\mathrm{importance\text{-}minimality}}$ ($\ell_p$ on CI values) & Eq.~\ref{eq:minimal} & $2 \times 10^{-4}$ \\
+\bottomrule
+\end{tabular}
+\caption{VPD loss terms and their coefficients. The importance minimality loss uses $p$-annealing from $2.0$ to $0.4$ with $\beta = 0.5$ (see text). All reconstruction losses use KL divergence.}
+\label{tab:vpd-loss-coefficients}
+\end{table}
+
+\paragraph{Subcomponent counts.}
+Table~\ref{tab:vpd-subcomponent-counts} lists the number of rank-one subcomponents $C$ we give to each module at initialization.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lr}
+\toprule
+\textbf{Module type} & \textbf{Subcomponents ($C$) per layer} \\
+\midrule
+\texttt{c\_fc} (MLP up-projection, $768 \times 3072$) & 3072 \\
+\texttt{down\_proj} (MLP down-projection, $3072 \times 768$) & 3584 \\
+\texttt{q\_proj} (query projection, $768 \times 768$) & 512 \\
+\texttt{k\_proj} (key projection, $768 \times 768$) & 512 \\
+\texttt{v\_proj} (value projection, $768 \times 768$) & 1024 \\
+\texttt{o\_proj} (output projection, $768 \times 768$) & 1024 \\
+\midrule
+\textbf{Total per layer} & 9984 \\
+\textbf{Total (4 layers)} & 39{,}936 \\
+\bottomrule
+\end{tabular}
+\caption{Number of rank-one subcomponents per module type at initialization.}
+\label{tab:vpd-subcomponent-counts}
+\end{table}
+
+The CI function architecture is shown in Table~\ref{tab:ci-hyperparams}.
+
+The training and evaluation losses achieved by the primary training run studied in this paper are listed in Table \ref{tab:vpd-eval-losses} and Table \ref{tab:vpd-train-losses} respectively.
+
+\begin{table}[h]
+\centering
+\caption{Training losses (Measured at final step).}
+\label{tab:vpd-train-losses}
+\begin{tabular}{lc}
+\toprule
+Loss & Value \\
+\midrule
+Total & $24.62$ \\
+FaithfulnessLoss & $0.00000240$ \\
+StochasticReconSubsetLoss & $0.2419$ \\
+PersistentPGDReconLoss & $0.5733$ \\
+ImportanceMinimalityLoss & $1102.0$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+
+\begin{table}[h]\label{tab:vpd-eval-losses}
+\centering
+\caption{Evaluation reconstruction losses.}
+\begin{tabular}{lc}
+\toprule
+Loss & Value \\
+\midrule
+StochasticReconSubsetLoss & $0.2381$ \\
+PGDReconLoss & $0.9268$ \\
+StochasticHiddenActsReconLoss & $0.4130$ \\
+CIHiddenActsReconLoss & $0.8464$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\section{Decomposition summary statistics and properties}
+\label{app:decomp-stats}
+
+\subsection{VPD recovers an acceptable amount of training compute compared with other methods}
+
+Our parameter components recover an acceptable amount of the training compute spent to train the target model. If we exclude the $\Delta$ component (which is trained to be as causally unimportant as possible), the remaining parameter components, when unmasked, recover about $85\%$ of the pretraining compute. When using stochastic masks, this drops to around $30\%$. This metric is important, but unfortunately rarely reported, so comparisons to other methods are difficult. Nonetheless, VPD compares favourably to the only other method in the literature that we are aware of that reports this metric: Top-$k$ SAEs \cite{gao2024scalingevaluatingsparseautoencoders} reports a pretraining loss recovered of $10\%$ when replacing a single layer of GPT-4 with an SAE with 16 million latents. Our whole model decomposition, by contrast, recovers between $11\%$ and $30\%$ while replacing the entire model, not just a single layer.
+
+\begin{table}[h]
+\centering
+\caption{SPD decomposition quality by masking mode.}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Masking mode} (excluding $\Delta$-component) & \textbf{CE loss} & \textbf{Training compute recovered} (\%) \\
+\midrule
+Unmasked \textit{(All masks$=$1)} & $2.72$ & $85.2$ \\
+Stochastic masks & $2.84$ & $29.8$ \\
+CIs used as masks & $2.99$ & $11.4$ \\
+Rounded masks \textit{(Mask$=$1 if CI$>$0)} & $2.94$ & $13.6$ \\
+\midrule
+\textbf{Target model} & $2.71$ & $100.0$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+The adversarial loss greatly improves the SPD model performance for small source ($r$) values (Figure \ref{fig:adv-vs-no-adv}). 
+
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.9\textwidth]{figures/adv_vs_no_adv.png}
+  \caption{Comparison between a decomposition with and without adversarial loss. The training configuration is otherwise identical. The CE loss is especially improved for small values of $r$.}
+  \label{fig:adv-vs-no-adv}
+\end{figure}
+
+
+
+
+
+\begin{table}[h]
+\centering
+\caption{Sparsity: component counts and CI-L0 per layer.}
+\begin{tabular}{lcccc}
+\toprule
+Layer & $C$ & Alive & Mean L0 & L0 / $C$ (\%) \\
+\midrule
+Layer 0 & $9728$ & $9682$ & $44.10$ & $0.5$ \\
+Layer 1 & $9728$ & $9663$ & $18.78$ & $0.2$ \\
+Layer 2 & $9728$ & $9664$ & $51.40$ & $0.5$ \\
+Layer 3 & $9728$ & $9672$ & $91.68$ & $0.9$ \\
+\midrule
+Total & $38912$ & $38681$ & $206.0$ & $0.5$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+
+
+
+
+
+\end{document}
