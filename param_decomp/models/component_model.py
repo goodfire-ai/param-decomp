@@ -472,10 +472,20 @@ class ComponentModel(LoadableModule):
             if site_name in self.components
         }
 
-    def calc_weight_deltas(self) -> dict[str, Float[Tensor, "d_out d_in"]]:
-        """Calculate `W_target - V@U` per site. Each site materializes its own delta
-        (so under FSDP both V/U and the target weight are gathered at the site)."""
-        return {site_name: site.calc_weight_delta() for site_name, site in self.components.items()}
+    def calc_faithfulness_terms(self) -> tuple[Float[Tensor, ""], int]:
+        """Per-rank `(sum_sq, numel)` of `(W_target - V@U)` summed over all sites.
+
+        Under FSDP2, each site's `faithfulness_terms()` method is registered as
+        an FSDP forward method, so the unit's gather/reshard hooks still run.
+        """
+        device = next(self.parameters()).device
+        total_sum_sq = torch.zeros((), device=device)
+        total_numel = 0
+        for site in self.components.values():
+            sum_sq, numel = site.faithfulness_terms()
+            total_sum_sq = total_sum_sq + sum_sq
+            total_numel += numel
+        return total_sum_sq, total_numel
 
 
 def handle_deprecated_state_dict_keys_(state_dict: dict[str, Tensor]) -> None:

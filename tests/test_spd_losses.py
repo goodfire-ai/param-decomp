@@ -105,56 +105,37 @@ def _zero_components_for_test(model: ComponentModel) -> None:
             cm.U.zero_()
 
 
-class TestCalcWeightDeltas:
-    def test_components_and_identity(self: object) -> None:
-        # fc weight 2x3 with known values
+class TestCalcFaithfulnessTerms:
+    def test_components_zeroed(self: object) -> None:
         fc_weight = torch.tensor([[1.0, 0.0, -1.0], [2.0, 3.0, -4.0]], dtype=torch.float32)
         model = _make_component_model(weight=fc_weight)
         _zero_components_for_test(model)
 
-        deltas = model.calc_weight_deltas()
+        sum_sq, numel = model.calc_faithfulness_terms()
 
-        assert set(deltas.keys()) == {"fc"}
-
-        # components were zeroed, so delta equals original weight
-        expected_fc = fc_weight
-        assert torch.allclose(deltas["fc"], expected_fc)
+        assert numel == fc_weight.numel()
+        assert torch.allclose(sum_sq, fc_weight.square().sum())
 
     def test_components_nonzero(self: object) -> None:
-        # TODO WRITE DESCRIPTION
         fc_weight = torch.tensor([[1.0, -2.0, 0.5], [0.0, 3.0, -1.0]], dtype=torch.float32)
         model = _make_component_model(weight=fc_weight)
 
-        deltas = model.calc_weight_deltas()
-        assert set(deltas.keys()) == {"fc"}
-
         component = model.components["fc"]
-        assert component is not None
-        expected_fc = model.target_weight("fc") - component.component_weight
-        assert torch.allclose(deltas["fc"], expected_fc)
+        expected_delta = model.target_weight("fc") - component.component_weight
+        sum_sq, numel = model.calc_faithfulness_terms()
+
+        assert numel == expected_delta.numel()
+        assert torch.allclose(sum_sq, expected_delta.square().sum())
 
 
 class TestCalcFaithfulnessLoss:
-    def test_manual_weight_deltas_normalization(self: object) -> None:
-        weight_deltas = {
-            "a": torch.tensor([[1.0, -1.0], [2.0, 0.0]], dtype=torch.float32),  # sum sq = 6
-            "b": torch.tensor([[2.0, -2.0, 1.0]], dtype=torch.float32),  # sum sq = 9
-        }
-        # total sum sq = 15, total params = 4 + 3 = 7
-        expected = torch.tensor(15.0 / 7.0)
-        result = faithfulness_loss(weight_deltas=weight_deltas)
-        assert torch.allclose(result, expected)
-
-    def test_with_model_weight_deltas(self: object) -> None:
+    def test_zeroed_components_yields_mean_squared_target(self: object) -> None:
         fc_weight = torch.tensor([[1.0, 0.0, -1.0], [2.0, 3.0, -4.0]], dtype=torch.float32)
         model = _make_component_model(weight=fc_weight)
         _zero_components_for_test(model)
-        deltas = model.calc_weight_deltas()
 
-        # Expected: mean of squared entries across both matrices
         expected = fc_weight.square().sum() / fc_weight.numel()
-
-        result = faithfulness_loss(weight_deltas=deltas)
+        result = faithfulness_loss(model=model)
         assert torch.allclose(result, expected)
 
 
@@ -495,8 +476,6 @@ class TestStochasticReconLoss:
         batch = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
         target_out = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
         ci = {"fc": torch.tensor([[1.0]], dtype=torch.float32)}
-        weight_deltas = model.calc_weight_deltas()
-
         result = stochastic_recon_loss(
             model=model,
             sampling="continuous",
@@ -504,7 +483,7 @@ class TestStochasticReconLoss:
             batch=batch,
             target_out=target_out,
             ci=ci,
-            weight_deltas=weight_deltas,
+            use_delta_component=True,
             reconstruction_loss=recon_loss_mse,
         )
 
@@ -518,8 +497,6 @@ class TestStochasticReconLoss:
         batch = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
         target_out = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
         ci = {"fc": torch.tensor([[1.0]], dtype=torch.float32)}
-        weight_deltas = model.calc_weight_deltas()
-
         result = stochastic_recon_loss(
             model=model,
             sampling="binomial",
@@ -527,7 +504,7 @@ class TestStochasticReconLoss:
             batch=batch,
             target_out=target_out,
             ci=ci,
-            weight_deltas=weight_deltas,
+            use_delta_component=True,
             reconstruction_loss=recon_loss_mse,
         )
 
@@ -541,8 +518,6 @@ class TestStochasticReconLoss:
         batch = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
         target_out = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
         ci = {"fc": torch.tensor([[0.5]], dtype=torch.float32)}
-        weight_deltas = model.calc_weight_deltas()
-
         # Test with different numbers of samples
         for n_samples in [1, 3, 5]:
             result = stochastic_recon_loss(
@@ -552,7 +527,7 @@ class TestStochasticReconLoss:
                 batch=batch,
                 target_out=target_out,
                 ci=ci,
-                weight_deltas=weight_deltas,
+                use_delta_component=True,
                 reconstruction_loss=recon_loss_mse,
             )
             assert result >= 0.0
@@ -565,8 +540,6 @@ class TestStochasticReconLoss:
         batch = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
         target_out = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
         ci = {"fc": torch.tensor([[1.0]], dtype=torch.float32)}
-        weight_deltas = model.calc_weight_deltas()
-
         loss_with_delta = stochastic_recon_loss(
             model=model,
             sampling="continuous",
@@ -574,7 +547,7 @@ class TestStochasticReconLoss:
             batch=batch,
             target_out=target_out,
             ci=ci,
-            weight_deltas=weight_deltas,
+            use_delta_component=True,
             reconstruction_loss=recon_loss_mse,
         )
 
@@ -585,7 +558,7 @@ class TestStochasticReconLoss:
             batch=batch,
             target_out=target_out,
             ci=ci,
-            weight_deltas=None,
+            use_delta_component=False,
             reconstruction_loss=recon_loss_mse,
         )
 
@@ -603,8 +576,6 @@ class TestStochasticReconLayerwiseLoss:
         batch = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
         target_out = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
         ci = {"fc": torch.tensor([[1.0]], dtype=torch.float32)}
-        weight_deltas = model.calc_weight_deltas()
-
         result = stochastic_recon_layerwise_loss(
             model=model,
             sampling="continuous",
@@ -612,7 +583,7 @@ class TestStochasticReconLayerwiseLoss:
             batch=batch,
             target_out=target_out,
             ci=ci,
-            weight_deltas=weight_deltas,
+            use_delta_component=True,
             reconstruction_loss=recon_loss_mse,
         )
 
@@ -626,8 +597,6 @@ class TestStochasticReconLayerwiseLoss:
         batch = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
         target_out = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
         ci = {"fc": torch.tensor([[0.8]], dtype=torch.float32)}
-        weight_deltas = model.calc_weight_deltas()
-
         for n_samples in [1, 2, 3]:
             result = stochastic_recon_layerwise_loss(
                 model=model,
@@ -636,7 +605,7 @@ class TestStochasticReconLayerwiseLoss:
                 batch=batch,
                 target_out=target_out,
                 ci=ci,
-                weight_deltas=weight_deltas,
+                use_delta_component=True,
                 reconstruction_loss=recon_loss_mse,
             )
             assert result >= 0.0
@@ -651,8 +620,6 @@ class TestStochasticReconSubsetLoss:
         batch = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
         target_out = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
         ci = {"fc": torch.tensor([[1.0]], dtype=torch.float32)}
-        weight_deltas = model.calc_weight_deltas()
-
         result = stochastic_recon_subset_loss(
             model=model,
             sampling="continuous",
@@ -660,7 +627,7 @@ class TestStochasticReconSubsetLoss:
             batch=batch,
             target_out=target_out,
             ci=ci,
-            weight_deltas=weight_deltas,
+            use_delta_component=True,
             routing=UniformKSubsetRoutingConfig(),
             reconstruction_loss=recon_loss_mse,
         )
@@ -675,8 +642,6 @@ class TestStochasticReconSubsetLoss:
         batch = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
         target_out = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
         ci = {"fc": torch.tensor([[0.7]], dtype=torch.float32)}
-        weight_deltas = model.calc_weight_deltas()
-
         result = stochastic_recon_subset_loss(
             model=model,
             sampling="binomial",
@@ -684,7 +649,7 @@ class TestStochasticReconSubsetLoss:
             batch=batch,
             target_out=target_out,
             ci=ci,
-            weight_deltas=weight_deltas,
+            use_delta_component=True,
             routing=UniformKSubsetRoutingConfig(),
             reconstruction_loss=recon_loss_mse,
         )
@@ -699,8 +664,6 @@ class TestStochasticReconSubsetLoss:
         batch = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
         target_out = torch.tensor([[1.0, 2.0]], dtype=torch.float32)
         ci = {"fc": torch.tensor([[0.5]], dtype=torch.float32)}
-        weight_deltas = model.calc_weight_deltas()
-
         losses = [
             stochastic_recon_subset_loss(
                 model=model,
@@ -709,7 +672,7 @@ class TestStochasticReconSubsetLoss:
                 batch=batch,
                 target_out=target_out,
                 ci=ci,
-                weight_deltas=weight_deltas,
+                use_delta_component=True,
                 routing=UniformKSubsetRoutingConfig(),
                 reconstruction_loss=recon_loss_mse,
             )
@@ -756,7 +719,6 @@ class TestPersistentPGDReconLoss:
             batch=batch,
             target_out=target_out,
             ci=ci,
-            weight_deltas=None,
         )
         grad = state.get_grads(loss)
 
@@ -808,7 +770,6 @@ class TestPersistentPGDReconLoss:
                 batch=batch,
                 target_out=target_out,
                 ci=ci,
-                weight_deltas=None,
             )
             grad = state.get_grads(loss)
             state.step(grad)
@@ -833,8 +794,6 @@ class TestPersistentPGDReconLoss:
         target_out = torch.tensor([[[1.0, 2.0], [0.5, 1.5]]], dtype=torch.float32)
         # CI shape: (batch=1, seq=2, C=1)
         ci = {"fc": torch.tensor([[[0.5], [0.5]]], dtype=torch.float32)}
-        weight_deltas = model.calc_weight_deltas()
-
         # batch_dims for PersistentPGDState is (batch, seq) = (1, 2)
         batch_dims = batch.shape[:2]
 
@@ -861,7 +820,6 @@ class TestPersistentPGDReconLoss:
             batch=batch,
             target_out=target_out,
             ci=ci,
-            weight_deltas=weight_deltas,
         )
         grad = state.get_grads(loss)
         state.step(grad)
@@ -924,7 +882,6 @@ class TestPersistentPGDReconLoss:
             batch=batch,
             target_out=target_out,
             ci=ci,
-            weight_deltas=None,
         )
         grad = state.get_grads(loss)
         state.step(grad)
@@ -963,7 +920,6 @@ class TestPersistentPGDReconLoss:
             batch=batch,
             target_out=target_out,
             ci=ci,
-            weight_deltas=None,
         )
         grad = state.get_grads(loss)
         state.step(grad)

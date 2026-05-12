@@ -20,7 +20,7 @@ def _pgd_recon_layerwise_loss_update(
     batch: Any,
     target_out: Tensor,
     ci: dict[str, Float[Tensor, "... C"]],
-    weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
+    use_delta_component: bool,
     pgd_config: PGDConfig,
     reconstruction_loss: ReconstructionLoss,
 ) -> tuple[Float[Tensor, ""], Int[Tensor, ""]]:
@@ -32,7 +32,7 @@ def _pgd_recon_layerwise_loss_update(
             model=model,
             batch=batch,
             ci=ci,
-            weight_deltas=weight_deltas,
+            use_delta_component=use_delta_component,
             target_out=target_out,
             router=LayerRouter(device=device, layer_name=layer),
             pgd_config=pgd_config,
@@ -49,7 +49,7 @@ def pgd_recon_layerwise_loss(
     batch: Any,
     target_out: Tensor,
     ci: dict[str, Float[Tensor, "... C"]],
-    weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
+    use_delta_component: bool,
     pgd_config: PGDConfig,
     reconstruction_loss: ReconstructionLoss,
 ) -> Float[Tensor, ""]:
@@ -58,7 +58,7 @@ def pgd_recon_layerwise_loss(
         batch=batch,
         target_out=target_out,
         ci=ci,
-        weight_deltas=weight_deltas,
+        use_delta_component=use_delta_component,
         pgd_config=pgd_config,
         reconstruction_loss=reconstruction_loss,
     )
@@ -93,7 +93,6 @@ class PGDReconLayerwiseLoss(Metric):
         batch: Any,
         target_out: Tensor,
         ci: CIOutputs,
-        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
         **_: Any,
     ) -> None:
         sum_loss, n_examples = _pgd_recon_layerwise_loss_update(
@@ -101,7 +100,7 @@ class PGDReconLayerwiseLoss(Metric):
             batch=batch,
             target_out=target_out,
             ci=ci.lower_leaky,
-            weight_deltas=weight_deltas if self.use_delta_component else None,
+            use_delta_component=self.use_delta_component,
             pgd_config=self.pgd_config,
             reconstruction_loss=self.reconstruction_loss,
         )

@@ -22,7 +22,7 @@ def _stochastic_recon_subset_loss_update(
     batch: Any,
     target_out: Tensor,
     ci: dict[str, Float[Tensor, "... C"]],
-    weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
+    use_delta_component: bool,
     router: Router,
     reconstruction_loss: ReconstructionLoss,
 ) -> tuple[Float[Tensor, ""], int]:
@@ -35,7 +35,7 @@ def _stochastic_recon_subset_loss_update(
         calc_stochastic_component_mask_info(
             causal_importances=ci,
             component_mask_sampling=sampling,
-            weight_deltas=weight_deltas,
+            use_delta_component=use_delta_component,
             router=router,
         )
         for _ in range(n_mask_samples)
@@ -62,7 +62,7 @@ def stochastic_recon_subset_loss(
     batch: Any,
     target_out: Tensor,
     ci: dict[str, Float[Tensor, "... C"]],
-    weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
+    use_delta_component: bool,
     routing: SubsetRoutingType,
     reconstruction_loss: ReconstructionLoss,
 ) -> Float[Tensor, ""]:
@@ -73,7 +73,7 @@ def stochastic_recon_subset_loss(
         batch=batch,
         target_out=target_out,
         ci=ci,
-        weight_deltas=weight_deltas,
+        use_delta_component=use_delta_component,
         router=get_subset_router(routing, device=get_obj_device(model)),
         reconstruction_loss=reconstruction_loss,
     )
@@ -111,7 +111,6 @@ class StochasticReconSubsetLoss(Metric):
         batch: Any,
         target_out: Tensor,
         ci: CIOutputs,
-        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
         **_: Any,
     ) -> None:
         sum_loss, n_examples = _stochastic_recon_subset_loss_update(
@@ -121,7 +120,7 @@ class StochasticReconSubsetLoss(Metric):
             batch=batch,
             target_out=target_out,
             ci=ci.lower_leaky,
-            weight_deltas=weight_deltas if self.use_delta_component else None,
+            use_delta_component=self.use_delta_component,
             router=self.router,
             reconstruction_loss=self.reconstruction_loss,
         )

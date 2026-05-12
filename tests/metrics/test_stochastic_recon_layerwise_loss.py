@@ -59,8 +59,8 @@ class TestStochasticReconLayerwiseLoss:
         def mock_calc_stochastic_component_mask_info(
             causal_importances: dict[str, Tensor],  # pyright: ignore[reportUnusedParameter]
             component_mask_sampling: SamplingType,  # pyright: ignore[reportUnusedParameter]
+            use_delta_component: bool,  # pyright: ignore[reportUnusedParameter]
             router: Router,  # pyright: ignore[reportUnusedParameter]
-            weight_deltas: dict[str, Tensor] | None,  # pyright: ignore[reportUnusedParameter]
         ) -> dict[str, ComponentsMaskInfo]:
             # Get the current call index (we'll cycle through sample_masks)
             idx = call_count[0] % len(sample_masks)
@@ -70,7 +70,6 @@ class TestStochasticReconLayerwiseLoss:
             return make_mask_infos(
                 component_masks=masks,
                 routing_masks="all",
-                weight_deltas_and_masks=None,
             )
 
         with patch(
@@ -109,7 +108,7 @@ class TestStochasticReconLayerwiseLoss:
                 batch=batch,
                 target_out=target_out,
                 ci=ci,
-                weight_deltas=None,
+                use_delta_component=False,
                 reconstruction_loss=recon_loss_mse,
             )
 
@@ -134,7 +133,7 @@ class TestStochasticReconLayerwiseLoss:
             batch=batch,
             target_out=target_out,
             ci=ci,
-            weight_deltas=None,
+            use_delta_component=False,
             reconstruction_loss=recon_loss_mse,
         )
         loss_layerwise = stochastic_recon_layerwise_loss(
@@ -144,7 +143,7 @@ class TestStochasticReconLayerwiseLoss:
             batch=batch,
             target_out=target_out,
             ci=ci,
-            weight_deltas=None,
+            use_delta_component=False,
             reconstruction_loss=recon_loss_mse,
         )
 

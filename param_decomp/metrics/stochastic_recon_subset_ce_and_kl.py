@@ -81,14 +81,12 @@ class StochasticReconSubsetCEAndKL(Metric):
         batch: Int[Tensor, "..."] | Float[Tensor, "..."],
         target_out: Float[Tensor, "... vocab"],
         ci: CIOutputs,
-        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
         **_: Any,
     ) -> None:
         losses = self._calc_subset_losses(
             batch=batch,
             target_out=target_out,
             ci=ci.lower_leaky,
-            weight_deltas=weight_deltas,
         )
         for key, value in losses.items():
             self.metric_values[key].append(value)
@@ -120,7 +118,6 @@ class StochasticReconSubsetCEAndKL(Metric):
         batch: Int[Tensor, "..."] | Float[Tensor, "..."],
         target_out: Float[Tensor, "... vocab"],
         ci: dict[str, Float[Tensor, "... C"]],
-        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
     ) -> dict[str, float]:
         assert batch.ndim == 2, "Batch must be 2D (batch, seq_len)"
 
@@ -149,7 +146,7 @@ class StochasticReconSubsetCEAndKL(Metric):
             calc_stochastic_component_mask_info(
                 causal_importances=ci,
                 component_mask_sampling=self.sampling,
-                weight_deltas=weight_deltas if self.use_delta_component else None,
+                use_delta_component=self.use_delta_component,
                 router=AllLayersRouter(),
             )
             for _ in range(self.n_mask_samples)

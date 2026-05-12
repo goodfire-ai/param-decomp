@@ -343,8 +343,6 @@ def optimize_ci_values(
         initial_pre_sigmoid=initial_ci_outputs.pre_sigmoid,
     )
 
-    weight_deltas = model.calc_weight_deltas()
-
     # Precompute snapshot metadata for CI visualization
     snapshot_layers = list(alive_info.alive_counts.keys())
     snapshot_initial_alive = [alive_info.alive_counts[layer] for layer in snapshot_layers]
@@ -390,7 +388,7 @@ def optimize_ci_values(
                 recon_mask_infos = calc_stochastic_component_mask_info(
                     causal_importances=ci_outputs.lower_leaky,
                     component_mask_sampling=config.sampling,
-                    weight_deltas=weight_deltas,
+                    use_delta_component=True,
                     router=AllLayersRouter(),
                 )
             case "ci":
@@ -463,7 +461,7 @@ def optimize_ci_values(
             stoch_mask_infos = calc_stochastic_component_mask_info(
                 causal_importances=final_ci_outputs.lower_leaky,
                 component_mask_sampling=config.sampling,
-                weight_deltas=weight_deltas,
+                use_delta_component=True,
                 router=AllLayersRouter(),
             )
             stoch_logits = model(tokens, mask_infos=stoch_mask_infos)
@@ -644,8 +642,6 @@ def optimize_ci_values_batched(
         for _ in range(N)
     ]
 
-    weight_deltas = model.calc_weight_deltas()
-
     all_params: list[Tensor] = []
     for ci_params in ci_params_list:
         all_params.extend(ci_params.get_parameters())
@@ -706,7 +702,7 @@ def optimize_ci_values_batched(
                 recon_mask_infos = calc_stochastic_component_mask_info(
                     causal_importances=batched_ci_lower_leaky,
                     component_mask_sampling=config.sampling,
-                    weight_deltas=weight_deltas,
+                    use_delta_component=True,
                     router=AllLayersRouter(),
                 )
             case "ci":
@@ -784,7 +780,7 @@ def optimize_ci_values_batched(
                 stoch_mask_infos = calc_stochastic_component_mask_info(
                     causal_importances=final_ci.lower_leaky,
                     component_mask_sampling=config.sampling,
-                    weight_deltas=weight_deltas,
+                    use_delta_component=True,
                     router=AllLayersRouter(),
                 )
                 stoch_logits = model(tokens, mask_infos=stoch_mask_infos)

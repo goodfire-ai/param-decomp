@@ -61,7 +61,7 @@ def _stochastic_hidden_acts_recon_loss_update(
     n_mask_samples: int,
     batch: Int[Tensor, "..."] | Float[Tensor, "..."],
     ci: dict[str, Float[Tensor, "... C"]],
-    weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
+    use_delta_component: bool,
 ) -> PerModuleMSE:
     assert ci, "Empty ci"
 
@@ -72,7 +72,7 @@ def _stochastic_hidden_acts_recon_loss_update(
         calc_stochastic_component_mask_info(
             causal_importances=ci,
             component_mask_sampling=sampling,
-            weight_deltas=weight_deltas,
+            use_delta_component=use_delta_component,
             router=AllLayersRouter(),
         )
         for _ in range(n_mask_samples)
@@ -120,7 +120,7 @@ def stochastic_hidden_acts_recon_loss(
     n_mask_samples: int,
     batch: Int[Tensor, "..."] | Float[Tensor, "..."],
     ci: dict[str, Float[Tensor, "... C"]],
-    weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
+    use_delta_component: bool,
 ) -> Float[Tensor, ""]:
     per_module = _stochastic_hidden_acts_recon_loss_update(
         model=model,
@@ -128,7 +128,7 @@ def stochastic_hidden_acts_recon_loss(
         n_mask_samples=n_mask_samples,
         batch=batch,
         ci=ci,
-        weight_deltas=weight_deltas,
+        use_delta_component=use_delta_component,
     )
     sum_mse, n_examples = _sum_per_module_mse(per_module)
     return _hidden_acts_recon_loss_compute(sum_mse, n_examples)
@@ -162,7 +162,6 @@ class StochasticHiddenActsReconLoss(Metric):
         *,
         batch: Int[Tensor, "..."] | Float[Tensor, "..."],
         ci: CIOutputs,
-        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
         **_: Any,
     ) -> None:
         per_module = _stochastic_hidden_acts_recon_loss_update(
@@ -171,7 +170,7 @@ class StochasticHiddenActsReconLoss(Metric):
             n_mask_samples=self.n_mask_samples,
             batch=batch,
             ci=ci.lower_leaky,
-            weight_deltas=weight_deltas if self.use_delta_component else None,
+            use_delta_component=self.use_delta_component,
         )
         for key, (mse, n) in per_module.items():
             if key not in self.per_module_sum_mse:
@@ -210,7 +209,7 @@ class CIHiddenActsReconLoss(Metric):
         **_: Any,
     ) -> None:
         target_acts = self.model(batch, cache_type="output").cache
-        mask_infos = make_mask_infos(ci.lower_leaky, weight_deltas_and_masks=None)
+        mask_infos = make_mask_infos(ci.lower_leaky)
         per_module, _output = calc_hidden_acts_mse(
             model=self.model,
             batch=batch,

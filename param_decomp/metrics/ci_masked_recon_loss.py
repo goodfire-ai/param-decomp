@@ -19,7 +19,7 @@ def _ci_masked_recon_loss_update(
     ci: dict[str, Float[Tensor, "... C"]],
     reconstruction_loss: ReconstructionLoss,
 ) -> tuple[Float[Tensor, ""], int]:
-    mask_infos = make_mask_infos(ci, weight_deltas_and_masks=None)
+    mask_infos = make_mask_infos(ci)
     out = model(batch, mask_infos=mask_infos)
     return reconstruction_loss(out, target_out)
 

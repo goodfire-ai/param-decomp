@@ -49,7 +49,7 @@ def _stochastic(
         batch=batch,
         target_out=target_out,
         ci=ci,
-        weight_deltas=None,
+        use_delta_component=False,
     )
 
 
@@ -80,7 +80,7 @@ def _pgd(
         target_out=target_out,
         reconstruction_loss=recon_loss_mse,
         ci=ci,
-        weight_deltas=None,
+        use_delta_component=False,
         pgd_config=PGDConfig(
             init="random",
             step_size=0.1,
@@ -192,7 +192,7 @@ def test_per_module_recon_manual_calculation() -> None:
 
     # Actual computation
     target_acts = model(batch, cache_type="output").cache
-    mask_infos = make_mask_infos(ci, weight_deltas_and_masks=None)
+    mask_infos = make_mask_infos(ci)
     per_module, _ = calc_hidden_acts_mse(model, batch, mask_infos, target_acts)
     sum_mse, n_examples = _sum_per_module_mse(per_module)
     actual_total = sum_mse / n_examples
@@ -268,7 +268,6 @@ def test_ppgd_recon_eval_metric_keys() -> None:
     metric.update(
         batch=batch,
         ci=_make_ci_outputs(ci),
-        weight_deltas={},
         target_out=target_out,
     )
     result = metric.compute()
@@ -322,7 +321,7 @@ def test_ppgd_recon_eval_manual_calculation() -> None:
     target_acts = model(batch, cache_type="output").cache
     mask_infos = get_ppgd_mask_infos(
         ci=ci,
-        weight_deltas=None,
+        use_delta_component=False,
         ppgd_sources=adv_sources,
         routing_masks="all",
         batch_dims=(1,),

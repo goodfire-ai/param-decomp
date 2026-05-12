@@ -84,7 +84,6 @@ from param_decomp.models.component_model import (
 from param_decomp.persistent_pgd import PersistentPGDState
 from param_decomp.routing import AllLayersRouter, get_subset_router
 from param_decomp.utils.distributed_utils import avg_metrics_across_ranks, is_distributed
-from param_decomp.utils.fsdp import calc_weight_deltas_full
 from param_decomp.utils.general_utils import dict_safe_update_
 
 MetricOutType = dict[str, str | Number | Image.Image | CustomChart]
@@ -168,6 +167,7 @@ def init_metric(
                 model=model,
                 device=device,
                 sampling=run_config.sampling,
+                use_delta_component=run_config.use_delta_component,
                 rounding_threshold=cfg.rounding_threshold,
             )
         case CIHistogramsConfig():
@@ -400,14 +400,6 @@ def evaluate(
             continue
         metrics.append(metric)
 
-    # Weight deltas can be computed once per eval since params are frozen.
-    # Under FSDP2, V/U live as sharded DTensors outside any forward; gather them so
-    # downstream bmm against regular Tensors doesn't trip DTensor's dispatcher.
-    if run_config.parallel_strategy == "fsdp":
-        weight_deltas = calc_weight_deltas_full(model)
-    else:
-        weight_deltas = model.calc_weight_deltas()
-
     for _ in range(n_eval_steps):
         batch = move_batch_to_device(next(eval_iterator), device)
 
@@ -425,7 +417,6 @@ def evaluate(
                 pre_weight_acts=target_output.cache,
                 ci=ci,
                 current_frac_of_training=current_frac_of_training,
-                weight_deltas=weight_deltas,
             )
 
     outputs: MetricOutType = {}
@@ -452,15 +443,6 @@ def evaluate_multibatch_pgd(
     reconstruction_loss: ReconstructionLoss,
 ) -> dict[str, float]:
     """Calculate multibatch PGD metrics."""
-    if config.use_delta_component:
-        weight_deltas = (
-            calc_weight_deltas_full(model)
-            if config.parallel_strategy == "fsdp"
-            else model.calc_weight_deltas()
-        )
-    else:
-        weight_deltas = None
-
     metrics: dict[str, float] = {}
     for multibatch_pgd_config in multibatch_pgd_eval_configs:
         match multibatch_pgd_config:
@@ -476,7 +458,6 @@ def evaluate_multibatch_pgd(
         metrics[multibatch_pgd_config.classname] = calc_multibatch_pgd_masked_recon_loss(
             pgd_config=multibatch_pgd_config,
             model=model,
-            weight_deltas=weight_deltas,
             create_data_iter=create_data_iter,
             router=router,
             sampling=config.sampling,

@@ -3,7 +3,7 @@ from typing import Any, ClassVar, override
 import einops
 import torch
 import torch.nn.functional as F
-from jaxtyping import Float, Int
+from jaxtyping import Int
 from torch import Tensor
 from torch.distributed import ReduceOp
 
@@ -50,10 +50,12 @@ class CEandKLLosses(Metric):
         model: ComponentModel,
         device: str,
         sampling: SamplingType,
+        use_delta_component: bool,
         rounding_threshold: float,
     ) -> None:
         self.model = model
         self.sampling: SamplingType = sampling
+        self.use_delta_component = use_delta_component
         self.rounding_threshold = rounding_threshold
 
         self.loss_sums: dict[str, Tensor] = {
@@ -68,11 +70,10 @@ class CEandKLLosses(Metric):
         batch: Tensor,
         target_out: Tensor,
         ci: CIOutputs,
-        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
         **_: Any,
     ) -> None:
         ce_losses = self._calc_ce_and_kl_losses(
-            batch=batch, target_out=target_out, ci=ci.lower_leaky, weight_deltas=weight_deltas
+            batch=batch, target_out=target_out, ci=ci.lower_leaky
         )
 
         assert batch.ndim == 2, "Batch must be 2D (batch, seq_len)"
@@ -96,7 +97,6 @@ class CEandKLLosses(Metric):
         batch: Tensor,
         target_out: Tensor,
         ci: dict[str, Tensor],
-        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
     ) -> dict[str, float]:
         assert batch.ndim == 2, "Batch must be 2D (batch, seq_len)"
         masked_batch = batch.clone()
@@ -122,7 +122,7 @@ class CEandKLLosses(Metric):
             causal_importances=ci,
             component_mask_sampling=self.sampling,
             router=AllLayersRouter(),
-            weight_deltas=weight_deltas,
+            use_delta_component=self.use_delta_component,
         )
         stoch_masked_logits = self.model(batch, mask_infos=mask_infos)
         stoch_masked_ce_loss = ce_vs_labels(stoch_masked_logits)

@@ -30,7 +30,6 @@ def _ci_masked_recon_subset_loss_update(
     mask_infos = make_mask_infos(
         component_masks=ci,
         routing_masks=subset_routing_masks,
-        weight_deltas_and_masks=None,
     )
     out = model(batch, mask_infos=mask_infos)
     return reconstruction_loss(out, target_out)

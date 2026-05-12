@@ -8,20 +8,6 @@ from torch.distributed import ReduceOp
 from param_decomp.metrics.base import Metric
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.utils.distributed_utils import all_reduce
-from param_decomp.utils.general_utils import get_obj_device
-
-
-def _faithfulness_loss_update(
-    weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
-) -> tuple[Float[Tensor, ""], int]:
-    assert weight_deltas, "Empty weight deltas"
-    device = get_obj_device(weight_deltas)
-    sum_loss = torch.tensor(0.0, device=device)
-    total_params = 0
-    for delta in weight_deltas.values():
-        sum_loss += (delta**2).sum()
-        total_params += delta.numel()
-    return sum_loss, total_params
 
 
 def _faithfulness_loss_compute(
@@ -30,9 +16,11 @@ def _faithfulness_loss_compute(
     return sum_loss / total_params
 
 
-def faithfulness_loss(weight_deltas: dict[str, Float[Tensor, "d_out d_in"]]) -> Float[Tensor, ""]:
-    sum_loss, total_params = _faithfulness_loss_update(weight_deltas)
-    return _faithfulness_loss_compute(sum_loss, total_params)
+def faithfulness_loss(model: ComponentModel) -> Float[Tensor, ""]:
+    """MSE of `W_target - V@U` over all sites. Computed inside each site's forward
+    so FSDP2 gather/reduce hooks fire."""
+    sum_sq, numel = model.calc_faithfulness_terms()
+    return _faithfulness_loss_compute(sum_sq, numel)
 
 
 class FaithfulnessLoss(Metric):
@@ -46,10 +34,10 @@ class FaithfulnessLoss(Metric):
         self.total_params = torch.tensor(0, device=device)
 
     @override
-    def update(self, *, weight_deltas: dict[str, Float[Tensor, "d_out d_in"]], **_: Any) -> None:
-        sum_loss, total_params = _faithfulness_loss_update(weight_deltas)
-        self.sum_loss += sum_loss
-        self.total_params += total_params
+    def update(self, **_: Any) -> None:
+        sum_sq, numel = self.model.calc_faithfulness_terms()
+        self.sum_loss = self.sum_loss + sum_sq
+        self.total_params = self.total_params + numel
 
     @override
     def compute(self) -> Float[Tensor, ""]:

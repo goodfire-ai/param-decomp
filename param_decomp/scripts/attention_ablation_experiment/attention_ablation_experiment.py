@@ -643,13 +643,13 @@ def _build_stochastic_masks(
     router = AllLayersRouter()
 
     expanded_ci = {k: v.unsqueeze(1).expand(-1, seq_len, -1).clone() for k, v in ci.items()}
-    baseline_mask_infos = calc_stochastic_component_mask_info(expanded_ci, sampling, None, router)
+    baseline_mask_infos = calc_stochastic_component_mask_info(expanded_ci, sampling, False, router)
 
     ablated_ci = {k: v.clone() for k, v in expanded_ci.items()}
     for module_name, comp_idx in ablated_components:
         assert module_name in ablated_ci, f"Module {module_name!r} not in model"
         ablated_ci[module_name][:, ablation_pos, comp_idx] = 0.0
-    ablated_mask_infos = calc_stochastic_component_mask_info(ablated_ci, sampling, None, router)
+    ablated_mask_infos = calc_stochastic_component_mask_info(ablated_ci, sampling, False, router)
 
     return baseline_mask_infos, ablated_mask_infos
 
@@ -668,7 +668,7 @@ def _build_adversarial_masks(
     router = AllLayersRouter()
 
     baseline_sum_loss, baseline_n = pgd_masked_recon_loss_update(
-        model, batch, ci, None, target_out, router, pgd_config, recon_loss_kl
+        model, batch, ci, False, target_out, router, pgd_config, recon_loss_kl
     )
 
     ablated_ci = {k: v.clone() for k, v in ci.items()}
@@ -677,7 +677,7 @@ def _build_adversarial_masks(
         ablated_ci[module_name][..., comp_idx] = 0.0
 
     ablated_sum_loss, ablated_n = pgd_masked_recon_loss_update(
-        model, batch, ablated_ci, None, target_out, router, pgd_config, recon_loss_kl
+        model, batch, ablated_ci, False, target_out, router, pgd_config, recon_loss_kl
     )
 
     return baseline_sum_loss / baseline_n, ablated_sum_loss / ablated_n

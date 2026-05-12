@@ -7,10 +7,10 @@ across the target-only forward, PPGD warmups, and each loss flavor's forward),
 producing `setStorage out of bounds` failures at backward. FSDP2 is built for that
 pattern and keeps the module tree intact (no `_fsdp_wrapped_module` indirection).
 
-Wrap layout: each `DecomposedSite`, each `TransformerBlock` (target + CI fn), and
-`GlobalSharedTransformerCiFn` itself become their own FSDP units. The root unit owns
-the remaining params (target.wte, target.ln_f, target.lm_head, etc.). Frozen target
-submodules that aren't decomposed stay in the root unit.
+Wrap layout: each `DecomposedSite`, each CI-function `TransformerBlock`, and
+`GlobalSharedTransformerCiFn` itself become their own FSDP units. `ComponentModel`
+is deliberately not root-wrapped, so target params outside decomposed sites remain
+regular frozen parameters.
 
 Mixed precision: bf16 reduce + bf16 buffers, params stay fp32. Subsumes the legacy
 `autocast_bf16` context manager.
@@ -18,39 +18,12 @@ Mixed precision: bf16 reduce + bf16 buffers, params stay fp32. Subsumes the lega
 
 from __future__ import annotations
 
-from torch import Tensor, nn
-from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard
+from torch import nn
+from torch.distributed.fsdp import MixedPrecisionPolicy, fully_shard, register_fsdp_forward_method
 
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import GlobalSharedTransformerCiFn, TransformerBlock
 from param_decomp.models.decomposed_module import DecomposedEmbedding, DecomposedLinear
-
-
-def calc_weight_deltas_full(component_model: ComponentModel) -> dict[str, Tensor]:
-    """Compute weight deltas as regular Tensors under FSDP2.
-
-    Mirrors what the training loop does outside any forward: gather each wrapped
-    site's V/U via `.unshard()`, read deltas, materialize to a regular Tensor via
-    `.full_tensor()`, then `.reshard()`. Downstream code (loss / eval metrics)
-    feeds these into `bmm` against regular Tensors, which DTensor's dispatcher
-    refuses — so the full_tensor() conversion is the load-bearing step.
-
-    Use this only outside an FSDP-wrapped forward. Inside a forward each site's
-    params are already unsharded by FSDP's pre-forward hook.
-    """
-    sites_to_unshard = [m for m in component_model.modules() if hasattr(m, "unshard")]
-    for s in sites_to_unshard:
-        s.unshard()  # pyright: ignore[reportCallIssue]
-    try:
-        weight_deltas: dict[str, Tensor] = {}
-        for k, v in component_model.calc_weight_deltas().items():
-            v = v.detach()
-            v = v.full_tensor() if hasattr(v, "full_tensor") else v.clone()
-            weight_deltas[k] = v
-    finally:
-        for s in sites_to_unshard:
-            s.reshard()  # pyright: ignore[reportCallIssue]
-    return weight_deltas
 
 
 def _untie_target_weights_(target_model: nn.Module) -> None:
@@ -135,7 +108,10 @@ def fsdp_wrap(
     # frozen params as regular nn.Parameters; their memory cost is bounded (a few hundred MB
     # at the 4B-target scale) and they don't update.
     for module in component_model.modules():
-        if isinstance(module, DecomposedLinear | DecomposedEmbedding | TransformerBlock):
+        if isinstance(module, DecomposedLinear | DecomposedEmbedding):
+            fully_shard(module, mp_policy=mp_policy)
+            register_fsdp_forward_method(module, "faithfulness_terms")
+        elif isinstance(module, TransformerBlock):
             fully_shard(module, mp_policy=mp_policy)
 
     for submodule in component_model.ci_fn.modules():
