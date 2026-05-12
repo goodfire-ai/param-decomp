@@ -93,6 +93,14 @@ EXPERIMENT_REGISTRY: dict[str, ExperimentConfig] = {
         config_path=Path("param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml"),
         expected_runtime=1440,
     ),
+    "deep_linear": ExperimentConfig(
+        task_name="deep_linear",
+        decomp_script=Path(
+            "param_decomp/experiments/deep_linear/deep_linear_decomposition.py"
+        ),
+        config_path=Path("param_decomp/experiments/deep_linear/deep_linear_config.yaml"),
+        expected_runtime=15,
+    ),
     "pile_llama_simple_mlp-12L": ExperimentConfig(
         task_name="lm",
         decomp_script=Path("param_decomp/experiments/lm/lm_decomposition.py"),
