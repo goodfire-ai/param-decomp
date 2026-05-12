@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Scaling SPD beyond DDP — an FSDP feasibility report</title>
+<style>
+  :root {
+    --bg: #faf8f4;
+    --fg: #1c1c1c;
+    --muted: #5a5a5a;
+    --rule: #d8d2c4;
+    --accent: #8a3a1a;
+    --accent-soft: #f1e4d4;
+    --warn: #b06a00;
+    --warn-soft: #fdf1d8;
+    --good: #2f6b3a;
+    --good-soft: #e2efe1;
+    --code-bg: #f1ece1;
+    --code-fg: #2a2a2a;
+    --shadow: 0 1px 0 #00000010;
+  }
+  html { background: var(--bg); }
+  body {
+    font-family: "Iowan Old Style", "Charter", "Georgia", "Cambria", serif;
+    color: var(--fg);
+    line-height: 1.6;
+    max-width: 760px;
+    margin: 3rem auto 6rem auto;
+    padding: 0 1.25rem;
+    font-size: 17px;
+  }
+  h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    margin: 0 0 0.4rem 0;
+    letter-spacing: -0.01em;
+  }
+  h2 {
+    font-size: 1.35rem;
+    margin: 2.6rem 0 0.8rem 0;
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 0.4rem;
+    letter-spacing: -0.005em;
+  }
+  h3 {
+    font-size: 1.08rem;
+    margin: 1.6rem 0 0.4rem 0;
+    color: var(--accent);
+  }
+  h4 {
+    font-size: 1rem;
+    margin: 1.2rem 0 0.3rem 0;
+    color: var(--fg);
+  }
+  .subtitle {
+    color: var(--muted);
+    font-style: italic;
+    margin: 0 0 2rem 0;
+  }
+  p, li { font-size: 17px; }
+  code, kbd {
+    font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 0.08em 0.35em;
+    border-radius: 3px;
+  }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 0.9rem 1rem;
+    overflow-x: auto;
+    border-radius: 4px;
+    font-size: 0.82em;
+    line-height: 1.5;
+    border: 1px solid var(--rule);
+  }
+  pre code { background: none; padding: 0; }
+  blockquote {
+    border-left: 3px solid var(--accent);
+    margin: 1rem 0;
+    padding: 0.2rem 0 0.2rem 1rem;
+    color: var(--muted);
+    font-style: italic;
+  }
+  .callout {
+    border-radius: 4px;
+    padding: 0.9rem 1.1rem;
+    margin: 1.2rem 0;
+    border: 1px solid var(--rule);
+  }
+  .callout.tldr  { background: var(--accent-soft); border-color: #d6b89a; }
+  .callout.warn  { background: var(--warn-soft);   border-color: #e8c98a; }
+  .callout.good  { background: var(--good-soft);   border-color: #b6cdb1; }
+  .callout > .label {
+    display: inline-block;
+    font-family: "SF Mono", "Menlo", monospace;
+    font-size: 0.72em;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.4rem;
+    color: var(--muted);
+  }
+  .callout.tldr .label { color: var(--accent); }
+  .callout.warn .label { color: var(--warn); }
+  .callout.good .label { color: var(--good); }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1rem 0;
+    font-size: 0.92em;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.7rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  th {
+    font-weight: 600;
+    background: #f3ede0;
+    color: #333;
+  }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  ul, ol { padding-left: 1.4rem; }
+  li { margin: 0.2rem 0; }
+  hr { border: 0; border-top: 1px solid var(--rule); margin: 2.5rem 0; }
+  .ref {
+    font-family: "SF Mono", "Menlo", monospace;
+    font-size: 0.82em;
+    color: var(--muted);
+  }
+  .meta {
+    font-size: 0.85em;
+    color: var(--muted);
+    margin-top: 0.2rem;
+  }
+  details {
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 0.6rem 0.9rem;
+    margin: 0.9rem 0;
+    background: #fefcf7;
+  }
+  details summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  .toc {
+    background: #f3ede0;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 0.8rem 1.2rem;
+    margin: 1.2rem 0 2rem 0;
+    font-size: 0.93em;
+  }
+  .toc ol { margin: 0.3rem 0 0 0; padding-left: 1.4rem; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<h1>Scaling SPD beyond DDP</h1>
+<p class="subtitle">An FSDP feasibility report — what works, what breaks, and what to do first.</p>
+<p class="meta">Drafted from a read of <code>param_decomp/</code> at <code>main</code>. References are <code>file:line</code> against the working tree.</p>
+
+<div class="callout tldr">
+<span class="label">TL;DR</span>
+<p style="margin:0">
+Yes, FSDP is the right next step — but it's not a drop-in replacement for the current DDP wrapper, and it's <em>not</em> the cheapest first move. SPD has three architectural quirks that interact badly with naive FSDP wrapping: (i) a frozen target model that gets read repeatedly per step, (ii) a forward-hook system that runs <code>components[name](x)</code> from inside a hook on a <em>different</em> module than where the components' parameters live, and (iii) <code>calc_weight_deltas()</code>, which reads <em>full</em> target and component weights once per step. The cheapest substantial win is almost certainly <strong>ZeRO-1 (optimizer-state sharding) + gradient checkpointing on the CI transformer and the target's transformer blocks</strong>. Real FSDP should come second, and only after we've decided how to handle the hook/weight-delta interaction. Concrete plan in §8.
+</p>
+</div>
+
+<div class="toc">
+<strong>Contents</strong>
+<ol>
+  <li><a href="#status">Where distributed training currently lives</a></li>
+  <li><a href="#jose">Jose, in numbers</a></li>
+  <li><a href="#batch">From per-rank state to batch sizes</a></li>
+  <li><a href="#wall">Why DDP runs out</a></li>
+  <li><a href="#quirks">Three SPD-specific things FSDP has to coexist with</a></li>
+  <li><a href="#friction">Specific FSDP friction points, with line numbers</a></li>
+  <li><a href="#cheap">Cheaper levers worth pulling first (or alongside)</a></li>
+  <li><a href="#plan">Recommended phased plan</a></li>
+  <li><a href="#open">Open questions and things I couldn't verify</a></li>
+</ol>
+</div>
+
+<h2 id="status">1. Where distributed training currently lives</h2>
+
+<p>The codebase already has a small but real distributed scaffolding. It is uniformly DDP-based — there is no FSDP code anywhere in <code>param_decomp/</code>. The relevant pieces:</p>
+
+<ul>
+  <li>
+    <strong>Process-group bootstrap:</strong> <code>param_decomp/utils/distributed_utils.py</code>.
+    <code>init_distributed()</code> picks <code>nccl</code> on CUDA, <code>gloo</code> on CPU, reads <code>RANK</code>/<code>WORLD_SIZE</code>/<code>LOCAL_RANK</code> from env (set by <code>torchrun</code>). Wrappers exist for <code>all_reduce</code>, <code>broadcast_tensor</code>, <code>sync_across_processes</code>, <code>gather_all_tensors</code>.
+  </li>
+  <li>
+    <strong>DDP wrap:</strong> <span class="ref">run_param_decomp.py:164–184</span>. The entire <code>ComponentModel</code> (which itself contains the frozen target model + components + CI fn) is wrapped in <code>DistributedDataParallel</code>. <code>find_unused_parameters</code> is not set.
+    <pre><code>wrapped_model = torch.nn.parallel.DistributedDataParallel(
+    model, device_ids=[device_id], output_device=device_id,
+)</code></pre>
+  </li>
+  <li>
+    <strong>The "always-call-the-wrapped-model-once" hack:</strong> <span class="ref">run_param_decomp.py:268–272</span>. Because some forwards in <code>compute_losses</code> only touch a subset of the parameters, the loop forces a call to <code>wrapped_model(...)</code> every step purely to make DDP register every parameter as participating. That comment is worth reading — it's a load-bearing line.
+  </li>
+  <li>
+    <strong>Data sharding:</strong> <span class="ref">data.py:167–250</span>. Streaming HF datasets use <code>dataset.shard(num_shards=world_size, index=rank)</code>; non-streaming uses <code>DistributedSampler</code>.
+  </li>
+  <li>
+    <strong>Per-rank seed divergence:</strong> <span class="ref">run_param_decomp.py:162</span>, implemented in <code>distributed_utils.py:259–271</code>. Each rank gets <code>seed * world_size + rank</code> so stochastic masks differ across ranks. With DDP this is fine: backward all-reduces gradients, so each rank contributes a different mask sample to the average. Same will be true under FSDP.
+  </li>
+  <li>
+    <strong>Persistent PGD has its own reduction:</strong> <span class="ref">persistent_pgd.py:138, 168–169, 177–181</span>. PPGD <em>sources</em> aren't model parameters, so DDP doesn't sync them — there's an explicit <code>all_reduce(op=AVG)</code> for cross-rank scopes, and a deliberate skip for <code>PerBatchPerPositionScope</code>. This is independent of DDP/FSDP.
+  </li>
+  <li>
+    <strong>Launch path:</strong>
+    <ul>
+      <li><code>pd-local --dp N</code> → <code>scripts/run_local.py:47–58</code> shells out to <code>torchrun --standalone --nproc_per_node=N</code>.</li>
+      <li><code>pd-run</code> (SLURM) → <code>utils/compute_utils.py:99–128</code>. Single-node uses standalone torchrun; multi-node uses <code>srun</code> + torchrun with rendezvous on the first allocated host.</li>
+    </ul>
+  </li>
+</ul>
+
+<p>So today the picture is: one process per GPU, one full replica of the (target + components + CI fn + AdamW state) on every GPU, gradient sync at backward. Standard.</p>
+
+<h2 id="jose">2. Jose, in numbers</h2>
+
+<p>"Jose" is <code>pile_llama_simple_mlp-4L</code> (config: <code>param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml</code>). The numbers below are estimated from the config; treat the parameter counts as ±10%.</p>
+
+<h3>Target model</h3>
+<p>4-layer MLP-only Llama: <code>d_model=2048</code>, <code>d_mlp=8192</code>, <code>n_heads=16</code>, <code>vocab=20000</code>, <code>max_seq=512</code>.</p>
+
+<table>
+  <thead><tr><th>Block</th><th class="num">Params</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>Per-layer attention (q,k,v,o)</td><td class="num">~16.8 M</td><td>4 × 2048²</td></tr>
+    <tr><td>Per-layer MLP (c_fc, down_proj)</td><td class="num">~33.6 M</td><td>2 × 2048×8192</td></tr>
+    <tr><td>4 layers total</td><td class="num">~201 M</td><td></td></tr>
+    <tr><td>Embedding (likely tied)</td><td class="num">~41 M</td><td>2048×20000</td></tr>
+    <tr><td><strong>Target ≈</strong></td><td class="num"><strong>~242 M</strong></td><td>Frozen, <code>requires_grad=False</code></td></tr>
+  </tbody>
+</table>
+
+<h3>Components (decomposed modules only — embeddings are not decomposed in Jose)</h3>
+<table>
+  <thead><tr><th>Module</th><th class="num">C</th><th class="num">V params</th><th class="num">U params</th><th class="num">Total / layer</th></tr></thead>
+  <tbody>
+    <tr><td>c_fc</td><td class="num">3072</td><td class="num">6.3 M</td><td class="num">25.2 M</td><td class="num">31.5 M</td></tr>
+    <tr><td>down_proj</td><td class="num">3584</td><td class="num">29.4 M</td><td class="num">7.3 M</td><td class="num">36.7 M</td></tr>
+    <tr><td>q_proj / k_proj</td><td class="num">512</td><td class="num">1.0 M</td><td class="num">1.0 M</td><td class="num">2.1 M each</td></tr>
+    <tr><td>v_proj / o_proj</td><td class="num">1024</td><td class="num">2.1 M</td><td class="num">2.1 M</td><td class="num">4.2 M each</td></tr>
+    <tr><td><strong>Per layer</strong></td><td colspan="3"></td><td class="num"><strong>~80.7 M</strong></td></tr>
+    <tr><td><strong>4 layers</strong></td><td colspan="3"></td><td class="num"><strong>~323 M</strong></td></tr>
+  </tbody>
+</table>
+
+<h3>CI function (the part that's easy to forget)</h3>
+<p>The Jose config uses <code>global_shared_transformer</code> with <code>d_model=2048</code>, <code>n_blocks=8</code>, <code>n_heads=16</code>, <code>mlp_hidden_dim=8192</code>. That is itself a <strong>~400 M-parameter transformer</strong> — bigger than the target model it's interpreting. Plus per-target-module input projections (small).</p>
+
+<h3>Total trainable on each GPU under DDP</h3>
+<table>
+  <thead><tr><th>Bucket</th><th class="num">Params</th><th class="num">fp32 size</th><th class="num">+ AdamW state (×2)</th></tr></thead>
+  <tbody>
+    <tr><td>Components</td><td class="num">~323 M</td><td class="num">1.29 GB</td><td class="num">+2.58 GB</td></tr>
+    <tr><td>CI transformer</td><td class="num">~400 M</td><td class="num">1.60 GB</td><td class="num">+3.20 GB</td></tr>
+    <tr><td>Frozen target</td><td class="num">~242 M</td><td class="num">0.97 GB</td><td class="num">— (no opt state)</td></tr>
+    <tr><td><strong>Trainable subtotal</strong></td><td class="num"><strong>~723 M</strong></td><td class="num"><strong>2.89 GB</strong></td><td class="num"><strong>+5.78 GB</strong></td></tr>
+    <tr><td><strong>Gradients (fp32)</strong></td><td class="num">~723 M</td><td class="num">2.89 GB</td><td class="num"></td></tr>
+    <tr><td><strong>Replicated state per rank</strong></td><td colspan="3" class="num"><strong>~12.6 GB</strong> before activations</td></tr>
+  </tbody>
+</table>
+
+<p>So on Jose, a ~242M target effectively presents as a ~970M training system per rank, of which all ~12.6 GB is duplicated under DDP. Activations on top — and there are <em>many</em> forwards per step (see §6) — push this comfortably onto 80 GB H100s but make smaller GPUs marginal.</p>
+
+<div class="callout">
+<span class="label">Your "4× target" intuition</span>
+<p style="margin:0">It's a fair gloss, though the breakdown matters for FSDP planning: ~1.3× from components, ~1.7× from the CI transformer, plus ~1× for the still-resident frozen target. The CI transformer and the components have very different sharding profiles — they're not the same problem.</p>
+</div>
+
+<h2 id="batch">3. From per-rank state to batch sizes</h2>
+
+<p>The per-rank state in §2 is what's <em>fixed</em> — it doesn't depend on batch size. Activations are what scale with batch. So GPU memory minus fixed state minus a workspace margin gives you the activation budget, which divided by per-batch-element activation cost gives you achievable batch.</p>
+
+<h3>The fixed-state formula</h3>
+<p>Let <code>T</code> = trainable params (components + CI fn), <code>F</code> = frozen target params, <code>N</code> = world size. Assuming fp32 master weights, fp32 grads, fp32 AdamW state — which is what Jose currently uses, despite <code>autocast_bf16=True</code> (autocast affects activations, not optimizer state):</p>
+
+<pre><code>DDP:    16·T + 4·F                     bytes per rank
+ZeRO-1: (8 + 8/N)·T + 4·F              bytes per rank
+FSDP:  ~16·T/N + 4·F/N                 bytes per rank   (full sharding, approx)</code></pre>
+
+<p>ZeRO-1's saving is <code>8·T·(N−1)/N</code> per rank — linear in <code>T</code>, asymptoting to <code>8·T</code> as <code>N→∞</code>. <strong>The absolute saving grows with model size,</strong> which is the regime we care about.</p>
+
+<h3>Fixed state at various scales</h3>
+<p>Assuming Jose's ratios hold (components ≈ 1.3× target, CI fn ≈ 1.7× target → trainable ≈ 3× target):</p>
+
+<table>
+  <thead><tr><th>Target</th><th class="num">T</th><th class="num">DDP</th><th class="num">ZeRO-1 (N=8)</th><th class="num">FSDP (N=8)</th></tr></thead>
+  <tbody>
+    <tr><td>250 M (Jose)</td><td class="num">0.75 B</td><td class="num">13 GB</td><td class="num">7.8 GB</td><td class="num">~1.6 GB</td></tr>
+    <tr><td>500 M</td><td class="num">1.5 B</td><td class="num">25 GB</td><td class="num">15.5 GB</td><td class="num">~3.1 GB</td></tr>
+    <tr><td>1 B</td><td class="num">3.0 B</td><td class="num">52 GB</td><td class="num">31 GB</td><td class="num">~6.5 GB</td></tr>
+    <tr><td>2 B</td><td class="num">6.0 B</td><td class="num">100 GB</td><td class="num">58 GB</td><td class="num">~13 GB</td></tr>
+    <tr><td>4 B</td><td class="num">12.0 B</td><td class="num">196 GB</td><td class="num">113 GB</td><td class="num">~25 GB</td></tr>
+  </tbody>
+</table>
+
+<p>Anything above the GPU's memory size — assume 80 GB H100 — won't even start training under that strategy. DDP hits the wall at ~1.5B target; ZeRO-1 buys roughly another 2× before <em>it</em> runs out.</p>
+
+<h3>Translating to batch size</h3>
+
+<p>Activation memory depends on per-step forward count, autograd retention from PPGD warmup, and gradient checkpointing — there's no clean closed form. So I calibrate against an observed config:</p>
+
+<blockquote>Jose runs at <code>batch_size: 64</code> on 80 GB H100s. With ~13 GB fixed state under DDP, that leaves ~67 GB for activations and workspace. So <strong>~1 GB per batch element at Jose scale.</strong></blockquote>
+
+<p>Activations scale roughly with <code>d_model × n_layers × seq_len</code>; parameters scale roughly with <code>d_model² × n_layers</code>. So activation/B grows roughly as <code>√(target_params)</code> under width scaling. Working assumption: <strong>activation/B ≈ 1 GB × √(target / 250 M)</strong>.</p>
+
+<div class="callout warn">
+<span class="label">Confidence</span>
+<p style="margin:0">±50% on the activation-per-batch-element estimate, ±10% on the fixed-state figures (which are tight algebra). The headline batch numbers below should be read as order-of-magnitude, not exact. The <a href="investigation_plan.md">investigation plan</a> in the repo root specifies how to replace these with measured numbers.</p>
+</div>
+
+<h3>Max batch on 80 GB H100, world size 8</h3>
+
+<table>
+  <thead><tr><th>Target</th><th class="num">DDP</th><th class="num">ZeRO-1</th><th class="num">+ grad ckpt</th><th class="num">FSDP + ckpt</th></tr></thead>
+  <tbody>
+    <tr><td>250 M (Jose)</td><td class="num">~67</td><td class="num">~72</td><td class="num">~140</td><td class="num">~155</td></tr>
+    <tr><td>500 M</td><td class="num">~28</td><td class="num">~33</td><td class="num">~65</td><td class="num">~75</td></tr>
+    <tr><td>1 B</td><td class="num">~7</td><td class="num">~13</td><td class="num">~25</td><td class="num">~35</td></tr>
+    <tr><td>2 B</td><td class="num"><em>OOM</em></td><td class="num">~3</td><td class="num">~6</td><td class="num">~12</td></tr>
+    <tr><td>4 B</td><td class="num"><em>OOM</em></td><td class="num"><em>OOM</em></td><td class="num"><em>OOM</em></td><td class="num">~5</td></tr>
+  </tbody>
+</table>
+
+<p>Per-rank batch; multiply by <code>N=8</code> for global batch.</p>
+
+<h3>Headline interpretation</h3>
+<ul>
+  <li><strong>Jose scale (~250M target):</strong> ZeRO-1 buys ~+5 batch/rank. We're not memory-bound here — this is mostly free headroom for future experiments.</li>
+  <li><strong>500M–1B target:</strong> ZeRO-1 + checkpointing is the difference between "uncomfortable" and "comfortable." At 1B specifically, batch 7 → batch 25 with both is a real productivity win.</li>
+  <li><strong>2B target:</strong> ZeRO-1 + checkpointing is the difference between <em>doesn't fit at all</em> and "fits at batch ~6." Qualitative — and ZeRO-1 alone is barely enough.</li>
+  <li><strong>4B+:</strong> ZeRO-1 is insufficient regardless. You need actual parameter sharding — i.e. FSDP. This is where Phase 2 of the plan starts paying off.</li>
+</ul>
+
+<h2 id="wall">4. Why DDP runs out</h2>
+
+<p>You had this right but the shape isn't exponential. Two separate things break:</p>
+
+<ol>
+  <li><strong>Memory wall, not gradual decay.</strong> DDP per-rank memory is roughly constant in world size: every GPU holds a full <em>(params + grads + optimizer state)</em> replica. Adding GPUs only adds batch capacity; per-rank fixed cost doesn't drop. When the fixed cost crosses GPU memory, max-batch goes from "constant" to "zero" — a cliff, not a curve.</li>
+  <li><strong>Communication scaling, gradual.</strong> All-reduce time is O(P) where P is parameter count, independent of world size on ring all-reduce — but SPD already does many forwards per step (§6), and in DDP the all-reduce only fires once at <code>backward()</code>. So this is currently <em>not</em> the bottleneck.</li>
+</ol>
+
+<p>The cliff is what bites. Extrapolating Jose to ~1B target with the same component:target ratio:</p>
+
+<table>
+  <thead><tr><th>Component</th><th class="num">Jose</th><th class="num">Hypothetical 1B target</th></tr></thead>
+  <tbody>
+    <tr><td>Target (frozen)</td><td class="num">0.24 B</td><td class="num">1.0 B</td></tr>
+    <tr><td>Components</td><td class="num">0.32 B</td><td class="num">~1.3 B</td></tr>
+    <tr><td>CI fn (assume similar scaling)</td><td class="num">0.40 B</td><td class="num">~1.6 B</td></tr>
+    <tr><td>Trainable</td><td class="num">0.72 B</td><td class="num">~2.9 B</td></tr>
+    <tr><td>Per-rank state (params + grads + AdamW), fp32</td><td class="num">~12.6 GB</td><td class="num"><strong>~50 GB</strong></td></tr>
+  </tbody>
+</table>
+
+<p>~50 GB of replicated training state on a 80 GB H100 leaves enough headroom for activations only with aggressive gradient checkpointing and bf16 throughout — and any larger and we're done. So your timing instinct is right: this is the regime where sharding stops being optional.</p>
+
+<h2 id="quirks">5. Three SPD-specific things any sharding strategy has to coexist with</h2>
+
+<h3>5a. The target model is frozen but read constantly</h3>
+<p><span class="ref">run_param_decomp.py:147</span>: <code>target_model.requires_grad_(False)</code>, asserted at <span class="ref">component_model.py:121–125</span>. Target params have no grads and no optimizer state, so the only memory they cost is the parameter tensors themselves. But they are <em>read</em> every step in three places:</p>
+<ol>
+  <li>The "target-only" forward at <span class="ref">run_param_decomp.py:272</span> for input caching and KL targets.</li>
+  <li>Inside every component-replacement forward, the original target module runs first and the hook fires after (see 5b).</li>
+  <li><code>calc_weight_deltas()</code> at <span class="ref">run_param_decomp.py:263</span>, which reads the full <code>.weight</code> of each decomposed target submodule.</li>
+</ol>
+<p>If we shard the target with FSDP, every one of these reads triggers all-gather, and per-step we'll do that 5–10 times. That's a lot of unnecessary comm for parameters that never change. <strong>Strong preference: don't shard the frozen target unless we have to.</strong> Shard only the trainable parts. This implies non-uniform FSDP wrap policy.</p>
+
+<h3>5b. Components live in a separate <code>ModuleDict</code>, not on the target submodules</h3>
+<p>This is the architectural decision that makes FSDP wrapping hard.</p>
+
+<p>From <span class="ref">component_model.py:131–137</span>:</p>
+<pre><code>self.components = ComponentModel._create_components(target_model=target_model, module_to_c=...)
+self._components = nn.ModuleDict(
+    {k.replace(".", "-"): self.components[k] for k in sorted(self.components)}
+)</code></pre>
+
+<p>Forward replacement is implemented as a forward hook registered on the <em>target</em> submodule (<span class="ref">component_model.py:489–501</span>). The hook closure calls <code>components[module_name](x, mask=...)</code> — which dispatches into a parameter tensor that lives in <code>self._components</code>, a sibling tree.</p>
+
+<pre><code># component_model.py:457-481 (slightly abridged)
+if components is not None and mask_info is not None:
+    components_out = components(x, mask=..., weight_delta_and_mask=...)
+    final_out = components_out if mask_info.routing_mask == "all" else \
+                torch.where(mask_info.routing_mask[..., None], components_out, output)
+    return final_out</code></pre>
+
+<p>What this means under FSDP: the target submodule runs (its FSDP unit gathers, computes, optionally frees), then the post-forward hook runs and tries to dispatch into <em>another</em> FSDP unit (the components for that module). FSDP's auto-wrap policy will not have prefetched the components' shard, so the hook either incurs an extra all-gather right there or fails outright. <strong>The hook crosses FSDP unit boundaries.</strong></p>
+
+<p>There are three plausible fixes, ranked by invasiveness:</p>
+<ol>
+  <li><strong>Fuse target submodule + its components + its CI piece into a single nn.Module per decomposed site, and FSDP-wrap that fused unit.</strong> Conceptually clean, eliminates the cross-unit access, but is a meaningful refactor of <code>ComponentModel</code>.</li>
+  <li><strong>Manually <code>summon_full_params(components_for_this_module)</code> inside the hook.</strong> Works but is comm-heavy and sequential; defeats most of FSDP's benefit because we're round-tripping inside hot path.</li>
+  <li><strong>Don't shard components (only shard the CI transformer + target).</strong> Components are ~323M for Jose, ~1.3B at the 1B-target scale. At the 1B scale that's too big to leave unsharded. So this only works for a transitional intermediate scale.</li>
+</ol>
+
+<p>Option 1 is the right destination, in my view. It also generalises: a "decomposition site" becomes a real first-class object, which has knock-on benefits for harvest, attribution, autointerp.</p>
+
+<h3>5c. <code>calc_weight_deltas</code> wants the full weights, materialized</h3>
+<p><span class="ref">component_model.py:646–651</span>:</p>
+<pre><code>def calc_weight_deltas(self) -> dict[str, Float[Tensor, "d_out d_in"]]:
+    weight_deltas = {}
+    for comp_name, components in self.components.items():
+        weight_deltas[comp_name] = self.target_weight(comp_name) - components.weight
+    return weight_deltas</code></pre>
+
+<p>Where <code>components.weight</code> is the property at <span class="ref">components.py:430–432</span>:</p>
+<pre><code>@property
+def weight(self) -> Float[Tensor, "d_out d_in"]:
+    """(V @ U).T."""
+    return einops.einsum(self.V, self.U, "d_in C, C d_out -> d_out d_in")</code></pre>
+
+<p>Two issues:</p>
+<ol>
+  <li>This is <strong>called once every step</strong> (<span class="ref">run_param_decomp.py:263</span>) when <code>use_delta_component=True</code> — which is on in the Jose config. It materializes the full <code>(d_out, d_in)</code> delta for every decomposed module, and that delta then participates in the forward (<span class="ref">components.py:469–475</span>: <code>x @ weight_delta</code>).</li>
+  <li>Under FSDP both <code>V</code>, <code>U</code>, and the target <code>.weight</code> are sharded. Reading <code>self.V</code> in a sharded FSDP unit returns the <em>local shard</em>, not the gathered tensor. Without a <code>summon_full_params</code> wrapper, <code>einsum(V, U, ...)</code> is silently wrong (or it crashes due to shape mismatch — depends on the FSDP version and wrap policy).</li>
+</ol>
+
+<p>This needs deliberate handling. Options, in order of preference:</p>
+<ol>
+  <li>Do the delta computation <em>inside</em> the hook, after <code>summon_full_params</code> has been done by FSDP's own forward path — which is automatic if components are part of the same FSDP unit as their target submodule (the option-1 fusion above).</li>
+  <li>If we keep the explicit <code>calc_weight_deltas</code> call at the top of the step, wrap it in <code>FSDP.summon_full_params(component_model, recurse=True, writeback=False)</code>. Cheap to write but pays a full-gather on every step.</li>
+  <li>Reformulate so the delta is never materialized: <code>x @ (W_target − V@U) = x @ W_target − (x @ V) @ U</code>. Both halves can be computed without ever forming the <code>(d_out, d_in)</code> delta tensor. This is a strict win even ignoring FSDP — we save an O(d_in · d_out) materialization in favor of two O(batch · seq · d) matmuls — and it removes the need for <code>calc_weight_deltas</code> at the top of the step entirely. <strong>This is probably worth doing independently.</strong></li>
+</ol>
+
+<h2 id="friction">6. Specific FSDP friction points, with line numbers</h2>
+
+<p>If we tried to swap <code>DistributedDataParallel(model)</code> for <code>FSDP(model, auto_wrap_policy=...)</code> tomorrow, here is the list of everything that will break or behave oddly. Worth keeping as a checklist.</p>
+
+<table>
+  <thead><tr><th>Site</th><th>What goes wrong</th><th>Fix shape</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><span class="ref">run_param_decomp.py:172</span> — <code>DDP(model)</code></td>
+      <td>Direct replacement is wrong. FSDP wants per-block wrapping, not whole-model wrapping, to actually shard parameters and not just the outer module.</td>
+      <td>Custom <code>auto_wrap_policy</code>: wrap each target transformer block, each CI transformer block, and each <code>LinearComponents</code> as separate FSDP units (or fuse, see §5b).</td>
+    </tr>
+    <tr>
+      <td><span class="ref">run_param_decomp.py:263</span> — <code>calc_weight_deltas()</code></td>
+      <td>Reads sharded <code>V</code>, <code>U</code>, and target <code>.weight</code> outside any forward. Either silently wrong or crashes.</td>
+      <td>Reformulate to never materialize <code>(d_out, d_in)</code> delta (see §5c option 3).</td>
+    </tr>
+    <tr>
+      <td><span class="ref">component_model.py:175–187</span> — <code>target_weight()</code></td>
+      <td>Returns <code>target_module.weight</code> directly. Sharded under FSDP.</td>
+      <td>Either fuse target submodule + components into one FSDP unit, or wrap callsites in <code>summon_full_params</code>.</td>
+    </tr>
+    <tr>
+      <td><span class="ref">component_model.py:457–481</span> — forward hook calls <code>components[name](x)</code></td>
+      <td>Cross-FSDP-unit dispatch from a hook. Components' params not gathered when hook fires.</td>
+      <td>Fuse target submodule + components into a single FSDP unit (§5b option 1), so FSDP's own pre-forward hook has already gathered them.</td>
+    </tr>
+    <tr>
+      <td><span class="ref">run_param_decomp.py:268–272</span> — "must call wrapped_model once" hack</td>
+      <td>This is a DDP-ism (DDP requires forward to touch every parameter). FSDP doesn't have this constraint. Currently harmless but vestigial; might mask a real bug if it papers over a missing forward elsewhere.</td>
+      <td>Remove under FSDP. Verify nothing else relied on it.</td>
+    </tr>
+    <tr>
+      <td><span class="ref">run_param_decomp.py:198–207</span> — optimizer params list</td>
+      <td>Manually concatenates <code>component_params + ci_fn_params</code>. Under FSDP, the parameters that exist on each rank are <em>flat shards</em> of those originals, named differently. <code>AdamW(optimized_params, ...)</code> still works because FSDP returns <code>FlatParameter</code>s that look like <code>nn.Parameter</code>, but the per-group LR/clip logic needs auditing.</td>
+      <td>Switch to FSDP's recommended pattern: optimizer over <code>FSDP(model).parameters()</code>, then partition by name, not by identity.</td>
+    </tr>
+    <tr>
+      <td><span class="ref">run_param_decomp.py:418–421</span> — <code>clip_grad_norm_</code></td>
+      <td><code>clip_grad_norm_</code> is broken under FSDP — needs the cross-rank norm, not the per-shard norm.</td>
+      <td>Use <code>FSDP.clip_grad_norm_</code>.</td>
+    </tr>
+    <tr>
+      <td><span class="ref">run_param_decomp.py:405</span> — <code>component_model.state_dict()</code> for save</td>
+      <td>Returns flat shards, not full state dict.</td>
+      <td>Wrap in <code>FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, FullStateDictConfig(offload_to_cpu=True, rank0_only=True))</code> context.</td>
+    </tr>
+    <tr>
+      <td>Tied weights (<span class="ref">run_param_decomp.py:186–196</span>)</td>
+      <td>FSDP doesn't support cross-FSDP-unit tying; it flattens parameters per unit.</td>
+      <td>Either keep tied weights inside one FSDP unit, or replace with a re-tying step at forward time.</td>
+    </tr>
+    <tr>
+      <td>PPGD <code>broadcast_tensor</code> at <span class="ref">persistent_pgd.py:169</span></td>
+      <td>Independent of FSDP. Should still work — these aren't model params.</td>
+      <td>No change.</td>
+    </tr>
+    <tr>
+      <td>Multiple forwards per step (§ next)</td>
+      <td>FSDP all-gathers per-forward instead of once-per-backward (DDP). With 5–10 forwards/step and prefetch enabled, this is the largest perf cost.</td>
+      <td>Tune <code>FullyShardedDataParallel(forward_prefetch=True, backward_prefetch=BACKWARD_PRE, limit_all_gathers=True)</code>. Profile.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>How many forwards per step actually happen?</h3>
+<p>Counting the Jose config (<span class="ref">pile_llama_simple_mlp-4L.yaml</span>):</p>
+<ol>
+  <li><strong>1× target-only forward</strong> with input caching (<span class="ref">run_param_decomp.py:272</span>).</li>
+  <li><strong>1× CI-fn forward</strong> on cached activations (small).</li>
+  <li><strong>2× component forward + backward</strong> for PPGD warmup (<code>n_warmup_steps: 2</code>, <span class="ref">run_param_decomp.py:281</span>).</li>
+  <li><strong>3 active reconstruction-style losses</strong> in <code>compute_losses</code> — <code>StochasticReconSubsetLoss</code>, <code>PersistentPGDReconLoss</code>, <code>FaithfulnessLoss</code> — each driving one component forward at <code>n_mask_samples=1</code>. Plus <code>ImportanceMinimalityLoss</code>, which uses CI directly.</li>
+</ol>
+<p>Total: roughly <strong>5–7 component forwards + 2–3 backwards per training step</strong>, which is the load FSDP's all-gather has to absorb. This is high but not crazy. Prefetching should hide most of it.</p>
+
+<h2 id="cheap">7. Cheaper levers worth pulling first (or alongside)</h2>
+
+<p>FSDP is a real refactor. Several things give large memory wins for far less work and stack well with FSDP later.</p>
+
+<h3>7a. ZeRO-1 (<code>ZeroRedundancyOptimizer</code>)</h3>
+<p>Drop-in replacement for <code>AdamW</code> at <span class="ref">run_param_decomp.py:207</span> — shards optimizer state across ranks, leaves params and grads replicated. For Jose: optimizer state is 5.78 GB out of 12.6 GB per-rank state, so ZeRO-1 across 4 ranks frees ~4.3 GB/rank. Across 8 ranks, ~5.0 GB/rank. <strong>Smallest possible code change, ~30–40% memory recovered.</strong></p>
+<pre><code>from torch.distributed.optim import ZeroRedundancyOptimizer
+optimizer = ZeroRedundancyOptimizer(
+    optimized_params, optimizer_class=optim.AdamW,
+    lr=config.lr_schedule.start_val, weight_decay=0,
+)</code></pre>
+<p>Caveats: per-param-group hyperparameters (you have two: components and ci_fn) need to be set after construction. Save/load needs <code>consolidate_state_dict()</code>.</p>
+
+<h3>7b. Gradient checkpointing on the CI transformer and the target's transformer blocks</h3>
+<p>The CI transformer is the single biggest activation consumer per forward (it's a full transformer over batch×seq). Checkpointing its blocks ~halves activation memory. The target's transformer blocks are run multiple times per step → checkpointing them halves memory but doubles compute on those forwards. Likely still net positive on memory-bound runs.</p>
+<p>Implementation: use <code>torch.utils.checkpoint.checkpoint_sequential</code> on the block list, or apply at construction time inside <code>GlobalSharedTransformerCiFn</code> and the target's <code>LlamaSimpleMLP</code>. Doesn't touch the SPD machinery at all.</p>
+
+<h3>7c. bf16 master weights</h3>
+<p>Currently <code>autocast_bf16=True</code>, but master weights and AdamW state are fp32. Switching to bf16 master + fp32 Adam state gives ~halving of param/grad memory. Not always stable for SPD given the loss landscape; needs careful testing on a small target before committing. Lower-priority than 6a/6b.</p>
+
+<h3>7d. Stop materializing <code>weight_delta</code></h3>
+<p>From §5c: rewrite <code>x @ (W_target − components.weight)</code> as <code>x @ W_target − (x @ V) @ U</code>. Saves an O(d_in · d_out) materialization per decomposed module per step. For Jose, that's ~10 modules × 16M floats × 2 bytes ≈ 320 MB of intermediate state that doesn't have to exist. And it removes the trickiest FSDP hazard from <code>calc_weight_deltas</code>. Pure win even before sharding.</p>
+
+<h3>7e. CPU offload for the frozen target's optimizer state</h3>
+<p>Trivially: there is none. So this doesn't apply. Mentioned for completeness.</p>
+
+<h3>What's NOT going to help meaningfully</h3>
+<ul>
+  <li><strong>Tensor parallelism (TP/Megatron-style):</strong> Helpful when a single matmul exceeds GPU memory or when activations dominate. We're parameter-state-dominated. Skip.</li>
+  <li><strong>Pipeline parallelism:</strong> Worth considering at &gt;10B target model. Not now.</li>
+  <li><strong>Sequence parallelism:</strong> Useful at long contexts. Jose is 512. Not now.</li>
+</ul>
+
+<h2 id="plan">8. Recommended phased plan</h2>
+
+<div class="callout good">
+<span class="label">Recommendation</span>
+<p style="margin:0">Three phases. Phase 1 alone might be enough to get to a 1B target on 8×80GB. Phase 2 buys the next 2–3× of headroom. Phase 3 is the architectural commitment.</p>
+</div>
+
+<h3>Phase 1 — quick wins, ~1–2 weeks of work</h3>
+<ol>
+  <li><strong>Profile current memory.</strong> Run Jose at batch 64 on 1×H100 with <code>torch.cuda.memory._record_memory_history</code> + <code>torch.cuda.memory_summary</code>. Identify the actual top-3 allocators. <em>Don't skip this.</em> The whole plan below assumes the per-rank breakdown I estimated; it could be wrong.</li>
+  <li><strong>Switch optimizer to <code>ZeroRedundancyOptimizer</code></strong> behind a config flag. Verify save/load round-trips with <code>consolidate_state_dict</code>.</li>
+  <li><strong>Add gradient checkpointing</strong> to the CI transformer (<code>GlobalSharedTransformerCiFn</code>) and to the target's transformer blocks. Config-flag it.</li>
+  <li><strong>Rewrite the weight-delta path</strong> to never materialize the <code>(d_out, d_in)</code> delta. Remove the per-step <code>calc_weight_deltas</code> call entirely; do the equivalent two-matmul form inside <code>LinearComponents.forward</code> when <code>weight_delta_and_mask</code> is requested.</li>
+</ol>
+<p>Exit criterion: Jose runs at the same batch size on a 40 GB A100, or at 2× batch on an 80 GB H100. (Pick whichever is more useful.)</p>
+
+<h3>Phase 2 — fuse the decomposition site, then FSDP, ~3–4 weeks</h3>
+<ol>
+  <li><strong>Refactor <code>ComponentModel</code> so each decomposed module + its components forms a single nn.Module.</strong> Concretely: a <code>DecomposedLinear</code> module that wraps the original <code>nn.Linear</code> as a child, holds <code>V</code>, <code>U</code>, <code>bias</code> as its own parameters, and replaces the target's <code>nn.Linear</code> in the model tree (instead of adding a hook on it). This eliminates the cross-FSDP-unit access pattern entirely. It's the same forward semantics, just expressed structurally instead of via hooks.
+    <p class="meta">This is a bigger change than it sounds, because hooks are how the codebase currently does input/output/component-act caching too. The replacement needs to expose those caches as well. But it's the change that unlocks everything else, and arguably it's better factoring even without FSDP — the current hook-based scheme is a bit of an "action at a distance" pattern.</p>
+  </li>
+  <li><strong>Wrap with FSDP using a custom <code>auto_wrap_policy</code>.</strong> One FSDP unit per <code>DecomposedLinear</code>, one per CI-transformer block, one per target transformer block. Don't outer-wrap the whole model. Set <code>forward_prefetch=True</code>, <code>backward_prefetch=BACKWARD_PRE</code>.</li>
+  <li><strong>Replace DDP-specific bits:</strong> <code>FSDP.clip_grad_norm_</code>, <code>FSDP.state_dict_type</code> for save/load, drop the "must-call-wrapped_model" line at <span class="ref">run_param_decomp.py:268–272</span>.</li>
+  <li><strong>Decide on the frozen target.</strong> Options:
+    <ul>
+      <li><em>Don't shard it</em> — leaves it replicated, costs ~1 GB/rank for Jose, ~4 GB/rank at 1B target. Avoids per-step all-gather of frozen weights. <strong>Probably the right default.</strong></li>
+      <li><em>Shard it with <code>NO_SHARD</code>-policy FSDP units</em> — gives sharding without the runtime gather (parameters stay sharded but live on each rank's slice). Useful if even the frozen target is too big.</li>
+    </ul>
+  </li>
+</ol>
+<p>Exit criterion: 1B-target run completes on 8×80GB H100 at meaningful batch size with throughput within ~1.7× of an equivalent DDP run (FSDP overhead is real).</p>
+
+<h3>Phase 3 — only if Phase 2 isn't enough, &gt;1 month</h3>
+<ol>
+  <li><strong>Move CI-fn to a separate process group.</strong> The CI transformer is conceptually independent from the components — it's reading cached target activations and producing CI scores. There's a case for putting it on its own subset of GPUs with its own pipeline.</li>
+  <li><strong>Tensor parallelism on the CI transformer's MLPs and attention</strong>, if it's still the bottleneck after FSDP.</li>
+  <li><strong>Activation offload to CPU.</strong> Last resort.</li>
+</ol>
+
+<h2 id="open">9. Open questions and things I couldn't verify in this pass</h2>
+
+<ol>
+  <li><strong>Is the target really ~242M or are MLPs gated (SwiGLU)?</strong> <code>LlamaSimpleMLP</code> is named "simple" specifically to avoid that, but worth confirming on the actual checkpoint. Affects parameter math, not the plan.</li>
+  <li><strong>Are embeddings tied?</strong> If yes, the ~41M embedding figure is single-counted; if no, it's roughly doubled. Doesn't change the conclusion but affects the table.</li>
+  <li><strong>How much of the per-rank memory is actually activations vs param/grad/optimizer state?</strong> I assumed param/grad/opt dominates because of the mask-sample × multi-loss multiplier on activations. Phase 1 step 1 (profile) tells us for sure.</li>
+  <li><strong>Does PPGD warmup work cleanly under FSDP?</strong> It does <code>torch.autograd.grad(loss, list(self.sources.values()))</code> at <span class="ref">persistent_pgd.py:175</span>. The <code>sources</code> aren't model params and shouldn't be FSDP-managed, so this should be fine — but the loss computation does flow through FSDP-wrapped components, which means the autograd graph crosses FSDP boundaries. Worth a small test.</li>
+  <li><strong>Is the CI transformer always going to be ~the size of the target?</strong> It's a config knob (<code>ci_config.simple_transformer_ci_cfg</code>). For Jose it happens to be similarly sized; for a 1B target you might want a smaller CI fn. If so, the trainable-parameter math changes meaningfully.</li>
+  <li><strong>Tied weights interaction with FSDP.</strong> The Jose config doesn't appear to use <code>tied_weights</code> for components (the <code>tied_weights</code> mechanism at <span class="ref">run_param_decomp.py:186–196</span> ties <code>U</code>↔<code>V.T</code> across components). If/when this is used, FSDP unit boundaries need to keep tied params together. Easy if the tied modules are in the same decomposed-block fusion, but worth flagging.</li>
+</ol>
+
+<hr/>
+
+<h2>Appendix: file locations referenced</h2>
+<ul>
+  <li><code>param_decomp/run_param_decomp.py</code> — main loop, DDP wrap, optimizer setup, eval, save</li>
+  <li><code>param_decomp/models/component_model.py</code> — <code>ComponentModel</code>, hooks, <code>calc_weight_deltas</code>, <code>target_weight</code></li>
+  <li><code>param_decomp/models/components.py</code> — <code>LinearComponents</code>, <code>EmbeddingComponents</code>, the <code>weight</code> property</li>
+  <li><code>param_decomp/utils/distributed_utils.py</code> — process group, all-reduce, per-rank seed</li>
+  <li><code>param_decomp/utils/compute_utils.py</code> — torchrun/srun launch templates</li>
+  <li><code>param_decomp/scripts/run_local.py</code> — <code>--dp</code> handling</li>
+  <li><code>param_decomp/persistent_pgd.py</code> — PPGD source state, manual all-reduce</li>
+  <li><code>param_decomp/data.py</code> — distributed data sharding</li>
+  <li><code>param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml</code> — the Jose config</li>
+</ul>
+
+</body>
+</html>
+
