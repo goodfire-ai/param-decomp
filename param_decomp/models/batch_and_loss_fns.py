@@ -81,3 +81,18 @@ def recon_loss_kl(
     p = torch.softmax(target, dim=-1)  # P
     kl_per_position = F.kl_div(log_q, p, reduction="none").sum(dim=-1)  # P · (log P − log Q)
     return kl_per_position.sum(), math.prod(pred.shape[:-1])
+
+
+def recon_loss_kl_probs(
+    pred: Float[Tensor, "... vocab"],
+    target: Float[Tensor, "... vocab"],
+) -> tuple[Float[Tensor, ""], int]:
+    """KL divergence reconstruction loss for probability distributions.
+
+    Both `pred` and `target` must already be probability distributions over the last dim.
+    Returns (sum_of_kl, n_positions).
+    """
+    assert pred.shape == target.shape
+    log_q = torch.log(pred.clamp_min(1e-12))
+    kl_per_position = F.kl_div(log_q, target, reduction="none").sum(dim=-1)
+    return kl_per_position.sum(), math.prod(pred.shape[:-1])
