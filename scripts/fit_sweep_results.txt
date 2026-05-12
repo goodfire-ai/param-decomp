@@ -1,0 +1,47 @@
+=== Running hidden_width=0 ===
+Loading model from goodfire/spd/s-82ffb969
+Downloading run from wandb: goodfire/spd/s-82ffb969
+wandb: Currently logged in as: lucius_goodfire (linda-linsefors-n-a) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+Source: h.3.mlp.c_fc (C=3072), Target: h.3.mlp.down_proj[3379] (C=3584)
+Using the latest cached version of the dataset since danbraunai/pile-uncopyrighted-tok-shuffled couldn't be found on the Hugging Face Hub
+Found the latest cached dataset configuration 'default' at /mnt/polished-lake/artifacts/public/hf_cache/datasets/danbraunai___pile-uncopyrighted-tok-shuffled/default/0.0.0/34bf30a7a4f8c798ec77f8f1f63bed7c234ef8dc (last modified on Wed Feb 25 14:57:47 2026).
+Using the latest cached version of the dataset since danbraunai/pile-uncopyrighted-tok-shuffled couldn't be found on the Hugging Face Hub
+Found the latest cached dataset configuration 'default' at /mnt/polished-lake/artifacts/public/hf_cache/datasets/danbraunai___pile-uncopyrighted-tok-shuffled/default/0.0.0/34bf30a7a4f8c798ec77f8f1f63bed7c234ef8dc (last modified on Wed Feb 25 14:57:47 2026).
+Training GeLU-gated linear (H=0), cosine LR 5e-05 -> 5e-06 fit for 50000 steps...
+Init: MSE=1.740456 R²=-2.4286
+Step      0/50000: MSE=1.850723 R²=-2.8516
+Step   1000/50000: MSE=0.496704 R²=0.0162
+Step   2000/50000: MSE=0.158667 R²=0.6893
+Step   3000/50000: MSE=0.126943 R²=0.7499
+Step   4000/50000: MSE=0.123401 R²=0.7578
+Step   5000/50000: MSE=0.121895 R²=0.7602
+Step   6000/50000: MSE=0.122061 R²=0.7601
+Step   7000/50000: MSE=0.121750 R²=0.7614
+Step   8000/50000: MSE=0.122647 R²=0.7606
+Step   9000/50000: MSE=0.122356 R²=0.7594
+Step  10000/50000: MSE=0.122034 R²=0.7603
+Step  11000/50000: MSE=0.122431 R²=0.7591
+Step  12000/50000: MSE=0.122997 R²=0.7586
+Step  13000/50000: MSE=0.122447 R²=0.7590
+Step  14000/50000: MSE=0.121944 R²=0.7614
+Step  15000/50000: MSE=0.122268 R²=0.7609
+Step  16000/50000: MSE=0.122153 R²=0.7604
+Step  17000/50000: MSE=0.123158 R²=0.7589
+Step  18000/50000: MSE=0.122128 R²=0.7597
+Step  19000/50000: MSE=0.122091 R²=0.7598
+Step  20000/50000: MSE=0.121489 R²=0.7601
+Step  21000/50000: MSE=0.122297 R²=0.7608
+Step  22000/50000: MSE=0.121917 R²=0.7612
+Step  23000/50000: MSE=0.121767 R²=0.7602
+Step  24000/50000: MSE=0.121872 R²=0.7608
+Step  25000/50000: MSE=0.121909 R²=0.7598
+Step  26000/50000: MSE=0.121932 R²=0.7612
+Step  27000/50000: MSE=0.122101 R²=0.7607
+Step  28000/50000: MSE=0.121416 R²=0.7620
+Step  29000/50000: MSE=0.121234 R²=0.7592
+Step  30000/50000: MSE=0.122574 R²=0.7604
+Step  31000/50000: MSE=0.121442 R²=0.7613
+Step  32000/50000: MSE=0.122038 R²=0.7616
+Step  33000/50000: MSE=0.121820 R²=0.7590
+Step  34000/50000: MSE=0.121533 R²=0.7612
+Step  35000/50000: MSE=0.121549 R²=0.7637
