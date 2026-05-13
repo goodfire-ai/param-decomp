@@ -27,6 +27,12 @@ class ParallelLinear(nn.Module):
 
     @override
     def forward(self, x: Float[Tensor, "... C d_in"]) -> Float[Tensor, "... C d_out"]:
+        # Cast x to W.dtype so einsum's dtype check passes. Under FSDP MixedPrecision,
+        # the parent unit's params are bf16 but block outputs are cast to fp32 by the
+        # inner-block output_dtype, so x and W can mismatch when this Linear lives
+        # inside the parent unit but outside any block. torch.nn.Linear handles this
+        # via F.linear; we replicate that behavior here.
+        x = x.to(self.W.dtype)
         return einops.einsum(x, self.W, "... C d_in, C d_in d_out -> ... C d_out") + self.b
 
 
@@ -43,6 +49,8 @@ class Linear(nn.Module):
 
     @override
     def forward(self, x: Float[Tensor, "... d_in"]) -> Float[Tensor, "... d_out"]:
+        # See ParallelLinear.forward for rationale on the explicit dtype cast.
+        x = x.to(self.W.dtype)
         return einops.einsum(x, self.W, "... d_in, d_in d_out -> ... d_out") + self.b
 
 
@@ -89,6 +97,11 @@ class RoPEEmbedding(nn.Module):
         sin: Float[Tensor, "seq d_head"],
     ) -> Float[Tensor, "... n_heads seq d_head"]:
         """Apply rotation: x' = x * cos + rotate_half(x) * sin."""
+        # Cast cos/sin to x.dtype so RoPE preserves the input dtype. Otherwise under
+        # FSDP+bf16 (bf16 q/k from sharded projections) the fp32 cos/sin would upcast
+        # q,k to fp32 while v stays bf16, breaking the subsequent SDPA dtype check.
+        cos = cos.to(x.dtype)
+        sin = sin.to(x.dtype)
         # Split into first half and second half
         x1 = x[..., : self.d_head // 2]
         x2 = x[..., self.d_head // 2 :]
