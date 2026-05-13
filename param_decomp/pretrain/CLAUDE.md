@@ -38,12 +38,13 @@ pd-pretrain --config_path ... --n_gpus 4
 - **SimpleStories**: `SimpleStories/test-SimpleStories-gpt2-1.25M` (vocab size: 4019)
 - **Pile/OpenWebText**: `gpt2` (vocab size: 50257)
 
-## Dataset n_ctx vs Model n_ctx
+## Dataset max_seq_len vs Model block_size
 
-The dataset `n_ctx` must be **model n_ctx + 1**. During training, sequences are split into
-input `[:, :-1]` and target `[:, 1:]` for next-token prediction, so the extra token provides
-room for label indexing. For example, if the model has `n_ctx: 512`, the dataset should have
-`n_ctx: 513`.
+The dataset `max_seq_len` must be **model.block_size + 1**. During training, sequences are
+split into input `[:, :-1]` and target `[:, 1:]` for next-token prediction, so the extra
+token provides room for label indexing. For example, if the model has `block_size: 512`,
+the data config should have `max_seq_len: 513`. This is enforced by an assertion in
+`train.py`.
 
 ## Key Files
 

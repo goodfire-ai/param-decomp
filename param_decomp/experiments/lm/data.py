@@ -36,26 +36,6 @@ class LMDataConfig(BaseConfig):
     )
 
 
-class LMDataLoaderConfig(BaseConfig):
-    """Split-specific LM dataloader config.
-
-    This exists for pretraining configs, which specify separate train/validation dataset configs.
-    LM experiments should normally use `LMDataConfig` plus `build_lm_dataloaders`.
-    """
-
-    name: str
-    is_tokenized: bool
-    hf_tokenizer_path: str
-    streaming: bool
-    split: str
-    n_ctx: int
-    """Must be model n_ctx + 1 to provide room for next-token label indexing."""
-    seed: int | None = None
-    column_name: str
-    """Dataset column containing text or token ids."""
-    shuffle_each_epoch: bool = True
-
-
 def _keep_single_column(
     dataset: Dataset | IterableDataset, col_name: str
 ) -> Dataset | IterableDataset:
@@ -167,31 +147,24 @@ def _prepare_lm_dataset(
 
 
 def create_lm_data_loader(
+    cfg: LMDataConfig,
     *,
-    dataset_name: str,
-    tokenizer_name: str,
     split: str,
-    max_seq_len: int,
-    is_tokenized: bool,
-    streaming: bool,
-    column_name: str,
     batch_size: int,
-    buffer_size: int,
     seed: int,
-    shuffle_each_epoch: bool = True,
     dist_state: DistributedState | None = None,
     collate_fn: Callable[..., Any] | None = None,
 ) -> tuple[DataLoader[Any], PreTrainedTokenizer]:
     """Create an LM token dataloader from a HuggingFace dataset split."""
     dataset = load_dataset(
-        dataset_name,
-        streaming=streaming,
+        cfg.dataset_name,
+        streaming=cfg.streaming,
         split=split,
         trust_remote_code=False,
     )
     assert isinstance(dataset, Dataset | IterableDataset)
 
-    if streaming:
+    if cfg.streaming:
         assert isinstance(dataset, IterableDataset)
         if dist_state is not None:
             ds_num_shards = getattr(dataset, "num_shards", None)
@@ -202,30 +175,30 @@ def create_lm_data_loader(
                     lambda _ex, idx: idx % dist_state.world_size == dist_state.rank,
                     with_indices=True,
                 )
-        dataset = dataset.shuffle(seed=seed, buffer_size=buffer_size)
+        dataset = dataset.shuffle(seed=seed, buffer_size=cfg.buffer_size)
     else:
         assert isinstance(dataset, Dataset)
         logger.info("Shuffling dataset (len=%d)", len(dataset))
         dataset = dataset.shuffle(seed=seed)
         logger.info("Shuffled dataset")
 
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer_name)
     torch_dataset = _prepare_lm_dataset(
         dataset,
-        dataset_name=dataset_name,
+        dataset_name=cfg.dataset_name,
         tokenizer=tokenizer,
-        column_name=column_name,
-        max_seq_len=max_seq_len,
-        is_tokenized=is_tokenized,
+        column_name=cfg.column_name,
+        max_seq_len=cfg.max_seq_len,
+        is_tokenized=cfg.is_tokenized,
     )
 
     sampler = None
-    if not streaming and dist_state is not None:
+    if not cfg.streaming and dist_state is not None:
         sampler = DistributedSampler(
             torch_dataset,  # pyright: ignore[reportArgumentType]
             num_replicas=dist_state.world_size,
             rank=dist_state.rank,
-            shuffle=shuffle_each_epoch,
+            shuffle=cfg.shuffle_each_epoch,
             seed=seed,
             drop_last=True,
         )
@@ -237,7 +210,7 @@ def create_lm_data_loader(
         torch_dataset,  # pyright: ignore[reportArgumentType]
         batch_size=batch_size,
         sampler=sampler,
-        shuffle=(sampler is None and shuffle_each_epoch and not streaming),
+        shuffle=(sampler is None and cfg.shuffle_each_epoch and not cfg.streaming),
         drop_last=True,
         generator=generator,
         collate_fn=collate_fn,
@@ -274,32 +247,18 @@ def build_lm_dataloaders(
         return torch.stack([item[collate_column] for item in batch])
 
     train_loader, _ = create_lm_data_loader(
-        dataset_name=data_cfg.dataset_name,
-        tokenizer_name=data_cfg.tokenizer_name,
+        data_cfg,
         split=data_cfg.train_split,
-        max_seq_len=data_cfg.max_seq_len,
-        is_tokenized=data_cfg.is_tokenized,
-        streaming=data_cfg.streaming,
-        column_name=data_cfg.column_name,
         batch_size=train_batch_size,
-        buffer_size=data_cfg.buffer_size,
         seed=data_seed,
-        shuffle_each_epoch=data_cfg.shuffle_each_epoch,
         dist_state=dist_state,
         collate_fn=collate_token_column,
     )
     eval_loader, _ = create_lm_data_loader(
-        dataset_name=data_cfg.dataset_name,
-        tokenizer_name=data_cfg.tokenizer_name,
+        data_cfg,
         split=data_cfg.eval_split,
-        max_seq_len=data_cfg.max_seq_len,
-        is_tokenized=data_cfg.is_tokenized,
-        streaming=data_cfg.streaming,
-        column_name=data_cfg.column_name,
         batch_size=eval_batch_size,
-        buffer_size=data_cfg.buffer_size,
         seed=data_seed + 1,
-        shuffle_each_epoch=data_cfg.shuffle_each_epoch,
         dist_state=dist_state,
         collate_fn=collate_token_column,
     )

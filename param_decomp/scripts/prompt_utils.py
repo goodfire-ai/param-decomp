@@ -28,17 +28,10 @@ def sample_prompts_from_dataset(run_info: PDRunInfo, n_samples: int) -> list[str
     tokenizer = AutoTokenizer.from_pretrained(data.tokenizer_name)
 
     loader, _ = create_lm_data_loader(
-        dataset_name=data.dataset_name,
-        tokenizer_name=data.tokenizer_name,
+        data,
         split=data.eval_split,
-        max_seq_len=data.max_seq_len,
-        is_tokenized=data.is_tokenized,
-        streaming=data.streaming,
-        column_name=data.column_name,
         batch_size=1,
-        buffer_size=1000,
         seed=0,
-        shuffle_each_epoch=False,
     )
 
     token_column = data.column_name if data.is_tokenized else "input_ids"

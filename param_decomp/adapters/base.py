@@ -44,33 +44,18 @@ def pretrain_dataloader(run_info: PretrainRunInfo, batch_size: int) -> DataLoade
     pretrain runs, build the dataloader directly with `create_lm_data_loader` and an
     appropriate collate_fn.
     """
-    from param_decomp.experiments.lm.data import (
-        LMDataLoaderConfig,
-        create_lm_data_loader,
-    )
+    from param_decomp.experiments.lm.data import LMDataConfig, create_lm_data_loader
 
-    ds_cfg = run_info.config_dict["train_dataset_config"]
-    block_size = run_info.model_config_dict["block_size"]
-    dataset_config = LMDataLoaderConfig.model_validate(
-        {**ds_cfg, "streaming": True, "n_ctx": block_size}
-    )
-    seed = dataset_config.seed if dataset_config.seed is not None else 0
+    data_cfg = LMDataConfig.model_validate({**run_info.config_dict["data"], "streaming": True})
 
     def collate_input_ids(batch: list[dict[str, Tensor]]) -> Tensor:
         return torch.stack([item["input_ids"] for item in batch])
 
     loader, _ = create_lm_data_loader(
-        dataset_name=dataset_config.name,
-        tokenizer_name=dataset_config.hf_tokenizer_path,
-        split=dataset_config.split,
-        max_seq_len=dataset_config.n_ctx,
-        is_tokenized=dataset_config.is_tokenized,
-        streaming=dataset_config.streaming,
-        column_name=dataset_config.column_name,
+        data_cfg,
+        split=data_cfg.train_split,
         batch_size=batch_size,
-        buffer_size=1000,
-        seed=seed,
-        shuffle_each_epoch=dataset_config.shuffle_each_epoch,
+        seed=data_cfg.dataset_shuffle_seed,
         collate_fn=collate_input_ids,
     )
     return loader

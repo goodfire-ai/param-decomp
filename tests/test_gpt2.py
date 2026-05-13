@@ -17,7 +17,7 @@ from param_decomp.configs import (
     StochasticReconLossConfig,
 )
 from param_decomp.experiments.lm.data import (
-    LMDataLoaderConfig,
+    LMDataConfig,
     create_lm_data_loader,
 )
 from param_decomp.identity_insertion import insert_identity_operations_
@@ -86,57 +86,33 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
     if config.identity_module_info is not None:
         insert_identity_operations_(target_model, identity_module_info=config.identity_module_info)
 
-    train_data_config = LMDataLoaderConfig(
-        name="SimpleStories/SimpleStories",
-        hf_tokenizer_path=model_name,
-        split="train[:100]",
-        n_ctx=16,
+    data_config = LMDataConfig(
+        dataset_name="SimpleStories/SimpleStories",
+        tokenizer_name=model_name,
+        max_seq_len=16,
+        train_split="train[:100]",
+        eval_split="test[100:200]",
         is_tokenized=False,
         streaming=False,
         column_name="story",
-        seed=None,
+        dataset_shuffle_seed=config.seed,
     )
 
     def collate_input_ids(batch: list[dict[str, Tensor]]) -> Tensor:
         return torch.stack([item["input_ids"] for item in batch])
 
     train_loader, _tokenizer = create_lm_data_loader(
-        dataset_name=train_data_config.name,
-        tokenizer_name=train_data_config.hf_tokenizer_path,
-        split=train_data_config.split,
-        max_seq_len=train_data_config.n_ctx,
-        is_tokenized=train_data_config.is_tokenized,
-        streaming=train_data_config.streaming,
-        column_name=train_data_config.column_name,
+        data_config,
+        split=data_config.train_split,
         batch_size=config.batch_size,
-        buffer_size=1000,
-        seed=train_data_config.seed if train_data_config.seed is not None else config.seed,
-        shuffle_each_epoch=train_data_config.shuffle_each_epoch,
+        seed=data_config.dataset_shuffle_seed,
         collate_fn=collate_input_ids,
     )
-
-    eval_data_config = LMDataLoaderConfig(
-        name="SimpleStories/SimpleStories",
-        hf_tokenizer_path=model_name,
-        split="test[100:200]",
-        n_ctx=16,
-        is_tokenized=False,
-        streaming=False,
-        column_name="story",
-        seed=None,
-    )
     eval_loader, _ = create_lm_data_loader(
-        dataset_name=eval_data_config.name,
-        tokenizer_name=eval_data_config.hf_tokenizer_path,
-        split=eval_data_config.split,
-        max_seq_len=eval_data_config.n_ctx,
-        is_tokenized=eval_data_config.is_tokenized,
-        streaming=eval_data_config.streaming,
-        column_name=eval_data_config.column_name,
+        data_config,
+        split=data_config.eval_split,
         batch_size=config.batch_size,
-        buffer_size=1000,
-        seed=eval_data_config.seed if eval_data_config.seed is not None else config.seed + 1,
-        shuffle_each_epoch=eval_data_config.shuffle_each_epoch,
+        seed=data_config.dataset_shuffle_seed + 1,
         collate_fn=collate_input_ids,
     )
 
