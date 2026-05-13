@@ -1,0 +1,29 @@
+{
+  "args": {
+    "strategy": "zero1",
+    "target_scale": "jose",
+    "batch": 1,
+    "seq": 512,
+    "out_dir": "/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/smoke-n2-20260513-092131/jose_b1_zero1",
+    "ci_d_model": 2048,
+    "ci_blocks": 8,
+    "ci_mlp": 8192,
+    "ci_heads": 16,
+    "ci_checkpointing": true,
+    "target_checkpointing": false,
+    "autocast_bf16": true,
+    "delta_masks": true,
+    "include_faithfulness": false,
+    "decomposed_forwards": 2,
+    "warmup_steps": 1,
+    "measure_steps": 2,
+    "lr": 1e-05,
+    "record_snapshot": false,
+    "snapshot_max_entries": 200000,
+    "profile_label": "jose_b1_zero1"
+  },
+  "rank": 0,
+  "error_type": "RuntimeError",
+  "error": "Expected to have finished reduction in the prior iteration before starting a new one. This error indicates that your module has parameters that were not used in producing loss. You can enable unused parameter detection by passing the keyword argument `find_unused_parameters=True` to `torch.nn.parallel.DistributedDataParallel`, and by \nmaking sure all `forward` function outputs participate in calculating loss. \nIf you already have done the above, then the distributed data parallel module wasn't able to locate the output tensors in the return value of your module's `forward` function. Please include the loss function and the structure of the return value of `forward` of your module when reporting this issue (e.g. list, dict, iterable).\nParameter indices which did not receive grad for rank 0: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47\n In addition, you can set the environment variable TORCH_DISTRIBUTED_DEBUG to either INFO or DETAIL to print out information about which particular parameters did not receive gradient on this rank as part of this error",
+  "traceback": "Traceback (most recent call last):\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/scripts/fsdp_memory_profile.py\", line 561, in main\n    phases[\"single_decomposed_step\"] = measure_phase(\n                                       ~~~~~~~~~~~~~^\n        \"single_decomposed_step\",\n        ^^^^^^^^^^^^^^^^^^^^^^^^^\n    ...<11 lines>...\n        device,\n        ^^^^^^^\n    )\n    ^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/scripts/fsdp_memory_profile.py\", line 413, in measure_phase\n    fn()\n    ~~^^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/scripts/fsdp_memory_profile.py\", line 563, in <lambda>\n    lambda: single_decomposed_step(\n            ~~~~~~~~~~~~~~~~~~~~~~^\n        wrapped,\n        ^^^^^^^^\n    ...<6 lines>...\n        autocast_enabled,\n        ^^^^^^^^^^^^^^^^^\n    ),\n    ^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/scripts/fsdp_memory_profile.py\", line 346, in single_decomposed_step\n    out = call_model(wrapped, idx, mask_infos=make_mask_infos(masks, delta_masks=delta_masks))\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/scripts/fsdp_memory_profile.py\", line 294, in call_model\n    return module(*args, **kwargs)\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py\", line 1773, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py\", line 1784, in _call_impl\n    return forward_call(*args, **kwargs)\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/.venv/lib/python3.13/site-packages/torch/nn/parallel/distributed.py\", line 1644, in forward\n    inputs, kwargs = self._pre_forward(*inputs, **kwargs)\n                     ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/.venv/lib/python3.13/site-packages/torch/nn/parallel/distributed.py\", line 1533, in _pre_forward\n    if torch.is_grad_enabled() and self.reducer._rebuild_buckets():\n                                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^\nRuntimeError: Expected to have finished reduction in the prior iteration before starting a new one. This error indicates that your module has parameters that were not used in producing loss. You can enable unused parameter detection by passing the keyword argument `find_unused_parameters=True` to `torch.nn.parallel.DistributedDataParallel`, and by \nmaking sure all `forward` function outputs participate in calculating loss. \nIf you already have done the above, then the distributed data parallel module wasn't able to locate the output tensors in the return value of your module's `forward` function. Please include the loss function and the structure of the return value of `forward` of your module when reporting this issue (e.g. list, dict, iterable).\nParameter indices which did not receive grad for rank 0: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47\n In addition, you can set the environment variable TORCH_DISTRIBUTED_DEBUG to either INFO or DETAIL to print out information about which particular parameters did not receive gradient on this rank as part of this error\n"
+}

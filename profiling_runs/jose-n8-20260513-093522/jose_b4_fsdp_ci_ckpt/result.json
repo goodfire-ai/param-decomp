@@ -1,0 +1,1831 @@
+{
+  "args": {
+    "strategy": "fsdp",
+    "target_scale": "jose",
+    "batch": 4,
+    "seq": 512,
+    "out_dir": "/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/jose-n8-20260513-093522/jose_b4_fsdp_ci_ckpt",
+    "ci_d_model": 2048,
+    "ci_blocks": 8,
+    "ci_mlp": 8192,
+    "ci_heads": 16,
+    "ci_checkpointing": true,
+    "target_checkpointing": false,
+    "autocast_bf16": false,
+    "delta_masks": true,
+    "include_faithfulness": false,
+    "decomposed_forwards": 2,
+    "warmup_steps": 1,
+    "measure_steps": 2,
+    "lr": 1e-05,
+    "record_snapshot": false,
+    "snapshot_max_entries": 200000,
+    "profile_label": "jose_b4_fsdp_ci_ckpt"
+  },
+  "target_spec": {
+    "n_layer": 4,
+    "n_embd": 768,
+    "n_head": 6,
+    "n_intermediate": 3072,
+    "n_key_value_heads": 6,
+    "vocab_size": 50277,
+    "n_ctx": 512
+  },
+  "world_size": 8,
+  "frozen_target_params": 66931200,
+  "target_plus_site_params": 188041728,
+  "trainable_params": 660201472,
+  "summary": {
+    "construction": {
+      "start": {
+        "max_allocated_gb": 0.0,
+        "max_reserved_gb": 0.0,
+        "max_peak_allocated_gb": 0.0,
+        "per_rank": [
+          {
+            "label": "start",
+            "allocated_gb": 0.0,
+            "reserved_gb": 0.0,
+            "max_allocated_gb": 0.0,
+            "max_reserved_gb": 0.0
+          },
+          {
+            "label": "start",
+            "allocated_gb": 0.0,
+            "reserved_gb": 0.0,
+            "max_allocated_gb": 0.0,
+            "max_reserved_gb": 0.0
+          },
+          {
+            "label": "start",
+            "allocated_gb": 0.0,
+            "reserved_gb": 0.0,
+            "max_allocated_gb": 0.0,
+            "max_reserved_gb": 0.0
+          },
+          {
+            "label": "start",
+            "allocated_gb": 0.0,
+            "reserved_gb": 0.0,
+            "max_allocated_gb": 0.0,
+            "max_reserved_gb": 0.0
+          },
+          {
+            "label": "start",
+            "allocated_gb": 0.0,
+            "reserved_gb": 0.0,
+            "max_allocated_gb": 0.0,
+            "max_reserved_gb": 0.0
+          },
+          {
+            "label": "start",
+            "allocated_gb": 0.0,
+            "reserved_gb": 0.0,
+            "max_allocated_gb": 0.0,
+            "max_reserved_gb": 0.0
+          },
+          {
+            "label": "start",
+            "allocated_gb": 0.0,
+            "reserved_gb": 0.0,
+            "max_allocated_gb": 0.0,
+            "max_reserved_gb": 0.0
+          },
+          {
+            "label": "start",
+            "allocated_gb": 0.0,
+            "reserved_gb": 0.0,
+            "max_allocated_gb": 0.0,
+            "max_reserved_gb": 0.0
+          }
+        ]
+      },
+      "after_target": {
+        "max_allocated_gb": 0.274016256,
+        "max_reserved_gb": 0.281018368,
+        "max_peak_allocated_gb": 0.274016256,
+        "per_rank": [
+          {
+            "label": "after_target",
+            "allocated_gb": 0.274016256,
+            "reserved_gb": 0.281018368,
+            "max_allocated_gb": 0.274016256,
+            "max_reserved_gb": 0.281018368
+          },
+          {
+            "label": "after_target",
+            "allocated_gb": 0.274016256,
+            "reserved_gb": 0.281018368,
+            "max_allocated_gb": 0.274016256,
+            "max_reserved_gb": 0.281018368
+          },
+          {
+            "label": "after_target",
+            "allocated_gb": 0.274016256,
+            "reserved_gb": 0.281018368,
+            "max_allocated_gb": 0.274016256,
+            "max_reserved_gb": 0.281018368
+          },
+          {
+            "label": "after_target",
+            "allocated_gb": 0.274016256,
+            "reserved_gb": 0.281018368,
+            "max_allocated_gb": 0.274016256,
+            "max_reserved_gb": 0.281018368
+          },
+          {
+            "label": "after_target",
+            "allocated_gb": 0.274016256,
+            "reserved_gb": 0.281018368,
+            "max_allocated_gb": 0.274016256,
+            "max_reserved_gb": 0.281018368
+          },
+          {
+            "label": "after_target",
+            "allocated_gb": 0.274016256,
+            "reserved_gb": 0.281018368,
+            "max_allocated_gb": 0.274016256,
+            "max_reserved_gb": 0.281018368
+          },
+          {
+            "label": "after_target",
+            "allocated_gb": 0.274016256,
+            "reserved_gb": 0.281018368,
+            "max_allocated_gb": 0.274016256,
+            "max_reserved_gb": 0.281018368
+          },
+          {
+            "label": "after_target",
+            "allocated_gb": 0.274016256,
+            "reserved_gb": 0.281018368,
+            "max_allocated_gb": 0.274016256,
+            "max_reserved_gb": 0.281018368
+          }
+        ]
+      },
+      "after_component_model": {
+        "max_allocated_gb": 2.91482624,
+        "max_reserved_gb": 2.923429888,
+        "max_peak_allocated_gb": 2.91482624,
+        "per_rank": [
+          {
+            "label": "after_component_model",
+            "allocated_gb": 2.91482624,
+            "reserved_gb": 2.923429888,
+            "max_allocated_gb": 2.91482624,
+            "max_reserved_gb": 2.923429888
+          },
+          {
+            "label": "after_component_model",
+            "allocated_gb": 2.91482624,
+            "reserved_gb": 2.923429888,
+            "max_allocated_gb": 2.91482624,
+            "max_reserved_gb": 2.923429888
+          },
+          {
+            "label": "after_component_model",
+            "allocated_gb": 2.91482624,
+            "reserved_gb": 2.923429888,
+            "max_allocated_gb": 2.91482624,
+            "max_reserved_gb": 2.923429888
+          },
+          {
+            "label": "after_component_model",
+            "allocated_gb": 2.91482624,
+            "reserved_gb": 2.923429888,
+            "max_allocated_gb": 2.91482624,
+            "max_reserved_gb": 2.923429888
+          },
+          {
+            "label": "after_component_model",
+            "allocated_gb": 2.91482624,
+            "reserved_gb": 2.923429888,
+            "max_allocated_gb": 2.91482624,
+            "max_reserved_gb": 2.923429888
+          },
+          {
+            "label": "after_component_model",
+            "allocated_gb": 2.91482624,
+            "reserved_gb": 2.923429888,
+            "max_allocated_gb": 2.91482624,
+            "max_reserved_gb": 2.923429888
+          },
+          {
+            "label": "after_component_model",
+            "allocated_gb": 2.91482624,
+            "reserved_gb": 2.923429888,
+            "max_allocated_gb": 2.91482624,
+            "max_reserved_gb": 2.923429888
+          },
+          {
+            "label": "after_component_model",
+            "allocated_gb": 2.91482624,
+            "reserved_gb": 2.923429888,
+            "max_allocated_gb": 2.91482624,
+            "max_reserved_gb": 2.923429888
+          }
+        ]
+      },
+      "after_wrap": {
+        "max_allocated_gb": 0.659482112,
+        "max_reserved_gb": 3.105882112,
+        "max_peak_allocated_gb": 3.069965312,
+        "per_rank": [
+          {
+            "label": "after_wrap",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_wrap",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_wrap",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_wrap",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_wrap",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_wrap",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_wrap",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_wrap",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          }
+        ]
+      },
+      "after_optimizer": {
+        "max_allocated_gb": 0.659482112,
+        "max_reserved_gb": 3.105882112,
+        "max_peak_allocated_gb": 3.069965312,
+        "per_rank": [
+          {
+            "label": "after_optimizer",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_optimizer",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_optimizer",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_optimizer",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_optimizer",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_optimizer",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_optimizer",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_optimizer",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          }
+        ]
+      },
+      "after_batch": {
+        "max_allocated_gb": 0.659498496,
+        "max_reserved_gb": 3.105882112,
+        "max_peak_allocated_gb": 3.069965312,
+        "per_rank": [
+          {
+            "label": "after_batch",
+            "allocated_gb": 0.659498496,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_batch",
+            "allocated_gb": 0.659498496,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_batch",
+            "allocated_gb": 0.659498496,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_batch",
+            "allocated_gb": 0.659498496,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_batch",
+            "allocated_gb": 0.659498496,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_batch",
+            "allocated_gb": 0.659498496,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_batch",
+            "allocated_gb": 0.659498496,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          {
+            "label": "after_batch",
+            "allocated_gb": 0.659498496,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          }
+        ]
+      },
+      "after_jose_warmup": {
+        "max_allocated_gb": 1.386808832,
+        "max_reserved_gb": 11.647582208,
+        "max_peak_allocated_gb": 9.883463168,
+        "per_rank": [
+          {
+            "label": "after_jose_warmup",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 11.647582208,
+            "max_allocated_gb": 9.883463168,
+            "max_reserved_gb": 11.647582208
+          },
+          {
+            "label": "after_jose_warmup",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 11.647582208,
+            "max_allocated_gb": 9.883463168,
+            "max_reserved_gb": 11.647582208
+          },
+          {
+            "label": "after_jose_warmup",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 11.647582208,
+            "max_allocated_gb": 9.883463168,
+            "max_reserved_gb": 11.647582208
+          },
+          {
+            "label": "after_jose_warmup",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 11.647582208,
+            "max_allocated_gb": 9.883463168,
+            "max_reserved_gb": 11.647582208
+          },
+          {
+            "label": "after_jose_warmup",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 11.647582208,
+            "max_allocated_gb": 9.883463168,
+            "max_reserved_gb": 11.647582208
+          },
+          {
+            "label": "after_jose_warmup",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 11.647582208,
+            "max_allocated_gb": 9.883463168,
+            "max_reserved_gb": 11.647582208
+          },
+          {
+            "label": "after_jose_warmup",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 11.647582208,
+            "max_allocated_gb": 9.883463168,
+            "max_reserved_gb": 11.647582208
+          },
+          {
+            "label": "after_jose_warmup",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 11.647582208,
+            "max_allocated_gb": 9.883463168,
+            "max_reserved_gb": 11.647582208
+          }
+        ]
+      }
+    },
+    "phases": {
+      "target_only": {
+        "max_peak_allocated_gb": 1.891354112,
+        "max_phase_peak_delta_gb": 1.2318556159999998,
+        "max_allocated_after_gb": 1.290741248,
+        "avg_time_ms_rank0": 876.1194739490747,
+        "per_rank": [
+          {
+            "label": "target_only",
+            "allocated_gb": 1.290741248,
+            "reserved_gb": 2.896166912,
+            "max_allocated_gb": 1.891354112,
+            "max_reserved_gb": 2.896166912,
+            "base_allocated_gb": 0.659498496,
+            "phase_peak_delta_gb": 1.2318556159999998,
+            "times_ms": [
+              876.1194739490747
+            ],
+            "avg_time_ms": 876.1194739490747
+          },
+          {
+            "label": "target_only",
+            "allocated_gb": 1.290741248,
+            "reserved_gb": 2.896166912,
+            "max_allocated_gb": 1.891354112,
+            "max_reserved_gb": 2.896166912,
+            "base_allocated_gb": 0.659498496,
+            "phase_peak_delta_gb": 1.2318556159999998,
+            "times_ms": [
+              876.118091866374
+            ],
+            "avg_time_ms": 876.118091866374
+          },
+          {
+            "label": "target_only",
+            "allocated_gb": 1.290741248,
+            "reserved_gb": 2.896166912,
+            "max_allocated_gb": 1.891354112,
+            "max_reserved_gb": 2.896166912,
+            "base_allocated_gb": 0.659498496,
+            "phase_peak_delta_gb": 1.2318556159999998,
+            "times_ms": [
+              876.1185109615326
+            ],
+            "avg_time_ms": 876.1185109615326
+          },
+          {
+            "label": "target_only",
+            "allocated_gb": 1.290741248,
+            "reserved_gb": 2.896166912,
+            "max_allocated_gb": 1.891354112,
+            "max_reserved_gb": 2.896166912,
+            "base_allocated_gb": 0.659498496,
+            "phase_peak_delta_gb": 1.2318556159999998,
+            "times_ms": [
+              876.0377522557974
+            ],
+            "avg_time_ms": 876.0377522557974
+          },
+          {
+            "label": "target_only",
+            "allocated_gb": 1.290741248,
+            "reserved_gb": 2.896166912,
+            "max_allocated_gb": 1.891354112,
+            "max_reserved_gb": 2.896166912,
+            "base_allocated_gb": 0.659498496,
+            "phase_peak_delta_gb": 1.2318556159999998,
+            "times_ms": [
+              876.1181682348251
+            ],
+            "avg_time_ms": 876.1181682348251
+          },
+          {
+            "label": "target_only",
+            "allocated_gb": 1.290741248,
+            "reserved_gb": 2.896166912,
+            "max_allocated_gb": 1.891354112,
+            "max_reserved_gb": 2.896166912,
+            "base_allocated_gb": 0.659498496,
+            "phase_peak_delta_gb": 1.2318556159999998,
+            "times_ms": [
+              876.1383108794689
+            ],
+            "avg_time_ms": 876.1383108794689
+          },
+          {
+            "label": "target_only",
+            "allocated_gb": 1.290741248,
+            "reserved_gb": 2.896166912,
+            "max_allocated_gb": 1.891354112,
+            "max_reserved_gb": 2.896166912,
+            "base_allocated_gb": 0.659498496,
+            "phase_peak_delta_gb": 1.2318556159999998,
+            "times_ms": [
+              876.1209864169359
+            ],
+            "avg_time_ms": 876.1209864169359
+          },
+          {
+            "label": "target_only",
+            "allocated_gb": 1.290741248,
+            "reserved_gb": 2.896166912,
+            "max_allocated_gb": 1.891354112,
+            "max_reserved_gb": 2.896166912,
+            "base_allocated_gb": 0.659498496,
+            "phase_peak_delta_gb": 1.2318556159999998,
+            "times_ms": [
+              876.1214911937714
+            ],
+            "avg_time_ms": 876.1214911937714
+          }
+        ]
+      },
+      "target_plus_ci_forward": {
+        "max_peak_allocated_gb": 3.896395264,
+        "max_phase_peak_delta_gb": 2.605654016,
+        "max_allocated_after_gb": 1.836164608,
+        "avg_time_ms_rank0": 203.56647856533527,
+        "per_rank": [
+          {
+            "label": "target_plus_ci_forward",
+            "allocated_gb": 1.836164608,
+            "reserved_gb": 4.75004928,
+            "max_allocated_gb": 3.896395264,
+            "max_reserved_gb": 4.75004928,
+            "base_allocated_gb": 1.290741248,
+            "phase_peak_delta_gb": 2.605654016,
+            "times_ms": [
+              203.56647856533527
+            ],
+            "avg_time_ms": 203.56647856533527
+          },
+          {
+            "label": "target_plus_ci_forward",
+            "allocated_gb": 1.836164608,
+            "reserved_gb": 4.75004928,
+            "max_allocated_gb": 3.896395264,
+            "max_reserved_gb": 4.75004928,
+            "base_allocated_gb": 1.290741248,
+            "phase_peak_delta_gb": 2.605654016,
+            "times_ms": [
+              203.45930382609367
+            ],
+            "avg_time_ms": 203.45930382609367
+          },
+          {
+            "label": "target_plus_ci_forward",
+            "allocated_gb": 1.836164608,
+            "reserved_gb": 4.75004928,
+            "max_allocated_gb": 3.896395264,
+            "max_reserved_gb": 4.75004928,
+            "base_allocated_gb": 1.290741248,
+            "phase_peak_delta_gb": 2.605654016,
+            "times_ms": [
+              203.4649159759283
+            ],
+            "avg_time_ms": 203.4649159759283
+          },
+          {
+            "label": "target_plus_ci_forward",
+            "allocated_gb": 1.836164608,
+            "reserved_gb": 4.75004928,
+            "max_allocated_gb": 3.896395264,
+            "max_reserved_gb": 4.75004928,
+            "base_allocated_gb": 1.290741248,
+            "phase_peak_delta_gb": 2.605654016,
+            "times_ms": [
+              203.47310043871403
+            ],
+            "avg_time_ms": 203.47310043871403
+          },
+          {
+            "label": "target_plus_ci_forward",
+            "allocated_gb": 1.836164608,
+            "reserved_gb": 4.75004928,
+            "max_allocated_gb": 3.896395264,
+            "max_reserved_gb": 4.75004928,
+            "base_allocated_gb": 1.290741248,
+            "phase_peak_delta_gb": 2.605654016,
+            "times_ms": [
+              203.46577279269695
+            ],
+            "avg_time_ms": 203.46577279269695
+          },
+          {
+            "label": "target_plus_ci_forward",
+            "allocated_gb": 1.836164608,
+            "reserved_gb": 4.75004928,
+            "max_allocated_gb": 3.896395264,
+            "max_reserved_gb": 4.75004928,
+            "base_allocated_gb": 1.290741248,
+            "phase_peak_delta_gb": 2.605654016,
+            "times_ms": [
+              203.47011275589466
+            ],
+            "avg_time_ms": 203.47011275589466
+          },
+          {
+            "label": "target_plus_ci_forward",
+            "allocated_gb": 1.836164608,
+            "reserved_gb": 4.75004928,
+            "max_allocated_gb": 3.896395264,
+            "max_reserved_gb": 4.75004928,
+            "base_allocated_gb": 1.290741248,
+            "phase_peak_delta_gb": 2.605654016,
+            "times_ms": [
+              203.46457324922085
+            ],
+            "avg_time_ms": 203.46457324922085
+          },
+          {
+            "label": "target_plus_ci_forward",
+            "allocated_gb": 1.836164608,
+            "reserved_gb": 4.75004928,
+            "max_allocated_gb": 3.896395264,
+            "max_reserved_gb": 4.75004928,
+            "base_allocated_gb": 1.290741248,
+            "phase_peak_delta_gb": 2.605654016,
+            "times_ms": [
+              203.4621797502041
+            ],
+            "avg_time_ms": 203.4621797502041
+          }
+        ]
+      },
+      "single_decomposed_step": {
+        "max_peak_allocated_gb": 5.55901184,
+        "max_phase_peak_delta_gb": 3.7228472320000003,
+        "max_allocated_after_gb": 1.393141248,
+        "avg_time_ms_rank0": 917.897429317236,
+        "per_rank": [
+          {
+            "label": "single_decomposed_step",
+            "allocated_gb": 1.393141248,
+            "reserved_gb": 5.8720256,
+            "max_allocated_gb": 5.55901184,
+            "max_reserved_gb": 5.8720256,
+            "base_allocated_gb": 1.836164608,
+            "phase_peak_delta_gb": 3.7228472320000003,
+            "times_ms": [
+              917.897429317236
+            ],
+            "avg_time_ms": 917.897429317236
+          },
+          {
+            "label": "single_decomposed_step",
+            "allocated_gb": 1.393141248,
+            "reserved_gb": 5.8720256,
+            "max_allocated_gb": 5.55901184,
+            "max_reserved_gb": 5.8720256,
+            "base_allocated_gb": 1.836164608,
+            "phase_peak_delta_gb": 3.7228472320000003,
+            "times_ms": [
+              915.7783817499876
+            ],
+            "avg_time_ms": 915.7783817499876
+          },
+          {
+            "label": "single_decomposed_step",
+            "allocated_gb": 1.393141248,
+            "reserved_gb": 5.8720256,
+            "max_allocated_gb": 5.55901184,
+            "max_reserved_gb": 5.8720256,
+            "base_allocated_gb": 1.836164608,
+            "phase_peak_delta_gb": 3.7228472320000003,
+            "times_ms": [
+              917.8838729858398
+            ],
+            "avg_time_ms": 917.8838729858398
+          },
+          {
+            "label": "single_decomposed_step",
+            "allocated_gb": 1.393141248,
+            "reserved_gb": 5.8720256,
+            "max_allocated_gb": 5.55901184,
+            "max_reserved_gb": 5.8720256,
+            "base_allocated_gb": 1.836164608,
+            "phase_peak_delta_gb": 3.7228472320000003,
+            "times_ms": [
+              917.8981687873602
+            ],
+            "avg_time_ms": 917.8981687873602
+          },
+          {
+            "label": "single_decomposed_step",
+            "allocated_gb": 1.393141248,
+            "reserved_gb": 5.8720256,
+            "max_allocated_gb": 5.55901184,
+            "max_reserved_gb": 5.8720256,
+            "base_allocated_gb": 1.836164608,
+            "phase_peak_delta_gb": 3.7228472320000003,
+            "times_ms": [
+              917.8993683308363
+            ],
+            "avg_time_ms": 917.8993683308363
+          },
+          {
+            "label": "single_decomposed_step",
+            "allocated_gb": 1.393141248,
+            "reserved_gb": 5.8720256,
+            "max_allocated_gb": 5.55901184,
+            "max_reserved_gb": 5.8720256,
+            "base_allocated_gb": 1.836164608,
+            "phase_peak_delta_gb": 3.7228472320000003,
+            "times_ms": [
+              918.1685969233513
+            ],
+            "avg_time_ms": 918.1685969233513
+          },
+          {
+            "label": "single_decomposed_step",
+            "allocated_gb": 1.393141248,
+            "reserved_gb": 5.8720256,
+            "max_allocated_gb": 5.55901184,
+            "max_reserved_gb": 5.8720256,
+            "base_allocated_gb": 1.836164608,
+            "phase_peak_delta_gb": 3.7228472320000003,
+            "times_ms": [
+              917.9005790501833
+            ],
+            "avg_time_ms": 917.9005790501833
+          },
+          {
+            "label": "single_decomposed_step",
+            "allocated_gb": 1.393141248,
+            "reserved_gb": 5.8720256,
+            "max_allocated_gb": 5.55901184,
+            "max_reserved_gb": 5.8720256,
+            "base_allocated_gb": 1.836164608,
+            "phase_peak_delta_gb": 3.7228472320000003,
+            "times_ms": [
+              917.9047234356403
+            ],
+            "avg_time_ms": 917.9047234356403
+          }
+        ]
+      },
+      "jose_like_step": {
+        "max_peak_allocated_gb": 10.422554112,
+        "max_phase_peak_delta_gb": 9.03574528,
+        "max_allocated_after_gb": 1.386808832,
+        "avg_time_ms_rank0": 738.8989003375173,
+        "per_rank": [
+          {
+            "label": "jose_like_step",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 12.528386048,
+            "max_allocated_gb": 10.422554112,
+            "max_reserved_gb": 12.528386048,
+            "base_allocated_gb": 1.386808832,
+            "phase_peak_delta_gb": 9.03574528,
+            "times_ms": [
+              1112.7581261098385,
+              365.03967456519604
+            ],
+            "avg_time_ms": 738.8989003375173
+          },
+          {
+            "label": "jose_like_step",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 12.528386048,
+            "max_allocated_gb": 10.422554112,
+            "max_reserved_gb": 12.528386048,
+            "base_allocated_gb": 1.386808832,
+            "phase_peak_delta_gb": 9.03574528,
+            "times_ms": [
+              1112.6585975289345,
+              365.05796015262604
+            ],
+            "avg_time_ms": 738.8582788407803
+          },
+          {
+            "label": "jose_like_step",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 12.528386048,
+            "max_allocated_gb": 10.422554112,
+            "max_reserved_gb": 12.528386048,
+            "base_allocated_gb": 1.386808832,
+            "phase_peak_delta_gb": 9.03574528,
+            "times_ms": [
+              1112.7068791538477,
+              365.8680394291878
+            ],
+            "avg_time_ms": 739.2874592915177
+          },
+          {
+            "label": "jose_like_step",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 12.528386048,
+            "max_allocated_gb": 10.422554112,
+            "max_reserved_gb": 12.528386048,
+            "base_allocated_gb": 1.386808832,
+            "phase_peak_delta_gb": 9.03574528,
+            "times_ms": [
+              1112.7621624618769,
+              365.03549106419086
+            ],
+            "avg_time_ms": 738.8988267630339
+          },
+          {
+            "label": "jose_like_step",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 12.528386048,
+            "max_allocated_gb": 10.422554112,
+            "max_reserved_gb": 12.528386048,
+            "base_allocated_gb": 1.386808832,
+            "phase_peak_delta_gb": 9.03574528,
+            "times_ms": [
+              1112.7756964415312,
+              365.03632366657257
+            ],
+            "avg_time_ms": 738.9060100540519
+          },
+          {
+            "label": "jose_like_step",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 12.528386048,
+            "max_allocated_gb": 10.422554112,
+            "max_reserved_gb": 12.528386048,
+            "base_allocated_gb": 1.386808832,
+            "phase_peak_delta_gb": 9.03574528,
+            "times_ms": [
+              1112.7092577517033,
+              365.0454841554165
+            ],
+            "avg_time_ms": 738.8773709535599
+          },
+          {
+            "label": "jose_like_step",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 12.528386048,
+            "max_allocated_gb": 10.422554112,
+            "max_reserved_gb": 12.528386048,
+            "base_allocated_gb": 1.386808832,
+            "phase_peak_delta_gb": 9.03574528,
+            "times_ms": [
+              1112.7048041671515,
+              365.0418035686016
+            ],
+            "avg_time_ms": 738.8733038678765
+          },
+          {
+            "label": "jose_like_step",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 12.528386048,
+            "max_allocated_gb": 10.422554112,
+            "max_reserved_gb": 12.528386048,
+            "base_allocated_gb": 1.386808832,
+            "phase_peak_delta_gb": 9.03574528,
+            "times_ms": [
+              1112.760055810213,
+              365.03743939101696
+            ],
+            "avg_time_ms": 738.898747600615
+          }
+        ]
+      }
+    },
+    "ranks": [
+      {
+        "rank": 0,
+        "local_rank": 0,
+        "hostname": "h200-reserved-145-032",
+        "construction": {
+          "start": {
+            "label": "start",
+            "allocated_gb": 0.0,
+            "reserved_gb": 0.0,
+            "max_allocated_gb": 0.0,
+            "max_reserved_gb": 0.0
+          },
+          "after_target": {
+            "label": "after_target",
+            "allocated_gb": 0.274016256,
+            "reserved_gb": 0.281018368,
+            "max_allocated_gb": 0.274016256,
+            "max_reserved_gb": 0.281018368
+          },
+          "after_component_model": {
+            "label": "after_component_model",
+            "allocated_gb": 2.91482624,
+            "reserved_gb": 2.923429888,
+            "max_allocated_gb": 2.91482624,
+            "max_reserved_gb": 2.923429888
+          },
+          "after_wrap": {
+            "label": "after_wrap",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_optimizer": {
+            "label": "after_optimizer",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_batch": {
+            "label": "after_batch",
+            "allocated_gb": 0.659498496,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_jose_warmup": {
+            "label": "after_jose_warmup",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 11.647582208,
+            "max_allocated_gb": 9.883463168,
+            "max_reserved_gb": 11.647582208
+          }
+        },
+        "phases": {
+          "target_only": {
+            "label": "target_only",
+            "allocated_gb": 1.290741248,
+            "reserved_gb": 2.896166912,
+            "max_allocated_gb": 1.891354112,
+            "max_reserved_gb": 2.896166912,
+            "base_allocated_gb": 0.659498496,
+            "phase_peak_delta_gb": 1.2318556159999998,
+            "times_ms": [
+              876.1194739490747
+            ],
+            "avg_time_ms": 876.1194739490747
+          },
+          "target_plus_ci_forward": {
+            "label": "target_plus_ci_forward",
+            "allocated_gb": 1.836164608,
+            "reserved_gb": 4.75004928,
+            "max_allocated_gb": 3.896395264,
+            "max_reserved_gb": 4.75004928,
+            "base_allocated_gb": 1.290741248,
+            "phase_peak_delta_gb": 2.605654016,
+            "times_ms": [
+              203.56647856533527
+            ],
+            "avg_time_ms": 203.56647856533527
+          },
+          "single_decomposed_step": {
+            "label": "single_decomposed_step",
+            "allocated_gb": 1.393141248,
+            "reserved_gb": 5.8720256,
+            "max_allocated_gb": 5.55901184,
+            "max_reserved_gb": 5.8720256,
+            "base_allocated_gb": 1.836164608,
+            "phase_peak_delta_gb": 3.7228472320000003,
+            "times_ms": [
+              917.897429317236
+            ],
+            "avg_time_ms": 917.897429317236
+          },
+          "jose_like_step": {
+            "label": "jose_like_step",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 12.528386048,
+            "max_allocated_gb": 10.422554112,
+            "max_reserved_gb": 12.528386048,
+            "base_allocated_gb": 1.386808832,
+            "phase_peak_delta_gb": 9.03574528,
+            "times_ms": [
+              1112.7581261098385,
+              365.03967456519604
+            ],
+            "avg_time_ms": 738.8989003375173
+          }
+        }
+      },
+      {
+        "rank": 1,
+        "local_rank": 1,
+        "hostname": "h200-reserved-145-032",
+        "construction": {
+          "start": {
+            "label": "start",
+            "allocated_gb": 0.0,
+            "reserved_gb": 0.0,
+            "max_allocated_gb": 0.0,
+            "max_reserved_gb": 0.0
+          },
+          "after_target": {
+            "label": "after_target",
+            "allocated_gb": 0.274016256,
+            "reserved_gb": 0.281018368,
+            "max_allocated_gb": 0.274016256,
+            "max_reserved_gb": 0.281018368
+          },
+          "after_component_model": {
+            "label": "after_component_model",
+            "allocated_gb": 2.91482624,
+            "reserved_gb": 2.923429888,
+            "max_allocated_gb": 2.91482624,
+            "max_reserved_gb": 2.923429888
+          },
+          "after_wrap": {
+            "label": "after_wrap",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_optimizer": {
+            "label": "after_optimizer",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_batch": {
+            "label": "after_batch",
+            "allocated_gb": 0.659498496,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_jose_warmup": {
+            "label": "after_jose_warmup",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 11.647582208,
+            "max_allocated_gb": 9.883463168,
+            "max_reserved_gb": 11.647582208
+          }
+        },
+        "phases": {
+          "target_only": {
+            "label": "target_only",
+            "allocated_gb": 1.290741248,
+            "reserved_gb": 2.896166912,
+            "max_allocated_gb": 1.891354112,
+            "max_reserved_gb": 2.896166912,
+            "base_allocated_gb": 0.659498496,
+            "phase_peak_delta_gb": 1.2318556159999998,
+            "times_ms": [
+              876.118091866374
+            ],
+            "avg_time_ms": 876.118091866374
+          },
+          "target_plus_ci_forward": {
+            "label": "target_plus_ci_forward",
+            "allocated_gb": 1.836164608,
+            "reserved_gb": 4.75004928,
+            "max_allocated_gb": 3.896395264,
+            "max_reserved_gb": 4.75004928,
+            "base_allocated_gb": 1.290741248,
+            "phase_peak_delta_gb": 2.605654016,
+            "times_ms": [
+              203.45930382609367
+            ],
+            "avg_time_ms": 203.45930382609367
+          },
+          "single_decomposed_step": {
+            "label": "single_decomposed_step",
+            "allocated_gb": 1.393141248,
+            "reserved_gb": 5.8720256,
+            "max_allocated_gb": 5.55901184,
+            "max_reserved_gb": 5.8720256,
+            "base_allocated_gb": 1.836164608,
+            "phase_peak_delta_gb": 3.7228472320000003,
+            "times_ms": [
+              915.7783817499876
+            ],
+            "avg_time_ms": 915.7783817499876
+          },
+          "jose_like_step": {
+            "label": "jose_like_step",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 12.528386048,
+            "max_allocated_gb": 10.422554112,
+            "max_reserved_gb": 12.528386048,
+            "base_allocated_gb": 1.386808832,
+            "phase_peak_delta_gb": 9.03574528,
+            "times_ms": [
+              1112.6585975289345,
+              365.05796015262604
+            ],
+            "avg_time_ms": 738.8582788407803
+          }
+        }
+      },
+      {
+        "rank": 2,
+        "local_rank": 2,
+        "hostname": "h200-reserved-145-032",
+        "construction": {
+          "start": {
+            "label": "start",
+            "allocated_gb": 0.0,
+            "reserved_gb": 0.0,
+            "max_allocated_gb": 0.0,
+            "max_reserved_gb": 0.0
+          },
+          "after_target": {
+            "label": "after_target",
+            "allocated_gb": 0.274016256,
+            "reserved_gb": 0.281018368,
+            "max_allocated_gb": 0.274016256,
+            "max_reserved_gb": 0.281018368
+          },
+          "after_component_model": {
+            "label": "after_component_model",
+            "allocated_gb": 2.91482624,
+            "reserved_gb": 2.923429888,
+            "max_allocated_gb": 2.91482624,
+            "max_reserved_gb": 2.923429888
+          },
+          "after_wrap": {
+            "label": "after_wrap",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_optimizer": {
+            "label": "after_optimizer",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_batch": {
+            "label": "after_batch",
+            "allocated_gb": 0.659498496,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_jose_warmup": {
+            "label": "after_jose_warmup",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 11.647582208,
+            "max_allocated_gb": 9.883463168,
+            "max_reserved_gb": 11.647582208
+          }
+        },
+        "phases": {
+          "target_only": {
+            "label": "target_only",
+            "allocated_gb": 1.290741248,
+            "reserved_gb": 2.896166912,
+            "max_allocated_gb": 1.891354112,
+            "max_reserved_gb": 2.896166912,
+            "base_allocated_gb": 0.659498496,
+            "phase_peak_delta_gb": 1.2318556159999998,
+            "times_ms": [
+              876.1185109615326
+            ],
+            "avg_time_ms": 876.1185109615326
+          },
+          "target_plus_ci_forward": {
+            "label": "target_plus_ci_forward",
+            "allocated_gb": 1.836164608,
+            "reserved_gb": 4.75004928,
+            "max_allocated_gb": 3.896395264,
+            "max_reserved_gb": 4.75004928,
+            "base_allocated_gb": 1.290741248,
+            "phase_peak_delta_gb": 2.605654016,
+            "times_ms": [
+              203.4649159759283
+            ],
+            "avg_time_ms": 203.4649159759283
+          },
+          "single_decomposed_step": {
+            "label": "single_decomposed_step",
+            "allocated_gb": 1.393141248,
+            "reserved_gb": 5.8720256,
+            "max_allocated_gb": 5.55901184,
+            "max_reserved_gb": 5.8720256,
+            "base_allocated_gb": 1.836164608,
+            "phase_peak_delta_gb": 3.7228472320000003,
+            "times_ms": [
+              917.8838729858398
+            ],
+            "avg_time_ms": 917.8838729858398
+          },
+          "jose_like_step": {
+            "label": "jose_like_step",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 12.528386048,
+            "max_allocated_gb": 10.422554112,
+            "max_reserved_gb": 12.528386048,
+            "base_allocated_gb": 1.386808832,
+            "phase_peak_delta_gb": 9.03574528,
+            "times_ms": [
+              1112.7068791538477,
+              365.8680394291878
+            ],
+            "avg_time_ms": 739.2874592915177
+          }
+        }
+      },
+      {
+        "rank": 3,
+        "local_rank": 3,
+        "hostname": "h200-reserved-145-032",
+        "construction": {
+          "start": {
+            "label": "start",
+            "allocated_gb": 0.0,
+            "reserved_gb": 0.0,
+            "max_allocated_gb": 0.0,
+            "max_reserved_gb": 0.0
+          },
+          "after_target": {
+            "label": "after_target",
+            "allocated_gb": 0.274016256,
+            "reserved_gb": 0.281018368,
+            "max_allocated_gb": 0.274016256,
+            "max_reserved_gb": 0.281018368
+          },
+          "after_component_model": {
+            "label": "after_component_model",
+            "allocated_gb": 2.91482624,
+            "reserved_gb": 2.923429888,
+            "max_allocated_gb": 2.91482624,
+            "max_reserved_gb": 2.923429888
+          },
+          "after_wrap": {
+            "label": "after_wrap",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_optimizer": {
+            "label": "after_optimizer",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_batch": {
+            "label": "after_batch",
+            "allocated_gb": 0.659498496,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_jose_warmup": {
+            "label": "after_jose_warmup",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 11.647582208,
+            "max_allocated_gb": 9.883463168,
+            "max_reserved_gb": 11.647582208
+          }
+        },
+        "phases": {
+          "target_only": {
+            "label": "target_only",
+            "allocated_gb": 1.290741248,
+            "reserved_gb": 2.896166912,
+            "max_allocated_gb": 1.891354112,
+            "max_reserved_gb": 2.896166912,
+            "base_allocated_gb": 0.659498496,
+            "phase_peak_delta_gb": 1.2318556159999998,
+            "times_ms": [
+              876.0377522557974
+            ],
+            "avg_time_ms": 876.0377522557974
+          },
+          "target_plus_ci_forward": {
+            "label": "target_plus_ci_forward",
+            "allocated_gb": 1.836164608,
+            "reserved_gb": 4.75004928,
+            "max_allocated_gb": 3.896395264,
+            "max_reserved_gb": 4.75004928,
+            "base_allocated_gb": 1.290741248,
+            "phase_peak_delta_gb": 2.605654016,
+            "times_ms": [
+              203.47310043871403
+            ],
+            "avg_time_ms": 203.47310043871403
+          },
+          "single_decomposed_step": {
+            "label": "single_decomposed_step",
+            "allocated_gb": 1.393141248,
+            "reserved_gb": 5.8720256,
+            "max_allocated_gb": 5.55901184,
+            "max_reserved_gb": 5.8720256,
+            "base_allocated_gb": 1.836164608,
+            "phase_peak_delta_gb": 3.7228472320000003,
+            "times_ms": [
+              917.8981687873602
+            ],
+            "avg_time_ms": 917.8981687873602
+          },
+          "jose_like_step": {
+            "label": "jose_like_step",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 12.528386048,
+            "max_allocated_gb": 10.422554112,
+            "max_reserved_gb": 12.528386048,
+            "base_allocated_gb": 1.386808832,
+            "phase_peak_delta_gb": 9.03574528,
+            "times_ms": [
+              1112.7621624618769,
+              365.03549106419086
+            ],
+            "avg_time_ms": 738.8988267630339
+          }
+        }
+      },
+      {
+        "rank": 4,
+        "local_rank": 4,
+        "hostname": "h200-reserved-145-032",
+        "construction": {
+          "start": {
+            "label": "start",
+            "allocated_gb": 0.0,
+            "reserved_gb": 0.0,
+            "max_allocated_gb": 0.0,
+            "max_reserved_gb": 0.0
+          },
+          "after_target": {
+            "label": "after_target",
+            "allocated_gb": 0.274016256,
+            "reserved_gb": 0.281018368,
+            "max_allocated_gb": 0.274016256,
+            "max_reserved_gb": 0.281018368
+          },
+          "after_component_model": {
+            "label": "after_component_model",
+            "allocated_gb": 2.91482624,
+            "reserved_gb": 2.923429888,
+            "max_allocated_gb": 2.91482624,
+            "max_reserved_gb": 2.923429888
+          },
+          "after_wrap": {
+            "label": "after_wrap",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_optimizer": {
+            "label": "after_optimizer",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_batch": {
+            "label": "after_batch",
+            "allocated_gb": 0.659498496,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_jose_warmup": {
+            "label": "after_jose_warmup",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 11.647582208,
+            "max_allocated_gb": 9.883463168,
+            "max_reserved_gb": 11.647582208
+          }
+        },
+        "phases": {
+          "target_only": {
+            "label": "target_only",
+            "allocated_gb": 1.290741248,
+            "reserved_gb": 2.896166912,
+            "max_allocated_gb": 1.891354112,
+            "max_reserved_gb": 2.896166912,
+            "base_allocated_gb": 0.659498496,
+            "phase_peak_delta_gb": 1.2318556159999998,
+            "times_ms": [
+              876.1181682348251
+            ],
+            "avg_time_ms": 876.1181682348251
+          },
+          "target_plus_ci_forward": {
+            "label": "target_plus_ci_forward",
+            "allocated_gb": 1.836164608,
+            "reserved_gb": 4.75004928,
+            "max_allocated_gb": 3.896395264,
+            "max_reserved_gb": 4.75004928,
+            "base_allocated_gb": 1.290741248,
+            "phase_peak_delta_gb": 2.605654016,
+            "times_ms": [
+              203.46577279269695
+            ],
+            "avg_time_ms": 203.46577279269695
+          },
+          "single_decomposed_step": {
+            "label": "single_decomposed_step",
+            "allocated_gb": 1.393141248,
+            "reserved_gb": 5.8720256,
+            "max_allocated_gb": 5.55901184,
+            "max_reserved_gb": 5.8720256,
+            "base_allocated_gb": 1.836164608,
+            "phase_peak_delta_gb": 3.7228472320000003,
+            "times_ms": [
+              917.8993683308363
+            ],
+            "avg_time_ms": 917.8993683308363
+          },
+          "jose_like_step": {
+            "label": "jose_like_step",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 12.528386048,
+            "max_allocated_gb": 10.422554112,
+            "max_reserved_gb": 12.528386048,
+            "base_allocated_gb": 1.386808832,
+            "phase_peak_delta_gb": 9.03574528,
+            "times_ms": [
+              1112.7756964415312,
+              365.03632366657257
+            ],
+            "avg_time_ms": 738.9060100540519
+          }
+        }
+      },
+      {
+        "rank": 5,
+        "local_rank": 5,
+        "hostname": "h200-reserved-145-032",
+        "construction": {
+          "start": {
+            "label": "start",
+            "allocated_gb": 0.0,
+            "reserved_gb": 0.0,
+            "max_allocated_gb": 0.0,
+            "max_reserved_gb": 0.0
+          },
+          "after_target": {
+            "label": "after_target",
+            "allocated_gb": 0.274016256,
+            "reserved_gb": 0.281018368,
+            "max_allocated_gb": 0.274016256,
+            "max_reserved_gb": 0.281018368
+          },
+          "after_component_model": {
+            "label": "after_component_model",
+            "allocated_gb": 2.91482624,
+            "reserved_gb": 2.923429888,
+            "max_allocated_gb": 2.91482624,
+            "max_reserved_gb": 2.923429888
+          },
+          "after_wrap": {
+            "label": "after_wrap",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_optimizer": {
+            "label": "after_optimizer",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_batch": {
+            "label": "after_batch",
+            "allocated_gb": 0.659498496,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_jose_warmup": {
+            "label": "after_jose_warmup",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 11.647582208,
+            "max_allocated_gb": 9.883463168,
+            "max_reserved_gb": 11.647582208
+          }
+        },
+        "phases": {
+          "target_only": {
+            "label": "target_only",
+            "allocated_gb": 1.290741248,
+            "reserved_gb": 2.896166912,
+            "max_allocated_gb": 1.891354112,
+            "max_reserved_gb": 2.896166912,
+            "base_allocated_gb": 0.659498496,
+            "phase_peak_delta_gb": 1.2318556159999998,
+            "times_ms": [
+              876.1383108794689
+            ],
+            "avg_time_ms": 876.1383108794689
+          },
+          "target_plus_ci_forward": {
+            "label": "target_plus_ci_forward",
+            "allocated_gb": 1.836164608,
+            "reserved_gb": 4.75004928,
+            "max_allocated_gb": 3.896395264,
+            "max_reserved_gb": 4.75004928,
+            "base_allocated_gb": 1.290741248,
+            "phase_peak_delta_gb": 2.605654016,
+            "times_ms": [
+              203.47011275589466
+            ],
+            "avg_time_ms": 203.47011275589466
+          },
+          "single_decomposed_step": {
+            "label": "single_decomposed_step",
+            "allocated_gb": 1.393141248,
+            "reserved_gb": 5.8720256,
+            "max_allocated_gb": 5.55901184,
+            "max_reserved_gb": 5.8720256,
+            "base_allocated_gb": 1.836164608,
+            "phase_peak_delta_gb": 3.7228472320000003,
+            "times_ms": [
+              918.1685969233513
+            ],
+            "avg_time_ms": 918.1685969233513
+          },
+          "jose_like_step": {
+            "label": "jose_like_step",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 12.528386048,
+            "max_allocated_gb": 10.422554112,
+            "max_reserved_gb": 12.528386048,
+            "base_allocated_gb": 1.386808832,
+            "phase_peak_delta_gb": 9.03574528,
+            "times_ms": [
+              1112.7092577517033,
+              365.0454841554165
+            ],
+            "avg_time_ms": 738.8773709535599
+          }
+        }
+      },
+      {
+        "rank": 6,
+        "local_rank": 6,
+        "hostname": "h200-reserved-145-032",
+        "construction": {
+          "start": {
+            "label": "start",
+            "allocated_gb": 0.0,
+            "reserved_gb": 0.0,
+            "max_allocated_gb": 0.0,
+            "max_reserved_gb": 0.0
+          },
+          "after_target": {
+            "label": "after_target",
+            "allocated_gb": 0.274016256,
+            "reserved_gb": 0.281018368,
+            "max_allocated_gb": 0.274016256,
+            "max_reserved_gb": 0.281018368
+          },
+          "after_component_model": {
+            "label": "after_component_model",
+            "allocated_gb": 2.91482624,
+            "reserved_gb": 2.923429888,
+            "max_allocated_gb": 2.91482624,
+            "max_reserved_gb": 2.923429888
+          },
+          "after_wrap": {
+            "label": "after_wrap",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_optimizer": {
+            "label": "after_optimizer",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_batch": {
+            "label": "after_batch",
+            "allocated_gb": 0.659498496,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_jose_warmup": {
+            "label": "after_jose_warmup",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 11.647582208,
+            "max_allocated_gb": 9.883463168,
+            "max_reserved_gb": 11.647582208
+          }
+        },
+        "phases": {
+          "target_only": {
+            "label": "target_only",
+            "allocated_gb": 1.290741248,
+            "reserved_gb": 2.896166912,
+            "max_allocated_gb": 1.891354112,
+            "max_reserved_gb": 2.896166912,
+            "base_allocated_gb": 0.659498496,
+            "phase_peak_delta_gb": 1.2318556159999998,
+            "times_ms": [
+              876.1209864169359
+            ],
+            "avg_time_ms": 876.1209864169359
+          },
+          "target_plus_ci_forward": {
+            "label": "target_plus_ci_forward",
+            "allocated_gb": 1.836164608,
+            "reserved_gb": 4.75004928,
+            "max_allocated_gb": 3.896395264,
+            "max_reserved_gb": 4.75004928,
+            "base_allocated_gb": 1.290741248,
+            "phase_peak_delta_gb": 2.605654016,
+            "times_ms": [
+              203.46457324922085
+            ],
+            "avg_time_ms": 203.46457324922085
+          },
+          "single_decomposed_step": {
+            "label": "single_decomposed_step",
+            "allocated_gb": 1.393141248,
+            "reserved_gb": 5.8720256,
+            "max_allocated_gb": 5.55901184,
+            "max_reserved_gb": 5.8720256,
+            "base_allocated_gb": 1.836164608,
+            "phase_peak_delta_gb": 3.7228472320000003,
+            "times_ms": [
+              917.9005790501833
+            ],
+            "avg_time_ms": 917.9005790501833
+          },
+          "jose_like_step": {
+            "label": "jose_like_step",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 12.528386048,
+            "max_allocated_gb": 10.422554112,
+            "max_reserved_gb": 12.528386048,
+            "base_allocated_gb": 1.386808832,
+            "phase_peak_delta_gb": 9.03574528,
+            "times_ms": [
+              1112.7048041671515,
+              365.0418035686016
+            ],
+            "avg_time_ms": 738.8733038678765
+          }
+        }
+      },
+      {
+        "rank": 7,
+        "local_rank": 7,
+        "hostname": "h200-reserved-145-032",
+        "construction": {
+          "start": {
+            "label": "start",
+            "allocated_gb": 0.0,
+            "reserved_gb": 0.0,
+            "max_allocated_gb": 0.0,
+            "max_reserved_gb": 0.0
+          },
+          "after_target": {
+            "label": "after_target",
+            "allocated_gb": 0.274016256,
+            "reserved_gb": 0.281018368,
+            "max_allocated_gb": 0.274016256,
+            "max_reserved_gb": 0.281018368
+          },
+          "after_component_model": {
+            "label": "after_component_model",
+            "allocated_gb": 2.91482624,
+            "reserved_gb": 2.923429888,
+            "max_allocated_gb": 2.91482624,
+            "max_reserved_gb": 2.923429888
+          },
+          "after_wrap": {
+            "label": "after_wrap",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_optimizer": {
+            "label": "after_optimizer",
+            "allocated_gb": 0.659482112,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_batch": {
+            "label": "after_batch",
+            "allocated_gb": 0.659498496,
+            "reserved_gb": 3.105882112,
+            "max_allocated_gb": 3.069965312,
+            "max_reserved_gb": 3.105882112
+          },
+          "after_jose_warmup": {
+            "label": "after_jose_warmup",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 11.647582208,
+            "max_allocated_gb": 9.883463168,
+            "max_reserved_gb": 11.647582208
+          }
+        },
+        "phases": {
+          "target_only": {
+            "label": "target_only",
+            "allocated_gb": 1.290741248,
+            "reserved_gb": 2.896166912,
+            "max_allocated_gb": 1.891354112,
+            "max_reserved_gb": 2.896166912,
+            "base_allocated_gb": 0.659498496,
+            "phase_peak_delta_gb": 1.2318556159999998,
+            "times_ms": [
+              876.1214911937714
+            ],
+            "avg_time_ms": 876.1214911937714
+          },
+          "target_plus_ci_forward": {
+            "label": "target_plus_ci_forward",
+            "allocated_gb": 1.836164608,
+            "reserved_gb": 4.75004928,
+            "max_allocated_gb": 3.896395264,
+            "max_reserved_gb": 4.75004928,
+            "base_allocated_gb": 1.290741248,
+            "phase_peak_delta_gb": 2.605654016,
+            "times_ms": [
+              203.4621797502041
+            ],
+            "avg_time_ms": 203.4621797502041
+          },
+          "single_decomposed_step": {
+            "label": "single_decomposed_step",
+            "allocated_gb": 1.393141248,
+            "reserved_gb": 5.8720256,
+            "max_allocated_gb": 5.55901184,
+            "max_reserved_gb": 5.8720256,
+            "base_allocated_gb": 1.836164608,
+            "phase_peak_delta_gb": 3.7228472320000003,
+            "times_ms": [
+              917.9047234356403
+            ],
+            "avg_time_ms": 917.9047234356403
+          },
+          "jose_like_step": {
+            "label": "jose_like_step",
+            "allocated_gb": 1.386808832,
+            "reserved_gb": 12.528386048,
+            "max_allocated_gb": 10.422554112,
+            "max_reserved_gb": 12.528386048,
+            "base_allocated_gb": 1.386808832,
+            "phase_peak_delta_gb": 9.03574528,
+            "times_ms": [
+              1112.760055810213,
+              365.03743939101696
+            ],
+            "avg_time_ms": 738.898747600615
+          }
+        }
+      }
+    ]
+  }
+}
