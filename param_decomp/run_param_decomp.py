@@ -2,6 +2,7 @@
 
 import gc
 import os
+import time
 from collections import defaultdict
 from collections.abc import Iterator
 from pathlib import Path
@@ -177,6 +178,14 @@ def optimize(
         else:
             # For CPU, don't pass device_ids or output_device
             wrapped_model = torch.nn.parallel.DistributedDataParallel(model)
+        if config.ddp_comm_hook != "none":
+            from torch.distributed.algorithms.ddp_comm_hooks.default_hooks import (
+                bf16_compress_hook,
+                fp16_compress_hook,
+            )
+
+            hook = {"bf16": bf16_compress_hook, "fp16": fp16_compress_hook}[config.ddp_comm_hook]
+            wrapped_model.register_comm_hook(state=None, hook=hook)
         # Access the underlying module for component operations
         component_model = cast(ComponentModel, wrapped_model.module)
     else:
@@ -244,6 +253,14 @@ def optimize(
         )
         for ppgd_cfg in persistent_pgd_configs
     }
+
+    timing_warmup_steps = 20
+    timing_sum_s = 0.0
+    timing_n_steps = 0
+    timing_last_t: float | None = None
+    cuda_sync_for_timing = (
+        dist_state is not None and dist_state.backend == "nccl"
+    ) or device.startswith("cuda")
 
     for step in tqdm(range(config.steps + 1), ncols=0, disable=not is_main_process()):
         optimizer.zero_grad()
@@ -335,6 +352,13 @@ def optimize(
 
             batch_log_data["train/schedules/lr"] = step_lr
 
+            if timing_n_steps > 0:
+                avg_ms = 1000.0 * timing_sum_s / timing_n_steps
+                batch_log_data["train/ms_per_step"] = avg_ms
+                batch_log_data["train/steps_per_sec"] = 1000.0 / avg_ms
+            timing_sum_s = 0.0
+            timing_n_steps = 0
+
             if is_main_process():
                 assert out_dir is not None
                 tqdm.write(f"--- Step {step} ---")
@@ -420,6 +444,23 @@ def optimize(
             if config.grad_clip_norm_ci_fns is not None:
                 clip_grad_norm_(ci_fn_params, config.grad_clip_norm_ci_fns)
             optimizer.step()
+
+        if cuda_sync_for_timing:
+            torch.cuda.synchronize()
+        now = time.perf_counter()
+        eval_ran = step % config.eval_freq == 0
+        save_ran = (
+            config.save_freq is not None and step % config.save_freq == 0 and step > 0
+        ) or step == config.steps
+        if (
+            timing_last_t is not None
+            and step > timing_warmup_steps
+            and not eval_ran
+            and not save_ran
+        ):
+            timing_sum_s += now - timing_last_t
+            timing_n_steps += 1
+        timing_last_t = now
 
     if is_main_process():
         logger.info("Finished training loop.")
