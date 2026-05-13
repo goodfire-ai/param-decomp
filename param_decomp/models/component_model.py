@@ -27,7 +27,7 @@ from param_decomp.experiment_manifest import (
 )
 from param_decomp.experiments.driver import ExperimentDriver, load_driver
 from param_decomp.identity_insertion import insert_identity_operations_
-from param_decomp.interfaces import LoadableModule, resolve_config_path, resolve_run_files
+from param_decomp.interfaces import LoadableModule
 from param_decomp.models.batch_and_loss_fns import PDTarget, RunBatch
 from param_decomp.models.components import (
     Components,
@@ -48,6 +48,7 @@ from param_decomp.models.sigmoids import SIGMOID_TYPES, SigmoidType
 from param_decomp.param_decomp_types import LayerwiseCiFnType, ModelPath
 from param_decomp.utils.distributed_utils import DistributedState
 from param_decomp.utils.module_utils import ModulePathInfo, expand_module_patterns
+from param_decomp.utils.run_files import resolve_config_path, resolve_run_files
 
 
 def _validate_checkpoint_ci_config_compatibility(
