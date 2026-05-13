@@ -350,8 +350,7 @@ class LlamaSimple(LoadableModule):
         return logits, loss
 
     @classmethod
-    @override
-    def from_run_info(cls, run_info: PretrainRunInfo) -> "LlamaSimple":  # pyright: ignore[reportIncompatibleMethodOverride]
+    def from_run_info(cls, run_info: PretrainRunInfo) -> "LlamaSimple":
         """Create a LlamaSimple model from a PretrainRunInfo, loading weights from its checkpoint."""
         model = cls(LlamaSimpleConfig(**run_info.model_config_dict))
         state_dict = torch.load(run_info.checkpoint_path, map_location="cpu", weights_only=True)

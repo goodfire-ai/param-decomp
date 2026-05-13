@@ -120,8 +120,8 @@ def run_experiment(
         sweep_params=parse_sweep_params(sweep_params_json),
         manifest=manifest,
         artifacts=prepared.artifacts,
-        experiment_tag=prepared.tags[0] if prepared.tags else prepared.target.name,
-        wandb_tags=[*prepared.tags[1:], *extra_tags],
+        kind=driver.kind,
+        wandb_tags=extra_tags,
     )
 
 

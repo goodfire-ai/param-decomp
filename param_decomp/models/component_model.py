@@ -27,7 +27,7 @@ from param_decomp.experiment_manifest import (
 )
 from param_decomp.experiments.driver import ExperimentDriver, load_driver
 from param_decomp.identity_insertion import insert_identity_operations_
-from param_decomp.interfaces import LoadableModule, RunInfo
+from param_decomp.interfaces import LoadableModule
 from param_decomp.models.batch_and_loss_fns import PDTarget, RunBatch
 from param_decomp.models.components import (
     Components,
@@ -48,6 +48,7 @@ from param_decomp.models.sigmoids import SIGMOID_TYPES, SigmoidType
 from param_decomp.param_decomp_types import LayerwiseCiFnType, ModelPath
 from param_decomp.utils.distributed_utils import DistributedState
 from param_decomp.utils.module_utils import ModulePathInfo, expand_module_patterns
+from param_decomp.utils.run_files import resolve_config_path, resolve_run_files
 
 
 def _validate_checkpoint_ci_config_compatibility(
@@ -71,50 +72,31 @@ def _validate_checkpoint_ci_config_compatibility(
 
 
 @dataclass
-class PDRunInfo(RunInfo[ExperimentManifest]):
+class PDRunInfo:
     """Run info from training a ComponentModel (i.e. from a PD run)."""
 
-    config_class = ExperimentManifest
-    config_filename = EXPERIMENT_MANIFEST_FILENAME
-    checkpoint_prefix = "model"
+    checkpoint_path: Path
+    manifest: ExperimentManifest
 
     @classmethod
-    @override
-    def _resolve_from_run_dir(cls, run_dir: Path) -> dict[str, Path]:
-        file_paths = super()._resolve_from_run_dir(run_dir)
-        manifest = ExperimentManifest.from_file(run_dir / cls.config_filename)
-        file_paths.update({f: run_dir / f for f in manifest.artifact_filenames})
-        return file_paths
-
-    @classmethod
-    @override
-    def _download_from_wandb(cls, wandb_path: str) -> dict[str, Path]:
-        import wandb
-
-        from param_decomp.utils.wandb_utils import (
-            download_wandb_file,
-            fetch_latest_wandb_checkpoint,
-            fetch_wandb_run_dir,
+    def from_path(cls, path: ModelPath) -> "PDRunInfo":
+        files = resolve_run_files(
+            path,
+            config_filename=EXPERIMENT_MANIFEST_FILENAME,
+            checkpoint_prefix="model",
+            extras_from_config_path=lambda p: ExperimentManifest.from_file(p).artifact_filenames,
+        )
+        return cls(
+            checkpoint_path=files.checkpoint_path,
+            manifest=ExperimentManifest.from_file(files.config_path),
         )
 
-        api = wandb.Api()
-        run = api.run(wandb_path)
-        run_dir = fetch_wandb_run_dir(run.id)
-        config_path = download_wandb_file(run, run_dir, cls.config_filename)
-        manifest = ExperimentManifest.from_file(config_path)
-        checkpoint = fetch_latest_wandb_checkpoint(run, prefix=cls.checkpoint_prefix)
-        return {
-            "config": config_path,
-            "checkpoint": download_wandb_file(run, run_dir, checkpoint.name),
-            **{
-                filename: download_wandb_file(run, run_dir, filename)
-                for filename in manifest.artifact_filenames
-            },
-        }
-
-    @cached_property
-    def manifest(self) -> ExperimentManifest:
-        return self.config
+    @classmethod
+    def config_from_path(cls, path: ModelPath) -> ExperimentManifest:
+        """Load just the manifest, without resolving or downloading checkpoints."""
+        return ExperimentManifest.from_file(
+            resolve_config_path(path, config_filename=EXPERIMENT_MANIFEST_FILENAME)
+        )
 
     @cached_property
     def experiment_config(self) -> ExperimentConfig:
@@ -122,9 +104,9 @@ class PDRunInfo(RunInfo[ExperimentManifest]):
 
     @cached_property
     def driver(self) -> ExperimentDriver[Any] | None:
-        if self.config.driver is None:
+        if self.manifest.driver is None:
             return None
-        return load_driver(self.config.driver)
+        return load_driver(self.manifest.driver)
 
     @property
     def pd_config(self) -> PDConfig:
@@ -583,16 +565,13 @@ class ComponentModel(LoadableModule):
                 handle.remove()
 
     @classmethod
-    @override
-    def from_run_info(cls, run_info: RunInfo[Any]) -> "ComponentModel":
+    def from_run_info(cls, run_info: PDRunInfo) -> "ComponentModel":
         """Load a `ComponentModel` from saved run info via the experiment-config dispatcher.
 
         Convenience wrapper around `from_checkpoint` for callers that already have a
         `PDRunInfo`. New code should prefer `load_pd(path, target=...)` with an
         explicit `PDTarget`.
         """
-        assert isinstance(run_info, PDRunInfo), f"Expected PDRunInfo, got {type(run_info).__name__}"
-
         target = run_info.load_target()
         return cls.from_checkpoint(
             config=run_info.pd_config,

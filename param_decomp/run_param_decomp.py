@@ -439,10 +439,14 @@ def run_pd(
     sweep_params: dict[str, Any] | None = None,
     manifest: ExperimentManifest | None = None,
     artifacts: Sequence[RunArtifact] = (),
-    experiment_tag: str | None = None,
+    kind: str = "custom",
     wandb_tags: list[str] | None = None,
 ) -> Path | None:
     """Run a full PD decomposition: setup, optimize, cleanup.
+
+    `kind` is the run's label — used as the headline wandb tag and as the manifest's `kind`
+    field when no manifest is supplied. Driver-mediated callers pass `driver.kind`; notebook
+    callers can pass their own label or accept the "custom" default.
 
     All ranks call this function. Only the main process does wandb/logging setup.
     Returns the output directory on the main process and None on other ranks.
@@ -456,8 +460,7 @@ def run_pd(
         logger.info(f"Run ID: {run_id}")
         logger.info(f"Output directory: {out_dir}")
 
-        effective_tag = experiment_tag if experiment_tag is not None else target.name
-        tags = [effective_tag, *(wandb_tags or [])]
+        tags = [kind, *(wandb_tags or [])]
         slurm_array_job_id = os.getenv("SLURM_ARRAY_JOB_ID")
         if slurm_array_job_id is not None:
             tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
@@ -468,7 +471,7 @@ def run_pd(
         logger.info(config)
 
         if manifest is None:
-            manifest = ExperimentManifest.from_pd_config(config, kind=target.name)
+            manifest = ExperimentManifest.from_pd_config(config, kind=kind)
         save_pre_run_info(
             save_to_wandb=config.wandb_project is not None,
             out_dir=out_dir,

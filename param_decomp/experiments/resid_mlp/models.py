@@ -13,9 +13,10 @@ from torch import Tensor, nn
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import ScheduleConfig, migrate_to_lr_schedule_config
-from param_decomp.interfaces import LoadableModule, RunInfo
+from param_decomp.interfaces import LoadableModule
 from param_decomp.param_decomp_types import ModelPath
 from param_decomp.utils.module_utils import init_param_
+from param_decomp.utils.run_files import resolve_run_files
 
 
 class ResidMLPModelConfig(BaseConfig):
@@ -75,22 +76,34 @@ class ResidMLPTrainConfig(BaseConfig):
         return self
 
 
+RESID_MLP_TRAIN_CONFIG_FILENAME = "resid_mlp_train_config.yaml"
+RESID_MLP_CHECKPOINT_FILENAME = "resid_mlp.pth"
+RESID_MLP_LABEL_COEFFS_FILENAME = "label_coeffs.json"
+
+
 @dataclass
-class ResidMLPTargetRunInfo(RunInfo[ResidMLPTrainConfig]):
+class ResidMLPTargetRunInfo:
     """Run info from training a ResidualMLPModel."""
 
+    checkpoint_path: Path
+    config: ResidMLPTrainConfig
     label_coeffs: Float[Tensor, " n_features"]
 
-    config_class = ResidMLPTrainConfig
-    config_filename = "resid_mlp_train_config.yaml"
-    checkpoint_filename = "resid_mlp.pth"
-    extra_files = ["label_coeffs.json"]
-
     @classmethod
-    @override
-    def _process_extra_files(cls, file_paths: dict[str, Path], init_kwargs: dict[str, Any]) -> None:
-        with open(file_paths["label_coeffs.json"]) as f:
-            init_kwargs["label_coeffs"] = torch.tensor(json.load(f))
+    def from_path(cls, path: ModelPath) -> "ResidMLPTargetRunInfo":
+        files = resolve_run_files(
+            path,
+            config_filename=RESID_MLP_TRAIN_CONFIG_FILENAME,
+            checkpoint_filename=RESID_MLP_CHECKPOINT_FILENAME,
+            extras_from_config_path=lambda _: [RESID_MLP_LABEL_COEFFS_FILENAME],
+        )
+        with open(files.extras[RESID_MLP_LABEL_COEFFS_FILENAME]) as f:
+            label_coeffs = torch.tensor(json.load(f))
+        return cls(
+            checkpoint_path=files.checkpoint_path,
+            config=ResidMLPTrainConfig.from_file(files.config_path),
+            label_coeffs=label_coeffs,
+        )
 
 
 class MLP(nn.Module):
@@ -162,8 +175,7 @@ class ResidMLP(LoadableModule):
         return out
 
     @classmethod
-    @override
-    def from_run_info(cls, run_info: RunInfo[ResidMLPTrainConfig]) -> "ResidMLP":
+    def from_run_info(cls, run_info: ResidMLPTargetRunInfo) -> "ResidMLP":
         """Load a pretrained model from a run info object."""
         resid_mlp_model = cls(config=run_info.config.resid_mlp_model_config)
         resid_mlp_model.load_state_dict(
