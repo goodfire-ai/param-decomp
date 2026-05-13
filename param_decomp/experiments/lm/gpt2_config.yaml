@@ -27,6 +27,7 @@ pd:
   - classname: StochasticReconLayerwiseLoss
     coeff: 2.0
   batch_size: 2
+  eval_batch_size: 2
   steps: 50000
   lr_schedule:
     start_val: 3e-4

@@ -21,9 +21,9 @@ def adapter_from_config(method_config: DecompositionMethodHarvestConfig) -> Deco
 
     match method_config:
         case ParamDecompHarvestConfig():
-            from param_decomp.adapters.param_decomp import ParamDecompAdapter
+            from param_decomp.adapters.param_decomp import PDAdapter
 
-            return ParamDecompAdapter(method_config.wandb_path)
+            return PDAdapter(method_config.wandb_path)
         case TranscoderHarvestConfig():
             from param_decomp.adapters.transcoder import TranscoderAdapter
 

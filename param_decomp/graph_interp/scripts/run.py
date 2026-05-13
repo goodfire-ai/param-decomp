@@ -9,7 +9,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from param_decomp.adapters import adapter_from_id
-from param_decomp.adapters.param_decomp import ParamDecompAdapter
+from param_decomp.adapters.param_decomp import PDAdapter
 from param_decomp.dataset_attributions.repo import AttributionRepo
 from param_decomp.graph_interp.config import GraphInterpConfig
 from param_decomp.graph_interp.interpret import run_graph_interp
@@ -39,7 +39,7 @@ def main(
 
     logger.info("Loading adapter and model metadata...")
     adapter = adapter_from_id(decomposition_id)
-    assert isinstance(adapter, ParamDecompAdapter)
+    assert isinstance(adapter, PDAdapter)
     logger.info("Loading harvest data...")
     harvest = HarvestRepo(decomposition_id, subrun_id=harvest_subrun_id, readonly=True)
 

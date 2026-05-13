@@ -9,7 +9,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.configs import ScheduleConfig, migrate_to_lr_schedule_config
+from param_decomp.configs import ScheduleConfig
 from param_decomp.interfaces import LoadableModule
 from param_decomp.param_decomp_types import ModelPath
 from param_decomp.utils.run_files import resolve_run_files
@@ -36,12 +36,6 @@ class TMSTrainConfig(BaseConfig):
     fixed_identity_hidden_layers: bool = False
     fixed_random_hidden_layers: bool = False
     synced_inputs: list[list[int]] | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def handle_deprecated_config_keys(cls, config_dict: dict[str, Any]) -> dict[str, Any]:
-        migrate_to_lr_schedule_config(config_dict)
-        return config_dict
 
     @model_validator(mode="after")
     def validate_model(self) -> Self:

@@ -88,7 +88,3 @@ class PDAdapter(DecompositionAdapter):
             seq_len=exp.data.max_seq_len,
             decomposition_method="pd",
         )
-
-
-# Back-compat alias. Removed in step 9.
-ParamDecompAdapter = PDAdapter

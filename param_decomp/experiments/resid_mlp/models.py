@@ -2,7 +2,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Self, override
+from typing import Literal, Self, override
 
 import einops
 import torch
@@ -12,7 +12,7 @@ from pydantic import Field, PositiveFloat, PositiveInt, model_validator
 from torch import Tensor, nn
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.configs import ScheduleConfig, migrate_to_lr_schedule_config
+from param_decomp.configs import ScheduleConfig
 from param_decomp.interfaces import LoadableModule
 from param_decomp.param_decomp_types import ModelPath
 from param_decomp.utils.module_utils import init_param_
@@ -53,12 +53,6 @@ class ResidMLPTrainConfig(BaseConfig):
     fixed_random_embedding: bool = False
     fixed_identity_embedding: bool = False
     n_batches_final_losses: PositiveInt = 1
-
-    @model_validator(mode="before")
-    @classmethod
-    def handle_deprecated_config_keys(cls, config_dict: dict[str, Any]) -> dict[str, Any]:
-        migrate_to_lr_schedule_config(config_dict)
-        return config_dict
 
     @model_validator(mode="after")
     def validate_model(self) -> Self:

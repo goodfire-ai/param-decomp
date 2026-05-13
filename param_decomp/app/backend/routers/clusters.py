@@ -2,10 +2,9 @@
 
 import json
 from pathlib import Path
-from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import ValidationError, model_validator
+from pydantic import ValidationError
 
 from param_decomp.app.backend.state import StateManager
 from param_decomp.app.backend.utils import log_errors
@@ -33,13 +32,6 @@ class ClusterMappingFile(BaseConfig):
     pd_run: str
     iteration: int
     clusters: dict[str, int | None]
-
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_legacy_keys(cls, data: dict[str, Any]) -> dict[str, Any]:
-        if "spd_run" in data:
-            data["pd_run"] = data.pop("spd_run")
-        return data
 
 
 @router.post("/load")

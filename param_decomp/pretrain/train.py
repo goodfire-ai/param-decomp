@@ -23,7 +23,7 @@ import warnings
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
-from typing import Any, ClassVar, Literal, cast
+from typing import Any, Literal, cast
 
 import fire
 import numpy as np
@@ -41,7 +41,6 @@ from pydantic import (
     NonNegativeInt,
     PositiveFloat,
     PositiveInt,
-    model_validator,
 )
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -190,19 +189,6 @@ class Config(BaseConfig):
     from_pretrained: str | Path | None = Field(
         None, description="Path to a wandb string or a local path to a checkpoint to finetune from"
     )
-
-    DEPRECATED_CONFIG_KEYS: ClassVar[list[str]] = ["flash_attention"]
-
-    @model_validator(mode="before")
-    @classmethod
-    def handle_deprecated_config_keys(cls, config_dict: dict[str, Any]) -> dict[str, Any]:
-        for key in list(config_dict.keys()):
-            if key in cls.DEPRECATED_CONFIG_KEYS:
-                log0(
-                    f"{key} is deprecated in the top-level config (use model config instead). Removing."
-                )
-                del config_dict[key]
-        return config_dict
 
 
 def main(config_path_or_obj: Path | str | Config | None = None) -> None:
