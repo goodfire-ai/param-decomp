@@ -1,6 +1,6 @@
 import tempfile
 from pathlib import Path
-from typing import Any, override
+from typing import override
 
 import pytest
 import torch
@@ -17,7 +17,7 @@ from param_decomp.configs import (
     ScheduleConfig,
 )
 from param_decomp.identity_insertion import insert_identity_operations_
-from param_decomp.interfaces import LoadableModule, RunInfo
+from param_decomp.interfaces import LoadableModule
 from param_decomp.models.batch_and_loss_fns import run_batch_passthrough
 from param_decomp.models.component_model import (
     ComponentModel,
@@ -65,13 +65,6 @@ class SimpleTestModel(LoadableModule):
         x = self.linear2(self.linear1(x))
         x = self.conv1d2(self.conv1d1(x))
         return x
-
-    @classmethod
-    @override
-    def from_run_info(cls, run_info: RunInfo[Any]) -> "SimpleTestModel":
-        model = cls()
-        model.load_state_dict(torch.load(run_info.checkpoint_path))
-        return model
 
     @classmethod
     @override

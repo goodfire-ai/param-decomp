@@ -96,10 +96,7 @@ def _extract_hf_tokenizer_path(config_dict: dict[str, Any]) -> str | None:
 
 @dataclass
 class PretrainRunInfo:
-    """Run info from training a model with param_decomp.pretrain.
-
-    TODO: Perhaps inherit from RunInfo instead
-    """
+    """Run info from training a model with param_decomp.pretrain."""
 
     checkpoint_path: Path
     config_dict: dict[str, Any]

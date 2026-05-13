@@ -236,8 +236,7 @@ class GPT2Simple(LoadableModule):
         return out_logits, loss
 
     @classmethod
-    @override
-    def from_run_info(cls, run_info: PretrainRunInfo) -> "GPT2Simple":  # pyright: ignore[reportIncompatibleMethodOverride]
+    def from_run_info(cls, run_info: PretrainRunInfo) -> "GPT2Simple":
         """Create a GPT-2 model from a PretrainRunInfo, loading weights from its checkpoint."""
         model = cls(GPT2SimpleConfig(**run_info.model_config_dict))
         state_dict = torch.load(run_info.checkpoint_path, map_location="cpu", weights_only=True)

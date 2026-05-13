@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal, Self, override
 
 import torch
@@ -9,7 +10,7 @@ from torch.nn import functional as F
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import ScheduleConfig, migrate_to_lr_schedule_config
-from param_decomp.interfaces import LoadableModule, RunInfo
+from param_decomp.interfaces import LoadableModule, resolve_run_files
 from param_decomp.param_decomp_types import ModelPath
 
 
@@ -54,13 +55,28 @@ class TMSTrainConfig(BaseConfig):
         return self
 
 
+TMS_TRAIN_CONFIG_FILENAME = "tms_train_config.yaml"
+TMS_CHECKPOINT_FILENAME = "tms.pth"
+
+
 @dataclass
-class TMSTargetRunInfo(RunInfo[TMSTrainConfig]):
+class TMSTargetRunInfo:
     """Run info from training a TMSModel."""
 
-    config_class = TMSTrainConfig
-    config_filename = "tms_train_config.yaml"
-    checkpoint_filename = "tms.pth"
+    checkpoint_path: Path
+    config: TMSTrainConfig
+
+    @classmethod
+    def from_path(cls, path: ModelPath) -> "TMSTargetRunInfo":
+        files = resolve_run_files(
+            path,
+            config_filename=TMS_TRAIN_CONFIG_FILENAME,
+            checkpoint_filename=TMS_CHECKPOINT_FILENAME,
+        )
+        return cls(
+            checkpoint_path=files.checkpoint_path,
+            config=TMSTrainConfig.from_file(files.config_path),
+        )
 
 
 class TMSModel(LoadableModule):
@@ -107,8 +123,7 @@ class TMSModel(LoadableModule):
         return out
 
     @classmethod
-    @override
-    def from_run_info(cls, run_info: RunInfo[TMSTrainConfig]) -> "TMSModel":
+    def from_run_info(cls, run_info: TMSTargetRunInfo) -> "TMSModel":
         """Load a pretrained model from a run info object."""
         tms_model = cls(config=run_info.config.tms_model_config)
         tms_model.load_state_dict(
