@@ -1,0 +1,112 @@
+# Deep linear: L identity D x D layers followed by softmax(beta * x).
+# A faithful decomposition should learn one component per input dimension per layer.
+
+# --- WandB ---
+wandb_project: param-decomp
+wandb_run_name: null
+wandb_run_name_prefix: ""
+
+# --- General ---
+seed: 0
+n_mask_samples: 1
+# ci_config:
+#   mode: global
+#   fn_type: global_shared_transformer
+#   simple_transformer_ci_cfg:
+#     d_model: 1024
+#     n_blocks: 1
+#     mlp_hidden_dim: [1024]
+#     attn_config:
+#       n_heads: 4
+#       max_len: 1
+#       rope_base: 10000.0
+ci_config:
+  mode: layerwise
+  fn_type: mlp
+  hidden_dims: [200]
+sigmoid_type: "leaky_hard"
+module_info:
+  - module_pattern: "layers.*"
+    C: 100
+use_delta_component: true
+
+# --- Loss config ---
+loss_metric_configs:
+  - classname: "FaithfulnessLoss"
+    coeff: 1
+  - classname: "ImportanceMinimalityLoss"
+    coeff: 2e-5
+    pnorm: 2.0
+    beta: 0.5
+  - classname: "StochasticReconLayerwiseLoss"
+    coeff: 1.0
+  # - classname: "PGDReconLayerwiseLoss"
+  #   coeff: 1.0
+  #   init: random
+  #   step_size: 0.5
+  #   n_steps: 1
+  #   mask_scope: shared_across_batch
+
+  # - classname: "PersistentPGDReconLoss"
+  #   coeff: 1.0
+  #   optimizer:
+  #     type: adam
+  #     beta1: 0.5
+  #     beta2: 0.99
+  #     eps: 1.0e-08
+  #     lr_schedule:
+  #       start_val: 0.01
+  #       warmup_pct: 0.0
+  #       final_val_frac: 1.0
+  #       fn_type: constant
+  #   scope:
+  #     type: per_batch_per_position
+  #   use_sigmoid_parameterization: false
+  #   n_warmup_steps: 2
+
+# --- Training ---
+batch_size: 1024
+eval_batch_size: 1024
+steps: 30_000
+lr_schedule:
+  start_val: 1e-3
+  fn_type: cosine
+  final_val_frac: 0.1
+  warmup_pct: 0.0
+
+# --- Faithfulness Warmup ---
+faithfulness_warmup_steps: 200
+faithfulness_warmup_lr: 0.01
+faithfulness_warmup_weight_decay: 0.1
+
+# --- Logging & Saving ---
+train_log_freq: 100
+eval_freq: 1000
+n_eval_steps: 20
+slow_eval_freq: 5_000
+slow_eval_on_first_step: true
+save_freq: null
+ci_alive_threshold: 0.1
+eval_metric_configs:
+  - classname: "CIMeanPerComponent"
+  - classname: "CIHiddenActsReconLoss"
+  - classname: "StochasticHiddenActsReconLoss"
+  - init: random
+    step_size: 0.1
+    n_steps: 20
+    mask_scope: shared_across_batch
+    classname: "PGDReconLoss"
+  - classname: "OneHotCIPlots"
+    input_magnitude: 0.5
+
+# --- Pretrained model info ---
+pretrained_model_class: "param_decomp.experiments.deep_linear.models.DeepLinearModel"
+pretrained_model_path: null
+
+# --- Task Specific ---
+task_config:
+  task_name: deep_linear
+  D: 50
+  L: 30
+  k: 5
+  beta: 10.0

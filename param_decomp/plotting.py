@@ -1,9 +1,11 @@
 import fnmatch
 import io
 from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import torch
+import torch.utils.hooks
 from jaxtyping import Float
 from matplotlib import pyplot as plt
 from PIL import Image
@@ -206,7 +208,32 @@ def get_single_feature_causal_importances(
         # NOTE: For now, we only use the first pos dim
         batch = batch.unsqueeze(1)
 
-    pre_weight_acts = model(batch, cache_type="input").cache
+    # Capture pre-weight activations by hooking the target submodules directly. We bypass
+    # `model._run_batch` (e.g. `run_batch_first_element`, which would index the first dim of
+    # our eye tensor) and call `target_model` with the raw tensor instead.
+    pre_weight_acts: dict[str, Tensor] = {}
+
+    def _make_hook(name: str) -> Callable[[torch.nn.Module, tuple[Tensor, ...], dict[str, Any], Any], None]:
+        def _hook(
+            _module: torch.nn.Module,
+            args: tuple[Tensor, ...],
+            _kwargs: dict[str, Any],
+            _output: Any,
+        ) -> None:
+            assert len(args) == 1, "Expected single positional input"
+            pre_weight_acts[name] = args[0]
+
+        return _hook
+
+    handles: list[torch.utils.hooks.RemovableHandle] = []
+    for name in model.target_module_paths:
+        submod = model.target_model.get_submodule(name)
+        handles.append(submod.register_forward_hook(_make_hook(name), with_kwargs=True))
+    try:
+        model.target_model(batch)
+    finally:
+        for h in handles:
+            h.remove()
 
     return model.calc_causal_importances(
         pre_weight_acts=pre_weight_acts,
