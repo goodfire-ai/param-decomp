@@ -72,7 +72,7 @@ lr_schedule:
   final_val_frac: 0.1
   fn_type: cosine
 steps: 400000
-batch_size: 64
+batch_size: 128
 grad_clip_norm_components: 0.01
 grad_clip_norm_ci_fns: null
 faithfulness_warmup_steps: 400
@@ -80,7 +80,7 @@ faithfulness_warmup_lr: 0.001
 faithfulness_warmup_weight_decay: 0.0
 train_log_freq: 200
 eval_freq: 1000
-eval_batch_size: 128
+eval_batch_size: 256
 slow_eval_freq: 10000
 n_eval_steps: 1
 slow_eval_on_first_step: true

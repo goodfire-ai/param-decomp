@@ -99,6 +99,18 @@ EXPERIMENT_REGISTRY: dict[str, ExperimentConfig] = {
         config_path=Path("param_decomp/experiments/lm/pile_llama_simple_mlp-12L.yaml"),
         expected_runtime=2880,
     ),
+    "bench_pile_llama_4L_ddp_comm": ExperimentConfig(
+        task_name="lm",
+        decomp_script=Path("param_decomp/experiments/lm/lm_decomposition.py"),
+        config_path=Path("param_decomp/experiments/lm/bench_pile_llama_4L_ddp_comm.yaml"),
+        expected_runtime=15,
+    ),
+    "bench_pile_llama_4L_ddp_comm_bf16": ExperimentConfig(
+        task_name="lm",
+        decomp_script=Path("param_decomp/experiments/lm/lm_decomposition.py"),
+        config_path=Path("param_decomp/experiments/lm/bench_pile_llama_4L_ddp_comm_bf16.yaml"),
+        expected_runtime=15,
+    ),
 }
 
 
