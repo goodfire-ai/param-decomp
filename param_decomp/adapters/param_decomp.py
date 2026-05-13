@@ -28,6 +28,14 @@ class PDAdapter(DecompositionAdapter):
         return self.pd_run_info.experiment_config
 
     @cached_property
+    def lm_experiment_config(self) -> LMExperimentConfig:
+        exp = self.experiment_config
+        assert isinstance(exp, LMExperimentConfig), (
+            f"This method requires an LM run, got {type(exp).__name__}"
+        )
+        return exp
+
+    @cached_property
     def component_model(self) -> ComponentModel:
         target = self.pd_run_info.load_target()
         return load_pd(self._wandb_path, target=target)
@@ -63,19 +71,12 @@ class PDAdapter(DecompositionAdapter):
     @property
     @override
     def tokenizer_name(self) -> str:
-        exp = self.experiment_config
-        assert isinstance(exp, LMExperimentConfig), (
-            f"No tokenizer for kind={self.pd_run_info.manifest.kind!r}"
-        )
-        return exp.data.tokenizer_name
+        return self.lm_experiment_config.data.tokenizer_name
 
     @property
     @override
     def model_metadata(self) -> ModelMetadata:
-        exp = self.experiment_config
-        assert isinstance(exp, LMExperimentConfig), (
-            f"`model_metadata` is not implemented for kind={self.pd_run_info.manifest.kind!r}"
-        )
+        exp = self.lm_experiment_config
         return ModelMetadata(
             n_blocks=self._topology.n_blocks,
             model_class=exp.target.model_class,
