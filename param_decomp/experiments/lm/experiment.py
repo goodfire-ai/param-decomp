@@ -102,7 +102,6 @@ def load_lm_target(target_cfg: LMTargetConfig) -> PDTarget:
         model=target_model,
         run_batch=make_run_batch(target_cfg.output_extract),
         reconstruction_loss=recon_loss_kl,
-        name="lm",
     )
 
 
@@ -138,7 +137,6 @@ class Driver(ExperimentDriver[LMExperimentConfig]):
             target=target,
             train_loader=train_loader,
             eval_loader=eval_loader,
-            tags=(self.kind,),
         )
 
     @override

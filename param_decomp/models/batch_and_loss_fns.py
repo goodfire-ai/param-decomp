@@ -71,7 +71,6 @@ class PDTarget:
     run_batch: RunBatch
     reconstruction_loss: ReconstructionLoss
     tied_weights: list[tuple[str, str]] | None = None
-    name: str = "custom"
     to_device: ToDevice = move_batch_to_device
 
 

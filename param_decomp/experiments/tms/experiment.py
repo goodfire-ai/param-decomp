@@ -77,7 +77,6 @@ def load_tms_target(target_cfg: TMSTargetConfig) -> tuple[PDTarget, TMSTargetRun
         run_batch=run_batch_first_element,
         reconstruction_loss=recon_loss_mse,
         tied_weights=_tied_weight_edges(target_model),
-        name="tms",
     )
     return target, run_info
 
@@ -162,7 +161,6 @@ class Driver(ExperimentDriver[TMSExperimentConfig]):
             train_loader=train_loader,
             eval_loader=eval_loader,
             artifacts=artifacts,
-            tags=(self.kind,),
         )
 
     @override
@@ -186,7 +184,6 @@ class Driver(ExperimentDriver[TMSExperimentConfig]):
             run_batch=run_batch_first_element,
             reconstruction_loss=recon_loss_mse,
             tied_weights=_tied_weight_edges(target_model),
-            name=self.kind,
         )
 
     @override

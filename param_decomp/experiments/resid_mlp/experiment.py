@@ -74,7 +74,6 @@ def load_resid_mlp_target(
         model=target_model,
         run_batch=run_batch_first_element,
         reconstruction_loss=recon_loss_mse,
-        name="resid_mlp",
     )
     return target, run_info
 
@@ -166,7 +165,6 @@ class Driver(ExperimentDriver[ResidMLPExperimentConfig]):
             train_loader=train_loader,
             eval_loader=eval_loader,
             artifacts=artifacts,
-            tags=(self.kind,),
         )
 
     @override
@@ -186,7 +184,6 @@ class Driver(ExperimentDriver[ResidMLPExperimentConfig]):
             model=target_model,
             run_batch=run_batch_first_element,
             reconstruction_loss=recon_loss_mse,
-            name=self.kind,
         )
 
     @override

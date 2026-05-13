@@ -77,7 +77,6 @@ class PreparedExperiment:
     train_loader: DataLoader[Any]
     eval_loader: DataLoader[Any]
     artifacts: Sequence[RunArtifact] = ()
-    tags: Sequence[str] = ()
 
 
 class ExperimentDriver[ConfigT: ExperimentConfig](Protocol):
@@ -116,7 +115,7 @@ class ExperimentDriver[ConfigT: ExperimentConfig](Protocol):
 
 
 def load_driver(driver_path: str) -> ExperimentDriver[Any]:
-    """Load a driver object or no-arg driver class from `module:attr`."""
+    """Load a driver object or no-arg driver class from a `module:attr` import path."""
     module_path, sep, attr = driver_path.partition(":")
     if sep == "":
         raise ValueError(f"Driver path must be of the form 'module:attr', got {driver_path!r}")
