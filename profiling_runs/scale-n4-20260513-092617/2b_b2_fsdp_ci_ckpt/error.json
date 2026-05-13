@@ -1,0 +1,29 @@
+{
+  "args": {
+    "strategy": "fsdp",
+    "target_scale": "2b",
+    "batch": 2,
+    "seq": 512,
+    "out_dir": "/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/scale-n4-20260513-092617/2b_b2_fsdp_ci_ckpt",
+    "ci_d_model": 2048,
+    "ci_blocks": 8,
+    "ci_mlp": 8192,
+    "ci_heads": 16,
+    "ci_checkpointing": true,
+    "target_checkpointing": true,
+    "autocast_bf16": false,
+    "delta_masks": true,
+    "include_faithfulness": false,
+    "decomposed_forwards": 2,
+    "warmup_steps": 1,
+    "measure_steps": 2,
+    "lr": 1e-05,
+    "record_snapshot": false,
+    "snapshot_max_entries": 200000,
+    "profile_label": "2b_b2_fsdp_ci_ckpt"
+  },
+  "rank": 0,
+  "error_type": "CheckpointError",
+  "error": "torch.utils.checkpoint: A different number of tensors was saved during the original forward and recomputation.\nNumber of tensors saved during forward: 79\nNumber of tensors saved during recomputation: 31.\n\nTip: To see a more detailed error message, either pass `debug=True` to\n`torch.utils.checkpoint.checkpoint(...)` or wrap the code block\nwith `with torch.utils.checkpoint.set_checkpoint_debug_enabled(True):` to\nenable checkpoint\u2011debug mode globally.\n",
+  "traceback": "Traceback (most recent call last):\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/scripts/fsdp_memory_profile.py\", line 559, in main\n    phases[\"single_decomposed_step\"] = measure_phase(\n                                       ~~~~~~~~~~~~~^\n        \"single_decomposed_step\",\n        ^^^^^^^^^^^^^^^^^^^^^^^^^\n    ...<11 lines>...\n        device,\n        ^^^^^^^\n    )\n    ^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/scripts/fsdp_memory_profile.py\", line 411, in measure_phase\n    fn()\n    ~~^^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/scripts/fsdp_memory_profile.py\", line 561, in <lambda>\n    lambda: single_decomposed_step(\n            ~~~~~~~~~~~~~~~~~~~~~~^\n        wrapped,\n        ^^^^^^^^\n    ...<6 lines>...\n        autocast_enabled,\n        ^^^^^^^^^^^^^^^^^\n    ),\n    ^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/scripts/fsdp_memory_profile.py\", line 346, in single_decomposed_step\n    loss.backward()\n    ~~~~~~~~~~~~~^^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/.venv/lib/python3.13/site-packages/torch/_tensor.py\", line 647, in backward\n    torch.autograd.backward(\n    ~~~~~~~~~~~~~~~~~~~~~~~^\n        self, gradient, retain_graph, create_graph, inputs=inputs\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/.venv/lib/python3.13/site-packages/torch/autograd/__init__.py\", line 354, in backward\n    _engine_run_backward(\n    ~~~~~~~~~~~~~~~~~~~~^\n        tensors,\n        ^^^^^^^^\n    ...<5 lines>...\n        accumulate_grad=True,\n        ^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/.venv/lib/python3.13/site-packages/torch/autograd/graph.py\", line 829, in _engine_run_backward\n    return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass\n           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n        t_outputs, *args, **kwargs\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^\n    )  # Calls into the C++ engine to run the backward pass\n    ^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/.venv/lib/python3.13/site-packages/torch/utils/checkpoint.py\", line 1150, in unpack_hook\n    frame.check_recomputed_tensors_match(gid)\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/.venv/lib/python3.13/site-packages/torch/utils/checkpoint.py\", line 864, in check_recomputed_tensors_match\n    raise CheckpointError(\n    ...<5 lines>...\n    )\ntorch.utils.checkpoint.CheckpointError: torch.utils.checkpoint: A different number of tensors was saved during the original forward and recomputation.\nNumber of tensors saved during forward: 79\nNumber of tensors saved during recomputation: 31.\n\nTip: To see a more detailed error message, either pass `debug=True` to\n`torch.utils.checkpoint.checkpoint(...)` or wrap the code block\nwith `with torch.utils.checkpoint.set_checkpoint_debug_enabled(True):` to\nenable checkpoint\u2011debug mode globally.\n\n"
+}
