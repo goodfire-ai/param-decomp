@@ -203,8 +203,18 @@ def optimize(
 
     assert len(component_params) > 0, "No parameters found in components to optimize"
 
-    optimized_params = component_params + ci_fn_params
-    optimizer = optim.AdamW(optimized_params, lr=config.lr_schedule.start_val, weight_decay=0)
+    ci_lr_schedule = config.ci_config.lr_schedule or config.lr_schedule
+    optimizer = optim.AdamW(
+        [
+            {
+                "name": "components",
+                "params": component_params,
+                "lr": config.lr_schedule.start_val,
+            },
+            {"name": "ci_fn", "params": ci_fn_params, "lr": ci_lr_schedule.start_val},
+        ],
+        weight_decay=0,
+    )
 
     if config.faithfulness_warmup_steps > 0:
         run_faithfulness_warmup(component_model, component_params, config)
@@ -248,11 +258,16 @@ def optimize(
     for step in tqdm(range(config.steps + 1), ncols=0, disable=not is_main_process()):
         optimizer.zero_grad()
 
-        step_lr = get_scheduled_value(
-            step=step, total_steps=config.steps, config=config.lr_schedule
-        )
+        step_lrs = {
+            "components": get_scheduled_value(
+                step=step, total_steps=config.steps, config=config.lr_schedule
+            ),
+            "ci_fn": get_scheduled_value(
+                step=step, total_steps=config.steps, config=ci_lr_schedule
+            ),
+        }
         for group in optimizer.param_groups:
-            group["lr"] = step_lr
+            group["lr"] = step_lrs[group["name"]]
 
         frac = step / config.steps
         active_ppgd_configs = [c for c in persistent_pgd_configs if frac >= c.start_frac]
@@ -333,12 +348,16 @@ def optimize(
                 batch_log_data, {f"train/grad_norms/{k}": v for k, v in grad_norms.items()}
             )
 
-            batch_log_data["train/schedules/lr"] = step_lr
+            batch_log_data["train/schedules/lr"] = step_lrs["components"]
+            batch_log_data["train/schedules/lr_ci_fn"] = step_lrs["ci_fn"]
 
             if is_main_process():
                 assert out_dir is not None
                 tqdm.write(f"--- Step {step} ---")
-                tqdm.write(f"LR: {step_lr:.6f}")
+                tqdm.write(
+                    f"LR (components): {step_lrs['components']:.6f}, "
+                    f"LR (ci_fn): {step_lrs['ci_fn']:.6f}"
+                )
                 for name, value in batch_log_data.items():
                     tqdm.write(f"{name}: {value:.15f}")
                 local_log(batch_log_data, step, out_dir)
