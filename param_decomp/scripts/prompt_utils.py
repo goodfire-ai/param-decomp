@@ -31,7 +31,7 @@ def sample_prompts_from_dataset(run_info: PDRunInfo, n_samples: int) -> list[str
         data,
         split=data.eval_split,
         batch_size=1,
-        seed=0,
+        seed=run_info.pd_config.seed + 1,
     )
 
     token_column = data.column_name if data.is_tokenized else "input_ids"

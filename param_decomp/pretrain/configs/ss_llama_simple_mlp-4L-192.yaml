@@ -34,4 +34,3 @@ data:
   train_split: train
   eval_split: test
   column_name: story
-  dataset_shuffle_seed: 0

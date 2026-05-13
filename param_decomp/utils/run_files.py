@@ -81,6 +81,7 @@ def resolve_run_files(
     return _download_run_files_from_wandb(
         wandb_path,
         config_filename=config_filename,
+        checkpoint_filename=checkpoint_filename,
         checkpoint_prefix=checkpoint_prefix,
         extras_from_config_path=extras_from_config_path,
     )
@@ -133,6 +134,7 @@ def _download_run_files_from_wandb(
     wandb_path: str,
     *,
     config_filename: str,
+    checkpoint_filename: str | None,
     checkpoint_prefix: str | None,
     extras_from_config_path: Callable[[Path], list[str]],
 ) -> RunFiles:
@@ -141,8 +143,11 @@ def _download_run_files_from_wandb(
     run_dir = fetch_wandb_run_dir(run.id)
 
     config_path = download_wandb_file(run, run_dir, config_filename)
-    checkpoint = fetch_latest_wandb_checkpoint(run, prefix=checkpoint_prefix)
-    checkpoint_path = download_wandb_file(run, run_dir, checkpoint.name)
+    if checkpoint_filename is not None:
+        checkpoint_path = download_wandb_file(run, run_dir, checkpoint_filename)
+    else:
+        checkpoint = fetch_latest_wandb_checkpoint(run, prefix=checkpoint_prefix)
+        checkpoint_path = download_wandb_file(run, run_dir, checkpoint.name)
     extras = {
         name: download_wandb_file(run, run_dir, name)
         for name in extras_from_config_path(config_path)

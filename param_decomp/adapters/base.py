@@ -46,7 +46,13 @@ def pretrain_dataloader(run_info: PretrainRunInfo, batch_size: int) -> DataLoade
     """
     from param_decomp.experiments.lm.data import LMDataConfig, create_lm_data_loader
 
-    data_cfg = LMDataConfig.model_validate({**run_info.config_dict["data"], "streaming": True})
+    data_cfg = LMDataConfig.model_validate(
+        {
+            **run_info.config_dict["data"],
+            "streaming": True,
+            "max_seq_len": run_info.model_config_dict["block_size"],
+        }
+    )
 
     def collate_input_ids(batch: list[dict[str, Tensor]]) -> Tensor:
         return torch.stack([item["input_ids"] for item in batch])
@@ -55,7 +61,7 @@ def pretrain_dataloader(run_info: PretrainRunInfo, batch_size: int) -> DataLoade
         data_cfg,
         split=data_cfg.train_split,
         batch_size=batch_size,
-        seed=data_cfg.dataset_shuffle_seed,
+        seed=run_info.seed,
         collate_fn=collate_input_ids,
     )
     return loader

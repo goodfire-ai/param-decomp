@@ -95,7 +95,6 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         is_tokenized=False,
         streaming=False,
         column_name="story",
-        dataset_shuffle_seed=config.seed,
     )
 
     def collate_input_ids(batch: list[dict[str, Tensor]]) -> Tensor:
@@ -105,14 +104,14 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         data_config,
         split=data_config.train_split,
         batch_size=config.batch_size,
-        seed=data_config.dataset_shuffle_seed,
+        seed=config.seed,
         collate_fn=collate_input_ids,
     )
     eval_loader, _ = create_lm_data_loader(
         data_config,
         split=data_config.eval_split,
         batch_size=config.batch_size,
-        seed=data_config.dataset_shuffle_seed + 1,
+        seed=config.seed + 1,
         collate_fn=collate_input_ids,
     )
 

@@ -91,6 +91,7 @@ def harvest_attributions(
         train_batch_size=config.batch_size,
         eval_batch_size=config.batch_size,
         dist_state=None,
+        seed=pd_config.seed,
     )
 
     # Get gradient connectivity

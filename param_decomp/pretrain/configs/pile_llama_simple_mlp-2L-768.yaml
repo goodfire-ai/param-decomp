@@ -40,4 +40,3 @@ data:
   train_split: train
   eval_split: val
   column_name: input_ids
-  dataset_shuffle_seed: 0

@@ -147,6 +147,7 @@ class Config(BaseConfig):
     wandb_project: str | None = Field(
         None, description="WandB project name. If None, will not use WandB."
     )
+    seed: int = Field(45, description="Random seed for model initialization and data loading")
     data: LMDataConfig = Field(..., description="Dataset config (train + eval splits)")
     output_dir: Path = Field(
         PARAM_DECOMP_OUT_DIR / "target_models",
@@ -254,9 +255,9 @@ def main(config_path_or_obj: Path | str | Config | None = None) -> None:
     )
 
     # rng / reproducibility
-    torch.manual_seed(45)
+    torch.manual_seed(config.seed)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed(45)
+        torch.cuda.manual_seed(config.seed)
 
     # TF32
     if config.tensorcores:
@@ -288,12 +289,11 @@ def main(config_path_or_obj: Path | str | Config | None = None) -> None:
         log0("compiling the model...")
         model = cast(nn.Module, torch.compile(model))  # type: ignore[reportArgumentType]
 
-    data_seed = config.data.dataset_shuffle_seed
     train_loader, train_tokenizer = create_lm_data_loader(
         config.data,
         split=config.data.train_split,
         batch_size=B,
-        seed=data_seed,
+        seed=config.seed,
         dist_state=dist_state,
     )
     train_iter = iter(train_loader)
@@ -302,7 +302,7 @@ def main(config_path_or_obj: Path | str | Config | None = None) -> None:
         config.data,
         split=config.data.eval_split,
         batch_size=B,
-        seed=data_seed + 1,
+        seed=config.seed + 1,
         dist_state=None,  # Don't split validation data - all ranks evaluate same data
     )
 

@@ -163,6 +163,7 @@ class Driver(ExperimentDriver[LMExperimentConfig]):
             train_batch_size=train_batch_size,
             eval_batch_size=eval_batch_size,
             dist_state=dist_state,
+            seed=experiment_config.pd.seed,
         )
 
     @override

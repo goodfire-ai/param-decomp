@@ -94,7 +94,7 @@ def run_r_sweep(
         data,
         split=data.eval_split,
         batch_size=config.eval_batch_size,
-        seed=data.dataset_shuffle_seed,
+        seed=config.seed + 1,
     )
 
     logger.info(f"Collecting {n_batches} validation batches...")

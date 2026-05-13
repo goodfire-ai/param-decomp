@@ -30,10 +30,6 @@ class LMDataConfig(BaseConfig):
     streaming: bool = Field(default=False)
     buffer_size: PositiveInt = Field(default=1000)
     shuffle_each_epoch: bool = Field(default=True)
-    dataset_shuffle_seed: int = Field(
-        default=0,
-        description="Dataset shuffle seed",
-    )
 
 
 def _keep_single_column(
@@ -235,13 +231,12 @@ def build_lm_dataloaders(
     train_batch_size: int,
     eval_batch_size: int,
     dist_state: DistributedState | None,
+    seed: int,
 ) -> tuple[DataLoader[Any], DataLoader[Any]]:
     """Build train/eval dataloaders from total batch sizes."""
     train_batch_size = _rank_batch_size(train_batch_size, dist_state, label="train_batch_size")
     eval_batch_size = _rank_batch_size(eval_batch_size, dist_state, label="eval_batch_size")
     collate_column = data_cfg.column_name if data_cfg.is_tokenized else "input_ids"
-
-    data_seed = data_cfg.dataset_shuffle_seed
 
     def collate_token_column(batch: list[dict[str, Tensor]]) -> Tensor:
         return torch.stack([item[collate_column] for item in batch])
@@ -250,7 +245,7 @@ def build_lm_dataloaders(
         data_cfg,
         split=data_cfg.train_split,
         batch_size=train_batch_size,
-        seed=data_seed,
+        seed=seed,
         dist_state=dist_state,
         collate_fn=collate_token_column,
     )
@@ -258,7 +253,7 @@ def build_lm_dataloaders(
         data_cfg,
         split=data_cfg.eval_split,
         batch_size=eval_batch_size,
-        seed=data_seed + 1,
+        seed=seed + 1,
         dist_state=dist_state,
         collate_fn=collate_token_column,
     )

@@ -34,4 +34,3 @@ data:
   train_split: train[:10000000]
   eval_split: train[-100000:]
   column_name: text
-  dataset_shuffle_seed: 0

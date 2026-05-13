@@ -126,7 +126,6 @@ def _migrate_legacy_data_config(config_dict: dict[str, Any]) -> dict[str, Any]:
         "shuffle_each_epoch": train["shuffle_each_epoch"],
         "train_split": train["split"],
         "eval_split": val["split"],
-        "dataset_shuffle_seed": train.get("seed") or 0,
     }
     return config_dict
 
@@ -149,6 +148,7 @@ class PretrainRunInfo:
     model_config_dict: dict[str, Any]
     tokenizer_path: Path | None
     hf_tokenizer_path: str | None
+    seed: int
 
     @classmethod
     def from_path(cls, path: str | Path) -> "PretrainRunInfo":
@@ -184,6 +184,7 @@ class PretrainRunInfo:
                 model_config_dict=model_config_dict,
                 tokenizer_path=downloaded.tokenizer,
                 hf_tokenizer_path=_extract_hf_tokenizer_path(config_dict),
+                seed=config_dict["seed"],
             )
 
         # Local path
@@ -215,6 +216,7 @@ class PretrainRunInfo:
             model_config_dict=model_config_dict,
             tokenizer_path=tokenizer_path,
             hf_tokenizer_path=_extract_hf_tokenizer_path(config_dict),
+            seed=config_dict["seed"],
         )
 
     def load_tokenizer(self) -> HFTokenizer:

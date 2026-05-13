@@ -24,7 +24,6 @@ from param_decomp.load import load_pd
 from param_decomp.log import logger
 from param_decomp.models.component_model import PDRunInfo
 from param_decomp.utils.distributed_utils import get_device
-from param_decomp.utils.general_utils import runtime_cast
 
 os.environ["WANDB_QUIET"] = "true"
 
@@ -40,15 +39,19 @@ def harvest(config: HarvestConfig) -> Path:
     device = get_device()
 
     pd_run = PDRunInfo.from_path(config.model_path)
-    data_cfg = runtime_cast(LMExperimentConfig, pd_run.experiment_config).data.model_copy(
-        update={"dataset_shuffle_seed": config.dataset_seed}
-    )
-    dataloader, _ = build_lm_dataloaders(
-        data_cfg,
-        train_batch_size=config.batch_size,
-        eval_batch_size=config.batch_size,
-        dist_state=None,
-    )
+    if isinstance(pd_run.experiment_config, LMExperimentConfig):
+        dataloader, _ = build_lm_dataloaders(
+            pd_run.experiment_config.data,
+            train_batch_size=config.batch_size,
+            eval_batch_size=config.batch_size,
+            dist_state=None,
+            seed=config.dataset_seed,
+        )
+    else:
+        dataloader, _ = pd_run.build_dataloaders(
+            train_batch_size=config.batch_size,
+            eval_batch_size=config.batch_size,
+        )
 
     target = pd_run.load_target()
     model = load_pd(config.model_path, target=target).to(device)

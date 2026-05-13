@@ -168,6 +168,7 @@ def _get_dataset_short(pretrain_config: dict[str, Any] | None) -> str | None:
         return None
     dataset_name: str = (
         pretrain_config.get("train_dataset_config", {}).get("name", "")
+        or pretrain_config.get("data", {}).get("dataset_name", "")
         or pretrain_config.get("dataset", "")
     ).lower()
     for key, short in _DATASET_SHORT_NAMES.items():
