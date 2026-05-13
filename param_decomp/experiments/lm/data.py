@@ -30,12 +30,9 @@ class LMDataConfig(BaseConfig):
     streaming: bool = Field(default=False)
     buffer_size: PositiveInt = Field(default=1000)
     shuffle_each_epoch: bool = Field(default=True)
-    dataset_seed: int | None = Field(
-        default=None,
-        description=(
-            "Dataset shuffle seed. When None, experiment training falls back to `pd.seed`; "
-            "runtime callers may still pass an explicit seed override."
-        ),
+    dataset_shuffle_seed: int = Field(
+        default=0,
+        description="Dataset shuffle seed",
     )
 
 
@@ -262,20 +259,16 @@ def _rank_batch_size(batch_size: int, dist_state: DistributedState | None, *, la
 def build_lm_dataloaders(
     data_cfg: LMDataConfig,
     *,
-    seed: int | None,
-    default_seed: int = 0,
     train_batch_size: int,
     eval_batch_size: int,
     dist_state: DistributedState | None,
 ) -> tuple[DataLoader[Any], DataLoader[Any]]:
     """Build train/eval dataloaders from total batch sizes."""
-    data_seed = seed if seed is not None else data_cfg.dataset_seed
-    if data_seed is None:
-        data_seed = default_seed
-
     train_batch_size = _rank_batch_size(train_batch_size, dist_state, label="train_batch_size")
     eval_batch_size = _rank_batch_size(eval_batch_size, dist_state, label="eval_batch_size")
     collate_column = data_cfg.column_name if data_cfg.is_tokenized else "input_ids"
+
+    data_seed = data_cfg.dataset_shuffle_seed
 
     def collate_token_column(batch: list[dict[str, Tensor]]) -> Tensor:
         return torch.stack([item[collate_column] for item in batch])

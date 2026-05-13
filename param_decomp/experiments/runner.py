@@ -106,7 +106,7 @@ def run_experiment(
 
     extra_tags = [t for t in [evals_id, launch_id] if t is not None]
     manifest = ExperimentManifest(
-        kind=experiment_config.kind,
+        kind=driver.kind,
         driver=driver_path,
         experiment_config=experiment_config.model_dump(mode="json"),
     )

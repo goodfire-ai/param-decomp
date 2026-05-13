@@ -55,7 +55,6 @@ class PDAdapter(DecompositionAdapter):
     @override
     def dataloader(self, batch_size: int) -> DataLoader[Tensor]:
         train_loader, _ = self.pd_run_info.build_dataloaders(
-            seed=None,
             train_batch_size=batch_size,
             eval_batch_size=batch_size,
         )
@@ -65,7 +64,9 @@ class PDAdapter(DecompositionAdapter):
     @override
     def tokenizer_name(self) -> str:
         exp = self.experiment_config
-        assert isinstance(exp, LMExperimentConfig), f"No tokenizer for kind={exp.kind!r}"
+        assert isinstance(exp, LMExperimentConfig), (
+            f"No tokenizer for kind={self.pd_run_info.manifest.kind!r}"
+        )
         return exp.data.tokenizer_name
 
     @property
@@ -73,7 +74,7 @@ class PDAdapter(DecompositionAdapter):
     def model_metadata(self) -> ModelMetadata:
         exp = self.experiment_config
         assert isinstance(exp, LMExperimentConfig), (
-            f"`model_metadata` is not implemented for kind={exp.kind!r}"
+            f"`model_metadata` is not implemented for kind={self.pd_run_info.manifest.kind!r}"
         )
         return ModelMetadata(
             n_blocks=self._topology.n_blocks,

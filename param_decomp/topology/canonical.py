@@ -3,8 +3,6 @@
 Pure data types — no torch dependency. Safe to import anywhere.
 """
 
-from __future__ import annotations
-
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -20,7 +18,7 @@ class CanonicalWeight(ABC):
     def canonical_str(self) -> str: ...
 
     @staticmethod
-    def parse(s: str) -> CanonicalWeight:
+    def parse(s: str) -> "CanonicalWeight":
         """Parse a canonical address string into a CanonicalWeight."""
         m_embed = _EMBED_RE.match(s)
         m_output = _OUTPUT_RE.match(s)
