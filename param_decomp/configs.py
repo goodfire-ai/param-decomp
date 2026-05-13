@@ -717,6 +717,11 @@ class Config(BaseConfig):
         default=True,
         description="Whether to use torch.autocast with bfloat16 mixed precision",
     )
+    ddp_comm_hook: Literal["none", "bf16", "fp16"] = Field(
+        default="none",
+        description="DDP gradient compression comm hook. 'bf16' or 'fp16' halves all-reduce "
+        "bytes, helpful when training is comm-bound (typically multi-node). 'none' disables.",
+    )
     n_mask_samples: PositiveInt = Field(
         ...,
         description="Number of stochastic masks to sample when using stochastic recon losses",

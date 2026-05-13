@@ -1,0 +1,68 @@
+{
+  "suite": "ablation",
+  "gpus": 8,
+  "n_nodes": 1,
+  "gpus_per_node": 8,
+  "partition": "h200-reserved",
+  "config_path": "/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml",
+  "batch_size": 64,
+  "warmup_steps": 20,
+  "measure_steps": 100,
+  "out_root": "/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/train-step-ablation-20260513-132606",
+  "jobs": [
+    {
+      "name": "baseline_ddp",
+      "strategy": "ddp",
+      "disable_losses": [],
+      "ppgd_warmup_steps": null,
+      "use_delta_component": null,
+      "include_train_logging": false,
+      "trace_steps": 0
+    },
+    {
+      "name": "no_faithfulness",
+      "strategy": "ddp",
+      "disable_losses": [
+        "FaithfulnessLoss"
+      ],
+      "ppgd_warmup_steps": null,
+      "use_delta_component": null,
+      "include_train_logging": false,
+      "trace_steps": 0
+    },
+    {
+      "name": "ppgd_warmup0",
+      "strategy": "ddp",
+      "disable_losses": [],
+      "ppgd_warmup_steps": 0,
+      "use_delta_component": null,
+      "include_train_logging": false,
+      "trace_steps": 0
+    },
+    {
+      "name": "zero1",
+      "strategy": "zero1",
+      "disable_losses": [],
+      "ppgd_warmup_steps": null,
+      "use_delta_component": null,
+      "include_train_logging": false,
+      "trace_steps": 0
+    },
+    {
+      "name": "train_logging",
+      "strategy": "ddp",
+      "disable_losses": [],
+      "ppgd_warmup_steps": null,
+      "use_delta_component": null,
+      "include_train_logging": true,
+      "trace_steps": 0
+    }
+  ],
+  "commands": [
+    "cd /mnt/polished-lake/home/braun/param-decomp-fsdp-profile && source .venv/bin/activate && mkdir -p /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/train-step-ablation-20260513-132606/n8/baseline_ddp && torchrun --standalone --nproc_per_node=8 --master_port=24000 scripts/profile_train_step.py --config-path /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml --out-dir /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/train-step-ablation-20260513-132606/n8/baseline_ddp --profile-label baseline_ddp --strategy ddp --batch-size 64 --warmup-steps 20 --measure-steps 100 --trace-steps 0",
+    "cd /mnt/polished-lake/home/braun/param-decomp-fsdp-profile && source .venv/bin/activate && mkdir -p /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/train-step-ablation-20260513-132606/n8/no_faithfulness && torchrun --standalone --nproc_per_node=8 --master_port=24001 scripts/profile_train_step.py --config-path /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml --out-dir /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/train-step-ablation-20260513-132606/n8/no_faithfulness --profile-label no_faithfulness --strategy ddp --batch-size 64 --warmup-steps 20 --measure-steps 100 --trace-steps 0 --disable-loss FaithfulnessLoss",
+    "cd /mnt/polished-lake/home/braun/param-decomp-fsdp-profile && source .venv/bin/activate && mkdir -p /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/train-step-ablation-20260513-132606/n8/ppgd_warmup0 && torchrun --standalone --nproc_per_node=8 --master_port=24002 scripts/profile_train_step.py --config-path /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml --out-dir /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/train-step-ablation-20260513-132606/n8/ppgd_warmup0 --profile-label ppgd_warmup0 --strategy ddp --batch-size 64 --warmup-steps 20 --measure-steps 100 --trace-steps 0 --ppgd-warmup-steps 0",
+    "cd /mnt/polished-lake/home/braun/param-decomp-fsdp-profile && source .venv/bin/activate && mkdir -p /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/train-step-ablation-20260513-132606/n8/zero1 && torchrun --standalone --nproc_per_node=8 --master_port=24003 scripts/profile_train_step.py --config-path /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml --out-dir /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/train-step-ablation-20260513-132606/n8/zero1 --profile-label zero1 --strategy zero1 --batch-size 64 --warmup-steps 20 --measure-steps 100 --trace-steps 0",
+    "cd /mnt/polished-lake/home/braun/param-decomp-fsdp-profile && source .venv/bin/activate && mkdir -p /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/train-step-ablation-20260513-132606/n8/train_logging && torchrun --standalone --nproc_per_node=8 --master_port=24004 scripts/profile_train_step.py --config-path /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml --out-dir /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/train-step-ablation-20260513-132606/n8/train_logging --profile-label train_logging --strategy ddp --batch-size 64 --warmup-steps 20 --measure-steps 100 --trace-steps 0 --include-train-logging"
+  ]
+}
