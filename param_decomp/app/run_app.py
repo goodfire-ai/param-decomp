@@ -9,8 +9,6 @@ Starts backend and frontend with:
   - Clear logging & dependency checks
 """
 
-from __future__ import annotations
-
 import atexit
 import contextlib
 import os

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -110,7 +108,7 @@ class PretrainRunInfo:
     hf_tokenizer_path: str | None
 
     @classmethod
-    def from_path(cls, path: str | Path) -> PretrainRunInfo:
+    def from_path(cls, path: str | Path) -> "PretrainRunInfo":
         """Load run info from a W&B run string or a local path.
 
         W&B formats:

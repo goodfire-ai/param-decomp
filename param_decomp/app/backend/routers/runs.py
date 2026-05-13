@@ -79,7 +79,7 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
         raise HTTPException(
             status_code=400,
             detail=(
-                f"This run is a `{exp.kind}` PD run and is not compatible with "
+                f"This run is a `{run_info.manifest.kind}` PD run and is not compatible with "
                 "the token-based app. Use an LM run."
             ),
         )

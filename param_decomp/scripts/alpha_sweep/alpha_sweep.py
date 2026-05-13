@@ -100,7 +100,7 @@ def run_r_sweep(
         column_name=data.column_name,
         batch_size=config.eval_batch_size,
         buffer_size=data.buffer_size,
-        seed=data.dataset_seed if data.dataset_seed is not None else config.seed,
+        seed=data.dataset_shuffle_seed,
         shuffle_each_epoch=False,
     )
 

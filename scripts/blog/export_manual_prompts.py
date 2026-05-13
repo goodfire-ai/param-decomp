@@ -28,8 +28,6 @@ Run from ~/param-decomp:
       --out-file ../vpd-blog-replit/data/manual-prompts/copula.json
 """
 
-from __future__ import annotations
-
 import argparse
 import json
 from collections.abc import Sequence

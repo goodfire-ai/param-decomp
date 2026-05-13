@@ -79,7 +79,7 @@ def harvest_attributions(
     run_info = PDRunInfo.from_path(config.wandb_path)
     exp = run_info.experiment_config
     assert isinstance(exp, LMExperimentConfig), (
-        f"Dataset attributions currently only support LM runs, got {exp.kind!r}"
+        f"Dataset attributions currently only support LM runs, got {type(exp).__name__}"
     )
     target = run_info.load_target()
     model = load_pd(config.wandb_path, target=target).to(device)
@@ -88,8 +88,6 @@ def harvest_attributions(
     pd_config = run_info.pd_config
     train_loader, _ = build_lm_dataloaders(
         exp.data,
-        seed=None,
-        default_seed=pd_config.seed,
         train_batch_size=config.batch_size,
         eval_batch_size=config.batch_size,
         dist_state=None,

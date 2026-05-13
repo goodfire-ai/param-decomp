@@ -46,6 +46,7 @@ from param_decomp.models.components import (
 )
 from param_decomp.models.sigmoids import SIGMOID_TYPES, SigmoidType
 from param_decomp.param_decomp_types import LayerwiseCiFnType, ModelPath
+from param_decomp.utils.distributed_utils import DistributedState
 from param_decomp.utils.module_utils import ModulePathInfo, expand_module_patterns
 
 
@@ -139,10 +140,9 @@ class PDRunInfo(RunInfo[ExperimentManifest]):
     def build_dataloaders(
         self,
         *,
-        seed: int | None = None,
         train_batch_size: int,
         eval_batch_size: int,
-        dist_state: Any = None,
+        dist_state: DistributedState | None = None,
         device: str = "cpu",
     ) -> tuple[DataLoader[Any], DataLoader[Any]]:
         assert self.driver is not None, (
@@ -150,7 +150,6 @@ class PDRunInfo(RunInfo[ExperimentManifest]):
         )
         return self.driver.build_dataloaders(
             self.experiment_config,
-            seed=seed,
             train_batch_size=train_batch_size,
             eval_batch_size=eval_batch_size,
             dist_state=dist_state,

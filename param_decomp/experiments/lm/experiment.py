@@ -5,13 +5,13 @@ target loading, and driver registration.
 """
 
 from pathlib import Path
-from typing import Any, ClassVar, Self
+from typing import Any, Self, override
 
 from pydantic import Field, model_validator
 from torch.utils.data import DataLoader
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.experiments.driver import ExperimentConfig, PreparedExperiment
+from param_decomp.experiments.driver import ExperimentConfig, ExperimentDriver, PreparedExperiment
 from param_decomp.experiments.lm.data import LMDataConfig, build_lm_dataloaders
 from param_decomp.models.batch_and_loss_fns import PDTarget, make_run_batch, recon_loss_kl
 from param_decomp.param_decomp_types import ModelPath
@@ -62,7 +62,6 @@ class LMTargetConfig(BaseConfig):
 
 
 class LMExperimentConfig(ExperimentConfig):
-    kind: str = "lm"
     target: LMTargetConfig
     data: LMDataConfig
 
@@ -107,10 +106,18 @@ def load_lm_target(target_cfg: LMTargetConfig) -> PDTarget:
     )
 
 
-class Driver:
-    kind: ClassVar[str] = "lm"
-    config_model: ClassVar[type[LMExperimentConfig]] = LMExperimentConfig
+class Driver(ExperimentDriver[LMExperimentConfig]):
+    @property
+    @override
+    def kind(self) -> str:
+        return "lm"
 
+    @property
+    @override
+    def config_model(self) -> type[LMExperimentConfig]:
+        return LMExperimentConfig
+
+    @override
     def prepare(
         self,
         experiment_config: LMExperimentConfig,
@@ -121,7 +128,6 @@ class Driver:
         target = self.load_target(experiment_config)
         train_loader, eval_loader = self.build_dataloaders(
             experiment_config,
-            seed=None,
             train_batch_size=experiment_config.pd.batch_size,
             eval_batch_size=experiment_config.pd.eval_batch_size,
             dist_state=dist_state,
@@ -135,17 +141,18 @@ class Driver:
             tags=(self.kind,),
         )
 
+    @override
     def load_target(
         self, experiment_config: LMExperimentConfig, *, run_dir: Path | None = None
     ) -> PDTarget:
         _ = run_dir
         return load_lm_target(experiment_config.target)
 
+    @override
     def build_dataloaders(
         self,
         experiment_config: LMExperimentConfig,
         *,
-        seed: int | None = None,
         train_batch_size: int,
         eval_batch_size: int,
         dist_state: DistributedState | None = None,
@@ -155,13 +162,12 @@ class Driver:
         _ = device, run_dir
         return build_lm_dataloaders(
             experiment_config.data,
-            seed=seed,
-            default_seed=experiment_config.pd.seed,
             train_batch_size=train_batch_size,
             eval_batch_size=eval_batch_size,
             dist_state=dist_state,
         )
 
+    @override
     def display_name(self, experiment_config: LMExperimentConfig) -> str:
         return (
             f"LM: {experiment_config.target.model_class.rsplit('.', 1)[-1]} "
