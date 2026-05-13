@@ -12,7 +12,6 @@ import torch
 import yaml
 
 TEST_CONFIG = {
-    "kind": "lm",
     "pd": {
         # --- General ---
         "seed": 0,
