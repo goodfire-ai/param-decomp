@@ -1,0 +1,30 @@
+{
+  "args": {
+    "strategy": "fsdp",
+    "target_scale": "jose",
+    "batch": 8,
+    "seq": 512,
+    "out_dir": "/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/faith-n4-20260513-094851/jose_b8_fsdp_faith",
+    "ci_d_model": 2048,
+    "ci_blocks": 8,
+    "ci_mlp": 8192,
+    "ci_heads": 16,
+    "ci_checkpointing": true,
+    "target_checkpointing": false,
+    "autocast_bf16": false,
+    "forward_autocast_bf16": null,
+    "delta_masks": true,
+    "include_faithfulness": true,
+    "decomposed_forwards": 2,
+    "warmup_steps": 1,
+    "measure_steps": 2,
+    "lr": 1e-05,
+    "record_snapshot": false,
+    "snapshot_max_entries": 200000,
+    "profile_label": "jose_b8_fsdp_faith"
+  },
+  "rank": 0,
+  "error_type": "IndexError",
+  "error": "tuple index out of range",
+  "traceback": "Traceback (most recent call last):\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/scripts/fsdp_memory_profile.py\", line 593, in main\n    jose_like_step(\n    ~~~~~~~~~~~~~~^\n        wrapped,\n        ^^^^^^^^\n    ...<9 lines>...\n        autocast_enabled,\n        ^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/scripts/fsdp_memory_profile.py\", line 398, in jose_like_step\n    faith_sum, faith_numel = component_model.calc_faithfulness_terms()\n                             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/param_decomp/models/component_model.py\", line 485, in calc_faithfulness_terms\n    sum_sq, numel = site.faithfulness_terms()\n                    ~~~~~~~~~~~~~~~~~~~~~~~^^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/.venv/lib/python3.13/site-packages/torch/distributed/fsdp/_fully_shard/_fully_shard.py\", line 657, in wrapped_method\n    args, kwargs = fsdp_state._pre_forward(self, args, kwargs)\n                   ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/.venv/lib/python3.13/site-packages/torch/distributed/fsdp/_fully_shard/_fsdp_state.py\", line 62, in fsdp_hook_wrapper\n    return torch._dynamo.disable(\n           ~~~~~~~~~~~~~~~~~~~~~~\n    ...<2 lines>...\n        reason=\"skipping FSDP hooks since torch._dynamo.config.skip_fsdp_hooks is set\",\n        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n    )(*args, **kwargs)\n    ~^^^^^^^^^^^^^^^^^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/.venv/lib/python3.13/site-packages/torch/_dynamo/eval_frame.py\", line 929, in _fn\n    return fn(*args, **kwargs)\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/.venv/lib/python3.13/site-packages/torch/distributed/fsdp/_fully_shard/_fsdp_state.py\", line 237, in _pre_forward\n    args, kwargs = self._root_pre_forward(module, args, kwargs)\n                   ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/.venv/lib/python3.13/site-packages/torch/distributed/fsdp/_fully_shard/_fsdp_state.py\", line 150, in _root_pre_forward\n    args, kwargs = args_tuple[0], kwargs_tuple[0]\n                   ~~~~~~~~~~^^^\nIndexError: tuple index out of range\n"
+}
