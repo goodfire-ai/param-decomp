@@ -1,0 +1,26 @@
+{
+  "args": {
+    "config_path": "/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml",
+    "config_json": null,
+    "out_dir": "/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/train-step-ablation-20260513-132606/n8/train_logging",
+    "profile_label": "train_logging",
+    "strategy": "ddp",
+    "batch_size": 64,
+    "eval_batch_size": null,
+    "warmup_steps": 20,
+    "measure_steps": 100,
+    "trace_steps": 0,
+    "trace_memory": true,
+    "trace_shapes": false,
+    "include_train_logging": true,
+    "disable_loss": [],
+    "ppgd_warmup_steps": null,
+    "use_delta_component": null,
+    "autocast_bf16": null,
+    "max_steps_for_schedule": null
+  },
+  "rank": 0,
+  "error_type": "ConnectionError",
+  "error": "Couldn't reach 'danbraunai/pile-uncopyrighted-tok-shuffled' on the Hub (OfflineModeIsEnabled)",
+  "traceback": "Traceback (most recent call last):\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/scripts/profile_train_step.py\", line 870, in main\n    train_loader = build_train_loader(config, dist_state)\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/scripts/profile_train_step.py\", line 423, in build_train_loader\n    loader, _tokenizer = create_data_loader(\n                         ~~~~~~~~~~~~~~~~~~^\n        dataset_config=train_data_config,\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    ...<4 lines>...\n        collate_fn=input_ids_collate_fn,\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/param_decomp/data.py\", line 189, in create_data_loader\n    dataset = load_dataset(\n        dataset_config.name,\n    ...<2 lines>...\n        trust_remote_code=False,\n    )\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/.venv/lib/python3.13/site-packages/datasets/load.py\", line 1492, in load_dataset\n    builder_instance = load_dataset_builder(\n        path=path,\n    ...<10 lines>...\n        **config_kwargs,\n    )\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/.venv/lib/python3.13/site-packages/datasets/load.py\", line 1137, in load_dataset_builder\n    dataset_module = dataset_module_factory(\n        path,\n    ...<5 lines>...\n        cache_dir=cache_dir,\n    )\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/.venv/lib/python3.13/site-packages/datasets/load.py\", line 1036, in dataset_module_factory\n    raise e1 from None\n  File \"/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/.venv/lib/python3.13/site-packages/datasets/load.py\", line 972, in dataset_module_factory\n    raise ConnectionError(f\"Couldn't reach '{path}' on the Hub ({e.__class__.__name__})\") from e\nConnectionError: Couldn't reach 'danbraunai/pile-uncopyrighted-tok-shuffled' on the Hub (OfflineModeIsEnabled)\n"
+}

@@ -1,0 +1,27 @@
+{
+  "suite": "trace",
+  "gpus": 32,
+  "n_nodes": 4,
+  "gpus_per_node": 8,
+  "partition": "h200-reserved",
+  "config_path": "/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml",
+  "batch_size": 64,
+  "warmup_steps": 20,
+  "measure_steps": 1,
+  "synthetic_data": true,
+  "out_root": "/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/train-step-trace-20260513-134902",
+  "jobs": [
+    {
+      "name": "trace_ddp",
+      "strategy": "ddp",
+      "disable_losses": [],
+      "ppgd_warmup_steps": null,
+      "use_delta_component": null,
+      "include_train_logging": false,
+      "trace_steps": 1
+    }
+  ],
+  "commands": [
+    "srun --nodes=4 --ntasks=4 --ntasks-per-node=1 bash -c 'cd /mnt/polished-lake/home/braun/param-decomp-fsdp-profile && source .venv/bin/activate && mkdir -p /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/train-step-trace-20260513-134902/n32/trace_ddp && torchrun --nnodes=4 --node_rank=$SLURM_PROCID --nproc_per_node=8 --master_addr=$(scontrol show hostnames \"$SLURM_JOB_NODELIST\" | head -n 1) --master_port=24000 scripts/profile_train_step.py --config-path /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml --out-dir /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/train-step-trace-20260513-134902/n32/trace_ddp --profile-label trace_ddp --strategy ddp --batch-size 64 --warmup-steps 20 --measure-steps 1 --trace-steps 1 --synthetic-data'"
+  ]
+}

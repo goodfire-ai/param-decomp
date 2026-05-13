@@ -1,0 +1,26 @@
+{
+  "suite": "baseline",
+  "gpus": 8,
+  "n_nodes": 1,
+  "gpus_per_node": 8,
+  "partition": "h200-reserved",
+  "config_path": "/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml",
+  "batch_size": 64,
+  "warmup_steps": 20,
+  "measure_steps": 100,
+  "out_root": "/mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/train-step-baseline-20260513-130556",
+  "jobs": [
+    {
+      "name": "baseline_ddp",
+      "strategy": "ddp",
+      "disable_losses": [],
+      "ppgd_warmup_steps": null,
+      "use_delta_component": null,
+      "include_train_logging": false,
+      "trace_steps": 0
+    }
+  ],
+  "commands": [
+    "cd /mnt/polished-lake/home/braun/param-decomp-fsdp-profile && source .venv/bin/activate && mkdir -p /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/train-step-baseline-20260513-130556/n8/baseline_ddp && torchrun --standalone --nproc_per_node=8 --master_port=24000 scripts/profile_train_step.py --config-path /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml --out-dir /mnt/polished-lake/home/braun/param-decomp-fsdp-profile/profiling_runs/train-step-baseline-20260513-130556/n8/baseline_ddp --profile-label baseline_ddp --strategy ddp --batch-size 64 --warmup-steps 20 --measure-steps 100 --trace-steps 0"
+  ]
+}

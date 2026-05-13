@@ -1,0 +1,2011 @@
+{
+  "profile_dir": "profiling_runs/train-step-trace-20260513-134337/n8/trace_ddp",
+  "world_size": 8,
+  "rank_batch_size": 8,
+  "global_batch_size": 64,
+  "trace_count": 8,
+  "phases": {
+    "backward.total_loss": {
+      "wall_ms_max": 279.914996,
+      "wall_ms_avg": 159.083142125,
+      "gpu_active_ms_max": 250.56097705078125,
+      "gpu_active_ms_avg": 132.11648889160156,
+      "gpu_sum_ms_max": 289.79088037109375,
+      "comm_ms_max": 196.61622607421876,
+      "comm_ms_avg": 74.60181201171875,
+      "comm_sum_ms_max": 196.61622607421876,
+      "comm_count_max": 46,
+      "per_rank": [
+        {
+          "wall_ms": 186.37285500000002,
+          "gpu_active_ms": 159.63433251953126,
+          "gpu_sum_ms": 198.9709423828125,
+          "comm_ms": 105.71977294921875,
+          "comm_sum_ms": 105.71977294921875,
+          "comm_count": 46
+        },
+        {
+          "wall_ms": 279.914996,
+          "gpu_active_ms": 250.56097705078125,
+          "gpu_sum_ms": 289.79088037109375,
+          "comm_ms": 196.61622607421876,
+          "comm_sum_ms": 196.61622607421876,
+          "comm_count": 46
+        },
+        {
+          "wall_ms": 172.12865900000003,
+          "gpu_active_ms": 145.2483642578125,
+          "gpu_sum_ms": 184.36710302734375,
+          "comm_ms": 91.30551220703126,
+          "comm_sum_ms": 91.30551220703126,
+          "comm_count": 46
+        },
+        {
+          "wall_ms": 133.037884,
+          "gpu_active_ms": 104.11950439453125,
+          "gpu_sum_ms": 142.33811181640624,
+          "comm_ms": 48.4383408203125,
+          "comm_sum_ms": 48.4383408203125,
+          "comm_count": 46
+        },
+        {
+          "wall_ms": 118.729946,
+          "gpu_active_ms": 92.7088359375,
+          "gpu_sum_ms": 112.12451123046876,
+          "comm_ms": 20.806611328125,
+          "comm_sum_ms": 20.806611328125,
+          "comm_count": 46
+        },
+        {
+          "wall_ms": 121.484935,
+          "gpu_active_ms": 96.04526904296876,
+          "gpu_sum_ms": 132.78804638671875,
+          "comm_ms": 38.94033251953125,
+          "comm_sum_ms": 38.94033251953125,
+          "comm_count": 46
+        },
+        {
+          "wall_ms": 139.39654099999998,
+          "gpu_active_ms": 113.0756259765625,
+          "gpu_sum_ms": 151.8311455078125,
+          "comm_ms": 57.96044970703125,
+          "comm_sum_ms": 57.96044970703125,
+          "comm_count": 46
+        },
+        {
+          "wall_ms": 121.599321,
+          "gpu_active_ms": 95.539001953125,
+          "gpu_sum_ms": 130.71024609375,
+          "comm_ms": 37.02725048828125,
+          "comm_sum_ms": 37.02725048828125,
+          "comm_count": 46
+        }
+      ]
+    },
+    "ci_forward": {
+      "wall_ms_max": 137.78002600000002,
+      "wall_ms_avg": 115.930772,
+      "gpu_active_ms_max": 19.9434365234375,
+      "gpu_active_ms_avg": 19.893786682128905,
+      "gpu_sum_ms_max": 19.9434365234375,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 87.99144,
+          "gpu_active_ms": 19.9020615234375,
+          "gpu_sum_ms": 19.9020615234375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 81.649681,
+          "gpu_active_ms": 19.87295703125,
+          "gpu_sum_ms": 19.87295703125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 91.85453299999999,
+          "gpu_active_ms": 19.88616455078125,
+          "gpu_sum_ms": 19.88616455078125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 124.32817600000001,
+          "gpu_active_ms": 19.860669921875,
+          "gpu_sum_ms": 19.860669921875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 137.78002600000002,
+          "gpu_active_ms": 19.89697216796875,
+          "gpu_sum_ms": 19.89697216796875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 137.711445,
+          "gpu_active_ms": 19.85998828125,
+          "gpu_sum_ms": 19.85998828125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 129.665378,
+          "gpu_active_ms": 19.9434365234375,
+          "gpu_sum_ms": 19.9434365234375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 136.465497,
+          "gpu_active_ms": 19.92804345703125,
+          "gpu_sum_ms": 19.92804345703125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "ci_l_zero": {
+      "wall_ms_max": 2.5076590000000003,
+      "wall_ms_avg": 2.413337125,
+      "gpu_active_ms_max": 1.08147314453125,
+      "gpu_active_ms_avg": 1.07812548828125,
+      "gpu_sum_ms_max": 1.08147314453125,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 2.337847,
+          "gpu_active_ms": 1.0732724609375,
+          "gpu_sum_ms": 1.0732724609375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 2.432751,
+          "gpu_active_ms": 1.0773544921875,
+          "gpu_sum_ms": 1.0773544921875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 2.357375,
+          "gpu_active_ms": 1.0806435546875,
+          "gpu_sum_ms": 1.0806435546875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 2.4629369999999997,
+          "gpu_active_ms": 1.07574853515625,
+          "gpu_sum_ms": 1.07574853515625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 2.5076590000000003,
+          "gpu_active_ms": 1.075171875,
+          "gpu_sum_ms": 1.075171875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 2.39675,
+          "gpu_active_ms": 1.0809287109375,
+          "gpu_sum_ms": 1.0809287109375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 2.429379,
+          "gpu_active_ms": 1.08147314453125,
+          "gpu_sum_ms": 1.08147314453125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 2.381999,
+          "gpu_active_ms": 1.0804111328125,
+          "gpu_sum_ms": 1.0804111328125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "data.next": {
+      "wall_ms_max": 0.44089,
+      "wall_ms_avg": 0.386174,
+      "gpu_active_ms_max": 0.0,
+      "gpu_active_ms_avg": 0.0,
+      "gpu_sum_ms_max": 0.0,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 0.36556,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.382303,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.37411500000000003,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.372065,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.44089,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.390969,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.37692899999999996,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.386561,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "data.to_device": {
+      "wall_ms_max": 0.42899400000000004,
+      "wall_ms_avg": 0.40917637500000004,
+      "gpu_active_ms_max": 0.003583984375,
+      "gpu_active_ms_avg": 0.00334002685546875,
+      "gpu_sum_ms_max": 0.003583984375,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 0.373635,
+          "gpu_active_ms": 0.00326416015625,
+          "gpu_sum_ms": 0.00326416015625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.407341,
+          "gpu_active_ms": 0.00310400390625,
+          "gpu_sum_ms": 0.00310400390625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.41176,
+          "gpu_active_ms": 0.00316796875,
+          "gpu_sum_ms": 0.00316796875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.410882,
+          "gpu_active_ms": 0.0034560546875,
+          "gpu_sum_ms": 0.0034560546875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.422119,
+          "gpu_active_ms": 0.00352001953125,
+          "gpu_sum_ms": 0.00352001953125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.39832,
+          "gpu_active_ms": 0.003583984375,
+          "gpu_sum_ms": 0.003583984375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.42036,
+          "gpu_active_ms": 0.003328125,
+          "gpu_sum_ms": 0.003328125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.42899400000000004,
+          "gpu_active_ms": 0.0032958984375,
+          "gpu_sum_ms": 0.0032958984375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "grad_clip.components": {
+      "wall_ms_max": 1.3423019999999999,
+      "wall_ms_avg": 1.24537525,
+      "gpu_active_ms_max": 0.43372802734375,
+      "gpu_active_ms_avg": 0.4305648193359375,
+      "gpu_sum_ms_max": 0.43372802734375,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 1.195654,
+          "gpu_active_ms": 0.43164697265625,
+          "gpu_sum_ms": 0.43164697265625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 1.213058,
+          "gpu_active_ms": 0.428255859375,
+          "gpu_sum_ms": 0.428255859375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 1.250823,
+          "gpu_active_ms": 0.4277119140625,
+          "gpu_sum_ms": 0.4277119140625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 1.3423019999999999,
+          "gpu_active_ms": 0.43085107421875,
+          "gpu_sum_ms": 0.43085107421875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 1.341982,
+          "gpu_active_ms": 0.4312333984375,
+          "gpu_sum_ms": 0.4312333984375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 1.215306,
+          "gpu_active_ms": 0.431458984375,
+          "gpu_sum_ms": 0.431458984375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 1.214322,
+          "gpu_active_ms": 0.43372802734375,
+          "gpu_sum_ms": 0.43372802734375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 1.1895550000000001,
+          "gpu_active_ms": 0.42963232421875,
+          "gpu_sum_ms": 0.42963232421875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "loss.FaithfulnessLoss": {
+      "wall_ms_max": 2.0682840000000002,
+      "wall_ms_avg": 2.003555875,
+      "gpu_active_ms_max": 0.29301611328125,
+      "gpu_active_ms_avg": 0.2873831787109375,
+      "gpu_sum_ms_max": 0.29301611328125,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 2.003252,
+          "gpu_active_ms": 0.2862333984375,
+          "gpu_sum_ms": 0.2862333984375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 2.0296410000000003,
+          "gpu_active_ms": 0.286138671875,
+          "gpu_sum_ms": 0.286138671875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 1.95174,
+          "gpu_active_ms": 0.28767626953125,
+          "gpu_sum_ms": 0.28767626953125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 1.9816449999999999,
+          "gpu_active_ms": 0.287072265625,
+          "gpu_sum_ms": 0.287072265625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 2.0682840000000002,
+          "gpu_active_ms": 0.286234375,
+          "gpu_sum_ms": 0.286234375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 1.978933,
+          "gpu_active_ms": 0.28623046875,
+          "gpu_sum_ms": 0.28623046875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 2.029508,
+          "gpu_active_ms": 0.29301611328125,
+          "gpu_sum_ms": 0.29301611328125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 1.985444,
+          "gpu_active_ms": 0.2864638671875,
+          "gpu_sum_ms": 0.2864638671875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "loss.ImportanceMinimalityLoss": {
+      "wall_ms_max": 4.727289,
+      "wall_ms_avg": 4.537451625,
+      "gpu_active_ms_max": 1.55067236328125,
+      "gpu_active_ms_avg": 1.5471018676757813,
+      "gpu_sum_ms_max": 1.55067236328125,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 4.441273,
+          "gpu_active_ms": 1.54530126953125,
+          "gpu_sum_ms": 1.54530126953125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 4.574327,
+          "gpu_active_ms": 1.54652734375,
+          "gpu_sum_ms": 1.54652734375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 4.452642,
+          "gpu_active_ms": 1.55067236328125,
+          "gpu_sum_ms": 1.55067236328125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 4.727289,
+          "gpu_active_ms": 1.54928662109375,
+          "gpu_sum_ms": 1.54928662109375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 4.499696,
+          "gpu_active_ms": 1.5495732421875,
+          "gpu_sum_ms": 1.5495732421875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 4.53652,
+          "gpu_active_ms": 1.54559326171875,
+          "gpu_sum_ms": 1.54559326171875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 4.5862430000000005,
+          "gpu_active_ms": 1.54580078125,
+          "gpu_sum_ms": 1.54580078125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 4.481623,
+          "gpu_active_ms": 1.54406005859375,
+          "gpu_sum_ms": 1.54406005859375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "loss.PersistentPGDReconLoss": {
+      "wall_ms_max": 144.23337,
+      "wall_ms_avg": 124.74670449999999,
+      "gpu_active_ms_max": 16.6515478515625,
+      "gpu_active_ms_avg": 16.60901025390625,
+      "gpu_sum_ms_max": 16.6515478515625,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 115.689267,
+          "gpu_active_ms": 16.62273583984375,
+          "gpu_sum_ms": 16.62273583984375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 46.600283000000005,
+          "gpu_active_ms": 16.5921083984375,
+          "gpu_sum_ms": 16.5921083984375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 127.933766,
+          "gpu_active_ms": 16.5958076171875,
+          "gpu_sum_ms": 16.5958076171875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 141.50682999999998,
+          "gpu_active_ms": 16.61647998046875,
+          "gpu_sum_ms": 16.61647998046875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 144.23337,
+          "gpu_active_ms": 16.60219091796875,
+          "gpu_sum_ms": 16.60219091796875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 141.37274299999999,
+          "gpu_active_ms": 16.57147607421875,
+          "gpu_sum_ms": 16.57147607421875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 139.781684,
+          "gpu_active_ms": 16.6515478515625,
+          "gpu_sum_ms": 16.6515478515625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 140.855693,
+          "gpu_active_ms": 16.6197353515625,
+          "gpu_sum_ms": 16.6197353515625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "loss.StochasticReconSubsetLoss": {
+      "wall_ms_max": 28.226339,
+      "wall_ms_avg": 27.7827285,
+      "gpu_active_ms_max": 17.2373955078125,
+      "gpu_active_ms_avg": 17.212666198730467,
+      "gpu_sum_ms_max": 17.2373955078125,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 27.506002,
+          "gpu_active_ms": 17.20612890625,
+          "gpu_sum_ms": 17.20612890625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 27.560826000000002,
+          "gpu_active_ms": 17.2066201171875,
+          "gpu_sum_ms": 17.2066201171875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 27.871031,
+          "gpu_active_ms": 17.19272119140625,
+          "gpu_sum_ms": 17.19272119140625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 28.083416,
+          "gpu_active_ms": 17.22625439453125,
+          "gpu_sum_ms": 17.22625439453125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 28.226339,
+          "gpu_active_ms": 17.20760693359375,
+          "gpu_sum_ms": 17.20760693359375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 27.565501,
+          "gpu_active_ms": 17.19651220703125,
+          "gpu_sum_ms": 17.19651220703125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 27.623002,
+          "gpu_active_ms": 17.2373955078125,
+          "gpu_sum_ms": 17.2373955078125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 27.825711,
+          "gpu_active_ms": 17.22809033203125,
+          "gpu_sum_ms": 17.22809033203125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "lr_schedule": {
+      "wall_ms_max": 0.421195,
+      "wall_ms_avg": 0.39404975000000003,
+      "gpu_active_ms_max": 0.0,
+      "gpu_active_ms_avg": 0.0,
+      "gpu_sum_ms_max": 0.0,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 0.364043,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.369387,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.421195,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.38562,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.39171300000000003,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.40243900000000005,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.39961,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.418391,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "optimizer.step": {
+      "wall_ms_max": 14.272898,
+      "wall_ms_avg": 14.22331825,
+      "gpu_active_ms_max": 12.85528369140625,
+      "gpu_active_ms_avg": 12.843807556152344,
+      "gpu_sum_ms_max": 12.85528369140625,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 14.218325,
+          "gpu_active_ms": 12.8439697265625,
+          "gpu_sum_ms": 12.8439697265625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 14.195229,
+          "gpu_active_ms": 12.84746044921875,
+          "gpu_sum_ms": 12.84746044921875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 14.223818999999999,
+          "gpu_active_ms": 12.84274365234375,
+          "gpu_sum_ms": 12.84274365234375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 14.235406999999999,
+          "gpu_active_ms": 12.84302197265625,
+          "gpu_sum_ms": 12.84302197265625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 14.272898,
+          "gpu_active_ms": 12.84137255859375,
+          "gpu_sum_ms": 12.84137255859375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 14.230661,
+          "gpu_active_ms": 12.8465,
+          "gpu_sum_ms": 12.8465,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 14.219651,
+          "gpu_active_ms": 12.85528369140625,
+          "gpu_sum_ms": 12.85528369140625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 14.190556,
+          "gpu_active_ms": 12.8301083984375,
+          "gpu_sum_ms": 12.8301083984375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "optimizer.zero_grad": {
+      "wall_ms_max": 1.103667,
+      "wall_ms_avg": 0.949737375,
+      "gpu_active_ms_max": 0.0,
+      "gpu_active_ms_avg": 0.0,
+      "gpu_sum_ms_max": 0.0,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 0.893398,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.883246,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.957557,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 1.103667,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.960429,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.945701,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.906918,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.9469829999999999,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "ppgd.update_lr": {
+      "wall_ms_max": 0.367668,
+      "wall_ms_avg": 0.356020625,
+      "gpu_active_ms_max": 0.0,
+      "gpu_active_ms_avg": 0.0,
+      "gpu_sum_ms_max": 0.0,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 0.35946300000000003,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.338569,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.35982600000000003,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.347404,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.362301,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.359248,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.353686,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.367668,
+          "gpu_active_ms": 0.0,
+          "gpu_sum_ms": 0.0,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "ppgd_final_grads.PersistentPGDReconLoss": {
+      "wall_ms_max": 23.608522,
+      "wall_ms_avg": 22.54104675,
+      "gpu_active_ms_max": 16.6173916015625,
+      "gpu_active_ms_avg": 16.606559265136717,
+      "gpu_sum_ms_max": 16.6173916015625,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 21.998493,
+          "gpu_active_ms": 16.5999560546875,
+          "gpu_sum_ms": 16.5999560546875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 22.587636,
+          "gpu_active_ms": 16.6173916015625,
+          "gpu_sum_ms": 16.6173916015625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 22.317709999999998,
+          "gpu_active_ms": 16.600302734375,
+          "gpu_sum_ms": 16.600302734375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 23.608522,
+          "gpu_active_ms": 16.613697265625,
+          "gpu_sum_ms": 16.613697265625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 22.288347,
+          "gpu_active_ms": 16.61231494140625,
+          "gpu_sum_ms": 16.61231494140625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 22.40098,
+          "gpu_active_ms": 16.58590234375,
+          "gpu_sum_ms": 16.58590234375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 22.477762,
+          "gpu_active_ms": 16.61002685546875,
+          "gpu_sum_ms": 16.61002685546875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 22.648923999999997,
+          "gpu_active_ms": 16.61288232421875,
+          "gpu_sum_ms": 16.61288232421875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "ppgd_final_step.PersistentPGDReconLoss": {
+      "wall_ms_max": 5.4384570000000005,
+      "wall_ms_avg": 5.402422125,
+      "gpu_active_ms_max": 4.4823330078125,
+      "gpu_active_ms_avg": 4.479073059082031,
+      "gpu_sum_ms_max": 4.4823330078125,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 5.403639,
+          "gpu_active_ms": 4.47625341796875,
+          "gpu_sum_ms": 4.47625341796875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.390224,
+          "gpu_active_ms": 4.47905126953125,
+          "gpu_sum_ms": 4.47905126953125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.3649759999999995,
+          "gpu_active_ms": 4.47713916015625,
+          "gpu_sum_ms": 4.47713916015625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.384209,
+          "gpu_active_ms": 4.47973681640625,
+          "gpu_sum_ms": 4.47973681640625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.4348860000000005,
+          "gpu_active_ms": 4.477875,
+          "gpu_sum_ms": 4.477875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.4384570000000005,
+          "gpu_active_ms": 4.48044384765625,
+          "gpu_sum_ms": 4.48044384765625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.410976,
+          "gpu_active_ms": 4.4823330078125,
+          "gpu_sum_ms": 4.4823330078125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.39201,
+          "gpu_active_ms": 4.479751953125,
+          "gpu_sum_ms": 4.479751953125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "ppgd_warmup.PersistentPGDReconLoss.0.forward_loss": {
+      "wall_ms_max": 313.473276,
+      "wall_ms_avg": 284.7965895,
+      "gpu_active_ms_max": 16.9606552734375,
+      "gpu_active_ms_avg": 16.9133056640625,
+      "gpu_sum_ms_max": 16.9606552734375,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 313.473276,
+          "gpu_active_ms": 16.928375,
+          "gpu_sum_ms": 16.928375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 294.323404,
+          "gpu_active_ms": 16.9208798828125,
+          "gpu_sum_ms": 16.9208798828125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 307.724177,
+          "gpu_active_ms": 16.898322265625,
+          "gpu_sum_ms": 16.898322265625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 267.586616,
+          "gpu_active_ms": 16.89770947265625,
+          "gpu_sum_ms": 16.89770947265625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 275.515871,
+          "gpu_active_ms": 16.90954443359375,
+          "gpu_sum_ms": 16.90954443359375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 276.050245,
+          "gpu_active_ms": 16.86354296875,
+          "gpu_sum_ms": 16.86354296875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 266.29389299999997,
+          "gpu_active_ms": 16.9606552734375,
+          "gpu_sum_ms": 16.9606552734375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 277.405234,
+          "gpu_active_ms": 16.927416015625,
+          "gpu_sum_ms": 16.927416015625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "ppgd_warmup.PersistentPGDReconLoss.0.source_grads": {
+      "wall_ms_max": 25.995732,
+      "wall_ms_avg": 24.32524325,
+      "gpu_active_ms_max": 16.671078125,
+      "gpu_active_ms_avg": 16.645494018554686,
+      "gpu_sum_ms_max": 16.671078125,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 23.553588,
+          "gpu_active_ms": 16.64638232421875,
+          "gpu_sum_ms": 16.64638232421875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 24.571540000000002,
+          "gpu_active_ms": 16.66083349609375,
+          "gpu_sum_ms": 16.66083349609375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 24.48555,
+          "gpu_active_ms": 16.64493408203125,
+          "gpu_sum_ms": 16.64493408203125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 25.995732,
+          "gpu_active_ms": 16.6326162109375,
+          "gpu_sum_ms": 16.6326162109375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 23.93254,
+          "gpu_active_ms": 16.65176904296875,
+          "gpu_sum_ms": 16.65176904296875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 24.005564999999997,
+          "gpu_active_ms": 16.60880322265625,
+          "gpu_sum_ms": 16.60880322265625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 24.085543,
+          "gpu_active_ms": 16.64753564453125,
+          "gpu_sum_ms": 16.64753564453125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 23.971888,
+          "gpu_active_ms": 16.671078125,
+          "gpu_sum_ms": 16.671078125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "ppgd_warmup.PersistentPGDReconLoss.0.source_step": {
+      "wall_ms_max": 5.87461,
+      "wall_ms_avg": 5.823647625,
+      "gpu_active_ms_max": 4.48673681640625,
+      "gpu_active_ms_avg": 4.478700134277344,
+      "gpu_sum_ms_max": 4.48673681640625,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 5.824248,
+          "gpu_active_ms": 4.46931396484375,
+          "gpu_sum_ms": 4.46931396484375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.802059,
+          "gpu_active_ms": 4.48673681640625,
+          "gpu_sum_ms": 4.48673681640625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.812779000000001,
+          "gpu_active_ms": 4.4750283203125,
+          "gpu_sum_ms": 4.4750283203125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.820577,
+          "gpu_active_ms": 4.4797021484375,
+          "gpu_sum_ms": 4.4797021484375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.87461,
+          "gpu_active_ms": 4.4771640625,
+          "gpu_sum_ms": 4.4771640625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.839337,
+          "gpu_active_ms": 4.48350146484375,
+          "gpu_sum_ms": 4.48350146484375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.811624,
+          "gpu_active_ms": 4.47206103515625,
+          "gpu_sum_ms": 4.47206103515625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.803947,
+          "gpu_active_ms": 4.48609326171875,
+          "gpu_sum_ms": 4.48609326171875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "ppgd_warmup.PersistentPGDReconLoss.1.forward_loss": {
+      "wall_ms_max": 25.498729,
+      "wall_ms_avg": 25.08019375,
+      "gpu_active_ms_max": 16.63469970703125,
+      "gpu_active_ms_avg": 16.616553161621095,
+      "gpu_sum_ms_max": 16.63469970703125,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 24.667945,
+          "gpu_active_ms": 16.60217724609375,
+          "gpu_sum_ms": 16.60217724609375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 25.261805,
+          "gpu_active_ms": 16.62215087890625,
+          "gpu_sum_ms": 16.62215087890625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 25.044578,
+          "gpu_active_ms": 16.6174482421875,
+          "gpu_sum_ms": 16.6174482421875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 25.498729,
+          "gpu_active_ms": 16.62123046875,
+          "gpu_sum_ms": 16.62123046875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 25.352161,
+          "gpu_active_ms": 16.62417919921875,
+          "gpu_sum_ms": 16.62417919921875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 24.955064999999998,
+          "gpu_active_ms": 16.5813408203125,
+          "gpu_sum_ms": 16.5813408203125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 25.070403,
+          "gpu_active_ms": 16.63469970703125,
+          "gpu_sum_ms": 16.63469970703125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 24.790864000000003,
+          "gpu_active_ms": 16.62919873046875,
+          "gpu_sum_ms": 16.62919873046875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "ppgd_warmup.PersistentPGDReconLoss.1.source_grads": {
+      "wall_ms_max": 25.680229999999998,
+      "wall_ms_avg": 23.9008335,
+      "gpu_active_ms_max": 16.630802734375,
+      "gpu_active_ms_avg": 16.612951599121093,
+      "gpu_sum_ms_max": 16.630802734375,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 23.212363,
+          "gpu_active_ms": 16.60495849609375,
+          "gpu_sum_ms": 16.60495849609375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 24.048797999999998,
+          "gpu_active_ms": 16.59895361328125,
+          "gpu_sum_ms": 16.59895361328125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 23.690971,
+          "gpu_active_ms": 16.6101767578125,
+          "gpu_sum_ms": 16.6101767578125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 25.680229999999998,
+          "gpu_active_ms": 16.604357421875,
+          "gpu_sum_ms": 16.604357421875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 23.521877,
+          "gpu_active_ms": 16.630802734375,
+          "gpu_sum_ms": 16.630802734375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 23.531033,
+          "gpu_active_ms": 16.59463037109375,
+          "gpu_sum_ms": 16.59463037109375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 23.822396,
+          "gpu_active_ms": 16.629759765625,
+          "gpu_sum_ms": 16.629759765625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 23.699,
+          "gpu_active_ms": 16.6299736328125,
+          "gpu_sum_ms": 16.6299736328125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "ppgd_warmup.PersistentPGDReconLoss.1.source_step": {
+      "wall_ms_max": 5.40769,
+      "wall_ms_avg": 5.37182175,
+      "gpu_active_ms_max": 4.47827294921875,
+      "gpu_active_ms_avg": 4.471735717773438,
+      "gpu_sum_ms_max": 4.47827294921875,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 5.378787999999999,
+          "gpu_active_ms": 4.47632861328125,
+          "gpu_sum_ms": 4.47632861328125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.363386,
+          "gpu_active_ms": 4.4747646484375,
+          "gpu_sum_ms": 4.4747646484375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.342307,
+          "gpu_active_ms": 4.469140625,
+          "gpu_sum_ms": 4.469140625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.335074,
+          "gpu_active_ms": 4.47128369140625,
+          "gpu_sum_ms": 4.47128369140625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.40769,
+          "gpu_active_ms": 4.46643115234375,
+          "gpu_sum_ms": 4.46643115234375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.403783000000001,
+          "gpu_active_ms": 4.4682529296875,
+          "gpu_sum_ms": 4.4682529296875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.376158,
+          "gpu_active_ms": 4.4694111328125,
+          "gpu_sum_ms": 4.4694111328125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 5.367388,
+          "gpu_active_ms": 4.47827294921875,
+          "gpu_sum_ms": 4.47827294921875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "pre_optimizer_barrier": {
+      "wall_ms_max": 1.917867,
+      "wall_ms_avg": 1.459283125,
+      "gpu_active_ms_max": 1.4294150390625,
+      "gpu_active_ms_avg": 0.9808864135742188,
+      "gpu_sum_ms_max": 1.4294150390625,
+      "comm_ms_max": 1.42810302734375,
+      "comm_ms_avg": 0.9795826416015625,
+      "comm_sum_ms_max": 1.42810302734375,
+      "comm_count_max": 1,
+      "per_rank": [
+        {
+          "wall_ms": 1.89738,
+          "gpu_active_ms": 1.42636279296875,
+          "gpu_sum_ms": 1.42636279296875,
+          "comm_ms": 1.4250830078125,
+          "comm_sum_ms": 1.4250830078125,
+          "comm_count": 1
+        },
+        {
+          "wall_ms": 1.8641189999999999,
+          "gpu_active_ms": 1.38121923828125,
+          "gpu_sum_ms": 1.38121923828125,
+          "comm_ms": 1.379908203125,
+          "comm_sum_ms": 1.379908203125,
+          "comm_count": 1
+        },
+        {
+          "wall_ms": 1.917867,
+          "gpu_active_ms": 1.4294150390625,
+          "gpu_sum_ms": 1.4294150390625,
+          "comm_ms": 1.42810302734375,
+          "comm_sum_ms": 1.42810302734375,
+          "comm_count": 1
+        },
+        {
+          "wall_ms": 1.304584,
+          "gpu_active_ms": 0.8410595703125,
+          "gpu_sum_ms": 0.8410595703125,
+          "comm_ms": 0.83977978515625,
+          "comm_sum_ms": 0.83977978515625,
+          "comm_count": 1
+        },
+        {
+          "wall_ms": 0.504366,
+          "gpu_active_ms": 0.0148798828125,
+          "gpu_sum_ms": 0.0148798828125,
+          "comm_ms": 0.01343994140625,
+          "comm_sum_ms": 0.01343994140625,
+          "comm_count": 1
+        },
+        {
+          "wall_ms": 1.224098,
+          "gpu_active_ms": 0.74352294921875,
+          "gpu_sum_ms": 0.74352294921875,
+          "comm_ms": 0.7422431640625,
+          "comm_sum_ms": 0.7422431640625,
+          "comm_count": 1
+        },
+        {
+          "wall_ms": 1.801598,
+          "gpu_active_ms": 1.3259267578125,
+          "gpu_sum_ms": 1.3259267578125,
+          "comm_ms": 1.32464697265625,
+          "comm_sum_ms": 1.32464697265625,
+          "comm_count": 1
+        },
+        {
+          "wall_ms": 1.160253,
+          "gpu_active_ms": 0.684705078125,
+          "gpu_sum_ms": 0.684705078125,
+          "comm_ms": 0.68345703125,
+          "comm_sum_ms": 0.68345703125,
+          "comm_count": 1
+        }
+      ]
+    },
+    "target_forward_input_cache": {
+      "wall_ms_max": 192.47276000000002,
+      "wall_ms_avg": 64.365250375,
+      "gpu_active_ms_max": 191.02635205078124,
+      "gpu_active_ms_avg": 61.964740234375,
+      "gpu_sum_ms_max": 191.02635205078124,
+      "comm_ms_max": 184.065837890625,
+      "comm_ms_avg": 55.017664489746096,
+      "comm_sum_ms_max": 184.065837890625,
+      "comm_count_max": 1,
+      "per_rank": [
+        {
+          "wall_ms": 10.841369,
+          "gpu_active_ms": 7.13598046875,
+          "gpu_sum_ms": 7.13598046875,
+          "comm_ms": 0.19190380859375,
+          "comm_sum_ms": 0.19190380859375,
+          "comm_count": 1
+        },
+        {
+          "wall_ms": 142.463122,
+          "gpu_active_ms": 141.130470703125,
+          "gpu_sum_ms": 141.130470703125,
+          "comm_ms": 134.16722216796876,
+          "comm_sum_ms": 134.16722216796876,
+          "comm_count": 1
+        },
+        {
+          "wall_ms": 10.982935,
+          "gpu_active_ms": 7.03066259765625,
+          "gpu_sum_ms": 7.03066259765625,
+          "comm_ms": 0.09273583984375,
+          "comm_sum_ms": 0.09273583984375,
+          "comm_count": 1
+        },
+        {
+          "wall_ms": 11.55464,
+          "gpu_active_ms": 6.9788134765625,
+          "gpu_sum_ms": 6.9788134765625,
+          "comm_ms": 0.03913623046875,
+          "comm_sum_ms": 0.03913623046875,
+          "comm_count": 1
+        },
+        {
+          "wall_ms": 47.701929,
+          "gpu_active_ms": 46.2437265625,
+          "gpu_sum_ms": 46.2437265625,
+          "comm_ms": 39.29011279296875,
+          "comm_sum_ms": 39.29011279296875,
+          "comm_count": 1
+        },
+        {
+          "wall_ms": 41.800521999999994,
+          "gpu_active_ms": 40.422224609375,
+          "gpu_sum_ms": 40.422224609375,
+          "comm_ms": 33.5050732421875,
+          "comm_sum_ms": 33.5050732421875,
+          "comm_count": 1
+        },
+        {
+          "wall_ms": 192.47276000000002,
+          "gpu_active_ms": 191.02635205078124,
+          "gpu_sum_ms": 191.02635205078124,
+          "comm_ms": 184.065837890625,
+          "comm_sum_ms": 184.065837890625,
+          "comm_count": 1
+        },
+        {
+          "wall_ms": 57.104726,
+          "gpu_active_ms": 55.74969140625,
+          "gpu_sum_ms": 55.74969140625,
+          "comm_ms": 48.7892939453125,
+          "comm_sum_ms": 48.7892939453125,
+          "comm_count": 1
+        }
+      ]
+    },
+    "total_loss": {
+      "wall_ms_max": 0.650162,
+      "wall_ms_avg": 0.621809625,
+      "gpu_active_ms_max": 0.02364892578125,
+      "gpu_active_ms_avg": 0.02333203125,
+      "gpu_sum_ms_max": 0.02364892578125,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 0.6063289999999999,
+          "gpu_active_ms": 0.02361767578125,
+          "gpu_sum_ms": 0.02361767578125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.622738,
+          "gpu_active_ms": 0.0229140625,
+          "gpu_sum_ms": 0.0229140625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.628831,
+          "gpu_active_ms": 0.023392578125,
+          "gpu_sum_ms": 0.023392578125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.6051409999999999,
+          "gpu_active_ms": 0.0232939453125,
+          "gpu_sum_ms": 0.0232939453125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.650162,
+          "gpu_active_ms": 0.0231982421875,
+          "gpu_sum_ms": 0.0231982421875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.613889,
+          "gpu_active_ms": 0.02319775390625,
+          "gpu_sum_ms": 0.02319775390625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.6350439999999999,
+          "gpu_active_ms": 0.02364892578125,
+          "gpu_sum_ms": 0.02364892578125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 0.612343,
+          "gpu_active_ms": 0.02339306640625,
+          "gpu_sum_ms": 0.02339306640625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    },
+    "weight_deltas": {
+      "wall_ms_max": 4.896879,
+      "wall_ms_avg": 4.812996125,
+      "gpu_active_ms_max": 3.7534189453125,
+      "gpu_active_ms_avg": 3.742248291015625,
+      "gpu_sum_ms_max": 3.7534189453125,
+      "comm_ms_max": 0.0,
+      "comm_ms_avg": 0.0,
+      "comm_sum_ms_max": 0.0,
+      "comm_count_max": 0,
+      "per_rank": [
+        {
+          "wall_ms": 4.74985,
+          "gpu_active_ms": 3.736021484375,
+          "gpu_sum_ms": 3.736021484375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 4.741922,
+          "gpu_active_ms": 3.73984912109375,
+          "gpu_sum_ms": 3.73984912109375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 4.809226,
+          "gpu_active_ms": 3.7367568359375,
+          "gpu_sum_ms": 3.7367568359375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 4.761919,
+          "gpu_active_ms": 3.7456826171875,
+          "gpu_sum_ms": 3.7456826171875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 4.896879,
+          "gpu_active_ms": 3.7534189453125,
+          "gpu_sum_ms": 3.7534189453125,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 4.842864,
+          "gpu_active_ms": 3.73880419921875,
+          "gpu_sum_ms": 3.73880419921875,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 4.8406649999999996,
+          "gpu_active_ms": 3.743380859375,
+          "gpu_sum_ms": 3.743380859375,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        },
+        {
+          "wall_ms": 4.860644000000001,
+          "gpu_active_ms": 3.744072265625,
+          "gpu_sum_ms": 3.744072265625,
+          "comm_ms": 0.0,
+          "comm_sum_ms": 0.0,
+          "comm_count": 0
+        }
+      ]
+    }
+  }
+}
