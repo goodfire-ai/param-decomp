@@ -24,6 +24,7 @@ from param_decomp.configs import (
     IdentityCIErrorConfig,
     ImportanceMinimalityLossConfig,
     MetricConfigType,
+    OneHotCIPlotsConfig,
     PermutedCIPlotsConfig,
     PersistentPGDReconEvalConfig,
     PersistentPGDReconLossConfig,
@@ -63,6 +64,7 @@ from param_decomp.metrics.hidden_acts_recon_loss import (
 )
 from param_decomp.metrics.identity_ci_error import IdentityCIError
 from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLoss
+from param_decomp.metrics.one_hot_ci_plots import OneHotCIPlots
 from param_decomp.metrics.permuted_ci_plots import PermutedCIPlots
 from param_decomp.metrics.pgd_masked_recon_layerwise_loss import PGDReconLayerwiseLoss
 from param_decomp.metrics.pgd_masked_recon_loss import PGDReconLoss
@@ -216,6 +218,12 @@ def init_metric(
                 sampling=run_config.sampling,
                 identity_patterns=cfg.identity_patterns,
                 dense_patterns=cfg.dense_patterns,
+            )
+        case OneHotCIPlotsConfig():
+            metric = OneHotCIPlots(
+                model=model,
+                sampling=run_config.sampling,
+                input_magnitude=cfg.input_magnitude,
             )
         case StochasticReconLayerwiseLossConfig():
             metric = StochasticReconLayerwiseLoss(
