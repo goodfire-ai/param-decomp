@@ -17,6 +17,11 @@ ci_config:
       n_heads: 16
       max_len: 512
       rope_base: 10000.0
+  lr_schedule:  # Optional override; falls back to top-level lr_schedule when omitted.
+    start_val: 5e-5
+    fn_type: cosine
+    final_val_frac: 0.1
+    warmup_pct: 0.0
 sampling: continuous
 sigmoid_type: leaky_hard
 module_info:
@@ -44,10 +49,12 @@ loss_metric_configs:
   p_anneal_final_p: 0.4
   p_anneal_end_frac: 1.0
   eps: 1.0e-12
-- coeff: 0.5
-  classname: StochasticReconSubsetLoss
-  routing:
-    type: uniform_k_subset
+# - coeff: 0.5
+#   classname: StochasticReconSubsetLoss
+#   routing:
+#     type: uniform_k_subset
+- coeff: 6.0
+  classname: StochasticReconLayerwiseLoss
 - coeff: 0.5
   optimizer:
     type: adam
@@ -67,7 +74,7 @@ loss_metric_configs:
 - coeff: 10000000.0
   classname: FaithfulnessLoss
 lr_schedule:
-  start_val: 5.0e-05
+  start_val: 5.0e-04
   warmup_pct: 0.0
   final_val_frac: 0.1
   fn_type: cosine
