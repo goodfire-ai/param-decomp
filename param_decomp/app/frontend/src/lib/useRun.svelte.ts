@@ -17,6 +17,8 @@ type ClusterMapping = {
     data: ClusterMappingData;
     filePath: string;
     runWandbPath: string;
+    clusteringRunId: string;
+    iteration: number;
 };
 
 /**
@@ -133,6 +135,10 @@ export function useRun() {
                 if (interpretations.status === "uninitialized") {
                     fetchRunScopedData();
                 }
+                // Restore cluster mapping from backend if we don't have it locally
+                if (clusterMapping === null && status.cluster_mapping_path) {
+                    restoreClusterMapping(status.cluster_mapping_path);
+                }
             } else if (run.status === "loaded") {
                 run = { status: "error", error: "Backend state lost" };
             } else {
@@ -143,6 +149,23 @@ export function useRun() {
                 run = { status: "error", error: "Backend unreachable" };
             }
         }
+    }
+
+    /** Restore cluster mapping from a backend-persisted path (re-loads from file) */
+    function restoreClusterMapping(filePath: string) {
+        api.loadClusterMapping(filePath)
+            .then((result) => {
+                clusterMapping = {
+                    data: result.mapping,
+                    filePath,
+                    runWandbPath: run.status === "loaded" ? run.data.wandb_path : "",
+                    clusteringRunId: result.clustering_run_id,
+                    iteration: result.iteration,
+                };
+            })
+            .catch((err) => {
+                console.error("Failed to restore cluster mapping:", err);
+            });
     }
 
     /** Refresh prompts list (e.g., after generating new prompts) */
@@ -198,13 +221,22 @@ export function useRun() {
     }
 
     /** Set cluster mapping for the current run */
-    function setClusterMapping(data: ClusterMappingData, filePath: string, runWandbPath: string) {
-        clusterMapping = { data, filePath, runWandbPath };
+    function setClusterMapping(
+        data: ClusterMappingData,
+        filePath: string,
+        runWandbPath: string,
+        clusteringRunId: string,
+        iteration: number,
+    ) {
+        clusterMapping = { data, filePath, runWandbPath, clusteringRunId, iteration };
     }
 
-    /** Clear cluster mapping */
+    /** Clear cluster mapping (local state + backend) */
     function clearClusterMapping() {
         clusterMapping = null;
+        api.clearClusterMappingBackend().catch((err) => {
+            console.error("Failed to clear cluster mapping on backend:", err);
+        });
     }
 
     function getClusterId(layer: string, cIdx: number): number | null {

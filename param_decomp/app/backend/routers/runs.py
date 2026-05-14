@@ -45,6 +45,7 @@ class LoadedRun(BaseModel):
     dataset_search_enabled: bool
     graph_interp_available: bool
     autointerp_available: bool
+    cluster_mapping_path: str | None
 
 
 router = APIRouter(prefix="/api", tags=["runs"])
@@ -171,6 +172,7 @@ def get_status(manager: DepStateManager) -> LoadedRun | None:
         dataset_search_enabled=dataset_search_enabled,
         graph_interp_available=manager.run_state.graph_interp is not None,
         autointerp_available=manager.run_state.interp is not None,
+        cluster_mapping_path=manager.state.cluster_mapping_path,
     )
 
 

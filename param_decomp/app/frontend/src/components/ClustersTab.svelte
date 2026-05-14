@@ -11,7 +11,11 @@
 
 <div class="tab-wrapper">
     {#if clusterMapping}
-        <ClustersViewer clusterMappingData={clusterMapping.data} />
+        <ClustersViewer
+            clusterMappingData={clusterMapping.data}
+            clusteringRunId={clusterMapping.clusteringRunId}
+            iteration={clusterMapping.iteration}
+        />
     {:else}
         <StatusText
             >No clusters loaded. Use the cluster path input in the header bar to load a cluster mapping.</StatusText
