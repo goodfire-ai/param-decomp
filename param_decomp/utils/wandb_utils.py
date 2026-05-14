@@ -317,6 +317,7 @@ def init_wandb(
     run_id: str,
     name: str | None = None,
     tags: list[str] | None = None,
+    group: str | None = None,
 ) -> None:
     """Initialize Weights & Biases and log the config.
 
@@ -326,6 +327,7 @@ def init_wandb(
         run_id: The unique run ID (from ExecutionStamp).
         name: The name of the wandb run.
         tags: Optional list of tags to add to the run.
+        group: Optional WandB group name to bundle related runs.
     """
     wandb.init(
         id=run_id,
@@ -333,6 +335,7 @@ def init_wandb(
         entity=get_wandb_entity(),
         name=name,
         tags=tags,
+        group=group,
     )
     assert wandb.run is not None
     wandb.run.log_code(
@@ -347,7 +350,10 @@ def init_wandb(
         del config_dict["loss_metric_configs"]
     if "eval_metric_configs" in config_dict:
         del config_dict["eval_metric_configs"]
-    wandb.config.update({**config_dict, **flattened_config_dict})
+    # Promote extra_wandb_config keys to the top level so they're usable as
+    # group-by axes in chart panels (not just nested under extra_wandb_config.*).
+    extra = config_dict.pop("extra_wandb_config", {})
+    wandb.config.update({**config_dict, **flattened_config_dict, **extra})
 
 
 def ensure_project_exists(project: str) -> None:

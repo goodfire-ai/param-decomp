@@ -1,0 +1,10 @@
+global:
+  loss_metric_configs:
+    - classname: PersistentPGDReconSubsetLoss
+      scope:
+        values:
+          [
+            "single_mask",
+            "broadcast_across_batch",
+            "unique_per_batch_per_token",
+          ]
