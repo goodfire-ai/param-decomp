@@ -48,22 +48,22 @@ loss_metric_configs:
   classname: StochasticReconSubsetLoss
   routing:
     type: uniform_k_subset
-- coeff: 0.5
-  optimizer:
-    type: adam
-    beta1: 0.5
-    beta2: 0.99
-    eps: 1.0e-08
-    lr_schedule:
-      start_val: 0.01
-      warmup_pct: 0.025
-      final_val_frac: 1.0
-      fn_type: constant
-  scope:
-    type: per_batch_per_position
-  use_sigmoid_parameterization: false
-  n_warmup_steps: 2
-  classname: PersistentPGDReconLoss
+# - coeff: 0.5
+#   optimizer:
+#     type: adam
+#     beta1: 0.5
+#     beta2: 0.99
+#     eps: 1.0e-08
+#     lr_schedule:
+#       start_val: 0.01
+#       warmup_pct: 0.025
+#       final_val_frac: 1.0
+#       fn_type: constant
+#   scope:
+#     type: per_batch_per_position
+#   use_sigmoid_parameterization: false
+#   n_warmup_steps: 2
+#   classname: PersistentPGDReconLoss
 - coeff: 10000000.0
   classname: FaithfulnessLoss
 lr_schedule:
