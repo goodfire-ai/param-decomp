@@ -149,6 +149,7 @@ class TestDistributedDeterminicity:
             str(port),
             "-m",
             "param_decomp.experiments.runner",
+            "--config_path",
             str(config_path),
             "--driver",
             "param_decomp.experiments.lm.experiment:Driver",

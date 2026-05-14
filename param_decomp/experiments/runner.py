@@ -39,15 +39,20 @@ def _load_run_inputs(
     import path). Letting users point ``--config_path`` at saved metadata enables one-flag
     reruns of a finished experiment.
     """
-    assert (config_path is None) != (config_json is None), (
-        "Exactly one of config_path or config_json must be provided"
-    )
+    if (config_path is None) == (config_json is None):
+        raise ValueError("Pass exactly one of --config_path or --config_json.")
+
     if config_path is not None:
         with open(Path(config_path)) as f:
             data = yaml.safe_load(f)
     else:
-        assert config_json is not None
+        if config_json is None:
+            raise ValueError("Pass exactly one of --config_path or --config_json.")
         data = json.loads(config_json.removeprefix("json:"))
+
+    if not isinstance(data, dict):
+        raise ValueError("Config source must contain a YAML/JSON mapping.")
+
     if "driver" in data and "config" in data:
         metadata = RunMetadata.from_dict(data)
         return metadata.driver, metadata.config
@@ -62,10 +67,13 @@ def _resolve_inputs(
 ) -> tuple[str, dict[str, Any]]:
     """Resolve CLI inputs into (driver_path, config_dict)."""
     if experiment is not None:
-        assert config_path is None and config_json is None and driver is None, (
-            "Positional experiment name is mutually exclusive with "
-            "--config_path/--config_json/--driver"
-        )
+        if config_path is not None or config_json is not None or driver is not None:
+            raise ValueError(
+                "Choose one pd-run input mode: `pd-run <experiment>` for built-ins, "
+                "`pd-run --config_path <yaml-or-run_metadata.yaml> "
+                "[--driver <module:Driver>]` for config files, or launcher/internal "
+                "`pd-run --config_json <json> --driver <module:Driver>`."
+            )
         discovered = discover_experiments()
         if experiment not in discovered:
             available = ", ".join(sorted(discovered.keys()))
@@ -75,11 +83,20 @@ def _resolve_inputs(
             config_data = yaml.safe_load(f)
         return exp.driver_path, config_data
 
+    if config_path is None and config_json is None:
+        raise ValueError(
+            "No run input provided. Use `pd-run <experiment>`, "
+            "`pd-run --config_path <yaml-or-run_metadata.yaml> [--driver <module:Driver>]`, "
+            "or launcher/internal `pd-run --config_json <json> --driver <module:Driver>`."
+        )
+
     driver_from_metadata, config_data = _load_run_inputs(config_path, config_json)
     resolved_driver = driver if driver is not None else driver_from_metadata
-    assert resolved_driver is not None, (
-        "No driver provided and config has no driver field; pass --driver"
-    )
+    if resolved_driver is None:
+        raise ValueError(
+            "Raw experiment configs require --driver <module:Driver>. "
+            "Saved run_metadata.yaml files include their own driver."
+        )
     return resolved_driver, config_data
 
 
@@ -151,12 +168,13 @@ def main(
 
     Args:
         experiment: Built-in experiment name (e.g. 'tms_5-2'). Resolves the driver and YAML
-            config via discover_experiments(). Mutually exclusive with --config_path/--driver.
+            config via discover_experiments(). Mutually exclusive with --config_path,
+            --config_json, and --driver.
         config_path: Path to an experiment YAML or a saved run_metadata.yaml.
         config_json: JSON-encoded config dict (may be ``json:``-prefixed). Used by the SLURM
             launcher to pass an in-memory config without writing to disk.
         driver: Driver import path ``pkg.module:ClassName``. Required with --config_path
-            unless the config is a saved run_metadata.yaml (which carries its own driver).
+            unless the config is a saved run_metadata.yaml, which carries its own driver.
         cpu: Force CPU execution by hiding all CUDA devices from this process.
         evals_id, launch_id, run_id, sweep_params_json: Set by the launcher; you generally
             don't need to pass these manually.
@@ -165,6 +183,7 @@ def main(
         pd-run tms_5-2                                # built-in by name
         pd-run tms_5-2 --cpu                          # built-in on CPU
         pd-run --config_path my.yaml --driver pkg:Driver   # custom driver
+        pd-run --config_path run_metadata.yaml         # rerun from saved metadata
     """
     if cpu:
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
