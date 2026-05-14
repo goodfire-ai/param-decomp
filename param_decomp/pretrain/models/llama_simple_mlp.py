@@ -4,8 +4,6 @@ This model is the same as LlamaSimple but replaces the SwiGLU MLP with a
 standard GELU MLP (like GPT-2).
 """
 
-from __future__ import annotations
-
 import inspect
 import math
 from pathlib import Path
@@ -373,8 +371,7 @@ class LlamaSimpleMLP(LoadableModule):
         return logits, loss
 
     @classmethod
-    @override
-    def from_run_info(cls, run_info: PretrainRunInfo) -> LlamaSimpleMLP:  # pyright: ignore[reportIncompatibleMethodOverride]
+    def from_run_info(cls, run_info: PretrainRunInfo) -> "LlamaSimpleMLP":
         """Create a LlamaSimpleMLP model from a PretrainRunInfo, loading weights from its checkpoint."""
         model = cls(LlamaSimpleMLPConfig(**run_info.model_config_dict))
         state_dict = torch.load(run_info.checkpoint_path, map_location="cpu", weights_only=True)
@@ -383,7 +380,7 @@ class LlamaSimpleMLP(LoadableModule):
 
     @classmethod
     @override
-    def from_pretrained(cls, model_path: str | Path) -> LlamaSimpleMLP:
+    def from_pretrained(cls, model_path: str | Path) -> "LlamaSimpleMLP":
         """Create a LlamaSimpleMLP model from a wandb string or a local path."""
         from param_decomp.pretrain.run_info import PretrainRunInfo
 

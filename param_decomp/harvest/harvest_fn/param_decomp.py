@@ -2,16 +2,14 @@ from typing import override
 
 import torch
 
-from param_decomp.adapters.param_decomp import ParamDecompAdapter
+from param_decomp.adapters.param_decomp import PDAdapter
 from param_decomp.harvest.config import ParamDecompHarvestConfig
 from param_decomp.harvest.harvest_fn.base import HarvestFn
 from param_decomp.harvest.schemas import HarvestBatch
 
 
 class ParamDecompHarvestFn(HarvestFn):
-    def __init__(
-        self, config: ParamDecompHarvestConfig, adapter: ParamDecompAdapter, device: torch.device
-    ):
+    def __init__(self, config: ParamDecompHarvestConfig, adapter: PDAdapter, device: torch.device):
         self._adapter = adapter
         self._activation_threshold = config.activation_threshold
         self._device = device

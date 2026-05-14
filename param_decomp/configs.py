@@ -1,6 +1,6 @@
 """Config classes of various types"""
 
-from typing import Annotated, Any, ClassVar, Literal, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import (
     Field,
@@ -12,7 +12,6 @@ from pydantic import (
 )
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.log import logger
 from param_decomp.param_decomp_types import (
     GlobalCiFnType,
     LayerwiseCiFnType,
@@ -95,26 +94,6 @@ class GlobalCiConfig(BaseConfig):
     )
     simple_transformer_ci_cfg: GlobalSharedTransformerCiConfig | None = None
 
-    _DELETED_GLOBAL_REVERSE_RESIDUAL_KEYS: ClassVar[list[str]] = [
-        "reader_hidden_dims",
-        "d_resid_ci_fn",
-        "block_groups",
-        "transition_attn_config",
-        "transition_hidden_dim",
-    ]
-
-    @model_validator(mode="before")
-    @classmethod
-    def drop_deleted_global_reverse_residual_keys(cls, data: dict[str, Any]) -> dict[str, Any]:
-        for key in cls._DELETED_GLOBAL_REVERSE_RESIDUAL_KEYS:
-            if key in data:
-                assert data[key] is None, (
-                    f"{key} was removed with the global_reverse_residual CI fn; "
-                    f"got non-None value {data[key]!r}"
-                )
-                del data[key]
-        return data
-
     @model_validator(mode="after")
     def validate_ci_config(self) -> Self:
         if self.fn_type == "global_shared_mlp":
@@ -153,31 +132,6 @@ class ScheduleConfig(BaseConfig):
         return self
 
 
-def migrate_to_lr_schedule_config(config_dict: dict[str, Any]) -> None:
-    """Migrate old LR config format (lr + lr_schedule + lr_warmup_pct) to ScheduleConfig.
-
-    Modifies config_dict in place.
-    """
-    if "lr" not in config_dict:
-        return
-
-    logger.info("Migrating old LR config format to ScheduleConfig")
-
-    old_lr = config_dict.pop("lr")
-    old_fn_type = config_dict.pop("lr_schedule", "constant")
-    old_warmup_pct = config_dict.pop("lr_warmup_pct", 0.0)
-
-    # Old cosine decayed to 0, old constant stayed at 1
-    final_val_frac = 0.0 if old_fn_type == "cosine" else 1.0
-
-    config_dict["lr_schedule"] = {
-        "start_val": old_lr,
-        "fn_type": old_fn_type,
-        "warmup_pct": old_warmup_pct,
-        "final_val_frac": final_val_frac,
-    }
-
-
 class ModulePatternInfoConfig(BaseConfig):
     """Configuration for a module pattern with its number of components.
 
@@ -211,22 +165,6 @@ class ImportanceMinimalityLossConfig(LossMetricConfig):
     p_anneal_final_p: NonNegativeFloat | None = None
     p_anneal_end_frac: Probability = 1.0
     eps: NonNegativeFloat = 1e-12
-
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_old_fields(cls, data: dict[str, Any]) -> dict[str, Any]:
-        # Migrate pnorm_1 to pnorm (intermediate format)
-        if "pnorm_1" in data and "pnorm" not in data:
-            data["pnorm"] = data.pop("pnorm_1")
-        elif "pnorm_1" in data:
-            data.pop("pnorm_1")
-        # Remove deprecated pnorm_2
-        data.pop("pnorm_2", None)
-        # Default beta if missing
-        if "beta" not in data:
-            logger.warning("beta not in ImportanceMinimalityLossConfig, defaulting to 0.0")
-            data["beta"] = 0.0
-        return data
 
 
 class UniformKSubsetRoutingConfig(BaseConfig):
@@ -324,18 +262,6 @@ class SignPGDConfig(BaseConfig):
     type: Literal["sign"] = "sign"
     lr_schedule: ScheduleConfig
 
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_step_size(cls, data: Any) -> Any:
-        if isinstance(data, dict) and "step_size" in data and "lr_schedule" not in data:
-            data["lr_schedule"] = {
-                "start_val": data.pop("step_size"),
-                "warmup_pct": 0.0,
-                "final_val_frac": 1.0,
-                "fn_type": "constant",
-            }
-        return data
-
 
 class AdamPGDConfig(BaseConfig):
     type: Literal["adam"] = "adam"
@@ -343,18 +269,6 @@ class AdamPGDConfig(BaseConfig):
     beta2: Probability = Field(default=0.999, description="Adam beta2 for masks")
     eps: NonNegativeFloat = Field(default=1e-8, description="Adam epsilon for masks")
     lr_schedule: ScheduleConfig
-
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_lr(cls, data: Any) -> Any:
-        if isinstance(data, dict) and "lr" in data and "lr_schedule" not in data:
-            data["lr_schedule"] = {
-                "start_val": data.pop("lr"),
-                "warmup_pct": 0.0,
-                "final_val_frac": 1.0,
-                "fn_type": "constant",
-            }
-        return data
 
 
 PGDOptimizerConfig = SignPGDConfig | AdamPGDConfig
@@ -398,27 +312,6 @@ PersistentPGDSourceScope = Annotated[
 ]
 
 
-def _coerce_ppgd_scope(config_dict: dict[str, Any]) -> None:
-    """Backwards compat: migrate old scope format/names to current names."""
-    scope = config_dict.get("scope")
-    if isinstance(scope, str):
-        scope = {"type": scope}
-        config_dict["scope"] = scope
-    if not isinstance(scope, dict):
-        return
-    match scope.get("type"):
-        case "single_mask":
-            scope["type"] = "single_source"
-        case "batch_invariant":
-            scope["type"] = "repeat_across_batch"
-            if "n_masks" in scope:
-                scope["n_sources"] = scope.pop("n_masks")
-        case "per_batch" | "unique_per_batch_per_token":
-            scope["type"] = "per_batch_per_position"
-        case _:
-            pass
-
-
 class _PersistentPGDBaseConfig(LossMetricConfig):
     """Shared fields for persistent PGD configs.
 
@@ -440,13 +333,6 @@ class _PersistentPGDBaseConfig(LossMetricConfig):
     ] = 0
     start_frac: Probability = 0.0
     n_samples: PositiveInt = 1
-
-    @model_validator(mode="before")
-    @classmethod
-    def _compat_scope(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            _coerce_ppgd_scope(data)
-        return data
 
 
 class PersistentPGDReconLossConfig(_PersistentPGDBaseConfig):
@@ -540,12 +426,6 @@ class PermutedCIPlotsConfig(BaseConfig):
     classname: Literal["PermutedCIPlots"] = "PermutedCIPlots"
     identity_patterns: list[str] | None
     dense_patterns: list[str] | None
-
-    @model_validator(mode="before")
-    def handle_deprecated_config_keys(cls, config_dict: dict[str, Any]) -> dict[str, Any]:
-        """Remove deprecated config keys and change names of any keys that have been renamed."""
-        config_dict.pop("sigmoid_type", None)
-        return config_dict
 
 
 class StochasticReconSubsetCEAndKLConfig(BaseConfig):
@@ -679,10 +559,7 @@ class PDConfig(BaseConfig):
     # --- General ---
     seed: int = Field(
         default=0,
-        description=(
-            "Random seed for reproducibility. LM dataset shuffling uses data.dataset_seed when "
-            "that field is set."
-        ),
+        description="Random seed for reproducibility, including LM dataset shuffling.",
     )
     autocast_bf16: bool = Field(
         default=True,
@@ -826,160 +703,6 @@ class PDConfig(BaseConfig):
         default=0.0,
         description="Causal importance threshold above which a component is considered 'firing'",
     )
-
-    DEPRECATED_CONFIG_KEYS: ClassVar[list[str]] = [
-        "image_on_first_step",
-        "image_freq",
-        "metrics_fns",
-        "figures_fns",
-        "schatten_coeff",
-        "embedding_recon_coeff",
-        "is_embed_unembed_recon",
-        "out_recon_coeff",
-        "faithfulness_coeff",
-        "stochastic_recon_coeff",
-        "stochastic_recon_layerwise_coeff",
-        "recon_coeff",
-        "recon_layerwise_coeff",
-        "ci_recon_coeff",
-        "ci_recon_layerwise_coeff",
-        "pnorm",
-        "p_anneal_start_frac",
-        "p_anneal_final_p",
-        "p_anneal_end_frac",
-        "importance_minimality_coeff",
-        "dist_backend",
-        "lr_exponential_halflife",
-        "out_dir",
-        "n_examples_until_dead",
-        "output_loss_type",
-        "gradient_accumulation_steps",
-    ]
-    RENAMED_CONFIG_KEYS: ClassVar[dict[str, str]] = {
-        "grad_clip_norm": "grad_clip_norm_components",
-        "print_freq": "eval_freq",
-        "pretrained_model_name_hf": "pretrained_model_name",
-        "recon_coeff": "ci_recon_coeff",
-        "recon_layerwise_coeff": "ci_recon_layerwise_coeff",
-        "init_spd_checkpoint": "init_pd_checkpoint",
-    }
-
-    @model_validator(mode="before")
-    def handle_deprecated_config_keys(cls, config_dict: dict[str, Any]) -> dict[str, Any]:
-        """Remove deprecated config keys and change names of any keys that have been renamed."""
-
-        for old_key in ("loss_metric_configs", "eval_metric_configs"):
-            assert old_key not in config_dict, (
-                f"`{old_key}` was replaced by `{old_key.removesuffix('_configs') + 's'}` "
-                f"(a dict of named loss configs). Update your config to the new format."
-            )
-
-        cls._migrate_to_module_info(config_dict)
-        cls._migrate_to_ci_config(config_dict)
-        cls._strip_deprecated_global_ci_fields(config_dict)
-        migrate_to_lr_schedule_config(config_dict)
-
-        for key in list(config_dict.keys()):
-            val = config_dict[key]
-            if key in cls.DEPRECATED_CONFIG_KEYS:
-                logger.warning(f"{key} is deprecated, but has value: {val}. Removing from config.")
-                del config_dict[key]
-
-            elif key in cls.RENAMED_CONFIG_KEYS:
-                logger.info(f"Renaming {key} to {cls.RENAMED_CONFIG_KEYS[key]}")
-                config_dict[cls.RENAMED_CONFIG_KEYS[key]] = val
-                del config_dict[key]
-
-        if "eval_batch_size" not in config_dict:
-            config_dict["eval_batch_size"] = config_dict["batch_size"]
-        if "train_log_freq" not in config_dict:
-            config_dict["train_log_freq"] = 50
-        if "slow_eval_freq" not in config_dict:
-            config_dict["slow_eval_freq"] = config_dict["eval_freq"]
-        return config_dict
-
-    @classmethod
-    def _migrate_to_module_info(cls, config_dict: dict[str, Any]) -> None:
-        """Migrate old config format (C + target_module_patterns) to new module_info format."""
-        cond = "C" in config_dict or "target_module_patterns" in config_dict
-        if not cond:
-            return
-
-        logger.warning(
-            "Found old config keys for C definition, mapping old structure to new module_info structure"
-        )
-        global_c = config_dict["C"]
-        config_dict["module_info"] = [
-            {"module_pattern": p, "C": global_c} for p in config_dict["target_module_patterns"]
-        ]
-        del config_dict["C"]
-        del config_dict["target_module_patterns"]
-
-        identity_patterns = config_dict.pop("identity_module_patterns", None)
-        if identity_patterns is not None:
-            config_dict["identity_module_info"] = [
-                {"module_pattern": p, "C": global_c} for p in identity_patterns
-            ]
-
-    @classmethod
-    def _migrate_to_ci_config(cls, config_dict: dict[str, Any]) -> None:
-        """Migrate old ci_fn_type/ci_fn_hidden_dims/use_global_ci to new ci_config structure."""
-        has_old_fields = (
-            "ci_fn_type" in config_dict
-            or "ci_fn_hidden_dims" in config_dict
-            or "use_global_ci" in config_dict
-        )
-        if not has_old_fields:
-            return
-
-        logger.info(
-            "Migrating old ci_fn_type/ci_fn_hidden_dims/use_global_ci to ci_config structure"
-        )
-
-        ci_fn_type = config_dict.pop("ci_fn_type", "vector_mlp")
-        ci_fn_hidden_dims = config_dict.pop("ci_fn_hidden_dims", [8])
-        use_global_ci = config_dict.pop("use_global_ci", False)
-
-        # Determine if this is a global CI function
-        is_global = use_global_ci or ci_fn_type.startswith("global_")
-
-        if is_global:
-            # Map layerwise type to global type if use_global_ci was set
-            if not ci_fn_type.startswith("global_"):
-                ci_fn_type = "global_shared_mlp"
-            config_dict["ci_config"] = {
-                "mode": "global",
-                "fn_type": ci_fn_type,
-                "hidden_dims": ci_fn_hidden_dims,
-            }
-        else:
-            config_dict["ci_config"] = {
-                "mode": "layerwise",
-                "fn_type": ci_fn_type,
-                "hidden_dims": ci_fn_hidden_dims,
-            }
-
-    @classmethod
-    def _strip_deprecated_global_ci_fields(cls, config_dict: dict[str, Any]) -> None:
-        """Drop fields from the deleted GlobalReverseResidualCiFn architecture (commit f869a6d5)."""
-        ci_config = config_dict.get("ci_config")
-        if not isinstance(ci_config, dict) or ci_config.get("mode") != "global":
-            return
-        deprecated = (
-            "reader_hidden_dims",
-            "d_resid_ci_fn",
-            "block_groups",
-            "transition_attn_config",
-            "transition_hidden_dim",
-        )
-        for key in deprecated:
-            if key in ci_config:
-                val = ci_config.pop(key)
-                if val is not None:
-                    logger.warning(
-                        f"Dropping deprecated ci_config.{key}={val} "
-                        "(GlobalReverseResidualCiFn was removed)"
-                    )
 
     @model_validator(mode="after")
     def validate_model(self) -> Self:

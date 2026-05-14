@@ -18,6 +18,8 @@ import torch
 from param_decomp.clustering.harvest_config import HarvestConfig
 from param_decomp.clustering.memberships import collect_memberships
 from param_decomp.clustering.paths import clustering_harvest_dir, new_harvest_id
+from param_decomp.experiments.lm.data import build_lm_dataloaders
+from param_decomp.experiments.lm.experiment import LMExperimentConfig
 from param_decomp.load import load_pd
 from param_decomp.log import logger
 from param_decomp.models.component_model import PDRunInfo
@@ -35,17 +37,26 @@ def harvest(config: HarvestConfig) -> Path:
     config.to_file(out / "harvest_config.json")
 
     device = get_device()
+
     pd_run = PDRunInfo.from_path(config.model_path)
-    exp = pd_run.experiment_config
-    task_name = exp.kind
+    if isinstance(pd_run.experiment_config, LMExperimentConfig):
+        dataloader, _ = build_lm_dataloaders(
+            pd_run.experiment_config.data,
+            train_batch_size=config.batch_size,
+            eval_batch_size=config.batch_size,
+            dist_state=None,
+            seed=config.dataset_seed,
+        )
+    else:
+        dataloader, _ = pd_run.build_dataloaders(
+            train_batch_size=config.batch_size,
+            eval_batch_size=config.batch_size,
+        )
+
     target = pd_run.load_target()
     model = load_pd(config.model_path, target=target).to(device)
-    dataloader, _ = pd_run.build_dataloaders(
-        seed=config.dataset_seed,
-        train_batch_size=config.batch_size,
-        eval_batch_size=config.batch_size,
-    )
 
+    task_name = pd_run.manifest.kind
     processed = collect_memberships(model, dataloader, task_name, device, config)
 
     del model

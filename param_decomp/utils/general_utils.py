@@ -137,23 +137,6 @@ def get_scheduled_value(step: int, total_steps: int, config: ScheduleConfig) -> 
             return config.start_val * multiplier
 
 
-def replace_deprecated_param_names(
-    params: dict[str, Float[Tensor, "..."]], name_map: dict[str, str]
-) -> dict[str, Float[Tensor, "..."]]:
-    """Replace old parameter names with new parameter names in a dictionary.
-
-    Args:
-        params: The dictionary of parameters to fix
-        name_map: A dictionary mapping old parameter names to new parameter names
-    """
-    for k in list(params.keys()):
-        for old_name, new_name in name_map.items():
-            if old_name in k:
-                params[k.replace(old_name, new_name)] = params[k]
-                del params[k]
-    return params
-
-
 def resolve_class(path: str) -> type[nn.Module]:
     """Load a class from a string indicating its import path.
 

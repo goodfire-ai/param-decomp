@@ -147,7 +147,6 @@ def app_with_state():
                 streaming=False,
                 buffer_size=1000,
                 shuffle_each_epoch=True,
-                dataset_seed=None,
             ),
         )
         run_state = RunState(

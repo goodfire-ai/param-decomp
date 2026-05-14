@@ -91,17 +91,10 @@ def run_r_sweep(
 
     logger.info("Creating validation data loader...")
     eval_loader, _tokenizer = create_lm_data_loader(
-        dataset_name=data.dataset_name,
-        tokenizer_name=data.tokenizer_name,
+        data,
         split=data.eval_split,
-        max_seq_len=data.max_seq_len,
-        is_tokenized=data.is_tokenized,
-        streaming=data.streaming,
-        column_name=data.column_name,
         batch_size=config.eval_batch_size,
-        buffer_size=data.buffer_size,
-        seed=data.dataset_seed if data.dataset_seed is not None else config.seed,
-        shuffle_each_epoch=False,
+        seed=config.seed + 1,
     )
 
     logger.info(f"Collecting {n_batches} validation batches...")

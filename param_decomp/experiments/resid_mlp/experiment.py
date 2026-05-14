@@ -4,16 +4,15 @@ This file is the full runtime definition for the ResidMLP experiment: serializab
 target loading, dataloaders, and driver registration.
 """
 
-from __future__ import annotations
-
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, Literal, override
 
 import torch
 from pydantic import Field
 from torch import Tensor
 from torch.utils.data import DataLoader
 
+from param_decomp import ExperimentDriver
 from param_decomp.base_config import BaseConfig
 from param_decomp.experiments.driver import (
     ExperimentConfig,
@@ -59,7 +58,6 @@ class ResidMLPDataConfig(BaseConfig):
 
 
 class ResidMLPExperimentConfig(ExperimentConfig):
-    kind: str = "resid_mlp"
     target: ResidMLPTargetConfig
     data: ResidMLPDataConfig
 
@@ -76,7 +74,6 @@ def load_resid_mlp_target(
         model=target_model,
         run_batch=run_batch_first_element,
         reconstruction_loss=recon_loss_mse,
-        name="resid_mlp",
     )
     return target, run_info
 
@@ -128,10 +125,18 @@ def _load_train_config(
     return ResidMLPTargetRunInfo.from_path(target_cfg.run_path).config
 
 
-class Driver:
-    kind: ClassVar[str] = "resid_mlp"
-    config_model: ClassVar[type[ResidMLPExperimentConfig]] = ResidMLPExperimentConfig
+class Driver(ExperimentDriver[ResidMLPExperimentConfig]):
+    @property
+    @override
+    def kind(self) -> str:
+        return "resid_mlp"
 
+    @property
+    @override
+    def config_model(self) -> type[ResidMLPExperimentConfig]:
+        return ResidMLPExperimentConfig
+
+    @override
     def prepare(
         self,
         experiment_config: ResidMLPExperimentConfig,
@@ -160,9 +165,9 @@ class Driver:
             train_loader=train_loader,
             eval_loader=eval_loader,
             artifacts=artifacts,
-            tags=(self.kind,),
         )
 
+    @override
     def load_target(
         self, experiment_config: ResidMLPExperimentConfig, *, run_dir: Path | None = None
     ) -> PDTarget:
@@ -179,21 +184,20 @@ class Driver:
             model=target_model,
             run_batch=run_batch_first_element,
             reconstruction_loss=recon_loss_mse,
-            name=self.kind,
         )
 
+    @override
     def build_dataloaders(
         self,
         experiment_config: ResidMLPExperimentConfig,
         *,
-        seed: int | None = None,
         train_batch_size: int,
         eval_batch_size: int,
         dist_state: DistributedState | None = None,
         device: str = "cpu",
         run_dir: Path | None = None,
     ) -> tuple[DataLoader[Any], DataLoader[Any]]:
-        _ = seed, dist_state
+        _ = dist_state
         train_config = _load_train_config(experiment_config.target, run_dir)
         return build_resid_mlp_dataloaders(
             experiment_config.data,
@@ -203,5 +207,6 @@ class Driver:
             device=device,
         )
 
+    @override
     def display_name(self, experiment_config: ResidMLPExperimentConfig) -> str:
         return f"ResidMLP: {experiment_config.target.run_path}"

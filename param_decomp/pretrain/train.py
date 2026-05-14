@@ -23,7 +23,7 @@ import warnings
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
-from typing import Any, ClassVar, Literal, cast
+from typing import Any, Literal, cast
 
 import fire
 import numpy as np
@@ -41,14 +41,13 @@ from pydantic import (
     NonNegativeInt,
     PositiveFloat,
     PositiveInt,
-    model_validator,
 )
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.experiments.lm.data import (
-    LMDataLoaderConfig,
+    LMDataConfig,
     create_lm_data_loader,
 )
 from param_decomp.log import logger
@@ -148,8 +147,8 @@ class Config(BaseConfig):
     wandb_project: str | None = Field(
         None, description="WandB project name. If None, will not use WandB."
     )
-    train_dataset_config: LMDataLoaderConfig = Field(..., description="Dataset config for training")
-    val_dataset_config: LMDataLoaderConfig = Field(..., description="Dataset config for validation")
+    seed: int = Field(45, description="Random seed for model initialization and data loading")
+    data: LMDataConfig = Field(..., description="Dataset config (train + eval splits)")
     output_dir: Path = Field(
         PARAM_DECOMP_OUT_DIR / "target_models",
         description="Directory to write logs and checkpoints",
@@ -191,26 +190,17 @@ class Config(BaseConfig):
         None, description="Path to a wandb string or a local path to a checkpoint to finetune from"
     )
 
-    DEPRECATED_CONFIG_KEYS: ClassVar[list[str]] = ["flash_attention"]
-
-    @model_validator(mode="before")
-    @classmethod
-    def handle_deprecated_config_keys(cls, config_dict: dict[str, Any]) -> dict[str, Any]:
-        for key in list(config_dict.keys()):
-            if key in cls.DEPRECATED_CONFIG_KEYS:
-                log0(
-                    f"{key} is deprecated in the top-level config (use model config instead). Removing."
-                )
-                del config_dict[key]
-        return config_dict
-
 
 def main(config_path_or_obj: Path | str | Config | None = None) -> None:
     log0(f"Running pytorch {torch.__version__}")
     load_dotenv(override=True)
     config = load_config(config_path_or_obj, config_model=Config)
 
-    T = config.train_dataset_config.n_ctx - 1  # Training sequence length (positions to train on)
+    assert config.data.max_seq_len == config.model.block_size + 1, (
+        f"data.max_seq_len ({config.data.max_seq_len}) must be model.block_size "
+        f"({config.model.block_size}) + 1 to provide room for next-token label indexing"
+    )
+    T = config.data.max_seq_len - 1  # Training sequence length (positions to train on)
 
     # set up DDP (distributed data parallel). torchrun sets this env variable
     ddp = int(os.environ.get("RANK", -1)) != -1
@@ -265,9 +255,9 @@ def main(config_path_or_obj: Path | str | Config | None = None) -> None:
     )
 
     # rng / reproducibility
-    torch.manual_seed(45)
+    torch.manual_seed(config.seed)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed(45)
+        torch.cuda.manual_seed(config.seed)
 
     # TF32
     if config.tensorcores:
@@ -299,38 +289,20 @@ def main(config_path_or_obj: Path | str | Config | None = None) -> None:
         log0("compiling the model...")
         model = cast(nn.Module, torch.compile(model))  # type: ignore[reportArgumentType]
 
-    train_dataset_config = config.train_dataset_config
-    train_seed = train_dataset_config.seed if train_dataset_config.seed is not None else 0
     train_loader, train_tokenizer = create_lm_data_loader(
-        dataset_name=train_dataset_config.name,
-        tokenizer_name=train_dataset_config.hf_tokenizer_path,
-        split=train_dataset_config.split,
-        max_seq_len=train_dataset_config.n_ctx,
-        is_tokenized=train_dataset_config.is_tokenized,
-        streaming=train_dataset_config.streaming,
-        column_name=train_dataset_config.column_name,
+        config.data,
+        split=config.data.train_split,
         batch_size=B,
-        buffer_size=1000,
-        seed=train_seed,
-        shuffle_each_epoch=train_dataset_config.shuffle_each_epoch,
+        seed=config.seed,
         dist_state=dist_state,
     )
     train_iter = iter(train_loader)
 
-    val_dataset_config = config.val_dataset_config
-    val_seed = val_dataset_config.seed if val_dataset_config.seed is not None else 0
     val_loader, _ = create_lm_data_loader(
-        dataset_name=val_dataset_config.name,
-        tokenizer_name=val_dataset_config.hf_tokenizer_path,
-        split=val_dataset_config.split,
-        max_seq_len=val_dataset_config.n_ctx,
-        is_tokenized=val_dataset_config.is_tokenized,
-        streaming=val_dataset_config.streaming,
-        column_name=val_dataset_config.column_name,
+        config.data,
+        split=config.data.eval_split,
         batch_size=B,
-        buffer_size=1000,
-        seed=val_seed,
-        shuffle_each_epoch=val_dataset_config.shuffle_each_epoch,
+        seed=config.seed + 1,
         dist_state=None,  # Don't split validation data - all ranks evaluate same data
     )
 

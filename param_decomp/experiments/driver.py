@@ -5,30 +5,24 @@ Experiment drivers are the boundary layer that turns a serializable experiment c
 into those runtime objects.
 """
 
-from __future__ import annotations
-
 from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any, Protocol
 
-if TYPE_CHECKING:
-    from torch.utils.data import DataLoader
-
-    from param_decomp.models.batch_and_loss_fns import PDTarget
-    from param_decomp.utils.distributed_utils import DistributedState
+from torch.utils.data import DataLoader
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import PDConfig
+from param_decomp.models.batch_and_loss_fns import PDTarget
+from param_decomp.utils.distributed_utils import DistributedState
 
 
 class ExperimentConfig(BaseConfig):
     """Pure-data config shared by all experiment configs."""
 
-    kind: str
     pd: PDConfig
-    metadata: dict[str, Any] | None = None
 
 
 class ExperimentManifest(BaseConfig):
@@ -51,22 +45,18 @@ class ExperimentManifest(BaseConfig):
         *,
         kind: str = "manual",
         driver: str | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> ExperimentManifest:
+    ) -> "ExperimentManifest":
         """Build a manifest for direct `run_pd` callers without a full experiment config."""
         experiment_config: dict[str, Any] = {
-            "kind": kind,
             "pd": pd_config.model_dump(mode="json"),
         }
-        if metadata is not None:
-            experiment_config["metadata"] = metadata
         return cls(
             kind=kind,
             driver=driver,
             experiment_config=experiment_config,
         )
 
-    def with_artifacts(self, artifact_filenames: Sequence[str]) -> ExperimentManifest:
+    def with_artifacts(self, artifact_filenames: Sequence[str]) -> "ExperimentManifest":
         return self.model_copy(update={"artifact_filenames": list(artifact_filenames)})
 
 
@@ -87,14 +77,16 @@ class PreparedExperiment:
     train_loader: DataLoader[Any]
     eval_loader: DataLoader[Any]
     artifacts: Sequence[RunArtifact] = ()
-    tags: Sequence[str] = ()
 
 
 class ExperimentDriver[ConfigT: ExperimentConfig](Protocol):
     """Converts a serializable experiment config into runtime PD objects."""
 
-    kind: str
-    config_model: type[ConfigT]
+    @property
+    def kind(self) -> str: ...
+
+    @property
+    def config_model(self) -> type[ConfigT]: ...
 
     def prepare(
         self,
@@ -112,7 +104,6 @@ class ExperimentDriver[ConfigT: ExperimentConfig](Protocol):
         self,
         experiment_config: ConfigT,
         *,
-        seed: int | None = None,
         train_batch_size: int,
         eval_batch_size: int,
         dist_state: DistributedState | None = None,
@@ -124,7 +115,7 @@ class ExperimentDriver[ConfigT: ExperimentConfig](Protocol):
 
 
 def load_driver(driver_path: str) -> ExperimentDriver[Any]:
-    """Load a driver object or no-arg driver class from `module:attr`."""
+    """Load a driver object or no-arg driver class from a `module:attr` import path."""
     module_path, sep, attr = driver_path.partition(":")
     if sep == "":
         raise ValueError(f"Driver path must be of the form 'module:attr', got {driver_path!r}")

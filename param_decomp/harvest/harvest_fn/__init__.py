@@ -2,7 +2,7 @@ import torch
 
 from param_decomp.adapters.base import DecompositionAdapter
 from param_decomp.adapters.clt import CLTAdapter
-from param_decomp.adapters.param_decomp import ParamDecompAdapter
+from param_decomp.adapters.param_decomp import PDAdapter
 from param_decomp.adapters.transcoder import TranscoderAdapter
 from param_decomp.harvest.config import (
     CLTHarvestConfig,
@@ -22,7 +22,7 @@ def make_harvest_fn(
     adapter: DecompositionAdapter,
 ) -> HarvestFn:
     match method_config, adapter:
-        case ParamDecompHarvestConfig(), ParamDecompAdapter():
+        case ParamDecompHarvestConfig(), PDAdapter():
             return ParamDecompHarvestFn(method_config, adapter, device=device)
         case TranscoderHarvestConfig(), TranscoderAdapter():
             return TranscoderHarvestFn(adapter, device=device)

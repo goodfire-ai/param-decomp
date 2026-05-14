@@ -27,7 +27,7 @@ from param_decomp.experiment_manifest import (
 )
 from param_decomp.experiments.driver import ExperimentDriver, load_driver
 from param_decomp.identity_insertion import insert_identity_operations_
-from param_decomp.interfaces import LoadableModule, RunInfo
+from param_decomp.interfaces import LoadableModule
 from param_decomp.models.batch_and_loss_fns import PDTarget, RunBatch
 from param_decomp.models.components import (
     Components,
@@ -46,7 +46,9 @@ from param_decomp.models.components import (
 )
 from param_decomp.models.sigmoids import SIGMOID_TYPES, SigmoidType
 from param_decomp.param_decomp_types import LayerwiseCiFnType, ModelPath
+from param_decomp.utils.distributed_utils import DistributedState
 from param_decomp.utils.module_utils import ModulePathInfo, expand_module_patterns
+from param_decomp.utils.run_files import resolve_config_path, resolve_run_files
 
 
 def _validate_checkpoint_ci_config_compatibility(
@@ -70,50 +72,31 @@ def _validate_checkpoint_ci_config_compatibility(
 
 
 @dataclass
-class PDRunInfo(RunInfo[ExperimentManifest]):
+class PDRunInfo:
     """Run info from training a ComponentModel (i.e. from a PD run)."""
 
-    config_class = ExperimentManifest
-    config_filename = EXPERIMENT_MANIFEST_FILENAME
-    checkpoint_prefix = "model"
+    checkpoint_path: Path
+    manifest: ExperimentManifest
 
     @classmethod
-    @override
-    def _resolve_from_run_dir(cls, run_dir: Path) -> dict[str, Path]:
-        file_paths = super()._resolve_from_run_dir(run_dir)
-        manifest = ExperimentManifest.from_file(run_dir / cls.config_filename)
-        file_paths.update({f: run_dir / f for f in manifest.artifact_filenames})
-        return file_paths
-
-    @classmethod
-    @override
-    def _download_from_wandb(cls, wandb_path: str) -> dict[str, Path]:
-        import wandb
-
-        from param_decomp.utils.wandb_utils import (
-            download_wandb_file,
-            fetch_latest_wandb_checkpoint,
-            fetch_wandb_run_dir,
+    def from_path(cls, path: ModelPath) -> "PDRunInfo":
+        files = resolve_run_files(
+            path,
+            config_filename=EXPERIMENT_MANIFEST_FILENAME,
+            checkpoint_prefix="model",
+            extras_from_config_path=lambda p: ExperimentManifest.from_file(p).artifact_filenames,
+        )
+        return cls(
+            checkpoint_path=files.checkpoint_path,
+            manifest=ExperimentManifest.from_file(files.config_path),
         )
 
-        api = wandb.Api()
-        run = api.run(wandb_path)
-        run_dir = fetch_wandb_run_dir(run.id)
-        config_path = download_wandb_file(run, run_dir, cls.config_filename)
-        manifest = ExperimentManifest.from_file(config_path)
-        checkpoint = fetch_latest_wandb_checkpoint(run, prefix=cls.checkpoint_prefix)
-        return {
-            "config": config_path,
-            "checkpoint": download_wandb_file(run, run_dir, checkpoint.name),
-            **{
-                filename: download_wandb_file(run, run_dir, filename)
-                for filename in manifest.artifact_filenames
-            },
-        }
-
-    @cached_property
-    def manifest(self) -> ExperimentManifest:
-        return self.config
+    @classmethod
+    def config_from_path(cls, path: ModelPath) -> ExperimentManifest:
+        """Load just the manifest, without resolving or downloading checkpoints."""
+        return ExperimentManifest.from_file(
+            resolve_config_path(path, config_filename=EXPERIMENT_MANIFEST_FILENAME)
+        )
 
     @cached_property
     def experiment_config(self) -> ExperimentConfig:
@@ -121,9 +104,9 @@ class PDRunInfo(RunInfo[ExperimentManifest]):
 
     @cached_property
     def driver(self) -> ExperimentDriver[Any] | None:
-        if self.config.driver is None:
+        if self.manifest.driver is None:
             return None
-        return load_driver(self.config.driver)
+        return load_driver(self.manifest.driver)
 
     @property
     def pd_config(self) -> PDConfig:
@@ -139,10 +122,9 @@ class PDRunInfo(RunInfo[ExperimentManifest]):
     def build_dataloaders(
         self,
         *,
-        seed: int | None = None,
         train_batch_size: int,
         eval_batch_size: int,
-        dist_state: Any = None,
+        dist_state: DistributedState | None = None,
         device: str = "cpu",
     ) -> tuple[DataLoader[Any], DataLoader[Any]]:
         assert self.driver is not None, (
@@ -150,7 +132,6 @@ class PDRunInfo(RunInfo[ExperimentManifest]):
         )
         return self.driver.build_dataloaders(
             self.experiment_config,
-            seed=seed,
             train_batch_size=train_batch_size,
             eval_batch_size=eval_batch_size,
             dist_state=dist_state,
@@ -584,16 +565,13 @@ class ComponentModel(LoadableModule):
                 handle.remove()
 
     @classmethod
-    @override
-    def from_run_info(cls, run_info: RunInfo[Any]) -> "ComponentModel":
+    def from_run_info(cls, run_info: PDRunInfo) -> "ComponentModel":
         """Load a `ComponentModel` from saved run info via the experiment-config dispatcher.
 
         Convenience wrapper around `from_checkpoint` for callers that already have a
         `PDRunInfo`. New code should prefer `load_pd(path, target=...)` with an
         explicit `PDTarget`.
         """
-        assert isinstance(run_info, PDRunInfo), f"Expected PDRunInfo, got {type(run_info).__name__}"
-
         target = run_info.load_target()
         return cls.from_checkpoint(
             config=run_info.pd_config,
@@ -644,7 +622,6 @@ class ComponentModel(LoadableModule):
         )
 
         comp_model_weights = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-        handle_deprecated_state_dict_keys_(comp_model_weights)
         _validate_checkpoint_ci_config_compatibility(comp_model_weights, config.ci_config)
         comp_model.load_state_dict(comp_model_weights)
 
@@ -740,33 +717,3 @@ class ComponentModel(LoadableModule):
         for comp_name, components in self.components.items():
             weight_deltas[comp_name] = self.target_weight(comp_name) - components.weight
         return weight_deltas
-
-
-def handle_deprecated_state_dict_keys_(state_dict: dict[str, Tensor]) -> None:
-    """Maps deprecated state dict keys to new state dict keys"""
-    for key in list(state_dict.keys()):
-        new_key: str = key
-        # We used to have "_gates.*", now we have "_ci_fns.*"
-        if "_gates." in new_key:
-            new_key = new_key.replace("_gates.", "_ci_fns.")
-        # We used to have prefix "patched_model.*", now we have "target_model.*"
-        if new_key.startswith("patched_model."):
-            new_key = "target_model." + new_key.removeprefix("patched_model.")
-        # We used to have "*.original.weight", now we have "*.weight"
-        if new_key.endswith(".original.weight"):
-            new_key = new_key.removesuffix(".original.weight") + ".weight"
-        # We used to have "*.components.{U,V}", now we have "_components.*.{U,V}"
-        if new_key.endswith(".components.U") or new_key.endswith(".components.V"):
-            target_module_path: str = (
-                new_key.removeprefix("target_model.")
-                .removesuffix(".components.U")
-                .removesuffix(".components.V")
-            )
-            # module path has "." replaced with "-"
-            new_key = f"_components.{target_module_path.replace('.', '-')}.{new_key.split('.')[-1]}"
-        # Old checkpoints had _ci_fns.* at top level, now under ci_fn._ci_fns.*
-        if new_key.startswith("_ci_fns.") and not new_key.startswith("ci_fn."):
-            new_key = "ci_fn." + new_key
-        # replace if modified
-        if new_key != key:
-            state_dict[new_key] = state_dict.pop(key)

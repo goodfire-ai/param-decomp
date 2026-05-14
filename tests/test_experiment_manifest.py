@@ -68,13 +68,14 @@ def _pd_config() -> PDConfig:
 
 
 def _round_trip(experiment_config: ExperimentConfig, driver_path: str) -> ExperimentConfig:
+    driver = load_driver(driver_path)
     manifest = ExperimentManifest(
-        kind=experiment_config.kind,
+        kind=driver.kind,
         driver=driver_path,
         experiment_config=experiment_config.model_dump(mode="json"),
     )
     parsed = parse_experiment_manifest(manifest.model_dump(mode="json"))
-    assert parsed.kind == experiment_config.kind
+    assert parsed.kind == driver.kind
     assert parsed.driver == driver_path
     return parse_manifest_experiment_config(parsed)
 
@@ -133,8 +134,8 @@ def test_driver_class_paths_load():
 def test_manual_manifest_does_not_need_registered_driver():
     manifest = ExperimentManifest.from_pd_config(_pd_config(), kind="custom")
     parsed = parse_experiment_manifest(manifest.model_dump(mode="json"))
+    assert parsed.kind == "custom"
     experiment_config = parse_manifest_experiment_config(parsed)
-    assert experiment_config.kind == "custom"
     assert experiment_config.pd == _pd_config()
 
 

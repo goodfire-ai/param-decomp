@@ -25,22 +25,12 @@ model:
   n_key_value_heads: 12
   flash_attention: false
 
-train_dataset_config:
-  name: Skylion007/openwebtext
+data:
+  dataset_name: Skylion007/openwebtext
+  tokenizer_name: gpt2
   is_tokenized: false
-  hf_tokenizer_path: gpt2
-  split: train[:10000000]
   streaming: false
-  n_ctx: 513  # model n_ctx + 1 for next-token label indexing
-  seed: 0
-  column_name: text
-
-val_dataset_config:
-  name: Skylion007/openwebtext
-  is_tokenized: false
-  hf_tokenizer_path: gpt2
-  split: train[-100000:]
-  streaming: false
-  n_ctx: 513  # model n_ctx + 1 for next-token label indexing
-  seed: 0
+  max_seq_len: 513  # model.block_size + 1 for next-token label indexing
+  train_split: train[:10000000]
+  eval_split: train[-100000:]
   column_name: text

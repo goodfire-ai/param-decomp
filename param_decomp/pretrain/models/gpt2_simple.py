@@ -1,7 +1,5 @@
 """Version of GPT-2 with separate projection layers for query, key, and value."""
 
-from __future__ import annotations
-
 import inspect
 import math
 from pathlib import Path
@@ -238,8 +236,7 @@ class GPT2Simple(LoadableModule):
         return out_logits, loss
 
     @classmethod
-    @override
-    def from_run_info(cls, run_info: PretrainRunInfo) -> GPT2Simple:  # pyright: ignore[reportIncompatibleMethodOverride]
+    def from_run_info(cls, run_info: PretrainRunInfo) -> "GPT2Simple":
         """Create a GPT-2 model from a PretrainRunInfo, loading weights from its checkpoint."""
         model = cls(GPT2SimpleConfig(**run_info.model_config_dict))
         state_dict = torch.load(run_info.checkpoint_path, map_location="cpu", weights_only=True)
@@ -248,7 +245,7 @@ class GPT2Simple(LoadableModule):
 
     @classmethod
     @override
-    def from_pretrained(cls, model_path: str | Path) -> GPT2Simple:
+    def from_pretrained(cls, model_path: str | Path) -> "GPT2Simple":
         """Create a GPT-2 model from a wandb string or a local path."""
         from param_decomp.pretrain.run_info import PretrainRunInfo
 

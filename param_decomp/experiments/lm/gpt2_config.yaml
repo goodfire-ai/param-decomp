@@ -17,6 +17,7 @@ pd:
   sampling: continuous
   use_delta_component: true
   batch_size: 2
+  eval_batch_size: 2
   steps: 50000
   lr_schedule:
     start_val: 3e-4

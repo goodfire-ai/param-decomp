@@ -4,16 +4,15 @@ This file is the full runtime definition for the TMS experiment: serializable co
 target loading, dataloaders, and driver registration.
 """
 
-from __future__ import annotations
-
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, Literal, override
 
 import torch
 from pydantic import Field
 from torch import Tensor
 from torch.utils.data import DataLoader
 
+from param_decomp import ExperimentDriver
 from param_decomp.base_config import BaseConfig
 from param_decomp.experiments.driver import (
     ExperimentConfig,
@@ -57,7 +56,6 @@ class TMSDataConfig(BaseConfig):
 
 
 class TMSExperimentConfig(ExperimentConfig):
-    kind: str = "tms"
     target: TMSTargetConfig
     data: TMSDataConfig
 
@@ -79,7 +77,6 @@ def load_tms_target(target_cfg: TMSTargetConfig) -> tuple[PDTarget, TMSTargetRun
         run_batch=run_batch_first_element,
         reconstruction_loss=recon_loss_mse,
         tied_weights=_tied_weight_edges(target_model),
-        name="tms",
     )
     return target, run_info
 
@@ -125,10 +122,18 @@ def _load_train_config(target_cfg: TMSTargetConfig, run_dir: Path | None = None)
     return TMSTargetRunInfo.from_path(target_cfg.run_path).config
 
 
-class Driver:
-    kind: ClassVar[str] = "tms"
-    config_model: ClassVar[type[TMSExperimentConfig]] = TMSExperimentConfig
+class Driver(ExperimentDriver[TMSExperimentConfig]):
+    @property
+    @override
+    def kind(self) -> str:
+        return "tms"
 
+    @property
+    @override
+    def config_model(self) -> type[TMSExperimentConfig]:
+        return TMSExperimentConfig
+
+    @override
     def prepare(
         self,
         experiment_config: TMSExperimentConfig,
@@ -156,9 +161,9 @@ class Driver:
             train_loader=train_loader,
             eval_loader=eval_loader,
             artifacts=artifacts,
-            tags=(self.kind,),
         )
 
+    @override
     def load_target(
         self, experiment_config: TMSExperimentConfig, *, run_dir: Path | None = None
     ) -> PDTarget:
@@ -179,21 +184,20 @@ class Driver:
             run_batch=run_batch_first_element,
             reconstruction_loss=recon_loss_mse,
             tied_weights=_tied_weight_edges(target_model),
-            name=self.kind,
         )
 
+    @override
     def build_dataloaders(
         self,
         experiment_config: TMSExperimentConfig,
         *,
-        seed: int | None = None,
         train_batch_size: int,
         eval_batch_size: int,
         dist_state: DistributedState | None = None,
         device: str = "cpu",
         run_dir: Path | None = None,
     ) -> tuple[DataLoader[Any], DataLoader[Any]]:
-        _ = seed, dist_state
+        _ = dist_state
         train_config = _load_train_config(experiment_config.target, run_dir)
         return build_tms_dataloaders(
             experiment_config.data,
@@ -203,5 +207,6 @@ class Driver:
             device=device,
         )
 
+    @override
     def display_name(self, experiment_config: TMSExperimentConfig) -> str:
         return f"TMS: {experiment_config.target.run_path}"
