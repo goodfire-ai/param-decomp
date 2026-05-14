@@ -31,7 +31,8 @@ class SlurmConfig:
         n_nodes: Number of nodes (default 1)
         time: Time limit in HH:MM:SS format
         cpus_per_task: CPUs per task (for CPU-bound jobs like autointerp)
-        snapshot_branch: Git branch to checkout. If None, just cd to REPO_ROOT without cloning.
+        snapshot_ref: Fully-qualified git ref (e.g. `refs/runs/snapshot/<id>`) to fetch and
+            checkout in the SLURM job. If None, just cd to REPO_ROOT without cloning.
         dependency_job_id: If set, job waits for this job to complete (afterok dependency)
     """
 
@@ -42,7 +43,7 @@ class SlurmConfig:
     time: str = "72:00:00"
     mem: str | None = None  # Memory limit (e.g., "64G", "128G")
     cpus_per_task: int | None = None
-    snapshot_branch: str | None = None
+    snapshot_ref: str | None = None
     dependency_job_id: str | None = None
     comment: str | None = None
 
@@ -295,15 +296,18 @@ def _sbatch_header(
     return "\n".join(lines)
 
 
-def generate_git_snapshot_setup(work_dir: str, snapshot_branch: str) -> str:
+def generate_git_snapshot_setup(work_dir: str, snapshot_ref: str) -> str:
     """Generate bash commands for git snapshot workspace setup.
 
-    This creates a temporary workspace with a clone of the repo at a specific branch,
+    This creates a temporary workspace with a clone of the repo at a specific snapshot ref,
     sets up cleanup on exit, and activates the venv.
+
+    `git clone` only fetches `refs/heads/*` and tags by default, so for snapshot refs in custom
+    namespaces (e.g. `refs/runs/snapshot/*`) we fetch the ref explicitly after cloning.
 
     Args:
         work_dir: Bash expression for the workspace directory (can include $SLURM_* vars)
-        snapshot_branch: Git branch to checkout
+        snapshot_ref: Fully-qualified git ref to checkout (e.g. `refs/runs/snapshot/<id>`)
 
     Returns:
         Bash script fragment (no shebang, meant to be embedded in larger scripts)
@@ -315,7 +319,8 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 git clone "{REPO_ROOT}" "$WORK_DIR"
 cd "$WORK_DIR"
 [ -f "{REPO_ROOT}/.env" ] && cp "{REPO_ROOT}/.env" .env
-git checkout "{snapshot_branch}"
+git fetch "{REPO_ROOT}" "{snapshot_ref}:{snapshot_ref}"
+git checkout "{snapshot_ref}"
 deactivate 2>/dev/null || true
 unset VIRTUAL_ENV
 uv sync --no-dev --link-mode copy -q
@@ -329,9 +334,9 @@ def _setup_section(config: SlurmConfig, is_array: bool) -> str:
     else:
         workspace_suffix = "$SLURM_JOB_ID"
 
-    if config.snapshot_branch is not None:
+    if config.snapshot_ref is not None:
         work_dir = f"/tmp/param-decomp/workspace-{config.job_name}-{workspace_suffix}"
-        return generate_git_snapshot_setup(work_dir, config.snapshot_branch)
+        return generate_git_snapshot_setup(work_dir, config.snapshot_ref)
     else:
         return f"""\
 cd "{REPO_ROOT}"

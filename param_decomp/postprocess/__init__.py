@@ -43,15 +43,15 @@ def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None)
         Path to the manifest YAML file.
     """
 
-    snapshot_branch, commit_hash = create_git_snapshot(f"postprocess-{secrets.token_hex(4)}")
-    logger.info(f"Created git snapshot: {snapshot_branch} ({commit_hash[:8]})")
+    snapshot_ref, commit_hash = create_git_snapshot(f"postprocess-{secrets.token_hex(4)}")
+    logger.info(f"Created git snapshot: {snapshot_ref} ({commit_hash[:8]})")
 
     decomp_cfg = config.harvest.config.method_config
 
     # === 1. Harvest (always runs, upserts into harvest.db) ===
     harvest_result = submit_harvest(
         config.harvest,
-        snapshot_branch=snapshot_branch,
+        snapshot_ref=snapshot_ref,
         dependency_job_id=dependency_job_id,
     )
 
@@ -62,7 +62,7 @@ def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None)
             decomposition_id=decomp_cfg.id,
             config=config.autointerp,
             dependency_job_id=harvest_result.merge_result.job_id,
-            snapshot_branch=snapshot_branch,
+            snapshot_ref=snapshot_ref,
             harvest_subrun_id=harvest_result.subrun_id,
         )
 
@@ -80,7 +80,7 @@ def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None)
             partition=config.intruder.partition,
             n_gpus=2,
             time=config.intruder.time,
-            snapshot_branch=snapshot_branch,
+            snapshot_ref=snapshot_ref,
             dependency_job_id=harvest_result.merge_result.job_id,
         )
         intruder_script = generate_script(intruder_slurm, intruder_cmd)
@@ -103,7 +103,7 @@ def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None)
             wandb_path=decomp_cfg.wandb_path,
             config=config.attributions,
             harvest_subrun_id=harvest_result.subrun_id,
-            snapshot_branch=snapshot_branch,
+            snapshot_ref=snapshot_ref,
             dependency_job_id=harvest_result.merge_result.job_id,
         )
 
@@ -118,7 +118,7 @@ def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None)
                 harvest_result.merge_result.job_id,
                 attr_result.merge_result.job_id,
             ],
-            snapshot_branch=snapshot_branch,
+            snapshot_ref=snapshot_ref,
             harvest_subrun_id=harvest_result.subrun_id,
         )
 
@@ -151,7 +151,7 @@ def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None)
     manifest = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "decomposition": config.harvest.config.method_config.model_dump(),
-        "snapshot_branch": snapshot_branch,
+        "snapshot_ref": snapshot_ref,
         "commit_hash": commit_hash,
         "config": config.model_dump(),
         "jobs": jobs,

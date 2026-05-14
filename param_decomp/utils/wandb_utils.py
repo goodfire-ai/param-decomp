@@ -572,7 +572,7 @@ class ReportCfg:
     """metadata for setting up a wandb view and optionally a report for the run.
 
     Args:
-        snapshot_branch: Git branch name for the snapshot created by this run.
+        snapshot_ref: Fully-qualified git ref name for the snapshot created by this run.
         commit_hash: Commit hash of the snapshot created by this run.
         report_title: Title for the W&B report. If None, will be generated
     """

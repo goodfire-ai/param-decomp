@@ -30,11 +30,11 @@ class AutointerpSubmitResult:
     fuzzing_result: SubmitResult | None
 
 
-def _make_autointerp_subrun_id(snapshot_branch: str | None) -> str:
+def _make_autointerp_subrun_id(snapshot_ref: str | None) -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    if snapshot_branch is None:
+    if snapshot_ref is None:
         return f"a-{timestamp}"
-    branch_tag = re.sub(r"[^a-zA-Z0-9]+", "-", snapshot_branch).strip("-").lower()
+    branch_tag = re.sub(r"[^a-zA-Z0-9]+", "-", snapshot_ref).strip("-").lower()
     return f"a-{timestamp}-{branch_tag}"[:120]
 
 
@@ -43,7 +43,7 @@ def submit_autointerp(
     config: AutointerpSlurmConfig,
     harvest_subrun_id: str,
     dependency_job_id: str | None = None,
-    snapshot_branch: str | None = None,
+    snapshot_ref: str | None = None,
 ) -> AutointerpSubmitResult:
     """Submit the autointerp pipeline to SLURM.
 
@@ -54,12 +54,12 @@ def submit_autointerp(
         wandb_path: WandB run path for the target decomposition run.
         config: Autointerp SLURM configuration.
         dependency_job_id: Job to wait for before starting (e.g. harvest merge).
-        snapshot_branch: Git snapshot branch to use.
+        snapshot_ref: Fully-qualified git snapshot ref to use.
 
     Returns:
         AutointerpSubmitResult with interpret, detection, and fuzzing results.
     """
-    autointerp_subrun_id = _make_autointerp_subrun_id(snapshot_branch)
+    autointerp_subrun_id = _make_autointerp_subrun_id(snapshot_ref)
 
     # === 1. Interpret job ===
     interpret_cmd = run_interpret.get_command(
@@ -74,7 +74,7 @@ def submit_autointerp(
         partition=config.partition,
         n_gpus=2,
         time=config.time,
-        snapshot_branch=snapshot_branch,
+        snapshot_ref=snapshot_ref,
         dependency_job_id=dependency_job_id,
         comment=decomposition_id,
     )
@@ -115,7 +115,7 @@ def submit_autointerp(
             partition=config.partition,
             n_gpus=2,
             time=config.evals_time,
-            snapshot_branch=snapshot_branch,
+            snapshot_ref=snapshot_ref,
             dependency_job_id=interpret_result.job_id,
         )
         eval_script = generate_script(eval_slurm, scoring_cmd)

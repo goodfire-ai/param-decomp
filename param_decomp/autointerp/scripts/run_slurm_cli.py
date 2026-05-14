@@ -14,7 +14,7 @@ def main(
     decomposition_id: str,
     config: str,
     harvest_subrun_id: str,
-    snapshot_branch: str | None = None,
+    snapshot_ref: str | None = None,
 ) -> None:
     """Submit autointerp pipeline (interpret + evals) to SLURM.
 
@@ -22,7 +22,7 @@ def main(
         decomposition_id: ID of the target decomposition run.
         config: Path to AutointerpSlurmConfig YAML/JSON.
         harvest_subrun_id: Harvest subrun to use (e.g. "h-20260306_120000").
-        snapshot_branch: Git branch to run from (default: current REPO_ROOT checkout).
+        snapshot_ref: Fully-qualified git ref to run from (default: current REPO_ROOT checkout).
     """
     from param_decomp.autointerp.config import AutointerpSlurmConfig
     from param_decomp.autointerp.scripts.run_slurm import submit_autointerp
@@ -32,7 +32,7 @@ def main(
         decomposition_id,
         slurm_config,
         harvest_subrun_id=harvest_subrun_id,
-        snapshot_branch=snapshot_branch,
+        snapshot_ref=snapshot_ref,
     )
 
 
