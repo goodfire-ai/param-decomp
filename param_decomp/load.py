@@ -15,7 +15,7 @@ def load_pd(
 
     Args:
         path: Run directory, wandb path (`wandb:entity/project/runs/id`), or checkpoint file.
-        target: Optional override. When `None`, the run's driver reconstructs the target from
-            the manifest. For manual/notebook runs (no driver), `target` is required.
+        target: Optional override. When ``None``, the run's driver reconstructs the target
+            from the saved metadata. For manual/notebook runs (no driver), ``target`` is required.
     """
     return PDRun.from_path(path).load_model(target=target)

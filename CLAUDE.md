@@ -48,22 +48,22 @@ The `lm` experiment can decompose any HuggingFace-loadable model whose target mo
 The core PD framework exposes these entrypoints, re-exported from `param_decomp/__init__.py`:
 
 ```python
-from param_decomp import run_pd, load_pd, PDConfig, PDTarget, PDRun, ExperimentConfig, ExperimentDriver
+from param_decomp import run_pd, load_pd, PDConfig, PDTarget, PDRun, RunMetadata, ExperimentConfig, ExperimentDriver
 ```
 
-- `run_pd(config, target, train_loader, eval_loader, device, *, manifest=None, artifacts=...)`:
+- `run_pd(config, target, train_loader, eval_loader, device, *, metadata=None, artifacts=...)`:
   trains a decomposition. `PDConfig` carries algorithm/training settings; `PDTarget` bundles the
   target model + `run_batch` + reconstruction loss + optional tied weights. Core PD does not know
   about LM/TMS/etc. Helpers for the two `PDTarget` callables live in
   `param_decomp/models/batch_and_loss_fns.py`: `run_batch_passthrough`,
   `run_batch_first_element`, `make_run_batch(output_extract)`; and `recon_loss_mse`,
-  `recon_loss_kl`. Callers can pass their own functions instead. `manifest` is a plain dict
-  written verbatim to `experiment_manifest.yaml`; `artifacts` is a `{filename: data}` mapping
-  for extra files saved beside the checkpoint.
+  `recon_loss_kl`. Callers can pass their own functions instead. `metadata` is a `RunMetadata`
+  written to `run_metadata.yaml`; `artifacts` is a `{filename: data}` mapping for extra files
+  saved beside the checkpoint.
 - `load_pd(path, *, target=None)`: reload a saved run as a `ComponentModel`. When `target` is
-  omitted the run's driver reconstructs the target from the manifest; pass `target=...`
+  omitted the run's driver reconstructs the target from the saved metadata; pass `target=...`
   explicitly for runs produced via direct `run_pd` (no driver).
-- `PDRun.from_path(path)`: handle to a saved run. Exposes `manifest` (plain dict),
+- `PDRun.from_path(path)`: handle to a saved run. Exposes `metadata` (`RunMetadata`),
   `pd_config`, `experiment_config` (parsed via the driver), `load_target()`,
   `load_dataloaders(...)`, and `load_model(target=None)`.
 
@@ -74,7 +74,7 @@ pure Pydantic experiment config and converts it to runtime objects:
 
 ```python
 class MyDriver:
-    name = "my_exp"                  # ClassVar[str] — wandb tag, manifest label
+    name = "my_exp"                  # ClassVar[str] — wandb tag
     config_type = MyExperimentConfig  # ClassVar[type[ExperimentConfig]]
 
     def build_target(self, config, *, run_dir=None) -> PDTarget: ...
@@ -93,7 +93,7 @@ Custom users can run without editing core code via:
 pd-experiment --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml
 ```
 
-The runner records the supplied driver import path in the saved manifest.
+The runner records the supplied driver import path in the saved run metadata.
 
 Callers can also bypass drivers entirely and call `run_pd` directly with their own `PDTarget` and
 dataloaders — the right choice for notebook/script-driven use where `pd-experiment`, sweeps, and
@@ -115,7 +115,7 @@ artifact selection in the driver.
 
 ```
 PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/
-  experiment_manifest.yaml   # plain dict: driver path, name, full config, artifact_filenames
+  run_metadata.yaml          # RunMetadata: driver path, full config, artifact_filenames
   model_<step>.pth           # PD checkpoints
   target_model.pth           # target weights (TMS/ResidMLP only)
   target_train_config.yaml   # target train config (TMS/ResidMLP only)
@@ -123,11 +123,10 @@ PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/
   sweep_params.yaml          # if a sweep
 ```
 
-The manifest is a plain YAML/dict — no Pydantic class — with shape:
+Run metadata is a `RunMetadata` dataclass (defined in `param_decomp/run_metadata.py`):
 
 ```yaml
 driver: "param_decomp.experiments.lm.experiment:Driver"   # null for notebook/custom runs
-name: "lm"                                                  # human label, also wandb tag
 config:
   pd: {...}
   target: {...}
@@ -222,8 +221,8 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
 1. The generic runner parses a pure experiment config with the selected driver
 2. The driver prepares `PDTarget`, train loader, eval loader, and optional artifacts
-3. The runner builds the manifest from the parsed config and supplied driver import path
-4. `run_pd` saves the manifest/artifacts and trains a `ComponentModel` with specified target modules
+3. The runner builds `RunMetadata` from the parsed config and supplied driver import path
+4. `run_pd` saves the metadata/artifacts and trains a `ComponentModel` with specified target modules
 5. PD optimization runs via `param_decomp.run_param_decomp.optimize()` with config-driven loss combination
 6. Post-processing reloads registered runs through `PDRun.load_target()` /
    `PDRun.load_dataloaders(...)` (or just `PDRun.load_model()` / `load_pd(path)`)
@@ -547,14 +546,14 @@ Load trained PD models from wandb or local paths using these methods:
 ```python
 from param_decomp import load_pd, PDRun
 
-# Common case: path → ComponentModel. The driver reconstructs the target from the manifest.
+# Common case: path → ComponentModel. The driver reconstructs the target from saved metadata.
 model = load_pd("wandb:entity/project/runs/run_id")
 
-# Manual/custom runs (no driver in manifest): pass your own target.
+# Manual/custom runs (no driver in metadata): pass your own target.
 target = ...
 model = load_pd("wandb:entity/project/runs/run_id", target=target)
 
-# When you also need manifest/config access, use PDRun directly:
+# When you also need metadata/config access, use PDRun directly:
 pd_run = PDRun.from_path("wandb:entity/project/runs/run_id")
 print(pd_run.experiment_config)         # parsed via the driver
 print(pd_run.pd_config)                  # PDConfig
@@ -564,7 +563,7 @@ model = pd_run.load_model()              # equivalent to load_pd(path)
 **Path Formats:**
 
 - WandB: `wandb:entity/project/run_id` or `wandb:entity/project/runs/run_id`
-- Local: Direct path to checkpoint file (config must be in same directory as `experiment_manifest.yaml`)
+- Local: Direct path to checkpoint file (config must be in same directory as `run_metadata.yaml`)
 
 Downloaded runs are cached in `PARAM_DECOMP_OUT_DIR/runs/<project>-<run_id>/`.
 

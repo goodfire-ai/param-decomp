@@ -40,6 +40,7 @@ from param_decomp.models.batch_and_loss_fns import (
 )
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
 from param_decomp.persistent_pgd import PersistentPGDState
+from param_decomp.run_metadata import RunMetadata
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp.utils.component_utils import calc_ci_l_zero
 from param_decomp.utils.data_utils import loop_dataloader
@@ -445,15 +446,15 @@ def run_pd(
     *,
     run_id: str | None = None,
     sweep_params: dict[str, Any] | None = None,
-    manifest: dict[str, Any] | None = None,
+    metadata: RunMetadata | None = None,
     artifacts: dict[str, Any] | None = None,
     wandb_tags: list[str] | None = None,
 ) -> Path | None:
     """Run a full PD decomposition: setup, optimize, cleanup.
 
-    `manifest` is a plain dict written verbatim to `experiment_manifest.yaml`. Driver-mediated
-    callers pass a manifest with `{"driver", "name", "config"}`; notebook callers can omit it
-    (the runner synthesizes a `name="custom"` manifest containing only `pd:` config).
+    `metadata` is written to ``run_metadata.yaml``.  Driver-mediated callers
+    (via ``experiments/runner.py``) pass a fully populated ``RunMetadata``;
+    notebook callers can omit it and a minimal one is synthesized.
 
     All ranks call this function. Only the main process does wandb/logging setup.
     Returns the output directory on the main process and None on other ranks.
@@ -469,15 +470,15 @@ def run_pd(
         logger.info(f"Run ID: {run_id}")
         logger.info(f"Output directory: {out_dir}")
 
-        if manifest is None:
-            manifest = {
-                "driver": None,
-                "name": "custom",
-                "config": {"pd": config.model_dump(mode="json")},
-            }
         artifacts = artifacts or {}
+        if metadata is None:
+            metadata = RunMetadata(
+                driver=None,
+                config={"pd": config.model_dump(mode="json")},
+                artifact_filenames=list(artifacts),
+            )
 
-        tags = [manifest.get("name", "custom"), *(wandb_tags or [])]
+        tags = list(wandb_tags or [])
         slurm_array_job_id = os.getenv("SLURM_ARRAY_JOB_ID")
         if slurm_array_job_id is not None:
             tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
@@ -491,7 +492,7 @@ def run_pd(
             save_to_wandb=config.wandb_project is not None,
             out_dir=out_dir,
             sweep_params=sweep_params,
-            manifest=manifest,
+            metadata=metadata,
             artifacts=artifacts,
         )
     else:

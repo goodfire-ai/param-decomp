@@ -17,8 +17,6 @@ from param_decomp.configs import PDConfig
 from param_decomp.models.batch_and_loss_fns import PDTarget
 from param_decomp.utils.distributed_utils import DistributedState
 
-EXPERIMENT_MANIFEST_FILENAME = "experiment_manifest.yaml"
-
 
 class ExperimentConfig(BaseConfig):
     """Pure-data config shared by all experiment configs. Drivers subclass this."""
@@ -71,19 +69,8 @@ def load_driver(driver_path: str) -> ExperimentDriver[Any]:
     return driver
 
 
-def load_manifest(run_dir: Path) -> dict[str, Any]:
-    """Read a parsed manifest dict from `<run_dir>/experiment_manifest.yaml`."""
-    import yaml
-
-    path = run_dir / EXPERIMENT_MANIFEST_FILENAME
-    with open(path) as f:
-        return yaml.safe_load(f)
-
-
 __all__ = [
-    "EXPERIMENT_MANIFEST_FILENAME",
     "ExperimentConfig",
     "ExperimentDriver",
     "load_driver",
-    "load_manifest",
 ]

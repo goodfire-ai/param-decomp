@@ -9,7 +9,8 @@ Core types:
     - `PDTarget`: target model + run_batch + reconstruction_loss.
     - `ExperimentConfig`: user-authored experiment recipe parsed by a driver.
     - `ExperimentDriver`: Protocol for the open-world experiment extension point.
-    - `PDRun`: handle to a saved run (manifest, checkpoint, parsed config).
+    - `PDRun`: handle to a saved run (metadata, checkpoint, parsed config).
+    - `RunMetadata`: typed envelope for the on-disk ``run_metadata.yaml``.
 """
 
 from param_decomp.configs import PDConfig
@@ -17,6 +18,7 @@ from param_decomp.experiments.driver import ExperimentConfig, ExperimentDriver
 from param_decomp.load import load_pd
 from param_decomp.models.batch_and_loss_fns import PDTarget
 from param_decomp.pd_run import PDRun
+from param_decomp.run_metadata import RunMetadata
 from param_decomp.run_param_decomp import run_pd
 
 __all__ = [
@@ -25,6 +27,7 @@ __all__ = [
     "PDConfig",
     "PDRun",
     "PDTarget",
+    "RunMetadata",
     "load_pd",
     "run_pd",
 ]

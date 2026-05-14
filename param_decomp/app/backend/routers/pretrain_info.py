@@ -47,13 +47,12 @@ class PretrainInfoResponse(BaseModel):
 
 
 def _load_lm_experiment_config_lightweight(wandb_path: str) -> LMExperimentConfig | None:
-    """Load just the experiment manifest for an LM run, without downloading checkpoints."""
-    manifest = PDRun.manifest_from_path(wandb_path)
-    driver_path = manifest.get("driver")
-    if driver_path is None:
+    """Load just the run metadata for an LM run, without downloading checkpoints."""
+    metadata = PDRun.metadata_from_path(wandb_path)
+    if metadata.driver is None:
         return None
-    driver = load_driver(driver_path)
-    exp = driver.config_type.model_validate(manifest["config"])
+    driver = load_driver(metadata.driver)
+    exp = driver.config_type.model_validate(metadata.config)
     if not isinstance(exp, LMExperimentConfig):
         return None
     return exp
