@@ -21,6 +21,28 @@ from param_decomp.param_decomp_types import (
 )
 
 
+class ScheduleConfig(BaseConfig):
+    """Configuration for a schedule with warmup and decay. Can be used for LR or other values."""
+
+    start_val: PositiveFloat = Field(..., description="Starting/peak value (after warmup)")
+    warmup_pct: Probability = Field(
+        default=0.0, description="Fraction of total steps for linear warmup"
+    )
+    final_val_frac: NonNegativeFloat = Field(
+        default=1.0,
+        description="End value as fraction of start_val. Can be <1 (decay), =1 (no decay), or >1 (increase)",
+    )
+    fn_type: Literal["constant", "cosine", "linear"] = Field(
+        default="constant", description="Decay function type after warmup"
+    )
+
+    @model_validator(mode="after")
+    def validate_constant_schedule(self) -> Self:
+        if self.fn_type == "constant" and self.final_val_frac != 1.0:
+            raise ValueError("constant schedule requires final_val_frac == 1.0")
+        return self
+
+
 class LayerwiseCiConfig(BaseConfig):
     """Configuration for layerwise CI functions (one per layer)."""
 
@@ -30,6 +52,11 @@ class LayerwiseCiConfig(BaseConfig):
     )
     hidden_dims: list[NonNegativeInt] = Field(
         ..., description="Hidden dimensions for the CI function MLP"
+    )
+    lr_schedule: ScheduleConfig | None = Field(
+        default=None,
+        description="Optional override for the learning rate schedule applied to CI function "
+        "parameters. When None, the top-level Config.lr_schedule is used.",
     )
 
 
@@ -95,6 +122,11 @@ class GlobalCiConfig(BaseConfig):
         description="Hidden dimensions for global_shared_mlp CI function.",
     )
     simple_transformer_ci_cfg: GlobalSharedTransformerCiConfig | None = None
+    lr_schedule: ScheduleConfig | None = Field(
+        default=None,
+        description="Optional override for the learning rate schedule applied to CI function "
+        "parameters. When None, the top-level Config.lr_schedule is used.",
+    )
 
     _DELETED_GLOBAL_REVERSE_RESIDUAL_KEYS: ClassVar[list[str]] = [
         "reader_hidden_dims",
@@ -130,28 +162,6 @@ class GlobalCiConfig(BaseConfig):
 
 
 CiConfig = LayerwiseCiConfig | GlobalCiConfig
-
-
-class ScheduleConfig(BaseConfig):
-    """Configuration for a schedule with warmup and decay. Can be used for LR or other values."""
-
-    start_val: PositiveFloat = Field(..., description="Starting/peak value (after warmup)")
-    warmup_pct: Probability = Field(
-        default=0.0, description="Fraction of total steps for linear warmup"
-    )
-    final_val_frac: NonNegativeFloat = Field(
-        default=1.0,
-        description="End value as fraction of start_val. Can be <1 (decay), =1 (no decay), or >1 (increase)",
-    )
-    fn_type: Literal["constant", "cosine", "linear"] = Field(
-        default="constant", description="Decay function type after warmup"
-    )
-
-    @model_validator(mode="after")
-    def validate_constant_schedule(self) -> Self:
-        if self.fn_type == "constant" and self.final_val_frac != 1.0:
-            raise ValueError("constant schedule requires final_val_frac == 1.0")
-        return self
 
 
 def migrate_to_lr_schedule_config(config_dict: dict[str, Any]) -> None:
@@ -266,6 +276,26 @@ class LMTaskConfig(BaseConfig):
         default=None,
         description="Seed for dataset shuffling/sampling. When None, uses the global `seed`.",
     )
+
+
+class DeepLinearTaskConfig(BaseConfig):
+    task_name: Literal["deep_linear"] = Field(
+        default="deep_linear",
+        description="Identifier for the deep-linear decomposition task",
+    )
+    D: PositiveInt = Field(..., description="Dimension of each weight matrix and the input/output")
+    L: PositiveInt = Field(..., description="Number of identity weight matrices stacked in series")
+    k: PositiveInt = Field(
+        ..., description="Number of active features per input (k-sparse inputs from [0, 1])"
+    )
+    beta: PositiveFloat = Field(
+        ..., description="Softmax temperature applied to the final pre-softmax logits"
+    )
+
+    @model_validator(mode="after")
+    def validate_model(self) -> Self:
+        assert self.k <= self.D, f"k ({self.k}) must be <= D ({self.D})"
+        return self
 
 
 class ModulePatternInfoConfig(BaseConfig):
@@ -638,6 +668,14 @@ class PermutedCIPlotsConfig(BaseConfig):
         return config_dict
 
 
+class OneHotCIPlotsConfig(BaseConfig):
+    classname: Literal["OneHotCIPlots"] = "OneHotCIPlots"
+    input_magnitude: PositiveFloat = Field(
+        default=0.5,
+        description="Magnitude of the single active entry in each one-hot input.",
+    )
+
+
 class StochasticReconSubsetCEAndKLConfig(BaseConfig):
     classname: Literal["StochasticReconSubsetCEAndKL"] = "StochasticReconSubsetCEAndKL"
     include_patterns: dict[str, list[str]] | None
@@ -679,6 +717,7 @@ EvalOnlyMetricConfigType = (
     | PersistentPGDReconEvalConfig
     | PersistentPGDReconSubsetEvalConfig
     | PermutedCIPlotsConfig
+    | OneHotCIPlotsConfig
     | UVPlotsConfig
     | StochasticReconSubsetCEAndKLConfig
     | PGDMultiBatchReconLossConfig
@@ -688,7 +727,9 @@ EvalOnlyMetricConfigType = (
 )
 MetricConfigType = LossMetricConfigType | EvalOnlyMetricConfigType
 
-TaskConfig = TMSTaskConfig | ResidMLPTaskConfig | LMTaskConfig | IHTaskConfig
+TaskConfig = (
+    TMSTaskConfig | ResidMLPTaskConfig | LMTaskConfig | IHTaskConfig | DeepLinearTaskConfig
+)
 
 SamplingType = Literal["continuous", "binomial"]
 
@@ -1087,8 +1128,8 @@ class Config(BaseConfig):
             isinstance(cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig)
             for cfg in self.loss_metric_configs
         ):
-            assert isinstance(self.task_config, LMTaskConfig), (
-                "Persistent PGD losses are only supported with LM tasks"
+            assert isinstance(self.task_config, LMTaskConfig | DeepLinearTaskConfig), (
+                "Persistent PGD losses are only supported with LM or deep_linear tasks"
             )
 
         return self
