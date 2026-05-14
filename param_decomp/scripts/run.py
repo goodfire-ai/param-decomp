@@ -1,11 +1,12 @@
-"""PD launcher for experiments with sweeps and SLURM orchestration.
+"""SLURM launcher backend for PD experiments.
 
-Provides a full-featured entry point for launching PD experiments on the cluster, supporting
-parameter sweeps, multi-node training, git snapshots, and W&B workspace views/reports.
+Discovers experiments by name, optionally expands a parameter grid (``--sweep``), creates a
+git snapshot for reproducibility, builds in-memory config dicts, and submits a SLURM array
+where each task invokes ``pd-run`` on one config. For single-machine execution, use ``pd-run``
+directly.
 
-For simpler local execution without SLURM, use simple.py instead.
-
-The actual cli entry point is in run_cli.py. this is to speed up --help.
+The user-facing CLI entry point is in ``run_cli.py``; importing this module is deferred there
+to speed up ``--help``.
 """
 
 import copy

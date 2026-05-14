@@ -8,7 +8,7 @@ from param_decomp.clustering.util import (
     ModuleFilterFunc,
     ModuleFilterSource,
 )
-from param_decomp.param_decomp_types import Probability
+from param_decomp.types import Probability
 
 
 def _to_module_filter(source: ModuleFilterSource) -> ModuleFilterFunc:

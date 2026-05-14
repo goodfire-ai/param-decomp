@@ -97,7 +97,7 @@ def get_command(
 
     match n_gpus:
         case None | 1:
-            command = f"python -m param_decomp.experiments.runner {script_args}"
+            command = f"pd-run {script_args}"
 
         case n if n <= GPUS_PER_NODE:
             command = (

@@ -1,6 +1,12 @@
-"""Generic experiment runner used by built-in and custom drivers."""
+"""Single-process PD experiment worker.
+
+Runs one PD training job from either a built-in experiment name, a YAML config path,
+or an inline JSON config blob. Invoked directly by users as ``pd-run`` and from the
+SLURM launcher as ``pd-run --config_json '...'  --driver '...' ...``.
+"""
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -8,9 +14,11 @@ import fire
 import yaml
 
 from param_decomp import run_pd
+from param_decomp.experiments.discovery import discover_experiments
 from param_decomp.experiments.driver import load_driver
 from param_decomp.log import logger
 from param_decomp.run_metadata import RunMetadata
+from param_decomp.settings import REPO_ROOT
 from param_decomp.utils.distributed_utils import (
     get_device,
     init_distributed,
@@ -44,6 +52,35 @@ def _load_run_inputs(
         metadata = RunMetadata.from_dict(data)
         return metadata.driver, metadata.config
     return None, data
+
+
+def _resolve_inputs(
+    experiment: str | None,
+    config_path: Path | str | None,
+    config_json: str | None,
+    driver: str | None,
+) -> tuple[str, dict[str, Any]]:
+    """Resolve CLI inputs into (driver_path, config_dict)."""
+    if experiment is not None:
+        assert config_path is None and config_json is None and driver is None, (
+            "Positional experiment name is mutually exclusive with "
+            "--config_path/--config_json/--driver"
+        )
+        discovered = discover_experiments()
+        if experiment not in discovered:
+            available = ", ".join(sorted(discovered.keys()))
+            raise ValueError(f"Unknown experiment '{experiment}'. Available: {available}")
+        exp = discovered[experiment]
+        with open(REPO_ROOT / exp.config_path) as f:
+            config_data = yaml.safe_load(f)
+        return exp.driver_path, config_data
+
+    driver_from_metadata, config_data = _load_run_inputs(config_path, config_json)
+    resolved_driver = driver if driver is not None else driver_from_metadata
+    assert resolved_driver is not None, (
+        "No driver provided and config has no driver field; pass --driver"
+    )
+    return resolved_driver, config_data
 
 
 def run_experiment(
@@ -100,19 +137,39 @@ def run_experiment(
 
 @with_distributed_cleanup
 def main(
+    experiment: str | None = None,
     config_path: Path | str | None = None,
     config_json: str | None = None,
     driver: str | None = None,
+    cpu: bool = False,
     evals_id: str | None = None,
     launch_id: str | None = None,
     sweep_params_json: str | None = None,
     run_id: str | None = None,
 ) -> None:
-    driver_from_metadata, config_data = _load_run_inputs(config_path, config_json)
-    resolved_driver = driver if driver is not None else driver_from_metadata
-    assert resolved_driver is not None, (
-        "No driver provided and config has no driver field; pass --driver"
-    )
+    """Run a single PD experiment in this process.
+
+    Args:
+        experiment: Built-in experiment name (e.g. 'tms_5-2'). Resolves the driver and YAML
+            config via discover_experiments(). Mutually exclusive with --config_path/--driver.
+        config_path: Path to an experiment YAML or a saved run_metadata.yaml.
+        config_json: JSON-encoded config dict (may be ``json:``-prefixed). Used by the SLURM
+            launcher to pass an in-memory config without writing to disk.
+        driver: Driver import path ``pkg.module:ClassName``. Required with --config_path
+            unless the config is a saved run_metadata.yaml (which carries its own driver).
+        cpu: Force CPU execution by hiding all CUDA devices from this process.
+        evals_id, launch_id, run_id, sweep_params_json: Set by the launcher; you generally
+            don't need to pass these manually.
+
+    Examples:
+        pd-run tms_5-2                                # built-in by name
+        pd-run tms_5-2 --cpu                          # built-in on CPU
+        pd-run --config_path my.yaml --driver pkg:Driver   # custom driver
+    """
+    if cpu:
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+    resolved_driver, config_data = _resolve_inputs(experiment, config_path, config_json, driver)
     run_experiment(
         resolved_driver,
         config_data,

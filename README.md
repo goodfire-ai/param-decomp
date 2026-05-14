@@ -45,7 +45,7 @@ make install      # Install the package only (`pip install -e .`)
 
 ## Experiments
 
-Run an experiment locally with `pd-local <name>`, or on SLURM with `pd-run --experiments <name>`
+Run an experiment locally with `pd-run <name>`, or on SLURM with `pd-launch --experiments <name>`
 (adds git snapshot + W&B view; also supports `--dp N`, `--cpu`, and `--sweep --n_agents N`). The
 two main language-model decompositions:
 
@@ -74,7 +74,7 @@ Two routes, neither needing core-package edits:
   `build_target`, `build_dataloaders`, and `artifacts`; see
   [`driver.py`](param_decomp/experiments/driver.py) for the interface and
   [`tms/experiment.py`](param_decomp/experiments/tms/experiment.py) for the smallest example),
-  then run `pd-experiment --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml`. This is
+  then run `pd-run --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml`. This is
   what built-in experiments do, and is needed for sweeps and for self-reloading runs via
   `load_pd(path)` (no `target=` argument needed) or `PDRun.from_path(...)`.
 

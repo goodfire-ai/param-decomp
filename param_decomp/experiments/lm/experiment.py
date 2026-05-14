@@ -9,7 +9,7 @@ from param_decomp.base_config import BaseConfig
 from param_decomp.experiments.driver import ExperimentConfig
 from param_decomp.experiments.lm.data import LMDataConfig, build_lm_dataloaders
 from param_decomp.models.batch_and_loss_fns import PDTarget, make_run_batch, recon_loss_kl
-from param_decomp.param_decomp_types import ModelPath
+from param_decomp.types import ModelPath
 from param_decomp.utils.distributed_utils import DistributedState, ensure_cached_and_call
 from param_decomp.utils.general_utils import resolve_class
 

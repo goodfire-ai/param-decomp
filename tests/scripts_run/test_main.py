@@ -1,8 +1,4 @@
-"""Tests for the main() function in param_decomp/scripts/run.py.
-
-This file contains tests for pd-run, which always submits jobs to SLURM.
-For local execution tests, see tests/scripts_simple/.
-"""
+"""Tests for the main() function in param_decomp/scripts/run.py (the pd-launch SLURM launcher)."""
 
 # pyright: reportUnknownParameterType=false, reportMissingParameterType=false, reportUnusedParameter=false
 
@@ -13,8 +9,8 @@ import pytest
 from param_decomp.scripts.run import _create_training_jobs, _get_experiments
 
 
-class TestPDRun:
-    """Test pd-run command execution."""
+class TestPDLaunch:
+    """Test pd-launch command execution."""
 
     def test_invalid_experiment_name(self):
         """Test that invalid experiment names raise an error."""

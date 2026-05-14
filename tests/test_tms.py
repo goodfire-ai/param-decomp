@@ -22,7 +22,7 @@ from param_decomp.models.batch_and_loss_fns import (
     recon_loss_mse,
     run_batch_first_element,
 )
-from param_decomp.run_param_decomp import optimize
+from param_decomp.run_pd import optimize
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
 from param_decomp.utils.general_utils import set_seed
 

@@ -19,7 +19,7 @@ from param_decomp.load import load_pd
 from param_decomp.models.batch_and_loss_fns import PDTarget
 from param_decomp.pd_run import PDRun
 from param_decomp.run_metadata import RunMetadata
-from param_decomp.run_param_decomp import run_pd
+from param_decomp.run_pd import run_pd
 
 __all__ = [
     "ExperimentConfig",

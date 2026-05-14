@@ -3,7 +3,9 @@
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+from torch.utils.data import DataLoader
 
 from param_decomp.configs import PDConfig
 from param_decomp.experiments.driver import (
@@ -12,15 +14,11 @@ from param_decomp.experiments.driver import (
     load_driver,
 )
 from param_decomp.models.batch_and_loss_fns import PDTarget
-from param_decomp.param_decomp_types import ModelPath
+from param_decomp.models.component_model import ComponentModel
 from param_decomp.run_metadata import RUN_METADATA_FILENAME, RunMetadata
+from param_decomp.types import ModelPath
 from param_decomp.utils.distributed_utils import DistributedState
 from param_decomp.utils.run_files import resolve_config_path, resolve_run_files
-
-if TYPE_CHECKING:
-    from torch.utils.data import DataLoader
-
-    from param_decomp.models.component_model import ComponentModel
 
 
 @dataclass
@@ -85,7 +83,7 @@ class PDRun:
         eval_batch_size: int,
         dist_state: DistributedState | None = None,
         device: str = "cpu",
-    ) -> "tuple[DataLoader[Any], DataLoader[Any]]":
+    ) -> tuple[DataLoader[Any], DataLoader[Any]]:
         assert self.driver is not None and self.experiment_config is not None, (
             "Run has no driver. Build dataloaders explicitly for custom runs."
         )
@@ -98,9 +96,7 @@ class PDRun:
             run_dir=self.path,
         )
 
-    def load_model(self, target: PDTarget | None = None) -> "ComponentModel":
-        from param_decomp.models.component_model import ComponentModel
-
+    def load_model(self, target: PDTarget | None = None) -> ComponentModel:
         target = target if target is not None else self.load_target()
         return ComponentModel.from_checkpoint(
             config=self.pd_config,

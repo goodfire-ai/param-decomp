@@ -36,7 +36,7 @@ from param_decomp.models.components import (
     VectorSharedMLPCiFn,
 )
 from param_decomp.models.sigmoids import SIGMOID_TYPES, SigmoidType
-from param_decomp.param_decomp_types import LayerwiseCiFnType
+from param_decomp.types import LayerwiseCiFnType
 from param_decomp.utils.module_utils import ModulePathInfo, expand_module_patterns
 
 

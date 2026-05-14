@@ -12,7 +12,7 @@ from pydantic import (
 )
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.param_decomp_types import (
+from param_decomp.types import (
     GlobalCiFnType,
     LayerwiseCiFnType,
     Probability,

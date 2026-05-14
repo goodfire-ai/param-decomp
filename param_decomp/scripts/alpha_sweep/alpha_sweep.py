@@ -30,8 +30,8 @@ from param_decomp.experiments.lm.experiment import LMExperimentConfig
 from param_decomp.log import logger
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import make_mask_infos
-from param_decomp.param_decomp_types import ModelPath
 from param_decomp.pd_run import PDRun
+from param_decomp.types import ModelPath
 
 
 def compute_ce_at_r(

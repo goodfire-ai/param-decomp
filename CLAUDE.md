@@ -24,21 +24,9 @@ PD is a research framework for analyzing neural network components and their int
 
 The codebase supports three experimental domains: TMS (Toy Model of Superposition), ResidualMLP (residual MLP analysis), and Language Models.
 
-**Available experiments** (auto-discovered from YAML configs under `param_decomp/experiments/<kind>/`):
-
-- **TMS (Toy Model of Superposition)**:
-  - `tms_5-2` - TMS with 5 features, 2 hidden dimensions
-  - `tms_5-2-id` - TMS with 5 features, 2 hidden dimensions (fixed identity in-between)
-  - `tms_40-10`
-  - `tms_40-10-id`
-- **ResidualMLP**:
-  - `resid_mlp1` - 1 layer
-  - `resid_mlp2` - 2 layers
-  - `resid_mlp3` - 3 layers
-- **Language Models** (MLP-only Llama variants):
-  - `ss_llama_simple_mlp-2L` - 2-layer Llama on SimpleStories
-  - `pile_llama_simple_mlp-4L` - 4-layer Llama on the Pile (the VPD-paper run)
-  - `pile_llama_simple_mlp-12L` - 12-layer Llama on the Pile
+Built-in experiments are auto-discovered from YAML configs under `param_decomp/experiments/<kind>/`
+(TMS variants, ResidualMLP variants, and MLP-only Llama variants). See
+`param_decomp/experiments/discovery.py` or run `pd-run --help` for the live list.
 
 The `lm` experiment can decompose any HuggingFace-loadable model whose target modules are
 `nn.Linear`, `nn.Embedding`, or `transformers.modeling_utils.Conv1D`.
@@ -90,13 +78,13 @@ Built-in runtime definitions live in `param_decomp/experiments/{lm,tms,resid_mlp
 Custom users can run without editing core code via:
 
 ```bash
-pd-experiment --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml
+pd-run --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml
 ```
 
 The runner records the supplied driver import path in the saved run metadata.
 
 Callers can also bypass drivers entirely and call `run_pd` directly with their own `PDTarget` and
-dataloaders — the right choice for notebook/script-driven use where `pd-experiment`, sweeps, and
+dataloaders — the right choice for notebook/script-driven use where `pd-run`, sweeps, and
 post-processing tooling are not needed. Those runs reload with `load_pd(path, target=...)`. The
 README's "Custom experiments" section walks through both routes side-by-side.
 
@@ -191,7 +179,7 @@ This repository implements methods from two key research papers on parameter dec
 
 **Core PD Framework:**
 
-- `param_decomp/run_param_decomp.py` - Main PD optimization logic called by all experiments
+- `param_decomp/run_pd.py` - Main PD optimization logic called by all experiments
 - `param_decomp/configs.py` - Core PD config and loss/metric config classes
 - `param_decomp/experiments/*/experiment.py` - Experiment configs and drivers that prepare targets,
   dataloaders, and artifacts
@@ -223,7 +211,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 2. The driver prepares `PDTarget`, train loader, eval loader, and optional artifacts
 3. The runner builds `RunMetadata` from the parsed config and supplied driver import path
 4. `run_pd` saves the metadata/artifacts and trains a `ComponentModel` with specified target modules
-5. PD optimization runs via `param_decomp.run_param_decomp.optimize()` with config-driven loss combination
+5. PD optimization runs via `param_decomp.run_pd.optimize()` with config-driven loss combination
 6. Post-processing reloads registered runs through `PDRun.load_target()` /
    `PDRun.load_dataloaders(...)` (or just `PDRun.load_model()` / `load_pd(path)`)
 
@@ -234,7 +222,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 - WandB integration for experiment tracking and model storage
 - Supports both local paths and `wandb:project/runs/run_id` format for model loading
 - Built-in experiments are auto-discovered from YAML configs in `param_decomp/experiments/<kind>/`; custom
-  experiments can use `pd-experiment --driver module:MyDriver --config_path config.yaml`
+  experiments can use `pd-run --driver module:MyDriver --config_path config.yaml`
 
 **Harvest, Autointerp & Dataset Attributions Modules:**
 
@@ -282,11 +270,11 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 │   ├── models/
 │   │   ├── component_model.py       # ComponentModel.from_checkpoint(...)
 │   │   └── components.py            # LinearComponent, EmbeddingComponent, etc.
-│   ├── scripts/                     # CLI entry points (pd-run, pd-local)
+│   ├── scripts/                     # CLI entry points (pd-launch)
 │   ├── utils/
 │   │   └── slurm.py                 # SlurmConfig, submit functions
 │   ├── configs.py                   # Core PD configs (PDConfig, ModuleInfo, loss configs, etc.)
-│   ├── run_param_decomp.py                   # Main optimization loop
+│   ├── run_pd.py                             # Main optimization loop
 │   ├── losses.py                    # Loss functions (faithfulness, reconstruction, etc.)
 │   ├── figures.py                   # WandB figure generation
 │   └── settings.py                  # PARAM_DECOMP_OUT_DIR, SLURM_LOGS_DIR, SBATCH_SCRIPTS_DIR
@@ -300,9 +288,8 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
 | Command | Entry Point | Description |
 |---------|-------------|-------------|
-| `pd-run` | `param_decomp/scripts/run.py` | SLURM-based experiment runner |
-| `pd-experiment` | `param_decomp/experiments/runner.py` | Generic local runner for a driver + config |
-| `pd-local` | `param_decomp/scripts/run_local.py` | Local experiment runner |
+| `pd-run` | `param_decomp/experiments/runner.py` | Single-process PD worker / local runner (built-in by name or custom driver + config) |
+| `pd-launch` | `param_decomp/scripts/run.py` | SLURM launcher (optionally grid-expands via `--sweep`; each task invokes `pd-run`) |
 | `pd-harvest` | `param_decomp/harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
 | `pd-autointerp` | `param_decomp/autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
 | `pd-attributions` | `param_decomp/dataset_attributions/scripts/run_slurm_cli.py` | Submit dataset attribution SLURM job |
@@ -337,9 +324,8 @@ Use `param_decomp/` as the search root (not repo root) to avoid noise.
 
 **Running Experiments:**
 
-- `pd-run` → `param_decomp/scripts/run.py` → `param_decomp/utils/slurm.py` → SLURM → `param_decomp/experiments/runner.py` + driver path → `run_pd`
-- `pd-local` → `param_decomp/scripts/run_local.py` → `param_decomp/experiments/runner.py` + driver path → `run_pd`
-- `pd-experiment` → `param_decomp/experiments/runner.py` → custom/built-in driver → `run_pd`
+- `pd-run` → `param_decomp/experiments/runner.py` → driver (built-in or custom) → `run_pd`
+- `pd-launch` → `param_decomp/scripts/run.py` → `param_decomp/utils/slurm.py` → SLURM → `pd-run` (one per array task) → `run_pd`
 
 **Harvest Pipeline:**
 
@@ -363,17 +349,18 @@ Use `param_decomp/` as the search root (not repo root) to avoid noise.
 
 ## Common Usage Patterns
 
-### Running Experiments Locally (`pd-local`)
+### Running Experiments Locally (`pd-run`)
 
-For collaborators and simple local execution, use `pd-local`:
+For single-machine execution (no SLURM, no git snapshot, no W&B views/reports), use `pd-run`:
 
 ```bash
-pd-local tms_5-2           # Run on single GPU (default)
-pd-local tms_5-2 --cpu     # Run on CPU
-pd-local tms_5-2 --dp 4    # Run on 4 GPUs (single node DDP)
+pd-run tms_5-2                                     # built-in experiment by name (single GPU)
+pd-run tms_5-2 --cpu                               # built-in on CPU
+pd-run --config_path my.yaml --driver pkg:Driver   # custom driver
 ```
 
-This runs experiments directly without SLURM, git snapshots, or W&B views/reports.
+`pd-run` is single-process. For multi-GPU runs, use `pd-launch --dp N` (which submits a SLURM job
+that wraps `pd-run` in `torchrun`).
 
 ### Web App for Visualization
 
@@ -462,19 +449,19 @@ attributions (GPU array → merge, parallel with harvest)
 graph_interp         (CPU, depends on harvest merge + attributions merge)
 ```
 
-### Running on SLURM Cluster (`pd-run`)
+### Running on SLURM Cluster (`pd-launch`)
 
-For the core team, `pd-run` provides full-featured SLURM orchestration:
+For the core team, `pd-launch` provides full-featured SLURM orchestration:
 
 ```bash
-pd-run --experiments tms_5-2                    # Run a specific experiment
-pd-run --experiments tms_5-2,resid_mlp1         # Run multiple experiments
-pd-run                                          # Run all experiments
+pd-launch --experiments tms_5-2                    # Run a specific experiment
+pd-launch --experiments tms_5-2,resid_mlp1         # Run multiple experiments
+pd-launch                                          # Run all discovered experiments
 ```
 
-All `pd-run` executions:
+All `pd-launch` executions:
 
-- Submit jobs to SLURM
+- Submit jobs to SLURM (one task invokes `pd-run` per config)
 - Create a git snapshot for reproducibility
 - Create W&B workspace views
 
@@ -487,29 +474,29 @@ Metrics and figures are defined in `param_decomp/metrics.py` and `param_decomp/f
 
 ### Sweeps
 
-Run hyperparameter sweeps on the GPU cluster:
+Run parameter grids on the GPU cluster:
 
 ```bash
-pd-run --experiments <experiment_name> --sweep --n_agents <n-agents> [--cpu]
+pd-launch --experiments <experiment_name> --sweep --n_agents <n-agents> [--cpu]
 ```
 
 Examples:
 
 ```bash
-pd-run --experiments tms_5-2 --sweep --n_agents 4            # Run TMS 5-2 sweep with 4 GPU agents
-pd-run --experiments resid_mlp2 --sweep --n_agents 3 --cpu   # Run ResidualMLP2 sweep with 3 CPU agents
-pd-run --sweep --n_agents 10                                 # Sweep all experiments with 10 agents
-pd-run --experiments tms_5-2 --sweep custom.yaml --n_agents 2 # Use custom sweep params file
+pd-launch --experiments tms_5-2 --sweep --n_agents 4            # 4 concurrent SLURM tasks
+pd-launch --experiments resid_mlp2 --sweep --n_agents 3 --cpu   # CPU grid
+pd-launch --sweep --n_agents 10                                 # all experiments, 10 concurrent
+pd-launch --experiments tms_5-2 --sweep custom.yaml --n_agents 2  # custom grid file
 ```
 
-**Supported Experiments:** Any experiment auto-discovered from YAML configs under `param_decomp/experiments/<kind>/` (run `pd-local --help` to see available options)
+**Supported Experiments:** Any experiment auto-discovered from YAML configs under `param_decomp/experiments/<kind>/`.
 
 **How It Works:**
 
-1. Creates a WandB sweep using parameters from `param_decomp/scripts/sweep_params.yaml` (or custom file)
-2. Deploys multiple SLURM agents as a job array to run the sweep
-3. Each agent runs on a single GPU by default (use `--cpu` for CPU-only)
-4. Creates a git snapshot to ensure consistent code across all agents
+1. Expands the parameter grid in `param_decomp/scripts/sweep_params.yaml` (or a custom file) locally into one config per Cartesian-product combination. This is **not** a W&B sweep agent — W&B sees independent runs tagged with a shared `launch_id`.
+2. Submits the resulting configs as a SLURM job array, capped at `--n_agents` concurrent tasks.
+3. Each task runs on a single GPU by default (use `--cpu` for CPU-only).
+4. Creates a git snapshot to ensure consistent code across all tasks.
 
 **Sweep Parameters:**
 

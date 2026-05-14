@@ -6,8 +6,8 @@ import wandb
 from wandb.apis.public import Run
 
 from param_decomp.log import logger
-from param_decomp.param_decomp_types import ModelPath
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp.types import ModelPath
 from param_decomp.utils.general_utils import fetch_latest_local_checkpoint
 from param_decomp.utils.wandb_utils import (
     download_wandb_file,
