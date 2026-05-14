@@ -8,11 +8,7 @@ import fire
 import yaml
 
 from param_decomp import run_pd
-from param_decomp.configs import (
-    PersistentPGDReconLossConfig,
-    PersistentPGDReconSubsetLossConfig,
-    RepeatAcrossBatchScope,
-)
+from param_decomp.configs import RepeatAcrossBatchScope
 from param_decomp.experiments.driver import (
     ExperimentConfig,
     ExperimentDriver,
@@ -69,10 +65,11 @@ def _validate_prepared_experiment(
     dist_state: DistributedState | None,
 ) -> None:
     train_rank_bs = _per_rank_batch_size(prepared.pd.batch_size, dist_state)
-    for cfg in prepared.pd.loss_metric_configs:
-        if isinstance(
-            cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
-        ) and isinstance(cfg.scope, RepeatAcrossBatchScope):
+    for cfg in (
+        prepared.pd.loss_metrics.persistent_pgd_recon,
+        prepared.pd.loss_metrics.persistent_pgd_recon_subset,
+    ):
+        if cfg is not None and isinstance(cfg.scope, RepeatAcrossBatchScope):
             n = cfg.scope.n_sources
             assert train_rank_bs % n == 0, (
                 f"repeat_across_batch n_sources={n} must divide per-rank batch_size={train_rank_bs}"

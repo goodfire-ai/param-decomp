@@ -36,37 +36,6 @@ pd:
   identity_module_info: null
   init_pd_checkpoint: null
   use_delta_component: true
-  loss_metric_configs:
-  - coeff: 0.0002
-    classname: ImportanceMinimalityLoss
-    pnorm: 2.0
-    beta: 0.5
-    p_anneal_start_frac: 0.0
-    p_anneal_final_p: 0.4
-    p_anneal_end_frac: 1.0
-    eps: 1.0e-12
-  - coeff: 0.5
-    classname: StochasticReconSubsetLoss
-    routing:
-      type: uniform_k_subset
-  - coeff: 0.5
-    optimizer:
-      type: adam
-      beta1: 0.5
-      beta2: 0.99
-      eps: 1.0e-08
-      lr_schedule:
-        start_val: 0.01
-        warmup_pct: 0.025
-        final_val_frac: 1.0
-        fn_type: constant
-    scope:
-      type: per_batch_per_position
-    use_sigmoid_parameterization: false
-    n_warmup_steps: 2
-    classname: PersistentPGDReconLoss
-  - coeff: 10000000.0
-    classname: FaithfulnessLoss
   lr_schedule:
     start_val: 5.0e-05
     warmup_pct: 0.0
@@ -86,35 +55,64 @@ pd:
   n_eval_steps: 1
   slow_eval_on_first_step: true
   save_freq: null
-  eval_metric_configs:
-  - classname: CIHistograms
-    n_batches_accum: 1
-  - classname: ComponentActivationDensity
-  - classname: CI_L0
-    groups:
-      layer_0:
-      - h.0.*
-      layer_1:
-      - h.1.*
-      layer_2:
-      - h.2.*
-      layer_3:
-      - h.3.*
-      total:
-      - '*'
-  - classname: CEandKLLosses
-    rounding_threshold: 0.0
-  - classname: CIMeanPerComponent
-  - coeff: null
-    classname: StochasticHiddenActsReconLoss
-  - classname: CIHiddenActsReconLoss
-  - coeff: null
-    init: random
-    step_size: 0.1
-    n_steps: 20
-    mask_scope: shared_across_batch
-    classname: PGDReconLoss
   ci_alive_threshold: 0.0
+  loss_metrics:
+    importance_minimality:
+      coeff: 0.0002
+      pnorm: 2.0
+      beta: 0.5
+      p_anneal_start_frac: 0.0
+      p_anneal_final_p: 0.4
+      p_anneal_end_frac: 1.0
+      eps: 1.0e-12
+    stochastic_recon_subset:
+      coeff: 0.5
+      routing:
+        type: uniform_k_subset
+    persistent_pgd_recon:
+      coeff: 0.5
+      optimizer:
+        type: adam
+        beta1: 0.5
+        beta2: 0.99
+        eps: 1.0e-08
+        lr_schedule:
+          start_val: 0.01
+          warmup_pct: 0.025
+          final_val_frac: 1.0
+          fn_type: constant
+      scope:
+        type: per_batch_per_position
+      use_sigmoid_parameterization: false
+      n_warmup_steps: 2
+    faithfulness:
+      coeff: 10000000.0
+  eval_metrics:
+    ci_histograms:
+      n_batches_accum: 1
+    component_activation_density: {}
+    ci_l0:
+      groups:
+        layer_0:
+        - h.0.*
+        layer_1:
+        - h.1.*
+        layer_2:
+        - h.2.*
+        layer_3:
+        - h.3.*
+        total:
+        - '*'
+    ce_and_kl:
+      rounding_threshold: 0.0
+    ci_mean_per_component: {}
+    stochastic_hidden_acts_recon: {}
+    ci_hidden_acts_recon: {}
+    pgd_recon:
+      init: random
+      step_size: 0.1
+      n_steps: 20
+      mask_scope: shared_across_batch
 target:
   model_class: param_decomp.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
   model_name: goodfire/spd/runs/t-9d2b8f02

@@ -18,7 +18,6 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from param_decomp.configs import (
-    LossMetricConfigType,
     MetricConfigType,
     PDConfig,
     PersistentPGDReconLossConfig,
@@ -97,22 +96,6 @@ def run_faithfulness_warmup(
     # TODO: we should reverse the order of these two calls
     torch.cuda.empty_cache()
     gc.collect()
-
-
-def get_unique_metric_configs(
-    loss_configs: list[LossMetricConfigType], eval_configs: list[MetricConfigType]
-) -> list[MetricConfigType]:
-    """If a metric appears in both loss and eval configs, only include the eval version."""
-    eval_config_names = [type(cfg).__name__ for cfg in eval_configs]
-    eval_metric_configs = eval_configs[:]
-    for cfg in loss_configs:
-        if type(cfg).__name__ not in eval_config_names:
-            eval_metric_configs.append(cfg)
-        else:
-            logger.warning(
-                f"{type(cfg).__name__} is in both loss and eval configs, only including eval config"
-            )
-    return eval_metric_configs
 
 
 def optimize(
@@ -215,20 +198,28 @@ def optimize(
         PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
     ] = [
         cfg
-        for cfg in config.loss_metric_configs
-        if isinstance(cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig)
+        for cfg in (
+            config.loss_metrics.persistent_pgd_recon,
+            config.loss_metrics.persistent_pgd_recon_subset,
+        )
+        if cfg is not None
     ]
-
-    eval_metric_configs = get_unique_metric_configs(
-        loss_configs=config.loss_metric_configs, eval_configs=config.eval_metric_configs
-    )
 
     multibatch_pgd_eval_configs: list[
         PGDMultiBatchReconLossConfig | PGDMultiBatchReconSubsetLossConfig
-    ] = [cfg for cfg in eval_metric_configs if isinstance(cfg, PGDMultiBatchConfig)]
+    ] = [
+        cfg
+        for cfg in (
+            config.eval_metrics.pgd_multibatch_recon,
+            config.eval_metrics.pgd_multibatch_recon_subset,
+        )
+        if cfg is not None
+    ]
 
-    eval_metric_configs = [
-        cfg for cfg in eval_metric_configs if cfg not in multibatch_pgd_eval_configs
+    eval_metric_configs: list[MetricConfigType] = [
+        cfg
+        for cfg in config.loss_metrics.active() + config.eval_metrics.active()
+        if not isinstance(cfg, PGDMultiBatchConfig)
     ]
 
     sample_out = model(to_device(next(train_iterator), device))
@@ -289,7 +280,7 @@ def optimize(
                 )
 
             losses = compute_losses(
-                loss_metric_configs=config.loss_metric_configs,
+                loss_metrics=config.loss_metrics,
                 model=component_model,
                 batch=batch,
                 ci=ci,

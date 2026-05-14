@@ -8,6 +8,7 @@ from param_decomp.configs import (
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     LayerwiseCiConfig,
+    LossMetricsConfig,
     ModulePatternInfoConfig,
     PDConfig,
     ScheduleConfig,
@@ -58,17 +59,17 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
         identity_module_info=[
             ModulePatternInfoConfig(module_pattern="linear1", C=10),
         ],
-        loss_metric_configs=[
-            ImportanceMinimalityLossConfig(
+        loss_metrics=LossMetricsConfig(
+            importance_minimality=ImportanceMinimalityLossConfig(
                 coeff=3e-3,
                 pnorm=2.0,
                 beta=0.5,
                 eps=1e-12,
             ),
-            StochasticReconLayerwiseLossConfig(coeff=1.0),
-            StochasticReconLossConfig(coeff=1.0),
-            FaithfulnessLossConfig(coeff=1.0),
-        ],
+            stochastic_recon_layerwise=StochasticReconLayerwiseLossConfig(coeff=1.0),
+            stochastic_recon=StochasticReconLossConfig(coeff=1.0),
+            faithfulness=FaithfulnessLossConfig(coeff=1.0),
+        ),
         lr_schedule=ScheduleConfig(
             start_val=1e-3, fn_type="cosine", warmup_pct=0.0, final_val_frac=0.0
         ),

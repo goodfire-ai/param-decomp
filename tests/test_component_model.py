@@ -12,6 +12,7 @@ from param_decomp.configs import (
     GlobalCiConfig,
     ImportanceMinimalityLossConfig,
     LayerwiseCiConfig,
+    LossMetricsConfig,
     ModulePatternInfoConfig,
     PDConfig,
     ScheduleConfig,
@@ -139,7 +140,9 @@ def test_from_checkpoint():
             eval_batch_size=1,
             eval_freq=1,
             slow_eval_freq=1,
-            loss_metric_configs=[ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)],
+            loss_metrics=LossMetricsConfig(
+                importance_minimality=ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)
+            ),
             train_log_freq=1,
             n_mask_samples=1,
         )
@@ -539,7 +542,9 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             eval_batch_size=1,
             eval_freq=1,
             slow_eval_freq=1,
-            loss_metric_configs=[ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)],
+            loss_metrics=LossMetricsConfig(
+                importance_minimality=ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)
+            ),
             train_log_freq=1,
             n_mask_samples=1,
         )
@@ -571,7 +576,9 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             eval_batch_size=1,
             eval_freq=1,
             slow_eval_freq=1,
-            loss_metric_configs=[ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)],
+            loss_metrics=LossMetricsConfig(
+                importance_minimality=ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)
+            ),
             train_log_freq=1,
             n_mask_samples=1,
         )
@@ -620,7 +627,9 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             eval_batch_size=1,
             eval_freq=1,
             slow_eval_freq=1,
-            loss_metric_configs=[ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)],
+            loss_metrics=LossMetricsConfig(
+                importance_minimality=ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)
+            ),
             train_log_freq=1,
             n_mask_samples=1,
         )
@@ -652,7 +661,9 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             eval_batch_size=1,
             eval_freq=1,
             slow_eval_freq=1,
-            loss_metric_configs=[ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)],
+            loss_metrics=LossMetricsConfig(
+                importance_minimality=ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)
+            ),
             train_log_freq=1,
             n_mask_samples=1,
         )
@@ -1268,7 +1279,9 @@ def test_global_ci_save_and_load():
             eval_batch_size=1,
             eval_freq=1,
             slow_eval_freq=1,
-            loss_metric_configs=[ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)],
+            loss_metrics=LossMetricsConfig(
+                importance_minimality=ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)
+            ),
             train_log_freq=1,
             n_mask_samples=1,
         )

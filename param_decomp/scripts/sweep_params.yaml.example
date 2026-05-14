@@ -4,8 +4,8 @@ global:
   pd:
     seed:
       values: [0, 1]
-    loss_metric_configs:
-      - classname: "ImportanceMinimalityLoss"
+    loss_metrics:
+      importance_minimality:
         coeff:
           values: [0.1, 0.2]
 

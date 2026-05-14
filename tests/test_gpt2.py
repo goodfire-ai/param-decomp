@@ -7,9 +7,11 @@ from transformers import GPT2LMHeadModel
 
 from param_decomp.configs import (
     CI_L0Config,
+    EvalMetricsConfig,
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     LayerwiseCiConfig,
+    LossMetricsConfig,
     ModulePatternInfoConfig,
     PDConfig,
     ScheduleConfig,
@@ -50,17 +52,17 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         identity_module_info=[
             ModulePatternInfoConfig(module_pattern="transformer.h.1.attn.c_attn", C=10),
         ],
-        loss_metric_configs=[
-            ImportanceMinimalityLossConfig(
+        loss_metrics=LossMetricsConfig(
+            importance_minimality=ImportanceMinimalityLossConfig(
                 coeff=1e-2,
                 pnorm=0.9,
                 beta=0.5,
                 eps=1e-12,
             ),
-            StochasticReconLayerwiseLossConfig(coeff=1.0),
-            StochasticReconLossConfig(coeff=1.0),
-            FaithfulnessLossConfig(coeff=200),
-        ],
+            stochastic_recon_layerwise=StochasticReconLayerwiseLossConfig(coeff=1.0),
+            stochastic_recon=StochasticReconLossConfig(coeff=1.0),
+            faithfulness=FaithfulnessLossConfig(coeff=200),
+        ),
         lr_schedule=ScheduleConfig(
             start_val=1e-3, fn_type="cosine", warmup_pct=0.01, final_val_frac=0.0
         ),
@@ -74,9 +76,9 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         slow_eval_on_first_step=False,
         save_freq=None,
         ci_alive_threshold=0.1,
-        eval_metric_configs=[
-            CI_L0Config(groups=None),
-        ],
+        eval_metrics=EvalMetricsConfig(
+            ci_l0=CI_L0Config(groups=None),
+        ),
     )
 
     model_name = "SimpleStories/test-SimpleStories-gpt2-1.25M"

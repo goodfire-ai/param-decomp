@@ -16,16 +16,6 @@ pd:
   identity_module_info: null
   sampling: continuous
   use_delta_component: true
-  loss_metric_configs:
-  - classname: ImportanceMinimalityLoss
-    coeff: 0.0003
-    pnorm: 2.0
-    beta: 0
-    p_anneal_start_frac: 0.0
-    p_anneal_final_p: 0.3
-    p_anneal_end_frac: 1.0
-  - classname: StochasticReconLayerwiseLoss
-    coeff: 2.0
   batch_size: 2
   eval_batch_size: 2
   steps: 50000
@@ -44,16 +34,26 @@ pd:
   n_eval_steps: 5
   save_freq: null
   ci_alive_threshold: 0.0
-  eval_metric_configs:
-  - classname: CIHistograms
-    n_batches_accum: 5
-  - classname: ComponentActivationDensity
-  - classname: CI_L0
-    groups: null
-  - classname: CEandKLLosses
-    rounding_threshold: 0.0
-  - classname: CIMeanPerComponent
-  - classname: StochasticHiddenActsReconLoss
+  loss_metrics:
+    importance_minimality:
+      coeff: 0.0003
+      pnorm: 2.0
+      beta: 0
+      p_anneal_start_frac: 0.0
+      p_anneal_final_p: 0.3
+      p_anneal_end_frac: 1.0
+    stochastic_recon_layerwise:
+      coeff: 2.0
+  eval_metrics:
+    ci_histograms:
+      n_batches_accum: 5
+    component_activation_density: {}
+    ci_l0:
+      groups: null
+    ce_and_kl:
+      rounding_threshold: 0.0
+    ci_mean_per_component: {}
+    stochastic_hidden_acts_recon: {}
 target:
   model_class: transformers.GPT2LMHeadModel
   model_name: openai-community/gpt2

@@ -54,7 +54,6 @@ def _pd_config() -> PDConfig:
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[4]),
         sigmoid_type="leaky_hard",
         module_info=[],
-        loss_metric_configs=[],
         lr_schedule=ScheduleConfig(start_val=1e-3),
         steps=1,
         batch_size=4,

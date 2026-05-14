@@ -17,15 +17,6 @@ pd:
     C: 200
   identity_module_info: null
   use_delta_component: true
-  loss_metric_configs:
-  - classname: ImportanceMinimalityLoss
-    coeff: 1e-4
-    pnorm: 2.0
-    beta: 0
-  - classname: StochasticReconLayerwiseLoss
-    coeff: 1.0
-  - classname: StochasticReconLoss
-    coeff: 1.0
   batch_size: 4096
   eval_batch_size: 4096
   steps: 10000
@@ -43,26 +34,35 @@ pd:
   slow_eval_freq: 5000
   save_freq: null
   ci_alive_threshold: 0.1
-  eval_metric_configs:
-  - classname: CIHistograms
-    n_batches_accum: 5
-  - classname: ComponentActivationDensity
-  - classname: PermutedCIPlots
-    identity_patterns:
-    - linear1
-    - linear2
-    dense_patterns: null
-  - classname: IdentityCIError
-    identity_ci:
-    - layer_pattern: linear1
-      n_features: 40
-    - layer_pattern: linear2
-      n_features: 40
-    dense_ci: null
-  - classname: CI_L0
-    groups: null
-  - classname: CIMeanPerComponent
-  - classname: StochasticHiddenActsReconLoss
+  loss_metrics:
+    importance_minimality:
+      coeff: 1e-4
+      pnorm: 2.0
+      beta: 0
+    stochastic_recon_layerwise:
+      coeff: 1.0
+    stochastic_recon:
+      coeff: 1.0
+  eval_metrics:
+    ci_histograms:
+      n_batches_accum: 5
+    component_activation_density: {}
+    permuted_ci_plots:
+      identity_patterns:
+      - linear1
+      - linear2
+      dense_patterns: null
+    identity_ci_error:
+      identity_ci:
+      - layer_pattern: linear1
+        n_features: 40
+      - layer_pattern: linear2
+        n_features: 40
+      dense_ci: null
+    ci_l0:
+      groups: null
+    ci_mean_per_component: {}
+    stochastic_hidden_acts_recon: {}
 target:
   run_path: wandb:goodfire/spd-pre-Sep-2025/runs/urpntmfu
 data:

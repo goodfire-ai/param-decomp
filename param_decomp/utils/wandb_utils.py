@@ -39,41 +39,40 @@ _WANDB_URL_RE = re.compile(
     rf"^https://wandb\.ai/([^/]+)/([^/]+)/runs/({_RUN_ID_PATTERN})(?:/[^?]*)?(?:\?.*)?$"
 )
 
-# Short names for metric classes, used for W&B run names and view names
+# Short names for metric fields (keyed by LossMetricsConfig / EvalMetricsConfig field names),
+# used for W&B run names and view names.
 METRIC_CONFIG_SHORT_NAMES: dict[str, str] = {
-    # Loss metrics
-    "FaithfulnessLoss": "Faith",
-    "ImportanceMinimalityLoss": "ImpMin",
-    "StochasticReconLoss": "StochRecon",
-    "StochasticReconSubsetLoss": "StochReconSub",
-    "StochasticReconLayerwiseLoss": "StochReconLayer",
-    "CIMaskedReconLoss": "CIMaskRecon",
-    "CIMaskedReconSubsetLoss": "CIMaskReconSub",
-    "CIMaskedReconLayerwiseLoss": "CIMaskReconLayer",
-    "PGDReconLoss": "PGDRecon",
-    "PGDReconSubsetLoss": "PGDReconSub",
-    "PGDReconLayerwiseLoss": "PGDReconLayer",
-    "PersistentPGDReconLoss": "PersistPGDRecon",
-    "PersistentPGDReconSubsetLoss": "PersistPGDReconSub",
-    "StochasticHiddenActsReconLoss": "StochHiddenActRecon",
-    "CIHiddenActsReconLoss": "CIHiddenActRecon",
-    "StochasticAttnPatternsReconLoss": "StochAttnRecon",
-    "CIMaskedAttnPatternsReconLoss": "CIAttnRecon",
-    "UnmaskedReconLoss": "UnmaskedRecon",
-    # Eval metrics
-    "CEandKLLosses": "CEandKL",
-    "CIHistograms": "CIHist",
-    "CI_L0": "CI_L0",
-    "CIMeanPerComponent": "CIMeanPerComp",
-    "ComponentActivationDensity": "CompActDens",
-    "IdentityCIError": "IdCIErr",
-    "PermutedCIPlots": "PermCIPlots",
-    "UVPlots": "UVPlots",
-    "StochasticReconSubsetCEAndKL": "StochReconSubCEKL",
-    "PGDMultiBatchReconLoss": "PGDMultiBatchRecon",
-    "PGDMultiBatchReconSubsetLoss": "PGDMultiBatchReconSub",
-    "PersistentPGDReconEval": "PersistPGDReconEval",
-    "PersistentPGDReconSubsetEval": "PersistPGDReconSubEval",
+    "faithfulness": "Faith",
+    "importance_minimality": "ImpMin",
+    "stochastic_recon": "StochRecon",
+    "stochastic_recon_subset": "StochReconSub",
+    "stochastic_recon_layerwise": "StochReconLayer",
+    "ci_masked_recon": "CIMaskRecon",
+    "ci_masked_recon_subset": "CIMaskReconSub",
+    "ci_masked_recon_layerwise": "CIMaskReconLayer",
+    "pgd_recon": "PGDRecon",
+    "pgd_recon_subset": "PGDReconSub",
+    "pgd_recon_layerwise": "PGDReconLayer",
+    "persistent_pgd_recon": "PersistPGDRecon",
+    "persistent_pgd_recon_subset": "PersistPGDReconSub",
+    "stochastic_hidden_acts_recon": "StochHiddenActRecon",
+    "ci_hidden_acts_recon": "CIHiddenActRecon",
+    "stochastic_attn_patterns_recon": "StochAttnRecon",
+    "ci_masked_attn_patterns_recon": "CIAttnRecon",
+    "unmasked_recon": "UnmaskedRecon",
+    "ce_and_kl": "CEandKL",
+    "ci_histograms": "CIHist",
+    "ci_l0": "CI_L0",
+    "ci_mean_per_component": "CIMeanPerComp",
+    "component_activation_density": "CompActDens",
+    "identity_ci_error": "IdCIErr",
+    "permuted_ci_plots": "PermCIPlots",
+    "uv_plots": "UVPlots",
+    "stochastic_recon_subset_ce_and_kl": "StochReconSubCEKL",
+    "pgd_multibatch_recon": "PGDMultiBatchRecon",
+    "pgd_multibatch_recon_subset": "PGDMultiBatchReconSub",
+    "persistent_pgd_recon_eval": "PersistPGDReconEval",
+    "persistent_pgd_recon_subset_eval": "PersistPGDReconSubEval",
 }
 
 
@@ -101,28 +100,28 @@ def wandb_path_to_url(wandb_path: str) -> str:
 
 
 def _parse_metric_config_key(key: str) -> tuple[str, str, str] | None:
-    """Parse a metric config key into (list_field, classname, param).
+    """Parse a metric config key into (container, metric_field, param).
 
     Args:
-        key: Flattened key like "loss_metric_configs.ImportanceMinimalityLoss.pnorm"
+        key: Flattened key like "loss_metrics.importance_minimality.pnorm"
 
     Returns:
-        Tuple of (list_field, classname, param) if it's a metric config key, None otherwise
+        Tuple of (container, metric_field, param) if it's a metric config key, None otherwise
     """
     parts = key.split(".")
-    if len(parts) >= 3 and parts[0] in ("loss_metric_configs", "eval_metric_configs"):
-        list_field = parts[0]
-        classname = parts[1]
-        param = ".".join(parts[2:])  # Handle nested params like "task_config.feature_probability"
-        return (list_field, classname, param)
+    if len(parts) >= 3 and parts[0] in ("loss_metrics", "eval_metrics"):
+        container = parts[0]
+        metric_field = parts[1]
+        param = ".".join(parts[2:])
+        return (container, metric_field, param)
     return None
 
 
 def generate_wandb_run_name(params: dict[str, Any]) -> str:
     """Generate a W&B run name based on sweep parameters.
 
-    Handles special formatting for metric configs (loss_metric_configs, eval_metric_configs)
-    by abbreviating classnames and grouping parameters by metric type.
+    Groups parameters under `loss_metrics.<field>.<param>` or `eval_metrics.<field>.<param>`
+    by metric field name, abbreviating via METRIC_CONFIG_SHORT_NAMES.
 
     Args:
         params: Dictionary of flattened sweep parameters
@@ -133,36 +132,29 @@ def generate_wandb_run_name(params: dict[str, Any]) -> str:
     Example:
         >>> params = {
         ...     "seed": 42,
-        ...     "loss_metric_configs.ImportanceMinimalityLoss.pnorm": 0.9,
-        ...     "loss_metric_configs.ImportanceMinimalityLoss.coeff": 0.001,
+        ...     "loss_metrics.importance_minimality.pnorm": 0.9,
+        ...     "loss_metrics.importance_minimality.coeff": 0.001,
         ... }
         >>> generate_wandb_run_name(params)
         "seed-42-ImpMin-coeff-0.001-pnorm-0.9"
     """
-    # Group parameters by type: regular params and metric config params
     regular_params: list[tuple[str, Any]] = []
-    metric_params: dict[str, list[tuple[str, Any]]] = {}  # classname -> [(param, value), ...]
+    metric_params: dict[str, list[tuple[str, Any]]] = {}
 
     for key, value in params.items():
         parsed = _parse_metric_config_key(key)
         if parsed:
-            _, classname, param = parsed
-            # Get short name for the classname
-            short_name = METRIC_CONFIG_SHORT_NAMES.get(classname, classname)
+            _, metric_field, param = parsed
+            short_name = METRIC_CONFIG_SHORT_NAMES.get(metric_field, metric_field)
             if short_name not in metric_params:
                 metric_params[short_name] = []
             metric_params[short_name].append((param, value))
         else:
             regular_params.append((key, value))
 
-    # Build parts list
     parts: list[str] = []
-
-    # Add regular params (sorted for consistency)
     for key, value in sorted(regular_params):
         parts.append(f"{key}-{value}")
-
-    # Add metric config params (sorted by classname, then by param)
     for short_name in sorted(metric_params.keys()):
         parts.append(short_name)
         for param, value in sorted(metric_params[short_name]):
@@ -222,38 +214,32 @@ def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
 
 
 def flatten_metric_configs(config_dict: dict[str, Any]) -> dict[str, Any]:
-    """Flatten loss_metric_configs and eval_metric_configs into dot-notation for wandb searchability.
+    """Flatten `loss_metrics` and `eval_metrics` into dot-notation for wandb searchability.
 
     Converts:
-        loss_metric_configs: [{"classname": "ImportanceMinimalityLoss", "coeff": 0.1, "pnorm": 1.0}]
+        loss_metrics: {"importance_minimality": {"coeff": 0.1, "pnorm": 1.0}}
     To:
-        loss_metric_configs.ImportanceMinimalityLoss.coeff: 0.1
-        loss_metric_configs.ImportanceMinimalityLoss.pnorm: 1.0
+        loss.ImpMin.coeff: 0.1
+        loss.ImpMin.pnorm: 1.0
     """
     flattened: dict[str, Any] = {}
 
-    for config_list_name in ["loss_metric_configs", "eval_metric_configs"]:
-        if config_list_name not in config_dict:
+    for container_name in ("loss_metrics", "eval_metrics"):
+        if container_name not in config_dict:
             continue
+        container = config_dict[container_name]
+        assert isinstance(container, dict), f"{container_name} should be a dict"
 
-        configs = config_dict[config_list_name]
-        assert isinstance(configs, list), f"{config_list_name} should be a list"
-
-        for config_item in configs:
-            assert isinstance(config_item, dict), f"{config_list_name} should have dicts"
-
-            classname = config_item["classname"]
-            assert isinstance(classname, str), f"{config_list_name} should have a classname"
-            short_name = METRIC_CONFIG_SHORT_NAMES[classname]
-
-            for key, value in config_item.items():
+        prefix = container_name.split("_")[0]  # "loss" or "eval"
+        for metric_field, cfg in container.items():
+            if cfg is None:
+                continue
+            assert isinstance(cfg, dict), f"{container_name}.{metric_field} should be a dict"
+            short_name = METRIC_CONFIG_SHORT_NAMES[metric_field]
+            for key, value in cfg.items():
                 if key == "classname":
                     continue
-                # Get a "loss" or "eval" prefix
-                prefix = config_list_name.split("_")[0]
-                # Create flattened key
-                flat_key = f"{prefix}.{short_name}.{key}"
-                flattened[flat_key] = value
+                flattened[f"{prefix}.{short_name}.{key}"] = value
 
     return flattened
 
@@ -343,10 +329,8 @@ def init_wandb(
     # We also want flattened names for easier wandb searchability
     flattened_config_dict = flatten_metric_configs(config_dict)
     # Remove the nested metric configs to avoid duplication (if they exist)
-    if "loss_metric_configs" in config_dict:
-        del config_dict["loss_metric_configs"]
-    if "eval_metric_configs" in config_dict:
-        del config_dict["eval_metric_configs"]
+    config_dict.pop("loss_metrics", None)
+    config_dict.pop("eval_metrics", None)
     wandb.config.update({**config_dict, **flattened_config_dict})
 
 
