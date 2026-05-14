@@ -24,7 +24,7 @@ from param_decomp.app.backend.app_tokenizer import AppTokenizer
 from param_decomp.autointerp.repo import InterpRepo
 from param_decomp.experiments.lm.experiment import LMExperimentConfig
 from param_decomp.harvest.schemas import get_harvest_dir
-from param_decomp.models.component_model import ComponentModel, PDRunInfo
+from param_decomp.pd_run import PDRun
 from param_decomp.topology import TransformerTopology
 from param_decomp.topology.canonical import CanonicalWeight, Embed, LayerWeight, Unembed
 from scripts.blog.constants import (
@@ -113,13 +113,13 @@ def main() -> None:
     tile = WEIGHT_TILE_SIZE
 
     print("Loading run info...")
-    run_info = PDRunInfo.from_path(f"goodfire/spd/runs/{RUN_ID}")
-    exp = run_info.experiment_config
+    pd_run = PDRun.from_path(f"goodfire/spd/runs/{RUN_ID}")
+    exp = pd_run.experiment_config
     assert isinstance(exp, LMExperimentConfig), "component export only supports LM runs"
     tokenizer = AppTokenizer.from_pretrained(exp.data.tokenizer_name)
 
     print("Loading model...")
-    model = ComponentModel.from_run_info(run_info)
+    model = pd_run.load_model()
     model.eval()
     topology = TransformerTopology(model.target_model)
 

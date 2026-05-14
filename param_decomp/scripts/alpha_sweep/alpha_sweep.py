@@ -27,11 +27,11 @@ from torch import Tensor
 from param_decomp.configs import SamplingType
 from param_decomp.experiments.lm.data import create_lm_data_loader
 from param_decomp.experiments.lm.experiment import LMExperimentConfig
-from param_decomp.load import load_pd
 from param_decomp.log import logger
-from param_decomp.models.component_model import ComponentModel, PDRunInfo
+from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import make_mask_infos
 from param_decomp.param_decomp_types import ModelPath
+from param_decomp.pd_run import PDRun
 
 
 def compute_ce_at_r(
@@ -77,16 +77,15 @@ def run_r_sweep(
     device: str,
 ) -> tuple[str, list[float]]:
     """Run r sweep for a single model. Returns (run_id, ce_losses)."""
-    run_info = PDRunInfo.from_path(wandb_path)
-    config = run_info.pd_config
-    exp = run_info.experiment_config
+    pd_run = PDRun.from_path(wandb_path)
+    config = pd_run.pd_config
+    exp = pd_run.experiment_config
     assert isinstance(exp, LMExperimentConfig)
     data = exp.data
     run_id = str(wandb_path).split("/")[-1]
 
     logger.info(f"Loading model {run_id}...")
-    target = run_info.load_target()
-    model = load_pd(wandb_path, target=target).to(device)
+    model = pd_run.load_model().to(device)
     model.eval()
 
     logger.info("Creating validation data loader...")

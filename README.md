@@ -70,13 +70,13 @@ Two routes, neither needing core-package edits:
   `run_pd(config, target, train_loader, eval_loader, device)`. Reload with
   `load_pd(path, target=...)`. Best for notebooks/scripts.
 - **Package it as a YAML-driven experiment** — define your experiment as a Pydantic
-  `ExperimentConfig` plus an `ExperimentDriver` class (a small adapter that turns the config into
-  a `PDTarget` and dataloaders; see
+  `ExperimentConfig` plus an `ExperimentDriver` class (a small adapter exposing
+  `build_target`, `build_dataloaders`, and `artifacts`; see
   [`driver.py`](param_decomp/experiments/driver.py) for the interface and
   [`tms/experiment.py`](param_decomp/experiments/tms/experiment.py) for the smallest example),
   then run `pd-experiment --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml`. This is
   what built-in experiments do, and is needed for sweeps and for self-reloading runs via
-  `PDRunInfo.from_path(...)`.
+  `load_pd(path)` (no `target=` argument needed) or `PDRun.from_path(...)`.
 
 Runs save an `experiment_manifest.yaml` beside the checkpoint with the parsed config and (if
 applicable) the driver's import path.

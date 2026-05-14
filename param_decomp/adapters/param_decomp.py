@@ -8,8 +8,8 @@ from param_decomp.adapters.base import DecompositionAdapter
 from param_decomp.autointerp.schemas import ModelMetadata
 from param_decomp.experiments.driver import ExperimentConfig
 from param_decomp.experiments.lm.experiment import LMExperimentConfig
-from param_decomp.load import load_pd
-from param_decomp.models.component_model import ComponentModel, PDRunInfo
+from param_decomp.models.component_model import ComponentModel
+from param_decomp.pd_run import PDRun
 from param_decomp.topology import TransformerTopology
 from param_decomp.utils.wandb_utils import parse_wandb_run_path
 
@@ -20,12 +20,14 @@ class PDAdapter(DecompositionAdapter):
         _, _, self._run_id = parse_wandb_run_path(wandb_path)
 
     @cached_property
-    def pd_run_info(self) -> PDRunInfo:
-        return PDRunInfo.from_path(self._wandb_path)
+    def pd_run(self) -> PDRun:
+        return PDRun.from_path(self._wandb_path)
 
     @cached_property
     def experiment_config(self) -> ExperimentConfig:
-        return self.pd_run_info.experiment_config
+        exp = self.pd_run.experiment_config
+        assert exp is not None, "PD run has no driver; cannot reconstruct experiment config"
+        return exp
 
     @cached_property
     def lm_experiment_config(self) -> LMExperimentConfig:
@@ -37,8 +39,7 @@ class PDAdapter(DecompositionAdapter):
 
     @cached_property
     def component_model(self) -> ComponentModel:
-        target = self.pd_run_info.load_target()
-        return load_pd(self._wandb_path, target=target)
+        return self.pd_run.load_model()
 
     @cached_property
     def _topology(self) -> TransformerTopology:
@@ -62,7 +63,7 @@ class PDAdapter(DecompositionAdapter):
 
     @override
     def dataloader(self, batch_size: int) -> DataLoader[Tensor]:
-        train_loader, _ = self.pd_run_info.build_dataloaders(
+        train_loader, _ = self.pd_run.load_dataloaders(
             train_batch_size=batch_size,
             eval_batch_size=batch_size,
         )

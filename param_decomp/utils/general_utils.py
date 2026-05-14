@@ -201,23 +201,18 @@ def save_pre_run_info(
     save_to_wandb: bool,
     out_dir: Path,
     sweep_params: dict[str, Any] | None,
-    manifest: Any,
-    artifacts: Sequence[Any],
+    manifest: dict[str, Any],
+    artifacts: dict[str, Any],
 ) -> None:
     """Save run information locally and optionally to wandb."""
 
-    from param_decomp.experiments.constants import EXPERIMENT_MANIFEST_FILENAME
-
-    manifest = manifest.with_artifacts([artifact.filename for artifact in artifacts])
-    files_to_save: dict[str, Any] = {
-        EXPERIMENT_MANIFEST_FILENAME: manifest.model_dump(mode="json"),
-    }
+    manifest = {**manifest, "artifact_filenames": list(artifacts)}
+    files_to_save: dict[str, Any] = {"experiment_manifest.yaml": manifest}
 
     if sweep_params is not None:
         files_to_save["sweep_params.yaml"] = sweep_params
 
-    for artifact in artifacts:
-        files_to_save[artifact.filename] = artifact.data
+    files_to_save.update(artifacts)
 
     for filename, data in files_to_save.items():
         filepath = out_dir / filename

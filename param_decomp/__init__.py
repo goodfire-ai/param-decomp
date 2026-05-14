@@ -8,33 +8,23 @@ Core types:
     - `PDConfig`: training/algorithm config.
     - `PDTarget`: target model + run_batch + reconstruction_loss.
     - `ExperimentConfig`: user-authored experiment recipe parsed by a driver.
-    - `ExperimentManifest`: saved run metadata containing serialized config + reload metadata.
-    - `PreparedExperiment`: target + dataloaders + artifacts produced by an experiment driver.
-    - `PDRunInfo`: handle to a saved run (manifest, checkpoint path, experiment config).
+    - `ExperimentDriver`: Protocol for the open-world experiment extension point.
+    - `PDRun`: handle to a saved run (manifest, checkpoint, parsed config).
 """
 
 from param_decomp.configs import PDConfig
-from param_decomp.experiments.driver import (
-    ExperimentConfig,
-    ExperimentDriver,
-    ExperimentManifest,
-    PreparedExperiment,
-    RunArtifact,
-)
+from param_decomp.experiments.driver import ExperimentConfig, ExperimentDriver
 from param_decomp.load import load_pd
 from param_decomp.models.batch_and_loss_fns import PDTarget
-from param_decomp.models.component_model import PDRunInfo
+from param_decomp.pd_run import PDRun
 from param_decomp.run_param_decomp import run_pd
 
 __all__ = [
-    "PDConfig",
     "ExperimentConfig",
     "ExperimentDriver",
-    "ExperimentManifest",
-    "PDRunInfo",
+    "PDConfig",
+    "PDRun",
     "PDTarget",
-    "PreparedExperiment",
-    "RunArtifact",
     "load_pd",
     "run_pd",
 ]

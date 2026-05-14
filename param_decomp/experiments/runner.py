@@ -8,17 +8,9 @@ import fire
 import yaml
 
 from param_decomp import run_pd
-from param_decomp.configs import RepeatAcrossBatchScope
-from param_decomp.experiments.driver import (
-    ExperimentConfig,
-    ExperimentDriver,
-    ExperimentManifest,
-    PreparedExperiment,
-    load_driver,
-)
+from param_decomp.experiments.driver import load_driver
 from param_decomp.log import logger
 from param_decomp.utils.distributed_utils import (
-    DistributedState,
     get_device,
     init_distributed,
     is_main_process,
@@ -28,59 +20,34 @@ from param_decomp.utils.general_utils import set_seed
 from param_decomp.utils.run_utils import parse_sweep_params
 
 
-def _load_config_data(config_path: Path | str | None, config_json: str | None) -> dict[str, Any]:
+def _load_run_inputs(
+    config_path: Path | str | None, config_json: str | None
+) -> tuple[str | None, dict[str, Any]]:
+    """Load the YAML/JSON source and split it into (driver_from_manifest, experiment_config_dict).
+
+    The source is either a pure experiment config (driver_from_manifest is None) or a saved
+    `experiment_manifest.yaml` from a run directory (driver_from_manifest is the recorded
+    driver import path). Letting users point `--config_path` at a manifest is what enables
+    one-flag reruns of a finished experiment.
+    """
     assert (config_path is None) != (config_json is None), (
         "Exactly one of config_path or config_json must be provided"
     )
     if config_path is not None:
         with open(Path(config_path)) as f:
-            return yaml.safe_load(f)
-    assert config_json is not None
-    return json.loads(config_json.removeprefix("json:"))
-
-
-def _load_experiment_config(
-    driver: ExperimentDriver[Any],
-    config_path: Path | str | None,
-    config_json: str | None,
-) -> ExperimentConfig:
-    data = _load_config_data(config_path, config_json)
-    if "experiment_config" in data and "kind" in data:
-        manifest = ExperimentManifest.model_validate(data)
-        return driver.config_model.model_validate(manifest.experiment_config)
-    return driver.config_model.model_validate(data)
-
-
-def _per_rank_batch_size(total_batch_size: int, dist_state: DistributedState | None) -> int:
-    if dist_state is None:
-        return total_batch_size
-    assert total_batch_size % dist_state.world_size == 0, (
-        f"batch_size {total_batch_size} not divisible by world size {dist_state.world_size}"
-    )
-    return total_batch_size // dist_state.world_size
-
-
-def _validate_prepared_experiment(
-    prepared: PreparedExperiment,
-    dist_state: DistributedState | None,
-) -> None:
-    train_rank_bs = _per_rank_batch_size(prepared.pd.batch_size, dist_state)
-    for cfg in (
-        prepared.pd.loss_metrics.persistent_pgd_recon,
-        prepared.pd.loss_metrics.persistent_pgd_recon_subset,
-    ):
-        if cfg is not None and isinstance(cfg.scope, RepeatAcrossBatchScope):
-            n = cfg.scope.n_sources
-            assert train_rank_bs % n == 0, (
-                f"repeat_across_batch n_sources={n} must divide per-rank batch_size={train_rank_bs}"
-            )
+            data = yaml.safe_load(f)
+    else:
+        assert config_json is not None
+        data = json.loads(config_json.removeprefix("json:"))
+    if "driver" in data and "config" in data:
+        return data["driver"], data["config"]
+    return None, data
 
 
 def run_experiment(
     driver_path: str,
+    config_data: dict[str, Any],
     *,
-    config_path: Path | str | None = None,
-    config_json: str | None = None,
     evals_id: str | None = None,
     launch_id: str | None = None,
     sweep_params_json: str | None = None,
@@ -90,34 +57,41 @@ def run_experiment(
     logger.info(f"Distributed state: {dist_state}")
 
     driver = load_driver(driver_path)
-    experiment_config = _load_experiment_config(driver, config_path, config_json)
+    experiment_config = driver.config_type.model_validate(config_data)
     set_seed(experiment_config.pd.seed)
     device = get_device()
 
     if is_main_process():
-        logger.info(f"Preparing experiment: {driver.display_name(experiment_config)}")
+        logger.info(f"Driver: {driver.name}")
         logger.info(f"Using device: {device}")
 
-    prepared = driver.prepare(experiment_config, device=device, dist_state=dist_state)
-    _validate_prepared_experiment(prepared, dist_state)
+    target = driver.build_target(experiment_config)
+    target.model.to(device)
+    train_loader, eval_loader = driver.build_dataloaders(
+        experiment_config,
+        train_batch_size=experiment_config.pd.batch_size,
+        eval_batch_size=experiment_config.pd.eval_batch_size,
+        dist_state=dist_state,
+        device=device,
+    )
+    artifacts = driver.artifacts(experiment_config, target)
 
     extra_tags = [t for t in [evals_id, launch_id] if t is not None]
-    manifest = ExperimentManifest(
-        kind=driver.kind,
-        driver=driver_path,
-        experiment_config=experiment_config.model_dump(mode="json"),
-    )
+    manifest = {
+        "driver": driver_path,
+        "name": driver.name,
+        "config": experiment_config.model_dump(mode="json"),
+    }
     run_pd(
-        config=prepared.pd,
-        target=prepared.target,
-        train_loader=prepared.train_loader,
-        eval_loader=prepared.eval_loader,
+        config=experiment_config.pd,
+        target=target,
+        train_loader=train_loader,
+        eval_loader=eval_loader,
         device=device,
         run_id=run_id,
         sweep_params=parse_sweep_params(sweep_params_json),
         manifest=manifest,
-        artifacts=prepared.artifacts,
-        kind=driver.kind,
+        artifacts=artifacts,
         wandb_tags=extra_tags,
     )
 
@@ -132,16 +106,14 @@ def main(
     sweep_params_json: str | None = None,
     run_id: str | None = None,
 ) -> None:
-    data_driver = driver
-    if data_driver is None:
-        data = _load_config_data(config_path, config_json)
-        manifest = ExperimentManifest.model_validate(data)
-        assert manifest.driver is not None, "Experiment manifest has no driver; pass --driver"
-        data_driver = manifest.driver
+    driver_from_manifest, config_data = _load_run_inputs(config_path, config_json)
+    resolved_driver = driver if driver is not None else driver_from_manifest
+    assert resolved_driver is not None, (
+        "No driver provided and config is not a manifest with a driver field; pass --driver"
+    )
     run_experiment(
-        data_driver,
-        config_path=config_path,
-        config_json=config_json,
+        resolved_driver,
+        config_data,
         evals_id=evals_id,
         launch_id=launch_id,
         sweep_params_json=sweep_params_json,

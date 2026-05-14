@@ -1,4 +1,4 @@
-"""Round-trip tests for open-world experiment manifests."""
+"""Round-trip tests for open-world experiment manifests (plain-dict shape)."""
 
 from pathlib import Path
 
@@ -6,14 +6,9 @@ import pytest
 from pydantic import ValidationError
 
 from param_decomp.configs import LayerwiseCiConfig, PDConfig, ScheduleConfig
-from param_decomp.experiment_manifest import (
-    EXPERIMENT_MANIFEST_FILENAME,
-    parse_experiment_manifest,
-    parse_manifest_experiment_config,
-)
 from param_decomp.experiments.driver import (
+    EXPERIMENT_MANIFEST_FILENAME,
     ExperimentConfig,
-    ExperimentManifest,
     load_driver,
 )
 from param_decomp.experiments.lm.data import LMDataConfig
@@ -47,7 +42,6 @@ RESID_MLP_DRIVER_PATH = "param_decomp.experiments.resid_mlp.experiment:Driver"
 
 
 def _pd_config() -> PDConfig:
-    """A minimal PDConfig sufficient for round-trip tests."""
     return PDConfig(
         seed=0,
         n_mask_samples=1,
@@ -68,16 +62,16 @@ def _pd_config() -> PDConfig:
 
 
 def _round_trip(experiment_config: ExperimentConfig, driver_path: str) -> ExperimentConfig:
+    """Build a manifest dict for `experiment_config` and re-parse it through the driver."""
     driver = load_driver(driver_path)
-    manifest = ExperimentManifest(
-        kind=driver.kind,
-        driver=driver_path,
-        experiment_config=experiment_config.model_dump(mode="json"),
-    )
-    parsed = parse_experiment_manifest(manifest.model_dump(mode="json"))
-    assert parsed.kind == driver.kind
-    assert parsed.driver == driver_path
-    return parse_manifest_experiment_config(parsed)
+    manifest: dict[str, object] = {
+        "driver": driver_path,
+        "name": driver.name,
+        "config": experiment_config.model_dump(mode="json"),
+    }
+    assert manifest["name"] == driver.name
+    assert manifest["driver"] == driver_path
+    return driver.config_type.model_validate(manifest["config"])
 
 
 def test_lm_experiment_round_trip():
@@ -95,12 +89,9 @@ def test_lm_experiment_round_trip():
             max_seq_len=128,
         ),
     )
-    lm_driver = LMDriver()
     parsed = _round_trip(exp, LM_DRIVER_PATH)
     assert type(parsed) is LMExperimentConfig
     assert parsed == exp
-    assert "GPT2LMHeadModel" in lm_driver.display_name(exp)
-    assert "SimpleStories" in lm_driver.display_name(exp)
 
 
 def test_tms_experiment_round_trip():
@@ -131,24 +122,20 @@ def test_driver_class_paths_load():
     assert isinstance(load_driver(RESID_MLP_DRIVER_PATH), ResidMLPDriver)
 
 
-def test_manual_manifest_does_not_need_registered_driver():
-    manifest = ExperimentManifest.from_pd_config(_pd_config(), kind="custom")
-    parsed = parse_experiment_manifest(manifest.model_dump(mode="json"))
-    assert parsed.kind == "custom"
-    experiment_config = parse_manifest_experiment_config(parsed)
-    assert experiment_config.pd == _pd_config()
-
-
 def test_save_pre_run_info_writes_experiment_manifest(tmp_path: Path):
     from param_decomp.utils.general_utils import save_pre_run_info
 
-    manifest = ExperimentManifest.from_pd_config(_pd_config(), kind="custom")
+    manifest: dict[str, object] = {
+        "driver": None,
+        "name": "custom",
+        "config": {"pd": _pd_config().model_dump(mode="json")},
+    }
     save_pre_run_info(
         save_to_wandb=False,
         out_dir=tmp_path,
         sweep_params=None,
         manifest=manifest,
-        artifacts=(),
+        artifacts={},
     )
 
     assert (tmp_path / EXPERIMENT_MANIFEST_FILENAME).exists()
