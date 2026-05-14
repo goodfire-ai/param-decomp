@@ -41,7 +41,8 @@ def _load_run_inputs(
         assert config_json is not None
         data = json.loads(config_json.removeprefix("json:"))
     if "driver" in data and "config" in data:
-        return data["driver"], data["config"]
+        metadata = RunMetadata.from_dict(data)
+        return metadata.driver, metadata.config
     return None, data
 
 
