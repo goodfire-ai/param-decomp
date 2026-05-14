@@ -707,6 +707,20 @@ class Config(BaseConfig):
         default="",
         description="Prefix prepended to an auto-generated WandB run name",
     )
+    wandb_group: str | None = Field(
+        default=None,
+        description="WandB group name; used to bundle related runs (e.g. the 24 per-module runs "
+        "of a layerwise-split training) into a single group in the WandB UI.",
+    )
+    wandb_tags: list[str] = Field(
+        default_factory=list,
+        description="Extra WandB tags for this run, merged with launch/experiment tags.",
+    )
+    extra_wandb_config: dict[str, str] = Field(
+        default_factory=dict,
+        description="Extra key/value pairs to merge into `wandb.config`. Unlike tags, these "
+        "show up as columns in the runs table and as group-by axes in chart panels.",
+    )
 
     # --- General ---
     seed: int = Field(

@@ -457,9 +457,17 @@ def run_experiment(
         slurm_array_job_id = os.getenv("SLURM_ARRAY_JOB_ID")
         if slurm_array_job_id is not None:
             tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
+        tags.extend(config.wandb_tags)
 
         if config.wandb_project:
-            init_wandb(config, config.wandb_project, run_id, config.wandb_run_name, tags)
+            init_wandb(
+                config,
+                config.wandb_project,
+                run_id,
+                config.wandb_run_name,
+                tags,
+                group=config.wandb_group,
+            )
 
         logger.info(config)
 
