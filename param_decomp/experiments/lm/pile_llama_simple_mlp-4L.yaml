@@ -45,9 +45,7 @@ loss_metric_configs:
   p_anneal_end_frac: 1.0
   eps: 1.0e-12
 - coeff: 0.5
-  classname: StochasticReconSubsetLoss
-  routing:
-    type: uniform_k_subset
+  classname: StochasticReconLayerwiseLoss
 - coeff: 0.5
   optimizer:
     type: adam
@@ -83,36 +81,35 @@ eval_freq: 1000
 eval_batch_size: 128
 slow_eval_freq: 10000
 n_eval_steps: 1
-slow_eval_on_first_step: true
+slow_eval_on_first_step: false
 save_freq: null
-eval_metric_configs:
-- classname: CIHistograms
-  n_batches_accum: 1
-- classname: ComponentActivationDensity
-- classname: CI_L0
-  groups:
-    layer_0:
-    - h.0.*
-    layer_1:
-    - h.1.*
-    layer_2:
-    - h.2.*
-    layer_3:
-    - h.3.*
-    total:
-    - '*'
-- classname: CEandKLLosses
-  rounding_threshold: 0.0
-- classname: CIMeanPerComponent
-- coeff: null
-  classname: StochasticHiddenActsReconLoss
-- classname: CIHiddenActsReconLoss
-- coeff: null
-  init: random
-  step_size: 0.1
-  n_steps: 20
-  mask_scope: shared_across_batch
-  classname: PGDReconLoss
+eval_metric_configs: {}
+#   n_batches_accum: 1
+# - classname: ComponentActivationDensity
+# - classname: CI_L0
+#   groups:
+#     layer_0:
+#     - h.0.*
+#     layer_1:
+#     - h.1.*
+#     layer_2:
+#     - h.2.*
+#     layer_3:
+#     - h.3.*
+#     total:
+#     - '*'
+# - classname: CEandKLLosses
+#   rounding_threshold: 0.0
+# - classname: CIMeanPerComponent
+# - coeff: null
+#   classname: StochasticHiddenActsReconLoss
+# - classname: CIHiddenActsReconLoss
+# - coeff: null
+#   init: random
+#   step_size: 0.1
+#   n_steps: 20
+#   mask_scope: shared_across_batch
+#   classname: PGDReconLoss
 ci_alive_threshold: 0.0
 output_extract: 0 
 pretrained_model_class: param_decomp.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
