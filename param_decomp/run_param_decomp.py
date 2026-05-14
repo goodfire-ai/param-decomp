@@ -459,7 +459,14 @@ def run_experiment(
             tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
 
         if config.wandb_project:
-            init_wandb(config, config.wandb_project, run_id, config.wandb_run_name, tags)
+            init_wandb(
+                config,
+                config.wandb_project,
+                run_id,
+                config.wandb_run_name,
+                tags,
+                group=config.wandb_group,
+            )
 
         logger.info(config)
 

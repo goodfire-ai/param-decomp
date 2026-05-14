@@ -707,6 +707,11 @@ class Config(BaseConfig):
         default="",
         description="Prefix prepended to an auto-generated WandB run name",
     )
+    wandb_group: str | None = Field(
+        default=None,
+        description="WandB group name; used to bundle related runs (e.g. the 24 per-module runs "
+        "of a layerwise-split training) into a single group in the WandB UI.",
+    )
 
     # --- General ---
     seed: int = Field(

@@ -317,6 +317,7 @@ def init_wandb(
     run_id: str,
     name: str | None = None,
     tags: list[str] | None = None,
+    group: str | None = None,
 ) -> None:
     """Initialize Weights & Biases and log the config.
 
@@ -326,6 +327,7 @@ def init_wandb(
         run_id: The unique run ID (from ExecutionStamp).
         name: The name of the wandb run.
         tags: Optional list of tags to add to the run.
+        group: Optional WandB group name to bundle related runs.
     """
     wandb.init(
         id=run_id,
@@ -333,6 +335,7 @@ def init_wandb(
         entity=get_wandb_entity(),
         name=name,
         tags=tags,
+        group=group,
     )
     assert wandb.run is not None
     wandb.run.log_code(
