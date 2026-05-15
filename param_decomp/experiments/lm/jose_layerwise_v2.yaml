@@ -71,7 +71,7 @@ loss_metric_configs:
       final_val_frac: 1.0
       fn_type: constant
   scope:
-    type: per_batch_per_position
+    type: broadcast_across_batch
   use_sigmoid_parameterization: false
   n_warmup_steps: 2
   classname: PersistentPGDReconLoss
@@ -91,7 +91,7 @@ faithfulness_warmup_lr: 0.001
 faithfulness_warmup_weight_decay: 0.0
 train_log_freq: 200
 eval_freq: 1000
-eval_batch_size: 128
+eval_batch_size: 32
 slow_eval_freq: 10000
 n_eval_steps: 1
 slow_eval_on_first_step: true
