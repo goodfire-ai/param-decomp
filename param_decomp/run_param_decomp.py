@@ -215,22 +215,6 @@ def optimize(
         betas=config.ci_fn_optimizer.betas,
         weight_decay=config.ci_fn_optimizer.weight_decay,
     )
-    optimizers_by_name: dict[str, optim.Optimizer] = {
-        "components": components_optimizer,
-        "ci_fn": ci_fn_optimizer,
-    }
-    schedules_by_name = {
-        "components": config.components_optimizer.lr_schedule,
-        "ci_fn": config.ci_fn_optimizer.lr_schedule,
-    }
-    params_by_name = {
-        "components": component_params,
-        "ci_fn": ci_fn_params,
-    }
-    clips_by_name = {
-        "components": config.components_optimizer.grad_clip_norm,
-        "ci_fn": config.ci_fn_optimizer.grad_clip_norm,
-    }
 
     if config.faithfulness_warmup_steps > 0:
         run_faithfulness_warmup(component_model, component_params, config)
@@ -272,18 +256,19 @@ def optimize(
     }
 
     for step in tqdm(range(config.steps + 1), ncols=0, disable=not is_main_process()):
-        for opt in optimizers_by_name.values():
-            opt.zero_grad()
+        components_optimizer.zero_grad()
+        ci_fn_optimizer.zero_grad()
 
-        step_lrs: dict[str, float] = {
-            name: get_scheduled_value(
-                step=step, total_steps=config.steps, config=schedules_by_name[name]
-            )
-            for name in optimizers_by_name
-        }
-        for name, opt in optimizers_by_name.items():
-            for group in opt.param_groups:
-                group["lr"] = step_lrs[name]
+        components_lr = get_scheduled_value(
+            step=step, total_steps=config.steps, config=config.components_optimizer.lr_schedule
+        )
+        ci_fn_lr = get_scheduled_value(
+            step=step, total_steps=config.steps, config=config.ci_fn_optimizer.lr_schedule
+        )
+        for group in components_optimizer.param_groups:
+            group["lr"] = components_lr
+        for group in ci_fn_optimizer.param_groups:
+            group["lr"] = ci_fn_lr
 
         frac = step / config.steps
         active_ppgd_configs = [c for c in persistent_pgd_configs if frac >= c.start_frac]
@@ -364,14 +349,14 @@ def optimize(
                 batch_log_data, {f"train/grad_norms/{k}": v for k, v in grad_norms.items()}
             )
 
-            for name, lr_val in step_lrs.items():
-                batch_log_data[f"train/schedules/lr/{name}"] = lr_val
+            batch_log_data["train/schedules/lr/components"] = components_lr
+            batch_log_data["train/schedules/lr/ci_fn"] = ci_fn_lr
 
             if is_main_process():
                 assert out_dir is not None
                 tqdm.write(f"--- Step {step} ---")
-                for name, lr_val in step_lrs.items():
-                    tqdm.write(f"LR[{name}]: {lr_val:.6f}")
+                tqdm.write(f"LR[components]: {components_lr:.6f}")
+                tqdm.write(f"LR[ci_fn]: {ci_fn_lr:.6f}")
                 for name, value in batch_log_data.items():
                     tqdm.write(f"{name}: {value:.15f}")
                 local_log(batch_log_data, step, out_dir)
@@ -448,11 +433,12 @@ def optimize(
         # Skip gradient step if we are at the last step (last step just for plotting and logging)
         if step != config.steps:
             sync_across_processes()
-            for name, clip_val in clips_by_name.items():
-                if clip_val is not None:
-                    clip_grad_norm_(params_by_name[name], clip_val)
-            for opt in optimizers_by_name.values():
-                opt.step()
+            if config.components_optimizer.grad_clip_norm is not None:
+                clip_grad_norm_(component_params, config.components_optimizer.grad_clip_norm)
+            if config.ci_fn_optimizer.grad_clip_norm is not None:
+                clip_grad_norm_(ci_fn_params, config.ci_fn_optimizer.grad_clip_norm)
+            components_optimizer.step()
+            ci_fn_optimizer.step()
 
     if is_main_process():
         logger.info("Finished training loop.")
