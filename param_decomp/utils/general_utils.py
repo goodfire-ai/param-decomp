@@ -201,7 +201,6 @@ def fetch_latest_local_checkpoint(run_dir: Path, prefix: str | None = None) -> P
 def save_pre_run_info(
     save_to_wandb: bool,
     out_dir: Path,
-    sweep_params: dict[str, Any] | None,
     metadata: RunMetadata,
     artifacts: dict[str, Any],
 ) -> None:
@@ -209,16 +208,11 @@ def save_pre_run_info(
 
     metadata.write(out_dir / RUN_METADATA_FILENAME)
 
-    files_to_save: dict[str, Any] = {}
-    if sweep_params is not None:
-        files_to_save["sweep_params.yaml"] = sweep_params
-    files_to_save.update(artifacts)
-
-    for filename, data in files_to_save.items():
+    for filename, data in artifacts.items():
         save_file(data, out_dir / filename)
 
     if save_to_wandb:
-        all_filenames = [RUN_METADATA_FILENAME, *files_to_save]
+        all_filenames = [RUN_METADATA_FILENAME, *artifacts]
         for filename in all_filenames:
             wandb.save(str(out_dir / filename), base_path=out_dir, policy="now")
 

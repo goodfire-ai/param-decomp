@@ -130,7 +130,6 @@ def test_save_pre_run_info_writes_run_metadata(tmp_path: Path):
     save_pre_run_info(
         save_to_wandb=False,
         out_dir=tmp_path,
-        sweep_params=None,
         metadata=metadata,
         artifacts={},
     )

@@ -445,7 +445,6 @@ def run_pd(
     device: str,
     *,
     run_id: str | None = None,
-    sweep_params: dict[str, Any] | None = None,
     metadata: RunMetadata | None = None,
     artifacts: dict[str, Any] | None = None,
     wandb_tags: list[str] | None = None,
@@ -496,7 +495,6 @@ def run_pd(
         save_pre_run_info(
             save_to_wandb=config.wandb_project is not None,
             out_dir=out_dir,
-            sweep_params=sweep_params,
             metadata=metadata,
             artifacts=artifacts,
         )
