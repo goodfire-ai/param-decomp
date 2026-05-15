@@ -75,7 +75,7 @@ faithfulness_warmup_lr: 0.001
 faithfulness_warmup_weight_decay: 0.0
 train_log_freq: 200
 eval_freq: 1000
-eval_batch_size: 128
+eval_batch_size: 32
 slow_eval_freq: 10000
 n_eval_steps: 1
 slow_eval_on_first_step: true
