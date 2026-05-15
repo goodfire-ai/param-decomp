@@ -154,9 +154,10 @@ class ScheduleConfig(BaseConfig):
         return self
 
 
-class OptimizerConfig(BaseConfig):
-    """Configuration for a single AdamW optimizer (one of: components, ci_fn)."""
+class AdamWOptimizerConfig(BaseConfig):
+    """Configuration for an AdamW optimizer (one of: components, ci_fn)."""
 
+    type: Literal["AdamW"] = "AdamW"
     lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule")
     weight_decay: NonNegativeFloat = Field(default=0.0, description="AdamW weight decay")
     betas: tuple[Probability, Probability] = Field(
@@ -166,6 +167,13 @@ class OptimizerConfig(BaseConfig):
         default=None,
         description="If set, clip the grad norm of this group's parameters to this value",
     )
+
+
+# Single-variant union for now. To add another optimizer (e.g. SGD):
+#   1. Define SGDOptimizerConfig with `type: Literal["SGD"] = "SGD"`
+#   2. Change to: `OptimizerConfig = AdamWOptimizerConfig | SGDOptimizerConfig`
+#   3. Wrap field annotations on Config with Annotated[..., Field(discriminator="type")]
+OptimizerConfig = AdamWOptimizerConfig
 
 
 def migrate_to_optimizer_configs(config_dict: dict[str, Any]) -> None:
