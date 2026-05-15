@@ -66,15 +66,21 @@ loss_metric_configs:
 - coeff: 10000000.0
   classname: FaithfulnessLoss
 output_loss_type: kl
-lr_schedule:
-  start_val: 3e-4
-  warmup_pct: 0.0
-  final_val_frac: 0.1
-  fn_type: cosine
+components_optimizer:
+  lr_schedule:
+    start_val: 3e-4
+    warmup_pct: 0.0
+    final_val_frac: 0.1
+    fn_type: cosine
+  grad_clip_norm: 0.01
+ci_fn_optimizer:
+  lr_schedule:
+    start_val: 3e-4
+    warmup_pct: 0.0
+    final_val_frac: 0.1
+    fn_type: cosine
 steps: 400000
 batch_size: 64
-grad_clip_norm_components: 0.01
-grad_clip_norm_ci_fns: null
 faithfulness_warmup_steps: 400
 faithfulness_warmup_lr: 0.001
 faithfulness_warmup_weight_decay: 0.0

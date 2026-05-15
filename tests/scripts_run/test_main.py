@@ -74,7 +74,7 @@ class TestPDRun:
         jobs with params swept correctly"""
 
         sweep_params = {
-            "global": {"lr_schedule": {"start_val": {"values": [1, 2]}}},
+            "global": {"components_optimizer": {"lr_schedule": {"start_val": {"values": [1, 2]}}}},
             "tms_5-2": {
                 "steps": {"values": [100, 200]},
                 "module_info": {
@@ -104,7 +104,7 @@ class TestPDRun:
             matching = [
                 cfg
                 for cfg in configs
-                if cfg.lr_schedule.start_val == start_val
+                if cfg.components_optimizer.lr_schedule.start_val == start_val
                 and cfg.steps == steps
                 and c == cfg.module_info[0].C
                 and c == cfg.module_info[1].C

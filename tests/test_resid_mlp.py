@@ -6,6 +6,7 @@ from param_decomp.configs import (
     ImportanceMinimalityLossConfig,
     LayerwiseCiConfig,
     ModulePatternInfoConfig,
+    OptimizerConfig,
     ResidMLPTaskConfig,
     ScheduleConfig,
     StochasticReconLossConfig,
@@ -64,8 +65,15 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
             ModulePatternInfoConfig(module_pattern="layers.*.mlp_in", C=10),
         ],
         # Training
-        lr_schedule=ScheduleConfig(
-            start_val=1e-3, fn_type="cosine", warmup_pct=0.01, final_val_frac=0.0
+        components_optimizer=OptimizerConfig(
+            lr_schedule=ScheduleConfig(
+                start_val=1e-3, fn_type="cosine", warmup_pct=0.01, final_val_frac=0.0
+            ),
+        ),
+        ci_fn_optimizer=OptimizerConfig(
+            lr_schedule=ScheduleConfig(
+                start_val=1e-3, fn_type="cosine", warmup_pct=0.01, final_val_frac=0.0
+            ),
         ),
         batch_size=4,
         steps=3,  # Run more steps to see improvement
