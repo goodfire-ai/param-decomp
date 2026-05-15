@@ -53,7 +53,7 @@ dev = [
 
 [project.scripts]
 pd-run = "param_decomp.experiments.runner:cli"
-pd-launch = "param_decomp.scripts.run_cli:cli"
+pd-launch = "param_decomp.scripts.run_slurm_cli:cli"
 pd-pretrain = "param_decomp.pretrain.scripts.run_slurm:cli"
 pd-clustering = "param_decomp.clustering.scripts.run_pipeline:cli"
 pd-cluster-harvest = "param_decomp.clustering.scripts.run_harvest:cli"

@@ -5,7 +5,7 @@ git snapshot for reproducibility, builds in-memory config dicts, and submits a S
 where each task invokes ``pd-run`` on one config. For single-machine execution, use ``pd-run``
 directly.
 
-The user-facing CLI entry point is in ``run_cli.py``; importing this module is deferred there
+The user-facing CLI entry point is in ``run_slurm_cli.py``; importing this module is deferred there
 to speed up ``--help``.
 """
 

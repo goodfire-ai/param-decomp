@@ -1,4 +1,4 @@
-"""Tests for the main() function in param_decomp/scripts/run.py (the pd-launch SLURM launcher)."""
+"""Tests for the main() function in param_decomp/scripts/run_slurm.py (the pd-launch SLURM launcher)."""
 
 # pyright: reportUnknownParameterType=false, reportMissingParameterType=false, reportUnusedParameter=false
 
@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from param_decomp.scripts.run import _create_training_jobs, _get_experiments
+from param_decomp.scripts.run_slurm import _create_training_jobs, _get_experiments
 
 
 class TestPDLaunch:
@@ -21,11 +21,11 @@ class TestPDLaunch:
         with pytest.raises(ValueError, match=f"Invalid experiments.*{fake_exp_name}"):
             _get_experiments(f"{fake_exp_name},tms_5-2")
 
-    @patch("param_decomp.scripts.run.get_wandb_run_url")
-    @patch("param_decomp.scripts.run.submit_slurm_job")
-    @patch("param_decomp.scripts.run.create_slurm_script")
-    @patch("param_decomp.scripts.run.create_git_snapshot")
-    @patch("param_decomp.scripts.run._create_wandb_views_and_report")
+    @patch("param_decomp.scripts.run_slurm.get_wandb_run_url")
+    @patch("param_decomp.scripts.run_slurm.submit_slurm_job")
+    @patch("param_decomp.scripts.run_slurm.create_slurm_script")
+    @patch("param_decomp.scripts.run_slurm.create_git_snapshot")
+    @patch("param_decomp.scripts.run_slurm._create_wandb_views_and_report")
     def test_sweep_creates_slurm_array(
         self,
         mock_create_wandb_views_and_report,
@@ -37,7 +37,7 @@ class TestPDLaunch:
         """Test that sweep runs create SLURM array jobs with sweep params."""
         from pathlib import Path
 
-        from param_decomp.scripts.run_cli import main
+        from param_decomp.scripts.run_slurm_cli import main
         from param_decomp.utils.slurm import SubmitResult
 
         mock_create_git_snapshot.return_value = ("test-branch", "12345678")

@@ -35,7 +35,7 @@ def main(
         pd-launch --experiments tms_5-2 --sweep --n_agents 4
         pd-launch --experiments tms_5-2 --sweep my_sweep.yaml --n_agents 4
     """
-    from param_decomp.scripts.run import launch_slurm_run
+    from param_decomp.scripts.run_slurm import launch_slurm_run
 
     launch_slurm_run(
         experiments=experiments,

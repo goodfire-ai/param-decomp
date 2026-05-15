@@ -289,7 +289,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 | Command | Entry Point | Description |
 |---------|-------------|-------------|
 | `pd-run` | `param_decomp/experiments/runner.py` | Single-process PD worker / local runner (built-in by name or custom driver + config) |
-| `pd-launch` | `param_decomp/scripts/run.py` | SLURM launcher (optionally grid-expands via `--sweep`; each task invokes `pd-run`) |
+| `pd-launch` | `param_decomp/scripts/run_slurm.py` | SLURM launcher (optionally grid-expands via `--sweep`; each task invokes `pd-run`) |
 | `pd-harvest` | `param_decomp/harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
 | `pd-autointerp` | `param_decomp/autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
 | `pd-attributions` | `param_decomp/dataset_attributions/scripts/run_slurm_cli.py` | Submit dataset attribution SLURM job |
@@ -325,7 +325,7 @@ Use `param_decomp/` as the search root (not repo root) to avoid noise.
 **Running Experiments:**
 
 - `pd-run` → `param_decomp/experiments/runner.py` → driver (built-in or custom) → `run_pd`
-- `pd-launch` → `param_decomp/scripts/run.py` → `param_decomp/utils/slurm.py` → SLURM → `pd-run` (one per array task) → `run_pd`
+- `pd-launch` → `param_decomp/scripts/run_slurm.py` → `param_decomp/utils/slurm.py` → SLURM → `pd-run` (one per array task) → `run_pd`
 
 **Harvest Pipeline:**
 
