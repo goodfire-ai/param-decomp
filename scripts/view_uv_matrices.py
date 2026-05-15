@@ -11,6 +11,8 @@ nn.Linear.weight) is rendered as a PNG heatmap. Drag/zoom via the magnifier lens
 
 import argparse
 import io
+import threading
+import webbrowser
 from functools import lru_cache
 
 import matplotlib.cm as cm
@@ -255,7 +257,9 @@ def main() -> None:
     with torch.no_grad():
         model = ComponentModel.from_pretrained(args.path)
     print(f"Loaded. Components: {list(model.components.keys())}")
-    print(f"Serving on http://{args.host}:{args.port}")
+    url = f"http://{args.host}:{args.port}"
+    print(f"Serving on {url}")
+    threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     uvicorn.run(make_app(model), host=args.host, port=args.port, log_level="warning")
 
 
