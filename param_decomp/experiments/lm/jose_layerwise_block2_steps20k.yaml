@@ -1,7 +1,13 @@
 wandb_project: param-decomp
 wandb_run_name: null
 wandb_run_name_prefix: ''
-wandb_group: jose-layerwise-v2-ppgd
+wandb_group: jose-layerwise-block2-sweep
+wandb_tags:
+- block2-sweep
+- steps20k
+extra_wandb_config:
+  sweep_axis: steps
+  steps_target: '20000'
 seed: 0
 autocast_bf16: true
 n_mask_samples: 1
@@ -21,30 +27,12 @@ ci_config:
 sampling: continuous
 sigmoid_type: leaky_hard
 module_info:
-- {module_pattern: h.0.mlp.c_fc, C: 3072}
-- {module_pattern: h.0.mlp.down_proj, C: 3584}
-- {module_pattern: h.0.attn.q_proj, C: 512}
-- {module_pattern: h.0.attn.k_proj, C: 512}
-- {module_pattern: h.0.attn.v_proj, C: 1024}
-- {module_pattern: h.0.attn.o_proj, C: 1024}
-- {module_pattern: h.1.mlp.c_fc, C: 3072}
-- {module_pattern: h.1.mlp.down_proj, C: 3584}
-- {module_pattern: h.1.attn.q_proj, C: 512}
-- {module_pattern: h.1.attn.k_proj, C: 512}
-- {module_pattern: h.1.attn.v_proj, C: 1024}
-- {module_pattern: h.1.attn.o_proj, C: 1024}
 - {module_pattern: h.2.mlp.c_fc, C: 3072}
 - {module_pattern: h.2.mlp.down_proj, C: 3584}
 - {module_pattern: h.2.attn.q_proj, C: 512}
 - {module_pattern: h.2.attn.k_proj, C: 512}
 - {module_pattern: h.2.attn.v_proj, C: 1024}
 - {module_pattern: h.2.attn.o_proj, C: 1024}
-- {module_pattern: h.3.mlp.c_fc, C: 3072}
-- {module_pattern: h.3.mlp.down_proj, C: 3584}
-- {module_pattern: h.3.attn.q_proj, C: 512}
-- {module_pattern: h.3.attn.k_proj, C: 512}
-- {module_pattern: h.3.attn.v_proj, C: 1024}
-- {module_pattern: h.3.attn.o_proj, C: 1024}
 identity_module_info: null
 init_pd_checkpoint: null
 use_delta_component: true
@@ -59,22 +47,6 @@ loss_metric_configs:
   eps: 1.0e-12
 - coeff: 1.0
   classname: StochasticReconLayerwiseLoss
-- coeff: 0.5
-  optimizer:
-    type: adam
-    beta1: 0.5
-    beta2: 0.99
-    eps: 1.0e-08
-    lr_schedule:
-      start_val: 0.01
-      warmup_pct: 0.025
-      final_val_frac: 1.0
-      fn_type: constant
-  scope:
-    type: per_batch_per_position
-  use_sigmoid_parameterization: false
-  n_warmup_steps: 2
-  classname: PersistentPGDReconLoss
 - coeff: 10000000.0
   classname: FaithfulnessLoss
 lr_schedule:
@@ -82,7 +54,7 @@ lr_schedule:
   warmup_pct: 0.0
   final_val_frac: 0.1
   fn_type: cosine
-steps: 200000
+steps: 20000
 batch_size: 64
 grad_clip_norm_components: 0.01
 grad_clip_norm_ci_fns: null
@@ -90,9 +62,9 @@ faithfulness_warmup_steps: 400
 faithfulness_warmup_lr: 0.001
 faithfulness_warmup_weight_decay: 0.0
 train_log_freq: 200
-eval_freq: 1000
+eval_freq: 500
 eval_batch_size: 32
-slow_eval_freq: 10000
+slow_eval_freq: 2000
 n_eval_steps: 1
 slow_eval_on_first_step: true
 save_freq: null
