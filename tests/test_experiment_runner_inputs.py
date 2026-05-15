@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from param_decomp.experiments.runner import _resolve_inputs
+from param_decomp.experiments.runner import _resolve_source
 from param_decomp.run_metadata import RunMetadata
 
 
@@ -13,67 +13,75 @@ def _write_yaml(path: Path, data: dict[str, object]) -> Path:
     return path
 
 
-def test_builtin_experiment_rejects_explicit_config_options(tmp_path: Path) -> None:
+def test_at_most_one_source(tmp_path: Path) -> None:
     config_path = _write_yaml(tmp_path / "config.yaml", {"pd": {}})
 
-    with pytest.raises(ValueError, match="Choose one pd-run input mode"):
-        _resolve_inputs(
+    with pytest.raises(AssertionError, match="exactly one"):
+        _resolve_source(
             experiment="tms_5-2",
             config_path=config_path,
-            config_json=None,
             driver="param_decomp.experiments.tms.experiment:Driver",
+            rerun=None,
         )
 
 
-def test_raw_config_path_requires_driver(tmp_path: Path) -> None:
+def test_config_path_requires_driver(tmp_path: Path) -> None:
     config_path = _write_yaml(tmp_path / "config.yaml", {"pd": {}})
 
-    with pytest.raises(ValueError, match="Raw experiment configs require --driver"):
-        _resolve_inputs(
+    with pytest.raises(AssertionError, match="--config_path requires --driver"):
+        _resolve_source(
             experiment=None,
             config_path=config_path,
-            config_json=None,
             driver=None,
+            rerun=None,
         )
 
 
-def test_config_path_with_driver_resolves_raw_config(tmp_path: Path) -> None:
-    config_path = _write_yaml(tmp_path / "config.yaml", {"pd": {"seed": 123}})
+def test_config_path_with_driver_resolves(tmp_path: Path) -> None:
+    config_path = _write_yaml(tmp_path / "my_config.yaml", {"pd": {"seed": 123}})
 
-    driver, config = _resolve_inputs(
+    name, driver_path, config = _resolve_source(
         experiment=None,
         config_path=config_path,
-        config_json=None,
         driver="param_decomp.experiments.tms.experiment:Driver",
+        rerun=None,
     )
 
-    assert driver == "param_decomp.experiments.tms.experiment:Driver"
+    assert name == "my_config"
+    assert driver_path == "param_decomp.experiments.tms.experiment:Driver"
     assert config == {"pd": {"seed": 123}}
 
 
-def test_run_metadata_config_path_supplies_driver(tmp_path: Path) -> None:
+def test_rerun_loads_driver_from_metadata(tmp_path: Path) -> None:
     metadata_path = tmp_path / "run_metadata.yaml"
     RunMetadata(
         driver="param_decomp.experiments.tms.experiment:Driver",
         config={"pd": {"seed": 123}},
     ).write(metadata_path)
 
-    driver, config = _resolve_inputs(
+    name, driver_path, config = _resolve_source(
         experiment=None,
-        config_path=metadata_path,
-        config_json=None,
+        config_path=None,
         driver=None,
+        rerun=str(metadata_path.parent),
     )
 
-    assert driver == "param_decomp.experiments.tms.experiment:Driver"
+    assert name == "rerun"
+    assert driver_path == "param_decomp.experiments.tms.experiment:Driver"
     assert config == {"pd": {"seed": 123}}
 
 
-def test_missing_input_reports_supported_modes() -> None:
-    with pytest.raises(ValueError, match="No run input provided"):
-        _resolve_inputs(
+def test_rerun_rejects_driver_override(tmp_path: Path) -> None:
+    metadata_path = tmp_path / "run_metadata.yaml"
+    RunMetadata(
+        driver="param_decomp.experiments.tms.experiment:Driver",
+        config={"pd": {}},
+    ).write(metadata_path)
+
+    with pytest.raises(AssertionError, match="--driver is implied by --rerun"):
+        _resolve_source(
             experiment=None,
             config_path=None,
-            config_json=None,
-            driver=None,
+            driver="other:Driver",
+            rerun=str(metadata_path.parent),
         )

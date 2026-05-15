@@ -1,7 +1,7 @@
 """Export all alive components for the VPD blog post.
 
 Produces normalized data files:
-  index.json                — matrix manifest
+  index.json                — matrix metadata
   labels.json               — key→label for build-time <comp> tag resolution
   weights/{slug}.json       — int8 weight tiles (fullmat + per-component U/V)
   components/{slug}.json    — metadata + columnar activation examples {t,c,a}

@@ -1,201 +1,158 @@
-"""Single-process PD experiment worker.
+"""``pd-run``: the single user-facing CLI for running PD experiments.
 
-Runs one PD training job from either a built-in experiment name, a YAML config path,
-or an inline JSON config blob. Invoked directly by users as ``pd-run`` and from the
-SLURM launcher as ``pd-run --config_json '...'  --driver '...' ...``.
+By default ``pd-run`` submits a SLURM job. Pass ``--local`` to run in-process instead
+(no SLURM, no git snapshot). The launcher's internal worker entrypoint lives in
+``param_decomp/experiments/_worker.py`` and is not user-facing.
 """
 
-import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
 import fire
 import yaml
 
-from param_decomp import run_pd
+from param_decomp.experiments._worker import run_experiment
 from param_decomp.experiments.discovery import discover_experiments
-from param_decomp.experiments.driver import load_driver
-from param_decomp.log import logger
-from param_decomp.run_metadata import RunMetadata
-from param_decomp.settings import REPO_ROOT
-from param_decomp.utils.distributed_utils import (
-    get_device,
-    init_distributed,
-    is_main_process,
-    with_distributed_cleanup,
+from param_decomp.settings import (
+    DEFAULT_PARTITION_NAME,
+    DEFAULT_PROJECT_NAME,
+    REPO_ROOT,
 )
-from param_decomp.utils.general_utils import set_seed
-from param_decomp.utils.run_utils import parse_sweep_params
 
 
-def _load_run_inputs(
-    config_path: Path | str | None, config_json: str | None
-) -> tuple[str | None, dict[str, Any]]:
-    """Load the YAML/JSON source and split it into (driver_from_metadata, experiment_config_dict).
-
-    The source is either a pure experiment config (driver_from_metadata is None) or a saved
-    ``run_metadata.yaml`` from a run directory (driver_from_metadata is the recorded driver
-    import path). Letting users point ``--config_path`` at saved metadata enables one-flag
-    reruns of a finished experiment.
-    """
-    if (config_path is None) == (config_json is None):
-        raise ValueError("Pass exactly one of --config_path or --config_json.")
-
-    if config_path is not None:
-        with open(Path(config_path)) as f:
-            data = yaml.safe_load(f)
-    else:
-        if config_json is None:
-            raise ValueError("Pass exactly one of --config_path or --config_json.")
-        data = json.loads(config_json.removeprefix("json:"))
-
-    if not isinstance(data, dict):
-        raise ValueError("Config source must contain a YAML/JSON mapping.")
-
-    if "driver" in data and "config" in data:
-        metadata = RunMetadata.from_dict(data)
-        return metadata.driver, metadata.config
-    return None, data
-
-
-def _resolve_inputs(
+def _resolve_source(
     experiment: str | None,
-    config_path: Path | str | None,
-    config_json: str | None,
+    config_path: str | Path | None,
     driver: str | None,
-) -> tuple[str, dict[str, Any]]:
-    """Resolve CLI inputs into (driver_path, config_dict)."""
+    rerun: str | None,
+) -> tuple[str, str, dict[str, Any]]:
+    """Resolve CLI inputs into ``(name, driver_path, base_config)``.
+
+    Exactly one of ``experiment``, ``config_path``, or ``rerun`` must be set.
+    ``driver`` is required iff ``config_path`` is set.
+    """
+    sources_set = sum(x is not None for x in (experiment, config_path, rerun))
+    assert sources_set == 1, (
+        "Pass exactly one of: positional <experiment>, --config_path, or --rerun. "
+        "Run `pd-run --help` for examples."
+    )
+
     if experiment is not None:
-        if config_path is not None or config_json is not None or driver is not None:
-            raise ValueError(
-                "Choose one pd-run input mode: `pd-run <experiment>` for built-ins, "
-                "`pd-run --config_path <yaml-or-run_metadata.yaml> "
-                "[--driver <module:Driver>]` for config files, or launcher/internal "
-                "`pd-run --config_json <json> --driver <module:Driver>`."
-            )
+        assert driver is None, "--driver is only used with --config_path"
         discovered = discover_experiments()
-        if experiment not in discovered:
-            available = ", ".join(sorted(discovered.keys()))
-            raise ValueError(f"Unknown experiment '{experiment}'. Available: {available}")
+        assert experiment in discovered, (
+            f"Unknown experiment '{experiment}'. Available: {', '.join(sorted(discovered))}"
+        )
         exp = discovered[experiment]
         with open(REPO_ROOT / exp.config_path) as f:
+            return experiment, exp.driver_path, yaml.safe_load(f)
+
+    if config_path is not None:
+        assert driver is not None, "--config_path requires --driver <module:Driver>"
+        with open(Path(config_path)) as f:
             config_data = yaml.safe_load(f)
-        return exp.driver_path, config_data
+        assert isinstance(config_data, dict), "config must be a YAML mapping"
+        return Path(config_path).stem, driver, config_data
 
-    if config_path is None and config_json is None:
-        raise ValueError(
-            "No run input provided. Use `pd-run <experiment>`, "
-            "`pd-run --config_path <yaml-or-run_metadata.yaml> [--driver <module:Driver>]`, "
-            "or launcher/internal `pd-run --config_json <json> --driver <module:Driver>`."
-        )
+    assert rerun is not None  # by `sources_set == 1`
+    assert driver is None, "--driver is implied by --rerun (read from saved metadata)"
+    from param_decomp.pd_run import PDRun
 
-    driver_from_metadata, config_data = _load_run_inputs(config_path, config_json)
-    resolved_driver = driver if driver is not None else driver_from_metadata
-    if resolved_driver is None:
-        raise ValueError(
-            "Raw experiment configs require --driver <module:Driver>. "
-            "Saved run_metadata.yaml files include their own driver."
-        )
-    return resolved_driver, config_data
-
-
-def run_experiment(
-    driver_path: str,
-    config_data: dict[str, Any],
-    *,
-    evals_id: str | None = None,
-    launch_id: str | None = None,
-    sweep_params_json: str | None = None,
-    run_id: str | None = None,
-) -> None:
-    dist_state = init_distributed()
-    logger.info(f"Distributed state: {dist_state}")
-
-    driver = load_driver(driver_path)
-    experiment_config = driver.config_type.model_validate(config_data)
-    set_seed(experiment_config.pd.seed)
-    device = get_device()
-
-    if is_main_process():
-        logger.info(f"Driver: {driver.name}")
-        logger.info(f"Using device: {device}")
-
-    target = driver.build_target(experiment_config)
-    target.model.to(device)
-    train_loader, eval_loader = driver.build_dataloaders(
-        experiment_config,
-        train_batch_size=experiment_config.pd.batch_size,
-        eval_batch_size=experiment_config.pd.eval_batch_size,
-        dist_state=dist_state,
-        device=device,
+    metadata = PDRun.metadata_from_path(rerun)
+    assert metadata.driver is not None, (
+        f"Cannot rerun {rerun!r}: saved run has no driver. Reruns require a driver-managed run."
     )
-    artifacts = driver.artifacts(experiment_config, target)
-
-    wandb_tags = [driver.name, *(t for t in [evals_id, launch_id] if t is not None)]
-    metadata = RunMetadata(
-        driver=driver_path,
-        config=experiment_config.model_dump(mode="json"),
-        artifact_filenames=list(artifacts),
-    )
-    run_pd(
-        config=experiment_config.pd,
-        target=target,
-        train_loader=train_loader,
-        eval_loader=eval_loader,
-        device=device,
-        run_id=run_id,
-        sweep_params=parse_sweep_params(sweep_params_json),
-        metadata=metadata,
-        artifacts=artifacts,
-        wandb_tags=wandb_tags,
-    )
+    return "rerun", metadata.driver, metadata.config
 
 
-@with_distributed_cleanup
 def main(
     experiment: str | None = None,
-    config_path: Path | str | None = None,
-    config_json: str | None = None,
+    *,
+    config_path: str | Path | None = None,
     driver: str | None = None,
+    rerun: str | None = None,
+    local: bool = False,
+    sweep: str | bool = False,
+    n_agents: int | None = None,
+    job_suffix: str | None = None,
     cpu: bool = False,
-    evals_id: str | None = None,
-    launch_id: str | None = None,
-    sweep_params_json: str | None = None,
-    run_id: str | None = None,
+    partition: str = DEFAULT_PARTITION_NAME,
+    dp: int | None = None,
+    project: str = DEFAULT_PROJECT_NAME,
 ) -> None:
-    """Run a single PD experiment in this process.
+    """Run a PD experiment, on SLURM by default.
 
     Args:
-        experiment: Built-in experiment name (e.g. 'tms_5-2'). Resolves the driver and YAML
-            config via discover_experiments(). Mutually exclusive with --config_path,
-            --config_json, and --driver.
-        config_path: Path to an experiment YAML or a saved run_metadata.yaml.
-        config_json: JSON-encoded config dict (may be ``json:``-prefixed). Used by the SLURM
-            launcher to pass an in-memory config without writing to disk.
-        driver: Driver import path ``pkg.module:ClassName``. Required with --config_path
-            unless the config is a saved run_metadata.yaml, which carries its own driver.
-        cpu: Force CPU execution by hiding all CUDA devices from this process.
-        evals_id, launch_id, run_id, sweep_params_json: Set by the launcher; you generally
-            don't need to pass these manually.
+        experiment: Built-in experiment name (e.g. ``tms_5-2``). Run with no args to
+            see the discovered list.
+        config_path: Path to an experiment YAML. Requires --driver.
+        driver: Driver import path ``pkg.module:ClassName``. Used with --config_path.
+        rerun: Path or wandb URL of a saved run to rerun. Loads driver + config from
+            the run's ``run_metadata.yaml``.
+        local: Run in this process; skip SLURM, git snapshot, etc. Useful for quick
+            checks. Disables --sweep and --dp.
+        sweep: Enable parameter sweep. ``True`` for the default grid file, or a YAML
+            path. Built-in experiments only.
+        n_agents: Max concurrent SLURM tasks for sweeps.
+        job_suffix: Suffix for the SLURM job name.
+        cpu: Run on CPU.
+        partition: SLURM partition.
+        dp: GPUs for DDP. ``<= 8`` is single-node; multiples of 8 above 8 multi-node.
+        project: W&B project name.
 
     Examples:
-        pd-run tms_5-2                                # built-in by name
-        pd-run tms_5-2 --cpu                          # built-in on CPU
-        pd-run --config_path my.yaml --driver pkg:Driver   # custom driver
-        pd-run --config_path run_metadata.yaml         # rerun from saved metadata
+        pd-run tms_5-2                                # one SLURM job
+        pd-run tms_5-2 --sweep --n_agents 4           # SLURM array sweep
+        pd-run tms_5-2 --dp 4                         # multi-GPU DDP
+        pd-run tms_5-2 --cpu                          # CPU job
+        pd-run --driver pkg:D --config_path my.yaml   # custom driver
+        pd-run --rerun s-a1b2c3d4                     # rerun from saved metadata
+        pd-run tms_5-2 --local                        # in-process; no SLURM
     """
-    if cpu:
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    if experiment is None and config_path is None and rerun is None:
+        discovered = discover_experiments()
+        print("Available experiments:")
+        for name in sorted(discovered):
+            print(f"  {name}")
+        print("\nUse `pd-run <experiment>` or `pd-run --help` for details.")
+        return
 
-    resolved_driver, config_data = _resolve_inputs(experiment, config_path, config_json, driver)
-    run_experiment(
-        resolved_driver,
-        config_data,
-        evals_id=evals_id,
-        launch_id=launch_id,
-        sweep_params_json=sweep_params_json,
-        run_id=run_id,
+    name, driver_path, base_config = _resolve_source(experiment, config_path, driver, rerun)
+
+    if local:
+        assert sweep is False, "--sweep is not supported with --local"
+        assert dp is None, "--dp is not supported with --local"
+        if cpu:
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        base_config.setdefault("pd", {})["wandb_project"] = project
+        from param_decomp.utils.distributed_utils import with_distributed_cleanup
+
+        with_distributed_cleanup(run_experiment)(driver_path, base_config)
+        return
+
+    assert shutil.which("sbatch") is not None, (
+        "`sbatch` not found on PATH. Off-cluster, use `pd-run ... --local`."
+    )
+    assert not (sweep is not False and rerun is not None), "--sweep is not valid with --rerun"
+    assert not (sweep is not False and config_path is not None), (
+        "--sweep is only supported for built-in experiments"
+    )
+
+    from param_decomp.scripts.run_slurm import launch_slurm
+
+    launch_slurm(
+        name=name,
+        driver_path=driver_path,
+        base_config=base_config,
+        sweep=sweep,
+        n_agents=n_agents,
+        job_suffix=job_suffix,
+        cpu=cpu,
+        partition=partition,
+        dp=dp,
+        project=project,
     )
 
 

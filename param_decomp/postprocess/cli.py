@@ -36,8 +36,8 @@ def main() -> None:
         logger.info(yaml.dump(cfg.model_dump(), indent=2, sort_keys=False))
         return
 
-    manifest_path = postprocess(config=cfg, dependency_job_id=args.dependency)
-    logger.info(f"Manifest: {manifest_path}")
+    metadata_path = postprocess(config=cfg, dependency_job_id=args.dependency)
+    logger.info(f"Metadata: {metadata_path}")
 
 
 def cli() -> None:

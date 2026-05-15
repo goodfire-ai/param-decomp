@@ -45,9 +45,9 @@ make install      # Install the package only (`pip install -e .`)
 
 ## Experiments
 
-Run an experiment locally with `pd-run <name>`, or on SLURM with `pd-launch --experiments <name>`
-(adds git snapshot + W&B view; also supports `--dp N`, `--cpu`, and `--sweep --n_agents N`). The
-two main language-model decompositions:
+Run an experiment with `pd-run <name>`. This submits a SLURM job by default (with a git snapshot
+for reproducibility); add `--local` to run in this process instead. Also supports `--dp N`,
+`--cpu`, and `--sweep --n_agents N` for grid sweeps. The two main language-model decompositions:
 
 - **`pile_llama_simple_mlp-4L`** — 4-layer Llama (MLP-only) on the Pile; the VPD paper run
   [`goodfire/spd/runs/s-55ea3f9b`](https://wandb.ai/goodfire/spd/runs/s-55ea3f9b)
@@ -78,7 +78,7 @@ Two routes, neither needing core-package edits:
   what built-in experiments do, and is needed for sweeps and for self-reloading runs via
   `load_pd(path)` (no `target=` argument needed) or `PDRun.from_path(...)`.
 
-Runs save an `experiment_manifest.yaml` beside the checkpoint with the parsed config and (if
+Runs save a `run_metadata.yaml` beside the checkpoint with the parsed config and (if
 applicable) the driver's import path.
 
 ## Post-Processing Pipeline

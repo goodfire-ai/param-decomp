@@ -28,15 +28,19 @@ class Command:
 
 
 @dataclass(frozen=True, slots=True)
-class TrainingJob:
-    experiment: str
+class RunSpec:
+    """Everything needed to launch one PD run: a driver, a config, and a pre-allocated run_id.
+
+    A list of these is what a launcher submits as a SLURM array (one task per spec).
+    """
+
     driver_path: str
     config_dict: dict[str, Any]
-    """Raw experiment config dict.
-
-    This is the per-experiment Pydantic config as a JSON-serializable dict.
-    Passed directly to the experiment runner as `--config_json`."""
-    run_id: str  # Pre-generated unique run identifier (e.g. "s-a1b2c3d4")
+    """The experiment config as a JSON-serializable mapping. Passed to the worker via
+    `--config_json` and validated by the driver's Pydantic config_type."""
+    run_id: str
+    """Pre-generated unique run identifier (e.g. "s-a1b2c3d4"). The worker passes this
+    to `run_pd`, which writes outputs to PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/."""
 
 
 def _choose_master_port(run_id_local: str, idx: int) -> int:
@@ -53,17 +57,16 @@ def _choose_master_port(run_id_local: str, idx: int) -> int:
 
 def _build_script_args(
     launch_id: str,
-    job: TrainingJob,
+    run_spec: RunSpec,
     sweep_params: dict[str, Any] | None,
 ) -> str:
-    """Build the common script arguments for training jobs."""
-    json_tagged_config = f"json:{json.dumps(job.config_dict)}"
+    """Build the worker-CLI arguments for one SLURM task."""
+    json_tagged_config = f"json:{json.dumps(run_spec.config_dict)}"
     args = (
         f"--config_json {shlex.quote(json_tagged_config)} "
-        f"--driver {shlex.quote(job.driver_path)} "
+        f"--driver {shlex.quote(run_spec.driver_path)} "
         f"--launch_id {launch_id} "
-        f"--evals_id {job.experiment} "
-        f"--run_id {job.run_id}"
+        f"--run_id {run_spec.run_id}"
     )
     if sweep_params is not None:
         json_tagged_sweep_params = f"json:{json.dumps(sweep_params)}"
@@ -73,36 +76,37 @@ def _build_script_args(
 
 def get_command(
     launch_id: str,
-    job: TrainingJob,
-    job_idx: int,
+    run_spec: RunSpec,
+    spec_idx: int,
     n_gpus: int | None,
     sweep_params: dict[str, Any] | None,
     snapshot_branch: str,
     is_array: bool,
 ) -> Command:
-    """Build the command to run a training job.
+    """Build the command to run one PD run spec.
 
     Args:
-        launch_id: Launch identifier for this group of jobs.
-        job: The training job to run.
-        job_idx: Index of the job in the run.
+        launch_id: Launch identifier for this group of runs.
+        run_spec: The run spec to execute.
+        spec_idx: Index of the run spec within the launch.
         n_gpus: Number of GPUs. None or 1 means single GPU/CPU. 2-8 means single-node DDP.
                 >8 means multi-node DDP (must be divisible by 8).
-        sweep_params: Optional sweep parameters to pass to the job.
+        sweep_params: Optional sweep parameters to pass to the worker.
         snapshot_branch: Git branch to checkout (used for multi-node workspace setup).
-        is_array: Whether the job is part of a SLURM array.
+        is_array: Whether this command is part of a SLURM array.
     """
-    port = _choose_master_port(launch_id, job_idx)
-    script_args = _build_script_args(launch_id, job, sweep_params)
+    port = _choose_master_port(launch_id, spec_idx)
+    script_args = _build_script_args(launch_id, run_spec, sweep_params)
 
+    worker_module = "param_decomp.experiments._worker"
     match n_gpus:
         case None | 1:
-            command = f"pd-run {script_args}"
+            command = f"python -m {worker_module} {script_args}"
 
         case n if n <= GPUS_PER_NODE:
             command = (
                 f"torchrun --standalone --nproc_per_node={n} --master_port={port} "
-                f"-m param_decomp.experiments.runner {script_args}"
+                f"-m {worker_module} {script_args}"
             )
 
         case _:
@@ -116,7 +120,7 @@ def get_command(
                 f"--nproc_per_node={GPUS_PER_NODE} "
                 f'--master_addr=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1) '
                 f"--master_port={port} "
-                f"-m param_decomp.experiments.runner {script_args}"
+                f"-m {worker_module} {script_args}"
             )
 
             # Each node needs its own /tmp workspace since /tmp is node-local
@@ -136,7 +140,7 @@ def get_command(
 def create_slurm_script(
     slurm_job_name: str,
     launch_id: str,
-    training_jobs: list[TrainingJob],
+    run_specs: list[RunSpec],
     sweep_params: dict[str, Any] | None,
     snapshot_branch: str,
     n_gpus: int | None,
@@ -144,16 +148,16 @@ def create_slurm_script(
     max_concurrent_tasks: int | None = None,
     per_task_comments: list[str] | None = None,
 ) -> str:
-    """Create a SLURM script for training jobs with git snapshot for consistent code.
+    """Create a SLURM script for one or more run specs (with a git-snapshot checkout step).
 
-    For a single job, generates a regular SLURM script. For multiple jobs, generates
-    a SLURM job array script with a case statement.
+    For a single spec, generates a regular SLURM script. For multiple, generates a SLURM
+    array script with a case statement (one task per spec).
 
     Args:
-        slurm_job_name: Name for the SLURM job
-        launch_id: Launch identifier for this group of jobs.
-        training_jobs: List of training jobs to execute.
-        sweep_params: Optional sweep parameters to pass to the jobs.
+        slurm_job_name: Name for the SLURM job.
+        launch_id: Launch identifier for this group of runs.
+        run_specs: Run specs to execute (one task per spec).
+        sweep_params: Optional sweep parameters to pass to the worker.
         snapshot_branch: Git branch to checkout.
         n_gpus: Number of GPUs. None or 1 means single GPU. 2-8 means single-node DDP.
                 >8 means multi-node DDP (must be divisible by 8).
@@ -161,14 +165,13 @@ def create_slurm_script(
         max_concurrent_tasks: Maximum number of array tasks to run concurrently. If None, no limit.
         per_task_comments: If provided, each task sets its own SLURM comment (e.g. wandb URL).
     """
-    is_array = len(training_jobs) > 1
+    is_array = len(run_specs) > 1
 
-    # Convert TrainingJobs to command strings
     commands: list[str] = []
-    for i, training_job in enumerate(training_jobs):
+    for i, run_spec in enumerate(run_specs):
         cmd = get_command(
             launch_id,
-            training_job,
+            run_spec,
             i,
             n_gpus,
             sweep_params,
