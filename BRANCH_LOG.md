@@ -115,6 +115,98 @@ Rejects orchestrators that would defeat the layerwise split:
 - **Background monitor:** `b3p5jy3lb`, polling `sacct` every 30 min, fires
   when both arrays complete.
 
+## Cluster migration: H200 → H100 → B200 (2026-05-15)
+
+Three clusters in 24h. Each move surfaced different memory/scheduling
+constraints. Keeping this section so the next restart isn't re-learning.
+
+### What happened on the H100 cluster
+
+The H200 cluster (where this branch was developed) became unavailable. Cloned
+fresh to a CoreWeave H100 cluster and re-submitted. Three things broke:
+
+1. **Partition default is wrong.** `pd-run-layerwise` defaults to
+   `partition="h200-reserved"` (set in `param_decomp/settings.py:24`). The H100
+   cluster's default partition is `h100` (`h100*` in `sinfo`). Workaround was
+   `pd-run-layerwise <yaml> --partition h100 ...` on every call. **Fix later:**
+   either move `DEFAULT_PARTITION_NAME` into env config, or add cluster
+   auto-detection.
+
+2. **`mechanisms` team quota saturated.** Another teammate was running a single
+   job consuming all 256 GPUs of `MaxTRESPerAccount=gres/gpu=256` on the
+   `normal-mechanisms` QoS. All 72 of my tasks pended with
+   `Reason=MaxGRESPerAccount`. Workaround: `scontrol update job=<jid>
+   qos=opportunistic` on each parent array. Opportunistic bypasses the team
+   quota at zero fairshare cost (preemptable with 10-min grace, but no
+   preemptions occurred). `pd-run-layerwise` does **not** expose `--qos`; the
+   scontrol-update path was the only way without code changes.
+
+3. **OOMs from H200-tuned configs on 80 GB H100 cards** (H200 = 141 GB, B200 =
+   192 GB). Hit in two places:
+
+   - **Slow-eval at step 0** (`CEandKLLosses` → `kl_vs_target`):
+     `eval_batch_size=128` with vocab=50432 produces a ~6.6 GB fp32 KL
+     intermediate. `kl_div` is numerically sensitive and runs fp32 even under
+     bf16 autocast. Workaround: `eval_batch_size: 128 → 32` everywhere.
+   - **v2 PPGD training** (`PersistentPGDReconLoss` → `recon_loss_kl`): the
+     PPGD inner forward materialises the same ~6.6 GB logits tensor multiple
+     times, plus the source state. With `scope: per_batch_per_position` and
+     `batch_size: 64`, peak >80 GB. Tried `scope: broadcast_across_batch`
+     first — shrunk the source but not the logits, still OOM. Final fix:
+     `batch_size: 64 → 32` for v2 only.
+
+### What's been reverted for B200
+
+I reverted all H100-specific yaml edits before this commit. They're back to
+H200/B200-suitable values, so on B200 you can re-launch without thinking
+about it:
+
+| yaml | field | H100 value | reverted to |
+|---|---|---|---|
+| all 6 | `eval_batch_size` | 32 | **128** |
+| `jose_layerwise_v2.yaml` | `batch_size` | 32 | **64** |
+| `jose_layerwise_v2.yaml` | PPGD `scope.type` | `broadcast_across_batch` | **`per_batch_per_position`** |
+
+If B200 OOMs the v2 PPGD path, the broadcast-scope + batch=32 combo worked on
+H100, so it's a known-good fallback.
+
+### Things that ran on H100 (now dead weight)
+
+Six arrays were running on opportunistic QoS when the B200 move was decided.
+WandB groups (timestamps are launch IDs):
+- `jose-layerwise-v1-20260515_135538` (24 modules, 200k steps)
+- `jose-layerwise-v2-ppgd-20260515_140802` (24 modules, 200k steps, **batch=32 + broadcast scope** — not directly comparable to v1)
+- `jose-layerwise-block2-sweep-20260515_135556` (10k steps, block-2 only)
+- `jose-layerwise-block2-sweep-20260515_135604` (20k steps)
+- `jose-layerwise-block2-sweep-20260515_135613` (50k steps)
+- `jose-layerwise-block2-sweep-20260515_135622` (100k steps)
+
+User cancelled these on cluster-move. Partial WandB data exists but with the
+H100 hacks baked in. **The block2 step-sweep yamls are new on this branch**
+(committed alongside this log update) and are the most valuable artifact —
+they parameterise the steps axis for the 6 block-2 modules.
+
+### Re-launching on B200
+
+```bash
+# After cloning fresh on B200:
+make install-dev
+# write .env: WANDB_ENTITY=goodfire (+ wandb login interactively for ~/.netrc)
+# figure out the B200 partition name (sinfo) — likely "b200" or similar
+pd-run-layerwise param_decomp/experiments/lm/jose_layerwise.yaml         --partition <b200-partition> --max_concurrent 8
+pd-run-layerwise param_decomp/experiments/lm/jose_layerwise_v2.yaml      --partition <b200-partition> --max_concurrent 8
+for s in 10k 20k 50k 100k; do
+  pd-run-layerwise param_decomp/experiments/lm/jose_layerwise_block2_steps${s}.yaml \
+    --partition <b200-partition> --max_concurrent 6
+done
+```
+
+WandB workspace views from H100 still work — they filter by `group IN [...]`
+on the project, so just submit new launches and create new views (use the
+helper pattern from this session: `ws.Workspace.from_url(TEMPLATE_URL)`,
+set `runset_settings.filters = [ws.Metric("group").isin(groups)]`,
+`save_as_new_view()`).
+
 ## File map
 
 | Path | What |
@@ -123,6 +215,7 @@ Rejects orchestrators that would defeat the layerwise split:
 | `param_decomp/scripts/run_layerwise_cli.py` | Fire CLI entry. Resolves orchestrator path (absolute, relative-to-cwd, relative-to-REPO_ROOT). |
 | `param_decomp/experiments/lm/jose_layerwise.yaml` | Vanilla orchestrator (24 modules, no PPGD, layerwise stochastic recon @ coeff 1.0). |
 | `param_decomp/experiments/lm/jose_layerwise_v2.yaml` | PPGD-included variant (same as v1 + `PersistentPGDReconLoss` @ 0.5). |
+| `param_decomp/experiments/lm/jose_layerwise_block2_steps{10,20,50,100}k.yaml` | Step-axis sweep on block 2 only (6 modules each). Same yaml as v1 but `steps` varies. All four share `wandb_group: jose-layerwise-block2-sweep` so they appear together in WandB; filter by `config.steps` to compare. Added 2026-05-15. |
 | `param_decomp/configs.py` | Adds `wandb_group`, `wandb_tags`, `extra_wandb_config` fields to `Config`. |
 | `param_decomp/utils/wandb_utils.py` | `init_wandb` now accepts `group=`, threads through to `wandb.init`. `extra_wandb_config` keys promoted to top-level `wandb.config`. |
 | `param_decomp/run_param_decomp.py` | (a) Passes `wandb_group` to `init_wandb`. (b) `wandb_tags` merged with launch/experiment tags. (c) `PD_PROFILE=1` env-var gates CUDA-event phase timing for diagnostic runs (no-op otherwise). |
@@ -165,3 +258,11 @@ than joint — pure guess, can extend if needed.
   that finished yesterday don't have these eval metrics. If we want them
   re-evaluated post-hoc on those 11 checkpoints, that's a separate eval-only
   pass.
+- `DEFAULT_PARTITION_NAME = "h200-reserved"` in `settings.py:24` is hardcoded
+  for the original H200 cluster. Every cluster move forces `--partition <X>`
+  to be passed explicitly. Consider env-var override or cluster auto-detect.
+- `pd-run-layerwise` has no `--qos` flag. On clusters where the team quota is
+  saturated under normal QoS, the workaround is `scontrol update job=<jid>
+  qos=opportunistic` after submission. Wiring a `--qos` flag through
+  `pd-run-layerwise → create_slurm_script → SlurmArrayConfig → SBATCH header`
+  would be cleaner.
