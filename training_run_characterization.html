@@ -1,0 +1,721 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SPD Training Run Characterization</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --ink: #18202a;
+      --muted: #5c6673;
+      --line: #d8dee8;
+      --panel: #ffffff;
+      --blue: #2563eb;
+      --cyan: #0891b2;
+      --green: #16833d;
+      --amber: #b7791f;
+      --red: #b42318;
+      --violet: #6f42c1;
+      --slate: #42526e;
+      --soft-blue: #e6efff;
+      --soft-cyan: #dff7fb;
+      --soft-green: #e5f5ea;
+      --soft-amber: #fff1cf;
+      --soft-red: #ffe7e3;
+      --soft-violet: #eee7ff;
+      --shadow: 0 16px 40px rgba(20, 32, 45, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .page {
+      max-width: 1220px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.8fr);
+      gap: 18px;
+      align-items: stretch;
+      margin-bottom: 18px;
+    }
+    .hero,
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+    .hero {
+      padding: 24px;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(30px, 4vw, 54px);
+      line-height: 0.98;
+      letter-spacing: 0;
+    }
+    h2 {
+      margin: 0 0 14px;
+      font-size: 19px;
+      letter-spacing: 0;
+    }
+    h3 {
+      margin: 0 0 8px;
+      font-size: 14px;
+      letter-spacing: 0;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    p { margin: 0 0 10px; }
+    .lead {
+      max-width: 780px;
+      color: var(--muted);
+      font-size: 16px;
+    }
+    .assumptions {
+      padding: 18px;
+      display: grid;
+      gap: 12px;
+    }
+    .assumption-row {
+      display: grid;
+      grid-template-columns: 104px 1fr;
+      gap: 12px;
+      align-items: start;
+    }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 26px;
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-weight: 700;
+      background: #edf1f7;
+      color: #253247;
+      white-space: nowrap;
+    }
+    .grid {
+      display: grid;
+      gap: 18px;
+    }
+    .cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .panel { padding: 18px; }
+    .metric-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .metric {
+      min-height: 104px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fbfcfe;
+    }
+    .metric .num {
+      display: block;
+      font-size: 25px;
+      font-weight: 800;
+      letter-spacing: 0;
+      margin-bottom: 4px;
+    }
+    .metric .label {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .callout {
+      border-left: 4px solid var(--blue);
+      background: var(--soft-blue);
+      padding: 12px 14px;
+      border-radius: 6px;
+      color: #1d335c;
+    }
+    .warn {
+      border-left-color: var(--red);
+      background: var(--soft-red);
+      color: #652016;
+    }
+    .ok {
+      border-left-color: var(--green);
+      background: var(--soft-green);
+      color: #163d24;
+    }
+    .timeline {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1.2fr 1.5fr 1.1fr 1fr;
+      gap: 8px;
+      align-items: stretch;
+    }
+    .step {
+      position: relative;
+      min-height: 122px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcfe;
+      overflow: hidden;
+    }
+    .step:before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 5px;
+      background: var(--accent, var(--blue));
+    }
+    .step .kicker {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      margin-bottom: 7px;
+    }
+    .step strong { display: block; margin-bottom: 6px; }
+    .step small { color: var(--muted); }
+    .bars { display: grid; gap: 10px; }
+    .bar-row {
+      display: grid;
+      grid-template-columns: 170px 1fr 68px;
+      gap: 10px;
+      align-items: center;
+    }
+    .bar-label { color: var(--slate); font-weight: 650; }
+    .bar-track {
+      height: 26px;
+      border-radius: 6px;
+      background: #edf1f7;
+      overflow: hidden;
+      border: 1px solid #d9e0ea;
+    }
+    .bar-fill {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      padding-left: 8px;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 800;
+      min-width: 3px;
+      background: var(--accent);
+    }
+    .bar-value {
+      text-align: right;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .stack {
+      height: 36px;
+      border-radius: 7px;
+      overflow: hidden;
+      display: flex;
+      border: 1px solid var(--line);
+      background: #edf1f7;
+    }
+    .seg {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 800;
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 10px;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 5px;
+      vertical-align: -1px;
+      background: var(--accent);
+    }
+    .formula {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: #101828;
+      color: #f2f4f7;
+      border-radius: 8px;
+      padding: 14px;
+      overflow-x: auto;
+      white-space: pre;
+    }
+    .heat {
+      display: grid;
+      grid-template-columns: 190px repeat(5, 1fr);
+      gap: 6px;
+      align-items: stretch;
+    }
+    .heat div {
+      min-height: 46px;
+      border-radius: 6px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      background: #fbfcfe;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      font-size: 12px;
+    }
+    .heat .rowhead {
+      justify-content: flex-start;
+      text-align: left;
+      font-weight: 750;
+      color: var(--slate);
+    }
+    .heat .high { background: var(--soft-red); color: #6d271f; border-color: #ffc3b9; }
+    .heat .med { background: var(--soft-amber); color: #5f4211; border-color: #ffd880; }
+    .heat .low { background: var(--soft-green); color: #173f25; border-color: #b7e4c1; }
+    .heat .mod { background: var(--soft-cyan); color: #164653; border-color: #b5e8ef; }
+    .parallel {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .strategy {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 13px;
+      background: #fbfcfe;
+      min-height: 188px;
+    }
+    .strategy h3 {
+      color: var(--ink);
+      text-transform: none;
+      font-size: 16px;
+      margin-bottom: 10px;
+    }
+    .strategy p { color: var(--muted); font-size: 13px; }
+    .badge {
+      display: inline-block;
+      margin-bottom: 8px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      color: #fff;
+      background: var(--accent);
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .notes {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .note {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfe;
+      padding: 12px;
+    }
+    .note strong { display: block; margin-bottom: 5px; }
+    .note span { color: var(--muted); }
+    .svg-wrap {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfe;
+    }
+    svg { width: 100%; height: auto; display: block; }
+    .small { color: var(--muted); font-size: 12px; }
+    .source-list {
+      columns: 2 320px;
+      color: var(--muted);
+      font-size: 12px;
+      margin: 0;
+      padding-left: 18px;
+    }
+    .source-list li { margin: 0 0 6px; break-inside: avoid; }
+    @media (max-width: 980px) {
+      header, .cols-2, .cols-3, .parallel, .notes { grid-template-columns: 1fr; }
+      .metric-strip { grid-template-columns: repeat(2, 1fr); }
+      .timeline { grid-template-columns: 1fr 1fr; }
+      .heat { grid-template-columns: 150px repeat(5, minmax(80px, 1fr)); overflow-x: auto; }
+      .bar-row { grid-template-columns: 132px 1fr 58px; }
+    }
+    @media (max-width: 640px) {
+      .page { padding: 14px; }
+      .metric-strip, .timeline { grid-template-columns: 1fr; }
+      .assumption-row { grid-template-columns: 1fr; gap: 4px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <section class="hero">
+        <h1>Training Run Shape: 1B Target, 4B Causal Importance Function</h1>
+        <p class="lead">
+          This is a conceptual map of the current SPD/VPD training loop under the requested loss mix:
+          layer-wise stochastic reconstruction, persistent PGD reconstruction, faithfulness with the
+          weight-delta component enabled, and stochastic subset reconstruction. The key point is that
+          this is not a normal LM pretraining step. The target LM is mostly frozen, the CI function is
+          the largest trainable model, and one batch fans out into many masked full-model forwards.
+        </p>
+        <p class="lead">
+          Companion DAGs:
+          <a href="training_step_dag.html">full-objective training step</a> and
+          <a href="layerwise_parallel_dag.html">layerwise-parallel objective</a>.
+        </p>
+        <div class="metric-strip">
+          <div class="metric">
+            <span class="num">141 GB</span>
+            <span class="label">H200 HBM capacity per GPU</span>
+          </div>
+          <div class="metric">
+            <span class="num">4.8 TB/s</span>
+            <span class="label">H200 memory bandwidth</span>
+          </div>
+          <div class="metric">
+            <span class="num">~68 GB</span>
+            <span class="label">replicated fp32 Adam state for 4B trainable + 1B frozen</span>
+          </div>
+          <div class="metric">
+            <span class="num">113x</span>
+            <span class="label">example target-model forward calls per step with 108 layerwise sites</span>
+          </div>
+        </div>
+      </section>
+      <aside class="assumptions panel">
+        <div class="assumption-row">
+          <span class="tag">Scope</span>
+          <p>4B is treated as the trainable causal-importance function. Component V/U parameters are additional unless included in that 4B.</p>
+        </div>
+        <div class="assumption-row">
+          <span class="tag">Unit</span>
+          <p>Activation and mask costs scale with local tokens per rank: <strong>B<sub>rank</sub> x S</strong>. Global batch does not lower per-GPU activation pressure.</p>
+        </div>
+        <div class="assumption-row">
+          <span class="tag">Pattern</span>
+          <p>For a 1B Llama-like target, I use 18 blocks x 6 decomposed sites per block = <strong>108 sites</strong>, matching the current LM module pattern.</p>
+        </div>
+        <div class="assumption-row">
+          <span class="tag">Evidence</span>
+          <p>Measured local baseline: 67M target, 660M trainable, H200, per-rank batch 8, peak 34.6 GB, of which 23.8 GB was activation/transient memory.</p>
+        </div>
+      </aside>
+    </header>
+
+    <section class="panel">
+      <h2>One Training Step: Required Dependency Graph</h2>
+      <div class="timeline">
+        <div class="step" style="--accent: var(--slate)">
+          <div class="kicker">1. cache</div>
+          <strong>Frozen target forward</strong>
+          <small>Produces target logits plus pre-weight activations for every decomposed site.</small>
+        </div>
+        <div class="step" style="--accent: var(--violet)">
+          <div class="kicker">2. score</div>
+          <strong>4B CI function</strong>
+          <small>Maps cached site activations to CI masks. Backward updates CI parameters.</small>
+        </div>
+        <div class="step" style="--accent: var(--amber)">
+          <div class="kicker">3. adversary</div>
+          <strong>PPGD warmups</strong>
+          <small>Extra recon forwards update persistent sources before the final PPGD loss.</small>
+        </div>
+        <div class="step" style="--accent: var(--blue)">
+          <div class="kicker">4. losses</div>
+          <strong>Masked recon fanout</strong>
+          <small>Subset loss runs sampled full-model forwards. Layerwise loss runs one forward per selected site/layer.</small>
+        </div>
+        <div class="step" style="--accent: var(--red)">
+          <div class="kicker">5. delta</div>
+          <strong>Faithfulness + weight delta</strong>
+          <small>Materializes W_target - VU and may route an extra delta component through masked forwards.</small>
+        </div>
+        <div class="step" style="--accent: var(--green)">
+          <div class="kicker">6. update</div>
+          <strong>Two gradient targets</strong>
+          <small>One backward for model/CI params, plus a separate gradient extraction for PPGD sources.</small>
+        </div>
+      </div>
+      <p class="small" style="margin-top:12px;">
+        Fundamental serial points: target cache must precede CI; CI must precede stochastic masks and PPGD interpolation; PPGD warmups precede final PPGD loss; the optimizer step waits for all selected loss graphs.
+      </p>
+    </section>
+
+    <section class="grid cols-2" style="margin-top:18px;">
+      <div class="panel">
+        <h2>Target-Model Forward Multiplier</h2>
+        <div class="formula">full target-model calls per step
+= 1 target/cache
+  + n_mask_samples x M_layerwise
+  + n_mask_samples x 1 subset
+  + ppgd_n_samples x (ppgd_warmups + 1)
+
+Example: 1 + 1 x 108 + 1 + 1 x (2 + 1) = 113</div>
+        <div class="bars" style="margin-top:14px;">
+          <div class="bar-row">
+            <div class="bar-label">Target/cache</div>
+            <div class="bar-track"><div class="bar-fill" style="--accent:var(--slate); width:0.9%;">1</div></div>
+            <div class="bar-value">1</div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-label">Stoch subset</div>
+            <div class="bar-track"><div class="bar-fill" style="--accent:var(--blue); width:0.9%;">1</div></div>
+            <div class="bar-value">1</div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-label">PPGD final+warmup</div>
+            <div class="bar-track"><div class="bar-fill" style="--accent:var(--amber); width:2.7%;">3</div></div>
+            <div class="bar-value">3</div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-label">Layerwise stoch</div>
+            <div class="bar-track"><div class="bar-fill" style="--accent:var(--red); width:95.6%;">108</div></div>
+            <div class="bar-value">108</div>
+          </div>
+        </div>
+        <div class="callout warn" style="margin-top:14px;">
+          The layerwise term is the structural outlier. In the current implementation it loops over decomposed sites, not just transformer blocks. If the exact layerwise sum is kept as one loss and backpropagated once, many forward graphs can be live together.
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Resident State Before Activations</h2>
+        <p class="small">Approximate per-GPU fixed state for 1B frozen target + 4B trainable CI, excluding component V/U if those are not part of the 4B.</p>
+        <div class="stack" title="Replicated fp32 Adam state">
+          <div class="seg" style="width:5.9%; background:var(--slate);">target</div>
+          <div class="seg" style="width:23.5%; background:var(--violet);">params</div>
+          <div class="seg" style="width:23.5%; background:var(--cyan);">grads</div>
+          <div class="seg" style="width:47.1%; background:var(--red);">Adam m+v</div>
+        </div>
+        <div class="legend">
+          <span><i class="dot" style="--accent:var(--slate)"></i>1B frozen target: ~4 GB fp32</span>
+          <span><i class="dot" style="--accent:var(--violet)"></i>4B trainable params: ~16 GB fp32</span>
+          <span><i class="dot" style="--accent:var(--cyan)"></i>grads: ~16 GB</span>
+          <span><i class="dot" style="--accent:var(--red)"></i>Adam moments: ~32 GB</span>
+        </div>
+        <div class="bars" style="margin-top:16px;">
+          <div class="bar-row">
+            <div class="bar-label">Replicated Adam</div>
+            <div class="bar-track"><div class="bar-fill" style="--accent:var(--red); width:48.2%;">68 GB</div></div>
+            <div class="bar-value">68</div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-label">ZeRO-1, N=8</div>
+            <div class="bar-track"><div class="bar-fill" style="--accent:var(--amber); width:28.4%;">40 GB</div></div>
+            <div class="bar-value">40</div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-label">FSDP, N=4</div>
+            <div class="bar-track"><div class="bar-fill" style="--accent:var(--green); width:12.1%;">17 GB</div></div>
+            <div class="bar-value">17</div>
+          </div>
+          <div class="bar-row">
+            <div class="bar-label">FSDP, N=8</div>
+            <div class="bar-track"><div class="bar-fill" style="--accent:var(--green); width:6.0%;">8.5 GB</div></div>
+            <div class="bar-value">8.5</div>
+          </div>
+        </div>
+        <p class="small" style="margin-top:12px;">Bar width is relative to the 141 GB H200 HBM budget. Each extra 1B replicated trainable parameters adds ~16 GB with fp32 Adam.</p>
+      </div>
+    </section>
+
+    <section class="grid cols-2" style="margin-top:18px;">
+      <div class="panel">
+        <h2>Memory Pressure Map</h2>
+        <div class="heat">
+          <div></div>
+          <div><strong>Model size</strong></div>
+          <div><strong>B<sub>rank</sub></strong></div>
+          <div><strong>Seq len</strong></div>
+          <div><strong># sites</strong></div>
+          <div><strong>Loss samples</strong></div>
+
+          <div class="rowhead">Frozen target weights</div>
+          <div class="high">High</div><div class="low">No</div><div class="low">No</div><div class="med">site coverage</div><div class="low">No</div>
+
+          <div class="rowhead">CI function state</div>
+          <div class="high">Very high</div><div class="low">No</div><div class="low">No</div><div class="med">output width</div><div class="low">No</div>
+
+          <div class="rowhead">CI activations</div>
+          <div class="med">d_ci/layers</div><div class="high">Linear</div><div class="high">Linear</div><div class="mod">input concat</div><div class="low">No</div>
+
+          <div class="rowhead">Mask tensors</div>
+          <div class="low">No</div><div class="high">Linear</div><div class="high">Linear</div><div class="high">C_total</div><div class="high">Linear</div>
+
+          <div class="rowhead">Recon activations</div>
+          <div class="med">layer dims</div><div class="high">Linear</div><div class="high">Linear</div><div class="high">fanout</div><div class="high">fanout</div>
+
+          <div class="rowhead">Weight deltas</div>
+          <div class="high">target-sized</div><div class="low">No</div><div class="low">No</div><div class="med">covered sites</div><div class="low">No</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Why HBM Disappears</h2>
+        <div class="svg-wrap">
+          <svg viewBox="0 0 780 310" role="img" aria-label="Activation retention diagram">
+            <rect x="20" y="28" width="120" height="250" rx="8" fill="#edf1f7" stroke="#d8dee8"/>
+            <text x="80" y="58" text-anchor="middle" font-weight="800" fill="#42526e">one batch</text>
+            <text x="80" y="82" text-anchor="middle" font-size="12" fill="#5c6673">B_rank x S tokens</text>
+
+            <path d="M145 155 H185" stroke="#8b97a8" stroke-width="2"/>
+            <polygon points="185,155 175,149 175,161" fill="#8b97a8"/>
+
+            <rect x="195" y="28" width="135" height="74" rx="8" fill="#f4f7fb" stroke="#d8dee8"/>
+            <text x="262" y="57" text-anchor="middle" font-weight="800">target cache</text>
+            <text x="262" y="80" text-anchor="middle" font-size="12" fill="#5c6673">logits + site acts</text>
+
+            <rect x="195" y="118" width="135" height="74" rx="8" fill="#eee7ff" stroke="#cabdff"/>
+            <text x="262" y="147" text-anchor="middle" font-weight="800">4B CI fn</text>
+            <text x="262" y="170" text-anchor="middle" font-size="12" fill="#5c6673">scores every site</text>
+
+            <rect x="195" y="208" width="135" height="70" rx="8" fill="#fff1cf" stroke="#ffd880"/>
+            <text x="262" y="237" text-anchor="middle" font-weight="800">PPGD state</text>
+            <text x="262" y="260" text-anchor="middle" font-size="12" fill="#5c6673">sources + grads</text>
+
+            <path d="M335 65 H377" stroke="#8b97a8" stroke-width="2"/>
+            <path d="M335 155 H377" stroke="#8b97a8" stroke-width="2"/>
+            <path d="M335 243 H377" stroke="#8b97a8" stroke-width="2"/>
+            <polygon points="377,65 367,59 367,71" fill="#8b97a8"/>
+            <polygon points="377,155 367,149 367,161" fill="#8b97a8"/>
+            <polygon points="377,243 367,237 367,249" fill="#8b97a8"/>
+
+            <rect x="390" y="22" width="170" height="62" rx="8" fill="#e6efff" stroke="#bcd1ff"/>
+            <text x="475" y="48" text-anchor="middle" font-weight="800">subset recon</text>
+            <text x="475" y="68" text-anchor="middle" font-size="12" fill="#5c6673">1 sampled forward</text>
+
+            <rect x="390" y="98" width="170" height="104" rx="8" fill="#ffe7e3" stroke="#ffc3b9"/>
+            <text x="475" y="126" text-anchor="middle" font-weight="800">layerwise recon</text>
+            <text x="475" y="148" text-anchor="middle" font-size="12" fill="#5c6673">M site forwards</text>
+            <text x="475" y="171" text-anchor="middle" font-size="12" fill="#5c6673">graphs accumulate</text>
+
+            <rect x="390" y="218" width="170" height="62" rx="8" fill="#fff1cf" stroke="#ffd880"/>
+            <text x="475" y="244" text-anchor="middle" font-weight="800">PPGD recon</text>
+            <text x="475" y="264" text-anchor="middle" font-size="12" fill="#5c6673">final graph retained</text>
+
+            <path d="M565 53 H625 V150" stroke="#8b97a8" stroke-width="2" fill="none"/>
+            <path d="M565 150 H625" stroke="#8b97a8" stroke-width="2"/>
+            <path d="M565 249 H625 V150" stroke="#8b97a8" stroke-width="2" fill="none"/>
+            <polygon points="625,150 615,144 615,156" fill="#8b97a8"/>
+
+            <rect x="635" y="98" width="125" height="104" rx="8" fill="#e5f5ea" stroke="#b7e4c1"/>
+            <text x="697" y="132" text-anchor="middle" font-weight="800">one backward</text>
+            <text x="697" y="154" text-anchor="middle" font-size="12" fill="#5c6673">CI + V/U grads</text>
+            <text x="697" y="176" text-anchor="middle" font-size="12" fill="#5c6673">then optimizer</text>
+          </svg>
+        </div>
+        <div class="callout" style="margin-top:12px;">
+          Empirical anchor: the regular 67M-target run measured ~3 GB of activation/transient peak per local batch element at sequence length 512. At larger targets and a 4B CI function, the same categories dominate unless streamed or checkpointed.
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:18px;">
+      <h2>Distributed Training Implications</h2>
+      <div class="parallel">
+        <div class="strategy" style="--accent:var(--red)">
+          <span class="badge">DDP</span>
+          <h3>Replicates the expensive state</h3>
+          <p>Simple and bandwidth-efficient for small models, but every H200 carries the full 4B CI function, full optimizer state, full masks, and full local activation fanout. Adding GPUs mostly increases global batch.</p>
+        </div>
+        <div class="strategy" style="--accent:var(--amber)">
+          <span class="badge">ZeRO-1</span>
+          <h3>Shards Adam state only</h3>
+          <p>Useful because 4B trainable params imply ~32 GB of Adam moments. It does not shard params, grads, cached activations, layerwise graphs, masks, logits, or weight-delta transients.</p>
+        </div>
+        <div class="strategy" style="--accent:var(--green)">
+          <span class="badge">FSDP</span>
+          <h3>Shards params, grads, optimizer</h3>
+          <p>The right first lever for 4B+ trainable state. Its risk is the multi-forward loop: repeated gather/reshard and weight-delta materialization must be aligned with decomposition-site boundaries.</p>
+        </div>
+        <div class="strategy" style="--accent:var(--blue)">
+          <span class="badge">Work splitting</span>
+          <h3>Best target is loss fanout</h3>
+          <p>Layerwise samples and stochastic samples are mathematically additive. They are natural candidates for streaming backward, parallel loss evaluation, or assigning subsets of sites/samples to ranks.</p>
+        </div>
+      </div>
+      <div class="notes">
+        <div class="note">
+          <strong>Activation memory is not sharded by ordinary data parallelism.</strong>
+          <span>Per-rank batch size and sequence length are the main knobs. FSDP solves resident state, not the layerwise graph pileup.</span>
+        </div>
+        <div class="note">
+          <strong>The CI function creates a global coupling point.</strong>
+          <span>If CI reads all site activations and emits all site importances, naive layer or tensor parallelism has to move activations or scores across partitions.</span>
+        </div>
+        <div class="note">
+          <strong>PPGD is stateful but mostly separable.</strong>
+          <span>Per-batch-per-position sources are local to rank in the current pattern; shared-source scopes require synchronization of source gradients.</span>
+        </div>
+        <div class="note">
+          <strong>Faithfulness is parameter-space work.</strong>
+          <span>It does not need batch activations, but the weight-delta component injects target-sized delta tensors and extra delta-path matmuls into masked forwards.</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid cols-3" style="margin-top:18px;">
+      <div class="panel">
+        <h2>What Is Fundamentally Required</h2>
+        <p><strong>Resident:</strong> frozen target weights; trainable V/U components; trainable CI function; gradients; optimizer state; PPGD source tensors and any source optimizer state.</p>
+        <p><strong>Per step:</strong> target logits, cached pre-site activations, CI outputs, stochastic masks, routing masks, weight-delta tensors, and retained forward graphs for every loss term participating in the final backward.</p>
+      </div>
+      <div class="panel">
+        <h2>What Scales With Batch</h2>
+        <p>Everything shaped like <strong>[B<sub>rank</sub>, S, ...]</strong>: cached activations, CI activations, CI scores, masks, PPGD sources under per-position scope, target logits, component activations, and delta-path outputs.</p>
+        <p>Increasing global batch by adding ranks only helps if the per-rank batch stays fixed and the fixed state has already been sharded enough to fit.</p>
+      </div>
+      <div class="panel">
+        <h2>Most Sensitive Knobs</h2>
+        <p><strong>M_layerwise:</strong> exact layerwise loss cost scales linearly with selected sites.</p>
+        <p><strong>n_mask_samples:</strong> multiplies subset and layerwise fanout.</p>
+        <p><strong>PPGD warmups:</strong> add serial forward+grad source steps.</p>
+        <p><strong>CI checkpointing:</strong> trades compute for the largest activation savings seen so far.</p>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:18px;">
+      <h2>Practical Reading Of The Example</h2>
+      <div class="callout ok">
+        A 1B frozen target plus 4B trainable CI is not fundamentally impossible on H200s, but it is only comfortable if resident state is sharded and the loss fanout is handled deliberately. The resident-state problem points toward FSDP or equivalent sharding. The per-step activation problem points toward checkpointing, streaming loss terms, reducing or sampling the layerwise fanout, and keeping per-rank token count conservative.
+      </div>
+      <p style="margin-top:12px;">
+        The non-negotiable shape is: one target-cache pass, one global CI pass, multiple masked reconstruction passes, parameter-space faithfulness, and a PPGD source update path. The architectural constraint is that the CI pass couples all decomposed sites through a single trainable function, while the reconstruction losses create many independent masked evaluations whose gradients all flow back through the same CI outputs.
+      </p>
+    </section>
+
+    <section class="panel" style="margin-top:18px;">
+      <h2>Sources And Anchors</h2>
+      <ul class="source-list">
+        <li>Training loop: <a href="param_decomp/run_param_decomp.py">param_decomp/run_param_decomp.py</a></li>
+        <li>Loss dispatch: <a href="param_decomp/losses.py">param_decomp/losses.py</a></li>
+        <li>Layerwise stochastic loss: <a href="param_decomp/metrics/stochastic_recon_layerwise_loss.py">stochastic_recon_layerwise_loss.py</a></li>
+        <li>Subset stochastic loss: <a href="param_decomp/metrics/stochastic_recon_subset_loss.py">stochastic_recon_subset_loss.py</a></li>
+        <li>Persistent PGD: <a href="param_decomp/persistent_pgd.py">param_decomp/persistent_pgd.py</a></li>
+        <li>Decomposition sites: <a href="param_decomp/models/decomposed_module.py">decomposed_module.py</a></li>
+        <li>Measured scaling summary: <a href="fsdp_scaling_summary.md">fsdp_scaling_summary.md</a></li>
+        <li>H200 memory spec: <a href="https://www.nvidia.com/en-us/data-center/h200/">NVIDIA H200 page</a></li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
