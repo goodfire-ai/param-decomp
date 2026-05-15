@@ -253,8 +253,8 @@ def make_app(model: ComponentModel) -> FastAPI:
         U, V = cache[layer]
         if not (0 <= c < U.shape[0]):
             raise HTTPException(404, f"component {c} out of range [0, {U.shape[0]})")
-        u_sorted = np.sort(U[c])[::-1].tolist()
-        v_sorted = np.sort(V[:, c])[::-1].tolist()
+        u_sorted = np.sort(np.abs(U[c]))[::-1].tolist()
+        v_sorted = np.sort(np.abs(V[:, c]))[::-1].tolist()
         return JSONResponse({"U": u_sorted, "V": v_sorted})
 
     return app
