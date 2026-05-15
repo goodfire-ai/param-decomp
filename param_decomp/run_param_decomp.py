@@ -2,8 +2,10 @@
 
 import gc
 import os
+import sys
 from collections import defaultdict
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -245,6 +247,25 @@ def optimize(
         for ppgd_cfg in persistent_pgd_configs
     }
 
+    profile_enabled = os.environ.get("PD_PROFILE", "0") == "1"
+    profile_max_steps = int(os.environ.get("PD_PROFILE_STEPS", "60"))
+    profile_warmup = int(os.environ.get("PD_PROFILE_WARMUP", "5"))
+    phase_events: dict[str, list[tuple[torch.cuda.Event, torch.cuda.Event]]] = defaultdict(list)
+
+    @contextmanager
+    def cuda_timed(name: str):
+        if not profile_enabled:
+            yield
+            return
+        s = torch.cuda.Event(enable_timing=True)
+        e = torch.cuda.Event(enable_timing=True)
+        s.record()
+        try:
+            yield
+        finally:
+            e.record()
+            phase_events[name].append((s, e))
+
     for step in tqdm(range(config.steps + 1), ncols=0, disable=not is_main_process()):
         optimizer.zero_grad()
 
@@ -264,18 +285,21 @@ def optimize(
 
         batch_log_data: defaultdict[str, float] = defaultdict(float)
 
-        batch = move_batch_to_device(next(train_iterator), device)
+        with cuda_timed("data"):
+            batch = move_batch_to_device(next(train_iterator), device)
         with bf16_autocast(enabled=config.autocast_bf16):
-            # NOTE: we need to call the wrapped_model at least once each step in order to setup
-            # the DDP gradient syncing for all parameters in the component model. Gradients will
-            # sync regardless of whether the parameters are used in this call to wrapped_model.
-            target_model_output: OutputWithCache = wrapped_model(batch, cache_type="input")
+            with cuda_timed("target_fwd"):
+                # NOTE: we need to call the wrapped_model at least once each step in order to setup
+                # the DDP gradient syncing for all parameters in the component model. Gradients will
+                # sync regardless of whether the parameters are used in this call to wrapped_model.
+                target_model_output: OutputWithCache = wrapped_model(batch, cache_type="input")
 
-            ci = component_model.calc_causal_importances(
-                pre_weight_acts=target_model_output.cache,
-                detach_inputs=False,
-                sampling=config.sampling,
-            )
+            with cuda_timed("ci_compute"):
+                ci = component_model.calc_causal_importances(
+                    pre_weight_acts=target_model_output.cache,
+                    detach_inputs=False,
+                    sampling=config.sampling,
+                )
 
             for ppgd_cfg in active_ppgd_configs:
                 ppgd_states[ppgd_cfg].warmup(
@@ -286,42 +310,46 @@ def optimize(
                     weight_deltas=weight_deltas if config.use_delta_component else None,
                 )
 
-            losses = compute_losses(
-                loss_metric_configs=config.loss_metric_configs,
-                model=component_model,
-                batch=batch,
-                ci=ci,
-                target_out=target_model_output.output,
-                weight_deltas=weight_deltas,
-                current_frac_of_training=step / config.steps,
-                sampling=config.sampling,
-                use_delta_component=config.use_delta_component,
-                n_mask_samples=config.n_mask_samples,
-                ppgd_states=ppgd_states,
-                reconstruction_loss=reconstruction_loss,
-            )
+            with cuda_timed("compute_losses"):
+                losses = compute_losses(
+                    loss_metric_configs=config.loss_metric_configs,
+                    model=component_model,
+                    batch=batch,
+                    ci=ci,
+                    target_out=target_model_output.output,
+                    weight_deltas=weight_deltas,
+                    current_frac_of_training=step / config.steps,
+                    sampling=config.sampling,
+                    use_delta_component=config.use_delta_component,
+                    n_mask_samples=config.n_mask_samples,
+                    ppgd_states=ppgd_states,
+                    reconstruction_loss=reconstruction_loss,
+                )
 
-        total_loss = torch.tensor(0.0, device=device)
-        for loss_cfg, loss_val in losses.items():
-            assert loss_cfg.coeff is not None
-            total_loss = total_loss + loss_cfg.coeff * loss_val
-            batch_log_data[f"train/loss/{loss_cfg.classname}"] = loss_val.item()
+        with cuda_timed("loss_items"):
+            total_loss = torch.tensor(0.0, device=device)
+            for loss_cfg, loss_val in losses.items():
+                assert loss_cfg.coeff is not None
+                total_loss = total_loss + loss_cfg.coeff * loss_val
+                batch_log_data[f"train/loss/{loss_cfg.classname}"] = loss_val.item()
 
-        batch_log_data["train/loss/total"] = total_loss.item()
+            batch_log_data["train/loss/total"] = total_loss.item()
 
         ppgd_grads = {
             cfg: ppgd_states[cfg].get_grads(losses[cfg], retain_graph=True)
             for cfg in active_ppgd_configs
         }
 
-        total_loss.backward()
+        with cuda_timed("backward"):
+            total_loss.backward()
 
         for ppgd_cfg in active_ppgd_configs:
             ppgd_states[ppgd_cfg].step(ppgd_grads[ppgd_cfg])
 
-        for layer_name, layer_ci in ci.lower_leaky.items():
-            l0_val = calc_ci_l_zero(layer_ci, config.ci_alive_threshold)
-            batch_log_data[f"train/l0/{layer_name}"] = l0_val
+        with cuda_timed("calc_l0"):
+            for layer_name, layer_ci in ci.lower_leaky.items():
+                l0_val = calc_ci_l_zero(layer_ci, config.ci_alive_threshold)
+                batch_log_data[f"train/l0/{layer_name}"] = l0_val
 
         # --- Train Logging --- #
         if step % config.train_log_freq == 0:
@@ -419,7 +447,25 @@ def optimize(
                 clip_grad_norm_(component_params, config.grad_clip_norm_components)
             if config.grad_clip_norm_ci_fns is not None:
                 clip_grad_norm_(ci_fn_params, config.grad_clip_norm_ci_fns)
-            optimizer.step()
+            with cuda_timed("optimizer_step"):
+                optimizer.step()
+
+        if profile_enabled and step + 1 >= profile_max_steps:
+            torch.cuda.synchronize()
+            print(f"\n=== CUDA event profile ({profile_max_steps} steps, warmup={profile_warmup}) ===")
+            rows: list[tuple[str, float, int]] = []
+            for name, events in phase_events.items():
+                deltas = [s.elapsed_time(e) for s, e in events[profile_warmup:]]
+                if not deltas:
+                    continue
+                rows.append((name, sum(deltas) / len(deltas), len(deltas)))
+            rows.sort(key=lambda r: -r[1])
+            total_ms = sum(r[1] for r in rows)
+            for name, mean_ms, n in rows:
+                pct = 100 * mean_ms / total_ms if total_ms > 0 else 0
+                print(f"  {name:24s} {mean_ms:8.3f} ms  ({pct:5.1f}%)  n={n}")
+            print(f"  {'TOTAL':24s} {total_ms:8.3f} ms")
+            sys.exit(0)
 
     if is_main_process():
         logger.info("Finished training loop.")
@@ -457,9 +503,17 @@ def run_experiment(
         slurm_array_job_id = os.getenv("SLURM_ARRAY_JOB_ID")
         if slurm_array_job_id is not None:
             tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
+        tags.extend(config.wandb_tags)
 
         if config.wandb_project:
-            init_wandb(config, config.wandb_project, run_id, config.wandb_run_name, tags)
+            init_wandb(
+                config,
+                config.wandb_project,
+                run_id,
+                config.wandb_run_name,
+                tags,
+                group=config.wandb_group,
+            )
 
         logger.info(config)
 
