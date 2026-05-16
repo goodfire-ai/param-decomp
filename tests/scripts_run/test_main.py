@@ -1,8 +1,4 @@
-"""Tests for the main() function in param_decomp/scripts/run.py.
-
-This file contains tests for pd-run, which always submits jobs to SLURM.
-For local execution tests, see tests/scripts_simple/.
-"""
+"""Tests for param_decomp/scripts/run_slurm.py (the SLURM launcher under pd-run)."""
 
 # pyright: reportUnknownParameterType=false, reportMissingParameterType=false, reportUnusedParameter=false
 
@@ -10,29 +6,35 @@ from unittest.mock import patch
 
 import pytest
 
-from param_decomp.scripts.run import _create_training_jobs, _get_experiments
+from param_decomp.experiments.discovery import discover_experiments
+from param_decomp.scripts.run_slurm import _create_run_specs
 
 
-class TestPDRun:
-    """Test pd-run command execution."""
+def _builtin(name: str) -> tuple[str, dict[str, object]]:
+    discovered = discover_experiments()
+    exp = discovered[name]
+    import yaml
 
-    def test_invalid_experiment_name(self):
-        """Test that invalid experiment names raise an error."""
-        fake_exp_name = "nonexistent_experiment_please_dont_name_your_experiment_this"
-        with pytest.raises(ValueError, match=f"Invalid experiments.*{fake_exp_name}"):
-            _get_experiments(fake_exp_name)
+    from param_decomp.settings import REPO_ROOT
 
-        with pytest.raises(ValueError, match=f"Invalid experiments.*{fake_exp_name}"):
-            _get_experiments(f"{fake_exp_name},tms_5-2")
+    with open(REPO_ROOT / exp.config_path) as f:
+        return exp.driver_path, yaml.safe_load(f)
 
-    @patch("param_decomp.scripts.run.get_wandb_run_url")
-    @patch("param_decomp.scripts.run.submit_slurm_job")
-    @patch("param_decomp.scripts.run.create_slurm_script")
-    @patch("param_decomp.scripts.run.create_git_snapshot")
-    @patch("param_decomp.scripts.run._create_wandb_views_and_report")
+
+class TestLaunchSlurm:
+    def test_unknown_experiment_rejected(self):
+        from param_decomp.experiments.runner import _resolve_source
+
+        fake = "nonexistent_experiment_please_dont_name_your_experiment_this"
+        with pytest.raises(AssertionError, match=f"Unknown experiment '{fake}'"):
+            _resolve_source(experiment=fake, config_path=None, driver=None, rerun=None)
+
+    @patch("param_decomp.scripts.run_slurm.get_wandb_run_url")
+    @patch("param_decomp.scripts.run_slurm.submit_slurm_job")
+    @patch("param_decomp.scripts.run_slurm.create_slurm_script")
+    @patch("param_decomp.scripts.run_slurm.create_git_snapshot")
     def test_sweep_creates_slurm_array(
         self,
-        mock_create_wandb_views_and_report,
         mock_create_git_snapshot,
         mock_create_slurm_script,
         mock_submit_slurm_job,
@@ -41,7 +43,7 @@ class TestPDRun:
         """Test that sweep runs create SLURM array jobs with sweep params."""
         from pathlib import Path
 
-        from param_decomp.scripts.run_cli import main
+        from param_decomp.scripts.run_slurm import launch_slurm
         from param_decomp.utils.slurm import SubmitResult
 
         mock_create_git_snapshot.return_value = ("test-branch", "12345678")
@@ -53,26 +55,29 @@ class TestPDRun:
         )
         mock_get_wandb_run_url.return_value = "https://wandb.ai/test/test/runs/test"
 
-        main(
-            experiments="tms_5-2",
+        driver_path, base_config = _builtin("tms_5-2")
+        launch_slurm(
+            name="tms_5-2",
+            driver_path=driver_path,
+            base_config=base_config,
             sweep="sweep_params.yaml.example",
             n_agents=2,
+            job_suffix=None,
+            cpu=False,
+            partition="cpu",
+            dp=None,
+            project="test",
         )
 
-        # Verify SLURM array script was created
         mock_create_slurm_script.assert_called_once()
-
-        # Verify the run has sweep params and multiple jobs
         call_kwargs = mock_create_slurm_script.call_args.kwargs
-        training_jobs = call_kwargs["training_jobs"]
+        run_specs = call_kwargs["run_specs"]
         sweep_params = call_kwargs["sweep_params"]
-        assert len(training_jobs) > 1  # Sweep should create multiple jobs
+        assert len(run_specs) > 1
         assert sweep_params is not None
 
-    def test_create_training_jobs_sweep(self):
-        """when given sweep params, _create_training_jobs should generate the correct number of
-        jobs with params swept correctly"""
-
+    def test_create_run_specs_sweep(self):
+        """With sweep params, _create_run_specs should expand the grid."""
         sweep_params = {
             "global": {"pd": {"lr_schedule": {"start_val": {"values": [1, 2]}}}},
             "tms_5-2": {
@@ -94,13 +99,16 @@ class TestPDRun:
             },
         }
 
-        training_jobs = _create_training_jobs(
-            experiments=["tms_5-2"],
+        driver_path, base_config = _builtin("tms_5-2")
+        run_specs = _create_run_specs(
+            name="tms_5-2",
+            driver_path=driver_path,
+            base_config=base_config,
             project="test",
             sweep_params=sweep_params,
         )
 
-        configs = [j.config_dict["pd"] for j in training_jobs]
+        configs = [j.config_dict["pd"] for j in run_specs]
 
         def there_is_one_with(start_val: int, steps: int, c: int) -> bool:
             matching = [
@@ -113,9 +121,7 @@ class TestPDRun:
             ]
             return len(matching) == 1
 
-        # 2 start_val * 2 steps * 2 module_info = 8 jobs
         assert len(configs) == 8
-
         assert there_is_one_with(start_val=1, steps=100, c=10)
         assert there_is_one_with(start_val=1, steps=100, c=20)
         assert there_is_one_with(start_val=1, steps=200, c=10)
@@ -124,49 +130,3 @@ class TestPDRun:
         assert there_is_one_with(start_val=2, steps=100, c=20)
         assert there_is_one_with(start_val=2, steps=200, c=10)
         assert there_is_one_with(start_val=2, steps=200, c=20)
-
-    def test_create_training_jobs_sweep_multi_experiment(self):
-        """when given sweep params, _create_training_jobs should generate the correct number of
-        jobs with params swept correctly across multiple experiments"""
-
-        sweep_params = {
-            "tms_5-2": {
-                "pd": {
-                    "module_info": {
-                        "values": [
-                            [
-                                {"module_pattern": "linear1", "C": 10},
-                                {"module_pattern": "linear2", "C": 10},
-                            ],
-                        ]
-                    },
-                },
-            },
-            "tms_40-10": {"pd": {"steps": {"values": [100, 200]}}},
-        }
-
-        training_jobs = _create_training_jobs(
-            experiments=["tms_5-2", "tms_40-10"],
-            project="test",
-            sweep_params=sweep_params,
-        )
-
-        configs = [j.config_dict["pd"] for j in training_jobs]
-
-        def there_is_one_with(c: int | None = None, steps: int | None = None) -> bool:
-            matching = []
-            for cfg in configs:
-                match = True
-                if c is not None and c != cfg["module_info"][0]["C"]:
-                    match = False
-                if steps is not None and cfg["steps"] != steps:
-                    match = False
-                if match:
-                    matching.append(cfg)
-            return len(matching) == 1
-
-        assert len(configs) == 3
-
-        assert there_is_one_with(c=10)
-        assert there_is_one_with(steps=100)
-        assert there_is_one_with(steps=200)

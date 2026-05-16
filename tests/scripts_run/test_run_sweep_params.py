@@ -1,9 +1,9 @@
-"""Tests for sweep parameter loading and merging in param_decomp/scripts/run.py."""
+"""Tests for sweep parameter loading and merging in param_decomp/scripts/run_slurm.py."""
 
 import pytest
 import yaml
 
-from param_decomp.scripts.run import _get_experiment_sweep_params, _merge_sweep_params
+from param_decomp.scripts.run_slurm import _get_experiment_sweep_params, _merge_sweep_params
 
 
 class TestMergeSweepParams:

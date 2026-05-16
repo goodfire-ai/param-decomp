@@ -32,8 +32,9 @@ from param_decomp.app.backend.compute import OptimizedPromptAttributionResult
 from param_decomp.autointerp.repo import InterpRepo
 from param_decomp.harvest.repo import HarvestRepo
 from param_decomp.harvest.schemas import ComponentData
-from param_decomp.models.component_model import ComponentModel, PDRunInfo
+from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import make_mask_infos
+from param_decomp.saved_run import PDRun
 from param_decomp.topology.topology import TransformerTopology
 
 ForwardFn = Callable[[Int[Tensor, " seq"]], Float[Tensor, "seq vocab"]]
@@ -274,13 +275,11 @@ class EditableModel:
     ) -> tuple["EditableModel", AppTokenizer]:
         """Load from wandb path. Returns (editable_model, tokenizer)."""
         from param_decomp.experiments.lm.experiment import LMExperimentConfig
-        from param_decomp.load import load_pd
 
-        run_info = PDRunInfo.from_path(wandb_path)
-        exp = run_info.experiment_config
+        pd_run = PDRun.from_path(wandb_path)
+        exp = pd_run.experiment_config
         assert isinstance(exp, LMExperimentConfig)
-        target = run_info.load_target()
-        model = load_pd(wandb_path, target=target).to(device).eval()
+        model = pd_run.load_model().to(device).eval()
         tokenizer = AppTokenizer.from_pretrained(exp.data.tokenizer_name)
         return cls(model), tokenizer
 

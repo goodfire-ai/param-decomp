@@ -20,9 +20,8 @@ from param_decomp.clustering.memberships import collect_memberships
 from param_decomp.clustering.paths import clustering_harvest_dir, new_harvest_id
 from param_decomp.experiments.lm.data import build_lm_dataloaders
 from param_decomp.experiments.lm.experiment import LMExperimentConfig
-from param_decomp.load import load_pd
 from param_decomp.log import logger
-from param_decomp.models.component_model import PDRunInfo
+from param_decomp.saved_run import PDRun
 from param_decomp.utils.distributed_utils import get_device
 
 os.environ["WANDB_QUIET"] = "true"
@@ -38,7 +37,7 @@ def harvest(config: HarvestConfig) -> Path:
 
     device = get_device()
 
-    pd_run = PDRunInfo.from_path(config.model_path)
+    pd_run = PDRun.from_path(config.model_path)
     if isinstance(pd_run.experiment_config, LMExperimentConfig):
         dataloader, _ = build_lm_dataloaders(
             pd_run.experiment_config.data,
@@ -48,15 +47,14 @@ def harvest(config: HarvestConfig) -> Path:
             seed=config.dataset_seed,
         )
     else:
-        dataloader, _ = pd_run.build_dataloaders(
+        dataloader, _ = pd_run.load_dataloaders(
             train_batch_size=config.batch_size,
             eval_batch_size=config.batch_size,
         )
 
-    target = pd_run.load_target()
-    model = load_pd(config.model_path, target=target).to(device)
+    model = pd_run.load_model().to(device)
 
-    task_name = pd_run.manifest.kind
+    task_name = pd_run.name
     processed = collect_memberships(model, dataloader, task_name, device, config)
 
     del model

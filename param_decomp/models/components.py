@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from jaxtyping import Bool, Float, Int
 from torch import Tensor, nn
 
-from param_decomp.param_decomp_types import LayerwiseCiFnType
+from param_decomp.types import LayerwiseCiFnType
 from param_decomp.utils.module_utils import _NonlinearityType, init_param_
 
 

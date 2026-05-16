@@ -25,10 +25,9 @@ from param_decomp.experiments.lm.data import (
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.models.batch_and_loss_fns import (
     make_run_batch,
-    move_batch_to_device,
     recon_loss_kl,
 )
-from param_decomp.run_param_decomp import optimize
+from param_decomp.run_pd import optimize
 from param_decomp.utils.general_utils import set_seed
 
 
@@ -125,7 +124,6 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         eval_loader=eval_loader,
         run_batch=make_run_batch("logits"),
         reconstruction_loss=recon_loss_kl,
-        to_device=move_batch_to_device,
         out_dir=tmp_path,
     )
 

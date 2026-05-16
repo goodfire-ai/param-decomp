@@ -44,7 +44,7 @@ def _keep_single_column(
     return dataset
 
 
-def tokenize_and_concatenate(
+def _tokenize_and_concatenate(
     dataset: Dataset | IterableDataset,
     tokenizer: PreTrainedTokenizer,
     column_name: str,
@@ -132,7 +132,7 @@ def _prepare_lm_dataset(
         return torch_dataset
 
     to_lower = "SimpleStories" in dataset_name
-    return tokenize_and_concatenate(
+    return _tokenize_and_concatenate(
         dataset,
         tokenizer,
         max_length=max_seq_len,

@@ -16,8 +16,8 @@ from param_decomp.metrics import importance_minimality_loss
 from param_decomp.metrics.pgd_utils import get_pgd_init_tensor, interpolate_pgd_mask
 from param_decomp.models.component_model import CIOutputs, ComponentModel, OutputWithCache
 from param_decomp.models.components import make_mask_infos
-from param_decomp.param_decomp_types import Probability
 from param_decomp.routing import AllLayersRouter
+from param_decomp.types import Probability
 from param_decomp.utils.component_utils import calc_ci_l_zero, calc_stochastic_component_mask_info
 from param_decomp.utils.general_utils import bf16_autocast
 

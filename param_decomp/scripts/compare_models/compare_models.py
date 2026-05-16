@@ -22,9 +22,9 @@ from torch import Tensor
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import PDConfig
 from param_decomp.experiments.driver import ExperimentConfig
-from param_decomp.load import load_pd
 from param_decomp.log import logger
-from param_decomp.models.component_model import ComponentModel, PDRunInfo
+from param_decomp.models.component_model import ComponentModel
+from param_decomp.saved_run import PDRun
 from param_decomp.utils.distributed_utils import get_device
 from param_decomp.utils.general_utils import get_obj_device
 from param_decomp.utils.run_utils import save_file
@@ -88,21 +88,20 @@ class ModelComparator:
 
     def _load_model_and_config(
         self, model_path: str
-    ) -> tuple[ComponentModel, PDConfig, ExperimentConfig, PDRunInfo]:
-        """Load model and config. Returns (model, pd_config, experiment_config, model_path)."""
-        run_info = PDRunInfo.from_path(model_path)
-        exp = run_info.experiment_config
-        target = run_info.load_target()
-        model = load_pd(model_path, target=target)
-        model.to(self.device)
+    ) -> tuple[ComponentModel, PDConfig, ExperimentConfig, PDRun]:
+        """Load model and config. Returns (model, pd_config, experiment_config, pd_run)."""
+        pd_run = PDRun.from_path(model_path)
+        exp = pd_run.experiment_config
+        assert exp is not None, "Run metadata has no driver; cannot reconstruct experiment config"
+        model = pd_run.load_model().to(self.device)
         model.eval()
         model.requires_grad_(False)
 
-        return model, run_info.pd_config, exp, run_info
+        return model, pd_run.pd_config, exp, pd_run
 
     def create_eval_data_loader(self) -> Iterator[Tensor]:
         """Create evaluation data loader by delegating to the experiment config."""
-        _, eval_loader = self.current_run_info.build_dataloaders(
+        _, eval_loader = self.current_run_info.load_dataloaders(
             train_batch_size=self.config.eval_batch_size,
             eval_batch_size=self.config.eval_batch_size,
             device=self.device,

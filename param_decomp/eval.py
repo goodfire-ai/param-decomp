@@ -75,15 +75,13 @@ from param_decomp.metrics.stochastic_recon_subset_ce_and_kl import StochasticRec
 from param_decomp.metrics.stochastic_recon_subset_loss import StochasticReconSubsetLoss
 from param_decomp.metrics.unmasked_recon_loss import UnmaskedReconLoss
 from param_decomp.metrics.uv_plots import UVPlots
-from param_decomp.models.batch_and_loss_fns import ReconstructionLoss, ToDevice
+from param_decomp.models.batch_and_loss_fns import ReconstructionLoss, move_batch_to_device
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
 from param_decomp.persistent_pgd import PersistentPGDState
 from param_decomp.routing import AllLayersRouter, get_subset_router
-from param_decomp.utils.distributed_utils import avg_metrics_across_ranks, is_distributed
 from param_decomp.utils.general_utils import dict_safe_update_
 
 MetricOutType = dict[str, str | Number | Image.Image | CustomChart]
-DistMetricOutType = dict[str, str | float | Image.Image | CustomChart]
 
 
 def clean_metric_output(
@@ -114,22 +112,6 @@ def clean_metric_output(
 
             computed[f"{section}/{k}"] = v
     return computed
-
-
-def avg_eval_metrics_across_ranks(metrics: MetricOutType, device: str) -> DistMetricOutType:
-    """Get the average of eval metrics across ranks.
-
-    Ignores any metrics that are not numbers. Currently, the image metrics do not need to be
-    averaged. If this changes for future metrics, we will need to do a reduce during calculcation
-    of the metric.
-    """
-    assert is_distributed(), "Can only average metrics across ranks if running in distributed mode"
-    metrics_keys_to_avg = {k: v for k, v in metrics.items() if isinstance(v, Number)}
-    if metrics_keys_to_avg:
-        avg_metrics = avg_metrics_across_ranks(metrics_keys_to_avg, device)
-    else:
-        avg_metrics = {}
-    return {**metrics, **avg_metrics}
 
 
 def init_metric(
@@ -368,7 +350,6 @@ def evaluate(
     n_eval_steps: int,
     current_frac_of_training: float,
     reconstruction_loss: ReconstructionLoss,
-    to_device: ToDevice,
     ppgd_states: dict[
         PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig, PersistentPGDState
     ],
@@ -400,7 +381,7 @@ def evaluate(
     weight_deltas = model.calc_weight_deltas()
 
     for _ in range(n_eval_steps):
-        batch = to_device(next(eval_iterator), device)
+        batch = move_batch_to_device(next(eval_iterator), device)
 
         target_output: OutputWithCache = model(batch, cache_type="input")
         ci = model.calc_causal_importances(

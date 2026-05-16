@@ -16,6 +16,7 @@ from pydantic.v1.utils import deep_update
 from torch import Tensor
 
 from param_decomp.configs import ScheduleConfig
+from param_decomp.run_metadata import RUN_METADATA_FILENAME, RunMetadata
 from param_decomp.utils.run_utils import save_file
 
 # Avoid seaborn package installation (sns.color_palette("colorblind").as_hex())
@@ -200,31 +201,20 @@ def fetch_latest_local_checkpoint(run_dir: Path, prefix: str | None = None) -> P
 def save_pre_run_info(
     save_to_wandb: bool,
     out_dir: Path,
-    sweep_params: dict[str, Any] | None,
-    manifest: Any,
-    artifacts: Sequence[Any],
+    metadata: RunMetadata,
+    artifacts: dict[str, Any],
 ) -> None:
-    """Save run information locally and optionally to wandb."""
+    """Save run metadata and artifacts locally and optionally to wandb."""
 
-    from param_decomp.experiments.constants import EXPERIMENT_MANIFEST_FILENAME
+    metadata.write(out_dir / RUN_METADATA_FILENAME)
 
-    manifest = manifest.with_artifacts([artifact.filename for artifact in artifacts])
-    files_to_save: dict[str, Any] = {
-        EXPERIMENT_MANIFEST_FILENAME: manifest.model_dump(mode="json"),
-    }
+    for filename, data in artifacts.items():
+        save_file(data, out_dir / filename)
 
-    if sweep_params is not None:
-        files_to_save["sweep_params.yaml"] = sweep_params
-
-    for artifact in artifacts:
-        files_to_save[artifact.filename] = artifact.data
-
-    for filename, data in files_to_save.items():
-        filepath = out_dir / filename
-        save_file(data, filepath)
-
-        if save_to_wandb:
-            wandb.save(str(filepath), base_path=out_dir, policy="now")
+    if save_to_wandb:
+        all_filenames = [RUN_METADATA_FILENAME, *artifacts]
+        for filename in all_filenames:
+            wandb.save(str(out_dir / filename), base_path=out_dir, policy="now")
 
 
 class _HasDevice(Protocol):

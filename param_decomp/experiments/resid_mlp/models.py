@@ -14,7 +14,7 @@ from torch import Tensor, nn
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import ScheduleConfig
 from param_decomp.interfaces import LoadableModule
-from param_decomp.param_decomp_types import ModelPath
+from param_decomp.types import ModelPath
 from param_decomp.utils.module_utils import init_param_
 from param_decomp.utils.run_files import resolve_run_files
 

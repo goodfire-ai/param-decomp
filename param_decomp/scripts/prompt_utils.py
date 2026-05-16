@@ -8,7 +8,7 @@ from transformers import AutoTokenizer
 
 from param_decomp.experiments.lm.data import create_lm_data_loader
 from param_decomp.experiments.lm.experiment import LMExperimentConfig
-from param_decomp.models.component_model import PDRunInfo
+from param_decomp.saved_run import PDRun
 
 
 def load_prompts(path: Path) -> list[str]:
@@ -19,9 +19,9 @@ def load_prompts(path: Path) -> list[str]:
     return prompts
 
 
-def sample_prompts_from_dataset(run_info: PDRunInfo, n_samples: int) -> list[str]:
+def sample_prompts_from_dataset(pd_run: PDRun, n_samples: int) -> list[str]:
     """Sample n_samples sequences from the dataset and decode to strings."""
-    exp = run_info.experiment_config
+    exp = pd_run.experiment_config
     assert isinstance(exp, LMExperimentConfig), "Run is not an LM experiment"
     data = exp.data
 
@@ -31,7 +31,7 @@ def sample_prompts_from_dataset(run_info: PDRunInfo, n_samples: int) -> list[str
         data,
         split=data.eval_split,
         batch_size=1,
-        seed=run_info.pd_config.seed + 1,
+        seed=pd_run.pd_config.seed + 1,
     )
 
     token_column = data.column_name if data.is_tokenized else "input_ids"

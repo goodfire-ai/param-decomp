@@ -6,8 +6,8 @@ import wandb
 from wandb.apis.public import Run
 
 from param_decomp.log import logger
-from param_decomp.param_decomp_types import ModelPath
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp.types import ModelPath
 from param_decomp.utils.general_utils import fetch_latest_local_checkpoint
 from param_decomp.utils.wandb_utils import (
     download_wandb_file,
@@ -38,7 +38,7 @@ def resolve_run_files(
 
     Exactly one of `checkpoint_filename` or `checkpoint_prefix` must be given.
     `extras_from_config_path` is called with the resolved config path to determine which
-    additional files belong to the run (e.g. artifacts whose names live inside the manifest).
+    additional files belong to the run (e.g. artifacts whose names live inside the metadata).
     """
     assert (checkpoint_filename is None) != (checkpoint_prefix is None), (
         "Exactly one of checkpoint_filename or checkpoint_prefix is required"

@@ -17,7 +17,7 @@ from param_decomp.configs import ModulePatternInfoConfig
 from param_decomp.models.components import Identity
 
 
-def pre_id_hook(
+def _pre_id_hook(
     mod: nn.Module,
     args: tuple[Any, ...],
     kwargs: dict[Any, Any],
@@ -72,4 +72,4 @@ def insert_identity_operations_(
                 raise ValueError(f"Module {module} not supported. type: {type(module)}")
 
         module.pre_identity = Identity(d_in)
-        module.register_forward_pre_hook(pre_id_hook, with_kwargs=True)
+        module.register_forward_pre_hook(_pre_id_hook, with_kwargs=True)

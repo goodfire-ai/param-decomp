@@ -40,7 +40,7 @@ from param_decomp.app.backend.app_tokenizer import AppTokenizer
 from param_decomp.app.backend.compute import compute_ci_only
 from param_decomp.autointerp.repo import InterpRepo
 from param_decomp.experiments.lm.experiment import LMExperimentConfig
-from param_decomp.models.component_model import ComponentModel, PDRunInfo
+from param_decomp.saved_run import PDRun
 from param_decomp.scripts.prompt_utils import load_prompts
 from param_decomp.topology import TransformerTopology
 from param_decomp.utils.distributed_utils import get_device
@@ -147,10 +147,10 @@ def export_manual_prompts(
     prompts: Sequence[str],
 ) -> dict[str, Any]:
     """Compute CI/activation values for one component across manual prompts."""
-    run_info = PDRunInfo.from_path(run_path)
-    exp = run_info.experiment_config
+    pd_run = PDRun.from_path(run_path)
+    exp = pd_run.experiment_config
     assert isinstance(exp, LMExperimentConfig), "manual prompt export only supports LM runs"
-    model = ComponentModel.from_run_info(run_info).to(get_device())
+    model = pd_run.load_model().to(get_device())
     model.eval()
 
     tokenizer_name = exp.data.tokenizer_name
@@ -164,7 +164,7 @@ def export_manual_prompts(
     component_idx = int(component_idx_str)
     concrete_layer = topology.canon_to_target(canonical_layer)
     concrete_component_key = f"{concrete_layer}:{component_idx}"
-    run_id = _resolve_run_id(run_path=run_path, checkpoint_path=run_info.checkpoint_path)
+    run_id = _resolve_run_id(run_path=run_path, checkpoint_path=pd_run.checkpoint_path)
 
     label, reasoning = _resolve_component_metadata(
         run_id=run_id,
@@ -183,7 +183,7 @@ def export_manual_prompts(
 
         tokens_tensor = torch.tensor([token_ids], device=device)
         result = compute_ci_only(
-            model=model, tokens=tokens_tensor, sampling=run_info.pd_config.sampling
+            model=model, tokens=tokens_tensor, sampling=pd_run.pd_config.sampling
         )
 
         ci_tensor = result.ci_lower_leaky[concrete_layer]

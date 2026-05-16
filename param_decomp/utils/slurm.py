@@ -7,9 +7,6 @@ It handles:
 - Git snapshot checkout (optional)
 - Virtual environment activation
 - Job submission with script renaming and log file creation
-
-For PD training jobs with multi-node DDP, see compute_utils.py which
-uses this module internally.
 """
 
 import subprocess

@@ -40,7 +40,7 @@ def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None)
             (e.g. a training job that must complete first).
 
     Returns:
-        Path to the manifest YAML file.
+        Path to the metadata YAML file.
     """
 
     snapshot_branch, commit_hash = create_git_snapshot(f"postprocess-{secrets.token_hex(4)}")
@@ -122,11 +122,11 @@ def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None)
             harvest_subrun_id=harvest_result.subrun_id,
         )
 
-    # === Write manifest ===
-    manifest_id = "pp-" + datetime.now().strftime("%Y%m%d_%H%M%S")
-    manifest_dir = PARAM_DECOMP_OUT_DIR / "postprocess" / manifest_id
-    manifest_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = manifest_dir / "manifest.yaml"
+    # === Write metadata ===
+    metadata_id = "pp-" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    metadata_dir = PARAM_DECOMP_OUT_DIR / "postprocess" / metadata_id
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    metadata_path = metadata_dir / "metadata.yaml"
 
     jobs: dict[str, str] = {
         "harvest_array": harvest_result.array_result.job_id,
@@ -148,7 +148,7 @@ def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None)
     if graph_interp_result is not None:
         jobs["graph_interp"] = graph_interp_result.result.job_id
 
-    manifest = {
+    metadata = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "decomposition": config.harvest.config.method_config.model_dump(),
         "snapshot_branch": snapshot_branch,
@@ -157,10 +157,10 @@ def postprocess(config: PostprocessConfig, dependency_job_id: str | None = None)
         "jobs": jobs,
     }
 
-    with open(manifest_path, "w") as f:
-        yaml.dump(manifest, f, default_flow_style=False, sort_keys=False)
+    with open(metadata_path, "w") as f:
+        yaml.dump(metadata, f, default_flow_style=False, sort_keys=False)
 
-    logger.section("Postprocess manifest saved")
-    logger.info(str(manifest_path))
+    logger.section("Postprocess metadata saved")
+    logger.info(str(metadata_path))
 
-    return manifest_path
+    return metadata_path

@@ -18,7 +18,6 @@ from param_decomp.configs import (
     ScheduleConfig,
 )
 from param_decomp.identity_insertion import insert_identity_operations_
-from param_decomp.interfaces import LoadableModule
 from param_decomp.models.batch_and_loss_fns import run_batch_passthrough
 from param_decomp.models.component_model import (
     ComponentModel,
@@ -37,12 +36,11 @@ from param_decomp.models.components import (
     VectorSharedMLPCiFn,
     make_mask_infos,
 )
-from param_decomp.param_decomp_types import ModelPath
 from param_decomp.utils.module_utils import ModulePathInfo, expand_module_patterns
 from param_decomp.utils.run_utils import save_file
 
 
-class SimpleTestModel(LoadableModule):
+class SimpleTestModel(nn.Module):
     """Simple test model with Linear and Embedding layers for unit‑testing."""
 
     LINEAR_1_SHAPE = (10, 5)
@@ -66,13 +64,6 @@ class SimpleTestModel(LoadableModule):
         x = self.linear2(self.linear1(x))
         x = self.conv1d2(self.conv1d1(x))
         return x
-
-    @classmethod
-    @override
-    def from_pretrained(cls, path: ModelPath) -> "SimpleTestModel":
-        model = cls()
-        model.load_state_dict(torch.load(path))
-        return model
 
 
 def test_correct_parameters_require_grad():

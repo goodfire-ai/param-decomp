@@ -14,11 +14,10 @@ from param_decomp.experiments.resid_mlp.models import (
     ResidMLP,
 )
 from param_decomp.experiments.tms.models import TMSModel
-from param_decomp.load import load_pd
 from param_decomp.log import logger
-from param_decomp.models.component_model import PDRunInfo
 from param_decomp.models.components import Components
 from param_decomp.plotting import plot_causal_importance_vals
+from param_decomp.saved_run import PDRun
 from param_decomp.utils.distributed_utils import get_device
 from param_decomp.utils.general_utils import set_seed
 from param_decomp.utils.run_utils import ExecutionStamp
@@ -42,12 +41,10 @@ def extract_ci_val_figures(
     Returns:
         Dictionary containing causal importances data and metadata
     """
-    run_info = PDRunInfo.from_path(run_id)
-    target = run_info.load_target()
-    model = load_pd(run_id, target=target)
-    model.to(device)
+    pd_run = PDRun.from_path(run_id)
+    model = pd_run.load_model().to(device)
 
-    config = run_info.pd_config
+    config = pd_run.pd_config
     assert isinstance(model.target_model, ResidMLP | TMSModel), (
         "model must be a ResidMLP or TMSModel"
     )
@@ -479,10 +476,9 @@ def main(out_dir: Path, device: str):
     for path in CANONICAL_RUNS.values():
         wandb_id = path.split("/")[-1]
 
-        run_info = PDRunInfo.from_path(path)
-        target = run_info.load_target()
-        model = load_pd(path, target=target)
-        config = run_info.pd_config
+        pd_run = PDRun.from_path(path)
+        model = pd_run.load_model()
+        config = pd_run.pd_config
         assert isinstance(model.target_model, ResidMLP)
         model.target_model.to(device)
 

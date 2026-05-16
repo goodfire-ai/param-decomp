@@ -3,7 +3,7 @@
 import gc
 import os
 from collections import defaultdict
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -25,9 +25,9 @@ from param_decomp.configs import (
     PGDMultiBatchConfig,
     PGDMultiBatchReconLossConfig,
     PGDMultiBatchReconSubsetLossConfig,
+    RepeatAcrossBatchScope,
 )
 from param_decomp.eval import evaluate, evaluate_multibatch_pgd
-from param_decomp.experiments.driver import ExperimentManifest, RunArtifact
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.log import logger
 from param_decomp.losses import compute_losses
@@ -36,14 +36,16 @@ from param_decomp.models.batch_and_loss_fns import (
     PDTarget,
     ReconstructionLoss,
     RunBatch,
-    ToDevice,
+    move_batch_to_device,
 )
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
 from param_decomp.persistent_pgd import PersistentPGDState
+from param_decomp.run_metadata import RunMetadata
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp.utils.component_utils import calc_ci_l_zero
 from param_decomp.utils.data_utils import loop_dataloader
 from param_decomp.utils.distributed_utils import (
+    DistributedState,
     avg_metrics_across_ranks,
     get_distributed_state,
     is_main_process,
@@ -106,7 +108,6 @@ def optimize(
     eval_loader: DataLoader[Any],
     run_batch: RunBatch,
     reconstruction_loss: ReconstructionLoss,
-    to_device: ToDevice,
     out_dir: Path | None,
     tied_weights: list[tuple[str, str]] | None = None,
 ) -> None:
@@ -118,7 +119,7 @@ def optimize(
     def create_pgd_data_iter() -> Iterator[Any]:
         assert hasattr(train_loader, "generator") and train_loader.generator is not None
         train_loader.generator.manual_seed(config.seed)
-        return (to_device(batch, device) for batch in train_loader)
+        return (move_batch_to_device(batch, device) for batch in train_loader)
 
     if is_main_process():
         logger.info(f"Train+eval logs saved to directory: {out_dir}")
@@ -222,7 +223,7 @@ def optimize(
         if not isinstance(cfg, PGDMultiBatchConfig)
     ]
 
-    sample_out = model(to_device(next(train_iterator), device))
+    sample_out = model(move_batch_to_device(next(train_iterator), device))
     batch_dims = sample_out.shape[:-1]
     ppgd_states: dict[
         PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig, PersistentPGDState
@@ -257,7 +258,7 @@ def optimize(
 
         batch_log_data: defaultdict[str, float] = defaultdict(float)
 
-        batch = to_device(next(train_iterator), device)
+        batch = move_batch_to_device(next(train_iterator), device)
         with bf16_autocast(enabled=config.autocast_bf16):
             # NOTE: we need to call the wrapped_model at least once each step in order to setup
             # the DDP gradient syncing for all parameters in the component model. Gradients will
@@ -366,7 +367,6 @@ def optimize(
                     n_eval_steps=config.n_eval_steps,
                     current_frac_of_training=step / config.steps,
                     reconstruction_loss=reconstruction_loss,
-                    to_device=to_device,
                     ppgd_states=ppgd_states,
                 )
 
@@ -419,6 +419,24 @@ def optimize(
         logger.info("Finished training loop.")
 
 
+def _validate_pgd_scope(config: PDConfig, dist_state: DistributedState | None) -> None:
+    """Assert that PGD `repeat_across_batch` divides the per-rank training batch size."""
+    world_size = dist_state.world_size if dist_state is not None else 1
+    assert config.batch_size % world_size == 0, (
+        f"batch_size {config.batch_size} not divisible by world size {world_size}"
+    )
+    per_rank = config.batch_size // world_size
+    for cfg in (
+        config.loss_metrics.persistent_pgd_recon,
+        config.loss_metrics.persistent_pgd_recon_subset,
+    ):
+        if cfg is not None and isinstance(cfg.scope, RepeatAcrossBatchScope):
+            n = cfg.scope.n_sources
+            assert per_rank % n == 0, (
+                f"repeat_across_batch n_sources={n} must divide per-rank batch_size={per_rank}"
+            )
+
+
 def run_pd(
     config: PDConfig,
     target: PDTarget,
@@ -427,21 +445,21 @@ def run_pd(
     device: str,
     *,
     run_id: str | None = None,
-    sweep_params: dict[str, Any] | None = None,
-    manifest: ExperimentManifest | None = None,
-    artifacts: Sequence[RunArtifact] = (),
-    kind: str = "custom",
+    metadata: RunMetadata | None = None,
+    artifacts: dict[str, Any] | None = None,
     wandb_tags: list[str] | None = None,
 ) -> Path | None:
     """Run a full PD decomposition: setup, optimize, cleanup.
 
-    `kind` is the run's label — used as the headline wandb tag and as the manifest's `kind`
-    field when no manifest is supplied. Driver-mediated callers pass `driver.kind`; notebook
-    callers can pass their own label or accept the "custom" default.
+    `metadata` is written to ``run_metadata.yaml``.  Driver-mediated callers
+    (via ``experiments/runner.py``) pass a fully populated ``RunMetadata``;
+    notebook callers can omit it and a minimal one is synthesized.
 
     All ranks call this function. Only the main process does wandb/logging setup.
     Returns the output directory on the main process and None on other ranks.
     """
+    _validate_pgd_scope(config, get_distributed_state())
+
     out_dir: Path | None
     if is_main_process():
         run_id = run_id or generate_run_id("param_decomp")
@@ -451,7 +469,20 @@ def run_pd(
         logger.info(f"Run ID: {run_id}")
         logger.info(f"Output directory: {out_dir}")
 
-        tags = [kind, *(wandb_tags or [])]
+        artifacts = artifacts or {}
+        if metadata is None:
+            metadata = RunMetadata(
+                driver=None,
+                config={"pd": config.model_dump(mode="json")},
+                artifact_filenames=list(artifacts),
+            )
+        else:
+            assert sorted(metadata.artifact_filenames) == sorted(artifacts), (
+                f"metadata.artifact_filenames {metadata.artifact_filenames} does not match "
+                f"artifacts keys {list(artifacts)}"
+            )
+
+        tags = list(wandb_tags or [])
         slurm_array_job_id = os.getenv("SLURM_ARRAY_JOB_ID")
         if slurm_array_job_id is not None:
             tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
@@ -461,13 +492,10 @@ def run_pd(
 
         logger.info(config)
 
-        if manifest is None:
-            manifest = ExperimentManifest.from_pd_config(config, kind=kind)
         save_pre_run_info(
             save_to_wandb=config.wandb_project is not None,
             out_dir=out_dir,
-            sweep_params=sweep_params,
-            manifest=manifest,
+            metadata=metadata,
             artifacts=artifacts,
         )
     else:
@@ -481,7 +509,6 @@ def run_pd(
         eval_loader=eval_loader,
         run_batch=target.run_batch,
         reconstruction_loss=target.reconstruction_loss,
-        to_device=target.to_device,
         out_dir=out_dir,
         tied_weights=target.tied_weights,
     )

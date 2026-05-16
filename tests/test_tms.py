@@ -19,11 +19,10 @@ from param_decomp.experiments.tms.models import TMSModel, TMSModelConfig, TMSTra
 from param_decomp.experiments.tms.train_tms import get_model_and_dataloader, train
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.models.batch_and_loss_fns import (
-    move_batch_to_device,
     recon_loss_mse,
     run_batch_first_element,
 )
-from param_decomp.run_param_decomp import optimize
+from param_decomp.run_pd import optimize
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
 from param_decomp.utils.general_utils import set_seed
 
@@ -118,7 +117,6 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
         eval_loader=eval_loader,
         run_batch=run_batch_first_element,
         reconstruction_loss=recon_loss_mse,
-        to_device=move_batch_to_device,
         out_dir=tmp_path,
         tied_weights=tied_weights,
     )

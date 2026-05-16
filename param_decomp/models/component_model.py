@@ -1,14 +1,13 @@
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from functools import cached_property, partial
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, overload, override
 
 import torch
 from jaxtyping import Float, Int
 from torch import Tensor, nn
-from torch.utils.data import DataLoader
 from torch.utils.hooks import RemovableHandle
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
@@ -19,16 +18,8 @@ from param_decomp.configs import (
     PDConfig,
     SamplingType,
 )
-from param_decomp.experiment_manifest import (
-    EXPERIMENT_MANIFEST_FILENAME,
-    ExperimentConfig,
-    ExperimentManifest,
-    parse_manifest_experiment_config,
-)
-from param_decomp.experiments.driver import ExperimentDriver, load_driver
 from param_decomp.identity_insertion import insert_identity_operations_
-from param_decomp.interfaces import LoadableModule
-from param_decomp.models.batch_and_loss_fns import PDTarget, RunBatch
+from param_decomp.models.batch_and_loss_fns import RunBatch
 from param_decomp.models.components import (
     Components,
     ComponentsMaskInfo,
@@ -45,10 +36,8 @@ from param_decomp.models.components import (
     VectorSharedMLPCiFn,
 )
 from param_decomp.models.sigmoids import SIGMOID_TYPES, SigmoidType
-from param_decomp.param_decomp_types import LayerwiseCiFnType, ModelPath
-from param_decomp.utils.distributed_utils import DistributedState
+from param_decomp.types import LayerwiseCiFnType
 from param_decomp.utils.module_utils import ModulePathInfo, expand_module_patterns
-from param_decomp.utils.run_files import resolve_config_path, resolve_run_files
 
 
 def _validate_checkpoint_ci_config_compatibility(
@@ -71,75 +60,6 @@ def _validate_checkpoint_ci_config_compatibility(
             )
 
 
-@dataclass
-class PDRunInfo:
-    """Run info from training a ComponentModel (i.e. from a PD run)."""
-
-    checkpoint_path: Path
-    manifest: ExperimentManifest
-
-    @classmethod
-    def from_path(cls, path: ModelPath) -> "PDRunInfo":
-        files = resolve_run_files(
-            path,
-            config_filename=EXPERIMENT_MANIFEST_FILENAME,
-            checkpoint_prefix="model",
-            extras_from_config_path=lambda p: ExperimentManifest.from_file(p).artifact_filenames,
-        )
-        return cls(
-            checkpoint_path=files.checkpoint_path,
-            manifest=ExperimentManifest.from_file(files.config_path),
-        )
-
-    @classmethod
-    def config_from_path(cls, path: ModelPath) -> ExperimentManifest:
-        """Load just the manifest, without resolving or downloading checkpoints."""
-        return ExperimentManifest.from_file(
-            resolve_config_path(path, config_filename=EXPERIMENT_MANIFEST_FILENAME)
-        )
-
-    @cached_property
-    def experiment_config(self) -> ExperimentConfig:
-        return parse_manifest_experiment_config(self.manifest)
-
-    @cached_property
-    def driver(self) -> ExperimentDriver[Any] | None:
-        if self.manifest.driver is None:
-            return None
-        return load_driver(self.manifest.driver)
-
-    @property
-    def pd_config(self) -> PDConfig:
-        return self.experiment_config.pd
-
-    def load_target(self) -> PDTarget:
-        assert self.driver is not None, (
-            "This run manifest has no driver. Use load_pd(path, target=...) with an explicit "
-            "PDTarget."
-        )
-        return self.driver.load_target(self.experiment_config, run_dir=self.checkpoint_path.parent)
-
-    def build_dataloaders(
-        self,
-        *,
-        train_batch_size: int,
-        eval_batch_size: int,
-        dist_state: DistributedState | None = None,
-        device: str = "cpu",
-    ) -> tuple[DataLoader[Any], DataLoader[Any]]:
-        assert self.driver is not None, (
-            "This run manifest has no driver. Build dataloaders explicitly for custom runs."
-        )
-        return self.driver.build_dataloaders(
-            self.experiment_config,
-            train_batch_size=train_batch_size,
-            eval_batch_size=eval_batch_size,
-            dist_state=dist_state,
-            device=device,
-            run_dir=self.checkpoint_path.parent,
-        )
-
-
 class OutputWithCache(NamedTuple):
     """Output tensor and cached activations."""
 
@@ -154,7 +74,7 @@ class CIOutputs:
     pre_sigmoid: dict[str, Tensor]
 
 
-class ComponentModel(LoadableModule):
+class ComponentModel(nn.Module):
     """Wrapper around an arbitrary pytorch model for running PD.
 
     The underlying *base model* can be any subclass of `nn.Module` (e.g.
@@ -563,30 +483,6 @@ class ComponentModel(LoadableModule):
         finally:
             for handle in handles:
                 handle.remove()
-
-    @classmethod
-    def from_run_info(cls, run_info: PDRunInfo) -> "ComponentModel":
-        """Load a `ComponentModel` from saved run info via the experiment-config dispatcher.
-
-        Convenience wrapper around `from_checkpoint` for callers that already have a
-        `PDRunInfo`. New code should prefer `load_pd(path, target=...)` with an
-        explicit `PDTarget`.
-        """
-        target = run_info.load_target()
-        return cls.from_checkpoint(
-            config=run_info.pd_config,
-            checkpoint_path=run_info.checkpoint_path,
-            target_model=target.model,
-            run_batch=target.run_batch,
-            tied_weights=target.tied_weights,
-        )
-
-    @classmethod
-    @override
-    def from_pretrained(cls, path: ModelPath) -> "ComponentModel":
-        """Load a `ComponentModel` from a local or wandb path via metadata dispatch."""
-        run_info = PDRunInfo.from_path(path)
-        return cls.from_run_info(run_info)
 
     @classmethod
     def from_checkpoint(

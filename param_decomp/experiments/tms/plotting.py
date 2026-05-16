@@ -980,12 +980,9 @@ def main():
         out_dir.mkdir(parents=True, exist_ok=True)
 
         # Load models
-        from param_decomp.load import load_pd
-        from param_decomp.models.component_model import PDRunInfo
+        from param_decomp.saved_run import PDRun
 
-        run_info_obj = PDRunInfo.from_path(run_id)
-        target = run_info_obj.load_target()
-        model = load_pd(run_id, target=target)
+        model = PDRun.from_path(run_id).load_model()
         assert isinstance(model.target_model, TMSModel)
 
         # Get custom config and name for this run
