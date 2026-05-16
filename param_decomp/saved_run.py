@@ -35,7 +35,6 @@ class PDRun:
             path,
             config_filename=RUN_METADATA_FILENAME,
             checkpoint_prefix="model",
-            extras_from_config_path=_artifact_filenames_from,
         )
         return cls(
             path=files.config_path.parent,
@@ -120,7 +119,3 @@ def load_component_model(
             from the saved metadata. For manual/notebook runs (no driver), ``target`` is required.
     """
     return PDRun.from_path(path).load_model(target=target)
-
-
-def _artifact_filenames_from(config_path: Path) -> list[str]:
-    return RunMetadata.from_file(config_path).artifact_filenames

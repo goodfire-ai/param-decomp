@@ -66,7 +66,6 @@ def run_experiment(
     metadata = RunMetadata(
         driver=driver_path,
         config=experiment_config.model_dump(mode="json"),
-        artifact_filenames=list(artifacts),
     )
     run_pd(
         config=experiment_config.pd,

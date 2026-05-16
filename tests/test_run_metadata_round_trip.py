@@ -142,14 +142,12 @@ def test_run_metadata_round_trip_via_file(tmp_path: Path):
     metadata = RunMetadata(
         driver="param_decomp.experiments.lm.experiment:Driver",
         config={"pd": {"seed": 42}, "target": {}, "data": {}},
-        artifact_filenames=["target_model.pth", "label_coeffs.json"],
     )
     path = tmp_path / RUN_METADATA_FILENAME
     metadata.write(path)
     loaded = RunMetadata.from_file(path)
     assert loaded.driver == metadata.driver
     assert loaded.config == metadata.config
-    assert loaded.artifact_filenames == metadata.artifact_filenames
 
 
 def test_lm_target_requires_exactly_one_location():
