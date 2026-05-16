@@ -4,11 +4,13 @@ The core PD optimizer only needs a target model bundle plus train/eval dataloade
 An experiment driver is the boundary layer that turns a serializable experiment config
 into those runtime objects. The set of drivers is open-world: custom users can register
 their own driver class without editing core code.
+
+Drivers don't own reload-time state: reload calls `build_target` and `build_dataloaders`
+exactly like a fresh run, re-fetching whatever upstream the config points at (wandb
+pretrain run, HF model, etc.). Saved PD runs depend on their upstream continuing to exist.
 """
 
-from dataclasses import dataclass, field
 from importlib import import_module
-from pathlib import Path
 from typing import Any, ClassVar, Protocol
 
 from torch.utils.data import DataLoader
@@ -25,25 +27,8 @@ class ExperimentConfig(BaseConfig):
     pd: PDConfig
 
 
-@dataclass(frozen=True)
-class BuiltTarget:
-    """A fresh driver build: the runtime target plus files to bundle for reload.
-
-    `artifacts` is a `{filename: data}` mapping the worker persists beside the PD checkpoint
-    so the run is self-contained on reload.
-    """
-
-    target: PDTarget
-    artifacts: dict[str, Any] = field(default_factory=dict)
-
-
 class ExperimentDriver[ConfigT: ExperimentConfig](Protocol):
-    """Converts a serializable experiment config into runtime PD objects.
-
-    A driver is a stateless object that owns its config schema (`config_type`) and knows
-    how to build a fresh target (plus files to bundle for reload), reload a target from a
-    saved run directory, and build train/eval dataloaders.
-    """
+    """Converts a serializable experiment config into runtime PD objects."""
 
     name: ClassVar[str]
 
@@ -52,12 +37,8 @@ class ExperimentDriver[ConfigT: ExperimentConfig](Protocol):
         """Pydantic model type used to validate serialized experiment configs."""
         ...
 
-    def build_target(self, config: ConfigT) -> BuiltTarget:
-        """Build the target fresh from upstream, returning files to bundle for reload."""
-        ...
-
-    def load_target(self, config: ConfigT, run_dir: Path) -> PDTarget:
-        """Reconstruct the target from files bundled in `run_dir`."""
+    def build_target(self, config: ConfigT) -> PDTarget:
+        """Build the target model bundle from upstream."""
         ...
 
     def build_dataloaders(
@@ -68,9 +49,8 @@ class ExperimentDriver[ConfigT: ExperimentConfig](Protocol):
         eval_batch_size: int,
         dist_state: DistributedState | None = None,
         device: str = "cpu",
-        run_dir: Path | None = None,
     ) -> tuple[DataLoader[Any], DataLoader[Any]]:
-        """Build train/eval dataloaders. If `run_dir` is given, prefer locally bundled files."""
+        """Build train/eval dataloaders."""
         ...
 
 
@@ -87,7 +67,6 @@ def load_driver(driver_path: str) -> ExperimentDriver[Any]:
 
 
 __all__ = [
-    "BuiltTarget",
     "ExperimentConfig",
     "ExperimentDriver",
     "load_driver",

@@ -1,12 +1,11 @@
 """Language-model PD experiment: serializable config, target loading, and driver."""
 
-from pathlib import Path
 from typing import Any, ClassVar, Self
 
 from pydantic import Field, model_validator
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.experiments.driver import BuiltTarget, ExperimentConfig
+from param_decomp.experiments.driver import ExperimentConfig
 from param_decomp.experiments.lm.data import LMDataConfig, build_lm_dataloaders
 from param_decomp.models.batch_and_loss_fns import PDTarget, make_run_batch, recon_loss_kl
 from param_decomp.types import ModelPath
@@ -91,14 +90,7 @@ class Driver:
     name: ClassVar[str] = "lm"
     config_type: ClassVar[type[LMExperimentConfig]] = LMExperimentConfig
 
-    def build_target(self, config: LMExperimentConfig) -> BuiltTarget:
-        return BuiltTarget(target=self._load(config))
-
-    def load_target(self, config: LMExperimentConfig, run_dir: Path) -> PDTarget:
-        _ = run_dir
-        return self._load(config)
-
-    def _load(self, config: LMExperimentConfig) -> PDTarget:
+    def build_target(self, config: LMExperimentConfig) -> PDTarget:
         target_model = _load_target_model(config.target)
         target_model.eval()
         return PDTarget(
@@ -115,9 +107,8 @@ class Driver:
         eval_batch_size: int,
         dist_state: DistributedState | None = None,
         device: str = "cpu",
-        run_dir: Path | None = None,
     ) -> Any:
-        _ = device, run_dir
+        _ = device
         return build_lm_dataloaders(
             config.data,
             train_batch_size=train_batch_size,

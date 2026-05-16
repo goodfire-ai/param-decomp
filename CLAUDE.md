@@ -65,21 +65,13 @@ class MyDriver:
     name = "my_exp"                  # ClassVar[str] — wandb tag
     config_type = MyExperimentConfig  # ClassVar[type[ExperimentConfig]]
 
-    def build_target(self, config) -> BuiltTarget: ...
-    def load_target(self, config, run_dir: Path) -> PDTarget: ...
+    def build_target(self, config) -> PDTarget: ...
     def build_dataloaders(self, config, *, train_batch_size, eval_batch_size, ...): ...
 ```
 
-`build_target` is the fresh path: it loads the target from upstream (wandb pretrain run, HF, …)
-and returns a `BuiltTarget` bundling the runtime `PDTarget` with a `{filename: data}` `artifacts`
-dict of files to persist beside the checkpoint so the run is self-contained on reload. Drivers
-with nothing to bundle return `BuiltTarget(target=...)`.
-
-`load_target` is the reload path: it reconstructs the target from files bundled in `run_dir`. No
-artifacts to re-emit — they're already on disk.
-
-`build_dataloaders` takes an optional `run_dir`: when present, the driver should prefer locally
-bundled config files (e.g. `target_train_config.yaml`) over fetching from wandb.
+`build_target` and `build_dataloaders` always fetch from upstream (wandb pretrain run, HF, …);
+reload calls them exactly like a fresh run. Saved PD runs therefore depend on their upstream
+continuing to exist — the wandb run path / HF model name in the config is the pin.
 
 Built-in runtime definitions live in `param_decomp/experiments/{lm,tms,resid_mlp}/experiment.py`.
 Custom users can run without editing core code via:
@@ -103,8 +95,8 @@ Built-in YAML configs are pure experiment configs nested under `pd:`, `target:`,
 - `TMSExperimentConfig(pd, target, data)`
 - `ResidMLPExperimentConfig(pd, target, data)`
 
-Experiment configs should not perform I/O. Put target loading, dataloader construction, and
-artifact selection in the driver.
+Experiment configs should not perform I/O. Put target loading and dataloader construction in
+the driver.
 
 ### Saved run layout
 
@@ -112,9 +104,6 @@ artifact selection in the driver.
 PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/
   run_metadata.yaml          # RunMetadata: driver path, full config, artifact_filenames
   model_<step>.pth           # PD checkpoints
-  target_model.pth           # target weights (TMS/ResidMLP only)
-  target_train_config.yaml   # target train config (TMS/ResidMLP only)
-  label_coeffs.json          # ResidMLP only
   sweep_params.yaml          # if a sweep
 ```
 
@@ -126,7 +115,7 @@ config:
   pd: {...}
   target: {...}
   data: {...}
-artifact_filenames: ["target_model.pth"]
+artifact_filenames: []                                    # only sweep_params.yaml today
 ```
 
 ## Research Papers

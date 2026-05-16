@@ -75,7 +75,7 @@ class PDRun:
             "Run has no driver. Use `load_component_model(path, target=...)` with an "
             "explicit target."
         )
-        return self.driver.load_target(self.experiment_config, self.path)
+        return self.driver.build_target(self.experiment_config)
 
     def load_dataloaders(
         self,
@@ -94,7 +94,6 @@ class PDRun:
             eval_batch_size=eval_batch_size,
             dist_state=dist_state,
             device=device,
-            run_dir=self.path,
         )
 
     def load_model(self, target: PDTarget | None = None) -> ComponentModel:

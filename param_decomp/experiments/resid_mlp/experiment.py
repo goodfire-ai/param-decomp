@@ -1,19 +1,13 @@
 """Residual MLP PD experiment: serializable config, target loading, dataloaders, and driver."""
 
-from pathlib import Path
 from typing import ClassVar, Literal
 
-import torch
 from pydantic import Field
 from torch import Tensor
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.experiments.driver import BuiltTarget, ExperimentConfig
-from param_decomp.experiments.resid_mlp.models import (
-    ResidMLP,
-    ResidMLPTargetRunInfo,
-    ResidMLPTrainConfig,
-)
+from param_decomp.experiments.driver import ExperimentConfig
+from param_decomp.experiments.resid_mlp.models import ResidMLP, ResidMLPTargetRunInfo
 from param_decomp.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
 from param_decomp.models.batch_and_loss_fns import (
     PDTarget,
@@ -23,10 +17,6 @@ from param_decomp.models.batch_and_loss_fns import (
 from param_decomp.types import Probability
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader
 from param_decomp.utils.distributed_utils import DistributedState
-
-TARGET_MODEL_FILENAME = "target_model.pth"
-TARGET_TRAIN_CONFIG_FILENAME = "target_train_config.yaml"
-LABEL_COEFFS_FILENAME = "label_coeffs.json"
 
 
 class ResidMLPTargetConfig(BaseConfig):
@@ -49,57 +39,19 @@ class ResidMLPExperimentConfig(ExperimentConfig):
     data: ResidMLPDataConfig
 
 
-def _load_train_config(
-    config: ResidMLPExperimentConfig, run_dir: Path | None
-) -> ResidMLPTrainConfig:
-    if run_dir is None:
-        return ResidMLPTargetRunInfo.from_path(config.target.run_path).config
-
-    train_config_path = run_dir / TARGET_TRAIN_CONFIG_FILENAME
-    if not train_config_path.exists():
-        raise FileNotFoundError(
-            f"Saved ResidMLP PD run is missing bundled target train config: {train_config_path}"
-        )
-    return ResidMLPTrainConfig.from_file(train_config_path)
-
-
-def _make_pd_target(target_model: ResidMLP) -> PDTarget:
-    target_model.eval()
-    return PDTarget(
-        model=target_model,
-        run_batch=run_batch_first_element,
-        reconstruction_loss=recon_loss_mse,
-    )
-
-
 class Driver:
     name: ClassVar[str] = "resid_mlp"
     config_type: ClassVar[type[ResidMLPExperimentConfig]] = ResidMLPExperimentConfig
 
-    def build_target(self, config: ResidMLPExperimentConfig) -> BuiltTarget:
+    def build_target(self, config: ResidMLPExperimentConfig) -> PDTarget:
         run_info = ResidMLPTargetRunInfo.from_path(config.target.run_path)
         target_model = ResidMLP.from_run_info(run_info)
-        return BuiltTarget(
-            target=_make_pd_target(target_model),
-            artifacts={
-                TARGET_MODEL_FILENAME: target_model.state_dict(),
-                TARGET_TRAIN_CONFIG_FILENAME: run_info.config.model_dump(mode="json"),
-                LABEL_COEFFS_FILENAME: run_info.label_coeffs.detach().cpu().tolist(),
-            },
+        target_model.eval()
+        return PDTarget(
+            model=target_model,
+            run_batch=run_batch_first_element,
+            reconstruction_loss=recon_loss_mse,
         )
-
-    def load_target(self, config: ResidMLPExperimentConfig, run_dir: Path) -> PDTarget:
-        bundled_weights = run_dir / TARGET_MODEL_FILENAME
-        if not bundled_weights.exists():
-            raise FileNotFoundError(
-                f"Saved ResidMLP PD run is missing bundled target weights: {bundled_weights}"
-            )
-        train_config = _load_train_config(config, run_dir)
-        target_model = ResidMLP(train_config.resid_mlp_model_config)
-        target_model.load_state_dict(
-            torch.load(bundled_weights, weights_only=True, map_location="cpu")
-        )
-        return _make_pd_target(target_model)
 
     def build_dataloaders(
         self,
@@ -109,13 +61,12 @@ class Driver:
         eval_batch_size: int,
         dist_state: DistributedState | None = None,
         device: str = "cpu",
-        run_dir: Path | None = None,
     ) -> tuple[
         DatasetGeneratedDataLoader[tuple[Tensor, Tensor]],
         DatasetGeneratedDataLoader[tuple[Tensor, Tensor]],
     ]:
         _ = dist_state
-        train_config = _load_train_config(config, run_dir)
+        train_config = ResidMLPTargetRunInfo.from_path(config.target.run_path).config
         dataset = ResidMLPDataset(
             n_features=train_config.resid_mlp_model_config.n_features,
             feature_probability=config.data.feature_probability,
