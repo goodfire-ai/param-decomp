@@ -48,8 +48,8 @@ def run_experiment(
         logger.info(f"Driver: {driver.name}")
         logger.info(f"Using device: {device}")
 
-    target = driver.build_target(experiment_config)
-    target.model.to(device)
+    built = driver.build_target(experiment_config)
+    built.target.model.to(device)
     train_loader, eval_loader = driver.build_dataloaders(
         experiment_config,
         train_batch_size=experiment_config.pd.batch_size,
@@ -57,7 +57,7 @@ def run_experiment(
         dist_state=dist_state,
         device=device,
     )
-    artifacts = driver.artifacts(experiment_config, target)
+    artifacts = dict(built.artifacts)
     sweep_params = parse_sweep_params(sweep_params_json)
     if sweep_params is not None:
         artifacts["sweep_params.yaml"] = sweep_params
@@ -70,7 +70,7 @@ def run_experiment(
     )
     run_pd(
         config=experiment_config.pd,
-        target=target,
+        target=built.target,
         train_loader=train_loader,
         eval_loader=eval_loader,
         device=device,
