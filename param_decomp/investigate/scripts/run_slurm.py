@@ -45,7 +45,7 @@ def launch_investigation(
     output_dir = get_investigation_output_dir(inv_id)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    snapshot_branch, commit_hash = create_git_snapshot(inv_id)
+    snapshot_ref, commit_hash = create_git_snapshot(inv_id)
 
     suffix = f"-{job_suffix}" if job_suffix else ""
     job_name = f"pd-investigate{suffix}"
@@ -56,7 +56,7 @@ def launch_investigation(
         "prompt": prompt,
         "context_length": context_length,
         "max_turns": max_turns,
-        "snapshot_branch": snapshot_branch,
+        "snapshot_ref": snapshot_ref,
         "commit_hash": commit_hash,
     }
     (output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
@@ -68,7 +68,7 @@ def launch_investigation(
         partition=DEFAULT_PARTITION_NAME,
         n_gpus=1,
         time=time,
-        snapshot_branch=snapshot_branch,
+        snapshot_ref=snapshot_ref,
     )
     script = generate_script(slurm_config, cmd)
     result = submit_slurm_job(script, "investigate")

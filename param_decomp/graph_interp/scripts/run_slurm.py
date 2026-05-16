@@ -23,7 +23,7 @@ def submit_graph_interp(
     config: GraphInterpSlurmConfig,
     dependency_job_ids: list[str],
     harvest_subrun_id: str,
-    snapshot_branch: str | None = None,
+    snapshot_ref: str | None = None,
 ) -> GraphInterpSubmitResult:
     """Submit graph interpretation to SLURM."""
     subrun_id = "ti-" + datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -43,7 +43,7 @@ def submit_graph_interp(
         cpus_per_task=16,
         mem="240G",
         time=config.time,
-        snapshot_branch=snapshot_branch,
+        snapshot_ref=snapshot_ref,
         dependency_job_id=dependency_str,
         comment=decomposition_id,
     )

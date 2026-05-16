@@ -44,7 +44,7 @@ def submit_attributions(
     config: AttributionsSlurmConfig,
     harvest_subrun_id: str,
     job_suffix: str | None = None,
-    snapshot_branch: str | None = None,
+    snapshot_ref: str | None = None,
     dependency_job_id: str | None = None,
 ) -> AttributionsSubmitResult:
     """Submit multi-GPU attribution harvesting job to SLURM."""
@@ -52,10 +52,10 @@ def submit_attributions(
     partition = config.partition
     time = config.time
 
-    if snapshot_branch is None:
+    if snapshot_ref is None:
         run_id = f"attr-{secrets.token_hex(4)}"
-        snapshot_branch, commit_hash = create_git_snapshot(snapshot_id=run_id)
-        logger.info(f"Created git snapshot: {snapshot_branch} ({commit_hash[:8]})")
+        snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=run_id)
+        logger.info(f"Created git snapshot: {snapshot_ref} ({commit_hash[:8]})")
     else:
         commit_hash = "shared"
 
@@ -86,7 +86,7 @@ def submit_attributions(
         partition=partition,
         n_gpus=1,  # 1 GPU per worker
         time=time,
-        snapshot_branch=snapshot_branch,
+        snapshot_ref=snapshot_ref,
         dependency_job_id=dependency_job_id,
         comment=wandb_url,
     )
@@ -106,7 +106,7 @@ def submit_attributions(
         n_gpus=0,
         time=config.merge_time,
         mem=config.merge_mem,
-        snapshot_branch=snapshot_branch,
+        snapshot_ref=snapshot_ref,
         dependency_job_id=array_result.job_id,
         comment=wandb_url,
     )
@@ -121,7 +121,7 @@ def submit_attributions(
             "N batches": config.config.n_batches,
             "N GPUs": n_gpus,
             "Batch size": config.config.batch_size,
-            "Snapshot": f"{snapshot_branch} ({commit_hash[:8]})",
+            "Snapshot": f"{snapshot_ref} ({commit_hash[:8]})",
             "Array Job ID": array_result.job_id,
             "Merge Job ID": merge_result.job_id,
             "Worker logs": array_result.log_pattern,
