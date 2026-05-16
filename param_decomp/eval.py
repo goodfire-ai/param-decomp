@@ -79,11 +79,9 @@ from param_decomp.models.batch_and_loss_fns import ReconstructionLoss, move_batc
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
 from param_decomp.persistent_pgd import PersistentPGDState
 from param_decomp.routing import AllLayersRouter, get_subset_router
-from param_decomp.utils.distributed_utils import avg_metrics_across_ranks, is_distributed
 from param_decomp.utils.general_utils import dict_safe_update_
 
 MetricOutType = dict[str, str | Number | Image.Image | CustomChart]
-DistMetricOutType = dict[str, str | float | Image.Image | CustomChart]
 
 
 def clean_metric_output(
@@ -114,22 +112,6 @@ def clean_metric_output(
 
             computed[f"{section}/{k}"] = v
     return computed
-
-
-def avg_eval_metrics_across_ranks(metrics: MetricOutType, device: str) -> DistMetricOutType:
-    """Get the average of eval metrics across ranks.
-
-    Ignores any metrics that are not numbers. Currently, the image metrics do not need to be
-    averaged. If this changes for future metrics, we will need to do a reduce during calculcation
-    of the metric.
-    """
-    assert is_distributed(), "Can only average metrics across ranks if running in distributed mode"
-    metrics_keys_to_avg = {k: v for k, v in metrics.items() if isinstance(v, Number)}
-    if metrics_keys_to_avg:
-        avg_metrics = avg_metrics_across_ranks(metrics_keys_to_avg, device)
-    else:
-        avg_metrics = {}
-    return {**metrics, **avg_metrics}
 
 
 def init_metric(

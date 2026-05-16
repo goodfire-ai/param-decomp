@@ -35,7 +35,7 @@ from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 TokenData = dict[str, Any]
 
 
-def compute_token_divergence(
+def _compute_token_divergence(
     em: EditableModel,
     edit_fn: ForwardFn,
     token_ids: list[int],
@@ -119,7 +119,7 @@ def compute_token_divergence(
     return result
 
 
-def load_stories(n_tokens: int, max_seq_len: int = 300) -> list[list[int]]:
+def _load_stories(n_tokens: int, max_seq_len: int = 300) -> list[list[int]]:
     """Load stories from SimpleStories until we have >= n_tokens."""
     ds = load_dataset("SimpleStories/SimpleStories", split="train", streaming=True)
     tok = AppTokenizer.from_pretrained("goodfire/SimpleStories-Llama-tokenizer")
@@ -153,7 +153,7 @@ def main(
     out.parent.mkdir(parents=True, exist_ok=True)
 
     em, tok = EditableModel.from_wandb(wandb_path)
-    stories = load_stories(n_tokens)
+    stories = _load_stories(n_tokens)
     total_tokens = sum(len(s) for s in stories)
     print(f"Loaded {len(stories)} stories, {total_tokens} tokens")
 
@@ -164,7 +164,7 @@ def main(
 
         edit_stories = []
         for story_ids in stories:
-            tokens = compute_token_divergence(em, edit_fn, story_ids, tok)
+            tokens = _compute_token_divergence(em, edit_fn, story_ids, tok)
             edit_stories.append(tokens)
 
         all_data[edit_name] = {"components": component_keys, "stories": edit_stories}

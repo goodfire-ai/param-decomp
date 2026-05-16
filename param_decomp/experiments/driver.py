@@ -33,7 +33,11 @@ class ExperimentDriver[ConfigT: ExperimentConfig](Protocol):
     """
 
     name: ClassVar[str]
-    config_type: ClassVar[type[Any]]
+
+    @property
+    def config_type(self) -> type[ConfigT]:
+        """Pydantic model type used to validate serialized experiment configs."""
+        ...
 
     def build_target(self, config: ConfigT, *, run_dir: Path | None = None) -> PDTarget:
         """Build the target model bundle. If `run_dir` is given, prefer locally bundled files."""
