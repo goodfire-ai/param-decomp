@@ -28,11 +28,18 @@ pd:
   batch_size: 4096
   eval_batch_size: 4096
   steps: 10000
-  lr_schedule:
-    start_val: 1e-3
-    fn_type: cosine
-    warmup_pct: 0.0
-    final_val_frac: 0.0
+  components_optimizer:
+    lr_schedule:
+      start_val: 1e-3
+      fn_type: cosine
+      warmup_pct: 0.0
+      final_val_frac: 0.0
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 1e-3
+      fn_type: cosine
+      warmup_pct: 0.0
+      final_val_frac: 0.0
   faithfulness_warmup_steps: 200
   faithfulness_warmup_lr: 0.01
   faithfulness_warmup_weight_decay: 0.1

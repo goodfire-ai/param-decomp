@@ -19,10 +19,16 @@ pd:
   batch_size: 2048
   eval_batch_size: 2048
   steps: 50000
-  lr_schedule:
-    start_val: 1e-3
-    fn_type: constant
-    warmup_pct: 0.0
+  components_optimizer:
+    lr_schedule:
+      start_val: 1e-3
+      fn_type: constant
+      warmup_pct: 0.0
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 1e-3
+      fn_type: constant
+      warmup_pct: 0.0
   faithfulness_warmup_steps: 200
   faithfulness_warmup_lr: 0.01
   faithfulness_warmup_weight_decay: 0.1

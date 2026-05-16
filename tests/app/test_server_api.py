@@ -23,6 +23,7 @@ from param_decomp.app.backend.state import RunState, StateManager
 from param_decomp.configs import (
     LayerwiseCiConfig,
     ModulePatternInfoConfig,
+    OptimizerConfig,
     PDConfig,
     ScheduleConfig,
 )
@@ -96,7 +97,8 @@ def app_with_state():
             module_info=[
                 ModulePatternInfoConfig(module_pattern=p, C=C) for p in target_module_patterns
             ],
-            lr_schedule=ScheduleConfig(start_val=1e-3),
+            components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
+            ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
             steps=1,
             batch_size=1,
             eval_batch_size=1,

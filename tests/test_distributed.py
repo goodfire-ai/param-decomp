@@ -40,7 +40,12 @@ TEST_CONFIG = {
         "batch_size": 2,
         "eval_batch_size": 2,
         "steps": 20,
-        "lr_schedule": {"start_val": 1e-2, "fn_type": "constant"},
+        "components_optimizer": {
+            "lr_schedule": {"start_val": 1e-2, "fn_type": "constant"},
+        },
+        "ci_fn_optimizer": {
+            "lr_schedule": {"start_val": 1e-2, "fn_type": "constant"},
+        },
         # --- Logging & Saving ---
         "train_log_freq": 9999,
         "eval_freq": 5,  # Eval at steps 0, 5, 10

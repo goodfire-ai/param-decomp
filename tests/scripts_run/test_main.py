@@ -31,7 +31,7 @@ class TestLaunchSlurm:
 
     @patch("param_decomp.scripts.run_slurm.get_wandb_run_url")
     @patch("param_decomp.scripts.run_slurm.submit_slurm_job")
-    @patch("param_decomp.scripts.run_slurm.create_slurm_script")
+    @patch("param_decomp.scripts.run_slurm._create_slurm_script")
     @patch("param_decomp.scripts.run_slurm.create_git_snapshot")
     def test_sweep_creates_slurm_array(
         self,
@@ -79,7 +79,9 @@ class TestLaunchSlurm:
     def test_create_run_specs_sweep(self):
         """With sweep params, _create_run_specs should expand the grid."""
         sweep_params = {
-            "global": {"pd": {"lr_schedule": {"start_val": {"values": [1, 2]}}}},
+            "global": {
+                "pd": {"components_optimizer": {"lr_schedule": {"start_val": {"values": [1, 2]}}}}
+            },
             "tms_5-2": {
                 "pd": {
                     "steps": {"values": [100, 200]},
@@ -114,7 +116,7 @@ class TestLaunchSlurm:
             matching = [
                 cfg
                 for cfg in configs
-                if cfg["lr_schedule"]["start_val"] == start_val
+                if cfg["components_optimizer"]["lr_schedule"]["start_val"] == start_val
                 and cfg["steps"] == steps
                 and c == cfg["module_info"][0]["C"]
                 and c == cfg["module_info"][1]["C"]

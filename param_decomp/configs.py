@@ -132,6 +132,20 @@ class ScheduleConfig(BaseConfig):
         return self
 
 
+class OptimizerConfig(BaseConfig):
+    """Configuration for one AdamW optimizer."""
+
+    lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule")
+    weight_decay: NonNegativeFloat = Field(default=0.0, description="AdamW weight decay")
+    betas: tuple[Probability, Probability] = Field(
+        default=(0.9, 0.999), description="AdamW (beta1, beta2)"
+    )
+    grad_clip_norm: PositiveFloat | None = Field(
+        default=None,
+        description="If set, clip the grad norm of this group's parameters to this value",
+    )
+
+
 class ModulePatternInfoConfig(BaseConfig):
     """Configuration for a module pattern with its number of components.
 
@@ -631,19 +645,16 @@ class PDConfig(BaseConfig):
         ),
     )
     # --- Training ---
-    lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule configuration")
+    components_optimizer: OptimizerConfig = Field(
+        ..., description="Optimizer config for the component (LinearComponent etc.) parameters"
+    )
+    ci_fn_optimizer: OptimizerConfig = Field(
+        ..., description="Optimizer config for the CI function parameters"
+    )
     steps: NonNegativeInt = Field(..., description="Total number of optimisation steps")
     batch_size: PositiveInt = Field(
         ...,
         description="Total batch size (may be divided across multiple devices).",
-    )
-    grad_clip_norm_components: PositiveFloat | None = Field(
-        default=None,
-        description="If set, apply grad norm clipping to the parameters of the components",
-    )
-    grad_clip_norm_ci_fns: PositiveFloat | None = Field(
-        default=None,
-        description="If set, apply grad norm clipping to the parameters of the CI functions",
     )
 
     # --- Faithfulness Warmup ---

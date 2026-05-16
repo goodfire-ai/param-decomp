@@ -6,6 +6,7 @@ import torch
 from param_decomp.configs import (
     LayerwiseCiConfig,
     ModulePatternInfoConfig,
+    OptimizerConfig,
     PDConfig,
     ScheduleConfig,
 )
@@ -51,7 +52,8 @@ def _pd_config() -> PDConfig:
         n_mask_samples=1,
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[4]),
         module_info=[ModulePatternInfoConfig(module_pattern="*", C=2)],
-        lr_schedule=ScheduleConfig(start_val=1e-3),
+        components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
+        ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
         steps=1,
         batch_size=2,
         train_log_freq=1,

@@ -231,6 +231,36 @@ class TestApplyNestedUpdates:
 
         assert result == {"existing": 1, "new": {"nested": {"value": 42}}}
 
+    def test_update_nested_optimizer_config(self):
+        base = {
+            "pd": {
+                "components_optimizer": {
+                    "lr_schedule": {"start_val": 1e-3, "fn_type": "constant"},
+                },
+                "ci_fn_optimizer": {
+                    "lr_schedule": {"start_val": 1e-4, "fn_type": "constant"},
+                },
+            }
+        }
+        updates = {
+            "pd.components_optimizer.lr_schedule.start_val": 2e-3,
+            "pd.ci_fn_optimizer.weight_decay": 0.01,
+        }
+
+        result = apply_nested_updates(base, updates)
+
+        assert result == {
+            "pd": {
+                "components_optimizer": {
+                    "lr_schedule": {"start_val": 2e-3, "fn_type": "constant"},
+                },
+                "ci_fn_optimizer": {
+                    "lr_schedule": {"start_val": 1e-4, "fn_type": "constant"},
+                    "weight_decay": 0.01,
+                },
+            }
+        }
+
 
 class TestInvalidConfigurations:
     def test_leaf_without_values_dict(self):

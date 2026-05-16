@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from param_decomp.configs import LayerwiseCiConfig, PDConfig, ScheduleConfig
+from param_decomp.configs import LayerwiseCiConfig, OptimizerConfig, PDConfig, ScheduleConfig
 from param_decomp.experiments.driver import (
     ExperimentConfig,
     load_driver,
@@ -48,7 +48,8 @@ def _pd_config() -> PDConfig:
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[4]),
         sigmoid_type="leaky_hard",
         module_info=[],
-        lr_schedule=ScheduleConfig(start_val=1e-3),
+        components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
+        ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
         steps=1,
         batch_size=4,
         eval_batch_size=4,
