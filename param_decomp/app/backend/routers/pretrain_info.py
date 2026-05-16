@@ -16,7 +16,7 @@ from param_decomp.app.backend.utils import log_errors
 from param_decomp.experiments.driver import load_driver
 from param_decomp.experiments.lm.experiment import LMExperimentConfig
 from param_decomp.log import logger
-from param_decomp.pd_run import PDRun
+from param_decomp.saved_run import PDRun
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp.utils.wandb_utils import parse_wandb_run_path
 

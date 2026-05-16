@@ -24,7 +24,7 @@ from param_decomp.app.backend.app_tokenizer import AppTokenizer
 from param_decomp.autointerp.repo import InterpRepo
 from param_decomp.experiments.lm.experiment import LMExperimentConfig
 from param_decomp.harvest.schemas import get_harvest_dir
-from param_decomp.pd_run import PDRun
+from param_decomp.saved_run import PDRun
 from param_decomp.topology import TransformerTopology
 from param_decomp.topology.canonical import CanonicalWeight, Embed, LayerWeight, Unembed
 from scripts.blog.constants import (

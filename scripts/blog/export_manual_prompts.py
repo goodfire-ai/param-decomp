@@ -40,7 +40,7 @@ from param_decomp.app.backend.app_tokenizer import AppTokenizer
 from param_decomp.app.backend.compute import compute_ci_only
 from param_decomp.autointerp.repo import InterpRepo
 from param_decomp.experiments.lm.experiment import LMExperimentConfig
-from param_decomp.pd_run import PDRun
+from param_decomp.saved_run import PDRun
 from param_decomp.scripts.prompt_utils import load_prompts
 from param_decomp.topology import TransformerTopology
 from param_decomp.utils.distributed_utils import get_device

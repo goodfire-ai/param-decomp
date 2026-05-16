@@ -16,8 +16,8 @@ from param_decomp.experiments.resid_mlp.models import (
 from param_decomp.experiments.tms.models import TMSModel
 from param_decomp.log import logger
 from param_decomp.models.components import Components
-from param_decomp.pd_run import PDRun
 from param_decomp.plotting import plot_causal_importance_vals
+from param_decomp.saved_run import PDRun
 from param_decomp.utils.distributed_utils import get_device
 from param_decomp.utils.general_utils import set_seed
 from param_decomp.utils.run_utils import ExecutionStamp

@@ -58,7 +58,7 @@ def _resolve_source(
 
     assert rerun is not None  # by `sources_set == 1`
     assert driver is None, "--driver is implied by --rerun (read from saved metadata)"
-    from param_decomp.pd_run import PDRun
+    from param_decomp.saved_run import PDRun
 
     metadata = PDRun.metadata_from_path(rerun)
     assert metadata.driver is not None, (

@@ -24,7 +24,7 @@ from param_decomp.configs import PDConfig
 from param_decomp.experiments.driver import ExperimentConfig
 from param_decomp.log import logger
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.pd_run import PDRun
+from param_decomp.saved_run import PDRun
 from param_decomp.utils.distributed_utils import get_device
 from param_decomp.utils.general_utils import get_obj_device
 from param_decomp.utils.run_utils import save_file

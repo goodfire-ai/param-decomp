@@ -2,7 +2,7 @@
 
 from param_decomp.models.batch_and_loss_fns import PDTarget
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.pd_run import PDRun
+from param_decomp.saved_run import PDRun
 from param_decomp.types import ModelPath
 
 
