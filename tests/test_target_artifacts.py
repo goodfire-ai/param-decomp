@@ -94,13 +94,13 @@ def test_resid_mlp_saved_run_loads_bundled_target(tmp_path: Path) -> None:
     expected_state_dict = source_model.state_dict()
     torch.save(expected_state_dict, tmp_path / RESID_MLP_TARGET_MODEL_FILENAME)
 
-    target = ResidMLPDriver().build_target(
+    target = ResidMLPDriver().load_target(
         ResidMLPExperimentConfig(
             pd=_pd_config(),
             target=ResidMLPTargetConfig(run_path=str(tmp_path / "missing-source-run")),
             data=ResidMLPDataConfig(feature_probability=0.1),
         ),
-        run_dir=tmp_path,
+        tmp_path,
     )
 
     assert isinstance(target, PDTarget)
@@ -110,13 +110,13 @@ def test_resid_mlp_saved_run_loads_bundled_target(tmp_path: Path) -> None:
 
 def test_resid_mlp_saved_run_requires_bundled_target_weights(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match=RESID_MLP_TARGET_MODEL_FILENAME):
-        ResidMLPDriver().build_target(
+        ResidMLPDriver().load_target(
             ResidMLPExperimentConfig(
                 pd=_pd_config(),
                 target=ResidMLPTargetConfig(run_path=str(tmp_path / "missing-source-run")),
                 data=ResidMLPDataConfig(feature_probability=0.1),
             ),
-            run_dir=tmp_path,
+            tmp_path,
         )
 
 
@@ -143,13 +143,13 @@ def test_tms_saved_run_loads_bundled_target(tmp_path: Path) -> None:
     expected_state_dict = source_model.state_dict()
     torch.save(expected_state_dict, tmp_path / TMS_TARGET_MODEL_FILENAME)
 
-    target = TMSDriver().build_target(
+    target = TMSDriver().load_target(
         TMSExperimentConfig(
             pd=_pd_config(),
             target=TMSTargetConfig(run_path=str(tmp_path / "missing-source-run")),
             data=TMSDataConfig(feature_probability=0.1),
         ),
-        run_dir=tmp_path,
+        tmp_path,
     )
 
     assert isinstance(target, PDTarget)
@@ -169,11 +169,11 @@ def test_tms_saved_run_requires_bundled_target_train_config(tmp_path: Path) -> N
     torch.save(TMSModel(model_config).state_dict(), tmp_path / TMS_TARGET_MODEL_FILENAME)
 
     with pytest.raises(FileNotFoundError, match=TMS_TARGET_TRAIN_CONFIG_FILENAME):
-        TMSDriver().build_target(
+        TMSDriver().load_target(
             TMSExperimentConfig(
                 pd=_pd_config(),
                 target=TMSTargetConfig(run_path=str(tmp_path / "missing-source-run")),
                 data=TMSDataConfig(feature_probability=0.1),
             ),
-            run_dir=tmp_path,
+            tmp_path,
         )

@@ -1,14 +1,14 @@
 """Residual MLP PD experiment: serializable config, target loading, dataloaders, and driver."""
 
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import ClassVar, Literal
 
 import torch
 from pydantic import Field
 from torch import Tensor
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.experiments.driver import ExperimentConfig
+from param_decomp.experiments.driver import BuiltTarget, ExperimentConfig
 from param_decomp.experiments.resid_mlp.models import (
     ResidMLP,
     ResidMLPTargetRunInfo,
@@ -63,34 +63,43 @@ def _load_train_config(
     return ResidMLPTrainConfig.from_file(train_config_path)
 
 
+def _make_pd_target(target_model: ResidMLP) -> PDTarget:
+    target_model.eval()
+    return PDTarget(
+        model=target_model,
+        run_batch=run_batch_first_element,
+        reconstruction_loss=recon_loss_mse,
+    )
+
+
 class Driver:
     name: ClassVar[str] = "resid_mlp"
     config_type: ClassVar[type[ResidMLPExperimentConfig]] = ResidMLPExperimentConfig
 
-    def build_target(
-        self, config: ResidMLPExperimentConfig, *, run_dir: Path | None = None
-    ) -> PDTarget:
-        if run_dir is not None:
-            bundled_weights = run_dir / TARGET_MODEL_FILENAME
-            if not bundled_weights.exists():
-                raise FileNotFoundError(
-                    f"Saved ResidMLP PD run is missing bundled target weights: {bundled_weights}"
-                )
-            train_config = _load_train_config(config, run_dir)
-            target_model = ResidMLP(train_config.resid_mlp_model_config)
-            target_model.load_state_dict(
-                torch.load(bundled_weights, weights_only=True, map_location="cpu")
-            )
-        else:
-            run_info = ResidMLPTargetRunInfo.from_path(config.target.run_path)
-            target_model = ResidMLP.from_run_info(run_info)
-
-        target_model.eval()
-        return PDTarget(
-            model=target_model,
-            run_batch=run_batch_first_element,
-            reconstruction_loss=recon_loss_mse,
+    def build_target(self, config: ResidMLPExperimentConfig) -> BuiltTarget:
+        run_info = ResidMLPTargetRunInfo.from_path(config.target.run_path)
+        target_model = ResidMLP.from_run_info(run_info)
+        return BuiltTarget(
+            target=_make_pd_target(target_model),
+            artifacts={
+                TARGET_MODEL_FILENAME: target_model.state_dict(),
+                TARGET_TRAIN_CONFIG_FILENAME: run_info.config.model_dump(mode="json"),
+                LABEL_COEFFS_FILENAME: run_info.label_coeffs.detach().cpu().tolist(),
+            },
         )
+
+    def load_target(self, config: ResidMLPExperimentConfig, run_dir: Path) -> PDTarget:
+        bundled_weights = run_dir / TARGET_MODEL_FILENAME
+        if not bundled_weights.exists():
+            raise FileNotFoundError(
+                f"Saved ResidMLP PD run is missing bundled target weights: {bundled_weights}"
+            )
+        train_config = _load_train_config(config, run_dir)
+        target_model = ResidMLP(train_config.resid_mlp_model_config)
+        target_model.load_state_dict(
+            torch.load(bundled_weights, weights_only=True, map_location="cpu")
+        )
+        return _make_pd_target(target_model)
 
     def build_dataloaders(
         self,
@@ -124,11 +133,3 @@ class Driver:
         )
         eval_loader = DatasetGeneratedDataLoader(dataset, batch_size=eval_batch_size, shuffle=False)
         return train_loader, eval_loader
-
-    def artifacts(self, config: ResidMLPExperimentConfig, target: PDTarget) -> dict[str, Any]:
-        run_info = ResidMLPTargetRunInfo.from_path(config.target.run_path)
-        return {
-            TARGET_MODEL_FILENAME: target.model.state_dict(),
-            TARGET_TRAIN_CONFIG_FILENAME: run_info.config.model_dump(mode="json"),
-            LABEL_COEFFS_FILENAME: run_info.label_coeffs.detach().cpu().tolist(),
-        }

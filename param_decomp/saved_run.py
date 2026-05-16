@@ -74,7 +74,7 @@ class PDRun:
         assert self.driver is not None and self.experiment_config is not None, (
             "Run has no driver. Use `load_pd(path, target=...)` with an explicit target."
         )
-        return self.driver.build_target(self.experiment_config, run_dir=self.path)
+        return self.driver.load_target(self.experiment_config, self.path)
 
     def load_dataloaders(
         self,
