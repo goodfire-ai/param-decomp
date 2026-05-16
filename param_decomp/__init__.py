@@ -2,7 +2,7 @@
 
 Core entrypoints:
     - `run_pd`: train a parameter decomposition.
-    - `load_pd`: load a saved PD run as a `ComponentModel`.
+    - `load_component_model`: load a saved PD run as a `ComponentModel`.
 
 Core types:
     - `PDConfig`: training/algorithm config.
@@ -15,11 +15,10 @@ Core types:
 
 from param_decomp.configs import PDConfig
 from param_decomp.experiments.driver import ExperimentConfig, ExperimentDriver
-from param_decomp.load import load_pd
 from param_decomp.models.batch_and_loss_fns import PDTarget
 from param_decomp.run_metadata import RunMetadata
 from param_decomp.run_pd import run_pd
-from param_decomp.saved_run import PDRun
+from param_decomp.saved_run import PDRun, load_component_model
 
 __all__ = [
     "ExperimentConfig",
@@ -28,6 +27,6 @@ __all__ = [
     "PDRun",
     "PDTarget",
     "RunMetadata",
-    "load_pd",
+    "load_component_model",
     "run_pd",
 ]

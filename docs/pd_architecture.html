@@ -337,7 +337,7 @@
           A direct <code>run_pd()</code> call from a notebook skips the driver entirely. Metadata
           defaults to <code>RunMetadata(driver=None, config={"pd": pd_config.model_dump()},
           artifact_filenames=[])</code>; the run then reloads via
-          <code>load_pd(path, target=...)</code>.
+          <code>load_component_model(path, target=...)</code>.
         </li>
       </ol>
     </section>
@@ -401,7 +401,7 @@
       </div>
 
       <p>
-        <code>load_pd(path)</code> is shorthand for steps 1–3 chained together:
+        <code>load_component_model(path)</code> is shorthand for steps 1–3 chained together:
         <code>PDRun.from_path(path).load_model()</code>.
       </p>
 
@@ -414,7 +414,7 @@
 
       <div class="note">
         <strong>No driver in metadata?</strong> The run came from a direct <code>run_pd()</code>
-        call. You must pass <code>target=...</code> to <code>load_pd()</code>;
+        call. You must pass <code>target=...</code> to <code>load_component_model()</code>;
         <code>PDRun.experiment_config</code> will be <code>None</code> for such runs.
       </div>
     </section>
@@ -443,7 +443,7 @@
             One entry point (<code>pd-run</code>, on SLURM by default or in-process with
             <code>--local</code>) and one notebook escape hatch (direct <code>run_pd</code>)
             converge on a single training function and produce a saved run that
-            <code>PDRun.from_path</code> / <code>load_pd</code> can reload.
+            <code>PDRun.from_path</code> / <code>load_component_model</code> can reload.
           </p>
         </div>
       </div>
@@ -510,15 +510,12 @@
             <td><a href="../param_decomp/run_pd.py">run_pd.py</a></td>
             <td>
               Notebook / scripting: skip drivers, supply your own <code>PDTarget</code> +
-              dataloaders. Pair with <code>load_pd(path, target=...)</code> for reload.
+              dataloaders. Pair with <code>load_component_model(path, target=...)</code> for reload.
             </td>
           </tr>
           <tr>
-            <td><code>load_pd(path)</code> / <code>PDRun.from_path(path)</code></td>
-            <td>
-              <a href="../param_decomp/load.py">load.py</a>,
-              <a href="../param_decomp/pd_run.py">pd_run.py</a>
-            </td>
+            <td><code>load_component_model(path)</code> / <code>PDRun.from_path(path)</code></td>
+            <td><a href="../param_decomp/saved_run.py">saved_run.py</a></td>
             <td>Reload a saved run.</td>
           </tr>
         </tbody>
@@ -640,7 +637,7 @@ class RunMetadata:
         </p>
 
         <h3>PDRun</h3>
-        <p class="subtitle"><a href="../param_decomp/pd_run.py">param_decomp/pd_run.py</a></p>
+        <p class="subtitle"><a href="../param_decomp/saved_run.py">param_decomp/saved_run.py</a></p>
         <p>Handle to a saved run. Loads metadata eagerly; driver/config lazily.</p>
         <pre><code>@dataclass
 class PDRun:
@@ -666,7 +663,7 @@ class PDRun:
         <h3>Public API surface</h3>
         <p class="subtitle"><a href="../param_decomp/__init__.py">param_decomp/__init__.py</a></p>
         <pre><code>from param_decomp import (
-    run_pd, load_pd,
+    run_pd, load_component_model,
     PDConfig, PDTarget, RunMetadata, PDRun,
     ExperimentConfig, ExperimentDriver,
 )</code></pre>
@@ -870,8 +867,8 @@ loaders = pd_run.load_dataloaders(...)
 model = pd_run.load_model()          # ComponentModel.from_checkpoint(...)
 
 # Shortcuts
-model = load_pd("wandb:entity/project/runs/abc123")               # driver-backed
-model = load_pd("/path/to/run", target=my_target)                 # notebook-style run</code></pre>
+model = load_component_model("wandb:entity/project/runs/abc123")               # driver-backed
+model = load_component_model("/path/to/run", target=my_target)                 # notebook-style run</code></pre>
       </section>
     </div>
 

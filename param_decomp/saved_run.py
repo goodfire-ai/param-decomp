@@ -72,7 +72,8 @@ class PDRun:
 
     def load_target(self) -> PDTarget:
         assert self.driver is not None and self.experiment_config is not None, (
-            "Run has no driver. Use `load_pd(path, target=...)` with an explicit target."
+            "Run has no driver. Use `load_component_model(path, target=...)` with an "
+            "explicit target."
         )
         return self.driver.build_target(self.experiment_config, run_dir=self.path)
 
@@ -105,6 +106,21 @@ class PDRun:
             run_batch=target.run_batch,
             tied_weights=target.tied_weights,
         )
+
+
+def load_component_model(
+    path: ModelPath,
+    *,
+    target: PDTarget | None = None,
+) -> ComponentModel:
+    """Load a `ComponentModel` from a saved PD run.
+
+    Args:
+        path: Run directory, wandb path (`wandb:entity/project/runs/id`), or checkpoint file.
+        target: Optional override. When ``None``, the run's driver reconstructs the target
+            from the saved metadata. For manual/notebook runs (no driver), ``target`` is required.
+    """
+    return PDRun.from_path(path).load_model(target=target)
 
 
 def _artifact_filenames_from(config_path: Path) -> list[str]:

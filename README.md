@@ -68,7 +68,7 @@ Two routes, neither needing core-package edits:
 - **Call `run_pd` directly** — build a `PDTarget` (model + `run_batch` + reconstruction loss;
   helpers in [`batch_and_loss_fns.py`](param_decomp/models/batch_and_loss_fns.py)) and call
   `run_pd(config, target, train_loader, eval_loader, device)`. Reload with
-  `load_pd(path, target=...)`. Best for notebooks/scripts.
+  `load_component_model(path, target=...)`. Best for notebooks/scripts.
 - **Package it as a YAML-driven experiment** — define your experiment as a Pydantic
   `ExperimentConfig` plus an `ExperimentDriver` class (a small adapter exposing
   `build_target`, `build_dataloaders`, and `artifacts`; see
@@ -76,7 +76,7 @@ Two routes, neither needing core-package edits:
   [`tms/experiment.py`](param_decomp/experiments/tms/experiment.py) for the smallest example),
   then run `pd-run --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml`. This is
   what built-in experiments do, and is needed for sweeps and for self-reloading runs via
-  `load_pd(path)` (no `target=` argument needed) or `PDRun.from_path(...)`.
+  `load_component_model(path)` (no `target=` argument needed) or `PDRun.from_path(...)`.
 
 Runs save a `run_metadata.yaml` beside the checkpoint with the parsed config and (if
 applicable) the driver's import path.

@@ -36,7 +36,7 @@ The `lm` experiment can decompose any HuggingFace-loadable model whose target mo
 The core PD framework exposes these entrypoints, re-exported from `param_decomp/__init__.py`:
 
 ```python
-from param_decomp import run_pd, load_pd, PDConfig, PDTarget, PDRun, RunMetadata, ExperimentConfig, ExperimentDriver
+from param_decomp import run_pd, load_component_model, PDConfig, PDTarget, PDRun, RunMetadata, ExperimentConfig, ExperimentDriver
 ```
 
 - `run_pd(config, target, train_loader, eval_loader, device, *, metadata=None, artifacts=...)`:
@@ -48,7 +48,7 @@ from param_decomp import run_pd, load_pd, PDConfig, PDTarget, PDRun, RunMetadata
   `recon_loss_kl`. Callers can pass their own functions instead. `metadata` is a `RunMetadata`
   written to `run_metadata.yaml`; `artifacts` is a `{filename: data}` mapping for extra files
   saved beside the checkpoint.
-- `load_pd(path, *, target=None)`: reload a saved run as a `ComponentModel`. When `target` is
+- `load_component_model(path, *, target=None)`: reload a saved run as a `ComponentModel`. When `target` is
   omitted the run's driver reconstructs the target from the saved metadata; pass `target=...`
   explicitly for runs produced via direct `run_pd` (no driver).
 - `PDRun.from_path(path)`: handle to a saved run. Exposes `metadata` (`RunMetadata`),
@@ -81,11 +81,11 @@ Custom users can run without editing core code via:
 pd-run --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml
 ```
 
-The worker records the supplied driver import path in the saved run metadata, so reloading the run via `load_pd(path)` can reconstruct the target without an explicit `target=` argument.
+The worker records the supplied driver import path in the saved run metadata, so reloading the run via `load_component_model(path)` can reconstruct the target without an explicit `target=` argument.
 
 Callers can also bypass drivers entirely and call `run_pd` directly with their own `PDTarget` and
 dataloaders — the right choice for notebook/script-driven use where `pd-run`, sweeps, and
-post-processing tooling are not needed. Those runs reload with `load_pd(path, target=...)`. The
+post-processing tooling are not needed. Those runs reload with `load_component_model(path, target=...)`. The
 README's "Custom experiments" section walks through both routes side-by-side.
 
 ### Per-experiment Configs
@@ -213,7 +213,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 2. Each worker invocation (`experiments/_worker.py`, called as `python -m param_decomp.experiments._worker` from SLURM tasks, or directly from runner.py in --local mode) loads the driver, validates the config, and calls the driver to build `PDTarget`, train/eval loaders, and artifacts.
 3. The worker builds `RunMetadata` from the parsed config and driver import path, then calls `run_pd`.
 4. `run_pd` saves the metadata/artifacts and trains a `ComponentModel` via `optimize()` with config-driven losses.
-5. Post-processing reloads runs through `PDRun.load_target()` / `PDRun.load_dataloaders(...)` (or just `PDRun.load_model()` / `load_pd(path)`).
+5. Post-processing reloads runs through `PDRun.load_target()` / `PDRun.load_dataloaders(...)` (or just `PDRun.load_model()` / `load_component_model(path)`).
 
 **Configuration System:**
 
@@ -524,20 +524,20 @@ pd-run tms_5-2 --sweep custom.yaml --n_agents 2  # custom grid file
 Load trained PD models from wandb or local paths using these methods:
 
 ```python
-from param_decomp import load_pd, PDRun
+from param_decomp import load_component_model, PDRun
 
 # Common case: path → ComponentModel. The driver reconstructs the target from saved metadata.
-model = load_pd("wandb:entity/project/runs/run_id")
+model = load_component_model("wandb:entity/project/runs/run_id")
 
 # Manual/custom runs (no driver in metadata): pass your own target.
 target = ...
-model = load_pd("wandb:entity/project/runs/run_id", target=target)
+model = load_component_model("wandb:entity/project/runs/run_id", target=target)
 
 # When you also need metadata/config access, use PDRun directly:
 pd_run = PDRun.from_path("wandb:entity/project/runs/run_id")
 print(pd_run.experiment_config)         # parsed via the driver
 print(pd_run.pd_config)                  # PDConfig
-model = pd_run.load_model()              # equivalent to load_pd(path)
+model = pd_run.load_model()              # equivalent to load_component_model(path)
 ```
 
 **Path Formats:**
