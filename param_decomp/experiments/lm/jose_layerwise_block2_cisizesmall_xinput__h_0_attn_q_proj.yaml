@@ -1,0 +1,72 @@
+autocast_bf16: true
+batch_size: 64
+ci_alive_threshold: 0.0
+ci_config:
+  fn_type: global_shared_transformer
+  hidden_dims: null
+  mode: global
+  simple_transformer_ci_cfg:
+    attn_config: {max_len: 512, n_heads: 8, rope_base: 10000.0}
+    d_model: 512
+    mlp_hidden_dim: [2048]
+    n_blocks: 3
+  extra_input_module_patterns: [h.0.mlp.c_fc, h.0.mlp.down_proj, h.1.attn.q_proj,
+    h.1.mlp.c_fc, h.1.mlp.down_proj, h.2.attn.q_proj, h.2.mlp.c_fc, h.2.mlp.down_proj,
+    h.3.attn.q_proj, h.3.mlp.c_fc, h.3.mlp.down_proj]
+ci_fn_optimizer:
+  lr_schedule: {final_val_frac: 0.1, fn_type: cosine, start_val: 1.667e-05, warmup_pct: 0.0}
+components_optimizer:
+  grad_clip_norm: 0.01
+  lr_schedule: {final_val_frac: 0.1, fn_type: cosine, start_val: 5.0e-05, warmup_pct: 0.0}
+eval_batch_size: 128
+eval_freq: 1000
+eval_metric_configs:
+- {classname: CIHistograms, n_batches_accum: 1}
+- {classname: ComponentActivationDensity}
+- classname: CI_L0
+  groups:
+    total: ['*']
+- {classname: CEandKLLosses, rounding_threshold: 0.0}
+- {classname: CIMeanPerComponent}
+- {classname: StochasticHiddenActsReconLoss, coeff: null}
+- {classname: CIHiddenActsReconLoss}
+- {classname: PGDReconLoss, coeff: null, init: random, mask_scope: shared_across_batch,
+  n_steps: 20, step_size: 0.1}
+extra_wandb_config: {ci_d_model: '512', ci_mlp_hidden: '2048', ci_n_blocks: '3', ci_size: small,
+  imp_min_coeff: 2e-4, lr_base: 5e-5, lr_ratio: '3:1', sweep_axis: ci_size, use_xinput: 'true'}
+faithfulness_warmup_lr: 0.001
+faithfulness_warmup_steps: 400
+faithfulness_warmup_weight_decay: 0.0
+identity_module_info: null
+init_pd_checkpoint: null
+loss_metric_configs:
+- {beta: 0.5, classname: ImportanceMinimalityLoss, coeff: 2e-4, eps: 1.0e-12, p_anneal_end_frac: 1.0,
+  p_anneal_final_p: 0.4, p_anneal_start_frac: 0.0, pnorm: 2.0}
+- {classname: StochasticReconLayerwiseLoss, coeff: 1.0}
+- {classname: FaithfulnessLoss, coeff: 10000000.0}
+module_info: []
+n_eval_steps: 1
+n_mask_samples: 1
+output_extract: 0
+pretrained_model_class: param_decomp.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
+pretrained_model_name: goodfire/spd/runs/t-9d2b8f02
+pretrained_model_path: null
+sampling: continuous
+save_freq: null
+seed: 0
+sigmoid_type: leaky_hard
+slow_eval_freq: 5000
+slow_eval_on_first_step: true
+steps: 50000
+task_config: {buffer_size: 1000, column_name: input_ids, dataset_name: danbraunai/pile-uncopyrighted-tok-shuffled,
+  eval_data_split: val, is_tokenized: true, max_seq_len: 512, shuffle_each_epoch: true,
+  streaming: true, task_name: lm, train_data_split: train}
+tokenizer_name: EleutherAI/gpt-neox-20b
+train_log_freq: 200
+use_delta_component: true
+wandb_group: jose-layerwise-block2-cisize-sweep
+wandb_project: param-decomp
+wandb_run_name: null
+wandb_run_name_prefix: ''
+wandb_tags: [block2-cisize-sweep, cisizesmall, xinput, lr3-1, base5e-5, impmin2e-4,
+  h_0_attn_q_proj]
