@@ -31,11 +31,18 @@ loss_metric_configs:
 # --- Training ---
 batch_size: 2
 steps: 50_000
-lr_schedule:
-  start_val: 3e-4
-  fn_type: cosine
-  warmup_pct: 0.01
-  final_val_frac: 0.1
+components_optimizer:
+  lr_schedule:
+    start_val: 3e-4
+    fn_type: cosine
+    warmup_pct: 0.01
+    final_val_frac: 0.1
+ci_fn_optimizer:
+  lr_schedule:
+    start_val: 3e-4
+    fn_type: cosine
+    warmup_pct: 0.01
+    final_val_frac: 0.1
 
 # --- Faithfulness Warmup ---
 faithfulness_warmup_steps: 200

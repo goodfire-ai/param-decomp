@@ -25,6 +25,7 @@ from param_decomp.configs import (
     LayerwiseCiConfig,
     LMTaskConfig,
     ModulePatternInfoConfig,
+    OptimizerConfig,
     ScheduleConfig,
 )
 from param_decomp.models.batch_and_loss_fns import make_run_batch
@@ -100,7 +101,8 @@ def app_with_state():
             pretrained_model_class="param_decomp.pretrain.models.gpt2_simple.GPT2Simple",
             output_extract=0,
             tokenizer_name="SimpleStories/test-SimpleStories-gpt2-1.25M",
-            lr_schedule=ScheduleConfig(start_val=1e-3),
+            components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
+            ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
             steps=1,
             batch_size=1,
             eval_batch_size=1,

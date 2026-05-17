@@ -161,10 +161,10 @@ def main(
     logger.info(f"Pipeline {pipeline_run_id} → {pipeline_dir}")
 
     # Git snapshot
-    snapshot_branch: str | None = None
+    snapshot_ref: str | None = None
     if pipeline_config.create_git_snapshot:
-        snapshot_branch, commit_hash = create_git_snapshot(snapshot_id=pipeline_run_id)
-        logger.info(f"Created git snapshot: {snapshot_branch} ({commit_hash[:8]})")
+        snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=pipeline_run_id)
+        logger.info(f"Created git snapshot: {snapshot_ref} ({commit_hash[:8]})")
 
     # Save pipeline config
     pipeline_config.to_file(pipeline_dir / "pipeline_config.yaml")
@@ -246,7 +246,7 @@ def main(
             job_name=f"{pipeline_config.slurm_job_name_prefix}_cluster",
             partition=pipeline_config.slurm_partition,
             n_gpus=1,  # Always 1 GPU per run
-            snapshot_branch=snapshot_branch,
+            snapshot_ref=snapshot_ref,
             max_concurrent_tasks=pipeline_config.n_runs,  # Run all concurrently
             mem=pipeline_config.slurm_mem,
         )
@@ -271,7 +271,7 @@ def main(
                     job_name=f"{pipeline_config.slurm_job_name_prefix}_dist_{method}",
                     partition=pipeline_config.slurm_partition,
                     n_gpus=1,
-                    snapshot_branch=snapshot_branch,
+                    snapshot_ref=snapshot_ref,
                     dependency_job_id=array_job_id,
                 )
                 dist_script = generate_script(dist_config, cmd)

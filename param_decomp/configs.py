@@ -154,6 +154,59 @@ class ScheduleConfig(BaseConfig):
         return self
 
 
+class AdamWOptimizerConfig(BaseConfig):
+    """Configuration for an AdamW optimizer (one of: components, ci_fn)."""
+
+    type: Literal["AdamW"] = "AdamW"
+    lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule")
+    weight_decay: NonNegativeFloat = Field(default=0.0, description="AdamW weight decay")
+    betas: tuple[Probability, Probability] = Field(
+        default=(0.9, 0.999), description="AdamW (beta1, beta2)"
+    )
+    grad_clip_norm: PositiveFloat | None = Field(
+        default=None,
+        description="If set, clip the grad norm of this group's parameters to this value",
+    )
+
+
+# Single-variant union for now. To add another optimizer (e.g. SGD):
+#   1. Define SGDOptimizerConfig with `type: Literal["SGD"] = "SGD"`
+#   2. Change to: `OptimizerConfig = AdamWOptimizerConfig | SGDOptimizerConfig`
+#   3. Wrap field annotations on Config with Annotated[..., Field(discriminator="type")]
+OptimizerConfig = AdamWOptimizerConfig
+
+
+def migrate_to_optimizer_configs(config_dict: dict[str, Any]) -> None:
+    """Migrate top-level lr_schedule + grad_clip_norm_{components,ci_fns} to
+    components_optimizer + ci_fn_optimizer.
+
+    Modifies config_dict in place. No-op if either optimizer subconfig is already present.
+    """
+    if "components_optimizer" in config_dict or "ci_fn_optimizer" in config_dict:
+        return
+    if "lr_schedule" not in config_dict:
+        return
+
+    logger.info(
+        "Migrating top-level lr_schedule/grad_clip_norm_* to components_optimizer/ci_fn_optimizer"
+    )
+    lr_schedule = config_dict.pop("lr_schedule")
+    # Old name was just `grad_clip_norm` (applied only to components); later split into
+    # grad_clip_norm_components/grad_clip_norm_ci_fns. Fold both spellings here.
+    legacy_components_clip = config_dict.pop("grad_clip_norm", None)
+    components_clip = config_dict.pop("grad_clip_norm_components", legacy_components_clip)
+    ci_fn_clip = config_dict.pop("grad_clip_norm_ci_fns", None)
+
+    config_dict["components_optimizer"] = {
+        "lr_schedule": lr_schedule,
+        "grad_clip_norm": components_clip,
+    }
+    config_dict["ci_fn_optimizer"] = {
+        "lr_schedule": lr_schedule,
+        "grad_clip_norm": ci_fn_clip,
+    }
+
+
 def migrate_to_lr_schedule_config(config_dict: dict[str, Any]) -> None:
     """Migrate old LR config format (lr + lr_schedule + lr_warmup_pct) to ScheduleConfig.
 
@@ -799,19 +852,16 @@ class Config(BaseConfig):
         )
     )
     # --- Training ---
-    lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule configuration")
+    components_optimizer: OptimizerConfig = Field(
+        ..., description="Optimizer config for the component (LinearComponent etc.) parameters"
+    )
+    ci_fn_optimizer: OptimizerConfig = Field(
+        ..., description="Optimizer config for the CI function parameters"
+    )
     steps: NonNegativeInt = Field(..., description="Total number of optimisation steps")
     batch_size: PositiveInt = Field(
         ...,
         description="Total batch size (may be divided across multiple devices).",
-    )
-    grad_clip_norm_components: PositiveFloat | None = Field(
-        default=None,
-        description="If set, apply grad norm clipping to the parameters of the components",
-    )
-    grad_clip_norm_ci_fns: PositiveFloat | None = Field(
-        default=None,
-        description="If set, apply grad norm clipping to the parameters of the CI functions",
     )
 
     # --- Faithfulness Warmup ---
@@ -933,7 +983,6 @@ class Config(BaseConfig):
         "gradient_accumulation_steps",
     ]
     RENAMED_CONFIG_KEYS: ClassVar[dict[str, str]] = {
-        "grad_clip_norm": "grad_clip_norm_components",
         "print_freq": "eval_freq",
         "pretrained_model_name_hf": "pretrained_model_name",
         "recon_coeff": "ci_recon_coeff",
@@ -952,6 +1001,7 @@ class Config(BaseConfig):
         cls._migrate_to_ci_config(config_dict)
         cls._strip_deprecated_global_ci_fields(config_dict)
         migrate_to_lr_schedule_config(config_dict)
+        migrate_to_optimizer_configs(config_dict)
 
         for key in list(config_dict.keys()):
             val = config_dict[key]

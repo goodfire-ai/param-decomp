@@ -33,11 +33,18 @@ loss_metric_configs:
 batch_size: 4096
 eval_batch_size: 4096
 steps: 10_000
-lr_schedule:
-  start_val: 1e-3
-  fn_type: cosine
-  warmup_pct: 0.0
-  final_val_frac: 0.0
+components_optimizer:
+  lr_schedule:
+    start_val: 1e-3
+    fn_type: cosine
+    warmup_pct: 0.0
+    final_val_frac: 0.0
+ci_fn_optimizer:
+  lr_schedule:
+    start_val: 1e-3
+    fn_type: cosine
+    warmup_pct: 0.0
+    final_val_frac: 0.0
 
 # --- Faithfulness Warmup ---
 faithfulness_warmup_steps: 200

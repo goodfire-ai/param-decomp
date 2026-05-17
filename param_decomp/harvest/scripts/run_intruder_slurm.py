@@ -10,7 +10,7 @@ def submit_intruder(
     decomposition_id: str,
     slurm_config: IntruderSlurmConfig,
     harvest_subrun_id: str,
-    snapshot_branch: str | None = None,
+    snapshot_ref: str | None = None,
     dependency_job_id: str | None = None,
 ) -> SubmitResult:
     cmd = get_command(decomposition_id, slurm_config.config, harvest_subrun_id)
@@ -22,7 +22,7 @@ def submit_intruder(
         time=slurm_config.time,
         cpus_per_task=4,
         mem="64G",
-        snapshot_branch=snapshot_branch,
+        snapshot_ref=snapshot_ref,
         dependency_job_id=dependency_job_id,
         comment=f"intruder {decomposition_id}/{harvest_subrun_id}",
     )

@@ -357,7 +357,7 @@ def parse_sweep_params(sweep_params_json: str | None) -> dict[str, Any] | None:
 
 class ExecutionStamp(NamedTuple):
     run_id: str
-    snapshot_branch: str
+    snapshot_ref: str
     commit_hash: str
     run_type: RunType
 
@@ -367,28 +367,28 @@ class ExecutionStamp(NamedTuple):
         run_type: RunType,
         create_snapshot: bool,
     ) -> "ExecutionStamp":
-        """Create an execution stamp, possibly including a git snapshot branch."""
+        """Create an execution stamp, possibly including a git snapshot ref."""
         run_id = generate_run_id(run_type)
-        snapshot_branch: str
+        snapshot_ref: str
         commit_hash: str
 
         if create_snapshot:
-            snapshot_branch, commit_hash = create_git_snapshot(snapshot_id=run_id)
-            logger.info(f"Created git snapshot branch: {snapshot_branch} ({commit_hash[:8]})")
+            snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=run_id)
+            logger.info(f"Created git snapshot ref: {snapshot_ref} ({commit_hash[:8]})")
         else:
-            snapshot_branch = repo_current_branch()
+            snapshot_ref = repo_current_branch()
             if repo_is_clean():
                 commit_hash = repo_current_commit_hash()
-                logger.info(f"Using current branch: {snapshot_branch} ({commit_hash[:8]})")
+                logger.info(f"Using current branch: {snapshot_ref} ({commit_hash[:8]})")
             else:
                 commit_hash = "none"
                 logger.info(
-                    f"Using current branch: {snapshot_branch} (uncommitted changes, no commit hash)"
+                    f"Using current branch: {snapshot_ref} (uncommitted changes, no commit hash)"
                 )
 
         return ExecutionStamp(
             run_id=run_id,
-            snapshot_branch=snapshot_branch,
+            snapshot_ref=snapshot_ref,
             commit_hash=commit_hash,
             run_type=run_type,
         )

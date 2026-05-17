@@ -10,6 +10,7 @@ from param_decomp.configs import (
     ImportanceMinimalityLossConfig,
     LayerwiseCiConfig,
     ModulePatternInfoConfig,
+    OptimizerConfig,
     ScheduleConfig,
     StochasticReconLayerwiseLossConfig,
     StochasticReconLossConfig,
@@ -70,8 +71,15 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
             FaithfulnessLossConfig(coeff=1.0),
         ],
         # Training
-        lr_schedule=ScheduleConfig(
-            start_val=1e-3, fn_type="cosine", warmup_pct=0.0, final_val_frac=0.0
+        components_optimizer=OptimizerConfig(
+            lr_schedule=ScheduleConfig(
+                start_val=1e-3, fn_type="cosine", warmup_pct=0.0, final_val_frac=0.0
+            ),
+        ),
+        ci_fn_optimizer=OptimizerConfig(
+            lr_schedule=ScheduleConfig(
+                start_val=1e-3, fn_type="cosine", warmup_pct=0.0, final_val_frac=0.0
+            ),
         ),
         batch_size=4,
         steps=3,  # Run only a few steps for the test

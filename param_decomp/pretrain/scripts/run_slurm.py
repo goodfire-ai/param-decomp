@@ -68,7 +68,7 @@ def _submit_slurm(
     # Create git snapshot for reproducibility
     execution_stamp = ExecutionStamp.create(run_type="train", create_snapshot=True)
     logger.info(f"Run ID: {execution_stamp.run_id}")
-    logger.info(f"Snapshot branch: {execution_stamp.snapshot_branch}")
+    logger.info(f"Snapshot ref: {execution_stamp.snapshot_ref}")
 
     # Build the training command
     train_cmd = f"torchrun --standalone --nproc_per_node={n_gpus} -m param_decomp.pretrain.train {config_path}"
@@ -78,7 +78,7 @@ def _submit_slurm(
         partition=partition,
         n_gpus=n_gpus,
         time=time,
-        snapshot_branch=execution_stamp.snapshot_branch,
+        snapshot_ref=execution_stamp.snapshot_ref,
     )
 
     script = generate_script(config, train_cmd)

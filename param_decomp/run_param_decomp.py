@@ -205,8 +205,18 @@ def optimize(
 
     assert len(component_params) > 0, "No parameters found in components to optimize"
 
-    optimized_params = component_params + ci_fn_params
-    optimizer = optim.AdamW(optimized_params, lr=config.lr_schedule.start_val, weight_decay=0)
+    components_optimizer = optim.AdamW(
+        component_params,
+        lr=config.components_optimizer.lr_schedule.start_val,
+        betas=config.components_optimizer.betas,
+        weight_decay=config.components_optimizer.weight_decay,
+    )
+    ci_fn_optimizer = optim.AdamW(
+        ci_fn_params,
+        lr=config.ci_fn_optimizer.lr_schedule.start_val,
+        betas=config.ci_fn_optimizer.betas,
+        weight_decay=config.ci_fn_optimizer.weight_decay,
+    )
 
     if config.faithfulness_warmup_steps > 0:
         run_faithfulness_warmup(component_model, component_params, config)
@@ -267,13 +277,19 @@ def optimize(
             phase_events[name].append((s, e))
 
     for step in tqdm(range(config.steps + 1), ncols=0, disable=not is_main_process()):
-        optimizer.zero_grad()
+        components_optimizer.zero_grad()
+        ci_fn_optimizer.zero_grad()
 
-        step_lr = get_scheduled_value(
-            step=step, total_steps=config.steps, config=config.lr_schedule
+        components_lr = get_scheduled_value(
+            step=step, total_steps=config.steps, config=config.components_optimizer.lr_schedule
         )
-        for group in optimizer.param_groups:
-            group["lr"] = step_lr
+        ci_fn_lr = get_scheduled_value(
+            step=step, total_steps=config.steps, config=config.ci_fn_optimizer.lr_schedule
+        )
+        for group in components_optimizer.param_groups:
+            group["lr"] = components_lr
+        for group in ci_fn_optimizer.param_groups:
+            group["lr"] = ci_fn_lr
 
         frac = step / config.steps
         active_ppgd_configs = [c for c in persistent_pgd_configs if frac >= c.start_frac]
@@ -361,12 +377,14 @@ def optimize(
                 batch_log_data, {f"train/grad_norms/{k}": v for k, v in grad_norms.items()}
             )
 
-            batch_log_data["train/schedules/lr"] = step_lr
+            batch_log_data["train/schedules/lr/components"] = components_lr
+            batch_log_data["train/schedules/lr/ci_fn"] = ci_fn_lr
 
             if is_main_process():
                 assert out_dir is not None
                 tqdm.write(f"--- Step {step} ---")
-                tqdm.write(f"LR: {step_lr:.6f}")
+                tqdm.write(f"LR[components]: {components_lr:.6f}")
+                tqdm.write(f"LR[ci_fn]: {ci_fn_lr:.6f}")
                 for name, value in batch_log_data.items():
                     tqdm.write(f"{name}: {value:.15f}")
                 local_log(batch_log_data, step, out_dir)
@@ -443,12 +461,13 @@ def optimize(
         # Skip gradient step if we are at the last step (last step just for plotting and logging)
         if step != config.steps:
             sync_across_processes()
-            if config.grad_clip_norm_components is not None:
-                clip_grad_norm_(component_params, config.grad_clip_norm_components)
-            if config.grad_clip_norm_ci_fns is not None:
-                clip_grad_norm_(ci_fn_params, config.grad_clip_norm_ci_fns)
+            if config.components_optimizer.grad_clip_norm is not None:
+                clip_grad_norm_(component_params, config.components_optimizer.grad_clip_norm)
+            if config.ci_fn_optimizer.grad_clip_norm is not None:
+                clip_grad_norm_(ci_fn_params, config.ci_fn_optimizer.grad_clip_norm)
             with cuda_timed("optimizer_step"):
-                optimizer.step()
+                components_optimizer.step()
+                ci_fn_optimizer.step()
 
         if profile_enabled and step + 1 >= profile_max_steps:
             torch.cuda.synchronize()

@@ -75,8 +75,8 @@ def launch_layerwise_run(
         for cfg in per_module_configs
     ]
 
-    snapshot_branch, commit_hash = create_git_snapshot(snapshot_id=launch_id)
-    logger.info(f"Created git snapshot branch: {snapshot_branch} ({commit_hash[:8]})")
+    snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=launch_id)
+    logger.info(f"Created git snapshot ref: {snapshot_ref} ({commit_hash[:8]})")
 
     wandb_urls = [
         get_wandb_run_url(orchestrator.wandb_project, job.run_id)
@@ -90,7 +90,7 @@ def launch_layerwise_run(
         launch_id=launch_id,
         training_jobs=training_jobs,
         sweep_params=None,
-        snapshot_branch=snapshot_branch,
+        snapshot_ref=snapshot_ref,
         n_gpus=None,
         partition=partition,
         max_concurrent_tasks=max_concurrent_tasks,

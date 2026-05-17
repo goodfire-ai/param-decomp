@@ -35,10 +35,16 @@ loss_metric_configs:
 batch_size: 2048
 eval_batch_size: 2048
 steps: 20_000
-lr_schedule:
-  start_val: 2e-3
-  fn_type: constant
-  warmup_pct: 0.0
+components_optimizer:
+  lr_schedule:
+    start_val: 2e-3
+    fn_type: constant
+    warmup_pct: 0.0
+ci_fn_optimizer:
+  lr_schedule:
+    start_val: 2e-3
+    fn_type: constant
+    warmup_pct: 0.0
 
 # --- Faithfulness Warmup ---
 faithfulness_warmup_steps: 200

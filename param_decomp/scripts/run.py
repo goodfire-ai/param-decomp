@@ -85,8 +85,8 @@ def launch_slurm_run(
         sweep_params=sweep_params,
     )
 
-    snapshot_branch, commit_hash = create_git_snapshot(snapshot_id=launch_id)
-    logger.info(f"Created git snapshot branch: {snapshot_branch} ({commit_hash[:8]})")
+    snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=launch_id)
+    logger.info(f"Created git snapshot ref: {snapshot_ref} ({commit_hash[:8]})")
 
     if len(training_jobs) > 1:
         _create_wandb_views_and_report(
@@ -95,7 +95,7 @@ def launch_slurm_run(
             project=project,
             launch_id=launch_id,
             experiments_list=experiments_list,
-            snapshot_branch=snapshot_branch,
+            snapshot_ref=snapshot_ref,
             commit_hash=commit_hash,
         )
 
@@ -110,7 +110,7 @@ def launch_slurm_run(
         launch_id=launch_id,
         training_jobs=training_jobs,
         sweep_params=sweep_params,
-        snapshot_branch=snapshot_branch,
+        snapshot_ref=snapshot_ref,
         n_gpus=n_gpus,
         partition=partition,
         max_concurrent_tasks=n_agents,
@@ -341,7 +341,7 @@ def _create_wandb_views_and_report(
     project: str,
     launch_id: str,
     experiments_list: list[str],
-    snapshot_branch: str,
+    snapshot_ref: str,
     commit_hash: str,
 ) -> None:
     """Set up W&B workspace view and optionally a report."""
@@ -350,13 +350,13 @@ def _create_wandb_views_and_report(
         case True, None:
             report_cfg = ReportCfg(
                 report_title=report_title,
-                branch=snapshot_branch,
+                branch=snapshot_ref,
                 commit_hash=commit_hash,
             )
         case True, title:
             report_cfg = ReportCfg(
                 report_title=title,
-                branch=snapshot_branch,
+                branch=snapshot_ref,
                 commit_hash=commit_hash,
             )
         case False, _:

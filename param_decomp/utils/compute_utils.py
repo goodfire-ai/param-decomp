@@ -74,7 +74,7 @@ def get_command(
     job_idx: int,
     n_gpus: int | None,
     sweep_params: dict[str, Any] | None,
-    snapshot_branch: str,
+    snapshot_ref: str,
     is_array: bool,
 ) -> Command:
     """Build the command to run a training job.
@@ -86,7 +86,7 @@ def get_command(
         n_gpus: Number of GPUs. None or 1 means single GPU/CPU. 2-8 means single-node DDP.
                 >8 means multi-node DDP (must be divisible by 8).
         sweep_params: Optional sweep parameters to pass to the job.
-        snapshot_branch: Git branch to checkout (used for multi-node workspace setup).
+        snapshot_ref: Fully-qualified git ref to checkout (used for multi-node workspace setup).
         is_array: Whether the job is part of a SLURM array.
     """
     port = _choose_master_port(launch_id, job_idx)
@@ -122,7 +122,7 @@ def get_command(
             else:
                 job_id_suffix = "$SLURM_JOB_ID"
             work_dir = f"/tmp/param-decomp/workspace-{job_id_suffix}-node$SLURM_PROCID"
-            setup = generate_git_snapshot_setup(work_dir, snapshot_branch)
+            setup = generate_git_snapshot_setup(work_dir, snapshot_ref)
             # Explicit srun flags ensure one task per node across all allocated nodes
             srun_flags = f"--nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1"
             command = f"srun {srun_flags} bash -c {shlex.quote(f'{setup}\n{torchrun_cmd}')}"
@@ -135,7 +135,7 @@ def create_slurm_script(
     launch_id: str,
     training_jobs: list[TrainingJob],
     sweep_params: dict[str, Any] | None,
-    snapshot_branch: str,
+    snapshot_ref: str,
     n_gpus: int | None,
     partition: str,
     max_concurrent_tasks: int | None = None,
@@ -151,7 +151,7 @@ def create_slurm_script(
         launch_id: Launch identifier for this group of jobs.
         training_jobs: List of training jobs to execute.
         sweep_params: Optional sweep parameters to pass to the jobs.
-        snapshot_branch: Git branch to checkout.
+        snapshot_ref: Fully-qualified git ref to checkout.
         n_gpus: Number of GPUs. None or 1 means single GPU. 2-8 means single-node DDP.
                 >8 means multi-node DDP (must be divisible by 8).
         partition: SLURM partition to use.
@@ -169,7 +169,7 @@ def create_slurm_script(
             i,
             n_gpus,
             sweep_params,
-            snapshot_branch=snapshot_branch,
+            snapshot_ref=snapshot_ref,
             is_array=is_array,
         )
         commands.append(cmd.command)
@@ -189,7 +189,7 @@ def create_slurm_script(
             partition=partition,
             n_gpus=gpus_per_node,
             n_nodes=n_nodes,
-            snapshot_branch=snapshot_branch,
+            snapshot_ref=snapshot_ref,
             max_concurrent_tasks=max_concurrent_tasks,
         )
         return generate_array_script(
@@ -202,7 +202,7 @@ def create_slurm_script(
             partition=partition,
             n_gpus=gpus_per_node,
             n_nodes=n_nodes,
-            snapshot_branch=snapshot_branch,
+            snapshot_ref=snapshot_ref,
             comment=comment,
         )
         return generate_script(config, commands[0], env=CUDA_FLAGS)
