@@ -49,8 +49,9 @@ from param_decomp.app.backend.optim_cis import (
 )
 from param_decomp.app.backend.schemas import OutputProbability
 from param_decomp.app.backend.utils import log_errors
-from param_decomp.configs import ImportanceMinimalityLossConfig, SamplingType
+from param_decomp.configs import SamplingType
 from param_decomp.log import logger
+from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.topology import TransformerTopology
 from param_decomp.utils.distributed_utils import get_device

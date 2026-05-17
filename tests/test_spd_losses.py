@@ -14,16 +14,14 @@ from param_decomp.configs import (
     SingleSourceScope,
     UniformKSubsetRoutingConfig,
 )
-from param_decomp.metrics import (
-    ci_masked_recon_layerwise_loss,
-    ci_masked_recon_loss,
-    ci_masked_recon_subset_loss,
-    faithfulness_loss,
-    importance_minimality_loss,
-    stochastic_recon_layerwise_loss,
-    stochastic_recon_loss,
-    stochastic_recon_subset_loss,
-)
+from param_decomp.metrics.ci_masked_recon_layerwise_loss import ci_masked_recon_layerwise_loss
+from param_decomp.metrics.ci_masked_recon_loss import ci_masked_recon_loss
+from param_decomp.metrics.ci_masked_recon_subset_loss import ci_masked_recon_subset_loss
+from param_decomp.metrics.faithfulness_loss import faithfulness_loss
+from param_decomp.metrics.importance_minimality_loss import importance_minimality_loss
+from param_decomp.metrics.stochastic_recon_layerwise_loss import stochastic_recon_layerwise_loss
+from param_decomp.metrics.stochastic_recon_loss import stochastic_recon_loss
+from param_decomp.metrics.stochastic_recon_subset_loss import stochastic_recon_subset_loss
 from param_decomp.models.batch_and_loss_fns import (
     recon_loss_kl,
     recon_loss_mse,

@@ -1,5 +1,3 @@
-from typing import Any, ClassVar, override
-
 import torch
 import torch.nn.functional as F
 from jaxtyping import Float, Int
@@ -7,8 +5,10 @@ from torch import Tensor
 from torch.distributed import ReduceOp
 
 from param_decomp.configs import SamplingType
-from param_decomp.metrics.base import Metric
-from param_decomp.models.component_model import CIOutputs, ComponentModel
+from param_decomp.metrics.base import LossMetricConfig, MetricConfig
+from param_decomp.metrics.context import MetricContext
+from param_decomp.metrics.registry import register_metric
+from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import ComponentsMaskInfo, make_mask_infos
 from param_decomp.routing import AllLayersRouter
 from param_decomp.utils.component_utils import calc_stochastic_component_mask_info
@@ -17,16 +17,21 @@ from param_decomp.utils.distributed_utils import all_reduce
 PerModuleMSE = dict[str, tuple[Float[Tensor, ""], int]]
 
 
+class StochasticHiddenActsReconLossConfig(LossMetricConfig):
+    pass
+
+
+class CIHiddenActsReconLossConfig(MetricConfig):
+    pass
+
+
 def calc_hidden_acts_mse(
     model: ComponentModel,
     batch: Int[Tensor, "..."] | Float[Tensor, "..."],
     mask_infos: dict[str, ComponentsMaskInfo],
     target_acts: dict[str, Float[Tensor, "..."]],
 ) -> tuple[PerModuleMSE, Float[Tensor, "..."]]:
-    """Forward with mask_infos and compute per-module MSE against target output activations.
-
-    Returns the per-module MSE dict and the component model's output tensor.
-    """
+    """Forward with mask_infos and compute per-module MSE against target output activations."""
     result = model(batch, mask_infos=mask_infos, cache_type="output")
     per_module: PerModuleMSE = {}
     for layer_name, target in target_acts.items():
@@ -38,7 +43,7 @@ def calc_hidden_acts_mse(
 
 def _sum_per_module_mse(per_module: PerModuleMSE) -> tuple[Float[Tensor, ""], int]:
     device = next(iter(per_module.values()))[0].device
-    total_mse = torch.tensor(0.0, device=device)
+    total_mse = torch.zeros((), device=device)
     total_n = 0
     for mse, n in per_module.values():
         total_mse = total_mse + mse
@@ -55,7 +60,7 @@ def _accumulate_per_module(accum: PerModuleMSE, per_module: PerModuleMSE) -> Non
             accum[key] = (mse, n)
 
 
-def _stochastic_hidden_acts_recon_loss_update(
+def _stochastic_hidden_acts_update(
     model: ComponentModel,
     sampling: SamplingType,
     n_mask_samples: int,
@@ -64,35 +69,20 @@ def _stochastic_hidden_acts_recon_loss_update(
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
 ) -> PerModuleMSE:
     assert ci, "Empty ci"
-
     target_acts = model(batch, cache_type="output").cache
-
     accum: PerModuleMSE = {}
-    stoch_mask_infos_list = [
-        calc_stochastic_component_mask_info(
+    for _ in range(n_mask_samples):
+        stoch_mask_infos = calc_stochastic_component_mask_info(
             causal_importances=ci,
             component_mask_sampling=sampling,
             weight_deltas=weight_deltas,
             router=AllLayersRouter(),
         )
-        for _ in range(n_mask_samples)
-    ]
-    for stoch_mask_infos in stoch_mask_infos_list:
         per_module, _ = calc_hidden_acts_mse(
-            model=model,
-            batch=batch,
-            mask_infos=stoch_mask_infos,
-            target_acts=target_acts,
+            model=model, batch=batch, mask_infos=stoch_mask_infos, target_acts=target_acts
         )
         _accumulate_per_module(accum, per_module)
-
     return accum
-
-
-def _hidden_acts_recon_loss_compute(
-    sum_mse: Float[Tensor, ""], n_examples: Int[Tensor, ""] | int
-) -> Float[Tensor, ""]:
-    return sum_mse / n_examples
 
 
 def compute_per_module_metrics(
@@ -106,7 +96,6 @@ def compute_per_module_metrics(
     stacked_n = torch.stack([per_module_n_examples[k].float() for k in keys])
     stacked_mse = all_reduce(stacked_mse, op=ReduceOp.SUM)
     stacked_n = all_reduce(stacked_n, op=ReduceOp.SUM)
-
     out: dict[str, Float[Tensor, ""]] = {}
     for i, key in enumerate(keys):
         out[f"{class_name}/{key}"] = stacked_mse[i] / stacked_n[i]
@@ -114,6 +103,114 @@ def compute_per_module_metrics(
     return out
 
 
+class _HiddenActsAccumulator:
+    """Shared accumulator state for both hidden_acts metrics."""
+
+    def __init__(self, device: str) -> None:
+        self.device = device
+        self.reset()
+
+    def reset(self) -> None:
+        self.per_module_sum_mse: dict[str, Tensor] = {}
+        self.per_module_n_examples: dict[str, Tensor] = {}
+
+    def accumulate(self, per_module: PerModuleMSE) -> tuple[Float[Tensor, ""], int]:
+        for key, (mse, n) in per_module.items():
+            if key not in self.per_module_sum_mse:
+                self.per_module_sum_mse[key] = torch.zeros((), device=self.device)
+                self.per_module_n_examples[key] = torch.zeros(
+                    (), device=self.device, dtype=torch.long
+                )
+            self.per_module_sum_mse[key] += mse.detach()
+            self.per_module_n_examples[key] += n
+        return _sum_per_module_mse(per_module)
+
+
+@register_metric
+class StochasticHiddenActsReconLoss:
+    """Reconstruction loss between target and stochastic hidden activations when sampling with stochastic masks."""
+
+    name = "stochastic_hidden_acts_recon"
+    section = "loss"
+    config_type = StochasticHiddenActsReconLossConfig
+    slow = True
+    short_name = "StochHiddenActRecon"
+
+    def __init__(
+        self,
+        cfg: StochasticHiddenActsReconLossConfig,
+        *,
+        model: ComponentModel,
+        device: str,
+    ) -> None:
+        self.cfg = cfg
+        self.model = model
+        self.device = device
+        self._accum = _HiddenActsAccumulator(device)
+
+    def reset(self) -> None:
+        self._accum.reset()
+
+    def update(self, ctx: MetricContext) -> Tensor:
+        wd = ctx.weight_deltas if ctx.config.use_delta_component else None
+        per_module = _stochastic_hidden_acts_update(
+            model=self.model,
+            sampling=ctx.config.sampling,
+            n_mask_samples=ctx.config.n_mask_samples,
+            batch=ctx.batch,
+            ci=ctx.ci.lower_leaky,
+            weight_deltas=wd,
+        )
+        sum_loss, n = self._accum.accumulate(per_module)
+        return sum_loss / n
+
+    def compute(self) -> dict[str, Float[Tensor, ""]]:
+        return compute_per_module_metrics(
+            class_name=type(self).__name__,
+            per_module_sum_mse=self._accum.per_module_sum_mse,
+            per_module_n_examples=self._accum.per_module_n_examples,
+        )
+
+
+@register_metric
+class CIHiddenActsReconLoss:
+    """Reconstruction loss between target and component hidden activations when masking with CI values."""
+
+    name = "ci_hidden_acts_recon"
+    section = "loss"
+    config_type = CIHiddenActsReconLossConfig
+    slow = True
+    short_name = "CIHiddenActRecon"
+
+    def __init__(
+        self, cfg: CIHiddenActsReconLossConfig, *, model: ComponentModel, device: str
+    ) -> None:
+        self.cfg = cfg
+        self.model = model
+        self.device = device
+        self._accum = _HiddenActsAccumulator(device)
+
+    def reset(self) -> None:
+        self._accum.reset()
+
+    def update(self, ctx: MetricContext) -> None:
+        target_acts = self.model(ctx.batch, cache_type="output").cache
+        mask_infos = make_mask_infos(ctx.ci.lower_leaky, weight_deltas_and_masks=None)
+        per_module, _ = calc_hidden_acts_mse(
+            model=self.model, batch=ctx.batch, mask_infos=mask_infos, target_acts=target_acts
+        )
+        self._accum.accumulate(per_module)
+        return None
+
+    def compute(self) -> dict[str, Float[Tensor, ""]]:
+        return compute_per_module_metrics(
+            class_name=type(self).__name__,
+            per_module_sum_mse=self._accum.per_module_sum_mse,
+            per_module_n_examples=self._accum.per_module_n_examples,
+        )
+
+
+# Bring back top-level helper preserved for compatibility with optim_cis.py / external callers.
 def stochastic_hidden_acts_recon_loss(
     model: ComponentModel,
     sampling: SamplingType,
@@ -122,7 +219,7 @@ def stochastic_hidden_acts_recon_loss(
     ci: dict[str, Float[Tensor, "... C"]],
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
 ) -> Float[Tensor, ""]:
-    per_module = _stochastic_hidden_acts_recon_loss_update(
+    per_module = _stochastic_hidden_acts_update(
         model=model,
         sampling=sampling,
         n_mask_samples=n_mask_samples,
@@ -130,104 +227,5 @@ def stochastic_hidden_acts_recon_loss(
         ci=ci,
         weight_deltas=weight_deltas,
     )
-    sum_mse, n_examples = _sum_per_module_mse(per_module)
-    return _hidden_acts_recon_loss_compute(sum_mse, n_examples)
-
-
-class StochasticHiddenActsReconLoss(Metric):
-    """Reconstruction loss between target and stochastic hidden activations when sampling with stochastic masks."""
-
-    slow: ClassVar[bool] = True
-    metric_section: ClassVar[str] = "loss"
-
-    def __init__(
-        self,
-        model: ComponentModel,
-        device: str,
-        sampling: SamplingType,
-        use_delta_component: bool,
-        n_mask_samples: int,
-    ) -> None:
-        self.model = model
-        self.sampling: SamplingType = sampling
-        self.use_delta_component: bool = use_delta_component
-        self.n_mask_samples: int = n_mask_samples
-        self.device = device
-        self.per_module_sum_mse: dict[str, Tensor] = {}
-        self.per_module_n_examples: dict[str, Tensor] = {}
-
-    @override
-    def update(
-        self,
-        *,
-        batch: Int[Tensor, "..."] | Float[Tensor, "..."],
-        ci: CIOutputs,
-        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
-        **_: Any,
-    ) -> None:
-        per_module = _stochastic_hidden_acts_recon_loss_update(
-            model=self.model,
-            sampling=self.sampling,
-            n_mask_samples=self.n_mask_samples,
-            batch=batch,
-            ci=ci.lower_leaky,
-            weight_deltas=weight_deltas if self.use_delta_component else None,
-        )
-        for key, (mse, n) in per_module.items():
-            if key not in self.per_module_sum_mse:
-                self.per_module_sum_mse[key] = torch.tensor(0.0, device=self.device)
-                self.per_module_n_examples[key] = torch.tensor(0, device=self.device)
-            self.per_module_sum_mse[key] += mse.detach()
-            self.per_module_n_examples[key] += n
-
-    @override
-    def compute(self) -> dict[str, Float[Tensor, ""]]:
-        return compute_per_module_metrics(
-            class_name=type(self).__name__,
-            per_module_sum_mse=self.per_module_sum_mse,
-            per_module_n_examples=self.per_module_n_examples,
-        )
-
-
-class CIHiddenActsReconLoss(Metric):
-    """Reconstruction loss between target and component hidden activations when masking with CI values."""
-
-    slow: ClassVar[bool] = True
-    metric_section: ClassVar[str] = "loss"
-
-    def __init__(self, model: ComponentModel, device: str) -> None:
-        self.model = model
-        self.device = device
-        self.per_module_sum_mse: dict[str, Tensor] = {}
-        self.per_module_n_examples: dict[str, Tensor] = {}
-
-    @override
-    def update(
-        self,
-        *,
-        batch: Int[Tensor, "..."] | Float[Tensor, "..."],
-        ci: CIOutputs,
-        **_: Any,
-    ) -> None:
-        target_acts = self.model(batch, cache_type="output").cache
-        mask_infos = make_mask_infos(ci.lower_leaky, weight_deltas_and_masks=None)
-        per_module, _output = calc_hidden_acts_mse(
-            model=self.model,
-            batch=batch,
-            mask_infos=mask_infos,
-            target_acts=target_acts,
-        )
-        for key, (mse, n) in per_module.items():
-            if key not in self.per_module_sum_mse:
-                self.per_module_sum_mse[key] = torch.tensor(0.0, device=self.device)
-                self.per_module_n_examples[key] = torch.tensor(0, device=self.device)
-            self.per_module_sum_mse[key] += mse.detach()
-            self.per_module_n_examples[key] += n
-
-    @override
-    def compute(self) -> dict[str, Float[Tensor, ""]]:
-        return compute_per_module_metrics(
-            class_name=type(self).__name__,
-            per_module_sum_mse=self.per_module_sum_mse,
-            per_module_n_examples=self.per_module_n_examples,
-        )
+    sum_mse, n = _sum_per_module_mse(per_module)
+    return sum_mse / n

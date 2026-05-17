@@ -1,6 +1,6 @@
 import torch
 
-from param_decomp.metrics import faithfulness_loss
+from param_decomp.metrics.faithfulness_loss import faithfulness_loss
 from param_decomp.models.component_model import ComponentModel
 from tests.metrics.fixtures import make_one_layer_component_model
 

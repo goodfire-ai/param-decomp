@@ -1,60 +1,62 @@
-from typing import Any, ClassVar, override
-
-from torch import Tensor
+from typing import ClassVar
 
 from param_decomp.configs import SamplingType
-from param_decomp.metrics.base import Metric
+from param_decomp.metrics.base import MetricConfig
+from param_decomp.metrics.context import MetricContext
+from param_decomp.metrics.registry import register_metric
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.plotting import get_single_feature_causal_importances
 from param_decomp.utils.target_ci_solutions import compute_target_metrics, make_target_ci_solution
 
 
-class IdentityCIError(Metric):
+class IdentityCIErrorConfig(MetricConfig):
+    identity_ci: list[dict[str, str | int]] | None
+    dense_ci: list[dict[str, str | int]] | None
+
+
+@register_metric
+class IdentityCIError:
     """Error between the CI values and an Identity or Dense CI pattern."""
 
-    slow: ClassVar[bool] = True
+    name = "identity_ci_error"
+    section = "target_solution_error"
+    config_type = IdentityCIErrorConfig
+    slow = True
+    short_name = "IdCIErr"
+
     input_magnitude: ClassVar[float] = 0.75
 
-    metric_section: ClassVar[str] = "target_solution_error"
-
-    def __init__(
-        self,
-        model: ComponentModel,
-        sampling: SamplingType,
-        identity_ci: list[dict[str, str | int]] | None = None,
-        dense_ci: list[dict[str, str | int]] | None = None,
-    ) -> None:
+    def __init__(self, cfg: IdentityCIErrorConfig, *, model: ComponentModel, device: str) -> None:
+        self.cfg = cfg
         self.model = model
-        self.sampling: SamplingType = sampling
-        self.identity_ci = identity_ci
-        self.dense_ci = dense_ci
+        self.device = device
+        self.reset()
 
+    def reset(self) -> None:
         self.batch_shape: tuple[int, ...] | None = None
+        self.sampling: SamplingType | None = None
 
-    @override
-    def update(self, *, batch: Tensor | tuple[Tensor, ...], **_: Any) -> None:
+    def update(self, ctx: MetricContext) -> None:
         if self.batch_shape is None:
-            input_tensor = batch[0] if isinstance(batch, tuple) else batch
+            input_tensor = ctx.batch[0] if isinstance(ctx.batch, tuple) else ctx.batch
             self.batch_shape = tuple(input_tensor.shape)
+            self.sampling = ctx.config.sampling
+        return None
 
-    @override
     def compute(self) -> dict[str, float]:
         assert self.batch_shape is not None, "haven't seen any inputs yet"
-
+        assert self.sampling is not None
         target_solution = make_target_ci_solution(
-            identity_ci=self.identity_ci, dense_ci=self.dense_ci
+            identity_ci=self.cfg.identity_ci, dense_ci=self.cfg.dense_ci
         )
         if target_solution is None:
             return {}
-
         ci = get_single_feature_causal_importances(
             model=self.model,
             batch_shape=self.batch_shape,
             input_magnitude=self.input_magnitude,
             sampling=self.sampling,
         )
-
-        target_metrics = compute_target_metrics(
+        return compute_target_metrics(
             causal_importances=ci.lower_leaky, target_solution=target_solution
         )
-        return target_metrics

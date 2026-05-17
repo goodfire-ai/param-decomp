@@ -1,6 +1,12 @@
-"""Config classes of various types"""
+"""Config classes of various types."""
+# pyright: reportImportCycles=false
+#
+# This module intentionally has an import cycle with `param_decomp.metrics`: configs.py imports
+# the metric base classes (and triggers `discover_metrics()` at the bottom), and each metric
+# module imports symbols from this file. The cycle is safe at runtime because discovery only
+# runs after all class definitions here have completed.
 
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     Field,
@@ -8,10 +14,13 @@ from pydantic import (
     NonNegativeInt,
     PositiveFloat,
     PositiveInt,
+    field_validator,
     model_validator,
 )
 
 from param_decomp.base_config import BaseConfig
+from param_decomp.metrics.base import LossMetricConfig, MetricConfig
+from param_decomp.metrics.registry import METRIC_REGISTRY
 from param_decomp.types import (
     GlobalCiFnType,
     LayerwiseCiFnType,
@@ -83,12 +92,7 @@ class GlobalSharedTransformerCiConfig(BaseConfig):
 
 
 class GlobalCiConfig(BaseConfig):
-    """Configuration for global CI function (single function for all layers).
-
-    For fn_type='global_shared_mlp': Concatenates all activations, processes through MLP.
-    For fn_type='global_shared_transformer': Concatenates activations, projects to shared d_model,
-    and applies transformer blocks over the sequence dimension.
-    """
+    """Configuration for global CI function (single function for all layers)."""
 
     mode: Literal["global"] = "global"
     fn_type: GlobalCiFnType = Field(
@@ -121,7 +125,7 @@ CiConfig = LayerwiseCiConfig | GlobalCiConfig
 
 
 class ScheduleConfig(BaseConfig):
-    """Configuration for a schedule with warmup and decay. Can be used for LR or other values."""
+    """Configuration for a schedule with warmup and decay."""
 
     start_val: PositiveFloat = Field(..., description="Starting/peak value (after warmup)")
     warmup_pct: Probability = Field(
@@ -129,7 +133,7 @@ class ScheduleConfig(BaseConfig):
     )
     final_val_frac: NonNegativeFloat = Field(
         default=1.0,
-        description="End value as fraction of start_val. Can be <1 (decay), =1 (no decay), or >1 (increase)",
+        description="End value as fraction of start_val.",
     )
     fn_type: Literal["constant", "cosine", "linear"] = Field(
         default="constant", description="Decay function type after warmup"
@@ -157,11 +161,7 @@ class OptimizerConfig(BaseConfig):
 
 
 class ModulePatternInfoConfig(BaseConfig):
-    """Configuration for a module pattern with its number of components.
-
-    Used in config files to specify which modules to decompose and how many
-    components (C) to use for each module matching the pattern.
-    """
+    """Configuration for a module pattern with its number of components."""
 
     module_pattern: str = Field(..., description="fnmatch-style pattern to match module names")
     C: PositiveInt = Field(
@@ -169,26 +169,7 @@ class ModulePatternInfoConfig(BaseConfig):
     )
 
 
-#### Metrics that can be used as losses in training or eval ####
-class LossMetricConfig(BaseConfig):
-    coeff: float | None = Field(
-        default=None,
-        description="Loss coefficient. Required when set under `loss_metrics`; ignored under `eval_metrics`.",
-    )
-
-
-class FaithfulnessLossConfig(LossMetricConfig):
-    classname: Literal["FaithfulnessLoss"] = "FaithfulnessLoss"
-
-
-class ImportanceMinimalityLossConfig(LossMetricConfig):
-    classname: Literal["ImportanceMinimalityLoss"] = "ImportanceMinimalityLoss"
-    pnorm: NonNegativeFloat
-    beta: NonNegativeFloat
-    p_anneal_start_frac: Probability = 1.0
-    p_anneal_final_p: NonNegativeFloat | None = None
-    p_anneal_end_frac: Probability = 1.0
-    eps: NonNegativeFloat = 1e-12
+# --- Subset routing (used by several metric configs) ---
 
 
 class UniformKSubsetRoutingConfig(BaseConfig):
@@ -203,83 +184,7 @@ class StaticProbabilityRoutingConfig(BaseConfig):
 SubsetRoutingType = UniformKSubsetRoutingConfig | StaticProbabilityRoutingConfig
 
 
-class CIMaskedReconSubsetLossConfig(LossMetricConfig):
-    classname: Literal["CIMaskedReconSubsetLoss"] = "CIMaskedReconSubsetLoss"
-    routing: Annotated[
-        SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
-    ]
-
-
-class CIMaskedReconLayerwiseLossConfig(LossMetricConfig):
-    classname: Literal["CIMaskedReconLayerwiseLoss"] = "CIMaskedReconLayerwiseLoss"
-
-
-class CIMaskedReconLossConfig(LossMetricConfig):
-    classname: Literal["CIMaskedReconLoss"] = "CIMaskedReconLoss"
-
-
-class StochasticReconLossConfig(LossMetricConfig):
-    classname: Literal["StochasticReconLoss"] = "StochasticReconLoss"
-
-
-class StochasticReconSubsetLossConfig(LossMetricConfig):
-    classname: Literal["StochasticReconSubsetLoss"] = "StochasticReconSubsetLoss"
-    routing: Annotated[
-        SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
-    ]
-
-
-class StochasticReconLayerwiseLossConfig(LossMetricConfig):
-    classname: Literal["StochasticReconLayerwiseLoss"] = "StochasticReconLayerwiseLoss"
-
-
-class UnmaskedReconLossConfig(LossMetricConfig):
-    classname: Literal["UnmaskedReconLoss"] = "UnmaskedReconLoss"
-
-
-PGDInitStrategy = Literal["random", "ones", "zeroes"]
-
-MaskScope = Literal["unique_per_datapoint", "shared_across_batch"]
-
-
-class PGDConfig(LossMetricConfig):
-    init: PGDInitStrategy
-    step_size: float
-    n_steps: int
-    mask_scope: MaskScope
-
-
-class PGDReconLossConfig(PGDConfig):
-    classname: Literal["PGDReconLoss"] = "PGDReconLoss"
-
-
-class PGDReconSubsetLossConfig(PGDConfig):
-    classname: Literal["PGDReconSubsetLoss"] = "PGDReconSubsetLoss"
-    routing: Annotated[
-        SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
-    ]
-
-
-class PGDReconLayerwiseLossConfig(PGDConfig):
-    classname: Literal["PGDReconLayerwiseLoss"] = "PGDReconLayerwiseLoss"
-
-
-class PGDMultiBatchConfig(LossMetricConfig):
-    init: PGDInitStrategy
-    step_size: float
-    n_steps: int
-    gradient_accumulation_steps: int
-
-
-class PGDMultiBatchReconLossConfig(PGDMultiBatchConfig):
-    classname: Literal["PGDMultiBatchReconLoss"] = "PGDMultiBatchReconLoss"
-
-
-class PGDMultiBatchReconSubsetLossConfig(PGDMultiBatchConfig):
-    classname: Literal["PGDMultiBatchReconSubsetLoss"] = "PGDMultiBatchReconSubsetLoss"
-    routing: Annotated[
-        SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
-    ]
+# --- Persistent PGD shared types (also imported by `metrics.persistent_pgd_recon`) ---
 
 
 class SignPGDConfig(BaseConfig):
@@ -307,23 +212,11 @@ class BroadcastAcrossBatchScope(BaseConfig):
 
 
 class RepeatAcrossBatchScope(BaseConfig):
-    """Sources of shape (N, S, C) where N divides both batch_size and eval_batch_size.
-
-    Repeated along batch dim at forward time: (N, S, C) -> (B, S, C).
-    """
-
     type: Literal["repeat_across_batch"] = "repeat_across_batch"
     n_sources: PositiveInt
 
 
 class PerBatchPerPositionScope(BaseConfig):
-    """Sources of shape (B, S, C) — one source per batch element per position, separate across
-    ranks.
-
-    Unlike other scopes, gradients are NOT all-reduced across ranks, so each rank
-    maintains fully independent sources for its own batch elements.
-    """
-
     type: Literal["per_batch_per_position"] = "per_batch_per_position"
 
 
@@ -337,232 +230,52 @@ PersistentPGDSourceScope = Annotated[
 
 
 class _PersistentPGDBaseConfig(LossMetricConfig):
-    """Shared fields for persistent PGD configs.
-
-    Persistent PGD maintains persistent masks that receive one gradient update per training step,
-    amortizing PGD optimization across training.
-    """
+    """Shared fields for persistent PGD configs."""
 
     optimizer: Annotated[PGDOptimizerConfig, Field(discriminator="type")]
     scope: PersistentPGDSourceScope
     use_sigmoid_parameterization: bool = False
-    n_warmup_steps: Annotated[
-        NonNegativeInt,
-        Field(
-            description="Number of additional inner PGD source-optimization steps to run on each "
-            "batch before the final loss computation. Each training step always performs one PPGD "
-            "source update (grad + step) as part of the outer loop; these warmup steps add extra "
-            "source refinement iterations on the same batch in an inner loop beforehand."
+    n_warmup_steps: NonNegativeInt = Field(
+        default=0,
+        description=(
+            "Extra inner PGD source-optimization steps on each train batch before the final loss"
+            " computation."
         ),
-    ] = 0
+    )
     start_frac: Probability = 0.0
     n_samples: PositiveInt = 1
 
 
 class PersistentPGDReconLossConfig(_PersistentPGDBaseConfig):
-    classname: Literal["PersistentPGDReconLoss"] = "PersistentPGDReconLoss"
+    pass
 
 
 class PersistentPGDReconSubsetLossConfig(_PersistentPGDBaseConfig):
-    classname: Literal["PersistentPGDReconSubsetLoss"] = "PersistentPGDReconSubsetLoss"
     routing: Annotated[
         SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
     ]
 
 
-class StochasticHiddenActsReconLossConfig(LossMetricConfig):
-    classname: Literal["StochasticHiddenActsReconLoss"] = "StochasticHiddenActsReconLoss"
-
-
-class CIHiddenActsReconLossConfig(BaseConfig):
-    classname: Literal["CIHiddenActsReconLoss"] = "CIHiddenActsReconLoss"
-
-
-class PersistentPGDReconEvalConfig(BaseConfig):
-    classname: Literal["PersistentPGDReconEval"] = "PersistentPGDReconEval"
-
-
-class PersistentPGDReconSubsetEvalConfig(BaseConfig):
-    classname: Literal["PersistentPGDReconSubsetEval"] = "PersistentPGDReconSubsetEval"
-
-
-class _AttnPatternsReconLossBaseConfig(BaseConfig):
-    """Attention pattern reconstruction loss config.
-
-    Supports standard attention and RoPE attention (auto-detected from the parent attention
-    module). Models using ALiBi, QK-norm, sliding window, etc. are not supported.
-    """
-
-    n_heads: int
-    q_proj_path: str | None = None
-    k_proj_path: str | None = None
-    c_attn_path: str | None = None
-
-    @model_validator(mode="after")
-    def _validate_paths(self) -> Self:
-        has_separate = self.q_proj_path is not None and self.k_proj_path is not None
-        has_combined = self.c_attn_path is not None
-        assert has_separate != has_combined, (
-            "Specify either (q_proj_path, k_proj_path) or c_attn_path, not both/neither"
-        )
-        return self
-
-
-class CIMaskedAttnPatternsReconLossConfig(_AttnPatternsReconLossBaseConfig):
-    classname: Literal["CIMaskedAttnPatternsReconLoss"] = "CIMaskedAttnPatternsReconLoss"
-
-
-class StochasticAttnPatternsReconLossConfig(_AttnPatternsReconLossBaseConfig):
-    classname: Literal["StochasticAttnPatternsReconLoss"] = "StochasticAttnPatternsReconLoss"
-
-
-#### Metrics that can only be used in eval ####
-class CEandKLLossesConfig(BaseConfig):
-    classname: Literal["CEandKLLosses"] = "CEandKLLosses"
-    rounding_threshold: float
-
-
-class CIHistogramsConfig(BaseConfig):
-    classname: Literal["CIHistograms"] = "CIHistograms"
-    n_batches_accum: int | None
-
-
-class CI_L0Config(BaseConfig):
-    classname: Literal["CI_L0"] = "CI_L0"
-    groups: dict[str, list[str]] | None
-
-
-class CIMeanPerComponentConfig(BaseConfig):
-    classname: Literal["CIMeanPerComponent"] = "CIMeanPerComponent"
-
-
-class ComponentActivationDensityConfig(BaseConfig):
-    classname: Literal["ComponentActivationDensity"] = "ComponentActivationDensity"
-
-
-class IdentityCIErrorConfig(BaseConfig):
-    classname: Literal["IdentityCIError"] = "IdentityCIError"
-    identity_ci: list[dict[str, str | int]] | None
-    dense_ci: list[dict[str, str | int]] | None
-
-
-class PermutedCIPlotsConfig(BaseConfig):
-    classname: Literal["PermutedCIPlots"] = "PermutedCIPlots"
-    identity_patterns: list[str] | None
-    dense_patterns: list[str] | None
-
-
-class StochasticReconSubsetCEAndKLConfig(BaseConfig):
-    classname: Literal["StochasticReconSubsetCEAndKL"] = "StochasticReconSubsetCEAndKL"
-    include_patterns: dict[str, list[str]] | None
-    exclude_patterns: dict[str, list[str]] | None
-
-
-class UVPlotsConfig(BaseConfig):
-    classname: Literal["UVPlots"] = "UVPlots"
-    identity_patterns: list[str] | None
-    dense_patterns: list[str] | None
-
-
-ReconLossConfigType = (
-    UnmaskedReconLossConfig
-    | CIMaskedReconLossConfig
-    | CIMaskedReconSubsetLossConfig
-    | CIMaskedReconLayerwiseLossConfig
-    | StochasticReconLossConfig
-    | StochasticReconSubsetLossConfig
-    | StochasticReconLayerwiseLossConfig
-    | PGDReconLossConfig
-    | PGDReconSubsetLossConfig
-    | PGDReconLayerwiseLossConfig
-    | StochasticHiddenActsReconLossConfig
-    | PersistentPGDReconLossConfig
-    | PersistentPGDReconSubsetLossConfig
-)
-
-LossMetricConfigType = FaithfulnessLossConfig | ImportanceMinimalityLossConfig | ReconLossConfigType
-
-EvalOnlyMetricConfigType = (
-    CEandKLLossesConfig
-    | CIHiddenActsReconLossConfig
-    | CIHistogramsConfig
-    | CI_L0Config
-    | CIMeanPerComponentConfig
-    | ComponentActivationDensityConfig
-    | IdentityCIErrorConfig
-    | PersistentPGDReconEvalConfig
-    | PersistentPGDReconSubsetEvalConfig
-    | PermutedCIPlotsConfig
-    | UVPlotsConfig
-    | StochasticReconSubsetCEAndKLConfig
-    | PGDMultiBatchReconLossConfig
-    | PGDMultiBatchReconSubsetLossConfig
-    | CIMaskedAttnPatternsReconLossConfig
-    | StochasticAttnPatternsReconLossConfig
-)
-MetricConfigType = LossMetricConfigType | EvalOnlyMetricConfigType
-
-
-class _LossCapableMetricsConfig(BaseConfig):
-    """Shared loss-capable metric fields used by both `LossMetricsConfig` and `EvalMetricsConfig`."""
-
-    faithfulness: FaithfulnessLossConfig | None = None
-    importance_minimality: ImportanceMinimalityLossConfig | None = None
-    unmasked_recon: UnmaskedReconLossConfig | None = None
-    ci_masked_recon: CIMaskedReconLossConfig | None = None
-    ci_masked_recon_subset: CIMaskedReconSubsetLossConfig | None = None
-    ci_masked_recon_layerwise: CIMaskedReconLayerwiseLossConfig | None = None
-    stochastic_recon: StochasticReconLossConfig | None = None
-    stochastic_recon_subset: StochasticReconSubsetLossConfig | None = None
-    stochastic_recon_layerwise: StochasticReconLayerwiseLossConfig | None = None
-    stochastic_hidden_acts_recon: StochasticHiddenActsReconLossConfig | None = None
-    pgd_recon: PGDReconLossConfig | None = None
-    pgd_recon_subset: PGDReconSubsetLossConfig | None = None
-    pgd_recon_layerwise: PGDReconLayerwiseLossConfig | None = None
-    persistent_pgd_recon: PersistentPGDReconLossConfig | None = None
-    persistent_pgd_recon_subset: PersistentPGDReconSubsetLossConfig | None = None
-
-
-class LossMetricsConfig(_LossCapableMetricsConfig):
-    """Container of training-loss metric configs.
-
-    Each field is a named, nullable metric config. Setting a field selects that metric for both
-    training (weighted by `coeff`) and evaluation. Fields left as None are omitted.
-    """
-
-    def active(self) -> list[LossMetricConfigType]:
-        return [v for _, v in self if v is not None]
-
-
-class EvalMetricsConfig(_LossCapableMetricsConfig):
-    """Container of eval metric configs.
-
-    Includes all loss-capable metrics (set them here for eval-only computation; `coeff` is ignored)
-    and additional eval-only metric fields.
-    """
-
-    ce_and_kl: CEandKLLossesConfig | None = None
-    ci_hidden_acts_recon: CIHiddenActsReconLossConfig | None = None
-    ci_histograms: CIHistogramsConfig | None = None
-    ci_l0: CI_L0Config | None = None
-    ci_mean_per_component: CIMeanPerComponentConfig | None = None
-    component_activation_density: ComponentActivationDensityConfig | None = None
-    identity_ci_error: IdentityCIErrorConfig | None = None
-    persistent_pgd_recon_eval: PersistentPGDReconEvalConfig | None = None
-    persistent_pgd_recon_subset_eval: PersistentPGDReconSubsetEvalConfig | None = None
-    permuted_ci_plots: PermutedCIPlotsConfig | None = None
-    uv_plots: UVPlotsConfig | None = None
-    stochastic_recon_subset_ce_and_kl: StochasticReconSubsetCEAndKLConfig | None = None
-    pgd_multibatch_recon: PGDMultiBatchReconLossConfig | None = None
-    pgd_multibatch_recon_subset: PGDMultiBatchReconSubsetLossConfig | None = None
-    ci_masked_attn_patterns_recon: CIMaskedAttnPatternsReconLossConfig | None = None
-    stochastic_attn_patterns_recon: StochasticAttnPatternsReconLossConfig | None = None
-
-    def active(self) -> list[MetricConfigType]:
-        return [v for _, v in self if v is not None]
-
-
 SamplingType = Literal["continuous", "binomial"]
+
+
+# --- Metric resolution -------------------------------------------------------------
+
+
+def _parse_metric_cfg(slug: str, raw: Any, *, train_loss: bool) -> MetricConfig:
+    """Look up the metric by slug in METRIC_REGISTRY and validate `raw` against its config_type."""
+    assert slug in METRIC_REGISTRY, (
+        f"unknown metric {slug!r} (registered: {sorted(METRIC_REGISTRY)})"
+    )
+    metric_cls = METRIC_REGISTRY[slug]
+    cfg = raw if isinstance(raw, MetricConfig) else metric_cls.config_type.model_validate(raw or {})
+
+    if train_loss:
+        assert isinstance(cfg, LossMetricConfig), (
+            f"{slug!r} is eval-only; move it under eval_metrics"
+        )
+        assert cfg.coeff is not None, f"loss_metrics.{slug!r} must set `coeff`"
+    return cfg
 
 
 class PDConfig(BaseConfig):
@@ -591,8 +304,7 @@ class PDConfig(BaseConfig):
     ci_config: CiConfig = Field(
         ...,
         discriminator="mode",
-        description="Configuration for the causal importance function. "
-        "Use LayerwiseCiConfig for per-layer CI functions or GlobalCiConfig for a single global CI function.",
+        description="Configuration for the causal importance function.",
     )
     sampling: SamplingType = Field(
         default="continuous",
@@ -604,23 +316,16 @@ class PDConfig(BaseConfig):
     )
     module_info: list[ModulePatternInfoConfig] = Field(
         ...,
-        description="List of module patterns with C values specifying which modules to decompose. "
-        "Example: [{module_pattern: 'h.*.mlp.c_fc', C: 10}, {module_pattern: 'h.*.attn.*', C: 20}]",
+        description="List of module patterns with C values specifying which modules to decompose.",
     )
     identity_module_info: list[ModulePatternInfoConfig] | None = Field(
         default=None,
-        description="List of identity module patterns with C values. "
-        "Identity operations will be inserted at these modules.",
+        description="List of identity module patterns with C values.",
     )
 
     @property
     def all_module_info(self) -> list[ModulePatternInfoConfig]:
-        """Combine target and identity patterns with their C values.
-
-        Returns list of ModulePatternInfoConfig with .pre_identity suffix added to identity patterns.
-        """
         result = list(self.module_info)
-
         if self.identity_module_info is not None:
             for info in self.identity_module_info:
                 result.append(
@@ -628,22 +333,43 @@ class PDConfig(BaseConfig):
                         module_pattern=f"{info.module_pattern}.pre_identity", C=info.C
                     )
                 )
-
         return result
 
     use_delta_component: bool = Field(
         default=True,
         description="If True, use an extra component containing the difference between the target "
-        "model and component weights. This allows for removing the faithfulness loss.",
+        "model and component weights.",
     )
 
-    loss_metrics: LossMetricsConfig = Field(
-        default_factory=LossMetricsConfig,
+    loss_metrics: dict[str, LossMetricConfig] = Field(
+        default_factory=dict,
         description=(
-            "Training-loss metrics. Each non-None field selects a loss; its `coeff` weights the "
-            "training loss. Active loss metrics are automatically also evaluated."
+            "Training-loss metrics keyed by metric slug. Each value's `coeff` weights the metric"
+            " in the total training loss. Active loss metrics are automatically also evaluated."
         ),
     )
+    eval_metrics: dict[str, MetricConfig] = Field(
+        default_factory=dict,
+        description=(
+            "Additional eval-only metrics. Metrics already set in `loss_metrics` are evaluated"
+            " automatically and should not be repeated here."
+        ),
+    )
+
+    @field_validator("loss_metrics", mode="before")
+    @classmethod
+    def _parse_loss_metrics(cls, v: Any) -> dict[str, MetricConfig]:
+        if v is None:
+            return {}
+        return {slug: _parse_metric_cfg(slug, raw, train_loss=True) for slug, raw in v.items()}
+
+    @field_validator("eval_metrics", mode="before")
+    @classmethod
+    def _parse_eval_metrics(cls, v: Any) -> dict[str, MetricConfig]:
+        if v is None:
+            return {}
+        return {slug: _parse_metric_cfg(slug, raw, train_loss=False) for slug, raw in v.items()}
+
     # --- Training ---
     components_optimizer: OptimizerConfig = Field(
         ..., description="Optimizer config for the component (LinearComponent etc.) parameters"
@@ -682,11 +408,12 @@ class PDConfig(BaseConfig):
     )
     eval_batch_size: PositiveInt = Field(
         ...,
-        description="Batch size used for evaluation. If None, uses the same as `batch_size`.",
+        description="Batch size used for evaluation.",
     )
     slow_eval_freq: PositiveInt = Field(
         ...,
-        description="Interval (in steps) at which to run slow evaluation metrics. Must be a multiple of `eval_freq`.",
+        description="Interval (in steps) at which to run slow evaluation metrics. "
+        "Must be a multiple of `eval_freq`.",
     )
     n_eval_steps: PositiveInt = Field(
         ...,
@@ -698,15 +425,7 @@ class PDConfig(BaseConfig):
     )
     save_freq: PositiveInt | None = Field(
         default=None,
-        description="Interval (in steps) at which to save model checkpoints (None disables saving "
-        "until the end of training).",
-    )
-    eval_metrics: EvalMetricsConfig = Field(
-        default_factory=EvalMetricsConfig,
-        description=(
-            "Additional eval-only metrics. Metrics already set in `loss_metrics` are evaluated "
-            "automatically and should not be repeated here."
-        ),
+        description="Interval (in steps) at which to save model checkpoints.",
     )
 
     # --- Component Tracking ---
@@ -724,16 +443,23 @@ class PDConfig(BaseConfig):
             "slow_eval_freq must be at least eval_freq"
         )
 
-        for cfg in self.loss_metrics.active():
-            assert cfg.coeff is not None, f"loss_metrics.{type(cfg).__name__} must have a coeff"
-
-        loss_names = {name for name, val in self.loss_metrics if val is not None}
-        eval_names = {name for name, val in self.eval_metrics if val is not None}
+        loss_names = set(self.loss_metrics)
+        eval_names = set(self.eval_metrics)
         overlap = loss_names & eval_names
         assert not overlap, (
-            f"The same metric was set under both loss_metrics and eval_metrics: {sorted(overlap)}. "
-            "Loss metrics are automatically evaluated; remove the eval_metrics entry, or move it "
-            "out of loss_metrics if you want eval-only."
+            f"The same metric was set under both loss_metrics and eval_metrics: {sorted(overlap)}."
+            " Loss metrics are automatically evaluated; remove the eval_metrics entry, or move it"
+            " out of loss_metrics if you want eval-only."
         )
 
         return self
+
+
+# Populate METRIC_REGISTRY before any PDConfig validates. discover_metrics() imports every metric
+# module in `param_decomp.metrics`; each one imports symbols from this module, so the discovery
+# call must come after all class definitions here so the metric files see a fully-loaded
+# `configs` module. The intentional cycle is safe at runtime because configs has finished
+# defining its classes by the time discover_metrics() runs.
+from param_decomp.metrics import discover_metrics  # noqa: E402
+
+discover_metrics()

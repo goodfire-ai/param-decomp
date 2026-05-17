@@ -1,6 +1,7 @@
 """Sanity checks for stochastic, CI, PGD, and persistent PGD reconstruction losses."""
 
 from collections.abc import Callable
+from typing import cast
 
 import pytest
 import torch
@@ -8,23 +9,27 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from param_decomp.configs import (
+    PDConfig,
     PersistentPGDReconLossConfig,
-    PGDConfig,
     ScheduleConfig,
     SignPGDConfig,
     SingleSourceScope,
 )
-from param_decomp.metrics import ci_masked_recon_loss, pgd_recon_loss, stochastic_recon_loss
+from param_decomp.metrics.ci_masked_recon_loss import ci_masked_recon_loss
 from param_decomp.metrics.hidden_acts_recon_loss import (
     CIHiddenActsReconLoss,
+    CIHiddenActsReconLossConfig,
     _sum_per_module_mse,
     calc_hidden_acts_mse,
 )
-from param_decomp.metrics.ppgd_eval_losses import PPGDReconEval
+from param_decomp.metrics.persistent_pgd_recon import PersistentPGDReconLoss
+from param_decomp.metrics.pgd_masked_recon_loss import pgd_recon_loss
+from param_decomp.metrics.pgd_utils import PGDConfig
+from param_decomp.metrics.stochastic_recon_loss import stochastic_recon_loss
 from param_decomp.models.batch_and_loss_fns import recon_loss_mse
 from param_decomp.models.component_model import CIOutputs, ComponentModel
 from param_decomp.models.components import make_mask_infos
-from param_decomp.persistent_pgd import PersistentPGDState, PPGDSources, get_ppgd_mask_infos
+from param_decomp.persistent_pgd import PPGDSources, get_ppgd_mask_infos
 from tests.metrics.fixtures import (
     OneLayerLinearModel,
     TwoLayerLinearModel,
@@ -206,6 +211,8 @@ def test_per_module_recon_manual_calculation() -> None:
 
 def test_per_module_recon_metric_keys() -> None:
     """CIHiddenActsReconLoss.compute() returns per-module + total keys."""
+    from param_decomp.metrics.context import MetricContext
+
     torch.manual_seed(42)
 
     model = make_two_layer_component_model(weight1=torch.randn(3, 2), weight2=torch.randn(2, 3))
@@ -214,8 +221,20 @@ def test_per_module_recon_metric_keys() -> None:
     target_output = model(batch, cache_type="input")
     ci = model.calc_causal_importances(pre_weight_acts=target_output.cache, sampling="continuous")
 
-    metric = CIHiddenActsReconLoss(model=model, device="cpu")
-    metric.update(batch=batch, ci=ci)
+    metric = CIHiddenActsReconLoss(CIHiddenActsReconLossConfig(), model=model, device="cpu")
+    ctx = MetricContext(
+        model=model,
+        config=cast(PDConfig, cast(object, None)),
+        batch=batch,
+        target_out=target_output.output,
+        pre_weight_acts=target_output.cache,
+        ci=ci,
+        weight_deltas={},
+        step=0,
+        reconstruction_loss=recon_loss_mse,
+        is_eval=True,
+    )
+    metric.update(ctx)
     result = metric.compute()
 
     assert set(result.keys()) == {
@@ -236,7 +255,12 @@ def _make_ci_outputs(ci: dict[str, Tensor]) -> CIOutputs:
 
 
 def test_ppgd_recon_eval_metric_keys() -> None:
-    """PPGDReconEval.compute() returns hidden_acts (total + per-module) and output_recon keys."""
+    """PersistentPGDReconLoss.compute() returns hidden_acts (total + per-module) and output_recon
+    keys when run in eval mode."""
+    from types import SimpleNamespace
+
+    from param_decomp.metrics.context import MetricContext
+
     torch.manual_seed(42)
 
     model = make_two_layer_component_model(weight1=torch.randn(3, 2), weight2=torch.randn(2, 3))
@@ -245,39 +269,37 @@ def test_ppgd_recon_eval_metric_keys() -> None:
     ci = {"fc1": torch.ones(2, 1), "fc2": torch.ones(2, 1)}
 
     ppgd_cfg = PersistentPGDReconLossConfig(
+        coeff=1.0,
         optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
         scope=SingleSourceScope(),
     )
-    ppgd_state = PersistentPGDState(
-        module_to_c=model.module_to_c,
-        batch_dims=batch.shape[:1],
-        device="cpu",
-        use_delta_component=False,
-        cfg=ppgd_cfg,
-        reconstruction_loss=recon_loss_mse,
-    )
+    metric = PersistentPGDReconLoss(ppgd_cfg, model=model, device="cpu")
 
-    metric = PPGDReconEval(
-        model=model,
-        device="cpu",
-        ppgd_state=ppgd_state,
-        use_delta_component=False,
-        reconstruction_loss=recon_loss_mse,
-        metric_name="my_ppgd",
+    # Minimal config stand-in: the metric only reads use_delta_component and steps from it.
+    fake_config = cast(
+        PDConfig, cast(object, SimpleNamespace(use_delta_component=False, steps=100))
     )
-    metric.update(
+    ctx = MetricContext(
+        model=model,
+        config=fake_config,
         batch=batch,
+        target_out=target_out,
+        pre_weight_acts={},
         ci=_make_ci_outputs(ci),
         weight_deltas={},
-        target_out=target_out,
+        step=0,
+        reconstruction_loss=recon_loss_mse,
+        is_eval=True,
     )
+    metric.update(ctx)
     result = metric.compute()
 
+    cls_name = type(metric).__name__
     assert set(result.keys()) == {
-        "my_ppgd/hidden_acts",
-        "my_ppgd/hidden_acts/fc1",
-        "my_ppgd/hidden_acts/fc2",
-        "my_ppgd/output_recon",
+        f"{cls_name}/hidden_acts",
+        f"{cls_name}/hidden_acts/fc1",
+        f"{cls_name}/hidden_acts/fc2",
+        f"{cls_name}/output_recon",
     }
     for v in result.values():
         assert v.item() >= 0

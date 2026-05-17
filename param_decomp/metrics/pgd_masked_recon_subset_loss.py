@@ -1,92 +1,65 @@
-from typing import Any, ClassVar, override
+from typing import Annotated
 
 import torch
 from jaxtyping import Float
+from pydantic import Field
 from torch import Tensor
 from torch.distributed import ReduceOp
 
-from param_decomp.configs import PGDConfig, SubsetRoutingType
-from param_decomp.metrics.base import Metric
-from param_decomp.metrics.pgd_utils import pgd_masked_recon_loss_update
-from param_decomp.models.batch_and_loss_fns import ReconstructionLoss
-from param_decomp.models.component_model import CIOutputs, ComponentModel
+from param_decomp.configs import SubsetRoutingType, UniformKSubsetRoutingConfig
+from param_decomp.metrics.context import MetricContext
+from param_decomp.metrics.pgd_utils import PGDConfig, pgd_masked_recon_loss_update
+from param_decomp.metrics.registry import register_metric
+from param_decomp.models.component_model import ComponentModel
 from param_decomp.routing import get_subset_router
 from param_decomp.utils.distributed_utils import all_reduce
-from param_decomp.utils.general_utils import get_obj_device
 
 
-def pgd_recon_subset_loss(
-    *,
-    model: ComponentModel,
-    batch: Any,
-    target_out: Tensor,
-    ci: dict[str, Float[Tensor, "... C"]],
-    weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
-    pgd_config: PGDConfig,
-    routing: SubsetRoutingType,
-    reconstruction_loss: ReconstructionLoss,
-) -> Float[Tensor, ""]:
-    sum_loss, n_examples = pgd_masked_recon_loss_update(
-        model=model,
-        batch=batch,
-        ci=ci,
-        weight_deltas=weight_deltas,
-        target_out=target_out,
-        router=get_subset_router(routing, device=get_obj_device(model)),
-        pgd_config=pgd_config,
-        reconstruction_loss=reconstruction_loss,
-    )
-    return sum_loss / n_examples
+class PGDReconSubsetLossConfig(PGDConfig):
+    routing: Annotated[
+        SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
+    ]
 
 
-class PGDReconSubsetLoss(Metric):
+@register_metric
+class PGDReconSubsetLoss:
     """Recon loss when masking with adversarially-optimized values and routing to subsets of
     component layers."""
 
-    metric_section: ClassVar[str] = "loss"
+    name = "pgd_recon_subset"
+    section = "loss"
+    config_type = PGDReconSubsetLossConfig
+    short_name = "PGDReconSub"
 
     def __init__(
-        self,
-        model: ComponentModel,
-        device: str,
-        use_delta_component: bool,
-        pgd_config: PGDConfig,
-        routing: SubsetRoutingType,
-        reconstruction_loss: ReconstructionLoss,
+        self, cfg: PGDReconSubsetLossConfig, *, model: ComponentModel, device: str
     ) -> None:
+        self.cfg = cfg
         self.model = model
-        self.pgd_config: PGDConfig = pgd_config
-        self.use_delta_component: bool = use_delta_component
-        self.router = get_subset_router(routing, device=get_obj_device(model))
-        self.reconstruction_loss = reconstruction_loss
+        self.device = device
+        self.router = get_subset_router(cfg.routing, device)
+        self.reset()
 
-        self.sum_loss = torch.tensor(0.0, device=device)
-        self.n_examples = torch.tensor(0, device=device)
+    def reset(self) -> None:
+        self.sum_loss = torch.zeros((), device=self.device)
+        self.n_examples = torch.zeros((), device=self.device, dtype=torch.long)
 
-    @override
-    def update(
-        self,
-        *,
-        batch: Any,
-        target_out: Tensor,
-        ci: CIOutputs,
-        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
-        **_: Any,
-    ) -> None:
-        sum_loss, n_examples = pgd_masked_recon_loss_update(
+    def update(self, ctx: MetricContext) -> Tensor:
+        wd = ctx.weight_deltas if ctx.config.use_delta_component else None
+        sum_loss, n = pgd_masked_recon_loss_update(
             model=self.model,
-            batch=batch,
-            ci=ci.lower_leaky,
-            weight_deltas=weight_deltas if self.use_delta_component else None,
-            target_out=target_out,
+            batch=ctx.batch,
+            ci=ctx.ci.lower_leaky,
+            weight_deltas=wd,
+            target_out=ctx.target_out,
             router=self.router,
-            pgd_config=self.pgd_config,
-            reconstruction_loss=self.reconstruction_loss,
+            pgd_config=self.cfg,
+            reconstruction_loss=ctx.reconstruction_loss,
         )
-        self.sum_loss += sum_loss
-        self.n_examples += n_examples
+        self.sum_loss += sum_loss.detach()
+        self.n_examples += n
+        return sum_loss / n
 
-    @override
     def compute(self) -> Float[Tensor, ""]:
         sum_loss = all_reduce(self.sum_loss, op=ReduceOp.SUM)
         n_examples = all_reduce(self.n_examples, op=ReduceOp.SUM)

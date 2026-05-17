@@ -1,19 +1,18 @@
 from pathlib import Path
 
 from param_decomp.configs import (
-    FaithfulnessLossConfig,
-    ImportanceMinimalityLossConfig,
     LayerwiseCiConfig,
-    LossMetricsConfig,
     ModulePatternInfoConfig,
     OptimizerConfig,
     PDConfig,
     ScheduleConfig,
-    StochasticReconLossConfig,
 )
 from param_decomp.experiments.resid_mlp.models import ResidMLP, ResidMLPModelConfig
 from param_decomp.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
 from param_decomp.identity_insertion import insert_identity_operations_
+from param_decomp.metrics.faithfulness_loss import FaithfulnessLossConfig
+from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
+from param_decomp.metrics.stochastic_recon_loss import StochasticReconLossConfig
 from param_decomp.models.batch_and_loss_fns import (
     recon_loss_mse,
     run_batch_first_element,
@@ -45,16 +44,16 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         seed=0,
         n_mask_samples=1,
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[8]),
-        loss_metrics=LossMetricsConfig(
-            importance_minimality=ImportanceMinimalityLossConfig(
+        loss_metrics={
+            "importance_minimality": ImportanceMinimalityLossConfig(
                 coeff=3e-3,
                 pnorm=0.9,
                 beta=0.5,
                 eps=1e-12,
             ),
-            stochastic_recon=StochasticReconLossConfig(coeff=1.0),
-            faithfulness=FaithfulnessLossConfig(coeff=1.0),
-        ),
+            "stochastic_recon": StochasticReconLossConfig(coeff=1.0),
+            "faithfulness": FaithfulnessLossConfig(coeff=1.0),
+        },
         module_info=[
             ModulePatternInfoConfig(module_pattern="layers.*.mlp_in", C=10),
             ModulePatternInfoConfig(module_pattern="layers.*.mlp_out", C=10),

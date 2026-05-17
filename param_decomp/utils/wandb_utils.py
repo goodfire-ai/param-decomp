@@ -27,41 +27,15 @@ _WANDB_URL_RE = re.compile(
     rf"^https://wandb\.ai/([^/]+)/([^/]+)/runs/({_RUN_ID_PATTERN})(?:/[^?]*)?(?:\?.*)?$"
 )
 
-# Short names for metric fields (keyed by LossMetricsConfig / EvalMetricsConfig field names),
-# used for W&B run names and view names.
-METRIC_CONFIG_SHORT_NAMES: dict[str, str] = {
-    "faithfulness": "Faith",
-    "importance_minimality": "ImpMin",
-    "stochastic_recon": "StochRecon",
-    "stochastic_recon_subset": "StochReconSub",
-    "stochastic_recon_layerwise": "StochReconLayer",
-    "ci_masked_recon": "CIMaskRecon",
-    "ci_masked_recon_subset": "CIMaskReconSub",
-    "ci_masked_recon_layerwise": "CIMaskReconLayer",
-    "pgd_recon": "PGDRecon",
-    "pgd_recon_subset": "PGDReconSub",
-    "pgd_recon_layerwise": "PGDReconLayer",
-    "persistent_pgd_recon": "PersistPGDRecon",
-    "persistent_pgd_recon_subset": "PersistPGDReconSub",
-    "stochastic_hidden_acts_recon": "StochHiddenActRecon",
-    "ci_hidden_acts_recon": "CIHiddenActRecon",
-    "stochastic_attn_patterns_recon": "StochAttnRecon",
-    "ci_masked_attn_patterns_recon": "CIAttnRecon",
-    "unmasked_recon": "UnmaskedRecon",
-    "ce_and_kl": "CEandKL",
-    "ci_histograms": "CIHist",
-    "ci_l0": "CI_L0",
-    "ci_mean_per_component": "CIMeanPerComp",
-    "component_activation_density": "CompActDens",
-    "identity_ci_error": "IdCIErr",
-    "permuted_ci_plots": "PermCIPlots",
-    "uv_plots": "UVPlots",
-    "stochastic_recon_subset_ce_and_kl": "StochReconSubCEKL",
-    "pgd_multibatch_recon": "PGDMultiBatchRecon",
-    "pgd_multibatch_recon_subset": "PGDMultiBatchReconSub",
-    "persistent_pgd_recon_eval": "PersistPGDReconEval",
-    "persistent_pgd_recon_subset_eval": "PersistPGDReconSubEval",
-}
+
+def _build_short_names() -> dict[str, str]:
+    """Derive the metric -> short-name map from the registry."""
+    from param_decomp.metrics import METRIC_REGISTRY
+
+    return {cls.name: cls.short_name for cls in METRIC_REGISTRY.values() if cls.short_name}
+
+
+METRIC_CONFIG_SHORT_NAMES: dict[str, str] = _build_short_names()
 
 
 def get_wandb_entity() -> str:

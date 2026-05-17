@@ -10,15 +10,14 @@ from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
 from param_decomp.configs import (
     GlobalCiConfig,
-    ImportanceMinimalityLossConfig,
     LayerwiseCiConfig,
-    LossMetricsConfig,
     ModulePatternInfoConfig,
     OptimizerConfig,
     PDConfig,
     ScheduleConfig,
 )
 from param_decomp.identity_insertion import insert_identity_operations_
+from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
 from param_decomp.models.batch_and_loss_fns import run_batch_passthrough
 from param_decomp.models.component_model import (
     ComponentModel,
@@ -133,9 +132,11 @@ def test_from_checkpoint():
             eval_batch_size=1,
             eval_freq=1,
             slow_eval_freq=1,
-            loss_metrics=LossMetricsConfig(
-                importance_minimality=ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)
-            ),
+            loss_metrics={
+                "importance_minimality": ImportanceMinimalityLossConfig(
+                    coeff=1.0, pnorm=1.0, beta=0.5
+                )
+            },
             train_log_freq=1,
             n_mask_samples=1,
         )
@@ -536,9 +537,11 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             eval_batch_size=1,
             eval_freq=1,
             slow_eval_freq=1,
-            loss_metrics=LossMetricsConfig(
-                importance_minimality=ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)
-            ),
+            loss_metrics={
+                "importance_minimality": ImportanceMinimalityLossConfig(
+                    coeff=1.0, pnorm=1.0, beta=0.5
+                )
+            },
             train_log_freq=1,
             n_mask_samples=1,
         )
@@ -571,9 +574,11 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             eval_batch_size=1,
             eval_freq=1,
             slow_eval_freq=1,
-            loss_metrics=LossMetricsConfig(
-                importance_minimality=ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)
-            ),
+            loss_metrics={
+                "importance_minimality": ImportanceMinimalityLossConfig(
+                    coeff=1.0, pnorm=1.0, beta=0.5
+                )
+            },
             train_log_freq=1,
             n_mask_samples=1,
         )
@@ -623,9 +628,11 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             eval_batch_size=1,
             eval_freq=1,
             slow_eval_freq=1,
-            loss_metrics=LossMetricsConfig(
-                importance_minimality=ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)
-            ),
+            loss_metrics={
+                "importance_minimality": ImportanceMinimalityLossConfig(
+                    coeff=1.0, pnorm=1.0, beta=0.5
+                )
+            },
             train_log_freq=1,
             n_mask_samples=1,
         )
@@ -658,9 +665,11 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             eval_batch_size=1,
             eval_freq=1,
             slow_eval_freq=1,
-            loss_metrics=LossMetricsConfig(
-                importance_minimality=ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)
-            ),
+            loss_metrics={
+                "importance_minimality": ImportanceMinimalityLossConfig(
+                    coeff=1.0, pnorm=1.0, beta=0.5
+                )
+            },
             train_log_freq=1,
             n_mask_samples=1,
         )
@@ -1277,9 +1286,11 @@ def test_global_ci_save_and_load():
             eval_batch_size=1,
             eval_freq=1,
             slow_eval_freq=1,
-            loss_metrics=LossMetricsConfig(
-                importance_minimality=ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)
-            ),
+            loss_metrics={
+                "importance_minimality": ImportanceMinimalityLossConfig(
+                    coeff=1.0, pnorm=1.0, beta=0.5
+                )
+            },
             train_log_freq=1,
             n_mask_samples=1,
         )

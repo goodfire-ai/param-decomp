@@ -3,7 +3,6 @@
 import gc
 import os
 from collections import defaultdict
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -18,20 +17,18 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from param_decomp.configs import (
-    MetricConfigType,
     PDConfig,
     PersistentPGDReconLossConfig,
     PersistentPGDReconSubsetLossConfig,
-    PGDMultiBatchConfig,
-    PGDMultiBatchReconLossConfig,
-    PGDMultiBatchReconSubsetLossConfig,
     RepeatAcrossBatchScope,
 )
-from param_decomp.eval import evaluate, evaluate_multibatch_pgd
+from param_decomp.eval import evaluate
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.log import logger
 from param_decomp.losses import compute_losses
-from param_decomp.metrics import faithfulness_loss
+from param_decomp.metrics import METRIC_REGISTRY
+from param_decomp.metrics.base import LossMetricConfig, Metric
+from param_decomp.metrics.context import MetricContext
 from param_decomp.models.batch_and_loss_fns import (
     PDTarget,
     ReconstructionLoss,
@@ -39,7 +36,6 @@ from param_decomp.models.batch_and_loss_fns import (
     move_batch_to_device,
 )
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
-from param_decomp.persistent_pgd import PersistentPGDState
 from param_decomp.run_metadata import RunMetadata
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp.utils.component_utils import calc_ci_l_zero
@@ -68,10 +64,10 @@ def run_faithfulness_warmup(
     component_model: ComponentModel,
     component_params: list[torch.nn.Parameter],
     config: PDConfig,
+    device: str,
 ) -> None:
     """Run faithfulness warmup phase to improve initialization."""
     logger.info("Starting faithfulness warmup phase...")
-
     assert component_params, "component_params is empty"
 
     faithfulness_warmup_optimizer = optim.AdamW(
@@ -80,24 +76,45 @@ def run_faithfulness_warmup(
         weight_decay=config.faithfulness_warmup_weight_decay,
     )
 
-    for faithfulness_warmup_step in range(config.faithfulness_warmup_steps):
+    for warmup_step in range(config.faithfulness_warmup_steps):
         faithfulness_warmup_optimizer.zero_grad()
         weight_deltas = component_model.calc_weight_deltas()
-        loss = faithfulness_loss(weight_deltas)
+        sum_loss = torch.zeros((), device=device)
+        n = 0
+        for d in weight_deltas.values():
+            sum_loss = sum_loss + (d**2).sum()
+            n += d.numel()
+        loss = sum_loss / n
         loss.backward()
         faithfulness_warmup_optimizer.step()
 
-        if (
-            faithfulness_warmup_step % 100 == 0
-            or faithfulness_warmup_step == config.faithfulness_warmup_steps - 1
-        ):
+        if warmup_step % 100 == 0 or warmup_step == config.faithfulness_warmup_steps - 1:
             logger.info(
-                f"Faithfulness warmup step {faithfulness_warmup_step + 1} / {config.faithfulness_warmup_steps}; Faithfulness loss: {loss.item():.9f}"
+                f"Faithfulness warmup step {warmup_step + 1} / {config.faithfulness_warmup_steps}; "
+                f"Faithfulness loss: {loss.item():.9f}"
             )
     del faithfulness_warmup_optimizer
-    # TODO: we should reverse the order of these two calls
     torch.cuda.empty_cache()
     gc.collect()
+
+
+def _build_metric_instances(
+    config: PDConfig,
+    component_model: ComponentModel,
+    device: str,
+) -> tuple[dict[str, Metric], dict[str, Metric]]:
+    """Instantiate one metric instance per slug. Same model+device for both buckets."""
+    loss_instances: dict[str, Metric] = {}
+    for slug, cfg in config.loss_metrics.items():
+        cls = METRIC_REGISTRY[slug]
+        loss_instances[slug] = cls(cfg, model=component_model, device=device)
+
+    eval_instances: dict[str, Metric] = {}
+    for slug, cfg in config.eval_metrics.items():
+        cls = METRIC_REGISTRY[slug]
+        eval_instances[slug] = cls(cfg, model=component_model, device=device)
+
+    return loss_instances, eval_instances
 
 
 def optimize(
@@ -111,15 +128,9 @@ def optimize(
     out_dir: Path | None,
     tied_weights: list[tuple[str, str]] | None = None,
 ) -> None:
-    """Run the optimization loop for LM decomposition."""
-
+    """Run the optimization loop."""
     train_iterator = loop_dataloader(train_loader)
     eval_iterator = loop_dataloader(eval_loader)
-
-    def create_pgd_data_iter() -> Iterator[Any]:
-        assert hasattr(train_loader, "generator") and train_loader.generator is not None
-        train_loader.generator.manual_seed(config.seed)
-        return (move_batch_to_device(batch, device) for batch in train_loader)
 
     if is_main_process():
         logger.info(f"Train+eval logs saved to directory: {out_dir}")
@@ -131,7 +142,6 @@ def optimize(
         )
 
     target_model.requires_grad_(False)
-
     module_path_info = expand_module_patterns(target_model, config.all_module_info)
 
     model = ComponentModel(
@@ -141,37 +151,28 @@ def optimize(
         ci_config=config.ci_config,
         sigmoid_type=config.sigmoid_type,
     )
-
     model.to(device)
 
     # Diverge global RNG per rank so stochastic masks/sources differ across DP workers.
     seed_per_rank(config.seed)
 
-    # Wrap model with DDP if distributed
     dist_state = get_distributed_state()
     wrapped_model: nn.Module = model
-
     component_model: ComponentModel
     if dist_state is not None:
         if dist_state.backend == "nccl":
             device_id = dist_state.local_rank
             wrapped_model = torch.nn.parallel.DistributedDataParallel(
-                model,
-                device_ids=[device_id],
-                output_device=device_id,
+                model, device_ids=[device_id], output_device=device_id
             )
         else:
-            # For CPU, don't pass device_ids or output_device
             wrapped_model = torch.nn.parallel.DistributedDataParallel(model)
-        # Access the underlying module for component operations
         component_model = cast(ComponentModel, wrapped_model.module)
     else:
         component_model = model
     assert isinstance(component_model, ComponentModel), "component_model is not a ComponentModel"
 
     if tied_weights is not None:
-        # Tie component weights. Assume that the first element is a transpose of the second element
-        # NOTE: Tying weights will make your training nondeterministic
         for src_name, tgt_name in tied_weights:
             tgt = component_model.components[tgt_name]
             src = component_model.components[src_name]
@@ -184,9 +185,7 @@ def optimize(
     component_params: list[torch.nn.Parameter] = []
     for name in component_model.target_module_paths:
         component_params.extend(component_model.components[name].parameters())
-
     ci_fn_params = list(component_model.ci_fn.parameters())
-
     assert len(component_params) > 0, "No parameters found in components to optimize"
 
     components_optimizer = optim.AdamW(
@@ -203,51 +202,34 @@ def optimize(
     )
 
     if config.faithfulness_warmup_steps > 0:
-        run_faithfulness_warmup(component_model, component_params, config)
+        run_faithfulness_warmup(component_model, component_params, config, device)
 
-    persistent_pgd_configs: list[
-        PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
-    ] = [
-        cfg
-        for cfg in (
-            config.loss_metrics.persistent_pgd_recon,
-            config.loss_metrics.persistent_pgd_recon_subset,
+    loss_instances, eval_only_instances = _build_metric_instances(config, component_model, device)
+    all_instances = {**loss_instances, **eval_only_instances}
+
+    def _build_ctx(batch: Any, *, is_eval: bool) -> tuple[MetricContext, OutputWithCache]:
+        target_model_output: OutputWithCache = wrapped_model(batch, cache_type="input")
+        ci = component_model.calc_causal_importances(
+            pre_weight_acts=target_model_output.cache,
+            detach_inputs=False,
+            sampling=config.sampling,
         )
-        if cfg is not None
-    ]
-
-    multibatch_pgd_eval_configs: list[
-        PGDMultiBatchReconLossConfig | PGDMultiBatchReconSubsetLossConfig
-    ] = [
-        cfg
-        for cfg in (
-            config.eval_metrics.pgd_multibatch_recon,
-            config.eval_metrics.pgd_multibatch_recon_subset,
-        )
-        if cfg is not None
-    ]
-
-    eval_metric_configs: list[MetricConfigType] = [
-        cfg
-        for cfg in config.loss_metrics.active() + config.eval_metrics.active()
-        if not isinstance(cfg, PGDMultiBatchConfig)
-    ]
-
-    sample_out = model(move_batch_to_device(next(train_iterator), device))
-    batch_dims = sample_out.shape[:-1]
-    ppgd_states: dict[
-        PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig, PersistentPGDState
-    ] = {
-        ppgd_cfg: PersistentPGDState(
-            module_to_c=model.module_to_c,
-            batch_dims=batch_dims,
-            device=device,
-            use_delta_component=config.use_delta_component,
-            cfg=ppgd_cfg,
+        weight_deltas = component_model.calc_weight_deltas()
+        ctx = MetricContext(
+            model=component_model,
+            config=config,
+            batch=batch,
+            target_out=target_model_output.output,
+            pre_weight_acts=target_model_output.cache,
+            ci=ci,
+            weight_deltas=weight_deltas,
+            step=step,
             reconstruction_loss=reconstruction_loss,
+            is_eval=is_eval,
         )
-        for ppgd_cfg in persistent_pgd_configs
-    }
+        return ctx, target_model_output
+
+    step = 0  # Bound for _build_ctx (rebound each iteration); avoids NameError on first eval call.
 
     for step in tqdm(range(config.steps + 1), ncols=0, disable=not is_main_process()):
         components_optimizer.zero_grad()
@@ -264,72 +246,38 @@ def optimize(
         for group in ci_fn_optimizer.param_groups:
             group["lr"] = ci_fn_lr
 
-        frac = step / config.steps
-        active_ppgd_configs = [c for c in persistent_pgd_configs if frac >= c.start_frac]
-
-        for ppgd_cfg in active_ppgd_configs:
-            ppgd_states[ppgd_cfg].update_lr(step, config.steps)
-
-        weight_deltas = component_model.calc_weight_deltas()
-
         batch_log_data: defaultdict[str, float] = defaultdict(float)
-
         batch = move_batch_to_device(next(train_iterator), device)
+
         with bf16_autocast(enabled=config.autocast_bf16):
-            # NOTE: we need to call the wrapped_model at least once each step in order to setup
-            # the DDP gradient syncing for all parameters in the component model. Gradients will
-            # sync regardless of whether the parameters are used in this call to wrapped_model.
-            target_model_output: OutputWithCache = wrapped_model(batch, cache_type="input")
+            # The wrapped_model(...) call inside _build_ctx is what registers DDP gradient hooks
+            # for this step. Required even if no metric uses the DDP wrapper directly.
+            ctx, _ = _build_ctx(batch, is_eval=False)
+            losses = compute_losses(loss_instances, ctx)
 
-            ci = component_model.calc_causal_importances(
-                pre_weight_acts=target_model_output.cache,
-                detach_inputs=False,
-                sampling=config.sampling,
-            )
-
-            for ppgd_cfg in active_ppgd_configs:
-                ppgd_states[ppgd_cfg].warmup(
-                    model=component_model,
-                    batch=batch,
-                    target_out=target_model_output.output,
-                    ci=ci.lower_leaky,
-                    weight_deltas=weight_deltas if config.use_delta_component else None,
-                )
-
-            losses = compute_losses(
-                loss_metrics=config.loss_metrics,
-                model=component_model,
-                batch=batch,
-                ci=ci,
-                target_out=target_model_output.output,
-                weight_deltas=weight_deltas,
-                current_frac_of_training=step / config.steps,
-                sampling=config.sampling,
-                use_delta_component=config.use_delta_component,
-                n_mask_samples=config.n_mask_samples,
-                ppgd_states=ppgd_states,
-                reconstruction_loss=reconstruction_loss,
-            )
-
-        total_loss = torch.tensor(0.0, device=device)
-        for loss_cfg, loss_val in losses.items():
-            assert loss_cfg.coeff is not None
-            total_loss = total_loss + loss_cfg.coeff * loss_val
-            batch_log_data[f"train/loss/{loss_cfg.classname}"] = loss_val.item()
-
+        total_loss = torch.zeros((), device=device)
+        for slug, loss_val in losses.items():
+            if loss_val is None:
+                continue
+            cfg = cast(LossMetricConfig, loss_instances[slug].cfg)
+            assert cfg.coeff is not None
+            total_loss = total_loss + cfg.coeff * loss_val
+            batch_log_data[f"train/loss/{type(loss_instances[slug]).__name__}"] = loss_val.item()
         batch_log_data["train/loss/total"] = total_loss.item()
 
-        ppgd_grads = {
-            cfg: ppgd_states[cfg].get_grads(losses[cfg], retain_graph=True)
-            for cfg in active_ppgd_configs
-        }
+        for slug, m in loss_instances.items():
+            hook = getattr(m, "before_backward", None)
+            if hook is not None:
+                hook(losses[slug])
 
         total_loss.backward()
 
-        for ppgd_cfg in active_ppgd_configs:
-            ppgd_states[ppgd_cfg].step(ppgd_grads[ppgd_cfg])
+        for m in loss_instances.values():
+            hook = getattr(m, "after_backward", None)
+            if hook is not None:
+                hook()
 
-        for layer_name, layer_ci in ci.lower_leaky.items():
+        for layer_name, layer_ci in ctx.ci.lower_leaky.items():
             l0_val = calc_ci_l_zero(layer_ci, config.ci_alive_threshold)
             batch_log_data[f"train/l0/{layer_name}"] = l0_val
 
@@ -342,7 +290,6 @@ def optimize(
             dict_safe_update_(
                 batch_log_data, {f"train/grad_norms/{k}": v for k, v in grad_norms.items()}
             )
-
             batch_log_data["train/schedules/lr/components"] = components_lr
             batch_log_data["train/schedules/lr/ci_fn"] = ci_fn_lr
 
@@ -366,29 +313,18 @@ def optimize(
                     else step % config.slow_eval_freq == 0
                 )
 
-                multibatch_pgd_metrics = evaluate_multibatch_pgd(
-                    multibatch_pgd_eval_configs=multibatch_pgd_eval_configs,
-                    model=component_model,
-                    create_data_iter=create_pgd_data_iter,
-                    config=config,
-                    device=device,
-                    reconstruction_loss=reconstruction_loss,
-                )
+                def eval_ctx_builder(batch_local: Any) -> MetricContext:
+                    batch_local = move_batch_to_device(batch_local, device)
+                    ctx_local, _ = _build_ctx(batch_local, is_eval=True)
+                    return ctx_local
 
                 metrics = evaluate(
-                    eval_metric_configs=eval_metric_configs,
-                    model=component_model,  # No backward passes so DDP wrapped_model not needed
+                    instances=all_instances,
                     eval_iterator=eval_iterator,
-                    device=device,
-                    run_config=config,
-                    slow_step=slow_step,
+                    ctx_builder=eval_ctx_builder,
                     n_eval_steps=config.n_eval_steps,
-                    current_frac_of_training=step / config.steps,
-                    reconstruction_loss=reconstruction_loss,
-                    ppgd_states=ppgd_states,
+                    slow_step=slow_step,
                 )
-
-                dict_safe_update_(metrics, multibatch_pgd_metrics)
 
                 if is_main_process():
                     assert out_dir is not None
@@ -403,7 +339,6 @@ def optimize(
                         try_wandb(wandb.log, wandb_logs, step=step)
 
                 del metrics
-                # TODO: we should reverse the order of these two calls
                 torch.cuda.empty_cache()
                 gc.collect()
 
@@ -413,7 +348,6 @@ def optimize(
             or step == config.steps
         ) and is_main_process():
             assert out_dir is not None
-            # Save the state dict of the underlying module (not DDP wrapper)
             save_file(component_model.state_dict(), out_dir / f"model_{step}.pth")
             logger.info(f"Saved model, optimizer, and out_dir to {out_dir}")
             if config.wandb_project:
@@ -424,7 +358,7 @@ def optimize(
                     policy="now",
                 )
 
-        # Skip gradient step if we are at the last step (last step just for plotting and logging)
+        # Skip gradient step at the very last step (last step is just for plotting/logging).
         if step != config.steps:
             sync_across_processes()
             if config.components_optimizer.grad_clip_norm is not None:
@@ -439,20 +373,20 @@ def optimize(
 
 
 def _validate_pgd_scope(config: PDConfig, dist_state: DistributedState | None) -> None:
-    """Assert that PGD `repeat_across_batch` divides the per-rank training batch size."""
+    """Assert that persistent PGD `repeat_across_batch` divides the per-rank training batch size."""
     world_size = dist_state.world_size if dist_state is not None else 1
     assert config.batch_size % world_size == 0, (
         f"batch_size {config.batch_size} not divisible by world size {world_size}"
     )
     per_rank = config.batch_size // world_size
-    for cfg in (
-        config.loss_metrics.persistent_pgd_recon,
-        config.loss_metrics.persistent_pgd_recon_subset,
-    ):
-        if cfg is not None and isinstance(cfg.scope, RepeatAcrossBatchScope):
+    for slug, cfg in config.loss_metrics.items():
+        if isinstance(
+            cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
+        ) and isinstance(cfg.scope, RepeatAcrossBatchScope):
             n = cfg.scope.n_sources
             assert per_rank % n == 0, (
-                f"repeat_across_batch n_sources={n} must divide per-rank batch_size={per_rank}"
+                f"{slug}: repeat_across_batch n_sources={n} must divide "
+                f"per-rank batch_size={per_rank}"
             )
 
 
@@ -468,15 +402,7 @@ def run_pd(
     artifacts: dict[str, Any] | None = None,
     wandb_tags: list[str] | None = None,
 ) -> Path | None:
-    """Run a full PD decomposition: setup, optimize, cleanup.
-
-    `metadata` is written to ``run_metadata.yaml``.  Driver-mediated callers
-    (via ``experiments/runner.py``) pass a fully populated ``RunMetadata``;
-    notebook callers can omit it and a minimal one is synthesized.
-
-    All ranks call this function. Only the main process does wandb/logging setup.
-    Returns the output directory on the main process and None on other ranks.
-    """
+    """Run a full PD decomposition: setup, optimize, cleanup."""
     _validate_pgd_scope(config, get_distributed_state())
 
     out_dir: Path | None

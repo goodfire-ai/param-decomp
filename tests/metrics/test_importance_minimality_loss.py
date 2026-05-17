@@ -1,6 +1,6 @@
 import torch
 
-from param_decomp.metrics import importance_minimality_loss
+from param_decomp.metrics.importance_minimality_loss import importance_minimality_loss
 
 
 class TestImportanceMinimalityLoss:

@@ -4,7 +4,7 @@ import torch
 from torch import Tensor
 
 from param_decomp.configs import UniformKSubsetRoutingConfig
-from param_decomp.metrics import ci_masked_recon_subset_loss
+from param_decomp.metrics.ci_masked_recon_subset_loss import ci_masked_recon_subset_loss
 from param_decomp.models.batch_and_loss_fns import recon_loss_mse
 from tests.metrics.fixtures import make_one_layer_component_model
 

@@ -432,7 +432,9 @@ class EditableModel:
             OptimCIConfig,
             optimize_ci_values,
         )
-        from param_decomp.configs import ImportanceMinimalityLossConfig
+        from param_decomp.metrics.importance_minimality_loss import (
+            ImportanceMinimalityLossConfig,
+        )
 
         counts: dict[str, int] = {}
         n_examples = len(examples)
@@ -514,7 +516,9 @@ class EditableModel:
         """
         from param_decomp.app.backend.compute import compute_prompt_attributions_optimized
         from param_decomp.app.backend.optim_cis import CELossConfig, OptimCIConfig
-        from param_decomp.configs import ImportanceMinimalityLossConfig
+        from param_decomp.metrics.importance_minimality_loss import (
+            ImportanceMinimalityLossConfig,
+        )
         from param_decomp.topology.gradient_connectivity import get_sources_by_target
 
         device = str(tokens.device)

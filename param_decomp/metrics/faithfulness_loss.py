@@ -1,58 +1,70 @@
-from typing import Any, ClassVar, override
-
 import torch
-from jaxtyping import Float, Int
+from jaxtyping import Float
 from torch import Tensor
 from torch.distributed import ReduceOp
 
-from param_decomp.metrics.base import Metric
+from param_decomp.metrics.base import LossMetricConfig
+from param_decomp.metrics.context import MetricContext
+from param_decomp.metrics.registry import register_metric
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.utils.distributed_utils import all_reduce
-from param_decomp.utils.general_utils import get_obj_device
 
 
-def _faithfulness_loss_update(
+class FaithfulnessLossConfig(LossMetricConfig):
+    pass
+
+
+def faithfulness_loss(
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
-) -> tuple[Float[Tensor, ""], int]:
+) -> Float[Tensor, ""]:
+    """Pure compute helper preserved for direct callers (tests, notebooks)."""
     assert weight_deltas, "Empty weight deltas"
-    device = get_obj_device(weight_deltas)
-    sum_loss = torch.tensor(0.0, device=device)
+    device = next(iter(weight_deltas.values())).device
+    sum_loss = torch.zeros((), device=device)
     total_params = 0
     for delta in weight_deltas.values():
-        sum_loss += (delta**2).sum()
+        sum_loss = sum_loss + (delta**2).sum()
         total_params += delta.numel()
-    return sum_loss, total_params
-
-
-def _faithfulness_loss_compute(
-    sum_loss: Float[Tensor, ""], total_params: Int[Tensor, ""] | int
-) -> Float[Tensor, ""]:
     return sum_loss / total_params
 
 
-def faithfulness_loss(weight_deltas: dict[str, Float[Tensor, "d_out d_in"]]) -> Float[Tensor, ""]:
-    sum_loss, total_params = _faithfulness_loss_update(weight_deltas)
-    return _faithfulness_loss_compute(sum_loss, total_params)
-
-
-class FaithfulnessLoss(Metric):
+@register_metric
+class FaithfulnessLoss:
     """MSE between the target weights and the sum of the components."""
 
-    metric_section: ClassVar[str] = "loss"
+    name = "faithfulness"
+    section = "loss"
+    config_type = FaithfulnessLossConfig
+    short_name = "Faith"
 
-    def __init__(self, model: ComponentModel, device: str) -> None:
-        self.model = model
-        self.sum_loss = torch.tensor(0.0, device=device)
-        self.total_params = torch.tensor(0, device=device)
+    def __init__(self, cfg: FaithfulnessLossConfig, *, model: ComponentModel, device: str) -> None:
+        self.cfg = cfg
+        self.device = device
+        self.reset()
 
-    @override
-    def update(self, *, weight_deltas: dict[str, Float[Tensor, "d_out d_in"]], **_: Any) -> None:
-        sum_loss, total_params = _faithfulness_loss_update(weight_deltas)
-        self.sum_loss += sum_loss
-        self.total_params += total_params
+    def reset(self) -> None:
+        self.sum_loss = torch.zeros((), device=self.device)
+        self.total_params = torch.zeros((), device=self.device, dtype=torch.long)
 
-    @override
+    def _compute_batch(
+        self, weight_deltas: dict[str, Float[Tensor, "d_out d_in"]]
+    ) -> tuple[Float[Tensor, ""], int]:
+        assert weight_deltas, "Empty weight deltas"
+        device = next(iter(weight_deltas.values())).device
+        sum_loss = torch.zeros((), device=device)
+        total_params = 0
+        for delta in weight_deltas.values():
+            sum_loss = sum_loss + (delta**2).sum()
+            total_params += delta.numel()
+        return sum_loss, total_params
+
+    def update(self, ctx: MetricContext) -> Tensor:
+        sum_loss, n = self._compute_batch(ctx.weight_deltas)
+        self.sum_loss += sum_loss.detach()
+        self.total_params += n
+        return sum_loss / n
+
     def compute(self) -> Float[Tensor, ""]:
         sum_loss = all_reduce(self.sum_loss, op=ReduceOp.SUM)
         total_params = all_reduce(self.total_params, op=ReduceOp.SUM)
-        return _faithfulness_loss_compute(sum_loss, total_params)
+        return sum_loss / total_params
