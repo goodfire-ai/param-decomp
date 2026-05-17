@@ -95,6 +95,18 @@ class GlobalCiConfig(BaseConfig):
         description="Hidden dimensions for global_shared_mlp CI function.",
     )
     simple_transformer_ci_cfg: GlobalSharedTransformerCiConfig | None = None
+    extra_input_module_patterns: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional list of additional target_model module paths whose inputs are "
+            "captured and fed to the CI function as extra context (the CI function still "
+            "only predicts outputs for the modules in `module_info`). Each path must "
+            "refer to a Linear-like module (nn.Linear, RadfordConv1D) so the input dim "
+            "can be inferred. Useful for the layerwise launcher: feeding a block's "
+            "pre-attn, pre-mlp, and mlp-neuron sites lets a per-module CI function see "
+            "the broader residual-stream context."
+        ),
+    )
 
     _DELETED_GLOBAL_REVERSE_RESIDUAL_KEYS: ClassVar[list[str]] = [
         "reader_hidden_dims",

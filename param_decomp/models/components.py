@@ -287,23 +287,44 @@ class TargetLayerConfig:
 
 
 class GlobalSharedTransformerCiFn(nn.Module):
-    """Global CI function that projects concatenated activations and attends over sequence."""
+    """Global CI function that projects concatenated activations and attends over sequence.
+
+    The CI function takes input activations from a configurable set of sites
+    (`input_layer_configs`) and predicts CI scores for a (typically smaller) set of
+    sites (`output_layer_configs`). In the common case, the input and output sets
+    are identical (the original behavior). Passing extra inputs lets a per-module
+    CI function see broader residual-stream context.
+    """
 
     def __init__(
         self,
-        target_model_layer_configs: dict[str, TargetLayerConfig],
+        output_layer_configs: dict[str, TargetLayerConfig],
         d_model: int,
         n_layers: int,
         n_heads: int,
         mlp_hidden_dims: list[int] | None = None,
         max_len: int = 2048,
         rope_base: float = 10000.0,
+        extra_input_dims: dict[str, int] | None = None,
     ):
         super().__init__()
 
-        self.layer_order = sorted(target_model_layer_configs.keys())
-        self.target_model_layer_configs = target_model_layer_configs
-        self.split_sizes = [target_model_layer_configs[name].C for name in self.layer_order]
+        self.output_order = sorted(output_layer_configs.keys())
+        self.output_layer_configs = output_layer_configs
+        self.split_sizes = [output_layer_configs[name].C for name in self.output_order]
+
+        extra_input_dims = extra_input_dims or {}
+        assert not (set(extra_input_dims) & set(output_layer_configs)), (
+            "extra_input_dims must not overlap with output_layer_configs; got overlap "
+            f"on {set(extra_input_dims) & set(output_layer_configs)}"
+        )
+        input_dims_combined: dict[str, int] = {
+            name: cfg.input_dim for name, cfg in output_layer_configs.items()
+        }
+        input_dims_combined.update(extra_input_dims)
+        self.input_order = sorted(input_dims_combined.keys())
+        self.input_dims = input_dims_combined
+
         self.d_model = d_model
         self.n_transformer_layers = n_layers
         self.n_heads = n_heads
@@ -311,8 +332,8 @@ class GlobalSharedTransformerCiFn(nn.Module):
         if mlp_hidden_dims is None:
             mlp_hidden_dims = [4 * d_model]
 
-        total_input_dim = sum(config.input_dim for config in target_model_layer_configs.values())
-        total_c = sum(config.C for config in target_model_layer_configs.values())
+        total_input_dim = sum(input_dims_combined.values())
+        total_c = sum(cfg.C for cfg in output_layer_configs.values())
 
         self._input_projector = Linear(total_input_dim, d_model, nonlinearity="relu")
         self._output_head = Linear(d_model, total_c, nonlinearity="linear")
@@ -336,7 +357,7 @@ class GlobalSharedTransformerCiFn(nn.Module):
         input_acts: dict[str, Float[Tensor, "... d_in"]],
     ) -> dict[str, Float[Tensor, "... C"]]:
         inputs_list = [
-            F.rms_norm(input_acts[name], (input_acts[name].shape[-1],)) for name in self.layer_order
+            F.rms_norm(input_acts[name], (input_acts[name].shape[-1],)) for name in self.input_order
         ]
         concatenated = torch.cat(inputs_list, dim=-1)
         projected: Tensor = self._input_projector(concatenated)
@@ -358,7 +379,7 @@ class GlobalSharedTransformerCiFn(nn.Module):
             output = output.squeeze(-2)
 
         split_outputs = torch.split(output, self.split_sizes, dim=-1)
-        outputs = {name: split_outputs[i] for i, name in enumerate(self.layer_order)}
+        outputs = {name: split_outputs[i] for i, name in enumerate(self.output_order)}
 
         return outputs
 
@@ -663,7 +684,8 @@ class GlobalCiFnWrapper(nn.Module):
     """Wraps global CI functions with a unified interface.
 
     Transforms embedding layer inputs to component activations before calling
-    the underlying global CI function.
+    the underlying global CI function. Activations from extra-context sites
+    (paths not in `components`) are passed through to the CI function unchanged.
     """
 
     def __init__(
@@ -683,10 +705,11 @@ class GlobalCiFnWrapper(nn.Module):
         transformed: dict[str, Float[Tensor, ...]] = {}
 
         for layer_name, acts in layer_acts.items():
-            component = self.components[layer_name]
-            if isinstance(component, EmbeddingComponents):
+            if layer_name in self.components and isinstance(
+                self.components[layer_name], EmbeddingComponents
+            ):
                 # Embeddings pass token IDs; convert to component activations
-                transformed[layer_name] = component.get_component_acts(acts)
+                transformed[layer_name] = self.components[layer_name].get_component_acts(acts)
             else:
                 transformed[layer_name] = acts
 

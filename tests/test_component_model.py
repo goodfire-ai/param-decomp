@@ -893,7 +893,7 @@ def test_global_shared_transformer_ci_fn_shapes_and_values():
         "layer3": TargetLayerConfig(input_dim=15, C=7),
     }
     ci_fn = GlobalSharedTransformerCiFn(
-        target_model_layer_configs=layer_configs,
+        output_layer_configs=layer_configs,
         d_model=8,
         n_layers=2,
         n_heads=2,
@@ -925,7 +925,7 @@ def test_global_shared_transformer_ci_fn_with_seq_dim():
         "layer2": TargetLayerConfig(input_dim=8, C=3),
     }
     ci_fn = GlobalSharedTransformerCiFn(
-        target_model_layer_configs=layer_configs,
+        output_layer_configs=layer_configs,
         d_model=8,
         n_layers=3,
         n_heads=2,
@@ -945,6 +945,33 @@ def test_global_shared_transformer_ci_fn_with_seq_dim():
     # Check values are valid
     for name, out in outputs.items():
         assert torch.isfinite(out).all(), f"Output {name} contains NaN or Inf"
+
+
+def test_global_shared_transformer_ci_fn_with_extra_input_dims():
+    """CI fn predicts only for output layers but ingests acts from extra input-only sites too."""
+    output_configs = {
+        "target_layer": TargetLayerConfig(input_dim=10, C=5),
+    }
+    extra_inputs = {"context_a": 12, "context_b": 8}
+    ci_fn = GlobalSharedTransformerCiFn(
+        output_layer_configs=output_configs,
+        d_model=8,
+        n_layers=2,
+        n_heads=2,
+        mlp_hidden_dims=[16],
+        extra_input_dims=extra_inputs,
+    )
+
+    inputs = {
+        "target_layer": torch.randn(BATCH_SIZE, 10),
+        "context_a": torch.randn(BATCH_SIZE, 12),
+        "context_b": torch.randn(BATCH_SIZE, 8),
+    }
+    outputs = ci_fn(inputs)
+
+    assert set(outputs.keys()) == {"target_layer"}, "outputs only for output_layer_configs"
+    assert outputs["target_layer"].shape == (BATCH_SIZE, 5)
+    assert torch.isfinite(outputs["target_layer"]).all()
 
 
 def test_component_model_with_global_ci():
@@ -970,6 +997,49 @@ def test_component_model_with_global_ci():
     )
     out = cm(token_ids)
     torch.testing.assert_close(out, target_model(token_ids))
+
+
+def test_component_model_with_extra_input_module_patterns():
+    """ComponentModel hooks extra input-only sites and feeds them to the CI fn."""
+    from param_decomp.configs import AttnConfig, GlobalSharedTransformerCiConfig
+
+    target_model = tiny_target()
+
+    cm = ComponentModel(
+        target_model=target_model,
+        run_batch=run_batch_passthrough,
+        # Decompose 'mlp' only; 'out' is an input-only context site.
+        module_path_info=[ModulePathInfo(module_path="mlp", C=4)],
+        ci_config=GlobalCiConfig(
+            fn_type="global_shared_transformer",
+            simple_transformer_ci_cfg=GlobalSharedTransformerCiConfig(
+                d_model=8,
+                n_blocks=1,
+                mlp_hidden_dim=[16],
+                attn_config=AttnConfig(n_heads=2, max_len=16, rope_base=10000.0),
+            ),
+            extra_input_module_patterns=["out"],
+        ),
+        sigmoid_type="leaky_hard",
+    )
+
+    assert cm.extra_input_module_paths == ["out"]
+
+    token_ids = torch.randint(
+        low=0, high=target_model.embed.num_embeddings, size=(BATCH_SIZE,), dtype=torch.long
+    )
+    _, cache = cm(token_ids, cache_type="input")
+
+    # Cache should now contain both the target module ('mlp') and the extra site ('out').
+    assert set(cache.keys()) == {"mlp", "out"}
+
+    # CI outputs are only for target modules, not the extra site.
+    ci_outputs = cm.calc_causal_importances(
+        pre_weight_acts=cache,
+        sampling="continuous",
+        detach_inputs=False,
+    )
+    assert set(ci_outputs.lower_leaky.keys()) == {"mlp"}
 
 
 def test_component_model_global_ci_calc_causal_importances():

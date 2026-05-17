@@ -127,6 +127,7 @@ class ComponentModel(LoadableModule):
         self.target_model = target_model
         self.module_to_c = {info.module_path: info.C for info in module_path_info}
         self.target_module_paths = list(self.module_to_c.keys())
+        self.extra_input_module_paths: list[str] = []
 
         self.components = ComponentModel._create_components(
             target_model=target_model,
@@ -163,6 +164,7 @@ class ComponentModel(LoadableModule):
                     global_ci_fn=raw_global_ci_fn,
                     components=self.components,
                 )
+                self.extra_input_module_paths = list(ci_config.extra_input_module_patterns or [])
 
         if sigmoid_type == "leaky_hard":
             self.lower_leaky_fn = SIGMOID_TYPES["lower_leaky_hard"]
@@ -307,9 +309,24 @@ class ComponentModel(LoadableModule):
 
             layer_configs[target_module_path] = (input_dim, target_module_c)
 
+        extra_input_dims: dict[str, int] = {}
+        for extra_path in ci_config.extra_input_module_patterns or []:
+            assert extra_path not in module_to_c, (
+                f"extra_input_module_patterns must not overlap with target modules; "
+                f"got {extra_path!r} which is already a target module"
+            )
+            extra_module = target_model.get_submodule(extra_path)
+            assert not isinstance(extra_module, nn.Embedding), (
+                f"extra input site {extra_path!r} must be Linear-like, not Embedding"
+            )
+            extra_input_dims[extra_path] = ComponentModel._get_module_input_dim(extra_module)
+
         match ci_fn_type:
             case "global_shared_mlp":
                 assert ci_fn_hidden_dims is not None  # validated by Pydantic
+                assert not extra_input_dims, (
+                    "extra_input_module_patterns is not supported with global_shared_mlp yet"
+                )
                 return GlobalSharedMLPCiFn(
                     layer_configs=layer_configs, hidden_dims=ci_fn_hidden_dims
                 )
@@ -318,7 +335,7 @@ class ComponentModel(LoadableModule):
                 assert transformer_cfg is not None  # validated by Pydantic
 
                 return GlobalSharedTransformerCiFn(
-                    target_model_layer_configs={
+                    output_layer_configs={
                         target_module_path: TargetLayerConfig(input_dim=input_dim, C=C)
                         for target_module_path, (input_dim, C) in layer_configs.items()
                     },
@@ -328,6 +345,7 @@ class ComponentModel(LoadableModule):
                     mlp_hidden_dims=transformer_cfg.mlp_hidden_dim,
                     max_len=transformer_cfg.attn_config.max_len,
                     rope_base=transformer_cfg.attn_config.rope_base,
+                    extra_input_dims=extra_input_dims,
                 )
 
     @overload
@@ -407,6 +425,21 @@ class ComponentModel(LoadableModule):
                 cache_type=cache_type,
                 cache=cache,
             )
+
+        # Extra context sites (input-only) are always hooked when caching is on, regardless
+        # of cache_type. They never carry a Component substitution.
+        if cache_type != "none":
+            for extra_path in self.extra_input_module_paths:
+                if extra_path in hooks:
+                    continue
+                hooks[extra_path] = partial(
+                    self._components_and_cache_hook,
+                    module_name=extra_path,
+                    components=None,
+                    mask_info=None,
+                    cache_type="input",
+                    cache=cache,
+                )
 
         with self._attach_forward_hooks(hooks):
             out: Tensor = self._run_batch(self.target_model, batch)
