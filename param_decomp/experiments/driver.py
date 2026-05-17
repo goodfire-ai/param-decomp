@@ -4,10 +4,13 @@ The core PD optimizer only needs a target model bundle plus train/eval dataloade
 An experiment driver is the boundary layer that turns a serializable experiment config
 into those runtime objects. The set of drivers is open-world: custom users can register
 their own driver class without editing core code.
+
+Drivers don't own reload-time state: reload calls `build_target` and `build_dataloaders`
+exactly like a fresh run, re-fetching whatever upstream the config points at (wandb
+pretrain run, HF model, etc.). Saved PD runs depend on their upstream continuing to exist.
 """
 
 from importlib import import_module
-from pathlib import Path
 from typing import Any, ClassVar, Protocol
 
 from torch.utils.data import DataLoader
@@ -25,12 +28,7 @@ class ExperimentConfig(BaseConfig):
 
 
 class ExperimentDriver[ConfigT: ExperimentConfig](Protocol):
-    """Converts a serializable experiment config into runtime PD objects.
-
-    A driver is a stateless object that owns its config schema (`config_type`) and knows
-    how to build a `PDTarget`, train/eval dataloaders, and (optionally) extra files to
-    persist beside the checkpoint so that the run is self-contained on reload.
-    """
+    """Converts a serializable experiment config into runtime PD objects."""
 
     name: ClassVar[str]
 
@@ -39,8 +37,8 @@ class ExperimentDriver[ConfigT: ExperimentConfig](Protocol):
         """Pydantic model type used to validate serialized experiment configs."""
         ...
 
-    def build_target(self, config: ConfigT, *, run_dir: Path | None = None) -> PDTarget:
-        """Build the target model bundle. If `run_dir` is given, prefer locally bundled files."""
+    def build_target(self, config: ConfigT) -> PDTarget:
+        """Build the target model bundle from upstream."""
         ...
 
     def build_dataloaders(
@@ -51,13 +49,8 @@ class ExperimentDriver[ConfigT: ExperimentConfig](Protocol):
         eval_batch_size: int,
         dist_state: DistributedState | None = None,
         device: str = "cpu",
-        run_dir: Path | None = None,
     ) -> tuple[DataLoader[Any], DataLoader[Any]]:
-        """Build train/eval dataloaders. If `run_dir` is given, prefer locally bundled files."""
-        ...
-
-    def artifacts(self, config: ConfigT, target: PDTarget) -> dict[str, Any]:
-        """Filename → data for extra files to persist beside the checkpoint. Default: {}."""
+        """Build train/eval dataloaders."""
         ...
 
 

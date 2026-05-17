@@ -71,7 +71,7 @@ Two routes, neither needing core-package edits:
   `load_component_model(path, target=...)`. Best for notebooks/scripts.
 - **Package it as a YAML-driven experiment** — define your experiment as a Pydantic
   `ExperimentConfig` plus an `ExperimentDriver` class (a small adapter exposing
-  `build_target`, `build_dataloaders`, and `artifacts`; see
+  `build_target` and `build_dataloaders`; see
   [`driver.py`](param_decomp/experiments/driver.py) for the interface and
   [`tms/experiment.py`](param_decomp/experiments/tms/experiment.py) for the smallest example),
   then run `pd-run --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml`. This is

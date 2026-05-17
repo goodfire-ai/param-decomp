@@ -1,6 +1,5 @@
 """Language-model PD experiment: serializable config, target loading, and driver."""
 
-from pathlib import Path
 from typing import Any, ClassVar, Self
 
 from pydantic import Field, model_validator
@@ -91,8 +90,7 @@ class Driver:
     name: ClassVar[str] = "lm"
     config_type: ClassVar[type[LMExperimentConfig]] = LMExperimentConfig
 
-    def build_target(self, config: LMExperimentConfig, *, run_dir: Path | None = None) -> PDTarget:
-        _ = run_dir
+    def build_target(self, config: LMExperimentConfig) -> PDTarget:
         target_model = _load_target_model(config.target)
         target_model.eval()
         return PDTarget(
@@ -109,9 +107,8 @@ class Driver:
         eval_batch_size: int,
         dist_state: DistributedState | None = None,
         device: str = "cpu",
-        run_dir: Path | None = None,
     ) -> Any:
-        _ = device, run_dir
+        _ = device
         return build_lm_dataloaders(
             config.data,
             train_batch_size=train_batch_size,
@@ -119,7 +116,3 @@ class Driver:
             dist_state=dist_state,
             seed=config.pd.seed,
         )
-
-    def artifacts(self, config: LMExperimentConfig, target: PDTarget) -> dict[str, Any]:
-        _ = config, target
-        return {}

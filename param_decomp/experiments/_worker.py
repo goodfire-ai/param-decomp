@@ -57,16 +57,15 @@ def run_experiment(
         dist_state=dist_state,
         device=device,
     )
-    artifacts = driver.artifacts(experiment_config, target)
     sweep_params = parse_sweep_params(sweep_params_json)
-    if sweep_params is not None:
-        artifacts["sweep_params.yaml"] = sweep_params
+    artifacts: dict[str, Any] = (
+        {"sweep_params.yaml": sweep_params} if sweep_params is not None else {}
+    )
 
     wandb_tags = [driver.name, *([launch_id] if launch_id is not None else [])]
     metadata = RunMetadata(
         driver=driver_path,
         config=experiment_config.model_dump(mode="json"),
-        artifact_filenames=list(artifacts),
     )
     run_pd(
         config=experiment_config.pd,

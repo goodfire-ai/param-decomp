@@ -493,12 +493,6 @@ def run_pd(
             metadata = RunMetadata(
                 driver=None,
                 config={"pd": config.model_dump(mode="json")},
-                artifact_filenames=list(artifacts),
-            )
-        else:
-            assert sorted(metadata.artifact_filenames) == sorted(artifacts), (
-                f"metadata.artifact_filenames {metadata.artifact_filenames} does not match "
-                f"artifacts keys {list(artifacts)}"
             )
 
         tags = list(wandb_tags or [])
