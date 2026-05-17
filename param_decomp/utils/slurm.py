@@ -313,6 +313,7 @@ def generate_git_snapshot_setup(work_dir: str, snapshot_ref: str) -> str:
         Bash script fragment (no shebang, meant to be embedded in larger scripts)
     """
     return f"""\
+sleep $(( RANDOM % 60 ))
 WORK_DIR="{work_dir}"
 mkdir -p "$WORK_DIR"
 trap 'rm -rf "$WORK_DIR"' EXIT
@@ -323,7 +324,7 @@ git fetch "{REPO_ROOT}" "{snapshot_ref}:{snapshot_ref}"
 git checkout "{snapshot_ref}"
 deactivate 2>/dev/null || true
 unset VIRTUAL_ENV
-uv sync --no-dev --link-mode copy -q
+flock /tmp/pd-uv-sync.lock uv sync --no-dev --link-mode copy -q
 source .venv/bin/activate"""
 
 

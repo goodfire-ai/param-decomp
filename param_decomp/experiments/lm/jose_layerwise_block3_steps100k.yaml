@@ -1,0 +1,107 @@
+wandb_project: param-decomp
+wandb_run_name: null
+wandb_run_name_prefix: ''
+wandb_group: jose-layerwise-block3-sweep
+wandb_tags:
+- block3-sweep
+- steps100k
+extra_wandb_config:
+  sweep_axis: steps
+  steps_target: '100000'
+seed: 0
+autocast_bf16: true
+n_mask_samples: 1
+ci_config:
+  mode: global
+  fn_type: global_shared_transformer
+  hidden_dims: null
+  simple_transformer_ci_cfg:
+    d_model: 1024
+    n_blocks: 4
+    mlp_hidden_dim:
+    - 4096
+    attn_config:
+      n_heads: 8
+      max_len: 512
+      rope_base: 10000.0
+sampling: continuous
+sigmoid_type: leaky_hard
+module_info:
+- {module_pattern: h.3.mlp.c_fc, C: 3072}
+- {module_pattern: h.3.mlp.down_proj, C: 3584}
+- {module_pattern: h.3.attn.q_proj, C: 512}
+- {module_pattern: h.3.attn.k_proj, C: 512}
+- {module_pattern: h.3.attn.v_proj, C: 1024}
+- {module_pattern: h.3.attn.o_proj, C: 1024}
+identity_module_info: null
+init_pd_checkpoint: null
+use_delta_component: true
+loss_metric_configs:
+- coeff: 0.0002
+  classname: ImportanceMinimalityLoss
+  pnorm: 2.0
+  beta: 0.5
+  p_anneal_start_frac: 0.0
+  p_anneal_final_p: 0.4
+  p_anneal_end_frac: 1.0
+  eps: 1.0e-12
+- coeff: 1.0
+  classname: StochasticReconLayerwiseLoss
+- coeff: 10000000.0
+  classname: FaithfulnessLoss
+lr_schedule:
+  start_val: 5.0e-05
+  warmup_pct: 0.0
+  final_val_frac: 0.1
+  fn_type: cosine
+steps: 100000
+batch_size: 64
+grad_clip_norm_components: 0.01
+grad_clip_norm_ci_fns: null
+faithfulness_warmup_steps: 400
+faithfulness_warmup_lr: 0.001
+faithfulness_warmup_weight_decay: 0.0
+train_log_freq: 200
+eval_freq: 1000
+eval_batch_size: 128
+slow_eval_freq: 10000
+n_eval_steps: 1
+slow_eval_on_first_step: true
+save_freq: null
+eval_metric_configs:
+- classname: CIHistograms
+  n_batches_accum: 1
+- classname: ComponentActivationDensity
+- classname: CI_L0
+  groups:
+    total:
+    - '*'
+- classname: CEandKLLosses
+  rounding_threshold: 0.0
+- classname: CIMeanPerComponent
+- coeff: null
+  classname: StochasticHiddenActsReconLoss
+- classname: CIHiddenActsReconLoss
+- coeff: null
+  init: random
+  step_size: 0.1
+  n_steps: 20
+  mask_scope: shared_across_batch
+  classname: PGDReconLoss
+ci_alive_threshold: 0.0
+output_extract: 0
+pretrained_model_class: param_decomp.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
+pretrained_model_path: null
+pretrained_model_name: goodfire/spd/runs/t-9d2b8f02
+tokenizer_name: EleutherAI/gpt-neox-20b
+task_config:
+  task_name: lm
+  max_seq_len: 512
+  buffer_size: 1000
+  dataset_name: danbraunai/pile-uncopyrighted-tok-shuffled
+  column_name: input_ids
+  train_data_split: train
+  eval_data_split: val
+  shuffle_each_epoch: true
+  is_tokenized: true
+  streaming: true
