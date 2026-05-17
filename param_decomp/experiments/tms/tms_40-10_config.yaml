@@ -1,7 +1,6 @@
 pd:
   wandb_project: param-decomp
   wandb_run_name: null
-  wandb_run_name_prefix: ''
   seed: 0
   n_mask_samples: 1
   ci_config:

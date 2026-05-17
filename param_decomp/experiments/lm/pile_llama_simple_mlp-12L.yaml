@@ -1,7 +1,6 @@
 pd:
   wandb_project: param-decomp
   wandb_run_name: null
-  wandb_run_name_prefix: ''
   seed: 0
   autocast_bf16: true
   n_mask_samples: 1
@@ -34,7 +33,6 @@ pd:
   - module_pattern: h.*.attn.o_proj
     C: 1024
   identity_module_info: null
-  init_pd_checkpoint: null
   use_delta_component: true
   components_optimizer:
     lr_schedule:

@@ -5,7 +5,15 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from param_decomp.configs import LayerwiseCiConfig, OptimizerConfig, PDConfig, ScheduleConfig
+from param_decomp.configs import (
+    AttnConfig,
+    GlobalCiConfig,
+    GlobalSharedTransformerCiConfig,
+    LayerwiseCiConfig,
+    OptimizerConfig,
+    PDConfig,
+    ScheduleConfig,
+)
 from param_decomp.experiments.driver import (
     ExperimentConfig,
     load_driver,
@@ -156,4 +164,45 @@ def test_lm_target_requires_exactly_one_location():
             model_class="transformers.GPT2LMHeadModel",
             model_name=None,
             model_path=None,
+        )
+
+
+def test_layerwise_mlp_ci_hidden_dims_must_be_non_empty():
+    with pytest.raises(ValidationError, match="hidden_dims must be non-empty"):
+        LayerwiseCiConfig(fn_type="mlp", hidden_dims=[])
+
+    with pytest.raises(ValidationError, match="hidden_dims must be non-empty"):
+        LayerwiseCiConfig(fn_type="vector_mlp", hidden_dims=[])
+
+    assert LayerwiseCiConfig(fn_type="shared_mlp", hidden_dims=[]).hidden_dims == []
+
+
+def test_ci_hidden_dims_must_be_positive():
+    with pytest.raises(ValidationError):
+        LayerwiseCiConfig(fn_type="shared_mlp", hidden_dims=[0])
+
+    with pytest.raises(ValidationError):
+        GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[0])
+
+
+def test_transformer_ci_mlp_hidden_dim_can_use_default():
+    cfg = GlobalSharedTransformerCiConfig(
+        d_model=8,
+        n_blocks=1,
+        attn_config=AttnConfig(n_heads=2),
+    )
+    assert cfg.mlp_hidden_dim is None
+
+
+def test_global_transformer_ci_rejects_unused_hidden_dims():
+    transformer_cfg = GlobalSharedTransformerCiConfig(
+        d_model=8,
+        n_blocks=1,
+        attn_config=AttnConfig(n_heads=2),
+    )
+    with pytest.raises(ValidationError, match="hidden_dims is only used"):
+        GlobalCiConfig(
+            fn_type="global_shared_transformer",
+            hidden_dims=[8],
+            simple_transformer_ci_cfg=transformer_cfg,
         )

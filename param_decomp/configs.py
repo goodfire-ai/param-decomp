@@ -26,9 +26,15 @@ class LayerwiseCiConfig(BaseConfig):
     fn_type: LayerwiseCiFnType = Field(
         ..., description="Type of layerwise CI function: mlp, vector_mlp, or shared_mlp"
     )
-    hidden_dims: list[NonNegativeInt] = Field(
+    hidden_dims: list[PositiveInt] = Field(
         ..., description="Hidden dimensions for the CI function MLP"
     )
+
+    @model_validator(mode="after")
+    def validate_hidden_dims(self) -> Self:
+        if self.fn_type in ("mlp", "vector_mlp") and not self.hidden_dims:
+            raise ValueError(f"hidden_dims must be non-empty for fn_type={self.fn_type!r}")
+        return self
 
 
 class AttnConfig(BaseConfig):
@@ -54,7 +60,8 @@ class AttnConfig(BaseConfig):
 class GlobalSharedTransformerCiConfig(BaseConfig):
     d_model: PositiveInt
     n_blocks: PositiveInt
-    mlp_hidden_dim: list[NonNegativeInt] = Field(
+    mlp_hidden_dim: list[PositiveInt] | None = Field(
+        default=None,
         description="Hidden dimension for transformer MLP blocks. "
         "If None, defaults to [4 * d_model].",
     )
@@ -88,7 +95,7 @@ class GlobalCiConfig(BaseConfig):
         ...,
         description="Type of global CI function: global_shared_mlp or global_shared_transformer",
     )
-    hidden_dims: list[NonNegativeInt] | None = Field(
+    hidden_dims: list[PositiveInt] | None = Field(
         default=None,
         description="Hidden dimensions for global_shared_mlp CI function.",
     )
@@ -103,6 +110,9 @@ class GlobalCiConfig(BaseConfig):
         elif self.fn_type == "global_shared_transformer":
             assert self.simple_transformer_ci_cfg is not None, (
                 "simple_transformer_ci_cfg must be specified when fn_type='global_shared_transformer'"
+            )
+            assert self.hidden_dims is None, (
+                "hidden_dims is only used for fn_type='global_shared_mlp'"
             )
         return self
 
@@ -565,11 +575,6 @@ class PDConfig(BaseConfig):
         default=None,
         description="Explicit name for the WandB run (None generates an automatic name)",
     )
-    wandb_run_name_prefix: str = Field(
-        default="",
-        description="Prefix prepended to an auto-generated WandB run name",
-    )
-
     # --- General ---
     seed: int = Field(
         default=0,
@@ -625,11 +630,6 @@ class PDConfig(BaseConfig):
                 )
 
         return result
-
-    init_pd_checkpoint: str | None = Field(
-        default=None,
-        description="Path to a .pth checkpoint from a prior PD run for component/CI initialization",
-    )
 
     use_delta_component: bool = Field(
         default=True,

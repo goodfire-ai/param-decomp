@@ -41,7 +41,6 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
     config = PDConfig(
         wandb_project=None,
         wandb_run_name=None,
-        wandb_run_name_prefix="",
         seed=0,
         n_mask_samples=1,
         ci_config=LayerwiseCiConfig(fn_type="vector_mlp", hidden_dims=[128]),
