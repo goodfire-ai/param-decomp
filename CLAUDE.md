@@ -102,7 +102,7 @@ the driver.
 
 ```
 PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/
-  run_metadata.yaml          # RunMetadata: driver path, full config, artifact_filenames
+  run_metadata.yaml          # RunMetadata: driver path + full config
   model_<step>.pth           # PD checkpoints
   sweep_params.yaml          # if a sweep
 ```
@@ -115,7 +115,6 @@ config:
   pd: {...}
   target: {...}
   data: {...}
-artifact_filenames: []                                    # only sweep_params.yaml today
 ```
 
 ## Research Papers
