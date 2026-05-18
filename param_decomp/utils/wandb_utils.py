@@ -222,26 +222,26 @@ def download_wandb_file(run: Run, wandb_run_dir: Path, file_name: str) -> Path:
 
 
 def init_wandb(
-    config: BaseConfig,
     project: str,
     run_id: str,
+    configs: dict[str, BaseConfig],
     *,
     name: str | None = None,
     tags: list[str] | None = None,
-    extra_configs: dict[str, BaseConfig] | None = None,
     view_meta: dict[str, Any] | None = None,
 ) -> None:
-    """Initialize Weights & Biases and log the config.
+    """Initialize Weights & Biases and log the configs.
 
     Args:
-        config: The primary config to log (flattened into ``wandb.config``).
-        project: The name of the wandb project.
+        project: The wandb project name.
         run_id: The unique run ID (from ExecutionStamp).
+        configs: Mapping of prefix to config. Each config is dumped under its prefix
+            in ``wandb.config`` (``{prefix}/{field}``). Pass ``""`` as a prefix for a
+            flat dump (no key prefix), useful when there's a single config. The PD
+            path passes ``{"pd": ..., "logging": ..., "runtime": ...}`` — three
+            siblings, none privileged.
         name: The name of the wandb run.
         tags: Optional list of tags to add to the run.
-        extra_configs: Sibling configs to also log, keyed by prefix
-            (e.g. ``{"logging": LoggingConfig(...)}``). Each is dumped under its
-            key in ``wandb.config`` so fields don't collide with the primary config.
         view_meta: Free-form labels (typically populated by a sweep generator)
             merged into ``wandb.config`` under a ``view_meta/`` prefix so the W&B
             UI can group/color runs by researcher-facing axes.
@@ -258,18 +258,14 @@ def init_wandb(
         root=str(REPO_ROOT / "param_decomp"), exclude_fn=lambda path: "out" in Path(path).parts
     )
 
-    config_dict = config.model_dump(mode="json")
-    flattened = flatten_metric_configs(config_dict)
-    config_dict.pop("loss_metrics", None)
-    wandb.config.update({**config_dict, **flattened})
-
-    if extra_configs:
-        for prefix, extra in extra_configs.items():
-            extra_dict = extra.model_dump(mode="json")
-            flattened_extra = flatten_metric_configs(extra_dict)
-            extra_dict.pop("eval_metrics", None)
-            wandb.config.update({f"{prefix}/{k}": v for k, v in extra_dict.items()})
-            wandb.config.update({f"{prefix}/{k}": v for k, v in flattened_extra.items()})
+    for prefix, cfg in configs.items():
+        cfg_dict = cfg.model_dump(mode="json")
+        flattened = flatten_metric_configs(cfg_dict)
+        cfg_dict.pop("loss_metrics", None)
+        cfg_dict.pop("eval_metrics", None)
+        key_prefix = f"{prefix}/" if prefix else ""
+        wandb.config.update({f"{key_prefix}{k}": v for k, v in cfg_dict.items()})
+        wandb.config.update({f"{key_prefix}{k}": v for k, v in flattened.items()})
 
     if view_meta:
         wandb.config.update({f"view_meta/{k}": v for k, v in view_meta.items()})

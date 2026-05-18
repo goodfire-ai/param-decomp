@@ -517,12 +517,15 @@ def run_pd(
 
         if metadata.wandb_project:
             init_wandb(
-                config,
                 metadata.wandb_project,
                 run_id,
+                configs={
+                    "pd": config,
+                    "logging": logging_config,
+                    "runtime": runtime_config,
+                },
                 name=metadata.wandb_run_name,
                 tags=tags,
-                extra_configs={"logging": logging_config, "runtime": runtime_config},
                 view_meta=metadata.view_meta,
             )
 
