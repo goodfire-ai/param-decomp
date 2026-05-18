@@ -1,0 +1,129 @@
+# Randomly initialized 750M-ish non-embedding LlamaSimpleMLP target for PD memory profiling.
+#
+# Target non-embedding params are approximately 732.3M:
+#   19 layers * (4 attention matrices + 2 MLP matrices + 2 RMSNorms) + final RMSNorm.
+# Tied token embeddings add approximately 90.1M params but are not included in that count.
+#
+# The global CI transformer is approximately 7.96B params with the module_info below:
+#   d_model=3584, n_blocks=38, n_heads=28, mlp_hidden_dim=14336, plus CI input/output heads.
+
+wandb_project: null
+wandb_run_name: null
+wandb_run_name_prefix: ''
+
+seed: 0
+autocast_bf16: true
+n_mask_samples: 1
+ci_config:
+  mode: global
+  fn_type: global_shared_transformer
+  hidden_dims: null
+  simple_transformer_ci_cfg:
+    d_model: 3584
+    n_blocks: 38
+    mlp_hidden_dim:
+    - 14336
+    attn_config:
+      n_heads: 28
+      max_len: 2048
+      rope_base: 10000.0
+sampling: continuous
+sigmoid_type: leaky_hard
+
+module_info:
+- module_pattern: h.*.mlp.c_fc
+  C: 7168
+- module_pattern: h.*.mlp.down_proj
+  C: 7168
+- module_pattern: h.*.attn.q_proj
+  C: 1792
+- module_pattern: h.*.attn.k_proj
+  C: 1792
+- module_pattern: h.*.attn.v_proj
+  C: 1792
+- module_pattern: h.*.attn.o_proj
+  C: 1792
+identity_module_info: null
+init_pd_checkpoint: null
+use_delta_component: true
+
+loss_metric_configs:
+- classname: ImportanceMinimalityLoss
+  coeff: 0.0001
+  pnorm: 2.0
+  beta: 0.5
+  p_anneal_start_frac: 0.0
+  p_anneal_final_p: 0.4
+  p_anneal_end_frac: 1.0
+  eps: 1.0e-12
+- classname: StochasticReconLayerwiseLoss
+  coeff: 0.5
+
+components_optimizer:
+  lr_schedule:
+    start_val: 5.0e-05
+    warmup_pct: 0.0
+    final_val_frac: 0.1
+    fn_type: cosine
+  grad_clip_norm: 0.01
+ci_fn_optimizer:
+  lr_schedule:
+    start_val: 5.0e-05
+    warmup_pct: 0.0
+    final_val_frac: 0.1
+    fn_type: cosine
+  grad_clip_norm: 0.01
+steps: 20
+batch_size: 1
+
+faithfulness_warmup_steps: 0
+faithfulness_warmup_lr: 0.001
+faithfulness_warmup_weight_decay: 0.0
+
+train_log_freq: 1
+eval_freq: 1000000
+eval_batch_size: 1
+slow_eval_freq: 1000000
+n_eval_steps: 1
+slow_eval_on_first_step: false
+save_freq: null
+save_final_checkpoint: false
+include_loss_metrics_in_eval: false
+eval_metric_configs: []
+ci_alive_threshold: 0.0
+
+pretrained_model_class: param_decomp.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
+pretrained_model_path: null
+pretrained_model_name: null
+target_model_config:
+  model_type: LlamaSimpleMLP
+  attn_bias: false
+  block_size: 2048
+  flash_attention: true
+  mlp_bias: false
+  n_ctx: 2048
+  n_embd: 1792
+  n_head: 14
+  n_intermediate: 7168
+  n_key_value_heads: 14
+  n_layer: 19
+  rms_norm_eps: 1.0e-06
+  rotary_adjacent_pairs: false
+  rotary_base: 10000
+  rotary_dim: 128
+  use_grouped_query_attention: true
+  vocab_size: 50277
+output_extract: 0
+tokenizer_name: EleutherAI/gpt-neox-20b
+
+task_config:
+  task_name: lm
+  max_seq_len: 2048
+  buffer_size: 1000
+  dataset_name: monology/pile-uncopyrighted-parquet
+  column_name: text
+  train_data_split: train
+  eval_data_split: train
+  shuffle_each_epoch: true
+  is_tokenized: false
+  streaming: true

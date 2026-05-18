@@ -3,8 +3,10 @@
 from pathlib import Path
 
 import fire
+import torch.nn as nn
 
 from param_decomp.configs import (
+    Config,
     LMTaskConfig,
     PersistentPGDReconLossConfig,
     PersistentPGDReconSubsetLossConfig,
@@ -23,8 +25,61 @@ from param_decomp.utils.distributed_utils import (
     is_main_process,
     with_distributed_cleanup,
 )
-from param_decomp.utils.general_utils import resolve_class, set_seed
+from param_decomp.utils.general_utils import (
+    instantiate_model_from_config,
+    resolve_class,
+    set_seed,
+)
 from param_decomp.utils.run_utils import parse_config, parse_sweep_params
+
+
+def _load_target_model(config: Config) -> nn.Module:
+    pretrained_model_class = resolve_class(config.pretrained_model_class)
+
+    if config.target_model_config is not None:
+        return instantiate_model_from_config(pretrained_model_class, config.target_model_config)
+
+    if config.pretrained_model_name is not None:
+        assert hasattr(pretrained_model_class, "from_pretrained"), (
+            f"Model class {pretrained_model_class} should have a `from_pretrained` method"
+        )
+        if config.pretrained_model_class.startswith("param_decomp.pretrain"):
+            # Ensure local_rank 0 on each node caches the model, then all ranks load from local cache
+            # (In multi-node setups, /tmp is node-local so we can't broadcast paths across nodes)
+            run_info = ensure_cached_and_call(
+                PretrainRunInfo.from_path,
+                config.pretrained_model_name,
+            )
+
+            # Handle old training runs not having a model_type in the model_config_dict
+            if "model_type" not in run_info.model_config_dict:
+                run_info.model_config_dict["model_type"] = config.pretrained_model_class.split(".")[
+                    -1
+                ]
+
+            assert hasattr(pretrained_model_class, "from_run_info")
+            # Just loads from local file
+            return pretrained_model_class.from_run_info(run_info)  # pyright: ignore[reportAttributeAccessIssue]
+
+        # Avoid concurrent wandb API requests by first calling from_pretrained on rank 0 only
+        return ensure_cached_and_call(
+            pretrained_model_class.from_pretrained,  # pyright: ignore[reportAttributeAccessIssue]
+            config.pretrained_model_name,
+        )
+
+    if config.pretrained_model_path is not None:
+        assert hasattr(pretrained_model_class, "from_pretrained"), (
+            f"Model class {pretrained_model_class} should have a `from_pretrained` method"
+        )
+        return ensure_cached_and_call(
+            pretrained_model_class.from_pretrained,  # pyright: ignore[reportAttributeAccessIssue]
+            config.pretrained_model_path,
+        )
+
+    raise ValueError(
+        "LM configs must set one of target_model_config, pretrained_model_name, or "
+        "pretrained_model_path"
+    )
 
 
 @with_distributed_cleanup
@@ -47,30 +102,7 @@ def main(
     device = get_device()
     assert isinstance(config.task_config, LMTaskConfig), "task_config not LMTaskConfig"
 
-    pretrained_model_class = resolve_class(config.pretrained_model_class)
-    assert hasattr(pretrained_model_class, "from_pretrained"), (
-        f"Model class {pretrained_model_class} should have a `from_pretrained` method"
-    )
-    assert config.pretrained_model_name is not None
-
-    if config.pretrained_model_class.startswith("param_decomp.pretrain"):
-        # Ensure local_rank 0 on each node caches the model, then all ranks load from local cache
-        # (In multi-node setups, /tmp is node-local so we can't broadcast paths across nodes)
-        run_info = ensure_cached_and_call(PretrainRunInfo.from_path, config.pretrained_model_name)
-
-        # Handle old training runs not having a model_type in the model_config_dict
-        if "model_type" not in run_info.model_config_dict:
-            run_info.model_config_dict["model_type"] = config.pretrained_model_class.split(".")[-1]
-
-        assert hasattr(pretrained_model_class, "from_run_info")
-        # Just loads from local file
-        target_model = pretrained_model_class.from_run_info(run_info)  # pyright: ignore[reportAttributeAccessIssue]
-    else:
-        # Avoid concurrent wandb API requests by first calling from_pretrained on rank 0 only
-        target_model = ensure_cached_and_call(
-            pretrained_model_class.from_pretrained,  # pyright: ignore[reportAttributeAccessIssue]
-            config.pretrained_model_name,
-        )
+    target_model = _load_target_model(config)
     target_model.eval()
 
     # --- Load Data --- #
