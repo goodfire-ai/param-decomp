@@ -40,6 +40,14 @@ pd:
       coeff: 1.0
     stochastic_recon:
       coeff: 1.0
+logging:
+  train_log_freq: 500
+  eval_freq: 1000
+  slow_eval_freq: 5000
+  n_eval_steps: 100
+  eval_batch_size: 4096
+  save_freq: null
+  ci_alive_threshold: 0.1
   eval_metrics:
     ci_histograms:
       n_batches_accum: 5
@@ -60,14 +68,6 @@ pd:
       groups: null
     ci_mean_per_component: {}
     stochastic_hidden_acts_recon: {}
-logging:
-  train_log_freq: 500
-  eval_freq: 1000
-  slow_eval_freq: 5000
-  n_eval_steps: 100
-  eval_batch_size: 4096
-  save_freq: null
-  ci_alive_threshold: 0.1
 target:
   run_path: wandb:goodfire/spd-pre-Sep-2025/runs/urpntmfu
 data:

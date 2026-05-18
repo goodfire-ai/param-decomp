@@ -225,15 +225,15 @@ def optimize(
     ] = [
         cfg
         for cfg in (
-            config.eval_metrics.pgd_multibatch_recon,
-            config.eval_metrics.pgd_multibatch_recon_subset,
+            logging_config.eval_metrics.pgd_multibatch_recon,
+            logging_config.eval_metrics.pgd_multibatch_recon_subset,
         )
         if cfg is not None
     ]
 
     eval_metric_configs: list[MetricConfigType] = [
         cfg
-        for cfg in config.loss_metrics.active() + config.eval_metrics.active()
+        for cfg in config.loss_metrics.active() + logging_config.eval_metrics.active()
         if not isinstance(cfg, PGDMultiBatchConfig)
     ]
 
