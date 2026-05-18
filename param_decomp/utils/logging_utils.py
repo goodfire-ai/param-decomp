@@ -10,7 +10,6 @@ from torch import Tensor
 from tqdm import tqdm
 
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.utils.general_utils import runtime_cast
 
 
 def local_log(data: dict[str, Any], step: int, out_dir: Path) -> None:
@@ -39,6 +38,12 @@ def local_log(data: dict[str, Any], step: int, out_dir: Path) -> None:
         f.write(json.dumps({"step": step, **metrics_without_images}) + "\n")
 
 
+def _grad_sum_sq(param: torch.nn.Parameter, device: torch.device | str) -> Float[Tensor, ""]:
+    if param.grad is None:
+        return torch.zeros((), device=device)
+    return param.grad.detach().pow(2).sum()
+
+
 def get_grad_norms_dict(
     component_model: ComponentModel, device: torch.device | str
 ) -> dict[str, float]:
@@ -49,16 +54,14 @@ def get_grad_norms_dict(
     comp_grad_norm_sq_sum: Float[Tensor, ""] = torch.zeros((), device=device)
     for target_module_path, component in component_model.components.items():
         for local_param_name, local_param in component.named_parameters():
-            param_grad = runtime_cast(Tensor, local_param.grad)
-            param_grad_sum_sq = param_grad.pow(2).sum()
+            param_grad_sum_sq = _grad_sum_sq(local_param, device)
             key = f"components/{target_module_path}.{local_param_name}"
             out[key] = param_grad_sum_sq.sqrt().item()
             comp_grad_norm_sq_sum += param_grad_sum_sq
 
     ci_fn_grad_norm_sq_sum: Float[Tensor, ""] = torch.zeros((), device=device)
     for local_param_name, local_param in component_model.ci_fn.named_parameters():
-        ci_fn_grad = runtime_cast(Tensor, local_param.grad)
-        ci_fn_grad_sum_sq = ci_fn_grad.pow(2).sum()
+        ci_fn_grad_sum_sq = _grad_sum_sq(local_param, device)
         key = f"ci_fns/{local_param_name}"
         assert key not in out, f"Key {key} already exists in grad norms log"
         out[key] = ci_fn_grad_sum_sq.sqrt().item()

@@ -31,7 +31,7 @@ from param_decomp.models.components import (
 )
 from param_decomp.models.sigmoids import SIGMOID_TYPES, SigmoidType
 from param_decomp.param_decomp_types import LayerwiseCiFnType, ModelPath
-from param_decomp.utils.general_utils import resolve_class
+from param_decomp.utils.general_utils import instantiate_model_from_config, resolve_class
 from param_decomp.utils.module_utils import ModulePathInfo, expand_module_patterns
 
 
@@ -508,7 +508,9 @@ class ComponentModel(LoadableModule):
 
         # Load the target model
         model_class = resolve_class(config.pretrained_model_class)
-        if config.pretrained_model_name is not None:
+        if config.target_model_config is not None:
+            target_model = instantiate_model_from_config(model_class, config.target_model_config)
+        elif config.pretrained_model_name is not None:
             assert hasattr(model_class, "from_pretrained"), (
                 f"Model class {model_class} should have a `from_pretrained` method"
             )
