@@ -11,9 +11,8 @@ pretrain run, HF model, etc.). Saved PD runs depend on their upstream continuing
 """
 
 from importlib import import_module
-from typing import Any, ClassVar, Protocol, Self
+from typing import Any, ClassVar, Protocol
 
-from pydantic import model_validator
 from torch.utils.data import DataLoader
 
 from param_decomp.base_config import BaseConfig
@@ -27,18 +26,6 @@ class ExperimentConfig(BaseConfig):
 
     pd: PDConfig
     logging: LoggingConfig
-
-    @model_validator(mode="after")
-    def validate_metric_overlap(self) -> Self:
-        loss_names = {name for name, val in self.pd.loss_metrics if val is not None}
-        eval_names = {name for name, val in self.logging.eval_metrics if val is not None}
-        overlap = loss_names & eval_names
-        assert not overlap, (
-            f"The same metric was set under both pd.loss_metrics and logging.eval_metrics: "
-            f"{sorted(overlap)}. Loss metrics are automatically evaluated; remove the "
-            "logging.eval_metrics entry, or move it out of pd.loss_metrics if you want eval-only."
-        )
-        return self
 
 
 class ExperimentDriver[ConfigT: ExperimentConfig](Protocol):

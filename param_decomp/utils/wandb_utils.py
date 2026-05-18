@@ -261,15 +261,13 @@ def init_wandb(
     config_dict = config.model_dump(mode="json")
     flattened = flatten_metric_configs(config_dict)
     config_dict.pop("loss_metrics", None)
+    config_dict.pop("eval_metrics", None)
     wandb.config.update({**config_dict, **flattened})
 
     if extra_configs:
         for prefix, extra in extra_configs.items():
             extra_dict = extra.model_dump(mode="json")
-            flattened_extra = flatten_metric_configs(extra_dict)
-            extra_dict.pop("eval_metrics", None)
             wandb.config.update({f"{prefix}/{k}": v for k, v in extra_dict.items()})
-            wandb.config.update({f"{prefix}/{k}": v for k, v in flattened_extra.items()})
 
     if view_meta:
         wandb.config.update({f"view_meta/{k}": v for k, v in view_meta.items()})

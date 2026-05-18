@@ -41,14 +41,6 @@ pd:
       p_anneal_end_frac: 1.0
     stochastic_recon_layerwise:
       coeff: 2.0
-logging:
-  train_log_freq: 100
-  eval_freq: 1000
-  slow_eval_freq: 5000
-  slow_eval_on_first_step: true
-  n_eval_steps: 5
-  eval_batch_size: 2
-  save_freq: null
   eval_metrics:
     ci_histograms:
       n_batches_accum: 5
@@ -59,6 +51,14 @@ logging:
       rounding_threshold: 0.0
     ci_mean_per_component: {}
     stochastic_hidden_acts_recon: {}
+logging:
+  train_log_freq: 100
+  eval_freq: 1000
+  slow_eval_freq: 5000
+  slow_eval_on_first_step: true
+  n_eval_steps: 5
+  eval_batch_size: 2
+  save_freq: null
 target:
   model_class: transformers.GPT2LMHeadModel
   model_name: openai-community/gpt2

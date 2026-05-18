@@ -603,13 +603,6 @@ class LoggingConfig(BaseConfig):
         description="Interval (in steps) at which to save model checkpoints (None disables saving "
         "until the end of training).",
     )
-    eval_metrics: EvalMetricsConfig = Field(
-        default_factory=EvalMetricsConfig,
-        description=(
-            "Additional eval-only metrics. Metrics already set in `loss_metrics` are evaluated "
-            "automatically and should not be repeated here."
-        ),
-    )
 
     @model_validator(mode="after")
     def validate_model(self) -> Self:
@@ -719,6 +712,14 @@ class PDConfig(BaseConfig):
         description="Weight decay for warmup phase optimizer",
     )
 
+    eval_metrics: EvalMetricsConfig = Field(
+        default_factory=EvalMetricsConfig,
+        description=(
+            "Additional eval-only metrics. Metrics already set in `loss_metrics` are evaluated "
+            "automatically and should not be repeated here."
+        ),
+    )
+
     # --- Component Tracking ---
     ci_alive_threshold: Probability = Field(
         default=0.0,
@@ -729,4 +730,14 @@ class PDConfig(BaseConfig):
     def validate_model(self) -> Self:
         for cfg in self.loss_metrics.active():
             assert cfg.coeff is not None, f"loss_metrics.{type(cfg).__name__} must have a coeff"
+
+        loss_names = {name for name, val in self.loss_metrics if val is not None}
+        eval_names = {name for name, val in self.eval_metrics if val is not None}
+        overlap = loss_names & eval_names
+        assert not overlap, (
+            f"The same metric was set under both loss_metrics and eval_metrics: {sorted(overlap)}. "
+            "Loss metrics are automatically evaluated; remove the eval_metrics entry, or move it "
+            "out of loss_metrics if you want eval-only."
+        )
+
         return self

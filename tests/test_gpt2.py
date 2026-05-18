@@ -74,6 +74,9 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         batch_size=4,
         steps=2,
         ci_alive_threshold=0.1,
+        eval_metrics=EvalMetricsConfig(
+            ci_l0=CI_L0Config(groups=None),
+        ),
     )
     logging_config = LoggingConfig(
         n_eval_steps=1,
@@ -83,9 +86,6 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         slow_eval_freq=500,
         slow_eval_on_first_step=False,
         save_freq=None,
-        eval_metrics=EvalMetricsConfig(
-            ci_l0=CI_L0Config(groups=None),
-        ),
     )
 
     model_name = "SimpleStories/test-SimpleStories-gpt2-1.25M"

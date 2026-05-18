@@ -82,14 +82,6 @@ pd:
       n_warmup_steps: 2
     faithfulness:
       coeff: 10000000.0
-logging:
-  train_log_freq: 200
-  eval_freq: 1000
-  slow_eval_freq: 10000
-  slow_eval_on_first_step: true
-  n_eval_steps: 1
-  eval_batch_size: 64
-  save_freq: null
   eval_metrics:
     ci_histograms:
       n_batches_accum: 1
@@ -132,6 +124,14 @@ logging:
       step_size: 0.1
       n_steps: 20
       mask_scope: shared_across_batch
+logging:
+  train_log_freq: 200
+  eval_freq: 1000
+  slow_eval_freq: 10000
+  slow_eval_on_first_step: true
+  n_eval_steps: 1
+  eval_batch_size: 64
+  save_freq: null
 target:
   model_class: param_decomp.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
   model_name: goodfire/spd/runs/t-f99617bb
