@@ -578,6 +578,22 @@ class RuntimeConfig(BaseConfig):
         default=True,
         description="Use torch.autocast with bfloat16 mixed precision in training and eval.",
     )
+    dp: PositiveInt | None = Field(
+        default=None,
+        description="Number of GPUs for data parallelism. None = single GPU/CPU. <= 8 means "
+        "single-node DDP; multiples of 8 above 8 means multi-node. Declares the experiment's "
+        "compute requirement; can be overridden ad-hoc by ``pd-run --dp N``.",
+    )
+
+    @model_validator(mode="after")
+    def validate_dp(self) -> Self:
+        if self.dp is None:
+            return self
+        assert self.dp >= 2, "if set, dp must be at least 2 (pass None for single GPU)."
+        assert self.dp <= 8 or self.dp % 8 == 0, (
+            f"dp must be <= 8 (single node) or divisible by 8 (multi-node), got {self.dp}"
+        )
+        return self
 
 
 class LoggingConfig(BaseConfig):

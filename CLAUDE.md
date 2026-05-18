@@ -102,10 +102,10 @@ The four config classes split by concern:
   universe). Things that change what the trained model is.
 - **`LoggingConfig`** — observation-only settings (log/eval/save cadence, eval_batch_size,
   ci_alive_threshold). Don't affect the trained model.
-- **`RuntimeConfig`** — compute / deployment knobs (autocast_bf16 today; future home for
+- **`RuntimeConfig`** — compute / deployment knobs (autocast_bf16, dp; future home for
   device placement, NCCL flags, gradient accumulation). Affects numerical precision but
   describes *how* the run executes on a substrate, not the algorithm itself. Optional;
-  defaults if omitted in YAML.
+  defaults if omitted in YAML. `pd-run --dp N` overrides `runtime.dp` ad-hoc.
 
 Two runs with identical `PDConfig` and different `LoggingConfig` produce bit-identical
 weights. Different `RuntimeConfig` may produce slightly different weights via numerical

@@ -80,6 +80,23 @@ def _resolve_project(project: str | None, rerun: str | None) -> str:
     return DEFAULT_PROJECT_NAME
 
 
+def _resolve_dp(cli_dp: int | None, base_config: dict[str, Any]) -> int | None:
+    """CLI --dp overrides; otherwise use ``runtime.dp`` from the experiment config (if set).
+
+    Validates via RuntimeConfig (pydantic) on whichever value we pick, then writes the
+    resolved value back into ``base_config`` so the worker — and the saved RunMetadata —
+    record what actually ran.
+    """
+    from param_decomp.configs import RuntimeConfig
+
+    runtime_dict = dict(base_config.get("runtime", {}))
+    effective = cli_dp if cli_dp is not None else runtime_dict.get("dp")
+    runtime_dict["dp"] = effective
+    RuntimeConfig.model_validate(runtime_dict)
+    base_config.setdefault("runtime", {})["dp"] = effective
+    return effective
+
+
 def main(
     experiment: str | None = None,
     *,
@@ -114,7 +131,8 @@ def main(
         job_suffix: Suffix for the SLURM job name.
         cpu: Run on CPU.
         partition: SLURM partition.
-        dp: GPUs for DDP. ``<= 8`` is single-node; multiples of 8 above 8 multi-node.
+        dp: GPUs for DDP. Overrides ``runtime.dp`` in the experiment config if set.
+            ``<= 8`` is single-node; multiples of 8 above 8 multi-node.
         project: W&B project name. Defaults to the project recorded on the rerun's
             saved metadata (if any), otherwise ``DEFAULT_PROJECT_NAME``.
 
@@ -138,6 +156,7 @@ def main(
 
     name, driver_path, base_config = _resolve_source(experiment, config_path, driver, rerun)
     project = _resolve_project(project, rerun)
+    dp = _resolve_dp(dp, base_config)
 
     if local:
         assert sweep is None, "--sweep is not supported with --local"

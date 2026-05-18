@@ -153,18 +153,10 @@ def _build_sweep_spec(name: str, sweep: str | None, base_config: dict[str, Any])
 
 
 def _validate_and_get_n_gpus(cpu: bool, dp: int | None) -> int | None:
+    """Resolve final GPU count. dp value/shape already validated by RuntimeConfig upstream."""
     if cpu:
         assert dp is None, "dp should not be specified when running on cpu"
         return None
-
-    if dp is None:
-        return None
-
-    assert dp >= 2, "if given, dp must be at least 2. pass dp=None to use a single GPU."
-    assert dp <= _GPUS_PER_NODE or dp % _GPUS_PER_NODE == 0, (
-        f"dp must be <= {_GPUS_PER_NODE} (single node) or divisible by {_GPUS_PER_NODE} (multi-node), "
-        f"got {dp}"
-    )
     return dp
 
 
