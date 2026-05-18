@@ -566,15 +566,6 @@ SamplingType = Literal["continuous", "binomial"]
 
 
 class PDConfig(BaseConfig):
-    # --- WandB
-    wandb_project: str | None = Field(
-        default=None,
-        description="Weights & Biases project name (set to None to disable WandB logging)",
-    )
-    wandb_run_name: str | None = Field(
-        default=None,
-        description="Explicit name for the WandB run (None generates an automatic name)",
-    )
     # --- General ---
     seed: int = Field(
         default=0,

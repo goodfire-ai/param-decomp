@@ -354,7 +354,7 @@ def optimize(
                 for name, value in batch_log_data.items():
                     tqdm.write(f"{name}: {value:.15f}")
                 local_log(batch_log_data, step, out_dir)
-                if config.wandb_project:
+                if wandb.run is not None:
                     try_wandb(wandb.log, batch_log_data, step=step)
 
         # --- Evaluation --- #
@@ -395,7 +395,7 @@ def optimize(
                     for k, v in metrics.items():
                         tqdm.write(f"eval/{k}: {v}")
                     local_log(metrics, step, out_dir)
-                    if config.wandb_project:
+                    if wandb.run is not None:
                         wandb_logs = {
                             f"eval/{k}": wandb.Image(v) if isinstance(v, Image.Image) else v
                             for k, v in metrics.items()
@@ -416,7 +416,7 @@ def optimize(
             # Save the state dict of the underlying module (not DDP wrapper)
             save_file(component_model.state_dict(), out_dir / f"model_{step}.pth")
             logger.info(f"Saved model, optimizer, and out_dir to {out_dir}")
-            if config.wandb_project:
+            if wandb.run is not None:
                 try_wandb(
                     wandb.save,
                     str(out_dir / f"model_{step}.pth"),
@@ -500,13 +500,20 @@ def run_pd(
         if slurm_array_job_id is not None:
             tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
 
-        if config.wandb_project:
-            init_wandb(config, config.wandb_project, run_id, config.wandb_run_name, tags)
+        if metadata.wandb_project:
+            init_wandb(
+                config,
+                metadata.wandb_project,
+                run_id,
+                name=metadata.wandb_run_name,
+                tags=tags,
+                view_meta=metadata.view_meta,
+            )
 
         logger.info(config)
 
         save_pre_run_info(
-            save_to_wandb=config.wandb_project is not None,
+            save_to_wandb=metadata.wandb_project is not None,
             out_dir=out_dir,
             metadata=metadata,
             artifacts=artifacts,
@@ -526,7 +533,7 @@ def run_pd(
         tied_weights=target.tied_weights,
     )
 
-    if is_main_process() and config.wandb_project:
+    if is_main_process() and wandb.run is not None:
         wandb.finish()
 
     return out_dir

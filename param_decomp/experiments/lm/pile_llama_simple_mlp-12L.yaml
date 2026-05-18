@@ -1,6 +1,4 @@
 pd:
-  wandb_project: param-decomp
-  wandb_run_name: null
   seed: 0
   autocast_bf16: true
   n_mask_samples: 1

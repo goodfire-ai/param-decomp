@@ -45,8 +45,6 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
 
     # Create config similar to tms_config.yaml
     config = PDConfig(
-        wandb_project=None,
-        wandb_run_name=None,
         seed=0,
         n_mask_samples=1,
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[8]),
