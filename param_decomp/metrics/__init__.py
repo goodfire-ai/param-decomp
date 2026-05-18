@@ -1,17 +1,19 @@
 """Metrics package.
 
-Each metric module under `param_decomp/metrics/` defines its pydantic config + a
-`@register_metric`-decorated Metric class. `discover_metrics()` (called from `configs.py` after
-its own class definitions are complete) walks this package and imports every metric module,
-firing all the decorators so `METRIC_REGISTRY` is populated before any `PDConfig` validates.
+Built-in metric modules live under `param_decomp/metrics/builtin/`. Each defines its pydantic
+config + a `@register_metric`-decorated Metric class. `discover_metrics()` walks the `builtin/`
+subpackage and imports every module, firing all the decorators so `METRIC_REGISTRY` is
+populated before `PDConfig.loss_metrics` / `PDConfig.eval_metrics` are parsed.
 
 This package's `__init__.py` deliberately does NOT auto-discover at import time, because
 `configs.py` imports `metrics.base` early (which triggers this `__init__.py`), and the metric
-modules in turn import `configs.py`. If we ran discovery here we would re-enter `configs.py` mid-
-load. Instead, discovery is invoked explicitly from the bottom of `configs.py`.
+modules in turn import `configs.py`. If we ran discovery here we would re-enter `configs.py`
+mid-load. Instead, `PDConfig` invokes discovery during validation, after `configs.py` has
+finished defining its classes.
 
 Importers who want pure-function helpers (e.g. `faithfulness_loss`) should import them from the
-specific submodule, e.g. `from param_decomp.metrics.faithfulness_loss import faithfulness_loss`.
+specific submodule, e.g.
+`from param_decomp.metrics.builtin.faithfulness_loss import faithfulness_loss`.
 """
 
 import importlib
@@ -25,24 +27,25 @@ from param_decomp.metrics.registry import (
     register_metric,
 )
 
-_INFRASTRUCTURE = {"base", "context", "registry", "pgd_utils"}
+from . import builtin
+
 _discovered = False
 
 
 def discover_metrics() -> None:
-    """Import every metric module so its `@register_metric` decorator fires.
+    """Import every built-in metric module so its `@register_metric` decorator fires.
 
-    Called from the bottom of `configs.py` after class definitions complete. Subsequent calls are
+    Called by `PDConfig` validation before metric config fields are parsed. Subsequent calls are
     no-ops.
     """
     global _discovered
     if _discovered:
         return
     _discovered = True
-    for info in pkgutil.iter_modules(__path__):
-        if info.name in _INFRASTRUCTURE or info.name.startswith("_"):
+    for info in pkgutil.iter_modules(builtin.__path__):
+        if info.name.startswith("_"):
             continue
-        importlib.import_module(f"{__name__}.{info.name}")
+        importlib.import_module(f"{builtin.__name__}.{info.name}")
 
 
 __all__ = [

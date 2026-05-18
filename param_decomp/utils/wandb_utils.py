@@ -30,8 +30,9 @@ _WANDB_URL_RE = re.compile(
 
 def _build_short_names() -> dict[str, str]:
     """Derive the metric -> short-name map from the registry."""
-    from param_decomp.metrics import METRIC_REGISTRY
+    from param_decomp.metrics import METRIC_REGISTRY, discover_metrics
 
+    discover_metrics()
     return {cls.name: cls.short_name for cls in METRIC_REGISTRY.values() if cls.short_name}
 
 

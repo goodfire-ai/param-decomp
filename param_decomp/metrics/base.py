@@ -68,12 +68,9 @@ class Metric(Protocol):
 
     def compute(self) -> MetricResult: ...
 
-    def before_backward(self, live_loss: Tensor | None) -> None:
-        """Optional hook run before `total_loss.backward()`. Default no-op (most metrics don't
-        implement it). Persistent PGD overrides to extract source gradients with
-        `retain_graph=True` before the main backward pass."""
 
-    def after_backward(self) -> None:
-        """Optional hook run after `total_loss.backward()`. Default no-op. Persistent PGD
-        overrides to step its adversarial sources using the gradients stashed in
-        `before_backward`."""
+# Opt-in hooks (not part of `Metric` — `run_pd` discovers them via `getattr`):
+#   before_backward(live_loss: Tensor | None) -> None
+#   after_backward() -> None
+# Currently used only by `PersistentPGDReconLoss` to extract source gradients with
+# `retain_graph=True` and step its adversarial sources around `total_loss.backward()`.

@@ -5,28 +5,41 @@ the multi-kwarg `update(...)` signature each metric used to take.
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any, Literal, Protocol
 
 from jaxtyping import Float
 from torch import Tensor
 
-if TYPE_CHECKING:
-    from param_decomp.configs import PDConfig
-    from param_decomp.models.batch_and_loss_fns import ReconstructionLoss
-    from param_decomp.models.component_model import CIOutputs, ComponentModel
+
+class MetricContextConfig(Protocol):
+    steps: int
+    use_delta_component: bool
+    sampling: Literal["continuous", "binomial"]
+    n_mask_samples: int
+    ci_alive_threshold: float
+
+
+class MetricCIOutputs(Protocol):
+    lower_leaky: dict[str, Float[Tensor, "... C"]]
+    upper_leaky: dict[str, Float[Tensor, "... C"]]
+    pre_sigmoid: dict[str, Tensor]
+
+
+class MetricReconstructionLoss(Protocol):
+    def __call__(self, pred: Tensor, target: Tensor) -> tuple[Float[Tensor, ""], int]: ...
 
 
 @dataclass(frozen=True)
 class MetricContext:
-    model: "ComponentModel"
-    config: "PDConfig"
+    model: Any
+    config: MetricContextConfig
     batch: Any
     target_out: Tensor
     pre_weight_acts: dict[str, Float[Tensor, "..."]]
-    ci: "CIOutputs"
+    ci: MetricCIOutputs
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]]
     step: int
-    reconstruction_loss: "ReconstructionLoss"
+    reconstruction_loss: MetricReconstructionLoss
     is_eval: bool
 
     @property

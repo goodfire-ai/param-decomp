@@ -1,7 +1,9 @@
 import torch
 
-from param_decomp.metrics.ci_masked_recon_layerwise_loss import ci_masked_recon_layerwise_loss
-from param_decomp.metrics.ci_masked_recon_loss import ci_masked_recon_loss
+from param_decomp.metrics.builtin.ci_masked_recon_layerwise_loss import (
+    ci_masked_recon_layerwise_loss,
+)
+from param_decomp.metrics.builtin.ci_masked_recon_loss import ci_masked_recon_loss
 from param_decomp.models.batch_and_loss_fns import recon_loss_mse
 from tests.metrics.fixtures import make_one_layer_component_model, make_two_layer_component_model
 

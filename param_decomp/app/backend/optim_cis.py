@@ -12,7 +12,7 @@ from torch import Tensor
 from tqdm.auto import tqdm
 
 from param_decomp.configs import SamplingType
-from param_decomp.metrics.importance_minimality_loss import (
+from param_decomp.metrics.builtin.importance_minimality_loss import (
     ImportanceMinimalityLossConfig,
     importance_minimality_loss,
 )

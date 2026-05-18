@@ -34,7 +34,7 @@ from param_decomp.app.backend.routers.pretrain_info import _get_pretrain_info
 from param_decomp.app.backend.state import StateManager
 from param_decomp.harvest import analysis
 from param_decomp.log import logger
-from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
+from param_decomp.metrics.builtin.importance_minimality_loss import ImportanceMinimalityLossConfig
 from param_decomp.utils.distributed_utils import get_device
 
 router = APIRouter(tags=["mcp"])

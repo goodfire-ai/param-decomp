@@ -4,7 +4,7 @@ from typing import cast
 import torch
 
 from param_decomp.configs import LayerwiseCiConfig, PDConfig
-from param_decomp.metrics.attn_patterns_recon_loss import (
+from param_decomp.metrics.builtin.attn_patterns_recon_loss import (
     CIMaskedAttnPatternsReconLoss,
     CIMaskedAttnPatternsReconLossConfig,
     StochasticAttnPatternsReconLoss,

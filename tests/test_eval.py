@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from param_decomp.configs import PDConfig
-from param_decomp.metrics.ci_histograms import CIHistograms, CIHistogramsConfig
+from param_decomp.metrics.builtin.ci_histograms import CIHistograms, CIHistogramsConfig
 from param_decomp.metrics.context import MetricContext
 from param_decomp.models.batch_and_loss_fns import recon_loss_mse
 from param_decomp.models.component_model import CIOutputs, ComponentModel

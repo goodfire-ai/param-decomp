@@ -1,10 +1,4 @@
 """Config classes of various types."""
-# pyright: reportImportCycles=false
-#
-# This module intentionally has an import cycle with `param_decomp.metrics`: configs.py imports
-# the metric base classes (and triggers `discover_metrics()` at the bottom), and each metric
-# module imports symbols from this file. The cycle is safe at runtime because discovery only
-# runs after all class definitions here have completed.
 
 from typing import Annotated, Any, Literal, Self
 
@@ -369,10 +363,13 @@ class PDConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _import_metric_modules(cls, data: Any) -> Any:
-        """Import user-supplied metric modules so their `@register_metric` decorators fire
+        """Import metric modules so their `@register_metric` decorators fire
         before the `loss_metrics` / `eval_metrics` field validators look up slugs in
         `METRIC_REGISTRY`. Idempotent: re-validation in the same process is a no-op.
         """
+        from param_decomp.metrics import discover_metrics
+
+        discover_metrics()
         if isinstance(data, dict):
             for spec in data.get("metric_modules", []) or []:
                 import_metric_module(spec)
@@ -475,13 +472,3 @@ class PDConfig(BaseConfig):
         )
 
         return self
-
-
-# Populate METRIC_REGISTRY before any PDConfig validates. discover_metrics() imports every metric
-# module in `param_decomp.metrics`; each one imports symbols from this module, so the discovery
-# call must come after all class definitions here so the metric files see a fully-loaded
-# `configs` module. The intentional cycle is safe at runtime because configs has finished
-# defining its classes by the time discover_metrics() runs.
-from param_decomp.metrics import discover_metrics  # noqa: E402
-
-discover_metrics()

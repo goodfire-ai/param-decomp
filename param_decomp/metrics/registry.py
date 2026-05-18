@@ -1,22 +1,20 @@
 """Auto-registration for metrics.
 
 Metric classes decorated with `@register_metric` are inserted into `METRIC_REGISTRY` keyed by
-their `name` ClassVar. The `param_decomp.metrics` package walks its own modules at import time
-so all decorators fire once. External users can register their own metrics by listing additional
-modules in `PDConfig.metric_modules`; the validator calls `import_metric_module` on each entry
-before `loss_metrics`/`eval_metrics` are parsed.
+their `name` ClassVar. `PDConfig` validation calls `discover_metrics()` before parsing
+`loss_metrics` / `eval_metrics`, so built-in decorators fire before registry lookup. External
+users can register their own metrics by listing additional modules in `PDConfig.metric_modules`;
+the validator calls `import_metric_module` on each entry after built-in discovery.
 """
 
 import importlib
 import importlib.util
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from param_decomp.metrics.base import Metric
+from param_decomp.metrics.base import Metric
 
-METRIC_REGISTRY: "dict[str, type[Metric]]" = {}
+METRIC_REGISTRY: dict[str, type[Metric]] = {}
 
 
 def register_metric[T: type](cls: T) -> T:

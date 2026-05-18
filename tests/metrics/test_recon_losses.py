@@ -15,17 +15,17 @@ from param_decomp.configs import (
     SignPGDConfig,
     SingleSourceScope,
 )
-from param_decomp.metrics.ci_masked_recon_loss import ci_masked_recon_loss
-from param_decomp.metrics.hidden_acts_recon_loss import (
+from param_decomp.metrics.builtin.ci_masked_recon_loss import ci_masked_recon_loss
+from param_decomp.metrics.builtin.hidden_acts_recon_loss import (
     CIHiddenActsReconLoss,
     CIHiddenActsReconLossConfig,
     _sum_per_module_mse,
     calc_hidden_acts_mse,
 )
-from param_decomp.metrics.persistent_pgd_recon import PersistentPGDReconLoss
-from param_decomp.metrics.pgd_masked_recon_loss import pgd_recon_loss
+from param_decomp.metrics.builtin.persistent_pgd_recon import PersistentPGDReconLoss
+from param_decomp.metrics.builtin.pgd_masked_recon_loss import pgd_recon_loss
+from param_decomp.metrics.builtin.stochastic_recon_loss import stochastic_recon_loss
 from param_decomp.metrics.pgd_utils import PGDConfig
-from param_decomp.metrics.stochastic_recon_loss import stochastic_recon_loss
 from param_decomp.models.batch_and_loss_fns import recon_loss_mse
 from param_decomp.models.component_model import CIOutputs, ComponentModel
 from param_decomp.models.components import make_mask_infos

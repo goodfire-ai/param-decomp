@@ -24,7 +24,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from param_decomp.configs import LayerwiseCiConfig
-from param_decomp.metrics.pgd_masked_recon_loss import PGDReconLossConfig
+from param_decomp.metrics.builtin.pgd_masked_recon_loss import PGDReconLossConfig
 from param_decomp.metrics.pgd_utils import pgd_masked_recon_loss_update
 from param_decomp.models.batch_and_loss_fns import recon_loss_mse, run_batch_passthrough
 from param_decomp.models.component_model import ComponentModel

@@ -432,7 +432,7 @@ class EditableModel:
             OptimCIConfig,
             optimize_ci_values,
         )
-        from param_decomp.metrics.importance_minimality_loss import (
+        from param_decomp.metrics.builtin.importance_minimality_loss import (
             ImportanceMinimalityLossConfig,
         )
 
@@ -516,7 +516,7 @@ class EditableModel:
         """
         from param_decomp.app.backend.compute import compute_prompt_attributions_optimized
         from param_decomp.app.backend.optim_cis import CELossConfig, OptimCIConfig
-        from param_decomp.metrics.importance_minimality_loss import (
+        from param_decomp.metrics.builtin.importance_minimality_loss import (
             ImportanceMinimalityLossConfig,
         )
         from param_decomp.topology.gradient_connectivity import get_sources_by_target

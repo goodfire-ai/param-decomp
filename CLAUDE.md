@@ -90,7 +90,7 @@ README's "Custom experiments" section walks through both routes side-by-side.
 ### Custom Metrics
 
 Metrics follow the same open-world pattern as drivers. Built-in metrics live under
-`param_decomp/metrics/` and self-register via `@register_metric` (see
+`param_decomp/metrics/builtin/` and self-register via `@register_metric` (see
 `param_decomp/metrics/registry.py`). External users can register their own metrics by listing
 import targets in `pd.metric_modules`:
 

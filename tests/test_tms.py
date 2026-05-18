@@ -14,12 +14,12 @@ from param_decomp.configs import (
 from param_decomp.experiments.tms.models import TMSModel, TMSModelConfig, TMSTrainConfig
 from param_decomp.experiments.tms.train_tms import get_model_and_dataloader, train
 from param_decomp.identity_insertion import insert_identity_operations_
-from param_decomp.metrics.faithfulness_loss import FaithfulnessLossConfig
-from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
-from param_decomp.metrics.stochastic_recon_layerwise_loss import (
+from param_decomp.metrics.builtin.faithfulness_loss import FaithfulnessLossConfig
+from param_decomp.metrics.builtin.importance_minimality_loss import ImportanceMinimalityLossConfig
+from param_decomp.metrics.builtin.stochastic_recon_layerwise_loss import (
     StochasticReconLayerwiseLossConfig,
 )
-from param_decomp.metrics.stochastic_recon_loss import StochasticReconLossConfig
+from param_decomp.metrics.builtin.stochastic_recon_loss import StochasticReconLossConfig
 from param_decomp.models.batch_and_loss_fns import (
     recon_loss_mse,
     run_batch_first_element,

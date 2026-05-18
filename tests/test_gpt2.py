@@ -17,13 +17,13 @@ from param_decomp.experiments.lm.data import (
     create_lm_data_loader,
 )
 from param_decomp.identity_insertion import insert_identity_operations_
-from param_decomp.metrics.ci_l0 import CI_L0Config
-from param_decomp.metrics.faithfulness_loss import FaithfulnessLossConfig
-from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
-from param_decomp.metrics.stochastic_recon_layerwise_loss import (
+from param_decomp.metrics.builtin.ci_l0 import CI_L0Config
+from param_decomp.metrics.builtin.faithfulness_loss import FaithfulnessLossConfig
+from param_decomp.metrics.builtin.importance_minimality_loss import ImportanceMinimalityLossConfig
+from param_decomp.metrics.builtin.stochastic_recon_layerwise_loss import (
     StochasticReconLayerwiseLossConfig,
 )
-from param_decomp.metrics.stochastic_recon_loss import StochasticReconLossConfig
+from param_decomp.metrics.builtin.stochastic_recon_loss import StochasticReconLossConfig
 from param_decomp.models.batch_and_loss_fns import (
     make_run_batch,
     recon_loss_kl,

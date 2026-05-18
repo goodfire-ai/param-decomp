@@ -18,11 +18,11 @@ from param_decomp.configs import (
     PersistentPGDReconSubsetLossConfig,
     _PersistentPGDBaseConfig,
 )
-from param_decomp.metrics.context import MetricContext
-from param_decomp.metrics.hidden_acts_recon_loss import (
+from param_decomp.metrics.builtin.hidden_acts_recon_loss import (
     calc_hidden_acts_mse,
     compute_per_module_metrics,
 )
+from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.persistent_pgd import PersistentPGDState, get_ppgd_mask_infos
