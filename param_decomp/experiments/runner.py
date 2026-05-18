@@ -13,6 +13,7 @@ from typing import Any
 import fire
 import yaml
 
+from param_decomp.configs import RuntimeConfig
 from param_decomp.experiments._worker import run_experiment
 from param_decomp.experiments.discovery import discover_experiments
 from param_decomp.settings import (
@@ -80,26 +81,14 @@ def _resolve_project(project: str | None, rerun: str | None) -> str:
     return DEFAULT_PROJECT_NAME
 
 
-def _resolve_runtime(
-    cli_dp: int | None,
-    cli_device: str | None,
-    base_config: dict[str, Any],
-) -> tuple[int | None, str]:
-    """Merge CLI overrides into ``runtime:`` block, validate, and write the resolved values
-    back into ``base_config`` so the worker and the saved RunMetadata record what actually ran.
+def _parse_runtime(base_config: dict[str, Any]) -> RuntimeConfig:
+    """Parse the ``runtime:`` block — substrate is config-only, no CLI overrides.
 
-    CLI > config > field default. Validation runs once on the merged dict.
+    Want a CPU smoke test of a GPU experiment? Edit the YAML or copy it first. Keeping the
+    experiment's declared substrate as the single source of truth avoids silently running
+    "the same experiment" on different substrates.
     """
-    from param_decomp.configs import RuntimeConfig
-
-    runtime_dict = dict(base_config.get("runtime", {}))
-    if cli_dp is not None:
-        runtime_dict["dp"] = cli_dp
-    if cli_device is not None:
-        runtime_dict["device"] = cli_device
-    resolved = RuntimeConfig.model_validate(runtime_dict)
-    base_config["runtime"] = resolved.model_dump(mode="json")
-    return resolved.dp, resolved.device
+    return RuntimeConfig.model_validate(base_config.get("runtime", {}))
 
 
 def main(
@@ -112,9 +101,7 @@ def main(
     sweep: str | None = None,
     n_agents: int | None = None,
     job_suffix: str | None = None,
-    device: str | None = None,
     partition: str = DEFAULT_PARTITION_NAME,
-    dp: int | None = None,
     project: str | None = None,
 ) -> None:
     """Run a PD experiment, on SLURM by default.
@@ -134,20 +121,17 @@ def main(
             (``pkg.module:MyGenerator`` or ``pkg.module:MyGenerator:<arg>``).
         n_agents: Max concurrent SLURM tasks for sweeps.
         job_suffix: Suffix for the SLURM job name.
-        device: ``"cuda"`` or ``"cpu"``. Overrides ``runtime.device`` in the experiment config.
         partition: SLURM partition.
-        dp: GPUs for DDP. Overrides ``runtime.dp`` in the experiment config if set.
-            Bounded by the cluster's GPUs-per-node for single-node DDP; multiples of that for
-            multi-node.
         project: W&B project name. Defaults to the project recorded on the rerun's
             saved metadata (if any), otherwise ``DEFAULT_PROJECT_NAME``.
+
+    Substrate (device, dp, autocast_bf16) is declared in the experiment YAML's
+    ``runtime:`` block — there are no CLI overrides. Edit the YAML to change it.
 
     Examples:
         pd-run tms_5-2                                       # one SLURM job
         pd-run tms_5-2 --sweep my_grid.yaml --n_agents 4     # cartesian grid sweep
         pd-run tms_5-2 --sweep pkg.module:MySweep            # custom generator
-        pd-run tms_5-2 --dp 4                                # multi-GPU DDP
-        pd-run tms_5-2 --device cpu                          # CPU job
         pd-run --driver pkg:D --config_path my.yaml          # custom driver
         pd-run --rerun s-a1b2c3d4                            # rerun from saved metadata
         pd-run tms_5-2 --local                               # in-process; no SLURM
@@ -162,12 +146,12 @@ def main(
 
     name, driver_path, base_config = _resolve_source(experiment, config_path, driver, rerun)
     project = _resolve_project(project, rerun)
-    dp, device = _resolve_runtime(dp, device, base_config)
+    runtime = _parse_runtime(base_config)
 
     if local:
         assert sweep is None, "--sweep is not supported with --local"
-        assert dp is None, "--dp is not supported with --local"
-        if device == "cpu":
+        assert runtime.dp is None, "runtime.dp is not supported with --local"
+        if runtime.device == "cpu":
             os.environ["CUDA_VISIBLE_DEVICES"] = ""
         from param_decomp.utils.distributed_utils import with_distributed_cleanup
 
@@ -195,9 +179,9 @@ def main(
         sweep=sweep,
         n_agents=n_agents,
         job_suffix=job_suffix,
-        device=device,
+        device=runtime.device,
         partition=partition,
-        dp=dp,
+        dp=runtime.dp,
         project=project,
     )
 
