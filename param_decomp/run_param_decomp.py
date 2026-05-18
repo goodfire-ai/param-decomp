@@ -227,8 +227,13 @@ def optimize(
         if isinstance(cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig)
     ]
 
-    eval_metric_configs = get_unique_metric_configs(
-        loss_configs=config.loss_metric_configs, eval_configs=config.eval_metric_configs
+    eval_metric_configs = (
+        get_unique_metric_configs(
+            loss_configs=config.loss_metric_configs,
+            eval_configs=config.eval_metric_configs,
+        )
+        if config.include_loss_metrics_in_eval
+        else config.eval_metric_configs[:]
     )
 
     multibatch_pgd_eval_configs: list[
@@ -364,7 +369,7 @@ def optimize(
                     try_wandb(wandb.log, batch_log_data, step=step)
 
         # --- Evaluation --- #
-        if step % config.eval_freq == 0:
+        if (eval_metric_configs or multibatch_pgd_eval_configs) and step % config.eval_freq == 0:
             with torch.no_grad(), bf16_autocast(enabled=config.autocast_bf16):
                 slow_step: bool = (
                     config.slow_eval_on_first_step
@@ -416,7 +421,7 @@ def optimize(
         # --- Saving Checkpoint --- #
         if (
             (config.save_freq is not None and step % config.save_freq == 0 and step > 0)
-            or step == config.steps
+            or (config.save_final_checkpoint and step == config.steps)
         ) and is_main_process():
             assert out_dir is not None
             # Save the state dict of the underlying module (not DDP wrapper)
