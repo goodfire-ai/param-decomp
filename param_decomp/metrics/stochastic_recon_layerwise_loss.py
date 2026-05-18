@@ -14,6 +14,8 @@ from param_decomp.utils.component_utils import calc_stochastic_component_mask_in
 from param_decomp.utils.distributed_utils import all_reduce
 from param_decomp.utils.general_utils import get_obj_device
 
+HARDCODED_LAYERWISE_RECON_MODULE = "h.1.mlp.c_fc"
+
 
 def _stochastic_recon_layerwise_loss_update(
     model: ComponentModel,
@@ -26,15 +28,26 @@ def _stochastic_recon_layerwise_loss_update(
     reconstruction_loss: ReconstructionLoss,
 ) -> tuple[Float[Tensor, ""], int]:
     assert ci, "Empty ci"
+    target_modules = (
+        [HARDCODED_LAYERWISE_RECON_MODULE]
+        if HARDCODED_LAYERWISE_RECON_MODULE in ci
+        else list(ci)
+    )
     device = get_obj_device(ci)
     sum_loss = torch.tensor(0.0, device=device)
     n_examples = 0
+    target_ci = {module_name: ci[module_name] for module_name in target_modules}
+    target_weight_deltas = (
+        None
+        if weight_deltas is None
+        else {module_name: weight_deltas[module_name] for module_name in target_modules}
+    )
 
     stochastic_mask_infos_list = [
         calc_stochastic_component_mask_info(
-            causal_importances=ci,
+            causal_importances=target_ci,
             component_mask_sampling=sampling,
-            weight_deltas=weight_deltas,
+            weight_deltas=target_weight_deltas,
             router=AllLayersRouter(),
         )
         for _ in range(n_mask_samples)
