@@ -26,6 +26,10 @@ def main(
     - resid_mlp2
     - resid_mlp3
     - ss_llama_simple
+    - pile_llama_simple_mlp-100M-random
+    - pile_llama_simple_mlp-500M-random
+    - pile_llama_simple_mlp-750M-random
+    - pile_llama_simple_mlp-1B-random
     - ss_gpt2
     - ss_gpt2_simple
     - ss_gpt2_simple_noln

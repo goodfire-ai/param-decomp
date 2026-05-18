@@ -894,6 +894,15 @@ class Config(BaseConfig):
         description="Interval (in steps) at which to save model checkpoints (None disables saving "
         "until the end of training).",
     )
+    save_final_checkpoint: bool = Field(
+        default=True,
+        description="Whether to save the final model checkpoint at the end of training.",
+    )
+    include_loss_metrics_in_eval: bool = Field(
+        default=True,
+        description="Whether to evaluate loss_metric_configs during eval in addition to "
+        "eval_metric_configs.",
+    )
     eval_metric_configs: list[Annotated[MetricConfigType, Field(discriminator="classname")]] = (
         Field(
             default=[],
@@ -922,6 +931,11 @@ class Config(BaseConfig):
     pretrained_model_name: str | None = Field(
         default=None,
         description="hf model identifier. E.g. 'SimpleStories/SimpleStories-1.25M'",
+    )
+    target_model_config: dict[str, Any] | None = Field(
+        default=None,
+        description="Inline config for constructing a randomly initialized target model. "
+        "Used when pretrained_model_name and pretrained_model_path are None.",
     )
     output_extract: int | str | None = Field(
         default=None,

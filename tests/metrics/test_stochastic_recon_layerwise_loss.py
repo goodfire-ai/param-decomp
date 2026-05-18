@@ -26,9 +26,6 @@ class TestStochasticReconLayerwiseLoss:
 
         V1 = model.components["fc1"].V
         U1 = model.components["fc1"].U
-        V2 = model.components["fc2"].V
-        U2 = model.components["fc2"].U
-
         batch = torch.randn(1, 3, dtype=torch.float32)
         target_out = torch.randn(1, 2, dtype=torch.float32)
 
@@ -62,42 +59,40 @@ class TestStochasticReconLayerwiseLoss:
             router: Router,  # pyright: ignore[reportUnusedParameter]
             weight_deltas: dict[str, Tensor] | None,  # pyright: ignore[reportUnusedParameter]
         ) -> dict[str, ComponentsMaskInfo]:
+            assert set(causal_importances) == {"fc1"}
             # Get the current call index (we'll cycle through sample_masks)
             idx = call_count[0] % len(sample_masks)
             call_count[0] += 1
             masks = sample_masks[idx]
 
             return make_mask_infos(
-                component_masks=masks,
+                component_masks={"fc1": masks["fc1"]},
                 routing_masks="all",
                 weight_deltas_and_masks=None,
             )
 
-        with patch(
-            "param_decomp.metrics.stochastic_recon_layerwise_loss.calc_stochastic_component_mask_info",
-            side_effect=mock_calc_stochastic_component_mask_info,
+        with (
+            patch(
+                "param_decomp.metrics.stochastic_recon_layerwise_loss.HARDCODED_LAYERWISE_RECON_MODULE",
+                "fc1",
+            ),
+            patch(
+                "param_decomp.metrics.stochastic_recon_layerwise_loss.calc_stochastic_component_mask_info",
+                side_effect=mock_calc_stochastic_component_mask_info,
+            ),
         ):
             # Calculate expected loss manually
             sum_loss = 0.0
             n_examples = 0
 
             for masks in sample_masks:
-                # For each sample, we evaluate each layer separately
-                # Layer fc1: out = batch @ (V1 * mask_fc1 @ U1) @ fc2_weight.T
+                # Each sample evaluates only the hardcoded layer.
                 masked_component_fc1 = V1 * masks["fc1"] @ U1
                 hidden_fc1 = batch @ masked_component_fc1
                 out_fc1 = hidden_fc1 @ fc2_weight.T
                 loss_fc1 = torch.nn.functional.mse_loss(out_fc1, target_out, reduction="sum")
                 sum_loss += loss_fc1.item()
                 n_examples += out_fc1.numel()
-
-                # Layer fc2: out = batch @ fc1_weight.T @ (V2 * mask_fc2 @ U2)
-                hidden_fc2 = batch @ fc1_weight.T
-                masked_component_fc2 = V2 * masks["fc2"] @ U2
-                out_fc2 = hidden_fc2 @ masked_component_fc2
-                loss_fc2 = torch.nn.functional.mse_loss(out_fc2, target_out, reduction="sum")
-                sum_loss += loss_fc2.item()
-                n_examples += out_fc2.numel()
 
             expected_loss = sum_loss / n_examples
 
@@ -137,16 +132,20 @@ class TestStochasticReconLayerwiseLoss:
             weight_deltas=None,
             reconstruction_loss=recon_loss_mse,
         )
-        loss_layerwise = stochastic_recon_layerwise_loss(
-            model=model,
-            sampling="continuous",
-            n_mask_samples=5,
-            batch=batch,
-            target_out=target_out,
-            ci=ci,
-            weight_deltas=None,
-            reconstruction_loss=recon_loss_mse,
-        )
+        with patch(
+            "param_decomp.metrics.stochastic_recon_layerwise_loss.HARDCODED_LAYERWISE_RECON_MODULE",
+            "fc",
+        ):
+            loss_layerwise = stochastic_recon_layerwise_loss(
+                model=model,
+                sampling="continuous",
+                n_mask_samples=5,
+                batch=batch,
+                target_out=target_out,
+                ci=ci,
+                weight_deltas=None,
+                reconstruction_loss=recon_loss_mse,
+            )
 
         # For single layer, results should be the same
         assert torch.allclose(loss_full, loss_layerwise, rtol=1e-4)
