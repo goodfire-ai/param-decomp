@@ -89,11 +89,18 @@ README's "Custom experiments" section walks through both routes side-by-side.
 
 ### Per-experiment Configs
 
-Built-in YAML configs are pure experiment configs nested under `pd:`, `target:`, and `data:`:
+Built-in YAML configs are pure experiment configs nested under `pd:`, `logging:`, `target:`,
+and `data:`:
 
-- `LMExperimentConfig(pd, target: LMTargetConfig, data: LMDataConfig)`
-- `TMSExperimentConfig(pd, target, data)`
-- `ResidMLPExperimentConfig(pd, target, data)`
+- `LMExperimentConfig(pd, logging, target: LMTargetConfig, data: LMDataConfig)`
+- `TMSExperimentConfig(pd, logging, target, data)`
+- `ResidMLPExperimentConfig(pd, logging, target, data)`
+
+`PDConfig` carries algorithm hyperparameters (seed, ci_config, losses, optimizers, …) — the
+things that change what the trained model is. `LoggingConfig` carries observation-only
+settings (log/eval/save cadence, eval-only metrics, eval_batch_size) — fields that *don't*
+affect the trained model. Two runs with identical `PDConfig` and different `LoggingConfig`
+produce bit-identical weights.
 
 Experiment configs should not perform I/O. Put target loading and dataloader construction in
 the driver.

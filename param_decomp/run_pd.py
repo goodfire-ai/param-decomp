@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from param_decomp.configs import (
+    LoggingConfig,
     MetricConfigType,
     PDConfig,
     PersistentPGDReconLossConfig,
@@ -103,6 +104,7 @@ def run_faithfulness_warmup(
 def optimize(
     target_model: nn.Module,
     config: PDConfig,
+    logging_config: LoggingConfig,
     device: str,
     train_loader: DataLoader[Any],
     eval_loader: DataLoader[Any],
@@ -221,15 +223,15 @@ def optimize(
     ] = [
         cfg
         for cfg in (
-            config.eval_metrics.pgd_multibatch_recon,
-            config.eval_metrics.pgd_multibatch_recon_subset,
+            logging_config.eval_metrics.pgd_multibatch_recon,
+            logging_config.eval_metrics.pgd_multibatch_recon_subset,
         )
         if cfg is not None
     ]
 
     eval_metric_configs: list[MetricConfigType] = [
         cfg
-        for cfg in config.loss_metrics.active() + config.eval_metrics.active()
+        for cfg in config.loss_metrics.active() + logging_config.eval_metrics.active()
         if not isinstance(cfg, PGDMultiBatchConfig)
     ]
 
@@ -334,7 +336,7 @@ def optimize(
             batch_log_data[f"train/l0/{layer_name}"] = l0_val
 
         # --- Train Logging --- #
-        if step % config.train_log_freq == 0:
+        if step % logging_config.train_log_freq == 0:
             avg_metrics = avg_metrics_across_ranks(batch_log_data, device=device)
             batch_log_data = cast(defaultdict[str, float], avg_metrics)
 
@@ -358,12 +360,12 @@ def optimize(
                     try_wandb(wandb.log, batch_log_data, step=step)
 
         # --- Evaluation --- #
-        if step % config.eval_freq == 0:
+        if step % logging_config.eval_freq == 0:
             with torch.no_grad(), bf16_autocast(enabled=config.autocast_bf16):
                 slow_step: bool = (
-                    config.slow_eval_on_first_step
+                    logging_config.slow_eval_on_first_step
                     if step == 0
-                    else step % config.slow_eval_freq == 0
+                    else step % logging_config.slow_eval_freq == 0
                 )
 
                 multibatch_pgd_metrics = evaluate_multibatch_pgd(
@@ -382,7 +384,7 @@ def optimize(
                     device=device,
                     run_config=config,
                     slow_step=slow_step,
-                    n_eval_steps=config.n_eval_steps,
+                    n_eval_steps=logging_config.n_eval_steps,
                     current_frac_of_training=step / config.steps,
                     reconstruction_loss=reconstruction_loss,
                     ppgd_states=ppgd_states,
@@ -409,7 +411,11 @@ def optimize(
 
         # --- Saving Checkpoint --- #
         if (
-            (config.save_freq is not None and step % config.save_freq == 0 and step > 0)
+            (
+                logging_config.save_freq is not None
+                and step % logging_config.save_freq == 0
+                and step > 0
+            )
             or step == config.steps
         ) and is_main_process():
             assert out_dir is not None
@@ -458,6 +464,7 @@ def _validate_pgd_scope(config: PDConfig, dist_state: DistributedState | None) -
 
 def run_pd(
     config: PDConfig,
+    logging_config: LoggingConfig,
     target: PDTarget,
     train_loader: DataLoader[Any],
     eval_loader: DataLoader[Any],
@@ -492,7 +499,10 @@ def run_pd(
         if metadata is None:
             metadata = RunMetadata(
                 driver=None,
-                config={"pd": config.model_dump(mode="json")},
+                config={
+                    "pd": config.model_dump(mode="json"),
+                    "logging": logging_config.model_dump(mode="json"),
+                },
             )
 
         tags = list(wandb_tags or [])
@@ -507,6 +517,7 @@ def run_pd(
                 run_id,
                 name=metadata.wandb_run_name,
                 tags=tags,
+                extra_configs={"logging": logging_config},
                 view_meta=metadata.view_meta,
             )
 
@@ -524,6 +535,7 @@ def run_pd(
     optimize(
         target_model=target.model,
         config=config,
+        logging_config=logging_config,
         device=device,
         train_loader=train_loader,
         eval_loader=eval_loader,

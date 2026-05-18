@@ -61,7 +61,7 @@ def run_experiment(
     train_loader, eval_loader = driver.build_dataloaders(
         experiment_config,
         train_batch_size=experiment_config.pd.batch_size,
-        eval_batch_size=experiment_config.pd.eval_batch_size,
+        eval_batch_size=experiment_config.logging.eval_batch_size,
         dist_state=dist_state,
         device=device,
     )
@@ -76,6 +76,7 @@ def run_experiment(
     )
     run_pd(
         config=experiment_config.pd,
+        logging_config=experiment_config.logging,
         target=target,
         train_loader=train_loader,
         eval_loader=eval_loader,

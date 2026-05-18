@@ -565,6 +565,63 @@ class EvalMetricsConfig(_LossCapableMetricsConfig):
 SamplingType = Literal["continuous", "binomial"]
 
 
+class LoggingConfig(BaseConfig):
+    """Observation-only settings: cadence of logging/eval/checkpointing + eval-only metrics.
+
+    Separated from `PDConfig` because none of these fields affect the trained model — two
+    runs with identical `PDConfig` and different `LoggingConfig` produce bit-identical
+    weights. Keeping them out of `PDConfig` keeps the algorithm config narrow and makes
+    "what was the experiment" cleanly separable from "how often did I peek at it".
+    """
+
+    train_log_freq: PositiveInt = Field(
+        ...,
+        description="Interval (in steps) at which to log training metrics",
+    )
+    eval_freq: PositiveInt = Field(
+        ...,
+        description="Interval (in steps) at which to log evaluation metrics",
+    )
+    eval_batch_size: PositiveInt = Field(
+        ...,
+        description="Batch size used for evaluation.",
+    )
+    slow_eval_freq: PositiveInt = Field(
+        ...,
+        description="Interval (in steps) at which to run slow evaluation metrics. Must be a multiple of `eval_freq`.",
+    )
+    n_eval_steps: PositiveInt = Field(
+        ...,
+        description="Number of steps to run evaluation for",
+    )
+    slow_eval_on_first_step: bool = Field(
+        default=True,
+        description="Whether to run slow evaluation on the first step",
+    )
+    save_freq: PositiveInt | None = Field(
+        default=None,
+        description="Interval (in steps) at which to save model checkpoints (None disables saving "
+        "until the end of training).",
+    )
+    eval_metrics: EvalMetricsConfig = Field(
+        default_factory=EvalMetricsConfig,
+        description=(
+            "Additional eval-only metrics. Metrics already set in `loss_metrics` are evaluated "
+            "automatically and should not be repeated here."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_model(self) -> Self:
+        assert self.slow_eval_freq % self.eval_freq == 0, (
+            "slow_eval_freq must be a multiple of eval_freq"
+        )
+        assert self.slow_eval_freq // self.eval_freq >= 1, (
+            "slow_eval_freq must be at least eval_freq"
+        )
+        return self
+
+
 class PDConfig(BaseConfig):
     # --- General ---
     seed: int = Field(
@@ -662,44 +719,6 @@ class PDConfig(BaseConfig):
         description="Weight decay for warmup phase optimizer",
     )
 
-    # --- Logging & Saving ---
-    train_log_freq: PositiveInt = Field(
-        ...,
-        description="Interval (in steps) at which to log training metrics",
-    )
-    eval_freq: PositiveInt = Field(
-        ...,
-        description="Interval (in steps) at which to log evaluation metrics",
-    )
-    eval_batch_size: PositiveInt = Field(
-        ...,
-        description="Batch size used for evaluation. If None, uses the same as `batch_size`.",
-    )
-    slow_eval_freq: PositiveInt = Field(
-        ...,
-        description="Interval (in steps) at which to run slow evaluation metrics. Must be a multiple of `eval_freq`.",
-    )
-    n_eval_steps: PositiveInt = Field(
-        ...,
-        description="Number of steps to run evaluation for",
-    )
-    slow_eval_on_first_step: bool = Field(
-        default=True,
-        description="Whether to run slow evaluation on the first step",
-    )
-    save_freq: PositiveInt | None = Field(
-        default=None,
-        description="Interval (in steps) at which to save model checkpoints (None disables saving "
-        "until the end of training).",
-    )
-    eval_metrics: EvalMetricsConfig = Field(
-        default_factory=EvalMetricsConfig,
-        description=(
-            "Additional eval-only metrics. Metrics already set in `loss_metrics` are evaluated "
-            "automatically and should not be repeated here."
-        ),
-    )
-
     # --- Component Tracking ---
     ci_alive_threshold: Probability = Field(
         default=0.0,
@@ -708,23 +727,6 @@ class PDConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_model(self) -> Self:
-        assert self.slow_eval_freq % self.eval_freq == 0, (
-            "slow_eval_freq must be a multiple of eval_freq"
-        )
-        assert self.slow_eval_freq // self.eval_freq >= 1, (
-            "slow_eval_freq must be at least eval_freq"
-        )
-
         for cfg in self.loss_metrics.active():
             assert cfg.coeff is not None, f"loss_metrics.{type(cfg).__name__} must have a coeff"
-
-        loss_names = {name for name, val in self.loss_metrics if val is not None}
-        eval_names = {name for name, val in self.eval_metrics if val is not None}
-        overlap = loss_names & eval_names
-        assert not overlap, (
-            f"The same metric was set under both loss_metrics and eval_metrics: {sorted(overlap)}. "
-            "Loss metrics are automatically evaluated; remove the eval_metrics entry, or move it "
-            "out of loss_metrics if you want eval-only."
-        )
-
         return self

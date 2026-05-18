@@ -10,6 +10,7 @@ from param_decomp.configs import (
     GlobalCiConfig,
     GlobalSharedTransformerCiConfig,
     LayerwiseCiConfig,
+    LoggingConfig,
     OptimizerConfig,
     PDConfig,
     ScheduleConfig,
@@ -60,13 +61,18 @@ def _pd_config() -> PDConfig:
         ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
         steps=1,
         batch_size=4,
+        ci_alive_threshold=0.0,
+    )
+
+
+def _logging_config() -> LoggingConfig:
+    return LoggingConfig(
         eval_batch_size=4,
         train_log_freq=1,
         eval_freq=1,
         slow_eval_freq=1,
         n_eval_steps=1,
         slow_eval_on_first_step=False,
-        ci_alive_threshold=0.0,
     )
 
 
@@ -84,6 +90,7 @@ def _round_trip(experiment_config: ExperimentConfig, driver_path: str) -> Experi
 def test_lm_experiment_round_trip():
     exp = LMExperimentConfig(
         pd=_pd_config(),
+        logging=_logging_config(),
         target=LMTargetConfig(
             model_class="transformers.GPT2LMHeadModel",
             model_name="openai-community/gpt2",
@@ -104,6 +111,7 @@ def test_lm_experiment_round_trip():
 def test_tms_experiment_round_trip():
     exp = TMSExperimentConfig(
         pd=_pd_config(),
+        logging=_logging_config(),
         target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc"),
         data=TMSDataConfig(feature_probability=0.05),
     )
@@ -115,6 +123,7 @@ def test_tms_experiment_round_trip():
 def test_resid_mlp_experiment_round_trip():
     exp = ResidMLPExperimentConfig(
         pd=_pd_config(),
+        logging=_logging_config(),
         target=ResidMLPTargetConfig(run_path="wandb:foo/bar/runs/abc"),
         data=ResidMLPDataConfig(feature_probability=0.05),
     )
@@ -134,7 +143,10 @@ def test_save_pre_run_info_writes_run_metadata(tmp_path: Path):
 
     metadata = RunMetadata(
         driver=None,
-        config={"pd": _pd_config().model_dump(mode="json")},
+        config={
+            "pd": _pd_config().model_dump(mode="json"),
+            "logging": _logging_config().model_dump(mode="json"),
+        },
     )
     save_pre_run_info(
         save_to_wandb=False,

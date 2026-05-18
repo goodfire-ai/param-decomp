@@ -92,7 +92,7 @@ def run_r_sweep(
     eval_loader, _tokenizer = create_lm_data_loader(
         data,
         split=data.eval_split,
-        batch_size=config.eval_batch_size,
+        batch_size=exp.logging.eval_batch_size,
         seed=config.seed + 1,
     )
 

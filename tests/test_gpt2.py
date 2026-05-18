@@ -11,6 +11,7 @@ from param_decomp.configs import (
     FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     LayerwiseCiConfig,
+    LoggingConfig,
     LossMetricsConfig,
     ModulePatternInfoConfig,
     OptimizerConfig,
@@ -72,6 +73,9 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         ),
         batch_size=4,
         steps=2,
+        ci_alive_threshold=0.1,
+    )
+    logging_config = LoggingConfig(
         n_eval_steps=1,
         train_log_freq=50,
         eval_freq=500,
@@ -79,7 +83,6 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         slow_eval_freq=500,
         slow_eval_on_first_step=False,
         save_freq=None,
-        ci_alive_threshold=0.1,
         eval_metrics=EvalMetricsConfig(
             ci_l0=CI_L0Config(groups=None),
         ),
@@ -124,6 +127,7 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
     optimize(
         target_model=target_model,
         config=config,
+        logging_config=logging_config,
         device=device,
         train_loader=train_loader,
         eval_loader=eval_loader,

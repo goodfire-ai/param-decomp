@@ -14,7 +14,6 @@ pd:
   sampling: continuous
   use_delta_component: true
   batch_size: 2
-  eval_batch_size: 2
   steps: 50000
   components_optimizer:
     lr_schedule:
@@ -31,12 +30,6 @@ pd:
   faithfulness_warmup_steps: 200
   faithfulness_warmup_lr: 0.01
   faithfulness_warmup_weight_decay: 0.1
-  train_log_freq: 100
-  eval_freq: 1000
-  slow_eval_freq: 5000
-  slow_eval_on_first_step: true
-  n_eval_steps: 5
-  save_freq: null
   ci_alive_threshold: 0.0
   loss_metrics:
     importance_minimality:
@@ -48,6 +41,14 @@ pd:
       p_anneal_end_frac: 1.0
     stochastic_recon_layerwise:
       coeff: 2.0
+logging:
+  train_log_freq: 100
+  eval_freq: 1000
+  slow_eval_freq: 5000
+  slow_eval_on_first_step: true
+  n_eval_steps: 5
+  eval_batch_size: 2
+  save_freq: null
   eval_metrics:
     ci_histograms:
       n_batches_accum: 5
