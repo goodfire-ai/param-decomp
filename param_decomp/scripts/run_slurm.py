@@ -17,7 +17,7 @@ from hashlib import sha256
 from typing import Any
 
 from param_decomp.log import logger
-from param_decomp.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp.settings import GPUS_PER_NODE, PARAM_DECOMP_OUT_DIR
 from param_decomp.sweeps import SweepRun, SweepSpec, resolve_sweep
 from param_decomp.utils.git_utils import create_git_snapshot
 from param_decomp.utils.run_utils import generate_run_id
@@ -35,7 +35,6 @@ _CUDA_FLAGS = {
     "NCCL_DEBUG": "WARN",
     "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
 }
-_GPUS_PER_NODE = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +52,7 @@ def launch_slurm(
     sweep: str | None,
     n_agents: int | None,
     job_suffix: str | None,
-    cpu: bool,
+    device: str,
     partition: str,
     dp: int | None,
     project: str,
@@ -63,7 +62,7 @@ def launch_slurm(
     logger.info(f"Launch ID: {launch_id}")
     logger.info(f"Experiment: {name}")
 
-    n_gpus = _validate_and_get_n_gpus(cpu=cpu, dp=dp)
+    n_gpus = _validate_and_get_n_gpus(device=device, dp=dp)
     logger.info(f"Running on {_format_compute_info(n_gpus)}")
 
     sweep_spec = _build_sweep_spec(name=name, sweep=sweep, base_config=base_config)
@@ -152,10 +151,9 @@ def _build_sweep_spec(name: str, sweep: str | None, base_config: dict[str, Any])
     return spec
 
 
-def _validate_and_get_n_gpus(cpu: bool, dp: int | None) -> int | None:
-    """Resolve final GPU count. dp value/shape already validated by RuntimeConfig upstream."""
-    if cpu:
-        assert dp is None, "dp should not be specified when running on cpu"
+def _validate_and_get_n_gpus(device: str, dp: int | None) -> int | None:
+    """Resolve final GPU count. dp shape already validated by RuntimeConfig upstream."""
+    if device == "cpu":
         return None
     return dp
 
@@ -163,10 +161,10 @@ def _validate_and_get_n_gpus(cpu: bool, dp: int | None) -> int | None:
 def _format_compute_info(n_gpus: int | None) -> str:
     if n_gpus is None:
         return "single GPU"
-    if n_gpus <= _GPUS_PER_NODE:
+    if n_gpus <= GPUS_PER_NODE:
         return f"{n_gpus} GPUs (single node)"
-    n_nodes = n_gpus // _GPUS_PER_NODE
-    return f"{n_gpus} GPUs ({n_nodes} nodes x {_GPUS_PER_NODE} GPUs)"
+    n_nodes = n_gpus // GPUS_PER_NODE
+    return f"{n_gpus} GPUs ({n_nodes} nodes x {GPUS_PER_NODE} GPUs)"
 
 
 def _choose_master_port(run_id_local: str, idx: int) -> int:
@@ -228,7 +226,7 @@ def _get_command(
         case None | 1:
             return f"python -m {worker_module} {script_args}"
 
-        case n if n <= _GPUS_PER_NODE:
+        case n if n <= GPUS_PER_NODE:
             return (
                 f"torchrun --standalone --nproc_per_node={n} --master_port={port} "
                 f"-m {worker_module} {script_args}"
@@ -237,12 +235,12 @@ def _get_command(
         case _:
             # Multi-node DDP via srun + torchrun
             # $SLURM_PROCID is the node rank (0, 1, ..., n-1), evaluated on each node by bash -c
-            n_nodes = n_gpus // _GPUS_PER_NODE
+            n_nodes = n_gpus // GPUS_PER_NODE
             torchrun_cmd = (
                 f"torchrun "
                 f"--nnodes={n_nodes} "
                 f"--node_rank=$SLURM_PROCID "
-                f"--nproc_per_node={_GPUS_PER_NODE} "
+                f"--nproc_per_node={GPUS_PER_NODE} "
                 f'--master_addr=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1) '
                 f"--master_port={port} "
                 f"-m {worker_module} {script_args}"
@@ -292,11 +290,11 @@ def _create_slurm_script(
     match n_gpus:
         case None | 1:
             n_nodes, gpus_per_node = 1, 1
-        case n if n <= _GPUS_PER_NODE:
+        case n if n <= GPUS_PER_NODE:
             n_nodes, gpus_per_node = 1, n
         case _:
-            n_nodes = n_gpus // _GPUS_PER_NODE
-            gpus_per_node = _GPUS_PER_NODE
+            n_nodes = n_gpus // GPUS_PER_NODE
+            gpus_per_node = GPUS_PER_NODE
 
     if is_array:
         array_config = SlurmArrayConfig(

@@ -80,21 +80,26 @@ def _resolve_project(project: str | None, rerun: str | None) -> str:
     return DEFAULT_PROJECT_NAME
 
 
-def _resolve_dp(cli_dp: int | None, base_config: dict[str, Any]) -> int | None:
-    """CLI --dp overrides; otherwise use ``runtime.dp`` from the experiment config (if set).
+def _resolve_runtime(
+    cli_dp: int | None,
+    cli_device: str | None,
+    base_config: dict[str, Any],
+) -> tuple[int | None, str]:
+    """Merge CLI overrides into ``runtime:`` block, validate, and write the resolved values
+    back into ``base_config`` so the worker and the saved RunMetadata record what actually ran.
 
-    Validates via RuntimeConfig (pydantic) on whichever value we pick, then writes the
-    resolved value back into ``base_config`` so the worker — and the saved RunMetadata —
-    record what actually ran.
+    CLI > config > field default. Validation runs once on the merged dict.
     """
     from param_decomp.configs import RuntimeConfig
 
     runtime_dict = dict(base_config.get("runtime", {}))
-    effective = cli_dp if cli_dp is not None else runtime_dict.get("dp")
-    runtime_dict["dp"] = effective
-    RuntimeConfig.model_validate(runtime_dict)
-    base_config.setdefault("runtime", {})["dp"] = effective
-    return effective
+    if cli_dp is not None:
+        runtime_dict["dp"] = cli_dp
+    if cli_device is not None:
+        runtime_dict["device"] = cli_device
+    resolved = RuntimeConfig.model_validate(runtime_dict)
+    base_config["runtime"] = resolved.model_dump(mode="json")
+    return resolved.dp, resolved.device
 
 
 def main(
@@ -107,7 +112,7 @@ def main(
     sweep: str | None = None,
     n_agents: int | None = None,
     job_suffix: str | None = None,
-    cpu: bool = False,
+    device: str | None = None,
     partition: str = DEFAULT_PARTITION_NAME,
     dp: int | None = None,
     project: str | None = None,
@@ -129,10 +134,11 @@ def main(
             (``pkg.module:MyGenerator`` or ``pkg.module:MyGenerator:<arg>``).
         n_agents: Max concurrent SLURM tasks for sweeps.
         job_suffix: Suffix for the SLURM job name.
-        cpu: Run on CPU.
+        device: ``"cuda"`` or ``"cpu"``. Overrides ``runtime.device`` in the experiment config.
         partition: SLURM partition.
         dp: GPUs for DDP. Overrides ``runtime.dp`` in the experiment config if set.
-            ``<= 8`` is single-node; multiples of 8 above 8 multi-node.
+            Bounded by the cluster's GPUs-per-node for single-node DDP; multiples of that for
+            multi-node.
         project: W&B project name. Defaults to the project recorded on the rerun's
             saved metadata (if any), otherwise ``DEFAULT_PROJECT_NAME``.
 
@@ -141,7 +147,7 @@ def main(
         pd-run tms_5-2 --sweep my_grid.yaml --n_agents 4     # cartesian grid sweep
         pd-run tms_5-2 --sweep pkg.module:MySweep            # custom generator
         pd-run tms_5-2 --dp 4                                # multi-GPU DDP
-        pd-run tms_5-2 --cpu                                 # CPU job
+        pd-run tms_5-2 --device cpu                          # CPU job
         pd-run --driver pkg:D --config_path my.yaml          # custom driver
         pd-run --rerun s-a1b2c3d4                            # rerun from saved metadata
         pd-run tms_5-2 --local                               # in-process; no SLURM
@@ -156,12 +162,12 @@ def main(
 
     name, driver_path, base_config = _resolve_source(experiment, config_path, driver, rerun)
     project = _resolve_project(project, rerun)
-    dp = _resolve_dp(dp, base_config)
+    dp, device = _resolve_runtime(dp, device, base_config)
 
     if local:
         assert sweep is None, "--sweep is not supported with --local"
         assert dp is None, "--dp is not supported with --local"
-        if cpu:
+        if device == "cpu":
             os.environ["CUDA_VISIBLE_DEVICES"] = ""
         from param_decomp.utils.distributed_utils import with_distributed_cleanup
 
@@ -189,7 +195,7 @@ def main(
         sweep=sweep,
         n_agents=n_agents,
         job_suffix=job_suffix,
-        cpu=cpu,
+        device=device,
         partition=partition,
         dp=dp,
         project=project,

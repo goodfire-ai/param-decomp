@@ -578,21 +578,28 @@ class RuntimeConfig(BaseConfig):
         default=True,
         description="Use torch.autocast with bfloat16 mixed precision in training and eval.",
     )
+    device: Literal["cuda", "cpu"] = Field(
+        default="cuda",
+        description="Device to run on. Overridable ad-hoc with ``pd-run --device cpu``.",
+    )
     dp: PositiveInt | None = Field(
         default=None,
-        description="Number of GPUs for data parallelism. None = single GPU/CPU. <= 8 means "
-        "single-node DDP; multiples of 8 above 8 means multi-node. Declares the experiment's "
-        "compute requirement; can be overridden ad-hoc by ``pd-run --dp N``.",
+        description="Number of GPUs for data parallelism. None = single GPU/CPU. Bounded by "
+        "the cluster's GPUs-per-node for single-node DDP; multiples of that for multi-node. "
+        "Declares the experiment's compute requirement; overridable ad-hoc by ``pd-run --dp N``.",
     )
 
     @model_validator(mode="after")
-    def validate_dp(self) -> Self:
-        if self.dp is None:
-            return self
-        assert self.dp >= 2, "if set, dp must be at least 2 (pass None for single GPU)."
-        assert self.dp <= 8 or self.dp % 8 == 0, (
-            f"dp must be <= 8 (single node) or divisible by 8 (multi-node), got {self.dp}"
-        )
+    def validate_device_dp(self) -> Self:
+        from param_decomp.settings import GPUS_PER_NODE
+
+        if self.dp is not None:
+            assert self.device == "cuda", "dp requires device='cuda'"
+            assert self.dp >= 2, "if set, dp must be at least 2 (pass None for single device)."
+            assert self.dp <= GPUS_PER_NODE or self.dp % GPUS_PER_NODE == 0, (
+                f"dp must be <= {GPUS_PER_NODE} (single node) or divisible by {GPUS_PER_NODE} "
+                f"(multi-node), got {self.dp}"
+            )
         return self
 
 

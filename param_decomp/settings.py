@@ -25,5 +25,10 @@ DEFAULT_PARTITION_NAME = "h200-reserved"
 
 DEFAULT_PROJECT_NAME = "param-decomp"
 
+# Cluster topology: GPUs per node. Default matches the H200 cluster; override per-cluster
+# via `PARAM_DECOMP_GPUS_PER_NODE` env var. Used to compute single-node vs multi-node DDP
+# layout in run_slurm.py.
+GPUS_PER_NODE = int(os.environ.get("PARAM_DECOMP_GPUS_PER_NODE", "8"))
+
 # Default run for the app to load on startup if set
 PARAM_DECOMP_APP_DEFAULT_RUN: str | None = os.environ.get("PARAM_DECOMP_APP_DEFAULT_RUN")

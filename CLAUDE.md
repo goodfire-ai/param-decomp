@@ -102,10 +102,12 @@ The four config classes split by concern:
   universe). Things that change what the trained model is.
 - **`LoggingConfig`** — observation-only settings (log/eval/save cadence, eval_batch_size,
   ci_alive_threshold). Don't affect the trained model.
-- **`RuntimeConfig`** — compute / deployment knobs (autocast_bf16, dp; future home for
-  device placement, NCCL flags, gradient accumulation). Affects numerical precision but
-  describes *how* the run executes on a substrate, not the algorithm itself. Optional;
-  defaults if omitted in YAML. `pd-run --dp N` overrides `runtime.dp` ad-hoc.
+- **`RuntimeConfig`** — compute / deployment knobs (autocast_bf16, device, dp; future
+  home for NCCL flags, gradient accumulation). Affects numerical precision but describes
+  *how* the run executes on a substrate, not the algorithm itself. Optional; defaults if
+  omitted in YAML. `pd-run --dp N` / `pd-run --device cpu` override the YAML ad-hoc.
+  Cluster topology (GPUs per node) is `settings.GPUS_PER_NODE`, overridable via
+  `PARAM_DECOMP_GPUS_PER_NODE` env var.
 
 Two runs with identical `PDConfig` and different `LoggingConfig` produce bit-identical
 weights. Different `RuntimeConfig` may produce slightly different weights via numerical
@@ -316,7 +318,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
 | Command | Entry Point | Description |
 |---------|-------------|-------------|
-| `pd-run` | `param_decomp/experiments/runner.py` | Run a PD experiment. SLURM by default; `--local` runs in-process. Supports `--sweep`, `--dp`, `--cpu`, `--rerun`, and custom drivers (`--driver`/`--config_path`). |
+| `pd-run` | `param_decomp/experiments/runner.py` | Run a PD experiment. SLURM by default; `--local` runs in-process. Supports `--sweep`, `--dp`, `--device`, `--rerun`, and custom drivers (`--driver`/`--config_path`). |
 | `pd-harvest` | `param_decomp/harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
 | `pd-autointerp` | `param_decomp/autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
 | `pd-attributions` | `param_decomp/dataset_attributions/scripts/run_slurm_cli.py` | Submit dataset attribution SLURM job |
@@ -386,7 +388,7 @@ snapshot — useful for quick checks. Off-cluster `pd-run` fails fast unless `--
 pd-run tms_5-2                                       # one SLURM job
 pd-run tms_5-2 --sweep my_grid.yaml --n_agents 4     # SLURM array sweep
 pd-run tms_5-2 --dp 4                                # multi-GPU DDP on SLURM
-pd-run tms_5-2 --cpu                                 # CPU SLURM job
+pd-run tms_5-2 --device cpu                          # CPU SLURM job
 pd-run --driver pkg:D --config_path my.yaml          # custom driver
 pd-run --rerun <path-or-wandb-url>                   # rerun from a saved run_metadata.yaml
 pd-run tms_5-2 --local                               # in-process; no SLURM
@@ -514,7 +516,7 @@ pd-run tms_5-2 --sweep my_pkg.sweeps:LRRatioSweep:arg    # custom generator with
 4. The materialized `SweepSpec` is written to
    `PARAM_DECOMP_OUT_DIR/sweeps/<launch_id>/spec.yaml` for reproducibility.
 5. A SLURM array is submitted, capped at `--n_agents` concurrent tasks. Each task runs on
-   a single GPU by default (use `--cpu` or `--dp` to change).
+   a single GPU by default (use `--device cpu` or `--dp` to change).
 6. A git snapshot is created so all tasks run the same code, regardless of later edits.
 
 This is **not** a W&B sweep agent — W&B sees independent runs sharing a `launch_id` tag.
