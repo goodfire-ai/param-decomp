@@ -19,7 +19,11 @@ import pkgutil
 
 from param_decomp.metrics.base import LossMetricConfig, Metric, MetricConfig
 from param_decomp.metrics.context import MetricContext
-from param_decomp.metrics.registry import METRIC_REGISTRY, register_metric
+from param_decomp.metrics.registry import (
+    METRIC_REGISTRY,
+    import_metric_module,
+    register_metric,
+)
 
 _INFRASTRUCTURE = {"base", "context", "registry", "pgd_utils"}
 _discovered = False
@@ -48,5 +52,6 @@ __all__ = [
     "MetricConfig",
     "MetricContext",
     "discover_metrics",
+    "import_metric_module",
     "register_metric",
 ]

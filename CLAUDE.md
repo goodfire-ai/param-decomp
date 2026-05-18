@@ -87,6 +87,32 @@ dataloaders — the right choice for notebook/script-driven use where `pd-run`, 
 post-processing tooling are not needed. Those runs reload with `load_component_model(path, target=...)`. The
 README's "Custom experiments" section walks through both routes side-by-side.
 
+### Custom Metrics
+
+Metrics follow the same open-world pattern as drivers. Built-in metrics live under
+`param_decomp/metrics/` and self-register via `@register_metric` (see
+`param_decomp/metrics/registry.py`). External users can register their own metrics by listing
+import targets in `pd.metric_modules`:
+
+```yaml
+pd:
+  metric_modules:
+    - /abs/path/to/my_metrics.py          # absolute path to a .py file
+    - my_pkg.my_metrics                   # or a dotted module name
+  loss_metrics:
+    my_loss:
+      coeff: 1.0
+      my_param: 0.5
+```
+
+The user's module imports `register_metric` and `LossMetricConfig` / `MetricConfig` /
+`MetricContext` from `param_decomp.metrics`, defines a `@register_metric` Metric class with a
+`config_type` ClassVar pointing at their pydantic config, and that's it. A
+`@model_validator(mode="before")` on `PDConfig` imports these modules before
+`loss_metrics` / `eval_metrics` are validated, and the same hook fires on reload so saved runs
+that referenced custom metrics deserialize without manual setup. File paths must be absolute —
+relative paths would silently break under SLURM re-execution.
+
 ### Per-experiment Configs
 
 Built-in YAML configs are pure experiment configs nested under `pd:`, `target:`, and `data:`:

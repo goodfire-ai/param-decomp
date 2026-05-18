@@ -20,7 +20,7 @@ from pydantic import (
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.metrics.base import LossMetricConfig, MetricConfig
-from param_decomp.metrics.registry import METRIC_REGISTRY
+from param_decomp.metrics.registry import METRIC_REGISTRY, import_metric_module
 from param_decomp.types import (
     GlobalCiFnType,
     LayerwiseCiFnType,
@@ -341,6 +341,16 @@ class PDConfig(BaseConfig):
         "model and component weights.",
     )
 
+    metric_modules: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Extra Python modules to import before validating `loss_metrics` / `eval_metrics`."
+            " Each entry is either a dotted module name (`my_pkg.my_metrics`) or an absolute"
+            " path to a `.py` file. Imported side-effects (`@register_metric` decorators)"
+            " expand `METRIC_REGISTRY` so user-defined metrics can be referenced by slug."
+        ),
+    )
+
     loss_metrics: dict[str, LossMetricConfig] = Field(
         default_factory=dict,
         description=(
@@ -355,6 +365,18 @@ class PDConfig(BaseConfig):
             " automatically and should not be repeated here."
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _import_metric_modules(cls, data: Any) -> Any:
+        """Import user-supplied metric modules so their `@register_metric` decorators fire
+        before the `loss_metrics` / `eval_metrics` field validators look up slugs in
+        `METRIC_REGISTRY`. Idempotent: re-validation in the same process is a no-op.
+        """
+        if isinstance(data, dict):
+            for spec in data.get("metric_modules", []) or []:
+                import_metric_module(spec)
+        return data
 
     @field_validator("loss_metrics", mode="before")
     @classmethod
