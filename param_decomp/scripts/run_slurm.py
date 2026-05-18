@@ -16,6 +16,7 @@ from datetime import datetime
 from hashlib import sha256
 from typing import Any
 
+from param_decomp.configs import RuntimeConfig
 from param_decomp.log import logger
 from param_decomp.settings import GPUS_PER_NODE, PARAM_DECOMP_OUT_DIR
 from param_decomp.sweeps import SweepRun, SweepSpec, resolve_sweep
@@ -52,9 +53,8 @@ def launch_slurm(
     sweep: str | None,
     n_agents: int | None,
     job_suffix: str | None,
-    device: str,
+    runtime: RuntimeConfig,
     partition: str,
-    dp: int | None,
     project: str,
 ) -> None:
     """Submit a PD experiment to SLURM (with optional sweep)."""
@@ -62,7 +62,7 @@ def launch_slurm(
     logger.info(f"Launch ID: {launch_id}")
     logger.info(f"Experiment: {name}")
 
-    n_gpus = _validate_and_get_n_gpus(device=device, dp=dp)
+    n_gpus = _n_gpus_for(runtime)
     logger.info(f"Running on {_format_compute_info(n_gpus)}")
 
     sweep_spec = _build_sweep_spec(name=name, sweep=sweep, base_config=base_config)
@@ -151,11 +151,12 @@ def _build_sweep_spec(name: str, sweep: str | None, base_config: dict[str, Any])
     return spec
 
 
-def _validate_and_get_n_gpus(device: str, dp: int | None) -> int | None:
-    """Resolve final GPU count. dp shape already validated by RuntimeConfig upstream."""
-    if device == "cpu":
+def _n_gpus_for(runtime: RuntimeConfig) -> int | None:
+    """Resolve final GPU count for SLURM resource request. RuntimeConfig has already
+    validated dp shape and the device/dp interaction."""
+    if runtime.device == "cpu":
         return None
-    return dp
+    return runtime.dp
 
 
 def _format_compute_info(n_gpus: int | None) -> str:

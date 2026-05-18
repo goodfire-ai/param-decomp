@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from param_decomp.configs import RuntimeConfig
 from param_decomp.experiments.discovery import discover_experiments
 from param_decomp.settings import REPO_ROOT
 
@@ -74,9 +75,8 @@ class TestLaunchSlurm:
             sweep=str(grid_path),
             n_agents=2,
             job_suffix=None,
-            device="cuda",
+            runtime=RuntimeConfig(),
             partition="cpu",
-            dp=None,
             project="test",
         )
 
@@ -117,9 +117,8 @@ class TestLaunchSlurm:
             sweep=None,
             n_agents=None,
             job_suffix=None,
-            device="cuda",
+            runtime=RuntimeConfig(),
             partition="cpu",
-            dp=None,
             project="test",
         )
 

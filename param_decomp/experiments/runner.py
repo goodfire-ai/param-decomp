@@ -179,9 +179,8 @@ def main(
         sweep=sweep,
         n_agents=n_agents,
         job_suffix=job_suffix,
-        device=runtime.device,
+        runtime=runtime,
         partition=partition,
-        dp=runtime.dp,
         project=project,
     )
 
