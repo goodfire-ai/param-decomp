@@ -54,9 +54,9 @@ def test_run_names_encode_axis_values(tmp_path: Path) -> None:
     assert names == {"seed=0_lr_ratio=0.5", "seed=1_lr_ratio=0.5"}
 
 
-def test_missing_arg_rejected() -> None:
+def test_empty_arg_rejected() -> None:
     with pytest.raises(AssertionError, match="requires a yaml path"):
-        CartesianGridSweep()
+        CartesianGridSweep("")
 
 
 def test_missing_file_rejected(tmp_path: Path) -> None:

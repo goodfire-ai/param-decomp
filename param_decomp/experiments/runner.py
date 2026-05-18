@@ -67,6 +67,19 @@ def _resolve_source(
     return "rerun", metadata.driver, metadata.config
 
 
+def _resolve_project(project: str | None, rerun: str | None) -> str:
+    """If --project is unset and we're rerunning, inherit from the saved metadata."""
+    if project is not None:
+        return project
+    if rerun is not None:
+        from param_decomp.saved_run import PDRun
+
+        metadata = PDRun.metadata_from_path(rerun)
+        if metadata.wandb_project is not None:
+            return metadata.wandb_project
+    return DEFAULT_PROJECT_NAME
+
+
 def main(
     experiment: str | None = None,
     *,
@@ -80,7 +93,7 @@ def main(
     cpu: bool = False,
     partition: str = DEFAULT_PARTITION_NAME,
     dp: int | None = None,
-    project: str = DEFAULT_PROJECT_NAME,
+    project: str | None = None,
 ) -> None:
     """Run a PD experiment, on SLURM by default.
 
@@ -102,7 +115,8 @@ def main(
         cpu: Run on CPU.
         partition: SLURM partition.
         dp: GPUs for DDP. ``<= 8`` is single-node; multiples of 8 above 8 multi-node.
-        project: W&B project name.
+        project: W&B project name. Defaults to the project recorded on the rerun's
+            saved metadata (if any), otherwise ``DEFAULT_PROJECT_NAME``.
 
     Examples:
         pd-run tms_5-2                                       # one SLURM job
@@ -123,6 +137,7 @@ def main(
         return
 
     name, driver_path, base_config = _resolve_source(experiment, config_path, driver, rerun)
+    project = _resolve_project(project, rerun)
 
     if local:
         assert sweep is None, "--sweep is not supported with --local"

@@ -1,10 +1,10 @@
 # setup
 .PHONY: install
-install: copy-templates
+install:
 	uv sync --no-dev
 
 .PHONY: install-dev
-install-dev: copy-templates
+install-dev:
 	uv sync
 	uv run pre-commit install
 
@@ -29,14 +29,6 @@ install-ci:
 		--link-mode copy \
 		--extra-index-url https://download.pytorch.org/whl/cpu \
 		--index-strategy unsafe-best-match
-
-.PHONY: copy-templates
-copy-templates:
-	@if [ ! -f param_decomp/scripts/sweep_params.yaml ]; then \
-		cp param_decomp/scripts/sweep_params.yaml.example param_decomp/scripts/sweep_params.yaml; \
-		echo "Created param_decomp/scripts/sweep_params.yaml from template"; \
-	fi
-
 
 # checks
 .PHONY: type

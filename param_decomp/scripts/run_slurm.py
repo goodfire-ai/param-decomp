@@ -16,7 +16,6 @@ from datetime import datetime
 from hashlib import sha256
 from typing import Any
 
-from param_decomp.experiments.driver import load_driver
 from param_decomp.log import logger
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp.sweeps import SweepRun, SweepSpec, resolve_sweep
@@ -72,7 +71,9 @@ def launch_slurm(
         assert n_agents is not None, "n_agents must be provided when sweep is enabled"
     logger.info(f"Sweep '{sweep_spec.description}': {len(sweep_spec.runs)} run(s)")
 
-    _validate_configs(driver_path, sweep_spec)
+    # Config validation happens worker-side at _worker.run_experiment. Doing it here too
+    # would force the launch node (often a login node without GPUs) to import the driver's
+    # full deps (e.g. `transformers` for the lm driver). Skip it.
 
     sweep_dir = PARAM_DECOMP_OUT_DIR / "sweeps" / launch_id
     sweep_spec.write(sweep_dir / "spec.yaml")
@@ -149,20 +150,6 @@ def _build_sweep_spec(name: str, sweep: str | None, base_config: dict[str, Any])
     )
     assert spec.runs, f"sweep generator {generator!r} produced zero runs"
     return spec
-
-
-def _validate_configs(driver_path: str, sweep_spec: SweepSpec) -> None:
-    """Validate every generated config against the driver's pydantic config type.
-
-    Fails fast on the launch node rather than letting individual SLURM tasks crash.
-    """
-    driver = load_driver(driver_path)
-    for i, run in enumerate(sweep_spec.runs):
-        try:
-            driver.config_type.model_validate(run.config)
-        except Exception as e:
-            e.add_note(f"sweep run #{i} ({run.name!r}) failed config validation")
-            raise
 
 
 def _validate_and_get_n_gpus(cpu: bool, dp: int | None) -> int | None:

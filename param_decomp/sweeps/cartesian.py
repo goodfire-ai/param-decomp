@@ -26,13 +26,9 @@ class CartesianGridSweep(SweepGenerator):
 
     name: ClassVar[str] = "cartesian"
 
-    @override
-    def __init__(self, arg: str | None = None) -> None:
-        assert arg is not None, (
-            "cartesian sweep requires a yaml path: --sweep cartesian:my_grid.yaml"
-        )
-        super().__init__(arg=None)  # don't trigger base assertion; we accept this arg
-        self.grid_path = Path(arg)
+    def __init__(self, grid_path: str) -> None:
+        assert grid_path, "cartesian sweep requires a yaml path: --sweep cartesian:my_grid.yaml"
+        self.grid_path = Path(grid_path)
         assert self.grid_path.exists(), f"sweep grid not found: {self.grid_path}"
 
     @override

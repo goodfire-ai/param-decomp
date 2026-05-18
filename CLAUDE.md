@@ -215,7 +215,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
 **Key Data Flow:**
 
-1. `pd-run` (`experiments/runner.py`) resolves the input source into `(name, driver_path, base_config)` — either a built-in experiment name, `--driver`+`--config_path`, or `--rerun`. With `--local` it dispatches in-process; otherwise it builds `RunSpec`s and submits a SLURM array via `scripts/run_slurm.py:launch_slurm`.
+1. `pd-run` (`experiments/runner.py`) resolves the input source into `(name, driver_path, base_config)` — either a built-in experiment name, `--driver`+`--config_path`, or `--rerun`. With `--local` it dispatches in-process; otherwise `scripts/run_slurm.py:launch_slurm` resolves the sweep generator (if any) into a `SweepSpec` and submits a SLURM array (one task per run).
 2. Each worker invocation (`experiments/_worker.py`, called as `python -m param_decomp.experiments._worker` from SLURM tasks, or directly from runner.py in --local mode) loads the driver, validates the config, and calls the driver to build `PDTarget`, train/eval loaders, and artifacts.
 3. The worker builds `RunMetadata` from the parsed config and driver import path, then calls `run_pd`.
 4. `run_pd` saves the metadata/artifacts and trains a `ComponentModel` via `optimize()` with config-driven losses.
@@ -520,7 +520,17 @@ can pivot on it.
 
 **Custom generators:** subclass `SweepGenerator` from `param_decomp.sweeps`, set
 `name: ClassVar[str]`, and implement `__call__(base_config) -> SweepSpec`. Drop the file
-in `param_decomp/sweeps/` for auto-discovery, or reference it by import path.
+in `param_decomp/sweeps/` for auto-discovery, or reference it by import path. The
+`module.path:Class` form requires `module.path` to contain a dot — that's how the
+resolver tells "named generator with arg" (`cartesian:my_grid.yaml`) apart from
+"import path" (`my_pkg.sweeps:MyClass`).
+
+**Rerunning runs from before this layout existed:** `pd-run --rerun` will fail
+pydantic validation on saved runs whose `pd:` block contains `wandb_project` or
+`wandb_run_name` (now `RunMetadata` fields, not `PDConfig` fields). Edit the saved
+`run_metadata.yaml` to move those two keys out of `config.pd` and up to the top level
+before rerunning. The `--rerun` path also inherits the recorded `wandb_project` as
+the default for the new run's `--project` (pass `--project ...` to override).
 
 **Logs:** `~/slurm_logs/slurm-<job_id>_<task_id>.out`
 

@@ -57,19 +57,15 @@ class SweepSpec:
 class SweepGenerator(ABC):
     """Base class for sweep generators.
 
-    Subclasses must set ``name`` (used for auto-discovery / short CLI refs) and
-    implement ``__call__(base_config)``. The constructor may accept an optional
-    string argument (e.g. a yaml path) — the CLI surface is ``--sweep <name>:<arg>``.
+    Subclasses set ``name`` (used for auto-discovery / short CLI refs) and implement
+    ``__call__(base_config)``. The CLI surface is ``--sweep <name>[:<arg>]``; subclasses
+    that take an arg validate it in their own ``__init__``.
 
-    Custom generators don't have to subclass this — anything callable with the
-    right signature works — but subclassing gives you auto-discovery for free.
+    Custom generators don't have to subclass this — anything callable with the right
+    signature works — but subclassing gives you auto-discovery for free.
     """
 
     name: ClassVar[str]
-
-    def __init__(self, arg: str | None = None) -> None:
-        """Default: reject args. Override if your generator takes one."""
-        assert arg is None, f"{type(self).__name__} does not accept a CLI argument"
 
     @abstractmethod
     def __call__(self, base_config: dict[str, Any]) -> SweepSpec: ...
