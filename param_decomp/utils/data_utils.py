@@ -1,8 +1,8 @@
-from collections.abc import Generator, Iterator
-from typing import Literal, override
+from collections.abc import Iterator
+from typing import Any, Literal, override
 
 import torch
-from datasets import IterableDataset
+from datasets import IterableDataset as HFIterableDataset
 from jaxtyping import Float
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
@@ -10,25 +10,83 @@ from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from param_decomp.log import logger
 
 
-def loop_dataloader[T](dl: DataLoader[T]) -> Generator[T]:
-    """Loop over a dataloader, resetting the iterator when it is exhausted.
+class StatefulLoop[T]:
+    """Infinite iterator over a DataLoader with checkpointable position.
 
-    Ensures that each epoch gets different data, even when using a distributed sampler.
+    Tracks ``(epoch, batches_in_epoch)`` and can be restored to a previous position via
+    ``load_state_dict``. On restore, the loader's RNG / sampler / dataset epoch are set
+    deterministically from ``(seed, epoch)`` and the iterator is fast-forwarded.
+
+    Determinism guarantee: if the underlying ``DataLoader`` is constructed with the same
+    arguments and its shuffle order is a pure function of ``(seed + epoch)`` -- which holds
+    for ``shuffle=True`` map-style loaders with a ``generator``, and for
+    ``DistributedSampler``-driven loaders -- the post-restore batch sequence equals the
+    sequence a non-interrupted run would have produced. For ``IterableDataset`` we rely on
+    ``set_epoch`` + buffer-shuffle seeding; fast-forward still works but is O(batches_in_epoch).
+
+    For loaders whose data generation depends on global RNG (e.g.
+    ``DatasetGeneratedDataLoader``), the per-epoch generator reseed does *not* reproduce the
+    same batches across resume -- those loaders are intrinsically RNG-driven and we don't
+    attempt to recover global RNG state.
     """
-    epoch = 0
-    dl_iter = iter(dl)
-    while True:
+
+    def __init__(self, dl: DataLoader[T], seed: int) -> None:
+        self._dl = dl
+        self._seed = seed
+        self._epoch = 0
+        self._batches_in_epoch = 0
+        self._apply_epoch(self._epoch)
+        self._iter: Iterator[T] = iter(self._dl)
+
+    @property
+    def loader(self) -> DataLoader[T]:
+        """Underlying DataLoader (for PGD eval, which iterates independently)."""
+        return self._dl
+
+    def _apply_epoch(self, epoch: int) -> None:
+        """Set the loader's RNG / sampler / dataset epoch deterministically."""
+        gen: torch.Generator | None = getattr(self._dl, "generator", None)
+        if gen is not None:
+            gen.manual_seed(self._seed + epoch)
+        if isinstance(self._dl.sampler, DistributedSampler):
+            self._dl.sampler.set_epoch(epoch)
+        if isinstance(self._dl.dataset, HFIterableDataset):
+            self._dl.dataset.set_epoch(epoch)
+
+    def __iter__(self) -> "StatefulLoop[T]":
+        return self
+
+    def __next__(self) -> T:
         try:
-            yield next(dl_iter)
+            batch = next(self._iter)
         except StopIteration:
-            logger.warning("Dataloader exhausted, resetting iterator.")
-            epoch += 1
-            if isinstance(dl.sampler, DistributedSampler):
-                dl.sampler.set_epoch(epoch)
-            if isinstance(dl.dataset, IterableDataset):
-                dl.dataset.set_epoch(epoch)
-            dl_iter = iter(dl)
-            yield next(dl_iter)
+            logger.warning("Dataloader exhausted, advancing to next epoch.")
+            self._epoch += 1
+            self._batches_in_epoch = 0
+            self._apply_epoch(self._epoch)
+            self._iter = iter(self._dl)
+            batch = next(self._iter)
+        self._batches_in_epoch += 1
+        return batch
+
+    def state_dict(self) -> dict[str, int]:
+        return {"epoch": self._epoch, "batches_in_epoch": self._batches_in_epoch}
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        target_epoch = int(state["epoch"])
+        target_batches = int(state["batches_in_epoch"])
+        self._apply_epoch(target_epoch)
+        self._iter = iter(self._dl)
+        self._epoch = target_epoch
+        for skipped in range(target_batches):
+            try:
+                next(self._iter)
+            except StopIteration as e:
+                raise RuntimeError(
+                    f"StatefulLoop: cannot fast-forward to batch {target_batches} of epoch "
+                    f"{target_epoch} (loader exhausted after {skipped} batches)"
+                ) from e
+        self._batches_in_epoch = target_batches
 
 
 class DatasetGeneratedDataLoader[Q](DataLoader[Q]):

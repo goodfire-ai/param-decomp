@@ -27,7 +27,7 @@ class TestLaunchSlurm:
 
         fake = "nonexistent_experiment_please_dont_name_your_experiment_this"
         with pytest.raises(AssertionError, match=f"Unknown experiment '{fake}'"):
-            _resolve_source(experiment=fake, config_path=None, driver=None, rerun=None)
+            _resolve_source(experiment=fake, config_path=None, driver=None, rerun=None, resume=None)
 
     @patch("param_decomp.scripts.run_slurm.get_wandb_run_url")
     @patch("param_decomp.scripts.run_slurm.submit_slurm_job")

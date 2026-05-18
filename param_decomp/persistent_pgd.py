@@ -9,7 +9,7 @@ benefit of many PGD steps without the per-step computational cost.
 """
 
 from abc import ABC, abstractmethod
-from typing import override
+from typing import Any, override
 
 import torch
 from jaxtyping import Float, Int
@@ -52,6 +52,14 @@ class PPGDOptimizer(ABC):
     def set_lr(self, lr: float) -> None:
         """Update the learning rate / step size."""
 
+    @abstractmethod
+    def state_dict(self) -> dict[str, Any]:
+        """Serialize optimizer-internal state for checkpointing."""
+
+    @abstractmethod
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        """Restore optimizer-internal state from a previously saved dict."""
+
 
 class SignPGDOptimizer(PPGDOptimizer):
     def __init__(self, cfg: SignPGDConfig) -> None:
@@ -69,6 +77,14 @@ class SignPGDOptimizer(PPGDOptimizer):
     @override
     def set_lr(self, lr: float) -> None:
         self._step_size = lr
+
+    @override
+    def state_dict(self) -> dict[str, Any]:
+        return {"step_size": self._step_size}
+
+    @override
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        self._step_size = float(state["step_size"])
 
 
 class AdamPGDOptimizer(PPGDOptimizer):
@@ -106,6 +122,28 @@ class AdamPGDOptimizer(PPGDOptimizer):
     @override
     def set_lr(self, lr: float) -> None:
         self._lr = lr
+
+    @override
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "lr": self._lr,
+            "step_count": self._step_count,
+            "m": {k: v.detach().cpu() for k, v in self._m.items()},
+            "v": {k: v.detach().cpu() for k, v in self._v.items()},
+        }
+
+    @override
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        self._lr = float(state["lr"])
+        self._step_count = int(state["step_count"])
+        # Restore values in-place to preserve device of pre-existing tensors initialized by
+        # ``init_state``.
+        for k, v in state["m"].items():
+            assert k in self._m, f"PGD optimizer missing module '{k}' on load"
+            self._m[k].copy_(v.to(self._m[k].device))
+        for k, v in state["v"].items():
+            assert k in self._v, f"PGD optimizer missing module '{k}' on load"
+            self._v[k].copy_(v.to(self._v[k].device))
 
 
 def make_ppgd_optimizer(cfg: PGDOptimizerConfig) -> PPGDOptimizer:
@@ -207,6 +245,23 @@ class PersistentPGDState:
     def update_lr(self, step: int, total_steps: int) -> None:
         lr = get_scheduled_value(step, total_steps, self._lr_schedule)
         self.optimizer.set_lr(lr)
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "sources": {k: v.detach().cpu() for k, v in self.sources.items()},
+            "optimizer": self.optimizer.state_dict(),
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        saved_sources: dict[str, Tensor] = state["sources"]
+        assert set(saved_sources.keys()) == set(self.sources.keys()), (
+            f"PPGD source modules mismatch: saved={sorted(saved_sources)} "
+            f"current={sorted(self.sources)}"
+        )
+        with torch.no_grad():
+            for k, v in saved_sources.items():
+                self.sources[k].copy_(v.to(self.sources[k].device))
+        self.optimizer.load_state_dict(state["optimizer"])
 
     def warmup(
         self,

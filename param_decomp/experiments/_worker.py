@@ -10,6 +10,7 @@ Users wanting to run an experiment in-process should call
 """
 
 import json
+from pathlib import Path
 from typing import Any
 
 import fire
@@ -35,6 +36,7 @@ def run_experiment(
     launch_id: str | None = None,
     sweep_params_json: str | None = None,
     run_id: str | None = None,
+    resume_from: Path | None = None,
 ) -> None:
     dist_state = init_distributed()
     logger.info(f"Distributed state: {dist_state}")
@@ -77,6 +79,7 @@ def run_experiment(
         metadata=metadata,
         artifacts=artifacts,
         wandb_tags=wandb_tags,
+        resume_from=resume_from,
     )
 
 
@@ -87,6 +90,7 @@ def main(
     run_id: str,
     launch_id: str | None = None,
     sweep_params_json: str | None = None,
+    resume_from: str | None = None,
 ) -> None:
     """SLURM task entrypoint."""
     config_data = json.loads(config_json.removeprefix("json:"))
@@ -97,6 +101,7 @@ def main(
         launch_id=launch_id,
         sweep_params_json=sweep_params_json,
         run_id=run_id,
+        resume_from=Path(resume_from) if resume_from is not None else None,
     )
 
 

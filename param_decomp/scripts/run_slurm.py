@@ -74,6 +74,7 @@ def launch_slurm(
     partition: str,
     dp: int | None,
     project: str,
+    resume_from: Path | None = None,
 ) -> None:
     """Submit a PD experiment to SLURM (with optional sweep).
 
@@ -128,6 +129,7 @@ def launch_slurm(
         partition=partition,
         max_concurrent_tasks=n_agents,
         per_task_comments=wandb_urls,
+        resume_from=resume_from,
     )
 
     result = submit_slurm_job(
@@ -289,6 +291,7 @@ def _build_script_args(
     launch_id: str,
     run_spec: _RunSpec,
     sweep_params: dict[str, Any] | None,
+    resume_from: Path | None,
 ) -> str:
     """Build the worker-CLI arguments for one SLURM task."""
     json_tagged_config = f"json:{json.dumps(run_spec.config_dict)}"
@@ -301,6 +304,8 @@ def _build_script_args(
     if sweep_params is not None:
         json_tagged_sweep_params = f"json:{json.dumps(sweep_params)}"
         args += f" --sweep_params_json {shlex.quote(json_tagged_sweep_params)}"
+    if resume_from is not None:
+        args += f" --resume_from {shlex.quote(str(resume_from))}"
     return args
 
 
@@ -312,6 +317,7 @@ def _get_command(
     sweep_params: dict[str, Any] | None,
     snapshot_ref: str,
     is_array: bool,
+    resume_from: Path | None,
 ) -> str:
     """Build the command to run one PD run spec.
 
@@ -326,7 +332,7 @@ def _get_command(
         is_array: Whether this command is part of a SLURM array.
     """
     port = _choose_master_port(launch_id, spec_idx)
-    script_args = _build_script_args(launch_id, run_spec, sweep_params)
+    script_args = _build_script_args(launch_id, run_spec, sweep_params, resume_from)
 
     worker_module = "param_decomp.experiments._worker"
     match n_gpus:
@@ -375,6 +381,7 @@ def _create_slurm_script(
     partition: str,
     max_concurrent_tasks: int | None = None,
     per_task_comments: list[str] | None = None,
+    resume_from: Path | None = None,
 ) -> str:
     """Create a SLURM script for one or more run specs (with a git-snapshot checkout step).
 
@@ -405,6 +412,7 @@ def _create_slurm_script(
             sweep_params,
             snapshot_ref=snapshot_ref,
             is_array=is_array,
+            resume_from=resume_from,
         )
         commands.append(cmd)
 

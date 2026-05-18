@@ -22,6 +22,7 @@ def test_at_most_one_source(tmp_path: Path) -> None:
             config_path=config_path,
             driver="param_decomp.experiments.tms.experiment:Driver",
             rerun=None,
+            resume=None,
         )
 
 
@@ -34,17 +35,19 @@ def test_config_path_requires_driver(tmp_path: Path) -> None:
             config_path=config_path,
             driver=None,
             rerun=None,
+            resume=None,
         )
 
 
 def test_config_path_with_driver_resolves(tmp_path: Path) -> None:
     config_path = _write_yaml(tmp_path / "my_config.yaml", {"pd": {"seed": 123}})
 
-    name, driver_path, config = _resolve_source(
+    name, driver_path, config, _resume_from = _resolve_source(
         experiment=None,
         config_path=config_path,
         driver="param_decomp.experiments.tms.experiment:Driver",
         rerun=None,
+        resume=None,
     )
 
     assert name == "my_config"
@@ -59,11 +62,12 @@ def test_rerun_loads_driver_from_metadata(tmp_path: Path) -> None:
         config={"pd": {"seed": 123}},
     ).write(metadata_path)
 
-    name, driver_path, config = _resolve_source(
+    name, driver_path, config, _resume_from = _resolve_source(
         experiment=None,
         config_path=None,
         driver=None,
         rerun=str(metadata_path.parent),
+        resume=None,
     )
 
     assert name == "rerun"
@@ -84,4 +88,5 @@ def test_rerun_rejects_driver_override(tmp_path: Path) -> None:
             config_path=None,
             driver="other:Driver",
             rerun=str(metadata_path.parent),
+            resume=None,
         )

@@ -291,6 +291,7 @@ def init_wandb(
     run_id: str,
     name: str | None = None,
     tags: list[str] | None = None,
+    fork_from: str | None = None,
 ) -> None:
     """Initialize Weights & Biases and log the config.
 
@@ -300,14 +301,20 @@ def init_wandb(
         run_id: The unique run ID (from ExecutionStamp).
         name: The name of the wandb run.
         tags: Optional list of tags to add to the run.
+        fork_from: Optional ``"<parent_run_id>?_step=N"`` spec to fork the new run
+            from a previous run at step N (used by resumption). The parent run is
+            preserved at its preemption point; metrics continue from N in the fork.
     """
-    wandb.init(
-        id=run_id,
-        project=project,
-        entity=get_wandb_entity(),
-        name=name,
-        tags=tags,
-    )
+    init_kwargs: dict[str, Any] = {
+        "id": run_id,
+        "project": project,
+        "entity": get_wandb_entity(),
+        "name": name,
+        "tags": tags,
+    }
+    if fork_from is not None:
+        init_kwargs["fork_from"] = fork_from
+    wandb.init(**init_kwargs)
     assert wandb.run is not None
     wandb.run.log_code(
         root=str(REPO_ROOT / "param_decomp"), exclude_fn=lambda path: "out" in Path(path).parts

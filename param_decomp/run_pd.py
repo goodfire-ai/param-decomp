@@ -42,8 +42,14 @@ from param_decomp.models.component_model import ComponentModel, OutputWithCache
 from param_decomp.persistent_pgd import PersistentPGDState
 from param_decomp.run_metadata import RunMetadata
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp.training_state import (
+    TRAINING_STATE_FILENAME,
+    TrainingState,
+    capture_rng_state,
+    restore_rng_state,
+)
 from param_decomp.utils.component_utils import calc_ci_l_zero
-from param_decomp.utils.data_utils import loop_dataloader
+from param_decomp.utils.data_utils import StatefulLoop
 from param_decomp.utils.distributed_utils import (
     DistributedState,
     avg_metrics_across_ranks,
@@ -110,11 +116,24 @@ def optimize(
     reconstruction_loss: ReconstructionLoss,
     out_dir: Path | None,
     tied_weights: list[tuple[str, str]] | None = None,
+    *,
+    resume_state: TrainingState | None = None,
+    wandb_run_id: str | None = None,
 ) -> None:
-    """Run the optimization loop for LM decomposition."""
+    """Run the optimization loop for LM decomposition.
 
-    train_iterator = loop_dataloader(train_loader)
-    eval_iterator = loop_dataloader(eval_loader)
+    When ``resume_state`` is provided, restores model / optimizer / PPGD / dataloader /
+    RNG state from a previous run and continues from ``resume_state.step``. The fresh
+    setup path (model + optimizer construction, ppgd state allocation) still runs --
+    state is then applied on top so shapes / devices / inner-buffer aliases are correct.
+    ``wandb_run_id`` is recorded into ``training_state.pt`` so further resumes can fork
+    from the right parent.
+    """
+
+    train_loop = StatefulLoop(train_loader, seed=config.seed)
+    eval_loop = StatefulLoop(eval_loader, seed=config.seed + 1)
+    train_iterator: Iterator[Any] = train_loop
+    eval_iterator: Iterator[Any] = eval_loop
 
     def create_pgd_data_iter() -> Iterator[Any]:
         assert hasattr(train_loader, "generator") and train_loader.generator is not None
@@ -202,7 +221,7 @@ def optimize(
         weight_decay=config.ci_fn_optimizer.weight_decay,
     )
 
-    if config.faithfulness_warmup_steps > 0:
+    if config.faithfulness_warmup_steps > 0 and resume_state is None:
         run_faithfulness_warmup(component_model, component_params, config)
 
     persistent_pgd_configs: list[
@@ -249,7 +268,69 @@ def optimize(
         for ppgd_cfg in persistent_pgd_configs
     }
 
-    for step in tqdm(range(config.steps + 1), ncols=0, disable=not is_main_process()):
+    start_step = 0
+    if resume_state is not None:
+        start_step = resume_state.step
+        if is_main_process():
+            logger.info(f"Resuming from step {start_step} (of {config.steps})")
+        # Apply state onto freshly-constructed objects so shapes / devices line up.
+        component_model.load_state_dict(resume_state.model_sd)
+        components_optimizer.load_state_dict(resume_state.components_opt_sd)
+        ci_fn_optimizer.load_state_dict(resume_state.ci_fn_opt_sd)
+        assert len(resume_state.ppgd_sd) == len(persistent_pgd_configs), (
+            f"PPGD config count mismatch on resume: saved={len(resume_state.ppgd_sd)} "
+            f"current={len(persistent_pgd_configs)}. PPGD configs must match the original run."
+        )
+        for i, ppgd_cfg in enumerate(persistent_pgd_configs):
+            ppgd_states[ppgd_cfg].load_state_dict(resume_state.ppgd_sd[i])
+        train_loop.load_state_dict(resume_state.train_loop_sd)
+        eval_loop.load_state_dict(resume_state.eval_loop_sd)
+        restore_rng_state(resume_state.rng_sd)
+
+    for step in tqdm(
+        range(start_step, config.steps + 1),
+        ncols=0,
+        disable=not is_main_process(),
+        initial=start_step,
+        total=config.steps + 1,
+    ):
+        # --- Saving Checkpoint --- #
+        # Done at the top so the saved state corresponds to a clean step boundary:
+        # the model reflects ``step`` completed optimizer steps, and the dataloader
+        # iterator is positioned just before consuming step ``step``'s batch. A run
+        # resumed from this checkpoint will produce the same training trajectory as
+        # an uninterrupted run (modulo CUDA / stochastic-mask nondeterminism).
+        is_intermediate_save = (
+            config.save_freq is not None and step % config.save_freq == 0 and step > 0
+        )
+        is_final_step = step == config.steps
+        if (is_intermediate_save or is_final_step) and is_main_process():
+            assert out_dir is not None
+            save_file(component_model.state_dict(), out_dir / f"model_{step}.pth")
+            # Resumption snapshot only at intermediate saves -- there's nothing useful to
+            # resume from at the final step.
+            if is_intermediate_save and not is_final_step:
+                training_state = TrainingState(
+                    step=step,
+                    model_sd=component_model.state_dict(),
+                    components_opt_sd=components_optimizer.state_dict(),
+                    ci_fn_opt_sd=ci_fn_optimizer.state_dict(),
+                    ppgd_sd=[ppgd_states[c].state_dict() for c in persistent_pgd_configs],
+                    train_loop_sd=train_loop.state_dict(),
+                    eval_loop_sd=eval_loop.state_dict(),
+                    rng_sd=capture_rng_state(),
+                    wandb_run_id=wandb_run_id,
+                )
+                training_state.save(out_dir / TRAINING_STATE_FILENAME)
+            logger.info(f"Saved checkpoints (step {step}) to {out_dir}")
+            if config.wandb_project:
+                try_wandb(
+                    wandb.save,
+                    str(out_dir / f"model_{step}.pth"),
+                    base_path=str(out_dir),
+                    policy="now",
+                )
+
         components_optimizer.zero_grad()
         ci_fn_optimizer.zero_grad()
 
@@ -407,23 +488,6 @@ def optimize(
                 torch.cuda.empty_cache()
                 gc.collect()
 
-        # --- Saving Checkpoint --- #
-        if (
-            (config.save_freq is not None and step % config.save_freq == 0 and step > 0)
-            or step == config.steps
-        ) and is_main_process():
-            assert out_dir is not None
-            # Save the state dict of the underlying module (not DDP wrapper)
-            save_file(component_model.state_dict(), out_dir / f"model_{step}.pth")
-            logger.info(f"Saved model, optimizer, and out_dir to {out_dir}")
-            if config.wandb_project:
-                try_wandb(
-                    wandb.save,
-                    str(out_dir / f"model_{step}.pth"),
-                    base_path=str(out_dir),
-                    policy="now",
-                )
-
         # Skip gradient step if we are at the last step (last step just for plotting and logging)
         if step != config.steps:
             sync_across_processes()
@@ -467,6 +531,7 @@ def run_pd(
     metadata: RunMetadata | None = None,
     artifacts: dict[str, Any] | None = None,
     wandb_tags: list[str] | None = None,
+    resume_from: Path | None = None,
 ) -> Path | None:
     """Run a full PD decomposition: setup, optimize, cleanup.
 
@@ -474,10 +539,19 @@ def run_pd(
     (via ``experiments/runner.py``) pass a fully populated ``RunMetadata``;
     notebook callers can omit it and a minimal one is synthesized.
 
+    When ``resume_from`` is set (path to a ``training_state.pt``), the run continues
+    from the saved step in a *new* run dir / new wandb run that forks from the
+    parent. Parent run id is taken from the saved ``TrainingState.wandb_run_id``.
+
     All ranks call this function. Only the main process does wandb/logging setup.
     Returns the output directory on the main process and None on other ranks.
     """
     _validate_pgd_scope(config, get_distributed_state())
+
+    # All ranks load the resume state so they can restore their own RNG / model.
+    resume_state: TrainingState | None = None
+    if resume_from is not None:
+        resume_state = TrainingState.load(resume_from)
 
     out_dir: Path | None
     if is_main_process():
@@ -499,9 +573,21 @@ def run_pd(
         slurm_array_job_id = os.getenv("SLURM_ARRAY_JOB_ID")
         if slurm_array_job_id is not None:
             tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
+        if resume_state is not None and resume_state.wandb_run_id is not None:
+            tags.append(f"resumed-from_{resume_state.wandb_run_id}")
 
         if config.wandb_project:
-            init_wandb(config, config.wandb_project, run_id, config.wandb_run_name, tags)
+            fork_from: str | None = None
+            if resume_state is not None and resume_state.wandb_run_id is not None:
+                fork_from = f"{resume_state.wandb_run_id}?_step={resume_state.step}"
+            init_wandb(
+                config,
+                config.wandb_project,
+                run_id,
+                config.wandb_run_name,
+                tags,
+                fork_from=fork_from,
+            )
 
         logger.info(config)
 
@@ -514,6 +600,8 @@ def run_pd(
     else:
         out_dir = None
 
+    wandb_run_id = wandb.run.id if (is_main_process() and wandb.run is not None) else None
+
     optimize(
         target_model=target.model,
         config=config,
@@ -524,6 +612,8 @@ def run_pd(
         reconstruction_loss=target.reconstruction_loss,
         out_dir=out_dir,
         tied_weights=target.tied_weights,
+        resume_state=resume_state,
+        wandb_run_id=wandb_run_id,
     )
 
     if is_main_process() and config.wandb_project:
