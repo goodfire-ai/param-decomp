@@ -1,125 +1,98 @@
 # Parameter Decomposition
 
-This repo is for running parameter decomposition on neural networks.
+Training, post-processing, and visualization tools for parameter decomposition on neural networks.
+For a compact implementation of the core method, see [`nano_param_decomp/`](nano_param_decomp/).
 
-**VPD paper (April 2026)**
-- Paper: https://www.goodfire.ai/research/interpreting-lm-parameters
-- Branch: main
-- Wandb for run in paper: https://wandb.ai/goodfire/spd/runs/s-55ea3f9b
-- Comparison CLTs/PLTs: https://github.com/bartbussmann/nn_decompositions/tree/vpd_paper
+## References
 
-**SPD paper (June 2025)**
-- Paper: https://arxiv.org/abs/2506.20790
-- Branch: [spd-paper](https://github.com/goodfire-ai/param-decomp/tree/spd-paper)
-- Wandb report: https://wandb.ai/goodfire/spd-tms/reports/SPD-paper-report--VmlldzoxMzE3NzU0MQ
+- **VPD paper (April 2026):** https://www.goodfire.ai/research/interpreting-lm-parameters.
+  Canonical run: `goodfire/spd/runs/s-55ea3f9b`.
+- **SPD paper (June 2025):** https://arxiv.org/abs/2506.20790. Paper branch:
+  [`spd-paper`](https://github.com/goodfire-ai/param-decomp/tree/spd-paper).
 
-## App
-
-This project ships a web app for visualising and interpreting decompositions. You can point it at
-any decomposed run, including ones we've already trained and stored on wandb (e.g. the canonical
-`goodfire/spd/runs/s-55ea3f9b` below). At present, viewing a run still requires running the
-**harvest** and **autointerp** post-processing stages yourself — these produce the artifacts the
-app reads.
+## Install
 
 ```bash
-make install-app   # Install frontend dependencies (one-time)
-make app           # Launch backend + frontend dev servers
+make install-dev  # package, dev dependencies, pre-commit hooks
+make install      # package only
 ```
 
-See the app's [README](param_decomp/app/README.md) and
-[CLAUDE.md](param_decomp/app/CLAUDE.md) for details.
-
-## Nano Parameter Decomposition
-
-[`nano_param_decomp/`](nano_param_decomp/) is a self-contained, single-file implementation of the
-whole method. It deliberately omits alternative loss/CI/sigmoid types and various logging for brevity.
-
-## Installation
-
-From the root of the repository, run one of:
+## Run Experiments
 
 ```bash
-make install-dev  # Install the package, dev requirements, pre-commit hooks
-make install      # Install the package only (`pip install -e .`)
+pd-run <name>          # submit a SLURM job
+pd-run <name> --local  # run in this process
 ```
 
-## Experiments
+Useful built-ins:
 
-Run an experiment with `pd-run <name>`. This submits a SLURM job by default (with a git snapshot
-for reproducibility); add `--local` to run in this process instead. Also supports `--dp N`,
-`--cpu`, and `--sweep --n_agents N` for grid sweeps. The two main language-model decompositions:
-
-- **`pile_llama_simple_mlp-4L`** — 4-layer Llama (MLP-only) on the Pile; the VPD paper run
-  [`goodfire/spd/runs/s-55ea3f9b`](https://wandb.ai/goodfire/spd/runs/s-55ea3f9b)
+- `pile_llama_simple_mlp-4L`: VPD paper LM decomposition
   ([config](param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml)).
-- **`ss_llama_simple_mlp-2L`** — 2-layer Llama (MLP-only) on
-  [SimpleStories](https://arxiv.org/abs/2504.09184); smaller and faster
+- `ss_llama_simple_mlp-2L`: smaller SimpleStories LM decomposition
   ([config](param_decomp/experiments/lm/ss_llama_simple_mlp-2L.yaml)).
 
-Other built-in experiments (TMS, ResidualMLP, and larger Llama variants) live as YAML configs
-under [`param_decomp/experiments/<kind>/`](param_decomp/experiments) and are auto-discovered.
-The `lm` experiment can decompose any HuggingFace-loadable model whose target modules are
-`nn.Linear`, `nn.Embedding`, or `transformers.modeling_utils.Conv1D`.
+Other YAML configs under [`param_decomp/experiments/`](param_decomp/experiments) are
+auto-discovered. The LM experiment supports HuggingFace-loadable models with `nn.Linear`,
+`nn.Embedding`, or `transformers.modeling_utils.Conv1D` target modules.
 
-### Custom experiments
+For custom experiments, either call `run_pd(...)` directly or provide a YAML-driven
+`ExperimentDriver`:
 
-Two routes, neither needing core-package edits:
+```bash
+pd-run --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml
+```
 
-- **Call `run_pd` directly** — build a `PDTarget` (model + `run_batch` + reconstruction loss;
-  helpers in [`batch_and_loss_fns.py`](param_decomp/models/batch_and_loss_fns.py)) and call
-  `run_pd(config, target, train_loader, eval_loader, device)`. Reload with
-  `load_component_model(path, target=...)`. Best for notebooks/scripts.
-- **Package it as a YAML-driven experiment** — define your experiment as a Pydantic
-  `ExperimentConfig` plus an `ExperimentDriver` class (a small adapter exposing
-  `build_target` and `build_dataloaders`; see
-  [`driver.py`](param_decomp/experiments/driver.py) for the interface and
-  [`tms/experiment.py`](param_decomp/experiments/tms/experiment.py) for the smallest example),
-  then run `pd-run --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml`. This is
-  what built-in experiments do, and is needed for sweeps and for self-reloading runs via
-  `load_component_model(path)` (no `target=` argument needed) or `PDRun.from_path(...)`.
+See [`driver.py`](param_decomp/experiments/driver.py) and the small
+[`tms` example](param_decomp/experiments/tms/experiment.py).
 
-Runs save a `run_metadata.yaml` beside the checkpoint with the parsed config and (if
-applicable) the driver's import path.
+## Metrics
 
-## Post-Processing Pipeline
+Configure training losses in `pd.loss_metrics` and extra eval-only metrics in `pd.eval_metrics`.
+Keys are registered metric class names. Loss metrics must set `coeff`; they are evaluated
+automatically, so do not repeat them under `eval_metrics`.
 
-After a decomposition has finished training, post-processing produces the artifacts the app reads:
-component statistics, autointerp labels, dataset attributions, and graph-context interpretations.
-Each stage is a separate CLI; `pd-postprocess` runs them all under one SLURM dependency graph from
-a single config:
+You can pass your own metrics by listing importable dotted modules in `pd.metric_modules`.
+`PDConfig` imports those modules before resolving metric names, so any classes decorated with
+`@register_metric` are available from YAML:
+
+```yaml
+pd:
+  metric_modules:
+    - my_project.pd_metrics
+  loss_metrics:
+    MyCustomLoss:
+      coeff: 0.1
+      scale: 3.0
+  eval_metrics:
+    MyCustomEvalMetric: {}
+```
+
+Custom metric modules define a Pydantic config plus a metric class satisfying
+`__init__(cfg, *, model, device)`, `reset()`, `update(ctx)`, and `compute()`. Use
+`LossMetricConfig` for trainable losses and `MetricConfig` for eval-only metrics; see
+[`param_decomp/metrics/base.py`](param_decomp/metrics/base.py).
+
+## App And Post-Processing
+
+```bash
+make install-app
+make app
+```
+
+The app reads post-processed artifacts. Run all post-processing stages from one config with:
 
 ```bash
 pd-postprocess param_decomp/postprocess/pile.yaml
 ```
 
-The individual stages, with links to their docs:
-
-- **Harvest** ([`pd-harvest`](param_decomp/harvest/CLAUDE.md)) — collect activation examples,
-  correlations, and token statistics for each component.
-- **Autointerp** ([`pd-autointerp`](param_decomp/autointerp/CLAUDE.md)) — generate LLM
-  interpretations of components from harvested examples. Requires `OPENROUTER_API_KEY`.
-- **Dataset attributions** ([`pd-attributions`](param_decomp/dataset_attributions/CLAUDE.md)) —
-  compute component-to-component attribution strengths over the training distribution.
-- **Graph interpretation** ([`pd-graph-interp`](param_decomp/graph_interp/CLAUDE.md)) —
-  context-aware component labels that combine attributions and correlations.
-- **Clustering** ([`pd-clustering`](param_decomp/clustering/CLAUDE.md)) — ensemble clustering of
-  components.
-
-Default batch sizes (256 for harvest and attributions) work for models like
-`pile_llama_simple_mlp-4L`; tune via `--batch_size` / `--n_gpus` per stage.
+The stages are Harvest, Autointerp, Dataset attributions, Graph interpretation, and Clustering.
 
 ## Development
 
-Suggested VSCode/Cursor settings live in `.vscode/`. Copy `.vscode/settings-example.json` to
-`.vscode/settings.json` to use them. We are unlikely to be able to action new features, though
-issue reports are greatly appreciated!
-
-Useful `make` targets:
-
 ```bash
-make check     # Run pre-commit on all files (basedpyright, ruff lint, ruff format)
+make check     # ruff format/lint + basedpyright
 make type      # basedpyright only
 make format    # ruff lint + format
-make test      # Tests not marked `slow`
-make test-all  # All tests
+make test      # tests not marked slow
+make test-all  # all tests
 ```

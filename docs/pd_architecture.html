@@ -539,9 +539,35 @@
         <p class="subtitle"><a href="../param_decomp/configs.py">param_decomp/configs.py</a></p>
         <p>
           The PD algorithm config. Owns losses (<code>loss_metrics</code>), eval metrics
-          (<code>eval_metrics</code>), CI function (<code>ci_config</code>), module decomposition
+          (<code>eval_metrics</code>), custom metric imports (<code>metric_modules</code>),
+          CI function (<code>ci_config</code>), module decomposition
           patterns (<code>module_info</code>), LR schedule, batch sizes, seed, W&amp;B project.
           Never references a target model or dataset.
+        </p>
+
+        <h3>Metrics</h3>
+        <p class="subtitle"><a href="../param_decomp/metrics/">param_decomp/metrics/</a></p>
+        <p>
+          Metric modules register classes with <code>@register_metric</code>. <code>PDConfig</code>
+          first discovers built-ins, then imports each dotted module listed in
+          <code>pd.metric_modules</code>, then resolves <code>loss_metrics</code> and
+          <code>eval_metrics</code> by registered class name. This lets experiment configs pass
+          user-defined metrics without editing the core package.
+        </p>
+        <pre><code>pd:
+  metric_modules:
+    - my_project.pd_metrics
+  loss_metrics:
+    MyCustomLoss:
+      coeff: 0.1
+      scale: 3.0
+  eval_metrics:
+    MyCustomEvalMetric: {}</code></pre>
+        <p>
+          Loss metrics use config classes that subclass <code>LossMetricConfig</code> and require
+          <code>coeff</code> when used for training. Metrics already listed under
+          <code>loss_metrics</code> are evaluated automatically and should not be repeated under
+          <code>eval_metrics</code>.
         </p>
 
         <h3>ExperimentConfig</h3>
