@@ -566,12 +566,19 @@ SamplingType = Literal["continuous", "binomial"]
 
 
 class RuntimeConfig(BaseConfig):
-    """Compute / deployment knobs — not algorithm, not observation.
+    """Compute substrate the algorithm runs on.
 
-    Captures *how* the experiment runs on a given substrate (numerical precision,
-    future home for device placement, NCCL flags, gradient accumulation steps, etc.).
-    Two runs with identical PDConfig and different RuntimeConfig may produce slightly
-    different trained weights due to numerical effects, but the algorithm is the same.
+    The three configs form a determinism ladder:
+
+    1. Same ``PDConfig`` + same ``RuntimeConfig`` → bit-identical trained weights.
+    2. Same ``PDConfig``, different ``RuntimeConfig`` → same algorithm, weights differ
+       only via numerical effects (precision, device).
+    3. Same ``PDConfig`` + same ``RuntimeConfig``, different ``LoggingConfig`` →
+       bit-identical weights; only what was observed differs.
+
+    ``RuntimeConfig`` is class 2: device placement, precision, parallelism degree —
+    things that perturb numerics without changing the algorithm. Future home for
+    NCCL flags, gradient accumulation steps, fp8 variants, etc.
     """
 
     autocast_bf16: bool = Field(
@@ -604,12 +611,12 @@ class RuntimeConfig(BaseConfig):
 
 
 class LoggingConfig(BaseConfig):
-    """Observation-only settings: cadence of logging/eval/checkpointing + eval-only metrics.
+    """Observation-only settings: cadence + eval-only metrics + display thresholds.
 
-    Separated from `PDConfig` because none of these fields affect the trained model — two
-    runs with identical `PDConfig` and different `LoggingConfig` produce bit-identical
-    weights. Keeping them out of `PDConfig` keeps the algorithm config narrow and makes
-    "what was the experiment" cleanly separable from "how often did I peek at it".
+    Determinism class 3 in the PDConfig/RuntimeConfig/LoggingConfig ladder: fields
+    here never touch the optimizer. Two runs with identical ``PDConfig`` +
+    ``RuntimeConfig`` and different ``LoggingConfig`` produce bit-identical weights —
+    only what you observed about the run differs.
     """
 
     train_log_freq: PositiveInt = Field(
@@ -666,6 +673,14 @@ class LoggingConfig(BaseConfig):
 
 
 class PDConfig(BaseConfig):
+    """Algorithm specification.
+
+    Determinism class 1 in the PDConfig/RuntimeConfig/LoggingConfig ladder: these are
+    the fields that determine the trained weights given a fixed substrate. Two runs
+    with identical ``PDConfig`` and identical ``RuntimeConfig`` produce bit-identical
+    weights; flipping any field here changes what algorithm runs.
+    """
+
     # --- General ---
     seed: int = Field(
         default=0,

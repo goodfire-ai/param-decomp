@@ -96,22 +96,26 @@ Built-in YAML configs are pure experiment configs nested under `pd:`, `logging:`
 - `TMSExperimentConfig(pd, logging, runtime, target, data)`
 - `ResidMLPExperimentConfig(pd, logging, runtime, target, data)`
 
-The four config classes split by concern:
+The three configs form a **determinism ladder**:
 
-- **`PDConfig`** — algorithm hyperparameters (seed, ci_config, losses, optimizers, metric
-  universe). Things that change what the trained model is.
-- **`LoggingConfig`** — observation-only settings (log/eval/save cadence, eval_batch_size,
-  ci_alive_threshold). Don't affect the trained model.
-- **`RuntimeConfig`** — compute / deployment knobs (autocast_bf16, device, dp; future
-  home for NCCL flags, gradient accumulation). Affects numerical precision but describes
-  *how* the run executes on a substrate, not the algorithm itself. **Config-only — no CLI
-  overrides.** Edit the YAML (or copy it) to change substrate; that way you can't
-  silently run "the same experiment" on different hardware. Cluster topology (GPUs per
-  node) is `settings.GPUS_PER_NODE`, overridable via `PARAM_DECOMP_GPUS_PER_NODE` env var.
+1. Same `PDConfig` + same `RuntimeConfig` → bit-identical trained weights.
+2. Same `PDConfig`, different `RuntimeConfig` → same algorithm, weights differ only via
+   numerical effects (precision, device).
+3. Same `PDConfig` + same `RuntimeConfig`, different `LoggingConfig` → bit-identical
+   weights; only what was observed differs.
 
-Two runs with identical `PDConfig` and different `LoggingConfig` produce bit-identical
-weights. Different `RuntimeConfig` may produce slightly different weights via numerical
-precision, but the algorithm is the same.
+Mapping to fields:
+
+- **`PDConfig` (class 1)** — algorithm specification: seed, ci_config, losses,
+  optimizers, module_info. Flipping any field here changes what algorithm runs.
+- **`RuntimeConfig` (class 2)** — compute substrate: autocast_bf16, device, dp; future
+  NCCL flags, gradient accumulation, fp8 variants. Perturbs numerics, doesn't change
+  the algorithm. **Config-only — no CLI overrides.** Edit the YAML (or copy it) to
+  change substrate; you can't silently run "the same experiment" on different hardware.
+  Cluster topology (GPUs per node) is `settings.GPUS_PER_NODE`, overridable via
+  `PARAM_DECOMP_GPUS_PER_NODE` env var.
+- **`LoggingConfig` (class 3)** — observation: cadence (`*_freq`), `eval_batch_size`,
+  `ci_alive_threshold`, eval-only metrics. Never touches the optimizer.
 
 Experiment configs should not perform I/O. Put target loading and dataloader construction in
 the driver.
