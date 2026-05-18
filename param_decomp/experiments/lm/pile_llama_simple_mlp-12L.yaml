@@ -50,7 +50,6 @@ pd:
   faithfulness_warmup_steps: 400
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_weight_decay: 0.0
-  ci_alive_threshold: 0.0
   loss_metrics:
     importance_minimality:
       coeff: 0.0001
@@ -132,6 +131,7 @@ logging:
   n_eval_steps: 1
   eval_batch_size: 64
   save_freq: null
+  ci_alive_threshold: 0.0
 target:
   model_class: param_decomp.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
   model_name: goodfire/spd/runs/t-f99617bb

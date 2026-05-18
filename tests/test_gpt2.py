@@ -73,12 +73,12 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         ),
         batch_size=4,
         steps=2,
-        ci_alive_threshold=0.1,
         eval_metrics=EvalMetricsConfig(
             ci_l0=CI_L0Config(groups=None),
         ),
     )
     logging_config = LoggingConfig(
+        ci_alive_threshold=0.1,
         n_eval_steps=1,
         train_log_freq=50,
         eval_freq=500,

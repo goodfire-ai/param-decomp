@@ -29,7 +29,6 @@ pd:
   faithfulness_warmup_steps: 200
   faithfulness_warmup_lr: 0.01
   faithfulness_warmup_weight_decay: 0.1
-  ci_alive_threshold: 0.1
   loss_metrics:
     importance_minimality:
       coeff: 1e-5
@@ -67,6 +66,7 @@ logging:
   n_eval_steps: 100
   eval_batch_size: 2048
   save_freq: null
+  ci_alive_threshold: 0.1
 target:
   run_path: wandb:goodfire/spd-pre-Sep-2025/runs/pziyck78
 data:

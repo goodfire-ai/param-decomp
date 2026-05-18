@@ -73,9 +73,9 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         ),
         batch_size=4,
         steps=3,
-        ci_alive_threshold=0.1,
     )
     logging_config = LoggingConfig(
+        ci_alive_threshold=0.1,
         n_eval_steps=1,
         eval_freq=10,
         eval_batch_size=4,

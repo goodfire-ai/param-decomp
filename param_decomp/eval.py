@@ -118,6 +118,7 @@ def init_metric(
     cfg: MetricConfigType,
     model: ComponentModel,
     run_config: PDConfig,
+    ci_alive_threshold: float,
     device: str,
     reconstruction_loss: ReconstructionLoss,
     ppgd_states: dict[
@@ -153,7 +154,7 @@ def init_metric(
             metric = CI_L0(
                 model=model,
                 device=device,
-                ci_alive_threshold=run_config.ci_alive_threshold,
+                ci_alive_threshold=ci_alive_threshold,
                 groups=cfg.groups,
             )
         case CIMaskedReconSubsetLossConfig():
@@ -179,7 +180,7 @@ def init_metric(
             metric = CIMeanPerComponent(model=model, device=device)
         case ComponentActivationDensityConfig():
             metric = ComponentActivationDensity(
-                model=model, device=device, ci_alive_threshold=run_config.ci_alive_threshold
+                model=model, device=device, ci_alive_threshold=ci_alive_threshold
             )
         case IdentityCIErrorConfig():
             metric = IdentityCIError(
@@ -346,6 +347,7 @@ def evaluate(
     eval_iterator: Iterator[Any],
     device: str,
     run_config: PDConfig,
+    ci_alive_threshold: float,
     slow_step: bool,
     n_eval_steps: int,
     current_frac_of_training: float,
@@ -369,6 +371,7 @@ def evaluate(
             cfg=cfg,
             model=model,
             run_config=run_config,
+            ci_alive_threshold=ci_alive_threshold,
             device=device,
             reconstruction_loss=reconstruction_loss,
             ppgd_states=ppgd_states,

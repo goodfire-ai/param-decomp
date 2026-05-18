@@ -30,7 +30,6 @@ pd:
   faithfulness_warmup_steps: 200
   faithfulness_warmup_lr: 0.01
   faithfulness_warmup_weight_decay: 0.1
-  ci_alive_threshold: 0.0
   loss_metrics:
     importance_minimality:
       coeff: 0.0003
@@ -59,6 +58,7 @@ logging:
   n_eval_steps: 5
   eval_batch_size: 2
   save_freq: null
+  ci_alive_threshold: 0.0
 target:
   model_class: transformers.GPT2LMHeadModel
   model_name: openai-community/gpt2

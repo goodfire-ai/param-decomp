@@ -332,7 +332,7 @@ def optimize(
             ppgd_states[ppgd_cfg].step(ppgd_grads[ppgd_cfg])
 
         for layer_name, layer_ci in ci.lower_leaky.items():
-            l0_val = calc_ci_l_zero(layer_ci, config.ci_alive_threshold)
+            l0_val = calc_ci_l_zero(layer_ci, logging_config.ci_alive_threshold)
             batch_log_data[f"train/l0/{layer_name}"] = l0_val
 
         # --- Train Logging --- #
@@ -383,6 +383,7 @@ def optimize(
                     eval_iterator=eval_iterator,
                     device=device,
                     run_config=config,
+                    ci_alive_threshold=logging_config.ci_alive_threshold,
                     slow_step=slow_step,
                     n_eval_steps=logging_config.n_eval_steps,
                     current_frac_of_training=step / config.steps,

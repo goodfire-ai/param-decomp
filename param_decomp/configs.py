@@ -603,6 +603,11 @@ class LoggingConfig(BaseConfig):
         description="Interval (in steps) at which to save model checkpoints (None disables saving "
         "until the end of training).",
     )
+    ci_alive_threshold: Probability = Field(
+        default=0.0,
+        description="Causal importance threshold above which a component is considered 'firing'. "
+        "Used by L0 and component-activation-density metrics; doesn't affect training.",
+    )
 
     @model_validator(mode="after")
     def validate_model(self) -> Self:
@@ -718,12 +723,6 @@ class PDConfig(BaseConfig):
             "Additional eval-only metrics. Metrics already set in `loss_metrics` are evaluated "
             "automatically and should not be repeated here."
         ),
-    )
-
-    # --- Component Tracking ---
-    ci_alive_threshold: Probability = Field(
-        default=0.0,
-        description="Causal importance threshold above which a component is considered 'firing'",
     )
 
     @model_validator(mode="after")
