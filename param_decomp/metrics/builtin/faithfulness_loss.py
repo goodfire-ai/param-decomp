@@ -32,7 +32,6 @@ def faithfulness_loss(
 class FaithfulnessLoss:
     """MSE between the target weights and the sum of the components."""
 
-    name = "faithfulness"
     section = "loss"
     config_type = FaithfulnessLossConfig
     short_name = "Faith"

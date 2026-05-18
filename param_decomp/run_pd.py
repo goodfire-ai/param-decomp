@@ -3,6 +3,7 @@
 import gc
 import os
 from collections import defaultdict
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -98,21 +99,56 @@ def run_faithfulness_warmup(
     gc.collect()
 
 
+def _build_ctx(
+    batch: Any,
+    *,
+    step: int,
+    is_eval: bool,
+    device: str,
+    wrapped_model: nn.Module,
+    component_model: ComponentModel,
+    config: PDConfig,
+    reconstruction_loss: ReconstructionLoss,
+) -> MetricContext:
+    # The wrapped_model(...) call here is what registers DDP gradient hooks for this step.
+    # Required even if no metric uses the DDP wrapper directly.
+    batch = move_batch_to_device(batch, device)
+    target_model_output: OutputWithCache = wrapped_model(batch, cache_type="input")
+    ci = component_model.calc_causal_importances(
+        pre_weight_acts=target_model_output.cache,
+        detach_inputs=False,
+        sampling=config.sampling,
+    )
+    weight_deltas = component_model.calc_weight_deltas()
+    return MetricContext(
+        model=component_model,
+        config=config,
+        batch=batch,
+        target_out=target_model_output.output,
+        pre_weight_acts=target_model_output.cache,
+        ci=ci,
+        weight_deltas=weight_deltas,
+        step=step,
+        reconstruction_loss=reconstruction_loss,
+        is_eval=is_eval,
+    )
+
+
 def _build_metric_instances(
     config: PDConfig,
     component_model: ComponentModel,
     device: str,
 ) -> tuple[dict[str, Metric], dict[str, Metric]]:
-    """Instantiate one metric instance per slug. Same model+device for both buckets."""
+    """Instantiate one metric instance per class-name key. Same model+device for both buckets."""
     loss_instances: dict[str, Metric] = {}
-    for slug, cfg in config.loss_metrics.items():
-        cls = METRIC_REGISTRY[slug]
-        loss_instances[slug] = cls(cfg, model=component_model, device=device)
+    for metric_name, cfg in config.loss_metrics.items():
+        cls = METRIC_REGISTRY[metric_name]
+        loss_instances[metric_name] = cls(cfg, model=component_model, device=device)
 
     eval_instances: dict[str, Metric] = {}
-    for slug, cfg in config.eval_metrics.items():
-        cls = METRIC_REGISTRY[slug]
-        eval_instances[slug] = cls(cfg, model=component_model, device=device)
+    for metric_name, cfg in config.eval_metrics.items():
+        cls = METRIC_REGISTRY[metric_name]
+        eval_instances[metric_name] = cls(cfg, model=component_model, device=device)
 
     return loss_instances, eval_instances
 
@@ -207,30 +243,6 @@ def optimize(
     loss_instances, eval_only_instances = _build_metric_instances(config, component_model, device)
     all_instances = {**loss_instances, **eval_only_instances}
 
-    def _build_ctx(batch: Any, *, is_eval: bool) -> tuple[MetricContext, OutputWithCache]:
-        target_model_output: OutputWithCache = wrapped_model(batch, cache_type="input")
-        ci = component_model.calc_causal_importances(
-            pre_weight_acts=target_model_output.cache,
-            detach_inputs=False,
-            sampling=config.sampling,
-        )
-        weight_deltas = component_model.calc_weight_deltas()
-        ctx = MetricContext(
-            model=component_model,
-            config=config,
-            batch=batch,
-            target_out=target_model_output.output,
-            pre_weight_acts=target_model_output.cache,
-            ci=ci,
-            weight_deltas=weight_deltas,
-            step=step,
-            reconstruction_loss=reconstruction_loss,
-            is_eval=is_eval,
-        )
-        return ctx, target_model_output
-
-    step = 0  # Bound for _build_ctx (rebound each iteration); avoids NameError on first eval call.
-
     for step in tqdm(range(config.steps + 1), ncols=0, disable=not is_main_process()):
         components_optimizer.zero_grad()
         ci_fn_optimizer.zero_grad()
@@ -247,28 +259,37 @@ def optimize(
             group["lr"] = ci_fn_lr
 
         batch_log_data: defaultdict[str, float] = defaultdict(float)
-        batch = move_batch_to_device(next(train_iterator), device)
+
+        build_ctx = partial(
+            _build_ctx,
+            step=step,
+            device=device,
+            wrapped_model=wrapped_model,
+            component_model=component_model,
+            config=config,
+            reconstruction_loss=reconstruction_loss,
+        )
 
         with bf16_autocast(enabled=config.autocast_bf16):
-            # The wrapped_model(...) call inside _build_ctx is what registers DDP gradient hooks
-            # for this step. Required even if no metric uses the DDP wrapper directly.
-            ctx, _ = _build_ctx(batch, is_eval=False)
+            ctx = build_ctx(next(train_iterator), is_eval=False)
             losses = compute_losses(loss_instances, ctx)
 
         total_loss = torch.zeros((), device=device)
-        for slug, loss_val in losses.items():
+        for metric_name, loss_val in losses.items():
             if loss_val is None:
                 continue
-            cfg = cast(LossMetricConfig, loss_instances[slug].cfg)
+            cfg = cast(LossMetricConfig, loss_instances[metric_name].cfg)
             assert cfg.coeff is not None
             total_loss = total_loss + cfg.coeff * loss_val
-            batch_log_data[f"train/loss/{type(loss_instances[slug]).__name__}"] = loss_val.item()
+            batch_log_data[f"train/loss/{type(loss_instances[metric_name]).__name__}"] = (
+                loss_val.item()
+            )
         batch_log_data["train/loss/total"] = total_loss.item()
 
-        for slug, m in loss_instances.items():
+        for metric_name, m in loss_instances.items():
             hook = getattr(m, "before_backward", None)
             if hook is not None:
-                hook(losses[slug])
+                hook(losses[metric_name])
 
         total_loss.backward()
 
@@ -313,15 +334,10 @@ def optimize(
                     else step % config.slow_eval_freq == 0
                 )
 
-                def eval_ctx_builder(batch_local: Any) -> MetricContext:
-                    batch_local = move_batch_to_device(batch_local, device)
-                    ctx_local, _ = _build_ctx(batch_local, is_eval=True)
-                    return ctx_local
-
                 metrics = evaluate(
                     instances=all_instances,
                     eval_iterator=eval_iterator,
-                    ctx_builder=eval_ctx_builder,
+                    ctx_builder=partial(build_ctx, is_eval=True),
                     n_eval_steps=config.n_eval_steps,
                     slow_step=slow_step,
                 )
@@ -379,13 +395,13 @@ def _validate_pgd_scope(config: PDConfig, dist_state: DistributedState | None) -
         f"batch_size {config.batch_size} not divisible by world size {world_size}"
     )
     per_rank = config.batch_size // world_size
-    for slug, cfg in config.loss_metrics.items():
+    for metric_name, cfg in config.loss_metrics.items():
         if isinstance(
             cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
         ) and isinstance(cfg.scope, RepeatAcrossBatchScope):
             n = cfg.scope.n_sources
             assert per_rank % n == 0, (
-                f"{slug}: repeat_across_batch n_sources={n} must divide "
+                f"{metric_name}: repeat_across_batch n_sources={n} must divide "
                 f"per-rank batch_size={per_rank}"
             )
 

@@ -130,7 +130,6 @@ class _HiddenActsAccumulator:
 class StochasticHiddenActsReconLoss:
     """Reconstruction loss between target and stochastic hidden activations when sampling with stochastic masks."""
 
-    name = "stochastic_hidden_acts_recon"
     section = "loss"
     config_type = StochasticHiddenActsReconLossConfig
     slow = True
@@ -176,7 +175,6 @@ class StochasticHiddenActsReconLoss:
 class CIHiddenActsReconLoss:
     """Reconstruction loss between target and component hidden activations when masking with CI values."""
 
-    name = "ci_hidden_acts_recon"
     section = "loss"
     config_type = CIHiddenActsReconLossConfig
     slow = True

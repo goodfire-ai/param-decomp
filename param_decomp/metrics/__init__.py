@@ -3,7 +3,7 @@
 Built-in metric modules live under `param_decomp/metrics/builtin/`. Each defines its pydantic
 config + a `@register_metric`-decorated Metric class. `discover_metrics()` walks the `builtin/`
 subpackage and imports every module, firing all the decorators so `METRIC_REGISTRY` is
-populated before `PDConfig.loss_metrics` / `PDConfig.eval_metrics` are parsed.
+populated by class name before `PDConfig.loss_metrics` / `PDConfig.eval_metrics` are parsed.
 
 This package's `__init__.py` deliberately does NOT auto-discover at import time, because
 `configs.py` imports `metrics.base` early (which triggers this `__init__.py`), and the metric

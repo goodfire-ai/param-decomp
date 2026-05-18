@@ -26,15 +26,15 @@ TEST_CONFIG = {
         "module_info": [{"module_pattern": "model.layers.0.mlp.gate_proj", "C": 3}],
         # --- Loss metrics ---
         "loss_metrics": {
-            "importance_minimality": {
+            "ImportanceMinimalityLoss": {
                 "coeff": 0.1,
                 "pnorm": 2.0,
                 "beta": 0.0,
                 "eps": 1e-12,
             },
             # Disable stochastic terms for deterministic dp test; keep a simple layerwise recon if needed
-            "ci_masked_recon_layerwise": {"coeff": 1.0},
-            "ci_masked_recon": {"coeff": 1.0},
+            "CIMaskedReconLayerwiseLoss": {"coeff": 1.0},
+            "CIMaskedReconLoss": {"coeff": 1.0},
         },
         # --- Training ---
         "batch_size": 2,
@@ -54,8 +54,8 @@ TEST_CONFIG = {
         "n_eval_steps": 2,
         "save_freq": None,  # Just save at the end
         "eval_metrics": {
-            "ci_l0": {"groups": None},
-            "ce_and_kl": {"rounding_threshold": 0.1},
+            "CI_L0": {"groups": None},
+            "CEandKLLosses": {"rounding_threshold": 0.1},
         },
     },
     "target": {

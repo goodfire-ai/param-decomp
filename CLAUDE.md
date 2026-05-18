@@ -97,8 +97,7 @@ import targets in `pd.metric_modules`:
 ```yaml
 pd:
   metric_modules:
-    - /abs/path/to/my_metrics.py          # absolute path to a .py file
-    - my_pkg.my_metrics                   # or a dotted module name
+    - my_pkg.my_metrics                   # dotted module name, importable from the env
   loss_metrics:
     my_loss:
       coeff: 1.0
@@ -110,8 +109,9 @@ The user's module imports `register_metric` and `LossMetricConfig` / `MetricConf
 `config_type` ClassVar pointing at their pydantic config, and that's it. A
 `@model_validator(mode="before")` on `PDConfig` imports these modules before
 `loss_metrics` / `eval_metrics` are validated, and the same hook fires on reload so saved runs
-that referenced custom metrics deserialize without manual setup. File paths must be absolute —
-relative paths would silently break under SLURM re-execution.
+that referenced custom metrics deserialize without manual setup. The module must be installed
+in (or otherwise importable from) the Python environment used to run / reload the experiment —
+including SLURM workers.
 
 ### Per-experiment Configs
 

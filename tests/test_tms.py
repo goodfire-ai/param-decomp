@@ -60,15 +60,15 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
             ModulePatternInfoConfig(module_pattern="linear1", C=10),
         ],
         loss_metrics={
-            "importance_minimality": ImportanceMinimalityLossConfig(
+            "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                 coeff=3e-3,
                 pnorm=2.0,
                 beta=0.5,
                 eps=1e-12,
             ),
-            "stochastic_recon_layerwise": StochasticReconLayerwiseLossConfig(coeff=1.0),
-            "stochastic_recon": StochasticReconLossConfig(coeff=1.0),
-            "faithfulness": FaithfulnessLossConfig(coeff=1.0),
+            "StochasticReconLayerwiseLoss": StochasticReconLayerwiseLossConfig(coeff=1.0),
+            "StochasticReconLoss": StochasticReconLossConfig(coeff=1.0),
+            "FaithfulnessLoss": FaithfulnessLossConfig(coeff=1.0),
         },
         components_optimizer=OptimizerConfig(
             lr_schedule=ScheduleConfig(

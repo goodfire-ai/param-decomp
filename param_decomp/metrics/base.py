@@ -1,13 +1,13 @@
 """Metric protocol and config base classes.
 
-Metrics are auto-registered via `@register_metric` and looked up by their `name` ClassVar from
+Metrics are auto-registered via `@register_metric` and looked up by their class name from
 `PDConfig.loss_metrics` / `PDConfig.eval_metrics`. Each metric file defines its pydantic config
 class (subclassing `MetricConfig` for eval-only or `LossMetricConfig` for loss-capable) alongside
 the `Metric` class itself.
 
 A metric's `update(ctx)` is called once per training step (returning the live loss for
 loss-capable metrics) and once per eval batch. Eval reads `compute()` after the last batch.
-`reset()` is called before each eval pass; loss-capable metrics' accumulators MUST `.detach()`
+`reset()` is called before each eval pass; loss-capable metrics' accumulators must `.detach()`
 before adding to avoid retaining the autograd graph across training steps.
 """
 
@@ -41,35 +41,52 @@ MetricResult = Tensor | dict[str, Tensor | Number | str | Image.Image | wandb.pl
 class Metric(Protocol):
     """Structural protocol that every metric must satisfy.
 
-    Concrete metric classes should NOT subclass `Metric` — Python structural Protocols are
+    Concrete metric classes should not subclass `Metric`; Python structural Protocols are
     satisfied implicitly by matching the API. This avoids multi-inheritance and override-variance
     issues with concrete return types.
     """
 
-    name: ClassVar[str]
     section: ClassVar[str]
     config_type: ClassVar[type[MetricConfig]]
     slow: ClassVar[bool]
     short_name: ClassVar[str | None]
     cfg: MetricConfig
 
-    def __init__(self, cfg: MetricConfig, *, model: Any, device: str) -> None: ...
+    def __init__(self, cfg: MetricConfig, *, model: Any, device: str) -> None:
+        """Initialize one metric instance from validated config and shared runtime objects.
 
-    def reset(self) -> None: ...
-
-    def update(self, ctx: Any) -> Tensor | None:
-        """Process one batch. Accumulates state. Returns the per-batch scalar (the live loss when
-        loss-capable, used for backprop), or None for metrics without a per-batch scalar.
-
-        Loss-capable metrics MUST .detach() before adding to accumulators; otherwise the autograd
-        graph is retained across steps and leaks memory.
+        `model` is the component model being optimized or evaluated, and `device` is the target
+        torch device string used by the run.
         """
         ...
 
-    def compute(self) -> MetricResult: ...
+    def reset(self) -> None:
+        """Clear accumulated state before an evaluation pass.
+
+        Stateless metrics may implement this as a no-op. Stateful metrics should reset counters,
+        sums, cached examples, plots, or adversarial eval state so a subsequent `compute()` only
+        reflects batches processed after this call.
+        """
+        ...
+
+    def update(self, ctx: Any) -> Tensor | None:
+        """Process one batch from the metric context and update metric state.
+
+        Return the per-batch scalar when one exists. For loss-capable metrics, that scalar is the
+        live loss used for backprop. Metrics that only accumulate evaluation state should return
+        None.
+
+        Loss-capable metrics must call `.detach()` before adding tensors to accumulators;
+        otherwise the autograd graph is retained across steps and leaks memory.
+        """
+        ...
+
+    def compute(self) -> MetricResult:
+        """Return the scalar, artifact, or keyed metric outputs accumulated by `update()`."""
+        ...
 
 
-# Opt-in hooks (not part of `Metric` — `run_pd` discovers them via `getattr`):
+# Opt-in hooks (not part of `Metric`; `run_pd` discovers them via `getattr`):
 #   before_backward(live_loss: Tensor | None) -> None
 #   after_backward() -> None
 # Currently used only by `PersistentPGDReconLoss` to extract source gradients with

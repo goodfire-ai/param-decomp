@@ -52,15 +52,15 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
             ModulePatternInfoConfig(module_pattern="transformer.h.1.attn.c_attn", C=10),
         ],
         loss_metrics={
-            "importance_minimality": ImportanceMinimalityLossConfig(
+            "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                 coeff=1e-2,
                 pnorm=0.9,
                 beta=0.5,
                 eps=1e-12,
             ),
-            "stochastic_recon_layerwise": StochasticReconLayerwiseLossConfig(coeff=1.0),
-            "stochastic_recon": StochasticReconLossConfig(coeff=1.0),
-            "faithfulness": FaithfulnessLossConfig(coeff=200),
+            "StochasticReconLayerwiseLoss": StochasticReconLayerwiseLossConfig(coeff=1.0),
+            "StochasticReconLoss": StochasticReconLossConfig(coeff=1.0),
+            "FaithfulnessLoss": FaithfulnessLossConfig(coeff=200),
         },
         components_optimizer=OptimizerConfig(
             lr_schedule=ScheduleConfig(
@@ -82,7 +82,7 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         slow_eval_on_first_step=False,
         save_freq=None,
         ci_alive_threshold=0.1,
-        eval_metrics={"ci_l0": CI_L0Config(groups=None)},
+        eval_metrics={"CI_L0": CI_L0Config(groups=None)},
     )
 
     model_name = "SimpleStories/test-SimpleStories-gpt2-1.25M"

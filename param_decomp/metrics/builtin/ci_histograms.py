@@ -19,7 +19,6 @@ class CIHistogramsConfig(MetricConfig):
 
 @register_metric
 class CIHistograms:
-    name = "ci_histograms"
     section = "figures"
     config_type = CIHistogramsConfig
     slow = True

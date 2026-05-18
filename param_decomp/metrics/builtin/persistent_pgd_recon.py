@@ -164,7 +164,6 @@ class _PersistentPGDReconBase:
 class PersistentPGDReconLoss(_PersistentPGDReconBase):
     """Persistent PGD adversarial-mask reconstruction loss (routes to all layers)."""
 
-    name = "persistent_pgd_recon"
     config_type = PersistentPGDReconLossConfig
     short_name = "PersistPGDRecon"
 
@@ -173,6 +172,5 @@ class PersistentPGDReconLoss(_PersistentPGDReconBase):
 class PersistentPGDReconSubsetLoss(_PersistentPGDReconBase):
     """Persistent PGD adversarial-mask reconstruction loss (subset routing)."""
 
-    name = "persistent_pgd_recon_subset"
     config_type = PersistentPGDReconSubsetLossConfig
     short_name = "PersistPGDReconSub"

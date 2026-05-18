@@ -11,7 +11,7 @@ from jaxtyping import Float
 from torch import Tensor
 
 
-class MetricContextConfig(Protocol):
+class MetricRuntimeConfig(Protocol):
     steps: int
     use_delta_component: bool
     sampling: Literal["continuous", "binomial"]
@@ -32,7 +32,7 @@ class MetricReconstructionLoss(Protocol):
 @dataclass(frozen=True)
 class MetricContext:
     model: Any
-    config: MetricContextConfig
+    config: MetricRuntimeConfig
     batch: Any
     target_out: Tensor
     pre_weight_acts: dict[str, Float[Tensor, "..."]]

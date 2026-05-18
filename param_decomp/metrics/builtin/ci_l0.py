@@ -21,7 +21,6 @@ class CI_L0Config(MetricConfig):
 class CI_L0:
     """L0 metric for CI values."""
 
-    name = "ci_l0"
     section = "l0"
     config_type = CI_L0Config
     short_name = "CI_L0"

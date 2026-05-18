@@ -15,4 +15,4 @@ def compute_losses(
     caller will backprop through), or None if the metric is gated off (e.g. PPGD before its
     `start_frac`).
     """
-    return {slug: m.update(ctx) for slug, m in loss_instances.items()}
+    return {metric_name: m.update(ctx) for metric_name, m in loss_instances.items()}

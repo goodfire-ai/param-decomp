@@ -17,7 +17,6 @@ class CIMeanPerComponentConfig(MetricConfig):
 
 @register_metric
 class CIMeanPerComponent:
-    name = "ci_mean_per_component"
     section = "figures"
     config_type = CIMeanPerComponentConfig
     slow = True

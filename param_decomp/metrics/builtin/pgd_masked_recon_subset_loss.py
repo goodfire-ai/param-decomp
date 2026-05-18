@@ -26,7 +26,6 @@ class PGDReconSubsetLoss:
     """Recon loss when masking with adversarially-optimized values and routing to subsets of
     component layers."""
 
-    name = "pgd_recon_subset"
     section = "loss"
     config_type = PGDReconSubsetLossConfig
     short_name = "PGDReconSub"

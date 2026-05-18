@@ -18,7 +18,6 @@ class IdentityCIErrorConfig(MetricConfig):
 class IdentityCIError:
     """Error between the CI values and an Identity or Dense CI pattern."""
 
-    name = "identity_ci_error"
     section = "target_solution_error"
     config_type = IdentityCIErrorConfig
     slow = True

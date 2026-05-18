@@ -85,7 +85,6 @@ def stochastic_recon_subset_loss(
 class StochasticReconSubsetLoss:
     """Recon loss when sampling with stochastic masks and routing to subsets of component layers."""
 
-    name = "stochastic_recon_subset"
     section = "loss"
     config_type = StochasticReconSubsetLossConfig
     short_name = "StochReconSub"

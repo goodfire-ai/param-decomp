@@ -256,19 +256,19 @@ SamplingType = Literal["continuous", "binomial"]
 # --- Metric resolution -------------------------------------------------------------
 
 
-def _parse_metric_cfg(slug: str, raw: Any, *, train_loss: bool) -> MetricConfig:
-    """Look up the metric by slug in METRIC_REGISTRY and validate `raw` against its config_type."""
-    assert slug in METRIC_REGISTRY, (
-        f"unknown metric {slug!r} (registered: {sorted(METRIC_REGISTRY)})"
+def _parse_metric_cfg(metric_name: str, raw: Any, *, train_loss: bool) -> MetricConfig:
+    """Look up the metric by class name in METRIC_REGISTRY and validate its config."""
+    assert metric_name in METRIC_REGISTRY, (
+        f"unknown metric {metric_name!r} (registered: {sorted(METRIC_REGISTRY)})"
     )
-    metric_cls = METRIC_REGISTRY[slug]
+    metric_cls = METRIC_REGISTRY[metric_name]
     cfg = raw if isinstance(raw, MetricConfig) else metric_cls.config_type.model_validate(raw or {})
 
     if train_loss:
         assert isinstance(cfg, LossMetricConfig), (
-            f"{slug!r} is eval-only; move it under eval_metrics"
+            f"{metric_name!r} is eval-only; move it under eval_metrics"
         )
-        assert cfg.coeff is not None, f"loss_metrics.{slug!r} must set `coeff`"
+        assert cfg.coeff is not None, f"loss_metrics.{metric_name!r} must set `coeff`"
     return cfg
 
 
@@ -339,17 +339,18 @@ class PDConfig(BaseConfig):
         default_factory=list,
         description=(
             "Extra Python modules to import before validating `loss_metrics` / `eval_metrics`."
-            " Each entry is either a dotted module name (`my_pkg.my_metrics`) or an absolute"
-            " path to a `.py` file. Imported side-effects (`@register_metric` decorators)"
-            " expand `METRIC_REGISTRY` so user-defined metrics can be referenced by slug."
+            " Each entry is a dotted module name (`my_pkg.my_metrics`) importable from the"
+            " current environment. Imported side-effects (`@register_metric` decorators) expand"
+            " `METRIC_REGISTRY` so user-defined metrics can be referenced by class name."
         ),
     )
 
     loss_metrics: dict[str, LossMetricConfig] = Field(
         default_factory=dict,
         description=(
-            "Training-loss metrics keyed by metric slug. Each value's `coeff` weights the metric"
-            " in the total training loss. Active loss metrics are automatically also evaluated."
+            "Training-loss metrics keyed by metric class name. Each value's `coeff` weights the"
+            " metric in the total training loss. Active loss metrics are automatically also"
+            " evaluated."
         ),
     )
     eval_metrics: dict[str, MetricConfig] = Field(
@@ -364,7 +365,7 @@ class PDConfig(BaseConfig):
     @classmethod
     def _import_metric_modules(cls, data: Any) -> Any:
         """Import metric modules so their `@register_metric` decorators fire
-        before the `loss_metrics` / `eval_metrics` field validators look up slugs in
+        before the `loss_metrics` / `eval_metrics` field validators look up class names in
         `METRIC_REGISTRY`. Idempotent: re-validation in the same process is a no-op.
         """
         from param_decomp.metrics import discover_metrics
@@ -380,14 +381,20 @@ class PDConfig(BaseConfig):
     def _parse_loss_metrics(cls, v: Any) -> dict[str, MetricConfig]:
         if v is None:
             return {}
-        return {slug: _parse_metric_cfg(slug, raw, train_loss=True) for slug, raw in v.items()}
+        return {
+            metric_name: _parse_metric_cfg(metric_name, raw, train_loss=True)
+            for metric_name, raw in v.items()
+        }
 
     @field_validator("eval_metrics", mode="before")
     @classmethod
     def _parse_eval_metrics(cls, v: Any) -> dict[str, MetricConfig]:
         if v is None:
             return {}
-        return {slug: _parse_metric_cfg(slug, raw, train_loss=False) for slug, raw in v.items()}
+        return {
+            metric_name: _parse_metric_cfg(metric_name, raw, train_loss=False)
+            for metric_name, raw in v.items()
+        }
 
     # --- Training ---
     components_optimizer: OptimizerConfig = Field(

@@ -55,7 +55,6 @@ def ci_masked_recon_layerwise_loss(
 class CIMaskedReconLayerwiseLoss:
     """Recon loss when masking with CI values directly one layer at a time."""
 
-    name = "ci_masked_recon_layerwise"
     section = "loss"
     config_type = CIMaskedReconLayerwiseLossConfig
     short_name = "CIMaskReconLayer"

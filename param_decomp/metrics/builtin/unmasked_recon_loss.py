@@ -40,7 +40,6 @@ def _unmasked_recon_loss_update(
 class UnmaskedReconLoss:
     """Recon loss using the unmasked components and without the delta component."""
 
-    name = "unmasked_recon"
     section = "loss"
     config_type = UnmaskedReconLossConfig
     short_name = "UnmaskedRecon"

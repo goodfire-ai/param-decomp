@@ -1,7 +1,8 @@
 """Sanity checks for stochastic, CI, PGD, and persistent PGD reconstruction losses."""
 
 from collections.abc import Callable
-from typing import cast
+from types import SimpleNamespace
+from typing import Literal, cast
 
 import pytest
 import torch
@@ -9,7 +10,6 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from param_decomp.configs import (
-    PDConfig,
     PersistentPGDReconLossConfig,
     ScheduleConfig,
     SignPGDConfig,
@@ -25,6 +25,7 @@ from param_decomp.metrics.builtin.hidden_acts_recon_loss import (
 from param_decomp.metrics.builtin.persistent_pgd_recon import PersistentPGDReconLoss
 from param_decomp.metrics.builtin.pgd_masked_recon_loss import pgd_recon_loss
 from param_decomp.metrics.builtin.stochastic_recon_loss import stochastic_recon_loss
+from param_decomp.metrics.context import MetricRuntimeConfig
 from param_decomp.metrics.pgd_utils import PGDConfig
 from param_decomp.models.batch_and_loss_fns import recon_loss_mse
 from param_decomp.models.component_model import CIOutputs, ComponentModel
@@ -38,6 +39,29 @@ from tests.metrics.fixtures import (
 )
 
 ReconLossFn = Callable[[ComponentModel, Tensor, Tensor, dict[str, Tensor]], Tensor]
+
+
+def _metric_runtime_config(
+    *,
+    steps: int = 1,
+    use_delta_component: bool = False,
+    sampling: Literal["continuous", "binomial"] = "continuous",
+    n_mask_samples: int = 1,
+    ci_alive_threshold: float = 0.0,
+) -> MetricRuntimeConfig:
+    return cast(
+        MetricRuntimeConfig,
+        cast(
+            object,
+            SimpleNamespace(
+                steps=steps,
+                use_delta_component=use_delta_component,
+                sampling=sampling,
+                n_mask_samples=n_mask_samples,
+                ci_alive_threshold=ci_alive_threshold,
+            ),
+        ),
+    )
 
 
 def _stochastic(
@@ -224,7 +248,7 @@ def test_per_module_recon_metric_keys() -> None:
     metric = CIHiddenActsReconLoss(CIHiddenActsReconLossConfig(), model=model, device="cpu")
     ctx = MetricContext(
         model=model,
-        config=cast(PDConfig, cast(object, None)),
+        config=_metric_runtime_config(),
         batch=batch,
         target_out=target_output.output,
         pre_weight_acts=target_output.cache,
@@ -257,8 +281,6 @@ def _make_ci_outputs(ci: dict[str, Tensor]) -> CIOutputs:
 def test_ppgd_recon_eval_metric_keys() -> None:
     """PersistentPGDReconLoss.compute() returns hidden_acts (total + per-module) and output_recon
     keys when run in eval mode."""
-    from types import SimpleNamespace
-
     from param_decomp.metrics.context import MetricContext
 
     torch.manual_seed(42)
@@ -275,13 +297,9 @@ def test_ppgd_recon_eval_metric_keys() -> None:
     )
     metric = PersistentPGDReconLoss(ppgd_cfg, model=model, device="cpu")
 
-    # Minimal config stand-in: the metric only reads use_delta_component and steps from it.
-    fake_config = cast(
-        PDConfig, cast(object, SimpleNamespace(use_delta_component=False, steps=100))
-    )
     ctx = MetricContext(
         model=model,
-        config=fake_config,
+        config=_metric_runtime_config(use_delta_component=False, steps=100),
         batch=batch,
         target_out=target_out,
         pre_weight_acts={},

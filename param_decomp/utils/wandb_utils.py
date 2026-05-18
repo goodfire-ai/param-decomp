@@ -29,11 +29,11 @@ _WANDB_URL_RE = re.compile(
 
 
 def _build_short_names() -> dict[str, str]:
-    """Derive the metric -> short-name map from the registry."""
+    """Derive the metric class-name to short-name map from the registry."""
     from param_decomp.metrics import METRIC_REGISTRY, discover_metrics
 
     discover_metrics()
-    return {cls.name: cls.short_name for cls in METRIC_REGISTRY.values() if cls.short_name}
+    return {cls.__name__: cls.short_name for cls in METRIC_REGISTRY.values() if cls.short_name}
 
 
 METRIC_CONFIG_SHORT_NAMES: dict[str, str] = _build_short_names()
@@ -66,7 +66,7 @@ def _parse_metric_config_key(key: str) -> tuple[str, str, str] | None:
     """Parse a metric config key into (container, metric_field, param).
 
     Args:
-        key: Flattened key like "loss_metrics.importance_minimality.pnorm"
+        key: Flattened key like "loss_metrics.ImportanceMinimalityLoss.pnorm"
 
     Returns:
         Tuple of (container, metric_field, param) if it's a metric config key, None otherwise
@@ -83,8 +83,8 @@ def _parse_metric_config_key(key: str) -> tuple[str, str, str] | None:
 def generate_wandb_run_name(params: dict[str, Any]) -> str:
     """Generate a W&B run name based on sweep parameters.
 
-    Groups parameters under `loss_metrics.<field>.<param>` or `eval_metrics.<field>.<param>`
-    by metric field name, abbreviating via METRIC_CONFIG_SHORT_NAMES.
+    Groups parameters under `loss_metrics.<MetricClass>.<param>` or
+    `eval_metrics.<MetricClass>.<param>`, abbreviating via METRIC_CONFIG_SHORT_NAMES.
 
     Args:
         params: Dictionary of flattened sweep parameters
@@ -95,8 +95,8 @@ def generate_wandb_run_name(params: dict[str, Any]) -> str:
     Example:
         >>> params = {
         ...     "seed": 42,
-        ...     "loss_metrics.importance_minimality.pnorm": 0.9,
-        ...     "loss_metrics.importance_minimality.coeff": 0.001,
+        ...     "loss_metrics.ImportanceMinimalityLoss.pnorm": 0.9,
+        ...     "loss_metrics.ImportanceMinimalityLoss.coeff": 0.001,
         ... }
         >>> generate_wandb_run_name(params)
         "seed-42-ImpMin-coeff-0.001-pnorm-0.9"
@@ -180,7 +180,7 @@ def flatten_metric_configs(config_dict: dict[str, Any]) -> dict[str, Any]:
     """Flatten `loss_metrics` and `eval_metrics` into dot-notation for wandb searchability.
 
     Converts:
-        loss_metrics: {"importance_minimality": {"coeff": 0.1, "pnorm": 1.0}}
+        loss_metrics: {"ImportanceMinimalityLoss": {"coeff": 0.1, "pnorm": 1.0}}
     To:
         loss.ImpMin.coeff: 0.1
         loss.ImpMin.pnorm: 1.0
@@ -198,7 +198,7 @@ def flatten_metric_configs(config_dict: dict[str, Any]) -> dict[str, Any]:
             if cfg is None:
                 continue
             assert isinstance(cfg, dict), f"{container_name}.{metric_field} should be a dict"
-            short_name = METRIC_CONFIG_SHORT_NAMES[metric_field]
+            short_name = METRIC_CONFIG_SHORT_NAMES.get(metric_field, metric_field)
             for key, value in cfg.items():
                 if key == "classname":
                     continue

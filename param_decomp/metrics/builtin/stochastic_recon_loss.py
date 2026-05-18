@@ -76,7 +76,6 @@ def stochastic_recon_loss(
 class StochasticReconLoss:
     """Recon loss when sampling with stochastic masks on all component layers."""
 
-    name = "stochastic_recon"
     section = "loss"
     config_type = StochasticReconLossConfig
     short_name = "StochRecon"

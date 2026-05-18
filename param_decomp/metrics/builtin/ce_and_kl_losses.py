@@ -30,7 +30,6 @@ class CEandKLLosses:
     NOTE: Assumes all batches and sequences are the same size.
     """
 
-    name = "ce_and_kl"
     section = "ce_kl"
     config_type = CEandKLLossesConfig
     short_name = "CEandKL"

@@ -17,7 +17,6 @@ class PermutedCIPlotsConfig(MetricConfig):
 
 @register_metric
 class PermutedCIPlots:
-    name = "permuted_ci_plots"
     section = "figures"
     config_type = PermutedCIPlotsConfig
     slow = True

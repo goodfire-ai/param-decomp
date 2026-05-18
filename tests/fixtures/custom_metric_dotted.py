@@ -15,7 +15,6 @@ class DottedFixtureLossConfig(LossMetricConfig):
 
 @register_metric
 class DottedFixtureLoss:
-    name: ClassVar[str] = "_test_metric_modules_dotted_loss"
     section: ClassVar[str] = "loss"
     config_type: ClassVar[type[LossMetricConfig]] = DottedFixtureLossConfig
     slow: ClassVar[bool] = False

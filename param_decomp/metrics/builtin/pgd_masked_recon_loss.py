@@ -47,7 +47,6 @@ class PGDReconLoss:
     """Recon loss when masking with adversarially-optimized values and routing to all component
     layers."""
 
-    name = "pgd_recon"
     section = "loss"
     config_type = PGDReconLossConfig
     short_name = "PGDRecon"

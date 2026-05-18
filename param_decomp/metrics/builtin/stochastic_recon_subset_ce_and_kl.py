@@ -29,7 +29,6 @@ class StochasticReconSubsetCEAndKLConfig(MetricConfig):
 class StochasticReconSubsetCEAndKL:
     """Compute reconstruction loss for specific subsets of components."""
 
-    name = "stochastic_recon_subset_ce_and_kl"
     section = "subset_worst"
     config_type = StochasticReconSubsetCEAndKLConfig
     short_name = "StochReconSubCEKL"

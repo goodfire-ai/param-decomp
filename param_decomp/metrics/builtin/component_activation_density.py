@@ -20,7 +20,6 @@ class ComponentActivationDensityConfig(MetricConfig):
 class ComponentActivationDensity:
     """Activation density for each component."""
 
-    name = "component_activation_density"
     section = "figures"
     config_type = ComponentActivationDensityConfig
     slow = True

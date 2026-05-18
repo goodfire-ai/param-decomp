@@ -8,7 +8,7 @@ class TestGenerateGridCombinations:
         parameters = {
             "seed": {"values": [0, 1]},
             "loss_metrics": {
-                "importance_minimality": {"coeff": {"values": [0.1, 0.2]}},
+                "ImportanceMinimalityLoss": {"coeff": {"values": [0.1, 0.2]}},
             },
         }
 
@@ -17,19 +17,19 @@ class TestGenerateGridCombinations:
         assert len(combinations) == 4  # 2 seeds × 2 coeffs
         assert {
             "seed": 0,
-            "loss_metrics.importance_minimality.coeff": 0.1,
+            "loss_metrics.ImportanceMinimalityLoss.coeff": 0.1,
         } in combinations
         assert {
             "seed": 1,
-            "loss_metrics.importance_minimality.coeff": 0.2,
+            "loss_metrics.ImportanceMinimalityLoss.coeff": 0.2,
         } in combinations
 
     def test_sweep_multiple_losses(self):
         parameters = {
             "seed": {"values": [0]},
             "loss_metrics": {
-                "importance_minimality": {"coeff": {"values": [0.1, 0.2]}},
-                "faithfulness": {"coeff": {"values": [0.5]}},
+                "ImportanceMinimalityLoss": {"coeff": {"values": [0.1, 0.2]}},
+                "FaithfulnessLoss": {"coeff": {"values": [0.5]}},
             },
         }
 
@@ -38,20 +38,20 @@ class TestGenerateGridCombinations:
         assert len(combinations) == 2  # 2 × 1
         assert {
             "seed": 0,
-            "loss_metrics.importance_minimality.coeff": 0.1,
-            "loss_metrics.faithfulness.coeff": 0.5,
+            "loss_metrics.ImportanceMinimalityLoss.coeff": 0.1,
+            "loss_metrics.FaithfulnessLoss.coeff": 0.5,
         } in combinations
         assert {
             "seed": 0,
-            "loss_metrics.importance_minimality.coeff": 0.2,
-            "loss_metrics.faithfulness.coeff": 0.5,
+            "loss_metrics.ImportanceMinimalityLoss.coeff": 0.2,
+            "loss_metrics.FaithfulnessLoss.coeff": 0.5,
         } in combinations
 
     def test_sweep_multiple_params_per_loss(self):
         parameters = {
             "seed": {"values": [0]},
             "loss_metrics": {
-                "importance_minimality": {
+                "ImportanceMinimalityLoss": {
                     "coeff": {"values": [0.1, 0.2]},
                     "pnorm": {"values": [1.0, 2.0]},
                 },
@@ -64,23 +64,23 @@ class TestGenerateGridCombinations:
         expected = [
             {
                 "seed": 0,
-                "loss_metrics.importance_minimality.coeff": 0.1,
-                "loss_metrics.importance_minimality.pnorm": 1.0,
+                "loss_metrics.ImportanceMinimalityLoss.coeff": 0.1,
+                "loss_metrics.ImportanceMinimalityLoss.pnorm": 1.0,
             },
             {
                 "seed": 0,
-                "loss_metrics.importance_minimality.coeff": 0.1,
-                "loss_metrics.importance_minimality.pnorm": 2.0,
+                "loss_metrics.ImportanceMinimalityLoss.coeff": 0.1,
+                "loss_metrics.ImportanceMinimalityLoss.pnorm": 2.0,
             },
             {
                 "seed": 0,
-                "loss_metrics.importance_minimality.coeff": 0.2,
-                "loss_metrics.importance_minimality.pnorm": 1.0,
+                "loss_metrics.ImportanceMinimalityLoss.coeff": 0.2,
+                "loss_metrics.ImportanceMinimalityLoss.pnorm": 1.0,
             },
             {
                 "seed": 0,
-                "loss_metrics.importance_minimality.coeff": 0.2,
-                "loss_metrics.importance_minimality.pnorm": 2.0,
+                "loss_metrics.ImportanceMinimalityLoss.coeff": 0.2,
+                "loss_metrics.ImportanceMinimalityLoss.pnorm": 2.0,
             },
         ]
         for exp in expected:
@@ -92,7 +92,7 @@ class TestGenerateGridCombinations:
             "lr": {"values": [0.001, 0.01]},
             "task_config": {"feature_probability": {"values": [0.05, 0.1]}},
             "loss_metrics": {
-                "importance_minimality": {"coeff": {"values": [0.1, 0.2]}},
+                "ImportanceMinimalityLoss": {"coeff": {"values": [0.1, 0.2]}},
             },
         }
 
@@ -104,13 +104,13 @@ class TestGenerateGridCombinations:
             "seed": 0,
             "lr": 0.001,
             "task_config.feature_probability": 0.05,
-            "loss_metrics.importance_minimality.coeff": 0.1,
+            "loss_metrics.ImportanceMinimalityLoss.coeff": 0.1,
         } in combinations
         assert {
             "seed": 1,
             "lr": 0.01,
             "task_config.feature_probability": 0.1,
-            "loss_metrics.importance_minimality.coeff": 0.2,
+            "loss_metrics.ImportanceMinimalityLoss.coeff": 0.2,
         } in combinations
 
     def test_sweep_over_list_values(self):
@@ -118,18 +118,18 @@ class TestGenerateGridCombinations:
         parameters = {
             "ci_fn_hidden_dims": {"values": [[8], [4, 3]]},
             "loss_metrics": {
-                "importance_minimality": {"coeff": {"values": [0.1, 0.2]}},
+                "ImportanceMinimalityLoss": {"coeff": {"values": [0.1, 0.2]}},
             },
         }
         combinations = generate_grid_combinations(parameters)
         assert len(combinations) == 4  # 2 × 2
         assert {
             "ci_fn_hidden_dims": [8],
-            "loss_metrics.importance_minimality.coeff": 0.1,
+            "loss_metrics.ImportanceMinimalityLoss.coeff": 0.1,
         } in combinations
         assert {
             "ci_fn_hidden_dims": [4, 3],
-            "loss_metrics.importance_minimality.coeff": 0.2,
+            "loss_metrics.ImportanceMinimalityLoss.coeff": 0.2,
         } in combinations
 
 
@@ -139,15 +139,15 @@ class TestApplyNestedUpdates:
             "seed": 0,
             "lr": 0.001,
             "loss_metrics": {
-                "importance_minimality": {"coeff": 0.5, "pnorm": 1.0, "eps": 1e-12},
-                "faithfulness": {"coeff": 1.0},
+                "ImportanceMinimalityLoss": {"coeff": 0.5, "pnorm": 1.0, "eps": 1e-12},
+                "FaithfulnessLoss": {"coeff": 1.0},
             },
         }
 
         updates = {
             "seed": 42,
-            "loss_metrics.importance_minimality.coeff": 0.1,
-            "loss_metrics.importance_minimality.pnorm": 2.0,
+            "loss_metrics.ImportanceMinimalityLoss.coeff": 0.1,
+            "loss_metrics.ImportanceMinimalityLoss.pnorm": 2.0,
         }
 
         result = apply_nested_updates(base, updates)
@@ -156,24 +156,24 @@ class TestApplyNestedUpdates:
             "seed": 42,
             "lr": 0.001,
             "loss_metrics": {
-                "importance_minimality": {
+                "ImportanceMinimalityLoss": {
                     "coeff": 0.1,  # Updated
                     "pnorm": 2.0,  # Updated
                     "eps": 1e-12,  # Preserved
                 },
-                "faithfulness": {"coeff": 1.0},  # Preserved
+                "FaithfulnessLoss": {"coeff": 1.0},  # Preserved
             },
         }
 
     def test_add_new_loss_config(self):
         base = {
             "seed": 0,
-            "loss_metrics": {"faithfulness": {"coeff": 1.0}},
+            "loss_metrics": {"FaithfulnessLoss": {"coeff": 1.0}},
         }
 
         updates = {
-            "loss_metrics.importance_minimality.coeff": 0.1,
-            "loss_metrics.importance_minimality.pnorm": 1.0,
+            "loss_metrics.ImportanceMinimalityLoss.coeff": 0.1,
+            "loss_metrics.ImportanceMinimalityLoss.pnorm": 1.0,
         }
 
         result = apply_nested_updates(base, updates)
@@ -181,8 +181,8 @@ class TestApplyNestedUpdates:
         assert result == {
             "seed": 0,
             "loss_metrics": {
-                "faithfulness": {"coeff": 1.0},  # Preserved
-                "importance_minimality": {"coeff": 0.1, "pnorm": 1.0},  # Added
+                "FaithfulnessLoss": {"coeff": 1.0},  # Preserved
+                "ImportanceMinimalityLoss": {"coeff": 0.1, "pnorm": 1.0},  # Added
             },
         }
 
@@ -190,17 +190,17 @@ class TestApplyNestedUpdates:
         base = {
             "seed": 0,
             "loss_metrics": {
-                "importance_minimality": {"coeff": 0.5, "pnorm": 1.0, "eps": 1e-12},
-                "faithfulness": {"coeff": 1.0},
-                "stochastic_recon": {"coeff": 0.2},
+                "ImportanceMinimalityLoss": {"coeff": 0.5, "pnorm": 1.0, "eps": 1e-12},
+                "FaithfulnessLoss": {"coeff": 1.0},
+                "StochasticReconLoss": {"coeff": 0.2},
             },
         }
 
         updates = {
             "seed": 42,
-            "loss_metrics.importance_minimality.coeff": 0.1,
-            "loss_metrics.importance_minimality.pnorm": 2.0,
-            "loss_metrics.ci_masked_recon.coeff": 0.3,
+            "loss_metrics.ImportanceMinimalityLoss.coeff": 0.1,
+            "loss_metrics.ImportanceMinimalityLoss.pnorm": 2.0,
+            "loss_metrics.CIMaskedReconLoss.coeff": 0.3,
         }
 
         result = apply_nested_updates(base, updates)
@@ -208,10 +208,10 @@ class TestApplyNestedUpdates:
         assert result == {
             "seed": 42,
             "loss_metrics": {
-                "importance_minimality": {"coeff": 0.1, "pnorm": 2.0, "eps": 1e-12},
-                "faithfulness": {"coeff": 1.0},
-                "stochastic_recon": {"coeff": 0.2},
-                "ci_masked_recon": {"coeff": 0.3},
+                "ImportanceMinimalityLoss": {"coeff": 0.1, "pnorm": 2.0, "eps": 1e-12},
+                "FaithfulnessLoss": {"coeff": 1.0},
+                "StochasticReconLoss": {"coeff": 0.2},
+                "CIMaskedReconLoss": {"coeff": 0.3},
             },
         }
 
@@ -293,7 +293,7 @@ class TestInvalidConfigurations:
         parameters = {
             "seed": {"values": [0]},
             "loss_metrics": {
-                "importance_minimality": {
+                "ImportanceMinimalityLoss": {
                     "coeff": 0.1,  # Should be {"values": [0.1]}
                 },
             },

@@ -80,7 +80,6 @@ def stochastic_recon_layerwise_loss(
 class StochasticReconLayerwiseLoss:
     """Recon loss when sampling with stochastic masks one layer at a time."""
 
-    name = "stochastic_recon_layerwise"
     section = "loss"
     config_type = StochasticReconLayerwiseLossConfig
     short_name = "StochReconLayer"

@@ -5,7 +5,7 @@ global:
     seed:
       values: [0, 1]
     loss_metrics:
-      importance_minimality:
+      ImportanceMinimalityLoss:
         coeff:
           values: [0.1, 0.2]
 

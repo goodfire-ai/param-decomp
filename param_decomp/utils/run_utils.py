@@ -81,8 +81,8 @@ def save_file(data: dict[str, Any] | Any, path: Path | str, **kwargs: Any) -> No
 def apply_nested_updates(base_dict: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
     """Apply nested updates to a dictionary with dot-flattened keys.
 
-    Example: `{"pd.loss_metrics.importance_minimality.coeff": 0.1}` deep-merges into
-    `base_dict["pd"]["loss_metrics"]["importance_minimality"]["coeff"] = 0.1`.
+    Example: `{"pd.loss_metrics.ImportanceMinimalityLoss.coeff": 0.1}` deep-merges into
+    `base_dict["pd"]["loss_metrics"]["ImportanceMinimalityLoss"]["coeff"] = 0.1`.
 
     Args:
         base_dict: The base configuration dictionary
@@ -156,13 +156,13 @@ def generate_grid_combinations(parameters: dict[str, Any]) -> list[dict[str, Any
 
     Returns:
         List of parameter combinations with flattened keys (e.g.,
-        "loss_metrics.importance_minimality.coeff")
+        "loss_metrics.ImportanceMinimalityLoss.coeff")
 
     Example:
         >>> params = {
         ...     "seed": {"values": [0, 1]},
         ...     "loss_metrics": {
-        ...         "importance_minimality": {"coeff": {"values": [0.1, 0.2]}},
+        ...         "ImportanceMinimalityLoss": {"coeff": {"values": [0.1, 0.2]}},
         ...     },
         ... }
         >>> combos = generate_grid_combinations(params)
@@ -170,7 +170,7 @@ def generate_grid_combinations(parameters: dict[str, Any]) -> list[dict[str, Any
         4
         >>> combos[0]["seed"]
         0
-        >>> combos[0]["loss_metrics.importance_minimality.coeff"]
+        >>> combos[0]["loss_metrics.ImportanceMinimalityLoss.coeff"]
         0.1
     """
     # Validate all leaves have {"values": [...]} before extracting

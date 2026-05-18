@@ -17,7 +17,6 @@ class UVPlotsConfig(MetricConfig):
 
 @register_metric
 class UVPlots:
-    name = "uv_plots"
     section = "figures"
     config_type = UVPlotsConfig
     slow = True

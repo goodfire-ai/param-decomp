@@ -133,7 +133,7 @@ def test_from_checkpoint():
             eval_freq=1,
             slow_eval_freq=1,
             loss_metrics={
-                "importance_minimality": ImportanceMinimalityLossConfig(
+                "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                     coeff=1.0, pnorm=1.0, beta=0.5
                 )
             },
@@ -538,7 +538,7 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             eval_freq=1,
             slow_eval_freq=1,
             loss_metrics={
-                "importance_minimality": ImportanceMinimalityLossConfig(
+                "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                     coeff=1.0, pnorm=1.0, beta=0.5
                 )
             },
@@ -575,7 +575,7 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             eval_freq=1,
             slow_eval_freq=1,
             loss_metrics={
-                "importance_minimality": ImportanceMinimalityLossConfig(
+                "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                     coeff=1.0, pnorm=1.0, beta=0.5
                 )
             },
@@ -629,7 +629,7 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             eval_freq=1,
             slow_eval_freq=1,
             loss_metrics={
-                "importance_minimality": ImportanceMinimalityLossConfig(
+                "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                     coeff=1.0, pnorm=1.0, beta=0.5
                 )
             },
@@ -666,7 +666,7 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             eval_freq=1,
             slow_eval_freq=1,
             loss_metrics={
-                "importance_minimality": ImportanceMinimalityLossConfig(
+                "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                     coeff=1.0, pnorm=1.0, beta=0.5
                 )
             },
@@ -1287,7 +1287,7 @@ def test_global_ci_save_and_load():
             eval_freq=1,
             slow_eval_freq=1,
             loss_metrics={
-                "importance_minimality": ImportanceMinimalityLossConfig(
+                "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                     coeff=1.0, pnorm=1.0, beta=0.5
                 )
             },

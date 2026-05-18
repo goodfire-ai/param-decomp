@@ -206,7 +206,6 @@ class _AttnPatternsBase:
 class CIMaskedAttnPatternsReconLoss(_AttnPatternsBase):
     """Attention pattern reconstruction loss using CI masks."""
 
-    name = "ci_masked_attn_patterns_recon"
     section = "loss"
     config_type = CIMaskedAttnPatternsReconLossConfig
     short_name = "CIAttnRecon"
@@ -231,7 +230,6 @@ class CIMaskedAttnPatternsReconLoss(_AttnPatternsBase):
 class StochasticAttnPatternsReconLoss(_AttnPatternsBase):
     """Attention pattern reconstruction loss with stochastic masks."""
 
-    name = "stochastic_attn_patterns_recon"
     section = "loss"
     config_type = StochasticAttnPatternsReconLossConfig
     short_name = "StochAttnRecon"

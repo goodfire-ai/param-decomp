@@ -20,7 +20,6 @@ class PGDReconLayerwiseLoss:
     """Recon loss when masking with adversarially-optimized values and routing to one layer at a
     time."""
 
-    name = "pgd_recon_layerwise"
     section = "loss"
     config_type = PGDReconLayerwiseLossConfig
     short_name = "PGDReconLayer"

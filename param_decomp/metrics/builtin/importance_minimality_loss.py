@@ -109,7 +109,6 @@ def importance_minimality_loss(
 class ImportanceMinimalityLoss:
     """L_p loss on the sum of CI values."""
 
-    name = "importance_minimality"
     section = "loss"
     config_type = ImportanceMinimalityLossConfig
     short_name = "ImpMin"

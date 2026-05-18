@@ -46,7 +46,6 @@ def ci_masked_recon_loss(
 class CIMaskedReconLoss:
     """Recon loss when masking with CI values directly on all component layers."""
 
-    name = "ci_masked_recon"
     section = "loss"
     config_type = CIMaskedReconLossConfig
     short_name = "CIMaskRecon"
