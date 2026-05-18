@@ -167,6 +167,33 @@ def resolve_class(path: str) -> type[nn.Module]:
     return getattr(module, class_name)
 
 
+def instantiate_model_from_config(
+    model_class: type[nn.Module],
+    model_config_dict: dict[str, Any],
+) -> nn.Module:
+    """Instantiate a model from an inline config dict.
+
+    This is mainly for deterministic random target models used in memory/profiling experiments.
+    Local models conventionally take a sibling ``<ModelName>Config`` object as their constructor
+    argument; Hugging Face-style models often expose ``config_class``.
+    """
+    config_class = getattr(model_class, "config_class", None)
+
+    if not isinstance(config_class, type):
+        module = importlib.import_module(model_class.__module__)
+        config_class = getattr(module, f"{model_class.__name__}Config", None)
+
+    if isinstance(config_class, type):
+        model_config = config_class(**model_config_dict)
+        model = model_class(model_config)
+    else:
+        model = model_class(**model_config_dict)
+
+    if not isinstance(model, nn.Module):
+        raise TypeError(f"Expected {model_class} to instantiate to nn.Module, got {type(model)}")
+    return model
+
+
 def calc_kl_divergence_lm(
     pred: Float[Tensor, "... vocab"],
     target: Float[Tensor, "... vocab"],
