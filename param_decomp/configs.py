@@ -786,6 +786,14 @@ class Config(BaseConfig):
         description="Extra key/value pairs to merge into `wandb.config`. Unlike tags, these "
         "show up as columns in the runs table and as group-by axes in chart panels.",
     )
+    view_meta: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Derived / view-filtering metadata for wandb. Not part of the training "
+        "contract — anything in here is decoration only. Unlike extra_wandb_config, values "
+        "can be any JSON-serializable type (numbers, bools, strings) which makes them usable "
+        "as continuous coloring axes in the wandb UI. Promoted to top-level wandb.config "
+        "alongside extra_wandb_config.",
+    )
 
     # --- General ---
     seed: int = Field(

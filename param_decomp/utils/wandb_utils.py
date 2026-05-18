@@ -350,10 +350,11 @@ def init_wandb(
         del config_dict["loss_metric_configs"]
     if "eval_metric_configs" in config_dict:
         del config_dict["eval_metric_configs"]
-    # Promote extra_wandb_config keys to the top level so they're usable as
-    # group-by axes in chart panels (not just nested under extra_wandb_config.*).
+    # Promote extra_wandb_config and view_meta keys to the top level so they're usable as
+    # group-by axes in chart panels (not just nested under {extra_wandb_config,view_meta}.*).
     extra = config_dict.pop("extra_wandb_config", {})
-    wandb.config.update({**config_dict, **flattened_config_dict, **extra})
+    view_meta = config_dict.pop("view_meta", {})
+    wandb.config.update({**config_dict, **flattened_config_dict, **extra, **view_meta})
 
 
 def ensure_project_exists(project: str) -> None:
