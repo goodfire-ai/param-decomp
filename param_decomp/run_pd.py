@@ -11,8 +11,9 @@ import torch
 import torch.nn as nn
 import torch.nn.parallel
 import wandb
+from jaxtyping import Float
 from PIL import Image
-from torch import optim
+from torch import Tensor, optim
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -26,7 +27,6 @@ from param_decomp.configs import (
 from param_decomp.eval import evaluate
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.log import logger
-from param_decomp.losses import compute_losses
 from param_decomp.metrics import METRIC_REGISTRY
 from param_decomp.metrics.base import LossMetricConfig, Metric
 from param_decomp.metrics.context import MetricContext
@@ -51,7 +51,7 @@ from param_decomp.utils.distributed_utils import (
 )
 from param_decomp.utils.general_utils import (
     bf16_autocast,
-    dict_safe_update_,
+    combine_nonoverlapping_dicts,
     get_scheduled_value,
     save_pre_run_info,
 )
@@ -151,6 +151,19 @@ def _build_metric_instances(
         eval_instances[metric_name] = cls(cfg, model=component_model, device=device)
 
     return loss_instances, eval_instances
+
+
+def compute_losses(
+    loss_instances: dict[str, Metric],
+    ctx: MetricContext,
+) -> dict[str, Float[Tensor, ""] | None]:
+    """Compute per-metric live loss tensors for the current training step.
+
+    Each metric's `update(ctx)` returns the per-batch scalar (a graph-attached tensor that the
+    caller will backprop through), or None if the metric is gated off (e.g. PPGD before its
+    `start_frac`).
+    """
+    return {metric_name: m.update(ctx) for metric_name, m in loss_instances.items()}
 
 
 def optimize(
@@ -308,7 +321,7 @@ def optimize(
             batch_log_data = cast(defaultdict[str, float], avg_metrics)
 
             grad_norms = get_grad_norms_dict(component_model, device)
-            dict_safe_update_(
+            combine_nonoverlapping_dicts(
                 batch_log_data, {f"train/grad_norms/{k}": v for k, v in grad_norms.items()}
             )
             batch_log_data["train/schedules/lr/components"] = components_lr

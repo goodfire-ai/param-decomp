@@ -256,8 +256,7 @@ def get_obj_device(d: CanGetDevice) -> torch.device:
     return devices.pop()
 
 
-def dict_safe_update_(d1: dict[str, Any], d2: dict[str, Any]) -> None:
-    """Update a dictionary with another dictionary, but only if the key is not already present in
-    the first dictionary."""
+def combine_nonoverlapping_dicts(d1: dict[str, Any], d2: dict[str, Any]) -> None:
+    """Combine two dictionaries, asserting that they have no overlapping keys."""
     assert not set(d1.keys()) & set(d2.keys()), "The dictionaries must have no overlapping keys"
     d1.update(d2)
