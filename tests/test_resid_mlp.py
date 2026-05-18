@@ -9,6 +9,7 @@ from param_decomp.configs import (
     ModulePatternInfoConfig,
     OptimizerConfig,
     PDConfig,
+    RuntimeConfig,
     ScheduleConfig,
     StochasticReconLossConfig,
 )
@@ -114,6 +115,7 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         target_model=target_model,
         config=config,
         logging_config=logging_config,
+        runtime_config=RuntimeConfig(),
         device=device,
         train_loader=train_loader,
         eval_loader=eval_loader,

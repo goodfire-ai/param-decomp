@@ -1,6 +1,5 @@
 pd:
   seed: 0
-  autocast_bf16: true
   n_mask_samples: 1
   ci_config:
     mode: global
@@ -128,3 +127,5 @@ data:
   shuffle_each_epoch: true
   is_tokenized: false
   streaming: false
+runtime:
+  autocast_bf16: true

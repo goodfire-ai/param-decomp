@@ -13,9 +13,7 @@ import yaml
 
 TEST_CONFIG = {
     "pd": {
-        # --- General ---
         "seed": 0,
-        "autocast_bf16": False,
         "n_mask_samples": 1,
         "ci_config": {
             "mode": "layerwise",
@@ -24,7 +22,6 @@ TEST_CONFIG = {
         },
         "sigmoid_type": "leaky_hard",
         "module_info": [{"module_pattern": "model.layers.0.mlp.gate_proj", "C": 3}],
-        # --- Loss metrics ---
         "loss_metrics": {
             "importance_minimality": {
                 "coeff": 0.1,
@@ -36,9 +33,7 @@ TEST_CONFIG = {
             "ci_masked_recon_layerwise": {"coeff": 1.0},
             "ci_masked_recon": {"coeff": 1.0},
         },
-        # --- Training ---
         "batch_size": 2,
-        "eval_batch_size": 2,
         "steps": 20,
         "components_optimizer": {
             "lr_schedule": {"start_val": 1e-2, "fn_type": "constant"},
@@ -46,17 +41,22 @@ TEST_CONFIG = {
         "ci_fn_optimizer": {
             "lr_schedule": {"start_val": 1e-2, "fn_type": "constant"},
         },
-        # --- Logging & Saving ---
+        "eval_metrics": {
+            "ci_l0": {"groups": None},
+            "ce_and_kl": {"rounding_threshold": 0.1},
+        },
+    },
+    "logging": {
         "train_log_freq": 9999,
         "eval_freq": 5,  # Eval at steps 0, 5, 10
         "slow_eval_freq": 5,
         "slow_eval_on_first_step": True,
         "n_eval_steps": 2,
+        "eval_batch_size": 2,
         "save_freq": None,  # Just save at the end
-        "eval_metrics": {
-            "ci_l0": {"groups": None},
-            "ce_and_kl": {"rounding_threshold": 0.1},
-        },
+    },
+    "runtime": {
+        "autocast_bf16": False,
     },
     "target": {
         "model_class": "transformers.LlamaForCausalLM",

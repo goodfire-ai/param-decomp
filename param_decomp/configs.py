@@ -565,6 +565,21 @@ class EvalMetricsConfig(_LossCapableMetricsConfig):
 SamplingType = Literal["continuous", "binomial"]
 
 
+class RuntimeConfig(BaseConfig):
+    """Compute / deployment knobs — not algorithm, not observation.
+
+    Captures *how* the experiment runs on a given substrate (numerical precision,
+    future home for device placement, NCCL flags, gradient accumulation steps, etc.).
+    Two runs with identical PDConfig and different RuntimeConfig may produce slightly
+    different trained weights due to numerical effects, but the algorithm is the same.
+    """
+
+    autocast_bf16: bool = Field(
+        default=True,
+        description="Use torch.autocast with bfloat16 mixed precision in training and eval.",
+    )
+
+
 class LoggingConfig(BaseConfig):
     """Observation-only settings: cadence of logging/eval/checkpointing + eval-only metrics.
 
@@ -625,10 +640,6 @@ class PDConfig(BaseConfig):
     seed: int = Field(
         default=0,
         description="Random seed for reproducibility, including LM dataset shuffling.",
-    )
-    autocast_bf16: bool = Field(
-        default=True,
-        description="Whether to use torch.autocast with bfloat16 mixed precision",
     )
     n_mask_samples: PositiveInt = Field(
         ...,

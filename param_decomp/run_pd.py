@@ -27,6 +27,7 @@ from param_decomp.configs import (
     PGDMultiBatchReconLossConfig,
     PGDMultiBatchReconSubsetLossConfig,
     RepeatAcrossBatchScope,
+    RuntimeConfig,
 )
 from param_decomp.eval import evaluate, evaluate_multibatch_pgd
 from param_decomp.identity_insertion import insert_identity_operations_
@@ -105,6 +106,7 @@ def optimize(
     target_model: nn.Module,
     config: PDConfig,
     logging_config: LoggingConfig,
+    runtime_config: RuntimeConfig,
     device: str,
     train_loader: DataLoader[Any],
     eval_loader: DataLoader[Any],
@@ -277,7 +279,7 @@ def optimize(
         batch_log_data: defaultdict[str, float] = defaultdict(float)
 
         batch = move_batch_to_device(next(train_iterator), device)
-        with bf16_autocast(enabled=config.autocast_bf16):
+        with bf16_autocast(enabled=runtime_config.autocast_bf16):
             # NOTE: we need to call the wrapped_model at least once each step in order to setup
             # the DDP gradient syncing for all parameters in the component model. Gradients will
             # sync regardless of whether the parameters are used in this call to wrapped_model.
@@ -361,7 +363,7 @@ def optimize(
 
         # --- Evaluation --- #
         if step % logging_config.eval_freq == 0:
-            with torch.no_grad(), bf16_autocast(enabled=config.autocast_bf16):
+            with torch.no_grad(), bf16_autocast(enabled=runtime_config.autocast_bf16):
                 slow_step: bool = (
                     logging_config.slow_eval_on_first_step
                     if step == 0
@@ -466,6 +468,7 @@ def _validate_pgd_scope(config: PDConfig, dist_state: DistributedState | None) -
 def run_pd(
     config: PDConfig,
     logging_config: LoggingConfig,
+    runtime_config: RuntimeConfig,
     target: PDTarget,
     train_loader: DataLoader[Any],
     eval_loader: DataLoader[Any],
@@ -503,6 +506,7 @@ def run_pd(
                 config={
                     "pd": config.model_dump(mode="json"),
                     "logging": logging_config.model_dump(mode="json"),
+                    "runtime": runtime_config.model_dump(mode="json"),
                 },
             )
 
@@ -518,7 +522,7 @@ def run_pd(
                 run_id,
                 name=metadata.wandb_run_name,
                 tags=tags,
-                extra_configs={"logging": logging_config},
+                extra_configs={"logging": logging_config, "runtime": runtime_config},
                 view_meta=metadata.view_meta,
             )
 
@@ -537,6 +541,7 @@ def run_pd(
         target_model=target.model,
         config=config,
         logging_config=logging_config,
+        runtime_config=runtime_config,
         device=device,
         train_loader=train_loader,
         eval_loader=eval_loader,

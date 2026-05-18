@@ -89,18 +89,27 @@ README's "Custom experiments" section walks through both routes side-by-side.
 
 ### Per-experiment Configs
 
-Built-in YAML configs are pure experiment configs nested under `pd:`, `logging:`, `target:`,
-and `data:`:
+Built-in YAML configs are pure experiment configs nested under `pd:`, `logging:`, `runtime:`
+(optional), `target:`, and `data:`:
 
-- `LMExperimentConfig(pd, logging, target: LMTargetConfig, data: LMDataConfig)`
-- `TMSExperimentConfig(pd, logging, target, data)`
-- `ResidMLPExperimentConfig(pd, logging, target, data)`
+- `LMExperimentConfig(pd, logging, runtime, target: LMTargetConfig, data: LMDataConfig)`
+- `TMSExperimentConfig(pd, logging, runtime, target, data)`
+- `ResidMLPExperimentConfig(pd, logging, runtime, target, data)`
 
-`PDConfig` carries algorithm hyperparameters (seed, ci_config, losses, optimizers, …) — the
-things that change what the trained model is. `LoggingConfig` carries observation-only
-settings (log/eval/save cadence, eval-only metrics, eval_batch_size) — fields that *don't*
-affect the trained model. Two runs with identical `PDConfig` and different `LoggingConfig`
-produce bit-identical weights.
+The four config classes split by concern:
+
+- **`PDConfig`** — algorithm hyperparameters (seed, ci_config, losses, optimizers, metric
+  universe). Things that change what the trained model is.
+- **`LoggingConfig`** — observation-only settings (log/eval/save cadence, eval_batch_size,
+  ci_alive_threshold). Don't affect the trained model.
+- **`RuntimeConfig`** — compute / deployment knobs (autocast_bf16 today; future home for
+  device placement, NCCL flags, gradient accumulation). Affects numerical precision but
+  describes *how* the run executes on a substrate, not the algorithm itself. Optional;
+  defaults if omitted in YAML.
+
+Two runs with identical `PDConfig` and different `LoggingConfig` produce bit-identical
+weights. Different `RuntimeConfig` may produce slightly different weights via numerical
+precision, but the algorithm is the same.
 
 Experiment configs should not perform I/O. Put target loading and dataloader construction in
 the driver.

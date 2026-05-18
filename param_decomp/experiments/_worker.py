@@ -77,6 +77,7 @@ def run_experiment(
     run_pd(
         config=experiment_config.pd,
         logging_config=experiment_config.logging,
+        runtime_config=experiment_config.runtime,
         target=target,
         train_loader=train_loader,
         eval_loader=eval_loader,

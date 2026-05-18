@@ -13,10 +13,11 @@ pretrain run, HF model, etc.). Saved PD runs depend on their upstream continuing
 from importlib import import_module
 from typing import Any, ClassVar, Protocol
 
+from pydantic import Field
 from torch.utils.data import DataLoader
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.configs import LoggingConfig, PDConfig
+from param_decomp.configs import LoggingConfig, PDConfig, RuntimeConfig
 from param_decomp.models.batch_and_loss_fns import PDTarget
 from param_decomp.utils.distributed_utils import DistributedState
 
@@ -26,6 +27,7 @@ class ExperimentConfig(BaseConfig):
 
     pd: PDConfig
     logging: LoggingConfig
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
 
 
 class ExperimentDriver[ConfigT: ExperimentConfig](Protocol):
