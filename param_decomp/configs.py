@@ -1,5 +1,6 @@
 """Config classes of various types."""
 
+import importlib
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
@@ -14,7 +15,7 @@ from pydantic import (
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.metrics.base import LossMetricConfig, MetricConfig
-from param_decomp.metrics.registry import METRIC_REGISTRY, import_metric_module
+from param_decomp.metrics.registry import METRIC_REGISTRY
 from param_decomp.types import (
     GlobalCiFnType,
     LayerwiseCiFnType,
@@ -373,7 +374,7 @@ class PDConfig(BaseConfig):
         discover_metrics()
         if isinstance(data, dict):
             for spec in data.get("metric_modules", []) or []:
-                import_metric_module(spec)
+                importlib.import_module(spec)
         return data
 
     @field_validator("loss_metrics", mode="before")

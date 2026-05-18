@@ -4,10 +4,8 @@ Metric classes decorated with `@register_metric` are inserted into `METRIC_REGIS
 their class name. `PDConfig` validation calls `discover_metrics()` before parsing
 `loss_metrics` / `eval_metrics`, so built-in decorators fire before registry lookup. External
 users can register their own metrics by listing additional modules in `PDConfig.metric_modules`;
-the validator calls `import_metric_module` on each entry after built-in discovery.
+the validator imports each entry after built-in discovery.
 """
-
-import importlib
 
 from param_decomp.metrics.base import Metric
 
@@ -26,12 +24,3 @@ def register_metric[T: type](cls: T) -> T:
     )
     METRIC_REGISTRY[name] = cls  # type: ignore[assignment]
     return cls
-
-
-def import_metric_module(spec: str) -> None:
-    """Import an external metric module so its `@register_metric` decorators fire.
-
-    `spec` is a dotted module name (`my_pkg.my_metrics`) — the module must be importable from
-    the current Python environment. Idempotent: re-importing the same spec is a no-op.
-    """
-    importlib.import_module(spec)

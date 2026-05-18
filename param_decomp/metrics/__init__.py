@@ -23,7 +23,6 @@ from param_decomp.metrics.base import LossMetricConfig, Metric, MetricConfig
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import (
     METRIC_REGISTRY,
-    import_metric_module,
     register_metric,
 )
 
@@ -55,6 +54,5 @@ __all__ = [
     "MetricConfig",
     "MetricContext",
     "discover_metrics",
-    "import_metric_module",
     "register_metric",
 ]
