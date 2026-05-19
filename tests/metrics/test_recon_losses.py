@@ -260,13 +260,15 @@ def test_per_module_recon_metric_keys() -> None:
     )
     metric.update(ctx)
     result = metric.compute()
+    assert isinstance(result, dict)
+    tensor_result = cast(dict[str, Tensor], result)
 
-    assert set(result.keys()) == {
+    assert set(tensor_result.keys()) == {
         "CIHiddenActsReconLoss",
         "CIHiddenActsReconLoss/fc1",
         "CIHiddenActsReconLoss/fc2",
     }
-    for v in result.values():
+    for v in tensor_result.values():
         assert v.item() >= 0
 
 
@@ -311,15 +313,17 @@ def test_ppgd_recon_eval_metric_keys() -> None:
     )
     metric.update(ctx)
     result = metric.compute()
+    assert isinstance(result, dict)
+    tensor_result = cast(dict[str, Tensor], result)
 
     cls_name = type(metric).__name__
-    assert set(result.keys()) == {
+    assert set(tensor_result.keys()) == {
         f"{cls_name}/hidden_acts",
         f"{cls_name}/hidden_acts/fc1",
         f"{cls_name}/hidden_acts/fc2",
         f"{cls_name}/output_recon",
     }
-    for v in result.values():
+    for v in tensor_result.values():
         assert v.item() >= 0
 
 

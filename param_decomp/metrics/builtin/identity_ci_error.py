@@ -1,7 +1,7 @@
-from typing import ClassVar
+from typing import ClassVar, override
 
 from param_decomp.configs import SamplingType
-from param_decomp.metrics.base import MetricConfig
+from param_decomp.metrics.base import Metric, MetricConfig, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
 from param_decomp.models.component_model import ComponentModel
@@ -15,7 +15,7 @@ class IdentityCIErrorConfig(MetricConfig):
 
 
 @register_metric
-class IdentityCIError:
+class IdentityCIError(Metric[IdentityCIErrorConfig]):
     """Error between the CI values and an Identity or Dense CI pattern."""
 
     section = "target_solution_error"
@@ -31,10 +31,12 @@ class IdentityCIError:
         self.device = device
         self.reset()
 
+    @override
     def reset(self) -> None:
         self.batch_shape: tuple[int, ...] | None = None
         self.sampling: SamplingType | None = None
 
+    @override
     def update(self, ctx: MetricContext) -> None:
         if self.batch_shape is None:
             input_tensor = ctx.batch[0] if isinstance(ctx.batch, tuple) else ctx.batch
@@ -42,7 +44,8 @@ class IdentityCIError:
             self.sampling = ctx.config.sampling
         return None
 
-    def compute(self) -> dict[str, float]:
+    @override
+    def compute(self) -> MetricResult:
         assert self.batch_shape is not None, "haven't seen any inputs yet"
         assert self.sampling is not None
         target_solution = make_target_ci_solution(

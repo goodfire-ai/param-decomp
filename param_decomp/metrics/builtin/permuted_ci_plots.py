@@ -1,9 +1,7 @@
-from typing import ClassVar
-
-from PIL import Image
+from typing import ClassVar, override
 
 from param_decomp.configs import SamplingType
-from param_decomp.metrics.base import MetricConfig
+from param_decomp.metrics.base import Metric, MetricConfig, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
 from param_decomp.models.component_model import ComponentModel
@@ -16,7 +14,7 @@ class PermutedCIPlotsConfig(MetricConfig):
 
 
 @register_metric
-class PermutedCIPlots:
+class PermutedCIPlots(Metric[PermutedCIPlotsConfig]):
     section = "figures"
     config_type = PermutedCIPlotsConfig
     slow = True
@@ -30,10 +28,12 @@ class PermutedCIPlots:
         self.device = device
         self.reset()
 
+    @override
     def reset(self) -> None:
         self.batch_shape: tuple[int, ...] | None = None
         self.sampling: SamplingType | None = None
 
+    @override
     def update(self, ctx: MetricContext) -> None:
         if self.batch_shape is None:
             input_tensor = ctx.batch[0] if isinstance(ctx.batch, tuple) else ctx.batch
@@ -41,7 +41,8 @@ class PermutedCIPlots:
             self.sampling = ctx.config.sampling
         return None
 
-    def compute(self) -> dict[str, Image.Image]:
+    @override
+    def compute(self) -> MetricResult:
         assert self.batch_shape is not None, "haven't seen any inputs yet"
         assert self.sampling is not None
         figures = plot_causal_importance_vals(

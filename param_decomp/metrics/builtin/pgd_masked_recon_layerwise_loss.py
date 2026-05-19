@@ -1,8 +1,10 @@
+from typing import override
+
 import torch
-from jaxtyping import Float
 from torch import Tensor
 from torch.distributed import ReduceOp
 
+from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.pgd_utils import PGDConfig, pgd_masked_recon_loss_update
 from param_decomp.metrics.registry import register_metric
@@ -16,7 +18,7 @@ class PGDReconLayerwiseLossConfig(PGDConfig):
 
 
 @register_metric
-class PGDReconLayerwiseLoss:
+class PGDReconLayerwiseLoss(Metric[PGDReconLayerwiseLossConfig]):
     """Recon loss when masking with adversarially-optimized values and routing to one layer at a
     time."""
 
@@ -32,10 +34,12 @@ class PGDReconLayerwiseLoss:
         self.device = device
         self.reset()
 
+    @override
     def reset(self) -> None:
         self.sum_loss = torch.zeros((), device=self.device)
         self.n_examples = torch.zeros((), device=self.device, dtype=torch.long)
 
+    @override
     def update(self, ctx: MetricContext) -> Tensor:
         wd = ctx.weight_deltas if ctx.config.use_delta_component else None
         device = ctx.target_out.device
@@ -58,7 +62,8 @@ class PGDReconLayerwiseLoss:
         self.n_examples += n_examples
         return sum_loss / n_examples
 
-    def compute(self) -> Float[Tensor, ""]:
+    @override
+    def compute(self) -> MetricResult:
         sum_loss = all_reduce(self.sum_loss, op=ReduceOp.SUM)
         n_examples = all_reduce(self.n_examples, op=ReduceOp.SUM)
         return sum_loss / n_examples

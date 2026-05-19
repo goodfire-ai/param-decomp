@@ -1,3 +1,5 @@
+from typing import override
+
 import torch
 import torch.nn.functional as F
 from jaxtyping import Float, Int
@@ -5,7 +7,7 @@ from torch import Tensor
 from torch.distributed import ReduceOp
 
 from param_decomp.configs import SamplingType
-from param_decomp.metrics.base import LossMetricConfig, MetricConfig
+from param_decomp.metrics.base import LossMetricConfig, Metric, MetricConfig, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
 from param_decomp.models.component_model import ComponentModel
@@ -127,7 +129,7 @@ class _HiddenActsAccumulator:
 
 
 @register_metric
-class StochasticHiddenActsReconLoss:
+class StochasticHiddenActsReconLoss(Metric[StochasticHiddenActsReconLossConfig]):
     """Reconstruction loss between target and stochastic hidden activations when sampling with stochastic masks."""
 
     section = "loss"
@@ -147,9 +149,11 @@ class StochasticHiddenActsReconLoss:
         self.device = device
         self._accum = _HiddenActsAccumulator(device)
 
+    @override
     def reset(self) -> None:
         self._accum.reset()
 
+    @override
     def update(self, ctx: MetricContext) -> Tensor:
         wd = ctx.weight_deltas if ctx.config.use_delta_component else None
         per_module = _stochastic_hidden_acts_update(
@@ -163,7 +167,8 @@ class StochasticHiddenActsReconLoss:
         sum_loss, n = self._accum.accumulate(per_module)
         return sum_loss / n
 
-    def compute(self) -> dict[str, Float[Tensor, ""]]:
+    @override
+    def compute(self) -> MetricResult:
         return compute_per_module_metrics(
             class_name=type(self).__name__,
             per_module_sum_mse=self._accum.per_module_sum_mse,
@@ -172,7 +177,7 @@ class StochasticHiddenActsReconLoss:
 
 
 @register_metric
-class CIHiddenActsReconLoss:
+class CIHiddenActsReconLoss(Metric[CIHiddenActsReconLossConfig]):
     """Reconstruction loss between target and component hidden activations when masking with CI values."""
 
     section = "loss"
@@ -188,9 +193,11 @@ class CIHiddenActsReconLoss:
         self.device = device
         self._accum = _HiddenActsAccumulator(device)
 
+    @override
     def reset(self) -> None:
         self._accum.reset()
 
+    @override
     def update(self, ctx: MetricContext) -> None:
         target_acts = self.model(ctx.batch, cache_type="output").cache
         mask_infos = make_mask_infos(ctx.ci.lower_leaky, weight_deltas_and_masks=None)
@@ -200,7 +207,8 @@ class CIHiddenActsReconLoss:
         self._accum.accumulate(per_module)
         return None
 
-    def compute(self) -> dict[str, Float[Tensor, ""]]:
+    @override
+    def compute(self) -> MetricResult:
         return compute_per_module_metrics(
             class_name=type(self).__name__,
             per_module_sum_mse=self._accum.per_module_sum_mse,

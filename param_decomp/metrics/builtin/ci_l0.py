@@ -1,11 +1,12 @@
 import re
 from collections import defaultdict
+from typing import override
 
 import torch
 import wandb.plot
 from torch.distributed import ReduceOp
 
-from param_decomp.metrics.base import MetricConfig
+from param_decomp.metrics.base import Metric, MetricConfig, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
 from param_decomp.models.component_model import ComponentModel
@@ -18,7 +19,7 @@ class CI_L0Config(MetricConfig):
 
 
 @register_metric
-class CI_L0:
+class CI_L0(Metric[CI_L0Config]):
     """L0 metric for CI values."""
 
     section = "l0"
@@ -31,10 +32,12 @@ class CI_L0:
         self.model = model
         self.reset()
 
+    @override
     def reset(self) -> None:
         self.l0_values: defaultdict[str, list[float]] = defaultdict(list)
         self.threshold: float | None = None
 
+    @override
     def update(self, ctx: MetricContext) -> None:
         threshold = ctx.config.ci_alive_threshold
         self.threshold = threshold
@@ -52,7 +55,8 @@ class CI_L0:
             self.l0_values[group_name].append(group_sum)
         return None
 
-    def compute(self) -> dict[str, float | wandb.plot.CustomChart]:
+    @override
+    def compute(self) -> MetricResult:
         assert self.threshold is not None, "compute called before any update"
         out: dict[str, float | wandb.plot.CustomChart] = {}
         table_data = []

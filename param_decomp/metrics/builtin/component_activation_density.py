@@ -1,10 +1,11 @@
+from typing import override
+
 import torch
 from einops import reduce
-from PIL import Image
 from torch import Tensor
 from torch.distributed import ReduceOp
 
-from param_decomp.metrics.base import MetricConfig
+from param_decomp.metrics.base import Metric, MetricConfig, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
 from param_decomp.models.component_model import ComponentModel
@@ -17,7 +18,7 @@ class ComponentActivationDensityConfig(MetricConfig):
 
 
 @register_metric
-class ComponentActivationDensity:
+class ComponentActivationDensity(Metric[ComponentActivationDensityConfig]):
     """Activation density for each component."""
 
     section = "figures"
@@ -33,6 +34,7 @@ class ComponentActivationDensity:
         self.device = device
         self.reset()
 
+    @override
     def reset(self) -> None:
         self.n_examples: Tensor = torch.zeros((), device=self.device, dtype=torch.long)
         self.component_activation_counts: dict[str, Tensor] = {
@@ -40,6 +42,7 @@ class ComponentActivationDensity:
             for module_name in self.model.components
         }
 
+    @override
     def update(self, ctx: MetricContext) -> None:
         n_examples_this_batch = next(iter(ctx.ci.lower_leaky.values())).shape[:-1].numel()
         self.n_examples += n_examples_this_batch
@@ -50,7 +53,8 @@ class ComponentActivationDensity:
             self.component_activation_counts[module_name] += n_activations_per_component
         return None
 
-    def compute(self) -> dict[str, Image.Image]:
+    @override
+    def compute(self) -> MetricResult:
         activation_densities = {}
         n_examples_reduced = all_reduce(self.n_examples, op=ReduceOp.SUM)
         for module_name in self.model.components:

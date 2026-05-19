@@ -1,10 +1,12 @@
+from typing import override
+
 import torch
 from jaxtyping import Float
 from pydantic import NonNegativeFloat
 from torch import Tensor
 from torch.distributed import ReduceOp
 
-from param_decomp.metrics.base import LossMetricConfig
+from param_decomp.metrics.base import LossMetricConfig, Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
 from param_decomp.models.component_model import ComponentModel
@@ -106,7 +108,7 @@ def importance_minimality_loss(
 
 
 @register_metric
-class ImportanceMinimalityLoss:
+class ImportanceMinimalityLoss(Metric[ImportanceMinimalityLossConfig]):
     """L_p loss on the sum of CI values."""
 
     section = "loss"
@@ -120,10 +122,12 @@ class ImportanceMinimalityLoss:
         self.device = device
         self.reset()
 
+    @override
     def reset(self) -> None:
         self.per_component_sums: dict[str, Float[Tensor, " C"]] = {}
         self.n_examples = torch.zeros((), device=self.device, dtype=torch.long)
 
+    @override
     def update(self, ctx: MetricContext) -> Tensor:
         pnorm = _get_linear_annealed_p(
             current_frac_of_training=ctx.current_frac_of_training,
@@ -152,7 +156,8 @@ class ImportanceMinimalityLoss:
             world_size=world_size,
         )
 
-    def compute(self) -> Float[Tensor, ""]:
+    @override
+    def compute(self) -> MetricResult:
         reduced_sums = {
             k: all_reduce(v, op=ReduceOp.SUM) for k, v in self.per_component_sums.items()
         }

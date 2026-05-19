@@ -7,7 +7,7 @@ eval time additionally tracks hidden-activation MSE breakdowns. The optimizer lo
 that needs to bracket `total_loss.backward()`.
 """
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 
 import torch
 from jaxtyping import Float
@@ -18,6 +18,7 @@ from param_decomp.configs import (
     PersistentPGDReconSubsetLossConfig,
     _PersistentPGDBaseConfig,
 )
+from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.builtin.hidden_acts_recon_loss import (
     calc_hidden_acts_mse,
     compute_per_module_metrics,
@@ -29,7 +30,7 @@ from param_decomp.persistent_pgd import PersistentPGDState, get_ppgd_mask_infos
 from param_decomp.utils.distributed_utils import all_reduce
 
 
-class _PersistentPGDReconBase:
+class _PersistentPGDReconBase(Metric[_PersistentPGDBaseConfig]):
     """Shared logic between all-layers and subset PPGD recon metrics."""
 
     section: ClassVar[str] = "loss"
@@ -63,12 +64,14 @@ class _PersistentPGDReconBase:
             reconstruction_loss=ctx.reconstruction_loss,
         )
 
+    @override
     def reset(self) -> None:
         self._recon_sum_loss = torch.zeros((), device=self.device)
         self._recon_n_examples = torch.zeros((), device=self.device, dtype=torch.long)
         self._hidden_sum_mse: dict[str, Tensor] = {}
         self._hidden_n: dict[str, Tensor] = {}
 
+    @override
     def update(self, ctx: MetricContext) -> Tensor | None:
         if ctx.current_frac_of_training < self.cfg.start_frac:
             return None
@@ -130,7 +133,8 @@ class _PersistentPGDReconBase:
             self._hidden_sum_mse[key] += mse.detach()
             self._hidden_n[key] += n
 
-    def compute(self) -> dict[str, Float[Tensor, ""]]:
+    @override
+    def compute(self) -> MetricResult:
         out: dict[str, Float[Tensor, ""]] = {}
         if self._hidden_sum_mse:
             class_name = f"{type(self).__name__}/hidden_acts"

@@ -11,8 +11,10 @@ loss-capable metrics) and once per eval batch. Eval reads `compute()` after the 
 before adding to avoid retaining the autograd graph across training steps.
 """
 
+from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from numbers import Number
-from typing import Any, ClassVar, Protocol
+from typing import Any, ClassVar
 
 import wandb.plot
 from PIL import Image
@@ -35,24 +37,22 @@ class LossMetricConfig(MetricConfig):
     coeff: float | None = None
 
 
-MetricResult = Tensor | dict[str, Tensor | Number | str | Image.Image | wandb.plot.CustomChart]
+MetricResult = (
+    Tensor | Mapping[str, Tensor | float | Number | str | Image.Image | wandb.plot.CustomChart]
+)
 
 
-class Metric(Protocol):
-    """Structural protocol that every metric must satisfy.
-
-    Concrete metric classes should not subclass `Metric`; Python structural Protocols are
-    satisfied implicitly by matching the API. This avoids multi-inheritance and override-variance
-    issues with concrete return types.
-    """
+class Metric[TConfig: MetricConfig](ABC):
+    """Abstract base class that every metric must subclass."""
 
     section: ClassVar[str]
     config_type: ClassVar[type[MetricConfig]]
-    slow: ClassVar[bool]
+    slow: ClassVar[bool] = False
     short_name: ClassVar[str | None]
-    cfg: MetricConfig
+    cfg: TConfig
 
-    def __init__(self, cfg: MetricConfig, *, model: Any, device: str) -> None:
+    @abstractmethod
+    def __init__(self, cfg: TConfig, *, model: Any, device: str) -> None:
         """Initialize one metric instance from validated config and shared runtime objects.
 
         `model` is the component model being optimized or evaluated, and `device` is the target
@@ -60,6 +60,7 @@ class Metric(Protocol):
         """
         ...
 
+    @abstractmethod
     def reset(self) -> None:
         """Clear accumulated state before an evaluation pass.
 
@@ -69,6 +70,7 @@ class Metric(Protocol):
         """
         ...
 
+    @abstractmethod
     def update(self, ctx: Any) -> Tensor | None:
         """Process one batch from the metric context and update metric state.
 
@@ -81,6 +83,7 @@ class Metric(Protocol):
         """
         ...
 
+    @abstractmethod
     def compute(self) -> MetricResult:
         """Return the scalar, artifact, or keyed metric outputs accumulated by `update()`."""
         ...

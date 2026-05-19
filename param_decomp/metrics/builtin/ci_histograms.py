@@ -1,11 +1,11 @@
 from collections import defaultdict
+from typing import override
 
 import torch
 from jaxtyping import Float
-from PIL import Image
 from torch import Tensor
 
-from param_decomp.metrics.base import MetricConfig
+from param_decomp.metrics.base import Metric, MetricConfig, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
 from param_decomp.models.component_model import ComponentModel
@@ -18,7 +18,7 @@ class CIHistogramsConfig(MetricConfig):
 
 
 @register_metric
-class CIHistograms:
+class CIHistograms(Metric[CIHistogramsConfig]):
     section = "figures"
     config_type = CIHistogramsConfig
     slow = True
@@ -29,11 +29,13 @@ class CIHistograms:
         self.device = device
         self.reset()
 
+    @override
     def reset(self) -> None:
         self.batches_seen = 0
         self.lower_leaky_causal_importances = defaultdict[str, list[Float[Tensor, "... C"]]](list)
         self.pre_sigmoid_causal_importances = defaultdict[str, list[Float[Tensor, "... C"]]](list)
 
+    @override
     def update(self, ctx: MetricContext) -> None:
         if self.cfg.n_batches_accum is not None and self.batches_seen >= self.cfg.n_batches_accum:
             return None
@@ -44,7 +46,8 @@ class CIHistograms:
             self.pre_sigmoid_causal_importances[k].append(v.detach())
         return None
 
-    def compute(self) -> dict[str, Image.Image]:
+    @override
+    def compute(self) -> MetricResult:
         if self.batches_seen == 0:
             raise RuntimeError("No batches seen yet")
         lower_leaky_cis: dict[str, Float[Tensor, "... C"]] = {}

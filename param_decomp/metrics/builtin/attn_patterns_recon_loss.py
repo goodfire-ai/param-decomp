@@ -1,6 +1,7 @@
 import math
+from abc import ABC
 from fnmatch import fnmatch
-from typing import Self
+from typing import Self, override
 
 import torch
 import torch.nn.functional as F
@@ -9,7 +10,7 @@ from pydantic import model_validator
 from torch import Tensor, nn
 from torch.distributed import ReduceOp
 
-from param_decomp.metrics.base import MetricConfig
+from param_decomp.metrics.base import Metric, MetricConfig, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
 from param_decomp.models.component_model import ComponentModel
@@ -173,7 +174,7 @@ def _attn_patterns_recon_loss_update(
     return sum_kl, n_distributions
 
 
-class _AttnPatternsBase:
+class _AttnPatternsBase(Metric[_AttnPatternsBaseConfig], ABC):
     """Shared init/accumulator/compute for both attn-pattern metrics."""
 
     def __init__(self, cfg: _AttnPatternsBaseConfig, *, model: ComponentModel, device: str) -> None:
@@ -187,6 +188,7 @@ class _AttnPatternsBase:
         self.attn_modules = _resolve_attn_modules(model, self.q_paths)
         self.reset()
 
+    @override
     def reset(self) -> None:
         self.sum_kl = torch.zeros((), device=self.device)
         self.n_distributions = torch.zeros((), device=self.device, dtype=torch.long)
@@ -196,7 +198,8 @@ class _AttnPatternsBase:
         self.n_distributions += n
         return sum_kl / n
 
-    def compute(self) -> Float[Tensor, ""]:
+    @override
+    def compute(self) -> MetricResult:
         sum_kl = all_reduce(self.sum_kl, op=ReduceOp.SUM)
         n_distributions = all_reduce(self.n_distributions, op=ReduceOp.SUM)
         return sum_kl / n_distributions
@@ -210,6 +213,7 @@ class CIMaskedAttnPatternsReconLoss(_AttnPatternsBase):
     config_type = CIMaskedAttnPatternsReconLossConfig
     short_name = "CIAttnRecon"
 
+    @override
     def update(self, ctx: MetricContext) -> Tensor:
         mask_infos = make_mask_infos(ctx.ci.lower_leaky, weight_deltas_and_masks=None)
         sum_kl, n = _attn_patterns_recon_loss_update(
@@ -234,6 +238,7 @@ class StochasticAttnPatternsReconLoss(_AttnPatternsBase):
     config_type = StochasticAttnPatternsReconLossConfig
     short_name = "StochAttnRecon"
 
+    @override
     def update(self, ctx: MetricContext) -> Tensor:
         wd = ctx.weight_deltas if ctx.config.use_delta_component else None
         mask_infos_list = [

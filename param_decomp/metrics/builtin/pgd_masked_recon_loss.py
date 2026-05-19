@@ -1,10 +1,11 @@
-from typing import Any
+from typing import Any, override
 
 import torch
 from jaxtyping import Float
 from torch import Tensor
 from torch.distributed import ReduceOp
 
+from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.pgd_utils import PGDConfig, pgd_masked_recon_loss_update
 from param_decomp.metrics.registry import register_metric
@@ -43,7 +44,7 @@ def pgd_recon_loss(
 
 
 @register_metric
-class PGDReconLoss:
+class PGDReconLoss(Metric[PGDReconLossConfig]):
     """Recon loss when masking with adversarially-optimized values and routing to all component
     layers."""
 
@@ -57,10 +58,12 @@ class PGDReconLoss:
         self.device = device
         self.reset()
 
+    @override
     def reset(self) -> None:
         self.sum_loss = torch.zeros((), device=self.device)
         self.n_examples = torch.zeros((), device=self.device, dtype=torch.long)
 
+    @override
     def update(self, ctx: MetricContext) -> Tensor:
         wd = ctx.weight_deltas if ctx.config.use_delta_component else None
         sum_loss, n = pgd_masked_recon_loss_update(
@@ -77,7 +80,8 @@ class PGDReconLoss:
         self.n_examples += n
         return sum_loss / n
 
-    def compute(self) -> Float[Tensor, ""]:
+    @override
+    def compute(self) -> MetricResult:
         sum_loss = all_reduce(self.sum_loss, op=ReduceOp.SUM)
         n_examples = all_reduce(self.n_examples, op=ReduceOp.SUM)
         return sum_loss / n_examples

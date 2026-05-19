@@ -1,4 +1,4 @@
-from typing import ClassVar
+from typing import ClassVar, override
 
 import einops
 import torch
@@ -8,7 +8,7 @@ from torch import Tensor
 from torch.distributed import ReduceOp
 
 from param_decomp.configs import SamplingType
-from param_decomp.metrics.base import MetricConfig
+from param_decomp.metrics.base import Metric, MetricConfig, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
 from param_decomp.models.component_model import ComponentModel
@@ -24,7 +24,7 @@ class CEandKLLossesConfig(MetricConfig):
 
 
 @register_metric
-class CEandKLLosses:
+class CEandKLLosses(Metric[CEandKLLossesConfig]):
     """CE and KL losses for different masking strategies.
 
     NOTE: Assumes all batches and sequences are the same size.
@@ -59,12 +59,14 @@ class CEandKLLosses:
         self.device = device
         self.reset()
 
+    @override
     def reset(self) -> None:
         self.loss_sums: dict[str, Tensor] = {
             key: torch.zeros((), device=self.device) for key in self.loss_keys
         }
         self.n_positions: Int[Tensor, ""] = torch.zeros((), device=self.device, dtype=torch.long)
 
+    @override
     def update(self, ctx: MetricContext) -> None:
         assert ctx.batch.ndim == 2, "Batch must be 2D (batch, seq_len)"
         ce_losses = self._calc_ce_and_kl_losses(
@@ -80,7 +82,8 @@ class CEandKLLosses:
         self.n_positions += n_positions_in_batch
         return None
 
-    def compute(self) -> dict[str, float]:
+    @override
+    def compute(self) -> MetricResult:
         losses = {}
         n_positions_reduced = all_reduce(self.n_positions, op=ReduceOp.SUM).item()
         for key in self.loss_keys:

@@ -1,4 +1,4 @@
-from typing import Annotated, Any
+from typing import Annotated, Any, override
 
 import torch
 from jaxtyping import Float
@@ -7,7 +7,7 @@ from torch import Tensor
 from torch.distributed import ReduceOp
 
 from param_decomp.configs import SamplingType, SubsetRoutingType, UniformKSubsetRoutingConfig
-from param_decomp.metrics.base import LossMetricConfig
+from param_decomp.metrics.base import LossMetricConfig, Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
 from param_decomp.models.batch_and_loss_fns import ReconstructionLoss
@@ -82,7 +82,7 @@ def stochastic_recon_subset_loss(
 
 
 @register_metric
-class StochasticReconSubsetLoss:
+class StochasticReconSubsetLoss(Metric[StochasticReconSubsetLossConfig]):
     """Recon loss when sampling with stochastic masks and routing to subsets of component layers."""
 
     section = "loss"
@@ -98,10 +98,12 @@ class StochasticReconSubsetLoss:
         self.router = get_subset_router(cfg.routing, device)
         self.reset()
 
+    @override
     def reset(self) -> None:
         self.sum_loss = torch.zeros((), device=self.device)
         self.n_examples = torch.zeros((), device=self.device, dtype=torch.long)
 
+    @override
     def update(self, ctx: MetricContext) -> Tensor:
         wd = ctx.weight_deltas if ctx.config.use_delta_component else None
         sum_loss, n = _stochastic_recon_subset_loss_update(
@@ -119,7 +121,8 @@ class StochasticReconSubsetLoss:
         self.n_examples += n
         return sum_loss / n
 
-    def compute(self) -> Float[Tensor, ""]:
+    @override
+    def compute(self) -> MetricResult:
         sum_loss = all_reduce(self.sum_loss, op=ReduceOp.SUM)
         n_examples = all_reduce(self.n_examples, op=ReduceOp.SUM)
         return sum_loss / n_examples

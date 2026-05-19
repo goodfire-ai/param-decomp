@@ -28,7 +28,7 @@ from param_decomp.eval import evaluate
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.log import logger
 from param_decomp.metrics import METRIC_REGISTRY
-from param_decomp.metrics.base import LossMetricConfig, Metric
+from param_decomp.metrics.base import LossMetricConfig, Metric, MetricConfig
 from param_decomp.metrics.context import MetricContext
 from param_decomp.models.batch_and_loss_fns import (
     PDTarget,
@@ -138,14 +138,14 @@ def _build_metric_instances(
     config: PDConfig,
     component_model: ComponentModel,
     device: str,
-) -> tuple[dict[str, Metric], dict[str, Metric]]:
+) -> tuple[dict[str, Metric[MetricConfig]], dict[str, Metric[MetricConfig]]]:
     """Instantiate one metric instance per class-name key. Same model+device for both buckets."""
-    loss_instances: dict[str, Metric] = {}
+    loss_instances: dict[str, Metric[MetricConfig]] = {}
     for metric_name, cfg in config.loss_metrics.items():
         cls = METRIC_REGISTRY[metric_name]
         loss_instances[metric_name] = cls(cfg, model=component_model, device=device)
 
-    eval_instances: dict[str, Metric] = {}
+    eval_instances: dict[str, Metric[MetricConfig]] = {}
     for metric_name, cfg in config.eval_metrics.items():
         cls = METRIC_REGISTRY[metric_name]
         eval_instances[metric_name] = cls(cfg, model=component_model, device=device)
@@ -154,7 +154,7 @@ def _build_metric_instances(
 
 
 def compute_losses(
-    loss_instances: dict[str, Metric],
+    loss_instances: dict[str, Metric[MetricConfig]],
     ctx: MetricContext,
 ) -> dict[str, Float[Tensor, ""] | None]:
     """Compute per-metric live loss tensors for the current training step.

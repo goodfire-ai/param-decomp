@@ -1,11 +1,11 @@
-from typing import Any
+from typing import Any, override
 
 import torch
 from jaxtyping import Float
 from torch import Tensor
 from torch.distributed import ReduceOp
 
-from param_decomp.metrics.base import LossMetricConfig
+from param_decomp.metrics.base import LossMetricConfig, Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
 from param_decomp.models.batch_and_loss_fns import ReconstructionLoss
@@ -37,7 +37,7 @@ def _unmasked_recon_loss_update(
 
 
 @register_metric
-class UnmaskedReconLoss:
+class UnmaskedReconLoss(Metric[UnmaskedReconLossConfig]):
     """Recon loss using the unmasked components and without the delta component."""
 
     section = "loss"
@@ -50,10 +50,12 @@ class UnmaskedReconLoss:
         self.device = device
         self.reset()
 
+    @override
     def reset(self) -> None:
         self.sum_loss = torch.zeros((), device=self.device)
         self.n_examples = torch.zeros((), device=self.device, dtype=torch.long)
 
+    @override
     def update(self, ctx: MetricContext) -> Tensor:
         sum_loss, n = _unmasked_recon_loss_update(
             model=self.model,
@@ -65,7 +67,8 @@ class UnmaskedReconLoss:
         self.n_examples += n
         return sum_loss / n
 
-    def compute(self) -> Float[Tensor, ""]:
+    @override
+    def compute(self) -> MetricResult:
         sum_loss = all_reduce(self.sum_loss, op=ReduceOp.SUM)
         n_examples = all_reduce(self.n_examples, op=ReduceOp.SUM)
         return sum_loss / n_examples

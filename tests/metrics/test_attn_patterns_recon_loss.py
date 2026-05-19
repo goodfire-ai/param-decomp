@@ -145,7 +145,7 @@ class TestAttnPatternsReconLoss:
             is_eval=True,
         )
         metric.update(ctx)
-        loss = metric.compute()
+        loss = cast(torch.Tensor, metric.compute())
 
         assert loss.item() < 1e-4, f"Expected KL ≈ 0 with identity decomposition, got {loss.item()}"
 
@@ -186,7 +186,7 @@ class TestAttnPatternsReconLoss:
             is_eval=True,
         )
         metric.update(ctx)
-        loss = metric.compute()
+        loss = cast(torch.Tensor, metric.compute())
 
         assert loss.item() > 0.01, f"Expected KL > 0 with random init, got {loss.item()}"
 
@@ -235,7 +235,7 @@ class TestAttnPatternsReconLoss:
             is_eval=True,
         )
         metric.update(ctx)
-        loss = metric.compute()
+        loss = cast(torch.Tensor, metric.compute())
 
         assert loss.item() < 1e-4, f"Expected KL ≈ 0 with identity decomposition, got {loss.item()}"
 
@@ -278,7 +278,7 @@ class TestAttnPatternsReconLoss:
             is_eval=True,
         )
         metric.update(ctx)
-        loss = metric.compute()
+        loss = cast(torch.Tensor, metric.compute())
 
         assert loss.item() > 0.01, f"Expected KL > 0 with random init, got {loss.item()}"
 
@@ -327,7 +327,7 @@ class TestCAttnPatternsReconLoss:
             is_eval=True,
         )
         metric.update(ctx)
-        loss = metric.compute()
+        loss = cast(torch.Tensor, metric.compute())
 
         assert loss.item() < 1e-4, f"Expected KL ≈ 0 with identity decomposition, got {loss.item()}"
 
@@ -368,7 +368,7 @@ class TestCAttnPatternsReconLoss:
             is_eval=True,
         )
         metric.update(ctx)
-        loss = metric.compute()
+        loss = cast(torch.Tensor, metric.compute())
 
         assert loss.item() > 0.01, f"Expected KL > 0 with random init, got {loss.item()}"
 
@@ -450,7 +450,7 @@ class TestRoPEAttnPatternsReconLoss:
             is_eval=True,
         )
         metric.update(ctx)
-        loss = metric.compute()
+        loss = cast(torch.Tensor, metric.compute())
 
         assert loss.item() < 1e-4, f"Expected KL ≈ 0 with identity decomposition, got {loss.item()}"
 
@@ -491,7 +491,7 @@ class TestRoPEAttnPatternsReconLoss:
             is_eval=True,
         )
         metric.update(ctx)
-        loss = metric.compute()
+        loss = cast(torch.Tensor, metric.compute())
 
         assert loss.item() > 0.01, f"Expected KL > 0 with random init, got {loss.item()}"
 

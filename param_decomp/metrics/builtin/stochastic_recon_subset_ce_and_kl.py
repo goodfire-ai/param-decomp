@@ -1,5 +1,6 @@
 from collections import defaultdict
 from fnmatch import fnmatch
+from typing import override
 
 import einops
 import torch
@@ -9,7 +10,7 @@ from torch import Tensor
 from torch.distributed import ReduceOp
 
 from param_decomp.configs import SamplingType
-from param_decomp.metrics.base import MetricConfig
+from param_decomp.metrics.base import LossMetricConfig, Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
 from param_decomp.models.component_model import ComponentModel
@@ -20,13 +21,13 @@ from param_decomp.utils.distributed_utils import all_reduce
 from param_decomp.utils.general_utils import calc_kl_divergence_lm
 
 
-class StochasticReconSubsetCEAndKLConfig(MetricConfig):
+class StochasticReconSubsetCEAndKLConfig(LossMetricConfig):
     include_patterns: dict[str, list[str]] | None
     exclude_patterns: dict[str, list[str]] | None
 
 
 @register_metric
-class StochasticReconSubsetCEAndKL:
+class StochasticReconSubsetCEAndKL(Metric[StochasticReconSubsetCEAndKLConfig]):
     """Compute reconstruction loss for specific subsets of components."""
 
     section = "subset_worst"
@@ -71,9 +72,11 @@ class StochasticReconSubsetCEAndKL:
             self.subset_modules[subset_name] = remaining
         self.reset()
 
+    @override
     def reset(self) -> None:
         self.metric_values: defaultdict[str, list[float]] = defaultdict(list)
 
+    @override
     def update(self, ctx: MetricContext) -> None:
         losses = self._calc_subset_losses(
             batch=ctx.batch,
@@ -88,8 +91,9 @@ class StochasticReconSubsetCEAndKL:
             self.metric_values[key].append(value)
         return None
 
-    def compute(self) -> dict[str, float | str]:
-        results: dict[str, float | str] = {}
+    @override
+    def compute(self) -> MetricResult:
+        results: MetricResult = {}
         for key, vals in self.metric_values.items():
             local_sum = torch.tensor(sum(vals), device=self.device)
             local_count = torch.tensor(len(vals), device=self.device)
