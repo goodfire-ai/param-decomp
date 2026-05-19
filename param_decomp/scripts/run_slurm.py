@@ -39,7 +39,6 @@ _CUDA_FLAGS = {
 
 def launch_slurm(
     launchable: Run | SweepSpec,
-    runtime: RuntimeConfig,
     n_agents: int | None,
     job_suffix: str | None,
     partition: str,
@@ -64,7 +63,8 @@ def launch_slurm(
 
     logger.info(f"Launch ID: {launch_id}")
 
-    n_gpus = _n_gpus_for(runtime)
+    # All runs in a sweep share a runtime (asserted by SweepSpec.__post_init__).
+    n_gpus = _n_gpus_for(runs[0].runtime)
     logger.info(f"Running on {_format_compute_info(n_gpus)}")
 
     if is_sweep:

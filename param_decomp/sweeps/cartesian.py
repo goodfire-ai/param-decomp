@@ -8,20 +8,19 @@ zero-arg function returning a ``SweepSpec`` works. This module ships
 pattern without writing the product loop themselves.
 """
 
+import copy
 import itertools
 from typing import Any
 
 import yaml
 
-from param_decomp.experiments.driver import load_driver
 from param_decomp.run import Run
 from param_decomp.settings import REPO_ROOT
 from param_decomp.sweeps.spec import SweepSpec
-from param_decomp.utils.run_utils import apply_nested_updates
 
 
 def cartesian_product(
-    base_config: Run | dict[str, Any],
+    base_config: dict[str, Any],
     grid: dict[str, list[Any]],
     *,
     description: str,
@@ -39,21 +38,22 @@ def cartesian_product(
             f"grid['{axis}'] must be a non-empty list, got {values!r}"
         )
 
+    base_config_data = dict(base_config)
+    base_config_data.pop("run_id", None)
+
     axes = list(grid.keys())
     value_lists = [grid[a] for a in axes]
-    base_config_data = _config_data(base_config)
-    config_type = load_driver(driver_path).config_type
     runs: list[Run] = []
     for combo in itertools.product(*value_lists):
         updates = dict(zip(axes, combo, strict=True))
-        config_data = apply_nested_updates(base_config_data, updates)
+        config_data = _apply_nested_updates(base_config_data, updates)
         name = "_".join(f"{_short_axis(a)}={_short_value(v)}" for a, v in updates.items())
         logging_data = {
             **config_data.get("logging", {}),
             "wandb_run_name": name,
             "view_meta": dict(updates),
         }
-        run = config_type.model_validate(
+        run = Run.model_validate(
             {**config_data, "driver_path": driver_path, "logging": logging_data}
         )
         runs.append(run)
@@ -92,7 +92,23 @@ def _short_value(v: Any) -> str:
     return str(v).replace("/", "_")
 
 
-def _config_data(config: Run | dict[str, Any]) -> dict[str, Any]:
-    data = config.model_dump(mode="json") if isinstance(config, Run) else dict(config)
-    data.pop("run_id", None)
-    return data
+def _apply_nested_updates(base_dict: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+    """Deep-merge dot-pathed ``updates`` into a copy of ``base_dict``.
+
+    Example: ``{"pd.loss_metrics.importance_minimality.coeff": 0.1}`` sets
+    ``result["pd"]["loss_metrics"]["importance_minimality"]["coeff"] = 0.1``.
+    """
+    result = copy.deepcopy(base_dict)
+    for key, value in updates.items():
+        if "." in key:
+            keys = key.split(".")
+            current: dict[str, Any] = result
+            for k in keys[:-1]:
+                if k not in current:
+                    current[k] = {}
+                assert isinstance(current[k], dict)
+                current = current[k]
+            current[keys[-1]] = value
+        else:
+            result[key] = value
+    return result

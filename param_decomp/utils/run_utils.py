@@ -1,6 +1,5 @@
 """Utilities for managing experiment run directories and IDs."""
 
-import copy
 import json
 import os
 import secrets
@@ -42,22 +41,14 @@ def _save_text(data: str, path: Path | str, encoding: str = "utf-8") -> None:
 
 
 def save_file(data: dict[str, Any] | Any, path: Path | str, **kwargs: Any) -> None:
-    """Save a file.
+    """Write ``data`` to ``path``, dispatching on the file extension.
 
-    NOTE: This function was originally designed to save files with specific permissions,
-    bypassing the system's umask. This is not needed anymore, but we're keeping this
-    abstraction for convenience and brevity.
+    Ensures the parent directory exists. Format:
 
-    File type is determined by extension:
-    - .json: Save as JSON
-    - .yaml/.yml: Save as YAML
-    - .pth/.pt: Save as PyTorch model
-    - .txt or other: Save as plain text (data must be string)
-
-    Args:
-        data: Data to save (format depends on file type)
-        path: File path to save to
-        **kwargs: Additional arguments passed to the specific save function
+    - ``.json`` → JSON via ``json.dump``
+    - ``.yaml`` / ``.yml`` → YAML via ``yaml.dump`` (sort_keys=False)
+    - ``.pth`` / ``.pt`` → ``torch.save``
+    - anything else → plain text (``data`` must be a string)
     """
     path = Path(path)
     suffix = path.suffix.lower()
@@ -74,37 +65,6 @@ def save_file(data: dict[str, Any] | Any, path: Path | str, **kwargs: Any) -> No
         # Default to text file
         assert isinstance(data, str), f"For {suffix} files, data must be a string, got {type(data)}"
         _save_text(data, path, encoding=kwargs.get("encoding", "utf-8"))
-
-
-def apply_nested_updates(base_dict: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
-    """Apply nested updates to a dictionary with dot-flattened keys.
-
-    Example: `{"pd.loss_metrics.importance_minimality.coeff": 0.1}` deep-merges into
-    `base_dict["pd"]["loss_metrics"]["importance_minimality"]["coeff"] = 0.1`.
-
-    Args:
-        base_dict: The base configuration dictionary
-        updates: Dictionary of flattened key-value pairs
-
-    Returns:
-        Updated dictionary (deep copy, original unchanged)
-    """
-    result = copy.deepcopy(base_dict)
-
-    for key, value in updates.items():
-        if "." in key:
-            keys = key.split(".")
-            current: dict[str, Any] = result
-            for k in keys[:-1]:
-                if k not in current:
-                    current[k] = {}
-                assert isinstance(current[k], dict)
-                current = current[k]
-            current[keys[-1]] = value
-        else:
-            result[key] = value
-
-    return result
 
 
 RunType = Literal[

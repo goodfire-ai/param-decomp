@@ -8,13 +8,14 @@ from typing import Any
 from torch.utils.data import DataLoader
 
 from param_decomp.configs import PDConfig
-from param_decomp.experiments.driver import ExperimentDriver, load_driver
+from param_decomp.driver_path import load_driver
+from param_decomp.experiments.driver import ExperimentDriver
 from param_decomp.models.batch_and_loss_fns import PDTarget
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.run import RUN_METADATA_FILENAME, Run
 from param_decomp.types import ModelPath
 from param_decomp.utils.distributed_utils import DistributedState
-from param_decomp.utils.run_files import resolve_config_path, resolve_run_files
+from param_decomp.utils.run_files import resolve_run_files
 
 
 @dataclass
@@ -38,11 +39,6 @@ class PDRun:
             checkpoint_path=files.checkpoint_path,
         )
 
-    @classmethod
-    def run_from_path(cls, path: ModelPath) -> Run:
-        """Load just the `Run` config, without resolving or downloading checkpoints."""
-        return Run.from_file(resolve_config_path(path, config_filename=RUN_METADATA_FILENAME))
-
     @cached_property
     def driver(self) -> ExperimentDriver[Any] | None:
         return load_driver(self.run.driver_path) if self.run.driver_path else None
@@ -62,9 +58,6 @@ class PDRun:
             "Run has no driver. Use `load_component_model(path, target=...)` with an "
             "explicit target."
         )
-        assert isinstance(self.run, self.driver.config_type), (
-            f"Run has type {type(self.run).__name__}, expected {self.driver.config_type.__name__}"
-        )
         return self.driver.build_target(self.run)
 
     def load_dataloaders(
@@ -77,9 +70,6 @@ class PDRun:
     ) -> tuple[DataLoader[Any], DataLoader[Any]]:
         assert self.driver is not None, (
             "Run has no driver. Build dataloaders explicitly for custom runs."
-        )
-        assert isinstance(self.run, self.driver.config_type), (
-            f"Run has type {type(self.run).__name__}, expected {self.driver.config_type.__name__}"
         )
         return self.driver.build_dataloaders(
             self.run,

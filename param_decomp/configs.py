@@ -1,5 +1,6 @@
 """Config classes of various types"""
 
+from functools import cached_property
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
@@ -506,19 +507,28 @@ MetricConfigType = LossMetricConfigType | EvalOnlyMetricConfigType
 class _LossCapableMetricsConfig(BaseConfig):
     """Shared loss-capable metric fields used by both `LossMetricsConfig` and `EvalMetricsConfig`."""
 
+    # general
     faithfulness: FaithfulnessLossConfig | None = None
     importance_minimality: ImportanceMinimalityLossConfig | None = None
     unmasked_recon: UnmaskedReconLossConfig | None = None
+
+    # CI-masked reconstruction
     ci_masked_recon: CIMaskedReconLossConfig | None = None
     ci_masked_recon_subset: CIMaskedReconSubsetLossConfig | None = None
     ci_masked_recon_layerwise: CIMaskedReconLayerwiseLossConfig | None = None
+
+    # stochastic reconstruction
     stochastic_recon: StochasticReconLossConfig | None = None
     stochastic_recon_subset: StochasticReconSubsetLossConfig | None = None
     stochastic_recon_layerwise: StochasticReconLayerwiseLossConfig | None = None
     stochastic_hidden_acts_recon: StochasticHiddenActsReconLossConfig | None = None
+
+    # PGD reconstruction
     pgd_recon: PGDReconLossConfig | None = None
     pgd_recon_subset: PGDReconSubsetLossConfig | None = None
     pgd_recon_layerwise: PGDReconLayerwiseLossConfig | None = None
+
+    # persistent PGD reconstruction
     persistent_pgd_recon: PersistentPGDReconLossConfig | None = None
     persistent_pgd_recon_subset: PersistentPGDReconSubsetLossConfig | None = None
 
@@ -566,19 +576,11 @@ SamplingType = Literal["continuous", "binomial"]
 
 
 class RuntimeConfig(BaseConfig):
-    """Compute substrate the algorithm runs on.
+    """Compute substrate: device, precision, data-parallelism degree.
 
-    The three configs form a determinism ladder:
-
-    1. Same ``PDConfig`` + same ``RuntimeConfig`` → bit-identical trained weights.
-    2. Same ``PDConfig``, different ``RuntimeConfig`` → same algorithm, weights differ
-       only via numerical effects (precision, device).
-    3. Same ``PDConfig`` + same ``RuntimeConfig``, different ``LoggingConfig`` →
-       bit-identical weights; only what was observed differs.
-
-    ``RuntimeConfig`` is class 2: device placement, precision, parallelism degree —
-    things that perturb numerics without changing the algorithm. Future home for
-    NCCL flags, gradient accumulation steps, fp8 variants, etc.
+    Perturbs numerics but doesn't change the algorithm. Future home for NCCL flags,
+    gradient accumulation steps, fp8 variants, etc. See CLAUDE.md for how the
+    ``PDConfig`` / ``RuntimeConfig`` / ``LoggingConfig`` triple splits.
     """
 
     autocast_bf16: bool = Field(
@@ -610,12 +612,10 @@ class RuntimeConfig(BaseConfig):
 
 
 class LoggingConfig(BaseConfig):
-    """Observation-only settings: cadence + eval-only metrics + display thresholds.
+    """Observation-only settings: cadence, eval-only metrics, display thresholds.
 
-    Determinism class 3 in the PDConfig/RuntimeConfig/LoggingConfig ladder: fields
-    here never touch the optimizer. Two runs with identical ``PDConfig`` +
-    ``RuntimeConfig`` and different ``LoggingConfig`` produce bit-identical weights —
-    only what you observed about the run differs.
+    Fields here don't touch the optimizer. See CLAUDE.md for how the
+    ``PDConfig`` / ``RuntimeConfig`` / ``LoggingConfig`` triple splits.
     """
 
     train_log_freq: PositiveInt = Field(
@@ -682,12 +682,10 @@ class LoggingConfig(BaseConfig):
 
 
 class PDConfig(BaseConfig):
-    """Algorithm specification.
+    """Algorithm specification: seed, CI function, losses, optimizers, module info.
 
-    Determinism class 1 in the PDConfig/RuntimeConfig/LoggingConfig ladder: these are
-    the fields that determine the trained weights given a fixed substrate. Two runs
-    with identical ``PDConfig`` and identical ``RuntimeConfig`` produce bit-identical
-    weights; flipping any field here changes what algorithm runs.
+    Flipping any field here changes what algorithm runs. See CLAUDE.md for how the
+    ``PDConfig`` / ``RuntimeConfig`` / ``LoggingConfig`` triple splits.
     """
 
     # --- General ---
@@ -724,7 +722,7 @@ class PDConfig(BaseConfig):
         "Identity operations will be inserted at these modules.",
     )
 
-    @property
+    @cached_property
     def all_module_info(self) -> list[ModulePatternInfoConfig]:
         """Combine target and identity patterns with their C values.
 
