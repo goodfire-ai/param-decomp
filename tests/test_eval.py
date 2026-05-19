@@ -34,14 +34,6 @@ class TestCIHistograms:
     """Test suite for CIHistograms class."""
 
     @pytest.fixture
-    def mock_config(self):
-        """Create a mock PDConfig object."""
-        config = Mock(spec=PDConfig)
-        config.ci_alive_threshold = 0.5
-        config.sigmoid_type = "straight_through"
-        return config
-
-    @pytest.fixture
     def mock_model(self):
         """Create a mock ComponentModel."""
         model = Mock(spec=ComponentModel)

@@ -16,6 +16,7 @@ from param_decomp.utils.distributed_utils import all_reduce
 
 class CI_L0Config(MetricConfig):
     groups: dict[str, list[str]] | None
+    ci_alive_threshold: float = 0.0
 
 
 @register_metric
@@ -35,15 +36,12 @@ class CI_L0(Metric[CI_L0Config]):
     @override
     def reset(self) -> None:
         self.l0_values: defaultdict[str, list[float]] = defaultdict(list)
-        self.threshold: float | None = None
 
     @override
     def update(self, ctx: MetricContext) -> None:
-        threshold = ctx.config.ci_alive_threshold
-        self.threshold = threshold
         group_sums: dict[str, float] = defaultdict(float) if self.cfg.groups else {}
         for layer_name, layer_ci in ctx.ci.lower_leaky.items():
-            l0_val = calc_ci_l_zero(layer_ci, threshold)
+            l0_val = calc_ci_l_zero(layer_ci, self.cfg.ci_alive_threshold)
             self.l0_values[layer_name].append(l0_val)
             if self.cfg.groups:
                 for group_name, patterns in self.cfg.groups.items():
@@ -57,19 +55,19 @@ class CI_L0(Metric[CI_L0Config]):
 
     @override
     def compute(self) -> MetricResult:
-        assert self.threshold is not None, "compute called before any update"
+        threshold = self.cfg.ci_alive_threshold
         out: dict[str, float | wandb.plot.CustomChart] = {}
         table_data = []
         for key, l0s in self.l0_values.items():
             global_sum = all_reduce(torch.tensor(l0s, device=self.device).sum(), op=ReduceOp.SUM)
             global_count = all_reduce(torch.tensor(len(l0s), device=self.device), op=ReduceOp.SUM)
             avg_l0 = (global_sum / global_count).item()
-            out[f"{self.threshold}_{key}"] = avg_l0
+            out[f"{threshold}_{key}"] = avg_l0
             table_data.append((key, avg_l0))
         out["bar_chart"] = wandb.plot.bar(
             table=wandb.Table(columns=["layer", "l0"], data=table_data),
             label="layer",
             value="l0",
-            title=f"L0_{self.threshold}",
+            title=f"L0_{threshold}",
         )
         return out

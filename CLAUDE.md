@@ -115,11 +115,33 @@ including SLURM workers.
 
 ### Per-experiment Configs
 
-Built-in YAML configs are pure experiment configs nested under `pd:`, `target:`, and `data:`:
+Built-in YAML configs are pure experiment configs nested under `pd:`, `logging:`, `runtime:`
+(optional), `target:`, and `data:`:
 
-- `LMExperimentConfig(pd, target: LMTargetConfig, data: LMDataConfig)`
-- `TMSExperimentConfig(pd, target, data)`
-- `ResidMLPExperimentConfig(pd, target, data)`
+- `LMExperimentConfig(pd, logging, runtime, target: LMTargetConfig, data: LMDataConfig)`
+- `TMSExperimentConfig(pd, logging, runtime, target, data)`
+- `ResidMLPExperimentConfig(pd, logging, runtime, target, data)`
+
+The three configs form a **determinism ladder**:
+
+1. Same `PDConfig` + same `RuntimeConfig` → bit-identical trained weights.
+2. Same `PDConfig`, different `RuntimeConfig` → same algorithm, weights differ only via
+   numerical effects (precision, device).
+3. Same `PDConfig` + same `RuntimeConfig`, different `LoggingConfig` → bit-identical
+   weights; only what was observed differs.
+
+Mapping to fields:
+
+- **`PDConfig` (class 1)** — algorithm specification: seed, ci_config, losses,
+  optimizers, module_info. Flipping any field here changes what algorithm runs.
+- **`RuntimeConfig` (class 2)** — compute substrate: autocast_bf16, device, dp; future
+  NCCL flags, gradient accumulation, fp8 variants. Perturbs numerics, doesn't change
+  the algorithm. **Config-only — no CLI overrides.** Edit the YAML (or copy it) to
+  change substrate; you can't silently run "the same experiment" on different hardware.
+  Cluster topology (GPUs per node) is `settings.GPUS_PER_NODE`, overridable via
+  `PARAM_DECOMP_GPUS_PER_NODE` env var.
+- **`LoggingConfig` (class 3)** — observation: cadence (`*_freq`), `eval_batch_size`,
+  `ci_alive_threshold`, eval-only metrics. Never touches the optimizer.
 
 Experiment configs should not perform I/O. Put target loading and dataloader construction in
 the driver.
@@ -128,9 +150,11 @@ the driver.
 
 ```
 PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/
-  run_metadata.yaml          # RunMetadata: driver path + full config
+  run_metadata.yaml          # RunMetadata: driver path + config + wandb + view_meta
   model_<step>.pth           # PD checkpoints
-  sweep_params.yaml          # if a sweep
+
+PARAM_DECOMP_OUT_DIR/sweeps/<launch_id>/
+  spec.yaml                  # SweepSpec snapshot (one entry per run)
 ```
 
 Run metadata is a `RunMetadata` dataclass (defined in `param_decomp/run_metadata.py`):
@@ -141,7 +165,16 @@ config:
   pd: {...}
   target: {...}
   data: {...}
+wandb_project: "param-decomp"            # null disables W&B
+wandb_run_name: "seed=0_lr=1e-3"         # null lets W&B auto-name
+view_meta:                                # free-form labels (populated by sweep generators)
+  lr_ratio: 0.1
+  size: medium
 ```
+
+`view_meta` is surfaced to W&B under a `view_meta/` prefix in `wandb.config` so the
+UI can group/color runs by researcher-facing axes (not raw config fields). Populate
+it from your sweep generator.
 
 ## Research Papers
 
@@ -230,7 +263,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
 **Key Data Flow:**
 
-1. `pd-run` (`experiments/runner.py`) resolves the input source into `(name, driver_path, base_config)` — either a built-in experiment name, `--driver`+`--config_path`, or `--rerun`. With `--local` it dispatches in-process; otherwise it builds `RunSpec`s and submits a SLURM array via `scripts/run_slurm.py:launch_slurm`.
+1. `pd-run` (`experiments/runner.py`) resolves the input source into `(name, driver_path, base_config)` — either a built-in experiment name, `--driver`+`--config_path`, or `--rerun`. With `--local` it dispatches in-process; otherwise `scripts/run_slurm.py:launch_slurm` resolves the sweep generator (if any) into a `SweepSpec` and submits a SLURM array (one task per run).
 2. Each worker invocation (`experiments/_worker.py`, called as `python -m param_decomp.experiments._worker` from SLURM tasks, or directly from runner.py in --local mode) loads the driver, validates the config, and calls the driver to build `PDTarget`, train/eval loaders, and artifacts.
 3. The worker builds `RunMetadata` from the parsed config and driver import path, then calls `run_pd`.
 4. `run_pd` saves the metadata/artifacts and trains a `ComponentModel` via `optimize()` with config-driven losses.
@@ -296,7 +329,8 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 │   │   ├── component_model.py       # ComponentModel.from_checkpoint(...)
 │   │   └── components.py            # LinearComponent, EmbeddingComponent, etc.
 │   ├── scripts/
-│   │   └── run_slurm.py             # launch_slurm (SLURM submit, sweep expansion) — called by pd-run
+│   │   └── run_slurm.py             # launch_slurm (SLURM submit) — called by pd-run
+│   ├── sweeps/                      # SweepSpec / SweepGenerator + built-in cartesian grid
 │   ├── utils/
 │   │   └── slurm.py                 # SlurmConfig, submit functions
 │   ├── configs.py                   # Core PD configs (PDConfig, ModuleInfo, loss configs, etc.)
@@ -314,7 +348,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
 | Command | Entry Point | Description |
 |---------|-------------|-------------|
-| `pd-run` | `param_decomp/experiments/runner.py` | Run a PD experiment. SLURM by default; `--local` runs in-process. Supports `--sweep`, `--dp`, `--cpu`, `--rerun`, and custom drivers (`--driver`/`--config_path`). |
+| `pd-run` | `param_decomp/experiments/runner.py` | Run a PD experiment. SLURM by default; `--local` runs in-process. Supports `--sweep`, `--rerun`, and custom drivers (`--driver`/`--config_path`). Compute substrate (`device`/`dp`) is declared in the experiment YAML's `runtime:` block. |
 | `pd-harvest` | `param_decomp/harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
 | `pd-autointerp` | `param_decomp/autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
 | `pd-attributions` | `param_decomp/dataset_attributions/scripts/run_slurm_cli.py` | Submit dataset attribution SLURM job |
@@ -382,9 +416,9 @@ snapshot — useful for quick checks. Off-cluster `pd-run` fails fast unless `--
 
 ```bash
 pd-run tms_5-2                                       # one SLURM job
-pd-run tms_5-2 --sweep --n_agents 4                  # SLURM array sweep
+pd-run tms_5-2 --sweep my_grid.yaml --n_agents 4     # SLURM array sweep
 pd-run tms_5-2 --dp 4                                # multi-GPU DDP on SLURM
-pd-run tms_5-2 --cpu                                 # CPU SLURM job
+pd-run tms_5-2                                       # CPU/GPU/dp determined by YAML's runtime: block
 pd-run --driver pkg:D --config_path my.yaml          # custom driver
 pd-run --rerun <path-or-wandb-url>                   # rerun from a saved run_metadata.yaml
 pd-run tms_5-2 --local                               # in-process; no SLURM
@@ -486,59 +520,67 @@ Metrics and figures are defined in `param_decomp/metrics.py` and `param_decomp/f
 
 ### Sweeps
 
-Run parameter grids on the GPU cluster:
+A sweep is anything callable as `(base_config) -> SweepSpec`. The framework ships with
+one built-in generator (`CartesianGridSweep`) and discovers any others added under
+`param_decomp/sweeps/`. Custom one-off generators can also be referenced by import path.
 
 ```bash
-pd-run <experiment_name> --sweep --n_agents <n-agents> [--cpu]
+pd-run tms_5-2 --sweep my_grid.yaml --n_agents 4         # cartesian grid (shorthand)
+pd-run tms_5-2 --sweep cartesian:my_grid.yaml            # explicit
+pd-run tms_5-2 --sweep my_pkg.sweeps:LRRatioSweep        # custom generator class
+pd-run tms_5-2 --sweep my_pkg.sweeps:LRRatioSweep:arg    # custom generator with an arg
 ```
 
-Examples:
-
-```bash
-pd-run tms_5-2 --sweep --n_agents 4              # 4 concurrent SLURM tasks
-pd-run resid_mlp2 --sweep --n_agents 3 --cpu     # CPU grid
-pd-run tms_5-2 --sweep custom.yaml --n_agents 2  # custom grid file
-```
-
-**Supported Experiments:** Any experiment auto-discovered from YAML configs under `param_decomp/experiments/<kind>/`. Custom drivers (`--driver`/`--config_path`) and `--rerun` do not support `--sweep`.
+**Supported Experiments:** Built-in experiments auto-discovered from YAML configs under
+`param_decomp/experiments/<kind>/`. Custom drivers (`--driver`/`--config_path`) and
+`--rerun` do not support `--sweep`.
 
 **How It Works:**
 
-1. Expands the parameter grid in `param_decomp/scripts/sweep_params.yaml` (or a custom file) locally into one config per Cartesian-product combination. This is **not** a W&B sweep agent — W&B sees independent runs tagged with a shared `launch_id`.
-2. Submits the resulting configs as a SLURM job array, capped at `--n_agents` concurrent tasks.
-3. Each task runs on a single GPU by default (use `--cpu` for CPU-only).
-4. Creates a git snapshot to ensure consistent code across all tasks.
+1. `pd-run` resolves the `--sweep` spec to a `SweepGenerator` instance.
+2. The generator is called on the base config and returns a `SweepSpec` (description +
+   `list[SweepRun]`). Each `SweepRun` carries a name, a concrete config, and optional
+   `view_meta` labels.
+3. The runner validates every generated config against the driver's pydantic config type
+   (fail fast on the launch node, not on N separate SLURM workers).
+4. The materialized `SweepSpec` is written to
+   `PARAM_DECOMP_OUT_DIR/sweeps/<launch_id>/spec.yaml` for reproducibility.
+5. A SLURM array is submitted, capped at `--n_agents` concurrent tasks. Each task runs on
+   a single GPU by default (set `runtime.device` / `runtime.dp` in the experiment YAML to change).
+6. A git snapshot is created so all tasks run the same code, regardless of later edits.
 
-**Sweep Parameters:**
+This is **not** a W&B sweep agent — W&B sees independent runs sharing a `launch_id` tag.
+`view_meta` from each run is surfaced under `view_meta/<key>` in `wandb.config` so you
+can group/color by it in the UI.
 
-- Default sweep parameters are loaded from `param_decomp/scripts/sweep_params.yaml`
-- You can specify a custom sweep parameters file by passing its path to `--sweep`
-- Sweep parameters support a `global:` block plus per-experiment overrides. The global block is
-  shared across the file (so the same YAML can hold grids for multiple experiments if you reuse
-  it across separate `pd-run` invocations); the per-experiment block overrides for the experiment
-  you actually pass to `pd-run`.
+**Cartesian grid (the 80% case):**
 
-  ```yaml
-  # Shared across the file; merged into every experiment block below.
-  global:
-    pd:
-      seed:
-        values: [0, 1, 2]
-      lr_schedule:
-        start_val:
-          values: [0.001, 0.01]
+```yaml
+# my_grid.yaml
+description: "lr × recon coeff sweep"
+grid:
+  pd.seed: [0, 1, 2]
+  pd.loss_metrics.importance_minimality.coeff: [0.1, 0.2, 0.5]
+```
 
-  # Experiment-specific overrides (override matching keys in `global:`)
-  tms_5-2:
-    pd:
-      seed:
-        values: [100, 200] # Overrides global seed
-    data:
-      feature_probability:
-        values: [0.05, 0.1]
-  ```
+Dot-paths address into the base config. Each axis is recorded in `view_meta` so the W&B UI
+can pivot on it.
 
-**Logs:** logs are found in `~/slurm_logs/slurm-<job_id>_<task_id>.out`
+**Custom generators:** subclass `SweepGenerator` from `param_decomp.sweeps`, set
+`name: ClassVar[str]`, and implement `__call__(base_config) -> SweepSpec`. Drop the file
+in `param_decomp/sweeps/` for auto-discovery, or reference it by import path. The
+`module.path:Class` form requires `module.path` to contain a dot — that's how the
+resolver tells "named generator with arg" (`cartesian:my_grid.yaml`) apart from
+"import path" (`my_pkg.sweeps:MyClass`).
+
+**Rerunning runs from before this layout existed:** `pd-run --rerun` will fail
+pydantic validation on saved runs whose `pd:` block contains `wandb_project` or
+`wandb_run_name` (now `RunMetadata` fields, not `PDConfig` fields). Edit the saved
+`run_metadata.yaml` to move those two keys out of `config.pd` and up to the top level
+before rerunning. The `--rerun` path also inherits the recorded `wandb_project` as
+the default for the new run's `--project` (pass `--project ...` to override).
+
+**Logs:** `~/slurm_logs/slurm-<job_id>_<task_id>.out`
 
 ### Loading Models from WandB
 

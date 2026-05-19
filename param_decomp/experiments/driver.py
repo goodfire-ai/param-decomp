@@ -11,12 +11,13 @@ pretrain run, HF model, etc.). Saved PD runs depend on their upstream continuing
 """
 
 from importlib import import_module
-from typing import Any, ClassVar, Protocol
+from typing import Any, ClassVar, Protocol, Self
 
+from pydantic import Field, model_validator
 from torch.utils.data import DataLoader
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.configs import PDConfig
+from param_decomp.configs import LoggingConfig, PDConfig, RuntimeConfig
 from param_decomp.models.batch_and_loss_fns import PDTarget
 from param_decomp.utils.distributed_utils import DistributedState
 
@@ -25,6 +26,18 @@ class ExperimentConfig(BaseConfig):
     """Pure-data config shared by all experiment configs. Drivers subclass this."""
 
     pd: PDConfig
+    logging: LoggingConfig
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+
+    @model_validator(mode="after")
+    def validate_metric_overlap(self) -> Self:
+        overlap = sorted(set(self.pd.loss_metrics) & set(self.logging.eval_metrics))
+        assert not overlap, (
+            f"The same metric was set under both pd.loss_metrics and logging.eval_metrics: "
+            f"{overlap}. Loss metrics are automatically evaluated; remove the "
+            "logging.eval_metrics entry, or move it out of pd.loss_metrics if you want eval-only."
+        )
+        return self
 
 
 class ExperimentDriver[ConfigT: ExperimentConfig](Protocol):

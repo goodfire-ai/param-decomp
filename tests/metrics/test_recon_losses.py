@@ -47,7 +47,6 @@ def _metric_runtime_config(
     use_delta_component: bool = False,
     sampling: Literal["continuous", "binomial"] = "continuous",
     n_mask_samples: int = 1,
-    ci_alive_threshold: float = 0.0,
 ) -> MetricRuntimeConfig:
     return cast(
         MetricRuntimeConfig,
@@ -58,7 +57,6 @@ def _metric_runtime_config(
                 use_delta_component=use_delta_component,
                 sampling=sampling,
                 n_mask_samples=n_mask_samples,
-                ci_alive_threshold=ci_alive_threshold,
             ),
         ),
     )

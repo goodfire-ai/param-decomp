@@ -151,11 +151,13 @@ class _PersistentPGDReconBase(Metric[_PersistentPGDBaseConfig]):
             out[f"{type(self).__name__}/output_recon"] = sum_loss / n
         return out
 
+    @override
     def before_backward(self, live_loss: Tensor | None) -> None:
         if live_loss is None or self.state is None:
             return
         self._pending_source_grads = self.state.get_grads(live_loss, retain_graph=True)
 
+    @override
     def after_backward(self) -> None:
         if self._pending_source_grads is None:
             return

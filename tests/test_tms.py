@@ -6,9 +6,11 @@ from torch import nn
 
 from param_decomp.configs import (
     LayerwiseCiConfig,
+    LoggingConfig,
     ModulePatternInfoConfig,
     OptimizerConfig,
     PDConfig,
+    RuntimeConfig,
     ScheduleConfig,
 )
 from param_decomp.experiments.tms.models import TMSModel, TMSModelConfig, TMSTrainConfig
@@ -46,8 +48,6 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
 
     # Create config similar to tms_config.yaml
     config = PDConfig(
-        wandb_project=None,
-        wandb_run_name=None,
         seed=0,
         n_mask_samples=1,
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[8]),
@@ -82,13 +82,14 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
         ),
         batch_size=4,
         steps=3,
-        n_eval_steps=1,
         faithfulness_warmup_steps=2,
         faithfulness_warmup_lr=0.001,
         faithfulness_warmup_weight_decay=0.0,
+    )
+    logging_config = LoggingConfig(
+        n_eval_steps=1,
         train_log_freq=2,
         save_freq=None,
-        ci_alive_threshold=0.1,
         eval_batch_size=4,
         eval_freq=10,
         slow_eval_freq=10,
@@ -120,6 +121,8 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
     optimize(
         target_model=target_model,
         config=config,
+        logging_config=logging_config,
+        runtime_config=RuntimeConfig(),
         device=device,
         train_loader=train_loader,
         eval_loader=eval_loader,

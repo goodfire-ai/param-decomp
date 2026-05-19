@@ -128,16 +128,11 @@ def test_from_checkpoint():
             steps=1,
             components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
             ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
-            n_eval_steps=1,
-            eval_batch_size=1,
-            eval_freq=1,
-            slow_eval_freq=1,
             loss_metrics={
                 "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                     coeff=1.0, pnorm=1.0, beta=0.5
                 )
             },
-            train_log_freq=1,
             n_mask_samples=1,
         )
 
@@ -533,16 +528,11 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             steps=1,
             components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
             ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
-            n_eval_steps=1,
-            eval_batch_size=1,
-            eval_freq=1,
-            slow_eval_freq=1,
             loss_metrics={
                 "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                     coeff=1.0, pnorm=1.0, beta=0.5
                 )
             },
-            train_log_freq=1,
             n_mask_samples=1,
         )
 
@@ -570,16 +560,11 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             steps=1,
             components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
             ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
-            n_eval_steps=1,
-            eval_batch_size=1,
-            eval_freq=1,
-            slow_eval_freq=1,
             loss_metrics={
                 "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                     coeff=1.0, pnorm=1.0, beta=0.5
                 )
             },
-            train_log_freq=1,
             n_mask_samples=1,
         )
 
@@ -624,16 +609,11 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             steps=1,
             components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
             ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
-            n_eval_steps=1,
-            eval_batch_size=1,
-            eval_freq=1,
-            slow_eval_freq=1,
             loss_metrics={
                 "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                     coeff=1.0, pnorm=1.0, beta=0.5
                 )
             },
-            train_log_freq=1,
             n_mask_samples=1,
         )
 
@@ -661,16 +641,11 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             steps=1,
             components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
             ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
-            n_eval_steps=1,
-            eval_batch_size=1,
-            eval_freq=1,
-            slow_eval_freq=1,
             loss_metrics={
                 "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                     coeff=1.0, pnorm=1.0, beta=0.5
                 )
             },
-            train_log_freq=1,
             n_mask_samples=1,
         )
 
@@ -1282,16 +1257,11 @@ def test_global_ci_save_and_load():
             steps=1,
             components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
             ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
-            n_eval_steps=1,
-            eval_batch_size=1,
-            eval_freq=1,
-            slow_eval_freq=1,
             loss_metrics={
                 "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                     coeff=1.0, pnorm=1.0, beta=0.5
                 )
             },
-            train_log_freq=1,
             n_mask_samples=1,
         )
 

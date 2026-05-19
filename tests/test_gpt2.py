@@ -7,9 +7,11 @@ from transformers import GPT2LMHeadModel
 
 from param_decomp.configs import (
     LayerwiseCiConfig,
+    LoggingConfig,
     ModulePatternInfoConfig,
     OptimizerConfig,
     PDConfig,
+    RuntimeConfig,
     ScheduleConfig,
 )
 from param_decomp.experiments.lm.data import (
@@ -39,8 +41,6 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
     device = "cpu"
 
     config = PDConfig(
-        wandb_project=None,
-        wandb_run_name=None,
         seed=0,
         n_mask_samples=1,
         ci_config=LayerwiseCiConfig(fn_type="vector_mlp", hidden_dims=[128]),
@@ -74,6 +74,8 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         ),
         batch_size=4,
         steps=2,
+    )
+    logging_config = LoggingConfig(
         n_eval_steps=1,
         train_log_freq=50,
         eval_freq=500,
@@ -81,8 +83,7 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         slow_eval_freq=500,
         slow_eval_on_first_step=False,
         save_freq=None,
-        ci_alive_threshold=0.1,
-        eval_metrics={"CI_L0": CI_L0Config(groups=None)},
+        eval_metrics={"CI_L0": CI_L0Config(groups=None, ci_alive_threshold=0.1)},
     )
 
     model_name = "SimpleStories/test-SimpleStories-gpt2-1.25M"
@@ -124,6 +125,8 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
     optimize(
         target_model=target_model,
         config=config,
+        logging_config=logging_config,
+        runtime_config=RuntimeConfig(),
         device=device,
         train_loader=train_loader,
         eval_loader=eval_loader,

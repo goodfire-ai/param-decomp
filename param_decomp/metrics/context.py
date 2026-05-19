@@ -16,7 +16,6 @@ class MetricRuntimeConfig(Protocol):
     use_delta_component: bool
     sampling: Literal["continuous", "binomial"]
     n_mask_samples: int
-    ci_alive_threshold: float
 
 
 class MetricCIOutputs(Protocol):

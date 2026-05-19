@@ -2,9 +2,11 @@ from pathlib import Path
 
 from param_decomp.configs import (
     LayerwiseCiConfig,
+    LoggingConfig,
     ModulePatternInfoConfig,
     OptimizerConfig,
     PDConfig,
+    RuntimeConfig,
     ScheduleConfig,
 )
 from param_decomp.experiments.resid_mlp.models import ResidMLP, ResidMLPModelConfig
@@ -39,8 +41,6 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
     )
 
     config = PDConfig(
-        wandb_project=None,
-        wandb_run_name=None,
         seed=0,
         n_mask_samples=1,
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[8]),
@@ -73,6 +73,8 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         ),
         batch_size=4,
         steps=3,
+    )
+    logging_config = LoggingConfig(
         n_eval_steps=1,
         eval_freq=10,
         eval_batch_size=4,
@@ -80,7 +82,6 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         slow_eval_on_first_step=True,
         train_log_freq=50,
         save_freq=None,
-        ci_alive_threshold=0.1,
     )
 
     target_model = ResidMLP(config=resid_mlp_model_config).to(device)
@@ -104,13 +105,15 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
 
     train_loader = DatasetGeneratedDataLoader(dataset, batch_size=config.batch_size, shuffle=False)
     eval_loader = DatasetGeneratedDataLoader(
-        dataset, batch_size=config.eval_batch_size, shuffle=False
+        dataset, batch_size=logging_config.eval_batch_size, shuffle=False
     )
 
     # Run optimize function
     optimize(
         target_model=target_model,
         config=config,
+        logging_config=logging_config,
+        runtime_config=RuntimeConfig(),
         device=device,
         train_loader=train_loader,
         eval_loader=eval_loader,

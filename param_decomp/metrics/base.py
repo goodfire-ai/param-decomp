@@ -88,9 +88,22 @@ class Metric[TConfig: MetricConfig](ABC):
         """Return the scalar, artifact, or keyed metric outputs accumulated by `update()`."""
         ...
 
+    def before_backward(self, live_loss: Tensor | None) -> None:
+        """Hook called for each loss metric right before `total_loss.backward()`.
 
-# Opt-in hooks (not part of `Metric`; `run_pd` discovers them via `getattr`):
-#   before_backward(live_loss: Tensor | None) -> None
-#   after_backward() -> None
-# Currently used only by `PersistentPGDReconLoss` to extract source gradients with
-# `retain_graph=True` and step its adversarial sources around `total_loss.backward()`.
+        Default is a no-op. Override when a metric needs to extract gradients before the
+        outer backward consumes them — e.g. `PersistentPGDReconLoss` uses this to grab
+        source gradients with `retain_graph=True` before the outer step.
+
+        `live_loss` is whatever this metric's `update()` returned for the current batch
+        (or `None` if the metric was gated off this step).
+        """
+        del live_loss
+
+    def after_backward(self) -> None:  # noqa: B027 — intentional no-op default
+        """Hook called for each loss metric right after `total_loss.backward()`.
+
+        Default is a no-op. Override when a metric needs to step internal state coupled
+        to the outer backward — e.g. `PersistentPGDReconLoss` steps its adversarial
+        sources here.
+        """

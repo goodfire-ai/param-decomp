@@ -1,8 +1,5 @@
 pd:
-  wandb_project: param-decomp
-  wandb_run_name: null
   seed: 0
-  autocast_bf16: true
   n_mask_samples: 1
   ci_config:
     mode: global
@@ -52,14 +49,6 @@ pd:
   faithfulness_warmup_steps: 400
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_weight_decay: 0.0
-  train_log_freq: 200
-  eval_freq: 1000
-  eval_batch_size: 128
-  slow_eval_freq: 10000
-  n_eval_steps: 1
-  slow_eval_on_first_step: true
-  save_freq: null
-  ci_alive_threshold: 0.0
   loss_metrics:
     ImportanceMinimalityLoss:
       coeff: 0.0002
@@ -91,11 +80,21 @@ pd:
       n_warmup_steps: 2
     FaithfulnessLoss:
       coeff: 10000000.0
+logging:
+  train_log_freq: 200
+  eval_freq: 1000
+  slow_eval_freq: 10000
+  slow_eval_on_first_step: true
+  n_eval_steps: 1
+  eval_batch_size: 128
+  save_freq: null
   eval_metrics:
     CIHistograms:
       n_batches_accum: 1
-    ComponentActivationDensity: {}
+    ComponentActivationDensity:
+      ci_alive_threshold: 0.0
     CI_L0:
+      ci_alive_threshold: 0.0
       groups:
         layer_0:
         - h.0.*
@@ -133,3 +132,5 @@ data:
   shuffle_each_epoch: true
   is_tokenized: true
   streaming: true
+runtime:
+  autocast_bf16: true

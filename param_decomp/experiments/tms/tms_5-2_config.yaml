@@ -1,6 +1,4 @@
 pd:
-  wandb_project: param-decomp
-  wandb_run_name: null
   seed: 0
   n_mask_samples: 1
   ci_config:
@@ -25,7 +23,6 @@ pd:
     StochasticReconLayerwiseLoss:
       coeff: 1.0
   batch_size: 4096
-  eval_batch_size: 4096
   steps: 10000
   components_optimizer:
     lr_schedule:
@@ -42,16 +39,18 @@ pd:
   faithfulness_warmup_steps: 200
   faithfulness_warmup_lr: 0.01
   faithfulness_warmup_weight_decay: 0.1
+logging:
   train_log_freq: 100
   eval_freq: 1000
-  n_eval_steps: 100
   slow_eval_freq: 5000
+  n_eval_steps: 100
+  eval_batch_size: 4096
   save_freq: null
-  ci_alive_threshold: 0.1
   eval_metrics:
     CIHistograms:
       n_batches_accum: 5
-    ComponentActivationDensity: {}
+    ComponentActivationDensity:
+      ci_alive_threshold: 0.1
     PermutedCIPlots:
       identity_patterns:
       - linear1
@@ -66,6 +65,7 @@ pd:
       dense_ci: null
     CI_L0:
       groups: null
+      ci_alive_threshold: 0.1
     CIMeanPerComponent: {}
     StochasticHiddenActsReconLoss: {}
 target:

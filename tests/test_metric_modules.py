@@ -34,13 +34,6 @@ def _pd_config_kwargs(
         ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
         steps=1,
         batch_size=4,
-        eval_batch_size=4,
-        train_log_freq=1,
-        eval_freq=1,
-        slow_eval_freq=1,
-        n_eval_steps=1,
-        slow_eval_on_first_step=False,
-        ci_alive_threshold=0.0,
         metric_modules=metric_modules,
         loss_metrics=loss_metrics,
     )

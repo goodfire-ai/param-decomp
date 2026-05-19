@@ -25,15 +25,23 @@ from param_decomp.utils.distributed_utils import (
     with_distributed_cleanup,
 )
 from param_decomp.utils.general_utils import set_seed
-from param_decomp.utils.run_utils import parse_sweep_params
+
+
+def _decode_json_arg(value: str | None) -> Any:
+    """Decode a ``json:...`` prefixed CLI string. Returns None for None inputs."""
+    if value is None:
+        return None
+    return json.loads(value.removeprefix("json:"))
 
 
 def run_experiment(
     driver_path: str,
     config_data: dict[str, Any],
     *,
+    wandb_project: str | None = None,
+    wandb_run_name: str | None = None,
+    view_meta: dict[str, Any] | None = None,
     launch_id: str | None = None,
-    sweep_params_json: str | None = None,
     run_id: str | None = None,
 ) -> None:
     dist_state = init_distributed()
@@ -53,29 +61,29 @@ def run_experiment(
     train_loader, eval_loader = driver.build_dataloaders(
         experiment_config,
         train_batch_size=experiment_config.pd.batch_size,
-        eval_batch_size=experiment_config.pd.eval_batch_size,
+        eval_batch_size=experiment_config.logging.eval_batch_size,
         dist_state=dist_state,
         device=device,
-    )
-    sweep_params = parse_sweep_params(sweep_params_json)
-    artifacts: dict[str, Any] = (
-        {"sweep_params.yaml": sweep_params} if sweep_params is not None else {}
     )
 
     wandb_tags = [driver.name, *([launch_id] if launch_id is not None else [])]
     metadata = RunMetadata(
         driver=driver_path,
         config=experiment_config.model_dump(mode="json"),
+        wandb_project=wandb_project,
+        wandb_run_name=wandb_run_name,
+        view_meta=view_meta or {},
     )
     run_pd(
         config=experiment_config.pd,
+        logging_config=experiment_config.logging,
+        runtime_config=experiment_config.runtime,
         target=target,
         train_loader=train_loader,
         eval_loader=eval_loader,
         device=device,
         run_id=run_id,
         metadata=metadata,
-        artifacts=artifacts,
         wandb_tags=wandb_tags,
     )
 
@@ -85,17 +93,25 @@ def main(
     config_json: str,
     driver: str,
     run_id: str,
+    wandb_project: str | None = None,
+    wandb_run_name: str | None = None,
+    view_meta_json: str | None = None,
     launch_id: str | None = None,
-    sweep_params_json: str | None = None,
 ) -> None:
     """SLURM task entrypoint."""
-    config_data = json.loads(config_json.removeprefix("json:"))
+    config_data = _decode_json_arg(config_json)
     assert isinstance(config_data, dict), "config_json must decode to a mapping"
+    view_meta = _decode_json_arg(view_meta_json)
+    assert view_meta is None or isinstance(view_meta, dict), (
+        "view_meta_json must decode to a mapping"
+    )
     run_experiment(
         driver,
         config_data,
+        wandb_project=wandb_project,
+        wandb_run_name=wandb_run_name,
+        view_meta=view_meta,
         launch_id=launch_id,
-        sweep_params_json=sweep_params_json,
         run_id=run_id,
     )
 

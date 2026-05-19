@@ -19,11 +19,17 @@ PARAM_DECOMP_OUT_DIR.mkdir(parents=True, exist_ok=True)
 SLURM_LOGS_DIR = PARAM_DECOMP_OUT_DIR / "slurm_logs"
 SBATCH_SCRIPTS_DIR = PARAM_DECOMP_OUT_DIR / "sbatch_scripts"
 
-# this is the gpu-enabled partition on the cluster
-# Not sure why we call it "default" instead of "gpu" or "compute" but keeping the convention here for consistency
-DEFAULT_PARTITION_NAME = "h200-reserved"
+# SLURM partition for GPU jobs. Default matches the H200 cluster; override per-cluster
+# via `PARAM_DECOMP_PARTITION` env var. The pd-run CLI's `--partition` flag overrides
+# this further for ad-hoc launches.
+DEFAULT_PARTITION_NAME = os.environ.get("PARAM_DECOMP_PARTITION", "h200-reserved")
 
 DEFAULT_PROJECT_NAME = "param-decomp"
+
+# Cluster topology: GPUs per node. Default matches the H200 cluster; override per-cluster
+# via `PARAM_DECOMP_GPUS_PER_NODE` env var. Used to compute single-node vs multi-node DDP
+# layout in run_slurm.py.
+GPUS_PER_NODE = int(os.environ.get("PARAM_DECOMP_GPUS_PER_NODE", "8"))
 
 # Default run for the app to load on startup if set
 PARAM_DECOMP_APP_DEFAULT_RUN: str | None = os.environ.get("PARAM_DECOMP_APP_DEFAULT_RUN")

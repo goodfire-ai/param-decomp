@@ -26,7 +26,6 @@ def _metric_runtime_config(
     sampling: Literal["continuous", "binomial"] = "continuous",
     n_mask_samples: int = 1,
     steps: int = 1,
-    ci_alive_threshold: float = 0.0,
 ) -> MetricRuntimeConfig:
     return cast(
         MetricRuntimeConfig,
@@ -37,7 +36,6 @@ def _metric_runtime_config(
                 sampling=sampling,
                 n_mask_samples=n_mask_samples,
                 steps=steps,
-                ci_alive_threshold=ci_alive_threshold,
             ),
         ),
     )

@@ -19,10 +19,12 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from param_decomp.configs import (
+    LoggingConfig,
     PDConfig,
     PersistentPGDReconLossConfig,
     PersistentPGDReconSubsetLossConfig,
     RepeatAcrossBatchScope,
+    RuntimeConfig,
 )
 from param_decomp.eval import evaluate
 from param_decomp.identity_insertion import insert_identity_operations_
@@ -39,7 +41,6 @@ from param_decomp.models.batch_and_loss_fns import (
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
 from param_decomp.run_metadata import RunMetadata
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
-from param_decomp.utils.component_utils import calc_ci_l_zero
 from param_decomp.utils.data_utils import loop_dataloader
 from param_decomp.utils.distributed_utils import (
     DistributedState,
@@ -136,6 +137,7 @@ def _build_ctx(
 
 def _build_metric_instances(
     config: PDConfig,
+    logging_config: LoggingConfig,
     component_model: ComponentModel,
     device: str,
 ) -> tuple[dict[str, Metric[MetricConfig]], dict[str, Metric[MetricConfig]]]:
@@ -146,7 +148,7 @@ def _build_metric_instances(
         loss_instances[metric_name] = cls(cfg, model=component_model, device=device)
 
     eval_instances: dict[str, Metric[MetricConfig]] = {}
-    for metric_name, cfg in config.eval_metrics.items():
+    for metric_name, cfg in logging_config.eval_metrics.items():
         cls = METRIC_REGISTRY[metric_name]
         eval_instances[metric_name] = cls(cfg, model=component_model, device=device)
 
@@ -169,6 +171,8 @@ def compute_losses(
 def optimize(
     target_model: nn.Module,
     config: PDConfig,
+    logging_config: LoggingConfig,
+    runtime_config: RuntimeConfig,
     device: str,
     train_loader: DataLoader[Any],
     eval_loader: DataLoader[Any],
@@ -253,7 +257,9 @@ def optimize(
     if config.faithfulness_warmup_steps > 0:
         run_faithfulness_warmup(component_model, component_params, config, device)
 
-    loss_instances, eval_only_instances = _build_metric_instances(config, component_model, device)
+    loss_instances, eval_only_instances = _build_metric_instances(
+        config, logging_config, component_model, device
+    )
     all_instances = {**loss_instances, **eval_only_instances}
 
     for step in tqdm(range(config.steps + 1), ncols=0, disable=not is_main_process()):
@@ -283,7 +289,7 @@ def optimize(
             reconstruction_loss=reconstruction_loss,
         )
 
-        with bf16_autocast(enabled=config.autocast_bf16):
+        with bf16_autocast(enabled=runtime_config.autocast_bf16):
             ctx = build_ctx(next(train_iterator), is_eval=False)
             losses = compute_losses(loss_instances, ctx)
 
@@ -300,23 +306,15 @@ def optimize(
         batch_log_data["train/loss/total"] = total_loss.item()
 
         for metric_name, m in loss_instances.items():
-            hook = getattr(m, "before_backward", None)
-            if hook is not None:
-                hook(losses[metric_name])
+            m.before_backward(losses[metric_name])
 
         total_loss.backward()
 
         for m in loss_instances.values():
-            hook = getattr(m, "after_backward", None)
-            if hook is not None:
-                hook()
-
-        for layer_name, layer_ci in ctx.ci.lower_leaky.items():
-            l0_val = calc_ci_l_zero(layer_ci, config.ci_alive_threshold)
-            batch_log_data[f"train/l0/{layer_name}"] = l0_val
+            m.after_backward()
 
         # --- Train Logging --- #
-        if step % config.train_log_freq == 0:
+        if step % logging_config.train_log_freq == 0:
             avg_metrics = avg_metrics_across_ranks(batch_log_data, device=device)
             batch_log_data = cast(defaultdict[str, float], avg_metrics)
 
@@ -335,23 +333,23 @@ def optimize(
                 for name, value in batch_log_data.items():
                     tqdm.write(f"{name}: {value:.15f}")
                 local_log(batch_log_data, step, out_dir)
-                if config.wandb_project:
+                if wandb.run is not None:
                     try_wandb(wandb.log, batch_log_data, step=step)
 
         # --- Evaluation --- #
-        if step % config.eval_freq == 0:
-            with torch.no_grad(), bf16_autocast(enabled=config.autocast_bf16):
+        if step % logging_config.eval_freq == 0:
+            with torch.no_grad(), bf16_autocast(enabled=runtime_config.autocast_bf16):
                 slow_step: bool = (
-                    config.slow_eval_on_first_step
+                    logging_config.slow_eval_on_first_step
                     if step == 0
-                    else step % config.slow_eval_freq == 0
+                    else step % logging_config.slow_eval_freq == 0
                 )
 
                 metrics = evaluate(
                     instances=all_instances,
                     eval_iterator=eval_iterator,
                     ctx_builder=partial(build_ctx, is_eval=True),
-                    n_eval_steps=config.n_eval_steps,
+                    n_eval_steps=logging_config.n_eval_steps,
                     slow_step=slow_step,
                 )
 
@@ -360,7 +358,7 @@ def optimize(
                     for k, v in metrics.items():
                         tqdm.write(f"eval/{k}: {v}")
                     local_log(metrics, step, out_dir)
-                    if config.wandb_project:
+                    if wandb.run is not None:
                         wandb_logs = {
                             f"eval/{k}": wandb.Image(v) if isinstance(v, Image.Image) else v
                             for k, v in metrics.items()
@@ -373,13 +371,17 @@ def optimize(
 
         # --- Saving Checkpoint --- #
         if (
-            (config.save_freq is not None and step % config.save_freq == 0 and step > 0)
+            (
+                logging_config.save_freq is not None
+                and step % logging_config.save_freq == 0
+                and step > 0
+            )
             or step == config.steps
         ) and is_main_process():
             assert out_dir is not None
             save_file(component_model.state_dict(), out_dir / f"model_{step}.pth")
             logger.info(f"Saved model, optimizer, and out_dir to {out_dir}")
-            if config.wandb_project:
+            if wandb.run is not None:
                 try_wandb(
                     wandb.save,
                     str(out_dir / f"model_{step}.pth"),
@@ -421,6 +423,8 @@ def _validate_pgd_scope(config: PDConfig, dist_state: DistributedState | None) -
 
 def run_pd(
     config: PDConfig,
+    logging_config: LoggingConfig,
+    runtime_config: RuntimeConfig,
     target: PDTarget,
     train_loader: DataLoader[Any],
     eval_loader: DataLoader[Any],
@@ -447,7 +451,11 @@ def run_pd(
         if metadata is None:
             metadata = RunMetadata(
                 driver=None,
-                config={"pd": config.model_dump(mode="json")},
+                config={
+                    "pd": config.model_dump(mode="json"),
+                    "logging": logging_config.model_dump(mode="json"),
+                    "runtime": runtime_config.model_dump(mode="json"),
+                },
             )
 
         tags = list(wandb_tags or [])
@@ -455,13 +463,24 @@ def run_pd(
         if slurm_array_job_id is not None:
             tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
 
-        if config.wandb_project:
-            init_wandb(config, config.wandb_project, run_id, config.wandb_run_name, tags)
+        if metadata.wandb_project:
+            init_wandb(
+                metadata.wandb_project,
+                run_id,
+                configs={
+                    "pd": config,
+                    "logging": logging_config,
+                    "runtime": runtime_config,
+                },
+                name=metadata.wandb_run_name,
+                tags=tags,
+                view_meta=metadata.view_meta,
+            )
 
         logger.info(config)
 
         save_pre_run_info(
-            save_to_wandb=config.wandb_project is not None,
+            save_to_wandb=metadata.wandb_project is not None,
             out_dir=out_dir,
             metadata=metadata,
             artifacts=artifacts,
@@ -472,6 +491,8 @@ def run_pd(
     optimize(
         target_model=target.model,
         config=config,
+        logging_config=logging_config,
+        runtime_config=runtime_config,
         device=device,
         train_loader=train_loader,
         eval_loader=eval_loader,
@@ -481,7 +502,7 @@ def run_pd(
         tied_weights=target.tied_weights,
     )
 
-    if is_main_process() and config.wandb_project:
+    if is_main_process() and wandb.run is not None:
         wandb.finish()
 
     return out_dir

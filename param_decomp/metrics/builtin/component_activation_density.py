@@ -14,7 +14,7 @@ from param_decomp.utils.distributed_utils import all_reduce
 
 
 class ComponentActivationDensityConfig(MetricConfig):
-    pass
+    ci_alive_threshold: float = 0.0
 
 
 @register_metric
@@ -46,9 +46,8 @@ class ComponentActivationDensity(Metric[ComponentActivationDensityConfig]):
     def update(self, ctx: MetricContext) -> None:
         n_examples_this_batch = next(iter(ctx.ci.lower_leaky.values())).shape[:-1].numel()
         self.n_examples += n_examples_this_batch
-        threshold = ctx.config.ci_alive_threshold
         for module_name, ci_vals in ctx.ci.lower_leaky.items():
-            active_components = ci_vals > threshold
+            active_components = ci_vals > self.cfg.ci_alive_threshold
             n_activations_per_component = reduce(active_components, "... C -> C", "sum")
             self.component_activation_counts[module_name] += n_activations_per_component
         return None

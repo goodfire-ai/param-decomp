@@ -22,6 +22,7 @@ from param_decomp.app.backend.server import app
 from param_decomp.app.backend.state import RunState, StateManager
 from param_decomp.configs import (
     LayerwiseCiConfig,
+    LoggingConfig,
     ModulePatternInfoConfig,
     OptimizerConfig,
     PDConfig,
@@ -101,11 +102,6 @@ def app_with_state():
             ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
             steps=1,
             batch_size=1,
-            eval_batch_size=1,
-            n_eval_steps=1,
-            eval_freq=1,
-            slow_eval_freq=1,
-            train_log_freq=1,
         )
         module_path_info = expand_module_patterns(target_model, config.module_info)
         model = ComponentModel(
@@ -133,6 +129,13 @@ def app_with_state():
 
         lm_exp = LMExperimentConfig(
             pd=config,
+            logging=LoggingConfig(
+                eval_batch_size=1,
+                n_eval_steps=1,
+                eval_freq=1,
+                slow_eval_freq=1,
+                train_log_freq=1,
+            ),
             target=LMTargetConfig(
                 model_class="param_decomp.pretrain.models.gpt2_simple.GPT2Simple",
                 model_name="test-target",

@@ -273,24 +273,145 @@ def _parse_metric_cfg(metric_name: str, raw: Any, *, train_loss: bool) -> Metric
     return cfg
 
 
+class RuntimeConfig(BaseConfig):
+    """Compute substrate the algorithm runs on.
+
+    The three configs form a determinism ladder:
+
+    1. Same ``PDConfig`` + same ``RuntimeConfig`` → bit-identical trained weights.
+    2. Same ``PDConfig``, different ``RuntimeConfig`` → same algorithm, weights differ
+       only via numerical effects (precision, device).
+    3. Same ``PDConfig`` + same ``RuntimeConfig``, different ``LoggingConfig`` →
+       bit-identical weights; only what was observed differs.
+
+    ``RuntimeConfig`` is class 2: device placement, precision, parallelism degree —
+    things that perturb numerics without changing the algorithm. Future home for
+    NCCL flags, gradient accumulation steps, fp8 variants, etc.
+    """
+
+    autocast_bf16: bool = Field(
+        default=True,
+        description="Use torch.autocast with bfloat16 mixed precision in training and eval.",
+    )
+    device: Literal["cuda", "cpu"] = Field(
+        default="cuda",
+        description="Device to run on. Overridable ad-hoc with ``pd-run --device cpu``.",
+    )
+    dp: PositiveInt | None = Field(
+        default=None,
+        description="Number of GPUs for data parallelism. None = single GPU/CPU. Bounded by "
+        "the cluster's GPUs-per-node for single-node DDP; multiples of that for multi-node. "
+        "Declares the experiment's compute requirement; overridable ad-hoc by ``pd-run --dp N``.",
+    )
+
+    @model_validator(mode="after")
+    def validate_device_dp(self) -> Self:
+        from param_decomp.settings import GPUS_PER_NODE
+
+        if self.dp is not None:
+            assert self.device == "cuda", "dp requires device='cuda'"
+            assert self.dp >= 2, "if set, dp must be at least 2 (pass None for single device)."
+            assert self.dp <= GPUS_PER_NODE or self.dp % GPUS_PER_NODE == 0, (
+                f"dp must be <= {GPUS_PER_NODE} (single node) or divisible by {GPUS_PER_NODE} "
+                f"(multi-node), got {self.dp}"
+            )
+        return self
+
+
+class LoggingConfig(BaseConfig):
+    """Observation-only settings: cadence + eval-only metrics + display thresholds.
+
+    Determinism class 3 in the PDConfig/RuntimeConfig/LoggingConfig ladder: fields
+    here never touch the optimizer. Two runs with identical ``PDConfig`` +
+    ``RuntimeConfig`` and different ``LoggingConfig`` produce bit-identical weights —
+    only what you observed about the run differs.
+    """
+
+    train_log_freq: PositiveInt = Field(
+        ...,
+        description="Interval (in steps) at which to log training metrics",
+    )
+    eval_freq: PositiveInt = Field(
+        ...,
+        description="Interval (in steps) at which to log evaluation metrics",
+    )
+    eval_batch_size: PositiveInt = Field(
+        ...,
+        description="Batch size used for evaluation.",
+    )
+    slow_eval_freq: PositiveInt = Field(
+        ...,
+        description="Interval (in steps) at which to run slow evaluation metrics. "
+        "Must be a multiple of `eval_freq`.",
+    )
+    n_eval_steps: PositiveInt = Field(
+        ...,
+        description="Number of steps to run evaluation for",
+    )
+    slow_eval_on_first_step: bool = Field(
+        default=True,
+        description="Whether to run slow evaluation on the first step",
+    )
+    save_freq: PositiveInt | None = Field(
+        default=None,
+        description="Interval (in steps) at which to save model checkpoints (None disables saving "
+        "until the end of training).",
+    )
+    eval_metrics: dict[str, MetricConfig] = Field(
+        default_factory=dict,
+        description=(
+            "Eval-only metrics keyed by metric class name. Metrics already set in"
+            " `pd.loss_metrics` are evaluated automatically and should not be repeated here."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _discover_builtin_metrics(cls, data: Any) -> Any:
+        """Ensure built-in `@register_metric` decorators have fired before `eval_metrics`
+        looks names up in `METRIC_REGISTRY`. External metric modules are imported by
+        `PDConfig._import_metric_modules`; rely on field ordering on the parent
+        ExperimentConfig (pd validated before logging) for those to be visible here.
+        """
+        from param_decomp.metrics import discover_metrics
+
+        discover_metrics()
+        return data
+
+    @field_validator("eval_metrics", mode="before")
+    @classmethod
+    def _parse_eval_metrics(cls, v: Any) -> dict[str, MetricConfig]:
+        if v is None:
+            return {}
+        return {
+            metric_name: _parse_metric_cfg(metric_name, raw, train_loss=False)
+            for metric_name, raw in v.items()
+        }
+
+    @model_validator(mode="after")
+    def validate_model(self) -> Self:
+        assert self.slow_eval_freq % self.eval_freq == 0, (
+            "slow_eval_freq must be a multiple of eval_freq"
+        )
+        assert self.slow_eval_freq // self.eval_freq >= 1, (
+            "slow_eval_freq must be at least eval_freq"
+        )
+        return self
+
+
 class PDConfig(BaseConfig):
-    # --- WandB
-    wandb_project: str | None = Field(
-        default=None,
-        description="Weights & Biases project name (set to None to disable WandB logging)",
-    )
-    wandb_run_name: str | None = Field(
-        default=None,
-        description="Explicit name for the WandB run (None generates an automatic name)",
-    )
+    """Algorithm specification.
+
+    Determinism class 1 in the PDConfig/RuntimeConfig/LoggingConfig ladder: these are
+    the fields that determine the trained weights given a fixed substrate. Two runs
+    with identical ``PDConfig`` and identical ``RuntimeConfig`` produce bit-identical
+    weights; flipping any field here changes what algorithm runs.
+    """
+
     # --- General ---
     seed: int = Field(
         default=0,
         description="Random seed for reproducibility, including LM dataset shuffling.",
-    )
-    autocast_bf16: bool = Field(
-        default=True,
-        description="Whether to use torch.autocast with bfloat16 mixed precision",
     )
     n_mask_samples: PositiveInt = Field(
         ...,
@@ -354,20 +475,15 @@ class PDConfig(BaseConfig):
             " evaluated."
         ),
     )
-    eval_metrics: dict[str, MetricConfig] = Field(
-        default_factory=dict,
-        description=(
-            "Additional eval-only metrics. Metrics already set in `loss_metrics` are evaluated"
-            " automatically and should not be repeated here."
-        ),
-    )
 
     @model_validator(mode="before")
     @classmethod
     def _import_metric_modules(cls, data: Any) -> Any:
         """Import metric modules so their `@register_metric` decorators fire
-        before the `loss_metrics` / `eval_metrics` field validators look up class names in
-        `METRIC_REGISTRY`. Idempotent: re-validation in the same process is a no-op.
+        before the `loss_metrics` field validator looks names up in `METRIC_REGISTRY`.
+        Idempotent: re-validation in the same process is a no-op. External-metric
+        visibility on the sibling `LoggingConfig.eval_metrics` relies on field ordering
+        in the parent `ExperimentConfig` (pd validated before logging).
         """
         from param_decomp.metrics import discover_metrics
 
@@ -384,16 +500,6 @@ class PDConfig(BaseConfig):
             return {}
         return {
             metric_name: _parse_metric_cfg(metric_name, raw, train_loss=True)
-            for metric_name, raw in v.items()
-        }
-
-    @field_validator("eval_metrics", mode="before")
-    @classmethod
-    def _parse_eval_metrics(cls, v: Any) -> dict[str, MetricConfig]:
-        if v is None:
-            return {}
-        return {
-            metric_name: _parse_metric_cfg(metric_name, raw, train_loss=False)
             for metric_name, raw in v.items()
         }
 
@@ -424,59 +530,8 @@ class PDConfig(BaseConfig):
         description="Weight decay for warmup phase optimizer",
     )
 
-    # --- Logging & Saving ---
-    train_log_freq: PositiveInt = Field(
-        ...,
-        description="Interval (in steps) at which to log training metrics",
-    )
-    eval_freq: PositiveInt = Field(
-        ...,
-        description="Interval (in steps) at which to log evaluation metrics",
-    )
-    eval_batch_size: PositiveInt = Field(
-        ...,
-        description="Batch size used for evaluation.",
-    )
-    slow_eval_freq: PositiveInt = Field(
-        ...,
-        description="Interval (in steps) at which to run slow evaluation metrics. "
-        "Must be a multiple of `eval_freq`.",
-    )
-    n_eval_steps: PositiveInt = Field(
-        ...,
-        description="Number of steps to run evaluation for",
-    )
-    slow_eval_on_first_step: bool = Field(
-        default=True,
-        description="Whether to run slow evaluation on the first step",
-    )
-    save_freq: PositiveInt | None = Field(
-        default=None,
-        description="Interval (in steps) at which to save model checkpoints.",
-    )
-
-    # --- Component Tracking ---
-    ci_alive_threshold: Probability = Field(
-        default=0.0,
-        description="Causal importance threshold above which a component is considered 'firing'",
-    )
-
     @model_validator(mode="after")
     def validate_model(self) -> Self:
-        assert self.slow_eval_freq % self.eval_freq == 0, (
-            "slow_eval_freq must be a multiple of eval_freq"
-        )
-        assert self.slow_eval_freq // self.eval_freq >= 1, (
-            "slow_eval_freq must be at least eval_freq"
-        )
-
-        loss_names = set(self.loss_metrics)
-        eval_names = set(self.eval_metrics)
-        overlap = loss_names & eval_names
-        assert not overlap, (
-            f"The same metric was set under both loss_metrics and eval_metrics: {sorted(overlap)}."
-            " Loss metrics are automatically evaluated; remove the eval_metrics entry, or move it"
-            " out of loss_metrics if you want eval-only."
-        )
-
+        for metric_name, cfg in self.loss_metrics.items():
+            assert cfg.coeff is not None, f"loss_metrics.{metric_name!r} must have a coeff"
         return self
