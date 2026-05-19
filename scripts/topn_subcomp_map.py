@@ -11,7 +11,7 @@ PD run, this script:
 
      The closed form is used (analytically equivalent to autograd `d a_out_c /
      d a_in_c' * a_in_c'`) for efficiency. Subcomponents are scored by
-     `mean_{b,t} |attr|`.
+     `mean_{b,t} attr²` (i.e. squared and averaged over positions).
 
   2. For each N in `--n-keep`, keeps only the top-N rows of `U_cfc` (zeros the
      rest) and evaluates the approximation
@@ -203,7 +203,7 @@ def main() -> None:
 
     try:
         print(f"\nPhase 1: attribution over {args.n_attr_batches} batches")
-        abs_attr_sum = torch.zeros(c_in, device=args.device)
+        sq_attr_sum = torch.zeros(c_in, device=args.device)
         n_pos_attr = 0
         for b_idx in range(args.n_attr_batches):
             tokens = next(data_iter).to(args.device)
@@ -219,11 +219,11 @@ def main() -> None:
                 vg = einops.einsum(gp, V_dp_c, "b s d, d -> b s d")
                 jac = einops.einsum(vg, U_cfc, "b s d, c d -> b s c")
                 attribution = jac * a_in
-                abs_attr_sum += attribution.abs().sum(dim=(0, 1))
+                sq_attr_sum += attribution.pow(2).sum(dim=(0, 1))
             n_pos_attr += a_in.shape[0] * a_in.shape[1]
             print(f"  attr batch {b_idx + 1:>3d}/{args.n_attr_batches}")
 
-        attr_score = (abs_attr_sum / n_pos_attr).cpu()
+        attr_score = (sq_attr_sum / n_pos_attr).cpu()
         ranked = torch.argsort(attr_score, descending=True)
 
         print(f"\nPhase 2: top-N evaluation over {args.n_eval_batches} batches")
@@ -339,8 +339,8 @@ def main() -> None:
     sorted_scores = attr_score[ranked].numpy()
     ax.semilogy(np.clip(sorted_scores, 1e-20, None))
     ax.set_xlabel("Rank")
-    ax.set_ylabel("Mean |attribution| per c'")
-    ax.set_title(f"Attribution scores (sorted) | layer {layer} | c={args.subcomp_id}")
+    ax.set_ylabel("Mean attribution² per c'")
+    ax.set_title(f"Attribution² scores (sorted) | layer {layer} | c={args.subcomp_id}")
     ax.grid(alpha=0.3)
     for n in n_keep_list:
         ax.axvline(n, color="r", lw=0.5, alpha=0.5)
