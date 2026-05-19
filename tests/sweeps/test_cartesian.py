@@ -4,6 +4,7 @@ from pathlib import Path
 
 import yaml
 
+from param_decomp.run import Run
 from param_decomp.settings import REPO_ROOT
 from param_decomp.sweeps import SweepSpec
 from param_decomp.sweeps.cartesian import cartesian_product, example_cartesian_sweep
@@ -32,6 +33,7 @@ def test_cartesian_product_basic() -> None:
     combos = {(r.pd.seed, r.pd.steps) for r in spec.runs}
     assert combos == {(s, t) for s in (0, 1, 2) for t in (10, 20)}
     assert all(r.pd.batch_size == 4096 for r in spec.runs)
+    assert len({r.run_id for r in spec.runs}) == len(spec.runs)
 
 
 def test_cartesian_view_meta_records_axes() -> None:
@@ -57,6 +59,21 @@ def test_cartesian_run_names_encode_axis_values() -> None:
         "seed=0_faithfulness_warmup_lr=0.5",
         "seed=1_faithfulness_warmup_lr=0.5",
     }
+
+
+def test_cartesian_product_generates_new_run_ids_from_run_template() -> None:
+    base_config = _base_config()
+    base_run = Run.from_dict(base_config)
+    spec = cartesian_product(
+        base_config=base_run,
+        grid={"pd.seed": [0, 1]},
+        description="from run",
+        driver_path=TMS_DRIVER_PATH,
+    )
+
+    run_ids = {r.run_id for r in spec.runs}
+    assert len(run_ids) == 2
+    assert base_run.run_id not in run_ids
 
 
 def test_example_cartesian_sweep_smoke() -> None:

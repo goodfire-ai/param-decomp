@@ -5,9 +5,8 @@ import pytest
 import yaml
 
 from param_decomp.experiments.discovery import discover_experiments
-from param_decomp.experiments.driver import load_driver
 from param_decomp.experiments.runner import _resolve_source
-from param_decomp.run import RUN_METADATA_FILENAME
+from param_decomp.run import RUN_METADATA_FILENAME, Run
 from param_decomp.settings import REPO_ROOT
 
 
@@ -54,7 +53,7 @@ def test_rerun_loads_driver_from_run(tmp_path: Path) -> None:
     config_data["pd"]["seed"] = 123
     run_path = tmp_path / RUN_METADATA_FILENAME
     driver_path = config_data["driver_path"]
-    run = load_driver(driver_path).config_type.model_validate(config_data)
+    run = Run.from_dict(config_data)
     run.write(run_path)
 
     raw = _resolve_source(experiment=None, config_path=None, rerun=str(run_path.parent))

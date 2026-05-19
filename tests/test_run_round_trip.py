@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from param_decomp.configs import (
@@ -81,6 +82,17 @@ def _runtime_config() -> RuntimeConfig:
 def _round_trip(run: Run) -> Run:
     """Round-trip ``run`` through ``model_dump`` → ``Run.from_dict``."""
     return Run.from_dict(run.model_dump(mode="json"))
+
+
+def test_run_generates_run_id_on_instantiation():
+    run = Run(
+        driver_path=None,
+        pd=_pd_config(),
+        logging=_logging_config(),
+        runtime=_runtime_config(),
+    )
+
+    assert run.run_id.startswith("p-")
 
 
 def test_lm_run_round_trip():
@@ -182,8 +194,25 @@ def test_run_round_trip_via_file(tmp_path: Path):
     path = tmp_path / RUN_METADATA_FILENAME
     run.write(path)
     loaded = Run.from_file(path)
+    assert loaded.run_id == run.run_id
     assert loaded.driver_path == run.driver_path
     assert loaded == run
+
+
+def test_run_from_file_preserves_existing_run_id(tmp_path: Path):
+    run = Run(
+        run_id="p-existing",
+        driver_path=None,
+        pd=_pd_config(),
+        logging=_logging_config(),
+        runtime=_runtime_config(),
+    )
+    path = tmp_path / RUN_METADATA_FILENAME
+    path.write_text(yaml.safe_dump(run.model_dump(mode="json")))
+
+    loaded = Run.from_file(path)
+
+    assert loaded.run_id == "p-existing"
 
 
 def test_wandb_fields_default_to_none_on_logging_config():

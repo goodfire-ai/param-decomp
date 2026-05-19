@@ -11,7 +11,7 @@ import yaml
 
 from param_decomp.configs import RuntimeConfig
 from param_decomp.experiments.discovery import discover_experiments
-from param_decomp.experiments.driver import load_driver
+from param_decomp.run import Run
 from param_decomp.settings import REPO_ROOT
 from param_decomp.sweeps.cartesian import cartesian_product
 
@@ -74,8 +74,9 @@ class TestLaunchSlurm:
 
         mock_create_slurm_script.assert_called_once()
         call_kwargs = mock_create_slurm_script.call_args.kwargs
-        task_specs = call_kwargs["task_specs"]
-        assert len(task_specs) == 6  # 3 seeds x 2 steps
+        runs = call_kwargs["runs"]
+        assert len(runs) == 6  # 3 seeds x 2 steps
+        assert len({run.run_id for run in runs}) == 6
 
     @patch("param_decomp.scripts.run_slurm.get_wandb_run_url")
     @patch("param_decomp.scripts.run_slurm.submit_slurm_job")
@@ -103,9 +104,7 @@ class TestLaunchSlurm:
 
         base_config = _builtin("tms_5-2")
         logging_data = {**base_config.get("logging", {}), "wandb_run_name": "tms_5-2"}
-        run = load_driver(base_config["driver_path"]).config_type.model_validate(
-            {**base_config, "logging": logging_data}
-        )
+        run = Run.from_dict({**base_config, "logging": logging_data})
         launch_slurm(
             launchable=run,
             n_agents=None,
@@ -117,6 +116,18 @@ class TestLaunchSlurm:
 
         mock_create_slurm_script.assert_called_once()
         call_kwargs = mock_create_slurm_script.call_args.kwargs
-        task_specs = call_kwargs["task_specs"]
-        assert len(task_specs) == 1
+        runs = call_kwargs["runs"]
+        assert len(runs) == 1
+        assert runs[0].run_id == run.run_id
         assert call_kwargs["is_array"] is False
+
+    def test_worker_args_use_run_embedded_run_id(self):
+        from param_decomp.scripts.run_slurm import _build_worker_args
+
+        base_config = _builtin("tms_5-2")
+        run = Run.from_dict(base_config)
+
+        args = _build_worker_args("launch-test", run, "test")
+
+        assert "--run_id" not in args
+        assert run.run_id in args

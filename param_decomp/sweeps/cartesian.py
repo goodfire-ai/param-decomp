@@ -92,6 +92,6 @@ def _short_value(v: Any) -> str:
 
 
 def _config_data(config: Run | dict[str, Any]) -> dict[str, Any]:
-    if isinstance(config, Run):
-        return config.model_dump(mode="json")
-    return config
+    data = config.model_dump(mode="json") if isinstance(config, Run) else dict(config)
+    data.pop("run_id", None)
+    return data

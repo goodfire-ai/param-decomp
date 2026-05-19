@@ -30,7 +30,6 @@ from param_decomp.utils.general_utils import set_seed
 def run_experiment(
     run: Run,
     *,
-    run_id: str | None = None,
     launch_id: str | None = None,
     wandb_project: str | None = None,
 ) -> None:
@@ -69,7 +68,6 @@ def run_experiment(
         train_loader=train_loader,
         eval_loader=eval_loader,
         device=device,
-        run_id=run_id,
         run=run,
         wandb_project=wandb_project,
         wandb_tags=wandb_tags,
@@ -79,13 +77,12 @@ def run_experiment(
 @with_distributed_cleanup
 def main(
     run_json: str,
-    run_id: str,
     launch_id: str | None = None,
     wandb_project: str | None = None,
 ) -> None:
     """SLURM task entrypoint."""
     run = Run.from_dict(json.loads(run_json))
-    run_experiment(run, run_id=run_id, launch_id=launch_id, wandb_project=wandb_project)
+    run_experiment(run, launch_id=launch_id, wandb_project=wandb_project)
 
 
 def cli() -> None:

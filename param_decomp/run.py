@@ -14,9 +14,11 @@ from pathlib import Path
 from typing import Any, override
 
 import yaml
+from pydantic import Field
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import LoggingConfig, PDConfig, RuntimeConfig
+from param_decomp.utils.run_utils import generate_run_id
 
 RUN_METADATA_FILENAME = "run_metadata.yaml"
 
@@ -24,11 +26,16 @@ RUN_METADATA_FILENAME = "run_metadata.yaml"
 class Run(BaseConfig):
     """Top-level run config.
 
+    ``run_id`` identifies the output directory and W&B run. Fresh ``Run``
+    objects generate one automatically; YAML / dict inputs that already
+    contain a value preserve it.
+
     ``driver_path`` is the ``module:attr`` import path of the experiment driver
     used to build the target model and dataloaders. ``None`` for notebook
     callers of ``run_pd`` who build their own ``PDTarget``.
     """
 
+    run_id: str = Field(default_factory=lambda: generate_run_id("param_decomp"))
     driver_path: str | None
     pd: PDConfig
     logging: LoggingConfig

@@ -12,7 +12,6 @@ For single-machine execution, use ``pd-run <experiment> --local``.
 
 import json
 import shlex
-from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 
@@ -22,7 +21,6 @@ from param_decomp.run import Run
 from param_decomp.settings import GPUS_PER_NODE, PARAM_DECOMP_OUT_DIR
 from param_decomp.sweeps import SweepSpec
 from param_decomp.utils.git_utils import create_git_snapshot
-from param_decomp.utils.run_utils import generate_run_id
 from param_decomp.utils.slurm import (
     SlurmArrayConfig,
     SlurmConfig,
@@ -37,14 +35,6 @@ _CUDA_FLAGS = {
     "NCCL_DEBUG": "WARN",
     "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
 }
-
-
-@dataclass(frozen=True, slots=True)
-class _TaskSpec:
-    """One SLURM task: a Run + a pre-allocated run_id."""
-
-    run: Run
-    run_id: str
 
 
 def launch_slurm(
@@ -88,22 +78,17 @@ def launch_slurm(
         logger.info(f"Single run: {runs[0].logging.wandb_run_name}")
         sweep_spec_path = None
 
-    # Run is already a validated pydantic object. The worker still asserts that
-    # the Run subclass matches the driver before using it.
-
-    task_specs = [_TaskSpec(run=r, run_id=generate_run_id("param_decomp")) for r in runs]
-
     snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=launch_id)
     logger.info(f"Created git snapshot ref: {snapshot_ref} ({commit_hash[:8]})")
 
     slurm_job_name = f"pd-{job_suffix}" if job_suffix else "pd"
-    wandb_urls = [get_wandb_run_url(project, t.run_id) for t in task_specs]
+    wandb_urls = [get_wandb_run_url(project, run.run_id) for run in runs]
     is_array = is_sweep
 
     script_content = _create_slurm_script(
         slurm_job_name=slurm_job_name,
         launch_id=launch_id,
-        task_specs=task_specs,
+        runs=runs,
         snapshot_ref=snapshot_ref,
         n_gpus=n_gpus,
         partition=partition,
@@ -117,13 +102,13 @@ def launch_slurm(
         script_content,
         f"launch_{launch_id}",
         is_array=is_array,
-        n_array_tasks=len(task_specs) if is_array else None,
+        n_array_tasks=len(runs) if is_array else None,
     )
 
     logger.section("Job submitted successfully!")
     summary: dict[str, str | int | None] = {
         "Array Job ID" if is_array else "Job ID": result.job_id,
-        "Total runs": len(task_specs),
+        "Total runs": len(runs),
         "View logs in": result.log_pattern,
         "Script": str(result.script_path),
     }
@@ -177,13 +162,12 @@ def _choose_master_port(run_id_local: str, idx: int) -> int:
     return base + (h % span)
 
 
-def _build_worker_args(launch_id: str, task_spec: _TaskSpec, project: str) -> str:
+def _build_worker_args(launch_id: str, run: Run, project: str) -> str:
     """Build the ``_worker`` CLI arguments for one SLURM task."""
-    run_json = json.dumps(task_spec.run.model_dump(mode="json"))
+    run_json = json.dumps(run.model_dump(mode="json"))
     return " ".join(
         [
             f"--run_json {shlex.quote(run_json)}",
-            f"--run_id {task_spec.run_id}",
             f"--launch_id {launch_id}",
             f"--wandb_project {shlex.quote(project)}",
         ]
@@ -192,21 +176,21 @@ def _build_worker_args(launch_id: str, task_spec: _TaskSpec, project: str) -> st
 
 def _get_command(
     launch_id: str,
-    task_spec: _TaskSpec,
+    run: Run,
     spec_idx: int,
     n_gpus: int | None,
     snapshot_ref: str,
     is_array: bool,
     project: str,
 ) -> str:
-    """Build the command to run one task spec.
+    """Build the command to run one ``Run``.
 
     Args:
         n_gpus: None or 1 means single GPU/CPU. 2-8 means single-node DDP. >8 means multi-node
             DDP (must be divisible by 8).
     """
-    port = _choose_master_port(launch_id, spec_idx)
-    script_args = _build_worker_args(launch_id, task_spec, project)
+    port = _choose_master_port(run.run_id, spec_idx)
+    script_args = _build_worker_args(launch_id, run, project)
 
     worker_module = "param_decomp.experiments._worker"
     match n_gpus:
@@ -248,7 +232,7 @@ def _get_command(
 def _create_slurm_script(
     slurm_job_name: str,
     launch_id: str,
-    task_specs: list[_TaskSpec],
+    runs: list[Run],
     snapshot_ref: str,
     n_gpus: int | None,
     partition: str,
@@ -257,18 +241,18 @@ def _create_slurm_script(
     max_concurrent_tasks: int | None = None,
     per_task_comments: list[str] | None = None,
 ) -> str:
-    """Create a SLURM script for one or more task specs."""
+    """Create a SLURM script for one or more runs."""
     commands = [
         _get_command(
             launch_id=launch_id,
-            task_spec=task_spec,
+            run=run,
             spec_idx=i,
             n_gpus=n_gpus,
             snapshot_ref=snapshot_ref,
             is_array=is_array,
             project=project,
         )
-        for i, task_spec in enumerate(task_specs)
+        for i, run in enumerate(runs)
     ]
 
     match n_gpus:
@@ -293,7 +277,7 @@ def _create_slurm_script(
             array_config, commands, env=_CUDA_FLAGS, per_task_comments=per_task_comments
         )
     else:
-        assert len(task_specs) == 1, "non-array launch must have exactly one task"
+        assert len(runs) == 1, "non-array launch must have exactly one run"
         comment = per_task_comments[0] if per_task_comments is not None else None
         single_config = SlurmConfig(
             job_name=slurm_job_name,

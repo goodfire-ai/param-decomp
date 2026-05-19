@@ -62,7 +62,7 @@ from param_decomp.utils.general_utils import (
 )
 from param_decomp.utils.logging_utils import get_grad_norms_dict, local_log
 from param_decomp.utils.module_utils import expand_module_patterns
-from param_decomp.utils.run_utils import generate_run_id, save_file
+from param_decomp.utils.run_utils import save_file
 from param_decomp.utils.wandb_utils import init_wandb, try_wandb
 
 
@@ -474,7 +474,6 @@ def run_pd(
     eval_loader: DataLoader[Any],
     device: str,
     *,
-    run_id: str | None = None,
     run: Run | None = None,
     artifacts: dict[str, Any] | None = None,
     wandb_project: str | None = None,
@@ -496,13 +495,6 @@ def run_pd(
 
     out_dir: Path | None
     if is_main_process():
-        run_id = run_id or generate_run_id("param_decomp")
-        out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        logger.info(f"Run ID: {run_id}")
-        logger.info(f"Output directory: {out_dir}")
-
         artifacts = artifacts or {}
         if run is None:
             run = Run(
@@ -511,6 +503,12 @@ def run_pd(
                 logging=logging_config,
                 runtime=runtime_config,
             )
+        run_id = run.run_id
+        out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"Run ID: {run_id}")
+        logger.info(f"Output directory: {out_dir}")
 
         tags = list(wandb_tags or [])
         slurm_array_job_id = os.getenv("SLURM_ARRAY_JOB_ID")

@@ -16,7 +16,7 @@ def _write_sweep_module(tmp_path: Path, body: str) -> Path:
 def test_load_and_call(tmp_path: Path) -> None:
     path = _write_sweep_module(
         tmp_path,
-        "from param_decomp.experiments.tms.experiment import TMSRun\n"
+        "from param_decomp.run import Run\n"
         "from param_decomp.settings import REPO_ROOT\n"
         "from param_decomp.sweeps import SweepSpec\n"
         "import yaml\n"
@@ -28,7 +28,7 @@ def test_load_and_call(tmp_path: Path) -> None:
         "    return SweepSpec(\n"
         '        description="tiny",\n'
         "        runs=[\n"
-        "            TMSRun.model_validate({**config, 'driver_path': DRIVER}),\n"
+        "            Run.from_dict({**config, 'driver_path': DRIVER}),\n"
         "        ],\n"
         "    )\n",
     )
