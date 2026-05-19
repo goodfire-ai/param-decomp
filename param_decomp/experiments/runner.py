@@ -59,6 +59,7 @@ def _resolve_source(
         from param_decomp.saved_run import PDRun
 
         config_data = PDRun.run_from_path(rerun).model_dump(mode="json")
+        config_data.pop("run_id", None)
         name = "rerun"
 
     assert config_data.get("driver_path"), (
