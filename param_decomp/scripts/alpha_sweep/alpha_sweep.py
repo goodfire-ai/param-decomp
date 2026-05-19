@@ -26,7 +26,7 @@ from torch import Tensor
 
 from param_decomp.configs import SamplingType
 from param_decomp.experiments.lm.data import create_lm_data_loader
-from param_decomp.experiments.lm.experiment import LMExperimentConfig
+from param_decomp.experiments.lm.experiment import LMRun
 from param_decomp.log import logger
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import make_mask_infos
@@ -79,8 +79,8 @@ def run_r_sweep(
     """Run r sweep for a single model. Returns (run_id, ce_losses)."""
     pd_run = PDRun.from_path(wandb_path)
     config = pd_run.pd_config
-    exp = pd_run.experiment_config
-    assert isinstance(exp, LMExperimentConfig)
+    exp = pd_run.run
+    assert isinstance(exp, LMRun)
     data = exp.data
     run_id = str(wandb_path).split("/")[-1]
 
@@ -92,7 +92,7 @@ def run_r_sweep(
     eval_loader, _tokenizer = create_lm_data_loader(
         data,
         split=data.eval_split,
-        batch_size=config.eval_batch_size,
+        batch_size=exp.logging.eval_batch_size,
         seed=config.seed + 1,
     )
 

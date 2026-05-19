@@ -315,17 +315,15 @@
         </li>
         <li>
           With <code>--local</code>, <code>pd-run</code> calls
-          <code>_worker.run_experiment(driver_path, config_dict)</code> in this process.
+          <code>_worker.run_experiment(run)</code> in this process.
           Otherwise it calls <code>launch_slurm(...)</code>, which expands any sweep grid, creates
           a git snapshot branch, and submits a SLURM array. Each array task invokes
-          <code>python -m param_decomp.experiments._worker --config_json ... --driver ...</code>.
+          <code>python -m param_decomp.experiments._worker --run_json ...</code>.
         </li>
         <li>
-          <code>_worker.run_experiment</code> loads the driver, validates the config via
-          <code>driver.config_type.model_validate(...)</code>, builds the <code>PDTarget</code>
-          and train/eval dataloaders, calls <code>driver.artifacts(config, target)</code>, and
-          constructs a <code>RunMetadata(driver=driver_path, config=config_dump,
-          artifact_filenames=list(artifacts))</code>.
+          <code>_worker.run_experiment</code> loads the driver, checks that
+          <code>run</code> is an instance of the driver's <code>config_type</code>, builds the
+          <code>PDTarget</code> and train/eval dataloaders, and calls <code>run_pd()</code>.
         </li>
         <li>
           <code>run_pd()</code> creates
@@ -334,9 +332,10 @@
           starts W&amp;B if configured, then trains.
         </li>
         <li>
-          A direct <code>run_pd()</code> call from a notebook skips the driver entirely. Metadata
-          defaults to <code>RunMetadata(driver=None, config={"pd": pd_config.model_dump()},
-          artifact_filenames=[])</code>; the run then reloads via
+          A direct <code>run_pd()</code> call from a notebook skips the driver entirely. The
+          <code>Run</code> defaults to
+          <code>Run(driver_path=None, pd=..., logging=..., runtime=...)</code>;
+          the run then reloads via
           <code>load_component_model(path, target=...)</code>.
         </li>
       </ol>
@@ -349,7 +348,7 @@
         <strong>Saved run directory</strong> — is the same green
         <code>decompositions/&lt;run_id&gt;/</code> the training flow ended with. From there,
         three calls turn that directory back into a working <code>ComponentModel</code>:
-        <code>PDRun.from_path</code> parses the metadata, <code>load_target</code> rebuilds the
+        <code>PDRun.from_path</code> parses the run spec, <code>load_target</code> rebuilds the
         target via the driver, and <code>load_model</code> stitches the checkpoint onto it.
       </p>
 
@@ -372,18 +371,18 @@
           <text x="350" y="134" class="svg-small">parse the directory into a handle</text>
           <text x="350" y="160" class="svg-text">resolve_run_files:</text>
           <text x="350" y="178" class="svg-small">  local path or wandb download</text>
-          <text x="350" y="200" class="svg-text">RunMetadata.from_file(yaml)</text>
+          <text x="350" y="200" class="svg-text">Run.from_file(yaml)</text>
           <text x="350" y="222" class="svg-text">find latest model_&lt;step&gt;.pth</text>
-          <text x="350" y="244" class="svg-small">→ PDRun(path, metadata, ckpt)</text>
+          <text x="350" y="244" class="svg-small">→ PDRun(path, run, ckpt)</text>
 
           <rect x="640" y="80" width="270" height="180" class="svg-box svg-box-teal"></rect>
           <text x="660" y="112" class="svg-title">2. pd_run.load_target()</text>
           <text x="660" y="134" class="svg-small">driver rebuilds the target model</text>
-          <text x="660" y="160" class="svg-text">load_driver(metadata.driver)</text>
-          <text x="660" y="182" class="svg-text">config_type.model_validate(</text>
-          <text x="660" y="200" class="svg-small">  metadata.config)</text>
-          <text x="660" y="222" class="svg-text">driver.build_target(</text>
-          <text x="660" y="240" class="svg-small">  config, run_dir=path) → PDTarget</text>
+          <text x="660" y="160" class="svg-text">load_driver(run.driver_path)</text>
+          <text x="660" y="182" class="svg-text">assert isinstance(</text>
+          <text x="660" y="200" class="svg-small">  run, driver.config_type)</text>
+          <text x="660" y="222" class="svg-text">driver.build_target(run)</text>
+          <text x="660" y="240" class="svg-small">  → PDTarget</text>
 
           <rect x="950" y="80" width="260" height="180" class="svg-box svg-box-red"></rect>
           <text x="970" y="112" class="svg-title">3. pd_run.load_model(target)</text>
@@ -413,9 +412,10 @@
       </p>
 
       <div class="note">
-        <strong>No driver in metadata?</strong> The run came from a direct <code>run_pd()</code>
-        call. You must pass <code>target=...</code> to <code>load_component_model()</code>;
-        <code>PDRun.experiment_config</code> will be <code>None</code> for such runs.
+        <strong>No driver in the saved <code>Run</code>?</strong> The run came from a direct
+        <code>run_pd()</code> call. You must pass <code>target=...</code> to
+        <code>load_component_model()</code>; <code>pd_run.run</code> is a bare <code>Run</code>
+        (not a driver-specific subclass) and <code>pd_run.driver</code> is <code>None</code>.
       </div>
     </section>
 
@@ -598,25 +598,26 @@
           <li><code>tied_weights: list[tuple[str, str]] | None</code> — optional weight-tying pairs.</li>
         </ul>
 
-        <h3>RunMetadata</h3>
-        <p class="subtitle"><a href="../param_decomp/run_metadata.py">param_decomp/run_metadata.py</a></p>
+        <h3>RunSpec</h3>
+        <p class="subtitle"><a href="../param_decomp/run_spec.py">param_decomp/run_spec.py</a></p>
         <pre><code>@dataclass
-class RunMetadata:
+class RunSpec:
     driver: str | None             # import path; None for notebook/no-driver runs
-    config: dict[str, Any]         # full experiment config dump
-    artifact_filenames: list[str]  # extra files bundled into the run dir</code></pre>
+    config: ExperimentConfig       # full parsed experiment config object
+    wandb_project: str | None = None
+    wandb_run_name: str | None = None
+    view_meta: dict[str, Any] = field(default_factory=dict)</code></pre>
         <p>
-          Read/write helpers: <code>RunMetadata.from_file(path)</code>, <code>.write(path)</code>,
+          Read/write helpers: <code>RunSpec.from_file(path)</code>, <code>.write(path)</code>,
           <code>.from_dict(...)</code>.
         </p>
 
-        <h3>RunSpec</h3>
-        <p class="subtitle"><a href="../param_decomp/utils/compute_utils.py">param_decomp/utils/compute_utils.py</a></p>
+        <h3>TaskSpec</h3>
+        <p class="subtitle"><a href="../param_decomp/scripts/run_slurm.py">param_decomp/scripts/run_slurm.py</a></p>
         <p>
-          Per-task payload built by the launcher: <code>driver_path</code>, the JSON-serializable
-          <code>config_dict</code>, and a pre-generated <code>run_id</code>. One spec per array
-          task; the launcher serializes <code>config_dict</code> as
-          <code>--config_json 'json:{...}'</code> for the worker.
+          Per-task payload built by the launcher: a <code>RunSpec</code> plus a pre-generated
+          <code>run_id</code>. One task spec per array task; the launcher serializes the run
+          spec as <code>--run_spec_json '{...}'</code> for the worker.
         </p>
 
         <h3>Artifacts</h3>
@@ -631,25 +632,23 @@ class RunMetadata:
           <li>LM: empty (target is reloaded from HuggingFace by the driver).</li>
         </ul>
         <p>
-          The list of expected filenames is mirrored into
-          <code>RunMetadata.artifact_filenames</code>, and <code>run_pd</code> asserts at startup
-          that the keys match.
+          These files are saved beside <code>run_metadata.yaml</code> by <code>run_pd</code>.
         </p>
 
         <h3>PDRun</h3>
         <p class="subtitle"><a href="../param_decomp/saved_run.py">param_decomp/saved_run.py</a></p>
-        <p>Handle to a saved run. Loads metadata eagerly; driver/config lazily.</p>
+        <p>Handle to a saved run. Loads the run spec eagerly; driver/config lazily.</p>
         <pre><code>@dataclass
 class PDRun:
     path: Path
-    metadata: RunMetadata
+    spec: RunSpec
     checkpoint_path: Path
 
     @classmethod
     def from_path(cls, path: ModelPath) -> "PDRun": ...
 
     @classmethod
-    def metadata_from_path(cls, path: ModelPath) -> RunMetadata: ...   # metadata only, no checkpoint
+    def spec_from_path(cls, path: ModelPath) -> RunSpec: ...   # spec only, no checkpoint
 
     driver:             ExperimentDriver | None   # cached_property
     experiment_config:  ExperimentConfig | None   # cached_property, validated via driver.config_type
@@ -664,7 +663,7 @@ class PDRun:
         <p class="subtitle"><a href="../param_decomp/__init__.py">param_decomp/__init__.py</a></p>
         <pre><code>from param_decomp import (
     run_pd, load_component_model,
-    PDConfig, PDTarget, RunMetadata, PDRun,
+    PDConfig, PDTarget, RunSpec, PDRun,
     ExperimentConfig, ExperimentDriver,
 )</code></pre>
       </section>
@@ -732,10 +731,9 @@ class DiscoveredExperiment:
             <tr>
               <td><code>RunSpec</code></td>
               <td>
-                Per-task payload: <code>driver_path</code>, JSON-serializable
-                <code>config_dict</code>, pre-generated <code>run_id</code>. The launcher also
-                overrides <code>pd.wandb_project</code> and (for sweeps) sets
-                <code>pd.wandb_run_name</code> from the param combo.
+                Per-task payload: a <code>RunSpec</code> plus a pre-generated
+                <code>run_id</code>. The launcher stamps <code>wandb_project</code> onto each
+                run spec before submission.
               </td>
             </tr>
             <tr>
@@ -764,16 +762,15 @@ class DiscoveredExperiment:
         <h3>Command shapes</h3>
         <pre><code># Single-process
 python -m param_decomp.experiments._worker \
-  --config_json 'json:{...}' \
-  --driver param_decomp.experiments.lm.experiment:Driver \
+  --run_spec_json '{...}' \
   --launch_id launch-... --run_id p-...
 
 # Single-node DDP
 torchrun --standalone --nproc_per_node=4 --master_port=... \
-  -m param_decomp.experiments._worker --config_json 'json:{...}' --driver ...</code></pre>
+  -m param_decomp.experiments._worker --run_spec_json '{...}' --run_id p-...</code></pre>
         <p>
-          The <code>json:</code> prefix protects the dict literal from Fire's
-          <code>ast.literal_eval</code> auto-parsing.
+          The run spec JSON contains the driver import path, full config, W&amp;B fields, and
+          any <code>view_meta</code> labels.
         </p>
       </section>
 
@@ -818,7 +815,7 @@ torchrun --standalone --nproc_per_node=4 --master_port=... \
             "target_train_config.yaml": train_config.model_dump(mode="json"),
         }</code></pre>
         <p>
-          The worker records the supplied driver import path into <code>RunMetadata.driver</code>
+          The worker records the supplied driver import path into <code>RunSpec.driver</code>
           so the run is reloadable later via the same code path as built-ins.
         </p>
         <p>
@@ -836,7 +833,7 @@ torchrun --standalone --nproc_per_node=4 --master_port=... \
           <code>~/param_decomp_out/</code>).
         </p>
         <pre><code>decompositions/&lt;run_id&gt;/
-├── run_metadata.yaml          # RunMetadata: driver, config, artifact_filenames
+├── run_metadata.yaml          # RunSpec: driver, config, wandb fields, view_meta
 ├── model_&lt;step&gt;.pth           # PD checkpoints (one per save_freq + final)
 ├── target_model.pth           # artifact: TMS / ResidMLP only
 ├── target_train_config.yaml   # artifact: TMS / ResidMLP only
@@ -853,12 +850,13 @@ config:
     ...
   target: {...}
   data: {...}
-artifact_filenames:
-  - target_model.pth</code></pre>
+wandb_project: param-decomp
+wandb_run_name: seed=0
+view_meta: {}</code></pre>
 
-        <h3>Reload usage</h3>
+<h3>Reload usage</h3>
         <pre><code>pd_run = PDRun.from_path("wandb:entity/project/runs/abc123")
-pd_run.metadata           # RunMetadata
+pd_run.spec               # RunSpec
 pd_run.pd_config          # PDConfig (always available)
 pd_run.driver             # ExperimentDriver | None  (None for notebook runs)
 pd_run.experiment_config  # ExperimentConfig | None — parsed via driver.config_type

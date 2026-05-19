@@ -46,8 +46,10 @@ make install      # Install the package only (`pip install -e .`)
 ## Experiments
 
 Run an experiment with `pd-run <name>`. This submits a SLURM job by default (with a git snapshot
-for reproducibility); add `--local` to run in this process instead. Also supports `--dp N`,
-`--cpu`, and `--sweep --n_agents N` for grid sweeps. The two main language-model decompositions:
+for reproducibility); add `--local` to run in this process instead. Compute substrate (device,
+data parallelism, autocast) lives in the YAML's `runtime:` block — there are no CLI overrides.
+Sweeps run as `pd-run --sweep_generator_path /abs/path/file.py:func --n_agents N`. The two main
+language-model decompositions:
 
 - **`pile_llama_simple_mlp-4L`** — 4-layer Llama (MLP-only) on the Pile; the VPD paper run
   [`goodfire/spd/runs/s-55ea3f9b`](https://wandb.ai/goodfire/spd/runs/s-55ea3f9b)
@@ -67,15 +69,16 @@ Two routes, neither needing core-package edits:
 
 - **Call `run_pd` directly** — build a `PDTarget` (model + `run_batch` + reconstruction loss;
   helpers in [`batch_and_loss_fns.py`](param_decomp/models/batch_and_loss_fns.py)) and call
-  `run_pd(config, target, train_loader, eval_loader, device)`. Reload with
-  `load_component_model(path, target=...)`. Best for notebooks/scripts.
-- **Package it as a YAML-driven experiment** — define your experiment as a Pydantic
-  `ExperimentConfig` plus an `ExperimentDriver` class (a small adapter exposing
-  `build_target` and `build_dataloaders`; see
+  `run_pd(config, logging_config, runtime_config, target, train_loader, eval_loader, device)`.
+  Reload with `load_component_model(path, target=...)`. Best for notebooks/scripts.
+- **Package it as a YAML-driven experiment** — define your experiment as a Pydantic `Run`
+  subclass (adding `target` / `data` fields) plus an `ExperimentDriver` class (a small adapter
+  exposing `build_target` and `build_dataloaders`; see
   [`driver.py`](param_decomp/experiments/driver.py) for the interface and
   [`tms/experiment.py`](param_decomp/experiments/tms/experiment.py) for the smallest example),
-  then run `pd-run --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml`. This is
-  what built-in experiments do, and is needed for sweeps and for self-reloading runs via
+  put `driver_path: my_pkg.my_exp:MyDriver` at the top of your YAML, then run
+  `pd-run --config_path my_config.yaml`. This is what built-in experiments do, and is needed for
+  sweeps and for self-reloading runs via
   `load_component_model(path)` (no `target=` argument needed) or `PDRun.from_path(...)`.
 
 Runs save a `run_metadata.yaml` beside the checkpoint with the parsed config and (if

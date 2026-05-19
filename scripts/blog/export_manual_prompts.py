@@ -39,7 +39,7 @@ import torch
 from param_decomp.app.backend.app_tokenizer import AppTokenizer
 from param_decomp.app.backend.compute import compute_ci_only
 from param_decomp.autointerp.repo import InterpRepo
-from param_decomp.experiments.lm.experiment import LMExperimentConfig
+from param_decomp.experiments.lm.experiment import LMRun
 from param_decomp.saved_run import PDRun
 from param_decomp.scripts.prompt_utils import load_prompts
 from param_decomp.topology import TransformerTopology
@@ -148,8 +148,8 @@ def export_manual_prompts(
 ) -> dict[str, Any]:
     """Compute CI/activation values for one component across manual prompts."""
     pd_run = PDRun.from_path(run_path)
-    exp = pd_run.experiment_config
-    assert isinstance(exp, LMExperimentConfig), "manual prompt export only supports LM runs"
+    exp = pd_run.run
+    assert isinstance(exp, LMRun), "manual prompt export only supports LM runs"
     model = pd_run.load_model().to(get_device())
     model.eval()
 

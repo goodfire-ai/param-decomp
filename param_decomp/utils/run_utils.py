@@ -1,7 +1,6 @@
 """Utilities for managing experiment run directories and IDs."""
 
 import copy
-import itertools
 import json
 import os
 import secrets
@@ -13,7 +12,6 @@ from typing import Any, Final, Literal, NamedTuple
 import torch
 import yaml
 
-from param_decomp.configs import PDConfig
 from param_decomp.log import logger
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp.utils.git_utils import (
@@ -109,94 +107,6 @@ def apply_nested_updates(base_dict: dict[str, Any], updates: dict[str, Any]) -> 
     return result
 
 
-def _extract_value_specs_from_sweep_params(
-    obj: Any,
-    path: list[str],
-    value_specs: list[tuple[str, list[Any]]],
-) -> None:
-    """Recursively extract all {"values": [...]} specs with flattened paths.
-
-    Non-dict leaves are ignored here; `_validate_sweep_params_have_values` is responsible
-    for rejecting them.
-    """
-    if not isinstance(obj, dict):
-        return
-    if "values" in obj and len(obj) == 1:
-        flattened_key = ".".join(path)
-        value_specs.append((flattened_key, obj["values"]))
-        return
-    for key, value in obj.items():
-        _extract_value_specs_from_sweep_params(value, path + [key], value_specs)
-
-
-def _validate_sweep_params_have_values(obj: Any, path: list[str]) -> None:
-    """Validate that all leaves have {"values": [...]}."""
-    if isinstance(obj, dict):
-        if "values" in obj:
-            return
-        if not obj:
-            return
-        for key, value in obj.items():
-            _validate_sweep_params_have_values(value, path + [key])
-    else:
-        path_str = ".".join(path) if path else "(root)"
-        raise ValueError(
-            f'All leaf values in sweep parameters must be {{"values": [...]}}, '
-            f"but found {type(obj).__name__} at path '{path_str}': {obj}"
-        )
-
-
-def generate_grid_combinations(parameters: dict[str, Any]) -> list[dict[str, Any]]:
-    """Generate all combinations for a grid search from parameter specifications.
-
-    All leaf values must be {"values": [...]}.
-
-    Args:
-        parameters: Nested dict structure where all leaves are {"values": [...]}
-
-    Returns:
-        List of parameter combinations with flattened keys (e.g.,
-        "loss_metrics.importance_minimality.coeff")
-
-    Example:
-        >>> params = {
-        ...     "seed": {"values": [0, 1]},
-        ...     "loss_metrics": {
-        ...         "importance_minimality": {"coeff": {"values": [0.1, 0.2]}},
-        ...     },
-        ... }
-        >>> combos = generate_grid_combinations(params)
-        >>> len(combos)
-        4
-        >>> combos[0]["seed"]
-        0
-        >>> combos[0]["loss_metrics.importance_minimality.coeff"]
-        0.1
-    """
-    # Validate all leaves have {"values": [...]} before extracting
-    _validate_sweep_params_have_values(parameters, [])
-
-    # Extract all value specs with their flattened paths
-    value_specs: list[tuple[str, list[Any]]] = []
-    _extract_value_specs_from_sweep_params(parameters, [], value_specs)
-
-    if not value_specs:
-        # No value specs found, return single empty combination
-        return [{}]
-
-    # Generate cartesian product of all value specs
-    keys, value_lists = zip(*value_specs, strict=True)
-    all_value_combinations = list(itertools.product(*value_lists))
-
-    # Create flattened dicts for each combination
-    combinations: list[dict[str, Any]] = []
-    for value_combo in all_value_combinations:
-        combo_dict = dict(zip(keys, value_combo, strict=True))
-        combinations.append(combo_dict)
-
-    return combinations
-
-
 RunType = Literal[
     "param_decomp", "train", "clustering/runs", "clustering/ensembles", "clustering/harvests"
 ]
@@ -217,24 +127,6 @@ def generate_run_id(run_type: RunType) -> str:
     """
     type_abbr = RUN_TYPE_ABBREVIATIONS[run_type]
     return f"{type_abbr}-{secrets.token_hex(4)}"
-
-
-def parse_config(config_path: Path | str | None, config_json: str | None) -> PDConfig:
-    """Parse a PDConfig from either a file path or a JSON string. Exactly one must be provided."""
-    assert (config_path is not None) != (config_json is not None), (
-        "Need exactly one of config_path and config_json"
-    )
-    if config_path is not None:
-        return PDConfig.from_file(config_path)
-    assert config_json is not None
-    return PDConfig(**json.loads(config_json.removeprefix("json:")))
-
-
-def parse_sweep_params(sweep_params_json: str | None) -> dict[str, Any] | None:
-    """Parse sweep parameters from a JSON string, or return None if not provided."""
-    if sweep_params_json is None:
-        return None
-    return json.loads(sweep_params_json.removeprefix("json:"))
 
 
 class ExecutionStamp(NamedTuple):

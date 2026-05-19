@@ -6,13 +6,13 @@ from pydantic import Field
 from torch import Tensor
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.experiments.driver import ExperimentConfig
 from param_decomp.experiments.tms.models import TMSModel, TMSTargetRunInfo
 from param_decomp.models.batch_and_loss_fns import (
     PDTarget,
     recon_loss_mse,
     run_batch_first_element,
 )
+from param_decomp.run import Run
 from param_decomp.types import Probability
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
 from param_decomp.utils.distributed_utils import DistributedState
@@ -33,17 +33,17 @@ class TMSDataConfig(BaseConfig):
     )
 
 
-class TMSExperimentConfig(ExperimentConfig):
+class TMSRun(Run):
     target: TMSTargetConfig
     data: TMSDataConfig
 
 
 class Driver:
     name: ClassVar[str] = "tms"
-    config_type: ClassVar[type[TMSExperimentConfig]] = TMSExperimentConfig
+    config_type: ClassVar[type[TMSRun]] = TMSRun
 
-    def build_target(self, config: TMSExperimentConfig) -> PDTarget:
-        run_info = TMSTargetRunInfo.from_path(config.target.run_path)
+    def build_target(self, run: TMSRun) -> PDTarget:
+        run_info = TMSTargetRunInfo.from_path(run.target.run_path)
         target_model = TMSModel.from_run_info(run_info)
         target_model.eval()
         tied_weights = [("linear1", "linear2")] if target_model.config.tied_weights else None
@@ -56,7 +56,7 @@ class Driver:
 
     def build_dataloaders(
         self,
-        config: TMSExperimentConfig,
+        run: TMSRun,
         *,
         train_batch_size: int,
         eval_batch_size: int,
@@ -67,12 +67,12 @@ class Driver:
         DatasetGeneratedDataLoader[tuple[Tensor, Tensor]],
     ]:
         _ = dist_state
-        train_config = TMSTargetRunInfo.from_path(config.target.run_path).config
+        train_config = TMSTargetRunInfo.from_path(run.target.run_path).config
         dataset = SparseFeatureDataset(
             n_features=train_config.tms_model_config.n_features,
-            feature_probability=config.data.feature_probability,
+            feature_probability=run.data.feature_probability,
             device=device,
-            data_generation_type=config.data.data_generation_type,
+            data_generation_type=run.data.data_generation_type,
             value_range=(0.0, 1.0),
             synced_inputs=train_config.synced_inputs,
         )

@@ -1,6 +1,5 @@
+driver_path: param_decomp.experiments.tms.experiment:Driver
 pd:
-  wandb_project: param-decomp
-  wandb_run_name: null
   seed: 0
   n_mask_samples: 1
   ci_config:
@@ -18,7 +17,6 @@ pd:
     C: 200
   use_delta_component: true
   batch_size: 4096
-  eval_batch_size: 4096
   steps: 20000
   components_optimizer:
     lr_schedule:
@@ -35,12 +33,6 @@ pd:
   faithfulness_warmup_steps: 200
   faithfulness_warmup_lr: 0.01
   faithfulness_warmup_weight_decay: 0.1
-  train_log_freq: 100
-  eval_freq: 1000
-  n_eval_steps: 100
-  slow_eval_freq: 5000
-  save_freq: null
-  ci_alive_threshold: 0.1
   loss_metrics:
     importance_minimality:
       coeff: 1e-4
@@ -50,6 +42,14 @@ pd:
       coeff: 1.0
     stochastic_recon:
       coeff: 1.0
+logging:
+  train_log_freq: 100
+  eval_freq: 1000
+  slow_eval_freq: 5000
+  n_eval_steps: 100
+  eval_batch_size: 4096
+  save_freq: null
+  ci_alive_threshold: 0.1
   eval_metrics:
     ci_histograms:
       n_batches_accum: 5
@@ -78,3 +78,7 @@ target:
 data:
   feature_probability: 0.05
   data_generation_type: at_least_zero_active
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null

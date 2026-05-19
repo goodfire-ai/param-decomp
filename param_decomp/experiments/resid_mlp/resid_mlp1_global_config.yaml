@@ -1,6 +1,5 @@
+driver_path: param_decomp.experiments.resid_mlp.experiment:Driver
 pd:
-  wandb_project: param-decomp
-  wandb_run_name: null
   seed: 0
   n_mask_samples: 1
   ci_config:
@@ -18,7 +17,6 @@ pd:
   identity_module_info: null
   use_delta_component: true
   batch_size: 2048
-  eval_batch_size: 2048
   steps: 20000
   components_optimizer:
     lr_schedule:
@@ -33,13 +31,6 @@ pd:
   faithfulness_warmup_steps: 200
   faithfulness_warmup_lr: 0.01
   faithfulness_warmup_weight_decay: 0.1
-  train_log_freq: 100
-  eval_freq: 500
-  n_eval_steps: 100
-  slow_eval_freq: 5000
-  slow_eval_on_first_step: true
-  save_freq: null
-  ci_alive_threshold: 0.1
   loss_metrics:
     importance_minimality:
       coeff: 1e-5
@@ -49,6 +40,15 @@ pd:
       coeff: 1.0
     stochastic_recon:
       coeff: 1.0
+logging:
+  train_log_freq: 100
+  eval_freq: 500
+  slow_eval_freq: 5000
+  slow_eval_on_first_step: true
+  n_eval_steps: 100
+  eval_batch_size: 2048
+  save_freq: null
+  ci_alive_threshold: 0.1
   eval_metrics:
     ci_histograms:
       n_batches_accum: 5
@@ -74,3 +74,7 @@ target:
 data:
   feature_probability: 0.01
   data_generation_type: at_least_zero_active
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null

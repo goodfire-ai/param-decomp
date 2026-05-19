@@ -87,70 +87,6 @@ def wandb_path_to_url(wandb_path: str) -> str:
     return f"https://wandb.ai/{entity}/{project}/runs/{run_id}"
 
 
-def _parse_metric_config_key(key: str) -> tuple[str, str, str] | None:
-    """Parse a metric config key into (container, metric_field, param).
-
-    Args:
-        key: Flattened key like "loss_metrics.importance_minimality.pnorm"
-
-    Returns:
-        Tuple of (container, metric_field, param) if it's a metric config key, None otherwise
-    """
-    parts = key.split(".")
-    if len(parts) >= 3 and parts[0] in ("loss_metrics", "eval_metrics"):
-        container = parts[0]
-        metric_field = parts[1]
-        param = ".".join(parts[2:])
-        return (container, metric_field, param)
-    return None
-
-
-def generate_wandb_run_name(params: dict[str, Any]) -> str:
-    """Generate a W&B run name based on sweep parameters.
-
-    Groups parameters under `loss_metrics.<field>.<param>` or `eval_metrics.<field>.<param>`
-    by metric field name, abbreviating via METRIC_CONFIG_SHORT_NAMES.
-
-    Args:
-        params: Dictionary of flattened sweep parameters
-
-    Returns:
-        Formatted run name string
-
-    Example:
-        >>> params = {
-        ...     "seed": 42,
-        ...     "loss_metrics.importance_minimality.pnorm": 0.9,
-        ...     "loss_metrics.importance_minimality.coeff": 0.001,
-        ... }
-        >>> generate_wandb_run_name(params)
-        "seed-42-ImpMin-coeff-0.001-pnorm-0.9"
-    """
-    regular_params: list[tuple[str, Any]] = []
-    metric_params: dict[str, list[tuple[str, Any]]] = {}
-
-    for key, value in params.items():
-        parsed = _parse_metric_config_key(key)
-        if parsed:
-            _, metric_field, param = parsed
-            short_name = METRIC_CONFIG_SHORT_NAMES.get(metric_field, metric_field)
-            if short_name not in metric_params:
-                metric_params[short_name] = []
-            metric_params[short_name].append((param, value))
-        else:
-            regular_params.append((key, value))
-
-    parts: list[str] = []
-    for key, value in sorted(regular_params):
-        parts.append(f"{key}-{value}")
-    for short_name in sorted(metric_params.keys()):
-        parts.append(short_name)
-        for param, value in sorted(metric_params[short_name]):
-            parts.append(f"{param}-{value}")
-
-    return "-".join(parts)
-
-
 def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
     """Parse various W&B run reference formats into (entity, project, run_id).
 
@@ -286,20 +222,29 @@ def download_wandb_file(run: Run, wandb_run_dir: Path, file_name: str) -> Path:
 
 
 def init_wandb(
-    config: BaseConfig,
     project: str,
     run_id: str,
+    configs: dict[str, BaseConfig],
+    *,
     name: str | None = None,
     tags: list[str] | None = None,
+    view_meta: dict[str, Any] | None = None,
 ) -> None:
-    """Initialize Weights & Biases and log the config.
+    """Initialize Weights & Biases and log the configs.
 
     Args:
-        config: The config to log.
-        project: The name of the wandb project.
+        project: The wandb project name.
         run_id: The unique run ID (from ExecutionStamp).
+        configs: Mapping of prefix to config. Each config is dumped under its prefix
+            in ``wandb.config`` (``{prefix}/{field}``). Pass ``""`` as a prefix for a
+            flat dump (no key prefix), useful when there's a single config. The PD
+            path passes ``{"pd": ..., "logging": ..., "runtime": ...}`` — three
+            siblings, none privileged.
         name: The name of the wandb run.
         tags: Optional list of tags to add to the run.
+        view_meta: Free-form labels (typically populated by a sweep generator)
+            merged into ``wandb.config`` under a ``view_meta/`` prefix so the W&B
+            UI can group/color runs by researcher-facing axes.
     """
     wandb.init(
         id=run_id,
@@ -313,13 +258,17 @@ def init_wandb(
         root=str(REPO_ROOT / "param_decomp"), exclude_fn=lambda path: "out" in Path(path).parts
     )
 
-    config_dict = config.model_dump(mode="json")
-    # We also want flattened names for easier wandb searchability
-    flattened_config_dict = flatten_metric_configs(config_dict)
-    # Remove the nested metric configs to avoid duplication (if they exist)
-    config_dict.pop("loss_metrics", None)
-    config_dict.pop("eval_metrics", None)
-    wandb.config.update({**config_dict, **flattened_config_dict})
+    for prefix, cfg in configs.items():
+        cfg_dict = cfg.model_dump(mode="json")
+        flattened = flatten_metric_configs(cfg_dict)
+        cfg_dict.pop("loss_metrics", None)
+        cfg_dict.pop("eval_metrics", None)
+        key_prefix = f"{prefix}/" if prefix else ""
+        wandb.config.update({f"{key_prefix}{k}": v for k, v in cfg_dict.items()})
+        wandb.config.update({f"{key_prefix}{k}": v for k, v in flattened.items()})
+
+    if view_meta:
+        wandb.config.update({f"view_meta/{k}": v for k, v in view_meta.items()})
 
 
 _n_try_wandb_comm_errors = 0

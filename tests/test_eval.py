@@ -5,7 +5,6 @@ from unittest.mock import Mock
 import pytest
 import torch
 
-from param_decomp.configs import PDConfig
 from param_decomp.metrics import CIHistograms
 from param_decomp.models.component_model import CIOutputs, ComponentModel
 from param_decomp.models.sigmoids import lower_leaky_hard_sigmoid, upper_leaky_hard_sigmoid
@@ -13,14 +12,6 @@ from param_decomp.models.sigmoids import lower_leaky_hard_sigmoid, upper_leaky_h
 
 class TestCIHistograms:
     """Test suite for CIHistograms class."""
-
-    @pytest.fixture
-    def mock_config(self):
-        """Create a mock PDConfig object."""
-        config = Mock(spec=PDConfig)
-        config.ci_alive_threshold = 0.5
-        config.sigmoid_type = "straight_through"
-        return config
 
     @pytest.fixture
     def mock_model(self):

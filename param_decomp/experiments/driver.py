@@ -1,7 +1,7 @@
 """Open-world experiment driver interface.
 
 The core PD optimizer only needs a target model bundle plus train/eval dataloaders.
-An experiment driver is the boundary layer that turns a serializable experiment config
+An experiment driver is the boundary layer that turns a serializable `Run` config
 into those runtime objects. The set of drivers is open-world: custom users can register
 their own driver class without editing core code.
 
@@ -15,35 +15,28 @@ from typing import Any, ClassVar, Protocol
 
 from torch.utils.data import DataLoader
 
-from param_decomp.base_config import BaseConfig
-from param_decomp.configs import PDConfig
 from param_decomp.models.batch_and_loss_fns import PDTarget
+from param_decomp.run import Run
 from param_decomp.utils.distributed_utils import DistributedState
 
 
-class ExperimentConfig(BaseConfig):
-    """Pure-data config shared by all experiment configs. Drivers subclass this."""
-
-    pd: PDConfig
-
-
-class ExperimentDriver[ConfigT: ExperimentConfig](Protocol):
-    """Converts a serializable experiment config into runtime PD objects."""
+class ExperimentDriver[RunT: Run](Protocol):
+    """Converts a serializable `Run` config into runtime PD objects."""
 
     name: ClassVar[str]
 
     @property
-    def config_type(self) -> type[ConfigT]:
-        """Pydantic model type used to validate serialized experiment configs."""
+    def config_type(self) -> type[RunT]:
+        """Pydantic model type used to validate serialized `Run` configs."""
         ...
 
-    def build_target(self, config: ConfigT) -> PDTarget:
+    def build_target(self, run: RunT) -> PDTarget:
         """Build the target model bundle from upstream."""
         ...
 
     def build_dataloaders(
         self,
-        config: ConfigT,
+        run: RunT,
         *,
         train_batch_size: int,
         eval_batch_size: int,
@@ -67,7 +60,6 @@ def load_driver(driver_path: str) -> ExperimentDriver[Any]:
 
 
 __all__ = [
-    "ExperimentConfig",
     "ExperimentDriver",
     "load_driver",
 ]
