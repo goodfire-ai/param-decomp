@@ -38,7 +38,7 @@ def resolve_run_files(
 
     Exactly one of `checkpoint_filename` or `checkpoint_prefix` must be given.
     `extras_from_config_path` is called with the resolved config path to determine which
-    additional files belong to the run (e.g. artifacts whose names live inside the metadata).
+    additional files belong to the run (e.g. artifacts whose names live inside the config).
     """
     assert (checkpoint_filename is None) != (checkpoint_prefix is None), (
         "Exactly one of checkpoint_filename or checkpoint_prefix is required"

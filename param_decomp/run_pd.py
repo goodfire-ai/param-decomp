@@ -42,7 +42,7 @@ from param_decomp.models.batch_and_loss_fns import (
 )
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
 from param_decomp.persistent_pgd import PersistentPGDState
-from param_decomp.run_metadata import RunMetadata
+from param_decomp.run_spec import RunSpec
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp.utils.component_utils import calc_ci_l_zero
 from param_decomp.utils.data_utils import loop_dataloader
@@ -475,14 +475,14 @@ def run_pd(
     device: str,
     *,
     run_id: str | None = None,
-    metadata: RunMetadata | None = None,
+    spec: RunSpec | None = None,
     artifacts: dict[str, Any] | None = None,
     wandb_tags: list[str] | None = None,
 ) -> Path | None:
     """Run a full PD decomposition: setup, optimize, cleanup.
 
-    `metadata` is written to ``run_metadata.yaml``.  Driver-mediated callers
-    (via ``experiments/runner.py``) pass a fully populated ``RunMetadata``;
+    `spec` is written to ``run_metadata.yaml``.  Driver-mediated callers
+    (via ``experiments/runner.py``) pass a fully populated ``RunSpec``;
     notebook callers can omit it and a minimal one is synthesized.
 
     All ranks call this function. Only the main process does wandb/logging setup.
@@ -500,8 +500,8 @@ def run_pd(
         logger.info(f"Output directory: {out_dir}")
 
         artifacts = artifacts or {}
-        if metadata is None:
-            metadata = RunMetadata(
+        if spec is None:
+            spec = RunSpec(
                 driver=None,
                 config={
                     "pd": config.model_dump(mode="json"),
@@ -515,26 +515,26 @@ def run_pd(
         if slurm_array_job_id is not None:
             tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
 
-        if metadata.wandb_project:
+        if spec.wandb_project:
             init_wandb(
-                metadata.wandb_project,
+                spec.wandb_project,
                 run_id,
                 configs={
                     "pd": config,
                     "logging": logging_config,
                     "runtime": runtime_config,
                 },
-                name=metadata.wandb_run_name,
+                name=spec.wandb_run_name,
                 tags=tags,
-                view_meta=metadata.view_meta,
+                view_meta=spec.view_meta,
             )
 
         logger.info(config)
 
         save_pre_run_info(
-            save_to_wandb=metadata.wandb_project is not None,
+            save_to_wandb=spec.wandb_project is not None,
             out_dir=out_dir,
-            metadata=metadata,
+            spec=spec,
             artifacts=artifacts,
         )
     else:

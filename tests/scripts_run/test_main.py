@@ -10,7 +10,9 @@ import yaml
 
 from param_decomp.configs import RuntimeConfig
 from param_decomp.experiments.discovery import discover_experiments
+from param_decomp.run_spec import RunSpec
 from param_decomp.settings import REPO_ROOT
+from param_decomp.sweeps.cartesian import cartesian_product
 
 
 def _builtin(name: str) -> tuple[str, dict[str, object]]:
@@ -54,25 +56,15 @@ class TestLaunchSlurm:
         )
         mock_get_wandb_run_url.return_value = "https://wandb.ai/test/test/runs/test"
 
-        grid_path = tmp_path / "grid.yaml"
-        grid_path.write_text(
-            yaml.dump(
-                {
-                    "description": "tiny test grid",
-                    "grid": {
-                        "pd.seed": [0, 1, 2],
-                        "pd.steps": [10, 20],
-                    },
-                }
-            )
-        )
-
         driver_path, base_config = _builtin("tms_5-2")
-        launch_slurm(
-            name="tms_5-2",
-            driver_path=driver_path,
+        sweep_spec = cartesian_product(
             base_config=base_config,
-            sweep=str(grid_path),
+            grid={"pd.seed": [0, 1, 2], "pd.steps": [10, 20]},
+            description="tiny test grid",
+            driver_path=driver_path,
+        )
+        launch_slurm(
+            launchable=sweep_spec,
             n_agents=2,
             job_suffix=None,
             runtime=RuntimeConfig(),
@@ -110,11 +102,13 @@ class TestLaunchSlurm:
         mock_get_wandb_run_url.return_value = "https://wandb.ai/test/test/runs/test"
 
         driver_path, base_config = _builtin("tms_5-2")
+        spec = RunSpec(
+            driver=driver_path,
+            config=base_config,
+            wandb_run_name="tms_5-2",
+        )
         launch_slurm(
-            name="tms_5-2",
-            driver_path=driver_path,
-            base_config=base_config,
-            sweep=None,
+            launchable=spec,
             n_agents=None,
             job_suffix=None,
             runtime=RuntimeConfig(),
@@ -123,5 +117,7 @@ class TestLaunchSlurm:
         )
 
         mock_create_slurm_script.assert_called_once()
-        task_specs = mock_create_slurm_script.call_args.kwargs["task_specs"]
+        call_kwargs = mock_create_slurm_script.call_args.kwargs
+        task_specs = call_kwargs["task_specs"]
         assert len(task_specs) == 1
+        assert call_kwargs["is_array"] is False

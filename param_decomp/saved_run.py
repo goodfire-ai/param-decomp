@@ -15,7 +15,7 @@ from param_decomp.experiments.driver import (
 )
 from param_decomp.models.batch_and_loss_fns import PDTarget
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.run_metadata import RUN_METADATA_FILENAME, RunMetadata
+from param_decomp.run_spec import RUN_METADATA_FILENAME, RunSpec
 from param_decomp.types import ModelPath
 from param_decomp.utils.distributed_utils import DistributedState
 from param_decomp.utils.run_files import resolve_config_path, resolve_run_files
@@ -23,10 +23,10 @@ from param_decomp.utils.run_files import resolve_config_path, resolve_run_files
 
 @dataclass
 class PDRun:
-    """A saved PD run, resolved to local paths and parsed metadata."""
+    """A saved PD run, resolved to local paths and parsed run spec."""
 
     path: Path
-    metadata: RunMetadata
+    spec: RunSpec
     checkpoint_path: Path
 
     @classmethod
@@ -38,30 +38,28 @@ class PDRun:
         )
         return cls(
             path=files.config_path.parent,
-            metadata=RunMetadata.from_file(files.config_path),
+            spec=RunSpec.from_file(files.config_path),
             checkpoint_path=files.checkpoint_path,
         )
 
     @classmethod
-    def metadata_from_path(cls, path: ModelPath) -> RunMetadata:
-        """Load just the run metadata, without resolving or downloading checkpoints."""
-        return RunMetadata.from_file(
-            resolve_config_path(path, config_filename=RUN_METADATA_FILENAME)
-        )
+    def spec_from_path(cls, path: ModelPath) -> RunSpec:
+        """Load just the run spec, without resolving or downloading checkpoints."""
+        return RunSpec.from_file(resolve_config_path(path, config_filename=RUN_METADATA_FILENAME))
 
     @cached_property
     def driver(self) -> ExperimentDriver[Any] | None:
-        return load_driver(self.metadata.driver) if self.metadata.driver else None
+        return load_driver(self.spec.driver) if self.spec.driver else None
 
     @cached_property
     def experiment_config(self) -> ExperimentConfig | None:
         if self.driver is None:
             return None
-        return self.driver.config_type.model_validate(self.metadata.config)
+        return self.driver.config_type.model_validate(self.spec.config)
 
     @property
     def pd_config(self) -> PDConfig:
-        return PDConfig.model_validate(self.metadata.config["pd"])
+        return PDConfig.model_validate(self.spec.config["pd"])
 
     @property
     def name(self) -> str:
@@ -116,6 +114,6 @@ def load_component_model(
     Args:
         path: Run directory, wandb path (`wandb:entity/project/runs/id`), or checkpoint file.
         target: Optional override. When ``None``, the run's driver reconstructs the target
-            from the saved metadata. For manual/notebook runs (no driver), ``target`` is required.
+            from the saved run spec. For manual/notebook runs (no driver), ``target`` is required.
     """
     return PDRun.from_path(path).load_model(target=target)

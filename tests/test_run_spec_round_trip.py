@@ -1,4 +1,4 @@
-"""Round-trip tests for run metadata and experiment configs."""
+"""Round-trip tests for run specs and experiment configs."""
 
 from pathlib import Path
 
@@ -43,7 +43,7 @@ from param_decomp.experiments.tms.experiment import (
     TMSExperimentConfig,
     TMSTargetConfig,
 )
-from param_decomp.run_metadata import RUN_METADATA_FILENAME, RunMetadata
+from param_decomp.run_spec import RUN_METADATA_FILENAME, RunSpec
 
 LM_DRIVER_PATH = "param_decomp.experiments.lm.experiment:Driver"
 TMS_DRIVER_PATH = "param_decomp.experiments.tms.experiment:Driver"
@@ -77,14 +77,14 @@ def _logging_config() -> LoggingConfig:
 
 
 def _round_trip(experiment_config: ExperimentConfig, driver_path: str) -> ExperimentConfig:
-    """Build RunMetadata for `experiment_config` and re-parse it through the driver."""
+    """Build RunSpec for `experiment_config` and re-parse it through the driver."""
     driver = load_driver(driver_path)
-    metadata = RunMetadata(
+    spec = RunSpec(
         driver=driver_path,
         config=experiment_config.model_dump(mode="json"),
     )
-    assert metadata.driver == driver_path
-    return driver.config_type.model_validate(metadata.config)
+    assert spec.driver == driver_path
+    return driver.config_type.model_validate(spec.config)
 
 
 def test_lm_experiment_round_trip():
@@ -138,10 +138,10 @@ def test_driver_class_paths_load():
     assert isinstance(load_driver(RESID_MLP_DRIVER_PATH), ResidMLPDriver)
 
 
-def test_save_pre_run_info_writes_run_metadata(tmp_path: Path):
+def test_save_pre_run_info_writes_run_spec(tmp_path: Path):
     from param_decomp.utils.general_utils import save_pre_run_info
 
-    metadata = RunMetadata(
+    spec = RunSpec(
         driver=None,
         config={
             "pd": _pd_config().model_dump(mode="json"),
@@ -151,23 +151,23 @@ def test_save_pre_run_info_writes_run_metadata(tmp_path: Path):
     save_pre_run_info(
         save_to_wandb=False,
         out_dir=tmp_path,
-        metadata=metadata,
+        spec=spec,
         artifacts={},
     )
 
     assert (tmp_path / RUN_METADATA_FILENAME).exists()
 
 
-def test_run_metadata_round_trip_via_file(tmp_path: Path):
-    metadata = RunMetadata(
+def test_run_spec_round_trip_via_file(tmp_path: Path):
+    spec = RunSpec(
         driver="param_decomp.experiments.lm.experiment:Driver",
         config={"pd": {"seed": 42}, "target": {}, "data": {}},
     )
     path = tmp_path / RUN_METADATA_FILENAME
-    metadata.write(path)
-    loaded = RunMetadata.from_file(path)
-    assert loaded.driver == metadata.driver
-    assert loaded.config == metadata.config
+    spec.write(path)
+    loaded = RunSpec.from_file(path)
+    assert loaded.driver == spec.driver
+    assert loaded.config == spec.config
 
 
 def test_lm_target_requires_exactly_one_location():

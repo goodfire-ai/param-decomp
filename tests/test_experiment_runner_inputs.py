@@ -4,7 +4,7 @@ import pytest
 import yaml
 
 from param_decomp.experiments.runner import _resolve_source
-from param_decomp.run_metadata import RunMetadata
+from param_decomp.run_spec import RunSpec
 
 
 def _write_yaml(path: Path, data: dict[str, object]) -> Path:
@@ -52,18 +52,18 @@ def test_config_path_with_driver_resolves(tmp_path: Path) -> None:
     assert config == {"pd": {"seed": 123}}
 
 
-def test_rerun_loads_driver_from_metadata(tmp_path: Path) -> None:
-    metadata_path = tmp_path / "run_metadata.yaml"
-    RunMetadata(
+def test_rerun_loads_driver_from_spec(tmp_path: Path) -> None:
+    spec_path = tmp_path / "run_metadata.yaml"
+    RunSpec(
         driver="param_decomp.experiments.tms.experiment:Driver",
         config={"pd": {"seed": 123}},
-    ).write(metadata_path)
+    ).write(spec_path)
 
     name, driver_path, config = _resolve_source(
         experiment=None,
         config_path=None,
         driver=None,
-        rerun=str(metadata_path.parent),
+        rerun=str(spec_path.parent),
     )
 
     assert name == "rerun"
@@ -72,16 +72,16 @@ def test_rerun_loads_driver_from_metadata(tmp_path: Path) -> None:
 
 
 def test_rerun_rejects_driver_override(tmp_path: Path) -> None:
-    metadata_path = tmp_path / "run_metadata.yaml"
-    RunMetadata(
+    spec_path = tmp_path / "run_metadata.yaml"
+    RunSpec(
         driver="param_decomp.experiments.tms.experiment:Driver",
         config={"pd": {}},
-    ).write(metadata_path)
+    ).write(spec_path)
 
     with pytest.raises(AssertionError, match="--driver is implied by --rerun"):
         _resolve_source(
             experiment=None,
             config_path=None,
             driver="other:Driver",
-            rerun=str(metadata_path.parent),
+            rerun=str(spec_path.parent),
         )

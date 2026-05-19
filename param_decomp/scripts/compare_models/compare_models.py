@@ -92,7 +92,7 @@ class ModelComparator:
         """Load model and config. Returns (model, pd_config, experiment_config, pd_run)."""
         pd_run = PDRun.from_path(model_path)
         exp = pd_run.experiment_config
-        assert exp is not None, "Run metadata has no driver; cannot reconstruct experiment config"
+        assert exp is not None, "Run spec has no driver; cannot reconstruct experiment config"
         model = pd_run.load_model().to(self.device)
         model.eval()
         model.requires_grad_(False)

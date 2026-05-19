@@ -47,12 +47,12 @@ class PretrainInfoResponse(BaseModel):
 
 
 def _load_lm_experiment_config_lightweight(wandb_path: str) -> LMExperimentConfig | None:
-    """Load just the run metadata for an LM run, without downloading checkpoints."""
-    metadata = PDRun.metadata_from_path(wandb_path)
-    if metadata.driver is None:
+    """Load just the run spec for an LM run, without downloading checkpoints."""
+    spec = PDRun.spec_from_path(wandb_path)
+    if spec.driver is None:
         return None
-    driver = load_driver(metadata.driver)
-    exp = driver.config_type.model_validate(metadata.config)
+    driver = load_driver(spec.driver)
+    exp = driver.config_type.model_validate(spec.config)
     if not isinstance(exp, LMExperimentConfig):
         return None
     return exp
@@ -246,6 +246,6 @@ def get_pretrain_info_for_run(wandb_path: str) -> PretrainInfoResponse:
 def get_pretrain_info_for_loaded_run(loaded: DepLoadedRun) -> PretrainInfoResponse:
     """Get pretrained model architecture info for the currently loaded run.
 
-    Uses the already-loaded LM metadata (no additional wandb downloads).
+    Uses the already-loaded LM config (no additional wandb downloads).
     """
     return _get_pretrain_info(loaded.experiment_config)
