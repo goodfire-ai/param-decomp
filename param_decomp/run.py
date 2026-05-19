@@ -11,10 +11,9 @@ and re-read on reload. One type, one shape, everywhere.
 
 import importlib
 from pathlib import Path
-from typing import Any, Self, override
+from typing import Any, override
 
 import yaml
-from pydantic import model_validator
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import LoggingConfig, PDConfig, RuntimeConfig
@@ -44,20 +43,8 @@ class Run(BaseConfig):
     logging: LoggingConfig
     runtime: RuntimeConfig
 
-    @model_validator(mode="after")
-    def validate_metric_overlap(self) -> Self:
-        loss_names = {name for name, val in self.pd.loss_metrics if val is not None}
-        eval_names = {name for name, val in self.logging.eval_metrics if val is not None}
-        overlap = loss_names & eval_names
-        assert not overlap, (
-            f"The same metric was set under both pd.loss_metrics and logging.eval_metrics: "
-            f"{sorted(overlap)}. Loss metrics are automatically evaluated; remove the "
-            "logging.eval_metrics entry, or move it out of pd.loss_metrics if you want eval-only."
-        )
-        return self
-
     @classmethod
-    def model_validate_run(cls, data: dict[str, Any]) -> "Run":
+    def from_dict(cls, data: dict[str, Any]) -> "Run":
         """Parse a dict (e.g. from YAML) into the right `Run` subclass.
 
         Looks up ``driver_path`` → driver → ``config_type`` and validates the
@@ -76,7 +63,7 @@ class Run(BaseConfig):
         path = Path(path)
         assert path.exists(), f"{RUN_METADATA_FILENAME} not found at {path}"
         with open(path) as f:
-            return cls.model_validate_run(yaml.safe_load(f))
+            return cls.from_dict(yaml.safe_load(f))
 
     def write(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

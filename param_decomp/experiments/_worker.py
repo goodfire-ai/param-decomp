@@ -81,7 +81,7 @@ def main(
     launch_id: str | None = None,
 ) -> None:
     """SLURM task entrypoint."""
-    run = Run.model_validate_run(json.loads(run_json))
+    run = Run.from_dict(json.loads(run_json))
     run_experiment(run, run_id=run_id, launch_id=launch_id)
 
 
