@@ -1,52 +1,67 @@
-"""Sweep data model and generator protocol.
+"""Launch data model: ``SweepSpec`` (many runs sharing a driver and substrate).
 
-A ``SweepGenerator`` is anything callable as ``(base_config) -> SweepSpec``. The
-recommended pattern is to subclass ``SweepGenerator`` (the ABC defined here) so
-built-in discovery can find it by ``name``, but the runner accepts any callable
-with the right shape.
+A single PD launch is just a ``Run`` — the same type the worker writes
+to disk. A sweep is a ``SweepSpec`` carrying ``list[Run]``.
+
+A ``SweepGenerator`` is any zero-arg callable returning a ``SweepSpec``. The
+sweep is fully self-contained — it loads whatever base config it wants and
+each ``Run`` declares its own driver.
 """
 
-from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, Protocol, runtime_checkable
 
 import yaml
 
-
-@dataclass(frozen=True)
-class SweepRun:
-    """One concrete run produced by a sweep generator.
-
-    - ``name`` is a short identifier the runner uses for the W&B run name and
-      for human-readable logging. It does NOT need to encode the axes — that's
-      what ``view_meta`` is for.
-    - ``config`` is the materialized experiment config dict (driver-validated by
-      the runner before submission).
-    - ``view_meta`` carries researcher-facing labels (e.g. ``{"lr_ratio": 0.1,
-      "size": "medium"}``) that get surfaced to W&B under a ``view_meta/`` prefix.
-      Values should be JSON scalars (str | int | float | bool) so W&B can group
-      and color by them.
-    """
-
-    name: str
-    config: dict[str, Any]
-    view_meta: dict[str, Any] = field(default_factory=dict)
+from param_decomp.run import Run
 
 
 @dataclass(frozen=True)
 class SweepSpec:
-    """A complete sweep: a human-facing description plus the list of runs to launch.
+    """A complete sweep: description and the list of runs to launch.
 
-    Serialized to ``PARAM_DECOMP_OUT_DIR/sweeps/<launch_id>/spec.yaml`` on submit
-    so reproducing the sweep doesn't require re-running the generator code.
+    All runs in a sweep must share one driver and one ``runtime:`` block
+    (single SLURM array allocation, one substrate). Both invariants are
+    asserted at construction. The W&B project is supplied to the launcher
+    separately (``--project``) and is not part of the spec.
+
+    Serialized to ``PARAM_DECOMP_OUT_DIR/sweeps/<launch_id>/spec.yaml`` on
+    submit so reproducing the sweep doesn't require re-running the generator.
     """
 
     description: str
-    runs: list[SweepRun]
+    runs: list[Run]
+
+    def __post_init__(self) -> None:
+        assert self.runs, "SweepSpec.runs must be non-empty"
+        head_driver = self.runs[0].driver_path
+        head_runtime = self.runs[0].runtime
+        assert head_driver is not None, (
+            "SweepSpec runs must declare a driver_path; got driver_path=None on the first run"
+        )
+        for run in self.runs:
+            assert run.driver_path == head_driver, (
+                f"sweep run {run.logging.wandb_run_name!r} declares driver_path="
+                f"{run.driver_path!r}, but the first run uses {head_driver!r}; all runs in "
+                "one sweep must share a driver"
+            )
+            assert run.runtime == head_runtime, (
+                f"sweep run {run.logging.wandb_run_name!r} has a different runtime block than "
+                "the first run; all runs in one sweep must share the same substrate"
+            )
+
+    @property
+    def driver_path(self) -> str:
+        head = self.runs[0].driver_path
+        assert head is not None  # enforced by __post_init__
+        return head
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "description": self.description,
+            "runs": [run.model_dump(mode="json") for run in self.runs],
+        }
 
     def write(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -54,18 +69,13 @@ class SweepSpec:
             yaml.dump(self.to_dict(), f, default_flow_style=False, sort_keys=False)
 
 
-class SweepGenerator(ABC):
-    """Base class for sweep generators.
+@runtime_checkable
+class SweepGenerator(Protocol):
+    """Zero-arg callable returning a ``SweepSpec``.
 
-    Subclasses set ``name`` (used for auto-discovery / short CLI refs) and implement
-    ``__call__(base_config)``. The CLI surface is ``--sweep <name>[:<arg>]``; subclasses
-    that take an arg validate it in their own ``__init__``.
-
-    Custom generators don't have to subclass this — anything callable with the right
-    signature works — but subclassing gives you auto-discovery for free.
+    User sweep files expose one or more such functions; ``pd-run
+    --sweep_generator_path /abs/path/file.py:func_name`` imports the file and
+    calls the function.
     """
 
-    name: ClassVar[str]
-
-    @abstractmethod
-    def __call__(self, base_config: dict[str, Any]) -> SweepSpec: ...
+    def __call__(self) -> SweepSpec: ...

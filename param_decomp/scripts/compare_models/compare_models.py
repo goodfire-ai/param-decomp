@@ -21,9 +21,9 @@ from torch import Tensor
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import PDConfig
-from param_decomp.experiments.driver import ExperimentConfig
 from param_decomp.log import logger
 from param_decomp.models.component_model import ComponentModel
+from param_decomp.run import Run
 from param_decomp.saved_run import PDRun
 from param_decomp.utils.distributed_utils import get_device
 from param_decomp.utils.general_utils import get_obj_device
@@ -88,16 +88,15 @@ class ModelComparator:
 
     def _load_model_and_config(
         self, model_path: str
-    ) -> tuple[ComponentModel, PDConfig, ExperimentConfig, PDRun]:
-        """Load model and config. Returns (model, pd_config, experiment_config, pd_run)."""
+    ) -> tuple[ComponentModel, PDConfig, Run, PDRun]:
+        """Load model and config. Returns (model, pd_config, run, pd_run)."""
         pd_run = PDRun.from_path(model_path)
-        exp = pd_run.experiment_config
-        assert exp is not None, "Run metadata has no driver; cannot reconstruct experiment config"
+        run = pd_run.run
         model = pd_run.load_model().to(self.device)
         model.eval()
         model.requires_grad_(False)
 
-        return model, pd_run.pd_config, exp, pd_run
+        return model, pd_run.pd_config, run, pd_run
 
     def create_eval_data_loader(self) -> Iterator[Tensor]:
         """Create evaluation data loader by delegating to the experiment config."""

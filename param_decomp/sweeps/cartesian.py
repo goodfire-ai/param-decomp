@@ -1,58 +1,81 @@
-"""Built-in Cartesian grid sweep generator.
+"""Built-in example sweep: a small Cartesian grid over ``tms_5-2``.
 
-Reads a yaml file of the form::
-
-    description: "lr x recon coeff sweep"
-    grid:
-      pd.seed: [0, 1, 2]
-      pd.loss_metrics.importance_minimality.coeff: [0.1, 0.2, 0.5]
-
-and produces one ``SweepRun`` per Cartesian-product combination. The varying
-axes are recorded in each run's ``view_meta`` so W&B can group/color by them.
+User sweep files don't have to live here — pass
+``--sweep_generator_path /abs/path/to/file.py:func`` to ``pd-run`` and any
+zero-arg function returning a ``SweepSpec`` works. This module ships
+``example_cartesian_sweep`` as a working reference and exposes
+``cartesian_product`` as a reusable helper for users who want the Cartesian-grid
+pattern without writing the product loop themselves.
 """
 
 import itertools
-from pathlib import Path
-from typing import Any, ClassVar, override
+from typing import Any
 
 import yaml
 
-from param_decomp.sweeps.spec import SweepGenerator, SweepRun, SweepSpec
+from param_decomp.experiments.driver import load_driver
+from param_decomp.run import Run
+from param_decomp.settings import REPO_ROOT
+from param_decomp.sweeps.spec import SweepSpec
 from param_decomp.utils.run_utils import apply_nested_updates
 
 
-class CartesianGridSweep(SweepGenerator):
-    """The 80% case: dot-pathed parameter grid → Cartesian product of runs."""
+def cartesian_product(
+    base_config: Run | dict[str, Any],
+    grid: dict[str, list[Any]],
+    *,
+    description: str,
+    driver_path: str,
+) -> SweepSpec:
+    """Cartesian product of dot-pathed axes over a base config.
 
-    name: ClassVar[str] = "cartesian"
+    Each axis key is a dotted path into ``base_config`` (e.g.
+    ``"pd.loss_metrics.importance_minimality.coeff"``). Axis values are
+    recorded in each run's ``logging.view_meta`` so W&B can group/color by them.
+    """
+    assert grid, "cartesian_product requires a non-empty grid"
+    for axis, values in grid.items():
+        assert isinstance(values, list) and values, (
+            f"grid['{axis}'] must be a non-empty list, got {values!r}"
+        )
 
-    def __init__(self, grid_path: str) -> None:
-        assert grid_path, "cartesian sweep requires a yaml path: --sweep cartesian:my_grid.yaml"
-        self.grid_path = Path(grid_path)
-        assert self.grid_path.exists(), f"sweep grid not found: {self.grid_path}"
+    axes = list(grid.keys())
+    value_lists = [grid[a] for a in axes]
+    base_config_data = _config_data(base_config)
+    config_type = load_driver(driver_path).config_type
+    runs: list[Run] = []
+    for combo in itertools.product(*value_lists):
+        updates = dict(zip(axes, combo, strict=True))
+        config_data = apply_nested_updates(base_config_data, updates)
+        name = "_".join(f"{_short_axis(a)}={_short_value(v)}" for a, v in updates.items())
+        logging_data = {
+            **config_data.get("logging", {}),
+            "wandb_run_name": name,
+            "view_meta": dict(updates),
+        }
+        run = config_type.model_validate(
+            {**config_data, "driver_path": driver_path, "logging": logging_data}
+        )
+        runs.append(run)
+    return SweepSpec(description=description, runs=runs)
 
-    @override
-    def __call__(self, base_config: dict[str, Any]) -> SweepSpec:
-        with open(self.grid_path) as f:
-            grid_spec = yaml.safe_load(f)
-        assert isinstance(grid_spec, dict), f"{self.grid_path}: expected a YAML mapping"
-        description = grid_spec.get("description", f"Cartesian grid from {self.grid_path.name}")
-        grid: dict[str, list[Any]] = grid_spec["grid"]
-        assert grid, f"{self.grid_path}: 'grid' must be non-empty"
-        for axis, values in grid.items():
-            assert isinstance(values, list) and values, (
-                f"{self.grid_path}: grid['{axis}'] must be a non-empty list, got {values!r}"
-            )
 
-        axes = list(grid.keys())
-        value_lists = [grid[a] for a in axes]
-        runs: list[SweepRun] = []
-        for combo in itertools.product(*value_lists):
-            updates = dict(zip(axes, combo, strict=True))
-            config = apply_nested_updates(base_config, updates)
-            name = "_".join(f"{_short_axis(a)}={_short_value(v)}" for a, v in updates.items())
-            runs.append(SweepRun(name=name, config=config, view_meta=dict(updates)))
-        return SweepSpec(description=description, runs=runs)
+def example_cartesian_sweep() -> SweepSpec:
+    """Reference sweep: TMS 5-2 across three seeds.
+
+    Demonstrates the zero-arg ``SweepGenerator`` shape — loads its own base
+    config, defines its grid inline, and declares the driver in the returned
+    spec. Copy this file as a starting point for real sweeps.
+    """
+    base_config_path = REPO_ROOT / "param_decomp" / "experiments" / "tms" / "tms_5-2_config.yaml"
+    with open(base_config_path) as f:
+        base_config = yaml.safe_load(f)
+    return cartesian_product(
+        base_config=base_config,
+        grid={"pd.seed": [0, 1, 2]},
+        description="Example: tms_5-2 seed sweep",
+        driver_path="param_decomp.experiments.tms.experiment:Driver",
+    )
 
 
 def _short_axis(dotted: str) -> str:
@@ -67,3 +90,9 @@ def _short_value(v: Any) -> str:
     if isinstance(v, list):
         return "-".join(_short_value(x) for x in v)
     return str(v).replace("/", "_")
+
+
+def _config_data(config: Run | dict[str, Any]) -> dict[str, Any]:
+    data = config.model_dump(mode="json") if isinstance(config, Run) else dict(config)
+    data.pop("run_id", None)
+    return data

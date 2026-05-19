@@ -274,11 +274,11 @@ class EditableModel:
         cls, wandb_path: str, device: str = "cuda"
     ) -> tuple["EditableModel", AppTokenizer]:
         """Load from wandb path. Returns (editable_model, tokenizer)."""
-        from param_decomp.experiments.lm.experiment import LMExperimentConfig
+        from param_decomp.experiments.lm.experiment import LMRun
 
         pd_run = PDRun.from_path(wandb_path)
-        exp = pd_run.experiment_config
-        assert isinstance(exp, LMExperimentConfig)
+        exp = pd_run.run
+        assert isinstance(exp, LMRun)
         model = pd_run.load_model().to(device).eval()
         tokenizer = AppTokenizer.from_pretrained(exp.data.tokenizer_name)
         return cls(model), tokenizer

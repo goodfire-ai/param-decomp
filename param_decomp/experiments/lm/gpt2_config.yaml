@@ -1,3 +1,4 @@
+driver_path: param_decomp.experiments.lm.experiment:Driver
 pd:
   seed: 0
   n_mask_samples: 1
@@ -31,14 +32,14 @@ pd:
   faithfulness_warmup_lr: 0.01
   faithfulness_warmup_weight_decay: 0.1
   loss_metrics:
-    ImportanceMinimalityLoss:
+    importance_minimality:
       coeff: 0.0003
       pnorm: 2.0
       beta: 0
       p_anneal_start_frac: 0.0
       p_anneal_final_p: 0.3
       p_anneal_end_frac: 1.0
-    StochasticReconLayerwiseLoss:
+    stochastic_recon_layerwise:
       coeff: 2.0
 logging:
   train_log_freq: 100
@@ -48,18 +49,17 @@ logging:
   n_eval_steps: 5
   eval_batch_size: 2
   save_freq: null
+  ci_alive_threshold: 0.0
   eval_metrics:
-    CIHistograms:
+    ci_histograms:
       n_batches_accum: 5
-    ComponentActivationDensity:
-      ci_alive_threshold: 0.0
-    CI_L0:
+    component_activation_density: {}
+    ci_l0:
       groups: null
-      ci_alive_threshold: 0.0
-    CEandKLLosses:
+    ce_and_kl:
       rounding_threshold: 0.0
-    CIMeanPerComponent: {}
-    StochasticHiddenActsReconLoss: {}
+    ci_mean_per_component: {}
+    stochastic_hidden_acts_recon: {}
 target:
   model_class: transformers.GPT2LMHeadModel
   model_name: openai-community/gpt2
@@ -73,3 +73,7 @@ data:
   column_name: input_ids
   train_split: train
   eval_split: train
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null

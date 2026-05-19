@@ -12,6 +12,7 @@ import torch
 import yaml
 
 TEST_CONFIG = {
+    "driver_path": "param_decomp.experiments.lm.experiment:Driver",
     "pd": {
         "seed": 0,
         "n_mask_samples": 1,
@@ -23,15 +24,15 @@ TEST_CONFIG = {
         "sigmoid_type": "leaky_hard",
         "module_info": [{"module_pattern": "model.layers.0.mlp.gate_proj", "C": 3}],
         "loss_metrics": {
-            "ImportanceMinimalityLoss": {
+            "importance_minimality": {
                 "coeff": 0.1,
                 "pnorm": 2.0,
                 "beta": 0.0,
                 "eps": 1e-12,
             },
             # Disable stochastic terms for deterministic dp test; keep a simple layerwise recon if needed
-            "CIMaskedReconLayerwiseLoss": {"coeff": 1.0},
-            "CIMaskedReconLoss": {"coeff": 1.0},
+            "ci_masked_recon_layerwise": {"coeff": 1.0},
+            "ci_masked_recon": {"coeff": 1.0},
         },
         "batch_size": 2,
         "steps": 20,
@@ -40,6 +41,10 @@ TEST_CONFIG = {
         },
         "ci_fn_optimizer": {
             "lr_schedule": {"start_val": 1e-2, "fn_type": "constant"},
+        },
+        "eval_metrics": {
+            "ci_l0": {"groups": None},
+            "ce_and_kl": {"rounding_threshold": 0.1},
         },
     },
     "logging": {
@@ -50,10 +55,6 @@ TEST_CONFIG = {
         "n_eval_steps": 2,
         "eval_batch_size": 2,
         "save_freq": None,  # Just save at the end
-        "eval_metrics": {
-            "CI_L0": {"groups": None},
-            "CEandKLLosses": {"rounding_threshold": 0.1},
-        },
     },
     "runtime": {
         "autocast_bf16": False,
@@ -156,8 +157,6 @@ class TestDistributedDeterminicity:
             "param_decomp.experiments.runner",
             "--config_path",
             str(config_path),
-            "--driver",
-            "param_decomp.experiments.lm.experiment:Driver",
             "--local",
         ]
 

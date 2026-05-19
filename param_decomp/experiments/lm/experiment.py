@@ -5,9 +5,9 @@ from typing import Any, ClassVar, Self
 from pydantic import Field, model_validator
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.experiments.driver import ExperimentConfig
 from param_decomp.experiments.lm.data import LMDataConfig, build_lm_dataloaders
 from param_decomp.models.batch_and_loss_fns import PDTarget, make_run_batch, recon_loss_kl
+from param_decomp.run import Run
 from param_decomp.types import ModelPath
 from param_decomp.utils.distributed_utils import DistributedState, ensure_cached_and_call
 from param_decomp.utils.general_utils import resolve_class
@@ -55,7 +55,7 @@ class LMTargetConfig(BaseConfig):
         return self
 
 
-class LMExperimentConfig(ExperimentConfig):
+class LMRun(Run):
     target: LMTargetConfig
     data: LMDataConfig
 
@@ -88,20 +88,20 @@ def _load_target_model(target_cfg: LMTargetConfig) -> Any:
 
 class Driver:
     name: ClassVar[str] = "lm"
-    config_type: ClassVar[type[LMExperimentConfig]] = LMExperimentConfig
+    config_type: ClassVar[type[LMRun]] = LMRun
 
-    def build_target(self, config: LMExperimentConfig) -> PDTarget:
-        target_model = _load_target_model(config.target)
+    def build_target(self, run: LMRun) -> PDTarget:
+        target_model = _load_target_model(run.target)
         target_model.eval()
         return PDTarget(
             model=target_model,
-            run_batch=make_run_batch(config.target.output_extract),
+            run_batch=make_run_batch(run.target.output_extract),
             reconstruction_loss=recon_loss_kl,
         )
 
     def build_dataloaders(
         self,
-        config: LMExperimentConfig,
+        run: LMRun,
         *,
         train_batch_size: int,
         eval_batch_size: int,
@@ -110,9 +110,9 @@ class Driver:
     ) -> Any:
         _ = device
         return build_lm_dataloaders(
-            config.data,
+            run.data,
             train_batch_size=train_batch_size,
             eval_batch_size=eval_batch_size,
             dist_state=dist_state,
-            seed=config.pd.seed,
+            seed=run.pd.seed,
         )

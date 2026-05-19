@@ -26,7 +26,14 @@ pd-run <name> --local  # run in this process
 
 Useful built-ins:
 
-- `pile_llama_simple_mlp-4L`: VPD paper LM decomposition
+Run an experiment with `pd-run <name>`. This submits a SLURM job by default (with a git snapshot
+for reproducibility); add `--local` to run in this process instead. Compute substrate (device,
+data parallelism, autocast) lives in the YAML's `runtime:` block — there are no CLI overrides.
+Sweeps run as `pd-run --sweep_generator_path /abs/path/file.py:func --n_agents N`. The two main
+language-model decompositions:
+
+- **`pile_llama_simple_mlp-4L`** — 4-layer Llama (MLP-only) on the Pile; the VPD paper run
+  [`goodfire/spd/runs/s-55ea3f9b`](https://wandb.ai/goodfire/spd/runs/s-55ea3f9b)
   ([config](param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml)).
 - `ss_llama_simple_mlp-2L`: smaller SimpleStories LM decomposition
   ([config](param_decomp/experiments/lm/ss_llama_simple_mlp-2L.yaml)).
@@ -38,12 +45,19 @@ auto-discovered. The LM experiment supports HuggingFace-loadable models with `nn
 For custom experiments, either call `run_pd(...)` directly or provide a YAML-driven
 `ExperimentDriver`:
 
-```bash
-pd-run --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml
-```
-
-See [`driver.py`](param_decomp/experiments/driver.py) and the small
-[`tms` example](param_decomp/experiments/tms/experiment.py).
+- **Call `run_pd` directly** — build a `PDTarget` (model + `run_batch` + reconstruction loss;
+  helpers in [`batch_and_loss_fns.py`](param_decomp/models/batch_and_loss_fns.py)) and call
+  `run_pd(config, logging_config, runtime_config, target, train_loader, eval_loader, device)`.
+  Reload with `load_component_model(path, target=...)`. Best for notebooks/scripts.
+- **Package it as a YAML-driven experiment** — define your experiment as a Pydantic `Run`
+  subclass (adding `target` / `data` fields) plus an `ExperimentDriver` class (a small adapter
+  exposing `build_target` and `build_dataloaders`; see
+  [`driver.py`](param_decomp/experiments/driver.py) for the interface and
+  [`tms/experiment.py`](param_decomp/experiments/tms/experiment.py) for the smallest example),
+  put `driver_path: my_pkg.my_exp:MyDriver` at the top of your YAML, then run
+  `pd-run --config_path my_config.yaml`. This is what built-in experiments do, and is needed for
+  sweeps and for self-reloading runs via
+  `load_component_model(path)` (no `target=` argument needed) or `PDRun.from_path(...)`.
 
 ## Metrics
 

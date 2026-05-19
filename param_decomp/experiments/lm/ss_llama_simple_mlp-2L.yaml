@@ -1,3 +1,4 @@
+driver_path: param_decomp.experiments.lm.experiment:Driver
 pd:
   seed: 0
   n_mask_samples: 1
@@ -50,7 +51,7 @@ pd:
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_weight_decay: 0.0
   loss_metrics:
-    ImportanceMinimalityLoss:
+    importance_minimality:
       coeff: 0.001
       pnorm: 2.0
       beta: 0.5
@@ -58,11 +59,11 @@ pd:
       p_anneal_final_p: 0.4
       p_anneal_end_frac: 1.0
       eps: 1.0e-12
-    StochasticReconSubsetLoss:
+    stochastic_recon_subset:
       coeff: 0.5
       routing:
         type: uniform_k_subset
-    PersistentPGDReconLoss:
+    persistent_pgd_recon:
       coeff: 0.5
       optimizer:
         type: adam
@@ -78,7 +79,7 @@ pd:
         type: per_batch_per_position
       use_sigmoid_parameterization: false
       n_warmup_steps: 2
-    FaithfulnessLoss:
+    faithfulness:
       coeff: 10000000.0
 logging:
   train_log_freq: 200
@@ -88,13 +89,12 @@ logging:
   n_eval_steps: 1
   eval_batch_size: 128
   save_freq: null
+  ci_alive_threshold: 0.0
   eval_metrics:
-    CIHistograms:
+    ci_histograms:
       n_batches_accum: 1
-    ComponentActivationDensity:
-      ci_alive_threshold: 0.0
-    CI_L0:
-      ci_alive_threshold: 0.0
+    component_activation_density: {}
+    ci_l0:
       groups:
         layer_0:
         - h.0.*
@@ -102,12 +102,12 @@ logging:
         - h.1.*
         total:
         - '*'
-    CEandKLLosses:
+    ce_and_kl:
       rounding_threshold: 0.0
-    CIMeanPerComponent: {}
-    StochasticHiddenActsReconLoss: {}
-    CIHiddenActsReconLoss: {}
-    PGDReconLoss:
+    ci_mean_per_component: {}
+    stochastic_hidden_acts_recon: {}
+    ci_hidden_acts_recon: {}
+    pgd_recon:
       init: random
       step_size: 0.1
       n_steps: 20
@@ -130,3 +130,5 @@ data:
   streaming: false
 runtime:
   autocast_bf16: true
+  device: cuda
+  dp: null

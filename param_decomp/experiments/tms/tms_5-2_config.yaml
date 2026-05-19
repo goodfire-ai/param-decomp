@@ -1,3 +1,4 @@
+driver_path: param_decomp.experiments.tms.experiment:Driver
 pd:
   seed: 0
   n_mask_samples: 1
@@ -73,3 +74,7 @@ target:
 data:
   feature_probability: 0.05
   data_generation_type: at_least_zero_active
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null

@@ -1,9 +1,9 @@
 """Auto-discovery of built-in experiments from YAML configs.
 
 An experiment is any `<name>.yaml` file living next to an `experiment.py` under
-`param_decomp/experiments/<kind>/`. The driver is loaded by convention from
-`param_decomp.experiments.<kind>.experiment:Driver`, and the experiment name
-is the YAML filename stem with a trailing `_config` stripped.
+`param_decomp/experiments/<kind>/`. The experiment name is the YAML filename
+stem with a trailing `_config` stripped. The YAML itself declares its
+`driver_path` as a top-level field.
 """
 
 from dataclasses import dataclass
@@ -19,7 +19,6 @@ class DiscoveredExperiment:
     name: str
     kind: str
     config_path: Path
-    driver_path: str
 
 
 def discover_experiments() -> dict[str, DiscoveredExperiment]:
@@ -28,7 +27,6 @@ def discover_experiments() -> dict[str, DiscoveredExperiment]:
         if not kind_dir.is_dir() or not (kind_dir / "experiment.py").exists():
             continue
         kind = kind_dir.name
-        driver_path = f"param_decomp.experiments.{kind}.experiment:Driver"
         for yaml_path in sorted(kind_dir.glob("[!_]*.yaml")):
             name = yaml_path.stem.removesuffix("_config")
             assert name not in experiments, (
@@ -38,6 +36,5 @@ def discover_experiments() -> dict[str, DiscoveredExperiment]:
                 name=name,
                 kind=kind,
                 config_path=yaml_path.relative_to(REPO_ROOT),
-                driver_path=driver_path,
             )
     return experiments

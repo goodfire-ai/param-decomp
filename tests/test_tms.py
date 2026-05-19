@@ -61,10 +61,7 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
         ],
         loss_metrics={
             "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
-                coeff=3e-3,
-                pnorm=2.0,
-                beta=0.5,
-                eps=1e-12,
+                coeff=3e-3, pnorm=2.0, beta=0.5, eps=1e-12
             ),
             "StochasticReconLayerwiseLoss": StochasticReconLayerwiseLossConfig(coeff=1.0),
             "StochasticReconLoss": StochasticReconLossConfig(coeff=1.0),

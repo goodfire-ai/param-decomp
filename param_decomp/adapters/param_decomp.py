@@ -6,9 +6,9 @@ from torch.utils.data import DataLoader
 
 from param_decomp.adapters.base import DecompositionAdapter
 from param_decomp.autointerp.schemas import ModelMetadata
-from param_decomp.experiments.driver import ExperimentConfig
-from param_decomp.experiments.lm.experiment import LMExperimentConfig
+from param_decomp.experiments.lm.experiment import LMRun
 from param_decomp.models.component_model import ComponentModel
+from param_decomp.run import Run
 from param_decomp.saved_run import PDRun
 from param_decomp.topology import TransformerTopology
 from param_decomp.utils.wandb_utils import parse_wandb_run_path
@@ -24,18 +24,14 @@ class PDAdapter(DecompositionAdapter):
         return PDRun.from_path(self._wandb_path)
 
     @cached_property
-    def experiment_config(self) -> ExperimentConfig:
-        exp = self.pd_run.experiment_config
-        assert exp is not None, "PD run has no driver; cannot reconstruct experiment config"
-        return exp
+    def run(self) -> Run:
+        return self.pd_run.run
 
     @cached_property
-    def lm_experiment_config(self) -> LMExperimentConfig:
-        exp = self.experiment_config
-        assert isinstance(exp, LMExperimentConfig), (
-            f"This method requires an LM run, got {type(exp).__name__}"
-        )
-        return exp
+    def lm_run(self) -> LMRun:
+        run = self.run
+        assert isinstance(run, LMRun), f"This method requires an LM run, got {type(run).__name__}"
+        return run
 
     @cached_property
     def component_model(self) -> ComponentModel:
@@ -72,20 +68,20 @@ class PDAdapter(DecompositionAdapter):
     @property
     @override
     def tokenizer_name(self) -> str:
-        return self.lm_experiment_config.data.tokenizer_name
+        return self.lm_run.data.tokenizer_name
 
     @property
     @override
     def model_metadata(self) -> ModelMetadata:
-        exp = self.lm_experiment_config
+        run = self.lm_run
         return ModelMetadata(
             n_blocks=self._topology.n_blocks,
-            model_class=exp.target.model_class,
-            dataset_name=exp.data.dataset_name,
+            model_class=run.target.model_class,
+            dataset_name=run.data.dataset_name,
             layer_descriptions={
                 path: self._topology.target_to_canon(path)
                 for path in self.component_model.target_module_paths
             },
-            seq_len=exp.data.max_seq_len,
+            seq_len=run.data.max_seq_len,
             decomposition_method="pd",
         )

@@ -39,7 +39,7 @@ from param_decomp.models.batch_and_loss_fns import (
     move_batch_to_device,
 )
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
-from param_decomp.run_metadata import RunMetadata
+from param_decomp.run import Run
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp.utils.data_utils import loop_dataloader
 from param_decomp.utils.distributed_utils import (
@@ -58,7 +58,7 @@ from param_decomp.utils.general_utils import (
 )
 from param_decomp.utils.logging_utils import get_grad_norms_dict, local_log
 from param_decomp.utils.module_utils import expand_module_patterns
-from param_decomp.utils.run_utils import generate_run_id, save_file
+from param_decomp.utils.run_utils import save_file
 from param_decomp.utils.wandb_utils import init_wandb, try_wandb
 
 
@@ -430,59 +430,67 @@ def run_pd(
     eval_loader: DataLoader[Any],
     device: str,
     *,
-    run_id: str | None = None,
-    metadata: RunMetadata | None = None,
+    run: Run | None = None,
     artifacts: dict[str, Any] | None = None,
+    wandb_project: str | None = None,
     wandb_tags: list[str] | None = None,
 ) -> Path | None:
-    """Run a full PD decomposition: setup, optimize, cleanup."""
+    """Run a full PD decomposition: setup, optimize, cleanup.
+
+    `run` is written to ``run_metadata.yaml``.  Driver-mediated callers
+    (via ``experiments/runner.py``) pass a fully populated ``Run``;
+    notebook callers can omit it and a minimal one is synthesized.
+
+    ``wandb_project`` is a deploy-time parameter (which W&B account/project to log
+    to), not part of the reproducible ``Run`` config. ``None`` disables W&B.
+
+    All ranks call this function. Only the main process does wandb/logging setup.
+    Returns the output directory on the main process and None on other ranks.
+    """
     _validate_pgd_scope(config, get_distributed_state())
 
     out_dir: Path | None
     if is_main_process():
-        run_id = run_id or generate_run_id("param_decomp")
+        artifacts = artifacts or {}
+        if run is None:
+            run = Run(
+                driver_path=None,
+                pd=config,
+                logging=logging_config,
+                runtime=runtime_config,
+            )
+        run_id = run.run_id
         out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
         out_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info(f"Run ID: {run_id}")
         logger.info(f"Output directory: {out_dir}")
 
-        artifacts = artifacts or {}
-        if metadata is None:
-            metadata = RunMetadata(
-                driver=None,
-                config={
-                    "pd": config.model_dump(mode="json"),
-                    "logging": logging_config.model_dump(mode="json"),
-                    "runtime": runtime_config.model_dump(mode="json"),
-                },
-            )
-
         tags = list(wandb_tags or [])
         slurm_array_job_id = os.getenv("SLURM_ARRAY_JOB_ID")
         if slurm_array_job_id is not None:
             tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
 
-        if metadata.wandb_project:
+        if wandb_project:
             init_wandb(
-                metadata.wandb_project,
+                wandb_project,
                 run_id,
                 configs={
                     "pd": config,
                     "logging": logging_config,
                     "runtime": runtime_config,
                 },
-                name=metadata.wandb_run_name,
+                name=run.logging.wandb_run_name,
                 tags=tags,
-                view_meta=metadata.view_meta,
+                view_meta=run.logging.view_meta,
             )
 
         logger.info(config)
 
         save_pre_run_info(
-            save_to_wandb=metadata.wandb_project is not None,
+            save_to_wandb=wandb_project is not None,
             out_dir=out_dir,
-            metadata=metadata,
+            run=run,
             artifacts=artifacts,
         )
     else:

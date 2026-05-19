@@ -9,6 +9,7 @@ from pydantic import (
     NonNegativeInt,
     PositiveFloat,
     PositiveInt,
+    SerializeAsAny,
     field_validator,
     model_validator,
 )
@@ -357,12 +358,22 @@ class LoggingConfig(BaseConfig):
         description="Interval (in steps) at which to save model checkpoints (None disables saving "
         "until the end of training).",
     )
-    eval_metrics: dict[str, MetricConfig] = Field(
+    eval_metrics: dict[str, SerializeAsAny[MetricConfig]] = Field(
         default_factory=dict,
         description=(
             "Eval-only metrics keyed by metric class name. Metrics already set in"
             " `pd.loss_metrics` are evaluated automatically and should not be repeated here."
         ),
+    )
+    wandb_run_name: str | None = Field(
+        default=None,
+        description="W&B run display name. None lets W&B auto-name.",
+    )
+    view_meta: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Free-form labels for downstream grouping/coloring/reports (e.g. "
+        "`{'lr_ratio': 0.1, 'size': 'medium'}`). Populated by sweep generators; surfaced "
+        "to W&B under a `view_meta/` prefix.",
     )
 
     @model_validator(mode="before")
@@ -371,7 +382,7 @@ class LoggingConfig(BaseConfig):
         """Ensure built-in `@register_metric` decorators have fired before `eval_metrics`
         looks names up in `METRIC_REGISTRY`. External metric modules are imported by
         `PDConfig._import_metric_modules`; rely on field ordering on the parent
-        ExperimentConfig (pd validated before logging) for those to be visible here.
+        parent `Run` (pd validated before logging) for those to be visible here.
         """
         from param_decomp.metrics import discover_metrics
 
@@ -467,7 +478,7 @@ class PDConfig(BaseConfig):
         ),
     )
 
-    loss_metrics: dict[str, LossMetricConfig] = Field(
+    loss_metrics: dict[str, SerializeAsAny[LossMetricConfig]] = Field(
         default_factory=dict,
         description=(
             "Training-loss metrics keyed by metric class name. Each value's `coeff` weights the"
@@ -483,7 +494,7 @@ class PDConfig(BaseConfig):
         before the `loss_metrics` field validator looks names up in `METRIC_REGISTRY`.
         Idempotent: re-validation in the same process is a no-op. External-metric
         visibility on the sibling `LoggingConfig.eval_metrics` relies on field ordering
-        in the parent `ExperimentConfig` (pd validated before logging).
+        in the parent `Run` (pd validated before logging).
         """
         from param_decomp.metrics import discover_metrics
 

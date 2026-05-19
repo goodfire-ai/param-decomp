@@ -131,7 +131,7 @@ def test_from_checkpoint():
             loss_metrics={
                 "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                     coeff=1.0, pnorm=1.0, beta=0.5
-                )
+                ),
             },
             n_mask_samples=1,
         )
@@ -531,7 +531,7 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             loss_metrics={
                 "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                     coeff=1.0, pnorm=1.0, beta=0.5
-                )
+                ),
             },
             n_mask_samples=1,
         )
@@ -563,7 +563,7 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             loss_metrics={
                 "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                     coeff=1.0, pnorm=1.0, beta=0.5
-                )
+                ),
             },
             n_mask_samples=1,
         )
@@ -612,7 +612,7 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             loss_metrics={
                 "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                     coeff=1.0, pnorm=1.0, beta=0.5
-                )
+                ),
             },
             n_mask_samples=1,
         )
@@ -644,7 +644,7 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             loss_metrics={
                 "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                     coeff=1.0, pnorm=1.0, beta=0.5
-                )
+                ),
             },
             n_mask_samples=1,
         )
@@ -1260,7 +1260,7 @@ def test_global_ci_save_and_load():
             loss_metrics={
                 "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
                     coeff=1.0, pnorm=1.0, beta=0.5
-                )
+                ),
             },
             n_mask_samples=1,
         )

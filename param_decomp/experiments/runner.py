@@ -13,26 +13,30 @@ from typing import Any
 import fire
 import yaml
 
-from param_decomp.configs import RuntimeConfig
 from param_decomp.experiments._worker import run_experiment
 from param_decomp.experiments.discovery import discover_experiments
+from param_decomp.run import Run
 from param_decomp.settings import (
     DEFAULT_PARTITION_NAME,
     DEFAULT_PROJECT_NAME,
     REPO_ROOT,
 )
+from param_decomp.sweeps import SweepSpec, load_sweep_generator
 
 
 def _resolve_source(
     experiment: str | None,
     config_path: str | Path | None,
-    driver: str | None,
     rerun: str | None,
-) -> tuple[str, str, dict[str, Any]]:
-    """Resolve CLI inputs into ``(name, driver_path, base_config)``.
+) -> dict[str, Any]:
+    """Resolve the chosen input source into a dict ready for ``Run.from_dict``.
 
     Exactly one of ``experiment``, ``config_path``, or ``rerun`` must be set.
-    ``driver`` is required iff ``config_path`` is set.
+    Every source is expected to provide ``driver_path`` as a top-level field
+    (built-in YAMLs, user YAMLs, and saved ``run_metadata.yaml`` all declare it).
+
+    Stamps ``logging.wandb_run_name`` (the experiment slug, config filename
+    stem, or ``"rerun"``) so each YAML doesn't have to set one.
     """
     sources_set = sum(x is not None for x in (experiment, config_path, rerun))
     assert sources_set == 1, (
@@ -41,64 +45,60 @@ def _resolve_source(
     )
 
     if experiment is not None:
-        assert driver is None, "--driver is only used with --config_path"
         discovered = discover_experiments()
         assert experiment in discovered, (
             f"Unknown experiment '{experiment}'. Available: {', '.join(sorted(discovered))}"
         )
-        exp = discovered[experiment]
-        with open(REPO_ROOT / exp.config_path) as f:
-            return experiment, exp.driver_path, yaml.safe_load(f)
-
-    if config_path is not None:
-        assert driver is not None, "--config_path requires --driver <module:Driver>"
-        with open(Path(config_path)) as f:
-            config_data = yaml.safe_load(f)
-        assert isinstance(config_data, dict), "config must be a YAML mapping"
-        return Path(config_path).stem, driver, config_data
-
-    assert rerun is not None  # by `sources_set == 1`
-    assert driver is None, "--driver is implied by --rerun (read from saved metadata)"
-    from param_decomp.saved_run import PDRun
-
-    metadata = PDRun.metadata_from_path(rerun)
-    assert metadata.driver is not None, (
-        f"Cannot rerun {rerun!r}: saved run has no driver. Reruns require a driver-managed run."
-    )
-    return "rerun", metadata.driver, metadata.config
-
-
-def _resolve_project(project: str | None, rerun: str | None) -> str:
-    """If --project is unset and we're rerunning, inherit from the saved metadata."""
-    if project is not None:
-        return project
-    if rerun is not None:
+        config_data = _load_yaml(REPO_ROOT / discovered[experiment].config_path)
+        name = experiment
+    elif config_path is not None:
+        config_data = _load_yaml(Path(config_path))
+        name = Path(config_path).stem
+    else:
+        assert rerun is not None  # by `sources_set == 1`
         from param_decomp.saved_run import PDRun
 
-        metadata = PDRun.metadata_from_path(rerun)
-        if metadata.wandb_project is not None:
-            return metadata.wandb_project
-    return DEFAULT_PROJECT_NAME
+        config_data = PDRun.run_from_path(rerun).model_dump(mode="json")
+        config_data.pop("run_id", None)
+        name = "rerun"
+
+    assert config_data.get("driver_path"), (
+        "Config is missing a top-level `driver_path:` field. "
+        "Every PD config must declare its driver (e.g. "
+        "`driver_path: param_decomp.experiments.tms.experiment:Driver`)."
+    )
+    config_data["logging"] = {**config_data.get("logging", {}), "wandb_run_name": name}
+    return config_data
 
 
-def _parse_runtime(base_config: dict[str, Any]) -> RuntimeConfig:
-    """Parse the ``runtime:`` block — substrate is config-only, no CLI overrides.
+def _load_yaml(path: Path) -> dict[str, Any]:
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    assert isinstance(data, dict), f"config must be a YAML mapping: {path}"
+    return data
 
-    Want a CPU smoke test of a GPU experiment? Edit the YAML or copy it first. Keeping the
-    experiment's declared substrate as the single source of truth avoids silently running
-    "the same experiment" on different substrates.
+
+def _resolve_sweep_spec(sweep_generator_path: str) -> SweepSpec:
+    """Load and invoke a sweep generator.
+
+    ``SweepSpec.__post_init__`` enforces shared driver + shared ``runtime:``
+    block across all runs.
     """
-    return RuntimeConfig.model_validate(base_config.get("runtime", {}))
+    generator = load_sweep_generator(sweep_generator_path)
+    spec = generator()
+    assert isinstance(spec, SweepSpec), (
+        f"sweep generator {generator!r} returned {type(spec).__name__}, expected SweepSpec"
+    )
+    return spec
 
 
 def main(
     experiment: str | None = None,
     *,
     config_path: str | Path | None = None,
-    driver: str | None = None,
     rerun: str | None = None,
     local: bool = False,
-    sweep: str | None = None,
+    sweep_generator_path: str | None = None,
     n_agents: int | None = None,
     job_suffix: str | None = None,
     partition: str = DEFAULT_PARTITION_NAME,
@@ -109,34 +109,39 @@ def main(
     Args:
         experiment: Built-in experiment name (e.g. ``tms_5-2``). Run with no args to
             see the discovered list.
-        config_path: Path to an experiment YAML. Requires --driver.
-        driver: Driver import path ``pkg.module:ClassName``. Used with --config_path.
+        config_path: Path to an experiment YAML. The YAML must declare its driver via
+            a top-level ``driver_path:`` field.
         rerun: Path or wandb URL of a saved run to rerun. Loads driver + config from
             the run's ``run_metadata.yaml``.
         local: Run in this process; skip SLURM, git snapshot, etc. Useful for quick
-            checks. Disables --sweep and --dp.
-        sweep: Sweep spec. Either a yaml path (e.g. ``my_grid.yaml`` — shorthand for
-            the built-in cartesian generator), a registered generator name
-            (``cartesian:my_grid.yaml``, ``my_sweep_name``), or a custom import path
-            (``pkg.module:MyGenerator`` or ``pkg.module:MyGenerator:<arg>``).
+            checks. Incompatible with --sweep_generator_path and runtime.dp.
+        sweep_generator_path: Absolute path to a sweep generator function in the
+            form ``/abs/path/file.py:func_name``. The function takes no arguments
+            and returns a ``SweepSpec`` (which carries its own driver_path and
+            per-run configs). XOR with <experiment>, --config_path, --rerun.
         n_agents: Max concurrent SLURM tasks for sweeps.
         job_suffix: Suffix for the SLURM job name.
         partition: SLURM partition.
-        project: W&B project name. Defaults to the project recorded on the rerun's
-            saved metadata (if any), otherwise ``DEFAULT_PROJECT_NAME``.
+        project: W&B project name. Defaults to ``DEFAULT_PROJECT_NAME``.
 
     Substrate (device, dp, autocast_bf16) is declared in the experiment YAML's
     ``runtime:`` block — there are no CLI overrides. Edit the YAML to change it.
+    For sweeps, the substrate comes from each generated config's ``runtime:`` block;
+    all runs in one sweep must share the same substrate.
 
     Examples:
-        pd-run tms_5-2                                       # one SLURM job
-        pd-run tms_5-2 --sweep my_grid.yaml --n_agents 4     # cartesian grid sweep
-        pd-run tms_5-2 --sweep pkg.module:MySweep            # custom generator
-        pd-run --driver pkg:D --config_path my.yaml          # custom driver
-        pd-run --rerun s-a1b2c3d4                            # rerun from saved metadata
-        pd-run tms_5-2 --local                               # in-process; no SLURM
+        pd-run tms_5-2                                                              # one SLURM job
+        pd-run --sweep_generator_path /abs/path/my_sweep.py:my_sweep --n_agents 4   # sweep
+        pd-run --config_path my.yaml                                                # custom config
+        pd-run --rerun s-a1b2c3d4                                                   # rerun from saved run
+        pd-run tms_5-2 --local                                                      # in-process; no SLURM
     """
-    if experiment is None and config_path is None and rerun is None:
+    if (
+        experiment is None
+        and config_path is None
+        and rerun is None
+        and sweep_generator_path is None
+    ):
         discovered = discover_experiments()
         print("Available experiments:")
         for name in sorted(discovered):
@@ -144,42 +149,52 @@ def main(
         print("\nUse `pd-run <experiment>` or `pd-run --help` for details.")
         return
 
-    name, driver_path, base_config = _resolve_source(experiment, config_path, driver, rerun)
-    project = _resolve_project(project, rerun)
-    runtime = _parse_runtime(base_config)
+    project = project if project is not None else DEFAULT_PROJECT_NAME
+
+    if sweep_generator_path is not None:
+        assert experiment is None and config_path is None and rerun is None, (
+            "--sweep_generator_path is mutually exclusive with <experiment>, "
+            "--config_path, and --rerun"
+        )
+        assert not local, "--sweep_generator_path is not supported with --local"
+        assert shutil.which("sbatch") is not None, (
+            "`sbatch` not found on PATH. Off-cluster, use `pd-run ... --local` (no sweep)."
+        )
+        sweep_spec = _resolve_sweep_spec(sweep_generator_path)
+        from param_decomp.scripts.run_slurm import launch_slurm
+
+        launch_slurm(
+            launchable=sweep_spec,
+            runtime=sweep_spec.runs[0].runtime,
+            n_agents=n_agents,
+            job_suffix=job_suffix,
+            partition=partition,
+            project=project,
+        )
+        return
+
+    run = Run.from_dict(_resolve_source(experiment, config_path, rerun))
 
     if local:
-        assert sweep is None, "--sweep is not supported with --local"
-        assert runtime.dp is None, "runtime.dp is not supported with --local"
-        if runtime.device == "cpu":
+        assert run.runtime.dp is None, "runtime.dp is not supported with --local"
+        if run.runtime.device == "cpu":
             os.environ["CUDA_VISIBLE_DEVICES"] = ""
         from param_decomp.utils.distributed_utils import with_distributed_cleanup
 
-        with_distributed_cleanup(run_experiment)(
-            driver_path,
-            base_config,
-            wandb_project=project,
-        )
+        with_distributed_cleanup(run_experiment)(run, wandb_project=project)
         return
 
     assert shutil.which("sbatch") is not None, (
         "`sbatch` not found on PATH. Off-cluster, use `pd-run ... --local`."
     )
-    assert not (sweep is not None and rerun is not None), "--sweep is not valid with --rerun"
-    assert not (sweep is not None and config_path is not None), (
-        "--sweep is only supported for built-in experiments"
-    )
 
     from param_decomp.scripts.run_slurm import launch_slurm
 
     launch_slurm(
-        name=name,
-        driver_path=driver_path,
-        base_config=base_config,
-        sweep=sweep,
+        launchable=run,
+        runtime=run.runtime,
         n_agents=n_agents,
         job_suffix=job_suffix,
-        runtime=runtime,
         partition=partition,
         project=project,
     )

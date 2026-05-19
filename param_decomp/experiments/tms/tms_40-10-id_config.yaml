@@ -1,3 +1,4 @@
+driver_path: param_decomp.experiments.tms.experiment:Driver
 pd:
   seed: 0
   n_mask_samples: 1
@@ -33,13 +34,13 @@ pd:
   faithfulness_warmup_lr: 0.01
   faithfulness_warmup_weight_decay: 0.1
   loss_metrics:
-    ImportanceMinimalityLoss:
+    importance_minimality:
       coeff: 1e-4
       pnorm: 2.0
       beta: 0
-    StochasticReconLayerwiseLoss:
+    stochastic_recon_layerwise:
       coeff: 1.0
-    StochasticReconLoss:
+    stochastic_recon:
       coeff: 1.0
 logging:
   train_log_freq: 100
@@ -48,18 +49,18 @@ logging:
   n_eval_steps: 100
   eval_batch_size: 4096
   save_freq: null
+  ci_alive_threshold: 0.1
   eval_metrics:
-    CIHistograms:
+    ci_histograms:
       n_batches_accum: 5
-    ComponentActivationDensity:
-      ci_alive_threshold: 0.1
-    PermutedCIPlots:
+    component_activation_density: {}
+    permuted_ci_plots:
       identity_patterns:
       - linear1
       - linear2
       dense_patterns:
       - hidden_layers.0
-    IdentityCIError:
+    identity_ci_error:
       identity_ci:
       - layer_pattern: linear1
         n_features: 40
@@ -68,13 +69,16 @@ logging:
       dense_ci:
       - layer_pattern: hidden_layers.0
         k: 10
-    CI_L0:
+    ci_l0:
       groups: null
-      ci_alive_threshold: 0.1
-    CIMeanPerComponent: {}
-    StochasticHiddenActsReconLoss: {}
+    ci_mean_per_component: {}
+    stochastic_hidden_acts_recon: {}
 target:
   run_path: wandb:goodfire/spd-pre-Sep-2025/runs/eggs3wp8
 data:
   feature_probability: 0.05
   data_generation_type: at_least_zero_active
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null

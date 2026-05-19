@@ -3,6 +3,7 @@
 # pyright: reportUnknownParameterType=false, reportMissingParameterType=false, reportUnusedParameter=false
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -10,14 +11,15 @@ import yaml
 
 from param_decomp.configs import RuntimeConfig
 from param_decomp.experiments.discovery import discover_experiments
+from param_decomp.run import Run
 from param_decomp.settings import REPO_ROOT
+from param_decomp.sweeps.cartesian import cartesian_product
 
 
-def _builtin(name: str) -> tuple[str, dict[str, object]]:
+def _builtin(name: str) -> dict[str, Any]:
     discovered = discover_experiments()
-    exp = discovered[name]
-    with open(REPO_ROOT / exp.config_path) as f:
-        return exp.driver_path, yaml.safe_load(f)
+    with open(REPO_ROOT / discovered[name].config_path) as f:
+        return yaml.safe_load(f)
 
 
 class TestResolveSource:
@@ -26,7 +28,7 @@ class TestResolveSource:
 
         fake = "nonexistent_experiment_please_dont_name_your_experiment_this"
         with pytest.raises(AssertionError, match=f"Unknown experiment '{fake}'"):
-            _resolve_source(experiment=fake, config_path=None, driver=None, rerun=None)
+            _resolve_source(experiment=fake, config_path=None, rerun=None)
 
 
 class TestLaunchSlurm:
@@ -54,25 +56,15 @@ class TestLaunchSlurm:
         )
         mock_get_wandb_run_url.return_value = "https://wandb.ai/test/test/runs/test"
 
-        grid_path = tmp_path / "grid.yaml"
-        grid_path.write_text(
-            yaml.dump(
-                {
-                    "description": "tiny test grid",
-                    "grid": {
-                        "pd.seed": [0, 1, 2],
-                        "pd.steps": [10, 20],
-                    },
-                }
-            )
-        )
-
-        driver_path, base_config = _builtin("tms_5-2")
-        launch_slurm(
-            name="tms_5-2",
-            driver_path=driver_path,
+        base_config = _builtin("tms_5-2")
+        sweep_spec = cartesian_product(
             base_config=base_config,
-            sweep=str(grid_path),
+            grid={"pd.seed": [0, 1, 2], "pd.steps": [10, 20]},
+            description="tiny test grid",
+            driver_path=base_config["driver_path"],
+        )
+        launch_slurm(
+            launchable=sweep_spec,
             n_agents=2,
             job_suffix=None,
             runtime=RuntimeConfig(),
@@ -82,8 +74,9 @@ class TestLaunchSlurm:
 
         mock_create_slurm_script.assert_called_once()
         call_kwargs = mock_create_slurm_script.call_args.kwargs
-        task_specs = call_kwargs["task_specs"]
-        assert len(task_specs) == 6  # 3 seeds x 2 steps
+        runs = call_kwargs["runs"]
+        assert len(runs) == 6  # 3 seeds x 2 steps
+        assert len({run.run_id for run in runs}) == 6
 
     @patch("param_decomp.scripts.run_slurm.get_wandb_run_url")
     @patch("param_decomp.scripts.run_slurm.submit_slurm_job")
@@ -109,12 +102,11 @@ class TestLaunchSlurm:
         )
         mock_get_wandb_run_url.return_value = "https://wandb.ai/test/test/runs/test"
 
-        driver_path, base_config = _builtin("tms_5-2")
+        base_config = _builtin("tms_5-2")
+        logging_data = {**base_config.get("logging", {}), "wandb_run_name": "tms_5-2"}
+        run = Run.from_dict({**base_config, "logging": logging_data})
         launch_slurm(
-            name="tms_5-2",
-            driver_path=driver_path,
-            base_config=base_config,
-            sweep=None,
+            launchable=run,
             n_agents=None,
             job_suffix=None,
             runtime=RuntimeConfig(),
@@ -123,5 +115,19 @@ class TestLaunchSlurm:
         )
 
         mock_create_slurm_script.assert_called_once()
-        task_specs = mock_create_slurm_script.call_args.kwargs["task_specs"]
-        assert len(task_specs) == 1
+        call_kwargs = mock_create_slurm_script.call_args.kwargs
+        runs = call_kwargs["runs"]
+        assert len(runs) == 1
+        assert runs[0].run_id == run.run_id
+        assert call_kwargs["is_array"] is False
+
+    def test_worker_args_use_run_embedded_run_id(self):
+        from param_decomp.scripts.run_slurm import _build_worker_args
+
+        base_config = _builtin("tms_5-2")
+        run = Run.from_dict(base_config)
+
+        args = _build_worker_args("launch-test", run, "test")
+
+        assert "--run_id" not in args
+        assert run.run_id in args
