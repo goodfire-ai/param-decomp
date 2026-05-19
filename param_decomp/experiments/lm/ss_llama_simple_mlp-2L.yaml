@@ -129,3 +129,5 @@ data:
   streaming: false
 runtime:
   autocast_bf16: true
+  device: cuda
+  dp: null

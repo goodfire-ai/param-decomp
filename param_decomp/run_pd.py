@@ -42,7 +42,7 @@ from param_decomp.models.batch_and_loss_fns import (
 )
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
 from param_decomp.persistent_pgd import PersistentPGDState
-from param_decomp.run_spec import RunSpec
+from param_decomp.run import Run
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp.utils.component_utils import calc_ci_l_zero
 from param_decomp.utils.data_utils import loop_dataloader
@@ -475,14 +475,14 @@ def run_pd(
     device: str,
     *,
     run_id: str | None = None,
-    spec: RunSpec | None = None,
+    run: Run | None = None,
     artifacts: dict[str, Any] | None = None,
     wandb_tags: list[str] | None = None,
 ) -> Path | None:
     """Run a full PD decomposition: setup, optimize, cleanup.
 
-    `spec` is written to ``run_metadata.yaml``.  Driver-mediated callers
-    (via ``experiments/runner.py``) pass a fully populated ``RunSpec``;
+    `run` is written to ``run_metadata.yaml``.  Driver-mediated callers
+    (via ``experiments/runner.py``) pass a fully populated ``Run``;
     notebook callers can omit it and a minimal one is synthesized.
 
     All ranks call this function. Only the main process does wandb/logging setup.
@@ -500,14 +500,12 @@ def run_pd(
         logger.info(f"Output directory: {out_dir}")
 
         artifacts = artifacts or {}
-        if spec is None:
-            spec = RunSpec(
-                driver=None,
-                config={
-                    "pd": config.model_dump(mode="json"),
-                    "logging": logging_config.model_dump(mode="json"),
-                    "runtime": runtime_config.model_dump(mode="json"),
-                },
+        if run is None:
+            run = Run(
+                driver_path=None,
+                pd=config,
+                logging=logging_config,
+                runtime=runtime_config,
             )
 
         tags = list(wandb_tags or [])
@@ -515,26 +513,26 @@ def run_pd(
         if slurm_array_job_id is not None:
             tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
 
-        if spec.wandb_project:
+        if run.logging.wandb_project:
             init_wandb(
-                spec.wandb_project,
+                run.logging.wandb_project,
                 run_id,
                 configs={
                     "pd": config,
                     "logging": logging_config,
                     "runtime": runtime_config,
                 },
-                name=spec.wandb_run_name,
+                name=run.logging.wandb_run_name,
                 tags=tags,
-                view_meta=spec.view_meta,
+                view_meta=run.logging.view_meta,
             )
 
         logger.info(config)
 
         save_pre_run_info(
-            save_to_wandb=spec.wandb_project is not None,
+            save_to_wandb=run.logging.wandb_project is not None,
             out_dir=out_dir,
-            spec=spec,
+            run=run,
             artifacts=artifacts,
         )
     else:

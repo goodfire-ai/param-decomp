@@ -72,3 +72,7 @@ data:
   column_name: input_ids
   train_split: train
   eval_split: train
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null

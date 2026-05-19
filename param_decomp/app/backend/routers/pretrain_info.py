@@ -13,8 +13,7 @@ from pydantic import BaseModel
 
 from param_decomp.app.backend.dependencies import DepLoadedRun
 from param_decomp.app.backend.utils import log_errors
-from param_decomp.experiments.driver import load_driver
-from param_decomp.experiments.lm.experiment import LMExperimentConfig
+from param_decomp.experiments.lm.experiment import LMRun
 from param_decomp.log import logger
 from param_decomp.saved_run import PDRun
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
@@ -46,16 +45,12 @@ class PretrainInfoResponse(BaseModel):
     topology: TopologyInfo | None
 
 
-def _load_lm_experiment_config_lightweight(wandb_path: str) -> LMExperimentConfig | None:
-    """Load just the run spec for an LM run, without downloading checkpoints."""
-    spec = PDRun.spec_from_path(wandb_path)
-    if spec.driver is None:
+def _load_lm_run_lightweight(wandb_path: str) -> LMRun | None:
+    """Load just the `Run` for an LM run, without downloading checkpoints."""
+    run = PDRun.run_from_path(wandb_path)
+    if not isinstance(run, LMRun):
         return None
-    driver = load_driver(spec.driver)
-    exp = driver.config_type.model_validate(spec.config)
-    if not isinstance(exp, LMExperimentConfig):
-        return None
-    return exp
+    return run
 
 
 def _load_pretrain_configs(pretrain_path: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -180,7 +175,7 @@ def _get_dataset_short(pretrain_config: dict[str, Any] | None) -> str | None:
     return None
 
 
-def _get_pretrain_info(lm_exp: LMExperimentConfig | None) -> PretrainInfoResponse:
+def _get_pretrain_info(lm_exp: LMRun | None) -> PretrainInfoResponse:
     """Extract pretrain info from an LM experiment config."""
     if lm_exp is None:
         return PretrainInfoResponse(
@@ -238,7 +233,7 @@ def get_pretrain_info_for_run(wandb_path: str) -> PretrainInfoResponse:
 
     Fetches only config files (no checkpoints) for efficiency.
     """
-    return _get_pretrain_info(_load_lm_experiment_config_lightweight(wandb_path))
+    return _get_pretrain_info(_load_lm_run_lightweight(wandb_path))
 
 
 @router.get("/loaded")

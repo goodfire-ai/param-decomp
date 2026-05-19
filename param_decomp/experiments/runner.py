@@ -16,7 +16,8 @@ import yaml
 from param_decomp.configs import RuntimeConfig
 from param_decomp.experiments._worker import run_experiment
 from param_decomp.experiments.discovery import discover_experiments
-from param_decomp.run_spec import RunSpec
+from param_decomp.experiments.driver import load_driver
+from param_decomp.run import Run
 from param_decomp.settings import (
     DEFAULT_PARTITION_NAME,
     DEFAULT_PROJECT_NAME,
@@ -31,10 +32,13 @@ def _resolve_source(
     driver: str | None,
     rerun: str | None,
 ) -> tuple[str, str, dict[str, Any]]:
-    """Resolve CLI inputs into ``(name, driver_path, base_config)``.
+    """Resolve CLI inputs into ``(name, driver_path, config_data)``.
 
     Exactly one of ``experiment``, ``config_path``, or ``rerun`` must be set.
     ``driver`` is required iff ``config_path`` is set.
+
+    Returns the parsed YAML dict (not yet merged with driver_path/wandb_*) so
+    the launcher can splice in launcher-stamped fields before validation.
     """
     sources_set = sum(x is not None for x in (experiment, config_path, rerun))
     assert sources_set == 1, (
@@ -50,7 +54,9 @@ def _resolve_source(
         )
         exp = discovered[experiment]
         with open(REPO_ROOT / exp.config_path) as f:
-            return experiment, exp.driver_path, yaml.safe_load(f)
+            config_data = yaml.safe_load(f)
+        assert isinstance(config_data, dict), "config must be a YAML mapping"
+        return experiment, exp.driver_path, config_data
 
     if config_path is not None:
         assert driver is not None, "--config_path requires --driver <module:Driver>"
@@ -60,26 +66,26 @@ def _resolve_source(
         return Path(config_path).stem, driver, config_data
 
     assert rerun is not None  # by `sources_set == 1`
-    assert driver is None, "--driver is implied by --rerun (read from saved run spec)"
+    assert driver is None, "--driver is implied by --rerun (read from saved run config)"
     from param_decomp.saved_run import PDRun
 
-    spec = PDRun.spec_from_path(rerun)
-    assert spec.driver is not None, (
+    run = PDRun.run_from_path(rerun)
+    assert run.driver_path is not None, (
         f"Cannot rerun {rerun!r}: saved run has no driver. Reruns require a driver-managed run."
     )
-    return "rerun", spec.driver, spec.config
+    return "rerun", run.driver_path, run.model_dump(mode="json")
 
 
 def _resolve_project(project: str | None, rerun: str | None) -> str:
-    """If --project is unset and we're rerunning, inherit from the saved run spec."""
+    """If --project is unset and we're rerunning, inherit from the saved run."""
     if project is not None:
         return project
     if rerun is not None:
         from param_decomp.saved_run import PDRun
 
-        spec = PDRun.spec_from_path(rerun)
-        if spec.wandb_project is not None:
-            return spec.wandb_project
+        run = PDRun.run_from_path(rerun)
+        if run.logging.wandb_project is not None:
+            return run.logging.wandb_project
     return DEFAULT_PROJECT_NAME
 
 
@@ -97,14 +103,30 @@ def _resolve_sweep_spec(sweep_generator_path: str) -> SweepSpec:
     return spec
 
 
-def _parse_runtime(base_config: dict[str, Any]) -> RuntimeConfig:
+def _build_run(
+    *,
+    driver_path: str,
+    config_data: dict[str, Any],
+    wandb_run_name: str,
+) -> Run:
+    """Splice ``driver_path`` + ``wandb_run_name`` into ``config_data`` and validate.
+
+    ``wandb_project`` is stamped later by the launcher.
+    """
+    logging_data = {**config_data.get("logging", {}), "wandb_run_name": wandb_run_name}
+    return load_driver(driver_path).config_type.model_validate(
+        {**config_data, "driver_path": driver_path, "logging": logging_data}
+    )
+
+
+def _parse_runtime(run: Run) -> RuntimeConfig:
     """Parse the ``runtime:`` block — substrate is config-only, no CLI overrides.
 
     Want a CPU smoke test of a GPU experiment? Edit the YAML or copy it first. Keeping the
     experiment's declared substrate as the single source of truth avoids silently running
     "the same experiment" on different substrates.
     """
-    return RuntimeConfig.model_validate(base_config.get("runtime", {}))
+    return run.runtime
 
 
 def main(
@@ -139,7 +161,7 @@ def main(
         job_suffix: Suffix for the SLURM job name.
         partition: SLURM partition.
         project: W&B project name. Defaults to the project recorded on the rerun's
-            saved run spec (if any), otherwise ``DEFAULT_PROJECT_NAME``.
+            saved run (if any), otherwise ``DEFAULT_PROJECT_NAME``.
 
     Substrate (device, dp, autocast_bf16) is declared in the experiment YAML's
     ``runtime:`` block — there are no CLI overrides. Edit the YAML to change it.
@@ -150,7 +172,7 @@ def main(
         pd-run tms_5-2                                                              # one SLURM job
         pd-run --sweep_generator_path /abs/path/my_sweep.py:my_sweep --n_agents 4   # sweep
         pd-run --driver pkg:D --config_path my.yaml                                 # custom driver
-        pd-run --rerun s-a1b2c3d4                                                   # rerun from saved run spec
+        pd-run --rerun s-a1b2c3d4                                                   # rerun from saved run
         pd-run tms_5-2 --local                                                      # in-process; no SLURM
     """
     if (
@@ -176,7 +198,7 @@ def main(
             "`sbatch` not found on PATH. Off-cluster, use `pd-run ... --local` (no sweep)."
         )
         sweep_spec = _resolve_sweep_spec(sweep_generator_path)
-        runtime = _parse_runtime(sweep_spec.runs[0].config)
+        runtime = _parse_runtime(sweep_spec.runs[0])
         from param_decomp.scripts.run_slurm import launch_slurm
 
         launch_slurm(
@@ -189,24 +211,22 @@ def main(
         )
         return
 
-    name, driver_path, base_config = _resolve_source(experiment, config_path, driver, rerun)
+    name, driver_path, config_data = _resolve_source(experiment, config_path, driver, rerun)
     project = _resolve_project(project, rerun)
-    runtime = _parse_runtime(base_config)
-
-    spec = RunSpec(
-        driver=driver_path,
-        config=base_config,
-        wandb_project=project,
-        wandb_run_name=name,
-    )
+    run = _build_run(driver_path=driver_path, config_data=config_data, wandb_run_name=name)
+    runtime = _parse_runtime(run)
 
     if local:
         assert runtime.dp is None, "runtime.dp is not supported with --local"
         if runtime.device == "cpu":
             os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        # Stamp wandb_project for --local too so the run logs to the requested project.
+        run = run.model_copy(
+            update={"logging": run.logging.model_copy(update={"wandb_project": project})}
+        )
         from param_decomp.utils.distributed_utils import with_distributed_cleanup
 
-        with_distributed_cleanup(run_experiment)(spec)
+        with_distributed_cleanup(run_experiment)(run)
         return
 
     assert shutil.which("sbatch") is not None, (
@@ -216,7 +236,7 @@ def main(
     from param_decomp.scripts.run_slurm import launch_slurm
 
     launch_slurm(
-        launchable=spec,
+        launchable=run,
         runtime=runtime,
         n_agents=n_agents,
         job_suffix=job_suffix,

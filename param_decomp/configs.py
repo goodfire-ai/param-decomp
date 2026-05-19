@@ -1,6 +1,6 @@
 """Config classes of various types"""
 
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     Field,
@@ -659,6 +659,21 @@ class LoggingConfig(BaseConfig):
             "Eval-only metrics. Metrics already set in `pd.loss_metrics` are evaluated "
             "automatically and should not be repeated here."
         ),
+    )
+    wandb_project: str | None = Field(
+        default=None,
+        description="W&B project to log this run to. None disables W&B. Typically stamped by "
+        "the launcher from `--project`; sweep generators leave it unset.",
+    )
+    wandb_run_name: str | None = Field(
+        default=None,
+        description="W&B run display name. None lets W&B auto-name.",
+    )
+    view_meta: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Free-form labels for downstream grouping/coloring/reports (e.g. "
+        "`{'lr_ratio': 0.1, 'size': 'medium'}`). Populated by sweep generators; surfaced "
+        "to W&B under a `view_meta/` prefix.",
     )
 
     @model_validator(mode="after")

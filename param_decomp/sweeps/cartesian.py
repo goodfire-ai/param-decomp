@@ -12,14 +12,15 @@ from typing import Any
 
 import yaml
 
-from param_decomp.run_spec import RunSpec
+from param_decomp.experiments.driver import load_driver
+from param_decomp.run import Run
 from param_decomp.settings import REPO_ROOT
 from param_decomp.sweeps.spec import SweepSpec
 from param_decomp.utils.run_utils import apply_nested_updates
 
 
 def cartesian_product(
-    base_config: dict[str, Any],
+    base_config: Run | dict[str, Any],
     grid: dict[str, list[Any]],
     *,
     description: str,
@@ -29,7 +30,7 @@ def cartesian_product(
 
     Each axis key is a dotted path into ``base_config`` (e.g.
     ``"pd.loss_metrics.importance_minimality.coeff"``). Axis values are
-    recorded in each run's ``view_meta`` so W&B can group/color by them.
+    recorded in each run's ``logging.view_meta`` so W&B can group/color by them.
     """
     assert grid, "cartesian_product requires a non-empty grid"
     for axis, values in grid.items():
@@ -39,19 +40,22 @@ def cartesian_product(
 
     axes = list(grid.keys())
     value_lists = [grid[a] for a in axes]
-    runs: list[RunSpec] = []
+    base_config_data = _config_data(base_config)
+    config_type = load_driver(driver_path).config_type
+    runs: list[Run] = []
     for combo in itertools.product(*value_lists):
         updates = dict(zip(axes, combo, strict=True))
-        config = apply_nested_updates(base_config, updates)
+        config_data = apply_nested_updates(base_config_data, updates)
         name = "_".join(f"{_short_axis(a)}={_short_value(v)}" for a, v in updates.items())
-        runs.append(
-            RunSpec(
-                driver=driver_path,
-                config=config,
-                wandb_run_name=name,
-                view_meta=dict(updates),
-            )
+        logging_data = {
+            **config_data.get("logging", {}),
+            "wandb_run_name": name,
+            "view_meta": dict(updates),
+        }
+        run = config_type.model_validate(
+            {**config_data, "driver_path": driver_path, "logging": logging_data}
         )
+        runs.append(run)
     return SweepSpec(description=description, runs=runs)
 
 
@@ -85,3 +89,9 @@ def _short_value(v: Any) -> str:
     if isinstance(v, list):
         return "-".join(_short_value(x) for x in v)
     return str(v).replace("/", "_")
+
+
+def _config_data(config: Run | dict[str, Any]) -> dict[str, Any]:
+    if isinstance(config, Run):
+        return config.model_dump(mode="json")
+    return config

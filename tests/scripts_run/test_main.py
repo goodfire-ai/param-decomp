@@ -3,6 +3,7 @@
 # pyright: reportUnknownParameterType=false, reportMissingParameterType=false, reportUnusedParameter=false
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -10,12 +11,12 @@ import yaml
 
 from param_decomp.configs import RuntimeConfig
 from param_decomp.experiments.discovery import discover_experiments
-from param_decomp.run_spec import RunSpec
+from param_decomp.experiments.driver import load_driver
 from param_decomp.settings import REPO_ROOT
 from param_decomp.sweeps.cartesian import cartesian_product
 
 
-def _builtin(name: str) -> tuple[str, dict[str, object]]:
+def _builtin(name: str) -> tuple[str, dict[str, Any]]:
     discovered = discover_experiments()
     exp = discovered[name]
     with open(REPO_ROOT / exp.config_path) as f:
@@ -102,13 +103,12 @@ class TestLaunchSlurm:
         mock_get_wandb_run_url.return_value = "https://wandb.ai/test/test/runs/test"
 
         driver_path, base_config = _builtin("tms_5-2")
-        spec = RunSpec(
-            driver=driver_path,
-            config=base_config,
-            wandb_run_name="tms_5-2",
+        logging_data = {**base_config.get("logging", {}), "wandb_run_name": "tms_5-2"}
+        run = load_driver(driver_path).config_type.model_validate(
+            {**base_config, "driver_path": driver_path, "logging": logging_data}
         )
         launch_slurm(
-            launchable=spec,
+            launchable=run,
             n_agents=None,
             job_suffix=None,
             runtime=RuntimeConfig(),

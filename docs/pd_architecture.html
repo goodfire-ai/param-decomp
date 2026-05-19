@@ -315,16 +315,15 @@
         </li>
         <li>
           With <code>--local</code>, <code>pd-run</code> calls
-          <code>_worker.run_experiment(driver_path, config_dict)</code> in this process.
+          <code>_worker.run_experiment(run)</code> in this process.
           Otherwise it calls <code>launch_slurm(...)</code>, which expands any sweep grid, creates
           a git snapshot branch, and submits a SLURM array. Each array task invokes
-          <code>python -m param_decomp.experiments._worker --run_spec_json ...</code>.
+          <code>python -m param_decomp.experiments._worker --run_json ...</code>.
         </li>
         <li>
-          <code>_worker.run_experiment</code> loads the driver, validates the config via
-          <code>driver.config_type.model_validate(...)</code>, builds the <code>PDTarget</code>
-          and train/eval dataloaders, calls <code>driver.artifacts(config, target)</code>, and
-          constructs a <code>RunSpec(driver=driver_path, config=config_dump)</code>.
+          <code>_worker.run_experiment</code> loads the driver, checks that
+          <code>run</code> is an instance of the driver's <code>config_type</code>, builds the
+          <code>PDTarget</code> and train/eval dataloaders, and calls <code>run_pd()</code>.
         </li>
         <li>
           <code>run_pd()</code> creates
@@ -333,8 +332,9 @@
           starts W&amp;B if configured, then trains.
         </li>
         <li>
-          A direct <code>run_pd()</code> call from a notebook skips the driver entirely. The run spec
-          defaults to <code>RunSpec(driver=None, config={"pd": pd_config.model_dump()})</code>;
+          A direct <code>run_pd()</code> call from a notebook skips the driver entirely. The
+          <code>Run</code> defaults to
+          <code>Run(driver_path=None, pd=..., logging=..., runtime=...)</code>;
           the run then reloads via
           <code>load_component_model(path, target=...)</code>.
         </li>
@@ -371,18 +371,18 @@
           <text x="350" y="134" class="svg-small">parse the directory into a handle</text>
           <text x="350" y="160" class="svg-text">resolve_run_files:</text>
           <text x="350" y="178" class="svg-small">  local path or wandb download</text>
-          <text x="350" y="200" class="svg-text">RunSpec.from_file(yaml)</text>
+          <text x="350" y="200" class="svg-text">Run.from_file(yaml)</text>
           <text x="350" y="222" class="svg-text">find latest model_&lt;step&gt;.pth</text>
-          <text x="350" y="244" class="svg-small">→ PDRun(path, spec, ckpt)</text>
+          <text x="350" y="244" class="svg-small">→ PDRun(path, run, ckpt)</text>
 
           <rect x="640" y="80" width="270" height="180" class="svg-box svg-box-teal"></rect>
           <text x="660" y="112" class="svg-title">2. pd_run.load_target()</text>
           <text x="660" y="134" class="svg-small">driver rebuilds the target model</text>
-          <text x="660" y="160" class="svg-text">load_driver(spec.driver)</text>
-          <text x="660" y="182" class="svg-text">config_type.model_validate(</text>
-          <text x="660" y="200" class="svg-small">  spec.config)</text>
-          <text x="660" y="222" class="svg-text">driver.build_target(</text>
-          <text x="660" y="240" class="svg-small">  config, run_dir=path) → PDTarget</text>
+          <text x="660" y="160" class="svg-text">load_driver(run.driver_path)</text>
+          <text x="660" y="182" class="svg-text">assert isinstance(</text>
+          <text x="660" y="200" class="svg-small">  run, driver.config_type)</text>
+          <text x="660" y="222" class="svg-text">driver.build_target(run)</text>
+          <text x="660" y="240" class="svg-small">  → PDTarget</text>
 
           <rect x="950" y="80" width="260" height="180" class="svg-box svg-box-red"></rect>
           <text x="970" y="112" class="svg-title">3. pd_run.load_model(target)</text>
@@ -412,9 +412,10 @@
       </p>
 
       <div class="note">
-        <strong>No driver in the run spec?</strong> The run came from a direct <code>run_pd()</code>
-        call. You must pass <code>target=...</code> to <code>load_component_model()</code>;
-        <code>PDRun.experiment_config</code> will be <code>None</code> for such runs.
+        <strong>No driver in the saved <code>Run</code>?</strong> The run came from a direct
+        <code>run_pd()</code> call. You must pass <code>target=...</code> to
+        <code>load_component_model()</code>; <code>pd_run.run</code> is a bare <code>Run</code>
+        (not a driver-specific subclass) and <code>pd_run.driver</code> is <code>None</code>.
       </div>
     </section>
 
@@ -602,7 +603,7 @@
         <pre><code>@dataclass
 class RunSpec:
     driver: str | None             # import path; None for notebook/no-driver runs
-    config: dict[str, Any]         # full experiment config dump
+    config: ExperimentConfig       # full parsed experiment config object
     wandb_project: str | None = None
     wandb_run_name: str | None = None
     view_meta: dict[str, Any] = field(default_factory=dict)</code></pre>

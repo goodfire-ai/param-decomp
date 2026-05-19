@@ -16,7 +16,7 @@ from pydantic.v1.utils import deep_update
 from torch import Tensor
 
 from param_decomp.configs import ScheduleConfig
-from param_decomp.run_spec import RUN_METADATA_FILENAME, RunSpec
+from param_decomp.run import RUN_METADATA_FILENAME, Run
 from param_decomp.utils.run_utils import save_file
 
 # Avoid seaborn package installation (sns.color_palette("colorblind").as_hex())
@@ -201,12 +201,12 @@ def fetch_latest_local_checkpoint(run_dir: Path, prefix: str | None = None) -> P
 def save_pre_run_info(
     save_to_wandb: bool,
     out_dir: Path,
-    spec: RunSpec,
+    run: Run,
     artifacts: dict[str, Any],
 ) -> None:
-    """Save the run spec and artifacts locally and optionally to wandb."""
+    """Save the run config and artifacts locally and optionally to wandb."""
 
-    spec.write(out_dir / RUN_METADATA_FILENAME)
+    run.write(out_dir / RUN_METADATA_FILENAME)
 
     for filename, data in artifacts.items():
         save_file(data, out_dir / filename)

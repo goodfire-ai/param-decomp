@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from param_decomp.app.backend.routers.pretrain_info import (
     _get_pretrain_info,
-    _load_lm_experiment_config_lightweight,
+    _load_lm_run_lightweight,
 )
 from param_decomp.app.backend.utils import log_errors
 from param_decomp.log import logger
@@ -60,7 +60,7 @@ def _check_availability(run_id: str) -> DataAvailability:
 def _get_architecture_summary(wandb_path: str) -> str | None:
     """Get a short architecture label for a run. Returns None on failure."""
     try:
-        lm_exp = _load_lm_experiment_config_lightweight(wandb_path)
+        lm_exp = _load_lm_run_lightweight(wandb_path)
         info = _get_pretrain_info(lm_exp)
         parts: list[str] = []
         if info.dataset_short:

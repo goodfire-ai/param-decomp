@@ -1,4 +1,4 @@
-"""Round-trip tests for run specs and experiment configs."""
+"""Round-trip tests for the `Run` config object."""
 
 from pathlib import Path
 
@@ -13,18 +13,16 @@ from param_decomp.configs import (
     LoggingConfig,
     OptimizerConfig,
     PDConfig,
+    RuntimeConfig,
     ScheduleConfig,
 )
-from param_decomp.experiments.driver import (
-    ExperimentConfig,
-    load_driver,
-)
+from param_decomp.experiments.driver import load_driver
 from param_decomp.experiments.lm.data import LMDataConfig
 from param_decomp.experiments.lm.experiment import (
     Driver as LMDriver,
 )
 from param_decomp.experiments.lm.experiment import (
-    LMExperimentConfig,
+    LMRun,
     LMTargetConfig,
 )
 from param_decomp.experiments.resid_mlp.experiment import (
@@ -32,7 +30,7 @@ from param_decomp.experiments.resid_mlp.experiment import (
 )
 from param_decomp.experiments.resid_mlp.experiment import (
     ResidMLPDataConfig,
-    ResidMLPExperimentConfig,
+    ResidMLPRun,
     ResidMLPTargetConfig,
 )
 from param_decomp.experiments.tms.experiment import (
@@ -40,10 +38,10 @@ from param_decomp.experiments.tms.experiment import (
 )
 from param_decomp.experiments.tms.experiment import (
     TMSDataConfig,
-    TMSExperimentConfig,
+    TMSRun,
     TMSTargetConfig,
 )
-from param_decomp.run_spec import RUN_METADATA_FILENAME, RunSpec
+from param_decomp.run import RUN_METADATA_FILENAME, Run
 
 LM_DRIVER_PATH = "param_decomp.experiments.lm.experiment:Driver"
 TMS_DRIVER_PATH = "param_decomp.experiments.tms.experiment:Driver"
@@ -76,21 +74,21 @@ def _logging_config() -> LoggingConfig:
     )
 
 
-def _round_trip(experiment_config: ExperimentConfig, driver_path: str) -> ExperimentConfig:
-    """Build RunSpec for `experiment_config` and re-parse it through the driver."""
-    driver = load_driver(driver_path)
-    spec = RunSpec(
-        driver=driver_path,
-        config=experiment_config.model_dump(mode="json"),
-    )
-    assert spec.driver == driver_path
-    return driver.config_type.model_validate(spec.config)
+def _runtime_config() -> RuntimeConfig:
+    return RuntimeConfig(autocast_bf16=False, device="cpu", dp=None)
 
 
-def test_lm_experiment_round_trip():
-    exp = LMExperimentConfig(
+def _round_trip(run: Run) -> Run:
+    """Round-trip ``run`` through ``model_dump`` → ``Run.model_validate_run``."""
+    return Run.model_validate_run(run.model_dump(mode="json"))
+
+
+def test_lm_run_round_trip():
+    run = LMRun(
+        driver_path=LM_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
+        runtime=_runtime_config(),
         target=LMTargetConfig(
             model_class="transformers.GPT2LMHeadModel",
             model_name="openai-community/gpt2",
@@ -103,33 +101,48 @@ def test_lm_experiment_round_trip():
             max_seq_len=128,
         ),
     )
-    parsed = _round_trip(exp, LM_DRIVER_PATH)
-    assert type(parsed) is LMExperimentConfig
-    assert parsed == exp
+    parsed = _round_trip(run)
+    assert type(parsed) is LMRun
+    assert parsed == run
 
 
-def test_tms_experiment_round_trip():
-    exp = TMSExperimentConfig(
+def test_tms_run_round_trip():
+    run = TMSRun(
+        driver_path=TMS_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
+        runtime=_runtime_config(),
         target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc"),
         data=TMSDataConfig(feature_probability=0.05),
     )
-    parsed = _round_trip(exp, TMS_DRIVER_PATH)
-    assert type(parsed) is TMSExperimentConfig
-    assert parsed == exp
+    parsed = _round_trip(run)
+    assert type(parsed) is TMSRun
+    assert parsed == run
 
 
-def test_resid_mlp_experiment_round_trip():
-    exp = ResidMLPExperimentConfig(
+def test_resid_mlp_run_round_trip():
+    run = ResidMLPRun(
+        driver_path=RESID_MLP_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
+        runtime=_runtime_config(),
         target=ResidMLPTargetConfig(run_path="wandb:foo/bar/runs/abc"),
         data=ResidMLPDataConfig(feature_probability=0.05),
     )
-    parsed = _round_trip(exp, RESID_MLP_DRIVER_PATH)
-    assert type(parsed) is ResidMLPExperimentConfig
-    assert parsed == exp
+    parsed = _round_trip(run)
+    assert type(parsed) is ResidMLPRun
+    assert parsed == run
+
+
+def test_run_requires_runtime_config():
+    data = {
+        "driver_path": None,
+        "pd": _pd_config().model_dump(mode="json"),
+        "logging": _logging_config().model_dump(mode="json"),
+    }
+
+    with pytest.raises(ValidationError, match="runtime"):
+        Run.model_validate_run(data)
 
 
 def test_driver_class_paths_load():
@@ -138,36 +151,46 @@ def test_driver_class_paths_load():
     assert isinstance(load_driver(RESID_MLP_DRIVER_PATH), ResidMLPDriver)
 
 
-def test_save_pre_run_info_writes_run_spec(tmp_path: Path):
+def test_save_pre_run_info_writes_run_metadata(tmp_path: Path):
     from param_decomp.utils.general_utils import save_pre_run_info
 
-    spec = RunSpec(
-        driver=None,
-        config={
-            "pd": _pd_config().model_dump(mode="json"),
-            "logging": _logging_config().model_dump(mode="json"),
-        },
+    run = Run(
+        driver_path=None,
+        pd=_pd_config(),
+        logging=_logging_config(),
+        runtime=_runtime_config(),
     )
     save_pre_run_info(
         save_to_wandb=False,
         out_dir=tmp_path,
-        spec=spec,
+        run=run,
         artifacts={},
     )
 
     assert (tmp_path / RUN_METADATA_FILENAME).exists()
 
 
-def test_run_spec_round_trip_via_file(tmp_path: Path):
-    spec = RunSpec(
-        driver="param_decomp.experiments.lm.experiment:Driver",
-        config={"pd": {"seed": 42}, "target": {}, "data": {}},
+def test_run_round_trip_via_file(tmp_path: Path):
+    run = TMSRun(
+        driver_path=TMS_DRIVER_PATH,
+        pd=_pd_config(),
+        logging=_logging_config(),
+        runtime=_runtime_config(),
+        target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc"),
+        data=TMSDataConfig(feature_probability=0.05),
     )
     path = tmp_path / RUN_METADATA_FILENAME
-    spec.write(path)
-    loaded = RunSpec.from_file(path)
-    assert loaded.driver == spec.driver
-    assert loaded.config == spec.config
+    run.write(path)
+    loaded = Run.from_file(path)
+    assert loaded.driver_path == run.driver_path
+    assert loaded == run
+
+
+def test_wandb_fields_default_to_none_on_logging_config():
+    cfg = _logging_config()
+    assert cfg.wandb_project is None
+    assert cfg.wandb_run_name is None
+    assert cfg.view_meta == {}
 
 
 def test_lm_target_requires_exactly_one_location():

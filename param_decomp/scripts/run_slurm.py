@@ -1,16 +1,15 @@
 """SLURM launch helpers for PD experiments.
 
 Internal — invoked by ``pd-run`` (``param_decomp/experiments/runner.py``). Takes a
-``RunSpec`` (single launch) or ``SweepSpec`` (many runs sharing one driver and
+``Run`` (single launch) or ``SweepSpec`` (many runs sharing one driver and
 substrate). For sweeps, snapshots the spec to disk for reproducibility. Creates
-a git snapshot of the repo and submits SLURM: a plain job for ``RunSpec``, an
+a git snapshot of the repo and submits SLURM: a plain job for ``Run``, an
 array (one task per run) for ``SweepSpec``. Each task invokes
 ``python -m param_decomp.experiments._worker``.
 
 For single-machine execution, use ``pd-run <experiment> --local``.
 """
 
-import dataclasses
 import json
 import shlex
 from dataclasses import dataclass
@@ -19,7 +18,7 @@ from hashlib import sha256
 
 from param_decomp.configs import RuntimeConfig
 from param_decomp.log import logger
-from param_decomp.run_spec import RunSpec
+from param_decomp.run import Run
 from param_decomp.settings import GPUS_PER_NODE, PARAM_DECOMP_OUT_DIR
 from param_decomp.sweeps import SweepSpec
 from param_decomp.utils.git_utils import create_git_snapshot
@@ -42,14 +41,14 @@ _CUDA_FLAGS = {
 
 @dataclass(frozen=True, slots=True)
 class _TaskSpec:
-    """One SLURM task: a RunSpec + a pre-allocated run_id."""
+    """One SLURM task: a Run + a pre-allocated run_id."""
 
-    spec: RunSpec
+    run: Run
     run_id: str
 
 
 def launch_slurm(
-    launchable: RunSpec | SweepSpec,
+    launchable: Run | SweepSpec,
     runtime: RuntimeConfig,
     n_agents: int | None,
     job_suffix: str | None,
@@ -59,21 +58,24 @@ def launch_slurm(
     """Submit a PD experiment to SLURM.
 
     Callers (``pd-run``) resolve their input (built-in experiment, custom
-    config, rerun, or sweep generator) into either a single ``RunSpec`` or
+    config, rerun, or sweep generator) into either a single ``Run`` or
     a ``SweepSpec`` and pass it in here. Single runs submit a plain SLURM job;
     sweeps submit an array (one task per run) and snapshot the spec to
     ``PARAM_DECOMP_OUT_DIR/sweeps/<launch_id>/spec.yaml``.
 
-    ``wandb_project`` is stamped onto every run from ``project`` here, so
-    callers don't have to pre-set it (and sweep generators shouldn't).
+    ``wandb_project`` is stamped onto every run's ``logging`` from ``project``
+    here, so callers don't have to pre-set it (and sweep generators shouldn't).
     """
     launch_id = _generate_launch_id()
     is_sweep = isinstance(launchable, SweepSpec)
     raw_runs = launchable.runs if isinstance(launchable, SweepSpec) else [launchable]
-    runs = [dataclasses.replace(r, wandb_project=project) for r in raw_runs]
+    runs = [
+        r.model_copy(update={"logging": r.logging.model_copy(update={"wandb_project": project})})
+        for r in raw_runs
+    ]
     for r in runs:
-        assert r.driver is not None, "launchable RunSpec must declare a driver"
-    driver_path = runs[0].driver
+        assert r.driver_path is not None, "launchable Run must declare a driver_path"
+    driver_path = runs[0].driver_path
     assert driver_path is not None  # for type narrowing
 
     logger.info(f"Launch ID: {launch_id}")
@@ -91,14 +93,13 @@ def launch_slurm(
         logger.info(f"Wrote sweep spec to {sweep_dir / 'spec.yaml'}")
         sweep_spec_path: str | None = str(sweep_dir / "spec.yaml")
     else:
-        logger.info(f"Single run: {runs[0].wandb_run_name}")
+        logger.info(f"Single run: {runs[0].logging.wandb_run_name}")
         sweep_spec_path = None
 
-    # Config validation happens worker-side at _worker.run_experiment. Doing it here too
-    # would force the launch node (often a login node without GPUs) to import the driver's
-    # full deps (e.g. `transformers` for the lm driver). Skip it.
+    # Run is already a validated pydantic object. The worker still asserts that
+    # the Run subclass matches the driver before using it.
 
-    task_specs = [_TaskSpec(spec=r, run_id=generate_run_id("param_decomp")) for r in runs]
+    task_specs = [_TaskSpec(run=r, run_id=generate_run_id("param_decomp")) for r in runs]
 
     snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=launch_id)
     logger.info(f"Created git snapshot ref: {snapshot_ref} ({commit_hash[:8]})")
@@ -185,10 +186,10 @@ def _choose_master_port(run_id_local: str, idx: int) -> int:
 
 def _build_worker_args(launch_id: str, task_spec: _TaskSpec) -> str:
     """Build the ``_worker`` CLI arguments for one SLURM task."""
-    spec_json = json.dumps(task_spec.spec.to_dict())
+    run_json = json.dumps(task_spec.run.model_dump(mode="json"))
     return " ".join(
         [
-            f"--run_spec_json {shlex.quote(spec_json)}",
+            f"--run_json {shlex.quote(run_json)}",
             f"--run_id {task_spec.run_id}",
             f"--launch_id {launch_id}",
         ]

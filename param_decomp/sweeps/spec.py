@@ -1,20 +1,20 @@
 """Launch data model: ``SweepSpec`` (many runs sharing a driver and substrate).
 
-A single PD launch is just a ``RunSpec`` — the same type the worker writes
-to disk. A sweep is a ``SweepSpec`` carrying ``list[RunSpec]``.
+A single PD launch is just a ``Run`` — the same type the worker writes
+to disk. A sweep is a ``SweepSpec`` carrying ``list[Run]``.
 
 A ``SweepGenerator`` is any zero-arg callable returning a ``SweepSpec``. The
 sweep is fully self-contained — it loads whatever base config it wants and
-each ``RunSpec`` declares its own driver.
+each ``Run`` declares its own driver.
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 import yaml
 
-from param_decomp.run_spec import RunSpec
+from param_decomp.run import Run
 
 
 @dataclass(frozen=True)
@@ -24,40 +24,44 @@ class SweepSpec:
     All runs in a sweep must share one driver and one ``runtime:`` block
     (single SLURM array allocation, one substrate). Both invariants are
     asserted at construction; the launcher additionally stamps
-    ``wandb_project`` onto each run before submission.
+    ``wandb_project`` onto each run's ``logging`` before submission.
 
     Serialized to ``PARAM_DECOMP_OUT_DIR/sweeps/<launch_id>/spec.yaml`` on
     submit so reproducing the sweep doesn't require re-running the generator.
     """
 
     description: str
-    runs: list[RunSpec]
+    runs: list[Run]
 
     def __post_init__(self) -> None:
         assert self.runs, "SweepSpec.runs must be non-empty"
-        head_driver = self.runs[0].driver
-        head_runtime = self.runs[0].config.get("runtime", {})
+        head_driver = self.runs[0].driver_path
+        head_runtime = self.runs[0].runtime
         assert head_driver is not None, (
-            "SweepSpec runs must declare a driver; got driver=None on the first run"
+            "SweepSpec runs must declare a driver_path; got driver_path=None on the first run"
         )
         for run in self.runs:
-            assert run.driver == head_driver, (
-                f"sweep run {run.wandb_run_name!r} declares driver={run.driver!r}, "
-                f"but the first run uses {head_driver!r}; all runs in one sweep must share a driver"
+            assert run.driver_path == head_driver, (
+                f"sweep run {run.logging.wandb_run_name!r} declares driver_path="
+                f"{run.driver_path!r}, but the first run uses {head_driver!r}; all runs in "
+                "one sweep must share a driver"
             )
-            assert run.config.get("runtime", {}) == head_runtime, (
-                f"sweep run {run.wandb_run_name!r} has a different runtime block than the first run; "
-                "all runs in one sweep must share the same substrate"
+            assert run.runtime == head_runtime, (
+                f"sweep run {run.logging.wandb_run_name!r} has a different runtime block than "
+                "the first run; all runs in one sweep must share the same substrate"
             )
 
     @property
-    def driver(self) -> str:
-        head = self.runs[0].driver
+    def driver_path(self) -> str:
+        head = self.runs[0].driver_path
         assert head is not None  # enforced by __post_init__
         return head
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "description": self.description,
+            "runs": [run.model_dump(mode="json") for run in self.runs],
+        }
 
     def write(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

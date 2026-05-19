@@ -73,3 +73,7 @@ target:
 data:
   feature_probability: 0.05
   data_generation_type: at_least_zero_active
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null

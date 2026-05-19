@@ -8,14 +8,10 @@ from typing import Any
 from torch.utils.data import DataLoader
 
 from param_decomp.configs import PDConfig
-from param_decomp.experiments.driver import (
-    ExperimentConfig,
-    ExperimentDriver,
-    load_driver,
-)
+from param_decomp.experiments.driver import ExperimentDriver, load_driver
 from param_decomp.models.batch_and_loss_fns import PDTarget
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.run_spec import RUN_METADATA_FILENAME, RunSpec
+from param_decomp.run import RUN_METADATA_FILENAME, Run
 from param_decomp.types import ModelPath
 from param_decomp.utils.distributed_utils import DistributedState
 from param_decomp.utils.run_files import resolve_config_path, resolve_run_files
@@ -23,10 +19,10 @@ from param_decomp.utils.run_files import resolve_config_path, resolve_run_files
 
 @dataclass
 class PDRun:
-    """A saved PD run, resolved to local paths and parsed run spec."""
+    """A saved PD run, resolved to local paths and parsed `Run` config."""
 
     path: Path
-    spec: RunSpec
+    run: Run
     checkpoint_path: Path
 
     @classmethod
@@ -38,28 +34,22 @@ class PDRun:
         )
         return cls(
             path=files.config_path.parent,
-            spec=RunSpec.from_file(files.config_path),
+            run=Run.from_file(files.config_path),
             checkpoint_path=files.checkpoint_path,
         )
 
     @classmethod
-    def spec_from_path(cls, path: ModelPath) -> RunSpec:
-        """Load just the run spec, without resolving or downloading checkpoints."""
-        return RunSpec.from_file(resolve_config_path(path, config_filename=RUN_METADATA_FILENAME))
+    def run_from_path(cls, path: ModelPath) -> Run:
+        """Load just the `Run` config, without resolving or downloading checkpoints."""
+        return Run.from_file(resolve_config_path(path, config_filename=RUN_METADATA_FILENAME))
 
     @cached_property
     def driver(self) -> ExperimentDriver[Any] | None:
-        return load_driver(self.spec.driver) if self.spec.driver else None
-
-    @cached_property
-    def experiment_config(self) -> ExperimentConfig | None:
-        if self.driver is None:
-            return None
-        return self.driver.config_type.model_validate(self.spec.config)
+        return load_driver(self.run.driver_path) if self.run.driver_path else None
 
     @property
     def pd_config(self) -> PDConfig:
-        return PDConfig.model_validate(self.spec.config["pd"])
+        return self.run.pd
 
     @property
     def name(self) -> str:
@@ -68,11 +58,14 @@ class PDRun:
         return "custom"
 
     def load_target(self) -> PDTarget:
-        assert self.driver is not None and self.experiment_config is not None, (
+        assert self.driver is not None, (
             "Run has no driver. Use `load_component_model(path, target=...)` with an "
             "explicit target."
         )
-        return self.driver.build_target(self.experiment_config)
+        assert isinstance(self.run, self.driver.config_type), (
+            f"Run has type {type(self.run).__name__}, expected {self.driver.config_type.__name__}"
+        )
+        return self.driver.build_target(self.run)
 
     def load_dataloaders(
         self,
@@ -82,11 +75,14 @@ class PDRun:
         dist_state: DistributedState | None = None,
         device: str = "cpu",
     ) -> tuple[DataLoader[Any], DataLoader[Any]]:
-        assert self.driver is not None and self.experiment_config is not None, (
+        assert self.driver is not None, (
             "Run has no driver. Build dataloaders explicitly for custom runs."
         )
+        assert isinstance(self.run, self.driver.config_type), (
+            f"Run has type {type(self.run).__name__}, expected {self.driver.config_type.__name__}"
+        )
         return self.driver.build_dataloaders(
-            self.experiment_config,
+            self.run,
             train_batch_size=train_batch_size,
             eval_batch_size=eval_batch_size,
             dist_state=dist_state,
@@ -114,6 +110,7 @@ def load_component_model(
     Args:
         path: Run directory, wandb path (`wandb:entity/project/runs/id`), or checkpoint file.
         target: Optional override. When ``None``, the run's driver reconstructs the target
-            from the saved run spec. For manual/notebook runs (no driver), ``target`` is required.
+            from the saved `Run` config. For manual/notebook runs (no driver), ``target`` is
+            required.
     """
     return PDRun.from_path(path).load_model(target=target)

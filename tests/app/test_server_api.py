@@ -124,10 +124,12 @@ def app_with_state():
         assert isinstance(hf_tokenizer, PreTrainedTokenizerBase)
         tokenizer = AppTokenizer(hf_tokenizer)
 
+        from param_decomp.configs import RuntimeConfig
         from param_decomp.experiments.lm.data import LMDataConfig
-        from param_decomp.experiments.lm.experiment import LMExperimentConfig, LMTargetConfig
+        from param_decomp.experiments.lm.experiment import LMRun, LMTargetConfig
 
-        lm_exp = LMExperimentConfig(
+        lm_exp = LMRun(
+            driver_path="param_decomp.experiments.lm.experiment:Driver",
             pd=config,
             logging=LoggingConfig(
                 eval_batch_size=1,
@@ -136,6 +138,7 @@ def app_with_state():
                 slow_eval_freq=1,
                 train_log_freq=1,
             ),
+            runtime=RuntimeConfig(autocast_bf16=False, device="cpu", dp=None),
             target=LMTargetConfig(
                 model_class="param_decomp.pretrain.models.gpt2_simple.GPT2Simple",
                 model_name="test-target",
