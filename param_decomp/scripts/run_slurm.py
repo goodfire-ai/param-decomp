@@ -53,7 +53,6 @@ def launch_slurm(
     n_agents: int | None,
     job_suffix: str | None,
     partition: str,
-    project: str,
 ) -> None:
     """Submit a PD experiment to SLURM.
 
@@ -63,20 +62,20 @@ def launch_slurm(
     sweeps submit an array (one task per run) and snapshot the spec to
     ``PARAM_DECOMP_OUT_DIR/sweeps/<launch_id>/spec.yaml``.
 
-    ``wandb_project`` is stamped onto every run's ``logging`` from ``project``
-    here, so callers don't have to pre-set it (and sweep generators shouldn't).
+    Every run's ``logging.wandb_project`` must already be set by the caller.
     """
     launch_id = _generate_launch_id()
     is_sweep = isinstance(launchable, SweepSpec)
-    raw_runs = launchable.runs if isinstance(launchable, SweepSpec) else [launchable]
-    runs = [
-        r.model_copy(update={"logging": r.logging.model_copy(update={"wandb_project": project})})
-        for r in raw_runs
-    ]
+    runs = launchable.runs if isinstance(launchable, SweepSpec) else [launchable]
     for r in runs:
         assert r.driver_path is not None, "launchable Run must declare a driver_path"
+        assert r.logging.wandb_project is not None, (
+            "launchable Run must have logging.wandb_project set"
+        )
     driver_path = runs[0].driver_path
     assert driver_path is not None  # for type narrowing
+    project = runs[0].logging.wandb_project
+    assert project is not None  # for type narrowing
 
     logger.info(f"Launch ID: {launch_id}")
     logger.info(f"Driver: {driver_path}")
@@ -88,8 +87,7 @@ def launch_slurm(
         assert n_agents is not None, "n_agents must be provided for a SweepSpec"
         logger.info(f"Sweep '{launchable.description}': {len(runs)} run(s)")
         sweep_dir = PARAM_DECOMP_OUT_DIR / "sweeps" / launch_id
-        # Re-build the SweepSpec with project-stamped runs so the snapshot reflects what ran.
-        SweepSpec(description=launchable.description, runs=runs).write(sweep_dir / "spec.yaml")
+        launchable.write(sweep_dir / "spec.yaml")
         logger.info(f"Wrote sweep spec to {sweep_dir / 'spec.yaml'}")
         sweep_spec_path: str | None = str(sweep_dir / "spec.yaml")
     else:

@@ -57,6 +57,9 @@ class TestLaunchSlurm:
         )
         mock_get_wandb_run_url.return_value = "https://wandb.ai/test/test/runs/test"
 
+        from param_decomp.experiments.runner import _stamp_project
+        from param_decomp.sweeps import SweepSpec
+
         driver_path, base_config = _builtin("tms_5-2")
         sweep_spec = cartesian_product(
             base_config=base_config,
@@ -64,13 +67,14 @@ class TestLaunchSlurm:
             description="tiny test grid",
             driver_path=driver_path,
         )
+        sweep_spec = _stamp_project(sweep_spec, "test")
+        assert isinstance(sweep_spec, SweepSpec)
         launch_slurm(
             launchable=sweep_spec,
             n_agents=2,
             job_suffix=None,
             runtime=RuntimeConfig(),
             partition="cpu",
-            project="test",
         )
 
         mock_create_slurm_script.assert_called_once()
@@ -103,7 +107,11 @@ class TestLaunchSlurm:
         mock_get_wandb_run_url.return_value = "https://wandb.ai/test/test/runs/test"
 
         driver_path, base_config = _builtin("tms_5-2")
-        logging_data = {**base_config.get("logging", {}), "wandb_run_name": "tms_5-2"}
+        logging_data = {
+            **base_config.get("logging", {}),
+            "wandb_run_name": "tms_5-2",
+            "wandb_project": "test",
+        }
         run = load_driver(driver_path).config_type.model_validate(
             {**base_config, "driver_path": driver_path, "logging": logging_data}
         )
@@ -113,7 +121,6 @@ class TestLaunchSlurm:
             job_suffix=None,
             runtime=RuntimeConfig(),
             partition="cpu",
-            project="test",
         )
 
         mock_create_slurm_script.assert_called_once()

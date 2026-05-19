@@ -76,19 +76,6 @@ def _resolve_source(
     return "rerun", run.driver_path, run.model_dump(mode="json")
 
 
-def _resolve_project(project: str | None, rerun: str | None) -> str:
-    """If --project is unset and we're rerunning, inherit from the saved run."""
-    if project is not None:
-        return project
-    if rerun is not None:
-        from param_decomp.saved_run import PDRun
-
-        run = PDRun.run_from_path(rerun)
-        if run.logging.wandb_project is not None:
-            return run.logging.wandb_project
-    return DEFAULT_PROJECT_NAME
-
-
 def _resolve_sweep_spec(sweep_generator_path: str) -> SweepSpec:
     """Load and invoke a sweep generator.
 
@@ -108,15 +95,31 @@ def _build_run(
     driver_path: str,
     config_data: dict[str, Any],
     wandb_run_name: str,
+    project: str,
 ) -> Run:
-    """Splice ``driver_path`` + ``wandb_run_name`` into ``config_data`` and validate.
-
-    ``wandb_project`` is stamped later by the launcher.
-    """
-    logging_data = {**config_data.get("logging", {}), "wandb_run_name": wandb_run_name}
+    """Splice ``driver_path``, ``wandb_run_name``, and ``wandb_project`` into
+    ``config_data`` and validate."""
+    logging_data = {
+        **config_data.get("logging", {}),
+        "wandb_run_name": wandb_run_name,
+        "wandb_project": project,
+    }
     return load_driver(driver_path).config_type.model_validate(
         {**config_data, "driver_path": driver_path, "logging": logging_data}
     )
+
+
+def _stamp_project(spec: SweepSpec, project: str) -> SweepSpec:
+    """Return a copy of ``spec`` with ``wandb_project`` set on every run.
+
+    Sweep generators don't know the CLI ``--project`` value, so we stamp it
+    here before the launcher sees the spec.
+    """
+    runs = [
+        r.model_copy(update={"logging": r.logging.model_copy(update={"wandb_project": project})})
+        for r in spec.runs
+    ]
+    return SweepSpec(description=spec.description, runs=runs)
 
 
 def _parse_runtime(run: Run) -> RuntimeConfig:
@@ -160,8 +163,7 @@ def main(
         n_agents: Max concurrent SLURM tasks for sweeps.
         job_suffix: Suffix for the SLURM job name.
         partition: SLURM partition.
-        project: W&B project name. Defaults to the project recorded on the rerun's
-            saved run (if any), otherwise ``DEFAULT_PROJECT_NAME``.
+        project: W&B project name. Defaults to ``DEFAULT_PROJECT_NAME``.
 
     Substrate (device, dp, autocast_bf16) is declared in the experiment YAML's
     ``runtime:`` block — there are no CLI overrides. Edit the YAML to change it.
@@ -188,6 +190,8 @@ def main(
         print("\nUse `pd-run <experiment>` or `pd-run --help` for details.")
         return
 
+    project = project if project is not None else DEFAULT_PROJECT_NAME
+
     if sweep_generator_path is not None:
         assert experiment is None and config_path is None and rerun is None and driver is None, (
             "--sweep_generator_path is mutually exclusive with <experiment>, "
@@ -197,7 +201,7 @@ def main(
         assert shutil.which("sbatch") is not None, (
             "`sbatch` not found on PATH. Off-cluster, use `pd-run ... --local` (no sweep)."
         )
-        sweep_spec = _resolve_sweep_spec(sweep_generator_path)
+        sweep_spec = _stamp_project(_resolve_sweep_spec(sweep_generator_path), project)
         runtime = _parse_runtime(sweep_spec.runs[0])
         from param_decomp.scripts.run_slurm import launch_slurm
 
@@ -207,23 +211,19 @@ def main(
             n_agents=n_agents,
             job_suffix=job_suffix,
             partition=partition,
-            project=project if project is not None else DEFAULT_PROJECT_NAME,
         )
         return
 
     name, driver_path, config_data = _resolve_source(experiment, config_path, driver, rerun)
-    project = _resolve_project(project, rerun)
-    run = _build_run(driver_path=driver_path, config_data=config_data, wandb_run_name=name)
+    run = _build_run(
+        driver_path=driver_path, config_data=config_data, wandb_run_name=name, project=project
+    )
     runtime = _parse_runtime(run)
 
     if local:
         assert runtime.dp is None, "runtime.dp is not supported with --local"
         if runtime.device == "cpu":
             os.environ["CUDA_VISIBLE_DEVICES"] = ""
-        # Stamp wandb_project for --local too so the run logs to the requested project.
-        run = run.model_copy(
-            update={"logging": run.logging.model_copy(update={"wandb_project": project})}
-        )
         from param_decomp.utils.distributed_utils import with_distributed_cleanup
 
         with_distributed_cleanup(run_experiment)(run)
@@ -241,7 +241,6 @@ def main(
         n_agents=n_agents,
         job_suffix=job_suffix,
         partition=partition,
-        project=project,
     )
 
 
