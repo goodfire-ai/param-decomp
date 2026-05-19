@@ -477,6 +477,7 @@ def run_pd(
     run_id: str | None = None,
     run: Run | None = None,
     artifacts: dict[str, Any] | None = None,
+    wandb_project: str | None = None,
     wandb_tags: list[str] | None = None,
 ) -> Path | None:
     """Run a full PD decomposition: setup, optimize, cleanup.
@@ -484,6 +485,9 @@ def run_pd(
     `run` is written to ``run_metadata.yaml``.  Driver-mediated callers
     (via ``experiments/runner.py``) pass a fully populated ``Run``;
     notebook callers can omit it and a minimal one is synthesized.
+
+    ``wandb_project`` is a deploy-time parameter (which W&B account/project to log
+    to), not part of the reproducible ``Run`` config. ``None`` disables W&B.
 
     All ranks call this function. Only the main process does wandb/logging setup.
     Returns the output directory on the main process and None on other ranks.
@@ -513,9 +517,9 @@ def run_pd(
         if slurm_array_job_id is not None:
             tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
 
-        if run.logging.wandb_project:
+        if wandb_project:
             init_wandb(
-                run.logging.wandb_project,
+                wandb_project,
                 run_id,
                 configs={
                     "pd": config,
@@ -530,7 +534,7 @@ def run_pd(
         logger.info(config)
 
         save_pre_run_info(
-            save_to_wandb=run.logging.wandb_project is not None,
+            save_to_wandb=wandb_project is not None,
             out_dir=out_dir,
             run=run,
             artifacts=artifacts,

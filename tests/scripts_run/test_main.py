@@ -16,11 +16,10 @@ from param_decomp.settings import REPO_ROOT
 from param_decomp.sweeps.cartesian import cartesian_product
 
 
-def _builtin(name: str) -> tuple[str, dict[str, Any]]:
+def _builtin(name: str) -> dict[str, Any]:
     discovered = discover_experiments()
-    exp = discovered[name]
-    with open(REPO_ROOT / exp.config_path) as f:
-        return exp.driver_path, yaml.safe_load(f)
+    with open(REPO_ROOT / discovered[name].config_path) as f:
+        return yaml.safe_load(f)
 
 
 class TestResolveSource:
@@ -29,7 +28,7 @@ class TestResolveSource:
 
         fake = "nonexistent_experiment_please_dont_name_your_experiment_this"
         with pytest.raises(AssertionError, match=f"Unknown experiment '{fake}'"):
-            _resolve_source(experiment=fake, config_path=None, driver=None, rerun=None)
+            _resolve_source(experiment=fake, config_path=None, rerun=None)
 
 
 class TestLaunchSlurm:
@@ -57,24 +56,20 @@ class TestLaunchSlurm:
         )
         mock_get_wandb_run_url.return_value = "https://wandb.ai/test/test/runs/test"
 
-        from param_decomp.experiments.runner import _stamp_project
-        from param_decomp.sweeps import SweepSpec
-
-        driver_path, base_config = _builtin("tms_5-2")
+        base_config = _builtin("tms_5-2")
         sweep_spec = cartesian_product(
             base_config=base_config,
             grid={"pd.seed": [0, 1, 2], "pd.steps": [10, 20]},
             description="tiny test grid",
-            driver_path=driver_path,
+            driver_path=base_config["driver_path"],
         )
-        sweep_spec = _stamp_project(sweep_spec, "test")
-        assert isinstance(sweep_spec, SweepSpec)
         launch_slurm(
             launchable=sweep_spec,
             n_agents=2,
             job_suffix=None,
             runtime=RuntimeConfig(),
             partition="cpu",
+            project="test",
         )
 
         mock_create_slurm_script.assert_called_once()
@@ -106,14 +101,10 @@ class TestLaunchSlurm:
         )
         mock_get_wandb_run_url.return_value = "https://wandb.ai/test/test/runs/test"
 
-        driver_path, base_config = _builtin("tms_5-2")
-        logging_data = {
-            **base_config.get("logging", {}),
-            "wandb_run_name": "tms_5-2",
-            "wandb_project": "test",
-        }
-        run = load_driver(driver_path).config_type.model_validate(
-            {**base_config, "driver_path": driver_path, "logging": logging_data}
+        base_config = _builtin("tms_5-2")
+        logging_data = {**base_config.get("logging", {}), "wandb_run_name": "tms_5-2"}
+        run = load_driver(base_config["driver_path"]).config_type.model_validate(
+            {**base_config, "logging": logging_data}
         )
         launch_slurm(
             launchable=run,
@@ -121,6 +112,7 @@ class TestLaunchSlurm:
             job_suffix=None,
             runtime=RuntimeConfig(),
             partition="cpu",
+            project="test",
         )
 
         mock_create_slurm_script.assert_called_once()

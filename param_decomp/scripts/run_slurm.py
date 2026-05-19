@@ -53,6 +53,7 @@ def launch_slurm(
     n_agents: int | None,
     job_suffix: str | None,
     partition: str,
+    project: str,
 ) -> None:
     """Submit a PD experiment to SLURM.
 
@@ -62,23 +63,16 @@ def launch_slurm(
     sweeps submit an array (one task per run) and snapshot the spec to
     ``PARAM_DECOMP_OUT_DIR/sweeps/<launch_id>/spec.yaml``.
 
-    Every run's ``logging.wandb_project`` must already be set by the caller.
+    ``project`` is the W&B project to log every run to. It's a deploy-time
+    parameter, not part of the ``Run`` config, so it's passed alongside.
     """
     launch_id = _generate_launch_id()
     is_sweep = isinstance(launchable, SweepSpec)
     runs = launchable.runs if isinstance(launchable, SweepSpec) else [launchable]
     for r in runs:
         assert r.driver_path is not None, "launchable Run must declare a driver_path"
-        assert r.logging.wandb_project is not None, (
-            "launchable Run must have logging.wandb_project set"
-        )
-    driver_path = runs[0].driver_path
-    assert driver_path is not None  # for type narrowing
-    project = runs[0].logging.wandb_project
-    assert project is not None  # for type narrowing
 
     logger.info(f"Launch ID: {launch_id}")
-    logger.info(f"Driver: {driver_path}")
 
     n_gpus = _n_gpus_for(runtime)
     logger.info(f"Running on {_format_compute_info(n_gpus)}")
@@ -114,6 +108,7 @@ def launch_slurm(
         n_gpus=n_gpus,
         partition=partition,
         is_array=is_array,
+        project=project,
         max_concurrent_tasks=n_agents if is_array else None,
         per_task_comments=wandb_urls,
     )
@@ -182,7 +177,7 @@ def _choose_master_port(run_id_local: str, idx: int) -> int:
     return base + (h % span)
 
 
-def _build_worker_args(launch_id: str, task_spec: _TaskSpec) -> str:
+def _build_worker_args(launch_id: str, task_spec: _TaskSpec, project: str) -> str:
     """Build the ``_worker`` CLI arguments for one SLURM task."""
     run_json = json.dumps(task_spec.run.model_dump(mode="json"))
     return " ".join(
@@ -190,6 +185,7 @@ def _build_worker_args(launch_id: str, task_spec: _TaskSpec) -> str:
             f"--run_json {shlex.quote(run_json)}",
             f"--run_id {task_spec.run_id}",
             f"--launch_id {launch_id}",
+            f"--wandb_project {shlex.quote(project)}",
         ]
     )
 
@@ -201,6 +197,7 @@ def _get_command(
     n_gpus: int | None,
     snapshot_ref: str,
     is_array: bool,
+    project: str,
 ) -> str:
     """Build the command to run one task spec.
 
@@ -209,7 +206,7 @@ def _get_command(
             DDP (must be divisible by 8).
     """
     port = _choose_master_port(launch_id, spec_idx)
-    script_args = _build_worker_args(launch_id, task_spec)
+    script_args = _build_worker_args(launch_id, task_spec, project)
 
     worker_module = "param_decomp.experiments._worker"
     match n_gpus:
@@ -256,6 +253,7 @@ def _create_slurm_script(
     n_gpus: int | None,
     partition: str,
     is_array: bool,
+    project: str,
     max_concurrent_tasks: int | None = None,
     per_task_comments: list[str] | None = None,
 ) -> str:
@@ -268,6 +266,7 @@ def _create_slurm_script(
             n_gpus=n_gpus,
             snapshot_ref=snapshot_ref,
             is_array=is_array,
+            project=project,
         )
         for i, task_spec in enumerate(task_specs)
     ]

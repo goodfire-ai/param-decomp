@@ -660,11 +660,6 @@ class LoggingConfig(BaseConfig):
             "automatically and should not be repeated here."
         ),
     )
-    wandb_project: str | None = Field(
-        default=None,
-        description="W&B project to log this run to. None disables W&B. Typically stamped by "
-        "the launcher from `--project`; sweep generators leave it unset.",
-    )
     wandb_run_name: str | None = Field(
         default=None,
         description="W&B run display name. None lets W&B auto-name.",

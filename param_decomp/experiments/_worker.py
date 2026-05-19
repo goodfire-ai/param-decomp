@@ -32,6 +32,7 @@ def run_experiment(
     *,
     run_id: str | None = None,
     launch_id: str | None = None,
+    wandb_project: str | None = None,
 ) -> None:
     assert run.driver_path is not None, "run_experiment requires run.driver_path to be set"
 
@@ -70,6 +71,7 @@ def run_experiment(
         device=device,
         run_id=run_id,
         run=run,
+        wandb_project=wandb_project,
         wandb_tags=wandb_tags,
     )
 
@@ -79,10 +81,11 @@ def main(
     run_json: str,
     run_id: str,
     launch_id: str | None = None,
+    wandb_project: str | None = None,
 ) -> None:
     """SLURM task entrypoint."""
     run = Run.from_dict(json.loads(run_json))
-    run_experiment(run, run_id=run_id, launch_id=launch_id)
+    run_experiment(run, run_id=run_id, launch_id=launch_id, wandb_project=wandb_project)
 
 
 def cli() -> None:

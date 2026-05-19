@@ -12,6 +12,7 @@ import torch
 import yaml
 
 TEST_CONFIG = {
+    "driver_path": "param_decomp.experiments.lm.experiment:Driver",
     "pd": {
         "seed": 0,
         "n_mask_samples": 1,
@@ -156,8 +157,6 @@ class TestDistributedDeterminicity:
             "param_decomp.experiments.runner",
             "--config_path",
             str(config_path),
-            "--driver",
-            "param_decomp.experiments.lm.experiment:Driver",
             "--local",
         ]
 

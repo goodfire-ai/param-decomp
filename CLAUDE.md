@@ -77,13 +77,19 @@ reload calls them exactly like a fresh run. Saved PD runs therefore depend on th
 continuing to exist — the wandb run path / HF model name in the config is the pin.
 
 Built-in runtime definitions live in `param_decomp/experiments/{lm,tms,resid_mlp}/experiment.py`.
-Custom users can run without editing core code via:
+Custom users can run without editing core code by declaring the driver at the top of their YAML:
 
-```bash
-pd-run --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml
+```yaml
+driver_path: my_pkg.my_exp:MyDriver
+pd: {...}
+# ...
 ```
 
-The worker records the supplied driver import path in the saved `Run`, so reloading the run via `load_component_model(path)` can reconstruct the target without an explicit `target=` argument.
+```bash
+pd-run --config_path my_config.yaml
+```
+
+The driver import path is part of the saved `Run`, so reloading the run via `load_component_model(path)` can reconstruct the target without an explicit `target=` argument.
 
 Callers can also bypass drivers entirely and call `run_pd` directly with their own `PDTarget` and
 dataloaders — the right choice for notebook/script-driven use where `pd-run`, sweeps, and
@@ -118,8 +124,10 @@ Mapping to fields:
   Cluster topology (GPUs per node) is `settings.GPUS_PER_NODE`, overridable via
   `PARAM_DECOMP_GPUS_PER_NODE` env var.
 - **`LoggingConfig` (class 3)** — observation: cadence (`*_freq`), `eval_batch_size`,
-  `ci_alive_threshold`, eval-only metrics, plus `wandb_project` / `wandb_run_name` /
-  `view_meta`. Never touches the optimizer.
+  `ci_alive_threshold`, eval-only metrics, plus `wandb_run_name` / `view_meta`.
+  Never touches the optimizer. **Note:** the W&B *project* lives outside the
+  `Run` (it's a deploy-time parameter — which account/team to log to) and is
+  passed via `--project` to `pd-run` or `wandb_project=` to `run_pd`.
 
 `Run` configs should not perform I/O. Put target loading and dataloader construction in
 the driver.
@@ -141,7 +149,6 @@ PARAM_DECOMP_OUT_DIR/sweeps/<launch_id>/
 driver_path: "param_decomp.experiments.lm.experiment:Driver"   # null for notebook/custom runs
 pd: {...}
 logging:
-  wandb_project: "param-decomp"           # null disables W&B
   wandb_run_name: "seed=0_lr=1e-3"        # null lets W&B auto-name
   view_meta:                               # free-form labels (populated by sweep generators)
     lr_ratio: 0.1
@@ -243,7 +250,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
 **Key Data Flow:**
 
-1. `pd-run` (`experiments/runner.py`) resolves the input source — either a built-in experiment name, `--driver`+`--config_path`, `--rerun`, or `--sweep_generator_path` — into a `Run` (single launch) or a `SweepSpec` (many `Run`s sharing one driver and substrate). With `--local` it dispatches in-process; otherwise `scripts/run_slurm.py:launch_slurm` submits a plain SLURM job (`Run`) or an array — one task per run — (`SweepSpec`).
+1. `pd-run` (`experiments/runner.py`) resolves the input source — either a built-in experiment name, `--config_path`, `--rerun`, or `--sweep_generator_path` — into a `Run` (single launch) or a `SweepSpec` (many `Run`s sharing one driver and substrate). Every YAML/saved Run declares its driver via a top-level `driver_path:` field. With `--local` it dispatches in-process; otherwise `scripts/run_slurm.py:launch_slurm` submits a plain SLURM job (`Run`) or an array — one task per run — (`SweepSpec`).
 2. Each worker invocation (`experiments/_worker.py`, called as `python -m param_decomp.experiments._worker` from SLURM tasks, or directly from runner.py in --local mode) loads the driver, checks that the parsed `Run` matches the driver's `config_type`, and calls the driver to build `PDTarget` plus train/eval loaders.
 3. The worker passes the typed `Run` through to `run_pd`.
 4. `run_pd` saves the `Run` / artifacts and trains a `ComponentModel` via `optimize()` with config-driven losses.
@@ -256,7 +263,8 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 - WandB integration for experiment tracking and model storage
 - Supports both local paths and `wandb:project/runs/run_id` format for model loading
 - Built-in experiments are auto-discovered from YAML configs in `param_decomp/experiments/<kind>/`; custom
-  experiments can use `pd-run --driver module:MyDriver --config_path config.yaml`
+  experiments declare their driver in the YAML (`driver_path: module:MyDriver`) and run via
+  `pd-run --config_path config.yaml`
 
 **Harvest, Autointerp & Dataset Attributions Modules:**
 
@@ -328,7 +336,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
 | Command | Entry Point | Description |
 |---------|-------------|-------------|
-| `pd-run` | `param_decomp/experiments/runner.py` | Run a PD experiment. SLURM by default; `--local` runs in-process. Entry points are mutually exclusive: `<experiment>`, `--config_path`+`--driver`, `--rerun`, or `--sweep_generator_path /abs/path/file.py:func`. Compute substrate (`device`/`dp`) is declared in the experiment YAML's `runtime:` block. |
+| `pd-run` | `param_decomp/experiments/runner.py` | Run a PD experiment. SLURM by default; `--local` runs in-process. Entry points are mutually exclusive: `<experiment>`, `--config_path`, `--rerun`, or `--sweep_generator_path /abs/path/file.py:func`. Every config (built-in YAML, user YAML, saved Run) declares its driver via a top-level `driver_path:` field. Compute substrate (`device`/`dp`) is declared in the experiment YAML's `runtime:` block. |
 | `pd-harvest` | `param_decomp/harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
 | `pd-autointerp` | `param_decomp/autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
 | `pd-attributions` | `param_decomp/dataset_attributions/scripts/run_slurm_cli.py` | Submit dataset attribution SLURM job |
@@ -398,7 +406,7 @@ snapshot — useful for quick checks. Off-cluster `pd-run` fails fast unless `--
 pd-run tms_5-2                                                            # one SLURM job
 pd-run --sweep_generator_path /abs/path/my_sweep.py:my_sweep --n_agents 4 # SLURM array sweep
 pd-run tms_5-2                                                            # CPU/GPU/dp determined by YAML's runtime: block
-pd-run --driver pkg:D --config_path my.yaml                               # custom driver
+pd-run --config_path my.yaml                                              # custom config (declares driver_path: in YAML)
 pd-run --rerun <path-or-wandb-url>                                        # rerun from a saved run_metadata.yaml
 pd-run tms_5-2 --local                                                    # in-process; no SLURM
 ```
@@ -519,10 +527,10 @@ helper. Copy that file to start a new sweep.
    `description` and `runs: list[Run]`. Each `Run` is self-describing: a
    `driver_path`, `pd` / `logging` / `runtime` configs, and `target` /
    `data` from the driver's `Run` subclass. `logging.wandb_run_name` and
-   `logging.view_meta` are typically populated by the generator;
-   `logging.wandb_project` is left unset — the launcher stamps it from
-   `--project`. All runs in one sweep must share a `driver_path` and a
-   `runtime` block (asserted by `SweepSpec.__post_init__`).
+   `logging.view_meta` are typically populated by the generator. The W&B
+   project is not part of the `Run`; it's supplied via `--project` at launch.
+   All runs in one sweep must share a `driver_path` and a `runtime` block
+   (asserted by `SweepSpec.__post_init__`).
 3. The materialized `SweepSpec` is written to
    `PARAM_DECOMP_OUT_DIR/sweeps/<launch_id>/spec.yaml` for reproducibility.
 4. A SLURM array is submitted, capped at `--n_agents` concurrent tasks. Per-config
@@ -566,10 +574,10 @@ hierarchy. The function just has to return a `SweepSpec`; conformance to the
 pydantic validation on `run_metadata.yaml` files written before this refactor.
 Old files have `driver:` / `config:` / top-level `wandb_*` / `view_meta`; the
 new shape is top-level `driver_path:` / `pd:` / `logging:` / `runtime:` /
-`target:` / `data:`, with `wandb_project` / `wandb_run_name` / `view_meta`
-nested under `logging:`. Edit the saved YAML to match the new shape before
-rerunning. The `--rerun` path inherits the recorded `logging.wandb_project` as
-the default for the new run's `--project` (pass `--project ...` to override).
+`target:` / `data:`, with `wandb_run_name` / `view_meta` nested under
+`logging:`. (W&B project is no longer recorded on the `Run` — pass `--project`
+explicitly when rerunning if you want anything other than the default project.)
+Edit the saved YAML to match the new shape before rerunning.
 
 **Logs:** `~/slurm_logs/slurm-<job_id>_<task_id>.out`
 

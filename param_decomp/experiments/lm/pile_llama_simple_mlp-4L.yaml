@@ -1,3 +1,4 @@
+driver_path: param_decomp.experiments.lm.experiment:Driver
 pd:
   seed: 0
   n_mask_samples: 1

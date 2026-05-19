@@ -24,15 +24,6 @@ RUN_METADATA_FILENAME = "run_metadata.yaml"
 class Run(BaseConfig):
     """Top-level run config.
 
-    The three nested configs form a determinism ladder:
-
-    1. Same ``pd`` + same ``runtime`` → bit-identical trained weights.
-    2. Same ``pd``, different ``runtime`` → same algorithm, weights differ only
-       via numerical effects (precision, device).
-    3. Same ``pd`` + same ``runtime``, different ``logging`` → bit-identical
-       weights; only what was observed differs. ``logging`` carries
-       ``wandb_project`` / ``wandb_run_name`` / ``view_meta``.
-
     ``driver_path`` is the ``module:attr`` import path of the experiment driver
     used to build the target model and dataloaders. ``None`` for notebook
     callers of ``run_pd`` who build their own ``PDTarget``.

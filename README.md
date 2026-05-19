@@ -74,8 +74,9 @@ Two routes, neither needing core-package edits:
   `build_target` and `build_dataloaders`; see
   [`driver.py`](param_decomp/experiments/driver.py) for the interface and
   [`tms/experiment.py`](param_decomp/experiments/tms/experiment.py) for the smallest example),
-  then run `pd-run --driver my_pkg.my_exp:MyDriver --config_path my_config.yaml`. This is
-  what built-in experiments do, and is needed for sweeps and for self-reloading runs via
+  put `driver_path: my_pkg.my_exp:MyDriver` at the top of your YAML, then run
+  `pd-run --config_path my_config.yaml`. This is what built-in experiments do, and is needed for
+  sweeps and for self-reloading runs via
   `load_component_model(path)` (no `target=` argument needed) or `PDRun.from_path(...)`.
 
 Runs save a `run_metadata.yaml` beside the checkpoint with the parsed config and (if

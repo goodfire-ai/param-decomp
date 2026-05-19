@@ -188,7 +188,6 @@ def test_run_round_trip_via_file(tmp_path: Path):
 
 def test_wandb_fields_default_to_none_on_logging_config():
     cfg = _logging_config()
-    assert cfg.wandb_project is None
     assert cfg.wandb_run_name is None
     assert cfg.view_meta == {}
 
