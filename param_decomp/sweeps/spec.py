@@ -23,8 +23,8 @@ class SweepSpec:
 
     All runs in a sweep must share one driver and one ``runtime:`` block
     (single SLURM array allocation, one substrate). Both invariants are
-    asserted at construction; the launcher additionally stamps
-    ``wandb_project`` onto each run's ``logging`` before submission.
+    asserted at construction. The W&B project is supplied to the launcher
+    separately (``--project``) and is not part of the spec.
 
     Serialized to ``PARAM_DECOMP_OUT_DIR/sweeps/<launch_id>/spec.yaml`` on
     submit so reproducing the sweep doesn't require re-running the generator.

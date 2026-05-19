@@ -1,8 +1,9 @@
 """Built-in example sweep: a small Cartesian grid over ``tms_5-2``.
 
-User sweep files don't have to live here — pass ``--sweep /abs/path/to/file.py:func``
-to ``pd-run`` and any zero-arg function returning a ``SweepSpec`` works. This module
-ships ``example_cartesian_sweep`` as a working reference and exposes
+User sweep files don't have to live here — pass
+``--sweep_generator_path /abs/path/to/file.py:func`` to ``pd-run`` and any
+zero-arg function returning a ``SweepSpec`` works. This module ships
+``example_cartesian_sweep`` as a working reference and exposes
 ``cartesian_product`` as a reusable helper for users who want the Cartesian-grid
 pattern without writing the product loop themselves.
 """

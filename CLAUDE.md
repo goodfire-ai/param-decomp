@@ -595,9 +595,9 @@ model = load_component_model("wandb:entity/project/runs/run_id")
 target = ...
 model = load_component_model("wandb:entity/project/runs/run_id", target=target)
 
-# When you also need spec/config access, use PDRun directly:
+# When you also need run/config access, use PDRun directly:
 pd_run = PDRun.from_path("wandb:entity/project/runs/run_id")
-print(pd_run.experiment_config)         # parsed via the driver
+print(pd_run.run)                        # Run (the driver-specific subclass, e.g. LMRun)
 print(pd_run.pd_config)                  # PDConfig
 model = pd_run.load_model()              # equivalent to load_component_model(path)
 ```
