@@ -7,7 +7,10 @@ fits + how fast. Picks the b/s for the upcoming 2-pool Qwen bench.
 Single GPU. Frozen target, no_grad, no caching — pure target_fwd time only.
 """
 
-# pyright: reportArgumentType=false
+# pyright: reportArgumentType=false, reportAttributeAccessIssue=false
+# pyright: reportUnknownParameterType=false, reportMissingParameterType=false
+# pyright: reportUnknownArgumentType=false, reportUnknownVariableType=false
+# pyright: reportUnknownMemberType=false
 
 import statistics
 import time

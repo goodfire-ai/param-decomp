@@ -17,7 +17,10 @@ Usage:
         --out docs/two_pool_timeline_profile.html
 """
 
-# pyright: reportArgumentType=false
+# pyright: reportArgumentType=false, reportMissingTypeArgument=false
+# pyright: reportUnknownParameterType=false, reportMissingParameterType=false
+# pyright: reportUnknownArgumentType=false, reportUnknownVariableType=false
+# pyright: reportUnknownMemberType=false, reportUnknownLambdaType=false
 
 import argparse
 import hashlib

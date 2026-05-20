@@ -17,7 +17,10 @@ Run via:
     sbatch param_decomp/scripts/two_pool_benchmark/microbench_target_ci.sbatch
 """
 
-# pyright: reportArgumentType=false
+# pyright: reportArgumentType=false, reportAttributeAccessIssue=false
+# pyright: reportUnknownParameterType=false, reportMissingParameterType=false
+# pyright: reportUnknownArgumentType=false, reportUnknownVariableType=false
+# pyright: reportUnknownMemberType=false, reportUnknownLambdaType=false
 
 import statistics
 import time

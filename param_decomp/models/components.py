@@ -172,110 +172,110 @@ class TransformerBlock(nn.Module):
         return x
 
 
-# class MLPCiFn(nn.Module):
-#     """MLP-based function that creates a scalar output for each component."""
+class MLPCiFn(nn.Module):
+    """MLP-based function that creates a scalar output for each component."""
 
-#     def __init__(self, C: int, hidden_dims: list[int]):
-#         super().__init__()
+    def __init__(self, C: int, hidden_dims: list[int]):
+        super().__init__()
 
-#         self.hidden_dims = hidden_dims
+        self.hidden_dims = hidden_dims
 
-#         self.layers = nn.Sequential()
-#         for i in range(len(hidden_dims)):
-#             input_dim = 1 if i == 0 else hidden_dims[i - 1]
-#             output_dim = hidden_dims[i]
-#             self.layers.append(ParallelLinear(C, input_dim, output_dim, nonlinearity="relu"))
-#             self.layers.append(nn.GELU())
-#         self.layers.append(ParallelLinear(C, hidden_dims[-1], 1, nonlinearity="linear"))
+        self.layers = nn.Sequential()
+        for i in range(len(hidden_dims)):
+            input_dim = 1 if i == 0 else hidden_dims[i - 1]
+            output_dim = hidden_dims[i]
+            self.layers.append(ParallelLinear(C, input_dim, output_dim, nonlinearity="relu"))
+            self.layers.append(nn.GELU())
+        self.layers.append(ParallelLinear(C, hidden_dims[-1], 1, nonlinearity="linear"))
 
-#     @override
-#     def forward(self, x: Float[Tensor, "... C"]) -> Float[Tensor, "... C"]:
-#         x = einops.rearrange(x, "... C -> ... C 1")
-#         x = self.layers(x)
-#         assert x.shape[-1] == 1, "Last dimension should be 1 after the final layer"
-#         return x[..., 0]
-
-
-# class VectorMLPCiFn(nn.Module):
-#     """Contains a separate network for each component and takes a module's input vector as input."""
-
-#     def __init__(self, C: int, input_dim: int, hidden_dims: list[int]):
-#         super().__init__()
-
-#         self.hidden_dims = hidden_dims
-
-#         self.layers = nn.Sequential()
-#         for i in range(len(hidden_dims)):
-#             input_dim = input_dim if i == 0 else hidden_dims[i - 1]
-#             output_dim = hidden_dims[i]
-#             self.layers.append(ParallelLinear(C, input_dim, output_dim, nonlinearity="relu"))
-#             self.layers.append(nn.GELU())
-
-#         self.layers.append(ParallelLinear(C, hidden_dims[-1], 1, nonlinearity="linear"))
-
-#     @override
-#     def forward(self, x: Float[Tensor, "... d_in"]) -> Float[Tensor, "... C"]:
-#         # this 1 will broadcast out to actual C size, but no need to expand out yet
-#         x = self.layers(einops.rearrange(x, "... d_in -> ... 1 d_in"))
-#         assert x.shape[-1] == 1, "Last dimension should be 1 after the final layer"
-#         return x[..., 0]
+    @override
+    def forward(self, x: Float[Tensor, "... C"]) -> Float[Tensor, "... C"]:
+        x = einops.rearrange(x, "... C -> ... C 1")
+        x = self.layers(x)
+        assert x.shape[-1] == 1, "Last dimension should be 1 after the final layer"
+        return x[..., 0]
 
 
-# class VectorSharedMLPCiFn(nn.Module):
-#     """Maps a module's input vector to a scalar output for each component with a 'pure' MLP."""
+class VectorMLPCiFn(nn.Module):
+    """Contains a separate network for each component and takes a module's input vector as input."""
 
-#     def __init__(self, C: int, input_dim: int, hidden_dims: list[int]):
-#         super().__init__()
-#         self.layers = nn.Sequential()
-#         for i in range(len(hidden_dims)):
-#             in_dim = input_dim if i == 0 else hidden_dims[i - 1]
-#             output_dim = hidden_dims[i]
-#             self.layers.append(Linear(in_dim, output_dim, nonlinearity="relu"))
-#             self.layers.append(nn.GELU())
-#         final_dim = hidden_dims[-1] if len(hidden_dims) > 0 else input_dim
-#         self.layers.append(Linear(final_dim, C, nonlinearity="linear"))
+    def __init__(self, C: int, input_dim: int, hidden_dims: list[int]):
+        super().__init__()
 
-#     @override
-#     def forward(self, x: Float[Tensor, "... d_in"]) -> Float[Tensor, "... C"]:
-#         return self.layers(x)
+        self.hidden_dims = hidden_dims
+
+        self.layers = nn.Sequential()
+        for i in range(len(hidden_dims)):
+            input_dim = input_dim if i == 0 else hidden_dims[i - 1]
+            output_dim = hidden_dims[i]
+            self.layers.append(ParallelLinear(C, input_dim, output_dim, nonlinearity="relu"))
+            self.layers.append(nn.GELU())
+
+        self.layers.append(ParallelLinear(C, hidden_dims[-1], 1, nonlinearity="linear"))
+
+    @override
+    def forward(self, x: Float[Tensor, "... d_in"]) -> Float[Tensor, "... C"]:
+        # this 1 will broadcast out to actual C size, but no need to expand out yet
+        x = self.layers(einops.rearrange(x, "... d_in -> ... 1 d_in"))
+        assert x.shape[-1] == 1, "Last dimension should be 1 after the final layer"
+        return x[..., 0]
 
 
-# class GlobalSharedMLPCiFn(nn.Module):
-#     """Global CI function that concatenates all layer activations and outputs CI for all layers."""
+class VectorSharedMLPCiFn(nn.Module):
+    """Maps a module's input vector to a scalar output for each component with a 'pure' MLP."""
 
-#     def __init__(
-#         self,
-#         layer_configs: dict[str, tuple[int, int]],  # layer_name -> (input_dim, C)
-#         hidden_dims: list[int],
-#     ):
-#         super().__init__()
+    def __init__(self, C: int, input_dim: int, hidden_dims: list[int]):
+        super().__init__()
+        self.layers = nn.Sequential()
+        for i in range(len(hidden_dims)):
+            in_dim = input_dim if i == 0 else hidden_dims[i - 1]
+            output_dim = hidden_dims[i]
+            self.layers.append(Linear(in_dim, output_dim, nonlinearity="relu"))
+            self.layers.append(nn.GELU())
+        final_dim = hidden_dims[-1] if len(hidden_dims) > 0 else input_dim
+        self.layers.append(Linear(final_dim, C, nonlinearity="linear"))
 
-#         self.layer_order = sorted(layer_configs.keys())
-#         self.layer_configs = layer_configs
-#         self.split_sizes = [layer_configs[name][1] for name in self.layer_order]
+    @override
+    def forward(self, x: Float[Tensor, "... d_in"]) -> Float[Tensor, "... C"]:
+        return self.layers(x)
 
-#         total_input_dim = sum(input_dim for input_dim, _ in layer_configs.values())
-#         total_C = sum(C for _, C in layer_configs.values())
 
-#         self.layers = nn.Sequential()
-#         for i in range(len(hidden_dims)):
-#             in_dim = total_input_dim if i == 0 else hidden_dims[i - 1]
-#             output_dim = hidden_dims[i]
-#             self.layers.append(Linear(in_dim, output_dim, nonlinearity="relu"))
-#             self.layers.append(nn.GELU())
-#         final_dim = hidden_dims[-1] if len(hidden_dims) > 0 else total_input_dim
-#         self.layers.append(Linear(final_dim, total_C, nonlinearity="linear"))
+class GlobalSharedMLPCiFn(nn.Module):
+    """Global CI function that concatenates all layer activations and outputs CI for all layers."""
 
-#     @override
-#     def forward(
-#         self,
-#         input_acts: dict[str, Float[Tensor, "... d_in"]],
-#     ) -> dict[str, Float[Tensor, "... C"]]:
-#         inputs_list = [input_acts[name] for name in self.layer_order]
-#         concatenated = torch.cat(inputs_list, dim=-1)
-#         output = self.layers(concatenated)
-#         split_outputs = torch.split(output, self.split_sizes, dim=-1)
-#         return {name: split_outputs[i] for i, name in enumerate(self.layer_order)}
+    def __init__(
+        self,
+        layer_configs: dict[str, tuple[int, int]],  # layer_name -> (input_dim, C)
+        hidden_dims: list[int],
+    ):
+        super().__init__()
+
+        self.layer_order = sorted(layer_configs.keys())
+        self.layer_configs = layer_configs
+        self.split_sizes = [layer_configs[name][1] for name in self.layer_order]
+
+        total_input_dim = sum(input_dim for input_dim, _ in layer_configs.values())
+        total_C = sum(C for _, C in layer_configs.values())
+
+        self.layers = nn.Sequential()
+        for i in range(len(hidden_dims)):
+            in_dim = total_input_dim if i == 0 else hidden_dims[i - 1]
+            output_dim = hidden_dims[i]
+            self.layers.append(Linear(in_dim, output_dim, nonlinearity="relu"))
+            self.layers.append(nn.GELU())
+        final_dim = hidden_dims[-1] if len(hidden_dims) > 0 else total_input_dim
+        self.layers.append(Linear(final_dim, total_C, nonlinearity="linear"))
+
+    @override
+    def forward(
+        self,
+        input_acts: dict[str, Float[Tensor, "... d_in"]],
+    ) -> dict[str, Float[Tensor, "... C"]]:
+        inputs_list = [input_acts[name] for name in self.layer_order]
+        concatenated = torch.cat(inputs_list, dim=-1)
+        output = self.layers(concatenated)
+        split_outputs = torch.split(output, self.split_sizes, dim=-1)
+        return {name: split_outputs[i] for i, name in enumerate(self.layer_order)}
 
 
 @dataclass
@@ -666,7 +666,7 @@ class GlobalCiFnWrapper(nn.Module):
 
     def __init__(
         self,
-        global_ci_fn: GlobalSharedTransformerCiFn,  # | GlobalSharedMLPCiFn,
+        global_ci_fn: GlobalSharedTransformerCiFn | GlobalSharedMLPCiFn,
         components: dict[str, Components],
     ):
         super().__init__()

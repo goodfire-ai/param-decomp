@@ -25,16 +25,18 @@ from param_decomp.models.components import (
     ComponentsMaskInfo,
     EmbeddingComponents,
     GlobalCiFnWrapper,
-    # GlobalSharedMLPCiFn,
+    GlobalSharedMLPCiFn,
     GlobalSharedTransformerCiFn,
     Identity,
+    LayerwiseCiFnWrapper,
     LinearComponents,
-    # MLPCiFn,
+    MLPCiFn,
     TargetLayerConfig,
-    # VectorMLPCiFn,
-    # VectorSharedMLPCiFn,
+    VectorMLPCiFn,
+    VectorSharedMLPCiFn,
 )
 from param_decomp.models.sigmoids import SIGMOID_TYPES, SigmoidType
+from param_decomp.types import LayerwiseCiFnType
 from param_decomp.utils.module_utils import ModulePathInfo, expand_module_patterns
 
 
@@ -122,21 +124,20 @@ class ComponentModel(nn.Module):
 
         match ci_config:
             case LayerwiseCiConfig():
-                raise ValueError("layerwise CI is not supported")
-                # raw_layerwise_ci_fns = {
-                #     path: ComponentModel._create_layerwise_ci_fn(
-                #         target_module=target_model.get_submodule(path),
-                #         C=C,
-                #         ci_fn_type=ci_config.fn_type,
-                #         ci_fn_hidden_dims=ci_config.hidden_dims,
-                #     )
-                #     for path, C in self.module_to_c.items()
-                # }
-                # self.ci_fn = LayerwiseCiFnWrapper(
-                #     ci_fns=raw_layerwise_ci_fns,
-                #     components=self.components,
-                #     ci_fn_type=ci_config.fn_type,
-                # )
+                raw_layerwise_ci_fns = {
+                    path: ComponentModel._create_layerwise_ci_fn(
+                        target_module=target_model.get_submodule(path),
+                        C=C,
+                        ci_fn_type=ci_config.fn_type,
+                        ci_fn_hidden_dims=ci_config.hidden_dims,
+                    )
+                    for path, C in self.module_to_c.items()
+                }
+                self.ci_fn = LayerwiseCiFnWrapper(
+                    ci_fns=raw_layerwise_ci_fns,
+                    components=self.components,
+                    ci_fn_type=ci_config.fn_type,
+                )
             case GlobalCiConfig():
                 raw_global_ci_fn = ComponentModel._create_global_ci_fn(
                     target_model=target_model,
@@ -243,27 +244,27 @@ class ComponentModel(nn.Module):
                     "Embedding modules should be handled separately."
                 )
 
-    # @staticmethod
-    # def _create_layerwise_ci_fn(
-    #     target_module: nn.Module,
-    #     C: int,
-    #     ci_fn_type: LayerwiseCiFnType,
-    #     ci_fn_hidden_dims: list[int],
-    # ) -> nn.Module:
-    #     """Helper to create a single layerwise CI function based on ci_fn_type and module type."""
-    #     if isinstance(target_module, nn.Embedding):
-    #         assert ci_fn_type == "mlp", "Embedding modules only supported for ci_fn_type='mlp'"
+    @staticmethod
+    def _create_layerwise_ci_fn(
+        target_module: nn.Module,
+        C: int,
+        ci_fn_type: LayerwiseCiFnType,
+        ci_fn_hidden_dims: list[int],
+    ) -> nn.Module:
+        """Helper to create a single layerwise CI function based on ci_fn_type and module type."""
+        if isinstance(target_module, nn.Embedding):
+            assert ci_fn_type == "mlp", "Embedding modules only supported for ci_fn_type='mlp'"
 
-    #     if ci_fn_type == "mlp":
-    #         return MLPCiFn(C=C, hidden_dims=ci_fn_hidden_dims)
+        if ci_fn_type == "mlp":
+            return MLPCiFn(C=C, hidden_dims=ci_fn_hidden_dims)
 
-    #     input_dim = ComponentModel._get_module_input_dim(target_module)
+        input_dim = ComponentModel._get_module_input_dim(target_module)
 
-    #     match ci_fn_type:
-    #         case "vector_mlp":
-    #             return VectorMLPCiFn(C=C, input_dim=input_dim, hidden_dims=ci_fn_hidden_dims)
-    #         case "shared_mlp":
-    #             return VectorSharedMLPCiFn(C=C, input_dim=input_dim, hidden_dims=ci_fn_hidden_dims)
+        match ci_fn_type:
+            case "vector_mlp":
+                return VectorMLPCiFn(C=C, input_dim=input_dim, hidden_dims=ci_fn_hidden_dims)
+            case "shared_mlp":
+                return VectorSharedMLPCiFn(C=C, input_dim=input_dim, hidden_dims=ci_fn_hidden_dims)
 
     @staticmethod
     def _create_global_ci_fn(
@@ -271,11 +272,10 @@ class ComponentModel(nn.Module):
         module_to_c: dict[str, int],
         components: dict[str, Components],
         ci_config: GlobalCiConfig,
-        # ) -> GlobalSharedMLPCiFn | GlobalSharedTransformerCiFn:
-    ) -> GlobalSharedTransformerCiFn:
+    ) -> GlobalSharedMLPCiFn | GlobalSharedTransformerCiFn:
         """Create a global CI function that takes all layer activations as input."""
         ci_fn_type = ci_config.fn_type
-        # ci_fn_hidden_dims = ci_config.hidden_dims
+        ci_fn_hidden_dims = ci_config.hidden_dims
 
         # Build layer_configs: layer_name -> (input_dim, C)
         layer_configs: dict[str, tuple[int, int]] = {}
@@ -295,11 +295,10 @@ class ComponentModel(nn.Module):
 
         match ci_fn_type:
             case "global_shared_mlp":
-                raise ValueError("global_shared_mlp is not supported")
-                # assert ci_fn_hidden_dims is not None  # validated by Pydantic
-                # return GlobalSharedMLPCiFn(
-                #     layer_configs=layer_configs, hidden_dims=ci_fn_hidden_dims
-                # )
+                assert ci_fn_hidden_dims is not None  # validated by Pydantic
+                return GlobalSharedMLPCiFn(
+                    layer_configs=layer_configs, hidden_dims=ci_fn_hidden_dims
+                )
             case "global_shared_transformer":
                 transformer_cfg = ci_config.simple_transformer_ci_cfg
                 assert transformer_cfg is not None  # validated by Pydantic
