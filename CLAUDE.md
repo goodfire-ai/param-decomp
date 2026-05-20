@@ -108,7 +108,7 @@ pd:
   metric_modules:
     - my_pkg.my_metrics                   # dotted module name, importable from the env
   loss_metrics:
-    my_loss:
+    MyLoss:                              # class name of the @register_metric'd Metric
       coeff: 1.0
       my_param: 0.5
 ```
