@@ -20,6 +20,7 @@ indirection.
 """
 
 import gc
+import os
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
@@ -28,6 +29,7 @@ from typing import Any, cast
 import torch
 import torch.nn as nn
 import torch.nn.parallel
+import wandb
 from jaxtyping import Float
 from torch import Tensor, optim
 from torch.nn.utils import clip_grad_norm_
@@ -50,8 +52,9 @@ from param_decomp.models.batch_and_loss_fns import (
     move_batch_to_device,
 )
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
-from param_decomp.run import RunConfig
+from param_decomp.run import RUN_CONFIG_FILENAME, RunConfig
 from param_decomp.run_sink import RunSink
+from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp.utils.data_utils import loop_dataloader
 from param_decomp.utils.distributed_utils import (
     DistributedState,
@@ -68,6 +71,7 @@ from param_decomp.utils.general_utils import (
 )
 from param_decomp.utils.logging_utils import get_grad_norms_dict
 from param_decomp.utils.module_utils import expand_module_patterns
+from param_decomp.utils.wandb_utils import init_wandb
 
 
 def materialize_run(
@@ -433,6 +437,63 @@ def optimize(
         logger.info("Finished training loop.")
 
 
+def _run_sink_for_run_config(
+    run_cfg: RunConfig,
+    *,
+    driver: ExperimentDriver[Any],
+    wandb_project: str | None,
+    launch_id: str | None,
+) -> RunSink:
+    """Build a ``RunSink`` tied to a ``RunConfig`` — the framework's
+    driver-mediated equivalent of ``RunSink.local`` / ``RunSink.with_wandb``.
+
+    Called only by ``run_pd``. Not part of ``RunSink``'s public surface because
+    it's stuffed full of framework-specific concerns (run_id-derived out_dir,
+    writes ``run_config.yaml``, wandb tags from driver name + ``launch_id`` +
+    ``$SLURM_ARRAY_JOB_ID``).
+
+    On non-main ranks: skips all I/O and returns a no-op sink.
+    """
+    if not is_main_process():
+        return RunSink.silent()
+
+    out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_cfg.run_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    run_cfg.write(out_dir / RUN_CONFIG_FILENAME)
+    logger.info(f"Run ID: {run_cfg.run_id}")
+    logger.info(f"Output directory: {out_dir}")
+    logger.info(run_cfg.pd)
+
+    if wandb_project is None:
+        return RunSink(out_dir=out_dir, _wandb_active=False)
+
+    init_wandb(
+        wandb_project,
+        run_cfg.run_id,
+        configs={
+            "pd": run_cfg.pd,
+            "logging": run_cfg.logging,
+            "runtime": run_cfg.runtime,
+        },
+        name=run_cfg.name,
+        tags=_wandb_tags(driver_name=driver.name, launch_id=launch_id),
+        view_meta=run_cfg.view_meta,
+    )
+    wandb.save(str(out_dir / RUN_CONFIG_FILENAME), base_path=out_dir, policy="now")
+    return RunSink(out_dir=out_dir, _wandb_active=True)
+
+
+def _wandb_tags(*, driver_name: str, launch_id: str | None) -> list[str]:
+    """Tags attached to every wandb run from ``_run_sink_for_run_config``."""
+    tags = [driver_name]
+    if launch_id is not None:
+        tags.append(launch_id)
+    slurm_array_job_id = os.getenv("SLURM_ARRAY_JOB_ID")
+    if slurm_array_job_id is not None:
+        tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
+    return tags
+
+
 def run_pd(
     run_cfg: RunConfig,
     *,
@@ -444,18 +505,18 @@ def run_pd(
     """Driver-mediated PD run. Composition root for ``pd-run`` / ``_worker.py``.
 
     Steps:
-    1. Resolve the driver once. Threaded to both ``materialize_run`` and
-       ``RunSink.for_run`` so we don't ``load_driver(...)`` twice.
+    1. Resolve the driver once, thread to both ``materialize_run`` and
+       ``_run_sink_for_run_config`` (so no double ``load_driver``).
     2. Materialize ``(target, train_loader, eval_loader)`` via the driver.
-    3. Build a ``RunSink.for_run`` — creates ``PARAM_DECOMP_OUT_DIR/
-       decompositions/<run_id>/``, writes ``run_config.yaml``, inits wandb if
-       ``wandb_project`` is set.
+    3. Build a ``RunSink`` tied to the ``RunConfig`` (creates
+       ``PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/``, writes
+       ``run_config.yaml``, inits wandb if ``wandb_project`` is set).
     4. Hand off to ``optimize`` with the sink.
     5. ``sink.finish()`` for wandb cleanup.
 
     For notebook / script use, call ``optimize(...)`` directly with a
-    ``RunSink`` of your choosing (``RunSink.local`` / ``RunSink.with_wandb`` /
-    ``RunSink.silent``).
+    ``RunSink`` of your choosing (``RunSink.silent`` / ``RunSink.local`` /
+    ``RunSink.with_wandb``).
 
     ``wandb_project`` is a deploy-time parameter (which W&B account/project to
     log to), not part of the reproducible ``RunConfig``. ``None`` disables W&B.
@@ -471,7 +532,9 @@ def run_pd(
     )
     # target.model lands on `device` via ComponentModel.to(device) inside optimize().
 
-    sink = RunSink.for_run(run_cfg, wandb_project=wandb_project, launch_id=launch_id, driver=driver)
+    sink = _run_sink_for_run_config(
+        run_cfg, driver=driver, wandb_project=wandb_project, launch_id=launch_id
+    )
     try:
         optimize(
             target=target,
