@@ -23,6 +23,7 @@ from param_decomp.metrics.builtin.stochastic_recon_layerwise_loss import (
 )
 from param_decomp.metrics.builtin.stochastic_recon_loss import StochasticReconLossConfig
 from param_decomp.models.batch_and_loss_fns import (
+    PDTarget,
     recon_loss_mse,
     run_batch_first_element,
 )
@@ -114,19 +115,23 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
     if target_model.config.tied_weights:
         tied_weights = [("linear1", "linear2")]
 
+    target = PDTarget(
+        model=target_model,
+        run_batch=run_batch_first_element,
+        reconstruction_loss=recon_loss_mse,
+        tied_weights=tied_weights,
+    )
+
     # Run optimize function
     optimize(
-        target_model=target_model,
-        config=config,
+        target=target,
+        train_loader=train_loader,
+        eval_loader=eval_loader,
+        pd_config=config,
         logging_config=logging_config,
         runtime_config=RuntimeConfig(),
         device=device,
-        train_loader=train_loader,
-        eval_loader=eval_loader,
-        run_batch=run_batch_first_element,
-        reconstruction_loss=recon_loss_mse,
         out_dir=tmp_path,
-        tied_weights=tied_weights,
     )
 
     # The test passes if optimize runs without errors

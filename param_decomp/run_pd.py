@@ -1,8 +1,28 @@
-"""Run PD on a model."""
+"""Run PD on a model.
+
+Two entry points:
+
+- ``optimize(target, train_loader, eval_loader, *, pd_config, logging_config,
+  runtime_config, device, out_dir=None)`` — **the notebook entry point.** Pure
+  trainer: takes everything explicitly, doesn't know about RunConfig/drivers/
+  YAML. Wandb logging is opportunistic — if the caller has called
+  ``wandb.init(...)`` beforehand, metrics get logged; otherwise they don't.
+- ``run_pd(run_cfg, *, device, ...)`` — **the driver-mediated wrapper.**
+  Materializes the runtime inputs from the driver, writes ``run_config.yaml``
+  beside the checkpoint, initializes wandb from ``run_cfg`` fields, then
+  hands off to ``optimize``. Used by ``pd-run`` / ``_worker.py``.
+
+``RunInputs`` is the composition root: a dataclass bundling
+``(target, train_loader, eval_loader)`` with a ``from_config(run_cfg, ...)``
+classmethod that calls into the driver. Driver-mediated callers use
+``RunInputs.from_config(...)``; notebook callers construct
+``target``/loaders themselves and skip ``RunInputs`` entirely.
+"""
 
 import gc
 import os
 from collections import defaultdict
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any, cast
@@ -26,6 +46,7 @@ from param_decomp.configs import (
     RepeatAcrossBatchScope,
     RuntimeConfig,
 )
+from param_decomp.driver_path import load_driver
 from param_decomp.eval import evaluate
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.log import logger
@@ -36,7 +57,6 @@ from param_decomp.metrics.context import MetricContext
 from param_decomp.models.batch_and_loss_fns import (
     PDTarget,
     ReconstructionLoss,
-    RunBatch,
     move_batch_to_device,
 )
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
@@ -60,6 +80,41 @@ from param_decomp.utils.logging_utils import get_grad_norms_dict, local_log
 from param_decomp.utils.module_utils import expand_module_patterns
 from param_decomp.utils.run_utils import save_file
 from param_decomp.utils.wandb_utils import init_wandb, try_wandb
+
+
+@dataclass(frozen=True)
+class RunInputs:
+    """Runtime objects materialized from a ``RunConfig`` — what ``optimize`` actually needs.
+
+    Driver-mediated callers (``pd-run`` / ``_worker.py`` / ``run_pd``) build one
+    via ``RunInputs.from_config(...)``. Notebook callers skip ``RunInputs``
+    entirely: they construct ``PDTarget`` + dataloaders themselves and pass them
+    straight to ``optimize``.
+    """
+
+    target: PDTarget
+    train_loader: DataLoader[Any]
+    eval_loader: DataLoader[Any]
+
+    @classmethod
+    def from_config(
+        cls,
+        run_cfg: RunConfig,
+        *,
+        device: str,
+        dist_state: DistributedState | None = None,
+    ) -> "RunInputs":
+        """Compose runtime inputs from a saved ``RunConfig`` via its driver."""
+        driver = load_driver(run_cfg.driver_path)
+        assert isinstance(run_cfg, driver.config_type), (
+            f"RunConfig has type {type(run_cfg).__name__}, "
+            f"expected {driver.config_type.__name__} from driver {run_cfg.driver_path}"
+        )
+        return cls(
+            target=driver.build_target(run_cfg),
+            train_loader=driver.build_train_loader(run_cfg, device=device, dist_state=dist_state),
+            eval_loader=driver.build_eval_loader(run_cfg, device=device, dist_state=dist_state),
+        )
 
 
 def run_faithfulness_warmup(
@@ -162,45 +217,65 @@ def compute_losses(
 
 
 def optimize(
-    target_model: nn.Module,
-    config: PDConfig,
+    target: PDTarget,
+    train_loader: DataLoader[Any],
+    eval_loader: DataLoader[Any],
+    *,
+    pd_config: PDConfig,
     logging_config: LoggingConfig,
     runtime_config: RuntimeConfig,
     device: str,
-    train_loader: DataLoader[Any],
-    eval_loader: DataLoader[Any],
-    run_batch: RunBatch,
-    reconstruction_loss: ReconstructionLoss,
-    out_dir: Path | None,
-    tied_weights: list[tuple[str, str]] | None = None,
+    out_dir: Path | None = None,
 ) -> None:
-    """Run the optimization loop."""
+    """Run the optimization loop. The notebook / script entry point.
+
+    Pure trainer: takes a ``PDTarget`` plus dataloaders plus the three configs.
+    No ``RunConfig``, no driver, no YAML, no wandb-init responsibility.
+
+    ``out_dir`` is where train logs and checkpoints land (and where wandb
+    artifacts are sourced from). ``None`` skips persistence entirely — useful
+    for quick interactive runs that don't need to be reloaded.
+
+    Wandb is **opportunistic**: if the caller has already called
+    ``wandb.init(...)``, metrics are logged to wandb. Otherwise they aren't.
+    Wandb-from-the-driver wiring lives in ``run_pd``.
+
+    All ranks call this function. Only the main process does logging /
+    checkpoint persistence.
+    """
+    _validate_pgd_scope(pd_config, get_distributed_state())
+
     train_iterator = loop_dataloader(train_loader)
     eval_iterator = loop_dataloader(eval_loader)
 
-    if is_main_process():
+    if is_main_process() and out_dir is not None:
         logger.info(f"Train+eval logs saved to directory: {out_dir}")
 
-    if config.identity_module_info is not None:
+    target_model = target.model
+    run_batch = target.run_batch
+    reconstruction_loss = target.reconstruction_loss
+    tied_weights = target.tied_weights
+
+    if pd_config.identity_module_info is not None:
         insert_identity_operations_(
             target_model,
-            identity_module_info=config.identity_module_info,
+            identity_module_info=pd_config.identity_module_info,
         )
 
     target_model.requires_grad_(False)
-    module_path_info = expand_module_patterns(target_model, config.all_module_info)
+    module_path_info = expand_module_patterns(target_model, pd_config.all_module_info)
 
     model = ComponentModel(
         target_model=target_model,
         run_batch=run_batch,
         module_path_info=module_path_info,
-        ci_config=config.ci_config,
-        sigmoid_type=config.sigmoid_type,
+        ci_config=pd_config.ci_config,
+        sigmoid_type=pd_config.sigmoid_type,
     )
     model.to(device)
 
     # Diverge global RNG per rank so stochastic masks/sources differ across DP workers.
-    seed_per_rank(config.seed)
+    seed_per_rank(pd_config.seed)
 
     dist_state = get_distributed_state()
     wrapped_model: nn.Module = model
@@ -236,34 +311,36 @@ def optimize(
 
     components_optimizer = optim.AdamW(
         component_params,
-        lr=config.components_optimizer.lr_schedule.start_val,
-        betas=config.components_optimizer.betas,
-        weight_decay=config.components_optimizer.weight_decay,
+        lr=pd_config.components_optimizer.lr_schedule.start_val,
+        betas=pd_config.components_optimizer.betas,
+        weight_decay=pd_config.components_optimizer.weight_decay,
     )
     ci_fn_optimizer = optim.AdamW(
         ci_fn_params,
-        lr=config.ci_fn_optimizer.lr_schedule.start_val,
-        betas=config.ci_fn_optimizer.betas,
-        weight_decay=config.ci_fn_optimizer.weight_decay,
+        lr=pd_config.ci_fn_optimizer.lr_schedule.start_val,
+        betas=pd_config.ci_fn_optimizer.betas,
+        weight_decay=pd_config.ci_fn_optimizer.weight_decay,
     )
 
-    if config.faithfulness_warmup_steps > 0:
-        run_faithfulness_warmup(component_model, component_params, config)
+    if pd_config.faithfulness_warmup_steps > 0:
+        run_faithfulness_warmup(component_model, component_params, pd_config)
 
     loss_instances, eval_only_instances = _build_metric_instances(
-        config, logging_config, component_model, device
+        pd_config, logging_config, component_model, device
     )
     all_instances = {**loss_instances, **eval_only_instances}
 
-    for step in tqdm(range(config.steps + 1), ncols=0, disable=not is_main_process()):
+    for step in tqdm(range(pd_config.steps + 1), ncols=0, disable=not is_main_process()):
         components_optimizer.zero_grad()
         ci_fn_optimizer.zero_grad()
 
         components_lr = get_scheduled_value(
-            step=step, total_steps=config.steps, config=config.components_optimizer.lr_schedule
+            step=step,
+            total_steps=pd_config.steps,
+            config=pd_config.components_optimizer.lr_schedule,
         )
         ci_fn_lr = get_scheduled_value(
-            step=step, total_steps=config.steps, config=config.ci_fn_optimizer.lr_schedule
+            step=step, total_steps=pd_config.steps, config=pd_config.ci_fn_optimizer.lr_schedule
         )
         for group in components_optimizer.param_groups:
             group["lr"] = components_lr
@@ -278,7 +355,7 @@ def optimize(
             device=device,
             wrapped_model=wrapped_model,
             component_model=component_model,
-            config=config,
+            config=pd_config,
             reconstruction_loss=reconstruction_loss,
         )
 
@@ -319,13 +396,13 @@ def optimize(
             batch_log_data["train/schedules/lr/ci_fn"] = ci_fn_lr
 
             if is_main_process():
-                assert out_dir is not None
                 tqdm.write(f"--- Step {step} ---")
                 tqdm.write(f"LR[components]: {components_lr:.6f}")
                 tqdm.write(f"LR[ci_fn]: {ci_fn_lr:.6f}")
                 for name, value in batch_log_data.items():
                     tqdm.write(f"{name}: {value:.15f}")
-                local_log(batch_log_data, step, out_dir)
+                if out_dir is not None:
+                    local_log(batch_log_data, step, out_dir)
                 if wandb.run is not None:
                     try_wandb(wandb.log, batch_log_data, step=step)
 
@@ -347,10 +424,10 @@ def optimize(
                 )
 
                 if is_main_process():
-                    assert out_dir is not None
                     for k, v in metrics.items():
                         tqdm.write(f"eval/{k}: {v}")
-                    local_log(metrics, step, out_dir)
+                    if out_dir is not None:
+                        local_log(metrics, step, out_dir)
                     if wandb.run is not None:
                         wandb_logs = {
                             f"eval/{k}": wandb.Image(v) if isinstance(v, Image.Image) else v
@@ -365,13 +442,16 @@ def optimize(
         # --- Saving Checkpoint --- #
         if (
             (
-                logging_config.save_freq is not None
-                and step % logging_config.save_freq == 0
-                and step > 0
+                (
+                    logging_config.save_freq is not None
+                    and step % logging_config.save_freq == 0
+                    and step > 0
+                )
+                or step == pd_config.steps
             )
-            or step == config.steps
-        ) and is_main_process():
-            assert out_dir is not None
+            and is_main_process()
+            and out_dir is not None
+        ):
             save_file(component_model.state_dict(), out_dir / f"model_{step}.pth")
             logger.info(f"Saved model, optimizer, and out_dir to {out_dir}")
             if wandb.run is not None:
@@ -383,12 +463,12 @@ def optimize(
                 )
 
         # Skip gradient step at the very last step (last step is just for plotting/logging).
-        if step != config.steps:
+        if step != pd_config.steps:
             sync_across_processes()
-            if config.components_optimizer.grad_clip_norm is not None:
-                clip_grad_norm_(component_params, config.components_optimizer.grad_clip_norm)
-            if config.ci_fn_optimizer.grad_clip_norm is not None:
-                clip_grad_norm_(ci_fn_params, config.ci_fn_optimizer.grad_clip_norm)
+            if pd_config.components_optimizer.grad_clip_norm is not None:
+                clip_grad_norm_(component_params, pd_config.components_optimizer.grad_clip_norm)
+            if pd_config.ci_fn_optimizer.grad_clip_norm is not None:
+                clip_grad_norm_(ci_fn_params, pd_config.ci_fn_optimizer.grad_clip_norm)
             components_optimizer.step()
             ci_fn_optimizer.step()
 
@@ -416,30 +496,32 @@ def _validate_pgd_scope(config: PDConfig, dist_state: DistributedState | None) -
 
 def run_pd(
     run_cfg: RunConfig,
-    target: PDTarget,
-    train_loader: DataLoader[Any],
-    eval_loader: DataLoader[Any],
-    device: str,
     *,
+    device: str,
+    dist_state: DistributedState | None = None,
     wandb_project: str | None = None,
     wandb_tags: list[str] | None = None,
 ) -> Path | None:
-    """Run a full PD decomposition: setup, optimize, cleanup.
+    """Driver-mediated PD run. Composition root for ``pd-run`` / ``_worker.py``.
 
-    ``run_cfg`` is the complete reproducible spec for this run; it is written
-    to ``run_config.yaml`` next to the checkpoint so the run can be reloaded
-    later. Notebook callers construct one directly (with ``driver_path=None``
-    and their own ``PDTarget``); driver-mediated callers go through
-    ``experiments/_worker.py`` which builds the ``RunConfig`` from YAML.
+    Steps:
+    1. Materialize runtime inputs from the driver (``RunInputs.from_config``).
+    2. On the main rank: create ``out_dir`` (``PARAM_DECOMP_OUT_DIR/decompositions/<run_id>``),
+       write ``run_config.yaml``, initialize W&B from ``run_cfg`` fields.
+    3. Hand off to ``optimize``.
+    4. Cleanup W&B.
+
+    For notebook / script use, call ``optimize(...)`` directly — that path skips
+    everything driver/YAML/W&B-init related.
 
     ``wandb_project`` is a deploy-time parameter (which W&B account/project to
     log to), not part of the reproducible ``RunConfig``. ``None`` disables W&B.
 
-    All ranks call this function. Only the main process does wandb/logging
-    setup. Returns the output directory on the main process and ``None`` on
-    other ranks.
+    All ranks call this function. Returns the output directory on the main
+    process and ``None`` on other ranks.
     """
-    _validate_pgd_scope(run_cfg.pd, get_distributed_state())
+    inputs = RunInputs.from_config(run_cfg, device=device, dist_state=dist_state)
+    # target.model lands on `device` via ComponentModel.to(device) inside optimize().
 
     out_dir: Path | None
     if is_main_process():
@@ -469,27 +551,21 @@ def run_pd(
                 tags=tags,
                 view_meta=run_cfg.view_meta,
             )
-
-        logger.info(run_cfg.pd)
-
-        if wandb_project is not None:
             wandb.save(str(out_dir / RUN_CONFIG_FILENAME), base_path=out_dir, policy="now")
 
+        logger.info(run_cfg.pd)
     else:
         out_dir = None
 
     optimize(
-        target_model=target.model,
-        config=run_cfg.pd,
+        target=inputs.target,
+        train_loader=inputs.train_loader,
+        eval_loader=inputs.eval_loader,
+        pd_config=run_cfg.pd,
         logging_config=run_cfg.logging,
         runtime_config=run_cfg.runtime,
         device=device,
-        train_loader=train_loader,
-        eval_loader=eval_loader,
-        run_batch=target.run_batch,
-        reconstruction_loss=target.reconstruction_loss,
         out_dir=out_dir,
-        tied_weights=target.tied_weights,
     )
 
     if is_main_process() and wandb.run is not None:

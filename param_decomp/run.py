@@ -1,17 +1,21 @@
-"""The `RunConfig` object: serializable spec for a PD run.
+"""The `RunConfig` object: serializable spec for a driver-mediated PD run.
 
-Holds the driver import path plus the three determinism-tier configs (``pd``,
-``logging``, ``runtime``). Driver-specific subclasses (``LMRunConfig``, ``TMSRunConfig``,
-``ResidMLPRunConfig``) add ``target`` / ``data`` and are pointed at by each driver's
-``config_type``.
+Pure data. Holds the driver import path plus the three determinism-tier configs
+(``pd``, ``logging``, ``runtime``). Driver-specific subclasses
+(``LMRunConfig``, ``TMSRunConfig``, ``ResidMLPRunConfig``) add ``target`` /
+``data`` and are pointed at by each driver's ``config_type``.
 
 Written to ``run_config.yaml`` beside the checkpoint, passed to the worker,
 and re-read on reload. One type, one shape, everywhere.
 
-``RunConfig.from_dict(...)`` dispatches to the right subclass: it reads
-``driver_path``, loads the driver, and routes ``model_validate`` to
-``driver.config_type``. Callers use ``RunConfig.from_dict(data)`` /
-``RunConfig.from_file(path)`` and get back the appropriate subtype.
+``RunConfig.from_dict(...)`` dispatches to the right subclass by reading
+``driver_path``, loading the driver, and routing ``model_validate`` to
+``driver.config_type``.
+
+**Scope**: ``RunConfig`` only exists for driver-mediated runs. Notebook /
+script callers do **not** construct a ``RunConfig`` — they call ``optimize``
+directly with a ``PDTarget`` + dataloaders + ``PDConfig`` / ``LoggingConfig``
+/ ``RuntimeConfig``. See ``param_decomp/run_pd.py``.
 """
 
 from pathlib import Path
@@ -29,20 +33,21 @@ RUN_CONFIG_FILENAME = "run_config.yaml"
 
 
 class RunConfig(BaseConfig):
-    """Top-level run config.
+    """Top-level driver-mediated run config.
 
     ``run_id`` identifies the output directory and W&B run. Fresh ``RunConfig``
     objects generate one automatically; YAML / dict inputs that already
     contain a value preserve it.
 
     ``driver_path`` is the ``module:attr`` import path of the experiment driver
-    used to build the target model and dataloaders. ``None`` for notebook
-    callers of ``run_pd`` who build their own ``PDTarget``.
+    used to build the target model and dataloaders. **Required** — there is no
+    "notebook" flavour of ``RunConfig``; notebook callers skip this class
+    entirely and call ``optimize`` directly.
     """
 
     name: str | None = None
     run_id: str = Field(default_factory=lambda: generate_run_id("param_decomp"))
-    driver_path: str | None
+    driver_path: str
     pd: PDConfig
     logging: LoggingConfig
     runtime: RuntimeConfig
@@ -67,17 +72,17 @@ class RunConfig(BaseConfig):
     def from_dict(cls, data: dict[str, Any]) -> "RunConfig":
         """Parse a dict (e.g. from YAML) into the right `RunConfig` subclass.
 
-        Dispatch is driven entirely by ``data["driver_path"]``: when set, the
-        driver's ``config_type`` is used; when ``None``, the bare ``RunConfig``
-        is used. The caller class (``cls``) is intentionally not consulted —
-        every caller of this method uses ``RunConfig.from_dict(...)`` and the
-        right subtype falls out of the driver. Callers that need the concrete
-        subtype narrow with ``isinstance(run_cfg, driver.config_type)``.
+        Reads ``data["driver_path"]``, loads the driver, and validates against
+        ``driver.config_type``. Single unambiguous dispatch — ``driver_path`` is
+        required so there is no "fall through to bare RunConfig" branch.
+        Callers that need the concrete subtype narrow with
+        ``isinstance(run_cfg, driver.config_type)``.
         """
-        driver_path = data.get("driver_path")
-        if driver_path is None:
-            return RunConfig.model_validate(data)
-        return load_driver(driver_path).config_type.model_validate(data)
+        assert "driver_path" in data and data["driver_path"], (
+            "RunConfig requires a non-empty `driver_path`. "
+            "Notebook callers should use `optimize(...)` directly instead of building a RunConfig."
+        )
+        return load_driver(data["driver_path"]).config_type.model_validate(data)
 
     @classmethod
     @override
