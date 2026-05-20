@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from param_decomp.compose import resolve_run
 from param_decomp.configs import PDConfig
 from param_decomp.run import RunConfig
 from param_decomp.settings import REPO_ROOT
@@ -86,7 +87,7 @@ def example_cartesian_sweep() -> SweepSpec:
     """
     base_config_path = REPO_ROOT / "param_decomp" / "experiments" / "tms" / "tms_5-2_config.yaml"
     with open(base_config_path) as f:
-        base_config = RunConfig.from_dict(yaml.safe_load(f))
+        base_config, _ = resolve_run(yaml.safe_load(f))
     return cartesian_product(
         base_config=base_config,
         grid={"pd.seed": [0, 1, 2]},

@@ -33,7 +33,6 @@ from param_decomp.metrics import METRIC_REGISTRY
 from param_decomp.metrics.base import LossMetricConfig, Metric, MetricConfig
 from param_decomp.metrics.context import MetricContext
 from param_decomp.models.batch_and_loss_fns import (
-    PDTarget,
     ReconstructionLoss,
     RunBatch,
     move_batch_to_device,
@@ -422,21 +421,21 @@ def _validate_pgd_scope(config: PDConfig, dist_state: DistributedState | None) -
 
 def run_pd(
     run_cfg: RunConfig,
-    target: PDTarget,
-    train_loader: DataLoader[Any],
-    eval_loader: DataLoader[Any],
     device: str,
     *,
+    dist_state: DistributedState | None = None,
     wandb_project: str | None = None,
     wandb_tags: list[str] | None = None,
 ) -> Path | None:
-    """Run a full PD decomposition: setup, optimize, cleanup.
+    """Run a full PD decomposition: materialize, setup, optimize, cleanup.
 
     ``run_cfg`` is the complete reproducible spec for this run; it is written
     to ``run_config.yaml`` next to the checkpoint so the run can be reloaded
-    later. Notebook callers construct one directly (with ``driver_path=None``
-    and their own ``PDTarget``); driver-mediated callers go through
-    ``experiments/_worker.py`` which builds the ``RunConfig`` from YAML.
+    later. The driver is loaded from ``run_cfg.driver_path`` and used to build
+    the target model and dataloaders.
+
+    Notebook users who want to use their own target model should call
+    ``optimize()`` directly instead of this function.
 
     ``wandb_project`` is a deploy-time parameter (which W&B account/project to
     log to), not part of the reproducible ``RunConfig``. ``None`` disables W&B.
@@ -445,7 +444,13 @@ def run_pd(
     setup. Returns the output directory on the main process and ``None`` on
     other ranks.
     """
-    _validate_pgd_scope(run_cfg.pd, get_distributed_state())
+    from param_decomp.compose import materialize_run
+    from param_decomp.driver_path import load_driver
+
+    _validate_pgd_scope(run_cfg.pd, dist_state)
+
+    driver = load_driver(run_cfg.driver_path)
+    runtime = materialize_run(run_cfg, driver, device=device, dist_state=dist_state)
 
     out_dir: Path | None
     if is_main_process():
@@ -457,7 +462,7 @@ def run_pd(
         logger.info(f"Run ID: {run_cfg.run_id}")
         logger.info(f"Output directory: {out_dir}")
 
-        tags = list(wandb_tags or [])
+        tags = [driver.name, *(wandb_tags or [])]
         slurm_array_job_id = os.getenv("SLURM_ARRAY_JOB_ID")
         if slurm_array_job_id is not None:
             tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
@@ -485,17 +490,17 @@ def run_pd(
         out_dir = None
 
     optimize(
-        target_model=target.model,
+        target_model=runtime.target.model,
         config=run_cfg.pd,
         logging_config=run_cfg.logging,
         runtime_config=run_cfg.runtime,
         device=device,
-        train_loader=train_loader,
-        eval_loader=eval_loader,
-        run_batch=target.run_batch,
-        reconstruction_loss=target.reconstruction_loss,
+        train_loader=runtime.train_loader,
+        eval_loader=runtime.eval_loader,
+        run_batch=runtime.target.run_batch,
+        reconstruction_loss=runtime.target.reconstruction_loss,
         out_dir=out_dir,
-        tied_weights=target.tied_weights,
+        tied_weights=runtime.target.tied_weights,
     )
 
     if is_main_process() and wandb.run is not None:

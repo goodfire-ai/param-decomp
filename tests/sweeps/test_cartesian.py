@@ -4,6 +4,7 @@ from pathlib import Path
 
 import yaml
 
+from param_decomp.compose import resolve_run
 from param_decomp.run import RunConfig
 from param_decomp.settings import REPO_ROOT
 from param_decomp.sweeps import SweepSpec
@@ -14,7 +15,8 @@ TMS_DRIVER_PATH = "param_decomp.experiments.tms.experiment:Driver"
 
 def _base_config() -> RunConfig:
     with open(REPO_ROOT / "param_decomp" / "experiments" / "tms" / "tms_5-2_config.yaml") as f:
-        return RunConfig.from_dict(yaml.safe_load(f))
+        run_cfg, _ = resolve_run(yaml.safe_load(f))
+        return run_cfg
 
 
 def test_cartesian_product_basic() -> None:

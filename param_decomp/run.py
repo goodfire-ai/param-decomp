@@ -8,10 +8,11 @@ Holds the driver import path plus the three determinism-tier configs (``pd``,
 Written to ``run_config.yaml`` beside the checkpoint, passed to the worker,
 and re-read on reload. One type, one shape, everywhere.
 
-``RunConfig.from_dict(...)`` dispatches to the right subclass: it reads
-``driver_path``, loads the driver, and routes ``model_validate`` to
-``driver.config_type``. Callers use ``RunConfig.from_dict(data)`` /
-``RunConfig.from_file(path)`` and get back the appropriate subtype.
+For loading from YAML/dict, use ``resolve_run(data)`` from ``param_decomp.compose``
+which returns both the config and driver in one call.
+
+Notebook users who build their own target model and dataloaders should call
+``optimize()`` directly and skip RunConfig entirely.
 """
 
 from pathlib import Path
@@ -22,7 +23,6 @@ from pydantic import Field, model_validator
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import LoggingConfig, PDConfig, RuntimeConfig
-from param_decomp.driver_path import load_driver
 from param_decomp.utils.run_utils import generate_run_id
 
 RUN_CONFIG_FILENAME = "run_config.yaml"
@@ -36,13 +36,12 @@ class RunConfig(BaseConfig):
     contain a value preserve it.
 
     ``driver_path`` is the ``module:attr`` import path of the experiment driver
-    used to build the target model and dataloaders. ``None`` for notebook
-    callers of ``run_pd`` who build their own ``PDTarget``.
+    used to build the target model and dataloaders.
     """
 
     name: str | None = None
     run_id: str = Field(default_factory=lambda: generate_run_id("param_decomp"))
-    driver_path: str | None
+    driver_path: str
     pd: PDConfig
     logging: LoggingConfig
     runtime: RuntimeConfig
@@ -64,28 +63,18 @@ class RunConfig(BaseConfig):
         return self
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "RunConfig":
-        """Parse a dict (e.g. from YAML) into the right `RunConfig` subclass.
-
-        Dispatch is driven entirely by ``data["driver_path"]``: when set, the
-        driver's ``config_type`` is used; when ``None``, the bare ``RunConfig``
-        is used. The caller class (``cls``) is intentionally not consulted —
-        every caller of this method uses ``RunConfig.from_dict(...)`` and the
-        right subtype falls out of the driver. Callers that need the concrete
-        subtype narrow with ``isinstance(run_cfg, driver.config_type)``.
-        """
-        driver_path = data.get("driver_path")
-        if driver_path is None:
-            return RunConfig.model_validate(data)
-        return load_driver(driver_path).config_type.model_validate(data)
-
-    @classmethod
     @override
     def from_file(cls, path: Path | str) -> "RunConfig":
+        """Load from YAML.
+
+        Returns the base ``RunConfig`` type. For driver-specific subclasses
+        (and to get the driver), use ``resolve_run()`` from ``param_decomp.compose``
+        which returns both the config and driver.
+        """
         path = Path(path)
         assert path.exists(), f"{RUN_CONFIG_FILENAME} not found at {path}"
         with open(path) as f:
-            return cls.from_dict(yaml.safe_load(f))
+            return cls.model_validate(yaml.safe_load(f))
 
     def write(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -6,6 +6,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from param_decomp.compose import resolve_run
 from param_decomp.configs import (
     AttnConfig,
     GlobalCiConfig,
@@ -79,16 +80,19 @@ def _runtime_config() -> RuntimeConfig:
 
 
 def _round_trip(run: RunConfig) -> RunConfig:
-    """Round-trip ``run`` through ``model_dump`` → ``RunConfig.from_dict``."""
-    return RunConfig.from_dict(run.model_dump(mode="json"))
+    """Round-trip ``run`` through ``model_dump`` → ``resolve_run``."""
+    parsed, _ = resolve_run(run.model_dump(mode="json"))
+    return parsed
 
 
 def test_run_generates_run_id_on_instantiation():
-    run = RunConfig(
-        driver_path=None,
+    run = TMSRunConfig(
+        driver_path=TMS_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
         runtime=_runtime_config(),
+        target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc"),
+        data=TMSDataConfig(feature_probability=0.05),
     )
 
     assert run.run_id.startswith("p-")
@@ -147,13 +151,15 @@ def test_resid_mlp_run_round_trip():
 
 def test_run_requires_runtime_config():
     data = {
-        "driver_path": None,
+        "driver_path": TMS_DRIVER_PATH,
         "pd": _pd_config().model_dump(mode="json"),
         "logging": _logging_config().model_dump(mode="json"),
+        "target": TMSTargetConfig(run_path="wandb:foo/bar/runs/abc").model_dump(mode="json"),
+        "data": TMSDataConfig(feature_probability=0.05).model_dump(mode="json"),
     }
 
     with pytest.raises(ValidationError, match="runtime"):
-        RunConfig.from_dict(data)
+        resolve_run(data)
 
 
 def test_driver_class_paths_load():
@@ -173,24 +179,28 @@ def test_run_round_trip_via_file(tmp_path: Path):
     )
     path = tmp_path / RUN_CONFIG_FILENAME
     run.write(path)
-    loaded = RunConfig.from_file(path)
+    with open(path) as f:
+        loaded, _ = resolve_run(yaml.safe_load(f))
     assert loaded.run_id == run.run_id
     assert loaded.driver_path == run.driver_path
     assert loaded == run
 
 
 def test_run_from_file_preserves_existing_run_id(tmp_path: Path):
-    run = RunConfig(
+    run = TMSRunConfig(
         run_id="p-existing",
-        driver_path=None,
+        driver_path=TMS_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
         runtime=_runtime_config(),
+        target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc"),
+        data=TMSDataConfig(feature_probability=0.05),
     )
     path = tmp_path / RUN_CONFIG_FILENAME
     path.write_text(yaml.safe_dump(run.model_dump(mode="json")))
 
-    loaded = RunConfig.from_file(path)
+    with open(path) as f:
+        loaded, _ = resolve_run(yaml.safe_load(f))
 
     assert loaded.run_id == "p-existing"
 

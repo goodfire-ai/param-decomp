@@ -9,8 +9,8 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from param_decomp.compose import resolve_run
 from param_decomp.experiments.discovery import discover_experiments
-from param_decomp.run import RunConfig
 from param_decomp.settings import REPO_ROOT
 from param_decomp.sweeps.cartesian import cartesian_product
 
@@ -55,13 +55,13 @@ class TestLaunchSlurm:
         )
         mock_get_wandb_run_url.return_value = "https://wandb.ai/test/test/runs/test"
 
-        base_config = RunConfig.from_dict(_builtin("tms_5-2"))
+        base_config, _ = resolve_run(_builtin("tms_5-2"))
         sweep_spec = cartesian_product(
             base_config=base_config,
             grid={"pd.seed": [0, 1, 2], "pd.steps": [10, 20]},
             n_agents=2,
             description="tiny test grid",
-            driver_path=base_config.driver_path or "",
+            driver_path=base_config.driver_path,
         )
         launch_sweep_slurm(
             sweep=sweep_spec,
@@ -103,7 +103,7 @@ class TestLaunchSlurm:
         )
         mock_get_wandb_run_url.return_value = "https://wandb.ai/test/test/runs/test"
 
-        run = RunConfig.from_dict(_builtin("tms_5-2"))
+        run, _ = resolve_run(_builtin("tms_5-2"))
         launch_run_slurm(
             run_cfg=run,
             job_suffix=None,
@@ -121,7 +121,7 @@ class TestLaunchSlurm:
     def test_worker_args_use_run_embedded_run_id(self):
         from param_decomp.scripts.run_slurm import _build_worker_args
 
-        run = RunConfig.from_dict(_builtin("tms_5-2"))
+        run, _ = resolve_run(_builtin("tms_5-2"))
 
         args = _build_worker_args("launch-test", run, "test")
 

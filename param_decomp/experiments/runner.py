@@ -13,9 +13,10 @@ from typing import Any
 import fire
 import yaml
 
+from param_decomp.compose import resolve_run
 from param_decomp.experiments._worker import run_experiment
 from param_decomp.experiments.discovery import discover_experiments
-from param_decomp.run import RUN_CONFIG_FILENAME, RunConfig
+from param_decomp.run import RUN_CONFIG_FILENAME
 from param_decomp.settings import (
     DEFAULT_PARTITION_NAME,
     DEFAULT_PROJECT_NAME,
@@ -30,7 +31,7 @@ def _resolve_source(
     config_path: str | Path | None,
     rerun: str | None,
 ) -> dict[str, Any]:
-    """Resolve the chosen input source into a dict ready for ``RunConfig.from_dict``.
+    """Resolve the chosen input source into a dict ready for ``resolve_run()``.
 
     Exactly one of ``experiment``, ``config_path``, or ``rerun`` must be set.
     Every source is expected to provide ``driver_path`` as a top-level field
@@ -170,7 +171,7 @@ def main(
         )
         return
 
-    run = RunConfig.from_dict(_resolve_source(experiment, config_path, rerun))
+    run, _ = resolve_run(_resolve_source(experiment, config_path, rerun))
 
     if local:
         assert run.runtime.dp is None, "runtime.dp is not supported with --local"

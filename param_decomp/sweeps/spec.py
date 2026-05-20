@@ -41,7 +41,7 @@ class SweepSpec:
     """
 
     description: str
-    driver_path: str | None
+    driver_path: str
     logging: LoggingConfig
     runtime: RuntimeConfig
     n_agents: int

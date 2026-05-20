@@ -15,7 +15,7 @@ import json
 import fire
 
 from param_decomp import run_pd
-from param_decomp.driver_path import load_driver
+from param_decomp.compose import resolve_run
 from param_decomp.log import logger
 from param_decomp.run import RunConfig
 from param_decomp.utils.distributed_utils import (
@@ -33,12 +33,6 @@ def run_experiment(
     launch_id: str | None = None,
     wandb_project: str | None = None,
 ) -> None:
-    assert run_cfg.driver_path is not None, "run_experiment requires run.driver_path to be set"
-    driver = load_driver(run_cfg.driver_path)
-    assert isinstance(run_cfg, driver.config_type), (
-        f"Run has type {type(run_cfg).__name__}, expected {driver.config_type.__name__}"
-    )
-
     dist_state = init_distributed()
     logger.info(f"Distributed state: {dist_state}")
 
@@ -47,22 +41,14 @@ def run_experiment(
     device = get_device()
 
     if is_main_process():
-        logger.info(f"Driver: {driver.name}")
         logger.info(f"Using device: {device}")
 
-    target = driver.build_target(run_cfg)
-    target.model.to(device)
-    train_loader = driver.build_train_loader(run_cfg, dist_state=dist_state, device=device)
-    eval_loader = driver.build_eval_loader(run_cfg, dist_state=dist_state, device=device)
-
-    wandb_tags = [driver.name, *([launch_id] if launch_id is not None else [])]
+    wandb_tags = [launch_id] if launch_id is not None else None
 
     run_pd(
         run_cfg,
-        target=target,
-        train_loader=train_loader,
-        eval_loader=eval_loader,
         device=device,
+        dist_state=dist_state,
         wandb_project=wandb_project,
         wandb_tags=wandb_tags,
     )
@@ -75,8 +61,8 @@ def main(
     wandb_project: str | None = None,
 ) -> None:
     """SLURM task entrypoint."""
-    run = RunConfig.from_dict(json.loads(run_json))
-    run_experiment(run, launch_id=launch_id, wandb_project=wandb_project)
+    run_cfg, _ = resolve_run(json.loads(run_json))
+    run_experiment(run_cfg, launch_id=launch_id, wandb_project=wandb_project)
 
 
 def cli() -> None:
