@@ -7,11 +7,12 @@ CI fn for every site, plus AdamW state for both. Each rank runs:
   2. faithfulness loss (sum of squared weight-deltas)
   3. importance-minimality loss (cheap, on ci_upper)
   4. per-site layerwise loss: serial M-iteration loop, one site routed at a time
-  5. all-sites masked forward + an inline adversarial source PGD inner step
-  6. backward + DDP all-reduce + AdamW step
+  5. PPGD via PersistentPGDState (same scope + n_warmup as the 2-pool benchmark)
+  6. backward + DDP all-reduce + AdamW step + PPGD source step
 
-This is the apples-to-apples baseline that the 2-pool design competes with. It
-only fits at moderate scales because per-rank memory has to hold everything.
+This is the apples-to-apples baseline that the 2-pool design competes with — both
+benchmarks use PersistentPGDState identically; the only difference is whether the
+work is sharded across two pools or done on every rank.
 
 Run on 8 GPUs single-node:
     .venv/bin/python -m torch.distributed.run --standalone --nproc_per_node=8 \\
@@ -32,10 +33,17 @@ import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
 
-from param_decomp.configs import LayerwiseCiConfig
-from param_decomp.models.batch_and_loss_fns import run_batch_passthrough
+from param_decomp.configs import (
+    LayerwiseCiConfig,
+    PerBatchPerPositionScope,
+    PersistentPGDReconLossConfig,
+    ScheduleConfig,
+    SignPGDConfig,
+)
+from param_decomp.models.batch_and_loss_fns import recon_loss_kl, run_batch_passthrough
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import make_mask_infos
+from param_decomp.persistent_pgd import PersistentPGDState
 from param_decomp.scripts.two_pool_benchmark._tiny_model import TinyTransformer, sites_for_block
 from param_decomp.utils.module_utils import ModulePathInfo
 
@@ -122,6 +130,26 @@ def main() -> None:
     all_params = component_params + ci_fn_params
     optimizer = torch.optim.AdamW(all_params, lr=5e-5, weight_decay=0.0)
 
+    # PersistentPGDState with the same config the 2-pool benchmark uses on pool B,
+    # so the comparison is apples-to-apples on the PPGD side: same n_warmup_steps,
+    # same scope, same source-update behaviour.
+    ppgd_cfg = PersistentPGDReconLossConfig(
+        coeff=1.0,
+        scope=PerBatchPerPositionScope(),
+        optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.01)),
+        n_warmup_steps=2,
+        n_samples=1,
+        use_sigmoid_parameterization=False,
+    )
+    ppgd_state = PersistentPGDState(
+        module_to_c={s: C for s in all_sites},
+        batch_dims=(batch_local, SEQ_LEN),
+        device=device,
+        use_delta_component=False,
+        cfg=ppgd_cfg,
+        reconstruction_loss=recon_loss_kl,
+    )
+
     if rank == 0:
         n_comp = sum(p.numel() for p in component_params)
         n_ci = sum(p.numel() for p in ci_fn_params)
@@ -200,47 +228,37 @@ def main() -> None:
                     )
                 loss_stoch = torch.stack(layerwise_losses).mean()
 
-            # 5. ppgd: all sites masked, one inline adversarial step
-            with timer.phase("ppgd"):
-                with torch.no_grad():
-                    adv_masks_raw = {
-                        s: ci.lower_leaky[s] + (1 - ci.lower_leaky[s]) * torch.rand_like(ci.lower_leaky[s])
-                        for s in all_sites
-                    }
-                adv_masks = {s: m.detach().requires_grad_(True) for s, m in adv_masks_raw.items()}
-
-                # One PGD inner step on the masks
-                mask_infos_adv = make_mask_infos(adv_masks, routing_masks="all")
-                pred_adv = component_model(input_ids, mask_infos=mask_infos_adv)
-                inner_loss = nn.functional.kl_div(
-                    torch.log_softmax(pred_adv, dim=-1),
-                    torch.softmax(target_logits.detach(), dim=-1),
-                    reduction="batchmean",
+            # 5. PPGD via real PersistentPGDState (warmup refines persistent sources;
+            #    compute_recon_loss returns the loss with the refined sources for backward).
+            with timer.phase("ppgd_warmup"):
+                ppgd_state.warmup(
+                    model=component_model,
+                    batch=input_ids,
+                    target_out=target_logits.detach(),
+                    ci=ci.lower_leaky,
+                    weight_deltas=None,
                 )
-                inner_grads = torch.autograd.grad(inner_loss, list(adv_masks.values()), retain_graph=False)
-                with torch.no_grad():
-                    for s, g in zip(adv_masks, inner_grads, strict=True):
-                        adv_masks[s].add_(0.01 * g.sign())
-                        adv_masks[s].clamp_(0.0, 1.0)
-
-                # Final ppgd recon with the updated masks (graph-attached this time)
-                final_masks = {
-                    s: ci.lower_leaky[s] + (1 - ci.lower_leaky[s]) * adv_masks[s].detach()
-                    for s in all_sites
-                }
-                mask_infos_final = make_mask_infos(final_masks, routing_masks="all")
-                pred_ppgd = component_model(input_ids, mask_infos=mask_infos_final)
-                loss_ppgd = nn.functional.kl_div(
-                    torch.log_softmax(pred_ppgd, dim=-1),
-                    torch.softmax(target_logits.detach(), dim=-1),
-                    reduction="batchmean",
+            with timer.phase("ppgd_recon"):
+                loss_ppgd = ppgd_state.compute_recon_loss(
+                    model=component_model,
+                    batch=input_ids,
+                    target_out=target_logits.detach(),
+                    ci=ci.lower_leaky,
+                    weight_deltas=None,
                 )
 
             total = 1e6 * loss_faith + 1e-4 * loss_imp + 0.5 * loss_stoch + 0.5 * loss_ppgd
 
             with timer.phase("backward"):
                 optimizer.zero_grad(set_to_none=True)
-                total.backward()
+                total.backward(retain_graph=True)
+
+            with timer.phase("ppgd_source_step"):
+                # Update the persistent adversarial sources from the PPGD loss
+                # (this is what makes PersistentPGD "persistent" — sources evolve
+                # across training steps).
+                source_grads = ppgd_state.get_grads(0.5 * loss_ppgd, retain_graph=False)
+                ppgd_state.step(source_grads)
 
             with timer.phase("ddp_allreduce"):
                 for p in all_params:
