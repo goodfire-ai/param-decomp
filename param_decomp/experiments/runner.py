@@ -116,9 +116,9 @@ def main(
             checks. Incompatible with --sweep_generator_path and runtime.dp.
         sweep_generator_path: Absolute path to a sweep generator function in the
             form ``/abs/path/file.py:func_name``. The function takes no arguments
-            and returns a ``SweepSpec`` (which carries its own driver_path and
-            per-run configs). XOR with <experiment>, --config_path, --rerun.
-        n_agents: Max concurrent SLURM tasks for sweeps.
+            and returns a ``SweepSpec`` (which carries its own driver_path,
+            per-run configs, and ``n_agents`` cap). XOR with <experiment>,
+            --config_path, --rerun.
         job_suffix: Suffix for the SLURM job name.
         partition: SLURM partition.
         project: W&B project name. Defaults to ``DEFAULT_PROJECT_NAME``.
@@ -130,7 +130,7 @@ def main(
 
     Examples:
         pd-run tms_5-2                                                              # one SLURM job
-        pd-run --sweep_generator_path /abs/path/my_sweep.py:my_sweep --n_agents 4   # sweep
+        pd-run --sweep_generator_path /abs/path/my_sweep.py:my_sweep                # sweep
         pd-run --config_path my.yaml                                                # custom config
         pd-run --rerun s-a1b2c3d4                                                   # rerun from saved run
         pd-run tms_5-2 --local                                                      # in-process; no SLURM
