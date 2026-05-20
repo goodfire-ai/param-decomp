@@ -51,7 +51,7 @@ pd:
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_weight_decay: 0.0
   loss_metrics:
-    importance_minimality:
+    ImportanceMinimalityLoss:
       coeff: 0.001
       pnorm: 2.0
       beta: 0.5
@@ -59,11 +59,11 @@ pd:
       p_anneal_final_p: 0.4
       p_anneal_end_frac: 1.0
       eps: 1.0e-12
-    stochastic_recon_subset:
+    StochasticReconSubsetLoss:
       coeff: 0.5
       routing:
         type: uniform_k_subset
-    persistent_pgd_recon:
+    PersistentPGDReconLoss:
       coeff: 0.5
       optimizer:
         type: adam
@@ -79,7 +79,7 @@ pd:
         type: per_batch_per_position
       use_sigmoid_parameterization: false
       n_warmup_steps: 2
-    faithfulness:
+    FaithfulnessLoss:
       coeff: 10000000.0
 logging:
   train_log_freq: 200
@@ -89,12 +89,38 @@ logging:
   n_eval_steps: 1
   eval_batch_size: 128
   save_freq: null
-  ci_alive_threshold: 0.0
   eval_metrics:
-    ci_histograms:
+    ImportanceMinimalityLoss:
+      pnorm: 2.0
+      beta: 0.5
+      p_anneal_start_frac: 0.0
+      p_anneal_final_p: 0.4
+      p_anneal_end_frac: 1.0
+      eps: 1.0e-12
+    StochasticReconSubsetLoss:
+      routing:
+        type: uniform_k_subset
+    PersistentPGDReconLoss:
+      optimizer:
+        type: adam
+        beta1: 0.5
+        beta2: 0.99
+        eps: 1.0e-08
+        lr_schedule:
+          start_val: 0.01
+          warmup_pct: 0.025
+          final_val_frac: 1.0
+          fn_type: constant
+      scope:
+        type: per_batch_per_position
+      use_sigmoid_parameterization: false
+      n_warmup_steps: 2
+    CIHistograms:
       n_batches_accum: 1
-    component_activation_density: {}
-    ci_l0:
+    ComponentActivationDensity:
+      ci_alive_threshold: 0.0
+    CI_L0:
+      ci_alive_threshold: 0.0
       groups:
         layer_0:
         - h.0.*
@@ -102,12 +128,12 @@ logging:
         - h.1.*
         total:
         - '*'
-    ce_and_kl:
+    CEandKLLosses:
       rounding_threshold: 0.0
-    ci_mean_per_component: {}
-    stochastic_hidden_acts_recon: {}
-    ci_hidden_acts_recon: {}
-    pgd_recon:
+    CIMeanPerComponent: {}
+    StochasticHiddenActsReconLoss: {}
+    CIHiddenActsReconLoss: {}
+    PGDReconLoss:
       init: random
       step_size: 0.1
       n_steps: 20

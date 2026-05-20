@@ -61,9 +61,10 @@ For custom experiments, either call `run_pd(...)` directly or provide a YAML-dri
 
 ## Metrics
 
-Configure training losses in `pd.loss_metrics` and extra eval-only metrics in `pd.eval_metrics`.
-Keys are registered metric class names. Loss metrics must set `coeff`; they are evaluated
-automatically, so do not repeat them under `eval_metrics`.
+Configure training losses in `pd.loss_metrics` and eval metrics in `logging.eval_metrics`.
+Keys are registered metric class names. Loss metrics must set `coeff`. The two lists are
+independent: nothing is auto-evaluated, so list every metric you want at eval time under
+`logging.eval_metrics` — including any loss-capable metric you also train on.
 
 You can pass your own metrics by listing importable dotted modules in `pd.metric_modules`.
 `PDConfig` imports those modules before resolving metric names, so any classes decorated with
@@ -77,6 +78,7 @@ pd:
     MyCustomLoss:
       coeff: 0.1
       scale: 3.0
+logging:
   eval_metrics:
     MyCustomEvalMetric: {}
 ```
