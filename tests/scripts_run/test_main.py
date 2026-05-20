@@ -9,9 +9,8 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from param_decomp.configs import RuntimeConfig
 from param_decomp.experiments.discovery import discover_experiments
-from param_decomp.run import Run
+from param_decomp.run import RunConfig
 from param_decomp.settings import REPO_ROOT
 from param_decomp.sweeps.cartesian import cartesian_product
 
@@ -34,21 +33,21 @@ class TestResolveSource:
 class TestLaunchSlurm:
     @patch("param_decomp.scripts.run_slurm.get_wandb_run_url")
     @patch("param_decomp.scripts.run_slurm.submit_slurm_job")
-    @patch("param_decomp.scripts.run_slurm._create_slurm_script")
+    @patch("param_decomp.scripts.run_slurm._create_array_slurm_script")
     @patch("param_decomp.scripts.run_slurm.create_git_snapshot")
     def test_sweep_creates_one_task_per_combination(
         self,
         mock_create_git_snapshot,
-        mock_create_slurm_script,
+        mock_create_array_slurm_script,
         mock_submit_slurm_job,
         mock_get_wandb_run_url,
         tmp_path: Path,
     ):
-        from param_decomp.scripts.run_slurm import launch_slurm
+        from param_decomp.scripts.run_slurm import launch_sweep_slurm
         from param_decomp.utils.slurm import SubmitResult
 
         mock_create_git_snapshot.return_value = ("test-branch", "12345678")
-        mock_create_slurm_script.return_value = "#!/bin/bash\necho test"
+        mock_create_array_slurm_script.return_value = "#!/bin/bash\necho test"
         mock_submit_slurm_job.return_value = SubmitResult(
             job_id="12345",
             script_path=tmp_path / "test.sh",
@@ -56,45 +55,47 @@ class TestLaunchSlurm:
         )
         mock_get_wandb_run_url.return_value = "https://wandb.ai/test/test/runs/test"
 
-        base_config = _builtin("tms_5-2")
+        base_config = RunConfig.from_dict(_builtin("tms_5-2"))
         sweep_spec = cartesian_product(
             base_config=base_config,
             grid={"pd.seed": [0, 1, 2], "pd.steps": [10, 20]},
-            description="tiny test grid",
-            driver_path=base_config["driver_path"],
-        )
-        launch_slurm(
-            launchable=sweep_spec,
             n_agents=2,
+            description="tiny test grid",
+            driver_path=base_config.driver_path or "",
+        )
+        launch_sweep_slurm(
+            sweep=sweep_spec,
             job_suffix=None,
-            runtime=RuntimeConfig(),
             partition="cpu",
             project="test",
         )
 
-        mock_create_slurm_script.assert_called_once()
-        call_kwargs = mock_create_slurm_script.call_args.kwargs
-        runs = call_kwargs["runs"]
-        assert len(runs) == 6  # 3 seeds x 2 steps
-        assert len({run.run_id for run in runs}) == 6
+        mock_create_array_slurm_script.assert_called_once()
+        call_kwargs = mock_create_array_slurm_script.call_args.kwargs
+        run_cfgs = call_kwargs["run_cfgs"]
+        assert len(run_cfgs) == 6  # 3 seeds x 2 steps
+        assert len({r.run_id for r in run_cfgs}) == 6
+
+        submit_kwargs = mock_submit_slurm_job.call_args.kwargs
+        assert submit_kwargs["n_array_tasks"] == 6
 
     @patch("param_decomp.scripts.run_slurm.get_wandb_run_url")
     @patch("param_decomp.scripts.run_slurm.submit_slurm_job")
-    @patch("param_decomp.scripts.run_slurm._create_slurm_script")
+    @patch("param_decomp.scripts.run_slurm._create_singleton_slurm_script")
     @patch("param_decomp.scripts.run_slurm.create_git_snapshot")
     def test_single_run_produces_one_task(
         self,
         mock_create_git_snapshot,
-        mock_create_slurm_script,
+        mock_create_singleton_slurm_script,
         mock_submit_slurm_job,
         mock_get_wandb_run_url,
         tmp_path: Path,
     ):
-        from param_decomp.scripts.run_slurm import launch_slurm
+        from param_decomp.scripts.run_slurm import launch_run_slurm
         from param_decomp.utils.slurm import SubmitResult
 
         mock_create_git_snapshot.return_value = ("test-branch", "12345678")
-        mock_create_slurm_script.return_value = "#!/bin/bash\necho test"
+        mock_create_singleton_slurm_script.return_value = "#!/bin/bash\necho test"
         mock_submit_slurm_job.return_value = SubmitResult(
             job_id="12345",
             script_path=tmp_path / "test.sh",
@@ -102,30 +103,25 @@ class TestLaunchSlurm:
         )
         mock_get_wandb_run_url.return_value = "https://wandb.ai/test/test/runs/test"
 
-        base_config = _builtin("tms_5-2")
-        logging_data = {**base_config.get("logging", {}), "wandb_run_name": "tms_5-2"}
-        run = Run.from_dict({**base_config, "logging": logging_data})
-        launch_slurm(
-            launchable=run,
-            n_agents=None,
+        run = RunConfig.from_dict(_builtin("tms_5-2"))
+        launch_run_slurm(
+            run_cfg=run,
             job_suffix=None,
-            runtime=RuntimeConfig(),
             partition="cpu",
             project="test",
         )
 
-        mock_create_slurm_script.assert_called_once()
-        call_kwargs = mock_create_slurm_script.call_args.kwargs
-        runs = call_kwargs["runs"]
-        assert len(runs) == 1
-        assert runs[0].run_id == run.run_id
-        assert call_kwargs["is_array"] is False
+        mock_create_singleton_slurm_script.assert_called_once()
+        call_kwargs = mock_create_singleton_slurm_script.call_args.kwargs
+        assert call_kwargs["run_cfg"].run_id == run.run_id
+
+        submit_kwargs = mock_submit_slurm_job.call_args.kwargs
+        assert submit_kwargs["n_array_tasks"] is None
 
     def test_worker_args_use_run_embedded_run_id(self):
         from param_decomp.scripts.run_slurm import _build_worker_args
 
-        base_config = _builtin("tms_5-2")
-        run = Run.from_dict(base_config)
+        run = RunConfig.from_dict(_builtin("tms_5-2"))
 
         args = _build_worker_args("launch-test", run, "test")
 

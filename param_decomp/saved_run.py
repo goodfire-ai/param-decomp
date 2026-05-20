@@ -1,96 +1,113 @@
-"""Handle to a saved PD run on disk or wandb."""
+"""`SavedRun`: handle to a completed PD run on disk or in W&B.
+
+A `SavedRun` is the **reader** end of a run's three-phase lifecycle:
+`RunConfig` (recipe) → `RunSink` (writer during training) → `SavedRun`
+(reader after).
+
+Construct via `SavedRun.from_path(path)` and use it to reconstruct the
+target/dataloaders and load the model checkpoint. Methods are driver-mediated
+only — notebook callers who trained via `optimize(...)` without a `RunConfig`
+should reload their checkpoint with `ComponentModel.from_checkpoint(...)`
+directly.
+"""
 
 from dataclasses import dataclass
-from functools import cached_property
 from pathlib import Path
 from typing import Any
 
 from torch.utils.data import DataLoader
 
 from param_decomp.configs import PDConfig
-from param_decomp.experiments.driver import ExperimentDriver, load_driver
+from param_decomp.driver_path import load_driver
+from param_decomp.experiments.driver import ExperimentDriver
 from param_decomp.models.batch_and_loss_fns import PDTarget
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.run import RUN_METADATA_FILENAME, Run
+from param_decomp.run import RUN_CONFIG_FILENAME, RunConfig
 from param_decomp.types import ModelPath
 from param_decomp.utils.distributed_utils import DistributedState
 from param_decomp.utils.run_files import resolve_config_path, resolve_run_files
 
 
-@dataclass
-class PDRun:
-    """A saved PD run, resolved to local paths and parsed `Run` config."""
+@dataclass(frozen=True)
+class SavedRun:
+    """A completed PD run, resolved to local paths and parsed `RunConfig`.
+
+    `driver` is resolved from `run_cfg.driver_path` at construction time and
+    paired with `run_cfg` (whose concrete subtype is checked against
+    `driver.config_type`). Both fields are required — there is no
+    notebook-only `SavedRun`; notebook callers reload checkpoints via
+    `ComponentModel.from_checkpoint(...)` directly.
+    """
 
     path: Path
-    run: Run
+    run_cfg: RunConfig
     checkpoint_path: Path
+    driver: ExperimentDriver[Any]
 
     @classmethod
-    def from_path(cls, path: ModelPath) -> "PDRun":
+    def from_path(cls, path: ModelPath) -> "SavedRun":
+        """Reload from disk or W&B. Resolves spec + checkpoint, instantiates the driver."""
         files = resolve_run_files(
-            path,
-            config_filename=RUN_METADATA_FILENAME,
-            checkpoint_prefix="model",
+            path, config_filename=RUN_CONFIG_FILENAME, checkpoint_prefix="model"
+        )
+        run_cfg = RunConfig.from_file(files.config_path)
+        driver = load_driver(run_cfg.driver_path)
+        assert isinstance(run_cfg, driver.config_type), (
+            f"RunConfig has type {type(run_cfg).__name__}, expected {driver.config_type.__name__}"
         )
         return cls(
             path=files.config_path.parent,
-            run=Run.from_file(files.config_path),
+            run_cfg=run_cfg,
             checkpoint_path=files.checkpoint_path,
+            driver=driver,
         )
 
     @classmethod
-    def run_from_path(cls, path: ModelPath) -> Run:
-        """Load just the `Run` config, without resolving or downloading checkpoints."""
-        return Run.from_file(resolve_config_path(path, config_filename=RUN_METADATA_FILENAME))
-
-    @cached_property
-    def driver(self) -> ExperimentDriver[Any] | None:
-        return load_driver(self.run.driver_path) if self.run.driver_path else None
+    def run_cfg_from_path(cls, path: ModelPath) -> RunConfig:
+        """Load just the `RunConfig` without resolving the checkpoint."""
+        return RunConfig.from_file(resolve_config_path(path, config_filename=RUN_CONFIG_FILENAME))
 
     @property
     def pd_config(self) -> PDConfig:
-        return self.run.pd
+        return self.run_cfg.pd
 
     @property
     def name(self) -> str:
-        if self.driver is not None:
-            return self.driver.name
-        return "custom"
+        return self.driver.name
 
     def load_target(self) -> PDTarget:
-        assert self.driver is not None, (
-            "Run has no driver. Use `load_component_model(path, target=...)` with an "
-            "explicit target."
-        )
-        assert isinstance(self.run, self.driver.config_type), (
-            f"Run has type {type(self.run).__name__}, expected {self.driver.config_type.__name__}"
-        )
-        return self.driver.build_target(self.run)
+        return self.driver.build_target(self.run_cfg)
 
-    def load_dataloaders(
+    def build_train_loader(
         self,
         *,
-        train_batch_size: int,
-        eval_batch_size: int,
+        device: str,
+        batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
-        device: str = "cpu",
-    ) -> tuple[DataLoader[Any], DataLoader[Any]]:
-        assert self.driver is not None, (
-            "Run has no driver. Build dataloaders explicitly for custom runs."
-        )
-        assert isinstance(self.run, self.driver.config_type), (
-            f"Run has type {type(self.run).__name__}, expected {self.driver.config_type.__name__}"
-        )
-        return self.driver.build_dataloaders(
-            self.run,
-            train_batch_size=train_batch_size,
-            eval_batch_size=eval_batch_size,
-            dist_state=dist_state,
+    ) -> DataLoader[Any]:
+        return self.driver.build_train_loader(
+            self.run_cfg,
             device=device,
+            batch_size_override=batch_size_override,
+            dist_state=dist_state,
         )
 
-    def load_model(self, target: PDTarget | None = None) -> ComponentModel:
-        target = target if target is not None else self.load_target()
+    def build_eval_loader(
+        self,
+        *,
+        device: str,
+        batch_size_override: int | None = None,
+        dist_state: DistributedState | None = None,
+    ) -> DataLoader[Any]:
+        return self.driver.build_eval_loader(
+            self.run_cfg,
+            device=device,
+            batch_size_override=batch_size_override,
+            dist_state=dist_state,
+        )
+
+    def load_model(self) -> ComponentModel:
+        target = self.load_target()
         return ComponentModel.from_checkpoint(
             config=self.pd_config,
             checkpoint_path=self.checkpoint_path,
@@ -100,17 +117,9 @@ class PDRun:
         )
 
 
-def load_component_model(
-    path: ModelPath,
-    *,
-    target: PDTarget | None = None,
-) -> ComponentModel:
-    """Load a `ComponentModel` from a saved PD run.
+def load_component_model(path: ModelPath) -> ComponentModel:
+    """Load a `ComponentModel` from a saved driver-mediated PD run.
 
-    Args:
-        path: Run directory, wandb path (`wandb:entity/project/runs/id`), or checkpoint file.
-        target: Optional override. When ``None``, the run's driver reconstructs the target
-            from the saved `Run` config. For manual/notebook runs (no driver), ``target`` is
-            required.
+    Thin convenience over `SavedRun.from_path(path).load_model()`.
     """
-    return PDRun.from_path(path).load_model(target=target)
+    return SavedRun.from_path(path).load_model()

@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import wandb
-from wandb.apis.public import Run
+from wandb.apis.public import Run as WandbRun
 
 from param_decomp.log import logger
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
@@ -12,7 +12,6 @@ from param_decomp.utils.general_utils import fetch_latest_local_checkpoint
 from param_decomp.utils.wandb_utils import (
     download_wandb_file,
     fetch_latest_wandb_checkpoint,
-    fetch_wandb_run_dir,
     parse_wandb_run_path,
 )
 
@@ -24,6 +23,10 @@ class RunFiles:
     config_path: Path
     checkpoint_path: Path
     extras: dict[str, Path] = field(default_factory=dict)
+
+
+def _wandb_cache_dir(project: str, run_id: str) -> Path:
+    return PARAM_DECOMP_OUT_DIR / "runs" / f"{project}-{run_id}"
 
 
 def resolve_run_files(
@@ -56,7 +59,7 @@ def resolve_run_files(
         )
 
     wandb_path = f"{entity}/{project}/{run_id}"
-    run_dir = PARAM_DECOMP_OUT_DIR / "runs" / f"{project}-{run_id}"
+    run_dir = _wandb_cache_dir(project, run_id)
 
     if run_dir.exists():
         logger.info(f"Loading run from {run_dir}")
@@ -95,15 +98,14 @@ def resolve_config_path(path: ModelPath, *, config_filename: str) -> Path:
         path_obj = Path(path)
         return (path_obj if path_obj.is_dir() else path_obj.parent) / config_filename
 
-    run_dir = PARAM_DECOMP_OUT_DIR / "runs" / f"{project}-{run_id}"
+    run_dir = _wandb_cache_dir(project, run_id)
     config_path = run_dir / config_filename
     if config_path.exists():
         return config_path
 
     logger.info(f"Downloading config from wandb: {entity}/{project}/{run_id}")
     api = wandb.Api()
-    run: Run = api.run(f"{entity}/{project}/{run_id}")
-    run_dir = fetch_wandb_run_dir(run.id)
+    run: WandbRun = api.run(f"{entity}/{project}/{run_id}")
     return download_wandb_file(run, run_dir, config_filename)
 
 
@@ -139,8 +141,9 @@ def _download_run_files_from_wandb(
     extras_from_config_path: Callable[[Path], list[str]],
 ) -> RunFiles:
     api = wandb.Api()
-    run: Run = api.run(wandb_path)
-    run_dir = fetch_wandb_run_dir(run.id)
+    run: WandbRun = api.run(wandb_path)
+    _entity, project, run_id = parse_wandb_run_path(wandb_path)
+    run_dir = _wandb_cache_dir(project, run_id)
 
     config_path = download_wandb_file(run, run_dir, config_filename)
     if checkpoint_filename is not None:

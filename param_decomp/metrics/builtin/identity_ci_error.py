@@ -38,6 +38,8 @@ class IdentityCIError(Metric[IdentityCIErrorConfig]):
 
     @override
     def update(self, ctx: MetricContext) -> None:
+        # `compute` ignores eval-batch contents and instead synthesizes a single-feature probe
+        # from `batch_shape` + `sampling`, so only the first batch's metadata is needed.
         if self.batch_shape is None:
             input_tensor = ctx.batch[0] if isinstance(ctx.batch, tuple) else ctx.batch
             self.batch_shape = tuple(input_tensor.shape)

@@ -269,13 +269,14 @@ def main() -> None:
                     weight_deltas=None,
                 )
             with timer.phase("ppgd_recon"), _autocast():
-                loss_ppgd = ppgd_state.compute_recon_loss(
+                sum_loss, n_examples = ppgd_state.compute_recon_sum_and_n(
                     model=component_model,
                     batch=input_ids,
                     target_out=target_logits.detach(),
                     ci=ci.lower_leaky,
                     weight_deltas=None,
                 )
+                loss_ppgd = sum_loss / n_examples
 
             total = 1e6 * loss_faith + 1e-4 * loss_imp + 0.5 * loss_stoch + 0.5 * loss_ppgd
 

@@ -52,8 +52,7 @@ the data config should have `max_seq_len: 513`. This is enforced by an assertion
 - `run_info.py` - Load trained models from W&B or local paths
 - `models/` - Model implementations
 - `configs/` - Training configuration YAML files
-- `scripts/run_slurm_cli.py` - CLI entry point
-- `scripts/run_slurm.py` - SLURM submission and local run logic
+- `scripts/run_slurm.py` - CLI entry point + SLURM submission + local run logic
 
 ## Loading Trained Models
 
@@ -94,7 +93,9 @@ PARAM_DECOMP_OUT_DIR/target_models/
 After training, models can be decomposed using PD:
 
 ```yaml
-# In param_decomp/experiments/lm/*.yaml
-pretrained_model_class: param_decomp.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
-pretrained_model_name: wandb:goodfire/spd/runs/<run_id>
+# In param_decomp/experiments/lm/*.yaml, under `target:`
+target:
+  model_class: param_decomp.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
+  model_name: goodfire/spd/runs/<run_id>
+  model_path: null
 ```

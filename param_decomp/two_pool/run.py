@@ -479,13 +479,14 @@ def step_pool_b(
 
     # 5. Final PPGD recon loss with refined sources
     with p.phase("b/5_ppgd_recon"), _autocast(cfg.bf16_autocast):
-        loss_ppgd = ppgd_state.compute_recon_loss(
+        sum_loss, n_examples = ppgd_state.compute_recon_sum_and_n(
             model=component_model,
             batch=batch_local,
             target_out=target_logits,
             ci=ci_scratch,
             weight_deltas=None,
         )
+        loss_ppgd = sum_loss / n_examples
     # Scale by 1/N so a SUM-reduce of V/U grads across pool B equals the full-batch grad.
     total_ppgd = cfg.coeff_ppgd * loss_ppgd / layout.world.n_pool_b
 

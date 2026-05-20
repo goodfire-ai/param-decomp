@@ -18,5 +18,11 @@ def register_metric[T: type](cls: T) -> T:
     assert name not in METRIC_REGISTRY, (
         f"duplicate metric name {name!r}: {METRIC_REGISTRY[name]} vs {cls}"
     )
+    assert "section" in {k for c in cls.__mro__ for k in vars(c)}, (
+        f"@register_metric {name!r}: missing required ClassVar `section`"
+    )
+    assert "config_type" in {k for c in cls.__mro__ for k in vars(c)}, (
+        f"@register_metric {name!r}: missing required ClassVar `config_type`"
+    )
     METRIC_REGISTRY[name] = cls  # type: ignore[assignment]
     return cls

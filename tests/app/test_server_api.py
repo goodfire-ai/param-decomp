@@ -126,9 +126,9 @@ def app_with_state():
 
         from param_decomp.configs import RuntimeConfig
         from param_decomp.experiments.lm.data import LMDataConfig
-        from param_decomp.experiments.lm.experiment import LMRun, LMTargetConfig
+        from param_decomp.experiments.lm.experiment import LMRunConfig, LMTargetConfig
 
-        lm_exp = LMRun(
+        lm_exp = LMRunConfig(
             driver_path="param_decomp.experiments.lm.experiment:Driver",
             pd=config,
             logging=LoggingConfig(

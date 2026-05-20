@@ -27,10 +27,12 @@ from param_decomp.metrics.builtin.stochastic_recon_layerwise_loss import (
 )
 from param_decomp.metrics.builtin.stochastic_recon_loss import StochasticReconLossConfig
 from param_decomp.models.batch_and_loss_fns import (
+    PDTarget,
     make_run_batch,
     recon_loss_kl,
 )
 from param_decomp.run_pd import optimize
+from param_decomp.run_sink import RunSink
 from param_decomp.utils.general_utils import set_seed
 
 
@@ -121,17 +123,21 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         collate_fn=collate_input_ids,
     )
 
+    target = PDTarget(
+        model=target_model,
+        run_batch=make_run_batch("logits"),
+        reconstruction_loss=recon_loss_kl,
+    )
+
     optimize(
-        target_model=target_model,
-        config=config,
+        target=target,
+        train_loader=train_loader,
+        eval_loader=eval_loader,
+        pd_config=config,
         logging_config=logging_config,
         runtime_config=RuntimeConfig(),
         device=device,
-        train_loader=train_loader,
-        eval_loader=eval_loader,
-        run_batch=make_run_batch("logits"),
-        reconstruction_loss=recon_loss_kl,
-        out_dir=tmp_path,
+        sink=RunSink.local(tmp_path),
     )
 
     assert True, "Test completed successfully"

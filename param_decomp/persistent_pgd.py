@@ -223,13 +223,13 @@ class PersistentPGDState:
         """
         all_layers = AllLayersRouter()
         for _ in range(self._n_warmup_steps):
-            loss = self.compute_recon_loss(
+            sum_loss, n = self.compute_recon_sum_and_n(
                 model, batch, target_out, ci, weight_deltas, router=all_layers
             )
-            grads = self.get_grads(loss, retain_graph=False)
+            grads = self.get_grads(sum_loss / n, retain_graph=False)
             self.step(grads)
 
-    def compute_recon_loss(
+    def compute_recon_sum_and_n(
         self,
         model: ComponentModel,
         batch: Int[Tensor, "..."] | Float[Tensor, "..."],
@@ -237,8 +237,12 @@ class PersistentPGDState:
         ci: dict[str, Float[Tensor, "... C"]],
         weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
         router: Router | None = None,
-    ) -> Float[Tensor, ""]:
-        """Pure forward pass that returns the PPGD reconstruction loss. No source mutation."""
+    ) -> tuple[Float[Tensor, ""], int]:
+        """Pure forward pass returning (sum_loss, n_examples) over all mask samples.
+
+        Returning the unreduced pair lets eval accumulators weight by example count
+        across batches; training callers divide locally to get a scalar loss.
+        """
         batch_dims = next(iter(ci.values())).shape[:-1]
         router = router or self._router
         ppgd_sources = self.get_effective_sources()
@@ -262,7 +266,7 @@ class PersistentPGDState:
             )
             sum_loss = sum_loss + loss
             n_examples += n
-        return sum_loss / n_examples
+        return sum_loss, n_examples
 
 
 def _get_router_for_ppgd_config(

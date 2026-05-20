@@ -1,6 +1,7 @@
 """Config classes of various types."""
 
 import importlib
+from functools import cached_property
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
@@ -275,19 +276,11 @@ def _parse_metric_cfg(metric_name: str, raw: Any, *, train_loss: bool) -> Metric
 
 
 class RuntimeConfig(BaseConfig):
-    """Compute substrate the algorithm runs on.
+    """Compute substrate: device, precision, data-parallelism degree.
 
-    The three configs form a determinism ladder:
-
-    1. Same ``PDConfig`` + same ``RuntimeConfig`` → bit-identical trained weights.
-    2. Same ``PDConfig``, different ``RuntimeConfig`` → same algorithm, weights differ
-       only via numerical effects (precision, device).
-    3. Same ``PDConfig`` + same ``RuntimeConfig``, different ``LoggingConfig`` →
-       bit-identical weights; only what was observed differs.
-
-    ``RuntimeConfig`` is class 2: device placement, precision, parallelism degree —
-    things that perturb numerics without changing the algorithm. Future home for
-    NCCL flags, gradient accumulation steps, fp8 variants, etc.
+    Perturbs numerics but doesn't change the algorithm. Future home for NCCL flags,
+    gradient accumulation steps, fp8 variants, etc. See CLAUDE.md for how the
+    ``PDConfig`` / ``RuntimeConfig`` / ``LoggingConfig`` triple splits.
     """
 
     autocast_bf16: bool = Field(
@@ -320,12 +313,10 @@ class RuntimeConfig(BaseConfig):
 
 
 class LoggingConfig(BaseConfig):
-    """Observation-only settings: cadence + eval-only metrics + display thresholds.
+    """Observation-only settings: cadence, eval-only metrics, display thresholds.
 
-    Determinism class 3 in the PDConfig/RuntimeConfig/LoggingConfig ladder: fields
-    here never touch the optimizer. Two runs with identical ``PDConfig`` +
-    ``RuntimeConfig`` and different ``LoggingConfig`` produce bit-identical weights —
-    only what you observed about the run differs.
+    Fields here don't touch the optimizer. See CLAUDE.md for how the
+    ``PDConfig`` / ``RuntimeConfig`` / ``LoggingConfig`` triple splits.
     """
 
     train_log_freq: PositiveInt = Field(
@@ -365,16 +356,6 @@ class LoggingConfig(BaseConfig):
             " `pd.loss_metrics` are evaluated automatically and should not be repeated here."
         ),
     )
-    wandb_run_name: str | None = Field(
-        default=None,
-        description="W&B run display name. None lets W&B auto-name.",
-    )
-    view_meta: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Free-form labels for downstream grouping/coloring/reports (e.g. "
-        "`{'lr_ratio': 0.1, 'size': 'medium'}`). Populated by sweep generators; surfaced "
-        "to W&B under a `view_meta/` prefix.",
-    )
 
     @model_validator(mode="before")
     @classmethod
@@ -382,7 +363,7 @@ class LoggingConfig(BaseConfig):
         """Ensure built-in `@register_metric` decorators have fired before `eval_metrics`
         looks names up in `METRIC_REGISTRY`. External metric modules are imported by
         `PDConfig._import_metric_modules`; rely on field ordering on the parent
-        parent `Run` (pd validated before logging) for those to be visible here.
+        parent `RunConfig` (pd validated before logging) for those to be visible here.
         """
         from param_decomp.metrics import discover_metrics
 
@@ -411,12 +392,10 @@ class LoggingConfig(BaseConfig):
 
 
 class PDConfig(BaseConfig):
-    """Algorithm specification.
+    """Algorithm specification: seed, CI function, losses, optimizers, module info.
 
-    Determinism class 1 in the PDConfig/RuntimeConfig/LoggingConfig ladder: these are
-    the fields that determine the trained weights given a fixed substrate. Two runs
-    with identical ``PDConfig`` and identical ``RuntimeConfig`` produce bit-identical
-    weights; flipping any field here changes what algorithm runs.
+    Flipping any field here changes what algorithm runs. See CLAUDE.md for how the
+    ``PDConfig`` / ``RuntimeConfig`` / ``LoggingConfig`` triple splits.
     """
 
     # --- General ---
@@ -450,7 +429,7 @@ class PDConfig(BaseConfig):
         description="List of identity module patterns with C values.",
     )
 
-    @property
+    @cached_property
     def all_module_info(self) -> list[ModulePatternInfoConfig]:
         result = list(self.module_info)
         if self.identity_module_info is not None:
@@ -494,7 +473,7 @@ class PDConfig(BaseConfig):
         before the `loss_metrics` field validator looks names up in `METRIC_REGISTRY`.
         Idempotent: re-validation in the same process is a no-op. External-metric
         visibility on the sibling `LoggingConfig.eval_metrics` relies on field ordering
-        in the parent `Run` (pd validated before logging).
+        in the parent `RunConfig` (pd validated before logging).
         """
         from param_decomp.metrics import discover_metrics
 
@@ -546,3 +525,24 @@ class PDConfig(BaseConfig):
         for metric_name, cfg in self.loss_metrics.items():
             assert cfg.coeff is not None, f"loss_metrics.{metric_name!r} must have a coeff"
         return self
+
+    def validate_pgd_scope(self, *, world_size: int) -> None:
+        """Assert persistent-PGD `repeat_across_batch` divides the per-rank training batch size.
+
+        Takes ``world_size`` directly (not a ``DistributedState``) so this module
+        doesn't have to know about distributed plumbing. Callers pass
+        ``dist_state.world_size if dist_state is not None else 1``.
+        """
+        assert self.batch_size % world_size == 0, (
+            f"batch_size {self.batch_size} not divisible by world size {world_size}"
+        )
+        per_rank = self.batch_size // world_size
+        for metric_name, cfg in self.loss_metrics.items():
+            if isinstance(
+                cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
+            ) and isinstance(cfg.scope, RepeatAcrossBatchScope):
+                n = cfg.scope.n_sources
+                assert per_rank % n == 0, (
+                    f"{metric_name}: repeat_across_batch n_sources={n} must divide "
+                    f"per-rank batch_size={per_rank}"
+                )

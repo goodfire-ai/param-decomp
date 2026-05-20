@@ -38,7 +38,7 @@ backend/
 ├── state.py               # Singleton StateManager + HarvestRepo (lazy-loaded harvest data)
 ├── compute.py             # Core attribution computation + intervention evaluation
 ├── app_tokenizer.py       # AppTokenizer: wraps HF tokenizers for display/encoding
-├── (topology lives at param_decomp/topology.py — TransformerTopology)
+├── (topology lives at param_decomp/topology/ — TransformerTopology)
 ├── schemas.py             # Pydantic API models
 ├── dependencies.py        # FastAPI dependency injection
 ├── utils.py               # Logging/timing utilities

@@ -7,7 +7,7 @@ eval time additionally tracks hidden-activation MSE breakdowns. The optimizer lo
 that needs to bracket `total_loss.backward()`.
 """
 
-from typing import Any, ClassVar, override
+from typing import ClassVar, override
 
 import torch
 from jaxtyping import Float
@@ -16,7 +16,6 @@ from torch import Tensor
 from param_decomp.configs import (
     PersistentPGDReconLossConfig,
     PersistentPGDReconSubsetLossConfig,
-    _PersistentPGDBaseConfig,
 )
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.builtin.hidden_acts_recon_loss import (
@@ -26,35 +25,30 @@ from param_decomp.metrics.builtin.hidden_acts_recon_loss import (
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.persistent_pgd import PersistentPGDState, get_ppgd_mask_infos
+from param_decomp.persistent_pgd import PersistentPGDState, PPGDSources, get_ppgd_mask_infos
 from param_decomp.utils.distributed_utils import all_reduce
 
 
-class _PersistentPGDReconBase(Metric[_PersistentPGDBaseConfig]):
+class _PersistentPGDReconBase[
+    TConfig: PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
+](Metric[TConfig]):
     """Shared logic between all-layers and subset PPGD recon metrics."""
 
     section: ClassVar[str] = "loss"
     slow: ClassVar[bool] = True
 
-    def __init__(
-        self, cfg: _PersistentPGDBaseConfig, *, model: ComponentModel, device: str
-    ) -> None:
+    def __init__(self, cfg: TConfig, *, model: ComponentModel, device: str) -> None:
         self.cfg = cfg
         self.model = model
         self.device = device
         self.state: PersistentPGDState | None = None
-        self._pending_source_grads: Any = None
+        self._pending_source_grads: PPGDSources | None = None
         self.reset()
 
     def _ensure_state(self, ctx: MetricContext) -> None:
         if self.state is not None:
             return
         batch_dims = ctx.target_out.shape[:-1]
-        # cfg is one of PersistentPGDReconLossConfig / PersistentPGDReconSubsetLossConfig (the two
-        # concrete subclasses); the type is fixed in each registered metric class below.
-        assert isinstance(
-            self.cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
-        )
         self.state = PersistentPGDState(
             module_to_c=self.model.module_to_c,
             batch_dims=batch_dims,
@@ -93,7 +87,7 @@ class _PersistentPGDReconBase(Metric[_PersistentPGDBaseConfig]):
                 weight_deltas=wd,
             )
 
-        loss = self.state.compute_recon_loss(
+        sum_loss, n_examples = self.state.compute_recon_sum_and_n(
             model=self.model,
             batch=ctx.batch,
             target_out=ctx.target_out,
@@ -102,11 +96,11 @@ class _PersistentPGDReconBase(Metric[_PersistentPGDBaseConfig]):
         )
 
         if ctx.is_eval:
-            self._recon_sum_loss += loss.detach()
-            self._recon_n_examples += 1
+            self._recon_sum_loss += sum_loss.detach()
+            self._recon_n_examples += n_examples
             self._accum_hidden_acts(ctx, wd)
 
-        return loss
+        return sum_loss / n_examples
 
     def _accum_hidden_acts(
         self,
@@ -167,7 +161,7 @@ class _PersistentPGDReconBase(Metric[_PersistentPGDBaseConfig]):
 
 
 @register_metric
-class PersistentPGDReconLoss(_PersistentPGDReconBase):
+class PersistentPGDReconLoss(_PersistentPGDReconBase[PersistentPGDReconLossConfig]):
     """Persistent PGD adversarial-mask reconstruction loss (routes to all layers)."""
 
     config_type = PersistentPGDReconLossConfig
@@ -175,7 +169,7 @@ class PersistentPGDReconLoss(_PersistentPGDReconBase):
 
 
 @register_metric
-class PersistentPGDReconSubsetLoss(_PersistentPGDReconBase):
+class PersistentPGDReconSubsetLoss(_PersistentPGDReconBase[PersistentPGDReconSubsetLossConfig]):
     """Persistent PGD adversarial-mask reconstruction loss (subset routing)."""
 
     config_type = PersistentPGDReconSubsetLossConfig

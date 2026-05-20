@@ -42,22 +42,14 @@ def _save_text(data: str, path: Path | str, encoding: str = "utf-8") -> None:
 
 
 def save_file(data: dict[str, Any] | Any, path: Path | str, **kwargs: Any) -> None:
-    """Save a file.
+    """Write ``data`` to ``path``, dispatching on the file extension.
 
-    NOTE: This function was originally designed to save files with specific permissions,
-    bypassing the system's umask. This is not needed anymore, but we're keeping this
-    abstraction for convenience and brevity.
+    Ensures the parent directory exists. Format:
 
-    File type is determined by extension:
-    - .json: Save as JSON
-    - .yaml/.yml: Save as YAML
-    - .pth/.pt: Save as PyTorch model
-    - .txt or other: Save as plain text (data must be string)
-
-    Args:
-        data: Data to save (format depends on file type)
-        path: File path to save to
-        **kwargs: Additional arguments passed to the specific save function
+    - ``.json`` → JSON via ``json.dump``
+    - ``.yaml`` / ``.yml`` → YAML via ``yaml.dump`` (sort_keys=False)
+    - ``.pth`` / ``.pt`` → ``torch.save``
+    - anything else → plain text (``data`` must be a string)
     """
     path = Path(path)
     suffix = path.suffix.lower()

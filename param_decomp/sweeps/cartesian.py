@@ -13,51 +13,68 @@ from typing import Any
 
 import yaml
 
-from param_decomp.experiments.driver import load_driver
-from param_decomp.run import Run
+from param_decomp.configs import PDConfig
+from param_decomp.run import RunConfig
 from param_decomp.settings import REPO_ROOT
-from param_decomp.sweeps.spec import SweepSpec
+from param_decomp.sweeps.spec import SweepData, SweepSpec
 from param_decomp.utils.run_utils import apply_nested_updates
+
+_PD_PREFIX = "pd."
 
 
 def cartesian_product(
-    base_config: Run | dict[str, Any],
+    base_config: RunConfig,
     grid: dict[str, list[Any]],
     *,
+    n_agents: int,
     description: str,
     driver_path: str,
 ) -> SweepSpec:
     """Cartesian product of dot-pathed axes over a base config.
 
-    Each axis key is a dotted path into ``base_config`` (e.g.
-    ``"pd.loss_metrics.importance_minimality.coeff"``). Axis values are
-    recorded in each run's ``logging.view_meta`` so W&B can group/color by them.
+    Each axis key is a dotted path into ``base_config.pd`` (e.g.
+    ``"pd.loss_metrics.importance_minimality.coeff"``). Only ``pd.*`` keys are
+    supported — ``logging`` and ``runtime`` are hoisted to the ``SweepSpec``
+    and shared across runs. Axis values are recorded in each run's
+    ``view_meta`` so W&B can group/color by them.
     """
     assert grid, "cartesian_product requires a non-empty grid"
     for axis, values in grid.items():
+        assert axis.startswith(_PD_PREFIX), (
+            f"grid keys must start with 'pd.' (logging/runtime are shared across runs "
+            f"and cannot be swept); got {axis!r}"
+        )
         assert isinstance(values, list) and values, (
             f"grid['{axis}'] must be a non-empty list, got {values!r}"
         )
 
     axes = list(grid.keys())
     value_lists = [grid[a] for a in axes]
-    base_config_data = _config_data(base_config)
-    config_type = load_driver(driver_path).config_type
-    runs: list[Run] = []
+
+    base_config_data = base_config.model_dump(mode="json")
+
+    swept_datas: list[SweepData] = []
+
     for combo in itertools.product(*value_lists):
         updates = dict(zip(axes, combo, strict=True))
         config_data = apply_nested_updates(base_config_data, updates)
-        name = "_".join(f"{_short_axis(a)}={_short_value(v)}" for a, v in updates.items())
-        logging_data = {
-            **config_data.get("logging", {}),
-            "wandb_run_name": name,
-            "view_meta": dict(updates),
-        }
-        run = config_type.model_validate(
-            {**config_data, "driver_path": driver_path, "logging": logging_data}
+
+        sweep_data = SweepData(
+            name="_".join(f"{_short_axis(a)}={_short_value(v)}" for a, v in updates.items()),
+            pd_config=PDConfig.model_validate(config_data["pd"]),
+            view_meta=dict(updates),
         )
-        runs.append(run)
-    return SweepSpec(description=description, runs=runs)
+
+        swept_datas.append(sweep_data)
+
+    return SweepSpec(
+        description=description,
+        driver_path=driver_path,
+        logging=base_config.logging,
+        runtime=base_config.runtime,
+        n_agents=n_agents,
+        swept_datas=swept_datas,
+    )
 
 
 def example_cartesian_sweep() -> SweepSpec:
@@ -69,10 +86,11 @@ def example_cartesian_sweep() -> SweepSpec:
     """
     base_config_path = REPO_ROOT / "param_decomp" / "experiments" / "tms" / "tms_5-2_config.yaml"
     with open(base_config_path) as f:
-        base_config = yaml.safe_load(f)
+        base_config = RunConfig.from_dict(yaml.safe_load(f))
     return cartesian_product(
         base_config=base_config,
         grid={"pd.seed": [0, 1, 2]},
+        n_agents=3,
         description="Example: tms_5-2 seed sweep",
         driver_path="param_decomp.experiments.tms.experiment:Driver",
     )
@@ -90,9 +108,3 @@ def _short_value(v: Any) -> str:
     if isinstance(v, list):
         return "-".join(_short_value(x) for x in v)
     return str(v).replace("/", "_")
-
-
-def _config_data(config: Run | dict[str, Any]) -> dict[str, Any]:
-    data = config.model_dump(mode="json") if isinstance(config, Run) else dict(config)
-    data.pop("run_id", None)
-    return data

@@ -1,4 +1,5 @@
 import json
+from functools import cached_property
 from pathlib import Path
 from typing import ClassVar, Self
 
@@ -10,12 +11,13 @@ class BaseConfig(BaseModel):
     """Pydantic BaseModel suited for configs.
 
     Uses the pydantic `model_config` to enforce `extra="forbid"` and `frozen=True` and add loading
-    and saving from/to YAML, JSON.
+    and saving from/to YAML, JSON. ``cached_property`` is in ``ignored_types`` so subclasses can
+    use it for derived state on frozen models.
     """
 
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
-
-    # TODO: add a "config_type" field, which is set to the class name, so that when loading a config we can check whether the config type matches the expected class
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        extra="forbid", frozen=True, ignored_types=(cached_property,)
+    )
 
     @classmethod
     def from_file(cls, path: Path | str) -> Self:

@@ -753,13 +753,14 @@ class TestPersistentPGDReconLoss:
         initial_sources = {k: v.clone() for k, v in state.sources.items()}
 
         # Compute loss and gradients
-        loss = state.compute_recon_loss(
+        sum_loss, n = state.compute_recon_sum_and_n(
             model=model,
             batch=batch,
             target_out=target_out,
             ci=ci,
             weight_deltas=None,
         )
+        loss = sum_loss / n
         grad = state.get_grads(loss)
 
         # Apply PGD step
@@ -805,13 +806,14 @@ class TestPersistentPGDReconLoss:
         sources_history = []
         for _ in range(5):
             sources_history.append({k: v.clone() for k, v in state.sources.items()})
-            loss = state.compute_recon_loss(
+            sum_loss, n = state.compute_recon_sum_and_n(
                 model=model,
                 batch=batch,
                 target_out=target_out,
                 ci=ci,
                 weight_deltas=None,
             )
+            loss = sum_loss / n
             grad = state.get_grads(loss)
             state.step(grad)
             assert loss >= 0.0
@@ -858,13 +860,14 @@ class TestPersistentPGDReconLoss:
         # Masks should have C+1 elements when using delta component
         assert state.sources["fc"].shape[-1] == model.module_to_c["fc"] + 1
 
-        loss = state.compute_recon_loss(
+        sum_loss, n = state.compute_recon_sum_and_n(
             model=model,
             batch=batch,
             target_out=target_out,
             ci=ci,
             weight_deltas=weight_deltas,
         )
+        loss = sum_loss / n
         grad = state.get_grads(loss)
         state.step(grad)
 
@@ -921,13 +924,14 @@ class TestPersistentPGDReconLoss:
         # Masks should have shape (1, 1, C) for single_mask scope - single mask shared across batch
         assert state.sources["fc"].shape == (1, 1, model.module_to_c["fc"])
 
-        loss = state.compute_recon_loss(
+        sum_loss, n = state.compute_recon_sum_and_n(
             model=model,
             batch=batch,
             target_out=target_out,
             ci=ci,
             weight_deltas=None,
         )
+        loss = sum_loss / n
         grad = state.get_grads(loss)
         state.step(grad)
 
@@ -960,13 +964,14 @@ class TestPersistentPGDReconLoss:
             reconstruction_loss=recon_loss_mse,
         )
 
-        loss = state.compute_recon_loss(
+        sum_loss, n = state.compute_recon_sum_and_n(
             model=model,
             batch=batch,
             target_out=target_out,
             ci=ci,
             weight_deltas=None,
         )
+        loss = sum_loss / n
         grad = state.get_grads(loss)
         state.step(grad)
 

@@ -9,15 +9,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import wandb
 from jaxtyping import Float
 from pydantic import BaseModel
 from pydantic.v1.utils import deep_update
 from torch import Tensor
 
 from param_decomp.configs import ScheduleConfig
-from param_decomp.run import RUN_METADATA_FILENAME, Run
-from param_decomp.utils.run_utils import save_file
 
 # Avoid seaborn package installation (sns.color_palette("colorblind").as_hex())
 COLOR_PALETTE = [
@@ -196,25 +193,6 @@ def fetch_latest_local_checkpoint(run_dir: Path, prefix: str | None = None) -> P
     latest_checkpoint_name = fetch_latest_checkpoint_name(filenames, prefix)
     latest_checkpoint_local = run_dir / latest_checkpoint_name
     return latest_checkpoint_local
-
-
-def save_pre_run_info(
-    save_to_wandb: bool,
-    out_dir: Path,
-    run: Run,
-    artifacts: dict[str, Any],
-) -> None:
-    """Save the run config and artifacts locally and optionally to wandb."""
-
-    run.write(out_dir / RUN_METADATA_FILENAME)
-
-    for filename, data in artifacts.items():
-        save_file(data, out_dir / filename)
-
-    if save_to_wandb:
-        all_filenames = [RUN_METADATA_FILENAME, *artifacts]
-        for filename in all_filenames:
-            wandb.save(str(out_dir / filename), base_path=out_dir, policy="now")
 
 
 class _HasDevice(Protocol):
