@@ -421,39 +421,40 @@ def _validate_pgd_scope(config: PDConfig, dist_state: DistributedState | None) -
 
 
 def run_pd(
-    id: str,
-    pd_config: PDConfig,
-    logging_config: LoggingConfig,
-    runtime_config: RuntimeConfig,
+    run_cfg: RunConfig,
     target: PDTarget,
     train_loader: DataLoader[Any],
     eval_loader: DataLoader[Any],
     device: str,
     *,
-    run_cfg: RunConfig | None = None,
     wandb_project: str | None = None,
     wandb_tags: list[str] | None = None,
 ) -> Path | None:
-    # """Run a full PD decomposition: setup, optimize, cleanup.
+    """Run a full PD decomposition: setup, optimize, cleanup.
 
-    # `run` is written to ``run_metadata.yaml``.  Driver-mediated callers
-    # (via ``experiments/runner.py``) pass a fully populated ``Run``;
-    # notebook callers can omit it and a minimal one is synthesized.
+    ``run_cfg`` is the complete reproducible spec for this run; it is written
+    to ``run_metadata.yaml`` next to the checkpoint so the run can be reloaded
+    later. Notebook callers construct one directly (with ``driver_path=None``
+    and their own ``PDTarget``); driver-mediated callers go through
+    ``experiments/_worker.py`` which builds the ``RunConfig`` from YAML.
 
-    # ``wandb_project`` is a deploy-time parameter (which W&B account/project to log
-    # to), not part of the reproducible ``Run`` config. ``None`` disables W&B.
+    ``wandb_project`` is a deploy-time parameter (which W&B account/project to
+    log to), not part of the reproducible ``RunConfig``. ``None`` disables W&B.
 
-    # All ranks call this function. Only the main process does wandb/logging setup.
-    # Returns the output directory on the main process and None on other ranks.
-    # """
-    _validate_pgd_scope(pd_config, get_distributed_state())
+    All ranks call this function. Only the main process does wandb/logging
+    setup. Returns the output directory on the main process and ``None`` on
+    other ranks.
+    """
+    _validate_pgd_scope(run_cfg.pd, get_distributed_state())
 
     out_dir: Path | None
     if is_main_process():
-        out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / id
+        out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_cfg.run_id
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"Run ID: {id}")
+        run_cfg.write(out_dir / RUN_METADATA_FILENAME)
+
+        logger.info(f"Run ID: {run_cfg.run_id}")
         logger.info(f"Output directory: {out_dir}")
 
         tags = list(wandb_tags or [])
@@ -464,21 +465,18 @@ def run_pd(
         if wandb_project:
             init_wandb(
                 wandb_project,
-                id,
+                run_cfg.run_id,
                 configs={
-                    "pd": pd_config,
-                    "logging": logging_config,
-                    "runtime": runtime_config,
+                    "pd": run_cfg.pd,
+                    "logging": run_cfg.logging,
+                    "runtime": run_cfg.runtime,
                 },
-                name=logging_config.wandb_run_name,
+                name=run_cfg.name,
                 tags=tags,
-                view_meta=logging_config.view_meta,
+                view_meta=run_cfg.view_meta,
             )
 
-        logger.info(pd_config)
-
-        if run_cfg is not None:
-            run_cfg.write(out_dir / RUN_METADATA_FILENAME)
+        logger.info(run_cfg.pd)
 
         if wandb_project is not None:
             wandb.save(str(out_dir / RUN_METADATA_FILENAME), base_path=out_dir, policy="now")
@@ -488,9 +486,9 @@ def run_pd(
 
     optimize(
         target_model=target.model,
-        config=pd_config,
-        logging_config=logging_config,
-        runtime_config=runtime_config,
+        config=run_cfg.pd,
+        logging_config=run_cfg.logging,
+        runtime_config=run_cfg.runtime,
         device=device,
         train_loader=train_loader,
         eval_loader=eval_loader,

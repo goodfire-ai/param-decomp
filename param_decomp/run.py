@@ -1,4 +1,4 @@
-"""The `Run` object: one type for "what a PD run is".
+"""The `RunConfig` object: serializable spec for a PD run.
 
 Holds the driver import path plus the three determinism-tier configs (``pd``,
 ``logging``, ``runtime``). Driver-specific subclasses (``LMRun``, ``TMSRun``,
@@ -26,7 +26,7 @@ RUN_METADATA_FILENAME = "run_metadata.yaml"
 class RunConfig(BaseConfig):
     """Top-level run config.
 
-    ``run_id`` identifies the output directory and W&B run. Fresh ``Run``
+    ``run_id`` identifies the output directory and W&B run. Fresh ``RunConfig``
     objects generate one automatically; YAML / dict inputs that already
     contain a value preserve it.
 
@@ -35,11 +35,18 @@ class RunConfig(BaseConfig):
     callers of ``run_pd`` who build their own ``PDTarget``.
     """
 
+    name: str | None = None
     run_id: str = Field(default_factory=lambda: generate_run_id("param_decomp"))
     driver_path: str | None
     pd: PDConfig
     logging: LoggingConfig
     runtime: RuntimeConfig
+    view_meta: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Free-form labels for downstream grouping/coloring/reports (e.g. "
+        "`{'lr_ratio': 0.1, 'size': 'medium'}`). Populated by sweep generators; surfaced "
+        "to W&B under a `view_meta/` prefix.",
+    )
 
     @model_validator(mode="after")
     def validate_metric_overlap(self) -> Self:
@@ -53,16 +60,18 @@ class RunConfig(BaseConfig):
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RunConfig":
-        """Parse a dict (e.g. from YAML) into the right `Run` subclass.
+        """Parse a dict (e.g. from YAML) into the right `RunConfig` subclass.
 
-        Looks up ``driver_path`` → driver → ``config_type`` and validates the
-        dict against that subclass. When ``driver_path`` is ``None``, validates
-        as a bare ``Run``. Callers that need the concrete subtype narrow with
-        ``isinstance(run, driver.config_type)``.
+        Dispatch is driven entirely by ``data["driver_path"]``: when set, the
+        driver's ``config_type`` is used; when ``None``, the bare ``RunConfig``
+        is used. The caller class (``cls``) is intentionally not consulted —
+        every caller of this method uses ``RunConfig.from_dict(...)`` and the
+        right subtype falls out of the driver. Callers that need the concrete
+        subtype narrow with ``isinstance(run_cfg, driver.config_type)``.
         """
         driver_path = data.get("driver_path")
         if driver_path is None:
-            return cls.model_validate(data)
+            return RunConfig.model_validate(data)
         return _load_config_type(driver_path).model_validate(data)
 
     @classmethod
@@ -80,7 +89,7 @@ class RunConfig(BaseConfig):
 
 
 def _load_config_type(driver_path: str) -> type[RunConfig]:
-    """Resolve a ``module:attr`` driver path to its ``config_type`` (a ``Run`` subclass).
+    """Resolve a ``module:attr`` driver path to its ``config_type`` (a ``RunConfig`` subclass).
 
     Inlined here (rather than reusing ``experiments.driver.load_driver``) to avoid a
     static import cycle between this module and ``experiments.driver``.

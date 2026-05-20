@@ -184,7 +184,6 @@ esac
 def submit_slurm_job(
     script_content: str,
     script_name_prefix: str,
-    is_array: bool = False,
     n_array_tasks: int | None = None,
 ) -> SubmitResult:
     """Write script to disk, submit to SLURM, and set up logging.
@@ -227,8 +226,7 @@ def submit_slurm_job(
     temp_script_path.rename(final_script_path)
 
     # Create empty log file(s) for tailing
-    if is_array:
-        assert n_array_tasks is not None, "n_array_tasks required for array jobs"
+    if n_array_tasks is not None:
         for i in range(1, n_array_tasks + 1):
             (SLURM_LOGS_DIR / f"slurm-{job_id}_{i}.out").touch()
         log_pattern = str(SLURM_LOGS_DIR / f"slurm-{job_id}_*.out")

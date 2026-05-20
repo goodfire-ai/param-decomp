@@ -34,15 +34,16 @@ def run_experiment(
     wandb_project: str | None = None,
 ) -> None:
     assert run_cfg.driver_path is not None, "run_experiment requires run.driver_path to be set"
-
-    dist_state = init_distributed()
-    logger.info(f"Distributed state: {dist_state}")
-
     driver = load_driver(run_cfg.driver_path)
     assert isinstance(run_cfg, driver.config_type), (
         f"Run has type {type(run_cfg).__name__}, expected {driver.config_type.__name__}"
     )
+
+    dist_state = init_distributed()
+    logger.info(f"Distributed state: {dist_state}")
+
     set_seed(run_cfg.pd.seed)
+
     device = get_device()
 
     if is_main_process():
@@ -60,16 +61,13 @@ def run_experiment(
     )
 
     wandb_tags = [driver.name, *([launch_id] if launch_id is not None else [])]
+
     run_pd(
-        id=run_cfg.run_id,
-        pd_config=run_cfg.pd,
-        logging_config=run_cfg.logging,
-        runtime_config=run_cfg.runtime,
+        run_cfg,
         target=target,
         train_loader=train_loader,
         eval_loader=eval_loader,
         device=device,
-        run_cfg=run_cfg,
         wandb_project=wandb_project,
         wandb_tags=wandb_tags,
     )

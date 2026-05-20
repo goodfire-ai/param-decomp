@@ -365,16 +365,10 @@ class LoggingConfig(BaseConfig):
             " `pd.loss_metrics` are evaluated automatically and should not be repeated here."
         ),
     )
-    wandb_run_name: str | None = Field(
-        default=None,
-        description="W&B run display name. None lets W&B auto-name.",
-    )
-    view_meta: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Free-form labels for downstream grouping/coloring/reports (e.g. "
-        "`{'lr_ratio': 0.1, 'size': 'medium'}`). Populated by sweep generators; surfaced "
-        "to W&B under a `view_meta/` prefix.",
-    )
+    # wandb_run_name: str | None = Field(
+    #     default=None,
+    #     description="W&B run display name. None lets W&B auto-name.",
+    # )
 
     @model_validator(mode="before")
     @classmethod

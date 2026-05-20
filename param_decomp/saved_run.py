@@ -42,8 +42,7 @@ class PDRun:
         driver = load_driver(run_cfg.driver_path) if run_cfg.driver_path else None
         if driver is not None:
             assert isinstance(run_cfg, driver.config_type), (
-                f"Run has type {type(run_cfg).__name__}, "
-                f"expected {driver.config_type.__name__}"
+                f"Run has type {type(run_cfg).__name__}, expected {driver.config_type.__name__}"
             )
         return cls(
             path=files.config_path.parent,

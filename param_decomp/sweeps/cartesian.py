@@ -13,17 +13,18 @@ from typing import Any
 
 import yaml
 
-from param_decomp.experiments.driver import load_driver
+from param_decomp.configs import PDConfig
 from param_decomp.run import RunConfig
 from param_decomp.settings import REPO_ROOT
-from param_decomp.sweeps.spec import SweepSpec
+from param_decomp.sweeps.spec import SweepData, SweepSpec
 from param_decomp.utils.run_utils import apply_nested_updates
 
 
 def cartesian_product(
-    base_config: RunConfig | dict[str, Any],
+    base_config: RunConfig,
     grid: dict[str, list[Any]],
     *,
+    n_agents: int,
     description: str,
     driver_path: str,
 ) -> SweepSpec:
@@ -41,23 +42,31 @@ def cartesian_product(
 
     axes = list(grid.keys())
     value_lists = [grid[a] for a in axes]
-    base_config_data = _config_data(base_config)
-    config_type = load_driver(driver_path).config_type
-    runs: list[RunConfig] = []
+
+    base_pd_config_data = base_config.pd.model_dump(mode="json")
+
+    swept_datas: list[SweepData] = []
+
     for combo in itertools.product(*value_lists):
         updates = dict(zip(axes, combo, strict=True))
-        config_data = apply_nested_updates(base_config_data, updates)
-        name = "_".join(f"{_short_axis(a)}={_short_value(v)}" for a, v in updates.items())
-        logging_data = {
-            **config_data.get("logging", {}),
-            "wandb_run_name": name,
-            "view_meta": dict(updates),
-        }
-        run = config_type.model_validate(
-            {**config_data, "driver_path": driver_path, "logging": logging_data}
+        pd_config_data = apply_nested_updates(base_pd_config_data, updates)
+
+        sweep_data = SweepData(
+            name="_".join(f"{_short_axis(a)}={_short_value(v)}" for a, v in updates.items()),
+            pd_config=PDConfig.model_validate(pd_config_data),
+            view_meta=dict(updates),
         )
-        runs.append(run)
-    return SweepSpec(description=description, runs=runs)
+
+        swept_datas.append(sweep_data)
+
+    return SweepSpec(
+        description=description,
+        driver_path=driver_path,
+        logging=base_config.logging,
+        runtime=base_config.runtime,
+        n_agents=n_agents,
+        swept_datas=swept_datas,
+    )
 
 
 def example_cartesian_sweep() -> SweepSpec:
@@ -73,6 +82,7 @@ def example_cartesian_sweep() -> SweepSpec:
     return cartesian_product(
         base_config=base_config,
         grid={"pd.seed": [0, 1, 2]},
+        n_agents=3,
         description="Example: tms_5-2 seed sweep",
         driver_path="param_decomp.experiments.tms.experiment:Driver",
     )
@@ -90,9 +100,3 @@ def _short_value(v: Any) -> str:
     if isinstance(v, list):
         return "-".join(_short_value(x) for x in v)
     return str(v).replace("/", "_")
-
-
-def _config_data(config: RunConfig | dict[str, Any]) -> dict[str, Any]:
-    data = config.model_dump(mode="json") if isinstance(config, RunConfig) else dict(config)
-    data.pop("run_id", None)
-    return data

@@ -99,7 +99,6 @@ def main(
     rerun: str | None = None,
     local: bool = False,
     sweep_generator_path: str | None = None,
-    n_agents: int | None = None,
     job_suffix: str | None = None,
     partition: str = DEFAULT_PARTITION_NAME,
     project: str | None = None,
@@ -160,13 +159,12 @@ def main(
         assert shutil.which("sbatch") is not None, (
             "`sbatch` not found on PATH. Off-cluster, use `pd-run ... --local` (no sweep)."
         )
-        sweep_spec = _resolve_sweep_spec(sweep_generator_path)
-        from param_decomp.scripts.run_slurm import launch_slurm
 
-        launch_slurm(
-            launchable=sweep_spec,
-            runtime=sweep_spec.runs[0].runtime,
-            n_agents=n_agents,
+        from param_decomp.scripts.run_slurm import launch_sweep_slurm
+
+        sweep = _resolve_sweep_spec(sweep_generator_path)
+        launch_sweep_slurm(
+            sweep=sweep,
             job_suffix=job_suffix,
             partition=partition,
             project=project,
@@ -188,12 +186,10 @@ def main(
         "`sbatch` not found on PATH. Off-cluster, use `pd-run ... --local`."
     )
 
-    from param_decomp.scripts.run_slurm import launch_slurm
+    from param_decomp.scripts.run_slurm import launch_run_slurm
 
-    launch_slurm(
-        launchable=run,
-        runtime=run.runtime,
-        n_agents=n_agents,
+    launch_run_slurm(
+        run_cfg=run,
         job_suffix=job_suffix,
         partition=partition,
         project=project,

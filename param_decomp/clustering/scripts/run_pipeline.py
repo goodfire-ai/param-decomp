@@ -254,7 +254,6 @@ def main(
         clustering_result = submit_slurm_job(
             clustering_script,
             "clustering",
-            is_array=True,
             n_array_tasks=len(clustering_commands),
         )
         array_job_id = clustering_result.job_id

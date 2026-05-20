@@ -162,25 +162,6 @@ def test_driver_class_paths_load():
     assert isinstance(load_driver(RESID_MLP_DRIVER_PATH), ResidMLPDriver)
 
 
-def test_save_pre_run_info_writes_run_metadata(tmp_path: Path):
-    from param_decomp.utils.general_utils import save_pre_run_info
-
-    run = RunConfig(
-        driver_path=None,
-        pd=_pd_config(),
-        logging=_logging_config(),
-        runtime=_runtime_config(),
-    )
-    save_pre_run_info(
-        save_to_wandb=False,
-        out_dir=tmp_path,
-        run=run,
-        artifacts={},
-    )
-
-    assert (tmp_path / RUN_METADATA_FILENAME).exists()
-
-
 def test_run_round_trip_via_file(tmp_path: Path):
     run = TMSRun(
         driver_path=TMS_DRIVER_PATH,
@@ -212,12 +193,6 @@ def test_run_from_file_preserves_existing_run_id(tmp_path: Path):
     loaded = RunConfig.from_file(path)
 
     assert loaded.run_id == "p-existing"
-
-
-def test_wandb_fields_default_to_none_on_logging_config():
-    cfg = _logging_config()
-    assert cfg.wandb_run_name is None
-    assert cfg.view_meta == {}
 
 
 def test_lm_target_requires_exactly_one_location():
