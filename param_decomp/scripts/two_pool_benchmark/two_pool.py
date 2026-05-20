@@ -31,7 +31,12 @@ from param_decomp.configs import (
 )
 from param_decomp.models.batch_and_loss_fns import recon_loss_kl, run_batch_passthrough
 from param_decomp.scripts.two_pool_benchmark._tiny_model import TinyTransformer, sites_for_block
-from param_decomp.two_pool import BlockGroup, TwoPoolConfig, optimize_two_pool
+from param_decomp.two_pool import (
+    BlockGroupSpec,
+    TwoPoolConfig,
+    build_two_pool_runtime,
+    optimize_two_pool,
+)
 
 VOCAB = 8192
 D_MODEL = 768
@@ -71,33 +76,35 @@ def main() -> None:
     target = TinyTransformer(VOCAB, D_MODEL, N_TRANSFORMER_BLOCKS, N_HEADS, D_MLP).to(device)
     target.requires_grad_(False)
 
-    block_groups = tuple(
-        BlockGroup(
-            ranks=ranks,
-            owned_sites=tuple(
+    block_groups = [
+        BlockGroupSpec(
+            ranks=list(ranks),
+            owned_sites=[
                 s
                 for tb in range(g * BLOCKS_PER_GROUP, (g + 1) * BLOCKS_PER_GROUP)
                 for s in sites_for_block(tb)
-            ),
+            ],
         )
         for g, ranks in enumerate(BLOCK_GROUP_RANKS)
-    )
+    ]
     all_sites = [s for bg in block_groups for s in bg.owned_sites]
     c_per_site = {s: C for s in all_sites}
 
-    ppgd_cfg = PersistentPGDReconLossConfig(
-        coeff=1.0,
-        scope=PerBatchPerPositionScope(),
-        optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.01)),
-        n_warmup_steps=2,
-        n_samples=1,
-        use_sigmoid_parameterization=False,
-    )
-
     pool_config = TwoPoolConfig(
         block_groups=block_groups,
-        pool_b_ranks=POOL_B_RANKS,
+        pool_b_ranks=list(POOL_B_RANKS),
         batch_global=BATCH,
+        ppgd=PersistentPGDReconLossConfig(
+            coeff=1.0,
+            scope=PerBatchPerPositionScope(),
+            optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.01)),
+            n_warmup_steps=2,
+            n_samples=1,
+            use_sigmoid_parameterization=False,
+        ),
+    )
+    pool_runtime = build_two_pool_runtime(
+        pool_config,
         c_per_site=c_per_site,
         ci_config=GlobalCiConfig(
             fn_type="global_shared_transformer",
@@ -110,7 +117,6 @@ def main() -> None:
         sigmoid_type="leaky_hard",
         run_batch=run_batch_passthrough,
         reconstruction_loss=recon_loss_kl,
-        ppgd_cfg=ppgd_cfg,
         bf16_autocast=True,
     )
 
@@ -150,7 +156,7 @@ def main() -> None:
 
     optimize_two_pool(
         target_model=target,
-        pool_config=pool_config,
+        pool_config=pool_runtime,
         device=device,
         n_steps=WARMUP_STEPS + PROFILE_STEPS,
         batch_iter=batch_iter,

@@ -44,7 +44,13 @@ from param_decomp.configs import (
     SignPGDConfig,
 )
 from param_decomp.models.batch_and_loss_fns import make_run_batch, recon_loss_kl
-from param_decomp.two_pool import BlockGroup, PhaseProfiler, TwoPoolConfig, optimize_two_pool
+from param_decomp.two_pool import (
+    BlockGroupSpec,
+    PhaseProfiler,
+    TwoPoolConfig,
+    build_two_pool_runtime,
+    optimize_two_pool,
+)
 
 MODEL_ID = "Qwen/Qwen3-0.6B-Base"
 N_LAYERS = 28
@@ -169,38 +175,37 @@ def main() -> None:
     # 56 block groups: 28 attention groups (one per layer, 4 sites each: q/k/v/o)
     # followed by 28 mlp groups (one per layer, 3 sites each: gate/up/down).
     # Each group gets N_PER_BLOCK_GROUP ranks for intra-block DDP.
-    attn_groups = tuple(
-        BlockGroup(
-            ranks=BLOCK_GROUP_RANKS[layer],
-            owned_sites=tuple(f"model.layers.{layer}.{sub}" for sub in ATTN_SUBS),
+    attn_groups = [
+        BlockGroupSpec(
+            ranks=list(BLOCK_GROUP_RANKS[layer]),
+            owned_sites=[f"model.layers.{layer}.{sub}" for sub in ATTN_SUBS],
         )
         for layer in range(N_LAYERS)
-    )
-    mlp_groups = tuple(
-        BlockGroup(
-            ranks=BLOCK_GROUP_RANKS[N_LAYERS + layer],
-            owned_sites=tuple(f"model.layers.{layer}.{sub}" for sub in MLP_SUBS),
+    ]
+    mlp_groups = [
+        BlockGroupSpec(
+            ranks=list(BLOCK_GROUP_RANKS[N_LAYERS + layer]),
+            owned_sites=[f"model.layers.{layer}.{sub}" for sub in MLP_SUBS],
         )
         for layer in range(N_LAYERS)
-    )
-    block_groups = attn_groups + mlp_groups
-    assert len(block_groups) == N_BLOCK_GROUPS
+    ]
     c_per_site = {s: C for s in all_sites_list}
 
-    ppgd_cfg = PersistentPGDReconLossConfig(
-        coeff=1.0,
-        scope=PerBatchPerPositionScope(),
-        optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.01)),
-        n_warmup_steps=2,
-        n_samples=1,
-        use_sigmoid_parameterization=False,
-    )
-
-    # Qwen forward returns CausalLMOutput with .logits — use make_run_batch("logits").
     pool_config = TwoPoolConfig(
-        block_groups=block_groups,
-        pool_b_ranks=POOL_B_RANKS,
+        block_groups=attn_groups + mlp_groups,
+        pool_b_ranks=list(POOL_B_RANKS),
         batch_global=BATCH,
+        ppgd=PersistentPGDReconLossConfig(
+            coeff=1.0,
+            scope=PerBatchPerPositionScope(),
+            optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.01)),
+            n_warmup_steps=2,
+            n_samples=1,
+            use_sigmoid_parameterization=False,
+        ),
+    )
+    pool_runtime = build_two_pool_runtime(
+        pool_config,
         c_per_site=c_per_site,
         ci_config=GlobalCiConfig(
             fn_type="global_shared_transformer",
@@ -213,7 +218,6 @@ def main() -> None:
         sigmoid_type="leaky_hard",
         run_batch=make_run_batch("logits"),
         reconstruction_loss=recon_loss_kl,
-        ppgd_cfg=ppgd_cfg,
         bf16_autocast=True,
     )
 
@@ -271,7 +275,7 @@ def main() -> None:
 
     optimize_two_pool(
         target_model=target,
-        pool_config=pool_config,
+        pool_config=pool_runtime,
         device=device,
         n_steps=WARMUP_STEPS + PROFILE_STEPS,
         batch_iter=batch_iter,

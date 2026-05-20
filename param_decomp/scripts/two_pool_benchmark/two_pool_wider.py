@@ -42,7 +42,13 @@ from param_decomp.configs import (
 )
 from param_decomp.models.batch_and_loss_fns import recon_loss_kl, run_batch_passthrough
 from param_decomp.scripts.two_pool_benchmark._tiny_model import TinyTransformer, sites_for_block
-from param_decomp.two_pool import BlockGroup, PhaseProfiler, TwoPoolConfig, optimize_two_pool
+from param_decomp.two_pool import (
+    BlockGroupSpec,
+    PhaseProfiler,
+    TwoPoolConfig,
+    build_two_pool_runtime,
+    optimize_two_pool,
+)
 
 # Bumped batch/seq toward realistic LLM-training shapes (batch=64, seq=1024) so
 # matmuls actually saturate H200 throughput rather than living in the
@@ -105,28 +111,30 @@ def main() -> None:
     # Contiguous chunks of SITES_PER_GROUP sites per block group, in canonical order.
     # A group may span a transformer-block boundary, which is fine — a BlockGroup
     # is just a logical grouping for ownership, independent of the target's structure.
-    block_groups = tuple(
-        BlockGroup(
-            ranks=ranks,
-            owned_sites=tuple(all_sites_list[i * SITES_PER_GROUP : (i + 1) * SITES_PER_GROUP]),
+    block_groups = [
+        BlockGroupSpec(
+            ranks=list(ranks),
+            owned_sites=all_sites_list[i * SITES_PER_GROUP : (i + 1) * SITES_PER_GROUP],
         )
         for i, ranks in enumerate(BLOCK_GROUP_RANKS)
-    )
+    ]
     c_per_site = {s: C for s in all_sites_list}
-
-    ppgd_cfg = PersistentPGDReconLossConfig(
-        coeff=1.0,
-        scope=PerBatchPerPositionScope(),
-        optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.01)),
-        n_warmup_steps=2,
-        n_samples=1,
-        use_sigmoid_parameterization=False,
-    )
 
     pool_config = TwoPoolConfig(
         block_groups=block_groups,
-        pool_b_ranks=POOL_B_RANKS,
+        pool_b_ranks=list(POOL_B_RANKS),
         batch_global=BATCH,
+        ppgd=PersistentPGDReconLossConfig(
+            coeff=1.0,
+            scope=PerBatchPerPositionScope(),
+            optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.01)),
+            n_warmup_steps=2,
+            n_samples=1,
+            use_sigmoid_parameterization=False,
+        ),
+    )
+    pool_runtime = build_two_pool_runtime(
+        pool_config,
         c_per_site=c_per_site,
         ci_config=GlobalCiConfig(
             fn_type="global_shared_transformer",
@@ -139,7 +147,6 @@ def main() -> None:
         sigmoid_type="leaky_hard",
         run_batch=run_batch_passthrough,
         reconstruction_loss=recon_loss_kl,
-        ppgd_cfg=ppgd_cfg,
         bf16_autocast=True,
     )
 
@@ -194,7 +201,7 @@ def main() -> None:
 
     optimize_two_pool(
         target_model=target,
-        pool_config=pool_config,
+        pool_config=pool_runtime,
         device=device,
         n_steps=WARMUP_STEPS + PROFILE_STEPS,
         batch_iter=batch_iter,

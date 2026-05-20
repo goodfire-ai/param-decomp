@@ -18,6 +18,7 @@ and multi-node profiles at scales from 880K to 1B target / 10B CI fn before bein
 brought into the core codebase.
 """
 
+from param_decomp.two_pool.config import BlockGroupSpec, TwoPoolConfig
 from param_decomp.two_pool.install import (
     build_pool_a_module_path_info,
     build_pool_b_module_path_info,
@@ -33,7 +34,7 @@ from param_decomp.two_pool.layout import (
 )
 from param_decomp.two_pool.run import (
     PhaseProfiler,
-    TwoPoolConfig,
+    build_two_pool_runtime,
     optimize_two_pool,
     step_pool_a,
     step_pool_b,
@@ -43,6 +44,7 @@ __all__ = [
     "BlockDDPLayout",
     "BlockDDPWorld",
     "BlockGroup",
+    "BlockGroupSpec",
     "PhaseProfiler",
     "TwoPoolConfig",
     "TwoPoolLayout",
@@ -50,6 +52,7 @@ __all__ = [
     "build_block_ddp_world",
     "build_pool_a_module_path_info",
     "build_pool_b_module_path_info",
+    "build_two_pool_runtime",
     "build_world",
     "optimize_two_pool",
     "step_pool_a",

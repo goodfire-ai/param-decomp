@@ -48,6 +48,7 @@ from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import make_mask_infos
 from param_decomp.models.sigmoids import SigmoidType
 from param_decomp.persistent_pgd import PersistentPGDState
+from param_decomp.two_pool.config import TwoPoolConfig
 from param_decomp.two_pool.install import (
     build_pool_a_module_path_info,
     build_pool_b_module_path_info,
@@ -148,15 +149,13 @@ def _autocast(enabled: bool):
 
 
 @dataclass(frozen=True)
-class TwoPoolConfig:
-    """Topology and per-pool knobs for `optimize_two_pool`.
+class _TwoPoolRuntime:
+    """Internal bundle passed to step_pool_a/b. Mixes serializable config (from
+    ``TwoPoolConfig``) with the runtime callables from ``PDTarget`` and the
+    derived per-site C from the actual installed module_path_info.
 
-    Block groups and pool-B ranks are explicit so this config can describe any
-    topology the BlockDDPLayout supports — including the cross-node round-robin
-    layouts we measured in nano.
-
-    `c_per_site` is the component count per decomposed module. The matching
-    `ci_config` (LayerwiseCiConfig instance) governs how per-module CI fns are built.
+    Not part of the public API — call ``optimize_two_pool(target, run_cfg, ...)``
+    from outside and let it build this internally.
     """
 
     block_groups: tuple[BlockGroup, ...]
@@ -168,13 +167,13 @@ class TwoPoolConfig:
     run_batch: RunBatch
     reconstruction_loss: ReconstructionLoss
     ppgd_cfg: PersistentPGDReconLossConfig
-    coeff_faith: float = 1e6
-    coeff_imp: float = 1e-4
-    coeff_stoch: float = 0.5
-    coeff_ppgd: float = 0.5
-    lr_components: float = 5e-5
-    lr_ci_fn: float = 5e-5
-    bf16_autocast: bool = False
+    coeff_faith: float
+    coeff_imp: float
+    coeff_stoch: float
+    coeff_ppgd: float
+    lr_components: float
+    lr_ci_fn: float
+    bf16_autocast: bool
 
 
 # ───────────────────────── Helpers ─────────────────────────
@@ -264,7 +263,7 @@ def step_pool_a(
     optimizer: torch.optim.Optimizer,
     all_params: list[nn.Parameter],
     batch: Any,
-    cfg: TwoPoolConfig,
+    cfg: _TwoPoolRuntime,
     profiler: PhaseProfiler | None = None,
 ) -> dict[str, float]:
     """One training step on a pool-A rank."""
@@ -421,7 +420,7 @@ def step_pool_b(
     component_model: ComponentModel,
     ppgd_state: PersistentPGDState,
     batch: Any,
-    cfg: TwoPoolConfig,
+    cfg: _TwoPoolRuntime,
     profiler: PhaseProfiler | None = None,
 ) -> dict[str, float]:
     """One training step on a pool-B rank using PersistentPGDState."""
@@ -538,7 +537,7 @@ def step_pool_b(
 
 def optimize_two_pool(
     target_model: nn.Module,
-    pool_config: TwoPoolConfig,
+    pool_config: _TwoPoolRuntime,
     device: torch.device,
     n_steps: int,
     batch_iter: Callable[[int], Any],
@@ -684,3 +683,44 @@ def _seq_dims_from_batch_iter(batch_iter: Callable[[int], Any]) -> tuple[int, ..
     if isinstance(sample, Tensor):
         return tuple(sample.shape[1:])
     raise TypeError(f"Cannot infer seq dims from batch of type {type(sample).__name__}")
+
+
+def build_two_pool_runtime(
+    pool_config: TwoPoolConfig,
+    *,
+    c_per_site: dict[str, int],
+    ci_config: CiConfig,
+    sigmoid_type: SigmoidType,
+    run_batch: RunBatch,
+    reconstruction_loss: ReconstructionLoss,
+    bf16_autocast: bool,
+) -> _TwoPoolRuntime:
+    """Glue: serializable `TwoPoolConfig` + runtime callables + per-site C
+    → internal ``_TwoPoolRuntime`` bundle consumed by ``optimize_two_pool``.
+
+    The benchmark scripts call this directly with the runtime bits they have
+    (no full ``PDConfig``). The driver-mediated path goes through
+    ``runtime_from_run_config`` instead.
+    """
+    block_groups = tuple(
+        BlockGroup(ranks=tuple(bg.ranks), owned_sites=tuple(bg.owned_sites))
+        for bg in pool_config.block_groups
+    )
+    return _TwoPoolRuntime(
+        block_groups=block_groups,
+        pool_b_ranks=tuple(pool_config.pool_b_ranks),
+        batch_global=pool_config.batch_global,
+        c_per_site=c_per_site,
+        ci_config=ci_config,
+        sigmoid_type=sigmoid_type,
+        run_batch=run_batch,
+        reconstruction_loss=reconstruction_loss,
+        ppgd_cfg=pool_config.ppgd,
+        coeff_faith=pool_config.coeff_faith,
+        coeff_imp=pool_config.coeff_imp,
+        coeff_stoch=pool_config.coeff_stoch,
+        coeff_ppgd=pool_config.coeff_ppgd,
+        lr_components=pool_config.lr_components,
+        lr_ci_fn=pool_config.lr_ci_fn,
+        bf16_autocast=bf16_autocast,
+    )
