@@ -1,7 +1,6 @@
 """Handle to a saved PD run on disk or wandb."""
 
 from dataclasses import dataclass
-from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -19,11 +18,18 @@ from param_decomp.utils.run_files import resolve_config_path, resolve_run_files
 
 @dataclass
 class PDRun:
-    """A saved PD run, resolved to local paths and parsed `Run` config."""
+    """A saved PD run, resolved to local paths and parsed `RunConfig`.
+
+    `driver` is resolved from `run_cfg.driver_path` at construction time and paired
+    with `run_cfg` (whose concrete subtype is checked against `driver.config_type`).
+    `None` for runs produced via direct `run_pd` without a driver — those reload with
+    `load_component_model(path, target=...)`.
+    """
 
     path: Path
     run_cfg: RunConfig
     checkpoint_path: Path
+    driver: ExperimentDriver[Any] | None
 
     @classmethod
     def from_path(cls, path: ModelPath) -> "PDRun":
@@ -32,20 +38,24 @@ class PDRun:
             config_filename=RUN_METADATA_FILENAME,
             checkpoint_prefix="model",
         )
+        run_cfg = RunConfig.from_file(files.config_path)
+        driver = load_driver(run_cfg.driver_path) if run_cfg.driver_path else None
+        if driver is not None:
+            assert isinstance(run_cfg, driver.config_type), (
+                f"Run has type {type(run_cfg).__name__}, "
+                f"expected {driver.config_type.__name__}"
+            )
         return cls(
             path=files.config_path.parent,
-            run_cfg=RunConfig.from_file(files.config_path),
+            run_cfg=run_cfg,
             checkpoint_path=files.checkpoint_path,
+            driver=driver,
         )
 
     @classmethod
     def run_from_path(cls, path: ModelPath) -> RunConfig:
-        """Load just the `Run` config, without resolving or downloading checkpoints."""
+        """Load just the `RunConfig`, without resolving or downloading checkpoints."""
         return RunConfig.from_file(resolve_config_path(path, config_filename=RUN_METADATA_FILENAME))
-
-    @cached_property
-    def driver(self) -> ExperimentDriver[Any] | None:
-        return load_driver(self.run_cfg.driver_path) if self.run_cfg.driver_path else None
 
     @property
     def pd_config(self) -> PDConfig:
@@ -62,9 +72,6 @@ class PDRun:
             "Run has no driver. Use `load_component_model(path, target=...)` with an "
             "explicit target."
         )
-        assert isinstance(self.run_cfg, self.driver.config_type), (
-            f"Run has type {type(self.run_cfg).__name__}, expected {self.driver.config_type.__name__}"
-        )
         return self.driver.build_target(self.run_cfg)
 
     def load_dataloaders(
@@ -77,9 +84,6 @@ class PDRun:
     ) -> tuple[DataLoader[Any], DataLoader[Any]]:
         assert self.driver is not None, (
             "Run has no driver. Build dataloaders explicitly for custom runs."
-        )
-        assert isinstance(self.run_cfg, self.driver.config_type), (
-            f"Run has type {type(self.run_cfg).__name__}, expected {self.driver.config_type.__name__}"
         )
         return self.driver.build_dataloaders(
             self.run_cfg,
