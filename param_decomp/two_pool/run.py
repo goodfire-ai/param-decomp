@@ -375,6 +375,18 @@ def step_pool_b(
         for w in ci_recv_works:
             w.wait()
 
+    # NCCL's Work.wait() returns once the recv is ENQUEUED on the GPU stream,
+    # not once the data has landed. Subsequent consumer kernels honor the
+    # stream dependency, but Python has no way to see that wait — it gets
+    # absorbed into whichever phase first reads ci_scratch (in practice
+    # ppgd_warmup), inflating that span by ~90ms in the wider profile. When
+    # profiling in async mode, force the wait into its own span so the
+    # visualization is honest. In real training (profiler off) the GPU stream
+    # dep does the right thing and this sync would just kill overlap.
+    if profiler is not None and profiler.enabled and not profiler.sync:
+        with p.phase("b/3a_wait_ci_recv_gpu"):
+            torch.cuda.synchronize()
+
     # 3. Re-leaf CI so we can produce ci grads to send back to pool A
     ci_scratch = {s: v.detach().clone().requires_grad_(True) for s, v in ci_recv.items()}
 
