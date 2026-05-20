@@ -34,7 +34,7 @@ from param_decomp.harvest.repo import HarvestRepo
 from param_decomp.harvest.schemas import ComponentData
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import make_mask_infos
-from param_decomp.pd_run import PDRun
+from param_decomp.saved_run import SavedRun
 from param_decomp.topology.topology import TransformerTopology
 
 ForwardFn = Callable[[Int[Tensor, " seq"]], Float[Tensor, "seq vocab"]]
@@ -276,7 +276,7 @@ class EditableModel:
         """Load from wandb path. Returns (editable_model, tokenizer)."""
         from param_decomp.experiments.lm.experiment import LMRunConfig
 
-        pd_run = PDRun.from_path(wandb_path)
+        pd_run = SavedRun.from_path(wandb_path)
         exp = pd_run.run_cfg
         assert isinstance(exp, LMRunConfig)
         model = pd_run.load_model().to(device).eval()

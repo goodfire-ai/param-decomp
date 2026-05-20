@@ -30,7 +30,7 @@ from param_decomp.experiments.lm.experiment import LMRunConfig
 from param_decomp.log import logger
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import make_mask_infos
-from param_decomp.pd_run import PDRun
+from param_decomp.saved_run import SavedRun
 from param_decomp.types import ModelPath
 
 
@@ -77,7 +77,7 @@ def run_r_sweep(
     device: str,
 ) -> tuple[str, list[float]]:
     """Run r sweep for a single model. Returns (run_id, ce_losses)."""
-    pd_run = PDRun.from_path(wandb_path)
+    pd_run = SavedRun.from_path(wandb_path)
     config = pd_run.pd_config
     exp = pd_run.run_cfg
     assert isinstance(exp, LMRunConfig)

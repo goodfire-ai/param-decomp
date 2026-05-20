@@ -8,7 +8,7 @@ from transformers import AutoTokenizer
 
 from param_decomp.experiments.lm.data import create_lm_data_loader
 from param_decomp.experiments.lm.experiment import LMRunConfig
-from param_decomp.pd_run import PDRun
+from param_decomp.saved_run import SavedRun
 
 
 def load_prompts(path: Path) -> list[str]:
@@ -19,7 +19,7 @@ def load_prompts(path: Path) -> list[str]:
     return prompts
 
 
-def sample_prompts_from_dataset(pd_run: PDRun, n_samples: int) -> list[str]:
+def sample_prompts_from_dataset(pd_run: SavedRun, n_samples: int) -> list[str]:
     """Sample n_samples sequences from the dataset and decode to strings."""
     exp = pd_run.run_cfg
     assert isinstance(exp, LMRunConfig), "Run is not an LM experiment"

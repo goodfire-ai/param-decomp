@@ -3,13 +3,13 @@
 Two entry points:
 
 - ``optimize(target, train_loader, eval_loader, *, pd_config, logging_config,
-  runtime_config, device, run)`` — **the notebook entry point.** Pure
+  runtime_config, device, sink)`` — **the notebook entry point.** Pure
   trainer: takes everything explicitly, doesn't know about RunConfig /
-  drivers / YAML. ``run`` is a ``PDRun`` (use ``PDRun.silent()`` /
-  ``PDRun.local(out_dir)`` / ``PDRun.with_wandb(out_dir, ...)``).
+  drivers / YAML. ``sink`` is a ``RunSink`` (use ``RunSink.silent()`` /
+  ``RunSink.local(out_dir)`` / ``RunSink.with_wandb(out_dir, ...)``).
 - ``run_pd(run_cfg, *, device, ...)`` — **the driver-mediated wrapper.**
   Materializes runtime inputs via ``materialize_run``, builds a
-  ``PDRun.for_run`` (writes ``run_config.yaml``, inits wandb from ``run_cfg``
+  ``RunSink.for_run`` (writes ``run_config.yaml``, inits wandb from ``run_cfg``
   fields), then hands off to ``optimize``. Used by ``pd-run`` / ``_worker.py``.
 
 ``materialize_run`` is the composition root: a standalone function that
@@ -37,6 +37,7 @@ from tqdm import tqdm
 from param_decomp.configs import LoggingConfig, PDConfig, RuntimeConfig
 from param_decomp.driver_path import load_driver
 from param_decomp.eval import evaluate
+from param_decomp.experiments.driver import ExperimentDriver
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.log import logger
 from param_decomp.metrics import METRIC_REGISTRY
@@ -49,8 +50,8 @@ from param_decomp.models.batch_and_loss_fns import (
     move_batch_to_device,
 )
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
-from param_decomp.pd_run import PDRun
 from param_decomp.run import RunConfig
+from param_decomp.run_sink import RunSink
 from param_decomp.utils.data_utils import loop_dataloader
 from param_decomp.utils.distributed_utils import (
     DistributedState,
@@ -74,6 +75,7 @@ def materialize_run(
     *,
     device: str,
     dist_state: DistributedState | None = None,
+    driver: ExperimentDriver[Any] | None = None,
 ) -> tuple[PDTarget, DataLoader[Any], DataLoader[Any]]:
     """Compose the ``(target, train_loader, eval_loader)`` tuple ``optimize`` needs.
 
@@ -82,16 +84,22 @@ def materialize_run(
     ``build_train_loader`` / ``build_eval_loader``. Driver-mediated callers use
     this; notebook callers construct those three objects themselves and skip
     the indirection.
+
+    Pass ``driver=...`` if you've already resolved it (e.g. ``run_pd`` does
+    this once and threads it to both ``materialize_run`` and
+    ``RunSink.for_run``). Otherwise resolved internally.
     """
-    driver = load_driver(run_cfg.driver_path)
-    assert isinstance(run_cfg, driver.config_type), (
+    resolved: ExperimentDriver[Any] = (
+        driver if driver is not None else load_driver(run_cfg.driver_path)
+    )
+    assert isinstance(run_cfg, resolved.config_type), (
         f"RunConfig has type {type(run_cfg).__name__}, "
-        f"expected {driver.config_type.__name__} from driver {run_cfg.driver_path}"
+        f"expected {resolved.config_type.__name__} from driver {run_cfg.driver_path}"
     )
     return (
-        driver.build_target(run_cfg),
-        driver.build_train_loader(run_cfg, device=device, dist_state=dist_state),
-        driver.build_eval_loader(run_cfg, device=device, dist_state=dist_state),
+        resolved.build_target(run_cfg),
+        resolved.build_train_loader(run_cfg, device=device, dist_state=dist_state),
+        resolved.build_eval_loader(run_cfg, device=device, dist_state=dist_state),
     )
 
 
@@ -203,19 +211,19 @@ def optimize(
     logging_config: LoggingConfig,
     runtime_config: RuntimeConfig,
     device: str,
-    run: PDRun,
+    sink: RunSink,
 ) -> None:
     """Run the optimization loop. The notebook / script entry point.
 
     Pure trainer: takes a ``PDTarget`` plus dataloaders plus the three configs.
     No ``RunConfig``, no driver, no YAML, no wandb-init responsibility.
 
-    ``run`` is a ``PDRun`` carrying the output channels (local files +
-    optional wandb + checkpoints). Use ``PDRun.silent()`` for no-persistence
-    runs, ``PDRun.local(out_dir)`` for local files, or
-    ``PDRun.with_wandb(out_dir, project=...)`` for wandb.
+    ``sink`` is a ``RunSink`` carrying the output channels (local files +
+    optional wandb + checkpoints). Use ``RunSink.silent()`` for no-persistence
+    runs, ``RunSink.local(out_dir)`` for local files, or
+    ``RunSink.with_wandb(out_dir, project=...)`` for wandb.
 
-    All ranks call this function; ``run`` is automatically a no-op on
+    All ranks call this function; ``sink`` is automatically a no-op on
     non-main ranks.
     """
     _dist_state = get_distributed_state()
@@ -226,8 +234,8 @@ def optimize(
     train_iterator = loop_dataloader(train_loader)
     eval_iterator = loop_dataloader(eval_loader)
 
-    if run.out_dir is not None:
-        logger.info(f"Train+eval logs saved to directory: {run.out_dir}")
+    if sink.out_dir is not None:
+        logger.info(f"Train+eval logs saved to directory: {sink.out_dir}")
 
     target_model = target.model
     run_batch = target.run_batch
@@ -371,13 +379,13 @@ def optimize(
             batch_log_data["schedules/lr/components"] = components_lr
             batch_log_data["schedules/lr/ci_fn"] = ci_fn_lr
 
-            run.console(
+            sink.console(
                 f"--- Step {step} ---",
                 f"LR[components]: {components_lr:.6f}",
                 f"LR[ci_fn]: {ci_fn_lr:.6f}",
                 *(f"train/{name}: {value:.15f}" for name, value in batch_log_data.items()),
             )
-            run.log(batch_log_data, step=step, section="train")
+            sink.log(batch_log_data, step=step, section="train")
 
         # --- Evaluation --- #
         if step % logging_config.eval_freq == 0:
@@ -396,8 +404,8 @@ def optimize(
                     slow_step=slow_step,
                 )
 
-                run.console(*(f"eval/{k}: {v}" for k, v in metrics.items()))
-                run.log(metrics, step=step, section="eval")
+                sink.console(*(f"eval/{k}: {v}" for k, v in metrics.items()))
+                sink.log(metrics, step=step, section="eval")
 
                 del metrics
                 torch.cuda.empty_cache()
@@ -409,7 +417,7 @@ def optimize(
             and step % logging_config.save_freq == 0
             and step > 0
         ) or step == pd_config.steps:
-            run.checkpoint(component_model.state_dict(), step=step)
+            sink.checkpoint(component_model.state_dict(), step=step)
 
         # Skip gradient step at the very last step (last step is just for plotting/logging).
         if step != pd_config.steps:
@@ -436,17 +444,18 @@ def run_pd(
     """Driver-mediated PD run. Composition root for ``pd-run`` / ``_worker.py``.
 
     Steps:
-    1. Materialize ``(target, train_loader, eval_loader)`` from the driver
-       (``materialize_run``).
-    2. Build a ``PDRun.for_run`` — creates ``PARAM_DECOMP_OUT_DIR/
+    1. Resolve the driver once. Threaded to both ``materialize_run`` and
+       ``RunSink.for_run`` so we don't ``load_driver(...)`` twice.
+    2. Materialize ``(target, train_loader, eval_loader)`` via the driver.
+    3. Build a ``RunSink.for_run`` — creates ``PARAM_DECOMP_OUT_DIR/
        decompositions/<run_id>/``, writes ``run_config.yaml``, inits wandb if
        ``wandb_project`` is set.
-    3. Hand off to ``optimize`` with the run handle.
-    4. ``run.finish()`` for wandb cleanup.
+    4. Hand off to ``optimize`` with the sink.
+    5. ``sink.finish()`` for wandb cleanup.
 
     For notebook / script use, call ``optimize(...)`` directly with a
-    ``PDRun`` of your choosing (``PDRun.local`` / ``PDRun.with_wandb`` /
-    ``PDRun.silent``).
+    ``RunSink`` of your choosing (``RunSink.local`` / ``RunSink.with_wandb`` /
+    ``RunSink.silent``).
 
     ``wandb_project`` is a deploy-time parameter (which W&B account/project to
     log to), not part of the reproducible ``RunConfig``. ``None`` disables W&B.
@@ -456,12 +465,13 @@ def run_pd(
     All ranks call this function. Returns the output directory on the main
     process and ``None`` on other ranks.
     """
+    driver = load_driver(run_cfg.driver_path)
     target, train_loader, eval_loader = materialize_run(
-        run_cfg, device=device, dist_state=dist_state
+        run_cfg, device=device, dist_state=dist_state, driver=driver
     )
     # target.model lands on `device` via ComponentModel.to(device) inside optimize().
 
-    pd_run = PDRun.for_run(run_cfg, wandb_project=wandb_project, launch_id=launch_id)
+    sink = RunSink.for_run(run_cfg, wandb_project=wandb_project, launch_id=launch_id, driver=driver)
     try:
         optimize(
             target=target,
@@ -471,9 +481,9 @@ def run_pd(
             logging_config=run_cfg.logging,
             runtime_config=run_cfg.runtime,
             device=device,
-            run=pd_run,
+            sink=sink,
         )
     finally:
-        pd_run.finish()
+        sink.finish()
 
-    return pd_run.out_dir
+    return sink.out_dir

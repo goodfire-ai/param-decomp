@@ -147,9 +147,11 @@ def test_resid_mlp_run_round_trip():
 
 def test_run_requires_runtime_config():
     data = {
-        "driver_path": None,
+        "driver_path": TMS_DRIVER_PATH,
         "pd": _pd_config().model_dump(mode="json"),
         "logging": _logging_config().model_dump(mode="json"),
+        "target": TMSTargetConfig(run_path="wandb:foo/bar/runs/abc").model_dump(mode="json"),
+        "data": TMSDataConfig(feature_probability=0.05).model_dump(mode="json"),
     }
 
     with pytest.raises(ValidationError, match="runtime"):
@@ -180,12 +182,14 @@ def test_run_round_trip_via_file(tmp_path: Path):
 
 
 def test_run_from_file_preserves_existing_run_id(tmp_path: Path):
-    run = RunConfig(
+    run = TMSRunConfig(
         run_id="p-existing",
         driver_path=TMS_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
         runtime=_runtime_config(),
+        target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc"),
+        data=TMSDataConfig(feature_probability=0.05),
     )
     path = tmp_path / RUN_CONFIG_FILENAME
     path.write_text(yaml.safe_dump(run.model_dump(mode="json")))

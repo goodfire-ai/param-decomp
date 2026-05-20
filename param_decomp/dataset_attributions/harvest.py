@@ -28,7 +28,7 @@ from param_decomp.experiments.lm.experiment import LMRunConfig
 from param_decomp.harvest.repo import HarvestRepo
 from param_decomp.log import logger
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.pd_run import PDRun
+from param_decomp.saved_run import SavedRun
 from param_decomp.topology import TransformerTopology, get_sources_by_target
 from param_decomp.utils.distributed_utils import get_device
 from param_decomp.utils.wandb_utils import parse_wandb_run_path
@@ -76,7 +76,7 @@ def harvest_attributions(
 
     _, _, run_id = parse_wandb_run_path(config.wandb_path)
 
-    pd_run = PDRun.from_path(config.wandb_path)
+    pd_run = SavedRun.from_path(config.wandb_path)
     exp = pd_run.run_cfg
     assert isinstance(exp, LMRunConfig), (
         f"Dataset attributions currently only support LM runs, got {type(exp).__name__}"

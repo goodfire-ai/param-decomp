@@ -46,9 +46,9 @@ class PretrainInfoResponse(BaseModel):
 
 def _load_lm_run_lightweight(wandb_path: str) -> LMRunConfig | None:
     """Load just the `RunConfig` for an LM run, without downloading checkpoints."""
-    from param_decomp.pd_run import PDRun
+    from param_decomp.saved_run import SavedRun
 
-    run = PDRun.run_cfg_from_path(wandb_path)
+    run = SavedRun.run_cfg_from_path(wandb_path)
     if not isinstance(run, LMRunConfig):
         return None
     return run
