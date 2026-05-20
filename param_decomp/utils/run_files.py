@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import wandb
-from wandb.apis.public import Run
+from wandb.apis.public import Run as WandbRun
 
 from param_decomp.log import logger
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
@@ -102,7 +102,7 @@ def resolve_config_path(path: ModelPath, *, config_filename: str) -> Path:
 
     logger.info(f"Downloading config from wandb: {entity}/{project}/{run_id}")
     api = wandb.Api()
-    run: Run = api.run(f"{entity}/{project}/{run_id}")
+    run: WandbRun = api.run(f"{entity}/{project}/{run_id}")
     run_dir = fetch_wandb_run_dir(run.id)
     return download_wandb_file(run, run_dir, config_filename)
 
@@ -139,7 +139,7 @@ def _download_run_files_from_wandb(
     extras_from_config_path: Callable[[Path], list[str]],
 ) -> RunFiles:
     api = wandb.Api()
-    run: Run = api.run(wandb_path)
+    run: WandbRun = api.run(wandb_path)
     run_dir = fetch_wandb_run_dir(run.id)
 
     config_path = download_wandb_file(run, run_dir, config_filename)

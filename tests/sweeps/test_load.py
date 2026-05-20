@@ -28,7 +28,7 @@ def test_load_and_call(tmp_path: Path) -> None:
         "    return SweepSpec(\n"
         '        description="tiny",\n'
         "        runs=[\n"
-        "            Run.from_dict({**config, 'driver_path': DRIVER}),\n"
+        "            Run.model_validate({**config, 'driver_path': DRIVER}),\n"
         "        ],\n"
         "    )\n",
     )

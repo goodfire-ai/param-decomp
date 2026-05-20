@@ -97,9 +97,8 @@ def run_faithfulness_warmup(
                 f"Faithfulness warmup step {faithfulness_warmup_step + 1} / {config.faithfulness_warmup_steps}; Faithfulness loss: {loss.item():.9f}"
             )
     del faithfulness_warmup_optimizer
-    # TODO: we should reverse the order of these two calls
-    torch.cuda.empty_cache()
     gc.collect()
+    torch.cuda.empty_cache()
 
 
 def optimize(
@@ -408,9 +407,8 @@ def optimize(
                         try_wandb(wandb.log, wandb_logs, step=step)
 
                 del metrics
-                # TODO: we should reverse the order of these two calls
-                torch.cuda.empty_cache()
                 gc.collect()
+                torch.cuda.empty_cache()
 
         # --- Saving Checkpoint --- #
         if (
