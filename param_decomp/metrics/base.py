@@ -48,7 +48,7 @@ class Metric[TConfig: MetricConfig](ABC):
     section: ClassVar[str]
     config_type: ClassVar[type[MetricConfig]]
     slow: ClassVar[bool] = False
-    short_name: ClassVar[str | None]
+    short_name: ClassVar[str | None] = None
     cfg: TConfig
 
     @abstractmethod

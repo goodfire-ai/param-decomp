@@ -53,7 +53,7 @@ def evaluate(
     slow_step: bool,
 ) -> MetricOutType:
     """Run evaluation across `n_eval_steps` batches and return a flattened metrics map."""
-    active = [m for m in instances.values() if not (getattr(m, "slow", False) and not slow_step)]
+    active = [m for m in instances.values() if not (m.slow and not slow_step)]
     for m in active:
         m.reset()
     for _ in range(n_eval_steps):
