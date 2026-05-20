@@ -30,10 +30,17 @@ import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
 
-from param_decomp.configs import LayerwiseCiConfig
-from param_decomp.models.batch_and_loss_fns import run_batch_passthrough
+from param_decomp.configs import (
+    LayerwiseCiConfig,
+    PerBatchPerPositionScope,
+    PersistentPGDReconLossConfig,
+    ScheduleConfig,
+    SignPGDConfig,
+)
+from param_decomp.models.batch_and_loss_fns import recon_loss_kl, run_batch_passthrough
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import make_mask_infos
+from param_decomp.persistent_pgd import PersistentPGDState
 from param_decomp.scripts.two_pool_benchmark._tiny_model import TinyTransformer, sites_for_block
 from param_decomp.two_pool import (
     BlockDDPLayout,
@@ -204,12 +211,19 @@ def pool_b_step(
     timer: StepTimer,
     layout: BlockDDPLayout,
     component_model: ComponentModel,
+    ppgd_state: PersistentPGDState,
     input_ids_full: Tensor,
     all_sites: list[str],
     site_to_c: dict[str, int],
     device: torch.device,
 ) -> dict[str, float]:
-    """One training step for a pool-B rank."""
+    """One training step for a pool-B rank using the real PersistentPGDState.
+
+    The adversarial sources persist across training steps (per-batch-per-position
+    scope, so each pool-B rank's sources are local to its batch slice). Per step
+    we run n_warmup PGD inner steps that refine the sources, then compute the
+    final recon loss with the refined sources for backward.
+    """
 
     sl = layout.my_batch_slice_b()
     input_ids = input_ids_full[sl]
@@ -223,42 +237,30 @@ def pool_b_step(
         with torch.no_grad():
             target_logits = component_model(input_ids)
 
+    # Re-leaf the CI so we can backprop through it to get ci grads for pool A.
     ci_scratch = {s: v.detach().clone().requires_grad_(True) for s, v in ci_recv.items()}
 
-    # One inner PGD step
-    with timer.phase("b/ppgd_inner"):
-        with torch.no_grad():
-            adv = {
-                s: ci_scratch[s] + (1 - ci_scratch[s]) * torch.rand_like(ci_scratch[s])
-                for s in all_sites
-            }
-        for s in all_sites:
-            adv[s] = adv[s].detach().requires_grad_(True)
-        mask_infos_inner = make_mask_infos(adv, routing_masks="all")
-        pred_inner = component_model(input_ids, mask_infos=mask_infos_inner)
-        inner_loss = nn.functional.kl_div(
-            torch.log_softmax(pred_inner, dim=-1),
-            torch.softmax(target_logits.detach(), dim=-1),
-            reduction="batchmean",
+    # PPGD warmup: refines the persistent adversarial sources in-place.
+    with timer.phase("b/ppgd_warmup"):
+        ppgd_state.warmup(
+            model=component_model,
+            batch=input_ids,
+            target_out=target_logits.detach(),
+            ci=ci_scratch,
+            weight_deltas=None,
         )
-        inner_grads = torch.autograd.grad(inner_loss, [adv[s] for s in all_sites])
-        with torch.no_grad():
-            for s, g in zip(all_sites, inner_grads, strict=True):
-                adv[s].add_(0.01 * g.sign())
-                adv[s].clamp_(0.0, 1.0)
 
+    # Final PPGD recon loss with the (now-refined) sources.
     with timer.phase("b/ppgd_recon"):
-        final_masks = {
-            s: ci_scratch[s] + (1 - ci_scratch[s]) * adv[s].detach()
-            for s in all_sites
-        }
-        mask_infos_final = make_mask_infos(final_masks, routing_masks="all")
-        pred_ppgd = component_model(input_ids, mask_infos=mask_infos_final)
-        loss_ppgd = nn.functional.kl_div(
-            torch.log_softmax(pred_ppgd, dim=-1),
-            torch.softmax(target_logits.detach(), dim=-1),
-            reduction="batchmean",
+        loss_ppgd = ppgd_state.compute_recon_loss(
+            model=component_model,
+            batch=input_ids,
+            target_out=target_logits.detach(),
+            ci=ci_scratch,
+            weight_deltas=None,
         )
+        # Scale by 1/N so that SUM-reduce of V/U grads across pool B equals
+        # the full-batch gradient.
         total_ppgd = 0.5 * loss_ppgd / layout.world.n_pool_b
 
     with timer.phase("b/backward"):
@@ -267,7 +269,14 @@ def pool_b_step(
             params.append(component_model.components[s].V)  # type: ignore[attr-defined]
             params.append(component_model.components[s].U)  # type: ignore[attr-defined]
         ci_list = [ci_scratch[s] for s in all_sites]
-        grads = torch.autograd.grad(total_ppgd, params + ci_list)
+        # Retain graph so we can also update the persistent sources from this loss.
+        grads = torch.autograd.grad(total_ppgd, params + ci_list, retain_graph=True)
+
+    # Update the persistent sources from the same loss (this is what makes PPGD
+    # "persistent": the source state evolves across training steps).
+    with timer.phase("b/ppgd_source_step"):
+        source_grads = ppgd_state.get_grads(total_ppgd, retain_graph=False)
+        ppgd_state.step(source_grads)
 
     n_sites = len(all_sites)
     v_grads = {s: grads[2 * i] for i, s in enumerate(all_sites)}
@@ -348,6 +357,7 @@ def main() -> None:
 
     optimizer: torch.optim.Optimizer | None = None
     all_params: list[nn.Parameter] = []
+    ppgd_state: PersistentPGDState | None = None
     if layout.my_pool == "a":
         component_params: list[nn.Parameter] = []
         for name in component_model.target_module_paths:
@@ -355,6 +365,27 @@ def main() -> None:
         ci_fn_params = list(component_model.ci_fn.parameters())
         all_params = component_params + ci_fn_params
         optimizer = torch.optim.AdamW(all_params, lr=5e-5, weight_decay=0.0)
+    else:
+        # Pool B: build the persistent PGD state for adversarial source training.
+        # PerBatchPerPositionScope → each pool-B rank's sources are local to its batch slice
+        # (and PersistentPGDState's _skip_all_reduce auto-flips, which is what we want here:
+        # pool B does its own cross-rank V/U all-reduce explicitly inside the step).
+        ppgd_cfg = PersistentPGDReconLossConfig(
+            coeff=1.0,
+            scope=PerBatchPerPositionScope(),
+            optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.01)),
+            n_warmup_steps=2,
+            n_samples=1,
+            use_sigmoid_parameterization=False,
+        )
+        ppgd_state = PersistentPGDState(
+            module_to_c=c_per_site,
+            batch_dims=(layout.world.batch_local_b, SEQ_LEN),
+            device=device,
+            use_delta_component=False,
+            cfg=ppgd_cfg,
+            reconstruction_loss=recon_loss_kl,
+        )
 
     if rank == 0:
         n_target = sum(p.numel() for p in target.parameters())
@@ -391,8 +422,9 @@ def main() -> None:
                     timer, layout, component_model, optimizer, all_params, input_ids, all_sites,
                 )
             else:
+                assert ppgd_state is not None
                 metrics = pool_b_step(
-                    timer, layout, component_model, input_ids, all_sites, c_per_site, device,
+                    timer, layout, component_model, ppgd_state, input_ids, all_sites, c_per_site, device,
                 )
 
         if rank in (0, pool_b_ranks[0]):
