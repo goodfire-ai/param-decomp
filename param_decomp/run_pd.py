@@ -100,7 +100,7 @@ def run_faithfulness_warmup(
     gc.collect()
 
 
-def _build_ctx(
+def forward_and_build_ctx(
     batch: Any,
     *,
     step: int,
@@ -111,8 +111,11 @@ def _build_ctx(
     config: PDConfig,
     reconstruction_loss: ReconstructionLoss,
 ) -> MetricContext:
-    # The wrapped_model(...) call here is what registers DDP gradient hooks for this step.
-    # Required even if no metric uses the DDP wrapper directly.
+    """Run the target forward (registering DDP grad hooks for this step) and build a MetricContext.
+
+    The `wrapped_model(...)` call is load-bearing: it registers DDP gradient hooks for this step
+    even when no metric reads through the DDP wrapper directly.
+    """
     batch = move_batch_to_device(batch, device)
     target_model_output: OutputWithCache = wrapped_model(batch, cache_type="input")
     ci = component_model.calc_causal_importances(
@@ -280,7 +283,7 @@ def optimize(
         batch_log_data: defaultdict[str, float] = defaultdict(float)
 
         build_ctx = partial(
-            _build_ctx,
+            forward_and_build_ctx,
             step=step,
             device=device,
             wrapped_model=wrapped_model,
