@@ -1,8 +1,9 @@
 """Launch data model: ``SweepSpec`` (many runs sharing a driver and substrate).
 
 A single PD launch is just a ``RunConfig`` — the same type the worker writes
-to disk. A sweep is a ``SweepSpec`` carrying shared driver/logging/runtime
-plus a ``list[SweepData]`` of per-run varying ``pd``/``name``/``view_meta``.
+to disk. A sweep is a ``SweepSpec`` carrying shared
+driver/logging/runtime/target/data plus a ``list[SweepData]`` of per-run
+varying ``pd``/``name``/``view_meta``.
 
 A ``SweepGenerator`` is any zero-arg callable returning a ``SweepSpec``. The
 sweep is fully self-contained — it loads whatever base config it wants and
@@ -31,10 +32,12 @@ class SweepData:
 class SweepSpec:
     """A complete sweep: description and the list of runs to launch.
 
-    All runs in a sweep must share one driver and one ``runtime:`` block
-    (single SLURM array allocation, one substrate). Both invariants are
-    asserted at construction. The W&B project is supplied to the launcher
-    separately (``--project``) and is not part of the spec.
+    All runs in a sweep share one driver, one ``runtime:`` block (one SLURM
+    array allocation, one substrate), one ``logging:`` block, and one
+    driver-private ``target`` / ``data`` payload. Per-run variation lives in
+    ``swept_datas`` (``pd``, ``name``, ``view_meta``). The W&B project is
+    supplied to the launcher separately (``--project``) and is not part of
+    the spec.
 
     Serialized to ``PARAM_DECOMP_OUT_DIR/sweeps/<launch_id>/spec.yaml`` on
     submit so reproducing the sweep doesn't require re-running the generator.
@@ -44,6 +47,8 @@ class SweepSpec:
     driver_path: str
     logging: LoggingConfig
     runtime: RuntimeConfig
+    target: dict[str, Any]
+    data: dict[str, Any]
     n_agents: int
 
     swept_datas: list[SweepData]
@@ -56,6 +61,8 @@ class SweepSpec:
                 pd=sweep_data.pd_config,
                 logging=self.logging,
                 runtime=self.runtime,
+                target=self.target,
+                data=self.data,
                 view_meta=sweep_data.view_meta,
             )
             for sweep_data in self.swept_datas
@@ -67,6 +74,8 @@ class SweepSpec:
             "driver_path": self.driver_path,
             "logging": self.logging.model_dump(mode="json"),
             "runtime": self.runtime.model_dump(mode="json"),
+            "target": self.target,
+            "data": self.data,
             "n_agents": self.n_agents,
             "swept_datas": [
                 {

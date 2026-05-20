@@ -18,10 +18,10 @@ from param_decomp.app.backend.database import PromptAttrDB, Run
 from param_decomp.autointerp.repo import InterpRepo
 from param_decomp.configs import PDConfig
 from param_decomp.dataset_attributions.repo import AttributionRepo
-from param_decomp.experiments.lm.experiment import LMRunConfig
 from param_decomp.graph_interp.repo import GraphInterpRepo
 from param_decomp.harvest.repo import HarvestRepo
 from param_decomp.models.component_model import ComponentModel
+from param_decomp.run import RunConfig
 from param_decomp.topology import TransformerTopology
 
 
@@ -35,7 +35,7 @@ class RunState:
     tokenizer: AppTokenizer
     sources_by_target: dict[str, list[str]]
     config: PDConfig
-    experiment_config: LMRunConfig  # The token-based app only loads LM runs.
+    experiment_config: RunConfig  # The token-based app only loads LM runs; gated upstream.
     context_length: int
     harvest: HarvestRepo | None
     interp: InterpRepo | None

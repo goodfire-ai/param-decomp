@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from param_decomp.app.backend.dependencies import DepLoadedRun, DepStateManager
 from param_decomp.app.backend.state import DatasetSearchState
 from param_decomp.app.backend.utils import log_errors
+from param_decomp.experiments.lm.experiment import lm_data
 from param_decomp.log import logger
 from param_decomp.utils.distributed_utils import get_device
 
@@ -112,8 +113,9 @@ def search_dataset(
     Returns:
         Search metadata (query, split, dataset_name, total results, search time)
     """
-    dataset_name = loaded.experiment_config.data.dataset_name
-    text_column = loaded.experiment_config.data.column_name
+    data = lm_data(loaded.experiment_config)
+    dataset_name = data.dataset_name
+    text_column = data.column_name
     _assert_simplestories(dataset_name)
 
     start_time = time.time()
@@ -336,8 +338,9 @@ def get_random_samples(
     Returns:
         Random samples with metadata
     """
-    dataset_name = loaded.experiment_config.data.dataset_name
-    text_column = loaded.experiment_config.data.column_name
+    data = lm_data(loaded.experiment_config)
+    dataset_name = data.dataset_name
+    text_column = data.column_name
     _assert_simplestories(dataset_name)
 
     logger.info(f"Loading dataset {dataset_name} (split={split}) for random sampling...")
@@ -417,8 +420,9 @@ def get_random_samples_with_loss(
     Returns:
         Tokenized samples with next-token probability per token
     """
-    dataset_name = loaded.experiment_config.data.dataset_name
-    text_column = loaded.experiment_config.data.column_name
+    data = lm_data(loaded.experiment_config)
+    dataset_name = data.dataset_name
+    text_column = data.column_name
     _assert_simplestories(dataset_name)
 
     device = get_device()

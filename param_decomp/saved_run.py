@@ -32,17 +32,15 @@ from param_decomp.utils.run_files import resolve_config_path, resolve_run_files
 class SavedRun:
     """A completed PD run, resolved to local paths and parsed `RunConfig`.
 
-    `driver` is resolved from `run_cfg.driver_path` at construction time and
-    paired with `run_cfg` (whose concrete subtype is checked against
-    `driver.config_type`). Both fields are required — there is no
-    notebook-only `SavedRun`; notebook callers reload checkpoints via
-    `ComponentModel.from_checkpoint(...)` directly.
+    `driver` is resolved from `run_cfg.driver_path` at construction time.
+    Both fields are required — there is no notebook-only `SavedRun`; notebook
+    callers reload checkpoints via `ComponentModel.from_checkpoint(...)` directly.
     """
 
     path: Path
     run_cfg: RunConfig
     checkpoint_path: Path
-    driver: ExperimentDriver[Any]
+    driver: ExperimentDriver
 
     @classmethod
     def from_path(cls, path: ModelPath) -> "SavedRun":
@@ -52,9 +50,6 @@ class SavedRun:
         )
         run_cfg = RunConfig.from_file(files.config_path)
         driver = load_driver(run_cfg.driver_path)
-        assert isinstance(run_cfg, driver.config_type), (
-            f"RunConfig has type {type(run_cfg).__name__}, expected {driver.config_type.__name__}"
-        )
         return cls(
             path=files.config_path.parent,
             run_cfg=run_cfg,

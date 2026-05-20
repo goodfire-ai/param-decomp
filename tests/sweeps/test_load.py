@@ -25,7 +25,7 @@ def test_load_and_call(tmp_path: Path) -> None:
         "def my_sweep():\n"
         '    with open(REPO_ROOT / "param_decomp" / "experiments" / "tms" / "tms_5-2_config.yaml") as f:\n'
         "        config = yaml.safe_load(f)\n"
-        "    base_run = RunConfig.from_dict(config)\n"
+        "    base_run = RunConfig.model_validate(config)\n"
         "    return cartesian_product(\n"
         "        base_config=base_run,\n"
         '        grid={"pd.seed": [0]},\n'

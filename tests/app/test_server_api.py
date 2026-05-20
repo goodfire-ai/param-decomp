@@ -126,9 +126,10 @@ def app_with_state():
 
         from param_decomp.configs import RuntimeConfig
         from param_decomp.experiments.lm.data import LMDataConfig
-        from param_decomp.experiments.lm.experiment import LMRunConfig, LMTargetConfig
+        from param_decomp.experiments.lm.experiment import LMTargetConfig
+        from param_decomp.run import RunConfig
 
-        lm_exp = LMRunConfig(
+        lm_exp = RunConfig(
             driver_path="param_decomp.experiments.lm.experiment:Driver",
             pd=config,
             logging=LoggingConfig(
@@ -143,7 +144,7 @@ def app_with_state():
                 model_class="param_decomp.pretrain.models.gpt2_simple.GPT2Simple",
                 model_name="test-target",
                 model_path=None,
-            ),
+            ).model_dump(mode="json"),
             data=LMDataConfig(
                 tokenizer_name="SimpleStories/test-SimpleStories-gpt2-1.25M",
                 dataset_name="SimpleStories/SimpleStories",
@@ -155,7 +156,7 @@ def app_with_state():
                 streaming=False,
                 buffer_size=1000,
                 shuffle_each_epoch=True,
-            ),
+            ).model_dump(mode="json"),
         )
         run_state = RunState(
             run=run,

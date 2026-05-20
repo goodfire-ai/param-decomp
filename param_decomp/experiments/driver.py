@@ -5,6 +5,10 @@ An experiment driver is the boundary layer that turns a serializable `RunConfig`
 into those runtime objects. The set of drivers is open-world: custom users can register
 their own driver class without editing core code.
 
+Drivers own the typing of `run_cfg.target` and `run_cfg.data` — core stores both as
+raw dicts. Each driver validates them via its own pydantic models in `validate_config`
+and re-parses at the top of each `build_*` method.
+
 Drivers don't own reload-time state: reload calls `build_target`,
 `build_train_loader`, and `build_eval_loader` exactly like a fresh run,
 re-fetching whatever upstream the config points at (wandb pretrain run, HF model,
@@ -21,23 +25,29 @@ from param_decomp.run import RunConfig
 from param_decomp.utils.distributed_utils import DistributedState
 
 
-class ExperimentDriver[RunConfigT: RunConfig](Protocol):
+class ExperimentDriver(Protocol):
     """Converts a serializable `RunConfig` into runtime PD objects."""
 
     name: ClassVar[str]
 
-    @property
-    def config_type(self) -> type[RunConfigT]:
-        """Pydantic model type used to validate serialized `RunConfig` data."""
+    def validate_config(self, run_cfg: RunConfig) -> None:
+        """Parse driver-private fields (`target`, `data`) and raise on bad shape.
+
+        Implementations call e.g. ``MyTargetConfig.model_validate(run_cfg.target)``
+        and ``MyDataConfig.model_validate(run_cfg.data)``, letting pydantic raise
+        on bad shape. Called pre-flight by ``pd-run`` (single run) and the sweep
+        launcher (so a 200-config sweep dies before SLURM submit, not in task 17).
+        Idempotent and cheap (no I/O).
+        """
         ...
 
-    def build_target(self, run_cfg: RunConfigT) -> PDTarget:
+    def build_target(self, run_cfg: RunConfig) -> PDTarget:
         """Build the target model bundle from upstream."""
         ...
 
     def build_train_loader(
         self,
-        run_cfg: RunConfigT,
+        run_cfg: RunConfig,
         *,
         device: str,
         batch_size_override: int | None = None,
@@ -59,7 +69,7 @@ class ExperimentDriver[RunConfigT: RunConfig](Protocol):
 
     def build_eval_loader(
         self,
-        run_cfg: RunConfigT,
+        run_cfg: RunConfig,
         *,
         device: str,
         batch_size_override: int | None = None,

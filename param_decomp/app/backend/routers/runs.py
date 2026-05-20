@@ -14,7 +14,7 @@ from param_decomp.app.backend.state import RunState
 from param_decomp.app.backend.utils import log_errors
 from param_decomp.autointerp.repo import InterpRepo
 from param_decomp.dataset_attributions.repo import AttributionRepo
-from param_decomp.experiments.lm.experiment import LMRunConfig
+from param_decomp.experiments.lm.experiment import is_lm_run, lm_data
 from param_decomp.graph_interp.repo import GraphInterpRepo
 from param_decomp.harvest.repo import HarvestRepo
 from param_decomp.log import logger
@@ -74,7 +74,7 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
     logger.info(f"[API] Loading {clean_wandb_path}")
     pd_run = SavedRun.from_path(clean_wandb_path)
     exp = pd_run.run_cfg
-    if not isinstance(exp, LMRunConfig):
+    if not is_lm_run(exp):
         raise HTTPException(
             status_code=400,
             detail=(
@@ -82,6 +82,7 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
                 "the token-based app. Use an LM run."
             ),
         )
+    exp_data = lm_data(exp)
 
     run = db.get_run_by_wandb_path(clean_wandb_path)
     if run is None:
@@ -116,8 +117,8 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
     model.eval()
 
     pd_config = pd_run.pd_config
-    logger.info(f"[API] Loading tokenizer for run {run.id}: {exp.data.tokenizer_name}")
-    app_tokenizer = AppTokenizer.from_pretrained(exp.data.tokenizer_name)
+    logger.info(f"[API] Loading tokenizer for run {run.id}: {exp_data.tokenizer_name}")
+    app_tokenizer = AppTokenizer.from_pretrained(exp_data.tokenizer_name)
 
     # Build topology and sources_by_target mapping
     logger.info(f"[API] Building topology for run {run.id}")
@@ -162,7 +163,7 @@ def get_status(manager: DepStateManager) -> LoadedRun | None:
     prompt_count = manager.db.get_prompt_count(run.id, context_length)
 
     dataset_search_enabled = (
-        manager.run_state.experiment_config.data.dataset_name in _SEARCHABLE_DATASETS
+        lm_data(manager.run_state.experiment_config).dataset_name in _SEARCHABLE_DATASETS
     )
 
     return LoadedRun(

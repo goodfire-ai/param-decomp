@@ -68,25 +68,44 @@ from param_decomp import (
 
 ### Experiment Drivers
 
-Experiments are open-world drivers, not a closed discriminated union in core code. A driver owns a
-pure Pydantic `RunConfig` subclass and converts it to runtime objects:
+Experiments are open-world drivers, not a closed discriminated union in core code. There is a
+single `RunConfig` class — `target` and `data` are stored as raw `dict[str, Any]` payloads owned
+by the driver. The driver provides its own pydantic models for those payloads and validates them
+inside `validate_config` (called pre-flight by `pd-run` and the sweep launcher) and at the top of
+each `build_*` method:
 
 ```python
-class MyRunConfig(RunConfig):
-    target: MyTargetConfig
-    data: MyDataConfig
+class MyTargetConfig(BaseConfig):
+    model_path: str
+    # ... whatever the driver needs
+
+class MyDataConfig(BaseConfig):
+    dataset_name: str
+    # ...
 
 class MyDriver:
     name = "my_exp"                  # ClassVar[str] — wandb tag
-    config_type = MyRunConfig        # ClassVar[type[RunConfig]]
 
-    def build_target(self, run_cfg: MyRunConfig) -> PDTarget: ...
-    def build_dataloaders(self, run_cfg: MyRunConfig, *, train_batch_size, eval_batch_size, ...): ...
+    def validate_config(self, run_cfg: RunConfig) -> None:
+        MyTargetConfig.model_validate(run_cfg.target)
+        MyDataConfig.model_validate(run_cfg.data)
+
+    def build_target(self, run_cfg: RunConfig) -> PDTarget:
+        target = MyTargetConfig.model_validate(run_cfg.target)
+        ...
+
+    def build_train_loader(self, run_cfg: RunConfig, *, device, batch_size_override=None, dist_state=None): ...
+    def build_eval_loader(self, run_cfg: RunConfig, *, device, batch_size_override=None, dist_state=None): ...
 ```
 
-`build_target` and `build_dataloaders` always fetch from upstream (wandb pretrain run, HF, …);
-reload calls them exactly like a fresh run. Saved PD runs therefore depend on their upstream
-continuing to exist — the wandb run path / HF model name in the config is the pin.
+Driver-specific callers that need typed access from outside the driver can expose small accessor
+helpers in the driver module — see `is_lm_run` / `lm_target` / `lm_data` in
+`param_decomp/experiments/lm/experiment.py` for the pattern.
+
+`build_target`, `build_train_loader`, and `build_eval_loader` always fetch from upstream
+(wandb pretrain run, HF, …); reload calls them exactly like a fresh run. Saved PD runs therefore
+depend on their upstream continuing to exist — the wandb run path / HF model name in the config
+is the pin.
 
 Built-in runtime definitions live in `param_decomp/experiments/{lm,tms,resid_mlp}/experiment.py`.
 Custom users can run without editing core code by declaring the driver at the top of their YAML:
@@ -135,16 +154,15 @@ The user's module imports `register_metric` and `LossMetricConfig` / `MetricConf
 installed in (or otherwise importable from) the Python environment used to run / reload the
 experiment — including SLURM workers.
 
-### Per-experiment `RunConfig` subclasses
+### `RunConfig` shape
 
 Built-in YAML configs are pure `RunConfig` configs nested under `driver_path:`, `pd:`,
-`logging:`, `runtime:`, `target:`, and `data:`:
+`logging:`, `runtime:`, `target:`, and `data:`. There is one `RunConfig` class; `target` and
+`data` are raw `dict[str, Any]` payloads validated by the driver named in `driver_path`. The
+driver provides its own pydantic models (e.g. `LMTargetConfig`, `LMDataConfig`,
+`TMSTargetConfig`, …) and calls `model_validate` inside `validate_config` and each `build_*`.
 
-- `LMRunConfig(driver_path, pd, logging, runtime, target: LMTargetConfig, data: LMDataConfig)`
-- `TMSRunConfig(driver_path, pd, logging, runtime, target, data)`
-- `ResidMLPRunConfig(driver_path, pd, logging, runtime, target, data)`
-
-The three configs split by **what they affect**:
+The three core configs split by **what they affect**:
 
 - **`PDConfig`** — algorithm specification: seed, ci_config, losses, optimizers,
   module_info. Flipping any field here changes what algorithm runs.
@@ -280,7 +298,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 **Key Data Flow:**
 
 1. `pd-run` (`experiments/runner.py`) resolves the input source — either a built-in experiment name, `--config_path`, `--rerun`, or `--sweep_generator_path` — into a `RunConfig` (single launch) or a `SweepSpec` (many `RunConfig`s sharing one driver and substrate). Every YAML/saved `RunConfig` declares its driver via a top-level `driver_path:` field. With `--local` it dispatches in-process; otherwise `scripts/run_slurm.py:launch_run_slurm` submits a plain SLURM job (single `RunConfig`) and `launch_sweep_slurm` submits an array — one task per run — (`SweepSpec`).
-2. Each worker invocation (`experiments/_worker.py`, called as `python -m param_decomp.experiments._worker` from SLURM tasks, or directly from runner.py in --local mode) loads the driver, checks that the parsed `RunConfig` matches the driver's `config_type`, and calls the driver to build `PDTarget` plus train/eval loaders.
+2. Each worker invocation (`experiments/_worker.py`, called as `python -m param_decomp.experiments._worker` from SLURM tasks, or directly from runner.py in --local mode) loads the driver and calls it to build `PDTarget` plus train/eval loaders. Each `build_*` method validates its slice of `run_cfg.target` / `run_cfg.data` via the driver's own pydantic models; the launcher additionally calls `driver.validate_config(run_cfg)` pre-flight so bad configs fail before SLURM submit.
 3. The worker passes the typed `RunConfig` through to `run_pd`.
 4. `run_pd` saves the `RunConfig` / artifacts and trains a `ComponentModel` via `optimize()` with config-driven losses.
 5. Post-processing reloads runs through `SavedRun.load_target()` / `SavedRun.build_train_loader(...)` / `SavedRun.build_eval_loader(...)` (or just `SavedRun.load_model()` / `load_component_model(path)`).

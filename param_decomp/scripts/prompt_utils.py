@@ -7,7 +7,7 @@ import torch
 from transformers import AutoTokenizer
 
 from param_decomp.experiments.lm.data import create_lm_data_loader
-from param_decomp.experiments.lm.experiment import LMRunConfig
+from param_decomp.experiments.lm.experiment import lm_data
 from param_decomp.saved_run import SavedRun
 
 
@@ -21,9 +21,7 @@ def load_prompts(path: Path) -> list[str]:
 
 def sample_prompts_from_dataset(pd_run: SavedRun, n_samples: int) -> list[str]:
     """Sample n_samples sequences from the dataset and decode to strings."""
-    exp = pd_run.run_cfg
-    assert isinstance(exp, LMRunConfig), "Run is not an LM experiment"
-    data = exp.data
+    data = lm_data(pd_run.run_cfg)
 
     tokenizer = AutoTokenizer.from_pretrained(data.tokenizer_name)
 

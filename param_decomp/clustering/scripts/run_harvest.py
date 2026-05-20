@@ -19,7 +19,7 @@ from param_decomp.clustering.harvest_config import HarvestConfig
 from param_decomp.clustering.memberships import collect_memberships
 from param_decomp.clustering.paths import clustering_harvest_dir, new_harvest_id
 from param_decomp.experiments.lm.data import build_lm_train_loader
-from param_decomp.experiments.lm.experiment import LMRunConfig
+from param_decomp.experiments.lm.experiment import is_lm_run, lm_data
 from param_decomp.log import logger
 from param_decomp.saved_run import SavedRun
 from param_decomp.utils.distributed_utils import get_device
@@ -40,9 +40,9 @@ def harvest(config: HarvestConfig) -> Path:
     pd_run = SavedRun.from_path(config.model_path)
     # LM goes direct to the helper so we can override the dataset seed
     # (config.dataset_seed) — the driver only takes a batch-size override.
-    if isinstance(pd_run.run_cfg, LMRunConfig):
+    if is_lm_run(pd_run.run_cfg):
         dataloader = build_lm_train_loader(
-            pd_run.run_cfg.data,
+            lm_data(pd_run.run_cfg),
             batch_size=config.batch_size,
             dist_state=None,
             seed=config.dataset_seed,

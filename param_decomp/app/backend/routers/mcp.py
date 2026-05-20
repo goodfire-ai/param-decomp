@@ -893,10 +893,12 @@ def _tool_search_dataset(params: dict[str, Any]) -> dict[str, Any]:
     from datasets import Dataset, load_dataset
 
     from param_decomp.app.backend.routers.dataset_search import _assert_simplestories
+    from param_decomp.experiments.lm.experiment import lm_data
 
     _, loaded = _get_state()
-    dataset_name = loaded.experiment_config.data.dataset_name
-    text_column = loaded.experiment_config.data.column_name
+    data = lm_data(loaded.experiment_config)
+    dataset_name = data.dataset_name
+    text_column = data.column_name
     _assert_simplestories(dataset_name)
 
     query = params["query"]

@@ -64,7 +64,7 @@ class RunSink:
         *,
         wandb_project: str | None = None,
         launch_id: str | None = None,
-        driver: ExperimentDriver[Any] | None = None,
+        driver: ExperimentDriver | None = None,
     ) -> "RunSink":
         """Driver-mediated setup. Used by ``run_pd``.
 

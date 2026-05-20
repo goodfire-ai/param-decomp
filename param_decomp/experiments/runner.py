@@ -13,6 +13,7 @@ from typing import Any
 import fire
 import yaml
 
+from param_decomp.driver_path import load_driver
 from param_decomp.experiments._worker import run_experiment
 from param_decomp.experiments.discovery import discover_experiments
 from param_decomp.run import RUN_CONFIG_FILENAME, RunConfig
@@ -170,7 +171,8 @@ def main(
         )
         return
 
-    run = RunConfig.from_dict(_resolve_source(experiment, config_path, rerun))
+    run = RunConfig.model_validate(_resolve_source(experiment, config_path, rerun))
+    load_driver(run.driver_path).validate_config(run)
 
     if local:
         assert run.runtime.dp is None, "runtime.dp is not supported with --local"

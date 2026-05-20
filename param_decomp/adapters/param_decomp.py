@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 
 from param_decomp.adapters.base import DecompositionAdapter
 from param_decomp.autointerp.schemas import ModelMetadata
-from param_decomp.experiments.lm.experiment import LMRunConfig
+from param_decomp.experiments.lm.experiment import lm_data, lm_target
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.run import RunConfig
 from param_decomp.saved_run import SavedRun
@@ -27,14 +27,6 @@ class PDAdapter(DecompositionAdapter):
     def run(self) -> RunConfig:
         assert self.pd_run.run_cfg is not None  # always set on from_path handles
         return self.pd_run.run_cfg
-
-    @cached_property
-    def lm_run(self) -> LMRunConfig:
-        run = self.run
-        assert isinstance(run, LMRunConfig), (
-            f"This method requires an LM run, got {type(run).__name__}"
-        )
-        return run
 
     @cached_property
     def component_model(self) -> ComponentModel:
@@ -62,27 +54,28 @@ class PDAdapter(DecompositionAdapter):
 
     @override
     def dataloader(self, batch_size: int) -> DataLoader[Tensor]:
-        # PDAdapter is LM-only (via `self.lm_run`); the LM driver ignores `device`
-        # because batches are moved per-step.
+        # PDAdapter is LM-only; the LM driver ignores `device` because batches
+        # are moved per-step.
         return self.pd_run.build_train_loader(device="cpu", batch_size_override=batch_size)
 
     @property
     @override
     def tokenizer_name(self) -> str:
-        return self.lm_run.data.tokenizer_name
+        return lm_data(self.run).tokenizer_name
 
     @property
     @override
     def model_metadata(self) -> ModelMetadata:
-        run = self.lm_run
+        target = lm_target(self.run)
+        data = lm_data(self.run)
         return ModelMetadata(
             n_blocks=self._topology.n_blocks,
-            model_class=run.target.model_class,
-            dataset_name=run.data.dataset_name,
+            model_class=target.model_class,
+            dataset_name=data.dataset_name,
             layer_descriptions={
                 path: self._topology.target_to_canon(path)
                 for path in self.component_model.target_module_paths
             },
-            seq_len=run.data.max_seq_len,
+            seq_len=data.max_seq_len,
             decomposition_method="pd",
         )

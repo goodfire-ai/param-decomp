@@ -274,13 +274,13 @@ class EditableModel:
         cls, wandb_path: str, device: str = "cuda"
     ) -> tuple["EditableModel", AppTokenizer]:
         """Load from wandb path. Returns (editable_model, tokenizer)."""
-        from param_decomp.experiments.lm.experiment import LMRunConfig
+        from param_decomp.experiments.lm.experiment import is_lm_run, lm_data
 
         pd_run = SavedRun.from_path(wandb_path)
         exp = pd_run.run_cfg
-        assert isinstance(exp, LMRunConfig)
+        assert is_lm_run(exp), f"EditableModel requires an LM run, got {exp.driver_path!r}"
         model = pd_run.load_model().to(device).eval()
-        tokenizer = AppTokenizer.from_pretrained(exp.data.tokenizer_name)
+        tokenizer = AppTokenizer.from_pretrained(lm_data(exp).tokenizer_name)
         return cls(model), tokenizer
 
     def __call__(self, tokens: Int[Tensor, " seq"]) -> Float[Tensor, "seq vocab"]:

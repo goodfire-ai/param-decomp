@@ -14,7 +14,7 @@ TMS_DRIVER_PATH = "param_decomp.experiments.tms.experiment:Driver"
 
 def _base_config() -> RunConfig:
     with open(REPO_ROOT / "param_decomp" / "experiments" / "tms" / "tms_5-2_config.yaml") as f:
-        return RunConfig.from_dict(yaml.safe_load(f))
+        return RunConfig.model_validate(yaml.safe_load(f))
 
 
 def test_cartesian_product_basic() -> None:

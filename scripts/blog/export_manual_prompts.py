@@ -39,7 +39,7 @@ import torch
 from param_decomp.app.backend.app_tokenizer import AppTokenizer
 from param_decomp.app.backend.compute import compute_ci_only
 from param_decomp.autointerp.repo import InterpRepo
-from param_decomp.experiments.lm.experiment import LMRunConfig
+from param_decomp.experiments.lm.experiment import is_lm_run, lm_data
 from param_decomp.saved_run import SavedRun
 from param_decomp.scripts.prompt_utils import load_prompts
 from param_decomp.topology import TransformerTopology
@@ -149,16 +149,17 @@ def export_manual_prompts(
     """Compute CI/activation values for one component across manual prompts."""
     pd_run = SavedRun.from_path(run_path)
     exp = pd_run.run_cfg
-    assert isinstance(exp, LMRunConfig), "manual prompt export only supports LM runs"
+    assert is_lm_run(exp), "manual prompt export only supports LM runs"
     model = pd_run.load_model().to(get_device())
     model.eval()
 
-    tokenizer_name = exp.data.tokenizer_name
+    data = lm_data(exp)
+    tokenizer_name = data.tokenizer_name
     assert tokenizer_name is not None, "run config missing tokenizer_name"
     tokenizer = AppTokenizer.from_pretrained(tokenizer_name)
     topology = TransformerTopology(model.target_model)
 
-    context_length = exp.data.max_seq_len
+    context_length = data.max_seq_len
 
     canonical_layer, component_idx_str = component_key.rsplit(":", 1)
     component_idx = int(component_idx_str)

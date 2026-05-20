@@ -72,6 +72,8 @@ def cartesian_product(
         driver_path=driver_path,
         logging=base_config.logging,
         runtime=base_config.runtime,
+        target=base_config.target,
+        data=base_config.data,
         n_agents=n_agents,
         swept_datas=swept_datas,
     )
@@ -86,7 +88,7 @@ def example_cartesian_sweep() -> SweepSpec:
     """
     base_config_path = REPO_ROOT / "param_decomp" / "experiments" / "tms" / "tms_5-2_config.yaml"
     with open(base_config_path) as f:
-        base_config = RunConfig.from_dict(yaml.safe_load(f))
+        base_config = RunConfig.model_validate(yaml.safe_load(f))
     return cartesian_product(
         base_config=base_config,
         grid={"pd.seed": [0, 1, 2]},

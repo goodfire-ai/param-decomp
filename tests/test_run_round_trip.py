@@ -23,7 +23,6 @@ from param_decomp.experiments.lm.experiment import (
     Driver as LMDriver,
 )
 from param_decomp.experiments.lm.experiment import (
-    LMRunConfig,
     LMTargetConfig,
 )
 from param_decomp.experiments.resid_mlp.experiment import (
@@ -31,7 +30,6 @@ from param_decomp.experiments.resid_mlp.experiment import (
 )
 from param_decomp.experiments.resid_mlp.experiment import (
     ResidMLPDataConfig,
-    ResidMLPRunConfig,
     ResidMLPTargetConfig,
 )
 from param_decomp.experiments.tms.experiment import (
@@ -39,7 +37,6 @@ from param_decomp.experiments.tms.experiment import (
 )
 from param_decomp.experiments.tms.experiment import (
     TMSDataConfig,
-    TMSRunConfig,
     TMSTargetConfig,
 )
 from param_decomp.run import RUN_CONFIG_FILENAME, RunConfig
@@ -79,8 +76,8 @@ def _runtime_config() -> RuntimeConfig:
 
 
 def _round_trip(run: RunConfig) -> RunConfig:
-    """Round-trip ``run`` through ``model_dump`` → ``RunConfig.from_dict``."""
-    return RunConfig.from_dict(run.model_dump(mode="json"))
+    """Round-trip ``run`` through ``model_dump`` → ``RunConfig.model_validate``."""
+    return RunConfig.model_validate(run.model_dump(mode="json"))
 
 
 def test_run_generates_run_id_on_instantiation():
@@ -89,13 +86,15 @@ def test_run_generates_run_id_on_instantiation():
         pd=_pd_config(),
         logging=_logging_config(),
         runtime=_runtime_config(),
+        target={},
+        data={},
     )
 
     assert run.run_id.startswith("p-")
 
 
 def test_lm_run_round_trip():
-    run = LMRunConfig(
+    run = RunConfig(
         driver_path=LM_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
@@ -104,45 +103,45 @@ def test_lm_run_round_trip():
             model_class="transformers.GPT2LMHeadModel",
             model_name="openai-community/gpt2",
             output_extract="logits",
-        ),
+        ).model_dump(mode="json"),
         data=LMDataConfig(
             dataset_name="SimpleStories/SimpleStories",
             tokenizer_name="gpt2",
             column_name="story",
             max_seq_len=128,
-        ),
+        ).model_dump(mode="json"),
     )
     parsed = _round_trip(run)
-    assert type(parsed) is LMRunConfig
     assert parsed == run
+    LMDriver().validate_config(parsed)
 
 
 def test_tms_run_round_trip():
-    run = TMSRunConfig(
+    run = RunConfig(
         driver_path=TMS_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
         runtime=_runtime_config(),
-        target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc"),
-        data=TMSDataConfig(feature_probability=0.05),
+        target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc").model_dump(mode="json"),
+        data=TMSDataConfig(feature_probability=0.05).model_dump(mode="json"),
     )
     parsed = _round_trip(run)
-    assert type(parsed) is TMSRunConfig
     assert parsed == run
+    TMSDriver().validate_config(parsed)
 
 
 def test_resid_mlp_run_round_trip():
-    run = ResidMLPRunConfig(
+    run = RunConfig(
         driver_path=RESID_MLP_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
         runtime=_runtime_config(),
-        target=ResidMLPTargetConfig(run_path="wandb:foo/bar/runs/abc"),
-        data=ResidMLPDataConfig(feature_probability=0.05),
+        target=ResidMLPTargetConfig(run_path="wandb:foo/bar/runs/abc").model_dump(mode="json"),
+        data=ResidMLPDataConfig(feature_probability=0.05).model_dump(mode="json"),
     )
     parsed = _round_trip(run)
-    assert type(parsed) is ResidMLPRunConfig
     assert parsed == run
+    ResidMLPDriver().validate_config(parsed)
 
 
 def test_run_requires_runtime_config():
@@ -155,7 +154,7 @@ def test_run_requires_runtime_config():
     }
 
     with pytest.raises(ValidationError, match="runtime"):
-        RunConfig.from_dict(data)
+        RunConfig.model_validate(data)
 
 
 def test_driver_class_paths_load():
@@ -165,13 +164,13 @@ def test_driver_class_paths_load():
 
 
 def test_run_round_trip_via_file(tmp_path: Path):
-    run = TMSRunConfig(
+    run = RunConfig(
         driver_path=TMS_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
         runtime=_runtime_config(),
-        target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc"),
-        data=TMSDataConfig(feature_probability=0.05),
+        target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc").model_dump(mode="json"),
+        data=TMSDataConfig(feature_probability=0.05).model_dump(mode="json"),
     )
     path = tmp_path / RUN_CONFIG_FILENAME
     run.write(path)
@@ -182,14 +181,14 @@ def test_run_round_trip_via_file(tmp_path: Path):
 
 
 def test_run_from_file_preserves_existing_run_id(tmp_path: Path):
-    run = TMSRunConfig(
+    run = RunConfig(
         run_id="p-existing",
         driver_path=TMS_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
         runtime=_runtime_config(),
-        target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc"),
-        data=TMSDataConfig(feature_probability=0.05),
+        target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc").model_dump(mode="json"),
+        data=TMSDataConfig(feature_probability=0.05).model_dump(mode="json"),
     )
     path = tmp_path / RUN_CONFIG_FILENAME
     path.write_text(yaml.safe_dump(run.model_dump(mode="json")))
@@ -206,6 +205,45 @@ def test_lm_target_requires_exactly_one_location():
             model_name=None,
             model_path=None,
         )
+
+
+def test_lm_driver_validate_config_rejects_wrong_shape():
+    run = RunConfig(
+        driver_path=LM_DRIVER_PATH,
+        pd=_pd_config(),
+        logging=_logging_config(),
+        runtime=_runtime_config(),
+        target={"completely": "wrong"},
+        data={"also": "wrong"},
+    )
+    with pytest.raises(ValidationError):
+        LMDriver().validate_config(run)
+
+
+def test_tms_driver_validate_config_rejects_wrong_shape():
+    run = RunConfig(
+        driver_path=TMS_DRIVER_PATH,
+        pd=_pd_config(),
+        logging=_logging_config(),
+        runtime=_runtime_config(),
+        target={"completely": "wrong"},
+        data={},
+    )
+    with pytest.raises(ValidationError):
+        TMSDriver().validate_config(run)
+
+
+def test_resid_mlp_driver_validate_config_rejects_wrong_shape():
+    run = RunConfig(
+        driver_path=RESID_MLP_DRIVER_PATH,
+        pd=_pd_config(),
+        logging=_logging_config(),
+        runtime=_runtime_config(),
+        target={"completely": "wrong"},
+        data={},
+    )
+    with pytest.raises(ValidationError):
+        ResidMLPDriver().validate_config(run)
 
 
 def test_layerwise_mlp_ci_hidden_dims_must_be_non_empty():

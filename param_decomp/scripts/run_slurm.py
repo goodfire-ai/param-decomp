@@ -16,6 +16,7 @@ from datetime import datetime
 from hashlib import sha256
 
 from param_decomp.configs import RuntimeConfig
+from param_decomp.driver_path import load_driver
 from param_decomp.log import logger
 from param_decomp.run import RunConfig
 from param_decomp.settings import GPUS_PER_NODE, PARAM_DECOMP_OUT_DIR
@@ -47,6 +48,8 @@ def launch_run_slurm(
 ) -> None:
     launch_id = _generate_launch_id()
     logger.info(f"Launch ID: {launch_id}")
+
+    load_driver(run_cfg.driver_path).validate_config(run_cfg)
 
     snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=launch_id)
     logger.info(f"Created git snapshot ref: {snapshot_ref} ({commit_hash[:8]})")
@@ -92,6 +95,11 @@ def launch_sweep_slurm(
 
     run_cfgs = sweep.run_cfgs()
     logger.info(f"Sweep '{sweep.description}': {len(run_cfgs)} run(s)")
+
+    driver = load_driver(sweep.driver_path)
+    for run_cfg in run_cfgs:
+        driver.validate_config(run_cfg)
+
     sweep_dir = PARAM_DECOMP_OUT_DIR / "sweeps" / launch_id
 
     sweep.write(sweep_dir / "spec.yaml")

@@ -26,9 +26,12 @@ Reload:
 Core types:
     - `PDConfig`: training/algorithm config.
     - `PDTarget`: target model + run_batch + reconstruction_loss.
-    - `RunConfig`: serializable spec for a driver-mediated run.
-      Driver-specific subclasses (LMRunConfig, TMSRunConfig, ResidMLPRunConfig) add target/data.
-    - `ExperimentDriver`: Protocol for the open-world experiment extension point.
+    - `RunConfig`: serializable spec for a driver-mediated run. Single class —
+      `target` and `data` are stored as raw `dict[str, Any]` payloads and
+      interpreted by the driver (no per-driver subclass).
+    - `ExperimentDriver`: Protocol for the open-world experiment extension
+      point. Drivers validate their typed `target` / `data` via
+      `validate_config` and re-parse inside each `build_*` method.
     - `RunSink`: output channels (local files + opportunistic wandb +
       checkpoints) for a training run. Constructors:
       `RunSink.for_run(run_cfg, ...)` (driver-mediated),

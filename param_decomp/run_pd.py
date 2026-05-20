@@ -75,12 +75,11 @@ def materialize_run(
     *,
     device: str,
     dist_state: DistributedState | None = None,
-    driver: ExperimentDriver[Any] | None = None,
+    driver: ExperimentDriver | None = None,
 ) -> tuple[PDTarget, DataLoader[Any], DataLoader[Any]]:
     """Compose the ``(target, train_loader, eval_loader)`` tuple ``optimize`` needs.
 
-    Resolves the driver from ``run_cfg.driver_path``, validates that ``run_cfg``
-    is the driver's expected subtype, then calls ``build_target`` /
+    Resolves the driver from ``run_cfg.driver_path``, then calls ``build_target`` /
     ``build_train_loader`` / ``build_eval_loader``. Driver-mediated callers use
     this; notebook callers construct those three objects themselves and skip
     the indirection.
@@ -88,14 +87,13 @@ def materialize_run(
     Pass ``driver=...`` if you've already resolved it (e.g. ``run_pd`` does
     this once and threads it to both ``materialize_run`` and
     ``RunSink.for_run``). Otherwise resolved internally.
+
+    Each ``build_*`` method re-parses ``run_cfg.target`` / ``run_cfg.data`` into
+    the driver's typed configs, so a bad-shape config raises here. For
+    fail-fast before SLURM submit, callers invoke ``driver.validate_config``
+    pre-flight in the launcher.
     """
-    resolved: ExperimentDriver[Any] = (
-        driver if driver is not None else load_driver(run_cfg.driver_path)
-    )
-    assert isinstance(run_cfg, resolved.config_type), (
-        f"RunConfig has type {type(run_cfg).__name__}, "
-        f"expected {resolved.config_type.__name__} from driver {run_cfg.driver_path}"
-    )
+    resolved: ExperimentDriver = driver if driver is not None else load_driver(run_cfg.driver_path)
     return (
         resolved.build_target(run_cfg),
         resolved.build_train_loader(run_cfg, device=device, dist_state=dist_state),

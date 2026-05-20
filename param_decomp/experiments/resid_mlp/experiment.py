@@ -31,22 +31,36 @@ class ResidMLPDataConfig(BaseConfig):
     ] = "at_least_zero_active"
 
 
-class ResidMLPRunConfig(RunConfig):
-    target: ResidMLPTargetConfig
-    data: ResidMLPDataConfig
+def _build_dataset(
+    target: ResidMLPTargetConfig, data: ResidMLPDataConfig, device: str
+) -> ResidMLPDataset:
+    train_config = ResidMLPTargetRunInfo.from_path(target.run_path).config
+    return ResidMLPDataset(
+        n_features=train_config.resid_mlp_model_config.n_features,
+        feature_probability=data.feature_probability,
+        device=device,
+        calc_labels=False,
+        label_type=None,
+        act_fn_name=None,
+        label_fn_seed=None,
+        label_coeffs=None,
+        data_generation_type=data.data_generation_type,
+        synced_inputs=train_config.synced_inputs,
+    )
 
 
-class Driver(ExperimentDriver[ResidMLPRunConfig]):
+class Driver(ExperimentDriver):
     name: ClassVar[str] = "resid_mlp"
 
-    @property
     @override
-    def config_type(self) -> type[ResidMLPRunConfig]:
-        return ResidMLPRunConfig
+    def validate_config(self, run_cfg: RunConfig) -> None:
+        ResidMLPTargetConfig.model_validate(run_cfg.target)
+        ResidMLPDataConfig.model_validate(run_cfg.data)
 
     @override
-    def build_target(self, run_cfg: ResidMLPRunConfig) -> PDTarget:
-        run_info = ResidMLPTargetRunInfo.from_path(run_cfg.target.run_path)
+    def build_target(self, run_cfg: RunConfig) -> PDTarget:
+        target = ResidMLPTargetConfig.model_validate(run_cfg.target)
+        run_info = ResidMLPTargetRunInfo.from_path(target.run_path)
         target_model = ResidMLP.from_run_info(run_info)
         target_model.eval()
         return PDTarget(
@@ -55,33 +69,20 @@ class Driver(ExperimentDriver[ResidMLPRunConfig]):
             reconstruction_loss=recon_loss_mse,
         )
 
-    def _build_dataset(self, run_cfg: ResidMLPRunConfig, device: str) -> ResidMLPDataset:
-        train_config = ResidMLPTargetRunInfo.from_path(run_cfg.target.run_path).config
-        return ResidMLPDataset(
-            n_features=train_config.resid_mlp_model_config.n_features,
-            feature_probability=run_cfg.data.feature_probability,
-            device=device,
-            calc_labels=False,
-            label_type=None,
-            act_fn_name=None,
-            label_fn_seed=None,
-            label_coeffs=None,
-            data_generation_type=run_cfg.data.data_generation_type,
-            synced_inputs=train_config.synced_inputs,
-        )
-
     @override
     def build_train_loader(
         self,
-        run_cfg: ResidMLPRunConfig,
+        run_cfg: RunConfig,
         *,
         device: str,
         batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
     ) -> DatasetGeneratedDataLoader[tuple[Tensor, Tensor]]:
         del dist_state
+        target = ResidMLPTargetConfig.model_validate(run_cfg.target)
+        data = ResidMLPDataConfig.model_validate(run_cfg.data)
         return DatasetGeneratedDataLoader(
-            self._build_dataset(run_cfg, device),
+            _build_dataset(target, data, device),
             batch_size=batch_size_override or run_cfg.pd.batch_size,
             shuffle=False,
         )
@@ -89,15 +90,17 @@ class Driver(ExperimentDriver[ResidMLPRunConfig]):
     @override
     def build_eval_loader(
         self,
-        run_cfg: ResidMLPRunConfig,
+        run_cfg: RunConfig,
         *,
         device: str,
         batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
     ) -> DatasetGeneratedDataLoader[tuple[Tensor, Tensor]]:
         del dist_state
+        target = ResidMLPTargetConfig.model_validate(run_cfg.target)
+        data = ResidMLPDataConfig.model_validate(run_cfg.data)
         return DatasetGeneratedDataLoader(
-            self._build_dataset(run_cfg, device),
+            _build_dataset(target, data, device),
             batch_size=batch_size_override or run_cfg.logging.eval_batch_size,
             shuffle=False,
         )

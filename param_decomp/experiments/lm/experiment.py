@@ -17,6 +17,8 @@ from param_decomp.types import ModelPath
 from param_decomp.utils.distributed_utils import DistributedState, ensure_cached_and_call
 from param_decomp.utils.general_utils import resolve_class
 
+LM_DRIVER_PATH = "param_decomp.experiments.lm.experiment:Driver"
+
 
 class LMTargetConfig(BaseConfig):
     """How to load the target language model."""
@@ -60,11 +62,6 @@ class LMTargetConfig(BaseConfig):
         return self
 
 
-class LMRunConfig(RunConfig):
-    target: LMTargetConfig
-    data: LMDataConfig
-
-
 def _load_target_model(target_cfg: LMTargetConfig) -> Any:
     model_class = resolve_class(target_cfg.model_class)
     assert hasattr(model_class, "from_pretrained"), (
@@ -91,36 +88,38 @@ def _load_target_model(target_cfg: LMTargetConfig) -> Any:
     return model_class.from_pretrained(target_cfg.model_path)  # pyright: ignore[reportAttributeAccessIssue]
 
 
-class Driver(ExperimentDriver[LMRunConfig]):
+class Driver(ExperimentDriver):
     name: ClassVar[str] = "lm"
 
-    @property
     @override
-    def config_type(self) -> type[LMRunConfig]:
-        return LMRunConfig
+    def validate_config(self, run_cfg: RunConfig) -> None:
+        LMTargetConfig.model_validate(run_cfg.target)
+        LMDataConfig.model_validate(run_cfg.data)
 
     @override
-    def build_target(self, run_cfg: LMRunConfig) -> PDTarget:
-        target_model = _load_target_model(run_cfg.target)
+    def build_target(self, run_cfg: RunConfig) -> PDTarget:
+        target = LMTargetConfig.model_validate(run_cfg.target)
+        target_model = _load_target_model(target)
         target_model.eval()
         return PDTarget(
             model=target_model,
-            run_batch=make_run_batch(run_cfg.target.output_extract),
+            run_batch=make_run_batch(target.output_extract),
             reconstruction_loss=recon_loss_kl,
         )
 
     @override
     def build_train_loader(
         self,
-        run_cfg: LMRunConfig,
+        run_cfg: RunConfig,
         *,
         device: str,
         batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
     ) -> Any:
         del device  # LM loaders hand off raw tensors; per-batch device move happens later.
+        data = LMDataConfig.model_validate(run_cfg.data)
         return build_lm_train_loader(
-            data_cfg=run_cfg.data,
+            data_cfg=data,
             batch_size=batch_size_override or run_cfg.pd.batch_size,
             seed=run_cfg.pd.seed,
             dist_state=dist_state,
@@ -129,16 +128,35 @@ class Driver(ExperimentDriver[LMRunConfig]):
     @override
     def build_eval_loader(
         self,
-        run_cfg: LMRunConfig,
+        run_cfg: RunConfig,
         *,
         device: str,
         batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
     ) -> Any:
         del device
+        data = LMDataConfig.model_validate(run_cfg.data)
         return build_lm_eval_loader(
-            data_cfg=run_cfg.data,
+            data_cfg=data,
             batch_size=batch_size_override or run_cfg.logging.eval_batch_size,
             seed=run_cfg.pd.seed,
             dist_state=dist_state,
         )
+
+
+def is_lm_run(run_cfg: RunConfig) -> bool:
+    return run_cfg.driver_path == LM_DRIVER_PATH
+
+
+def lm_target(run_cfg: RunConfig) -> LMTargetConfig:
+    assert is_lm_run(run_cfg), (
+        f"expected LM run (driver_path={LM_DRIVER_PATH!r}), got {run_cfg.driver_path!r}"
+    )
+    return LMTargetConfig.model_validate(run_cfg.target)
+
+
+def lm_data(run_cfg: RunConfig) -> LMDataConfig:
+    assert is_lm_run(run_cfg), (
+        f"expected LM run (driver_path={LM_DRIVER_PATH!r}), got {run_cfg.driver_path!r}"
+    )
+    return LMDataConfig.model_validate(run_cfg.data)

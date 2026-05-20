@@ -34,22 +34,32 @@ class TMSDataConfig(BaseConfig):
     )
 
 
-class TMSRunConfig(RunConfig):
-    target: TMSTargetConfig
-    data: TMSDataConfig
+def _build_dataset(
+    target: TMSTargetConfig, data: TMSDataConfig, device: str
+) -> SparseFeatureDataset:
+    train_config = TMSTargetRunInfo.from_path(target.run_path).config
+    return SparseFeatureDataset(
+        n_features=train_config.tms_model_config.n_features,
+        feature_probability=data.feature_probability,
+        device=device,
+        data_generation_type=data.data_generation_type,
+        value_range=(0.0, 1.0),
+        synced_inputs=train_config.synced_inputs,
+    )
 
 
-class Driver(ExperimentDriver[TMSRunConfig]):
+class Driver(ExperimentDriver):
     name: ClassVar[str] = "tms"
 
-    @property
     @override
-    def config_type(self) -> type[TMSRunConfig]:
-        return TMSRunConfig
+    def validate_config(self, run_cfg: RunConfig) -> None:
+        TMSTargetConfig.model_validate(run_cfg.target)
+        TMSDataConfig.model_validate(run_cfg.data)
 
     @override
-    def build_target(self, run_cfg: TMSRunConfig) -> PDTarget:
-        run_info = TMSTargetRunInfo.from_path(run_cfg.target.run_path)
+    def build_target(self, run_cfg: RunConfig) -> PDTarget:
+        target = TMSTargetConfig.model_validate(run_cfg.target)
+        run_info = TMSTargetRunInfo.from_path(target.run_path)
         target_model = TMSModel.from_run_info(run_info)
         target_model.eval()
         tied_weights = [("linear1", "linear2")] if target_model.config.tied_weights else None
@@ -60,29 +70,20 @@ class Driver(ExperimentDriver[TMSRunConfig]):
             tied_weights=tied_weights,
         )
 
-    def _build_dataset(self, run_cfg: TMSRunConfig, device: str) -> SparseFeatureDataset:
-        train_config = TMSTargetRunInfo.from_path(run_cfg.target.run_path).config
-        return SparseFeatureDataset(
-            n_features=train_config.tms_model_config.n_features,
-            feature_probability=run_cfg.data.feature_probability,
-            device=device,
-            data_generation_type=run_cfg.data.data_generation_type,
-            value_range=(0.0, 1.0),
-            synced_inputs=train_config.synced_inputs,
-        )
-
     @override
     def build_train_loader(
         self,
-        run_cfg: TMSRunConfig,
+        run_cfg: RunConfig,
         *,
         device: str,
         batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
     ) -> DatasetGeneratedDataLoader[tuple[Tensor, Tensor]]:
         del dist_state
+        target = TMSTargetConfig.model_validate(run_cfg.target)
+        data = TMSDataConfig.model_validate(run_cfg.data)
         return DatasetGeneratedDataLoader(
-            self._build_dataset(run_cfg, device),
+            _build_dataset(target, data, device),
             batch_size=batch_size_override or run_cfg.pd.batch_size,
             shuffle=False,
         )
@@ -90,15 +91,17 @@ class Driver(ExperimentDriver[TMSRunConfig]):
     @override
     def build_eval_loader(
         self,
-        run_cfg: TMSRunConfig,
+        run_cfg: RunConfig,
         *,
         device: str,
         batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
     ) -> DatasetGeneratedDataLoader[tuple[Tensor, Tensor]]:
         del dist_state
+        target = TMSTargetConfig.model_validate(run_cfg.target)
+        data = TMSDataConfig.model_validate(run_cfg.data)
         return DatasetGeneratedDataLoader(
-            self._build_dataset(run_cfg, device),
+            _build_dataset(target, data, device),
             batch_size=batch_size_override or run_cfg.logging.eval_batch_size,
             shuffle=False,
         )

@@ -13,8 +13,9 @@ from pydantic import BaseModel
 
 from param_decomp.app.backend.dependencies import DepLoadedRun
 from param_decomp.app.backend.utils import log_errors
-from param_decomp.experiments.lm.experiment import LMRunConfig
+from param_decomp.experiments.lm.experiment import is_lm_run, lm_target
 from param_decomp.log import logger
+from param_decomp.run import RunConfig
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp.utils.wandb_utils import parse_wandb_run_path
 
@@ -44,12 +45,12 @@ class PretrainInfoResponse(BaseModel):
     topology: TopologyInfo | None
 
 
-def _load_lm_run_lightweight(wandb_path: str) -> LMRunConfig | None:
+def _load_lm_run_lightweight(wandb_path: str) -> RunConfig | None:
     """Load just the `RunConfig` for an LM run, without downloading checkpoints."""
     from param_decomp.saved_run import SavedRun
 
     run = SavedRun.run_cfg_from_path(wandb_path)
-    if not isinstance(run, LMRunConfig):
+    if not is_lm_run(run):
         return None
     return run
 
@@ -176,7 +177,7 @@ def _get_dataset_short(pretrain_config: dict[str, Any] | None) -> str | None:
     return None
 
 
-def _get_pretrain_info(lm_exp: LMRunConfig | None) -> PretrainInfoResponse:
+def _get_pretrain_info(lm_exp: RunConfig | None) -> PretrainInfoResponse:
     """Extract pretrain info from an LM experiment config."""
     if lm_exp is None:
         return PretrainInfoResponse(
@@ -189,11 +190,12 @@ def _get_pretrain_info(lm_exp: LMRunConfig | None) -> PretrainInfoResponse:
             topology=None,
         )
 
-    model_class_name = lm_exp.target.model_class
+    target = lm_target(lm_exp)
+    model_class_name = target.model_class
     model_type = model_class_name.rsplit(".", 1)[-1]
 
-    pretrain_path = lm_exp.target.model_name or (
-        str(lm_exp.target.model_path) if lm_exp.target.model_path is not None else None
+    pretrain_path = target.model_name or (
+        str(target.model_path) if target.model_path is not None else None
     )
 
     target_model_config: dict[str, Any] | None = None

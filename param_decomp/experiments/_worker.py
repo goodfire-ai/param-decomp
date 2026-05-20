@@ -57,7 +57,7 @@ def main(
     wandb_project: str | None = None,
 ) -> None:
     """SLURM task entrypoint."""
-    run = RunConfig.from_dict(json.loads(run_json))
+    run = RunConfig.model_validate(json.loads(run_json))
     run_experiment(run, launch_id=launch_id, wandb_project=wandb_project)
 
 
