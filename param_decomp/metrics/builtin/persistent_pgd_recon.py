@@ -87,7 +87,7 @@ class _PersistentPGDReconBase[
                 weight_deltas=wd,
             )
 
-        loss = self.state.compute_recon_loss(
+        sum_loss, n_examples = self.state.compute_recon_sum_and_n(
             model=self.model,
             batch=ctx.batch,
             target_out=ctx.target_out,
@@ -96,11 +96,11 @@ class _PersistentPGDReconBase[
         )
 
         if ctx.is_eval:
-            self._recon_sum_loss += loss.detach()
-            self._recon_n_examples += 1
+            self._recon_sum_loss += sum_loss.detach()
+            self._recon_n_examples += n_examples
             self._accum_hidden_acts(ctx, wd)
 
-        return loss
+        return sum_loss / n_examples
 
     def _accum_hidden_acts(
         self,
