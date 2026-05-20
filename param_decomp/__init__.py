@@ -25,6 +25,11 @@ Core types:
 Composition root:
     - `materialize_run(run_cfg, *, device, dist_state=None) -> (target, train_loader, eval_loader)`
       — driver-mediated callers turn a `RunConfig` into the tuple `optimize` needs.
+    - `RunSink` — output sink (local files + opportunistic wandb + checkpoints)
+      passed to `optimize`. Construct via `RunSink.for_run(run_cfg, ...)`
+      (driver-mediated), `RunSink.local(out_dir)` /
+      `RunSink.with_wandb(out_dir, project=..., ...)` (notebook), or
+      `RunSink.silent()` (no persistence).
 """
 
 from param_decomp.configs import PDConfig
@@ -32,6 +37,7 @@ from param_decomp.experiments.driver import ExperimentDriver
 from param_decomp.models.batch_and_loss_fns import PDTarget
 from param_decomp.run import RunConfig
 from param_decomp.run_pd import materialize_run, optimize, run_pd
+from param_decomp.run_sink import RunSink
 from param_decomp.saved_run import PDRun, load_component_model
 
 __all__ = [
@@ -40,6 +46,7 @@ __all__ = [
     "PDRun",
     "PDTarget",
     "RunConfig",
+    "RunSink",
     "load_component_model",
     "materialize_run",
     "optimize",

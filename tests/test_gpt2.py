@@ -32,6 +32,7 @@ from param_decomp.models.batch_and_loss_fns import (
     recon_loss_kl,
 )
 from param_decomp.run_pd import optimize
+from param_decomp.run_sink import RunSink
 from param_decomp.utils.general_utils import set_seed
 
 
@@ -136,7 +137,7 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         logging_config=logging_config,
         runtime_config=RuntimeConfig(),
         device=device,
-        out_dir=tmp_path,
+        sink=RunSink.local(tmp_path),
     )
 
     assert True, "Test completed successfully"

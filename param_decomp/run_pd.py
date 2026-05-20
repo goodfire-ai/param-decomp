@@ -3,14 +3,16 @@
 Two entry points:
 
 - ``optimize(target, train_loader, eval_loader, *, pd_config, logging_config,
-  runtime_config, device, out_dir=None)`` — **the notebook entry point.** Pure
-  trainer: takes everything explicitly, doesn't know about RunConfig/drivers/
-  YAML. Wandb logging is opportunistic — if the caller has called
-  ``wandb.init(...)`` beforehand, metrics get logged; otherwise they don't.
+  runtime_config, device, sink)`` — **the notebook entry point.** Pure
+  trainer: takes everything explicitly, doesn't know about RunConfig /
+  drivers / YAML. ``sink`` is a ``RunSink`` carrying the output channels
+  (local files + optional wandb + checkpoints); use ``RunSink.silent()`` to
+  skip persistence.
 - ``run_pd(run_cfg, *, device, ...)`` — **the driver-mediated wrapper.**
-  Materializes the runtime inputs from the driver, writes ``run_config.yaml``
-  beside the checkpoint, initializes wandb from ``run_cfg`` fields, then
-  hands off to ``optimize``. Used by ``pd-run`` / ``_worker.py``.
+  Materializes runtime inputs via ``materialize_run``, builds a
+  ``RunSink.for_run`` (writes ``run_config.yaml``, inits wandb from
+  ``run_cfg`` fields), then hands off to ``optimize``. Used by ``pd-run`` /
+  ``_worker.py``.
 
 ``materialize_run`` is the composition root: a standalone function that
 turns a ``RunConfig`` into the ``(target, train_loader, eval_loader)`` tuple
@@ -20,7 +22,6 @@ indirection.
 """
 
 import gc
-import os
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
@@ -29,9 +30,7 @@ from typing import Any, cast
 import torch
 import torch.nn as nn
 import torch.nn.parallel
-import wandb
 from jaxtyping import Float
-from PIL import Image
 from torch import Tensor, optim
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
@@ -59,8 +58,8 @@ from param_decomp.models.batch_and_loss_fns import (
     move_batch_to_device,
 )
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
-from param_decomp.run import RUN_CONFIG_FILENAME, RunConfig
-from param_decomp.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp.run import RunConfig
+from param_decomp.run_sink import RunSink
 from param_decomp.utils.data_utils import loop_dataloader
 from param_decomp.utils.distributed_utils import (
     DistributedState,
@@ -75,10 +74,8 @@ from param_decomp.utils.general_utils import (
     combine_nonoverlapping_dicts,
     get_scheduled_value,
 )
-from param_decomp.utils.logging_utils import get_grad_norms_dict, local_log
+from param_decomp.utils.logging_utils import get_grad_norms_dict
 from param_decomp.utils.module_utils import expand_module_patterns
-from param_decomp.utils.run_utils import save_file
-from param_decomp.utils.wandb_utils import init_wandb, try_wandb
 
 
 def materialize_run(
@@ -215,31 +212,28 @@ def optimize(
     logging_config: LoggingConfig,
     runtime_config: RuntimeConfig,
     device: str,
-    out_dir: Path | None = None,
+    sink: RunSink,
 ) -> None:
     """Run the optimization loop. The notebook / script entry point.
 
     Pure trainer: takes a ``PDTarget`` plus dataloaders plus the three configs.
     No ``RunConfig``, no driver, no YAML, no wandb-init responsibility.
 
-    ``out_dir`` is where train logs and checkpoints land (and where wandb
-    artifacts are sourced from). ``None`` skips persistence entirely — useful
-    for quick interactive runs that don't need to be reloaded.
+    ``sink`` is a ``RunSink`` carrying the output channels (local files +
+    optional wandb + checkpoints). Use ``RunSink.silent()`` for no-persistence
+    runs, ``RunSink.local(out_dir)`` for local files, or
+    ``RunSink.with_wandb(...)`` for wandb.
 
-    Wandb is **opportunistic**: if the caller has already called
-    ``wandb.init(...)``, metrics are logged to wandb. Otherwise they aren't.
-    Wandb-from-the-driver wiring lives in ``run_pd``.
-
-    All ranks call this function. Only the main process does logging /
-    checkpoint persistence.
+    All ranks call this function; ``sink`` is automatically a no-op on
+    non-main ranks.
     """
     _validate_pgd_scope(pd_config, get_distributed_state())
 
     train_iterator = loop_dataloader(train_loader)
     eval_iterator = loop_dataloader(eval_loader)
 
-    if is_main_process() and out_dir is not None:
-        logger.info(f"Train+eval logs saved to directory: {out_dir}")
+    if sink.out_dir is not None:
+        logger.info(f"Train+eval logs saved to directory: {sink.out_dir}")
 
     target_model = target.model
     run_batch = target.run_batch
@@ -391,10 +385,7 @@ def optimize(
                 tqdm.write(f"LR[ci_fn]: {ci_fn_lr:.6f}")
                 for name, value in batch_log_data.items():
                     tqdm.write(f"{name}: {value:.15f}")
-                if out_dir is not None:
-                    local_log(batch_log_data, step, out_dir)
-                if wandb.run is not None:
-                    try_wandb(wandb.log, batch_log_data, step=step)
+                sink.log(batch_log_data, step=step)
 
         # --- Evaluation --- #
         if step % logging_config.eval_freq == 0:
@@ -416,14 +407,7 @@ def optimize(
                 if is_main_process():
                     for k, v in metrics.items():
                         tqdm.write(f"eval/{k}: {v}")
-                    if out_dir is not None:
-                        local_log(metrics, step, out_dir)
-                    if wandb.run is not None:
-                        wandb_logs = {
-                            f"eval/{k}": wandb.Image(v) if isinstance(v, Image.Image) else v
-                            for k, v in metrics.items()
-                        }
-                        try_wandb(wandb.log, wandb_logs, step=step)
+                    sink.log(metrics, step=step, section="eval")
 
                 del metrics
                 torch.cuda.empty_cache()
@@ -432,25 +416,13 @@ def optimize(
         # --- Saving Checkpoint --- #
         if (
             (
-                (
-                    logging_config.save_freq is not None
-                    and step % logging_config.save_freq == 0
-                    and step > 0
-                )
-                or step == pd_config.steps
+                logging_config.save_freq is not None
+                and step % logging_config.save_freq == 0
+                and step > 0
             )
-            and is_main_process()
-            and out_dir is not None
-        ):
-            save_file(component_model.state_dict(), out_dir / f"model_{step}.pth")
-            logger.info(f"Saved model, optimizer, and out_dir to {out_dir}")
-            if wandb.run is not None:
-                try_wandb(
-                    wandb.save,
-                    str(out_dir / f"model_{step}.pth"),
-                    base_path=str(out_dir),
-                    policy="now",
-                )
+            or step == pd_config.steps
+        ) and is_main_process():
+            sink.checkpoint(component_model.state_dict(), step=step)
 
         # Skip gradient step at the very last step (last step is just for plotting/logging).
         if step != pd_config.steps:
@@ -484,24 +456,6 @@ def _validate_pgd_scope(config: PDConfig, dist_state: DistributedState | None) -
             )
 
 
-def _wandb_tags(*, driver_name: str, launch_id: str | None) -> list[str]:
-    """Tags attached to every wandb run from `run_pd`.
-
-    `driver_name` lets the W&B UI filter by experiment kind (lm / tms / resid_mlp).
-    `launch_id` groups every run from one `pd-run` invocation (single launches
-    and sweep arrays alike). The SLURM array job id is picked up from
-    `$SLURM_ARRAY_JOB_ID` so post-hoc you can find every run that came out of a
-    given SLURM submission.
-    """
-    tags = [driver_name]
-    if launch_id is not None:
-        tags.append(launch_id)
-    slurm_array_job_id = os.getenv("SLURM_ARRAY_JOB_ID")
-    if slurm_array_job_id is not None:
-        tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
-    return tags
-
-
 def run_pd(
     run_cfg: RunConfig,
     *,
@@ -515,13 +469,14 @@ def run_pd(
     Steps:
     1. Materialize ``(target, train_loader, eval_loader)`` from the driver
        (``materialize_run``).
-    2. On the main rank: create ``out_dir`` (``PARAM_DECOMP_OUT_DIR/decompositions/<run_id>``),
-       write ``run_config.yaml``, initialize W&B from ``run_cfg`` fields.
-    3. Hand off to ``optimize``.
-    4. Cleanup W&B.
+    2. Build a ``RunSink.for_run`` — creates ``PARAM_DECOMP_OUT_DIR/
+       decompositions/<run_id>/``, writes ``run_config.yaml``, inits wandb if
+       ``wandb_project`` is set.
+    3. Hand off to ``optimize`` with the sink.
+    4. ``sink.finish()`` for wandb cleanup.
 
-    For notebook / script use, call ``optimize(...)`` directly — that path skips
-    everything driver/YAML/W&B-init related.
+    For notebook / script use, call ``optimize(...)`` directly with a sink of
+    your choosing (``RunSink.local`` / ``RunSink.with_wandb`` / ``RunSink.silent``).
 
     ``wandb_project`` is a deploy-time parameter (which W&B account/project to
     log to), not part of the reproducible ``RunConfig``. ``None`` disables W&B.
@@ -536,49 +491,19 @@ def run_pd(
     )
     # target.model lands on `device` via ComponentModel.to(device) inside optimize().
 
-    out_dir: Path | None
-    if is_main_process():
-        out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_cfg.run_id
-        out_dir.mkdir(parents=True, exist_ok=True)
+    sink = RunSink.for_run(run_cfg, wandb_project=wandb_project, launch_id=launch_id)
+    try:
+        optimize(
+            target=target,
+            train_loader=train_loader,
+            eval_loader=eval_loader,
+            pd_config=run_cfg.pd,
+            logging_config=run_cfg.logging,
+            runtime_config=run_cfg.runtime,
+            device=device,
+            sink=sink,
+        )
+    finally:
+        sink.finish()
 
-        run_cfg.write(out_dir / RUN_CONFIG_FILENAME)
-
-        logger.info(f"Run ID: {run_cfg.run_id}")
-        logger.info(f"Output directory: {out_dir}")
-
-        if wandb_project:
-            init_wandb(
-                wandb_project,
-                run_cfg.run_id,
-                configs={
-                    "pd": run_cfg.pd,
-                    "logging": run_cfg.logging,
-                    "runtime": run_cfg.runtime,
-                },
-                name=run_cfg.name,
-                tags=_wandb_tags(
-                    driver_name=load_driver(run_cfg.driver_path).name, launch_id=launch_id
-                ),
-                view_meta=run_cfg.view_meta,
-            )
-            wandb.save(str(out_dir / RUN_CONFIG_FILENAME), base_path=out_dir, policy="now")
-
-        logger.info(run_cfg.pd)
-    else:
-        out_dir = None
-
-    optimize(
-        target=target,
-        train_loader=train_loader,
-        eval_loader=eval_loader,
-        pd_config=run_cfg.pd,
-        logging_config=run_cfg.logging,
-        runtime_config=run_cfg.runtime,
-        device=device,
-        out_dir=out_dir,
-    )
-
-    if is_main_process() and wandb.run is not None:
-        wandb.finish()
-
-    return out_dir
+    return sink.out_dir
