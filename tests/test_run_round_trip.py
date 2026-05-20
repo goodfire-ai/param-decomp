@@ -85,7 +85,7 @@ def _round_trip(run: RunConfig) -> RunConfig:
 
 def test_run_generates_run_id_on_instantiation():
     run = RunConfig(
-        driver_path=None,
+        driver_path=TMS_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
         runtime=_runtime_config(),
@@ -182,7 +182,7 @@ def test_run_round_trip_via_file(tmp_path: Path):
 def test_run_from_file_preserves_existing_run_id(tmp_path: Path):
     run = RunConfig(
         run_id="p-existing",
-        driver_path=None,
+        driver_path=TMS_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
         runtime=_runtime_config(),
