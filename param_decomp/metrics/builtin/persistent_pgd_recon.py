@@ -7,7 +7,7 @@ eval time additionally tracks hidden-activation MSE breakdowns. The optimizer lo
 that needs to bracket `total_loss.backward()`.
 """
 
-from typing import Any, ClassVar, override
+from typing import ClassVar, override
 
 import torch
 from jaxtyping import Float
@@ -26,7 +26,7 @@ from param_decomp.metrics.builtin.hidden_acts_recon_loss import (
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.persistent_pgd import PersistentPGDState, get_ppgd_mask_infos
+from param_decomp.persistent_pgd import PersistentPGDState, PPGDSources, get_ppgd_mask_infos
 from param_decomp.utils.distributed_utils import all_reduce
 
 
@@ -43,7 +43,7 @@ class _PersistentPGDReconBase(Metric[_PersistentPGDBaseConfig]):
         self.model = model
         self.device = device
         self.state: PersistentPGDState | None = None
-        self._pending_source_grads: Any = None
+        self._pending_source_grads: PPGDSources | None = None
         self.reset()
 
     def _ensure_state(self, ctx: MetricContext) -> None:

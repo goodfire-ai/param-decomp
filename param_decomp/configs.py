@@ -372,8 +372,9 @@ class LoggingConfig(BaseConfig):
     def _discover_builtin_metrics(cls, data: Any) -> Any:
         """Ensure built-in `@register_metric` decorators have fired before `eval_metrics`
         looks names up in `METRIC_REGISTRY`. External metric modules are imported by
-        `PDConfig._import_metric_modules`; rely on field ordering on the parent
-        parent `Run` (pd validated before logging) for those to be visible here.
+        `PDConfig._import_metric_modules`; visibility here relies on `Run` validating
+        `pd` before `logging` (declaration order), so external eval metrics only resolve
+        when going through `Run` — not when validating a raw-dict `LoggingConfig` alone.
         """
         from param_decomp.metrics import discover_metrics
 

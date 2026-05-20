@@ -31,6 +31,7 @@ from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.log import logger
 from param_decomp.metrics import METRIC_REGISTRY
 from param_decomp.metrics.base import LossMetricConfig, Metric, MetricConfig
+from param_decomp.metrics.builtin.faithfulness_loss import faithfulness_loss
 from param_decomp.metrics.context import MetricContext
 from param_decomp.models.batch_and_loss_fns import (
     PDTarget,
@@ -66,7 +67,6 @@ def run_faithfulness_warmup(
     component_model: ComponentModel,
     component_params: list[torch.nn.Parameter],
     config: PDConfig,
-    device: str,
 ) -> None:
     """Run faithfulness warmup phase to improve initialization."""
     logger.info("Starting faithfulness warmup phase...")
@@ -80,13 +80,7 @@ def run_faithfulness_warmup(
 
     for warmup_step in range(config.faithfulness_warmup_steps):
         faithfulness_warmup_optimizer.zero_grad()
-        weight_deltas = component_model.calc_weight_deltas()
-        sum_loss = torch.zeros((), device=device)
-        n = 0
-        for d in weight_deltas.values():
-            sum_loss = sum_loss + (d**2).sum()
-            n += d.numel()
-        loss = sum_loss / n
+        loss = faithfulness_loss(component_model.calc_weight_deltas())
         loss.backward()
         faithfulness_warmup_optimizer.step()
 
@@ -258,7 +252,7 @@ def optimize(
     )
 
     if config.faithfulness_warmup_steps > 0:
-        run_faithfulness_warmup(component_model, component_params, config, device)
+        run_faithfulness_warmup(component_model, component_params, config)
 
     loss_instances, eval_only_instances = _build_metric_instances(
         config, logging_config, component_model, device
