@@ -39,15 +39,21 @@ class ExperimentDriver[RunConfigT: RunConfig](Protocol):
         self,
         run_cfg: RunConfigT,
         *,
+        device: str,
         batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
-        device: str = "cpu",
     ) -> DataLoader[Any]:
         """Build the train dataloader.
 
         Defaults to ``run_cfg.pd.batch_size``; pass ``batch_size_override`` to use a
         different batch size (e.g. for offline analysis scripts that want a custom
         batch size without rewriting the saved ``run_cfg``).
+
+        ``device`` is the distributed-aware target device (``cuda:<local_rank>`` for
+        DDP, ``"cpu"`` otherwise). Synthetic-data drivers (TMS, ResidMLP) generate
+        batches on this device to avoid per-step CPU→GPU copies; LM-style drivers
+        that hand off raw tensors can ignore it. No default — silently falling back
+        to ``"cpu"`` would mis-route the synthetic drivers on a GPU run.
         """
         ...
 
@@ -55,14 +61,14 @@ class ExperimentDriver[RunConfigT: RunConfig](Protocol):
         self,
         run_cfg: RunConfigT,
         *,
+        device: str,
         batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
-        device: str = "cpu",
     ) -> DataLoader[Any]:
         """Build the eval dataloader.
 
         Defaults to ``run_cfg.logging.eval_batch_size``; pass ``batch_size_override``
-        to use a different batch size.
+        to use a different batch size. See ``build_train_loader`` for ``device``.
         """
         ...
 

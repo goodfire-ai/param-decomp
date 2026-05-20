@@ -114,11 +114,11 @@ class Driver(ExperimentDriver[LMRunConfig]):
         self,
         run_cfg: LMRunConfig,
         *,
+        device: str,
         batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
-        device: str = "cpu",
     ) -> Any:
-        _ = device
+        del device  # LM loaders hand off raw tensors; per-batch device move happens later.
         return build_lm_train_loader(
             data_cfg=run_cfg.data,
             batch_size=batch_size_override or run_cfg.pd.batch_size,
@@ -131,11 +131,11 @@ class Driver(ExperimentDriver[LMRunConfig]):
         self,
         run_cfg: LMRunConfig,
         *,
+        device: str,
         batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
-        device: str = "cpu",
     ) -> Any:
-        _ = device
+        del device
         return build_lm_eval_loader(
             data_cfg=run_cfg.data,
             batch_size=batch_size_override or run_cfg.logging.eval_batch_size,

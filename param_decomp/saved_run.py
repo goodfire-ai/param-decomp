@@ -77,35 +77,35 @@ class PDRun:
     def build_train_loader(
         self,
         *,
+        device: str,
         batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
-        device: str = "cpu",
     ) -> DataLoader[Any]:
         assert self.driver is not None, (
             "Run has no driver. Build dataloaders explicitly for custom runs."
         )
         return self.driver.build_train_loader(
             self.run_cfg,
+            device=device,
             batch_size_override=batch_size_override,
             dist_state=dist_state,
-            device=device,
         )
 
     def build_eval_loader(
         self,
         *,
+        device: str,
         batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
-        device: str = "cpu",
     ) -> DataLoader[Any]:
         assert self.driver is not None, (
             "Run has no driver. Build dataloaders explicitly for custom runs."
         )
         return self.driver.build_eval_loader(
             self.run_cfg,
+            device=device,
             batch_size_override=batch_size_override,
             dist_state=dist_state,
-            device=device,
         )
 
     def load_model(self, target: PDTarget | None = None) -> ComponentModel:

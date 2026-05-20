@@ -75,11 +75,11 @@ class Driver(ExperimentDriver[ResidMLPRunConfig]):
         self,
         run_cfg: ResidMLPRunConfig,
         *,
+        device: str,
         batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
-        device: str = "cpu",
     ) -> DatasetGeneratedDataLoader[tuple[Tensor, Tensor]]:
-        _ = dist_state
+        del dist_state
         return DatasetGeneratedDataLoader(
             self._build_dataset(run_cfg, device),
             batch_size=batch_size_override or run_cfg.pd.batch_size,
@@ -91,11 +91,11 @@ class Driver(ExperimentDriver[ResidMLPRunConfig]):
         self,
         run_cfg: ResidMLPRunConfig,
         *,
+        device: str,
         batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
-        device: str = "cpu",
     ) -> DatasetGeneratedDataLoader[tuple[Tensor, Tensor]]:
-        _ = dist_state
+        del dist_state
         return DatasetGeneratedDataLoader(
             self._build_dataset(run_cfg, device),
             batch_size=batch_size_override or run_cfg.logging.eval_batch_size,

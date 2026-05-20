@@ -48,7 +48,7 @@ def harvest(config: HarvestConfig) -> Path:
             seed=config.dataset_seed,
         )
     else:
-        dataloader = pd_run.build_train_loader(batch_size_override=config.batch_size)
+        dataloader = pd_run.build_train_loader(device=device, batch_size_override=config.batch_size)
 
     model = pd_run.load_model().to(device)
 

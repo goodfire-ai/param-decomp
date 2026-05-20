@@ -61,7 +61,9 @@ class PDAdapter(DecompositionAdapter):
 
     @override
     def dataloader(self, batch_size: int) -> DataLoader[Tensor]:
-        return self.pd_run.build_train_loader(batch_size_override=batch_size)
+        # PDAdapter is LM-only (via `self.lm_run`); the LM driver ignores `device`
+        # because batches are moved per-step.
+        return self.pd_run.build_train_loader(device="cpu", batch_size_override=batch_size)
 
     @property
     @override
