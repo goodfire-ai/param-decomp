@@ -6,10 +6,11 @@ Context-aware component labeling using network graph structure. Unlike standard 
 
 ```bash
 # Via SLURM (standalone)
-pd-graph-interp <decomposition_id> --config config.yaml
+pd-graph-interp <decomposition_id> --config config.yaml --harvest_subrun_id h-YYYYMMDD_HHMMSS
 
-# Direct execution
-python -m param_decomp.graph_interp.scripts.run <decomposition_id> --config_json '{...}'
+# Direct execution (one process; the SLURM wrapper picks the subrun id automatically)
+python -m param_decomp.graph_interp.scripts.run <decomposition_id> \
+    --config_json '{...}' --subrun_id ti-YYYYMMDD_HHMMSS --harvest_subrun_id h-...
 ```
 
 Requires `OPENROUTER_API_KEY` env var. Requires both harvest data and dataset attributions to exist.

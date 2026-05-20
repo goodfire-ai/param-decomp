@@ -247,9 +247,7 @@ This repository implements methods from two key research papers on parameter dec
 - `param_decomp/experiments/discovery.py` - Auto-discovery of built-in experiments from `experiments/<kind>/*.yaml`
 - `param_decomp/models/component_model.py` - Core ComponentModel that wraps target models
 - `param_decomp/models/components.py` - Component types (LinearComponent, EmbeddingComponent, etc.)
-- `param_decomp/losses.py` - PD loss functions (faithfulness, reconstruction, importance minimality)
-- `param_decomp/metrics.py` - Metrics for logging to WandB (e.g. CI-L0, KL divergence, etc.)
-- `param_decomp/figures.py` - Figures for logging to WandB (e.g. CI histograms, Identity plots, etc.)
+- `param_decomp/metrics/` - Self-registering `Metric` classes: losses, eval metrics, and W&B figures all live here (`metrics/base.py`, `metrics/registry.py`, `metrics/builtin/*.py`)
 
 **Terminology: Sources vs Masks:**
 
@@ -260,11 +258,11 @@ This repository implements methods from two key research papers on parameter dec
 
 Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
-- `models.py` - Experiment-specific model classes and pretrained loading
-- `experiment.py` - Pydantic experiment config, target/data builders, and driver
-- `train_*.py` - Training script for target models
-- `*_config.yaml` - Configuration files
-- `plotting.py` - Visualization utilities
+- `experiment.py` - `Run` subclass + driver (target/dataloader builders)
+- `*_config.yaml` - Built-in YAML configs (auto-discovered)
+- `models.py` (TMS/ResidMLP) / `data.py` (LM) - Model/data helpers
+- `train_*.py` (TMS/ResidMLP) - Target-model pretraining scripts
+- `plotting.py` (TMS/ResidMLP) - Visualization utilities
 
 **Key Data Flow:**
 
@@ -330,19 +328,20 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 │   │   ├── tms/                     # Toy Model of Superposition
 │   │   ├── resid_mlp/               # Residual MLP
 │   │   └── lm/                      # Language models
-│   ├── metrics/                     # Metrics - both for use as losses and as eval metrics
+│   ├── metrics/                     # Self-registering Metric classes (losses, eval metrics, figures) in metrics/builtin/
 │   ├── models/
 │   │   ├── component_model.py       # ComponentModel.from_checkpoint(...)
-│   │   └── components.py            # LinearComponent, EmbeddingComponent, etc.
+│   │   ├── components.py            # LinearComponent, EmbeddingComponent, etc.
+│   │   └── batch_and_loss_fns.py    # PDTarget + run_batch_*/recon_loss_* helpers
 │   ├── scripts/
 │   │   └── run_slurm.py             # launch_slurm (SLURM submit) — called by pd-run
 │   ├── sweeps/                      # SweepSpec / SweepGenerator protocol + cartesian helper + example sweep
 │   ├── utils/
 │   │   └── slurm.py                 # SlurmConfig, submit functions
-│   ├── configs.py                   # Core PD configs (PDConfig, ModuleInfo, loss configs, etc.)
-│   ├── run_pd.py                             # Main optimization loop
-│   ├── losses.py                    # Loss functions (faithfulness, reconstruction, etc.)
-│   ├── figures.py                   # WandB figure generation
+│   ├── configs.py                   # PDConfig, LoggingConfig, RuntimeConfig, ModuleInfo
+│   ├── run.py                       # Run (driver_path + pd/logging/runtime + per-driver target/data)
+│   ├── saved_run.py                 # PDRun + load_component_model
+│   ├── run_pd.py                    # Main optimization loop
 │   └── settings.py                  # PARAM_DECOMP_OUT_DIR, SLURM_LOGS_DIR, SBATCH_SCRIPTS_DIR
 ├── Makefile                         # Dev commands (make check, make test)
 └── pyproject.toml                   # Package config
@@ -363,7 +362,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 | `pd-clustering` | `param_decomp/clustering/scripts/run_pipeline.py` | Clustering ensemble pipeline |
 | `pd-cluster-harvest` | `param_decomp/clustering/scripts/run_harvest.py` | Harvest activations → membership snapshot |
 | `pd-cluster-merge` | `param_decomp/clustering/scripts/run_merge.py` | Merge from snapshot (CPU-only) |
-| `pd-pretrain` | `param_decomp/pretrain/scripts/run_slurm_cli.py` | Pretrain target models |
+| `pd-pretrain` | `param_decomp/pretrain/scripts/run_slurm.py` | Pretrain target models |
 | `pd-investigate` | `param_decomp/investigate/scripts/run_slurm_cli.py` | Launch investigation agent |
 
 ### Files to Skip When Searching
@@ -521,7 +520,12 @@ graph_interp         (CPU, depends on harvest merge + attributions merge)
 
 **Metrics and Figures:**
 
-Metrics and figures are defined in `param_decomp/metrics.py` and `param_decomp/figures.py`. These files expose dictionaries of functions that can be selected and parameterized in the config of a given experiment. This allows for easy extension and customization of metrics and figures, without modifying the core framework code.
+Metrics (losses, eval metrics, and W&B figures) are all `Metric` subclasses living in
+`param_decomp/metrics/builtin/`, self-registered via `@register_metric` from
+`param_decomp/metrics/registry.py`. They are selected and parameterized in the experiment YAML
+under `pd.loss_metrics` / `logging.eval_metrics` (keyed by class name). External users can register
+their own metrics by listing import targets in `pd.metric_modules` — see the "Custom Metrics"
+section above.
 
 ### Sweeps
 

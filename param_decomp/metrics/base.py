@@ -1,9 +1,9 @@
 """Metric protocol and config base classes.
 
 Metrics are auto-registered via `@register_metric` and looked up by their class name from
-`PDConfig.loss_metrics` / `PDConfig.eval_metrics`. Each metric file defines its pydantic config
-class (subclassing `MetricConfig` for eval-only or `LossMetricConfig` for loss-capable) alongside
-the `Metric` class itself.
+`PDConfig.loss_metrics` / `LoggingConfig.eval_metrics`. Each metric file defines its pydantic
+config class (subclassing `MetricConfig` for eval-only or `LossMetricConfig` for loss-capable)
+alongside the `Metric` class itself.
 
 A metric's `update(ctx)` is called once per training step (returning the live loss for
 loss-capable metrics) and once per eval batch. Eval reads `compute()` after the last batch.
