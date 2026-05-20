@@ -135,13 +135,9 @@ def flatten_metric_configs(config_dict: dict[str, Any]) -> dict[str, Any]:
 
         prefix = container_name.split("_")[0]  # "loss" or "eval"
         for metric_field, cfg in container.items():
-            if cfg is None:
-                continue
             assert isinstance(cfg, dict), f"{container_name}.{metric_field} should be a dict"
             short_name = METRIC_CONFIG_SHORT_NAMES.get(metric_field, metric_field)
             for key, value in cfg.items():
-                if key == "classname":
-                    continue
                 flattened[f"{prefix}.{short_name}.{key}"] = value
 
     return flattened
