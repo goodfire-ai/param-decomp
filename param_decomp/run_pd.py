@@ -3,16 +3,14 @@
 Two entry points:
 
 - ``optimize(target, train_loader, eval_loader, *, pd_config, logging_config,
-  runtime_config, device, sink)`` — **the notebook entry point.** Pure
+  runtime_config, device, run)`` — **the notebook entry point.** Pure
   trainer: takes everything explicitly, doesn't know about RunConfig /
-  drivers / YAML. ``sink`` is a ``RunSink`` carrying the output channels
-  (local files + optional wandb + checkpoints); use ``RunSink.silent()`` to
-  skip persistence.
+  drivers / YAML. ``run`` is a ``PDRun`` (use ``PDRun.silent()`` /
+  ``PDRun.local(out_dir)`` / ``PDRun.with_wandb(out_dir, ...)``).
 - ``run_pd(run_cfg, *, device, ...)`` — **the driver-mediated wrapper.**
   Materializes runtime inputs via ``materialize_run``, builds a
-  ``RunSink.for_run`` (writes ``run_config.yaml``, inits wandb from
-  ``run_cfg`` fields), then hands off to ``optimize``. Used by ``pd-run`` /
-  ``_worker.py``.
+  ``PDRun.for_run`` (writes ``run_config.yaml``, inits wandb from ``run_cfg``
+  fields), then hands off to ``optimize``. Used by ``pd-run`` / ``_worker.py``.
 
 ``materialize_run`` is the composition root: a standalone function that
 turns a ``RunConfig`` into the ``(target, train_loader, eval_loader)`` tuple
@@ -36,14 +34,7 @@ from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from param_decomp.configs import (
-    LoggingConfig,
-    PDConfig,
-    PersistentPGDReconLossConfig,
-    PersistentPGDReconSubsetLossConfig,
-    RepeatAcrossBatchScope,
-    RuntimeConfig,
-)
+from param_decomp.configs import LoggingConfig, PDConfig, RuntimeConfig
 from param_decomp.driver_path import load_driver
 from param_decomp.eval import evaluate
 from param_decomp.identity_insertion import insert_identity_operations_
@@ -57,8 +48,8 @@ from param_decomp.models.batch_and_loss_fns import (
     move_batch_to_device,
 )
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
+from param_decomp.pd_run import PDRun
 from param_decomp.run import RunConfig
-from param_decomp.run_sink import RunSink
 from param_decomp.utils.data_utils import loop_dataloader
 from param_decomp.utils.distributed_utils import (
     DistributedState,
@@ -218,28 +209,31 @@ def optimize(
     logging_config: LoggingConfig,
     runtime_config: RuntimeConfig,
     device: str,
-    sink: RunSink,
+    run: PDRun,
 ) -> None:
     """Run the optimization loop. The notebook / script entry point.
 
     Pure trainer: takes a ``PDTarget`` plus dataloaders plus the three configs.
     No ``RunConfig``, no driver, no YAML, no wandb-init responsibility.
 
-    ``sink`` is a ``RunSink`` carrying the output channels (local files +
-    optional wandb + checkpoints). Use ``RunSink.silent()`` for no-persistence
-    runs, ``RunSink.local(out_dir)`` for local files, or
-    ``RunSink.with_wandb(...)`` for wandb.
+    ``run`` is a ``PDRun`` carrying the output channels (local files +
+    optional wandb + checkpoints). Use ``PDRun.silent()`` for no-persistence
+    runs, ``PDRun.local(out_dir)`` for local files, or
+    ``PDRun.with_wandb(out_dir, project=...)`` for wandb.
 
-    All ranks call this function; ``sink`` is automatically a no-op on
+    All ranks call this function; ``run`` is automatically a no-op on
     non-main ranks.
     """
-    _validate_pgd_scope(pd_config, get_distributed_state())
+    _dist_state = get_distributed_state()
+    pd_config.validate_pgd_scope(
+        world_size=_dist_state.world_size if _dist_state is not None else 1
+    )
 
     train_iterator = loop_dataloader(train_loader)
     eval_iterator = loop_dataloader(eval_loader)
 
-    if sink.out_dir is not None:
-        logger.info(f"Train+eval logs saved to directory: {sink.out_dir}")
+    if run.out_dir is not None:
+        logger.info(f"Train+eval logs saved to directory: {run.out_dir}")
 
     target_model = target.model
     run_batch = target.run_batch
@@ -360,10 +354,8 @@ def optimize(
             cfg = cast(LossMetricConfig, loss_instances[metric_name].cfg)
             assert cfg.coeff is not None
             total_loss = total_loss + cfg.coeff * loss_val
-            batch_log_data[f"train/loss/{type(loss_instances[metric_name]).__name__}"] = (
-                loss_val.item()
-            )
-        batch_log_data["train/loss/total"] = total_loss.item()
+            batch_log_data[f"loss/{type(loss_instances[metric_name]).__name__}"] = loss_val.item()
+        batch_log_data["loss/total"] = total_loss.item()
 
         for metric_name, m in loss_instances.items():
             m.before_backward(losses[metric_name])
@@ -380,18 +372,18 @@ def optimize(
 
             grad_norms = get_grad_norms_dict(component_model, device)
             combine_nonoverlapping_dicts(
-                batch_log_data, {f"train/grad_norms/{k}": v for k, v in grad_norms.items()}
+                batch_log_data, {f"grad_norms/{k}": v for k, v in grad_norms.items()}
             )
-            batch_log_data["train/schedules/lr/components"] = components_lr
-            batch_log_data["train/schedules/lr/ci_fn"] = ci_fn_lr
+            batch_log_data["schedules/lr/components"] = components_lr
+            batch_log_data["schedules/lr/ci_fn"] = ci_fn_lr
 
-            if is_main_process():
-                tqdm.write(f"--- Step {step} ---")
-                tqdm.write(f"LR[components]: {components_lr:.6f}")
-                tqdm.write(f"LR[ci_fn]: {ci_fn_lr:.6f}")
-                for name, value in batch_log_data.items():
-                    tqdm.write(f"{name}: {value:.15f}")
-            sink.log(batch_log_data, step=step)
+            run.console(
+                f"--- Step {step} ---",
+                f"LR[components]: {components_lr:.6f}",
+                f"LR[ci_fn]: {ci_fn_lr:.6f}",
+                *(f"train/{name}: {value:.15f}" for name, value in batch_log_data.items()),
+            )
+            run.log(batch_log_data, step=step, section="train")
 
         # --- Evaluation --- #
         if step % logging_config.eval_freq == 0:
@@ -410,10 +402,8 @@ def optimize(
                     slow_step=slow_step,
                 )
 
-                if is_main_process():
-                    for k, v in metrics.items():
-                        tqdm.write(f"eval/{k}: {v}")
-                sink.log(metrics, step=step, section="eval")
+                run.console(*(f"eval/{k}: {v}" for k, v in metrics.items()))
+                run.log(metrics, step=step, section="eval")
 
                 del metrics
                 torch.cuda.empty_cache()
@@ -425,7 +415,7 @@ def optimize(
             and step % logging_config.save_freq == 0
             and step > 0
         ) or step == pd_config.steps:
-            sink.checkpoint(component_model.state_dict(), step=step)
+            run.checkpoint(component_model.state_dict(), step=step)
 
         # Skip gradient step at the very last step (last step is just for plotting/logging).
         if step != pd_config.steps:
@@ -441,24 +431,6 @@ def optimize(
         logger.info("Finished training loop.")
 
 
-def _validate_pgd_scope(config: PDConfig, dist_state: DistributedState | None) -> None:
-    """Assert that persistent PGD `repeat_across_batch` divides the per-rank training batch size."""
-    world_size = dist_state.world_size if dist_state is not None else 1
-    assert config.batch_size % world_size == 0, (
-        f"batch_size {config.batch_size} not divisible by world size {world_size}"
-    )
-    per_rank = config.batch_size // world_size
-    for metric_name, cfg in config.loss_metrics.items():
-        if isinstance(
-            cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
-        ) and isinstance(cfg.scope, RepeatAcrossBatchScope):
-            n = cfg.scope.n_sources
-            assert per_rank % n == 0, (
-                f"{metric_name}: repeat_across_batch n_sources={n} must divide "
-                f"per-rank batch_size={per_rank}"
-            )
-
-
 def run_pd(
     run_cfg: RunConfig,
     *,
@@ -472,14 +444,15 @@ def run_pd(
     Steps:
     1. Materialize ``(target, train_loader, eval_loader)`` from the driver
        (``materialize_run``).
-    2. Build a ``RunSink.for_run`` — creates ``PARAM_DECOMP_OUT_DIR/
+    2. Build a ``PDRun.for_run`` — creates ``PARAM_DECOMP_OUT_DIR/
        decompositions/<run_id>/``, writes ``run_config.yaml``, inits wandb if
        ``wandb_project`` is set.
-    3. Hand off to ``optimize`` with the sink.
-    4. ``sink.finish()`` for wandb cleanup.
+    3. Hand off to ``optimize`` with the run handle.
+    4. ``run.finish()`` for wandb cleanup.
 
-    For notebook / script use, call ``optimize(...)`` directly with a sink of
-    your choosing (``RunSink.local`` / ``RunSink.with_wandb`` / ``RunSink.silent``).
+    For notebook / script use, call ``optimize(...)`` directly with a
+    ``PDRun`` of your choosing (``PDRun.local`` / ``PDRun.with_wandb`` /
+    ``PDRun.silent``).
 
     ``wandb_project`` is a deploy-time parameter (which W&B account/project to
     log to), not part of the reproducible ``RunConfig``. ``None`` disables W&B.
@@ -494,7 +467,7 @@ def run_pd(
     )
     # target.model lands on `device` via ComponentModel.to(device) inside optimize().
 
-    sink = RunSink.for_run(run_cfg, wandb_project=wandb_project, launch_id=launch_id)
+    pd_run = PDRun.for_run(run_cfg, wandb_project=wandb_project, launch_id=launch_id)
     try:
         optimize(
             target=target,
@@ -504,9 +477,9 @@ def run_pd(
             logging_config=run_cfg.logging,
             runtime_config=run_cfg.runtime,
             device=device,
-            sink=sink,
+            run=pd_run,
         )
     finally:
-        sink.finish()
+        pd_run.finish()
 
-    return sink.out_dir
+    return pd_run.out_dir

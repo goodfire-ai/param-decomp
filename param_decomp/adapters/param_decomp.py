@@ -8,8 +8,8 @@ from param_decomp.adapters.base import DecompositionAdapter
 from param_decomp.autointerp.schemas import ModelMetadata
 from param_decomp.experiments.lm.experiment import LMRunConfig
 from param_decomp.models.component_model import ComponentModel
+from param_decomp.pd_run import PDRun
 from param_decomp.run import RunConfig
-from param_decomp.saved_run import PDRun
 from param_decomp.topology import TransformerTopology
 from param_decomp.utils.wandb_utils import parse_wandb_run_path
 
@@ -25,6 +25,7 @@ class PDAdapter(DecompositionAdapter):
 
     @cached_property
     def run(self) -> RunConfig:
+        assert self.pd_run.run_cfg is not None  # always set on from_path handles
         return self.pd_run.run_cfg
 
     @cached_property

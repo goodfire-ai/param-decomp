@@ -529,3 +529,24 @@ class PDConfig(BaseConfig):
         for metric_name, cfg in self.loss_metrics.items():
             assert cfg.coeff is not None, f"loss_metrics.{metric_name!r} must have a coeff"
         return self
+
+    def validate_pgd_scope(self, *, world_size: int) -> None:
+        """Assert persistent-PGD `repeat_across_batch` divides the per-rank training batch size.
+
+        Takes ``world_size`` directly (not a ``DistributedState``) so this module
+        doesn't have to know about distributed plumbing. Callers pass
+        ``dist_state.world_size if dist_state is not None else 1``.
+        """
+        assert self.batch_size % world_size == 0, (
+            f"batch_size {self.batch_size} not divisible by world size {world_size}"
+        )
+        per_rank = self.batch_size // world_size
+        for metric_name, cfg in self.loss_metrics.items():
+            if isinstance(
+                cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
+            ) and isinstance(cfg.scope, RepeatAcrossBatchScope):
+                n = cfg.scope.n_sources
+                assert per_rank % n == 0, (
+                    f"{metric_name}: repeat_across_batch n_sources={n} must divide "
+                    f"per-rank batch_size={per_rank}"
+                )

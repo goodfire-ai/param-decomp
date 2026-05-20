@@ -980,7 +980,7 @@ def main():
         out_dir.mkdir(parents=True, exist_ok=True)
 
         # Load models
-        from param_decomp.saved_run import PDRun
+        from param_decomp.pd_run import PDRun
 
         model = PDRun.from_path(run_id).load_model()
         assert isinstance(model.target_model, TMSModel)
