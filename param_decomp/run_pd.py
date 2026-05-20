@@ -391,7 +391,7 @@ def optimize(
                 tqdm.write(f"LR[ci_fn]: {ci_fn_lr:.6f}")
                 for name, value in batch_log_data.items():
                     tqdm.write(f"{name}: {value:.15f}")
-                sink.log(batch_log_data, step=step)
+            sink.log(batch_log_data, step=step)
 
         # --- Evaluation --- #
         if step % logging_config.eval_freq == 0:
@@ -413,7 +413,7 @@ def optimize(
                 if is_main_process():
                     for k, v in metrics.items():
                         tqdm.write(f"eval/{k}: {v}")
-                    sink.log(metrics, step=step, section="eval")
+                sink.log(metrics, step=step, section="eval")
 
                 del metrics
                 torch.cuda.empty_cache()
@@ -421,13 +421,10 @@ def optimize(
 
         # --- Saving Checkpoint --- #
         if (
-            (
-                logging_config.save_freq is not None
-                and step % logging_config.save_freq == 0
-                and step > 0
-            )
-            or step == pd_config.steps
-        ) and is_main_process():
+            logging_config.save_freq is not None
+            and step % logging_config.save_freq == 0
+            and step > 0
+        ) or step == pd_config.steps:
             sink.checkpoint(component_model.state_dict(), step=step)
 
         # Skip gradient step at the very last step (last step is just for plotting/logging).
