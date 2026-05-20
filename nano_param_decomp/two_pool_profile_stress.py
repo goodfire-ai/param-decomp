@@ -20,8 +20,8 @@ import math
 import os
 import time
 from collections import defaultdict
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 import torch
 import torch.distributed as dist
@@ -57,7 +57,12 @@ POOL_B_RANKS = [6, 7, 14, 15]
 WORLD_SIZE = 16
 
 BLOCK_GROUPS = [
-    [0, 8], [1, 9], [2, 10], [3, 11], [4, 12], [5, 13],
+    [0, 8],
+    [1, 9],
+    [2, 10],
+    [3, 11],
+    [4, 12],
+    [5, 13],
 ]
 N_TRANSFORMER_BLOCKS = 18
 BLOCKS_PER_GROUP = N_TRANSFORMER_BLOCKS // len(BLOCK_GROUPS)  # 3
@@ -68,7 +73,7 @@ VOCAB = 32000
 D_MODEL = 1792
 N_HEADS = 16
 D_MLP = 7168
-BATCH = 4   # smaller than multinode (8) to keep activations in check
+BATCH = 4  # smaller than multinode (8) to keep activations in check
 SEQ_LEN = 64
 C = 64
 CI_HIDDEN = 30000
@@ -78,6 +83,7 @@ PROFILE_STEPS = 4
 
 
 # --- Timer ---
+
 
 class StepTimer:
     def __init__(self, rank: int) -> None:
@@ -176,15 +182,17 @@ def pool_a_step(
     with timer.phase("a/layerwise_total"):
         sl = layout.my_batch_slice_a()
         loss_stoch = single_site_layerwise_loss_local_timed(
-            timer, target_model, wrappers, layout.my_owned_sites,
-            input_ids[sl], target_logits[sl].detach(),
+            timer,
+            target_model,
+            wrappers,
+            layout.my_owned_sites,
+            input_ids[sl],
+            target_logits[sl].detach(),
             {s: ci_lower_owned[s][sl] for s in layout.my_owned_sites},
         )
 
     total_home = (
-        cfg.coeff_faith * loss_faith
-        + cfg.coeff_imp * loss_imp
-        + cfg.coeff_stoch * loss_stoch
+        cfg.coeff_faith * loss_faith + cfg.coeff_imp * loss_imp + cfg.coeff_stoch * loss_stoch
     )
 
     with timer.phase("a/recv_grads_from_b"):
@@ -385,7 +393,9 @@ def main() -> None:
 
     if rank in (0, POOL_B_RANKS[0]):
         mem = torch.cuda.memory_allocated(device) / 1e9
-        print(f"[rank{rank}] pool={layout.my_pool} before training: allocated={mem:.2f}GB", flush=True)
+        print(
+            f"[rank{rank}] pool={layout.my_pool} before training: allocated={mem:.2f}GB", flush=True
+        )
 
     for step in range(cfg.n_steps):
         input_ids = make_batch(step)
@@ -393,7 +403,9 @@ def main() -> None:
 
         with timer.phase("STEP_TOTAL"):
             if layout.my_pool == "a":
-                metrics = pool_a_step(timer, layout, target, wrappers, ci_fns, optimizer, input_ids, cfg, imp_p)
+                metrics = pool_a_step(
+                    timer, layout, target, wrappers, ci_fns, optimizer, input_ids, cfg, imp_p
+                )
             else:
                 metrics = pool_b_step(timer, layout, target, wrappers, ppgd, input_ids, cfg, device)
 

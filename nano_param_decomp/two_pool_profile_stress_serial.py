@@ -17,8 +17,8 @@ import math
 import os
 import time
 from collections import defaultdict
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 import torch
 import torch.distributed as dist
@@ -175,15 +175,17 @@ def pool_a_step_serial(
     with timer.phase("a/layerwise_total"):
         sl = layout.my_batch_slice_a()
         loss_stoch = single_site_layerwise_loss_local_timed(
-            timer, target_model, wrappers, layout.my_owned_sites,
-            input_ids[sl], target_logits[sl].detach(),
+            timer,
+            target_model,
+            wrappers,
+            layout.my_owned_sites,
+            input_ids[sl],
+            target_logits[sl].detach(),
             {s: ci_lower_owned[s][sl] for s in layout.my_owned_sites},
         )
 
     total_home = (
-        cfg.coeff_faith * loss_faith
-        + cfg.coeff_imp * loss_imp
-        + cfg.coeff_stoch * loss_stoch
+        cfg.coeff_faith * loss_faith + cfg.coeff_imp * loss_imp + cfg.coeff_stoch * loss_stoch
     )
 
     with timer.phase("a/seed_and_backward"):
@@ -365,7 +367,6 @@ def main() -> None:
 
     if rank == 0:
         target_params = sum(p.numel() for p in target.parameters())
-        per_rank_wrapper_params = sum(p.numel() for w in wrappers.values() for p in (w.V, w.U))
         per_rank_ci_fn_params = sum(p.numel() for f in ci_fns.values() for p in f.parameters())
         print(
             f"[rank0] SERIAL BASELINE  target_params={target_params:,} "
@@ -380,7 +381,9 @@ def main() -> None:
 
         with timer.phase("STEP_TOTAL"):
             if layout.my_pool == "a":
-                metrics = pool_a_step_serial(timer, layout, target, wrappers, ci_fns, optimizer, input_ids, cfg, imp_p)
+                metrics = pool_a_step_serial(
+                    timer, layout, target, wrappers, ci_fns, optimizer, input_ids, cfg, imp_p
+                )
             else:
                 metrics = pool_b_step(timer, layout, target, wrappers, ppgd, input_ids, cfg, device)
 

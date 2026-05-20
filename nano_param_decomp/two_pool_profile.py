@@ -23,8 +23,8 @@ import math
 import os
 import time
 from collections import defaultdict
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 import torch
 import torch.distributed as dist
@@ -75,6 +75,7 @@ PROFILE_STEPS = 20
 
 # --- Timer ---
 
+
 class StepTimer:
     """Phase-level timer using torch.cuda.synchronize() + time.perf_counter().
 
@@ -118,6 +119,7 @@ class StepTimer:
 
 # --- Layerwise loss (timed version) ---
 
+
 def single_site_layerwise_loss_local_timed(
     timer: StepTimer,
     target_model: nn.Module,
@@ -152,6 +154,7 @@ def single_site_layerwise_loss_local_timed(
 
 
 # --- Pool A step ---
+
 
 def pool_a_step(
     timer: StepTimer,
@@ -193,9 +196,7 @@ def pool_a_step(
         )
 
     total_home = (
-        cfg.coeff_faith * loss_faith
-        + cfg.coeff_imp * loss_imp
-        + cfg.coeff_stoch * loss_stoch
+        cfg.coeff_faith * loss_faith + cfg.coeff_imp * loss_imp + cfg.coeff_stoch * loss_stoch
     )
 
     with timer.phase("a/recv_grads_from_b"):
@@ -235,6 +236,7 @@ def pool_a_step(
 
 
 # --- Pool B step ---
+
 
 def pool_b_step(
     timer: StepTimer,
@@ -300,6 +302,7 @@ def pool_b_step(
 
 # --- Main ---
 
+
 def main() -> None:
     dist.init_process_group("nccl")
     rank = dist.get_rank()
@@ -310,9 +313,7 @@ def main() -> None:
     torch.cuda.set_device(local_rank)
     device = torch.device(f"cuda:{local_rank}")
 
-    block_groups = [
-        [b * N_PER_BLOCK + k for k in range(N_PER_BLOCK)] for b in range(N_BLOCKS)
-    ]
+    block_groups = [[b * N_PER_BLOCK + k for k in range(N_PER_BLOCK)] for b in range(N_BLOCKS)]
     block_owned_sites = [sites_for_block(b) for b in range(N_BLOCKS)]
     pool_b_ranks = list(range(N_BLOCKS * N_PER_BLOCK, N_BLOCKS * N_PER_BLOCK + N_POOL_B))
 
@@ -349,7 +350,9 @@ def main() -> None:
     for w in wrappers.values():
         w.to(device)
 
-    ci_fns = build_ci_fns_for_block_ddp(layout, wrappers, c_per_site, hidden=64, leaky_alpha=cfg.leaky_alpha)
+    ci_fns = build_ci_fns_for_block_ddp(
+        layout, wrappers, c_per_site, hidden=64, leaky_alpha=cfg.leaky_alpha
+    )
     for f in ci_fns.values():
         f.to(device)
 
@@ -396,7 +399,9 @@ def main() -> None:
 
         with timer.phase("STEP_TOTAL"):
             if layout.my_pool == "a":
-                metrics = pool_a_step(timer, layout, target, wrappers, ci_fns, optimizer, input_ids, cfg, imp_p)
+                metrics = pool_a_step(
+                    timer, layout, target, wrappers, ci_fns, optimizer, input_ids, cfg, imp_p
+                )
             else:
                 metrics = pool_b_step(timer, layout, target, wrappers, ppgd, input_ids, cfg, device)
 

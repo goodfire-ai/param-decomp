@@ -25,8 +25,8 @@ import math
 import os
 import time
 from collections import defaultdict
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 import torch
 import torch.distributed as dist
@@ -81,7 +81,9 @@ class StepTimer:
     def report(self, warmup: int) -> None:
         if self.rank != 0:
             return
-        print(f"\n[vanilla rank{self.rank}] phase wall-clock (skipping first {warmup}):", flush=True)
+        print(
+            f"\n[vanilla rank{self.rank}] phase wall-clock (skipping first {warmup}):", flush=True
+        )
         total = 0.0
         for name, vals in self.times.items():
             vals = vals[warmup:]
@@ -160,10 +162,12 @@ def main() -> None:
         n_comp = sum(p.numel() for p in component_params)
         n_ci = sum(p.numel() for p in ci_fn_params)
         n_target = sum(p.numel() for p in target.parameters())
-        print(f"[vanilla] VANILLA DDP-{world_size}  (using param_decomp.ComponentModel)", flush=True)
         print(
-            f"[vanilla] target~{n_target/1e6:.1f}M  components={n_comp/1e6:.1f}M  "
-            f"ci_fn={n_ci/1e6:.1f}M  trainable_per_rank={(n_comp+n_ci)/1e6:.1f}M",
+            f"[vanilla] VANILLA DDP-{world_size}  (using param_decomp.ComponentModel)", flush=True
+        )
+        print(
+            f"[vanilla] target~{n_target / 1e6:.1f}M  components={n_comp / 1e6:.1f}M  "
+            f"ci_fn={n_ci / 1e6:.1f}M  trainable_per_rank={(n_comp + n_ci) / 1e6:.1f}M",
             flush=True,
         )
         print(
@@ -201,7 +205,7 @@ def main() -> None:
                 sum_sq = torch.zeros((), device=device)
                 numel = 0
                 for d in weight_deltas.values():
-                    sum_sq = sum_sq + (d ** 2).sum()
+                    sum_sq = sum_sq + (d**2).sum()
                     numel += d.numel()
                 loss_faith = sum_sq / numel
 

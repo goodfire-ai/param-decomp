@@ -24,7 +24,6 @@ Run:
 
 import os
 import time
-from collections import defaultdict
 
 import torch
 import torch.distributed as dist
@@ -183,7 +182,7 @@ def main() -> None:
         avg_ms = 1000 * sum(profile) / len(profile)
         print(
             f"\n[wider rank0] STEP_TOTAL avg={avg_ms:.2f}ms  "
-            f"min={1000*min(profile):.2f}ms  max={1000*max(profile):.2f}ms  (n={len(profile)})",
+            f"min={1000 * min(profile):.2f}ms  max={1000 * max(profile):.2f}ms  (n={len(profile)})",
             flush=True,
         )
 

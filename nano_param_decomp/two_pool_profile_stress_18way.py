@@ -30,8 +30,8 @@ import math
 import os
 import time
 from collections import defaultdict
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 import torch
 import torch.distributed as dist
@@ -68,21 +68,16 @@ GPUS_PER_NODE = 8
 
 # Per-node: 6 pool A + 2 pool B
 POOL_A_RANKS = [
-    node * GPUS_PER_NODE + pos
-    for node in range(N_NODES)
-    for pos in range(6)
+    node * GPUS_PER_NODE + pos for node in range(N_NODES) for pos in range(6)
 ]  # ranks 0..5, 8..13, 16..21
 POOL_B_RANKS = [
-    node * GPUS_PER_NODE + pos
-    for node in range(N_NODES)
-    for pos in (6, 7)
+    node * GPUS_PER_NODE + pos for node in range(N_NODES) for pos in (6, 7)
 ]  # ranks 6,7, 14,15, 22,23
 
 # 18 transformer blocks, 1 per block group, round-robin across nodes
 N_TRANSFORMER_BLOCKS = 18
 BLOCK_GROUPS = [
-    [(i % N_NODES) * GPUS_PER_NODE + (i // N_NODES)]
-    for i in range(N_TRANSFORMER_BLOCKS)
+    [(i % N_NODES) * GPUS_PER_NODE + (i // N_NODES)] for i in range(N_TRANSFORMER_BLOCKS)
 ]
 BLOCKS_PER_GROUP = 1  # 1 transformer block per block group
 
@@ -92,7 +87,7 @@ VOCAB = 32000
 D_MODEL = 1792
 N_HEADS = 16
 D_MLP = 7168
-BATCH = 6   # divisible by both n_per_block_group (1) and n_pool_b (6)
+BATCH = 6  # divisible by both n_per_block_group (1) and n_pool_b (6)
 SEQ_LEN = 64
 C = 64
 CI_HIDDEN = 30000
@@ -198,15 +193,17 @@ def pool_a_step(
     with timer.phase("a/layerwise_total"):
         sl = layout.my_batch_slice_a()
         loss_stoch = single_site_layerwise_loss_local_timed(
-            timer, target_model, wrappers, layout.my_owned_sites,
-            input_ids[sl], target_logits[sl].detach(),
+            timer,
+            target_model,
+            wrappers,
+            layout.my_owned_sites,
+            input_ids[sl],
+            target_logits[sl].detach(),
             {s: ci_lower_owned[s][sl] for s in layout.my_owned_sites},
         )
 
     total_home = (
-        cfg.coeff_faith * loss_faith
-        + cfg.coeff_imp * loss_imp
-        + cfg.coeff_stoch * loss_stoch
+        cfg.coeff_faith * loss_faith + cfg.coeff_imp * loss_imp + cfg.coeff_stoch * loss_stoch
     )
 
     with timer.phase("a/recv_grads_from_b"):
@@ -384,7 +381,6 @@ def main() -> None:
 
     if rank == 0:
         target_params = sum(p.numel() for p in target.parameters())
-        per_rank_wrapper_params = sum(p.numel() for w in wrappers.values() for p in (w.V, w.U))
         per_rank_ci_fn_params = sum(p.numel() for f in ci_fns.values() for p in f.parameters())
         print(
             f"[rank0] target_params={target_params:,} "
@@ -404,7 +400,9 @@ def main() -> None:
 
         with timer.phase("STEP_TOTAL"):
             if layout.my_pool == "a":
-                metrics = pool_a_step(timer, layout, target, wrappers, ci_fns, optimizer, input_ids, cfg, imp_p)
+                metrics = pool_a_step(
+                    timer, layout, target, wrappers, ci_fns, optimizer, input_ids, cfg, imp_p
+                )
             else:
                 metrics = pool_b_step(timer, layout, target, wrappers, ppgd, input_ids, cfg, device)
 

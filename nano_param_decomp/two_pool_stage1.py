@@ -18,7 +18,8 @@ Run:
 """
 
 import copy
-from typing import override
+from collections.abc import Callable
+from typing import cast, override
 
 import torch
 import torch.nn as nn
@@ -27,6 +28,7 @@ from torch import Tensor
 
 from nano_param_decomp.run import (
     CITransformer,
+    ComponentLinear,
     Config,
     PersistentPGD,
     anneal_p,
@@ -57,14 +59,16 @@ class TinyLM(nn.Module):
     def forward(self, input_ids: Tensor) -> Tensor:
         x = self.embed(input_ids)
         for layer in self.layers:
-            x = x + layer.fc2(F.gelu(layer.fc1(x)))
+            fc_1 = cast(nn.Linear, layer.fc1)
+            fc_2 = cast(nn.Linear, layer.fc2)
+            x = x + fc_2(F.gelu(fc_1(x)))
         return self.unembed(x)
 
 
 def _forward_get_ci(
     target_model: nn.Module,
     ci_fn: CITransformer,
-    wrappers: dict,
+    wrappers: dict[str, ComponentLinear],
     input_ids: Tensor,
 ) -> tuple[Tensor, dict[str, Tensor], dict[str, Tensor]]:
     clear_wrapper_masks(wrappers)
@@ -77,7 +81,7 @@ def _forward_get_ci(
 def baseline_step(
     target_model: nn.Module,
     ci_fn: CITransformer,
-    wrappers: dict,
+    wrappers: dict[str, ComponentLinear],
     ppgd: PersistentPGD,
     input_ids: Tensor,
     cfg: Config,
@@ -89,12 +93,8 @@ def baseline_step(
     ppgd.warmup(target_model, wrappers, input_ids, target_logits, ci_lower, lr=cfg.ppgd_lr)
 
     loss_faith = faithfulness_loss(wrappers)
-    loss_imp = importance_minimality_loss(
-        ci_upper, imp_p, cfg.imp_eps, cfg.imp_beta, world_size=1
-    )
-    loss_stoch = stochastic_recon_loss(
-        target_model, wrappers, input_ids, target_logits, ci_lower
-    )
+    loss_imp = importance_minimality_loss(ci_upper, imp_p, cfg.imp_eps, cfg.imp_beta, world_size=1)
+    loss_stoch = stochastic_recon_loss(target_model, wrappers, input_ids, target_logits, ci_lower)
     loss_ppgd = ppgd.recon_loss(target_model, wrappers, input_ids, target_logits, ci_lower)
 
     total = (
@@ -109,7 +109,7 @@ def baseline_step(
 def split_step(
     target_model: nn.Module,
     ci_fn: CITransformer,
-    wrappers: dict,
+    wrappers: dict[str, ComponentLinear],
     ppgd: PersistentPGD,
     input_ids: Tensor,
     cfg: Config,
@@ -139,16 +139,10 @@ def split_step(
 
     # --- Home pool work ---
     loss_faith = faithfulness_loss(wrappers)
-    loss_imp = importance_minimality_loss(
-        ci_upper, imp_p, cfg.imp_eps, cfg.imp_beta, world_size=1
-    )
-    loss_stoch = stochastic_recon_loss(
-        target_model, wrappers, input_ids, target_logits, ci_lower
-    )
+    loss_imp = importance_minimality_loss(ci_upper, imp_p, cfg.imp_eps, cfg.imp_beta, world_size=1)
+    loss_stoch = stochastic_recon_loss(target_model, wrappers, input_ids, target_logits, ci_lower)
     total_home = (
-        cfg.coeff_faith * loss_faith
-        + cfg.coeff_imp * loss_imp
-        + cfg.coeff_stoch * loss_stoch
+        cfg.coeff_faith * loss_faith + cfg.coeff_imp * loss_imp + cfg.coeff_stoch * loss_stoch
     )
 
     # Single backward call: total_home as scalar root + ci_lower tensors as extra roots
@@ -158,11 +152,11 @@ def split_step(
     ci_names = list(ci_lower)
     torch.autograd.backward(
         tensors=[total_home, *(ci_lower[n] for n in ci_names)],
-        grad_tensors=[None, *(ci_scratch[n].grad for n in ci_names)],
+        grad_tensors=[None, *(cast(Tensor, ci_scratch[n].grad) for n in ci_names)],  # pyright: ignore[reportArgumentType] I think pytorch is just typed wrong here
     )
 
 
-def collect_grads(target_model: nn.Module, ci_fn: CITransformer, wrappers: dict) -> dict[str, Tensor]:
+def collect_grads(ci_fn: CITransformer, wrappers: dict[str, ComponentLinear]) -> dict[str, Tensor]:
     out: dict[str, Tensor] = {}
     for name, w in wrappers.items():
         assert w.V.grad is not None, f"{name}.V has no grad"
@@ -175,7 +169,7 @@ def collect_grads(target_model: nn.Module, ci_fn: CITransformer, wrappers: dict)
     return out
 
 
-def zero_all_grads(target_model: nn.Module, ci_fn: CITransformer, wrappers: dict) -> None:
+def zero_all_grads(ci_fn: CITransformer, wrappers: dict[str, ComponentLinear]) -> None:
     for w in wrappers.values():
         if w.V.grad is not None:
             w.V.grad = None
@@ -219,7 +213,7 @@ def main() -> None:
     cfg.C_per_module = C_per_module
 
     wrappers = install_components(target, C_per_module)
-    d_in_per_module = {n: int(w.W_target.shape[1]) for n, w in wrappers.items()}
+    d_in_per_module = {n: int(cast(Tensor, w.W_target).shape[1]) for n, w in wrappers.items()}
     ci_fn = CITransformer(d_in_per_module, C_per_module, cfg)
     target = target.to(device)
     ci_fn = ci_fn.to(device)
@@ -237,18 +231,31 @@ def main() -> None:
 
     imp_p = anneal_p(0, cfg.n_steps, cfg.p_start, cfg.p_end)
 
-    def run_once(step_fn) -> dict[str, Tensor]:
+    def run_once(
+        step_fn: Callable[
+            [
+                nn.Module,
+                CITransformer,
+                dict[str, ComponentLinear],
+                PersistentPGD,
+                Tensor,
+                Config,
+                float,
+            ],
+            None,
+        ],
+    ) -> dict[str, Tensor]:
         # Reset params, RNG, PPGD state to the same starting point.
         target.load_state_dict(initial_target_state)
         ci_fn.load_state_dict(initial_ci_fn_state)
-        zero_all_grads(target, ci_fn, wrappers)
+        zero_all_grads(ci_fn, wrappers)
         torch.manual_seed(42)
         ppgd = PersistentPGD(wrappers, batch_size, seq_len, device, cfg)
         # Re-seed *after* PPGD init so step-internal randomness (stoch loss masks, routing)
         # has identical state between runs.
         torch.manual_seed(123)
         step_fn(target, ci_fn, wrappers, ppgd, input_ids, cfg, imp_p)
-        return collect_grads(target, ci_fn, wrappers)
+        return collect_grads(ci_fn, wrappers)
 
     print("\n--- running baseline ---")
     baseline_grads = run_once(baseline_step)
@@ -281,7 +288,9 @@ def main() -> None:
 
     print(f"worst (by relative): {worst_rel_key}")
     print(f"  max_rel = {max_rel:.4e}")
-    print(f"  max_abs = {max_abs:.4e}  (baseline magnitude {baseline_grads[worst_rel_key].abs().max().item():.4e})")
+    print(
+        f"  max_abs = {max_abs:.4e}  (baseline magnitude {baseline_grads[worst_rel_key].abs().max().item():.4e})"
+    )
     if max_rel < rel_tol:
         print(f"\nPASS — split step matches baseline within relative tol {rel_tol:.0e}.")
     else:

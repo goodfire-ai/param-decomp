@@ -70,6 +70,7 @@ def role_for(rank: int) -> dict[str, Any]:
 
 # --- Comm helpers ---
 
+
 def _send_tensor(t: Tensor, dst: int) -> None:
     dist.send(t.contiguous(), dst=dst)
 
@@ -80,12 +81,13 @@ def _recv_tensor_like(template: Tensor, src: int) -> Tensor:
     return buf
 
 
-def _broadcast_in_pool_a(t: Tensor, pool_a_group) -> None:
+def _broadcast_in_pool_a(t: Tensor, pool_a_group: dist.ProcessGroup) -> None:
     """In-place broadcast from A_LEADER to all pool A ranks."""
     dist.broadcast(t, src=A_LEADER, group=pool_a_group)
 
 
 # --- Pool A step ---
+
 
 def pool_a_step(
     target_model: nn.Module,
@@ -98,7 +100,7 @@ def pool_a_step(
     site_names: list[str],
     role: dict[str, Any],
     device: torch.device,
-    pool_a_group,
+    pool_a_group: dist.ProcessGroup,
 ) -> dict[str, float]:
     B_global = input_ids.shape[0]
     B_local_b = B_global // N_POOL_B
@@ -120,16 +122,10 @@ def pool_a_step(
 
     # Home loss forwards (every A rank — they're identical).
     loss_faith = faithfulness_loss(wrappers)
-    loss_imp = importance_minimality_loss(
-        ci_upper, imp_p, cfg.imp_eps, cfg.imp_beta, world_size=1
-    )
-    loss_stoch = stochastic_recon_loss(
-        target_model, wrappers, input_ids, target_logits, ci_lower
-    )
+    loss_imp = importance_minimality_loss(ci_upper, imp_p, cfg.imp_eps, cfg.imp_beta, world_size=1)
+    loss_stoch = stochastic_recon_loss(target_model, wrappers, input_ids, target_logits, ci_lower)
     total_home = (
-        cfg.coeff_faith * loss_faith
-        + cfg.coeff_imp * loss_imp
-        + cfg.coeff_stoch * loss_stoch
+        cfg.coeff_faith * loss_faith + cfg.coeff_imp * loss_imp + cfg.coeff_stoch * loss_stoch
     )
 
     # Receive grads from pool B (A leader only) then broadcast within pool A.
@@ -197,6 +193,7 @@ def pool_a_step(
 
 # --- Pool B step ---
 
+
 def pool_b_step(
     target_model: nn.Module,
     wrappers: dict[str, ComponentLinear],
@@ -206,7 +203,7 @@ def pool_b_step(
     site_names: list[str],
     role: dict[str, Any],
     device: torch.device,
-    pool_b_group,
+    pool_b_group: dist.ProcessGroup,
 ) -> dict[str, float]:
     B_global = input_ids_full.shape[0]
     B_local = B_global // N_POOL_B
@@ -277,6 +274,7 @@ def pool_b_step(
 
 
 # --- Main ---
+
 
 def main() -> None:
     dist.init_process_group("nccl")
@@ -356,12 +354,29 @@ def main() -> None:
 
         if role["pool"] == "a":
             metrics = pool_a_step(
-                target, wrappers, ci_fns, optimizer, input_ids, cfg, imp_p,
-                site_names, role, device, pool_a_group,
+                target,
+                wrappers,
+                ci_fns,
+                optimizer,
+                input_ids,
+                cfg,
+                imp_p,
+                site_names,
+                role,
+                device,
+                pool_a_group,
             )
         else:
             metrics = pool_b_step(
-                target, wrappers, ppgd, input_ids, cfg, site_names, role, device, pool_b_group,
+                target,
+                wrappers,
+                ppgd,
+                input_ids,
+                cfg,
+                site_names,
+                role,
+                device,
+                pool_b_group,
             )
 
         if step % 5 == 0 and (role.get("is_leader") or role["pool"] == "b"):

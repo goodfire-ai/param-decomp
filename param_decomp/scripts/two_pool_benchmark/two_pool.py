@@ -15,7 +15,6 @@ Run on 8 GPUs single-node:
 
 import os
 import time
-from collections import defaultdict
 
 import torch
 import torch.distributed as dist
@@ -68,7 +67,8 @@ def main() -> None:
         BlockGroup(
             ranks=ranks,
             owned_sites=tuple(
-                s for tb in range(g * BLOCKS_PER_GROUP, (g + 1) * BLOCKS_PER_GROUP)
+                s
+                for tb in range(g * BLOCKS_PER_GROUP, (g + 1) * BLOCKS_PER_GROUP)
                 for s in sites_for_block(tb)
             ),
         )
@@ -99,7 +99,7 @@ def main() -> None:
     )
 
     if rank == 0:
-        print(f"[two_pool] 2-POOL via optimize_two_pool (param_decomp.two_pool.run)", flush=True)
+        print("[two_pool] 2-POOL via optimize_two_pool (param_decomp.two_pool.run)", flush=True)
         print(
             f"[two_pool] batch={BATCH} (A_local={BATCH // 2} B_local={BATCH // 2}) "
             f"seq={SEQ_LEN} d={D_MODEL} d_mlp={D_MLP} n_blocks={N_TRANSFORMER_BLOCKS} "
@@ -114,7 +114,6 @@ def main() -> None:
         return torch.randint(0, VOCAB, (BATCH, SEQ_LEN), device=device, generator=data_rng)
 
     step_times: list[float] = []
-    phase_times: dict[str, list[float]] = defaultdict(list)
 
     def on_step(step: int, metrics: dict[str, float]) -> None:
         torch.cuda.synchronize()
@@ -148,8 +147,8 @@ def main() -> None:
     if profile and rank == 0:
         avg_ms = 1000 * sum(profile) / len(profile)
         print(
-            f"\n[two_pool rank0] STEP_TOTAL avg={avg_ms:.2f}ms  min={1000*min(profile):.2f}ms  "
-            f"max={1000*max(profile):.2f}ms  (n={len(profile)})",
+            f"\n[two_pool rank0] STEP_TOTAL avg={avg_ms:.2f}ms  min={1000 * min(profile):.2f}ms  "
+            f"max={1000 * max(profile):.2f}ms  (n={len(profile)})",
             flush=True,
         )
 

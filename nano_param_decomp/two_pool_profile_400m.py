@@ -22,8 +22,8 @@ import math
 import os
 import time
 from collections import defaultdict
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 import torch
 import torch.distributed as dist
@@ -79,6 +79,7 @@ PROFILE_STEPS = 6
 
 # --- Timer ---
 
+
 class StepTimer:
     def __init__(self, rank: int) -> None:
         self.rank = rank
@@ -115,6 +116,7 @@ class StepTimer:
 
 # --- Layerwise loss (per-site, timed) ---
 
+
 def single_site_layerwise_loss_local_timed(
     timer: StepTimer,
     target_model: nn.Module,
@@ -149,6 +151,7 @@ def single_site_layerwise_loss_local_timed(
 
 
 # --- Pool A step ---
+
 
 def pool_a_step(
     timer: StepTimer,
@@ -190,9 +193,7 @@ def pool_a_step(
         )
 
     total_home = (
-        cfg.coeff_faith * loss_faith
-        + cfg.coeff_imp * loss_imp
-        + cfg.coeff_stoch * loss_stoch
+        cfg.coeff_faith * loss_faith + cfg.coeff_imp * loss_imp + cfg.coeff_stoch * loss_stoch
     )
 
     with timer.phase("a/recv_grads_from_b"):
@@ -232,6 +233,7 @@ def pool_a_step(
 
 
 # --- Pool B step ---
+
 
 def pool_b_step(
     timer: StepTimer,
@@ -297,6 +299,7 @@ def pool_b_step(
 
 # --- Main ---
 
+
 def main() -> None:
     dist.init_process_group("nccl")
     rank = dist.get_rank()
@@ -308,8 +311,7 @@ def main() -> None:
     device = torch.device(f"cuda:{local_rank}")
 
     block_groups = [
-        [g * N_PER_BLOCK_GROUP + k for k in range(N_PER_BLOCK_GROUP)]
-        for g in range(N_BLOCK_GROUPS)
+        [g * N_PER_BLOCK_GROUP + k for k in range(N_PER_BLOCK_GROUP)] for g in range(N_BLOCK_GROUPS)
     ]
     # Each block group owns BLOCKS_PER_GROUP consecutive transformer blocks.
     block_owned_sites = [
@@ -416,7 +418,9 @@ def main() -> None:
 
         with timer.phase("STEP_TOTAL"):
             if layout.my_pool == "a":
-                metrics = pool_a_step(timer, layout, target, wrappers, ci_fns, optimizer, input_ids, cfg, imp_p)
+                metrics = pool_a_step(
+                    timer, layout, target, wrappers, ci_fns, optimizer, input_ids, cfg, imp_p
+                )
             else:
                 metrics = pool_b_step(timer, layout, target, wrappers, ppgd, input_ids, cfg, device)
 

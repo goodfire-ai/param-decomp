@@ -29,8 +29,8 @@ import math
 import os
 import time
 from collections import defaultdict
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 import torch
 import torch.distributed as dist
@@ -70,7 +70,12 @@ WORLD_SIZE = 16
 
 # 6 block groups of 2 ranks each — every group is one rank-on-node-0 + one rank-on-node-1
 BLOCK_GROUPS = [
-    [0, 8], [1, 9], [2, 10], [3, 11], [4, 12], [5, 13],
+    [0, 8],
+    [1, 9],
+    [2, 10],
+    [3, 11],
+    [4, 12],
+    [5, 13],
 ]
 N_TRANSFORMER_BLOCKS = 12
 BLOCKS_PER_GROUP = N_TRANSFORMER_BLOCKS // len(BLOCK_GROUPS)  # = 2
@@ -91,6 +96,7 @@ PROFILE_STEPS = 6
 
 
 # --- Timer ---
+
 
 class StepTimer:
     def __init__(self, rank: int) -> None:
@@ -127,6 +133,7 @@ class StepTimer:
 
 
 # --- Loss + step functions (same as 400m profile) ---
+
 
 def single_site_layerwise_loss_local_timed(
     timer: StepTimer,
@@ -191,15 +198,17 @@ def pool_a_step(
     with timer.phase("a/layerwise_total"):
         sl = layout.my_batch_slice_a()
         loss_stoch = single_site_layerwise_loss_local_timed(
-            timer, target_model, wrappers, layout.my_owned_sites,
-            input_ids[sl], target_logits[sl].detach(),
+            timer,
+            target_model,
+            wrappers,
+            layout.my_owned_sites,
+            input_ids[sl],
+            target_logits[sl].detach(),
             {s: ci_lower_owned[s][sl] for s in layout.my_owned_sites},
         )
 
     total_home = (
-        cfg.coeff_faith * loss_faith
-        + cfg.coeff_imp * loss_imp
-        + cfg.coeff_stoch * loss_stoch
+        cfg.coeff_faith * loss_faith + cfg.coeff_imp * loss_imp + cfg.coeff_stoch * loss_stoch
     )
 
     with timer.phase("a/recv_grads_from_b"):
@@ -301,6 +310,7 @@ def pool_b_step(
 
 
 # --- Main ---
+
 
 def main() -> None:
     dist.init_process_group("nccl")
@@ -405,7 +415,9 @@ def main() -> None:
 
         with timer.phase("STEP_TOTAL"):
             if layout.my_pool == "a":
-                metrics = pool_a_step(timer, layout, target, wrappers, ci_fns, optimizer, input_ids, cfg, imp_p)
+                metrics = pool_a_step(
+                    timer, layout, target, wrappers, ci_fns, optimizer, input_ids, cfg, imp_p
+                )
             else:
                 metrics = pool_b_step(timer, layout, target, wrappers, ppgd, input_ids, cfg, device)
 

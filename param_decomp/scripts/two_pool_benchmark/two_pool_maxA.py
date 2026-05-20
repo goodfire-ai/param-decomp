@@ -18,7 +18,6 @@ Run:
 
 import os
 import time
-from collections import defaultdict
 
 import torch
 import torch.distributed as dist

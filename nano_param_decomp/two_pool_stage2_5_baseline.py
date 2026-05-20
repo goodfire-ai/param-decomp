@@ -21,6 +21,7 @@ import torch
 from torch import Tensor
 
 from nano_param_decomp.run import (
+    ComponentLinear,
     Config,
     PersistentPGD,
     anneal_p,
@@ -37,7 +38,7 @@ from nano_param_decomp.two_pool_stage2 import ModuleCIFn, build_ci_fns, ci_forwa
 def baseline_step_per_module(
     target_model: torch.nn.Module,
     ci_fns: dict[str, ModuleCIFn],
-    wrappers: dict,
+    wrappers: dict[str, ComponentLinear],
     ppgd: PersistentPGD,
     optimizer: torch.optim.Optimizer,
     input_ids: Tensor,
@@ -53,12 +54,8 @@ def baseline_step_per_module(
     # PPGD warmup. In stage 2 these run on different ranks but the same RNG seed; in
     # single-process we need to mirror the order to keep RNG consumption identical.
     loss_faith = faithfulness_loss(wrappers)
-    loss_imp = importance_minimality_loss(
-        ci_upper, imp_p, cfg.imp_eps, cfg.imp_beta, world_size=1
-    )
-    loss_stoch = stochastic_recon_loss(
-        target_model, wrappers, input_ids, target_logits, ci_lower
-    )
+    loss_imp = importance_minimality_loss(ci_upper, imp_p, cfg.imp_eps, cfg.imp_beta, world_size=1)
+    loss_stoch = stochastic_recon_loss(target_model, wrappers, input_ids, target_logits, ci_lower)
 
     ppgd.warmup(target_model, wrappers, input_ids, target_logits, ci_lower, lr=cfg.ppgd_lr)
     loss_ppgd = ppgd.recon_loss(target_model, wrappers, input_ids, target_logits, ci_lower)
@@ -149,7 +146,7 @@ def main() -> None:
         if step % 5 == 0:
             msg = " ".join(f"{k}={v:.4g}" for k, v in metrics.items())
             print(f"[baseline] step={step} {msg}", flush=True)
-        for k, v in metrics.items():
+        for v in metrics.values():
             if not math.isfinite(v):
                 print(f"[baseline] NaN at step {step}", flush=True)
                 raise SystemExit(1)

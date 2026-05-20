@@ -8,10 +8,8 @@ linears per block (Q/K/V/O on attention, gate/up/down on SwiGLU MLP).
 
 # pyright: reportArgumentType=false
 
-import math
 from typing import override
 
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
@@ -66,7 +64,12 @@ class TinyBlock(nn.Module):
 
 class TinyTransformer(nn.Module):
     def __init__(
-        self, vocab: int, d: int, n_blocks: int, n_heads: int, d_mlp: int,
+        self,
+        vocab: int,
+        d: int,
+        n_blocks: int,
+        n_heads: int,
+        d_mlp: int,
     ) -> None:
         super().__init__()
         self.embed = nn.Embedding(vocab, d)

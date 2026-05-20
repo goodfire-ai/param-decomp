@@ -32,7 +32,7 @@ should be lifted from `run_pd.optimize` as they become needed.
 import time
 from collections import defaultdict
 from collections.abc import Callable
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -51,8 +51,7 @@ from param_decomp.two_pool.install import (
     build_pool_a_module_path_info,
     build_pool_b_module_path_info,
 )
-from param_decomp.two_pool.layout import BlockDDPLayout, BlockDDPWorld, BlockGroup
-
+from param_decomp.two_pool.layout import BlockDDPLayout, BlockGroup
 
 # ───────────────────────── Public config ─────────────────────────
 
@@ -90,7 +89,9 @@ class PhaseProfiler:
             if not vals:
                 continue
             avg = sum(vals) / len(vals)
-            lines.append(f"  {name:32s} avg={avg:9.2f}ms  min={min(vals):8.2f}ms  max={max(vals):8.2f}ms")
+            lines.append(
+                f"  {name:32s} avg={avg:9.2f}ms  min={min(vals):8.2f}ms  max={max(vals):8.2f}ms"
+            )
         return "\n".join(lines)
 
 
@@ -127,20 +128,24 @@ class TwoPoolConfig:
 
 
 def _faithfulness_loss(
-    component_model: ComponentModel, device: torch.device,
+    component_model: ComponentModel,
+    device: torch.device,
 ) -> Tensor:
     """Standard faithfulness loss: ‖W_target − VU.T‖²_F / numel, summed across sites."""
     weight_deltas = component_model.calc_weight_deltas()
     sum_sq = torch.zeros((), device=device)
     numel = 0
     for d in weight_deltas.values():
-        sum_sq = sum_sq + (d ** 2).sum()
+        sum_sq = sum_sq + (d**2).sum()
         numel += d.numel()
     return sum_sq / numel
 
 
 def _importance_minimality_loss(
-    ci_upper: dict[str, Tensor], device: torch.device, p: float = 1.0, eps: float = 1e-12,
+    ci_upper: dict[str, Tensor],
+    device: torch.device,
+    p: float = 1.0,
+    eps: float = 1e-12,
 ) -> Tensor:
     """L_p importance penalty summed across owned sites."""
     total = torch.zeros((), device=device)
@@ -149,6 +154,7 @@ def _importance_minimality_loss(
         batch_seq_dims = tuple(range(vals.ndim - 1))
         sum_c = vals.sum(dim=batch_seq_dims)
         import math
+
         mean_c = sum_c / math.prod(vals.shape[:-1])
         total = total + mean_c.sum()
     return total
@@ -204,7 +210,9 @@ def step_pool_a(
         out = component_model(batch, cache_type="input")
         target_logits = out.output
         ci = component_model.calc_causal_importances(
-            pre_weight_acts=out.cache, sampling="continuous", detach_inputs=False,
+            pre_weight_acts=out.cache,
+            sampling="continuous",
+            detach_inputs=False,
         )
 
     # 2. Cross-pool: send CI values to pool B (async — don't block on pool B's recv).
@@ -225,14 +233,16 @@ def step_pool_a(
         target_local = target_logits[sl].detach()
         ci_local = {s: ci.lower_leaky[s][sl] for s in layout.my_owned_sites}
         loss_stoch = _layerwise_loss_local(
-            component_model, batch_local, target_local, ci_local,
-            layout.my_owned_sites, cfg.reconstruction_loss,
+            component_model,
+            batch_local,
+            target_local,
+            ci_local,
+            layout.my_owned_sites,
+            cfg.reconstruction_loss,
         )
 
     total_home = (
-        cfg.coeff_faith * loss_faith
-        + cfg.coeff_imp * loss_imp
-        + cfg.coeff_stoch * loss_stoch
+        cfg.coeff_faith * loss_faith + cfg.coeff_imp * loss_imp + cfg.coeff_stoch * loss_stoch
     )
 
     # 4. Cross-pool: receive per-site V/U grads + per-slice ci grads from pool B
@@ -241,7 +251,9 @@ def step_pool_a(
         u_templates = {s: component_model.components[s].U for s in layout.my_owned_sites}
         ci_lower_owned_full = {s: ci.lower_leaky[s] for s in layout.my_owned_sites}
         v_grads, u_grads, ci_grads = layout.recv_grads_from_pool_b(
-            v_templates, u_templates, ci_lower_owned_full,
+            v_templates,
+            u_templates,
+            ci_lower_owned_full,
         )
 
     # 5. Seed V/U .grad with pool-B contribution; combined backward.
@@ -269,7 +281,8 @@ def step_pool_a(
         v_owned = {s: component_model.components[s].V for s in layout.my_owned_sites}
         u_owned = {s: component_model.components[s].U for s in layout.my_owned_sites}
         weight_send_works, weight_send_buffers = layout.async_send_updated_weights_to_pool_b(
-            v_owned, u_owned,
+            v_owned,
+            u_owned,
         )
 
     # Make sure the async CI sends from step 2 are flushed before we touch the
@@ -280,7 +293,7 @@ def step_pool_a(
         del ci_send_buffers  # release references
     # The weight sends are free to complete in the background; we wait on them
     # at start of next step (phase a/0).
-    setattr(component_model, "_pending_weight_sends", (weight_send_works, weight_send_buffers))
+    component_model._pending_weight_sends = weight_send_works, weight_send_buffers
 
     return {
         "loss/faith": loss_faith.item(),
@@ -313,13 +326,15 @@ def step_pool_b(
     with p.phase("b/1_post_async_recv_ci"):
         seq_len = batch_local.shape[1] if batch_local.ndim >= 2 else 1
         ci_recv, ci_recv_works = layout.async_recv_ci_from_owners(
-            cfg.c_per_site, seq_len=seq_len, device=device, dtype=torch.float32,
+            cfg.c_per_site,
+            seq_len=seq_len,
+            device=device,
+            dtype=torch.float32,
         )
 
     # 2. Target forward (frozen, no grad) — runs in parallel with the CI recvs above.
-    with p.phase("b/2_target_fwd"):
-        with torch.no_grad():
-            target_logits = component_model(batch_local)
+    with p.phase("b/2_target_fwd"), torch.no_grad():
+        target_logits = component_model(batch_local)
 
     # Now block on the CI recvs — should already be done by the time we get here.
     with p.phase("b/3_wait_ci_recv"):
@@ -431,7 +446,9 @@ def optimize_two_pool(
 
     The function assumes `dist.init_process_group` has already been called.
     """
-    assert dist.is_initialized(), "init the distributed process group before calling optimize_two_pool"
+    assert dist.is_initialized(), (
+        "init the distributed process group before calling optimize_two_pool"
+    )
     rank = dist.get_rank()
 
     # TF32 matmuls are ~2-3x faster on H200 with sub-ULP precision loss — fine
@@ -440,6 +457,7 @@ def optimize_two_pool(
         torch.set_float32_matmul_precision("high")
 
     from param_decomp.two_pool.layout import build_block_ddp_world
+
     world = build_block_ddp_world(
         block_groups=list(pool_config.block_groups),
         pool_b_ranks=list(pool_config.pool_b_ranks),
@@ -499,12 +517,23 @@ def optimize_two_pool(
         if layout.my_pool == "a":
             assert optimizer is not None
             metrics = step_pool_a(
-                layout, component_model, optimizer, all_params, batch, pool_config, profiler=profiler,
+                layout,
+                component_model,
+                optimizer,
+                all_params,
+                batch,
+                pool_config,
+                profiler=profiler,
             )
         else:
             assert ppgd_state is not None
             metrics = step_pool_b(
-                layout, component_model, ppgd_state, batch, pool_config, profiler=profiler,
+                layout,
+                component_model,
+                ppgd_state,
+                batch,
+                pool_config,
+                profiler=profiler,
             )
 
         if on_step is not None:

@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>How parallelism works in two_pool/run.py</title>
+<style>
+  :root {
+    --bg: #f6f5f1;
+    --ink: #1a1a1a;
+    --muted: #6a6a6a;
+    --rule: #d8d6cf;
+    --card: #fffdf7;
+
+    /* Pool colors */
+    --pa: #1f6feb;          /* pool A: blue */
+    --pa-soft: #dde8fa;
+    --pb: #c9531a;          /* pool B: orange */
+    --pb-soft: #f7e2d2;
+
+    /* Data colors */
+    --ci: #6f42c1;          /* CI activations */
+    --grad: #cf222e;        /* gradients */
+    --wts: #1a7f37;         /* updated weights */
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; -webkit-font-smoothing: antialiased; line-height: 1.55; }
+  main { max-width: 1100px; margin: 0 auto; padding: 56px 32px 96px; }
+  h1 { font-size: 38px; margin: 0 0 4px; letter-spacing: -0.02em; }
+  h2 { font-size: 22px; margin: 56px 0 12px; letter-spacing: -0.01em; padding-bottom: 6px; border-bottom: 1px solid var(--rule); }
+  h3 { font-size: 16px; margin: 28px 0 6px; }
+  p  { margin: 8px 0 14px; }
+  code, .mono { font-family: var(--mono); font-size: 13px; }
+  .lede { color: var(--muted); font-size: 16px; max-width: 720px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 16px 22px; margin-top: 18px; font-size: 13px; }
+  .legend span { display: inline-flex; align-items: center; gap: 8px; }
+  .sw { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+  .card { background: var(--card); border: 1px solid var(--rule); border-radius: 8px; padding: 18px 22px; margin: 14px 0; }
+
+  /* topology */
+  .topo { display: grid; grid-template-columns: 1fr; gap: 22px; margin: 14px 0 8px; }
+  .topo-row { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 18px; }
+  .topo-row .label { font-family: var(--mono); font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .ranks { display: flex; flex-wrap: wrap; gap: 10px; }
+  .block { border: 1px dashed #b8b6af; border-radius: 8px; padding: 10px 12px; display: inline-flex; gap: 8px; align-items: center; position: relative; }
+  .block::before { content: attr(data-name); position: absolute; top: -9px; left: 10px; background: var(--card); padding: 0 6px; font-family: var(--mono); font-size: 10.5px; color: var(--muted); letter-spacing: 0.05em; }
+  .rank { width: 78px; height: 60px; border-radius: 6px; display: flex; flex-direction: column; justify-content: center; align-items: center; font-family: var(--mono); font-size: 12px; line-height: 1.25; color: white; padding: 4px; text-align: center; }
+  .rank.a { background: var(--pa); }
+  .rank.b { background: var(--pb); }
+  .rank small { font-size: 10px; opacity: 0.85; display: block; margin-top: 2px; font-weight: 400; }
+
+  /* step diagrams */
+  .steps { display: grid; grid-template-columns: 1fr; gap: 12px; counter-reset: stepcount; }
+  .step { display: grid; grid-template-columns: 44px 1fr; gap: 14px; align-items: start; }
+  .step .num { counter-increment: stepcount; width: 32px; height: 32px; border-radius: 50%; background: var(--ink); color: white; display: flex; justify-content: center; align-items: center; font-family: var(--mono); font-size: 13px; font-weight: 600; margin-top: 2px; }
+  .step .num::before { content: counter(stepcount); }
+  .step.a .num { background: var(--pa); }
+  .step.b .num { background: var(--pb); }
+  .step .body { padding-bottom: 8px; border-bottom: 1px dashed var(--rule); }
+  .step:last-child .body { border-bottom: 0; }
+  .step h4 { margin: 0 0 4px; font-size: 15px; }
+  .step p { margin: 4px 0 6px; font-size: 14px; color: #2a2a2a; }
+  .step .ops { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; font-family: var(--mono); font-size: 11px; border: 1px solid var(--rule); background: white; color: #333; }
+  .pill.ci    { color: var(--ci);   border-color: #d6c8ea; background: #f3edf9; }
+  .pill.grad  { color: var(--grad); border-color: #f1c6c9; background: #fbe6e7; }
+  .pill.wts   { color: var(--wts);  border-color: #c6e3cc; background: #e5f3e8; }
+  .pill.send::before  { content: "→"; }
+  .pill.recv::before  { content: "←"; }
+  .pill.local::before { content: "•"; opacity: 0.6; }
+
+  /* exchange diagram */
+  .exchange { background: var(--card); border: 1px solid var(--rule); border-radius: 8px; padding: 18px; margin: 16px 0 6px; overflow: auto; }
+  .exchange svg { display: block; min-width: 760px; width: 100%; height: auto; }
+
+  /* loss table */
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 4px; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 600; font-size: 12px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.05em; }
+  td code { font-size: 12.5px; }
+  .pa-tag, .pb-tag { display: inline-block; padding: 1px 7px; border-radius: 4px; font-family: var(--mono); font-size: 11px; color: white; }
+  .pa-tag { background: var(--pa); }
+  .pb-tag { background: var(--pb); }
+
+  /* invariant boxes */
+  .why { background: #fff8e0; border: 1px solid #e9d680; border-radius: 6px; padding: 12px 16px; font-size: 14px; }
+  .why strong { color: #745a00; }
+
+  footer { color: var(--muted); font-size: 12px; margin-top: 48px; border-top: 1px solid var(--rule); padding-top: 14px; }
+</style>
+</head>
+<body>
+<main>
+
+  <h1>How parallelism works in <span class="mono">two_pool/run.py</span></h1>
+  <p class="lede">
+    The 2-pool strategy splits the SPD training step across two disjoint groups of GPUs.
+    <strong>Pool A</strong> owns the optimizer and computes the cheap, layerwise losses.
+    <strong>Pool B</strong> holds a full replica of the model and runs the expensive
+    Persistent-PGD reconstruction loss. They run their forward/backward passes in parallel
+    on different batch slices and exchange CI activations, gradients, and updated weights
+    each step.
+  </p>
+
+  <div class="legend">
+    <span><span class="sw" style="background:var(--pa)"></span> Pool A — optimizer, layerwise loss</span>
+    <span><span class="sw" style="background:var(--pb)"></span> Pool B — full replica, PPGD recon</span>
+    <span><span class="sw" style="background:var(--ci)"></span> CI activations</span>
+    <span><span class="sw" style="background:var(--grad)"></span> V/U + CI gradients</span>
+    <span><span class="sw" style="background:var(--wts)"></span> Updated V/U weights</span>
+    <span><span class="sw" style="background:repeating-linear-gradient(45deg,#444 0 4px,#bbb 4px 8px)"></span> async / overlapped</span>
+  </div>
+
+  <!-- ───────────────── Topology ───────────────── -->
+  <h2>1 · Topology — who lives where</h2>
+  <p>
+    Pool A is organised into <em>blocks</em>. Each block owns a disjoint subset of the
+    decomposed sites and replicates V/U for those sites across the block's ranks
+    (in-block DDP). The global batch is split: each block processes one batch slice on
+    its owned sites, and each pool-B rank processes another batch slice on the full
+    model. Below is a representative 6-rank layout (2 blocks × 2 A-ranks + 2 B-ranks):
+  </p>
+
+  <div class="card">
+    <div class="topo">
+      <div class="topo-row">
+        <div class="label">Pool A</div>
+        <div class="ranks">
+          <div class="block" data-name="BLOCK 0 · owns sites s0,s1">
+            <div class="rank a">rank 0<small>batch slice 0</small></div>
+            <div class="rank a">rank 1<small>batch slice 0</small></div>
+          </div>
+          <div class="block" data-name="BLOCK 1 · owns sites s2,s3">
+            <div class="rank a">rank 2<small>batch slice 1</small></div>
+            <div class="rank a">rank 3<small>batch slice 1</small></div>
+          </div>
+        </div>
+      </div>
+      <div class="topo-row">
+        <div class="label">Pool B</div>
+        <div class="ranks">
+          <div class="block" data-name="FULL-MODEL REPLICAS">
+            <div class="rank b">rank 4<small>batch slice 2</small></div>
+            <div class="rank b">rank 5<small>batch slice 3</small></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="why">
+    <strong>Why blocks?</strong> Each A-rank only instantiates components for its block's
+    owned sites (<code>build_pool_a_module_path_info</code>) — so memory scales with the
+    block's site share, not the whole model. Pool B builds the full module path info
+    (<code>build_pool_b_module_path_info</code>) because PPGD needs to forward through
+    every decomposed layer.
+  </div>
+
+  <!-- ───────────────── Exchange diagram ───────────────── -->
+  <h2>2 · The cross-pool exchange (one step)</h2>
+  <p>
+    Within a single training step, A and B run their own forward/backward in parallel,
+    pausing only for three exchanges: A sends CI to B, B sends V/U + CI gradients back
+    to the site's owning A-rank, and A sends the freshly stepped V/U back to B. Two of
+    those — the CI send and the weight send — are <strong>async</strong>: they post
+    the transfer and let local compute run on top of it, only waiting when the buffer
+    or the parameter is about to be mutated.
+  </p>
+
+  <div class="exchange">
+    <svg viewBox="0 0 820 380" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arr-ci" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#6f42c1"/>
+        </marker>
+        <marker id="arr-grad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#cf222e"/>
+        </marker>
+        <marker id="arr-wts" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#1a7f37"/>
+        </marker>
+      </defs>
+
+      <!-- Pool A column -->
+      <rect x="40" y="30" width="280" height="320" rx="10" fill="#dde8fa" stroke="#1f6feb" stroke-opacity="0.35"/>
+      <text x="180" y="56" text-anchor="middle" font-family="ui-monospace" font-size="13" fill="#1f6feb" font-weight="700">POOL A · per block</text>
+
+      <g font-family="ui-sans-serif" font-size="12.5" fill="#0a2a5a">
+        <text x="60" y="84">wait on prev step's async weight send</text>
+        <text x="60" y="108">target + CI forward</text>
+        <text x="60" y="148">faith + imp + stoch losses</text>
+        <text x="60" y="167">(layerwise, serial over owned sites)</text>
+        <text x="60" y="207">seed V.grad / U.grad with B's grads</text>
+        <text x="60" y="226">combined backward seeded with B's ci-grads</text>
+        <text x="60" y="252">in-block all_reduce of V/U + CI-fn grads</text>
+        <text x="60" y="278" font-weight="700">AdamW.step() (fused)</text>
+        <text x="60" y="306">wait on this step's async CI send</text>
+      </g>
+
+      <!-- Pool B column -->
+      <rect x="500" y="30" width="280" height="320" rx="10" fill="#f7e2d2" stroke="#c9531a" stroke-opacity="0.35"/>
+      <text x="640" y="56" text-anchor="middle" font-family="ui-monospace" font-size="13" fill="#c9531a" font-weight="700">POOL B · per rank</text>
+
+      <g font-family="ui-sans-serif" font-size="12.5" fill="#5a1f00">
+        <text x="520" y="84">post irecvs for CI (async)</text>
+        <text x="520" y="108">target forward (no grad, full model)</text>
+        <text x="520" y="128" font-style="italic" fill="#a14a1a">↑ runs in parallel with CI recv</text>
+        <text x="520" y="156">wait on CI recv → re-leaf CI</text>
+        <text x="520" y="184">PPGD warmup</text>
+        <text x="520" y="204">(refine persistent adv. sources)</text>
+        <text x="520" y="232">PPGD recon loss → autograd.grad</text>
+        <text x="520" y="258">→ V, U, CI grads + source step</text>
+        <text x="520" y="288">SUM all_reduce V/U grads within B</text>
+      </g>
+
+      <!-- arrow 1: CI A -> B (async / dashed) -->
+      <path d="M 320 100 C 410 100, 410 100, 500 100" fill="none" stroke="#6f42c1" stroke-width="2.2" stroke-dasharray="6 4" marker-end="url(#arr-ci)"/>
+      <text x="410" y="92" text-anchor="middle" font-family="ui-monospace" font-size="11.5" fill="#6f42c1">CI[s] (async isend / irecv)</text>
+
+      <!-- arrow 2: grads B -> A (sync) -->
+      <path d="M 500 220 C 410 220, 410 220, 320 220" fill="none" stroke="#cf222e" stroke-width="2.2" marker-end="url(#arr-grad)"/>
+      <text x="410" y="212" text-anchor="middle" font-family="ui-monospace" font-size="11.5" fill="#cf222e">∂L_ppgd/∂V, ∂/∂U, ∂/∂CI</text>
+
+      <!-- arrow 3: weights A -> B (async / dashed) -->
+      <path d="M 320 310 C 410 310, 410 310, 500 310" fill="none" stroke="#1a7f37" stroke-width="2.2" stroke-dasharray="6 4" marker-end="url(#arr-wts)"/>
+      <text x="410" y="302" text-anchor="middle" font-family="ui-monospace" font-size="11.5" fill="#1a7f37">V[s], U[s] post-AdamW (async)</text>
+    </svg>
+  </div>
+
+  <div class="why">
+    <strong>Three async overlaps.</strong> <em>(1)</em> Pool A's CI send is non-blocking;
+    A only waits at the end of the step, after its own backward and optimizer step have
+    run on top of the transfer. <em>(2)</em> Pool A's weight send fires after AdamW, and
+    A doesn't wait until the start of the next step — overlapping the entire next forward
+    on top. <em>(3)</em> Pool B posts irecvs for CI <em>before</em> the target forward,
+    so the CI transfer overlaps the full-model forward — CI isn't needed until the
+    re-leaf step.
+  </div>
+
+  <!-- ───────────────── Pool A step ───────────────── -->
+  <h2>3 · Pool A step <span class="pa-tag">step_pool_a</span></h2>
+  <p style="color:var(--muted); font-size:13.5px;">
+    Phase tags match the labels emitted by <code>PhaseProfiler</code> (e.g. <code>a/0_wait_prev_weight_send</code>).
+  </p>
+
+  <div class="steps">
+    <div class="step a"><div class="num" style="background:#888"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">a/0</span> &nbsp; Wait on previous step's async weight send</h4>
+      <p>Before AdamW can mutate V/U this step, last step's async weight-send to pool B must have flushed. The wait is cheap because all the in-between work (forward, losses, backward, all-reduce) already overlapped the transfer.</p>
+      <div class="ops"><span class="pill local">_pending_weight_sends[0].wait()</span></div>
+    </div></div>
+
+    <div class="step a"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">a/1</span> &nbsp; Target + CI forward</h4>
+      <p>Run the (frozen) target model and compute CI activations. Cache inputs for the CI function so its graph is retained for backward.</p>
+      <div class="ops"><span class="pill local">forward (target + CI fn)</span></div>
+    </div></div>
+
+    <div class="step a"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">a/2</span> &nbsp; Async-send CI to pool B</h4>
+      <p>For every owned site, post non-blocking sends of the per-site CI tensor to each B-rank, sliced along batch so each B-rank gets only its own slice. Returns a list of work handles + holding buffers; A doesn't wait yet.</p>
+      <div class="ops"><span class="pill ci send">async_send_owned_ci_to_pool_b</span></div>
+    </div></div>
+
+    <div class="step a"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">a/3 — a/5</span> &nbsp; Three "home" losses</h4>
+      <p>Faithfulness + importance minimality + layerwise stochastic recon. The stochastic recon is a serial loop over owned sites — that serial cost is exactly what we wanted to move off pool B. These phases overlap the in-flight CI send from a/2.</p>
+      <div class="ops">
+        <span class="pill local">a/3 loss_faith</span>
+        <span class="pill local">a/4 loss_imp</span>
+        <span class="pill local">a/5 loss_stoch (per-site loop)</span>
+      </div>
+    </div></div>
+
+    <div class="step a"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">a/6</span> &nbsp; Receive grads from pool B</h4>
+      <p>Per owned site: V/U gradient (full grad), and the ci_lower gradient for each B-rank's batch slice.</p>
+      <div class="ops"><span class="pill grad recv">recv_grads_from_pool_b</span></div>
+    </div></div>
+
+    <div class="step a"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">a/7</span> &nbsp; Seed grads and run the combined backward</h4>
+      <p>Manually assign <code>comp.V.grad = v_grads[s]</code>, <code>comp.U.grad = u_grads[s]</code>, then call <code>autograd.backward</code> on <code>total_home</code> while also injecting B's ci-grads into the CI tensors. The CI-fn graph receives the combined (stoch + ppgd) signal — identical to what the single-pool path would have produced.</p>
+      <div class="ops"><span class="pill local">torch.autograd.backward(tensors=[total_home, *ci_lower], grad_tensors=[None, *ci_grads])</span></div>
+    </div></div>
+
+    <div class="step a"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">a/8</span> &nbsp; In-block DDP all-reduce</h4>
+      <p>V/U and the CI-fn parameters are replicated across the block's A-ranks. Average the gradients within the block group.</p>
+      <div class="ops"><span class="pill grad">all_reduce_grads_in_block</span></div>
+    </div></div>
+
+    <div class="step a"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">a/9</span> &nbsp; AdamW step (fused)</h4>
+      <p>One optimizer step covering both component params (V,U) and CI-fn params, on the synced gradients. <code>fused=True</code> uses a CUDA-fused AdamW kernel that is noticeably faster on H200 than the default foreach implementation.</p>
+      <div class="ops"><span class="pill local">optimizer.step()</span></div>
+    </div></div>
+
+    <div class="step a"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">a/10</span> &nbsp; Async-send updated V/U back to pool B</h4>
+      <p>Post non-blocking sends for the new V/U of each owned site — to every B-rank — so the full replica there stays in sync. <strong>Do not wait.</strong> The wait happens at a/0 of the next step, after the next forward has already been overlapped on top of the transfer.</p>
+      <div class="ops"><span class="pill wts send">async_send_updated_weights_to_pool_b</span></div>
+    </div></div>
+
+    <div class="step a"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">a/11</span> &nbsp; Wait on this step's async CI send</h4>
+      <p>The CI tensors backing the send from a/2 will be replaced next step; flush before the buffer references go out of scope.</p>
+      <div class="ops"><span class="pill ci">ci_send_works[i].wait()</span></div>
+    </div></div>
+  </div>
+
+  <!-- ───────────────── Pool B step ───────────────── -->
+  <h2>4 · Pool B step <span class="pb-tag">step_pool_b</span></h2>
+  <p style="color:var(--muted); font-size:13.5px;">
+    Phase tags match the labels emitted by <code>PhaseProfiler</code> (e.g. <code>b/1_post_async_recv_ci</code>).
+  </p>
+
+  <div class="steps">
+    <div class="step b"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">b/1</span> &nbsp; Post irecvs for CI (async)</h4>
+      <p>Post the receives for per-site CI from each owning A-rank, then move on immediately. The transfer will overlap the target forward below — pool B doesn't need CI until the re-leaf step.</p>
+      <div class="ops"><span class="pill ci recv">async_recv_ci_from_owners</span></div>
+    </div></div>
+
+    <div class="step b"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">b/2</span> &nbsp; Target forward (no grad, full model)</h4>
+      <p>Run the full target model on the local batch slice with <code>no_grad</code> — we only need the activations as a PPGD target. <strong>Runs in parallel with the CI recvs above.</strong></p>
+      <div class="ops"><span class="pill local">forward (full model, no_grad)</span></div>
+    </div></div>
+
+    <div class="step b"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">b/3</span> &nbsp; Wait on CI recvs, then re-leaf</h4>
+      <p>By this point the CI recvs are typically already done. Wait on the work handles, then detach + clone the received CI tensors with <code>requires_grad_(True)</code> so we can ship CI gradients back.</p>
+    </div></div>
+
+    <div class="step b"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">b/4</span> &nbsp; PPGD warmup</h4>
+      <p>Refine the persistent adversarial sources in <code>PersistentPGDState</code> in-place — these sources persist across training steps, which is the whole point of PPGD.</p>
+    </div></div>
+
+    <div class="step b"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">b/5</span> &nbsp; Compute PPGD recon loss</h4>
+      <p>Run the recon loss with the refined sources. Scale by <code>1 / n_pool_b</code> so a SUM-reduce across pool B equals the full-batch gradient.</p>
+    </div></div>
+
+    <div class="step b"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">b/6</span> &nbsp; Extract gradients via autograd.grad</h4>
+      <p>One <code>autograd.grad</code> call against (V, U for all sites) + (CI scratch leaves for all sites) — no <code>.grad</code> pollution on shared parameters.</p>
+    </div></div>
+
+    <div class="step b"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">b/7</span> &nbsp; Persistent source step</h4>
+      <p>Take a separate gradient w.r.t. the PPGD sources, then <code>ppgd_state.step</code> updates the sources for next round.</p>
+    </div></div>
+
+    <div class="step b"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">b/8</span> &nbsp; SUM all-reduce V/U within pool B</h4>
+      <p>Pool-B ranks each saw a different batch slice; SUM-reduce gives the full-batch V/U gradient (already scaled by 1/N in b/5).</p>
+      <div class="ops"><span class="pill grad">dist.all_reduce(SUM, pool_b_group)</span></div>
+    </div></div>
+
+    <div class="step b"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">b/9</span> &nbsp; Send grads to owning A-ranks</h4>
+      <p>Per site: V/U grad to the site's owner block; per slice: CI grad to the rank that owns it for that slice.</p>
+      <div class="ops"><span class="pill grad send">send_pool_b_grads_to_owners</span></div>
+    </div></div>
+
+    <div class="step b"><div class="num"></div><div class="body">
+      <h4><span class="mono" style="font-size:12px; color:var(--muted)">b/10</span> &nbsp; Receive updated V/U</h4>
+      <p>Block until owning A-ranks ship the post-AdamW weights, then copy into the full local replica. Ready for next step.</p>
+      <div class="ops"><span class="pill wts recv">recv_updated_weights_from_owners</span></div>
+    </div></div>
+  </div>
+
+  <!-- ───────────────── Loss table ───────────────── -->
+  <h2>5 · Which loss lives where?</h2>
+
+  <table>
+    <thead>
+      <tr><th>Loss term</th><th>Lives on</th><th>What flows where</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>loss_faith</code><br><span class="mono" style="color:var(--muted)">‖W_target − VU<sup>T</sup>‖²</span></td>
+        <td><span class="pa-tag">pool A</span></td>
+        <td>Local to each block; gradients land directly on V/U via the seeded backward.</td>
+      </tr>
+      <tr>
+        <td><code>loss_imp</code><br><span class="mono" style="color:var(--muted)">L<sub>p</sub> on CI upper</span></td>
+        <td><span class="pa-tag">pool A</span></td>
+        <td>Local; gradient flows through CI fn back to its params.</td>
+      </tr>
+      <tr>
+        <td><code>loss_stoch</code> (layerwise)</td>
+        <td><span class="pa-tag">pool A</span></td>
+        <td>Per-site serial loop — the cost that motivates moving PPGD off this path.</td>
+      </tr>
+      <tr>
+        <td><code>loss_ppgd</code><br><span class="mono" style="color:var(--muted)">PersistentPGD recon</span></td>
+        <td><span class="pb-tag">pool B</span></td>
+        <td>Full-model forward; its V/U + CI grads are shipped to pool A, which adds them into the seeded backward.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ───────────────── Invariants ───────────────── -->
+  <h2>6 · Why this is equivalent to a single-pool step</h2>
+
+  <div class="why">
+    <p><strong>Invariant 1 — total CI gradient.</strong> Pool A's CI tensor has graph
+    retained. The combined backward injects pool B's ci-grad alongside pool A's
+    own home-loss CI-grad. The CI-fn sees <code>∂(L_home + L_ppgd)/∂CI</code> — exactly
+    what a serial single-pool run would compute.</p>
+
+    <p style="margin-top:8px;"><strong>Invariant 2 — total V/U gradient.</strong> Pool A
+    seeds <code>V.grad</code> / <code>U.grad</code> with pool B's PPGD contribution,
+    then the backward of <code>total_home</code> <em>adds</em> the home-loss
+    contribution. Result: <code>V.grad = ∂L_home/∂V + ∂L_ppgd/∂V</code>, again matching
+    the single-pool sum.</p>
+
+    <p style="margin-top:8px;"><strong>Invariant 3 — batch coverage.</strong> Pool A
+    processes its block's slice of the global batch; pool B's ranks process the
+    remaining slices and SUM-reduce within pool B. The <code>1/n_pool_b</code> scaling
+    on <code>total_ppgd</code> makes the SUM equal to a full-batch gradient.</p>
+  </div>
+
+  <h2>7 · Profiling and perf knobs</h2>
+
+  <h3>PhaseProfiler</h3>
+  <p>
+    An optional <code>PhaseProfiler</code> wraps each phase in <code>cuda.synchronize() + perf_counter</code>.
+    The labels above (<code>a/0_wait_prev_weight_send</code> … <code>b/10_recv_weights</code>) come from
+    its <code>phase(name)</code> context manager. Synchronising serialises async ops, so
+    <strong>turn it off for real wall-clock measurements</strong> — it's a diagnostic for
+    finding the bottleneck phase, not a free measurement.
+  </p>
+
+  <h3>Other knobs</h3>
+  <ul>
+    <li>
+      <code>enable_tf32=True</code> — sets <code>torch.set_float32_matmul_precision("high")</code>.
+      ~2–3× matmul speedup on H200 with sub-ULP precision loss; safe for fp32 SPD training.
+    </li>
+    <li>
+      <code>fused_optimizer=True</code> — uses the CUDA-fused AdamW kernel
+      (noticeably faster than the foreach default).
+    </li>
+    <li>
+      <strong>Block groups</strong> are now first-class
+      <code>BlockGroup</code> objects in <code>TwoPoolConfig.block_groups</code>
+      (instead of raw rank lists + a parallel owned-sites tuple) — the topology is now
+      one tuple of well-typed entries.
+    </li>
+  </ul>
+
+  <h2>8 · The shape of the orchestrator</h2>
+  <p>
+    <code>optimize_two_pool</code> initialises the layout, picks which side this rank is
+    on, builds the right <code>ComponentModel</code> (sliced vs full), creates either an
+    AdamW (pool A) or a <code>PersistentPGDState</code> (pool B), then loops:
+  </p>
+  <pre class="card mono" style="font-size:12.5px; line-height:1.6; padding:16px 20px; overflow:auto;">for step in range(n_steps):
+    batch = batch_iter(step)
+    if layout.my_pool == "a":
+        step_pool_a(
+            layout, component_model, optimizer, all_params, batch,
+            pool_config, profiler=profiler,
+        )
+    else:
+        step_pool_b(
+            layout, component_model, ppgd_state, batch,
+            pool_config, profiler=profiler,
+        )</pre>
+  <p>
+    All the cross-pool plumbing — who sends what to whom, what slices, what groups —
+    is hidden behind <code>BlockDDPLayout</code>. <code>run.py</code> stays at the
+    same composition level as <code>run_pd.optimize</code>: it just wires the existing
+    primitives under a different topology.
+  </p>
+
+  <footer>
+    Generated from <span class="mono">param_decomp/two_pool/run.py</span> · 2-pool MVP branch · async-sends/profiler/BlockGroup revision.
+  </footer>
+
+</main>
+</body>
+</html>

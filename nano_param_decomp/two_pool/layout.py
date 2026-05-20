@@ -19,6 +19,8 @@ import torch
 import torch.distributed as dist
 from torch import Tensor
 
+from nano_param_decomp.run import ComponentLinear
+
 
 @dataclass(frozen=True)
 class World:
@@ -31,8 +33,8 @@ class World:
     world_size: int
     pool_a_ranks: tuple[int, ...]
     pool_b_ranks: tuple[int, ...]
-    all_sites: tuple[str, ...]            # canonical iteration order
-    site_owner: dict[str, int]            # site path → pool-A rank
+    all_sites: tuple[str, ...]  # canonical iteration order
+    site_owner: dict[str, int]  # site path → pool-A rank
     batch_global: int
     pool_a_group: dist.ProcessGroup
     pool_b_group: dist.ProcessGroup
@@ -102,9 +104,7 @@ class TwoPoolLayout:
                 my_rank=my_rank,
                 my_pool="a",
                 my_is_pool_leader=(my_rank == world.pool_a_ranks[0]),
-                my_owned_sites=tuple(
-                    s for s in world.all_sites if world.site_owner[s] == my_rank
-                ),
+                my_owned_sites=tuple(s for s in world.all_sites if world.site_owner[s] == my_rank),
                 my_slice_idx=None,
             )
         elif my_rank in world.pool_b_ranks:
@@ -151,7 +151,7 @@ class TwoPoolLayout:
 
     def recv_ci_from_owners(
         self,
-        wrappers: dict[str, "ComponentLinear"],  # type: ignore[name-defined]
+        wrappers: dict[str, ComponentLinear],
         seq_len: int,
         device: torch.device,
         dtype: torch.dtype,

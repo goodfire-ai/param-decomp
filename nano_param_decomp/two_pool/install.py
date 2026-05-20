@@ -8,7 +8,10 @@ paths keep their original `nn.Linear`. No phantom V/U on pool A.
 Empty dict on pool B.
 """
 
+from typing import cast
+
 import torch.nn as nn
+from torch import Tensor
 
 from nano_param_decomp.run import ComponentLinear
 from nano_param_decomp.two_pool.layout import TwoPoolLayout
@@ -30,10 +33,7 @@ def install_components_for_layout(
 
     Returns a dict keyed only by the sites actually installed on this rank.
     """
-    if layout.my_pool == "a":
-        paths = layout.my_owned_sites
-    else:
-        paths = layout.world.all_sites
+    paths = layout.my_owned_sites if layout.my_pool == "a" else layout.world.all_sites
 
     for p in target.parameters():
         p.requires_grad_(False)
@@ -61,6 +61,8 @@ def build_ci_fns_for_layout(
     """Per-site CI fns — pool A only, owned sites only. Empty on pool B."""
     if layout.my_pool != "a":
         return {}
-    d_in_per_site = {s: int(wrappers[s].W_target.shape[1]) for s in layout.my_owned_sites}
+    d_in_per_site = {
+        s: int(cast(Tensor, wrappers[s].W_target).shape[1]) for s in layout.my_owned_sites
+    }
     owned_c = {s: c_per_site[s] for s in layout.my_owned_sites}
     return build_ci_fns(d_in_per_site, owned_c, hidden=hidden, leaky_alpha=leaky_alpha)

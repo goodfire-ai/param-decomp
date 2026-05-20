@@ -24,6 +24,9 @@ import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
 
+from nano_param_decomp.run import ComponentLinear
+from nano_param_decomp.two_pool_stage2 import ModuleCIFn
+
 
 @dataclass(frozen=True)
 class BlockDDPWorld:
@@ -38,8 +41,8 @@ class BlockDDPWorld:
 
     world_size: int
 
-    block_groups: tuple[tuple[int, ...], ...]            # one tuple per block
-    block_owned_sites: tuple[tuple[str, ...], ...]       # parallel to block_groups
+    block_groups: tuple[tuple[int, ...], ...]  # one tuple per block
+    block_owned_sites: tuple[tuple[str, ...], ...]  # parallel to block_groups
 
     pool_b_ranks: tuple[int, ...]
 
@@ -47,7 +50,7 @@ class BlockDDPWorld:
     batch_global: int
 
     pool_b_group: dist.ProcessGroup
-    block_group_groups: tuple[dist.ProcessGroup, ...]    # one per block group
+    block_group_groups: tuple[dist.ProcessGroup, ...]  # one per block group
 
     @property
     def n_blocks(self) -> int:
@@ -219,7 +222,7 @@ class BlockDDPLayout:
 
     def recv_ci_from_owners(
         self,
-        wrappers: dict[str, "ComponentLinear"],  # type: ignore[name-defined]
+        wrappers: dict[str, ComponentLinear],
         seq_len: int,
         device: torch.device,
         dtype: torch.dtype,
@@ -256,7 +259,7 @@ class BlockDDPLayout:
 
     def recv_grads_from_pool_b(
         self,
-        wrappers: dict[str, "ComponentLinear"],  # type: ignore[name-defined]
+        wrappers: dict[str, ComponentLinear],  # type: ignore[name-defined]
         ci_lower_owned: dict[str, Tensor],
     ) -> tuple[dict[str, Tensor], dict[str, Tensor], dict[str, Tensor]]:
         """Pool A. Block leader recvs V/U grads from B leader and per-slice ci_grads from
@@ -376,10 +379,7 @@ def install_components_for_block_ddp(
     """
     from nano_param_decomp.run import ComponentLinear
 
-    if layout.my_pool == "a":
-        paths = layout.my_owned_sites
-    else:
-        paths = layout.world.all_sites
+    paths = layout.my_owned_sites if layout.my_pool == "a" else layout.world.all_sites
 
     for p in target.parameters():
         p.requires_grad_(False)
@@ -399,11 +399,11 @@ def install_components_for_block_ddp(
 
 def build_ci_fns_for_block_ddp(
     layout: BlockDDPLayout,
-    wrappers: dict[str, "ComponentLinear"],  # type: ignore[name-defined]
+    wrappers: dict[str, ComponentLinear],
     c_per_site: dict[str, int],
     hidden: int,
     leaky_alpha: float,
-) -> dict[str, "ModuleCIFn"]:  # type: ignore[name-defined]
+) -> dict[str, ModuleCIFn]:
     """Per-site CI fns — pool A only, owned sites only. Replicated within the block group
     (same seed since all ranks build the same model from the same seed).
     """

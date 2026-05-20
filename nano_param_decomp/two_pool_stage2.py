@@ -18,8 +18,7 @@ The test is "loss curves resemble single-pool baseline over ~50 steps with no Na
 
 import math
 import os
-from dataclasses import dataclass
-from typing import override
+from typing import Literal, override
 
 import torch
 import torch.distributed as dist
@@ -42,12 +41,11 @@ from nano_param_decomp.run import (
 )
 from nano_param_decomp.two_pool_stage1 import TinyLM
 
-
 # --- Hardcoded rank/role assignment ---
 
-RANK_ROLES: dict[int, dict] = {
-    0: {"pool": "a"},
-    1: {"pool": "b"},
+RANK_POOLS: dict[int, Literal["a", "b"]] = {
+    0: "a",
+    1: "b",
 }
 # Tensors flow rank 0 <-> rank 1 directly.
 RANK_A = 0
@@ -55,6 +53,7 @@ RANK_B = 1
 
 
 # --- Per-module CI fn (tiny) ---
+
 
 class ModuleCIFn(nn.Module):
     """Per-module CI function: takes one module's pre-weight acts [B, S, d_in] and
@@ -104,6 +103,7 @@ def ci_forward(
 
 # --- Cross-pool comm ---
 
+
 def _send_dict(tensors: dict[str, Tensor], dst: int, names: list[str]) -> None:
     """Send a dict of tensors in `names` order."""
     for n in names:
@@ -123,6 +123,7 @@ def _recv_dict(
 
 
 # --- Pool A (home) step ---
+
 
 def pool_a_step(
     target_model: nn.Module,
@@ -147,16 +148,10 @@ def pool_a_step(
 
     # Home loss forwards (no backward yet — happens after receiving B's grads).
     loss_faith = faithfulness_loss(wrappers)
-    loss_imp = importance_minimality_loss(
-        ci_upper, imp_p, cfg.imp_eps, cfg.imp_beta, world_size=1
-    )
-    loss_stoch = stochastic_recon_loss(
-        target_model, wrappers, input_ids, target_logits, ci_lower
-    )
+    loss_imp = importance_minimality_loss(ci_upper, imp_p, cfg.imp_eps, cfg.imp_beta, world_size=1)
+    loss_stoch = stochastic_recon_loss(target_model, wrappers, input_ids, target_logits, ci_lower)
     total_home = (
-        cfg.coeff_faith * loss_faith
-        + cfg.coeff_imp * loss_imp
-        + cfg.coeff_stoch * loss_stoch
+        cfg.coeff_faith * loss_faith + cfg.coeff_imp * loss_imp + cfg.coeff_stoch * loss_stoch
     )
 
     # Receive grads from pool B.
@@ -200,6 +195,7 @@ def pool_a_step(
 
 
 # --- Pool B (scratchpad) step ---
+
 
 def pool_b_step(
     target_model: nn.Module,
@@ -261,6 +257,7 @@ def pool_b_step(
 
 # --- Main ---
 
+
 def main() -> None:
     dist.init_process_group("nccl")
     rank = dist.get_rank()
@@ -269,8 +266,8 @@ def main() -> None:
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     device = torch.device(f"cuda:{local_rank}")
-    role = RANK_ROLES[rank]
-    print(f"[rank{rank}] role={role} device={device}", flush=True)
+    pool = RANK_POOLS[rank]
+    print(f"[rank{rank}] pool={pool} device={device}", flush=True)
 
     # Tiny model + decomp config — both ranks build identically.
     vocab, d, n_layers, batch_size, seq_len, C = 32, 16, 2, 2, 8, 4
@@ -299,18 +296,23 @@ def main() -> None:
 
     # Per-module CI fns — only built on pool A. Pool B doesn't need them.
     ci_fns: dict[str, ModuleCIFn] = {}
-    if role["pool"] == "a":
+    if pool == "a":
         d_in_per_module = {n: int(wrappers[n].W_target.shape[1]) for n in site_names}
-        ci_fns_dict = build_ci_fns(d_in_per_module, C_per_module, hidden=32, leaky_alpha=cfg.leaky_alpha)
+        ci_fns_dict = build_ci_fns(
+            d_in_per_module, C_per_module, hidden=32, leaky_alpha=cfg.leaky_alpha
+        )
         for n in site_names:
             ci_fns_dict[n].to(device)
         ci_fns = ci_fns_dict
-        print(f"[rank{rank}] built per-module CI fns: total params = "
-              f"{sum(p.numel() for f in ci_fns.values() for p in f.parameters()):,}", flush=True)
+        print(
+            f"[rank{rank}] built per-module CI fns: total params = "
+            f"{sum(p.numel() for f in ci_fns.values() for p in f.parameters()):,}",
+            flush=True,
+        )
 
     # Optimizer only on pool A.
     optimizer: torch.optim.Optimizer | None = None
-    if role["pool"] == "a":
+    if pool == "a":
         params: list[nn.Parameter] = []
         for w in wrappers.values():
             params.extend([w.V, w.U])
@@ -320,7 +322,7 @@ def main() -> None:
 
     # PPGD only on pool B.
     ppgd: PersistentPGD | None = None
-    if role["pool"] == "b":
+    if pool == "b":
         torch.manual_seed(42)
         ppgd = PersistentPGD(wrappers, batch_size, seq_len, device, cfg)
 
@@ -343,14 +345,12 @@ def main() -> None:
         input_ids = make_batch(step)
         torch.manual_seed(sampling_seed_base + step)
 
-        if role["pool"] == "a":
+        if pool == "a":
             metrics = pool_a_step(
                 target, wrappers, ci_fns, optimizer, input_ids, cfg, imp_p, site_names, device
             )
         else:
-            metrics = pool_b_step(
-                target, wrappers, ppgd, input_ids, cfg, site_names, device
-            )
+            metrics = pool_b_step(target, wrappers, ppgd, input_ids, cfg, site_names, device)
 
         if step % 5 == 0:
             msg = " ".join(f"{k}={v:.4g}" for k, v in metrics.items())
