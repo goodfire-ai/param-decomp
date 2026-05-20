@@ -54,8 +54,6 @@ def run_experiment(
     target.model.to(device)
     train_loader, eval_loader = driver.build_dataloaders(
         run_cfg,
-        train_batch_size=run_cfg.pd.batch_size,
-        eval_batch_size=run_cfg.logging.eval_batch_size,
         dist_state=dist_state,
         device=device,
     )

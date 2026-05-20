@@ -1,9 +1,10 @@
 """Language-model PD experiment: serializable config, target loading, and driver."""
 
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar, Self, override
 
 from pydantic import Field, model_validator
 
+from param_decomp import ExperimentDriver
 from param_decomp.base_config import BaseConfig
 from param_decomp.experiments.lm.data import LMDataConfig, build_lm_dataloaders
 from param_decomp.models.batch_and_loss_fns import PDTarget, make_run_batch, recon_loss_kl
@@ -86,33 +87,51 @@ def _load_target_model(target_cfg: LMTargetConfig) -> Any:
     return model_class.from_pretrained(target_cfg.model_path)  # pyright: ignore[reportAttributeAccessIssue]
 
 
-class Driver:
+class Driver(ExperimentDriver[LMRunConfig]):
     name: ClassVar[str] = "lm"
-    config_type: ClassVar[type[LMRunConfig]] = LMRunConfig
 
-    def build_target(self, run: LMRunConfig) -> PDTarget:
-        target_model = _load_target_model(run.target)
+    @property
+    @override
+    def config_type(self) -> type[LMRunConfig]:
+        return LMRunConfig
+
+    @override
+    def build_target(self, run_cfg: LMRunConfig) -> PDTarget:
+        target_model = _load_target_model(run_cfg.target)
         target_model.eval()
         return PDTarget(
             model=target_model,
-            run_batch=make_run_batch(run.target.output_extract),
+            run_batch=make_run_batch(run_cfg.target.output_extract),
             reconstruction_loss=recon_loss_kl,
         )
 
+    @override
     def build_dataloaders(
         self,
-        run: LMRunConfig,
+        run_cfg: LMRunConfig,
         *,
-        train_batch_size: int,
-        eval_batch_size: int,
+        train_batch_size_override: int | None = None,
+        eval_batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
         device: str = "cpu",
     ) -> Any:
         _ = device
+
+        train_batch_size = (
+            train_batch_size_override
+            if train_batch_size_override is not None
+            else run_cfg.pd.batch_size
+        )
+        eval_batch_size = (
+            eval_batch_size_override
+            if eval_batch_size_override is not None
+            else run_cfg.logging.eval_batch_size
+        )
+
         return build_lm_dataloaders(
-            run.data,
+            data_cfg=run_cfg.data,
             train_batch_size=train_batch_size,
             eval_batch_size=eval_batch_size,
+            seed=run_cfg.pd.seed,
             dist_state=dist_state,
-            seed=run.pd.seed,
         )

@@ -76,8 +76,8 @@ class PDRun:
     def load_dataloaders(
         self,
         *,
-        train_batch_size: int,
-        eval_batch_size: int,
+        train_batch_size_override: int | None = None,
+        eval_batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
         device: str = "cpu",
     ) -> tuple[DataLoader[Any], DataLoader[Any]]:
@@ -86,10 +86,10 @@ class PDRun:
         )
         return self.driver.build_dataloaders(
             self.run_cfg,
-            train_batch_size=train_batch_size,
-            eval_batch_size=eval_batch_size,
             dist_state=dist_state,
             device=device,
+            train_batch_size_override=train_batch_size_override,
+            eval_batch_size_override=eval_batch_size_override,
         )
 
     def load_model(self, target: PDTarget | None = None) -> ComponentModel:

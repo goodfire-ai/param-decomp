@@ -62,8 +62,8 @@ class PDAdapter(DecompositionAdapter):
     @override
     def dataloader(self, batch_size: int) -> DataLoader[Tensor]:
         train_loader, _ = self.pd_run.load_dataloaders(
-            train_batch_size=batch_size,
-            eval_batch_size=batch_size,
+            train_batch_size_override=batch_size,
+            eval_batch_size_override=None,
         )
         return train_loader
 

@@ -1,11 +1,12 @@
 """TMS PD experiment: serializable config, target loading, dataloaders, and driver."""
 
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, override
 
 from pydantic import Field
 from torch import Tensor
 
 from param_decomp.base_config import BaseConfig
+from param_decomp.experiments.driver import ExperimentDriver
 from param_decomp.experiments.tms.models import TMSModel, TMSTargetRunInfo
 from param_decomp.models.batch_and_loss_fns import (
     PDTarget,
@@ -38,12 +39,17 @@ class TMSRunConfig(RunConfig):
     data: TMSDataConfig
 
 
-class Driver:
+class Driver(ExperimentDriver[TMSRunConfig]):
     name: ClassVar[str] = "tms"
-    config_type: ClassVar[type[TMSRunConfig]] = TMSRunConfig
 
-    def build_target(self, run: TMSRunConfig) -> PDTarget:
-        run_info = TMSTargetRunInfo.from_path(run.target.run_path)
+    @property
+    @override
+    def config_type(self) -> type[TMSRunConfig]:
+        return TMSRunConfig
+
+    @override
+    def build_target(self, run_cfg: TMSRunConfig) -> PDTarget:
+        run_info = TMSTargetRunInfo.from_path(run_cfg.target.run_path)
         target_model = TMSModel.from_run_info(run_info)
         target_model.eval()
         tied_weights = [("linear1", "linear2")] if target_model.config.tied_weights else None
@@ -54,12 +60,13 @@ class Driver:
             tied_weights=tied_weights,
         )
 
+    @override
     def build_dataloaders(
         self,
-        run: TMSRunConfig,
+        run_cfg: TMSRunConfig,
         *,
-        train_batch_size: int,
-        eval_batch_size: int,
+        train_batch_size_override: int | None = None,
+        eval_batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
         device: str = "cpu",
     ) -> tuple[
@@ -67,17 +74,30 @@ class Driver:
         DatasetGeneratedDataLoader[tuple[Tensor, Tensor]],
     ]:
         _ = dist_state
-        train_config = TMSTargetRunInfo.from_path(run.target.run_path).config
+        train_config = TMSTargetRunInfo.from_path(run_cfg.target.run_path).config
         dataset = SparseFeatureDataset(
             n_features=train_config.tms_model_config.n_features,
-            feature_probability=run.data.feature_probability,
+            feature_probability=run_cfg.data.feature_probability,
             device=device,
-            data_generation_type=run.data.data_generation_type,
+            data_generation_type=run_cfg.data.data_generation_type,
             value_range=(0.0, 1.0),
             synced_inputs=train_config.synced_inputs,
         )
+
+        train_batch_size = (
+            train_batch_size_override
+            if train_batch_size_override is not None
+            else run_cfg.pd.batch_size
+        )
+        eval_batch_size = (
+            eval_batch_size_override
+            if eval_batch_size_override is not None
+            else run_cfg.logging.eval_batch_size
+        )
+
         train_loader = DatasetGeneratedDataLoader(
             dataset, batch_size=train_batch_size, shuffle=False
         )
         eval_loader = DatasetGeneratedDataLoader(dataset, batch_size=eval_batch_size, shuffle=False)
+
         return train_loader, eval_loader

@@ -38,8 +38,8 @@ class ExperimentDriver[RunConfigT: RunConfig](Protocol):
         self,
         run_cfg: RunConfigT,
         *,
-        train_batch_size: int,
-        eval_batch_size: int,
+        train_batch_size_override: int | None = None,
+        eval_batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
         device: str = "cpu",
     ) -> tuple[DataLoader[Any], DataLoader[Any]]:

@@ -48,8 +48,8 @@ def harvest(config: HarvestConfig) -> Path:
         )
     else:
         dataloader, _ = pd_run.load_dataloaders(
-            train_batch_size=config.batch_size,
-            eval_batch_size=config.batch_size,
+            train_batch_size_override=config.batch_size,
+            eval_batch_size_override=config.batch_size,
         )
 
     model = pd_run.load_model().to(device)
