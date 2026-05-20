@@ -33,8 +33,7 @@ def _resolve_source(
     """Resolve the chosen input source into a dict ready for ``RunConfig.from_dict``.
 
     Exactly one of ``experiment``, ``config_path``, or ``rerun`` must be set.
-    Every source is expected to provide ``driver_path`` as a top-level field
-    (built-in YAMLs, user YAMLs, and saved ``run_config.yaml`` all declare it).
+    Sources provide ``recipe`` as a top-level field.
 
     Stamps ``name`` (the experiment slug, config filename stem, or ``"rerun"``)
     on the top-level ``RunConfig`` so each YAML doesn't have to set one.
@@ -61,21 +60,17 @@ def _resolve_source(
         config_data.pop("run_id", None)
         name = "rerun"
 
-    assert config_data.get("driver_path"), (
-        "Config is missing a top-level `driver_path:` field. "
-        "Every PD config must declare its driver (e.g. "
-        "`driver_path: param_decomp.experiments.tms.experiment:Driver`)."
+    assert config_data.get("recipe"), (
+        "Config is missing a top-level `recipe:` block. "
+        "Every PD config must declare its reload recipe (e.g. "
+        "`recipe: {path: my_pkg.my_recipe:Recipe, config: {...}}`)."
     )
     config_data["name"] = name
     return config_data
 
 
 def _resolve_sweep_spec(sweep_generator_path: str) -> SweepSpec:
-    """Load and invoke a sweep generator.
-
-    ``SweepSpec.__post_init__`` enforces shared driver + shared ``runtime:``
-    block across all runs.
-    """
+    """Load and invoke a sweep generator."""
     generator = load_sweep_generator(sweep_generator_path)
     spec = generator()
     assert isinstance(spec, SweepSpec), (
@@ -107,16 +102,16 @@ def main(
     Args:
         experiment: Built-in experiment name (e.g. ``tms_5-2``). Run with no args to
             see the discovered list.
-        config_path: Path to an experiment YAML. The YAML must declare its driver via
-            a top-level ``driver_path:`` field.
-        rerun: Path or wandb URL of a saved run to rerun. Loads driver + config from
+        config_path: Path to an experiment YAML. The YAML must declare its reload recipe via
+            a top-level ``recipe:`` block.
+        rerun: Path or wandb URL of a saved run to rerun. Loads recipe + config from
             the run's ``run_config.yaml``.
         local: Run in this process; skip SLURM, git snapshot, etc. Useful for quick
             checks. Incompatible with --sweep_generator_path and runtime.dp.
         sweep_generator_path: Absolute path to a sweep generator function in the
             form ``/abs/path/file.py:func_name``. The function takes no arguments
-            and returns a ``SweepSpec`` (which carries its own driver_path,
-            per-run configs, and ``n_agents`` cap). XOR with <experiment>,
+            and returns a ``SweepSpec`` (which carries full per-run configs and
+            an ``n_agents`` cap). XOR with <experiment>,
             --config_path, --rerun.
         job_suffix: Suffix for the SLURM job name.
         partition: SLURM partition.

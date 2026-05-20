@@ -1,53 +1,71 @@
-"""The `RunConfig` object: serializable spec for a driver-mediated PD run.
+"""The `RunConfig` object: serializable spec for a recipe-mediated PD run.
 
-Pure data. Holds the driver import path plus the three determinism-tier configs
-(``pd``, ``logging``, ``runtime``). Driver-specific subclasses
-(``LMRunConfig``, ``TMSRunConfig``, ``ResidMLPRunConfig``) add ``target`` /
-``data`` and are pointed at by each driver's ``config_type``.
+Pure data. Holds a reloadable ``recipe`` reference plus the three config tiers
+(``pd``, ``logging``, ``runtime``). The recipe's own config is dynamically
+validated from ``recipe.path`` but stored inside one common top-level
+``RunConfig`` shape.
 
-Written to ``run_config.yaml`` beside the checkpoint, passed to the worker,
-and re-read on reload. One type, one shape, everywhere.
-
-``RunConfig.from_dict(...)`` dispatches to the right subclass by reading
-``driver_path``, loading the driver, and routing ``model_validate`` to
-``driver.config_type``.
-
-**Scope**: ``RunConfig`` only exists for driver-mediated runs. Notebook /
-script callers do **not** construct a ``RunConfig`` — they call ``optimize``
-directly with a ``PDTarget`` + dataloaders + ``PDConfig`` / ``LoggingConfig``
-/ ``RuntimeConfig``. See ``param_decomp/run_pd.py``.
+Written to ``run_config.yaml`` beside the checkpoint, passed to the worker, and
+re-read on reload. Notebook / script callers do **not** need a ``RunConfig``;
+they can call ``optimize`` directly with a ``PDTarget`` + dataloaders.
 """
 
 from pathlib import Path
 from typing import Any, Self, override
 
 import yaml
-from pydantic import Field, model_validator
+from pydantic import Field, SerializeAsAny, model_validator
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import LoggingConfig, PDConfig, RuntimeConfig
-from param_decomp.driver_path import load_driver
+from param_decomp.recipes import RunRecipe, load_recipe
 from param_decomp.utils.run_utils import generate_run_id
 
 RUN_CONFIG_FILENAME = "run_config.yaml"
 
 
+class RecipeRef(BaseConfig):
+    """Serializable recipe import path plus its typed config."""
+
+    path: str = Field(..., description="Import path of a RunRecipe (`module:attr`).")
+    config: SerializeAsAny[BaseConfig]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_recipe_config(cls, data: Any) -> Any:
+        if isinstance(data, RecipeRef):
+            return data
+        assert isinstance(data, dict), f"recipe must be a mapping, got {type(data).__name__}"
+        assert data.get("path"), "recipe requires a non-empty `path`"
+        recipe = load_recipe(data["path"])
+        raw_config = data.get("config", {})
+        if isinstance(raw_config, recipe.config_type):
+            config = raw_config
+        elif isinstance(raw_config, BaseConfig):
+            config = recipe.config_type.model_validate(raw_config.model_dump(mode="json"))
+        else:
+            config = recipe.config_type.model_validate(raw_config)
+        return {**data, "config": config}
+
+    def load(self) -> RunRecipe[Any]:
+        """Resolve ``path`` to a recipe object."""
+        return load_recipe(self.path)
+
+
 class RunConfig(BaseConfig):
-    """Top-level driver-mediated run config.
+    """Top-level recipe-mediated run config.
 
     ``run_id`` identifies the output directory and W&B run. Fresh ``RunConfig``
     objects generate one automatically; YAML / dict inputs that already
     contain a value preserve it.
 
-    ``driver_path`` is the ``module:attr`` import path of the experiment driver
-    used to build the target model and dataloaders. **Required** — there is no
-    "notebook" flavour of ``RunConfig``; notebook callers skip this class
-    entirely and call ``optimize`` directly.
+    ``recipe`` is the durable reload hook used to build the target model and
+    dataloaders.
     """
 
     name: str | None = None
     run_id: str = Field(default_factory=lambda: generate_run_id("param_decomp"))
-    driver_path: str
+    recipe: RecipeRef
     pd: PDConfig
     logging: LoggingConfig
     runtime: RuntimeConfig
@@ -70,19 +88,12 @@ class RunConfig(BaseConfig):
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RunConfig":
-        """Parse a dict (e.g. from YAML) into the right `RunConfig` subclass.
+        """Parse a dict (e.g. from YAML) into a `RunConfig`.
 
-        Reads ``data["driver_path"]``, loads the driver, and validates against
-        ``driver.config_type``. Single unambiguous dispatch — ``driver_path`` is
-        required so there is no "fall through to bare RunConfig" branch.
-        Callers that need the concrete subtype narrow with
-        ``isinstance(run_cfg, driver.config_type)``.
+        The recipe block determines the typed config model used to validate
+        ``recipe.config``.
         """
-        assert "driver_path" in data and data["driver_path"], (
-            "RunConfig requires a non-empty `driver_path`. "
-            "Notebook callers should use `optimize(...)` directly instead of building a RunConfig."
-        )
-        return load_driver(data["driver_path"]).config_type.model_validate(data)
+        return cls.model_validate(data)
 
     @classmethod
     @override
@@ -92,7 +103,10 @@ class RunConfig(BaseConfig):
         with open(path) as f:
             return cls.from_dict(yaml.safe_load(f))
 
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump(mode="json")
+
     def write(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
-            yaml.dump(self.model_dump(mode="json"), f, default_flow_style=False, sort_keys=False)
+            yaml.dump(self.to_dict(), f, default_flow_style=False, sort_keys=False)

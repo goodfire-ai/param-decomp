@@ -2,8 +2,8 @@
 
 An experiment is any `<name>.yaml` file living next to an `experiment.py` under
 `param_decomp/experiments/<kind>/`. The experiment name is the YAML filename
-stem with a trailing `_config` stripped. The YAML itself declares its
-`driver_path` as a top-level field.
+stem with a trailing `_config` stripped. The YAML itself declares a top-level
+`recipe` block.
 """
 
 from dataclasses import dataclass

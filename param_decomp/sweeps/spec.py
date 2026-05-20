@@ -1,81 +1,39 @@
-"""Launch data model: ``SweepSpec`` (many runs sharing a driver and substrate).
+"""Launch data model: ``SweepSpec`` (many complete runs).
 
-A single PD launch is just a ``RunConfig`` — the same type the worker writes
-to disk. A sweep is a ``SweepSpec`` carrying shared driver/logging/runtime
-plus a ``list[SweepData]`` of per-run varying ``pd``/``name``/``view_meta``.
-
-A ``SweepGenerator`` is any zero-arg callable returning a ``SweepSpec``. The
-sweep is fully self-contained — it loads whatever base config it wants and
-the spec declares the driver shared across all runs.
+A single PD launch is a ``RunConfig``. A sweep is a list of complete
+``RunConfig`` objects plus a concurrency cap. Sweep generators are ordinary
+zero-arg Python functions returning a ``SweepSpec``.
 """
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 import yaml
+from pydantic import PositiveInt
 
-from param_decomp import PDConfig
-from param_decomp.configs import LoggingConfig, RuntimeConfig
+from param_decomp.base_config import BaseConfig
 from param_decomp.run import RunConfig
 
 
-@dataclass(frozen=True)
-class SweepData:
-    name: str
-    pd_config: PDConfig
-    view_meta: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class SweepSpec:
-    """A complete sweep: description and the list of runs to launch.
-
-    All runs in a sweep must share one driver and one ``runtime:`` block
-    (single SLURM array allocation, one substrate). Both invariants are
-    asserted at construction. The W&B project is supplied to the launcher
-    separately (``--project``) and is not part of the spec.
+class SweepSpec(BaseConfig):
+    """A complete sweep: description and the exact runs to launch.
 
     Serialized to ``PARAM_DECOMP_OUT_DIR/sweeps/<launch_id>/spec.yaml`` on
     submit so reproducing the sweep doesn't require re-running the generator.
     """
 
     description: str
-    driver_path: str
-    logging: LoggingConfig
-    runtime: RuntimeConfig
-    n_agents: int
-
-    swept_datas: list[SweepData]
+    n_agents: PositiveInt
+    runs: list[RunConfig]
 
     def run_cfgs(self) -> list[RunConfig]:
-        return [
-            RunConfig(
-                name=sweep_data.name,
-                driver_path=self.driver_path,
-                pd=sweep_data.pd_config,
-                logging=self.logging,
-                runtime=self.runtime,
-                view_meta=sweep_data.view_meta,
-            )
-            for sweep_data in self.swept_datas
-        ]
+        return self.runs
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "description": self.description,
-            "driver_path": self.driver_path,
-            "logging": self.logging.model_dump(mode="json"),
-            "runtime": self.runtime.model_dump(mode="json"),
             "n_agents": self.n_agents,
-            "swept_datas": [
-                {
-                    "name": sweep_data.name,
-                    "pd_config": sweep_data.pd_config.model_dump(mode="json"),
-                    "view_meta": sweep_data.view_meta,
-                }
-                for sweep_data in self.swept_datas
-            ],
+            "runs": [run.to_dict() for run in self.runs],
         }
 
     def write(self, path: Path) -> None:

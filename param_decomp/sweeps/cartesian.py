@@ -13,10 +13,9 @@ from typing import Any
 
 import yaml
 
-from param_decomp.configs import PDConfig
 from param_decomp.run import RunConfig
 from param_decomp.settings import REPO_ROOT
-from param_decomp.sweeps.spec import SweepData, SweepSpec
+from param_decomp.sweeps.spec import SweepSpec
 from param_decomp.utils.run_utils import apply_nested_updates
 
 _PD_PREFIX = "pd."
@@ -28,15 +27,14 @@ def cartesian_product(
     *,
     n_agents: int,
     description: str,
-    driver_path: str,
 ) -> SweepSpec:
     """Cartesian product of dot-pathed axes over a base config.
 
     Each axis key is a dotted path into ``base_config.pd`` (e.g.
     ``"pd.loss_metrics.ImportanceMinimalityLoss.coeff"``). Only ``pd.*`` keys are
-    supported — ``logging`` and ``runtime`` are hoisted to the ``SweepSpec``
-    and shared across runs. Axis values are recorded in each run's
-    ``view_meta`` so W&B can group/color by them.
+    supported. ``logging``, ``runtime``, and ``recipe`` are copied from the
+    base config into each generated run. Axis values are recorded in each
+    run's ``view_meta`` so W&B can group/color by them.
     """
     assert grid, "cartesian_product requires a non-empty grid"
     for axis, values in grid.items():
@@ -51,29 +49,28 @@ def cartesian_product(
     axes = list(grid.keys())
     value_lists = [grid[a] for a in axes]
 
-    base_config_data = base_config.model_dump(mode="json")
+    base_config_data = base_config.to_dict()
+    base_config_data.pop("run_id", None)
+    base_config_data.pop("name", None)
 
-    swept_datas: list[SweepData] = []
+    runs: list[RunConfig] = []
 
     for combo in itertools.product(*value_lists):
         updates = dict(zip(axes, combo, strict=True))
         config_data = apply_nested_updates(base_config_data, updates)
-
-        sweep_data = SweepData(
-            name="_".join(f"{_short_axis(a)}={_short_value(v)}" for a, v in updates.items()),
-            pd_config=PDConfig.model_validate(config_data["pd"]),
-            view_meta=dict(updates),
+        config_data["name"] = "_".join(
+            f"{_short_axis(a)}={_short_value(v)}" for a, v in updates.items()
         )
-
-        swept_datas.append(sweep_data)
+        config_data["view_meta"] = {
+            **base_config.view_meta,
+            **updates,
+        }
+        runs.append(RunConfig.from_dict(config_data))
 
     return SweepSpec(
         description=description,
-        driver_path=driver_path,
-        logging=base_config.logging,
-        runtime=base_config.runtime,
         n_agents=n_agents,
-        swept_datas=swept_datas,
+        runs=runs,
     )
 
 
@@ -81,8 +78,8 @@ def example_cartesian_sweep() -> SweepSpec:
     """Reference sweep: TMS 5-2 across three seeds.
 
     Demonstrates the zero-arg ``SweepGenerator`` shape — loads its own base
-    config, defines its grid inline, and declares the driver in the returned
-    spec. Copy this file as a starting point for real sweeps.
+    config and defines its grid inline. Copy this file as a starting point for
+    real sweeps.
     """
     base_config_path = REPO_ROOT / "param_decomp" / "experiments" / "tms" / "tms_5-2_config.yaml"
     with open(base_config_path) as f:
@@ -92,7 +89,6 @@ def example_cartesian_sweep() -> SweepSpec:
         grid={"pd.seed": [0, 1, 2]},
         n_agents=3,
         description="Example: tms_5-2 seed sweep",
-        driver_path="param_decomp.experiments.tms.experiment:Driver",
     )
 
 

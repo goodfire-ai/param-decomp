@@ -12,7 +12,26 @@ import torch
 import yaml
 
 TEST_CONFIG = {
-    "driver_path": "param_decomp.experiments.lm.experiment:Driver",
+    "recipe": {
+        "path": "param_decomp.experiments.lm.experiment:Recipe",
+        "config": {
+            "target": {
+                "model_class": "transformers.LlamaForCausalLM",
+                "model_name": "SimpleStories/SimpleStories-1.25M",
+                "output_extract": "logits",
+            },
+            "data": {
+                "tokenizer_name": "SimpleStories/SimpleStories-1.25M",
+                "max_seq_len": 5,
+                "buffer_size": 100,
+                "dataset_name": "SimpleStories/SimpleStories",
+                "column_name": "story",
+                "train_split": "train[:100]",
+                "eval_split": "test[:100]",
+                "shuffle_each_epoch": False,  # Need False in order to maintain determinicity
+            },
+        },
+    },
     "pd": {
         "seed": 0,
         "n_mask_samples": 1,
@@ -58,21 +77,6 @@ TEST_CONFIG = {
     },
     "runtime": {
         "autocast_bf16": False,
-    },
-    "target": {
-        "model_class": "transformers.LlamaForCausalLM",
-        "model_name": "SimpleStories/SimpleStories-1.25M",
-        "output_extract": "logits",
-    },
-    "data": {
-        "tokenizer_name": "SimpleStories/SimpleStories-1.25M",
-        "max_seq_len": 5,
-        "buffer_size": 100,
-        "dataset_name": "SimpleStories/SimpleStories",
-        "column_name": "story",
-        "train_split": "train[:100]",
-        "eval_split": "test[:100]",
-        "shuffle_each_epoch": False,  # Need False in order to maintain determinicity
     },
 }
 

@@ -17,36 +17,26 @@ from param_decomp.configs import (
     RuntimeConfig,
     ScheduleConfig,
 )
-from param_decomp.experiments.driver import load_driver
 from param_decomp.experiments.lm.data import LMDataConfig
 from param_decomp.experiments.lm.experiment import (
-    Driver as LMDriver,
-)
-from param_decomp.experiments.lm.experiment import (
-    LMRunConfig,
+    LMRecipeConfig,
     LMTargetConfig,
 )
 from param_decomp.experiments.resid_mlp.experiment import (
-    Driver as ResidMLPDriver,
-)
-from param_decomp.experiments.resid_mlp.experiment import (
     ResidMLPDataConfig,
-    ResidMLPRunConfig,
+    ResidMLPRecipeConfig,
     ResidMLPTargetConfig,
 )
 from param_decomp.experiments.tms.experiment import (
-    Driver as TMSDriver,
-)
-from param_decomp.experiments.tms.experiment import (
     TMSDataConfig,
-    TMSRunConfig,
+    TMSRecipeConfig,
     TMSTargetConfig,
 )
-from param_decomp.run import RUN_CONFIG_FILENAME, RunConfig
+from param_decomp.run import RUN_CONFIG_FILENAME, RecipeRef, RunConfig
 
-LM_DRIVER_PATH = "param_decomp.experiments.lm.experiment:Driver"
-TMS_DRIVER_PATH = "param_decomp.experiments.tms.experiment:Driver"
-RESID_MLP_DRIVER_PATH = "param_decomp.experiments.resid_mlp.experiment:Driver"
+LM_RECIPE_PATH = "param_decomp.experiments.lm.experiment:Recipe"
+TMS_RECIPE_PATH = "param_decomp.experiments.tms.experiment:Recipe"
+RESID_MLP_RECIPE_PATH = "param_decomp.experiments.resid_mlp.experiment:Recipe"
 
 
 def _pd_config() -> PDConfig:
@@ -78,6 +68,45 @@ def _runtime_config() -> RuntimeConfig:
     return RuntimeConfig(autocast_bf16=False, device="cpu", dp=None)
 
 
+def _tms_recipe_ref() -> RecipeRef:
+    return RecipeRef(
+        path=TMS_RECIPE_PATH,
+        config=TMSRecipeConfig(
+            target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc"),
+            data=TMSDataConfig(feature_probability=0.05),
+        ),
+    )
+
+
+def _resid_mlp_recipe_ref() -> RecipeRef:
+    return RecipeRef(
+        path=RESID_MLP_RECIPE_PATH,
+        config=ResidMLPRecipeConfig(
+            target=ResidMLPTargetConfig(run_path="wandb:foo/bar/runs/abc"),
+            data=ResidMLPDataConfig(feature_probability=0.05),
+        ),
+    )
+
+
+def _lm_recipe_ref() -> RecipeRef:
+    return RecipeRef(
+        path=LM_RECIPE_PATH,
+        config=LMRecipeConfig(
+            target=LMTargetConfig(
+                model_class="transformers.GPT2LMHeadModel",
+                model_name="openai-community/gpt2",
+                output_extract="logits",
+            ),
+            data=LMDataConfig(
+                dataset_name="SimpleStories/SimpleStories",
+                tokenizer_name="gpt2",
+                column_name="story",
+                max_seq_len=128,
+            ),
+        ),
+    )
+
+
 def _round_trip(run: RunConfig) -> RunConfig:
     """Round-trip ``run`` through ``model_dump`` → ``RunConfig.from_dict``."""
     return RunConfig.from_dict(run.model_dump(mode="json"))
@@ -85,7 +114,7 @@ def _round_trip(run: RunConfig) -> RunConfig:
 
 def test_run_generates_run_id_on_instantiation():
     run = RunConfig(
-        driver_path=TMS_DRIVER_PATH,
+        recipe=_tms_recipe_ref(),
         pd=_pd_config(),
         logging=_logging_config(),
         runtime=_runtime_config(),
@@ -94,102 +123,89 @@ def test_run_generates_run_id_on_instantiation():
     assert run.run_id.startswith("p-")
 
 
-def test_lm_run_round_trip():
-    run = LMRunConfig(
-        driver_path=LM_DRIVER_PATH,
+def test_lm_recipe_run_round_trip():
+    run = RunConfig(
+        recipe=_lm_recipe_ref(),
         pd=_pd_config(),
         logging=_logging_config(),
         runtime=_runtime_config(),
-        target=LMTargetConfig(
-            model_class="transformers.GPT2LMHeadModel",
-            model_name="openai-community/gpt2",
-            output_extract="logits",
-        ),
-        data=LMDataConfig(
-            dataset_name="SimpleStories/SimpleStories",
-            tokenizer_name="gpt2",
-            column_name="story",
-            max_seq_len=128,
-        ),
     )
     parsed = _round_trip(run)
-    assert type(parsed) is LMRunConfig
+    assert type(parsed) is RunConfig
+    assert isinstance(parsed.recipe.config, LMRecipeConfig)
     assert parsed == run
 
 
-def test_tms_run_round_trip():
-    run = TMSRunConfig(
-        driver_path=TMS_DRIVER_PATH,
+def test_tms_recipe_run_round_trip():
+    run = RunConfig(
+        recipe=_tms_recipe_ref(),
         pd=_pd_config(),
         logging=_logging_config(),
         runtime=_runtime_config(),
-        target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc"),
-        data=TMSDataConfig(feature_probability=0.05),
     )
     parsed = _round_trip(run)
-    assert type(parsed) is TMSRunConfig
+    assert type(parsed) is RunConfig
+    assert isinstance(parsed.recipe.config, TMSRecipeConfig)
     assert parsed == run
 
 
-def test_resid_mlp_run_round_trip():
-    run = ResidMLPRunConfig(
-        driver_path=RESID_MLP_DRIVER_PATH,
+def test_resid_mlp_recipe_run_round_trip():
+    run = RunConfig(
+        recipe=_resid_mlp_recipe_ref(),
         pd=_pd_config(),
         logging=_logging_config(),
         runtime=_runtime_config(),
-        target=ResidMLPTargetConfig(run_path="wandb:foo/bar/runs/abc"),
-        data=ResidMLPDataConfig(feature_probability=0.05),
     )
     parsed = _round_trip(run)
-    assert type(parsed) is ResidMLPRunConfig
+    assert type(parsed) is RunConfig
+    assert isinstance(parsed.recipe.config, ResidMLPRecipeConfig)
     assert parsed == run
 
 
 def test_run_requires_runtime_config():
     data = {
-        "driver_path": TMS_DRIVER_PATH,
+        "recipe": _tms_recipe_ref().model_dump(mode="json"),
         "pd": _pd_config().model_dump(mode="json"),
         "logging": _logging_config().model_dump(mode="json"),
-        "target": TMSTargetConfig(run_path="wandb:foo/bar/runs/abc").model_dump(mode="json"),
-        "data": TMSDataConfig(feature_probability=0.05).model_dump(mode="json"),
     }
 
     with pytest.raises(ValidationError, match="runtime"):
         RunConfig.from_dict(data)
 
 
-def test_driver_class_paths_load():
-    assert isinstance(load_driver(LM_DRIVER_PATH), LMDriver)
-    assert isinstance(load_driver(TMS_DRIVER_PATH), TMSDriver)
-    assert isinstance(load_driver(RESID_MLP_DRIVER_PATH), ResidMLPDriver)
+def test_run_requires_recipe():
+    data = {
+        "pd": _pd_config().model_dump(mode="json"),
+        "logging": _logging_config().model_dump(mode="json"),
+        "runtime": _runtime_config().model_dump(mode="json"),
+    }
+
+    with pytest.raises(ValidationError, match="recipe"):
+        RunConfig.from_dict(data)
 
 
 def test_run_round_trip_via_file(tmp_path: Path):
-    run = TMSRunConfig(
-        driver_path=TMS_DRIVER_PATH,
+    run = RunConfig(
+        recipe=_tms_recipe_ref(),
         pd=_pd_config(),
         logging=_logging_config(),
         runtime=_runtime_config(),
-        target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc"),
-        data=TMSDataConfig(feature_probability=0.05),
     )
     path = tmp_path / RUN_CONFIG_FILENAME
     run.write(path)
     loaded = RunConfig.from_file(path)
     assert loaded.run_id == run.run_id
-    assert loaded.driver_path == run.driver_path
+    assert loaded.recipe == run.recipe
     assert loaded == run
 
 
 def test_run_from_file_preserves_existing_run_id(tmp_path: Path):
-    run = TMSRunConfig(
+    run = RunConfig(
         run_id="p-existing",
-        driver_path=TMS_DRIVER_PATH,
+        recipe=_tms_recipe_ref(),
         pd=_pd_config(),
         logging=_logging_config(),
         runtime=_runtime_config(),
-        target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc"),
-        data=TMSDataConfig(feature_probability=0.05),
     )
     path = tmp_path / RUN_CONFIG_FILENAME
     path.write_text(yaml.safe_dump(run.model_dump(mode="json")))

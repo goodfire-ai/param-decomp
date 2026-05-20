@@ -31,8 +31,7 @@ def run_experiment(
 ) -> None:
     """Set up the distributed env + per-task seed, then hand off to `run_pd`.
 
-    W&B tagging (driver name + launch_id + SLURM env) lives in `run_pd` — see
-    `_wandb_tags` there.
+    W&B tagging (recipe name + launch_id + SLURM env) is handled by `RunSink`.
     """
     dist_state = init_distributed()
     logger.info(f"Distributed state: {dist_state}")

@@ -29,10 +29,10 @@ def test_at_most_one_source(tmp_path: Path) -> None:
         _resolve_source(experiment="tms_5-2", config_path=config_path, rerun=None)
 
 
-def test_config_path_requires_driver_path_in_yaml(tmp_path: Path) -> None:
+def test_config_path_requires_recipe_in_yaml(tmp_path: Path) -> None:
     config_path = _write_yaml(tmp_path / "config.yaml", {"pd": {}})
 
-    with pytest.raises(AssertionError, match="missing a top-level `driver_path:` field"):
+    with pytest.raises(AssertionError, match="missing a top-level `recipe:` block"):
         _resolve_source(experiment=None, config_path=config_path, rerun=None)
 
 
@@ -44,15 +44,15 @@ def test_config_path_resolves(tmp_path: Path) -> None:
     raw = _resolve_source(experiment=None, config_path=config_path, rerun=None)
 
     assert raw["name"] == "my_config"
-    assert raw["driver_path"] == config_data["driver_path"]
+    assert raw["recipe"] == config_data["recipe"]
     assert raw["pd"]["seed"] == 123
 
 
-def test_rerun_loads_driver_from_run(tmp_path: Path) -> None:
+def test_rerun_loads_recipe_from_run(tmp_path: Path) -> None:
     config_data = _builtin("tms_5-2")
     config_data["pd"]["seed"] = 123
     run_path = tmp_path / RUN_CONFIG_FILENAME
-    driver_path = config_data["driver_path"]
+    recipe = config_data["recipe"]
 
     run = RunConfig.from_dict(config_data)
     run.write(run_path)
@@ -60,7 +60,7 @@ def test_rerun_loads_driver_from_run(tmp_path: Path) -> None:
     raw = _resolve_source(experiment=None, config_path=None, rerun=str(run_path.parent))
 
     assert raw["name"] == "rerun"
-    assert raw["driver_path"] == driver_path
+    assert raw["recipe"] == recipe
     assert raw["pd"]["seed"] == 123
 
 

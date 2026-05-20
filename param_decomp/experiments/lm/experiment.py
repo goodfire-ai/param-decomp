@@ -1,10 +1,9 @@
-"""Language-model PD experiment: serializable config, target loading, and driver."""
+"""Language-model PD recipe: serializable config, target loading, and dataloaders."""
 
 from typing import Any, ClassVar, Self, override
 
 from pydantic import Field, model_validator
 
-from param_decomp import ExperimentDriver
 from param_decomp.base_config import BaseConfig
 from param_decomp.experiments.lm.data import (
     LMDataConfig,
@@ -12,6 +11,7 @@ from param_decomp.experiments.lm.data import (
     build_lm_train_loader,
 )
 from param_decomp.models.batch_and_loss_fns import PDTarget, make_run_batch, recon_loss_kl
+from param_decomp.recipes import RunRecipe
 from param_decomp.run import RunConfig
 from param_decomp.types import ModelPath
 from param_decomp.utils.distributed_utils import DistributedState, ensure_cached_and_call
@@ -60,7 +60,7 @@ class LMTargetConfig(BaseConfig):
         return self
 
 
-class LMRunConfig(RunConfig):
+class LMRecipeConfig(BaseConfig):
     target: LMTargetConfig
     data: LMDataConfig
 
@@ -91,54 +91,62 @@ def _load_target_model(target_cfg: LMTargetConfig) -> Any:
     return model_class.from_pretrained(target_cfg.model_path)  # pyright: ignore[reportAttributeAccessIssue]
 
 
-class Driver(ExperimentDriver[LMRunConfig]):
+class Recipe(RunRecipe[LMRecipeConfig]):
     name: ClassVar[str] = "lm"
 
     @property
     @override
-    def config_type(self) -> type[LMRunConfig]:
-        return LMRunConfig
+    def config_type(self) -> type[LMRecipeConfig]:
+        return LMRecipeConfig
 
     @override
-    def build_target(self, run_cfg: LMRunConfig) -> PDTarget:
-        target_model = _load_target_model(run_cfg.target)
+    def build_target(self, cfg: LMRecipeConfig) -> PDTarget:
+        target_model = _load_target_model(cfg.target)
         target_model.eval()
         return PDTarget(
             model=target_model,
-            run_batch=make_run_batch(run_cfg.target.output_extract),
+            run_batch=make_run_batch(cfg.target.output_extract),
             reconstruction_loss=recon_loss_kl,
         )
 
     @override
     def build_train_loader(
         self,
-        run_cfg: LMRunConfig,
+        cfg: LMRecipeConfig,
         *,
         device: str,
-        batch_size_override: int | None = None,
+        batch_size: int,
+        seed: int,
         dist_state: DistributedState | None = None,
     ) -> Any:
         del device  # LM loaders hand off raw tensors; per-batch device move happens later.
         return build_lm_train_loader(
-            data_cfg=run_cfg.data,
-            batch_size=batch_size_override or run_cfg.pd.batch_size,
-            seed=run_cfg.pd.seed,
+            data_cfg=cfg.data,
+            batch_size=batch_size,
+            seed=seed,
             dist_state=dist_state,
         )
 
     @override
     def build_eval_loader(
         self,
-        run_cfg: LMRunConfig,
+        cfg: LMRecipeConfig,
         *,
         device: str,
-        batch_size_override: int | None = None,
+        batch_size: int,
+        seed: int,
         dist_state: DistributedState | None = None,
     ) -> Any:
         del device
         return build_lm_eval_loader(
-            data_cfg=run_cfg.data,
-            batch_size=batch_size_override or run_cfg.logging.eval_batch_size,
-            seed=run_cfg.pd.seed,
+            data_cfg=cfg.data,
+            batch_size=batch_size,
+            seed=seed,
             dist_state=dist_state,
         )
+
+
+def get_lm_recipe_config(run_cfg: RunConfig) -> LMRecipeConfig | None:
+    if isinstance(run_cfg.recipe.config, LMRecipeConfig):
+        return run_cfg.recipe.config
+    return None

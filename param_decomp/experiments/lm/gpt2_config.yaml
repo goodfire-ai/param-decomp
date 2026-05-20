@@ -1,4 +1,3 @@
-driver_path: param_decomp.experiments.lm.experiment:Driver
 pd:
   seed: 0
   n_mask_samples: 1
@@ -59,19 +58,22 @@ logging:
       rounding_threshold: 0.0
     CIMeanPerComponent: {}
     StochasticHiddenActsReconLoss: {}
-target:
-  model_class: transformers.GPT2LMHeadModel
-  model_name: openai-community/gpt2
-  model_path: null
-  output_extract: logits
-data:
-  tokenizer_name: openai-community/gpt2
-  max_seq_len: 1024
-  dataset_name: apollo-research/Skylion007-openwebtext-tokenizer-gpt2
-  is_tokenized: true
-  column_name: input_ids
-  train_split: train
-  eval_split: train
+recipe:
+  path: param_decomp.experiments.lm.experiment:Recipe
+  config:
+    target:
+      model_class: transformers.GPT2LMHeadModel
+      model_name: openai-community/gpt2
+      model_path: null
+      output_extract: logits
+    data:
+      tokenizer_name: openai-community/gpt2
+      max_seq_len: 1024
+      dataset_name: apollo-research/Skylion007-openwebtext-tokenizer-gpt2
+      is_tokenized: true
+      column_name: input_ids
+      train_split: train
+      eval_split: train
 runtime:
   autocast_bf16: true
   device: cuda

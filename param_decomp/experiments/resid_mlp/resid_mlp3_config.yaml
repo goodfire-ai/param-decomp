@@ -1,4 +1,3 @@
-driver_path: param_decomp.experiments.resid_mlp.experiment:Driver
 pd:
   seed: 0
   n_mask_samples: 1
@@ -68,11 +67,14 @@ logging:
       ci_alive_threshold: 0.1
     CIMeanPerComponent: {}
     StochasticHiddenActsReconLoss: {}
-target:
-  run_path: wandb:goodfire/spd-pre-Sep-2025/runs/6hk3uciu
-data:
-  feature_probability: 0.01
-  data_generation_type: at_least_zero_active
+recipe:
+  path: param_decomp.experiments.resid_mlp.experiment:Recipe
+  config:
+    target:
+      run_path: wandb:goodfire/spd-pre-Sep-2025/runs/6hk3uciu
+    data:
+      feature_probability: 0.01
+      data_generation_type: at_least_zero_active
 runtime:
   autocast_bf16: true
   device: cuda

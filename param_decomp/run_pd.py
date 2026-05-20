@@ -5,16 +5,16 @@ Two entry points:
 - ``optimize(target, train_loader, eval_loader, *, pd_config, logging_config,
   runtime_config, device, sink)`` — **the notebook entry point.** Pure
   trainer: takes everything explicitly, doesn't know about RunConfig /
-  drivers / YAML. ``sink`` is a ``RunSink`` (use ``RunSink.silent()`` /
+  recipes / YAML. ``sink`` is a ``RunSink`` (use ``RunSink.silent()`` /
   ``RunSink.local(out_dir)`` / ``RunSink.with_wandb(out_dir, ...)``).
-- ``run_pd(run_cfg, *, device, ...)`` — **the driver-mediated wrapper.**
+- ``run_pd(run_cfg, *, device, ...)`` — **the recipe-mediated wrapper.**
   Materializes runtime inputs via ``materialize_run``, builds a
   ``RunSink.for_run`` (writes ``run_config.yaml``, inits wandb from ``run_cfg``
   fields), then hands off to ``optimize``. Used by ``pd-run`` / ``_worker.py``.
 
 ``materialize_run`` is the composition root: a standalone function that
 turns a ``RunConfig`` into the ``(target, train_loader, eval_loader)`` tuple
-``optimize`` expects. Driver-mediated callers go through ``materialize_run``;
+``optimize`` expects. Recipe-mediated callers go through ``materialize_run``;
 notebook callers construct those three objects themselves and skip the
 indirection.
 """
@@ -35,9 +35,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from param_decomp.configs import LoggingConfig, PDConfig, RuntimeConfig
-from param_decomp.driver_path import load_driver
 from param_decomp.eval import evaluate
-from param_decomp.experiments.driver import ExperimentDriver
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.log import logger
 from param_decomp.metrics import METRIC_REGISTRY
@@ -50,6 +48,7 @@ from param_decomp.models.batch_and_loss_fns import (
     move_batch_to_device,
 )
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
+from param_decomp.recipes import RunRecipe
 from param_decomp.run import RunConfig
 from param_decomp.run_sink import RunSink
 from param_decomp.utils.data_utils import loop_dataloader
@@ -75,31 +74,36 @@ def materialize_run(
     *,
     device: str,
     dist_state: DistributedState | None = None,
-    driver: ExperimentDriver[Any] | None = None,
+    recipe: RunRecipe[Any] | None = None,
 ) -> tuple[PDTarget, DataLoader[Any], DataLoader[Any]]:
     """Compose the ``(target, train_loader, eval_loader)`` tuple ``optimize`` needs.
 
-    Resolves the driver from ``run_cfg.driver_path``, validates that ``run_cfg``
-    is the driver's expected subtype, then calls ``build_target`` /
-    ``build_train_loader`` / ``build_eval_loader``. Driver-mediated callers use
-    this; notebook callers construct those three objects themselves and skip
-    the indirection.
+    Recipe-backed runs resolve ``run_cfg.recipe`` and call ``build_target`` /
+    ``build_train_loader`` / ``build_eval_loader`` with the typed recipe config.
+    Notebook callers construct those three objects themselves and skip the
+    indirection.
 
-    Pass ``driver=...`` if you've already resolved it (e.g. ``run_pd`` does
-    this once and threads it to both ``materialize_run`` and
-    ``RunSink.for_run``). Otherwise resolved internally.
+    Pass ``recipe=...`` if you've already resolved the run's materializer.
+    Otherwise resolved internally.
     """
-    resolved: ExperimentDriver[Any] = (
-        driver if driver is not None else load_driver(run_cfg.driver_path)
-    )
-    assert isinstance(run_cfg, resolved.config_type), (
-        f"RunConfig has type {type(run_cfg).__name__}, "
-        f"expected {resolved.config_type.__name__} from driver {run_cfg.driver_path}"
-    )
+    resolved_recipe = recipe if recipe is not None else run_cfg.recipe.load()
+    recipe_cfg = run_cfg.recipe.config
     return (
-        resolved.build_target(run_cfg),
-        resolved.build_train_loader(run_cfg, device=device, dist_state=dist_state),
-        resolved.build_eval_loader(run_cfg, device=device, dist_state=dist_state),
+        resolved_recipe.build_target(recipe_cfg),
+        resolved_recipe.build_train_loader(
+            recipe_cfg,
+            device=device,
+            batch_size=run_cfg.pd.batch_size,
+            seed=run_cfg.pd.seed,
+            dist_state=dist_state,
+        ),
+        resolved_recipe.build_eval_loader(
+            recipe_cfg,
+            device=device,
+            batch_size=run_cfg.logging.eval_batch_size,
+            seed=run_cfg.pd.seed,
+            dist_state=dist_state,
+        ),
     )
 
 
@@ -216,7 +220,7 @@ def optimize(
     """Run the optimization loop. The notebook / script entry point.
 
     Pure trainer: takes a ``PDTarget`` plus dataloaders plus the three configs.
-    No ``RunConfig``, no driver, no YAML, no wandb-init responsibility.
+    No ``RunConfig``, no YAML, no wandb-init responsibility.
 
     ``sink`` is a ``RunSink`` carrying the output channels (local files +
     optional wandb + checkpoints). Use ``RunSink.silent()`` for no-persistence
@@ -441,12 +445,12 @@ def run_pd(
     wandb_project: str | None = None,
     launch_id: str | None = None,
 ) -> Path | None:
-    """Driver-mediated PD run. Composition root for ``pd-run`` / ``_worker.py``.
+    """Recipe-mediated PD run. Composition root for ``pd-run`` / ``_worker.py``.
 
     Steps:
-    1. Resolve the driver once. Threaded to both ``materialize_run`` and
-       ``RunSink.for_run`` so we don't ``load_driver(...)`` twice.
-    2. Materialize ``(target, train_loader, eval_loader)`` via the driver.
+    1. Resolve the recipe once. Threaded to both ``materialize_run`` and
+       ``RunSink.for_run`` so we don't import it twice.
+    2. Materialize ``(target, train_loader, eval_loader)`` via the recipe.
     3. Build a ``RunSink.for_run`` — creates ``PARAM_DECOMP_OUT_DIR/
        decompositions/<run_id>/``, writes ``run_config.yaml``, inits wandb if
        ``wandb_project`` is set.
@@ -465,13 +469,18 @@ def run_pd(
     All ranks call this function. Returns the output directory on the main
     process and ``None`` on other ranks.
     """
-    driver = load_driver(run_cfg.driver_path)
+    recipe = run_cfg.recipe.load()
     target, train_loader, eval_loader = materialize_run(
-        run_cfg, device=device, dist_state=dist_state, driver=driver
+        run_cfg, device=device, dist_state=dist_state, recipe=recipe
     )
     # target.model lands on `device` via ComponentModel.to(device) inside optimize().
 
-    sink = RunSink.for_run(run_cfg, wandb_project=wandb_project, launch_id=launch_id, driver=driver)
+    sink = RunSink.for_run(
+        run_cfg,
+        wandb_project=wandb_project,
+        launch_id=launch_id,
+        recipe=recipe,
+    )
     try:
         optimize(
             target=target,

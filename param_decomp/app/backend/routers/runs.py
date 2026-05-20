@@ -14,7 +14,7 @@ from param_decomp.app.backend.state import RunState
 from param_decomp.app.backend.utils import log_errors
 from param_decomp.autointerp.repo import InterpRepo
 from param_decomp.dataset_attributions.repo import AttributionRepo
-from param_decomp.experiments.lm.experiment import LMRunConfig
+from param_decomp.experiments.lm.experiment import get_lm_recipe_config
 from param_decomp.graph_interp.repo import GraphInterpRepo
 from param_decomp.harvest.repo import HarvestRepo
 from param_decomp.log import logger
@@ -74,7 +74,8 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
     logger.info(f"[API] Loading {clean_wandb_path}")
     pd_run = SavedRun.from_path(clean_wandb_path)
     exp = pd_run.run_cfg
-    if not isinstance(exp, LMRunConfig):
+    lm_cfg = get_lm_recipe_config(exp)
+    if lm_cfg is None:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -116,8 +117,8 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
     model.eval()
 
     pd_config = pd_run.pd_config
-    logger.info(f"[API] Loading tokenizer for run {run.id}: {exp.data.tokenizer_name}")
-    app_tokenizer = AppTokenizer.from_pretrained(exp.data.tokenizer_name)
+    logger.info(f"[API] Loading tokenizer for run {run.id}: {lm_cfg.data.tokenizer_name}")
+    app_tokenizer = AppTokenizer.from_pretrained(lm_cfg.data.tokenizer_name)
 
     # Build topology and sources_by_target mapping
     logger.info(f"[API] Building topology for run {run.id}")
@@ -133,7 +134,7 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
         tokenizer=app_tokenizer,
         sources_by_target=sources_by_target,
         config=pd_config,
-        experiment_config=exp,
+        experiment_config=lm_cfg,
         context_length=context_length,
         harvest=HarvestRepo.open_most_recent(run_id),
         interp=InterpRepo.open(run_id),

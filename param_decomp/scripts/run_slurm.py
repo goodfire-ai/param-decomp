@@ -2,8 +2,8 @@
 
 Internal — invoked by ``pd-run`` (``param_decomp/experiments/runner.py``).
 ``launch_run_slurm`` takes a single ``RunConfig`` and submits a plain SLURM
-job; ``launch_sweep_slurm`` takes a ``SweepSpec`` (many runs sharing one
-driver and substrate), snapshots the spec to disk for reproducibility, and
+job; ``launch_sweep_slurm`` takes a ``SweepSpec`` (many complete runs),
+snapshots the spec to disk for reproducibility, and
 submits a SLURM array (one task per run). Each task invokes
 ``python -m param_decomp.experiments._worker``.
 
@@ -171,7 +171,7 @@ def _choose_master_port(run_id_local: str, idx: int) -> int:
 
 def _build_worker_args(launch_id: str, run: RunConfig, project: str) -> str:
     """Build the ``_worker`` CLI arguments for one SLURM task."""
-    run_json = json.dumps(run.model_dump(mode="json"))
+    run_json = json.dumps(run.to_dict())
     return " ".join(
         [
             f"--run_json {shlex.quote(run_json)}",

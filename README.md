@@ -43,7 +43,7 @@ auto-discovered. The LM experiment supports HuggingFace-loadable models with `nn
 `nn.Embedding`, or `transformers.modeling_utils.Conv1D` target modules.
 
 For custom experiments, either call `optimize(...)` directly or provide a YAML-driven
-`ExperimentDriver`:
+reload recipe:
 
 - **Call `optimize` directly** — build a `PDTarget` (model + `run_batch` + reconstruction loss;
   helpers in [`batch_and_loss_fns.py`](param_decomp/models/batch_and_loss_fns.py)) plus a
@@ -51,14 +51,23 @@ For custom experiments, either call `optimize(...)` directly or provide a YAML-d
   `optimize(target=..., train_loader=..., eval_loader=..., pd_config=..., logging_config=...,
   runtime_config=..., device=..., sink=...)`.
   Reload with `ComponentModel.from_checkpoint(...)`. Best for notebooks/scripts.
-- **Package it as a YAML-driven experiment** — define your experiment as a Pydantic `RunConfig`
-  subclass (adding `target` / `data` fields) plus an `ExperimentDriver` class (a small adapter
-  exposing `build_target` and `build_dataloaders`; see
-  [`driver.py`](param_decomp/experiments/driver.py) for the interface and
-  [`tms/experiment.py`](param_decomp/experiments/tms/experiment.py) for the smallest example),
-  put `driver_path: my_pkg.my_exp:MyDriver` at the top of your YAML, then run
-  `pd-run --config_path my_config.yaml`. This is what built-in experiments do, and is needed for
-  sweeps and for self-reloading runs via `load_component_model(path)` or `SavedRun.from_path(...)`.
+- **Package it as a reloadable recipe** — define a Pydantic recipe config plus a `RunRecipe`
+  class exposing `build_target`, `build_train_loader`, and `build_eval_loader`; see
+  [`recipes/base.py`](param_decomp/recipes/base.py) for the protocol and
+  [`tms/experiment.py`](param_decomp/experiments/tms/experiment.py) for the smallest built-in
+  example. Put the recipe import path and config in YAML:
+
+  ```yaml
+  recipe:
+    path: my_pkg.bio_pd:BioRecipe
+    config:
+      model_path: ...
+      dataset_path: ...
+  ```
+
+  Then run `pd-run --config_path my_config.yaml`. This is what built-in experiments do, and is
+  needed for sweeps and for self-reloading runs via `load_component_model(path)` or
+  `SavedRun.from_path(...)`.
 
 ## Metrics
 

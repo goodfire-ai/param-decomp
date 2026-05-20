@@ -61,7 +61,6 @@ class TestLaunchSlurm:
             grid={"pd.seed": [0, 1, 2], "pd.steps": [10, 20]},
             n_agents=2,
             description="tiny test grid",
-            driver_path=base_config.driver_path or "",
         )
         launch_sweep_slurm(
             sweep=sweep_spec,

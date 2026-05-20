@@ -7,7 +7,7 @@ session and the on-disk output directory for the run.
 
 Three usage modes:
 
-    # Driver-mediated (run_pd does this for you):
+    # Recipe-mediated (run_pd does this for you):
     sink = RunSink.for_run(run_cfg, *, wandb_project=..., launch_id=...)
 
     # Notebook with local persistence:
@@ -33,9 +33,8 @@ import wandb
 from PIL import Image
 from tqdm import tqdm
 
-from param_decomp.driver_path import load_driver
-from param_decomp.experiments.driver import ExperimentDriver
 from param_decomp.log import logger
+from param_decomp.recipes import RunRecipe
 from param_decomp.run import RUN_CONFIG_FILENAME, RunConfig
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp.utils.distributed_utils import is_main_process
@@ -64,17 +63,17 @@ class RunSink:
         *,
         wandb_project: str | None = None,
         launch_id: str | None = None,
-        driver: ExperimentDriver[Any] | None = None,
+        recipe: RunRecipe[Any] | None = None,
     ) -> "RunSink":
-        """Driver-mediated setup. Used by ``run_pd``.
+        """Recipe-mediated setup. Used by ``run_pd``.
 
         On the main rank: creates ``PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/``,
         writes ``run_config.yaml`` next to (eventual) checkpoints, and (if
-        ``wandb_project`` is set) inits wandb with tags derived from the driver
+        ``wandb_project`` is set) inits wandb with tags derived from the recipe
         name + ``launch_id`` + ``$SLURM_ARRAY_JOB_ID``.
 
-        Pass ``driver=...`` if you've already resolved it (avoids a second
-        ``load_driver`` call). Otherwise resolved internally.
+        Pass ``recipe=...`` if you've already resolved the run's materializer.
+        Otherwise resolved internally.
 
         On non-main ranks: skips all the I/O and returns a no-op handle.
         """
@@ -89,7 +88,7 @@ class RunSink:
 
         wandb_active = False
         if wandb_project:
-            resolved_driver = driver if driver is not None else load_driver(run_cfg.driver_path)
+            run_kind = _run_kind_name(run_cfg, recipe=recipe)
             init_wandb(
                 wandb_project,
                 run_cfg.run_id,
@@ -99,7 +98,7 @@ class RunSink:
                     "runtime": run_cfg.runtime,
                 },
                 name=run_cfg.name,
-                tags=_wandb_tags(driver_name=resolved_driver.name, launch_id=launch_id),
+                tags=_wandb_tags(run_kind=run_kind, launch_id=launch_id),
                 view_meta=run_cfg.view_meta,
             )
             wandb.save(str(out_dir / RUN_CONFIG_FILENAME), base_path=out_dir, policy="now")
@@ -193,9 +192,18 @@ def _wandb_value(v: Any) -> Any:
     return v
 
 
-def _wandb_tags(*, driver_name: str, launch_id: str | None) -> list[str]:
+def _run_kind_name(
+    run_cfg: RunConfig,
+    *,
+    recipe: RunRecipe[Any] | None,
+) -> str:
+    resolved_recipe = recipe if recipe is not None else run_cfg.recipe.load()
+    return resolved_recipe.name
+
+
+def _wandb_tags(*, run_kind: str, launch_id: str | None) -> list[str]:
     """Tags attached to every wandb run from ``RunSink.for_run``."""
-    tags = [driver_name]
+    tags = [run_kind]
     if launch_id is not None:
         tags.append(launch_id)
     slurm_array_job_id = os.getenv("SLURM_ARRAY_JOB_ID")
