@@ -52,10 +52,12 @@ D_MODEL = 768
 N_HEADS = 12
 D_MLP = 3072
 N_TRANSFORMER_BLOCKS = 6
-BATCH = 8
-SEQ_LEN = 64
+# Vanilla can't fit batch=64 seq=1024 — every rank holds 42 retained layerwise
+# forward graphs. Dial to what actually fits on H200.
+BATCH = 16
+SEQ_LEN = 256
 C = 32
-CI_HIDDEN = 1024   # vector_mlp grows fast; keep this modest so vanilla DDP-N fits
+CI_HIDDEN = 1024  # vector_mlp grows fast; keep this modest so vanilla DDP-N fits
 
 WARMUP_STEPS = 2
 PROFILE_STEPS = 4
@@ -102,6 +104,10 @@ def main() -> None:
     torch.cuda.set_device(local_rank)
     device = torch.device(f"cuda:{local_rank}")
 
+    # Same speed knobs we use in optimize_two_pool, so the comparison stays
+    # apples-to-apples: TF32 matmuls on H200 and fused AdamW.
+    torch.set_float32_matmul_precision("high")
+
     assert BATCH % world_size == 0
     batch_local = BATCH // world_size
 
@@ -128,7 +134,7 @@ def main() -> None:
         component_params.extend(component_model.components[name].parameters())
     ci_fn_params = list(component_model.ci_fn.parameters())
     all_params = component_params + ci_fn_params
-    optimizer = torch.optim.AdamW(all_params, lr=5e-5, weight_decay=0.0)
+    optimizer = torch.optim.AdamW(all_params, lr=5e-5, weight_decay=0.0, fused=True)
 
     # PersistentPGDState with the same config the 2-pool benchmark uses on pool B,
     # so the comparison is apples-to-apples on the PPGD side: same n_warmup_steps,

@@ -29,8 +29,11 @@ should be lifted from `run_pd.optimize` as they become needed.
 
 # pyright: reportArgumentType=false, reportOperatorIssue=false, reportIndexIssue=false
 
+import time
+from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -48,26 +51,62 @@ from param_decomp.two_pool.install import (
     build_pool_a_module_path_info,
     build_pool_b_module_path_info,
 )
-from param_decomp.two_pool.layout import BlockDDPLayout, BlockDDPWorld
+from param_decomp.two_pool.layout import BlockDDPLayout, BlockDDPWorld, BlockGroup
 
 
 # ───────────────────────── Public config ─────────────────────────
+
+
+@dataclass
+class PhaseProfiler:
+    """Optional inline per-phase timer for `optimize_two_pool`.
+
+    Each phase wraps a chunk of compute/comm with cuda.synchronize() + perf_counter
+    on entry and exit. Synchronizing serializes async ops — so this is for
+    DIAGNOSING where time goes, not for production runs. Disable when measuring
+    real wall-clock; enable when chasing Amdahl's-law-style bottlenecks.
+    """
+
+    times: dict[str, list[float]] = field(default_factory=lambda: defaultdict(list))
+    enabled: bool = True
+
+    @contextmanager
+    def phase(self, name: str):
+        if not self.enabled:
+            yield
+            return
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        try:
+            yield
+        finally:
+            torch.cuda.synchronize()
+            self.times[name].append((time.perf_counter() - t0) * 1000.0)
+
+    def report(self, warmup: int = 0) -> str:
+        lines = []
+        for name, vals in self.times.items():
+            vals = vals[warmup:]
+            if not vals:
+                continue
+            avg = sum(vals) / len(vals)
+            lines.append(f"  {name:32s} avg={avg:9.2f}ms  min={min(vals):8.2f}ms  max={max(vals):8.2f}ms")
+        return "\n".join(lines)
 
 
 @dataclass(frozen=True)
 class TwoPoolConfig:
     """Topology and per-pool knobs for `optimize_two_pool`.
 
-    Block groups and pool-B ranks are explicit (raw rank lists) so this config
-    can describe any topology the BlockDDPLayout supports — including the
-    cross-node round-robin layouts we measured in nano.
+    Block groups and pool-B ranks are explicit so this config can describe any
+    topology the BlockDDPLayout supports — including the cross-node round-robin
+    layouts we measured in nano.
 
     `c_per_site` is the component count per decomposed module. The matching
     `ci_config` (LayerwiseCiConfig instance) governs how per-module CI fns are built.
     """
 
-    block_groups: tuple[tuple[int, ...], ...]
-    block_owned_sites: tuple[tuple[str, ...], ...]
+    block_groups: tuple[BlockGroup, ...]
     pool_b_ranks: tuple[int, ...]
     batch_global: int
     c_per_site: dict[str, int]
@@ -146,31 +185,49 @@ def step_pool_a(
     all_params: list[nn.Parameter],
     batch: Any,
     cfg: TwoPoolConfig,
+    profiler: PhaseProfiler | None = None,
 ) -> dict[str, float]:
     """One training step on a pool-A rank."""
+    p = profiler if profiler is not None else PhaseProfiler(enabled=False)
 
-    # 1. target + CI forward; CI fn graph retained
-    out = component_model(batch, cache_type="input")
-    target_logits = out.output
-    ci = component_model.calc_causal_importances(
-        pre_weight_acts=out.cache, sampling="continuous", detach_inputs=False,
-    )
+    # 0. Wait for any pending async weight sends from the previous step before we
+    #    risk modifying V/U via the optimizer step below.
+    with p.phase("a/0_wait_prev_weight_send"):
+        pending = getattr(component_model, "_pending_weight_sends", None)
+        if pending is not None:
+            for w in pending[0]:
+                w.wait()
+            component_model._pending_weight_sends = None  # type: ignore[attr-defined]
 
-    # 2. Cross-pool: send CI values to pool B (per site, per B-rank slice)
-    layout.send_owned_ci_to_pool_b({s: ci.lower_leaky[s] for s in layout.my_owned_sites})
+    # 1. target + CI forward; CI fn graph retained.
+    with p.phase("a/1_target_and_ci_fwd"):
+        out = component_model(batch, cache_type="input")
+        target_logits = out.output
+        ci = component_model.calc_causal_importances(
+            pre_weight_acts=out.cache, sampling="continuous", detach_inputs=False,
+        )
+
+    # 2. Cross-pool: send CI values to pool B (async — don't block on pool B's recv).
+    with p.phase("a/2_async_send_ci"):
+        ci_send_works, ci_send_buffers = layout.async_send_owned_ci_to_pool_b(
+            {s: ci.lower_leaky[s] for s in layout.my_owned_sites}
+        )
 
     # 3. Home losses (forward)
     device = target_logits.device
-    loss_faith = _faithfulness_loss(component_model, device)
-    loss_imp = _importance_minimality_loss(ci.upper_leaky, device)
-    sl = layout.my_batch_slice_a()
-    batch_local = batch[sl] if isinstance(batch, Tensor) else batch
-    target_local = target_logits[sl].detach()
-    ci_local = {s: ci.lower_leaky[s][sl] for s in layout.my_owned_sites}
-    loss_stoch = _layerwise_loss_local(
-        component_model, batch_local, target_local, ci_local,
-        layout.my_owned_sites, cfg.reconstruction_loss,
-    )
+    with p.phase("a/3_faith"):
+        loss_faith = _faithfulness_loss(component_model, device)
+    with p.phase("a/4_imp"):
+        loss_imp = _importance_minimality_loss(ci.upper_leaky, device)
+    with p.phase("a/5_layerwise"):
+        sl = layout.my_batch_slice_a()
+        batch_local = batch[sl] if isinstance(batch, Tensor) else batch
+        target_local = target_logits[sl].detach()
+        ci_local = {s: ci.lower_leaky[s][sl] for s in layout.my_owned_sites}
+        loss_stoch = _layerwise_loss_local(
+            component_model, batch_local, target_local, ci_local,
+            layout.my_owned_sites, cfg.reconstruction_loss,
+        )
 
     total_home = (
         cfg.coeff_faith * loss_faith
@@ -179,36 +236,51 @@ def step_pool_a(
     )
 
     # 4. Cross-pool: receive per-site V/U grads + per-slice ci grads from pool B
-    v_templates = {s: component_model.components[s].V for s in layout.my_owned_sites}
-    u_templates = {s: component_model.components[s].U for s in layout.my_owned_sites}
-    ci_lower_owned_full = {s: ci.lower_leaky[s] for s in layout.my_owned_sites}
-    v_grads, u_grads, ci_grads = layout.recv_grads_from_pool_b(
-        v_templates, u_templates, ci_lower_owned_full,
-    )
+    with p.phase("a/6_recv_grads_from_b"):
+        v_templates = {s: component_model.components[s].V for s in layout.my_owned_sites}
+        u_templates = {s: component_model.components[s].U for s in layout.my_owned_sites}
+        ci_lower_owned_full = {s: ci.lower_leaky[s] for s in layout.my_owned_sites}
+        v_grads, u_grads, ci_grads = layout.recv_grads_from_pool_b(
+            v_templates, u_templates, ci_lower_owned_full,
+        )
 
-    # 5. Seed V/U .grad with pool-B contribution; combined backward through CI fn
-    #    is seeded by pool-B's ci grads at ci_lower (so the leaky's piecewise
-    #    backward sees the combined (stoch + ppgd) signal — matches single-pool).
-    optimizer.zero_grad(set_to_none=True)
-    for s in layout.my_owned_sites:
-        comp = component_model.components[s]
-        comp.V.grad = v_grads[s]
-        comp.U.grad = u_grads[s]
-    torch.autograd.backward(
-        tensors=[total_home, *(ci.lower_leaky[s] for s in layout.my_owned_sites)],
-        grad_tensors=[None, *(ci_grads[s] for s in layout.my_owned_sites)],
-    )
+    # 5. Seed V/U .grad with pool-B contribution; combined backward.
+    with p.phase("a/7_seed_and_backward"):
+        optimizer.zero_grad(set_to_none=True)
+        for s in layout.my_owned_sites:
+            comp = component_model.components[s]
+            comp.V.grad = v_grads[s]
+            comp.U.grad = u_grads[s]
+        torch.autograd.backward(
+            tensors=[total_home, *(ci.lower_leaky[s] for s in layout.my_owned_sites)],
+            grad_tensors=[None, *(ci_grads[s] for s in layout.my_owned_sites)],
+        )
 
-    # 6. In-block DDP sync across the block group's replicated V/U + CI fn grads
-    layout.all_reduce_grads_in_block(all_params)
+    # 6. In-block DDP sync.
+    with p.phase("a/8_in_block_allreduce"):
+        layout.all_reduce_grads_in_block(all_params)
 
-    # 7. AdamW step
-    optimizer.step()
+    # 7. AdamW step.
+    with p.phase("a/9_opt_step"):
+        optimizer.step()
 
-    # 8. Cross-pool: ship updated V/U back to pool B
-    v_owned = {s: component_model.components[s].V for s in layout.my_owned_sites}
-    u_owned = {s: component_model.components[s].U for s in layout.my_owned_sites}
-    layout.send_updated_weights_to_pool_b(v_owned, u_owned)
+    # 8. Cross-pool: ship updated V/U back to pool B (async).
+    with p.phase("a/10_async_send_weights"):
+        v_owned = {s: component_model.components[s].V for s in layout.my_owned_sites}
+        u_owned = {s: component_model.components[s].U for s in layout.my_owned_sites}
+        weight_send_works, weight_send_buffers = layout.async_send_updated_weights_to_pool_b(
+            v_owned, u_owned,
+        )
+
+    # Make sure the async CI sends from step 2 are flushed before we touch the
+    # source CI tensors next step.
+    with p.phase("a/11_wait_async_ci_send"):
+        for w in ci_send_works:
+            w.wait()
+        del ci_send_buffers  # release references
+    # The weight sends are free to complete in the background; we wait on them
+    # at start of next step (phase a/0).
+    setattr(component_model, "_pending_weight_sends", (weight_send_works, weight_send_buffers))
 
     return {
         "loss/faith": loss_faith.item(),
@@ -226,54 +298,68 @@ def step_pool_b(
     ppgd_state: PersistentPGDState,
     batch: Any,
     cfg: TwoPoolConfig,
+    profiler: PhaseProfiler | None = None,
 ) -> dict[str, float]:
     """One training step on a pool-B rank using PersistentPGDState."""
+    p = profiler if profiler is not None else PhaseProfiler(enabled=False)
     device = next(component_model.parameters()).device
 
     sl = layout.my_batch_slice_b()
     batch_local = batch[sl] if isinstance(batch, Tensor) else batch
 
-    # 1. Receive CI values from owning A ranks
-    seq_len = batch_local.shape[1] if batch_local.ndim >= 2 else 1
-    ci_recv = layout.recv_ci_from_owners(
-        cfg.c_per_site, seq_len=seq_len, device=device, dtype=torch.float32,
-    )
+    # 1. Async: post irecvs for CI values from owning A ranks. The recvs run
+    #    concurrently with target_fwd below — pool B doesn't actually need CI for
+    #    target_fwd, so we save the recv latency by overlapping.
+    with p.phase("b/1_post_async_recv_ci"):
+        seq_len = batch_local.shape[1] if batch_local.ndim >= 2 else 1
+        ci_recv, ci_recv_works = layout.async_recv_ci_from_owners(
+            cfg.c_per_site, seq_len=seq_len, device=device, dtype=torch.float32,
+        )
 
-    # 2. Target forward (frozen, no grad)
-    with torch.no_grad():
-        target_logits = component_model(batch_local)
+    # 2. Target forward (frozen, no grad) — runs in parallel with the CI recvs above.
+    with p.phase("b/2_target_fwd"):
+        with torch.no_grad():
+            target_logits = component_model(batch_local)
+
+    # Now block on the CI recvs — should already be done by the time we get here.
+    with p.phase("b/3_wait_ci_recv"):
+        for w in ci_recv_works:
+            w.wait()
 
     # 3. Re-leaf CI so we can produce ci grads to send back to pool A
     ci_scratch = {s: v.detach().clone().requires_grad_(True) for s, v in ci_recv.items()}
 
     # 4. PPGD warmup — refines the persistent adversarial sources in-place
-    ppgd_state.warmup(
-        model=component_model,
-        batch=batch_local,
-        target_out=target_logits.detach(),
-        ci=ci_scratch,
-        weight_deltas=None,
-    )
+    with p.phase("b/4_ppgd_warmup"):
+        ppgd_state.warmup(
+            model=component_model,
+            batch=batch_local,
+            target_out=target_logits.detach(),
+            ci=ci_scratch,
+            weight_deltas=None,
+        )
 
     # 5. Final PPGD recon loss with refined sources
-    loss_ppgd = ppgd_state.compute_recon_loss(
-        model=component_model,
-        batch=batch_local,
-        target_out=target_logits.detach(),
-        ci=ci_scratch,
-        weight_deltas=None,
-    )
+    with p.phase("b/5_ppgd_recon"):
+        loss_ppgd = ppgd_state.compute_recon_loss(
+            model=component_model,
+            batch=batch_local,
+            target_out=target_logits.detach(),
+            ci=ci_scratch,
+            weight_deltas=None,
+        )
     # Scale by 1/N so a SUM-reduce of V/U grads across pool B equals the full-batch grad.
     total_ppgd = cfg.coeff_ppgd * loss_ppgd / layout.world.n_pool_b
 
     # 6. Extract V/U + ci_scratch grads via autograd (no .grad pollution)
-    all_sites = list(layout.world.all_sites)
-    params: list[Tensor] = []
-    for s in all_sites:
-        params.append(component_model.components[s].V)
-        params.append(component_model.components[s].U)
-    ci_list = [ci_scratch[s] for s in all_sites]
-    grads = torch.autograd.grad(total_ppgd, params + ci_list, retain_graph=True)
+    with p.phase("b/6_backward"):
+        all_sites = list(layout.world.all_sites)
+        params: list[Tensor] = []
+        for s in all_sites:
+            params.append(component_model.components[s].V)
+            params.append(component_model.components[s].U)
+        ci_list = [ci_scratch[s] for s in all_sites]
+        grads = torch.autograd.grad(total_ppgd, params + ci_list, retain_graph=True)
 
     n_sites = len(all_sites)
     v_grads = {s: grads[2 * i] for i, s in enumerate(all_sites)}
@@ -281,25 +367,29 @@ def step_pool_b(
     ci_grads = {s: grads[2 * n_sites + i] for i, s in enumerate(all_sites)}
 
     # 7. Update the persistent adversarial sources from the same loss
-    source_grads = ppgd_state.get_grads(total_ppgd, retain_graph=False)
-    ppgd_state.step(source_grads)
+    with p.phase("b/7_ppgd_source_step"):
+        source_grads = ppgd_state.get_grads(total_ppgd, retain_graph=False)
+        ppgd_state.step(source_grads)
 
     # 8. SUM-reduce V/U grads within pool B
-    for s in all_sites:
-        dist.all_reduce(v_grads[s], op=dist.ReduceOp.SUM, group=layout.world.pool_b_group)
-        dist.all_reduce(u_grads[s], op=dist.ReduceOp.SUM, group=layout.world.pool_b_group)
+    with p.phase("b/8_pool_b_allreduce"):
+        for s in all_sites:
+            dist.all_reduce(v_grads[s], op=dist.ReduceOp.SUM, group=layout.world.pool_b_group)
+            dist.all_reduce(u_grads[s], op=dist.ReduceOp.SUM, group=layout.world.pool_b_group)
 
     # 9. Send grads to owning A ranks
-    layout.send_pool_b_grads_to_owners(v_grads, u_grads, ci_grads)
+    with p.phase("b/9_send_grads_to_a"):
+        layout.send_pool_b_grads_to_owners(v_grads, u_grads, ci_grads)
 
     # 10. Receive updated V/U from owning A ranks
-    v_templates = {s: component_model.components[s].V for s in all_sites}
-    u_templates = {s: component_model.components[s].U for s in all_sites}
-    v_new, u_new = layout.recv_updated_weights_from_owners(v_templates, u_templates)
-    with torch.no_grad():
-        for s in all_sites:
-            component_model.components[s].V.copy_(v_new[s])
-            component_model.components[s].U.copy_(u_new[s])
+    with p.phase("b/10_recv_weights"):
+        v_templates = {s: component_model.components[s].V for s in all_sites}
+        u_templates = {s: component_model.components[s].U for s in all_sites}
+        v_new, u_new = layout.recv_updated_weights_from_owners(v_templates, u_templates)
+        with torch.no_grad():
+            for s in all_sites:
+                component_model.components[s].V.copy_(v_new[s])
+                component_model.components[s].U.copy_(u_new[s])
 
     return {"loss/ppgd": loss_ppgd.item()}
 
@@ -315,7 +405,10 @@ def optimize_two_pool(
     batch_iter: Callable[[int], Any],
     *,
     on_step: Callable[[int, dict[str, float]], None] | None = None,
-) -> tuple[ComponentModel, BlockDDPLayout]:
+    enable_tf32: bool = True,
+    fused_optimizer: bool = True,
+    profiler: PhaseProfiler | None = None,
+) -> tuple[ComponentModel, BlockDDPLayout, PhaseProfiler | None]:
     """Train a ComponentModel under the 2-pool strategy.
 
     Composes the same primitives that `run_pd.optimize` uses (ComponentModel,
@@ -341,10 +434,14 @@ def optimize_two_pool(
     assert dist.is_initialized(), "init the distributed process group before calling optimize_two_pool"
     rank = dist.get_rank()
 
+    # TF32 matmuls are ~2-3x faster on H200 with sub-ULP precision loss — fine
+    # for SPD training where we already use fp32 throughout.
+    if enable_tf32:
+        torch.set_float32_matmul_precision("high")
+
     from param_decomp.two_pool.layout import build_block_ddp_world
     world = build_block_ddp_world(
-        block_groups=[list(bg) for bg in pool_config.block_groups],
-        block_owned_sites=[list(s) for s in pool_config.block_owned_sites],
+        block_groups=list(pool_config.block_groups),
         pool_b_ranks=list(pool_config.pool_b_ranks),
         batch_global=pool_config.batch_global,
     )
@@ -377,12 +474,15 @@ def optimize_two_pool(
         # One optimizer covering both component params and CI fn — matches the
         # benchmark's behaviour and is a fine default. Split-optimizer (one per group)
         # would be a natural future option mirroring `run_pd.optimize`.
+        # fused=True uses a CUDA-fused kernel, noticeably faster on H200 vs the
+        # Python foreach implementation that's the default.
         optimizer = torch.optim.AdamW(
             [
                 {"params": component_params, "lr": pool_config.lr_components},
                 {"params": ci_fn_params, "lr": pool_config.lr_ci_fn},
             ],
             weight_decay=0.0,
+            fused=fused_optimizer,
         )
     else:
         ppgd_state = PersistentPGDState(
@@ -398,15 +498,19 @@ def optimize_two_pool(
         batch = batch_iter(step)
         if layout.my_pool == "a":
             assert optimizer is not None
-            metrics = step_pool_a(layout, component_model, optimizer, all_params, batch, pool_config)
+            metrics = step_pool_a(
+                layout, component_model, optimizer, all_params, batch, pool_config, profiler=profiler,
+            )
         else:
             assert ppgd_state is not None
-            metrics = step_pool_b(layout, component_model, ppgd_state, batch, pool_config)
+            metrics = step_pool_b(
+                layout, component_model, ppgd_state, batch, pool_config, profiler=profiler,
+            )
 
         if on_step is not None:
             on_step(step, metrics)
 
-    return component_model, layout
+    return component_model, layout, profiler
 
 
 def _seq_dims_from_batch_iter(batch_iter: Callable[[int], Any]) -> tuple[int, ...]:

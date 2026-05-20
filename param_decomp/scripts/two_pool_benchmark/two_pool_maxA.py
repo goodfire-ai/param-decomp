@@ -33,7 +33,7 @@ from param_decomp.configs import (
 )
 from param_decomp.models.batch_and_loss_fns import recon_loss_kl, run_batch_passthrough
 from param_decomp.scripts.two_pool_benchmark._tiny_model import TinyTransformer, sites_for_block
-from param_decomp.two_pool import TwoPoolConfig, optimize_two_pool
+from param_decomp.two_pool import BlockGroup, PhaseProfiler, TwoPoolConfig, optimize_two_pool
 
 # Same model as two_pool.py / two_pool_wider.py.
 VOCAB = 8192
@@ -41,8 +41,12 @@ D_MODEL = 768
 N_HEADS = 12
 D_MLP = 3072
 N_TRANSFORMER_BLOCKS = 6   # → 42 sites total
-BATCH = 12                 # divisible by both N_PER_BLOCK_GROUP (=1) and N_POOL_B (=6)
-SEQ_LEN = 64
+# Bumped to realistic LLM-training shapes (batch=66, seq=1024) — 66 divides
+# evenly by both N_PER_BLOCK_GROUP (=1) and N_POOL_B (=6). Vanilla OOMs at
+# this shape; 2-pool with 1 site/rank should be the fastest config at this
+# scale because pool A's layerwise+backward shrinks from 3 sites to 1.
+BATCH = 66
+SEQ_LEN = 1024
 C = 32
 CI_HIDDEN = 1024
 
@@ -63,7 +67,7 @@ POOL_A_RANKS: tuple[int, ...] = tuple(r for r in range(WORLD_SIZE) if r not in P
 assert len(POOL_A_RANKS) == N_BLOCK_GROUPS
 
 # Block groups: one rank per group.
-BLOCK_GROUPS: tuple[tuple[int, ...], ...] = tuple((r,) for r in POOL_A_RANKS)
+BLOCK_GROUP_RANKS: tuple[tuple[int, ...], ...] = tuple((r,) for r in POOL_A_RANKS)
 
 WARMUP_STEPS = 2
 PROFILE_STEPS = 4
@@ -85,7 +89,10 @@ def main() -> None:
     all_sites_list = [s for b in range(N_TRANSFORMER_BLOCKS) for s in sites_for_block(b)]
     # 1 site per block group, in canonical order.
     assert len(all_sites_list) == N_BLOCK_GROUPS
-    block_owned_sites: tuple[tuple[str, ...], ...] = tuple((s,) for s in all_sites_list)
+    block_groups = tuple(
+        BlockGroup(ranks=ranks, owned_sites=(site,))
+        for ranks, site in zip(BLOCK_GROUP_RANKS, all_sites_list, strict=True)
+    )
     c_per_site = {s: C for s in all_sites_list}
 
     ppgd_cfg = PersistentPGDReconLossConfig(
@@ -98,8 +105,7 @@ def main() -> None:
     )
 
     pool_config = TwoPoolConfig(
-        block_groups=BLOCK_GROUPS,
-        block_owned_sites=block_owned_sites,
+        block_groups=block_groups,
         pool_b_ranks=POOL_B_RANKS,
         batch_global=BATCH,
         c_per_site=c_per_site,
@@ -146,6 +152,7 @@ def main() -> None:
     torch.cuda.synchronize()
     step_times.append(time.perf_counter())
 
+    profiler = PhaseProfiler(enabled=True)
     optimize_two_pool(
         target_model=target,
         pool_config=pool_config,
@@ -153,6 +160,7 @@ def main() -> None:
         n_steps=WARMUP_STEPS + PROFILE_STEPS,
         batch_iter=batch_iter,
         on_step=on_step,
+        profiler=profiler,
     )
 
     intervals = [step_times[i + 1] - step_times[i] for i in range(len(step_times) - 1)]
@@ -169,6 +177,10 @@ def main() -> None:
             f"[maxA rank0] per-sample throughput: {1000/per_sample:.1f} samples/sec/world",
             flush=True,
         )
+
+    if rank in (0, POOL_B_RANKS[0]):
+        print(f"\n[maxA rank{rank}] phase breakdown (skipping first {WARMUP_STEPS}):", flush=True)
+        print(profiler.report(warmup=WARMUP_STEPS), flush=True)
 
     dist.destroy_process_group()
 

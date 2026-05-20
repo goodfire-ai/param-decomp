@@ -39,16 +39,18 @@ from param_decomp.configs import (
 )
 from param_decomp.models.batch_and_loss_fns import recon_loss_kl, run_batch_passthrough
 from param_decomp.scripts.two_pool_benchmark._tiny_model import TinyTransformer, sites_for_block
-from param_decomp.two_pool import TwoPoolConfig, optimize_two_pool
+from param_decomp.two_pool import BlockGroup, PhaseProfiler, TwoPoolConfig, optimize_two_pool
 
-# Same model as two_pool.py — only the topology and batch slicing change.
+# Bumped batch/seq toward realistic LLM-training shapes (batch=64, seq=1024) so
+# matmuls actually saturate H200 throughput rather than living in the
+# overhead-bound regime where step time is dominated by kernel launch latency.
 VOCAB = 8192
 D_MODEL = 768
 N_HEADS = 12
 D_MLP = 3072
 N_TRANSFORMER_BLOCKS = 6
-BATCH = 8
-SEQ_LEN = 64
+BATCH = 64
+SEQ_LEN = 1024
 C = 32
 CI_HIDDEN = 1024
 
@@ -75,7 +77,7 @@ POOL_A_RANKS = tuple(r for r in range(16) if r not in POOL_B_RANKS)
 assert len(POOL_A_RANKS) == N_BLOCK_GROUPS, (
     f"need {N_BLOCK_GROUPS} pool A ranks, got {len(POOL_A_RANKS)}"
 )
-BLOCK_GROUPS: tuple[tuple[int, ...], ...] = tuple((r,) for r in POOL_A_RANKS)
+BLOCK_GROUP_RANKS: tuple[tuple[int, ...], ...] = tuple((r,) for r in POOL_A_RANKS)
 
 WARMUP_STEPS = 2
 PROFILE_STEPS = 4
@@ -96,11 +98,14 @@ def main() -> None:
 
     all_sites_list = [s for b in range(N_TRANSFORMER_BLOCKS) for s in sites_for_block(b)]
     # Contiguous chunks of SITES_PER_GROUP sites per block group, in canonical order.
-    # A group may span a transformer-block boundary, which is fine — block_owned_sites
+    # A group may span a transformer-block boundary, which is fine — a BlockGroup
     # is just a logical grouping for ownership, independent of the target's structure.
-    block_owned_sites: tuple[tuple[str, ...], ...] = tuple(
-        tuple(all_sites_list[i * SITES_PER_GROUP : (i + 1) * SITES_PER_GROUP])
-        for i in range(N_BLOCK_GROUPS)
+    block_groups = tuple(
+        BlockGroup(
+            ranks=ranks,
+            owned_sites=tuple(all_sites_list[i * SITES_PER_GROUP : (i + 1) * SITES_PER_GROUP]),
+        )
+        for i, ranks in enumerate(BLOCK_GROUP_RANKS)
     )
     c_per_site = {s: C for s in all_sites_list}
 
@@ -114,8 +119,7 @@ def main() -> None:
     )
 
     pool_config = TwoPoolConfig(
-        block_groups=BLOCK_GROUPS,
-        block_owned_sites=block_owned_sites,
+        block_groups=block_groups,
         pool_b_ranks=POOL_B_RANKS,
         batch_global=BATCH,
         c_per_site=c_per_site,
@@ -162,6 +166,7 @@ def main() -> None:
     torch.cuda.synchronize()
     step_times.append(time.perf_counter())
 
+    profiler = PhaseProfiler(enabled=True)
     optimize_two_pool(
         target_model=target,
         pool_config=pool_config,
@@ -169,6 +174,7 @@ def main() -> None:
         n_steps=WARMUP_STEPS + PROFILE_STEPS,
         batch_iter=batch_iter,
         on_step=on_step,
+        profiler=profiler,
     )
 
     intervals = [step_times[i + 1] - step_times[i] for i in range(len(step_times) - 1)]
@@ -180,6 +186,14 @@ def main() -> None:
             f"min={1000*min(profile):.2f}ms  max={1000*max(profile):.2f}ms  (n={len(profile)})",
             flush=True,
         )
+
+    # Each rank prints its own phase breakdown — pool A ranks have a/ phases, pool
+    # B ranks have b/ phases. Rank 0 (pool A) and POOL_B_RANKS[0] are the two we
+    # care about; everyone else has the same phase composition so we skip them
+    # to keep the log clean.
+    if rank in (0, POOL_B_RANKS[0]):
+        print(f"\n[wider rank{rank}] phase breakdown (skipping first {WARMUP_STEPS}):", flush=True)
+        print(profiler.report(warmup=WARMUP_STEPS), flush=True)
 
     dist.destroy_process_group()
 

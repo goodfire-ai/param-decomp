@@ -25,12 +25,14 @@ from param_decomp.two_pool.install import (
 from param_decomp.two_pool.layout import (
     BlockDDPLayout,
     BlockDDPWorld,
+    BlockGroup,
     TwoPoolLayout,
     World,
     build_block_ddp_world,
     build_world,
 )
 from param_decomp.two_pool.run import (
+    PhaseProfiler,
     TwoPoolConfig,
     optimize_two_pool,
     step_pool_a,
@@ -40,6 +42,8 @@ from param_decomp.two_pool.run import (
 __all__ = [
     "BlockDDPLayout",
     "BlockDDPWorld",
+    "BlockGroup",
+    "PhaseProfiler",
     "TwoPoolConfig",
     "TwoPoolLayout",
     "World",

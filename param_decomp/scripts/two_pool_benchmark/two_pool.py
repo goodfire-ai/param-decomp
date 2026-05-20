@@ -30,7 +30,7 @@ from param_decomp.configs import (
 )
 from param_decomp.models.batch_and_loss_fns import recon_loss_kl, run_batch_passthrough
 from param_decomp.scripts.two_pool_benchmark._tiny_model import TinyTransformer, sites_for_block
-from param_decomp.two_pool import TwoPoolConfig, optimize_two_pool
+from param_decomp.two_pool import BlockGroup, TwoPoolConfig, optimize_two_pool
 
 VOCAB = 8192
 D_MODEL = 768
@@ -43,9 +43,9 @@ C = 32
 CI_HIDDEN = 1024
 
 # Topology: 3 block groups × 2 ranks (in-block DDP-2) + 2 pool B ranks (DP-2) = 8 GPUs.
-BLOCK_GROUPS: tuple[tuple[int, ...], ...] = ((0, 1), (2, 3), (4, 5))
+BLOCK_GROUP_RANKS: tuple[tuple[int, ...], ...] = ((0, 1), (2, 3), (4, 5))
 POOL_B_RANKS: tuple[int, ...] = (6, 7)
-BLOCKS_PER_GROUP = N_TRANSFORMER_BLOCKS // len(BLOCK_GROUPS)
+BLOCKS_PER_GROUP = N_TRANSFORMER_BLOCKS // len(BLOCK_GROUP_RANKS)
 
 WARMUP_STEPS = 2
 PROFILE_STEPS = 4
@@ -64,14 +64,17 @@ def main() -> None:
     target = TinyTransformer(VOCAB, D_MODEL, N_TRANSFORMER_BLOCKS, N_HEADS, D_MLP).to(device)
     target.requires_grad_(False)
 
-    block_owned_sites = tuple(
-        tuple(
-            s for tb in range(g * BLOCKS_PER_GROUP, (g + 1) * BLOCKS_PER_GROUP)
-            for s in sites_for_block(tb)
+    block_groups = tuple(
+        BlockGroup(
+            ranks=ranks,
+            owned_sites=tuple(
+                s for tb in range(g * BLOCKS_PER_GROUP, (g + 1) * BLOCKS_PER_GROUP)
+                for s in sites_for_block(tb)
+            ),
         )
-        for g in range(len(BLOCK_GROUPS))
+        for g, ranks in enumerate(BLOCK_GROUP_RANKS)
     )
-    all_sites = [s for sites in block_owned_sites for s in sites]
+    all_sites = [s for bg in block_groups for s in bg.owned_sites]
     c_per_site = {s: C for s in all_sites}
 
     ppgd_cfg = PersistentPGDReconLossConfig(
@@ -84,8 +87,7 @@ def main() -> None:
     )
 
     pool_config = TwoPoolConfig(
-        block_groups=BLOCK_GROUPS,
-        block_owned_sites=block_owned_sites,
+        block_groups=block_groups,
         pool_b_ranks=POOL_B_RANKS,
         batch_global=BATCH,
         c_per_site=c_per_site,
