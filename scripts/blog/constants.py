@@ -1,10 +1,19 @@
 """Constants for VPD blog post data exports.
 
 Single source of truth for all IDs, paths, and configuration used across
-export_components.py, export_graphs.py, and export_heatmap.py.
+export_components.py and export_graphs.py.
 """
 
 from pathlib import Path
+from typing import NotRequired, TypedDict
+
+
+class GraphSpec(TypedDict):
+    name: str
+    graph_id: int
+    output_filter: NotRequired[str | int]
+    n_tokens: NotRequired[int]
+
 
 # --- Model ---
 RUN_ID = "s-55ea3f9b"
@@ -24,7 +33,7 @@ SHOWCASE_N_PER_MATRIX = 3  # top components per matrix for the carousel showcase
 COMP_BIN_SIZE = 256  # components per bin file (binned by raw component index)
 
 # --- Graph export ---
-GRAPHS = [
+GRAPHS: list[GraphSpec] = [
     {"name": "princess-full", "graph_id": 65, "output_filter": "output:2:617", "n_tokens": 3},
     {"name": "princess-minimal", "graph_id": 68, "output_filter": "output:2:617", "n_tokens": 3},
     {"name": "prince-full", "graph_id": 86, "output_filter": "output:2:521", "n_tokens": 3},
@@ -34,8 +43,3 @@ GRAPHS = [
     {"name": "bracket-u-full", "graph_id": 144, "output_filter": 10, "n_tokens": 2},
 ]
 DATASET_ATTRIBUTION_TOP_K = 10
-
-# --- Heatmap export ---
-HEATMAP_MODULE = "h.2.mlp.down_proj"
-HEATMAP_U_IDX = 2359
-HEATMAP_TARGET_TOKEN = 80  # "o"

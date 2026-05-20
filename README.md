@@ -42,14 +42,15 @@ Other YAML configs under [`param_decomp/experiments/`](param_decomp/experiments)
 auto-discovered. The LM experiment supports HuggingFace-loadable models with `nn.Linear`,
 `nn.Embedding`, or `transformers.modeling_utils.Conv1D` target modules.
 
-For custom experiments, either call `run_pd(...)` directly or provide a YAML-driven
+For custom experiments, either call `optimize(...)` directly or provide a YAML-driven
 `ExperimentDriver`:
 
-- **Call `run_pd` directly** — build a `PDTarget` (model + `run_batch` + reconstruction loss;
+- **Call `optimize` directly** — build a `PDTarget` (model + `run_batch` + reconstruction loss;
   helpers in [`batch_and_loss_fns.py`](param_decomp/models/batch_and_loss_fns.py)) plus a
-  `RunConfig` (id + pd/logging/runtime configs) and call
-  `run_pd(run_cfg, target, train_loader, eval_loader, device)`.
-  Reload with `load_component_model(path, target=...)`. Best for notebooks/scripts.
+  `PDConfig` / `LoggingConfig` / `RuntimeConfig` triple and a `RunSink`, then call
+  `optimize(target=..., train_loader=..., eval_loader=..., pd_config=..., logging_config=...,
+  runtime_config=..., device=..., sink=...)`.
+  Reload with `ComponentModel.from_checkpoint(...)`. Best for notebooks/scripts.
 - **Package it as a YAML-driven experiment** — define your experiment as a Pydantic `RunConfig`
   subclass (adding `target` / `data` fields) plus an `ExperimentDriver` class (a small adapter
   exposing `build_target` and `build_dataloaders`; see
@@ -57,8 +58,7 @@ For custom experiments, either call `run_pd(...)` directly or provide a YAML-dri
   [`tms/experiment.py`](param_decomp/experiments/tms/experiment.py) for the smallest example),
   put `driver_path: my_pkg.my_exp:MyDriver` at the top of your YAML, then run
   `pd-run --config_path my_config.yaml`. This is what built-in experiments do, and is needed for
-  sweeps and for self-reloading runs via
-  `load_component_model(path)` (no `target=` argument needed) or `PDRun.from_path(...)`.
+  sweeps and for self-reloading runs via `load_component_model(path)` or `SavedRun.from_path(...)`.
 
 ## Metrics
 

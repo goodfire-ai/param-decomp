@@ -36,23 +36,35 @@ The `lm` experiment can decompose any HuggingFace-loadable model whose target mo
 The core PD framework exposes these entrypoints, re-exported from `param_decomp/__init__.py`:
 
 ```python
-from param_decomp import run_pd, load_component_model, PDConfig, PDTarget, PDRun, RunConfig, ExperimentDriver
+from param_decomp import (
+    run_pd, optimize, materialize_run, load_component_model,
+    PDConfig, PDTarget, RunConfig, RunSink, SavedRun, ExperimentDriver,
+)
 ```
 
-- `run_pd(run_cfg, target, train_loader, eval_loader, device, *, wandb_project=None, wandb_tags=None)`:
-  trains a decomposition. `run_cfg` is a `RunConfig` (id + pd/logging/runtime configs, plus
-  driver_path for driver-mediated runs or `None` for notebook callers); it is written to
-  `run_config.yaml` next to the checkpoint. `PDTarget` bundles the target model + `run_batch` +
-  reconstruction loss + optional tied weights. Core PD does not know about LM/TMS/etc. Helpers
-  for the two `PDTarget` callables live in `param_decomp/models/batch_and_loss_fns.py`:
-  `run_batch_passthrough`, `run_batch_first_element`, `make_run_batch(output_extract)`; and
-  `recon_loss_mse`, `recon_loss_kl`. Callers can pass their own functions instead.
-- `load_component_model(path, *, target=None)`: reload a saved run as a `ComponentModel`. When `target` is
-  omitted the run's driver reconstructs the target from the saved `RunConfig`; pass `target=...`
-  explicitly for runs produced via direct `run_pd` (no driver).
-- `PDRun.from_path(path)`: handle to a saved run. Exposes `run_cfg` (`RunConfig`), `driver`
-  (resolved at construction), `pd_config`, `load_target()`, `load_dataloaders(...)`, and
-  `load_model(target=None)`.
+- `optimize(*, target, train_loader, eval_loader, pd_config, logging_config, runtime_config,
+  device, sink, dist_state=None)`: notebook/script entry point. Pure trainer — caller supplies
+  the target bundle, dataloaders, the three config tiers, the device, and a `RunSink` for
+  outputs. `PDTarget` bundles the target model + `run_batch` + reconstruction loss + optional
+  tied weights; helpers for the two `PDTarget` callables live in
+  `param_decomp/models/batch_and_loss_fns.py`: `run_batch_passthrough`, `run_batch_first_element`,
+  `make_run_batch(output_extract)`; and `recon_loss_mse`, `recon_loss_kl`. Callers can pass their
+  own functions instead. Pair with `RunSink.local(...)`, `RunSink.with_wandb(...)`, or
+  `RunSink.silent()` depending on whether you want files / W&B / nothing persisted.
+- `run_pd(run_cfg, *, device, dist_state=None, wandb_project=None, launch_id=None)`:
+  driver-mediated entry point used by `pd-run` / `_worker.py`. Loads the driver from
+  `run_cfg.driver_path`, calls `materialize_run` to build target+loaders, builds a
+  `RunSink.for_run(...)`, then delegates to `optimize`.
+- `materialize_run(run_cfg, *, device, dist_state=None, driver=None) ->
+  (target, train_loader, eval_loader)`: composition root that turns a `RunConfig` into the
+  tuple `optimize` needs. Exposed so other tooling can reuse the same materialization.
+- `load_component_model(path)`: reload a saved driver-mediated run as a `ComponentModel`. Thin
+  convenience over `SavedRun.from_path(path).load_model()` — the run's driver reconstructs the
+  target from the saved `RunConfig`. Notebook-only runs (trained via `optimize` without a
+  `RunConfig`) reload with `ComponentModel.from_checkpoint(...)` directly.
+- `SavedRun.from_path(path)`: handle to a saved driver-mediated run. Exposes `run_cfg`
+  (`RunConfig`), `driver` (resolved at construction), `pd_config`, `load_target()`,
+  `build_train_loader(...)`, `build_eval_loader(...)`, and `load_model()`.
 
 ### Experiment Drivers
 
@@ -89,12 +101,13 @@ pd: {...}
 pd-run --config_path my_config.yaml
 ```
 
-The driver import path is part of the saved `RunConfig`, so reloading the run via `load_component_model(path)` can reconstruct the target without an explicit `target=` argument.
+The driver import path is part of the saved `RunConfig`, so reloading the run via `load_component_model(path)` can reconstruct the target without any extra arguments.
 
-Callers can also bypass drivers entirely and call `run_pd` directly with their own `PDTarget` and
-dataloaders — the right choice for notebook/script-driven use where `pd-run`, sweeps, and
-post-processing tooling are not needed. Those runs reload with `load_component_model(path, target=...)`. The
-README's "Custom experiments" section walks through both routes side-by-side.
+Callers can also bypass drivers entirely and call `optimize(...)` directly with their own
+`PDTarget`, dataloaders, configs, and `RunSink` — the right choice for notebook/script-driven
+use where `pd-run`, sweeps, and post-processing tooling are not needed. Those runs reload with
+`ComponentModel.from_checkpoint(...)` (no `RunConfig` was written). The README's "Custom
+experiments" section walks through both routes side-by-side.
 
 ### Custom Metrics
 
@@ -108,7 +121,7 @@ pd:
   metric_modules:
     - my_pkg.my_metrics                   # dotted module name, importable from the env
   loss_metrics:
-    my_loss:
+    MyLoss:
       coeff: 1.0
       my_param: 0.5
 ```
@@ -258,7 +271,7 @@ This repository implements methods from two key research papers on parameter dec
 
 Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
-- `experiment.py` - `Run` subclass + driver (target/dataloader builders)
+- `experiment.py` - `RunConfig` subclass + driver (target/dataloader builders)
 - `*_config.yaml` - Built-in YAML configs (auto-discovered)
 - `models.py` (TMS/ResidMLP) / `data.py` (LM) - Model/data helpers
 - `train_*.py` (TMS/ResidMLP) - Target-model pretraining scripts
@@ -270,7 +283,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 2. Each worker invocation (`experiments/_worker.py`, called as `python -m param_decomp.experiments._worker` from SLURM tasks, or directly from runner.py in --local mode) loads the driver, checks that the parsed `RunConfig` matches the driver's `config_type`, and calls the driver to build `PDTarget` plus train/eval loaders.
 3. The worker passes the typed `RunConfig` through to `run_pd`.
 4. `run_pd` saves the `RunConfig` / artifacts and trains a `ComponentModel` via `optimize()` with config-driven losses.
-5. Post-processing reloads runs through `PDRun.load_target()` / `PDRun.load_dataloaders(...)` (or just `PDRun.load_model()` / `load_component_model(path)`).
+5. Post-processing reloads runs through `SavedRun.load_target()` / `SavedRun.build_train_loader(...)` / `SavedRun.build_eval_loader(...)` (or just `SavedRun.load_model()` / `load_component_model(path)`).
 
 **Configuration System:**
 
@@ -333,14 +346,14 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 │   │   ├── component_model.py       # ComponentModel.from_checkpoint(...)
 │   │   ├── components.py            # LinearComponent, EmbeddingComponent, etc.
 │   │   └── batch_and_loss_fns.py    # PDTarget + run_batch_*/recon_loss_* helpers
+│   ├── saved_run.py                 # SavedRun + load_component_model
 │   ├── scripts/
 │   │   └── run_slurm.py             # launch_run_slurm / launch_sweep_slurm — called by pd-run
 │   ├── sweeps/                      # SweepSpec / SweepGenerator protocol + cartesian helper + example sweep
 │   ├── utils/
 │   │   └── slurm.py                 # SlurmConfig, submit functions
 │   ├── configs.py                   # PDConfig, LoggingConfig, RuntimeConfig, ModuleInfo
-│   ├── run.py                       # Run (driver_path + pd/logging/runtime + per-driver target/data)
-│   ├── saved_run.py                 # PDRun + load_component_model
+│   ├── run.py                       # RunConfig (driver_path + pd/logging/runtime + per-driver target/data)
 │   ├── run_pd.py                    # Main optimization loop
 │   └── settings.py                  # PARAM_DECOMP_OUT_DIR, SLURM_LOGS_DIR, SBATCH_SCRIPTS_DIR
 ├── Makefile                         # Dev commands (make check, make test)
@@ -609,20 +622,20 @@ before rerunning.
 Load trained PD models from wandb or local paths using these methods:
 
 ```python
-from param_decomp import load_component_model, PDRun
+from param_decomp import load_component_model, SavedRun
 
 # Common case: path → ComponentModel. The driver reconstructs the target from the saved run spec.
 model = load_component_model("wandb:entity/project/runs/run_id")
 
-# Manual/custom runs (no driver in the run spec): pass your own target.
-target = ...
-model = load_component_model("wandb:entity/project/runs/run_id", target=target)
-
-# When you also need run/config access, use PDRun directly:
-pd_run = PDRun.from_path("wandb:entity/project/runs/run_id")
-print(pd_run.run)                        # Run (the driver-specific subclass, e.g. LMRunConfig)
+# When you also need run/config access, use SavedRun directly:
+pd_run = SavedRun.from_path("wandb:entity/project/runs/run_id")
+print(pd_run.run_cfg)                    # RunConfig (the driver-specific subclass, e.g. LMRunConfig)
 print(pd_run.pd_config)                  # PDConfig
 model = pd_run.load_model()              # equivalent to load_component_model(path)
+
+# Notebook-only runs (trained via optimize(...) without a RunConfig) reload directly:
+# from param_decomp.models.component_model import ComponentModel
+# model = ComponentModel.from_checkpoint(...)
 ```
 
 **Path Formats:**

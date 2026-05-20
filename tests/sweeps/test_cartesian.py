@@ -101,4 +101,4 @@ def test_sweep_spec_write_serializes_plain_yaml(tmp_path: Path) -> None:
     spec.write(path)
 
     data = yaml.safe_load(path.read_text())
-    assert data["swept_data"][0]["pd_config"]["seed"] == 0
+    assert data["swept_datas"][0]["pd_config"]["seed"] == 0

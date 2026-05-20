@@ -238,12 +238,13 @@
     <section id="flow" class="section">
       <h2>End-to-End Run Flow</h2>
       <p>
-        There is one user-facing CLI — <code>pd-run</code> — and one training function —
-        <code>run_pd()</code>. <code>pd-run</code> submits a SLURM job by default; each task
+        There is one user-facing CLI — <code>pd-run</code> — and one driver-mediated training
+        function — <code>run_pd()</code>, which composes onto the pure trainer
+        <code>optimize()</code>. <code>pd-run</code> submits a SLURM job by default; each task
         invokes the internal worker module <code>param_decomp.experiments._worker</code>, which
         loads the driver and calls <code>run_pd</code>. <code>pd-run --local</code> skips SLURM
-        and runs the worker in-process. A notebook can also import <code>run_pd</code> directly,
-        bypassing drivers entirely.
+        and runs the worker in-process. A notebook can call <code>optimize()</code> directly,
+        bypassing drivers and <code>RunConfig</code> entirely.
       </p>
 
       <div class="diagram-wrap" aria-label="Execution flow diagram">
@@ -266,7 +267,7 @@
 
           <rect x="40" y="300" width="240" height="92" class="svg-box svg-box-blue"></rect>
           <text x="58" y="331" class="svg-title">notebook / script</text>
-          <text x="58" y="355" class="svg-text">import run_pd directly</text>
+          <text x="58" y="355" class="svg-text">import optimize directly</text>
           <text x="58" y="375" class="svg-small">supply your own PDTarget</text>
 
           <rect x="340" y="40" width="260" height="92" class="svg-box svg-box-teal"></rect>
@@ -290,7 +291,7 @@
 
           <rect x="960" y="170" width="240" height="142" class="svg-box svg-box-green"></rect>
           <text x="978" y="204" class="svg-title">decompositions/&lt;run_id&gt;/</text>
-          <text x="978" y="230" class="svg-text">run_config.yaml (Run)</text>
+          <text x="978" y="230" class="svg-text">run_config.yaml (RunConfig)</text>
           <text x="978" y="252" class="svg-text">model_&lt;step&gt;.pth</text>
           <text x="978" y="274" class="svg-text">(sweeps/&lt;launch_id&gt;/spec.yaml</text>
           <text x="978" y="296" class="svg-text">  for sweep launches)</text>
@@ -307,13 +308,13 @@
       <h3>What happens, in order</h3>
       <ol>
         <li>
-          <code>pd-run</code> resolves its input source into a <code>Run</code>: a built-in
+          <code>pd-run</code> resolves its input source into a <code>RunConfig</code>: a built-in
           experiment name (looked up via <code>discover_experiments()</code>),
           <code>--config_path PATH</code> reading a YAML that declares its driver via a top-level
           <code>driver_path:</code> field, <code>--rerun PATH</code> reading the same shape from a
           saved <code>run_config.yaml</code>, or <code>--sweep_generator_path
           FILE.py:func</code> calling a generator that returns a <code>SweepSpec</code> of
-          <code>Run</code>s.
+          <code>RunConfig</code>s.
         </li>
         <li>
           With <code>--local</code>, <code>pd-run</code> calls
@@ -335,11 +336,13 @@
           starts W&amp;B if configured, then trains.
         </li>
         <li>
-          A direct <code>run_pd()</code> call from a notebook skips the driver entirely. The
-          <code>Run</code> defaults to
-          <code>Run(driver_path=None, pd=..., logging=..., runtime=...)</code>;
-          the run then reloads via
-          <code>load_component_model(path, target=...)</code>.
+          A direct <code>optimize()</code> call from a notebook skips the driver and
+          <code>RunConfig</code> entirely: the caller supplies the <code>PDTarget</code>,
+          dataloaders, the three config tiers (<code>PDConfig</code> / <code>LoggingConfig</code>
+          / <code>RuntimeConfig</code>), the device, and a <code>RunSink</code>. The resulting
+          checkpoint reloads via <code>ComponentModel.from_checkpoint(...)</code> (no
+          <code>run_config.yaml</code> was written, so <code>SavedRun</code> /
+          <code>load_component_model</code> don't apply).
         </li>
       </ol>
     </section>
@@ -351,8 +354,9 @@
         <strong>Saved run directory</strong> — is the same green
         <code>decompositions/&lt;run_id&gt;/</code> the training flow ended with. From there,
         three calls turn that directory back into a working <code>ComponentModel</code>:
-        <code>PDRun.from_path</code> parses the run spec, <code>load_target</code> rebuilds the
-        target via the driver, and <code>load_model</code> stitches the checkpoint onto it.
+        <code>SavedRun.from_path</code> parses the run spec and resolves the driver,
+        <code>load_target</code> rebuilds the target via the driver, and <code>load_model</code>
+        stitches the checkpoint onto it.
       </p>
 
       <div class="diagram-wrap" aria-label="Saved run reload diagram">
@@ -363,19 +367,19 @@
           <rect x="30" y="80" width="260" height="180" class="svg-box svg-box-green"></rect>
           <text x="50" y="112" class="svg-title">Saved run directory</text>
           <text x="50" y="134" class="svg-small">decompositions/&lt;run_id&gt;/ or wandb URL</text>
-          <text x="50" y="160" class="svg-text">run_config.yaml (Run)</text>
+          <text x="50" y="160" class="svg-text">run_config.yaml (RunConfig)</text>
           <text x="50" y="182" class="svg-text">model_&lt;step&gt;.pth</text>
           <text x="50" y="216" class="svg-small">target is rebuilt from upstream</text>
           <text x="50" y="236" class="svg-small">(wandb pretrain run, HF, ...)</text>
 
           <rect x="330" y="80" width="270" height="180" class="svg-box svg-box-blue"></rect>
-          <text x="350" y="112" class="svg-title">1. PDRun.from_path(path)</text>
+          <text x="350" y="112" class="svg-title">1. SavedRun.from_path(path)</text>
           <text x="350" y="134" class="svg-small">parse the directory into a handle</text>
           <text x="350" y="160" class="svg-text">resolve_run_files:</text>
           <text x="350" y="178" class="svg-small">  local path or wandb download</text>
           <text x="350" y="200" class="svg-text">Run.from_file(yaml)</text>
           <text x="350" y="222" class="svg-text">find latest model_&lt;step&gt;.pth</text>
-          <text x="350" y="244" class="svg-small">→ PDRun(path, run, ckpt)</text>
+          <text x="350" y="244" class="svg-small">→ SavedRun(path, run_cfg, ckpt, driver)</text>
 
           <rect x="640" y="80" width="270" height="180" class="svg-box svg-box-teal"></rect>
           <text x="660" y="112" class="svg-title">2. pd_run.load_target()</text>
@@ -387,7 +391,7 @@
           <text x="660" y="240" class="svg-small">  → PDTarget</text>
 
           <rect x="950" y="80" width="260" height="180" class="svg-box svg-box-red"></rect>
-          <text x="970" y="112" class="svg-title">3. pd_run.load_model(target)</text>
+          <text x="970" y="112" class="svg-title">3. pd_run.load_model()</text>
           <text x="970" y="134" class="svg-small">attach PD checkpoint to target</text>
           <text x="970" y="160" class="svg-text">ComponentModel.from_checkpoint:</text>
           <text x="970" y="182" class="svg-small">  config = pd_run.pd_config</text>
@@ -403,7 +407,7 @@
 
       <p>
         <code>load_component_model(path)</code> is shorthand for steps 1–3 chained together:
-        <code>PDRun.from_path(path).load_model()</code>.
+        <code>SavedRun.from_path(path).load_model()</code>.
       </p>
 
       <p>
@@ -414,10 +418,11 @@
       </p>
 
       <div class="note">
-        <strong>No driver in the saved <code>Run</code>?</strong> The run came from a direct
-        <code>run_pd()</code> call. You must pass <code>target=...</code> to
-        <code>load_component_model()</code>; <code>pd_run.run</code> is a bare <code>Run</code>
-        (not a driver-specific subclass) and <code>pd_run.driver</code> is <code>None</code>.
+        <strong>No <code>run_config.yaml</code> on disk?</strong> The run came from a direct
+        <code>optimize()</code> call without a <code>RunConfig</code>. <code>SavedRun</code> /
+        <code>load_component_model</code> don't apply — reload the checkpoint with
+        <code>ComponentModel.from_checkpoint(config=..., checkpoint_path=...,
+        target_model=..., run_batch=..., tied_weights=...)</code> directly.
       </div>
     </section>
 
@@ -434,8 +439,8 @@
         <div class="panel">
           <h3>Experiment recipe</h3>
           <p>
-            A driver-specific <code>Run</code> subclass (e.g. <code>LMRun</code>,
-            <code>TMSRun</code>) adds <code>target</code> and <code>data</code> fields describing
+            A driver-specific <code>RunConfig</code> subclass (e.g. <code>LMRunConfig</code>,
+            <code>TMSRunConfig</code>) adds <code>target</code> and <code>data</code> fields describing
             <em>where the target comes from</em> and <em>what the data is</em>. A driver turns
             the recipe into runtime objects: a <code>PDTarget</code> and dataloaders.
           </p>
@@ -444,9 +449,11 @@
           <h3>Runtime orchestration</h3>
           <p>
             One entry point (<code>pd-run</code>, on SLURM by default or in-process with
-            <code>--local</code>) and one notebook escape hatch (direct <code>run_pd</code>)
-            converge on a single training function and produce a saved run that
-            <code>PDRun.from_path</code> / <code>load_component_model</code> can reload.
+            <code>--local</code>) and one notebook escape hatch (direct <code>optimize</code>)
+            converge on the same trainer. Driver-mediated runs produce a saved run that
+            <code>SavedRun.from_path</code> / <code>load_component_model</code> can reload; pure
+            <code>optimize</code> runs leave only a checkpoint and reload via
+            <code>ComponentModel.from_checkpoint</code>.
           </p>
         </div>
       </div>
@@ -498,7 +505,7 @@
             <td><a href="../param_decomp/scripts/run_slurm.py">scripts/run_slurm.py</a></td>
             <td>
               SLURM array sweep over a Python-generated <code>SweepSpec</code>. The generator is
-              a zero-arg callable returning a list of <code>Run</code> objects; see
+              a zero-arg callable returning a list of <code>RunConfig</code> objects; see
               <a href="../param_decomp/sweeps/cartesian.py">sweeps/cartesian.py</a> for the
               built-in Cartesian helper.
             </td>
@@ -509,17 +516,28 @@
             <td>Internal: the per-task entry point that each SLURM array task invokes.</td>
           </tr>
           <tr>
-            <td><code>run_pd(config, logging_config, runtime_config, target, ...)</code></td>
+            <td><code>run_pd(run_cfg, *, device, ...)</code></td>
             <td><a href="../param_decomp/run_pd.py">run_pd.py</a></td>
             <td>
-              Notebook / scripting: skip drivers, supply your own <code>PDTarget</code> +
-              dataloaders. Pair with <code>load_component_model(path, target=...)</code> for reload.
+              Driver-mediated composition root: loads the driver from
+              <code>run_cfg.driver_path</code>, calls <code>materialize_run</code>, builds a
+              <code>RunSink.for_run</code>, and delegates to <code>optimize</code>. Used by
+              <code>pd-run</code> / <code>_worker.py</code>.
             </td>
           </tr>
           <tr>
-            <td><code>load_component_model(path)</code> / <code>PDRun.from_path(path)</code></td>
+            <td><code>optimize(*, target, train_loader, eval_loader, pd_config, logging_config, runtime_config, device, sink, ...)</code></td>
+            <td><a href="../param_decomp/run_pd.py">run_pd.py</a></td>
+            <td>
+              Notebook / scripting: pure trainer. Skip drivers, supply your own
+              <code>PDTarget</code>, dataloaders, configs, and a <code>RunSink</code>. Reload via
+              <code>ComponentModel.from_checkpoint(...)</code>.
+            </td>
+          </tr>
+          <tr>
+            <td><code>load_component_model(path)</code> / <code>SavedRun.from_path(path)</code></td>
             <td><a href="../param_decomp/saved_run.py">saved_run.py</a></td>
-            <td>Reload a saved run.</td>
+            <td>Reload a saved driver-mediated run.</td>
           </tr>
         </tbody>
       </table>
@@ -553,19 +571,21 @@
             changes what algorithm runs.
           </li>
           <li>
-            <strong><code>RuntimeConfig</code></strong> — compute substrate:
+            <strong><code>RunConfigtimeConfig</code></strong> — compute substrate:
             <code>autocast_bf16</code>, <code>device</code>, <code>dp</code>. Perturbs numerics
             without changing the algorithm. Config-only — no CLI overrides.
           </li>
           <li>
             <strong><code>LoggingConfig</code></strong> — observation: cadence
-            (<code>*_freq</code>), <code>eval_batch_size</code>, <code>ci_alive_threshold</code>,
-            eval-only metrics (<code>eval_metrics</code>), <code>wandb_run_name</code>,
-            <code>view_meta</code>. Never touches the optimizer.
+            (<code>*_freq</code>), <code>eval_batch_size</code>, <code>save_freq</code>,
+            eval-only metrics (<code>eval_metrics</code>). Never touches the optimizer. Run
+            identity fields — <code>name</code> (W&amp;B display name) and <code>view_meta</code>
+            (free-form sweep labels) — live on <code>RunConfig</code> itself, not in
+            <code>LoggingConfig</code>.
           </li>
         </ul>
         <p>
-          The W&amp;B <em>project</em> is not part of the <code>Run</code> — it is a deploy-time
+          The W&amp;B <em>project</em> is not part of the <code>RunConfig</code> — it is a deploy-time
           parameter (which account/team to log to), passed via <code>--project</code> to
           <code>pd-run</code> or <code>wandb_project=</code> to <code>run_pd</code>.
         </p>
@@ -599,39 +619,49 @@ logging:
           <code>eval_metrics</code>.
         </p>
 
-        <h3>Run (and driver-specific subclasses)</h3>
+        <h3>RunConfig (and driver-specific subclasses)</h3>
         <p class="subtitle"><a href="../param_decomp/run.py">param_decomp/run.py</a></p>
         <p>
-          One Pydantic type — <code>Run</code> — represents "what a PD run is". The base class
-          owns <code>driver_path</code>, <code>pd</code>, <code>logging</code>, and
-          <code>runtime</code>; driver-specific subclasses add <code>target</code> and
-          <code>data</code>. A <code>mode="wrap"</code> model validator on the base reads
-          <code>driver_path</code>, loads the driver, and re-routes <code>model_validate</code>
-          to <code>driver.config_type</code>, so callers always use
-          <code>Run.model_validate(data)</code> / <code>Run.from_file(path)</code> and get back
-          the right subtype.
+          One Pydantic type — <code>RunConfig</code> — represents the serializable spec for a
+          driver-mediated run. The base class owns <code>name</code>, <code>run_id</code>,
+          <code>driver_path</code>, <code>pd</code>, <code>logging</code>, <code>runtime</code>,
+          and <code>view_meta</code>; driver-specific subclasses add <code>target</code> and
+          <code>data</code>. Callers parse via <code>RunConfig.from_dict(data)</code> /
+          <code>RunConfig.from_file(path)</code>, which read <code>driver_path</code>, load the
+          driver, and route validation to <code>driver.config_type</code> so the returned object
+          is the right subtype. Notebook callers don't construct a <code>RunConfig</code> —
+          they call <code>optimize</code> directly with configs + target + loaders.
         </p>
         <ul>
-          <li><code>LMRun(driver_path, pd, logging, runtime, target: LMTargetConfig, data: LMDataConfig)</code></li>
-          <li><code>TMSRun(driver_path, pd, logging, runtime, target, data)</code></li>
-          <li><code>ResidMLPRun(driver_path, pd, logging, runtime, target, data)</code></li>
+          <li><code>LMRunConfig(driver_path, pd, logging, runtime, target: LMTargetConfig, data: LMDataConfig)</code></li>
+          <li><code>TMSRunConfig(driver_path, pd, logging, runtime, target, data)</code></li>
+          <li><code>ResidMLPRunConfig(driver_path, pd, logging, runtime, target, data)</code></li>
         </ul>
 
         <h3>ExperimentDriver</h3>
         <p class="subtitle"><a href="../param_decomp/experiments/driver.py">experiments/driver.py</a></p>
-        <p>Stateless adapter: turns a <code>Run</code> into runtime objects.</p>
-        <pre><code>class ExperimentDriver[RunT: Run](Protocol):
+        <p>Stateless adapter: turns a <code>RunConfig</code> into runtime objects.</p>
+        <pre><code>class ExperimentDriver[RunConfigT: RunConfig](Protocol):
     name: ClassVar[str]
-    config_type: ClassVar[type[Run]]
 
-    def build_target(self, run: RunT) -> PDTarget: ...
+    @property
+    def config_type(self) -> type[RunConfigT]: ...
 
-    def build_dataloaders(
-        self, run: RunT, *,
-        train_batch_size: int, eval_batch_size: int,
+    def build_target(self, run_cfg: RunConfigT) -> PDTarget: ...
+
+    def build_train_loader(
+        self, run_cfg: RunConfigT, *,
+        device: str,
+        batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
-        device: str = "cpu",
-    ) -> tuple[DataLoader[Any], DataLoader[Any]]: ...</code></pre>
+    ) -> DataLoader[Any]: ...
+
+    def build_eval_loader(
+        self, run_cfg: RunConfigT, *,
+        device: str,
+        batch_size_override: int | None = None,
+        dist_state: DistributedState | None = None,
+    ) -> DataLoader[Any]: ...</code></pre>
         <p>
           Drivers always fetch from upstream (wandb pretrain run, HuggingFace, …); reload calls
           them exactly like a fresh run. Drivers are loaded by import path via
@@ -658,38 +688,44 @@ logging:
         <h3>SweepSpec</h3>
         <p class="subtitle"><a href="../param_decomp/sweeps/spec.py">param_decomp/sweeps/spec.py</a></p>
         <p>
-          Materialized output of a sweep generator: a description plus
-          <code>runs: list[Run]</code>. All runs in one <code>SweepSpec</code> must share a
-          <code>driver_path</code> and a <code>runtime</code> block (asserted in
-          <code>__post_init__</code>). The launcher writes the spec to
+          Materialized output of a sweep generator: a description plus shared
+          <code>driver_path</code> / <code>target</code> / <code>data</code> /
+          <code>logging</code> / <code>runtime</code> / <code>n_agents</code>, plus a
+          <code>swept_datas: list[SweepData]</code> of per-run varying
+          <code>pd</code> / <code>name</code> / <code>view_meta</code>. The
+          <code>run_cfgs()</code> method validates each combination through
+          <code>driver.config_type</code>, so worker-side validation matches what the spec
+          implied. The launcher writes the spec to
           <code>PARAM_DECOMP_OUT_DIR/sweeps/&lt;launch_id&gt;/spec.yaml</code> before
           submitting the array.
         </p>
 
-        <h3>PDRun</h3>
+        <h3>SavedRun</h3>
         <p class="subtitle"><a href="../param_decomp/saved_run.py">param_decomp/saved_run.py</a></p>
-        <p>Handle to a saved run. Loads the <code>Run</code> eagerly; driver/target lazily.</p>
-        <pre><code>class PDRun:
+        <p>Handle to a saved driver-mediated run. Resolves spec + checkpoint + driver eagerly.</p>
+        <pre><code>@dataclass(frozen=True)
+class SavedRun:
     path: Path
-    run: Run
+    run_cfg: RunConfig
     checkpoint_path: Path
+    driver: ExperimentDriver[Any]
 
     @classmethod
-    def from_path(cls, path: ModelPath) -> "PDRun": ...
+    def from_path(cls, path: ModelPath) -> "SavedRun": ...
 
-    driver:    ExperimentDriver | None    # via run.driver_path
-    pd_config: PDConfig                   # property
-    name:      str                        # driver.name or "custom"
+    pd_config: PDConfig                   # property -> run_cfg.pd
+    name:      str                        # property -> driver.name
 
     def load_target(self) -> PDTarget: ...
-    def load_dataloaders(self, *, train_batch_size, eval_batch_size, ...) -> tuple[DataLoader, DataLoader]: ...
-    def load_model(self, target: PDTarget | None = None) -> ComponentModel: ...</code></pre>
+    def build_train_loader(self, *, device, batch_size_override=None, dist_state=None) -> DataLoader[Any]: ...
+    def build_eval_loader(self, *, device, batch_size_override=None, dist_state=None) -> DataLoader[Any]: ...
+    def load_model(self) -> ComponentModel: ...</code></pre>
 
         <h3>Public API surface</h3>
         <p class="subtitle"><a href="../param_decomp/__init__.py">param_decomp/__init__.py</a></p>
         <pre><code>from param_decomp import (
-    run_pd, load_component_model,
-    PDConfig, PDTarget, Run, PDRun,
+    run_pd, optimize, materialize_run, load_component_model,
+    PDConfig, PDTarget, RunConfig, RunSink, SavedRun,
     ExperimentDriver,
 )</code></pre>
       </section>
@@ -742,7 +778,7 @@ class DiscoveredExperiment:
               <td>Input resolution</td>
               <td>
                 <code>runner._resolve_source</code> turns the CLI flags into a raw config dict
-                that is then validated into a <code>Run</code>. Exactly one of positional
+                that is then validated into a <code>RunConfig</code>. Exactly one of positional
                 <code>&lt;experiment&gt;</code>, <code>--config_path</code>,
                 <code>--rerun</code>, or <code>--sweep_generator_path</code> must be set.
               </td>
@@ -752,8 +788,12 @@ class DiscoveredExperiment:
               <td>
                 For <code>--sweep_generator_path</code>, imports the absolute file path and
                 calls the named zero-arg function. The function returns a
-                <code>SweepSpec(runs=[...])</code>; all runs must share a
-                <code>driver_path</code> and a <code>runtime</code> block. <em>Not</em> W&amp;B
+                <code>SweepSpec</code> carrying the shared <code>driver_path</code> /
+                <code>target</code> / <code>data</code> / <code>logging</code> /
+                <code>runtime</code> and a list of <code>SweepData</code> for per-run varying
+                <code>pd</code> / <code>name</code> / <code>view_meta</code>.
+                <code>SweepSpec.run_cfgs()</code> materializes a <code>list[RunConfig]</code> via
+                the driver's <code>config_type</code> before submission. <em>Not</em> W&amp;B
                 sweep agents.
               </td>
             </tr>
@@ -781,7 +821,7 @@ class DiscoveredExperiment:
             <tr>
               <td>Submission</td>
               <td>
-                Single SLURM script for one <code>Run</code>; SLURM array (capped by
+                Single SLURM script for one <code>RunConfig</code>; SLURM array (capped by
                 <code>--n_agents</code>) for a <code>SweepSpec</code>, one task per run.
               </td>
             </tr>
@@ -796,10 +836,10 @@ python -m param_decomp.experiments._worker --run_json '{...}'
 torchrun --standalone --nproc_per_node=4 --master_port=... \
   -m param_decomp.experiments._worker --run_json '{...}'</code></pre>
         <p>
-          The run JSON is the serialized <code>Run</code>: <code>driver_path</code>,
-          <code>pd</code>, <code>logging</code>, <code>runtime</code>, plus driver-specific
-          <code>target</code> / <code>data</code>. <code>view_meta</code> lives under
-          <code>logging.view_meta</code>; the W&amp;B project is passed separately via
+          The run JSON is the serialized <code>RunConfig</code>: <code>name</code>,
+          <code>run_id</code>, <code>driver_path</code>, <code>pd</code>, <code>logging</code>,
+          <code>runtime</code>, <code>view_meta</code>, plus driver-specific <code>target</code>
+          / <code>data</code>. The W&amp;B project is passed separately via
           <code>--project</code> on the launcher.
         </p>
       </section>
@@ -824,15 +864,15 @@ data: {...}</code></pre>
           <a href="../param_decomp/experiments/tms/experiment.py"><code>experiments/tms/experiment.py</code></a>
           for a complete reference:
         </p>
-        <pre><code>class MyRun(Run):
+        <pre><code>class MyRunConfig(RunConfig):
     target: MyTargetConfig
     data: MyDataConfig
 
 class Driver:
     name: ClassVar[str] = "my_exp"
-    config_type: ClassVar[type[MyRun]] = MyRun
+    config_type: ClassVar[type[MyRunConfig]] = MyRunConfig
 
-    def build_target(self, run: MyRun) -> PDTarget:
+    def build_target(self, run_cfg: MyRunConfig) -> PDTarget:
         # Always fetch from upstream (wandb pretrain run, HuggingFace, disk).
         # Reload calls this exactly like a fresh run.
         target_model = ...
@@ -843,18 +883,22 @@ class Driver:
             tied_weights=_tied_weights(target_model),
         )
 
-    def build_dataloaders(self, run: MyRun, *, train_batch_size, eval_batch_size, ...):
+    def build_train_loader(self, run_cfg: MyRunConfig, *, device, batch_size_override=None, dist_state=None):
         ...
-        return train_loader, eval_loader</code></pre>
+        return train_loader
+
+    def build_eval_loader(self, run_cfg: MyRunConfig, *, device, batch_size_override=None, dist_state=None):
+        ...
+        return eval_loader</code></pre>
         <p>
-          The driver import path is part of the saved <code>Run</code>, so the run is reloadable
-          via <code>load_component_model(path)</code> with no explicit <code>target=</code>.
+          The driver import path is part of the saved <code>RunConfig</code>, so the run is reloadable
+          via <code>load_component_model(path)</code> with no extra arguments.
         </p>
         <p>
           If you don't need <code>pd-run</code>, sweeps, or post-processing tooling, call
-          <code>run_pd</code> directly and skip drivers entirely — see the README's "Custom
-          experiments" section. Those runs reload with
-          <code>load_component_model(path, target=...)</code>.
+          <code>optimize</code> directly with your own <code>PDTarget</code>, dataloaders,
+          configs, and <code>RunSink</code> — see the README's "Custom experiments" section.
+          Those runs reload with <code>ComponentModel.from_checkpoint(...)</code>.
         </p>
       </section>
 
@@ -866,7 +910,7 @@ class Driver:
           <code>~/param_decomp_out/</code>).
         </p>
         <pre><code>decompositions/&lt;run_id&gt;/
-├── run_config.yaml          # Run: driver_path + pd + logging + runtime + target + data
+├── run_config.yaml          # RunConfig: driver_path + name + pd + logging + runtime + view_meta + target + data
 └── model_&lt;step&gt;.pth           # PD checkpoints (one per save_freq + final)
 
 sweeps/&lt;launch_id&gt;/
@@ -878,6 +922,8 @@ sweeps/&lt;launch_id&gt;/
         </p>
         <p>A typical <code>run_config.yaml</code>:</p>
         <pre><code>driver_path: param_decomp.experiments.lm.experiment:Driver
+name: seed=0
+run_id: p-a1b2c3d4
 pd:
   seed: 0
   loss_metrics: {...}
@@ -885,29 +931,31 @@ pd:
   module_info: [...]
   ...
 logging:
-  wandb_run_name: seed=0
-  view_meta: {}
   eval_metrics: {...}
   ...
 runtime:
   autocast_bf16: true
   device: cuda
   dp: null
+view_meta: {}
 target: {...}
 data: {...}</code></pre>
 
 <h3>Reload usage</h3>
-        <pre><code>pd_run = PDRun.from_path("wandb:entity/project/runs/abc123")
-pd_run.run                # Run (driver-specific subclass, e.g. LMRun)
+        <pre><code>pd_run = SavedRun.from_path("wandb:entity/project/runs/abc123")
+pd_run.run_cfg            # RunConfig (driver-specific subclass, e.g. LMRunConfig)
 pd_run.pd_config          # PDConfig (always available)
-pd_run.driver             # ExperimentDriver | None  (None for notebook runs)
-target = pd_run.load_target()        # driver.build_target(run)
-loaders = pd_run.load_dataloaders(...)
-model = pd_run.load_model()          # ComponentModel.from_checkpoint(...)
+pd_run.driver             # ExperimentDriver (resolved at construction)
+target = pd_run.load_target()                       # driver.build_target(run_cfg)
+train_loader = pd_run.build_train_loader(device="cuda")
+eval_loader = pd_run.build_eval_loader(device="cuda")
+model = pd_run.load_model()                          # ComponentModel.from_checkpoint(...)
 
-# Shortcuts
-model = load_component_model("wandb:entity/project/runs/abc123")               # driver-backed
-model = load_component_model("/path/to/run", target=my_target)                 # notebook-style run</code></pre>
+# Shortcut
+model = load_component_model("wandb:entity/project/runs/abc123")  # driver-mediated only
+
+# Notebook-only run (no RunConfig was written)
+# model = ComponentModel.from_checkpoint(config=..., checkpoint_path=..., target_model=..., run_batch=...)</code></pre>
       </section>
     </div>
 

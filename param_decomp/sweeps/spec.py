@@ -68,7 +68,7 @@ class SweepSpec:
             "logging": self.logging.model_dump(mode="json"),
             "runtime": self.runtime.model_dump(mode="json"),
             "n_agents": self.n_agents,
-            "swept_data": [
+            "swept_datas": [
                 {
                     "name": sweep_data.name,
                     "pd_config": sweep_data.pd_config.model_dump(mode="json"),

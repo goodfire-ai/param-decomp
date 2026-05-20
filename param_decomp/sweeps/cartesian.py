@@ -33,7 +33,7 @@ def cartesian_product(
     """Cartesian product of dot-pathed axes over a base config.
 
     Each axis key is a dotted path into ``base_config.pd`` (e.g.
-    ``"pd.loss_metrics.importance_minimality.coeff"``). Only ``pd.*`` keys are
+    ``"pd.loss_metrics.ImportanceMinimalityLoss.coeff"``). Only ``pd.*`` keys are
     supported — ``logging`` and ``runtime`` are hoisted to the ``SweepSpec``
     and shared across runs. Axis values are recorded in each run's
     ``view_meta`` so W&B can group/color by them.
