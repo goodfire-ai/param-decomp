@@ -30,7 +30,6 @@ import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
 
-
 # ───────────────────────── plain (1 rank per block group) ─────────────────────────
 
 
@@ -116,9 +115,7 @@ class TwoPoolLayout:
                 my_rank=my_rank,
                 my_pool="a",
                 my_is_pool_leader=(my_rank == world.pool_a_ranks[0]),
-                my_owned_sites=tuple(
-                    s for s in world.all_sites if world.site_owner[s] == my_rank
-                ),
+                my_owned_sites=tuple(s for s in world.all_sites if world.site_owner[s] == my_rank),
                 my_slice_idx=None,
             )
         elif my_rank in world.pool_b_ranks:
@@ -159,7 +156,11 @@ class TwoPoolLayout:
                 dist.send(ci_owned[site][sl].detach().contiguous(), dst=b_rank)
 
     def recv_ci_from_owners(
-        self, site_to_c: dict[str, int], seq_len: int, device: torch.device, dtype: torch.dtype,
+        self,
+        site_to_c: dict[str, int],
+        seq_len: int,
+        device: torch.device,
+        dtype: torch.dtype,
     ) -> dict[str, Tensor]:
         assert self.my_pool == "b"
         out: dict[str, Tensor] = {}
@@ -225,7 +226,9 @@ class TwoPoolLayout:
         return v_grads, u_grads, ci_grads
 
     def send_updated_weights_to_pool_b(
-        self, v_owned: dict[str, Tensor], u_owned: dict[str, Tensor],
+        self,
+        v_owned: dict[str, Tensor],
+        u_owned: dict[str, Tensor],
     ) -> None:
         assert self.my_pool == "a"
         for site in self.world.all_sites:
@@ -236,7 +239,9 @@ class TwoPoolLayout:
                 dist.send(u_owned[site].detach().contiguous(), dst=b_rank)
 
     def recv_updated_weights_from_owners(
-        self, v_templates: dict[str, Tensor], u_templates: dict[str, Tensor],
+        self,
+        v_templates: dict[str, Tensor],
+        u_templates: dict[str, Tensor],
     ) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
         assert self.my_pool == "b"
         v_new: dict[str, Tensor] = {}
@@ -273,7 +278,9 @@ class BlockGroup:
 
     def __post_init__(self) -> None:
         assert len(self.ranks) > 0, "block group must have at least one rank"
-        assert len(self.ranks) == len(set(self.ranks)), f"duplicate ranks in block group: {self.ranks}"
+        assert len(self.ranks) == len(set(self.ranks)), (
+            f"duplicate ranks in block group: {self.ranks}"
+        )
 
 
 @dataclass(frozen=True)
@@ -378,17 +385,25 @@ class BlockDDPLayout:
             if my_rank in bg.ranks:
                 within = bg.ranks.index(my_rank)
                 return cls(
-                    world=world, my_rank=my_rank, my_pool="a",
-                    my_block_idx=bg_idx, my_within_block_idx=within,
+                    world=world,
+                    my_rank=my_rank,
+                    my_pool="a",
+                    my_block_idx=bg_idx,
+                    my_within_block_idx=within,
                     my_is_block_leader=(within == 0),
                     my_owned_sites=bg.owned_sites,
-                    my_slice_idx=None, my_is_pool_leader=False,
+                    my_slice_idx=None,
+                    my_is_pool_leader=False,
                 )
         if my_rank in world.pool_b_ranks:
             return cls(
-                world=world, my_rank=my_rank, my_pool="b",
-                my_block_idx=None, my_within_block_idx=None,
-                my_is_block_leader=False, my_owned_sites=(),
+                world=world,
+                my_rank=my_rank,
+                my_pool="b",
+                my_block_idx=None,
+                my_within_block_idx=None,
+                my_is_block_leader=False,
+                my_owned_sites=(),
                 my_slice_idx=world.pool_b_ranks.index(my_rank),
                 my_is_pool_leader=(my_rank == world.pool_b_ranks[0]),
             )
@@ -426,7 +441,8 @@ class BlockDDPLayout:
                 dist.send(ci_owned[site][sl].detach().contiguous(), dst=b_rank)
 
     def async_send_owned_ci_to_pool_b(
-        self, ci_owned: dict[str, Tensor],
+        self,
+        ci_owned: dict[str, Tensor],
     ) -> tuple[list["dist.Work"], list[Tensor]]:
         """Async variant — issue isends and return (work_handles, kept-alive buffers).
         Caller must wait on the handles AND keep the buffers alive until then.
@@ -445,7 +461,11 @@ class BlockDDPLayout:
         return works, buffers
 
     def recv_ci_from_owners(
-        self, site_to_c: dict[str, int], seq_len: int, device: torch.device, dtype: torch.dtype,
+        self,
+        site_to_c: dict[str, int],
+        seq_len: int,
+        device: torch.device,
+        dtype: torch.dtype,
     ) -> dict[str, Tensor]:
         assert self.my_pool == "b"
         out: dict[str, Tensor] = {}
@@ -458,7 +478,11 @@ class BlockDDPLayout:
         return out
 
     def async_recv_ci_from_owners(
-        self, site_to_c: dict[str, int], seq_len: int, device: torch.device, dtype: torch.dtype,
+        self,
+        site_to_c: dict[str, int],
+        seq_len: int,
+        device: torch.device,
+        dtype: torch.dtype,
     ) -> tuple[dict[str, Tensor], list["dist.Work"]]:
         """Async variant — issue irecvs and return (buffers_dict, work_handles).
         Caller must wait on all handles before reading the buffers.
@@ -524,7 +548,9 @@ class BlockDDPLayout:
                 slices: list[Tensor] = []
                 for b_rank in self.world.pool_b_ranks:
                     buf = torch.empty(
-                        (self.world.batch_local_b, S, C), dtype=full.dtype, device=full.device,
+                        (self.world.batch_local_b, S, C),
+                        dtype=full.dtype,
+                        device=full.device,
                     )
                     dist.recv(buf, src=b_rank)
                     slices.append(buf)
@@ -553,7 +579,9 @@ class BlockDDPLayout:
                 dist.all_reduce(p.grad, op=dist.ReduceOp.AVG, group=block_group)
 
     def send_updated_weights_to_pool_b(
-        self, v_owned: dict[str, Tensor], u_owned: dict[str, Tensor],
+        self,
+        v_owned: dict[str, Tensor],
+        u_owned: dict[str, Tensor],
     ) -> None:
         assert self.my_pool == "a"
         for site in self.world.all_sites:
@@ -564,7 +592,9 @@ class BlockDDPLayout:
                 dist.send(u_owned[site].detach().contiguous(), dst=b_rank)
 
     def async_send_updated_weights_to_pool_b(
-        self, v_owned: dict[str, Tensor], u_owned: dict[str, Tensor],
+        self,
+        v_owned: dict[str, Tensor],
+        u_owned: dict[str, Tensor],
     ) -> tuple[list["dist.Work"], list[Tensor]]:
         """Async variant. Clones V/U into a send buffer so the underlying tensors
         are free to be modified by the next optimizer step while the send is in
@@ -586,7 +616,9 @@ class BlockDDPLayout:
         return works, buffers
 
     def recv_updated_weights_from_owners(
-        self, v_templates: dict[str, Tensor], u_templates: dict[str, Tensor],
+        self,
+        v_templates: dict[str, Tensor],
+        u_templates: dict[str, Tensor],
     ) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
         assert self.my_pool == "b"
         v_new: dict[str, Tensor] = {}

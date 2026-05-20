@@ -32,7 +32,9 @@ import torch.distributed as dist
 from torch import Tensor
 
 from param_decomp.configs import (
-    LayerwiseCiConfig,
+    AttnConfig,
+    GlobalCiConfig,
+    GlobalSharedTransformerCiConfig,
     PerBatchPerPositionScope,
     PersistentPGDReconLossConfig,
     ScheduleConfig,
@@ -53,7 +55,9 @@ N_TRANSFORMER_BLOCKS = 6
 BATCH = 64
 SEQ_LEN = 1024
 C = 32
-CI_HIDDEN = 1024
+CI_D_MODEL = 128
+CI_N_BLOCKS = 2
+CI_N_HEADS = 4
 
 # Topology: 14 single-rank block groups + 2 pool B ranks. Total 16 GPUs.
 N_BLOCK_GROUPS = 14
@@ -124,11 +128,19 @@ def main() -> None:
         pool_b_ranks=POOL_B_RANKS,
         batch_global=BATCH,
         c_per_site=c_per_site,
-        ci_config=LayerwiseCiConfig(fn_type="vector_mlp", hidden_dims=[CI_HIDDEN]),
+        ci_config=GlobalCiConfig(
+            fn_type="global_shared_transformer",
+            simple_transformer_ci_cfg=GlobalSharedTransformerCiConfig(
+                d_model=CI_D_MODEL,
+                n_blocks=CI_N_BLOCKS,
+                attn_config=AttnConfig(n_heads=CI_N_HEADS),
+            ),
+        ),
         sigmoid_type="leaky_hard",
         run_batch=run_batch_passthrough,
         reconstruction_loss=recon_loss_kl,
         ppgd_cfg=ppgd_cfg,
+        bf16_autocast=True,
     )
 
     if rank == 0:
@@ -140,7 +152,8 @@ def main() -> None:
         print(
             f"[wider] batch={BATCH} (A_local={BATCH // N_PER_BLOCK_GROUP} "
             f"B_local={BATCH // N_POOL_B}) seq={SEQ_LEN} d={D_MODEL} d_mlp={D_MLP} "
-            f"n_blocks={N_TRANSFORMER_BLOCKS} ci_hidden={CI_HIDDEN}",
+            f"n_blocks={N_TRANSFORMER_BLOCKS} "
+            f"ci_d_model={CI_D_MODEL} ci_n_blocks={CI_N_BLOCKS} ci_n_heads={CI_N_HEADS}",
             flush=True,
         )
 

@@ -35,7 +35,4 @@ def build_pool_b_module_path_info(
 ) -> list[ModulePathInfo]:
     """For a pool-B rank, the full ModulePathInfo for every site (replicated V/U)."""
     assert layout.my_pool == "b"
-    return [
-        ModulePathInfo(module_path=s, C=c_per_site[s])
-        for s in layout.world.all_sites
-    ]
+    return [ModulePathInfo(module_path=s, C=c_per_site[s]) for s in layout.world.all_sites]

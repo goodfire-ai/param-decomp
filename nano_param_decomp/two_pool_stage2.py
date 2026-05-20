@@ -95,9 +95,9 @@ def ci_forward(
     ci_lower: dict[str, Tensor] = {}
     ci_upper: dict[str, Tensor] = {}
     for name, fn in ci_fns.items():
-        l, u = fn(acts[name])
-        ci_lower[name] = l
-        ci_upper[name] = u
+        lower, upper = fn(acts[name])
+        ci_lower[name] = lower
+        ci_upper[name] = upper
     return ci_lower, ci_upper
 
 

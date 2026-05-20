@@ -16,15 +16,19 @@ Run:
 
 # pyright: reportArgumentType=false, reportOperatorIssue=false, reportIndexIssue=false
 
+import json
 import os
 import time
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
 from torch import Tensor
 
 from param_decomp.configs import (
-    LayerwiseCiConfig,
+    AttnConfig,
+    GlobalCiConfig,
+    GlobalSharedTransformerCiConfig,
     PerBatchPerPositionScope,
     PersistentPGDReconLossConfig,
     ScheduleConfig,
@@ -39,7 +43,7 @@ VOCAB = 8192
 D_MODEL = 768
 N_HEADS = 12
 D_MLP = 3072
-N_TRANSFORMER_BLOCKS = 6   # → 42 sites total
+N_TRANSFORMER_BLOCKS = 6  # → 42 sites total
 # Bumped to realistic LLM-training shapes (batch=66, seq=1024) — 66 divides
 # evenly by both N_PER_BLOCK_GROUP (=1) and N_POOL_B (=6). Vanilla OOMs at
 # this shape; 2-pool with 1 site/rank should be the fastest config at this
@@ -47,7 +51,9 @@ N_TRANSFORMER_BLOCKS = 6   # → 42 sites total
 BATCH = 66
 SEQ_LEN = 1024
 C = 32
-CI_HIDDEN = 1024
+CI_D_MODEL = 128
+CI_N_BLOCKS = 2
+CI_N_HEADS = 4
 
 # Topology: 48 GPUs across 6 nodes.
 #   Per node: 7 pool-A ranks + 1 pool-B rank (the last rank on each node)
@@ -61,7 +67,9 @@ N_PER_BLOCK_GROUP = 1
 N_POOL_B = 6
 
 # Reserve rank 7, 15, 23, 31, 39, 47 (last on each node) for pool B.
-POOL_B_RANKS: tuple[int, ...] = tuple(node * GPUS_PER_NODE + (GPUS_PER_NODE - 1) for node in range(N_NODES))
+POOL_B_RANKS: tuple[int, ...] = tuple(
+    node * GPUS_PER_NODE + (GPUS_PER_NODE - 1) for node in range(N_NODES)
+)
 POOL_A_RANKS: tuple[int, ...] = tuple(r for r in range(WORLD_SIZE) if r not in POOL_B_RANKS)
 assert len(POOL_A_RANKS) == N_BLOCK_GROUPS
 
@@ -108,11 +116,19 @@ def main() -> None:
         pool_b_ranks=POOL_B_RANKS,
         batch_global=BATCH,
         c_per_site=c_per_site,
-        ci_config=LayerwiseCiConfig(fn_type="vector_mlp", hidden_dims=[CI_HIDDEN]),
+        ci_config=GlobalCiConfig(
+            fn_type="global_shared_transformer",
+            simple_transformer_ci_cfg=GlobalSharedTransformerCiConfig(
+                d_model=CI_D_MODEL,
+                n_blocks=CI_N_BLOCKS,
+                attn_config=AttnConfig(n_heads=CI_N_HEADS),
+            ),
+        ),
         sigmoid_type="leaky_hard",
         run_batch=run_batch_passthrough,
         reconstruction_loss=recon_loss_kl,
         ppgd_cfg=ppgd_cfg,
+        bf16_autocast=True,
     )
 
     if rank == 0:
@@ -124,7 +140,8 @@ def main() -> None:
         print(
             f"[maxA] batch={BATCH} (A_local={BATCH // N_PER_BLOCK_GROUP} "
             f"B_local={BATCH // N_POOL_B}) seq={SEQ_LEN} d={D_MODEL} d_mlp={D_MLP} "
-            f"n_blocks={N_TRANSFORMER_BLOCKS} ci_hidden={CI_HIDDEN}",
+            f"n_blocks={N_TRANSFORMER_BLOCKS} "
+            f"ci_d_model={CI_D_MODEL} ci_n_blocks={CI_N_BLOCKS} ci_n_heads={CI_N_HEADS}",
             flush=True,
         )
 
@@ -151,7 +168,12 @@ def main() -> None:
     torch.cuda.synchronize()
     step_times.append(time.perf_counter())
 
-    profiler = PhaseProfiler(enabled=True)
+    profile_mode = os.environ.get("PROFILE_MODE", "off")
+    assert profile_mode in ("sync", "async", "off"), f"PROFILE_MODE={profile_mode}"
+    profiler = PhaseProfiler(enabled=(profile_mode != "off"), sync=(profile_mode == "sync"))
+    if rank == 0:
+        print(f"[maxA] PROFILE_MODE={profile_mode}", flush=True)
+
     optimize_two_pool(
         target_model=target,
         pool_config=pool_config,
@@ -169,17 +191,31 @@ def main() -> None:
         per_sample = avg_ms / BATCH
         print(
             f"\n[maxA rank0] STEP_TOTAL avg={avg_ms:.2f}ms  "
-            f"min={1000*min(profile):.2f}ms  max={1000*max(profile):.2f}ms  (n={len(profile)})",
+            f"min={1000 * min(profile):.2f}ms  max={1000 * max(profile):.2f}ms  (n={len(profile)})",
             flush=True,
         )
         print(
-            f"[maxA rank0] per-sample throughput: {1000/per_sample:.1f} samples/sec/world",
+            f"[maxA rank0] per-sample throughput: {1000 / per_sample:.1f} samples/sec/world",
             flush=True,
         )
 
     if rank in (0, POOL_B_RANKS[0]):
         print(f"\n[maxA rank{rank}] phase breakdown (skipping first {WARMUP_STEPS}):", flush=True)
         print(profiler.report(warmup=WARMUP_STEPS), flush=True)
+
+        if profile_mode != "off":
+            out_dir = Path(os.environ.get("PROFILE_OUT_DIR", "/tmp/two_pool_profile"))
+            out_dir.mkdir(parents=True, exist_ok=True)
+            pool = "a" if rank == 0 else "b"
+            out_path = out_dir / f"maxA_{profile_mode}_pool{pool}_rank{rank}.json"
+            with open(out_path, "w") as f:
+                json.dump(
+                    profiler.to_json_dict(
+                        warmup=WARMUP_STEPS, rank=rank, pool=pool, mode=profile_mode
+                    ),
+                    f,
+                )
+            print(f"[maxA rank{rank}] wrote spans → {out_path}", flush=True)
 
     dist.destroy_process_group()
 

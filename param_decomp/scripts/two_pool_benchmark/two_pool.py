@@ -21,7 +21,9 @@ import torch.distributed as dist
 from torch import Tensor
 
 from param_decomp.configs import (
-    LayerwiseCiConfig,
+    AttnConfig,
+    GlobalCiConfig,
+    GlobalSharedTransformerCiConfig,
     PerBatchPerPositionScope,
     PersistentPGDReconLossConfig,
     ScheduleConfig,
@@ -39,7 +41,13 @@ N_TRANSFORMER_BLOCKS = 6
 BATCH = 8
 SEQ_LEN = 64
 C = 32
-CI_HIDDEN = 1024
+# Per-rank CI fn config. Each pool-A rank gets a `GlobalSharedTransformerCiFn`
+# instantiated over its owned sites (singleton in maxA, 3-site group here in
+# wider). The fn is shared across whatever sites the rank owns — kept modest
+# so it isn't the bottleneck. See `param_decomp/models/components.py`.
+CI_D_MODEL = 128
+CI_N_BLOCKS = 2
+CI_N_HEADS = 4
 
 # Topology: 3 block groups × 2 ranks (in-block DDP-2) + 2 pool B ranks (DP-2) = 8 GPUs.
 BLOCK_GROUP_RANKS: tuple[tuple[int, ...], ...] = ((0, 1), (2, 3), (4, 5))
@@ -91,11 +99,19 @@ def main() -> None:
         pool_b_ranks=POOL_B_RANKS,
         batch_global=BATCH,
         c_per_site=c_per_site,
-        ci_config=LayerwiseCiConfig(fn_type="vector_mlp", hidden_dims=[CI_HIDDEN]),
+        ci_config=GlobalCiConfig(
+            fn_type="global_shared_transformer",
+            simple_transformer_ci_cfg=GlobalSharedTransformerCiConfig(
+                d_model=CI_D_MODEL,
+                n_blocks=CI_N_BLOCKS,
+                attn_config=AttnConfig(n_heads=CI_N_HEADS),
+            ),
+        ),
         sigmoid_type="leaky_hard",
         run_batch=run_batch_passthrough,
         reconstruction_loss=recon_loss_kl,
         ppgd_cfg=ppgd_cfg,
+        bf16_autocast=True,
     )
 
     if rank == 0:
@@ -103,7 +119,7 @@ def main() -> None:
         print(
             f"[two_pool] batch={BATCH} (A_local={BATCH // 2} B_local={BATCH // 2}) "
             f"seq={SEQ_LEN} d={D_MODEL} d_mlp={D_MLP} n_blocks={N_TRANSFORMER_BLOCKS} "
-            f"ci_hidden={CI_HIDDEN}",
+            f"ci_d_model={CI_D_MODEL} ci_n_blocks={CI_N_BLOCKS} ci_n_heads={CI_N_HEADS}",
             flush=True,
         )
 

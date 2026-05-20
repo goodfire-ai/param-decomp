@@ -55,10 +55,11 @@ from nano_param_decomp.two_pool_stage2 import ModuleCIFn, ci_forward
 
 N_POOL_A = 6
 N_POOL_B = 2
-N_BLOCKS = 6   # == N_POOL_A; one block per pool-A rank
+N_BLOCKS = 6  # == N_POOL_A; one block per pool-A rank
 
 
 # --- Tiny 6-block transformer ---
+
 
 class TinyAttention(nn.Module):
     def __init__(self, d: int, n_heads: int) -> None:
@@ -137,6 +138,7 @@ def sites_for_block(block_idx: int) -> list[str]:
 
 # --- Per-site layerwise loss ---
 
+
 def single_site_layerwise_loss(
     target_model: nn.Module,
     wrappers: dict[str, ComponentLinear],
@@ -185,9 +187,7 @@ def faith_loss_owned(wrappers: dict[str, ComponentLinear], owned_sites: tuple[st
     return sum_sq / numel
 
 
-def imp_loss_owned(
-    ci_upper_owned: dict[str, Tensor], p: float, eps: float, beta: float
-) -> Tensor:
+def imp_loss_owned(ci_upper_owned: dict[str, Tensor], p: float, eps: float, beta: float) -> Tensor:
     total = torch.zeros((), device=next(iter(ci_upper_owned.values())).device)
     for v in ci_upper_owned.values():
         vals = (v + eps).pow(p)
@@ -200,6 +200,7 @@ def imp_loss_owned(
 
 
 # --- Pool A step ---
+
 
 def pool_a_step(
     layout: TwoPoolLayout,
@@ -226,9 +227,7 @@ def pool_a_step(
         target_model, wrappers, layout.my_owned_sites, input_ids, target_logits, ci_lower_owned
     )
     total_home = (
-        cfg.coeff_faith * loss_faith
-        + cfg.coeff_imp * loss_imp
-        + cfg.coeff_stoch * loss_stoch
+        cfg.coeff_faith * loss_faith + cfg.coeff_imp * loss_imp + cfg.coeff_stoch * loss_stoch
     )
 
     v_grads, u_grads, ci_grads = layout.recv_grads_from_pool_b(wrappers, ci_lower_owned)
@@ -256,6 +255,7 @@ def pool_a_step(
 
 
 # --- Pool B step ---
+
 
 def pool_b_step(
     layout: TwoPoolLayout,
@@ -311,6 +311,7 @@ def pool_b_step(
 
 # --- Main ---
 
+
 def main() -> None:
     dist.init_process_group("nccl")
     rank = dist.get_rank()
@@ -341,7 +342,10 @@ def main() -> None:
         batch_global=batch_size,
     )
     layout = TwoPoolLayout.from_world(world, rank)
-    print(f"[rank{rank}] pool={layout.my_pool} owned={layout.my_owned_sites} slice={layout.my_slice_idx}", flush=True)
+    print(
+        f"[rank{rank}] pool={layout.my_pool} owned={layout.my_owned_sites} slice={layout.my_slice_idx}",
+        flush=True,
+    )
 
     cfg = Config(
         C_per_module={},
@@ -361,7 +365,9 @@ def main() -> None:
     for w in wrappers.values():
         w.to(device)
 
-    ci_fns = build_ci_fns_for_layout(layout, wrappers, c_per_site, hidden=32, leaky_alpha=cfg.leaky_alpha)
+    ci_fns = build_ci_fns_for_layout(
+        layout, wrappers, c_per_site, hidden=32, leaky_alpha=cfg.leaky_alpha
+    )
     for f in ci_fns.values():
         f.to(device)
 
@@ -393,7 +399,9 @@ def main() -> None:
         torch.manual_seed(100 + step * 1000 + rank)
 
         if layout.my_pool == "a":
-            metrics = pool_a_step(layout, target, wrappers, ci_fns, optimizer, input_ids, cfg, imp_p)
+            metrics = pool_a_step(
+                layout, target, wrappers, ci_fns, optimizer, input_ids, cfg, imp_p
+            )
         else:
             metrics = pool_b_step(layout, target, wrappers, ppgd, input_ids, cfg, device)
 

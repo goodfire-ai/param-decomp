@@ -26,7 +26,7 @@ import os
 import time
 from collections import defaultdict
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 import torch
 import torch.distributed as dist
@@ -34,7 +34,9 @@ import torch.nn as nn
 from torch import Tensor
 
 from param_decomp.configs import (
-    LayerwiseCiConfig,
+    AttnConfig,
+    GlobalCiConfig,
+    GlobalSharedTransformerCiConfig,
     PerBatchPerPositionScope,
     PersistentPGDReconLossConfig,
     ScheduleConfig,
@@ -57,10 +59,20 @@ N_TRANSFORMER_BLOCKS = 6
 BATCH = 16
 SEQ_LEN = 256
 C = 32
-CI_HIDDEN = 1024  # vector_mlp grows fast; keep this modest so vanilla DDP-N fits
+CI_D_MODEL = 128
+CI_N_BLOCKS = 2
+CI_N_HEADS = 4
+
+BF16_AUTOCAST = True
 
 WARMUP_STEPS = 2
 PROFILE_STEPS = 4
+
+
+def _autocast():
+    if BF16_AUTOCAST:
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    return nullcontext()
 
 
 class StepTimer:
@@ -120,7 +132,14 @@ def main() -> None:
     all_sites = [s for b in range(N_TRANSFORMER_BLOCKS) for s in sites_for_block(b)]
     module_path_info = [ModulePathInfo(module_path=s, C=C) for s in all_sites]
 
-    ci_config = LayerwiseCiConfig(fn_type="vector_mlp", hidden_dims=[CI_HIDDEN])
+    ci_config = GlobalCiConfig(
+        fn_type="global_shared_transformer",
+        simple_transformer_ci_cfg=GlobalSharedTransformerCiConfig(
+            d_model=CI_D_MODEL,
+            n_blocks=CI_N_BLOCKS,
+            attn_config=AttnConfig(n_heads=CI_N_HEADS),
+        ),
+    )
 
     target = target.to(device)
     component_model = ComponentModel(
@@ -172,7 +191,8 @@ def main() -> None:
         )
         print(
             f"[vanilla] batch={BATCH} (local={batch_local}) seq={SEQ_LEN} "
-            f"d={D_MODEL} d_mlp={D_MLP} n_blocks={N_TRANSFORMER_BLOCKS} ci_hidden={CI_HIDDEN}",
+            f"d={D_MODEL} d_mlp={D_MLP} n_blocks={N_TRANSFORMER_BLOCKS} "
+            f"ci_d_model={CI_D_MODEL} ci_n_blocks={CI_N_BLOCKS} ci_n_heads={CI_N_HEADS}",
             flush=True,
         )
 
@@ -189,8 +209,8 @@ def main() -> None:
         torch.manual_seed(100 + step * 1000 + rank)
 
         with timer.phase("STEP_TOTAL"):
-            # 1. target + CI forward
-            with timer.phase("target_and_ci_fwd"):
+            # 1. target + CI forward (bf16 unlocks the fast SDPA backends)
+            with timer.phase("target_and_ci_fwd"), _autocast():
                 output_with_cache = component_model(input_ids, cache_type="input")
                 target_logits = output_with_cache.output
                 ci = component_model.calc_causal_importances(
@@ -221,7 +241,7 @@ def main() -> None:
                 loss_imp = imp_total
 
             # 4. per-site layerwise: serial M-iteration loop
-            with timer.phase("layerwise_total"):
+            with timer.phase("layerwise_total"), _autocast():
                 layerwise_losses: list[Tensor] = []
                 for site in all_sites:
                     ci_s = ci.lower_leaky[site]
@@ -240,7 +260,7 @@ def main() -> None:
 
             # 5. PPGD via real PersistentPGDState (warmup refines persistent sources;
             #    compute_recon_loss returns the loss with the refined sources for backward).
-            with timer.phase("ppgd_warmup"):
+            with timer.phase("ppgd_warmup"), _autocast():
                 ppgd_state.warmup(
                     model=component_model,
                     batch=input_ids,
@@ -248,7 +268,7 @@ def main() -> None:
                     ci=ci.lower_leaky,
                     weight_deltas=None,
                 )
-            with timer.phase("ppgd_recon"):
+            with timer.phase("ppgd_recon"), _autocast():
                 loss_ppgd = ppgd_state.compute_recon_loss(
                     model=component_model,
                     batch=input_ids,

@@ -59,6 +59,7 @@ N_POOL_B = 2
 
 # --- Per-site layerwise loss, but now on a local batch slice ---
 
+
 def single_site_layerwise_loss_local(
     target_model: nn.Module,
     wrappers: dict[str, ComponentLinear],
@@ -100,6 +101,7 @@ def single_site_layerwise_loss_local(
 
 # --- Pool A step ---
 
+
 def pool_a_step(
     layout: BlockDDPLayout,
     target_model: nn.Module,
@@ -134,9 +136,7 @@ def pool_a_step(
         {s: ci_lower_owned[s][sl] for s in layout.my_owned_sites},
     )
     total_home = (
-        cfg.coeff_faith * loss_faith
-        + cfg.coeff_imp * loss_imp
-        + cfg.coeff_stoch * loss_stoch
+        cfg.coeff_faith * loss_faith + cfg.coeff_imp * loss_imp + cfg.coeff_stoch * loss_stoch
     )
 
     # Recv B-contributed grads — block leader recvs from pool B, then broadcasts within block group.
@@ -176,6 +176,7 @@ def pool_a_step(
 
 
 # --- Pool B step (essentially unchanged from stage 4) ---
+
 
 def pool_b_step(
     layout: BlockDDPLayout,
@@ -231,6 +232,7 @@ def pool_b_step(
 
 # --- Main ---
 
+
 def main() -> None:
     dist.init_process_group("nccl")
     rank = dist.get_rank()
@@ -241,10 +243,7 @@ def main() -> None:
     torch.cuda.set_device(local_rank)
     device = torch.device(f"cuda:{local_rank}")
 
-    block_groups = [
-        [b * N_PER_BLOCK + k for k in range(N_PER_BLOCK)]
-        for b in range(N_BLOCKS)
-    ]
+    block_groups = [[b * N_PER_BLOCK + k for k in range(N_PER_BLOCK)] for b in range(N_BLOCKS)]
     block_owned_sites = [sites_for_block(b) for b in range(N_BLOCKS)]
     pool_b_ranks = list(range(N_BLOCKS * N_PER_BLOCK, N_BLOCKS * N_PER_BLOCK + N_POOL_B))
 
@@ -283,7 +282,9 @@ def main() -> None:
     for w in wrappers.values():
         w.to(device)
 
-    ci_fns = build_ci_fns_for_block_ddp(layout, wrappers, c_per_site, hidden=32, leaky_alpha=cfg.leaky_alpha)
+    ci_fns = build_ci_fns_for_block_ddp(
+        layout, wrappers, c_per_site, hidden=32, leaky_alpha=cfg.leaky_alpha
+    )
     for f in ci_fns.values():
         f.to(device)
 
@@ -315,7 +316,9 @@ def main() -> None:
         torch.manual_seed(100 + step * 1000 + rank)
 
         if layout.my_pool == "a":
-            metrics = pool_a_step(layout, target, wrappers, ci_fns, optimizer, input_ids, cfg, imp_p)
+            metrics = pool_a_step(
+                layout, target, wrappers, ci_fns, optimizer, input_ids, cfg, imp_p
+            )
         else:
             metrics = pool_b_step(layout, target, wrappers, ppgd, input_ids, cfg, device)
 
