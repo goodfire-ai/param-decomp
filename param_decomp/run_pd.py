@@ -48,6 +48,7 @@ from param_decomp.configs import (
 )
 from param_decomp.driver_path import load_driver
 from param_decomp.eval import evaluate
+from param_decomp.experiments.driver import ExperimentDriver
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.log import logger
 from param_decomp.metrics import METRIC_REGISTRY
@@ -89,8 +90,12 @@ class RunInputs:
     via ``RunInputs.from_config(...)``. Notebook callers skip ``RunInputs``
     entirely: they construct ``PDTarget`` + dataloaders themselves and pass them
     straight to ``optimize``.
+
+    Carries the resolved ``driver`` alongside the runtime objects so callers
+    (e.g. ``run_pd`` deriving W&B tags) don't have to re-resolve it.
     """
 
+    driver: ExperimentDriver[Any]
     target: PDTarget
     train_loader: DataLoader[Any]
     eval_loader: DataLoader[Any]
@@ -110,6 +115,7 @@ class RunInputs:
             f"expected {driver.config_type.__name__} from driver {run_cfg.driver_path}"
         )
         return cls(
+            driver=driver,
             target=driver.build_target(run_cfg),
             train_loader=driver.build_train_loader(run_cfg, device=device, dist_state=dist_state),
             eval_loader=driver.build_eval_loader(run_cfg, device=device, dist_state=dist_state),
@@ -500,13 +506,31 @@ def _validate_pgd_scope(config: PDConfig, dist_state: DistributedState | None) -
             )
 
 
+def _wandb_tags(*, driver_name: str, launch_id: str | None) -> list[str]:
+    """Tags attached to every wandb run from `run_pd`.
+
+    `driver_name` lets the W&B UI filter by experiment kind (lm / tms / resid_mlp).
+    `launch_id` groups every run from one `pd-run` invocation (single launches
+    and sweep arrays alike). The SLURM array job id is picked up from
+    `$SLURM_ARRAY_JOB_ID` so post-hoc you can find every run that came out of a
+    given SLURM submission.
+    """
+    tags = [driver_name]
+    if launch_id is not None:
+        tags.append(launch_id)
+    slurm_array_job_id = os.getenv("SLURM_ARRAY_JOB_ID")
+    if slurm_array_job_id is not None:
+        tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
+    return tags
+
+
 def run_pd(
     run_cfg: RunConfig,
     *,
     device: str,
     dist_state: DistributedState | None = None,
     wandb_project: str | None = None,
-    wandb_tags: list[str] | None = None,
+    launch_id: str | None = None,
 ) -> Path | None:
     """Driver-mediated PD run. Composition root for ``pd-run`` / ``_worker.py``.
 
@@ -522,6 +546,8 @@ def run_pd(
 
     ``wandb_project`` is a deploy-time parameter (which W&B account/project to
     log to), not part of the reproducible ``RunConfig``. ``None`` disables W&B.
+    ``launch_id`` is the SLURM launch identifier shared by every run in a
+    sweep — used as a W&B tag so the sweep can be queried as a group.
 
     All ranks call this function. Returns the output directory on the main
     process and ``None`` on other ranks.
@@ -539,11 +565,6 @@ def run_pd(
         logger.info(f"Run ID: {run_cfg.run_id}")
         logger.info(f"Output directory: {out_dir}")
 
-        tags = list(wandb_tags or [])
-        slurm_array_job_id = os.getenv("SLURM_ARRAY_JOB_ID")
-        if slurm_array_job_id is not None:
-            tags.append(f"slurm-array-job-id_{slurm_array_job_id}")
-
         if wandb_project:
             init_wandb(
                 wandb_project,
@@ -554,7 +575,7 @@ def run_pd(
                     "runtime": run_cfg.runtime,
                 },
                 name=run_cfg.name,
-                tags=tags,
+                tags=_wandb_tags(driver_name=inputs.driver.name, launch_id=launch_id),
                 view_meta=run_cfg.view_meta,
             )
             wandb.save(str(out_dir / RUN_CONFIG_FILENAME), base_path=out_dir, policy="now")

@@ -12,7 +12,6 @@ import json
 import fire
 
 from param_decomp import run_pd
-from param_decomp.driver_path import load_driver
 from param_decomp.log import logger
 from param_decomp.run import RunConfig
 from param_decomp.utils.distributed_utils import (
@@ -30,27 +29,24 @@ def run_experiment(
     launch_id: str | None = None,
     wandb_project: str | None = None,
 ) -> None:
-    """Compose distributed setup + per-task seeding + wandb tagging, then run_pd."""
+    """Set up the distributed env + per-task seed, then hand off to `run_pd`.
+
+    W&B tagging (driver name + launch_id + SLURM env) lives in `run_pd` — see
+    `_wandb_tags` there.
+    """
     dist_state = init_distributed()
     logger.info(f"Distributed state: {dist_state}")
-
     set_seed(run_cfg.pd.seed)
     device = get_device()
-
     if is_main_process():
-        driver_name = load_driver(run_cfg.driver_path).name
-        logger.info(f"Driver: {driver_name}")
         logger.info(f"Using device: {device}")
-        wandb_tags = [driver_name, *([launch_id] if launch_id is not None else [])]
-    else:
-        wandb_tags = None
 
     run_pd(
         run_cfg,
         device=device,
         dist_state=dist_state,
         wandb_project=wandb_project,
-        wandb_tags=wandb_tags,
+        launch_id=launch_id,
     )
 
 
