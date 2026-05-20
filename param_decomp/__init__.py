@@ -19,17 +19,19 @@ Core types:
     - `PDTarget`: target model + run_batch + reconstruction_loss.
     - `RunConfig`: serializable spec for a driver-mediated run.
       Driver-specific subclasses (LMRunConfig, TMSRunConfig, ResidMLPRunConfig) add target/data.
-    - `RunInputs`: composition root — `(target, train_loader, eval_loader)`
-      bundle materialized from a `RunConfig` via `RunInputs.from_config(...)`.
     - `ExperimentDriver`: Protocol for the open-world experiment extension point.
     - `PDRun`: handle to a saved run.
+
+Composition root:
+    - `materialize_run(run_cfg, *, device, dist_state=None) -> (target, train_loader, eval_loader)`
+      — driver-mediated callers turn a `RunConfig` into the tuple `optimize` needs.
 """
 
 from param_decomp.configs import PDConfig
 from param_decomp.experiments.driver import ExperimentDriver
 from param_decomp.models.batch_and_loss_fns import PDTarget
 from param_decomp.run import RunConfig
-from param_decomp.run_pd import RunInputs, optimize, run_pd
+from param_decomp.run_pd import materialize_run, optimize, run_pd
 from param_decomp.saved_run import PDRun, load_component_model
 
 __all__ = [
@@ -38,8 +40,8 @@ __all__ = [
     "PDRun",
     "PDTarget",
     "RunConfig",
-    "RunInputs",
     "load_component_model",
+    "materialize_run",
     "optimize",
     "run_pd",
 ]

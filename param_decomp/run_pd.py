@@ -12,17 +12,16 @@ Two entry points:
   beside the checkpoint, initializes wandb from ``run_cfg`` fields, then
   hands off to ``optimize``. Used by ``pd-run`` / ``_worker.py``.
 
-``RunInputs`` is the composition root: a dataclass bundling
-``(target, train_loader, eval_loader)`` with a ``from_config(run_cfg, ...)``
-classmethod that calls into the driver. Driver-mediated callers use
-``RunInputs.from_config(...)``; notebook callers construct
-``target``/loaders themselves and skip ``RunInputs`` entirely.
+``materialize_run`` is the composition root: a standalone function that
+turns a ``RunConfig`` into the ``(target, train_loader, eval_loader)`` tuple
+``optimize`` expects. Driver-mediated callers go through ``materialize_run``;
+notebook callers construct those three objects themselves and skip the
+indirection.
 """
 
 import gc
 import os
 from collections import defaultdict
-from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any, cast
@@ -48,7 +47,6 @@ from param_decomp.configs import (
 )
 from param_decomp.driver_path import load_driver
 from param_decomp.eval import evaluate
-from param_decomp.experiments.driver import ExperimentDriver
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.log import logger
 from param_decomp.metrics import METRIC_REGISTRY
@@ -83,44 +81,30 @@ from param_decomp.utils.run_utils import save_file
 from param_decomp.utils.wandb_utils import init_wandb, try_wandb
 
 
-@dataclass(frozen=True)
-class RunInputs:
-    """Runtime objects materialized from a ``RunConfig`` — what ``optimize`` actually needs.
+def materialize_run(
+    run_cfg: RunConfig,
+    *,
+    device: str,
+    dist_state: DistributedState | None = None,
+) -> tuple[PDTarget, DataLoader[Any], DataLoader[Any]]:
+    """Compose the ``(target, train_loader, eval_loader)`` tuple ``optimize`` needs.
 
-    Driver-mediated callers (``pd-run`` / ``_worker.py`` / ``run_pd``) build one
-    via ``RunInputs.from_config(...)``. Notebook callers skip ``RunInputs``
-    entirely: they construct ``PDTarget`` + dataloaders themselves and pass them
-    straight to ``optimize``.
-
-    Carries the resolved ``driver`` alongside the runtime objects so callers
-    (e.g. ``run_pd`` deriving W&B tags) don't have to re-resolve it.
+    Resolves the driver from ``run_cfg.driver_path``, validates that ``run_cfg``
+    is the driver's expected subtype, then calls ``build_target`` /
+    ``build_train_loader`` / ``build_eval_loader``. Driver-mediated callers use
+    this; notebook callers construct those three objects themselves and skip
+    the indirection.
     """
-
-    driver: ExperimentDriver[Any]
-    target: PDTarget
-    train_loader: DataLoader[Any]
-    eval_loader: DataLoader[Any]
-
-    @classmethod
-    def from_config(
-        cls,
-        run_cfg: RunConfig,
-        *,
-        device: str,
-        dist_state: DistributedState | None = None,
-    ) -> "RunInputs":
-        """Compose runtime inputs from a saved ``RunConfig`` via its driver."""
-        driver = load_driver(run_cfg.driver_path)
-        assert isinstance(run_cfg, driver.config_type), (
-            f"RunConfig has type {type(run_cfg).__name__}, "
-            f"expected {driver.config_type.__name__} from driver {run_cfg.driver_path}"
-        )
-        return cls(
-            driver=driver,
-            target=driver.build_target(run_cfg),
-            train_loader=driver.build_train_loader(run_cfg, device=device, dist_state=dist_state),
-            eval_loader=driver.build_eval_loader(run_cfg, device=device, dist_state=dist_state),
-        )
+    driver = load_driver(run_cfg.driver_path)
+    assert isinstance(run_cfg, driver.config_type), (
+        f"RunConfig has type {type(run_cfg).__name__}, "
+        f"expected {driver.config_type.__name__} from driver {run_cfg.driver_path}"
+    )
+    return (
+        driver.build_target(run_cfg),
+        driver.build_train_loader(run_cfg, device=device, dist_state=dist_state),
+        driver.build_eval_loader(run_cfg, device=device, dist_state=dist_state),
+    )
 
 
 def run_faithfulness_warmup(
@@ -529,7 +513,8 @@ def run_pd(
     """Driver-mediated PD run. Composition root for ``pd-run`` / ``_worker.py``.
 
     Steps:
-    1. Materialize runtime inputs from the driver (``RunInputs.from_config``).
+    1. Materialize ``(target, train_loader, eval_loader)`` from the driver
+       (``materialize_run``).
     2. On the main rank: create ``out_dir`` (``PARAM_DECOMP_OUT_DIR/decompositions/<run_id>``),
        write ``run_config.yaml``, initialize W&B from ``run_cfg`` fields.
     3. Hand off to ``optimize``.
@@ -546,7 +531,9 @@ def run_pd(
     All ranks call this function. Returns the output directory on the main
     process and ``None`` on other ranks.
     """
-    inputs = RunInputs.from_config(run_cfg, device=device, dist_state=dist_state)
+    target, train_loader, eval_loader = materialize_run(
+        run_cfg, device=device, dist_state=dist_state
+    )
     # target.model lands on `device` via ComponentModel.to(device) inside optimize().
 
     out_dir: Path | None
@@ -569,7 +556,9 @@ def run_pd(
                     "runtime": run_cfg.runtime,
                 },
                 name=run_cfg.name,
-                tags=_wandb_tags(driver_name=inputs.driver.name, launch_id=launch_id),
+                tags=_wandb_tags(
+                    driver_name=load_driver(run_cfg.driver_path).name, launch_id=launch_id
+                ),
                 view_meta=run_cfg.view_meta,
             )
             wandb.save(str(out_dir / RUN_CONFIG_FILENAME), base_path=out_dir, policy="now")
@@ -579,9 +568,9 @@ def run_pd(
         out_dir = None
 
     optimize(
-        target=inputs.target,
-        train_loader=inputs.train_loader,
-        eval_loader=inputs.eval_loader,
+        target=target,
+        train_loader=train_loader,
+        eval_loader=eval_loader,
         pd_config=run_cfg.pd,
         logging_config=run_cfg.logging,
         runtime_config=run_cfg.runtime,
