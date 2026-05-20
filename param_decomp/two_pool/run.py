@@ -60,27 +60,52 @@ from param_decomp.two_pool.layout import BlockDDPLayout, BlockGroup
 class PhaseProfiler:
     """Optional inline per-phase timer for `optimize_two_pool`.
 
-    Each phase wraps a chunk of compute/comm with cuda.synchronize() + perf_counter
-    on entry and exit. Synchronizing serializes async ops — so this is for
-    DIAGNOSING where time goes, not for production runs. Disable when measuring
-    real wall-clock; enable when chasing Amdahl's-law-style bottlenecks.
+    Two modes:
+      sync=True   cuda.synchronize() at phase entry+exit. Gives honest per-phase
+                  duration but kills the async-overlap the design relies on, so
+                  total wall-clock is inflated and phases appear sequential.
+      sync=False  perf_counter() only. Records when Python WAS IN the phase block.
+                  Async sends/recvs appear as tiny spans because their work
+                  completes off-thread — useful for visualizing actual overlap.
+
+    Both modes record per-phase spans (start_ms, end_ms) relative to the step
+    start, so the timeline can be rendered. Call `start_step(step)` at the top
+    of each training iter to reset the time origin.
     """
 
     times: dict[str, list[float]] = field(default_factory=lambda: defaultdict(list))
+    spans: list[tuple[int, str, float, float]] = field(default_factory=list)
     enabled: bool = True
+    sync: bool = True
+    _step_start: float | None = None
+    _current_step: int = 0
+
+    def start_step(self, step: int) -> None:
+        self._current_step = step
+        self._step_start = time.perf_counter()
 
     @contextmanager
     def phase(self, name: str):
         if not self.enabled:
             yield
             return
-        torch.cuda.synchronize()
+        if self.sync:
+            torch.cuda.synchronize()
         t0 = time.perf_counter()
         try:
             yield
         finally:
-            torch.cuda.synchronize()
-            self.times[name].append((time.perf_counter() - t0) * 1000.0)
+            if self.sync:
+                torch.cuda.synchronize()
+            t1 = time.perf_counter()
+            self.times[name].append((t1 - t0) * 1000.0)
+            if self._step_start is not None:
+                self.spans.append((
+                    self._current_step,
+                    name,
+                    (t0 - self._step_start) * 1000.0,
+                    (t1 - self._step_start) * 1000.0,
+                ))
 
     def report(self, warmup: int = 0) -> str:
         lines = []
@@ -93,6 +118,15 @@ class PhaseProfiler:
                 f"  {name:32s} avg={avg:9.2f}ms  min={min(vals):8.2f}ms  max={max(vals):8.2f}ms"
             )
         return "\n".join(lines)
+
+    def to_json_dict(self, *, warmup: int = 0, rank: int, pool: str, mode: str) -> dict:
+        kept = [(s, n, a, b) for (s, n, a, b) in self.spans if s >= warmup]
+        return {
+            "rank": rank,
+            "pool": pool,
+            "mode": mode,
+            "spans": [{"step": s, "name": n, "start_ms": a, "end_ms": b} for s, n, a, b in kept],
+        }
 
 
 @dataclass(frozen=True)
@@ -513,6 +547,12 @@ def optimize_two_pool(
         )
 
     for step in range(n_steps):
+        # When profiling, sync ranks at step boundary so both pools share a
+        # common time origin — otherwise the recorded spans drift relative to
+        # each other and the timeline visualization is misleading.
+        if profiler is not None and profiler.enabled:
+            dist.barrier()
+            profiler.start_step(step)
         batch = batch_iter(step)
         if layout.my_pool == "a":
             assert optimizer is not None

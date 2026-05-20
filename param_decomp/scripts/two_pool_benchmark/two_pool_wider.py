@@ -22,8 +22,10 @@ Run:
 
 # pyright: reportArgumentType=false, reportOperatorIssue=false, reportIndexIssue=false
 
+import json
 import os
 import time
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -165,7 +167,18 @@ def main() -> None:
     torch.cuda.synchronize()
     step_times.append(time.perf_counter())
 
-    profiler = PhaseProfiler(enabled=True)
+    # PROFILE_MODE controls the profiler's cuda.sync behaviour:
+    #   sync   — synchronize between phases. Phases appear sequential and honest
+    #            per-phase durations, but overlap-killing.
+    #   async  — perf_counter only. Async sends appear as tiny spans because
+    #            their work happens off-thread. Shows actual interleaving.
+    #   off    — no profiling, fastest run.
+    profile_mode = os.environ.get("PROFILE_MODE", "sync")
+    assert profile_mode in ("sync", "async", "off"), f"PROFILE_MODE={profile_mode}"
+    profiler = PhaseProfiler(enabled=(profile_mode != "off"), sync=(profile_mode == "sync"))
+    if rank == 0:
+        print(f"[wider] PROFILE_MODE={profile_mode}", flush=True)
+
     optimize_two_pool(
         target_model=target,
         pool_config=pool_config,
@@ -193,6 +206,18 @@ def main() -> None:
     if rank in (0, POOL_B_RANKS[0]):
         print(f"\n[wider rank{rank}] phase breakdown (skipping first {WARMUP_STEPS}):", flush=True)
         print(profiler.report(warmup=WARMUP_STEPS), flush=True)
+
+        # Dump spans to JSON for HTML rendering.
+        out_dir = Path(os.environ.get("PROFILE_OUT_DIR", "/tmp/two_pool_profile"))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        pool = "a" if rank == 0 else "b"
+        out_path = out_dir / f"wider_{profile_mode}_pool{pool}_rank{rank}.json"
+        with open(out_path, "w") as f:
+            json.dump(
+                profiler.to_json_dict(warmup=WARMUP_STEPS, rank=rank, pool=pool, mode=profile_mode),
+                f,
+            )
+        print(f"[wider rank{rank}] wrote spans → {out_path}", flush=True)
 
     dist.destroy_process_group()
 
