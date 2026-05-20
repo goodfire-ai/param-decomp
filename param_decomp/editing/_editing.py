@@ -34,7 +34,7 @@ from param_decomp.harvest.repo import HarvestRepo
 from param_decomp.harvest.schemas import ComponentData
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import make_mask_infos
-from param_decomp.saved_run import PDRun
+from param_decomp.pd_run import PDRun
 from param_decomp.topology.topology import TransformerTopology
 
 ForwardFn = Callable[[Int[Tensor, " seq"]], Float[Tensor, "seq vocab"]]

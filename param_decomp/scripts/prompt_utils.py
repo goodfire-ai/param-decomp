@@ -8,7 +8,7 @@ from transformers import AutoTokenizer
 
 from param_decomp.experiments.lm.data import create_lm_data_loader
 from param_decomp.experiments.lm.experiment import LMRunConfig
-from param_decomp.saved_run import PDRun
+from param_decomp.pd_run import PDRun
 
 
 def load_prompts(path: Path) -> list[str]:
