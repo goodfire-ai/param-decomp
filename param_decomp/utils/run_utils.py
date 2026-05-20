@@ -1,5 +1,6 @@
 """Utilities for managing experiment run directories and IDs."""
 
+import copy
 import json
 import os
 import secrets
@@ -65,6 +66,37 @@ def save_file(data: dict[str, Any] | Any, path: Path | str, **kwargs: Any) -> No
         # Default to text file
         assert isinstance(data, str), f"For {suffix} files, data must be a string, got {type(data)}"
         _save_text(data, path, encoding=kwargs.get("encoding", "utf-8"))
+
+
+def apply_nested_updates(base_dict: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+    """Apply nested updates to a dictionary with dot-flattened keys.
+
+    Example: `{"pd.loss_metrics.ImportanceMinimalityLoss.coeff": 0.1}` deep-merges into
+    `base_dict["pd"]["loss_metrics"]["ImportanceMinimalityLoss"]["coeff"] = 0.1`.
+
+    Args:
+        base_dict: The base configuration dictionary
+        updates: Dictionary of flattened key-value pairs
+
+    Returns:
+        Updated dictionary (deep copy, original unchanged)
+    """
+    result = copy.deepcopy(base_dict)
+
+    for key, value in updates.items():
+        if "." in key:
+            keys = key.split(".")
+            current: dict[str, Any] = result
+            for k in keys[:-1]:
+                if k not in current:
+                    current[k] = {}
+                assert isinstance(current[k], dict)
+                current = current[k]
+            current[keys[-1]] = value
+        else:
+            result[key] = value
+
+    return result
 
 
 RunType = Literal[

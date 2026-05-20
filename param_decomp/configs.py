@@ -356,25 +356,18 @@ class LoggingConfig(BaseConfig):
             " `pd.loss_metrics` are evaluated automatically and should not be repeated here."
         ),
     )
-    wandb_run_name: str | None = Field(
-        default=None,
-        description="W&B run display name. None lets W&B auto-name.",
-    )
-    view_meta: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Free-form labels for downstream grouping/coloring/reports (e.g. "
-        "`{'lr_ratio': 0.1, 'size': 'medium'}`). Populated by sweep generators; surfaced "
-        "to W&B under a `view_meta/` prefix.",
-    )
+    # wandb_run_name: str | None = Field(
+    #     default=None,
+    #     description="W&B run display name. None lets W&B auto-name.",
+    # )
 
     @model_validator(mode="before")
     @classmethod
     def _discover_builtin_metrics(cls, data: Any) -> Any:
         """Ensure built-in `@register_metric` decorators have fired before `eval_metrics`
         looks names up in `METRIC_REGISTRY`. External metric modules are imported by
-        `PDConfig._import_metric_modules`; visibility here relies on `Run` validating
-        `pd` before `logging` (declaration order), so external eval metrics only resolve
-        when going through `Run` — not when validating a raw-dict `LoggingConfig` alone.
+        `PDConfig._import_metric_modules`; rely on field ordering on the parent
+        parent `RunConfig` (pd validated before logging) for those to be visible here.
         """
         from param_decomp.metrics import discover_metrics
 
@@ -484,7 +477,7 @@ class PDConfig(BaseConfig):
         before the `loss_metrics` field validator looks names up in `METRIC_REGISTRY`.
         Idempotent: re-validation in the same process is a no-op. External-metric
         visibility on the sibling `LoggingConfig.eval_metrics` relies on field ordering
-        in the parent `Run` (pd validated before logging).
+        in the parent `RunConfig` (pd validated before logging).
         """
         from param_decomp.metrics import discover_metrics
 

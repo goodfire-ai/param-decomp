@@ -31,7 +31,6 @@ from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.log import logger
 from param_decomp.metrics import METRIC_REGISTRY
 from param_decomp.metrics.base import LossMetricConfig, Metric, MetricConfig
-from param_decomp.metrics.builtin.faithfulness_loss import faithfulness_loss
 from param_decomp.metrics.context import MetricContext
 from param_decomp.models.batch_and_loss_fns import (
     PDTarget,
@@ -40,7 +39,7 @@ from param_decomp.models.batch_and_loss_fns import (
     move_batch_to_device,
 )
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
-from param_decomp.run import Run
+from param_decomp.run import RUN_CONFIG_FILENAME, RunConfig
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp.utils.data_utils import loop_dataloader
 from param_decomp.utils.distributed_utils import (
@@ -55,7 +54,6 @@ from param_decomp.utils.general_utils import (
     bf16_autocast,
     combine_nonoverlapping_dicts,
     get_scheduled_value,
-    save_pre_run_info,
 )
 from param_decomp.utils.logging_utils import get_grad_norms_dict, local_log
 from param_decomp.utils.module_utils import expand_module_patterns
@@ -67,6 +65,7 @@ def run_faithfulness_warmup(
     component_model: ComponentModel,
     component_params: list[torch.nn.Parameter],
     config: PDConfig,
+    device: str,
 ) -> None:
     """Run faithfulness warmup phase to improve initialization."""
     logger.info("Starting faithfulness warmup phase...")
@@ -80,7 +79,13 @@ def run_faithfulness_warmup(
 
     for warmup_step in range(config.faithfulness_warmup_steps):
         faithfulness_warmup_optimizer.zero_grad()
-        loss = faithfulness_loss(component_model.calc_weight_deltas())
+        weight_deltas = component_model.calc_weight_deltas()
+        sum_loss = torch.zeros((), device=device)
+        n = 0
+        for d in weight_deltas.values():
+            sum_loss = sum_loss + (d**2).sum()
+            n += d.numel()
+        loss = sum_loss / n
         loss.backward()
         faithfulness_warmup_optimizer.step()
 
@@ -90,11 +95,11 @@ def run_faithfulness_warmup(
                 f"Faithfulness loss: {loss.item():.9f}"
             )
     del faithfulness_warmup_optimizer
-    gc.collect()
     torch.cuda.empty_cache()
+    gc.collect()
 
 
-def forward_and_build_ctx(
+def _build_ctx(
     batch: Any,
     *,
     step: int,
@@ -105,11 +110,8 @@ def forward_and_build_ctx(
     config: PDConfig,
     reconstruction_loss: ReconstructionLoss,
 ) -> MetricContext:
-    """Run the target forward (registering DDP grad hooks for this step) and build a MetricContext.
-
-    The `wrapped_model(...)` call is load-bearing: it registers DDP gradient hooks for this step
-    even when no metric reads through the DDP wrapper directly.
-    """
+    # The wrapped_model(...) call here is what registers DDP gradient hooks for this step.
+    # Required even if no metric uses the DDP wrapper directly.
     batch = move_batch_to_device(batch, device)
     target_model_output: OutputWithCache = wrapped_model(batch, cache_type="input")
     ci = component_model.calc_causal_importances(
@@ -252,7 +254,7 @@ def optimize(
     )
 
     if config.faithfulness_warmup_steps > 0:
-        run_faithfulness_warmup(component_model, component_params, config)
+        run_faithfulness_warmup(component_model, component_params, config, device)
 
     loss_instances, eval_only_instances = _build_metric_instances(
         config, logging_config, component_model, device
@@ -277,7 +279,7 @@ def optimize(
         batch_log_data: defaultdict[str, float] = defaultdict(float)
 
         build_ctx = partial(
-            forward_and_build_ctx,
+            _build_ctx,
             step=step,
             device=device,
             wrapped_model=wrapped_model,
@@ -363,8 +365,8 @@ def optimize(
                         try_wandb(wandb.log, wandb_logs, step=step)
 
                 del metrics
-                gc.collect()
                 torch.cuda.empty_cache()
+                gc.collect()
 
         # --- Saving Checkpoint --- #
         if (
@@ -419,48 +421,40 @@ def _validate_pgd_scope(config: PDConfig, dist_state: DistributedState | None) -
 
 
 def run_pd(
-    config: PDConfig,
-    logging_config: LoggingConfig,
-    runtime_config: RuntimeConfig,
+    run_cfg: RunConfig,
     target: PDTarget,
     train_loader: DataLoader[Any],
     eval_loader: DataLoader[Any],
     device: str,
     *,
-    run: Run | None = None,
-    artifacts: dict[str, Any] | None = None,
     wandb_project: str | None = None,
     wandb_tags: list[str] | None = None,
 ) -> Path | None:
     """Run a full PD decomposition: setup, optimize, cleanup.
 
-    `run` is written to ``run_metadata.yaml``.  Driver-mediated callers
-    (via ``experiments/runner.py``) pass a fully populated ``Run``;
-    notebook callers can omit it and a minimal one is synthesized.
+    ``run_cfg`` is the complete reproducible spec for this run; it is written
+    to ``run_config.yaml`` next to the checkpoint so the run can be reloaded
+    later. Notebook callers construct one directly (with ``driver_path=None``
+    and their own ``PDTarget``); driver-mediated callers go through
+    ``experiments/_worker.py`` which builds the ``RunConfig`` from YAML.
 
-    ``wandb_project`` is a deploy-time parameter (which W&B account/project to log
-    to), not part of the reproducible ``Run`` config. ``None`` disables W&B.
+    ``wandb_project`` is a deploy-time parameter (which W&B account/project to
+    log to), not part of the reproducible ``RunConfig``. ``None`` disables W&B.
 
-    All ranks call this function. Only the main process does wandb/logging setup.
-    Returns the output directory on the main process and None on other ranks.
+    All ranks call this function. Only the main process does wandb/logging
+    setup. Returns the output directory on the main process and ``None`` on
+    other ranks.
     """
-    _validate_pgd_scope(config, get_distributed_state())
+    _validate_pgd_scope(run_cfg.pd, get_distributed_state())
 
     out_dir: Path | None
     if is_main_process():
-        artifacts = artifacts or {}
-        if run is None:
-            run = Run(
-                driver_path=None,
-                pd=config,
-                logging=logging_config,
-                runtime=runtime_config,
-            )
-        run_id = run.run_id
-        out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
+        out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_cfg.run_id
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"Run ID: {run_id}")
+        run_cfg.write(out_dir / RUN_CONFIG_FILENAME)
+
+        logger.info(f"Run ID: {run_cfg.run_id}")
         logger.info(f"Output directory: {out_dir}")
 
         tags = list(wandb_tags or [])
@@ -471,33 +465,30 @@ def run_pd(
         if wandb_project:
             init_wandb(
                 wandb_project,
-                run_id,
+                run_cfg.run_id,
                 configs={
-                    "pd": config,
-                    "logging": logging_config,
-                    "runtime": runtime_config,
+                    "pd": run_cfg.pd,
+                    "logging": run_cfg.logging,
+                    "runtime": run_cfg.runtime,
                 },
-                name=run.logging.wandb_run_name,
+                name=run_cfg.name,
                 tags=tags,
-                view_meta=run.logging.view_meta,
+                view_meta=run_cfg.view_meta,
             )
 
-        logger.info(config)
+        logger.info(run_cfg.pd)
 
-        save_pre_run_info(
-            save_to_wandb=wandb_project is not None,
-            out_dir=out_dir,
-            run=run,
-            artifacts=artifacts,
-        )
+        if wandb_project is not None:
+            wandb.save(str(out_dir / RUN_CONFIG_FILENAME), base_path=out_dir, policy="now")
+
     else:
         out_dir = None
 
     optimize(
         target_model=target.model,
-        config=config,
-        logging_config=logging_config,
-        runtime_config=runtime_config,
+        config=run_cfg.pd,
+        logging_config=run_cfg.logging,
+        runtime_config=run_cfg.runtime,
         device=device,
         train_loader=train_loader,
         eval_loader=eval_loader,

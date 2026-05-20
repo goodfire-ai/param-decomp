@@ -225,36 +225,54 @@ def _rank_batch_size(batch_size: int, dist_state: DistributedState | None, *, la
     return batch_size // world_size
 
 
-def build_lm_dataloaders(
-    data_cfg: LMDataConfig,
-    *,
-    train_batch_size: int,
-    eval_batch_size: int,
-    dist_state: DistributedState | None,
-    seed: int,
-) -> tuple[DataLoader[Any], DataLoader[Any]]:
-    """Build train/eval dataloaders from total batch sizes."""
-    train_batch_size = _rank_batch_size(train_batch_size, dist_state, label="train_batch_size")
-    eval_batch_size = _rank_batch_size(eval_batch_size, dist_state, label="eval_batch_size")
+def _collate_fn_for(data_cfg: LMDataConfig):
     collate_column = data_cfg.column_name if data_cfg.is_tokenized else "input_ids"
 
     def collate_token_column(batch: list[dict[str, Tensor]]) -> Tensor:
         return torch.stack([item[collate_column] for item in batch])
 
+    return collate_token_column
+
+
+def build_lm_train_loader(
+    data_cfg: LMDataConfig,
+    *,
+    batch_size: int,
+    dist_state: DistributedState | None,
+    seed: int,
+) -> DataLoader[Any]:
+    """Build the LM train dataloader."""
+    batch_size = _rank_batch_size(batch_size, dist_state, label="train_batch_size")
     train_loader, _ = create_lm_data_loader(
         data_cfg,
         split=data_cfg.train_split,
-        batch_size=train_batch_size,
+        batch_size=batch_size,
         seed=seed,
         dist_state=dist_state,
-        collate_fn=collate_token_column,
+        collate_fn=_collate_fn_for(data_cfg),
     )
+    return train_loader
+
+
+def build_lm_eval_loader(
+    data_cfg: LMDataConfig,
+    *,
+    batch_size: int,
+    dist_state: DistributedState | None,
+    seed: int,
+) -> DataLoader[Any]:
+    """Build the LM eval dataloader.
+
+    Seed is offset by 1 so the eval split shuffles differently from the train split
+    when both are constructed from the same ``run_cfg.pd.seed``.
+    """
+    batch_size = _rank_batch_size(batch_size, dist_state, label="eval_batch_size")
     eval_loader, _ = create_lm_data_loader(
         data_cfg,
         split=data_cfg.eval_split,
-        batch_size=eval_batch_size,
+        batch_size=batch_size,
         seed=seed + 1,
         dist_state=dist_state,
-        collate_fn=collate_token_column,
+        collate_fn=_collate_fn_for(data_cfg),
     )
-    return train_loader, eval_loader
+    return eval_loader

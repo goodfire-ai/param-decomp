@@ -84,7 +84,6 @@ def submit_harvest(
     array_result = submit_slurm_job(
         array_script,
         "harvest_worker",
-        is_array=True,
         n_array_tasks=n_gpus,
     )
 

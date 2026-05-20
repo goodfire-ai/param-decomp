@@ -6,9 +6,9 @@ from torch.utils.data import DataLoader
 
 from param_decomp.adapters.base import DecompositionAdapter
 from param_decomp.autointerp.schemas import ModelMetadata
-from param_decomp.experiments.lm.experiment import LMRun
+from param_decomp.experiments.lm.experiment import LMRunConfig
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.run import Run
+from param_decomp.run import RunConfig
 from param_decomp.saved_run import PDRun
 from param_decomp.topology import TransformerTopology
 from param_decomp.utils.wandb_utils import parse_wandb_run_path
@@ -24,13 +24,15 @@ class PDAdapter(DecompositionAdapter):
         return PDRun.from_path(self._wandb_path)
 
     @cached_property
-    def run(self) -> Run:
-        return self.pd_run.run
+    def run(self) -> RunConfig:
+        return self.pd_run.run_cfg
 
     @cached_property
-    def lm_run(self) -> LMRun:
+    def lm_run(self) -> LMRunConfig:
         run = self.run
-        assert isinstance(run, LMRun), f"This method requires an LM run, got {type(run).__name__}"
+        assert isinstance(run, LMRunConfig), (
+            f"This method requires an LM run, got {type(run).__name__}"
+        )
         return run
 
     @cached_property
@@ -59,11 +61,7 @@ class PDAdapter(DecompositionAdapter):
 
     @override
     def dataloader(self, batch_size: int) -> DataLoader[Tensor]:
-        train_loader, _ = self.pd_run.load_dataloaders(
-            train_batch_size=batch_size,
-            eval_batch_size=batch_size,
-        )
-        return train_loader
+        return self.pd_run.build_train_loader(batch_size_override=batch_size)
 
     @property
     @override
