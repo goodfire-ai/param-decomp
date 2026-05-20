@@ -352,9 +352,8 @@ class LoggingConfig(BaseConfig):
     eval_metrics: dict[str, SerializeAsAny[MetricConfig]] = Field(
         default_factory=dict,
         description=(
-            "Eval metrics keyed by metric class name. Every metric you want to see during"
-            " evaluation must be listed here, including any loss-capable metric from"
-            " `pd.loss_metrics` that you also want to track at eval time."
+            "Eval-only metrics keyed by metric class name. Metrics already set in"
+            " `pd.loss_metrics` are evaluated automatically and should not be repeated here."
         ),
     )
     wandb_run_name: str | None = Field(
@@ -472,8 +471,8 @@ class PDConfig(BaseConfig):
         default_factory=dict,
         description=(
             "Training-loss metrics keyed by metric class name. Each value's `coeff` weights the"
-            " metric in the total training loss. Loss metrics are not evaluated automatically;"
-            " list them in `logging.eval_metrics` too if you also want eval-time tracking."
+            " metric in the total training loss. Active loss metrics are automatically also"
+            " evaluated."
         ),
     )
 

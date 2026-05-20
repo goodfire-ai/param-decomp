@@ -16,7 +16,7 @@ use ``Run.model_validate(data)`` / ``Run.from_file(path)`` (inherited from
 """
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import yaml
 from pydantic import Field, ValidatorFunctionWrapHandler, model_validator
@@ -48,6 +48,16 @@ class Run(BaseConfig):
     pd: PDConfig
     logging: LoggingConfig
     runtime: RuntimeConfig
+
+    @model_validator(mode="after")
+    def validate_metric_overlap(self) -> Self:
+        overlap = sorted(set(self.pd.loss_metrics) & set(self.logging.eval_metrics))
+        assert not overlap, (
+            f"The same metric was set under both pd.loss_metrics and logging.eval_metrics: "
+            f"{overlap}. Loss metrics are automatically evaluated; remove the "
+            "logging.eval_metrics entry, or move it out of pd.loss_metrics if you want eval-only."
+        )
+        return self
 
     @model_validator(mode="wrap")
     @classmethod

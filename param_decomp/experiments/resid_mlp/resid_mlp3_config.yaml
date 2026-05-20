@@ -30,13 +30,13 @@ pd:
   faithfulness_warmup_lr: 0.01
   faithfulness_warmup_weight_decay: 0.1
   loss_metrics:
-    ImportanceMinimalityLoss:
+    importance_minimality:
       coeff: 1e-5
       pnorm: 2.0
       beta: 0
-    StochasticReconLayerwiseLoss:
+    stochastic_recon_layerwise:
       coeff: 1.0
-    StochasticReconLoss:
+    stochastic_recon:
       coeff: 1.0
 logging:
   train_log_freq: 50
@@ -46,33 +46,27 @@ logging:
   n_eval_steps: 100
   eval_batch_size: 2048
   save_freq: null
+  ci_alive_threshold: 0.1
   eval_metrics:
-    ImportanceMinimalityLoss:
-      pnorm: 2.0
-      beta: 0
-    StochasticReconLayerwiseLoss: {}
-    StochasticReconLoss: {}
-    CIHistograms:
+    ci_histograms:
       n_batches_accum: 5
-    ComponentActivationDensity:
-      ci_alive_threshold: 0.1
-    PermutedCIPlots:
+    component_activation_density: {}
+    permuted_ci_plots:
       identity_patterns:
       - layers.*.mlp_in
       dense_patterns:
       - layers.*.mlp_out
-    IdentityCIError:
+    identity_ci_error:
       identity_ci:
       - layer_pattern: layers.*.mlp_in
         n_features: 102
       dense_ci:
       - layer_pattern: layers.*.mlp_out
         k: 17
-    CI_L0:
+    ci_l0:
       groups: null
-      ci_alive_threshold: 0.1
-    CIMeanPerComponent: {}
-    StochasticHiddenActsReconLoss: {}
+    ci_mean_per_component: {}
+    stochastic_hidden_acts_recon: {}
 target:
   run_path: wandb:goodfire/spd-pre-Sep-2025/runs/6hk3uciu
 data:

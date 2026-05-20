@@ -144,7 +144,7 @@ def _build_metric_instances(
     component_model: ComponentModel,
     device: str,
 ) -> tuple[dict[str, Metric[MetricConfig]], dict[str, Metric[MetricConfig]]]:
-    """Instantiate one metric instance per class-name key for the train-loss and eval buckets."""
+    """Instantiate one metric instance per class-name key. Same model+device for both buckets."""
     loss_instances: dict[str, Metric[MetricConfig]] = {}
     for metric_name, cfg in config.loss_metrics.items():
         cls = METRIC_REGISTRY[metric_name]
@@ -260,9 +260,10 @@ def optimize(
     if config.faithfulness_warmup_steps > 0:
         run_faithfulness_warmup(component_model, component_params, config, device)
 
-    loss_instances, eval_instances = _build_metric_instances(
+    loss_instances, eval_only_instances = _build_metric_instances(
         config, logging_config, component_model, device
     )
+    all_instances = {**loss_instances, **eval_only_instances}
 
     for step in tqdm(range(config.steps + 1), ncols=0, disable=not is_main_process()):
         components_optimizer.zero_grad()
@@ -348,7 +349,7 @@ def optimize(
                 )
 
                 metrics = evaluate(
-                    instances=eval_instances,
+                    instances=all_instances,
                     eval_iterator=eval_iterator,
                     ctx_builder=partial(build_ctx, is_eval=True),
                     n_eval_steps=logging_config.n_eval_steps,
