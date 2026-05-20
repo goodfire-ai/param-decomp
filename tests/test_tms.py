@@ -28,6 +28,7 @@ from param_decomp.models.batch_and_loss_fns import (
     run_batch_first_element,
 )
 from param_decomp.run_pd import optimize
+from param_decomp.run_sink import RunSink
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
 from param_decomp.utils.general_utils import set_seed
 
@@ -131,7 +132,7 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
         logging_config=logging_config,
         runtime_config=RuntimeConfig(),
         device=device,
-        out_dir=tmp_path,
+        sink=RunSink.local(tmp_path),
     )
 
     # The test passes if optimize runs without errors
