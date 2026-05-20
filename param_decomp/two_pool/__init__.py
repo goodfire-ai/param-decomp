@@ -30,14 +30,24 @@ from param_decomp.two_pool.layout import (
     build_block_ddp_world,
     build_world,
 )
+from param_decomp.two_pool.run import (
+    TwoPoolConfig,
+    optimize_two_pool,
+    step_pool_a,
+    step_pool_b,
+)
 
 __all__ = [
     "BlockDDPLayout",
     "BlockDDPWorld",
+    "TwoPoolConfig",
     "TwoPoolLayout",
     "World",
     "build_block_ddp_world",
     "build_pool_a_module_path_info",
     "build_pool_b_module_path_info",
     "build_world",
+    "optimize_two_pool",
+    "step_pool_a",
+    "step_pool_b",
 ]
