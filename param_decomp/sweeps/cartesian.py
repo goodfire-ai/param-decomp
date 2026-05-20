@@ -19,6 +19,8 @@ from param_decomp.settings import REPO_ROOT
 from param_decomp.sweeps.spec import SweepData, SweepSpec
 from param_decomp.utils.run_utils import apply_nested_updates
 
+_PD_PREFIX = "pd."
+
 
 def cartesian_product(
     base_config: RunConfig,
@@ -30,12 +32,18 @@ def cartesian_product(
 ) -> SweepSpec:
     """Cartesian product of dot-pathed axes over a base config.
 
-    Each axis key is a dotted path into ``base_config`` (e.g.
-    ``"pd.loss_metrics.importance_minimality.coeff"``). Axis values are
-    recorded in each run's ``logging.view_meta`` so W&B can group/color by them.
+    Each axis key is a dotted path into ``base_config.pd`` (e.g.
+    ``"pd.loss_metrics.importance_minimality.coeff"``). Only ``pd.*`` keys are
+    supported — ``logging`` and ``runtime`` are hoisted to the ``SweepSpec``
+    and shared across runs. Axis values are recorded in each run's
+    ``view_meta`` so W&B can group/color by them.
     """
     assert grid, "cartesian_product requires a non-empty grid"
     for axis, values in grid.items():
+        assert axis.startswith(_PD_PREFIX), (
+            f"grid keys must start with 'pd.' (logging/runtime are shared across runs "
+            f"and cannot be swept); got {axis!r}"
+        )
         assert isinstance(values, list) and values, (
             f"grid['{axis}'] must be a non-empty list, got {values!r}"
         )
@@ -43,17 +51,17 @@ def cartesian_product(
     axes = list(grid.keys())
     value_lists = [grid[a] for a in axes]
 
-    base_pd_config_data = base_config.pd.model_dump(mode="json")
+    base_config_data = base_config.model_dump(mode="json")
 
     swept_datas: list[SweepData] = []
 
     for combo in itertools.product(*value_lists):
         updates = dict(zip(axes, combo, strict=True))
-        pd_config_data = apply_nested_updates(base_pd_config_data, updates)
+        config_data = apply_nested_updates(base_config_data, updates)
 
         sweep_data = SweepData(
             name="_".join(f"{_short_axis(a)}={_short_value(v)}" for a, v in updates.items()),
-            pd_config=PDConfig.model_validate(pd_config_data),
+            pd_config=PDConfig.model_validate(config_data["pd"]),
             view_meta=dict(updates),
         )
 
@@ -78,7 +86,7 @@ def example_cartesian_sweep() -> SweepSpec:
     """
     base_config_path = REPO_ROOT / "param_decomp" / "experiments" / "tms" / "tms_5-2_config.yaml"
     with open(base_config_path) as f:
-        base_config = yaml.safe_load(f)
+        base_config = RunConfig.from_dict(yaml.safe_load(f))
     return cartesian_product(
         base_config=base_config,
         grid={"pd.seed": [0, 1, 2]},
