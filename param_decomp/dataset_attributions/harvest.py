@@ -23,12 +23,12 @@ from torch import Tensor
 from param_decomp.dataset_attributions.config import DatasetAttributionConfig
 from param_decomp.dataset_attributions.harvester import AttributionHarvester
 from param_decomp.dataset_attributions.storage import DatasetAttributionStorage
-from param_decomp.experiments.lm.data import build_lm_dataloaders
-from param_decomp.experiments.lm.experiment import LMRun
+from param_decomp.experiments.lm.data import build_lm_train_loader
+from param_decomp.experiments.lm.experiment import LMRunConfig
 from param_decomp.harvest.repo import HarvestRepo
 from param_decomp.log import logger
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.saved_run import PDRun
+from param_decomp.saved_run import SavedRun
 from param_decomp.topology import TransformerTopology, get_sources_by_target
 from param_decomp.utils.distributed_utils import get_device
 from param_decomp.utils.wandb_utils import parse_wandb_run_path
@@ -76,19 +76,18 @@ def harvest_attributions(
 
     _, _, run_id = parse_wandb_run_path(config.wandb_path)
 
-    pd_run = PDRun.from_path(config.wandb_path)
-    exp = pd_run.run
-    assert isinstance(exp, LMRun), (
+    pd_run = SavedRun.from_path(config.wandb_path)
+    exp = pd_run.run_cfg
+    assert isinstance(exp, LMRunConfig), (
         f"Dataset attributions currently only support LM runs, got {type(exp).__name__}"
     )
     model = pd_run.load_model().to(device)
     model.eval()
 
     pd_config = pd_run.pd_config
-    train_loader, _ = build_lm_dataloaders(
+    train_loader = build_lm_train_loader(
         exp.data,
-        train_batch_size=config.batch_size,
-        eval_batch_size=config.batch_size,
+        batch_size=config.batch_size,
         dist_state=None,
         seed=pd_config.seed,
     )

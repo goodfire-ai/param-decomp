@@ -290,7 +290,7 @@
 
           <rect x="960" y="170" width="240" height="142" class="svg-box svg-box-green"></rect>
           <text x="978" y="204" class="svg-title">decompositions/&lt;run_id&gt;/</text>
-          <text x="978" y="230" class="svg-text">run_metadata.yaml (Run)</text>
+          <text x="978" y="230" class="svg-text">run_config.yaml (Run)</text>
           <text x="978" y="252" class="svg-text">model_&lt;step&gt;.pth</text>
           <text x="978" y="274" class="svg-text">(sweeps/&lt;launch_id&gt;/spec.yaml</text>
           <text x="978" y="296" class="svg-text">  for sweep launches)</text>
@@ -311,7 +311,7 @@
           experiment name (looked up via <code>discover_experiments()</code>),
           <code>--config_path PATH</code> reading a YAML that declares its driver via a top-level
           <code>driver_path:</code> field, <code>--rerun PATH</code> reading the same shape from a
-          saved <code>run_metadata.yaml</code>, or <code>--sweep_generator_path
+          saved <code>run_config.yaml</code>, or <code>--sweep_generator_path
           FILE.py:func</code> calling a generator that returns a <code>SweepSpec</code> of
           <code>Run</code>s.
         </li>
@@ -331,7 +331,7 @@
         <li>
           <code>run_pd()</code> creates
           <code>PARAM_DECOMP_OUT_DIR/decompositions/&lt;run_id&gt;</code>, writes
-          <code>run_metadata.yaml</code> and all artifacts via <code>save_pre_run_info()</code>,
+          <code>run_config.yaml</code> and all artifacts via <code>save_pre_run_info()</code>,
           starts W&amp;B if configured, then trains.
         </li>
         <li>
@@ -363,7 +363,7 @@
           <rect x="30" y="80" width="260" height="180" class="svg-box svg-box-green"></rect>
           <text x="50" y="112" class="svg-title">Saved run directory</text>
           <text x="50" y="134" class="svg-small">decompositions/&lt;run_id&gt;/ or wandb URL</text>
-          <text x="50" y="160" class="svg-text">run_metadata.yaml (Run)</text>
+          <text x="50" y="160" class="svg-text">run_config.yaml (Run)</text>
           <text x="50" y="182" class="svg-text">model_&lt;step&gt;.pth</text>
           <text x="50" y="216" class="svg-small">target is rebuilt from upstream</text>
           <text x="50" y="236" class="svg-small">(wandb pretrain run, HF, ...)</text>
@@ -481,7 +481,7 @@
             <td><a href="../param_decomp/experiments/runner.py">experiments/runner.py</a></td>
             <td>
               Rerun a saved run (local path or wandb URL). Driver + config are read from the
-              run's <code>run_metadata.yaml</code>.
+              run's <code>run_config.yaml</code>.
             </td>
           </tr>
           <tr>
@@ -866,7 +866,7 @@ class Driver:
           <code>~/param_decomp_out/</code>).
         </p>
         <pre><code>decompositions/&lt;run_id&gt;/
-├── run_metadata.yaml          # Run: driver_path + pd + logging + runtime + target + data
+├── run_config.yaml          # Run: driver_path + pd + logging + runtime + target + data
 └── model_&lt;step&gt;.pth           # PD checkpoints (one per save_freq + final)
 
 sweeps/&lt;launch_id&gt;/
@@ -876,7 +876,7 @@ sweeps/&lt;launch_id&gt;/
           always fetches from upstream, so the wandb run path / HF model name in
           <code>target</code> is the only pin.
         </p>
-        <p>A typical <code>run_metadata.yaml</code>:</p>
+        <p>A typical <code>run_config.yaml</code>:</p>
         <pre><code>driver_path: param_decomp.experiments.lm.experiment:Driver
 pd:
   seed: 0

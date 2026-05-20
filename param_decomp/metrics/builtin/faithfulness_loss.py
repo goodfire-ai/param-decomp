@@ -19,7 +19,7 @@ class FaithfulnessLossConfig(LossMetricConfig):
 def faithfulness_loss(
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
 ) -> Float[Tensor, ""]:
-    """Pure compute helper preserved for direct callers (tests, notebooks)."""
+    """MSE between target weights and the sum of components, averaged over all parameters."""
     assert weight_deltas, "Empty weight deltas"
     device = next(iter(weight_deltas.values())).device
     sum_loss = torch.zeros((), device=device)

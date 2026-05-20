@@ -16,28 +16,30 @@ def _write_sweep_module(tmp_path: Path, body: str) -> Path:
 def test_load_and_call(tmp_path: Path) -> None:
     path = _write_sweep_module(
         tmp_path,
-        "from param_decomp.run import Run\n"
+        "from param_decomp.run import RunConfig\n"
         "from param_decomp.settings import REPO_ROOT\n"
         "from param_decomp.sweeps import SweepSpec\n"
+        "from param_decomp.sweeps.cartesian import cartesian_product\n"
         "import yaml\n"
         "DRIVER = 'param_decomp.experiments.tms.experiment:Driver'\n"
         "def my_sweep():\n"
         '    with open(REPO_ROOT / "param_decomp" / "experiments" / "tms" / "tms_5-2_config.yaml") as f:\n'
         "        config = yaml.safe_load(f)\n"
-        "    config['logging']['wandb_run_name'] = 'r'\n"
-        "    return SweepSpec(\n"
+        "    base_run = RunConfig.from_dict(config)\n"
+        "    return cartesian_product(\n"
+        "        base_config=base_run,\n"
+        '        grid={"pd.seed": [0]},\n'
+        "        n_agents=1,\n"
         '        description="tiny",\n'
-        "        runs=[\n"
-        "            Run.model_validate({**config, 'driver_path': DRIVER}),\n"
-        "        ],\n"
+        "        driver_path=DRIVER,\n"
         "    )\n",
     )
     gen = load_sweep_generator(f"{path}:my_sweep")
     spec = gen()
     assert isinstance(spec, SweepSpec)
     assert spec.driver_path == "param_decomp.experiments.tms.experiment:Driver"
-    assert len(spec.runs) == 1
-    assert spec.runs[0].pd.seed == 0
+    assert len(spec.swept_datas) == 1
+    assert spec.swept_datas[0].pd_config.seed == 0
 
 
 def test_non_absolute_path_rejected() -> None:

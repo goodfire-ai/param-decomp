@@ -14,11 +14,11 @@ from param_decomp.app.backend.state import RunState
 from param_decomp.app.backend.utils import log_errors
 from param_decomp.autointerp.repo import InterpRepo
 from param_decomp.dataset_attributions.repo import AttributionRepo
-from param_decomp.experiments.lm.experiment import LMRun
+from param_decomp.experiments.lm.experiment import LMRunConfig
 from param_decomp.graph_interp.repo import GraphInterpRepo
 from param_decomp.harvest.repo import HarvestRepo
 from param_decomp.log import logger
-from param_decomp.saved_run import PDRun
+from param_decomp.saved_run import SavedRun
 from param_decomp.topology import TransformerTopology, get_sources_by_target
 from param_decomp.utils.distributed_utils import get_device
 from param_decomp.utils.wandb_utils import parse_wandb_run_path
@@ -72,9 +72,9 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
     clean_wandb_path = f"{entity}/{project}/{run_id}"
 
     logger.info(f"[API] Loading {clean_wandb_path}")
-    pd_run = PDRun.from_path(clean_wandb_path)
-    exp = pd_run.run
-    if not isinstance(exp, LMRun):
+    pd_run = SavedRun.from_path(clean_wandb_path)
+    exp = pd_run.run_cfg
+    if not isinstance(exp, LMRunConfig):
         raise HTTPException(
             status_code=400,
             detail=(

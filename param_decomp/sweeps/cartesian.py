@@ -8,56 +8,73 @@ zero-arg function returning a ``SweepSpec`` works. This module ships
 pattern without writing the product loop themselves.
 """
 
-import copy
 import itertools
 from typing import Any
 
 import yaml
 
-from param_decomp.run import Run
+from param_decomp.configs import PDConfig
+from param_decomp.run import RunConfig
 from param_decomp.settings import REPO_ROOT
-from param_decomp.sweeps.spec import SweepSpec
+from param_decomp.sweeps.spec import SweepData, SweepSpec
+from param_decomp.utils.run_utils import apply_nested_updates
+
+_PD_PREFIX = "pd."
 
 
 def cartesian_product(
-    base_config: dict[str, Any],
+    base_config: RunConfig,
     grid: dict[str, list[Any]],
     *,
+    n_agents: int,
     description: str,
     driver_path: str,
 ) -> SweepSpec:
     """Cartesian product of dot-pathed axes over a base config.
 
-    Each axis key is a dotted path into ``base_config`` (e.g.
-    ``"pd.loss_metrics.importance_minimality.coeff"``). Axis values are
-    recorded in each run's ``logging.view_meta`` so W&B can group/color by them.
+    Each axis key is a dotted path into ``base_config.pd`` (e.g.
+    ``"pd.loss_metrics.importance_minimality.coeff"``). Only ``pd.*`` keys are
+    supported — ``logging`` and ``runtime`` are hoisted to the ``SweepSpec``
+    and shared across runs. Axis values are recorded in each run's
+    ``view_meta`` so W&B can group/color by them.
     """
     assert grid, "cartesian_product requires a non-empty grid"
     for axis, values in grid.items():
+        assert axis.startswith(_PD_PREFIX), (
+            f"grid keys must start with 'pd.' (logging/runtime are shared across runs "
+            f"and cannot be swept); got {axis!r}"
+        )
         assert isinstance(values, list) and values, (
             f"grid['{axis}'] must be a non-empty list, got {values!r}"
         )
 
-    base_config_data = dict(base_config)
-    base_config_data.pop("run_id", None)
-
     axes = list(grid.keys())
     value_lists = [grid[a] for a in axes]
-    runs: list[Run] = []
+
+    base_config_data = base_config.model_dump(mode="json")
+
+    swept_datas: list[SweepData] = []
+
     for combo in itertools.product(*value_lists):
         updates = dict(zip(axes, combo, strict=True))
-        config_data = _apply_nested_updates(base_config_data, updates)
-        name = "_".join(f"{_short_axis(a)}={_short_value(v)}" for a, v in updates.items())
-        logging_data = {
-            **config_data.get("logging", {}),
-            "wandb_run_name": name,
-            "view_meta": dict(updates),
-        }
-        run = Run.model_validate(
-            {**config_data, "driver_path": driver_path, "logging": logging_data}
+        config_data = apply_nested_updates(base_config_data, updates)
+
+        sweep_data = SweepData(
+            name="_".join(f"{_short_axis(a)}={_short_value(v)}" for a, v in updates.items()),
+            pd_config=PDConfig.model_validate(config_data["pd"]),
+            view_meta=dict(updates),
         )
-        runs.append(run)
-    return SweepSpec(description=description, runs=runs)
+
+        swept_datas.append(sweep_data)
+
+    return SweepSpec(
+        description=description,
+        driver_path=driver_path,
+        logging=base_config.logging,
+        runtime=base_config.runtime,
+        n_agents=n_agents,
+        swept_datas=swept_datas,
+    )
 
 
 def example_cartesian_sweep() -> SweepSpec:
@@ -69,10 +86,11 @@ def example_cartesian_sweep() -> SweepSpec:
     """
     base_config_path = REPO_ROOT / "param_decomp" / "experiments" / "tms" / "tms_5-2_config.yaml"
     with open(base_config_path) as f:
-        base_config = yaml.safe_load(f)
+        base_config = RunConfig.from_dict(yaml.safe_load(f))
     return cartesian_product(
         base_config=base_config,
         grid={"pd.seed": [0, 1, 2]},
+        n_agents=3,
         description="Example: tms_5-2 seed sweep",
         driver_path="param_decomp.experiments.tms.experiment:Driver",
     )
@@ -90,25 +108,3 @@ def _short_value(v: Any) -> str:
     if isinstance(v, list):
         return "-".join(_short_value(x) for x in v)
     return str(v).replace("/", "_")
-
-
-def _apply_nested_updates(base_dict: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
-    """Deep-merge dot-pathed ``updates`` into a copy of ``base_dict``.
-
-    Example: ``{"pd.loss_metrics.importance_minimality.coeff": 0.1}`` sets
-    ``result["pd"]["loss_metrics"]["importance_minimality"]["coeff"] = 0.1``.
-    """
-    result = copy.deepcopy(base_dict)
-    for key, value in updates.items():
-        if "." in key:
-            keys = key.split(".")
-            current: dict[str, Any] = result
-            for k in keys[:-1]:
-                if k not in current:
-                    current[k] = {}
-                assert isinstance(current[k], dict)
-                current = current[k]
-            current[keys[-1]] = value
-        else:
-            result[key] = value
-    return result

@@ -7,8 +7,8 @@ import wandb
 from jaxtyping import Float
 from PIL import Image
 from torch import Tensor
-from tqdm import tqdm
 
+from param_decomp.log import logger
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.utils.general_utils import runtime_cast
 
@@ -25,13 +25,13 @@ def local_log(data: dict[str, Any], step: int, out_dir: Path) -> None:
         if isinstance(v, Image.Image):
             filename = f"{k.replace('/', '_')}_{step}.png"
             v.save(fig_dir / filename)
-            tqdm.write(f"Saved figure {k} to {fig_dir / filename}")
+            logger.info(f"Saved figure {k} to {fig_dir / filename}")
         elif isinstance(v, wandb.plot.CustomChart):
             json_path = fig_dir / f"{k.replace('/', '_')}_{step}.json"
             payload = {"columns": list(v.table.columns), "data": list(v.table.data), "step": step}
             with open(json_path, "w") as f:
                 json.dump(payload, f, default=str)
-            tqdm.write(f"Saved custom chart data {k} to {json_path}")
+            logger.info(f"Saved custom chart data {k} to {json_path}")
         else:
             metrics_without_images[k] = v
 

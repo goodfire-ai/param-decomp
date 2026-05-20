@@ -16,6 +16,12 @@ from pathlib import Path
 
 from param_decomp.settings import REPO_ROOT, SBATCH_SCRIPTS_DIR, SLURM_LOGS_DIR
 
+# Bash expressions that uniquely identify a job invocation, used to name per-job /tmp
+# workspaces. Exposed so other modules building SLURM commands (e.g. multi-node DDP
+# srun wrappers) don't have to re-spell the same magic strings.
+SINGLETON_JOB_ID_BASH = "$SLURM_JOB_ID"
+ARRAY_JOB_ID_BASH = "${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+
 
 @dataclass
 class SlurmConfig:
@@ -83,9 +89,9 @@ def generate_script(config: SlurmConfig, command: str, env: dict[str, str] | Non
     Returns:
         Complete SLURM script content as a string
     """
-    header = _sbatch_header(config, is_array=False)
+    header = _sbatch_header_singleton(config)
     if config.n_nodes == 1:
-        setup = _setup_section(config, is_array=False)
+        setup = _setup_section_singleton(config)
     else:
         setup = "# Multi-node job: each node sets up its own workspace in the srun command"
     env_exports = _env_exports(env)
@@ -141,9 +147,9 @@ def generate_array_script(
     else:
         array_range = f"1-{n_jobs}"
 
-    header = _sbatch_header(config, is_array=True, array_range=array_range)
+    header = _sbatch_header_array(config, array_range=array_range)
     # Multi-node: each node sets up its own workspace in the srun command (can't share /tmp)
-    setup = "" if config.n_nodes > 1 else _setup_section(config, is_array=True)
+    setup = "" if config.n_nodes > 1 else _setup_section_array(config)
     env_exports = _env_exports(env)
     case_block = _case_block(commands)
 
@@ -184,7 +190,6 @@ esac
 def submit_slurm_job(
     script_content: str,
     script_name_prefix: str,
-    is_array: bool = False,
     n_array_tasks: int | None = None,
 ) -> SubmitResult:
     """Write script to disk, submit to SLURM, and set up logging.
@@ -198,8 +203,7 @@ def submit_slurm_job(
     Args:
         script_content: The SLURM script content
         script_name_prefix: Prefix for script filename (e.g., "harvest", "clustering")
-        is_array: Whether this is an array job (affects log file creation)
-        n_array_tasks: Number of array tasks (required if is_array=True)
+        n_array_tasks: Number of array tasks; None for a singleton (non-array) job.
 
     Returns:
         SubmitResult with job ID, script path, and log pattern
@@ -227,8 +231,7 @@ def submit_slurm_job(
     temp_script_path.rename(final_script_path)
 
     # Create empty log file(s) for tailing
-    if is_array:
-        assert n_array_tasks is not None, "n_array_tasks required for array jobs"
+    if n_array_tasks is not None:
         for i in range(1, n_array_tasks + 1):
             (SLURM_LOGS_DIR / f"slurm-{job_id}_{i}.out").touch()
         log_pattern = str(SLURM_LOGS_DIR / f"slurm-{job_id}_*.out")
@@ -248,23 +251,11 @@ def submit_slurm_job(
 # =============================================================================
 
 
-def _sbatch_header(
-    config: SlurmConfig,
-    is_array: bool = False,
-    array_range: str | None = None,
-) -> str:
-    """Generate the #SBATCH directive block.
+def _common_sbatch_lines(config: SlurmConfig, log_pattern: str) -> list[str]:
+    """Shared #SBATCH directives between singleton and array jobs.
 
-    Handles:
-    - --job-name, --partition, --nodes, --gres, --time, --output
-    - --ntasks-per-node (for multi-node DDP, ensures proper GPU isolation)
-    - --cpus-per-task (for CPU-bound jobs)
-    - --array (for array jobs)
-    - --dependency (if dependency_job_id is set)
+    `log_pattern` is the SLURM filename pattern: `%j` for singletons, `%A_%a` for arrays.
     """
-    # Use %A_%a for array jobs, %j for single jobs
-    log_pattern = "%A_%a" if is_array else "%j"
-
     lines = [
         f"#SBATCH --job-name={config.job_name}",
         f"#SBATCH --partition={config.partition}",
@@ -274,22 +265,26 @@ def _sbatch_header(
         f"#SBATCH --time={config.time}",
         f"#SBATCH --output={SLURM_LOGS_DIR}/slurm-{log_pattern}.out",
     ]
-
     if config.cpus_per_task is not None:
         lines.append(f"#SBATCH --cpus-per-task={config.cpus_per_task}")
-
     if config.mem is not None:
         lines.append(f"#SBATCH --mem={config.mem}")
-
-    if is_array and array_range:
-        lines.append(f"#SBATCH --array={array_range}")
-
     if config.dependency_job_id:
         lines.append(f"#SBATCH --dependency=afterok:{config.dependency_job_id}")
-
     if config.comment:
         lines.append(f'#SBATCH --comment="{config.comment}"')
+    return lines
 
+
+def _sbatch_header_singleton(config: SlurmConfig) -> str:
+    """Generate the #SBATCH directive block for a non-array job."""
+    return "\n".join(_common_sbatch_lines(config, log_pattern="%j"))
+
+
+def _sbatch_header_array(config: SlurmArrayConfig, array_range: str) -> str:
+    """Generate the #SBATCH directive block for an array job."""
+    lines = _common_sbatch_lines(config, log_pattern="%A_%a")
+    lines.append(f"#SBATCH --array={array_range}")
     return "\n".join(lines)
 
 
@@ -324,13 +319,9 @@ uv sync --no-dev --link-mode copy -q
 source .venv/bin/activate"""
 
 
-def _setup_section(config: SlurmConfig, is_array: bool) -> str:
-    """Generate workspace creation and git/venv setup."""
-    if is_array:
-        workspace_suffix = "${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
-    else:
-        workspace_suffix = "$SLURM_JOB_ID"
-
+def _workspace_setup(config: SlurmConfig, workspace_suffix: str) -> str:
+    """Generate workspace creation and git/venv setup, parameterized by the bash
+    expression that uniquely identifies this job invocation."""
     if config.snapshot_ref is not None:
         work_dir = f"/tmp/param-decomp/workspace-{config.job_name}-{workspace_suffix}"
         return generate_git_snapshot_setup(work_dir, config.snapshot_ref)
@@ -338,6 +329,14 @@ def _setup_section(config: SlurmConfig, is_array: bool) -> str:
         return f"""\
 cd "{REPO_ROOT}"
 source .venv/bin/activate"""
+
+
+def _setup_section_singleton(config: SlurmConfig) -> str:
+    return _workspace_setup(config, SINGLETON_JOB_ID_BASH)
+
+
+def _setup_section_array(config: SlurmConfig) -> str:
+    return _workspace_setup(config, ARRAY_JOB_ID_BASH)
 
 
 def _env_exports(env: dict[str, str] | None) -> str:

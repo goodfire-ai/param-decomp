@@ -94,7 +94,6 @@ def submit_attributions(
     array_result = submit_slurm_job(
         array_script,
         "attr_harvest",
-        is_array=True,
         n_array_tasks=n_gpus,
     )
 

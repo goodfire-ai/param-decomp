@@ -1,4 +1,4 @@
-"""Round-trip tests for the `Run` config object."""
+"""Round-trip tests for the `RunConfig` object."""
 
 from pathlib import Path
 
@@ -23,7 +23,7 @@ from param_decomp.experiments.lm.experiment import (
     Driver as LMDriver,
 )
 from param_decomp.experiments.lm.experiment import (
-    LMRun,
+    LMRunConfig,
     LMTargetConfig,
 )
 from param_decomp.experiments.resid_mlp.experiment import (
@@ -31,7 +31,7 @@ from param_decomp.experiments.resid_mlp.experiment import (
 )
 from param_decomp.experiments.resid_mlp.experiment import (
     ResidMLPDataConfig,
-    ResidMLPRun,
+    ResidMLPRunConfig,
     ResidMLPTargetConfig,
 )
 from param_decomp.experiments.tms.experiment import (
@@ -39,10 +39,10 @@ from param_decomp.experiments.tms.experiment import (
 )
 from param_decomp.experiments.tms.experiment import (
     TMSDataConfig,
-    TMSRun,
+    TMSRunConfig,
     TMSTargetConfig,
 )
-from param_decomp.run import RUN_METADATA_FILENAME, Run
+from param_decomp.run import RUN_CONFIG_FILENAME, RunConfig
 
 LM_DRIVER_PATH = "param_decomp.experiments.lm.experiment:Driver"
 TMS_DRIVER_PATH = "param_decomp.experiments.tms.experiment:Driver"
@@ -78,14 +78,14 @@ def _runtime_config() -> RuntimeConfig:
     return RuntimeConfig(autocast_bf16=False, device="cpu", dp=None)
 
 
-def _round_trip(run: Run) -> Run:
-    """Round-trip ``run`` through ``model_dump`` → ``Run.model_validate``."""
-    return Run.model_validate(run.model_dump(mode="json"))
+def _round_trip(run: RunConfig) -> RunConfig:
+    """Round-trip ``run`` through ``model_dump`` → ``RunConfig.from_dict``."""
+    return RunConfig.from_dict(run.model_dump(mode="json"))
 
 
 def test_run_generates_run_id_on_instantiation():
-    run = Run(
-        driver_path=None,
+    run = RunConfig(
+        driver_path=TMS_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
         runtime=_runtime_config(),
@@ -95,7 +95,7 @@ def test_run_generates_run_id_on_instantiation():
 
 
 def test_lm_run_round_trip():
-    run = LMRun(
+    run = LMRunConfig(
         driver_path=LM_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
@@ -113,12 +113,12 @@ def test_lm_run_round_trip():
         ),
     )
     parsed = _round_trip(run)
-    assert type(parsed) is LMRun
+    assert type(parsed) is LMRunConfig
     assert parsed == run
 
 
 def test_tms_run_round_trip():
-    run = TMSRun(
+    run = TMSRunConfig(
         driver_path=TMS_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
@@ -127,12 +127,12 @@ def test_tms_run_round_trip():
         data=TMSDataConfig(feature_probability=0.05),
     )
     parsed = _round_trip(run)
-    assert type(parsed) is TMSRun
+    assert type(parsed) is TMSRunConfig
     assert parsed == run
 
 
 def test_resid_mlp_run_round_trip():
-    run = ResidMLPRun(
+    run = ResidMLPRunConfig(
         driver_path=RESID_MLP_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
@@ -141,19 +141,21 @@ def test_resid_mlp_run_round_trip():
         data=ResidMLPDataConfig(feature_probability=0.05),
     )
     parsed = _round_trip(run)
-    assert type(parsed) is ResidMLPRun
+    assert type(parsed) is ResidMLPRunConfig
     assert parsed == run
 
 
 def test_run_requires_runtime_config():
     data = {
-        "driver_path": None,
+        "driver_path": TMS_DRIVER_PATH,
         "pd": _pd_config().model_dump(mode="json"),
         "logging": _logging_config().model_dump(mode="json"),
+        "target": TMSTargetConfig(run_path="wandb:foo/bar/runs/abc").model_dump(mode="json"),
+        "data": TMSDataConfig(feature_probability=0.05).model_dump(mode="json"),
     }
 
     with pytest.raises(ValidationError, match="runtime"):
-        Run.model_validate(data)
+        RunConfig.from_dict(data)
 
 
 def test_driver_class_paths_load():
@@ -162,27 +164,8 @@ def test_driver_class_paths_load():
     assert isinstance(load_driver(RESID_MLP_DRIVER_PATH), ResidMLPDriver)
 
 
-def test_save_pre_run_info_writes_run_metadata(tmp_path: Path):
-    from param_decomp.utils.general_utils import save_pre_run_info
-
-    run = Run(
-        driver_path=None,
-        pd=_pd_config(),
-        logging=_logging_config(),
-        runtime=_runtime_config(),
-    )
-    save_pre_run_info(
-        save_to_wandb=False,
-        out_dir=tmp_path,
-        run=run,
-        artifacts={},
-    )
-
-    assert (tmp_path / RUN_METADATA_FILENAME).exists()
-
-
 def test_run_round_trip_via_file(tmp_path: Path):
-    run = TMSRun(
+    run = TMSRunConfig(
         driver_path=TMS_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
@@ -190,34 +173,30 @@ def test_run_round_trip_via_file(tmp_path: Path):
         target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc"),
         data=TMSDataConfig(feature_probability=0.05),
     )
-    path = tmp_path / RUN_METADATA_FILENAME
+    path = tmp_path / RUN_CONFIG_FILENAME
     run.write(path)
-    loaded = Run.from_file(path)
+    loaded = RunConfig.from_file(path)
     assert loaded.run_id == run.run_id
     assert loaded.driver_path == run.driver_path
     assert loaded == run
 
 
 def test_run_from_file_preserves_existing_run_id(tmp_path: Path):
-    run = Run(
+    run = TMSRunConfig(
         run_id="p-existing",
-        driver_path=None,
+        driver_path=TMS_DRIVER_PATH,
         pd=_pd_config(),
         logging=_logging_config(),
         runtime=_runtime_config(),
+        target=TMSTargetConfig(run_path="wandb:foo/bar/runs/abc"),
+        data=TMSDataConfig(feature_probability=0.05),
     )
-    path = tmp_path / RUN_METADATA_FILENAME
+    path = tmp_path / RUN_CONFIG_FILENAME
     path.write_text(yaml.safe_dump(run.model_dump(mode="json")))
 
-    loaded = Run.from_file(path)
+    loaded = RunConfig.from_file(path)
 
     assert loaded.run_id == "p-existing"
-
-
-def test_wandb_fields_default_to_none_on_logging_config():
-    cfg = _logging_config()
-    assert cfg.wandb_run_name is None
-    assert cfg.view_meta == {}
 
 
 def test_lm_target_requires_exactly_one_location():
