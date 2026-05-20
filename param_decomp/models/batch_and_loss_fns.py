@@ -55,7 +55,6 @@ class PDTarget:
     model: nn.Module
     run_batch: RunBatch
     reconstruction_loss: ReconstructionLoss
-    tied_weights: list[tuple[str, str]] | None = None
 
 
 def run_batch_passthrough(model: nn.Module, batch: Any) -> Tensor:

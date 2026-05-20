@@ -100,14 +100,7 @@ class PDRun:
         )
 
     def load_model(self) -> ComponentModel:
-        target = self.load_target()
-        return ComponentModel.from_checkpoint(
-            config=self.pd_config,
-            checkpoint_path=self.checkpoint_path,
-            target_model=target.model,
-            run_batch=target.run_batch,
-            tied_weights=target.tied_weights,
-        )
+        return self.driver.load_model(self.run_cfg, self.checkpoint_path)
 
 
 def load_component_model(path: ModelPath) -> ComponentModel:

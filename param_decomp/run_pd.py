@@ -3,22 +3,21 @@
 Two entry points:
 
 - ``optimize(target, train_loader, eval_loader, *, pd_config, logging_config,
-  runtime_config, device, sink)`` — **the notebook entry point.** Pure
-  trainer: takes everything explicitly, doesn't know about RunConfig /
+  runtime_config, device, sink)`` — **the generic DDP-aware trainer.**
+  Pure trainer: takes everything explicitly, doesn't know about RunConfig /
   drivers / YAML. ``sink`` is a ``RunSink`` carrying the output channels
   (local files + optional wandb + checkpoints); use ``RunSink.silent()`` to
-  skip persistence.
+  skip persistence. Notebook callers and the LM / ResidMLP drivers call this
+  directly; TMS uses ``tms_optimize`` instead (no DDP, has weight tying).
 - ``run_pd(run_cfg, *, device, ...)`` — **the driver-mediated wrapper.**
   Materializes runtime inputs via ``materialize_run``, builds a
   ``RunSink.for_run`` (writes ``run_config.yaml``, inits wandb from
-  ``run_cfg`` fields), then hands off to ``optimize``. Used by ``pd-run`` /
-  ``_worker.py``.
+  ``run_cfg`` fields), then hands off to ``driver.optimize``. Used by
+  ``pd-run`` / ``_worker.py``.
 
 ``materialize_run`` is the composition root: a standalone function that
 turns a ``RunConfig`` into the ``(target, train_loader, eval_loader)`` tuple
-``optimize`` expects. Driver-mediated callers go through ``materialize_run``;
-notebook callers construct those three objects themselves and skip the
-indirection.
+the driver's optimize loop expects.
 """
 
 import gc
@@ -244,7 +243,6 @@ def optimize(
     target_model = target.model
     run_batch = target.run_batch
     reconstruction_loss = target.reconstruction_loss
-    tied_weights = target.tied_weights
 
     if pd_config.identity_module_info is not None:
         insert_identity_operations_(
@@ -282,16 +280,6 @@ def optimize(
     else:
         component_model = model
     assert isinstance(component_model, ComponentModel), "component_model is not a ComponentModel"
-
-    if tied_weights is not None:
-        for src_name, tgt_name in tied_weights:
-            tgt = component_model.components[tgt_name]
-            src = component_model.components[src_name]
-            assert tgt is not None and src is not None, (
-                f"Cannot tie weights between {src_name} and {tgt_name} - one or both are None"
-            )
-            tgt.U.data = src.V.data.T
-            tgt.V.data = src.U.data.T
 
     component_params: list[torch.nn.Parameter] = []
     for name in component_model.target_module_paths:
@@ -473,13 +461,15 @@ def run_pd(
     """Driver-mediated PD run. Composition root for ``pd-run`` / ``_worker.py``.
 
     Steps:
-    1. Materialize ``(target, train_loader, eval_loader)`` from the driver
+    1. Resolve the driver from ``run_cfg.driver_path`` and validate the config subtype.
+    2. Materialize ``(target, train_loader, eval_loader)`` from the driver
        (``materialize_run``).
-    2. Build a ``RunSink.for_run`` — creates ``PARAM_DECOMP_OUT_DIR/
+    3. Build a ``RunSink.for_run`` — creates ``PARAM_DECOMP_OUT_DIR/
        decompositions/<run_id>/``, writes ``run_config.yaml``, inits wandb if
        ``wandb_project`` is set.
-    3. Hand off to ``optimize`` with the sink.
-    4. ``sink.finish()`` for wandb cleanup.
+    4. Hand off to ``driver.optimize`` — most drivers delegate to the generic
+       ``optimize`` loop; TMS dispatches to its own ``tms_optimize``.
+    5. ``sink.finish()`` for wandb cleanup.
 
     For notebook / script use, call ``optimize(...)`` directly with a sink of
     your choosing (``RunSink.local`` / ``RunSink.with_wandb`` / ``RunSink.silent``).
@@ -492,21 +482,25 @@ def run_pd(
     All ranks call this function. Returns the output directory on the main
     process and ``None`` on other ranks.
     """
+    driver = load_driver(run_cfg.driver_path)
+    assert isinstance(run_cfg, driver.config_type), (
+        f"RunConfig has type {type(run_cfg).__name__}, "
+        f"expected {driver.config_type.__name__} from driver {run_cfg.driver_path}"
+    )
     target, train_loader, eval_loader = materialize_run(
         run_cfg, device=device, dist_state=dist_state
     )
-    # target.model lands on `device` via ComponentModel.to(device) inside optimize().
+    # target.model lands on `device` via ComponentModel.to(device) inside the optimize loop.
 
     sink = RunSink.for_run(run_cfg, wandb_project=wandb_project, launch_id=launch_id)
     try:
-        optimize(
-            target=target,
-            train_loader=train_loader,
-            eval_loader=eval_loader,
-            pd_config=run_cfg.pd,
-            logging_config=run_cfg.logging,
-            runtime_config=run_cfg.runtime,
+        driver.optimize(
+            run_cfg,
+            target,
+            train_loader,
+            eval_loader,
             device=device,
+            dist_state=dist_state,
             sink=sink,
         )
     finally:

@@ -69,11 +69,19 @@ class MyDriver:
     config_type = MyRunConfig        # ClassVar[type[RunConfig]]
 
     def build_target(self, run_cfg: MyRunConfig) -> PDTarget: ...
-    def build_dataloaders(self, run_cfg: MyRunConfig, *, train_batch_size, eval_batch_size, ...): ...
+    def build_train_loader(self, run_cfg: MyRunConfig, *, device, ...) -> DataLoader: ...
+    def build_eval_loader(self, run_cfg: MyRunConfig, *, device, ...) -> DataLoader: ...
+    def optimize(self, run_cfg, target, train_loader, eval_loader, *, device, dist_state, sink) -> None:
+        # most drivers delegate to `param_decomp.run_pd.optimize` (generic DDP-aware trainer);
+        # experiments with per-step idiosyncrasies (e.g. TMS weight tying) can dispatch elsewhere.
+        ...
+    def load_model(self, run_cfg: MyRunConfig, checkpoint_path: Path) -> ComponentModel:
+        # usually: build the target, then call ComponentModel.from_checkpoint(...).
+        ...
 ```
 
-`build_target` and `build_dataloaders` always fetch from upstream (wandb pretrain run, HF, …);
-reload calls them exactly like a fresh run. Saved PD runs therefore depend on their upstream
+`build_target` and the dataloader builders always fetch from upstream (wandb pretrain run, HF,
+…); reload calls them exactly like a fresh run. Saved PD runs therefore depend on their upstream
 continuing to exist — the wandb run path / HF model name in the config is the pin.
 
 Built-in runtime definitions live in `param_decomp/experiments/{lm,tms,resid_mlp}/experiment.py`.

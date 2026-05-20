@@ -491,12 +491,13 @@ class ComponentModel(nn.Module):
         checkpoint_path: Path,
         target_model: nn.Module,
         run_batch: RunBatch,
-        tied_weights: list[tuple[str, str]] | None = None,
     ) -> "ComponentModel":
         """Rebuild a ComponentModel from a saved PD checkpoint and a user-supplied target.
 
         The caller owns target loading (HF, in-repo pretrain runs, custom user models),
         so this method takes the already-instantiated target plus its run_batch function.
+        Any experiment-specific post-load setup (e.g. TMS weight tying) is applied by
+        the caller — typically via the driver's ``load_model``.
         """
         target_model.eval()
         target_model.requires_grad_(False)
@@ -520,16 +521,6 @@ class ComponentModel(nn.Module):
         comp_model_weights = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
         _validate_checkpoint_ci_config_compatibility(comp_model_weights, config.ci_config)
         comp_model.load_state_dict(comp_model_weights)
-
-        if tied_weights is not None:
-            for src_name, tgt_name in tied_weights:
-                tgt = comp_model.components[tgt_name]
-                src = comp_model.components[src_name]
-                assert tgt is not None and src is not None, (
-                    f"Cannot tie weights between {src_name} and {tgt_name} - one or both are None"
-                )
-                tgt.U.data = src.V.data.T
-                tgt.V.data = src.U.data.T
 
         return comp_model
 

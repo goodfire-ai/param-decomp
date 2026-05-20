@@ -1,16 +1,21 @@
 """Residual MLP PD experiment: serializable config, target loading, dataloaders, and driver."""
 
-from typing import ClassVar, Literal, override
+from pathlib import Path
+from typing import Any, ClassVar, Literal, override
 
 from pydantic import Field
 from torch import Tensor
+from torch.utils.data import DataLoader
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.experiments.driver import ExperimentDriver
 from param_decomp.experiments.resid_mlp.models import ResidMLP, ResidMLPTargetRunInfo
 from param_decomp.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
 from param_decomp.models.batch_and_loss_fns import PDTarget, recon_loss_mse, run_batch_first_element
+from param_decomp.models.component_model import ComponentModel
 from param_decomp.run import RunConfig
+from param_decomp.run_pd import optimize as run_optimize_loop
+from param_decomp.run_sink import RunSink
 from param_decomp.types import Probability
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader
 from param_decomp.utils.distributed_utils import DistributedState
@@ -100,4 +105,38 @@ class Driver(ExperimentDriver[ResidMLPRunConfig]):
             self._build_dataset(run_cfg, device),
             batch_size=batch_size_override or run_cfg.logging.eval_batch_size,
             shuffle=False,
+        )
+
+    @override
+    def optimize(
+        self,
+        run_cfg: ResidMLPRunConfig,
+        target: PDTarget,
+        train_loader: DataLoader[Any],
+        eval_loader: DataLoader[Any],
+        *,
+        device: str,
+        dist_state: DistributedState | None,
+        sink: RunSink,
+    ) -> None:
+        del dist_state
+        run_optimize_loop(
+            target=target,
+            train_loader=train_loader,
+            eval_loader=eval_loader,
+            pd_config=run_cfg.pd,
+            logging_config=run_cfg.logging,
+            runtime_config=run_cfg.runtime,
+            device=device,
+            sink=sink,
+        )
+
+    @override
+    def load_model(self, run_cfg: ResidMLPRunConfig, checkpoint_path: Path) -> ComponentModel:
+        target = self.build_target(run_cfg)
+        return ComponentModel.from_checkpoint(
+            config=run_cfg.pd,
+            checkpoint_path=checkpoint_path,
+            target_model=target.model,
+            run_batch=target.run_batch,
         )

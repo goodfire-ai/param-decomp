@@ -14,6 +14,7 @@ from param_decomp.configs import (
     ScheduleConfig,
 )
 from param_decomp.experiments.tms.models import TMSModel, TMSModelConfig, TMSTrainConfig
+from param_decomp.experiments.tms.optimize import tms_optimize
 from param_decomp.experiments.tms.train_tms import get_model_and_dataloader, train
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.metrics.builtin.faithfulness_loss import FaithfulnessLossConfig
@@ -27,7 +28,6 @@ from param_decomp.models.batch_and_loss_fns import (
     recon_loss_mse,
     run_batch_first_element,
 )
-from param_decomp.run_pd import optimize
 from param_decomp.run_sink import RunSink
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
 from param_decomp.utils.general_utils import set_seed
@@ -112,19 +112,13 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
     train_loader = DatasetGeneratedDataLoader(dataset, batch_size=config.batch_size, shuffle=False)
     eval_loader = DatasetGeneratedDataLoader(dataset, batch_size=config.batch_size, shuffle=False)
 
-    tied_weights = None
-    if target_model.config.tied_weights:
-        tied_weights = [("linear1", "linear2")]
-
     target = PDTarget(
         model=target_model,
         run_batch=run_batch_first_element,
         reconstruction_loss=recon_loss_mse,
-        tied_weights=tied_weights,
     )
 
-    # Run optimize function
-    optimize(
+    tms_optimize(
         target=target,
         train_loader=train_loader,
         eval_loader=eval_loader,
@@ -133,6 +127,7 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
         runtime_config=RuntimeConfig(),
         device=device,
         sink=RunSink.local(tmp_path),
+        tied_weights=target_model.config.tied_weights,
     )
 
     # The test passes if optimize runs without errors
