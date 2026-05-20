@@ -14,7 +14,7 @@ from typing import Any, Protocol, runtime_checkable
 
 import yaml
 
-from param_decomp.run import Run
+from param_decomp.run import RunConfig
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,7 @@ class SweepSpec:
     """
 
     description: str
-    runs: list[Run]
+    runs: list[RunConfig]
 
     def __post_init__(self) -> None:
         assert self.runs, "SweepSpec.runs must be non-empty"

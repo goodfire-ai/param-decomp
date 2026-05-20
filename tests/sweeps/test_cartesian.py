@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from param_decomp.run import Run
+from param_decomp.run import RunConfig
 from param_decomp.settings import REPO_ROOT
 from param_decomp.sweeps import SweepSpec
 from param_decomp.sweeps.cartesian import cartesian_product, example_cartesian_sweep
@@ -63,7 +63,7 @@ def test_cartesian_run_names_encode_axis_values() -> None:
 
 def test_cartesian_product_generates_new_run_ids_from_run_template() -> None:
     base_config = _base_config()
-    base_run = Run.from_dict(base_config)
+    base_run = RunConfig.from_dict(base_config)
     spec = cartesian_product(
         base_config=base_run,
         grid={"pd.seed": [0, 1]},

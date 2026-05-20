@@ -11,7 +11,7 @@ import yaml
 
 from param_decomp.configs import RuntimeConfig
 from param_decomp.experiments.discovery import discover_experiments
-from param_decomp.run import Run
+from param_decomp.run import RunConfig
 from param_decomp.settings import REPO_ROOT
 from param_decomp.sweeps.cartesian import cartesian_product
 
@@ -104,7 +104,7 @@ class TestLaunchSlurm:
 
         base_config = _builtin("tms_5-2")
         logging_data = {**base_config.get("logging", {}), "wandb_run_name": "tms_5-2"}
-        run = Run.from_dict({**base_config, "logging": logging_data})
+        run = RunConfig.from_dict({**base_config, "logging": logging_data})
         launch_slurm(
             launchable=run,
             n_agents=None,
@@ -125,7 +125,7 @@ class TestLaunchSlurm:
         from param_decomp.scripts.run_slurm import _build_worker_args
 
         base_config = _builtin("tms_5-2")
-        run = Run.from_dict(base_config)
+        run = RunConfig.from_dict(base_config)
 
         args = _build_worker_args("launch-test", run, "test")
 

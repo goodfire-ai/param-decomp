@@ -73,7 +73,7 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
 
     logger.info(f"[API] Loading {clean_wandb_path}")
     pd_run = PDRun.from_path(clean_wandb_path)
-    exp = pd_run.run
+    exp = pd_run.run_cfg
     if not isinstance(exp, LMRun):
         raise HTTPException(
             status_code=400,

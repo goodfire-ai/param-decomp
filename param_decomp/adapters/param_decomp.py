@@ -8,7 +8,7 @@ from param_decomp.adapters.base import DecompositionAdapter
 from param_decomp.autointerp.schemas import ModelMetadata
 from param_decomp.experiments.lm.experiment import LMRun
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.run import Run
+from param_decomp.run import RunConfig
 from param_decomp.saved_run import PDRun
 from param_decomp.topology import TransformerTopology
 from param_decomp.utils.wandb_utils import parse_wandb_run_path
@@ -24,8 +24,8 @@ class PDAdapter(DecompositionAdapter):
         return PDRun.from_path(self._wandb_path)
 
     @cached_property
-    def run(self) -> Run:
-        return self.pd_run.run
+    def run(self) -> RunConfig:
+        return self.pd_run.run_cfg
 
     @cached_property
     def lm_run(self) -> LMRun:

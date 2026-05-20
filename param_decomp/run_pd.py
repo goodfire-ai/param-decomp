@@ -39,7 +39,7 @@ from param_decomp.models.batch_and_loss_fns import (
     move_batch_to_device,
 )
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
-from param_decomp.run import Run
+from param_decomp.run import RUN_METADATA_FILENAME, RunConfig
 from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp.utils.data_utils import loop_dataloader
 from param_decomp.utils.distributed_utils import (
@@ -54,7 +54,6 @@ from param_decomp.utils.general_utils import (
     bf16_autocast,
     combine_nonoverlapping_dicts,
     get_scheduled_value,
-    save_pre_run_info,
 )
 from param_decomp.utils.logging_utils import get_grad_norms_dict, local_log
 from param_decomp.utils.module_utils import expand_module_patterns
@@ -422,7 +421,8 @@ def _validate_pgd_scope(config: PDConfig, dist_state: DistributedState | None) -
 
 
 def run_pd(
-    config: PDConfig,
+    id: str,
+    pd_config: PDConfig,
     logging_config: LoggingConfig,
     runtime_config: RuntimeConfig,
     target: PDTarget,
@@ -430,40 +430,30 @@ def run_pd(
     eval_loader: DataLoader[Any],
     device: str,
     *,
-    run: Run | None = None,
-    artifacts: dict[str, Any] | None = None,
+    run_cfg: RunConfig | None = None,
     wandb_project: str | None = None,
     wandb_tags: list[str] | None = None,
 ) -> Path | None:
-    """Run a full PD decomposition: setup, optimize, cleanup.
+    # """Run a full PD decomposition: setup, optimize, cleanup.
 
-    `run` is written to ``run_metadata.yaml``.  Driver-mediated callers
-    (via ``experiments/runner.py``) pass a fully populated ``Run``;
-    notebook callers can omit it and a minimal one is synthesized.
+    # `run` is written to ``run_metadata.yaml``.  Driver-mediated callers
+    # (via ``experiments/runner.py``) pass a fully populated ``Run``;
+    # notebook callers can omit it and a minimal one is synthesized.
 
-    ``wandb_project`` is a deploy-time parameter (which W&B account/project to log
-    to), not part of the reproducible ``Run`` config. ``None`` disables W&B.
+    # ``wandb_project`` is a deploy-time parameter (which W&B account/project to log
+    # to), not part of the reproducible ``Run`` config. ``None`` disables W&B.
 
-    All ranks call this function. Only the main process does wandb/logging setup.
-    Returns the output directory on the main process and None on other ranks.
-    """
-    _validate_pgd_scope(config, get_distributed_state())
+    # All ranks call this function. Only the main process does wandb/logging setup.
+    # Returns the output directory on the main process and None on other ranks.
+    # """
+    _validate_pgd_scope(pd_config, get_distributed_state())
 
     out_dir: Path | None
     if is_main_process():
-        artifacts = artifacts or {}
-        if run is None:
-            run = Run(
-                driver_path=None,
-                pd=config,
-                logging=logging_config,
-                runtime=runtime_config,
-            )
-        run_id = run.run_id
-        out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
+        out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / id
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"Run ID: {run_id}")
+        logger.info(f"Run ID: {id}")
         logger.info(f"Output directory: {out_dir}")
 
         tags = list(wandb_tags or [])
@@ -474,31 +464,31 @@ def run_pd(
         if wandb_project:
             init_wandb(
                 wandb_project,
-                run_id,
+                id,
                 configs={
-                    "pd": config,
+                    "pd": pd_config,
                     "logging": logging_config,
                     "runtime": runtime_config,
                 },
-                name=run.logging.wandb_run_name,
+                name=logging_config.wandb_run_name,
                 tags=tags,
-                view_meta=run.logging.view_meta,
+                view_meta=logging_config.view_meta,
             )
 
-        logger.info(config)
+        logger.info(pd_config)
 
-        save_pre_run_info(
-            save_to_wandb=wandb_project is not None,
-            out_dir=out_dir,
-            run=run,
-            artifacts=artifacts,
-        )
+        if run_cfg is not None:
+            run_cfg.write(out_dir / RUN_METADATA_FILENAME)
+
+        if wandb_project is not None:
+            wandb.save(str(out_dir / RUN_METADATA_FILENAME), base_path=out_dir, policy="now")
+
     else:
         out_dir = None
 
     optimize(
         target_model=target.model,
-        config=config,
+        config=pd_config,
         logging_config=logging_config,
         runtime_config=runtime_config,
         device=device,

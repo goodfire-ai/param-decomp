@@ -17,7 +17,7 @@ from hashlib import sha256
 
 from param_decomp.configs import RuntimeConfig
 from param_decomp.log import logger
-from param_decomp.run import Run
+from param_decomp.run import RunConfig
 from param_decomp.settings import GPUS_PER_NODE, PARAM_DECOMP_OUT_DIR
 from param_decomp.sweeps import SweepSpec
 from param_decomp.utils.git_utils import create_git_snapshot
@@ -38,7 +38,7 @@ _CUDA_FLAGS = {
 
 
 def launch_slurm(
-    launchable: Run | SweepSpec,
+    launchable: RunConfig | SweepSpec,
     runtime: RuntimeConfig,
     n_agents: int | None,
     job_suffix: str | None,
@@ -162,7 +162,7 @@ def _choose_master_port(run_id_local: str, idx: int) -> int:
     return base + (h % span)
 
 
-def _build_worker_args(launch_id: str, run: Run, project: str) -> str:
+def _build_worker_args(launch_id: str, run: RunConfig, project: str) -> str:
     """Build the ``_worker`` CLI arguments for one SLURM task."""
     run_json = json.dumps(run.model_dump(mode="json"))
     return " ".join(
@@ -176,7 +176,7 @@ def _build_worker_args(launch_id: str, run: Run, project: str) -> str:
 
 def _get_command(
     launch_id: str,
-    run: Run,
+    run: RunConfig,
     spec_idx: int,
     n_gpus: int | None,
     snapshot_ref: str,
@@ -232,7 +232,7 @@ def _get_command(
 def _create_slurm_script(
     slurm_job_name: str,
     launch_id: str,
-    runs: list[Run],
+    runs: list[RunConfig],
     snapshot_ref: str,
     n_gpus: int | None,
     partition: str,

@@ -42,7 +42,7 @@ from param_decomp.experiments.tms.experiment import (
     TMSRun,
     TMSTargetConfig,
 )
-from param_decomp.run import RUN_METADATA_FILENAME, Run
+from param_decomp.run import RUN_METADATA_FILENAME, RunConfig
 
 LM_DRIVER_PATH = "param_decomp.experiments.lm.experiment:Driver"
 TMS_DRIVER_PATH = "param_decomp.experiments.tms.experiment:Driver"
@@ -78,13 +78,13 @@ def _runtime_config() -> RuntimeConfig:
     return RuntimeConfig(autocast_bf16=False, device="cpu", dp=None)
 
 
-def _round_trip(run: Run) -> Run:
+def _round_trip(run: RunConfig) -> RunConfig:
     """Round-trip ``run`` through ``model_dump`` → ``Run.from_dict``."""
-    return Run.from_dict(run.model_dump(mode="json"))
+    return RunConfig.from_dict(run.model_dump(mode="json"))
 
 
 def test_run_generates_run_id_on_instantiation():
-    run = Run(
+    run = RunConfig(
         driver_path=None,
         pd=_pd_config(),
         logging=_logging_config(),
@@ -153,7 +153,7 @@ def test_run_requires_runtime_config():
     }
 
     with pytest.raises(ValidationError, match="runtime"):
-        Run.from_dict(data)
+        RunConfig.from_dict(data)
 
 
 def test_driver_class_paths_load():
@@ -165,7 +165,7 @@ def test_driver_class_paths_load():
 def test_save_pre_run_info_writes_run_metadata(tmp_path: Path):
     from param_decomp.utils.general_utils import save_pre_run_info
 
-    run = Run(
+    run = RunConfig(
         driver_path=None,
         pd=_pd_config(),
         logging=_logging_config(),
@@ -192,14 +192,14 @@ def test_run_round_trip_via_file(tmp_path: Path):
     )
     path = tmp_path / RUN_METADATA_FILENAME
     run.write(path)
-    loaded = Run.from_file(path)
+    loaded = RunConfig.from_file(path)
     assert loaded.run_id == run.run_id
     assert loaded.driver_path == run.driver_path
     assert loaded == run
 
 
 def test_run_from_file_preserves_existing_run_id(tmp_path: Path):
-    run = Run(
+    run = RunConfig(
         run_id="p-existing",
         driver_path=None,
         pd=_pd_config(),
@@ -209,7 +209,7 @@ def test_run_from_file_preserves_existing_run_id(tmp_path: Path):
     path = tmp_path / RUN_METADATA_FILENAME
     path.write_text(yaml.safe_dump(run.model_dump(mode="json")))
 
-    loaded = Run.from_file(path)
+    loaded = RunConfig.from_file(path)
 
     assert loaded.run_id == "p-existing"
 

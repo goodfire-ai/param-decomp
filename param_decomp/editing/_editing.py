@@ -277,7 +277,7 @@ class EditableModel:
         from param_decomp.experiments.lm.experiment import LMRun
 
         pd_run = PDRun.from_path(wandb_path)
-        exp = pd_run.run
+        exp = pd_run.run_cfg
         assert isinstance(exp, LMRun)
         model = pd_run.load_model().to(device).eval()
         tokenizer = AppTokenizer.from_pretrained(exp.data.tokenizer_name)

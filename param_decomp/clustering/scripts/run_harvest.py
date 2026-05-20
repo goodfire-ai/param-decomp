@@ -38,9 +38,9 @@ def harvest(config: HarvestConfig) -> Path:
     device = get_device()
 
     pd_run = PDRun.from_path(config.model_path)
-    if isinstance(pd_run.run, LMRun):
+    if isinstance(pd_run.run_cfg, LMRun):
         dataloader, _ = build_lm_dataloaders(
-            pd_run.run.data,
+            pd_run.run_cfg.data,
             train_batch_size=config.batch_size,
             eval_batch_size=config.batch_size,
             dist_state=None,

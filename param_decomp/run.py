@@ -23,7 +23,7 @@ from param_decomp.utils.run_utils import generate_run_id
 RUN_METADATA_FILENAME = "run_metadata.yaml"
 
 
-class Run(BaseConfig):
+class RunConfig(BaseConfig):
     """Top-level run config.
 
     ``run_id`` identifies the output directory and W&B run. Fresh ``Run``
@@ -52,7 +52,7 @@ class Run(BaseConfig):
         return self
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Run":
+    def from_dict(cls, data: dict[str, Any]) -> "RunConfig":
         """Parse a dict (e.g. from YAML) into the right `Run` subclass.
 
         Looks up ``driver_path`` → driver → ``config_type`` and validates the
@@ -67,7 +67,7 @@ class Run(BaseConfig):
 
     @classmethod
     @override
-    def from_file(cls, path: Path | str) -> "Run":
+    def from_file(cls, path: Path | str) -> "RunConfig":
         path = Path(path)
         assert path.exists(), f"{RUN_METADATA_FILENAME} not found at {path}"
         with open(path) as f:
@@ -79,7 +79,7 @@ class Run(BaseConfig):
             yaml.dump(self.model_dump(mode="json"), f, default_flow_style=False, sort_keys=False)
 
 
-def _load_config_type(driver_path: str) -> type[Run]:
+def _load_config_type(driver_path: str) -> type[RunConfig]:
     """Resolve a ``module:attr`` driver path to its ``config_type`` (a ``Run`` subclass).
 
     Inlined here (rather than reusing ``experiments.driver.load_driver``) to avoid a

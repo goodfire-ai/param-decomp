@@ -16,27 +16,27 @@ from typing import Any, ClassVar, Protocol
 from torch.utils.data import DataLoader
 
 from param_decomp.models.batch_and_loss_fns import PDTarget
-from param_decomp.run import Run
+from param_decomp.run import RunConfig
 from param_decomp.utils.distributed_utils import DistributedState
 
 
-class ExperimentDriver[RunT: Run](Protocol):
+class ExperimentDriver[RunConfigT: RunConfig](Protocol):
     """Converts a serializable `Run` config into runtime PD objects."""
 
     name: ClassVar[str]
 
     @property
-    def config_type(self) -> type[RunT]:
+    def config_type(self) -> type[RunConfigT]:
         """Pydantic model type used to validate serialized `Run` configs."""
         ...
 
-    def build_target(self, run: RunT) -> PDTarget:
+    def build_target(self, run_cfg: RunConfigT) -> PDTarget:
         """Build the target model bundle from upstream."""
         ...
 
     def build_dataloaders(
         self,
-        run: RunT,
+        run_cfg: RunConfigT,
         *,
         train_batch_size: int,
         eval_batch_size: int,

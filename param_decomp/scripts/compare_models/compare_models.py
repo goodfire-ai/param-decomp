@@ -23,7 +23,7 @@ from param_decomp.base_config import BaseConfig
 from param_decomp.configs import PDConfig
 from param_decomp.log import logger
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.run import Run
+from param_decomp.run import RunConfig
 from param_decomp.saved_run import PDRun
 from param_decomp.utils.distributed_utils import get_device
 from param_decomp.utils.general_utils import get_obj_device
@@ -88,10 +88,10 @@ class ModelComparator:
 
     def _load_model_and_config(
         self, model_path: str
-    ) -> tuple[ComponentModel, PDConfig, Run, PDRun]:
+    ) -> tuple[ComponentModel, PDConfig, RunConfig, PDRun]:
         """Load model and config. Returns (model, pd_config, run, pd_run)."""
         pd_run = PDRun.from_path(model_path)
-        run = pd_run.run
+        run = pd_run.run_cfg
         model = pd_run.load_model().to(self.device)
         model.eval()
         model.requires_grad_(False)

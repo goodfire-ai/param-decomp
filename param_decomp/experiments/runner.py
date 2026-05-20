@@ -15,7 +15,7 @@ import yaml
 
 from param_decomp.experiments._worker import run_experiment
 from param_decomp.experiments.discovery import discover_experiments
-from param_decomp.run import Run
+from param_decomp.run import RunConfig
 from param_decomp.settings import (
     DEFAULT_PARTITION_NAME,
     DEFAULT_PROJECT_NAME,
@@ -173,7 +173,7 @@ def main(
         )
         return
 
-    run = Run.from_dict(_resolve_source(experiment, config_path, rerun))
+    run = RunConfig.from_dict(_resolve_source(experiment, config_path, rerun))
 
     if local:
         assert run.runtime.dp is None, "runtime.dp is not supported with --local"

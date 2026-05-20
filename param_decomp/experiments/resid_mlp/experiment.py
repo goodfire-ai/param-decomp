@@ -13,7 +13,7 @@ from param_decomp.models.batch_and_loss_fns import (
     recon_loss_mse,
     run_batch_first_element,
 )
-from param_decomp.run import Run
+from param_decomp.run import RunConfig
 from param_decomp.types import Probability
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader
 from param_decomp.utils.distributed_utils import DistributedState
@@ -34,7 +34,7 @@ class ResidMLPDataConfig(BaseConfig):
     ] = "at_least_zero_active"
 
 
-class ResidMLPRun(Run):
+class ResidMLPRun(RunConfig):
     target: ResidMLPTargetConfig
     data: ResidMLPDataConfig
 

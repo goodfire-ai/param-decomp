@@ -14,14 +14,14 @@ from typing import Any
 import yaml
 
 from param_decomp.experiments.driver import load_driver
-from param_decomp.run import Run
+from param_decomp.run import RunConfig
 from param_decomp.settings import REPO_ROOT
 from param_decomp.sweeps.spec import SweepSpec
 from param_decomp.utils.run_utils import apply_nested_updates
 
 
 def cartesian_product(
-    base_config: Run | dict[str, Any],
+    base_config: RunConfig | dict[str, Any],
     grid: dict[str, list[Any]],
     *,
     description: str,
@@ -43,7 +43,7 @@ def cartesian_product(
     value_lists = [grid[a] for a in axes]
     base_config_data = _config_data(base_config)
     config_type = load_driver(driver_path).config_type
-    runs: list[Run] = []
+    runs: list[RunConfig] = []
     for combo in itertools.product(*value_lists):
         updates = dict(zip(axes, combo, strict=True))
         config_data = apply_nested_updates(base_config_data, updates)
@@ -92,7 +92,7 @@ def _short_value(v: Any) -> str:
     return str(v).replace("/", "_")
 
 
-def _config_data(config: Run | dict[str, Any]) -> dict[str, Any]:
-    data = config.model_dump(mode="json") if isinstance(config, Run) else dict(config)
+def _config_data(config: RunConfig | dict[str, Any]) -> dict[str, Any]:
+    data = config.model_dump(mode="json") if isinstance(config, RunConfig) else dict(config)
     data.pop("run_id", None)
     return data

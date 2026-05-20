@@ -77,7 +77,7 @@ def harvest_attributions(
     _, _, run_id = parse_wandb_run_path(config.wandb_path)
 
     pd_run = PDRun.from_path(config.wandb_path)
-    exp = pd_run.run
+    exp = pd_run.run_cfg
     assert isinstance(exp, LMRun), (
         f"Dataset attributions currently only support LM runs, got {type(exp).__name__}"
     )

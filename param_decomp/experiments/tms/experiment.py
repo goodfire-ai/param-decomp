@@ -12,7 +12,7 @@ from param_decomp.models.batch_and_loss_fns import (
     recon_loss_mse,
     run_batch_first_element,
 )
-from param_decomp.run import Run
+from param_decomp.run import RunConfig
 from param_decomp.types import Probability
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
 from param_decomp.utils.distributed_utils import DistributedState
@@ -33,7 +33,7 @@ class TMSDataConfig(BaseConfig):
     )
 
 
-class TMSRun(Run):
+class TMSRun(RunConfig):
     target: TMSTargetConfig
     data: TMSDataConfig
 
