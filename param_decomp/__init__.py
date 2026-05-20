@@ -7,10 +7,10 @@ Core entrypoints:
 Core types:
     - `PDConfig`: training/algorithm config.
     - `PDTarget`: target model + run_batch + reconstruction_loss.
-    - `Run`: one type for "what a PD run is" — driver_path + pd/logging/runtime.
-      Driver-specific subclasses (LMRun, TMSRun, ResidMLPRun) add target/data.
+    - `RunConfig`: one type for "what a PD run is" — driver_path + pd/logging/runtime.
+      Driver-specific subclasses (LMRunConfig, TMSRunConfig, ResidMLPRunConfig) add target/data.
     - `ExperimentDriver`: Protocol for the open-world experiment extension point.
-    - `PDRun`: handle to a saved run (Run config, checkpoint).
+    - `PDRun`: handle to a saved run (RunConfig, checkpoint).
 """
 
 from param_decomp.configs import PDConfig

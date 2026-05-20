@@ -34,16 +34,16 @@ class ResidMLPDataConfig(BaseConfig):
     ] = "at_least_zero_active"
 
 
-class ResidMLPRun(RunConfig):
+class ResidMLPRunConfig(RunConfig):
     target: ResidMLPTargetConfig
     data: ResidMLPDataConfig
 
 
 class Driver:
     name: ClassVar[str] = "resid_mlp"
-    config_type: ClassVar[type[ResidMLPRun]] = ResidMLPRun
+    config_type: ClassVar[type[ResidMLPRunConfig]] = ResidMLPRunConfig
 
-    def build_target(self, run: ResidMLPRun) -> PDTarget:
+    def build_target(self, run: ResidMLPRunConfig) -> PDTarget:
         run_info = ResidMLPTargetRunInfo.from_path(run.target.run_path)
         target_model = ResidMLP.from_run_info(run_info)
         target_model.eval()
@@ -55,7 +55,7 @@ class Driver:
 
     def build_dataloaders(
         self,
-        run: ResidMLPRun,
+        run: ResidMLPRunConfig,
         *,
         train_batch_size: int,
         eval_batch_size: int,

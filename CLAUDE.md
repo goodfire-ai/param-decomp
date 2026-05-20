@@ -36,40 +36,40 @@ The `lm` experiment can decompose any HuggingFace-loadable model whose target mo
 The core PD framework exposes these entrypoints, re-exported from `param_decomp/__init__.py`:
 
 ```python
-from param_decomp import run_pd, load_component_model, PDConfig, PDTarget, PDRun, Run, ExperimentDriver
+from param_decomp import run_pd, load_component_model, PDConfig, PDTarget, PDRun, RunConfig, ExperimentDriver
 ```
 
-- `run_pd(config, logging_config, runtime_config, target, train_loader, eval_loader, device, *, run=None, artifacts=...)`:
-  trains a decomposition. `PDConfig` carries algorithm/training settings; `PDTarget` bundles the
-  target model + `run_batch` + reconstruction loss + optional tied weights. Core PD does not know
-  about LM/TMS/etc. Helpers for the two `PDTarget` callables live in
-  `param_decomp/models/batch_and_loss_fns.py`: `run_batch_passthrough`,
-  `run_batch_first_element`, `make_run_batch(output_extract)`; and `recon_loss_mse`,
-  `recon_loss_kl`. Callers can pass their own functions instead. `run` is a `Run`
-  written to `run_metadata.yaml`; `artifacts` is a `{filename: data}` mapping for extra files
-  saved beside the checkpoint.
+- `run_pd(run_cfg, target, train_loader, eval_loader, device, *, wandb_project=None, wandb_tags=None)`:
+  trains a decomposition. `run_cfg` is a `RunConfig` (id + pd/logging/runtime configs, plus
+  driver_path for driver-mediated runs or `None` for notebook callers); it is written to
+  `run_metadata.yaml` next to the checkpoint. `PDTarget` bundles the target model + `run_batch` +
+  reconstruction loss + optional tied weights. Core PD does not know about LM/TMS/etc. Helpers
+  for the two `PDTarget` callables live in `param_decomp/models/batch_and_loss_fns.py`:
+  `run_batch_passthrough`, `run_batch_first_element`, `make_run_batch(output_extract)`; and
+  `recon_loss_mse`, `recon_loss_kl`. Callers can pass their own functions instead.
 - `load_component_model(path, *, target=None)`: reload a saved run as a `ComponentModel`. When `target` is
-  omitted the run's driver reconstructs the target from the saved `Run`; pass `target=...`
+  omitted the run's driver reconstructs the target from the saved `RunConfig`; pass `target=...`
   explicitly for runs produced via direct `run_pd` (no driver).
-- `PDRun.from_path(path)`: handle to a saved run. Exposes `run` (`Run`),
-  `pd_config`, `load_target()`, `load_dataloaders(...)`, and `load_model(target=None)`.
+- `PDRun.from_path(path)`: handle to a saved run. Exposes `run_cfg` (`RunConfig`), `driver`
+  (resolved at construction), `pd_config`, `load_target()`, `load_dataloaders(...)`, and
+  `load_model(target=None)`.
 
 ### Experiment Drivers
 
 Experiments are open-world drivers, not a closed discriminated union in core code. A driver owns a
-pure Pydantic `Run` subclass and converts it to runtime objects:
+pure Pydantic `RunConfig` subclass and converts it to runtime objects:
 
 ```python
-class MyRun(Run):
+class MyRunConfig(RunConfig):
     target: MyTargetConfig
     data: MyDataConfig
 
 class MyDriver:
     name = "my_exp"                  # ClassVar[str] — wandb tag
-    config_type = MyRun              # ClassVar[type[Run]]
+    config_type = MyRunConfig        # ClassVar[type[RunConfig]]
 
-    def build_target(self, run: MyRun) -> PDTarget: ...
-    def build_dataloaders(self, run: MyRun, *, train_batch_size, eval_batch_size, ...): ...
+    def build_target(self, run_cfg: MyRunConfig) -> PDTarget: ...
+    def build_dataloaders(self, run_cfg: MyRunConfig, *, train_batch_size, eval_batch_size, ...): ...
 ```
 
 `build_target` and `build_dataloaders` always fetch from upstream (wandb pretrain run, HF, …);
@@ -89,7 +89,7 @@ pd: {...}
 pd-run --config_path my_config.yaml
 ```
 
-The driver import path is part of the saved `Run`, so reloading the run via `load_component_model(path)` can reconstruct the target without an explicit `target=` argument.
+The driver import path is part of the saved `RunConfig`, so reloading the run via `load_component_model(path)` can reconstruct the target without an explicit `target=` argument.
 
 Callers can also bypass drivers entirely and call `run_pd` directly with their own `PDTarget` and
 dataloaders — the right choice for notebook/script-driven use where `pd-run`, sweeps, and
@@ -118,18 +118,18 @@ The user's module imports `register_metric` and `LossMetricConfig` / `MetricConf
 `config_type` ClassVar pointing at their pydantic config, and that's it. A
 `@model_validator(mode="before")` on `PDConfig` imports these modules before
 `loss_metrics` / `eval_metrics` are validated, and the same hook fires on reload so saved
-`Run`s that referenced custom metrics deserialize without manual setup. The module must be
+`RunConfig`s that referenced custom metrics deserialize without manual setup. The module must be
 installed in (or otherwise importable from) the Python environment used to run / reload the
 experiment — including SLURM workers.
 
-### Per-experiment `Run` subclasses
+### Per-experiment `RunConfig` subclasses
 
-Built-in YAML configs are pure `Run` configs nested under `driver_path:`, `pd:`,
+Built-in YAML configs are pure `RunConfig` configs nested under `driver_path:`, `pd:`,
 `logging:`, `runtime:`, `target:`, and `data:`:
 
-- `LMRun(driver_path, pd, logging, runtime, target: LMTargetConfig, data: LMDataConfig)`
-- `TMSRun(driver_path, pd, logging, runtime, target, data)`
-- `ResidMLPRun(driver_path, pd, logging, runtime, target, data)`
+- `LMRunConfig(driver_path, pd, logging, runtime, target: LMTargetConfig, data: LMDataConfig)`
+- `TMSRunConfig(driver_path, pd, logging, runtime, target, data)`
+- `ResidMLPRunConfig(driver_path, pd, logging, runtime, target, data)`
 
 The three configs form a **determinism ladder**:
 
@@ -150,39 +150,39 @@ Mapping to fields:
   Cluster topology (GPUs per node) is `settings.GPUS_PER_NODE`, overridable via
   `PARAM_DECOMP_GPUS_PER_NODE` env var.
 - **`LoggingConfig` (class 3)** — observation: cadence (`*_freq`), `eval_batch_size`,
-  `ci_alive_threshold`, eval-only metrics, plus `wandb_run_name` / `view_meta`.
-  Never touches the optimizer. **Note:** the W&B *project* lives outside the
-  `Run` (it's a deploy-time parameter — which account/team to log to) and is
-  passed via `--project` to `pd-run` or `wandb_project=` to `run_pd`.
+  `ci_alive_threshold`, eval-only metrics. Never touches the optimizer. (Run identity
+  fields — `name` for the W&B display name and `view_meta` for free-form sweep labels —
+  live on `RunConfig` itself, not in `LoggingConfig`.) **Note:** the W&B *project* lives
+  outside the `RunConfig` too (it's a deploy-time parameter — which account/team to log
+  to) and is passed via `--project` to `pd-run` or `wandb_project=` to `run_pd`.
 
-`Run` configs should not perform I/O. Put target loading and dataloader construction in
+`RunConfig` should not perform I/O. Put target loading and dataloader construction in
 the driver.
 
 ### Saved run layout
 
 ```
 PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/
-  run_metadata.yaml          # Run: driver_path + pd + logging + runtime + target + data
+  run_metadata.yaml          # RunConfig: driver_path + name + pd + logging + runtime + view_meta + target + data
   model_<step>.pth           # PD checkpoints
 
 PARAM_DECOMP_OUT_DIR/sweeps/<launch_id>/
   spec.yaml                  # SweepSpec snapshot (sweep launches only; single runs don't write this)
 ```
 
-`Run` is a Pydantic model (defined in `param_decomp/run.py`):
+`RunConfig` is a Pydantic model (defined in `param_decomp/run.py`):
 
 ```yaml
 driver_path: "param_decomp.experiments.lm.experiment:Driver"   # null for notebook/custom runs
+name: "seed=0_lr=1e-3"                      # W&B display name; null lets W&B auto-name
 pd: {...}
-logging:
-  wandb_run_name: "seed=0_lr=1e-3"        # null lets W&B auto-name
-  view_meta:                               # free-form labels (populated by sweep generators)
-    lr_ratio: 0.1
-    size: medium
-  # ...other observation-only fields...
+logging: {...}                              # observation-only (cadence, eval batch size, …)
 runtime: {...}                              # compute substrate
-target: {...}                               # driver-specific (on the Run subclass)
-data: {...}                                 # driver-specific (on the Run subclass)
+view_meta:                                  # free-form labels (populated by sweep generators)
+  lr_ratio: 0.1
+  size: medium
+target: {...}                               # driver-specific (on the RunConfig subclass)
+data: {...}                                 # driver-specific (on the RunConfig subclass)
 ```
 
 `view_meta` is surfaced to W&B under a `view_meta/` prefix in `wandb.config` so the
@@ -276,10 +276,10 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
 **Key Data Flow:**
 
-1. `pd-run` (`experiments/runner.py`) resolves the input source — either a built-in experiment name, `--config_path`, `--rerun`, or `--sweep_generator_path` — into a `Run` (single launch) or a `SweepSpec` (many `Run`s sharing one driver and substrate). Every YAML/saved Run declares its driver via a top-level `driver_path:` field. With `--local` it dispatches in-process; otherwise `scripts/run_slurm.py:launch_slurm` submits a plain SLURM job (`Run`) or an array — one task per run — (`SweepSpec`).
-2. Each worker invocation (`experiments/_worker.py`, called as `python -m param_decomp.experiments._worker` from SLURM tasks, or directly from runner.py in --local mode) loads the driver, checks that the parsed `Run` matches the driver's `config_type`, and calls the driver to build `PDTarget` plus train/eval loaders.
-3. The worker passes the typed `Run` through to `run_pd`.
-4. `run_pd` saves the `Run` / artifacts and trains a `ComponentModel` via `optimize()` with config-driven losses.
+1. `pd-run` (`experiments/runner.py`) resolves the input source — either a built-in experiment name, `--config_path`, `--rerun`, or `--sweep_generator_path` — into a `RunConfig` (single launch) or a `SweepSpec` (many `RunConfig`s sharing one driver and substrate). Every YAML/saved `RunConfig` declares its driver via a top-level `driver_path:` field. With `--local` it dispatches in-process; otherwise `scripts/run_slurm.py:launch_run_slurm` submits a plain SLURM job (single `RunConfig`) and `launch_sweep_slurm` submits an array — one task per run — (`SweepSpec`).
+2. Each worker invocation (`experiments/_worker.py`, called as `python -m param_decomp.experiments._worker` from SLURM tasks, or directly from runner.py in --local mode) loads the driver, checks that the parsed `RunConfig` matches the driver's `config_type`, and calls the driver to build `PDTarget` plus train/eval loaders.
+3. The worker passes the typed `RunConfig` through to `run_pd`.
+4. `run_pd` saves the `RunConfig` / artifacts and trains a `ComponentModel` via `optimize()` with config-driven losses.
 5. Post-processing reloads runs through `PDRun.load_target()` / `PDRun.load_dataloaders(...)` (or just `PDRun.load_model()` / `load_component_model(path)`).
 
 **Configuration System:**
@@ -343,7 +343,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 │   │   ├── component_model.py       # ComponentModel.from_checkpoint(...)
 │   │   └── components.py            # LinearComponent, EmbeddingComponent, etc.
 │   ├── scripts/
-│   │   └── run_slurm.py             # launch_slurm (SLURM submit) — called by pd-run
+│   │   └── run_slurm.py             # launch_run_slurm / launch_sweep_slurm — called by pd-run
 │   ├── sweeps/                      # SweepSpec / SweepGenerator protocol + cartesian helper + example sweep
 │   ├── utils/
 │   │   └── slurm.py                 # SlurmConfig, submit functions
@@ -362,7 +362,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
 | Command | Entry Point | Description |
 |---------|-------------|-------------|
-| `pd-run` | `param_decomp/experiments/runner.py` | Run a PD experiment. SLURM by default; `--local` runs in-process. Entry points are mutually exclusive: `<experiment>`, `--config_path`, `--rerun`, or `--sweep_generator_path /abs/path/file.py:func`. Every config (built-in YAML, user YAML, saved Run) declares its driver via a top-level `driver_path:` field. Compute substrate (`device`/`dp`) is declared in the experiment YAML's `runtime:` block. |
+| `pd-run` | `param_decomp/experiments/runner.py` | Run a PD experiment. SLURM by default; `--local` runs in-process. Entry points are mutually exclusive: `<experiment>`, `--config_path`, `--rerun`, or `--sweep_generator_path /abs/path/file.py:func`. Every config (built-in YAML, user YAML, saved `RunConfig`) declares its driver via a top-level `driver_path:` field. Compute substrate (`device`/`dp`) is declared in the experiment YAML's `runtime:` block. |
 | `pd-harvest` | `param_decomp/harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
 | `pd-autointerp` | `param_decomp/autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
 | `pd-attributions` | `param_decomp/dataset_attributions/scripts/run_slurm_cli.py` | Submit dataset attribution SLURM job |
@@ -398,7 +398,7 @@ Use `param_decomp/` as the search root (not repo root) to avoid noise.
 **Running Experiments:**
 
 - `pd-run --local`: `runner.py` → `_worker.run_experiment` → `run_pd` (in-process)
-- `pd-run` (SLURM, default): `runner.py` → `scripts/run_slurm.py:launch_slurm` → `utils/slurm.py` → SLURM array → `python -m param_decomp.experiments._worker` (one per task) → `run_pd`
+- `pd-run` (SLURM, default): `runner.py` → `scripts/run_slurm.py:launch_run_slurm` / `launch_sweep_slurm` → `utils/slurm.py` → SLURM array → `python -m param_decomp.experiments._worker` (one per task) → `run_pd`
 
 **Harvest Pipeline:**
 
@@ -549,18 +549,16 @@ helper. Copy that file to start a new sweep.
 **How It Works:**
 
 1. `pd-run` imports the file at the given absolute path and looks up the named function.
-2. The generator is called (no args) and returns a `SweepSpec` carrying
-   `description` and `runs: list[Run]`. Each `Run` is self-describing: a
-   `driver_path`, `pd` / `logging` / `runtime` configs, and `target` /
-   `data` from the driver's `Run` subclass. `logging.wandb_run_name` and
-   `logging.view_meta` are typically populated by the generator. The W&B
-   project is not part of the `Run`; it's supplied via `--project` at launch.
-   All runs in one sweep must share a `driver_path` and a `runtime` block
-   (asserted by `SweepSpec.__post_init__`).
+2. The generator is called (no args) and returns a `SweepSpec` carrying the
+   shared `driver_path`, `logging`, `runtime`, and `n_agents` (one per sweep),
+   plus a `list[SweepData]` of per-run varying data — each `SweepData` is
+   `name` + `pd_config` + `view_meta`. The `SweepSpec.run_cfgs()` method
+   materializes the implied `list[RunConfig]` for the worker. The W&B project
+   is not part of the spec; it's supplied via `--project` at launch.
 3. The materialized `SweepSpec` is written to
    `PARAM_DECOMP_OUT_DIR/sweeps/<launch_id>/spec.yaml` for reproducibility.
-4. A SLURM array is submitted, capped at `--n_agents` concurrent tasks. Per-config
-   validation happens worker-side at launch.
+4. A SLURM array is submitted, capped at `SweepSpec.n_agents` concurrent tasks.
+   Per-config validation happens worker-side at launch.
 5. A git snapshot is created so all tasks run the same code, regardless of later edits.
 
 This is **not** a W&B sweep agent — W&B sees independent runs sharing a `launch_id` tag.
@@ -572,18 +570,20 @@ can group/color by it in the UI.
 ```python
 # my_sweep.py
 import yaml
+from param_decomp.run import RunConfig
 from param_decomp.sweeps import SweepSpec
 from param_decomp.sweeps.cartesian import cartesian_product
 
 def my_sweep() -> SweepSpec:
     with open("/abs/path/to/base_config.yaml") as f:
-        base = yaml.safe_load(f)
+        base = RunConfig.from_dict(yaml.safe_load(f))
     return cartesian_product(
         base_config=base,
         grid={
             "pd.seed": [0, 1, 2],
             "pd.loss_metrics.importance_minimality.coeff": [0.1, 0.2, 0.5],
         },
+        n_agents=4,
         description="lr x recon coeff sweep",
         driver_path="param_decomp.experiments.tms.experiment:Driver",
     )
@@ -596,14 +596,15 @@ Dot-paths in the grid address into the base config. Each axis is recorded in
 hierarchy. The function just has to return a `SweepSpec`; conformance to the
 `SweepGenerator` protocol is structural.
 
-**Rerunning runs from before the `Run` refactor:** `pd-run --rerun` will fail
+**Rerunning runs from before the `RunConfig` refactor:** `pd-run --rerun` will fail
 pydantic validation on `run_metadata.yaml` files written before this refactor.
-Old files have `driver:` / `config:` / top-level `wandb_*` / `view_meta`; the
-new shape is top-level `driver_path:` / `pd:` / `logging:` / `runtime:` /
-`target:` / `data:`, with `wandb_run_name` / `view_meta` nested under
-`logging:`. (W&B project is no longer recorded on the `Run` — pass `--project`
-explicitly when rerunning if you want anything other than the default project.)
-Edit the saved YAML to match the new shape before rerunning.
+Old files have `driver:` / `config:` / top-level `wandb_*` / nested `logging.wandb_run_name`
+/ nested `logging.view_meta`; the new shape is top-level `driver_path:` / `name:` /
+`pd:` / `logging:` / `runtime:` / `view_meta:` / `target:` / `data:`, with the run name
+and view metadata hoisted out of `logging:` and up to the top level. (W&B project is
+not recorded on the `RunConfig` — pass `--project` explicitly when rerunning if you want
+anything other than the default project.) Edit the saved YAML to match the new shape
+before rerunning.
 
 **Logs:** `~/slurm_logs/slurm-<job_id>_<task_id>.out`
 
@@ -623,7 +624,7 @@ model = load_component_model("wandb:entity/project/runs/run_id", target=target)
 
 # When you also need run/config access, use PDRun directly:
 pd_run = PDRun.from_path("wandb:entity/project/runs/run_id")
-print(pd_run.run)                        # Run (the driver-specific subclass, e.g. LMRun)
+print(pd_run.run)                        # Run (the driver-specific subclass, e.g. LMRunConfig)
 print(pd_run.pd_config)                  # PDConfig
 model = pd_run.load_model()              # equivalent to load_component_model(path)
 ```

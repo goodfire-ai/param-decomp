@@ -29,7 +29,7 @@ def _resolve_source(
     config_path: str | Path | None,
     rerun: str | None,
 ) -> dict[str, Any]:
-    """Resolve the chosen input source into a dict ready for ``Run.from_dict``.
+    """Resolve the chosen input source into a dict ready for ``RunConfig.from_dict``.
 
     Exactly one of ``experiment``, ``config_path``, or ``rerun`` must be set.
     Every source is expected to provide ``driver_path`` as a top-level field

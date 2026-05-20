@@ -1,11 +1,12 @@
 """Launch data model: ``SweepSpec`` (many runs sharing a driver and substrate).
 
-A single PD launch is just a ``Run`` — the same type the worker writes
-to disk. A sweep is a ``SweepSpec`` carrying ``list[Run]``.
+A single PD launch is just a ``RunConfig`` — the same type the worker writes
+to disk. A sweep is a ``SweepSpec`` carrying shared driver/logging/runtime
+plus a ``list[SweepData]`` of per-run varying ``pd``/``name``/``view_meta``.
 
 A ``SweepGenerator`` is any zero-arg callable returning a ``SweepSpec``. The
 sweep is fully self-contained — it loads whatever base config it wants and
-each ``Run`` declares its own driver.
+the spec declares the driver shared across all runs.
 """
 
 from dataclasses import dataclass

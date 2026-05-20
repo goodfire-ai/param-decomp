@@ -1,8 +1,8 @@
 """The `RunConfig` object: serializable spec for a PD run.
 
 Holds the driver import path plus the three determinism-tier configs (``pd``,
-``logging``, ``runtime``). Driver-specific subclasses (``LMRun``, ``TMSRun``,
-``ResidMLPRun``) add ``target`` / ``data`` and are pointed at by each driver's
+``logging``, ``runtime``). Driver-specific subclasses (``LMRunConfig``, ``TMSRunConfig``,
+``ResidMLPRunConfig``) add ``target`` / ``data`` and are pointed at by each driver's
 ``config_type``.
 
 Written to ``run_metadata.yaml`` beside the checkpoint, passed to the worker,

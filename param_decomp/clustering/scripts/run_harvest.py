@@ -19,7 +19,7 @@ from param_decomp.clustering.harvest_config import HarvestConfig
 from param_decomp.clustering.memberships import collect_memberships
 from param_decomp.clustering.paths import clustering_harvest_dir, new_harvest_id
 from param_decomp.experiments.lm.data import build_lm_dataloaders
-from param_decomp.experiments.lm.experiment import LMRun
+from param_decomp.experiments.lm.experiment import LMRunConfig
 from param_decomp.log import logger
 from param_decomp.saved_run import PDRun
 from param_decomp.utils.distributed_utils import get_device
@@ -38,7 +38,7 @@ def harvest(config: HarvestConfig) -> Path:
     device = get_device()
 
     pd_run = PDRun.from_path(config.model_path)
-    if isinstance(pd_run.run_cfg, LMRun):
+    if isinstance(pd_run.run_cfg, LMRunConfig):
         dataloader, _ = build_lm_dataloaders(
             pd_run.run_cfg.data,
             train_batch_size=config.batch_size,

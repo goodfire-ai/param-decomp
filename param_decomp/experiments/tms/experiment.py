@@ -33,16 +33,16 @@ class TMSDataConfig(BaseConfig):
     )
 
 
-class TMSRun(RunConfig):
+class TMSRunConfig(RunConfig):
     target: TMSTargetConfig
     data: TMSDataConfig
 
 
 class Driver:
     name: ClassVar[str] = "tms"
-    config_type: ClassVar[type[TMSRun]] = TMSRun
+    config_type: ClassVar[type[TMSRunConfig]] = TMSRunConfig
 
-    def build_target(self, run: TMSRun) -> PDTarget:
+    def build_target(self, run: TMSRunConfig) -> PDTarget:
         run_info = TMSTargetRunInfo.from_path(run.target.run_path)
         target_model = TMSModel.from_run_info(run_info)
         target_model.eval()
@@ -56,7 +56,7 @@ class Driver:
 
     def build_dataloaders(
         self,
-        run: TMSRun,
+        run: TMSRunConfig,
         *,
         train_batch_size: int,
         eval_batch_size: int,

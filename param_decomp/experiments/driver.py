@@ -1,7 +1,7 @@
 """Open-world experiment driver interface.
 
 The core PD optimizer only needs a target model bundle plus train/eval dataloaders.
-An experiment driver is the boundary layer that turns a serializable `Run` config
+An experiment driver is the boundary layer that turns a serializable `RunConfig`
 into those runtime objects. The set of drivers is open-world: custom users can register
 their own driver class without editing core code.
 
@@ -21,13 +21,13 @@ from param_decomp.utils.distributed_utils import DistributedState
 
 
 class ExperimentDriver[RunConfigT: RunConfig](Protocol):
-    """Converts a serializable `Run` config into runtime PD objects."""
+    """Converts a serializable `RunConfig` into runtime PD objects."""
 
     name: ClassVar[str]
 
     @property
     def config_type(self) -> type[RunConfigT]:
-        """Pydantic model type used to validate serialized `Run` configs."""
+        """Pydantic model type used to validate serialized `RunConfig` data."""
         ...
 
     def build_target(self, run_cfg: RunConfigT) -> PDTarget:

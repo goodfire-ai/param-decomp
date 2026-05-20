@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 
 from param_decomp.adapters.base import DecompositionAdapter
 from param_decomp.autointerp.schemas import ModelMetadata
-from param_decomp.experiments.lm.experiment import LMRun
+from param_decomp.experiments.lm.experiment import LMRunConfig
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.run import RunConfig
 from param_decomp.saved_run import PDRun
@@ -28,9 +28,11 @@ class PDAdapter(DecompositionAdapter):
         return self.pd_run.run_cfg
 
     @cached_property
-    def lm_run(self) -> LMRun:
+    def lm_run(self) -> LMRunConfig:
         run = self.run
-        assert isinstance(run, LMRun), f"This method requires an LM run, got {type(run).__name__}"
+        assert isinstance(run, LMRunConfig), (
+            f"This method requires an LM run, got {type(run).__name__}"
+        )
         return run
 
     @cached_property

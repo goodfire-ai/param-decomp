@@ -1,7 +1,7 @@
 """Sweep specification and generator framework.
 
-A single PD launch is just a ``Run``. A sweep is a ``SweepSpec``
-containing many ``Run``\\ s that share a driver and runtime substrate.
+A single PD launch is just a ``RunConfig``. A sweep is a ``SweepSpec``
+containing many ``RunConfig``\\ s that share a driver and runtime substrate.
 
 A sweep generator is any zero-arg callable returning a ``SweepSpec``. The
 runner imports a user-specified ``.py`` file, calls the named function,

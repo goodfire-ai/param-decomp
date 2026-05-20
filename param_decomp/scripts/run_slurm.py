@@ -1,10 +1,10 @@
 """SLURM launch helpers for PD experiments.
 
-Internal — invoked by ``pd-run`` (``param_decomp/experiments/runner.py``). Takes a
-``Run`` (single launch) or ``SweepSpec`` (many runs sharing one driver and
-substrate). For sweeps, snapshots the spec to disk for reproducibility. Creates
-a git snapshot of the repo and submits SLURM: a plain job for ``Run``, an
-array (one task per run) for ``SweepSpec``. Each task invokes
+Internal — invoked by ``pd-run`` (``param_decomp/experiments/runner.py``).
+``launch_run_slurm`` takes a single ``RunConfig`` and submits a plain SLURM
+job; ``launch_sweep_slurm`` takes a ``SweepSpec`` (many runs sharing one
+driver and substrate), snapshots the spec to disk for reproducibility, and
+submits a SLURM array (one task per run). Each task invokes
 ``python -m param_decomp.experiments._worker``.
 
 For single-machine execution, use ``pd-run <experiment> --local``.
@@ -196,7 +196,7 @@ def _get_command(
     is_array: bool,
     project: str,
 ) -> str:
-    """Build the command to run one ``Run``.
+    """Build the command to run one ``RunConfig``.
 
     Args:
         n_gpus: None or 1 means single GPU/CPU. 2-8 means single-node DDP. >8 means multi-node

@@ -55,7 +55,7 @@ class LMTargetConfig(BaseConfig):
         return self
 
 
-class LMRun(RunConfig):
+class LMRunConfig(RunConfig):
     target: LMTargetConfig
     data: LMDataConfig
 
@@ -88,9 +88,9 @@ def _load_target_model(target_cfg: LMTargetConfig) -> Any:
 
 class Driver:
     name: ClassVar[str] = "lm"
-    config_type: ClassVar[type[LMRun]] = LMRun
+    config_type: ClassVar[type[LMRunConfig]] = LMRunConfig
 
-    def build_target(self, run: LMRun) -> PDTarget:
+    def build_target(self, run: LMRunConfig) -> PDTarget:
         target_model = _load_target_model(run.target)
         target_model.eval()
         return PDTarget(
@@ -101,7 +101,7 @@ class Driver:
 
     def build_dataloaders(
         self,
-        run: LMRun,
+        run: LMRunConfig,
         *,
         train_batch_size: int,
         eval_batch_size: int,
