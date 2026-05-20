@@ -111,6 +111,7 @@ def launch_sweep_slurm(
         snapshot_ref=snapshot_ref,
         partition=partition,
         project=project,
+        per_task_comments=wandb_urls,
         max_concurrent_tasks=sweep.n_agents,
     )
 
@@ -156,15 +157,6 @@ def _n_gpus_for(runtime: RuntimeConfig) -> int | None:
     return runtime.dp
 
 
-# def _format_compute_info(n_gpus: int | None) -> str:
-#     if n_gpus is None:
-#         return "single GPU"
-#     if n_gpus <= GPUS_PER_NODE:
-#         return f"{n_gpus} GPUs (single node)"
-#     n_nodes = n_gpus // GPUS_PER_NODE
-#     return f"{n_gpus} GPUs ({n_nodes} nodes x {GPUS_PER_NODE} GPUs)"
-
-
 def _choose_master_port(run_id_local: str, idx: int) -> int:
     """Choose a unique port per command.
 
@@ -189,6 +181,31 @@ def _build_worker_args(launch_id: str, run: RunConfig, project: str) -> str:
     )
 
 
+def _topology(n_gpus: int | None) -> tuple[int, int]:
+    """Resolve ``(n_nodes, gpus_per_node)`` for a given total GPU count.
+
+    Single source of truth for "how do we partition `n_gpus` across nodes".
+
+    - ``n_gpus = None`` or ``1``: single CPU/GPU (returns ``(1, 1)``). Plain
+      ``python`` invocation downstream.
+    - ``n_gpus <= GPUS_PER_NODE``: single node, ``n_gpus`` GPUs. Single-node
+      ``torchrun``.
+    - ``n_gpus > GPUS_PER_NODE``: multi-node. **Must be divisible by
+      ``GPUS_PER_NODE``** — asserted, since silent truncation would allocate
+      fewer GPUs than the caller asked for.
+    """
+    match n_gpus:
+        case None | 1:
+            return 1, 1
+        case n if n <= GPUS_PER_NODE:
+            return 1, n
+        case _:
+            assert n_gpus % GPUS_PER_NODE == 0, (
+                f"multi-node n_gpus={n_gpus} must be divisible by GPUS_PER_NODE={GPUS_PER_NODE}"
+            )
+            return n_gpus // GPUS_PER_NODE, GPUS_PER_NODE
+
+
 def _get_command(
     launch_id: str,
     run_cfg: RunConfig,
@@ -201,58 +218,46 @@ def _get_command(
     """Build the command to run one ``RunConfig``.
 
     Args:
-        n_gpus: None or 1 means single GPU/CPU. 2-8 means single-node DDP. >8 means multi-node
-            DDP (must be divisible by 8).
-        workspace_job_id_bash: Bash expression uniquely identifying this job invocation,
-            used to name per-node /tmp workspaces in the multi-node DDP path. Pass
-            ``SINGLETON_JOB_ID_BASH`` or ``ARRAY_JOB_ID_BASH`` from ``utils.slurm``.
+        n_gpus: total GPU count. ``None`` / ``1`` → plain python. ``≤
+            GPUS_PER_NODE`` → single-node DDP via ``torchrun``. ``>
+            GPUS_PER_NODE`` → multi-node DDP via ``srun`` + ``torchrun``
+            (must be divisible by ``GPUS_PER_NODE`` — see ``_topology``).
+        workspace_job_id_bash: Bash expression uniquely identifying this job
+            invocation, used to name per-node ``/tmp`` workspaces in the
+            multi-node DDP path. Pass ``SINGLETON_JOB_ID_BASH`` or
+            ``ARRAY_JOB_ID_BASH`` from ``utils.slurm``.
     """
     port = _choose_master_port(run_cfg.run_id, spec_idx)
     script_args = _build_worker_args(launch_id, run_cfg, project)
-
     worker_module = "param_decomp.experiments._worker"
-    match n_gpus:
-        case None | 1:
-            return f"python -m {worker_module} {script_args}"
+    n_nodes, gpus_per_node = _topology(n_gpus)
 
-        case n if n <= GPUS_PER_NODE:
-            return (
-                f"torchrun --standalone --nproc_per_node={n} --master_port={port} "
-                f"-m {worker_module} {script_args}"
-            )
+    if n_nodes == 1 and gpus_per_node == 1:
+        return f"python -m {worker_module} {script_args}"
 
-        case _:
-            # Multi-node DDP via srun + torchrun
-            # $SLURM_PROCID is the node rank (0, 1, ..., n-1), evaluated on each node by bash -c
-            n_nodes = n_gpus // GPUS_PER_NODE
-            torchrun_cmd = (
-                f"torchrun "
-                f"--nnodes={n_nodes} "
-                f"--node_rank=$SLURM_PROCID "
-                f"--nproc_per_node={GPUS_PER_NODE} "
-                f'--master_addr=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1) '
-                f"--master_port={port} "
-                f"-m {worker_module} {script_args}"
-            )
+    if n_nodes == 1:
+        return (
+            f"torchrun --standalone --nproc_per_node={gpus_per_node} --master_port={port} "
+            f"-m {worker_module} {script_args}"
+        )
 
-            # Each node needs its own /tmp workspace since /tmp is node-local
-            work_dir = f"/tmp/param-decomp/workspace-{workspace_job_id_bash}-node$SLURM_PROCID"
-            setup = generate_git_snapshot_setup(work_dir, snapshot_ref)
-            # Explicit srun flags ensure one task per node across all allocated nodes
-            srun_flags = f"--nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1"
-            return f"srun {srun_flags} bash -c {shlex.quote(f'{setup}\n{torchrun_cmd}')}"
-
-
-def _n_nodes_and_gpus_per_node(n_gpus: int | None) -> tuple[int, int]:
-    match n_gpus:
-        case None | 1:
-            n_nodes, gpus_per_node = 1, 1
-        case n if n <= GPUS_PER_NODE:
-            n_nodes, gpus_per_node = 1, n
-        case _:
-            n_nodes = n_gpus // GPUS_PER_NODE
-            gpus_per_node = GPUS_PER_NODE
-    return n_nodes, gpus_per_node
+    # Multi-node DDP via srun + torchrun.
+    # $SLURM_PROCID is the node rank (0, 1, ..., n-1), evaluated on each node by bash -c.
+    torchrun_cmd = (
+        f"torchrun "
+        f"--nnodes={n_nodes} "
+        f"--node_rank=$SLURM_PROCID "
+        f"--nproc_per_node={gpus_per_node} "
+        f'--master_addr=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1) '
+        f"--master_port={port} "
+        f"-m {worker_module} {script_args}"
+    )
+    # Each node needs its own /tmp workspace since /tmp is node-local.
+    work_dir = f"/tmp/param-decomp/workspace-{workspace_job_id_bash}-node$SLURM_PROCID"
+    setup = generate_git_snapshot_setup(work_dir, snapshot_ref)
+    # Explicit srun flags ensure one task per node across all allocated nodes.
+    srun_flags = f"--nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1"
+    return f"srun {srun_flags} bash -c {shlex.quote(f'{setup}\n{torchrun_cmd}')}"
 
 
 def _create_singleton_slurm_script(
@@ -265,7 +270,7 @@ def _create_singleton_slurm_script(
     project: str,
     comment: str | None = None,
 ) -> str:
-    """Create a SLURM script for one or more runs."""
+    """Create a SLURM script for a single (non-array) run."""
     command = _get_command(
         launch_id=launch_id,
         run_cfg=run_cfg,
@@ -276,7 +281,7 @@ def _create_singleton_slurm_script(
         project=project,
     )
 
-    n_nodes, gpus_per_node = _n_nodes_and_gpus_per_node(n_gpus)
+    n_nodes, gpus_per_node = _topology(n_gpus)
 
     single_config = SlurmConfig(
         job_name=slurm_job_name,
@@ -297,9 +302,11 @@ def _create_array_slurm_script(
     snapshot_ref: str,
     partition: str,
     project: str,
+    per_task_comments: list[str],
     max_concurrent_tasks: int | None = None,
 ) -> str:
-    """Create a SLURM script for one or more runs."""
+    """Create a SLURM array script — one task per run in ``run_cfgs``."""
+    assert run_cfgs, "run_cfgs must be non-empty"
     n_gpus_each = [_n_gpus_for(run_cfg.runtime) for run_cfg in run_cfgs]
     assert all(n == n_gpus_each[0] for n in n_gpus_each), (
         "all runs must have the same number of GPUs"
@@ -319,7 +326,7 @@ def _create_array_slurm_script(
         for i, run_cfg in enumerate(run_cfgs)
     ]
 
-    n_nodes, gpus_per_node = _n_nodes_and_gpus_per_node(n_gpus)
+    n_nodes, gpus_per_node = _topology(n_gpus)
 
     array_config = SlurmArrayConfig(
         job_name=slurm_job_name,
@@ -334,5 +341,5 @@ def _create_array_slurm_script(
         array_config,
         commands,
         env=_CUDA_FLAGS,
-        per_task_comments=[get_wandb_run_url(project, run_cfg.run_id) for run_cfg in run_cfgs],
+        per_task_comments=per_task_comments,
     )

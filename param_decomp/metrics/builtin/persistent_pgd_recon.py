@@ -16,7 +16,6 @@ from torch import Tensor
 from param_decomp.configs import (
     PersistentPGDReconLossConfig,
     PersistentPGDReconSubsetLossConfig,
-    _PersistentPGDBaseConfig,
 )
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.builtin.hidden_acts_recon_loss import (
@@ -30,15 +29,15 @@ from param_decomp.persistent_pgd import PersistentPGDState, PPGDSources, get_ppg
 from param_decomp.utils.distributed_utils import all_reduce
 
 
-class _PersistentPGDReconBase(Metric[_PersistentPGDBaseConfig]):
+class _PersistentPGDReconBase[
+    TConfig: PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
+](Metric[TConfig]):
     """Shared logic between all-layers and subset PPGD recon metrics."""
 
     section: ClassVar[str] = "loss"
     slow: ClassVar[bool] = True
 
-    def __init__(
-        self, cfg: _PersistentPGDBaseConfig, *, model: ComponentModel, device: str
-    ) -> None:
+    def __init__(self, cfg: TConfig, *, model: ComponentModel, device: str) -> None:
         self.cfg = cfg
         self.model = model
         self.device = device
@@ -50,11 +49,6 @@ class _PersistentPGDReconBase(Metric[_PersistentPGDBaseConfig]):
         if self.state is not None:
             return
         batch_dims = ctx.target_out.shape[:-1]
-        # cfg is one of PersistentPGDReconLossConfig / PersistentPGDReconSubsetLossConfig (the two
-        # concrete subclasses); the type is fixed in each registered metric class below.
-        assert isinstance(
-            self.cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
-        )
         self.state = PersistentPGDState(
             module_to_c=self.model.module_to_c,
             batch_dims=batch_dims,
@@ -167,7 +161,7 @@ class _PersistentPGDReconBase(Metric[_PersistentPGDBaseConfig]):
 
 
 @register_metric
-class PersistentPGDReconLoss(_PersistentPGDReconBase):
+class PersistentPGDReconLoss(_PersistentPGDReconBase[PersistentPGDReconLossConfig]):
     """Persistent PGD adversarial-mask reconstruction loss (routes to all layers)."""
 
     config_type = PersistentPGDReconLossConfig
@@ -175,7 +169,7 @@ class PersistentPGDReconLoss(_PersistentPGDReconBase):
 
 
 @register_metric
-class PersistentPGDReconSubsetLoss(_PersistentPGDReconBase):
+class PersistentPGDReconSubsetLoss(_PersistentPGDReconBase[PersistentPGDReconSubsetLossConfig]):
     """Persistent PGD adversarial-mask reconstruction loss (subset routing)."""
 
     config_type = PersistentPGDReconSubsetLossConfig
