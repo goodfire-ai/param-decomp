@@ -43,7 +43,7 @@ def test_config_path_resolves(tmp_path: Path) -> None:
 
     raw = _resolve_source(experiment=None, config_path=config_path, rerun=None)
 
-    assert raw["logging"]["wandb_run_name"] == "my_config"
+    assert raw["name"] == "my_config"
     assert raw["driver_path"] == config_data["driver_path"]
     assert raw["pd"]["seed"] == 123
 
@@ -58,7 +58,7 @@ def test_rerun_loads_driver_from_run(tmp_path: Path) -> None:
 
     raw = _resolve_source(experiment=None, config_path=None, rerun=str(run_path.parent))
 
-    assert raw["logging"]["wandb_run_name"] == "rerun"
+    assert raw["name"] == "rerun"
     assert raw["driver_path"] == driver_path
     assert raw["pd"]["seed"] == 123
 

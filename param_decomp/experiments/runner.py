@@ -35,8 +35,8 @@ def _resolve_source(
     Every source is expected to provide ``driver_path`` as a top-level field
     (built-in YAMLs, user YAMLs, and saved ``run_metadata.yaml`` all declare it).
 
-    Stamps ``logging.wandb_run_name`` (the experiment slug, config filename
-    stem, or ``"rerun"``) so each YAML doesn't have to set one.
+    Stamps ``name`` (the experiment slug, config filename stem, or ``"rerun"``)
+    on the top-level ``RunConfig`` so each YAML doesn't have to set one.
     """
     sources_set = sum(x is not None for x in (experiment, config_path, rerun))
     assert sources_set == 1, (
@@ -67,7 +67,7 @@ def _resolve_source(
         "Every PD config must declare its driver (e.g. "
         "`driver_path: param_decomp.experiments.tms.experiment:Driver`)."
     )
-    config_data["logging"] = {**config_data.get("logging", {}), "wandb_run_name": name}
+    config_data["name"] = name
     return config_data
 
 

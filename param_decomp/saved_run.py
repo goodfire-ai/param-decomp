@@ -73,23 +73,38 @@ class PDRun:
         )
         return self.driver.build_target(self.run_cfg)
 
-    def load_dataloaders(
+    def build_train_loader(
         self,
         *,
-        train_batch_size_override: int | None = None,
-        eval_batch_size_override: int | None = None,
+        batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
         device: str = "cpu",
-    ) -> tuple[DataLoader[Any], DataLoader[Any]]:
+    ) -> DataLoader[Any]:
         assert self.driver is not None, (
             "Run has no driver. Build dataloaders explicitly for custom runs."
         )
-        return self.driver.build_dataloaders(
+        return self.driver.build_train_loader(
             self.run_cfg,
+            batch_size_override=batch_size_override,
             dist_state=dist_state,
             device=device,
-            train_batch_size_override=train_batch_size_override,
-            eval_batch_size_override=eval_batch_size_override,
+        )
+
+    def build_eval_loader(
+        self,
+        *,
+        batch_size_override: int | None = None,
+        dist_state: DistributedState | None = None,
+        device: str = "cpu",
+    ) -> DataLoader[Any]:
+        assert self.driver is not None, (
+            "Run has no driver. Build dataloaders explicitly for custom runs."
+        )
+        return self.driver.build_eval_loader(
+            self.run_cfg,
+            batch_size_override=batch_size_override,
+            dist_state=dist_state,
+            device=device,
         )
 
     def load_model(self, target: PDTarget | None = None) -> ComponentModel:

@@ -60,22 +60,9 @@ class Driver(ExperimentDriver[TMSRunConfig]):
             tied_weights=tied_weights,
         )
 
-    @override
-    def build_dataloaders(
-        self,
-        run_cfg: TMSRunConfig,
-        *,
-        train_batch_size_override: int | None = None,
-        eval_batch_size_override: int | None = None,
-        dist_state: DistributedState | None = None,
-        device: str = "cpu",
-    ) -> tuple[
-        DatasetGeneratedDataLoader[tuple[Tensor, Tensor]],
-        DatasetGeneratedDataLoader[tuple[Tensor, Tensor]],
-    ]:
-        _ = dist_state
+    def _build_dataset(self, run_cfg: TMSRunConfig, device: str) -> SparseFeatureDataset:
         train_config = TMSTargetRunInfo.from_path(run_cfg.target.run_path).config
-        dataset = SparseFeatureDataset(
+        return SparseFeatureDataset(
             n_features=train_config.tms_model_config.n_features,
             feature_probability=run_cfg.data.feature_probability,
             device=device,
@@ -84,20 +71,34 @@ class Driver(ExperimentDriver[TMSRunConfig]):
             synced_inputs=train_config.synced_inputs,
         )
 
-        train_batch_size = (
-            train_batch_size_override
-            if train_batch_size_override is not None
-            else run_cfg.pd.batch_size
-        )
-        eval_batch_size = (
-            eval_batch_size_override
-            if eval_batch_size_override is not None
-            else run_cfg.logging.eval_batch_size
+    @override
+    def build_train_loader(
+        self,
+        run_cfg: TMSRunConfig,
+        *,
+        batch_size_override: int | None = None,
+        dist_state: DistributedState | None = None,
+        device: str = "cpu",
+    ) -> DatasetGeneratedDataLoader[tuple[Tensor, Tensor]]:
+        _ = dist_state
+        return DatasetGeneratedDataLoader(
+            self._build_dataset(run_cfg, device),
+            batch_size=batch_size_override or run_cfg.pd.batch_size,
+            shuffle=False,
         )
 
-        train_loader = DatasetGeneratedDataLoader(
-            dataset, batch_size=train_batch_size, shuffle=False
+    @override
+    def build_eval_loader(
+        self,
+        run_cfg: TMSRunConfig,
+        *,
+        batch_size_override: int | None = None,
+        dist_state: DistributedState | None = None,
+        device: str = "cpu",
+    ) -> DatasetGeneratedDataLoader[tuple[Tensor, Tensor]]:
+        _ = dist_state
+        return DatasetGeneratedDataLoader(
+            self._build_dataset(run_cfg, device),
+            batch_size=batch_size_override or run_cfg.logging.eval_batch_size,
+            shuffle=False,
         )
-        eval_loader = DatasetGeneratedDataLoader(dataset, batch_size=eval_batch_size, shuffle=False)
-
-        return train_loader, eval_loader

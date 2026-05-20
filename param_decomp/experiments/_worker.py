@@ -52,11 +52,8 @@ def run_experiment(
 
     target = driver.build_target(run_cfg)
     target.model.to(device)
-    train_loader, eval_loader = driver.build_dataloaders(
-        run_cfg,
-        dist_state=dist_state,
-        device=device,
-    )
+    train_loader = driver.build_train_loader(run_cfg, dist_state=dist_state, device=device)
+    eval_loader = driver.build_eval_loader(run_cfg, dist_state=dist_state, device=device)
 
     wandb_tags = [driver.name, *([launch_id] if launch_id is not None else [])]
 

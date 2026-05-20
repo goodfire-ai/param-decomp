@@ -6,7 +6,11 @@ from pydantic import Field, model_validator
 
 from param_decomp import ExperimentDriver
 from param_decomp.base_config import BaseConfig
-from param_decomp.experiments.lm.data import LMDataConfig, build_lm_dataloaders
+from param_decomp.experiments.lm.data import (
+    LMDataConfig,
+    build_lm_eval_loader,
+    build_lm_train_loader,
+)
 from param_decomp.models.batch_and_loss_fns import PDTarget, make_run_batch, recon_loss_kl
 from param_decomp.run import RunConfig
 from param_decomp.types import ModelPath
@@ -106,32 +110,35 @@ class Driver(ExperimentDriver[LMRunConfig]):
         )
 
     @override
-    def build_dataloaders(
+    def build_train_loader(
         self,
         run_cfg: LMRunConfig,
         *,
-        train_batch_size_override: int | None = None,
-        eval_batch_size_override: int | None = None,
+        batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
         device: str = "cpu",
     ) -> Any:
         _ = device
-
-        train_batch_size = (
-            train_batch_size_override
-            if train_batch_size_override is not None
-            else run_cfg.pd.batch_size
-        )
-        eval_batch_size = (
-            eval_batch_size_override
-            if eval_batch_size_override is not None
-            else run_cfg.logging.eval_batch_size
-        )
-
-        return build_lm_dataloaders(
+        return build_lm_train_loader(
             data_cfg=run_cfg.data,
-            train_batch_size=train_batch_size,
-            eval_batch_size=eval_batch_size,
+            batch_size=batch_size_override or run_cfg.pd.batch_size,
+            seed=run_cfg.pd.seed,
+            dist_state=dist_state,
+        )
+
+    @override
+    def build_eval_loader(
+        self,
+        run_cfg: LMRunConfig,
+        *,
+        batch_size_override: int | None = None,
+        dist_state: DistributedState | None = None,
+        device: str = "cpu",
+    ) -> Any:
+        _ = device
+        return build_lm_eval_loader(
+            data_cfg=run_cfg.data,
+            batch_size=batch_size_override or run_cfg.logging.eval_batch_size,
             seed=run_cfg.pd.seed,
             dist_state=dist_state,
         )

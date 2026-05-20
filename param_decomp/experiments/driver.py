@@ -5,9 +5,10 @@ An experiment driver is the boundary layer that turns a serializable `RunConfig`
 into those runtime objects. The set of drivers is open-world: custom users can register
 their own driver class without editing core code.
 
-Drivers don't own reload-time state: reload calls `build_target` and `build_dataloaders`
-exactly like a fresh run, re-fetching whatever upstream the config points at (wandb
-pretrain run, HF model, etc.). Saved PD runs depend on their upstream continuing to exist.
+Drivers don't own reload-time state: reload calls `build_target`,
+`build_train_loader`, and `build_eval_loader` exactly like a fresh run,
+re-fetching whatever upstream the config points at (wandb pretrain run, HF model,
+etc.). Saved PD runs depend on their upstream continuing to exist.
 """
 
 from importlib import import_module
@@ -34,16 +35,35 @@ class ExperimentDriver[RunConfigT: RunConfig](Protocol):
         """Build the target model bundle from upstream."""
         ...
 
-    def build_dataloaders(
+    def build_train_loader(
         self,
         run_cfg: RunConfigT,
         *,
-        train_batch_size_override: int | None = None,
-        eval_batch_size_override: int | None = None,
+        batch_size_override: int | None = None,
         dist_state: DistributedState | None = None,
         device: str = "cpu",
-    ) -> tuple[DataLoader[Any], DataLoader[Any]]:
-        """Build train/eval dataloaders."""
+    ) -> DataLoader[Any]:
+        """Build the train dataloader.
+
+        Defaults to ``run_cfg.pd.batch_size``; pass ``batch_size_override`` to use a
+        different batch size (e.g. for offline analysis scripts that want a custom
+        batch size without rewriting the saved ``run_cfg``).
+        """
+        ...
+
+    def build_eval_loader(
+        self,
+        run_cfg: RunConfigT,
+        *,
+        batch_size_override: int | None = None,
+        dist_state: DistributedState | None = None,
+        device: str = "cpu",
+    ) -> DataLoader[Any]:
+        """Build the eval dataloader.
+
+        Defaults to ``run_cfg.logging.eval_batch_size``; pass ``batch_size_override``
+        to use a different batch size.
+        """
         ...
 
 
