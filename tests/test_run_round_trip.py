@@ -79,8 +79,8 @@ def _runtime_config() -> RuntimeConfig:
 
 
 def _round_trip(run: Run) -> Run:
-    """Round-trip ``run`` through ``model_dump`` → ``Run.from_dict``."""
-    return Run.from_dict(run.model_dump(mode="json"))
+    """Round-trip ``run`` through ``model_dump`` → ``Run.model_validate``."""
+    return Run.model_validate(run.model_dump(mode="json"))
 
 
 def test_run_generates_run_id_on_instantiation():
@@ -153,7 +153,7 @@ def test_run_requires_runtime_config():
     }
 
     with pytest.raises(ValidationError, match="runtime"):
-        Run.from_dict(data)
+        Run.model_validate(data)
 
 
 def test_driver_class_paths_load():

@@ -4,7 +4,6 @@ from pathlib import Path
 
 import yaml
 
-from param_decomp.run import Run
 from param_decomp.settings import REPO_ROOT
 from param_decomp.sweeps import SweepSpec
 from param_decomp.sweeps.cartesian import cartesian_product, example_cartesian_sweep
@@ -61,19 +60,18 @@ def test_cartesian_run_names_encode_axis_values() -> None:
     }
 
 
-def test_cartesian_product_generates_new_run_ids_from_run_template() -> None:
-    base_config = _base_config()
-    base_run = Run.from_dict(base_config)
+def test_cartesian_product_strips_run_id_from_base_config() -> None:
+    base_config = {**_base_config(), "run_id": "p-deadbeef"}
     spec = cartesian_product(
-        base_config=base_run,
+        base_config=base_config,
         grid={"pd.seed": [0, 1]},
-        description="from run",
+        description="strips run_id",
         driver_path=TMS_DRIVER_PATH,
     )
 
     run_ids = {r.run_id for r in spec.runs}
     assert len(run_ids) == 2
-    assert base_run.run_id not in run_ids
+    assert "p-deadbeef" not in run_ids
 
 
 def test_example_cartesian_sweep_smoke() -> None:

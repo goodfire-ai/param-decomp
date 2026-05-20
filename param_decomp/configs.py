@@ -1,6 +1,7 @@
 """Config classes of various types."""
 
 import importlib
+from functools import cached_property
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
@@ -275,19 +276,11 @@ def _parse_metric_cfg(metric_name: str, raw: Any, *, train_loss: bool) -> Metric
 
 
 class RuntimeConfig(BaseConfig):
-    """Compute substrate the algorithm runs on.
+    """Compute substrate: device, precision, data-parallelism degree.
 
-    The three configs form a determinism ladder:
-
-    1. Same ``PDConfig`` + same ``RuntimeConfig`` → bit-identical trained weights.
-    2. Same ``PDConfig``, different ``RuntimeConfig`` → same algorithm, weights differ
-       only via numerical effects (precision, device).
-    3. Same ``PDConfig`` + same ``RuntimeConfig``, different ``LoggingConfig`` →
-       bit-identical weights; only what was observed differs.
-
-    ``RuntimeConfig`` is class 2: device placement, precision, parallelism degree —
-    things that perturb numerics without changing the algorithm. Future home for
-    NCCL flags, gradient accumulation steps, fp8 variants, etc.
+    Perturbs numerics but doesn't change the algorithm. Future home for NCCL flags,
+    gradient accumulation steps, fp8 variants, etc. See CLAUDE.md for how the
+    ``PDConfig`` / ``RuntimeConfig`` / ``LoggingConfig`` triple splits.
     """
 
     autocast_bf16: bool = Field(
@@ -320,12 +313,10 @@ class RuntimeConfig(BaseConfig):
 
 
 class LoggingConfig(BaseConfig):
-    """Observation-only settings: cadence + eval-only metrics + display thresholds.
+    """Observation-only settings: cadence, eval-only metrics, display thresholds.
 
-    Determinism class 3 in the PDConfig/RuntimeConfig/LoggingConfig ladder: fields
-    here never touch the optimizer. Two runs with identical ``PDConfig`` +
-    ``RuntimeConfig`` and different ``LoggingConfig`` produce bit-identical weights —
-    only what you observed about the run differs.
+    Fields here don't touch the optimizer. See CLAUDE.md for how the
+    ``PDConfig`` / ``RuntimeConfig`` / ``LoggingConfig`` triple splits.
     """
 
     train_log_freq: PositiveInt = Field(
@@ -411,12 +402,10 @@ class LoggingConfig(BaseConfig):
 
 
 class PDConfig(BaseConfig):
-    """Algorithm specification.
+    """Algorithm specification: seed, CI function, losses, optimizers, module info.
 
-    Determinism class 1 in the PDConfig/RuntimeConfig/LoggingConfig ladder: these are
-    the fields that determine the trained weights given a fixed substrate. Two runs
-    with identical ``PDConfig`` and identical ``RuntimeConfig`` produce bit-identical
-    weights; flipping any field here changes what algorithm runs.
+    Flipping any field here changes what algorithm runs. See CLAUDE.md for how the
+    ``PDConfig`` / ``RuntimeConfig`` / ``LoggingConfig`` triple splits.
     """
 
     # --- General ---
@@ -450,7 +439,7 @@ class PDConfig(BaseConfig):
         description="List of identity module patterns with C values.",
     )
 
-    @property
+    @cached_property
     def all_module_info(self) -> list[ModulePatternInfoConfig]:
         result = list(self.module_info)
         if self.identity_module_info is not None:

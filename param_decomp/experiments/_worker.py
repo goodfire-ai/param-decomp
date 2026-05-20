@@ -15,7 +15,7 @@ import json
 import fire
 
 from param_decomp import run_pd
-from param_decomp.experiments.driver import load_driver
+from param_decomp.driver_path import load_driver
 from param_decomp.log import logger
 from param_decomp.run import Run
 from param_decomp.utils.distributed_utils import (
@@ -39,9 +39,6 @@ def run_experiment(
     logger.info(f"Distributed state: {dist_state}")
 
     driver = load_driver(run.driver_path)
-    assert isinstance(run, driver.config_type), (
-        f"Run has type {type(run).__name__}, expected {driver.config_type.__name__}"
-    )
     set_seed(run.pd.seed)
     device = get_device()
 
@@ -81,7 +78,7 @@ def main(
     wandb_project: str | None = None,
 ) -> None:
     """SLURM task entrypoint."""
-    run = Run.from_dict(json.loads(run_json))
+    run = Run.model_validate(json.loads(run_json))
     run_experiment(run, launch_id=launch_id, wandb_project=wandb_project)
 
 

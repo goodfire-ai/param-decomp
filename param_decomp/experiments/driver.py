@@ -10,11 +10,11 @@ exactly like a fresh run, re-fetching whatever upstream the config points at (wa
 pretrain run, HF model, etc.). Saved PD runs depend on their upstream continuing to exist.
 """
 
-from importlib import import_module
 from typing import Any, ClassVar, Protocol
 
 from torch.utils.data import DataLoader
 
+from param_decomp.driver_path import load_driver
 from param_decomp.models.batch_and_loss_fns import PDTarget
 from param_decomp.run import Run
 from param_decomp.utils.distributed_utils import DistributedState
@@ -45,18 +45,6 @@ class ExperimentDriver[RunT: Run](Protocol):
     ) -> tuple[DataLoader[Any], DataLoader[Any]]:
         """Build train/eval dataloaders."""
         ...
-
-
-def load_driver(driver_path: str) -> ExperimentDriver[Any]:
-    """Load a driver object or no-arg driver class from a `module:attr` import path."""
-    module_path, sep, attr = driver_path.partition(":")
-    if sep == "":
-        raise ValueError(f"Driver path must be of the form 'module:attr', got {driver_path!r}")
-    module = import_module(module_path)
-    driver = getattr(module, attr)
-    if isinstance(driver, type):
-        driver = driver()
-    return driver
 
 
 __all__ = [

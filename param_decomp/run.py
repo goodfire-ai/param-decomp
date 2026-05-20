@@ -1,26 +1,34 @@
 """The `Run` object: one type for "what a PD run is".
 
-Holds the driver import path plus the three determinism-tier configs (``pd``,
-``logging``, ``runtime``). Driver-specific subclasses (``LMRun``, ``TMSRun``,
-``ResidMLPRun``) add ``target`` / ``data`` and are pointed at by each driver's
-``config_type``.
+Holds the driver import path plus three configs (``pd``, ``logging``, ``runtime``)
+that split algorithm / substrate / observation. Driver-specific subclasses
+(``LMRun``, ``TMSRun``, ``ResidMLPRun``) add ``target`` / ``data`` and are pointed
+at by each driver's ``config_type``.
 
 Written to ``run_metadata.yaml`` beside the checkpoint, passed to the worker,
 and re-read on reload. One type, one shape, everywhere.
+
+A ``mode="wrap"`` model validator on the base ``Run`` dispatches to the right
+subclass when validating a dict: it reads ``driver_path``, loads the driver,
+and re-routes ``model_validate`` to ``driver.config_type``. Callers therefore
+use ``Run.model_validate(data)`` / ``Run.from_file(path)`` (inherited from
+``BaseConfig``) and get back the appropriate subtype.
 """
 
-import importlib
 from pathlib import Path
-from typing import Any, Self, override
+from typing import Any, Self
 
 import yaml
-from pydantic import Field, model_validator
+from pydantic import Field, ValidatorFunctionWrapHandler, model_validator
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import LoggingConfig, PDConfig, RuntimeConfig
+from param_decomp.driver_path import load_driver
 from param_decomp.utils.run_utils import generate_run_id
 
 RUN_METADATA_FILENAME = "run_metadata.yaml"
+
+_BASE_RUN_FIELDS = frozenset({"run_id", "driver_path", "pd", "logging", "runtime"})
 
 
 class Run(BaseConfig):
@@ -51,44 +59,32 @@ class Run(BaseConfig):
         )
         return self
 
+    @model_validator(mode="wrap")
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Run":
-        """Parse a dict (e.g. from YAML) into the right `Run` subclass.
+    def _dispatch_to_subclass(cls, data: Any, handler: ValidatorFunctionWrapHandler) -> "Run":
+        """Route base-``Run`` validation to the driver's ``config_type`` subclass.
 
-        Looks up ``driver_path`` → driver → ``config_type`` and validates the
-        dict against that subclass. When ``driver_path`` is ``None``, validates
-        as a bare ``Run``. Callers that need the concrete subtype narrow with
-        ``isinstance(run, driver.config_type)``.
+        Only triggers when the caller asked for the base class (``cls is Run``)
+        and is passing a dict — direct ``LMRun.model_validate(...)`` calls and
+        validation of an already-constructed model fall through unchanged.
         """
-        driver_path = data.get("driver_path")
-        if driver_path is None:
-            return cls.model_validate(data)
-        return _load_config_type(driver_path).model_validate(data)
-
-    @classmethod
-    @override
-    def from_file(cls, path: Path | str) -> "Run":
-        path = Path(path)
-        assert path.exists(), f"{RUN_METADATA_FILENAME} not found at {path}"
-        with open(path) as f:
-            return cls.from_dict(yaml.safe_load(f))
+        if cls is Run and isinstance(data, dict):
+            driver_path = data.get("driver_path")
+            if driver_path is not None:
+                subclass = load_driver(driver_path).config_type
+                if subclass is not Run:
+                    return subclass.model_validate(data)
+            else:
+                extras = set(data) - _BASE_RUN_FIELDS
+                if extras:
+                    raise ValueError(
+                        f"Config has extra fields {sorted(extras)} but no driver_path. "
+                        "Set `driver_path: module:Driver` so the right Run subclass can "
+                        "be selected, or remove the extra fields for a notebook-style run."
+                    )
+        return handler(data)
 
     def write(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
             yaml.dump(self.model_dump(mode="json"), f, default_flow_style=False, sort_keys=False)
-
-
-def _load_config_type(driver_path: str) -> type[Run]:
-    """Resolve a ``module:attr`` driver path to its ``config_type`` (a ``Run`` subclass).
-
-    Inlined here (rather than reusing ``experiments.driver.load_driver``) to avoid a
-    static import cycle between this module and ``experiments.driver``.
-    """
-    module_path, sep, attr = driver_path.partition(":")
-    if sep == "":
-        raise ValueError(f"Driver path must be of the form 'module:attr', got {driver_path!r}")
-    driver = getattr(importlib.import_module(module_path), attr)
-    if isinstance(driver, type):
-        driver = driver()
-    return driver.config_type

@@ -131,29 +131,21 @@ Built-in YAML configs are pure `Run` configs nested under `driver_path:`, `pd:`,
 - `TMSRun(driver_path, pd, logging, runtime, target, data)`
 - `ResidMLPRun(driver_path, pd, logging, runtime, target, data)`
 
-The three configs form a **determinism ladder**:
+The three configs split by **what they affect**:
 
-1. Same `PDConfig` + same `RuntimeConfig` → bit-identical trained weights.
-2. Same `PDConfig`, different `RuntimeConfig` → same algorithm, weights differ only via
-   numerical effects (precision, device).
-3. Same `PDConfig` + same `RuntimeConfig`, different `LoggingConfig` → bit-identical
-   weights; only what was observed differs.
-
-Mapping to fields:
-
-- **`PDConfig` (class 1)** — algorithm specification: seed, ci_config, losses,
-  optimizers, module_info. Flipping any field here changes what algorithm runs.
-- **`RuntimeConfig` (class 2)** — compute substrate: autocast_bf16, device, dp; future
-  NCCL flags, gradient accumulation, fp8 variants. Perturbs numerics, doesn't change
+- **`PDConfig`** — algorithm specification: seed, ci_config, losses, optimizers,
+  module_info. Flipping any field here changes what algorithm runs.
+- **`RuntimeConfig`** — compute substrate: autocast_bf16, device, dp; future home for
+  NCCL flags, gradient accumulation, fp8 variants. Perturbs numerics without changing
   the algorithm. **Config-only — no CLI overrides.** Edit the YAML (or copy it) to
   change substrate; you can't silently run "the same experiment" on different hardware.
   Cluster topology (GPUs per node) is `settings.GPUS_PER_NODE`, overridable via
   `PARAM_DECOMP_GPUS_PER_NODE` env var.
-- **`LoggingConfig` (class 3)** — observation: cadence (`*_freq`), `eval_batch_size`,
-  `ci_alive_threshold`, eval-only metrics, plus `wandb_run_name` / `view_meta`.
-  Never touches the optimizer. **Note:** the W&B *project* lives outside the
-  `Run` (it's a deploy-time parameter — which account/team to log to) and is
-  passed via `--project` to `pd-run` or `wandb_project=` to `run_pd`.
+- **`LoggingConfig`** — observation: cadence (`*_freq`), `eval_batch_size`,
+  `ci_alive_threshold`, eval-only metrics, plus `wandb_run_name` / `view_meta`. Never
+  touches the optimizer. **Note:** the W&B *project* lives outside the `Run` (it's a
+  deploy-time parameter — which account/team to log to) and is passed via `--project`
+  to `pd-run` or `wandb_project=` to `run_pd`.
 
 `Run` configs should not perform I/O. Put target loading and dataloader construction in
 the driver.

@@ -96,8 +96,8 @@ def run_faithfulness_warmup(
                 f"Faithfulness loss: {loss.item():.9f}"
             )
     del faithfulness_warmup_optimizer
-    torch.cuda.empty_cache()
     gc.collect()
+    torch.cuda.empty_cache()
 
 
 def forward_and_build_ctx(
@@ -369,8 +369,8 @@ def optimize(
                         try_wandb(wandb.log, wandb_logs, step=step)
 
                 del metrics
-                torch.cuda.empty_cache()
                 gc.collect()
+                torch.cuda.empty_cache()
 
         # --- Saving Checkpoint --- #
         if (

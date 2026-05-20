@@ -53,7 +53,7 @@ def test_rerun_loads_driver_from_run(tmp_path: Path) -> None:
     config_data["pd"]["seed"] = 123
     run_path = tmp_path / RUN_METADATA_FILENAME
     driver_path = config_data["driver_path"]
-    run = Run.from_dict(config_data)
+    run = Run.model_validate(config_data)
     run.write(run_path)
 
     raw = _resolve_source(experiment=None, config_path=None, rerun=str(run_path.parent))
@@ -65,12 +65,12 @@ def test_rerun_loads_driver_from_run(tmp_path: Path) -> None:
 
 def test_rerun_drops_saved_run_id(tmp_path: Path) -> None:
     config_data = _builtin("tms_5-2")
-    run = Run.from_dict(config_data)
+    run = Run.model_validate(config_data)
     run.write(tmp_path / RUN_METADATA_FILENAME)
     original_run_id = run.run_id
 
     raw = _resolve_source(experiment=None, config_path=None, rerun=str(tmp_path))
-    new_run = Run.from_dict(raw)
+    new_run = Run.model_validate(raw)
 
     assert "run_id" not in raw
     assert new_run.run_id != original_run_id
