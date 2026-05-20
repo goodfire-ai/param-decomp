@@ -356,10 +356,6 @@ class LoggingConfig(BaseConfig):
             " `pd.loss_metrics` are evaluated automatically and should not be repeated here."
         ),
     )
-    # wandb_run_name: str | None = Field(
-    #     default=None,
-    #     description="W&B run display name. None lets W&B auto-name.",
-    # )
 
     @model_validator(mode="before")
     @classmethod
