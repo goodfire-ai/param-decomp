@@ -1,17 +1,44 @@
+from types import SimpleNamespace
+from typing import Literal, cast
+
 import torch
 
 from param_decomp.configs import LayerwiseCiConfig
-from param_decomp.metrics.attn_patterns_recon_loss import (
+from param_decomp.metrics.builtin.attn_patterns_recon_loss import (
     CIMaskedAttnPatternsReconLoss,
+    CIMaskedAttnPatternsReconLossConfig,
     StochasticAttnPatternsReconLoss,
+    StochasticAttnPatternsReconLossConfig,
     _compute_attn_patterns,
 )
-from param_decomp.models.batch_and_loss_fns import make_run_batch
+from param_decomp.metrics.context import MetricContext, MetricRuntimeConfig
+from param_decomp.models.batch_and_loss_fns import make_run_batch, recon_loss_mse
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.pretrain.models.gpt2 import GPT2, GPT2Config
 from param_decomp.pretrain.models.gpt2_simple import GPT2Simple, GPT2SimpleConfig
 from param_decomp.pretrain.models.llama_simple import LlamaSimple, LlamaSimpleConfig
 from param_decomp.utils.module_utils import ModulePathInfo
+
+
+def _metric_runtime_config(
+    *,
+    use_delta_component: bool = False,
+    sampling: Literal["continuous", "binomial"] = "continuous",
+    n_mask_samples: int = 1,
+    steps: int = 1,
+) -> MetricRuntimeConfig:
+    return cast(
+        MetricRuntimeConfig,
+        cast(
+            object,
+            SimpleNamespace(
+                use_delta_component=use_delta_component,
+                sampling=sampling,
+                n_mask_samples=n_mask_samples,
+                steps=steps,
+            ),
+        ),
+    )
 
 
 def _make_gpt2_component_model(n_embd: int = 16, n_head: int = 2) -> ComponentModel:
@@ -94,15 +121,29 @@ class TestAttnPatternsReconLoss:
         )
 
         metric = CIMaskedAttnPatternsReconLoss(
+            CIMaskedAttnPatternsReconLossConfig(
+                n_heads=n_head,
+                q_proj_path="h.*.attn.q_proj",
+                k_proj_path="h.*.attn.k_proj",
+                c_attn_path=None,
+            ),
             model=model,
             device="cpu",
-            n_heads=n_head,
-            q_proj_path="h.*.attn.q_proj",
-            k_proj_path="h.*.attn.k_proj",
-            c_attn_path=None,
         )
-        metric.update(batch=batch, pre_weight_acts=pre_weight_acts, ci=ci)
-        loss = metric.compute()
+        ctx = MetricContext(
+            model=model,
+            config=_metric_runtime_config(),
+            batch=batch,
+            target_out=target_output.output,
+            pre_weight_acts=pre_weight_acts,
+            ci=ci,
+            weight_deltas={},
+            step=0,
+            reconstruction_loss=recon_loss_mse,
+            is_eval=True,
+        )
+        metric.update(ctx)
+        loss = cast(torch.Tensor, metric.compute())
 
         assert loss.item() < 1e-4, f"Expected KL ≈ 0 with identity decomposition, got {loss.item()}"
 
@@ -121,15 +162,29 @@ class TestAttnPatternsReconLoss:
         )
 
         metric = CIMaskedAttnPatternsReconLoss(
+            CIMaskedAttnPatternsReconLossConfig(
+                n_heads=n_head,
+                q_proj_path="h.*.attn.q_proj",
+                k_proj_path="h.*.attn.k_proj",
+                c_attn_path=None,
+            ),
             model=model,
             device="cpu",
-            n_heads=n_head,
-            q_proj_path="h.*.attn.q_proj",
-            k_proj_path="h.*.attn.k_proj",
-            c_attn_path=None,
         )
-        metric.update(batch=batch, pre_weight_acts=pre_weight_acts, ci=ci)
-        loss = metric.compute()
+        ctx = MetricContext(
+            model=model,
+            config=_metric_runtime_config(),
+            batch=batch,
+            target_out=target_output.output,
+            pre_weight_acts=pre_weight_acts,
+            ci=ci,
+            weight_deltas={},
+            step=0,
+            reconstruction_loss=recon_loss_mse,
+            is_eval=True,
+        )
+        metric.update(ctx)
+        loss = cast(torch.Tensor, metric.compute())
 
         assert loss.item() > 0.01, f"Expected KL > 0 with random init, got {loss.item()}"
 
@@ -154,21 +209,31 @@ class TestAttnPatternsReconLoss:
         )
 
         metric = StochasticAttnPatternsReconLoss(
+            StochasticAttnPatternsReconLossConfig(
+                n_heads=n_head,
+                q_proj_path="h.*.attn.q_proj",
+                k_proj_path="h.*.attn.k_proj",
+                c_attn_path=None,
+            ),
             model=model,
             device="cpu",
-            sampling="continuous",
-            use_delta_component=False,
-            n_mask_samples=2,
-            n_heads=n_head,
-            q_proj_path="h.*.attn.q_proj",
-            k_proj_path="h.*.attn.k_proj",
-            c_attn_path=None,
         )
+        _stoch_n_mask_samples = 2
         weight_deltas = model.calc_weight_deltas()
-        metric.update(
-            batch=batch, pre_weight_acts=pre_weight_acts, ci=ci, weight_deltas=weight_deltas
+        ctx = MetricContext(
+            model=model,
+            config=_metric_runtime_config(n_mask_samples=_stoch_n_mask_samples),
+            batch=batch,
+            target_out=target_output.output,
+            pre_weight_acts=pre_weight_acts,
+            ci=ci,
+            weight_deltas=weight_deltas,
+            step=0,
+            reconstruction_loss=recon_loss_mse,
+            is_eval=True,
         )
-        loss = metric.compute()
+        metric.update(ctx)
+        loss = cast(torch.Tensor, metric.compute())
 
         assert loss.item() < 1e-4, f"Expected KL ≈ 0 with identity decomposition, got {loss.item()}"
 
@@ -187,21 +252,31 @@ class TestAttnPatternsReconLoss:
         )
 
         metric = StochasticAttnPatternsReconLoss(
+            StochasticAttnPatternsReconLossConfig(
+                n_heads=n_head,
+                q_proj_path="h.*.attn.q_proj",
+                k_proj_path="h.*.attn.k_proj",
+                c_attn_path=None,
+            ),
             model=model,
             device="cpu",
-            sampling="continuous",
-            use_delta_component=False,
-            n_mask_samples=2,
-            n_heads=n_head,
-            q_proj_path="h.*.attn.q_proj",
-            k_proj_path="h.*.attn.k_proj",
-            c_attn_path=None,
         )
+        _stoch_n_mask_samples = 2
         weight_deltas = model.calc_weight_deltas()
-        metric.update(
-            batch=batch, pre_weight_acts=pre_weight_acts, ci=ci, weight_deltas=weight_deltas
+        ctx = MetricContext(
+            model=model,
+            config=_metric_runtime_config(n_mask_samples=_stoch_n_mask_samples),
+            batch=batch,
+            target_out=target_output.output,
+            pre_weight_acts=pre_weight_acts,
+            ci=ci,
+            weight_deltas=weight_deltas,
+            step=0,
+            reconstruction_loss=recon_loss_mse,
+            is_eval=True,
         )
-        loss = metric.compute()
+        metric.update(ctx)
+        loss = cast(torch.Tensor, metric.compute())
 
         assert loss.item() > 0.01, f"Expected KL > 0 with random init, got {loss.item()}"
 
@@ -228,15 +303,29 @@ class TestCAttnPatternsReconLoss:
         )
 
         metric = CIMaskedAttnPatternsReconLoss(
+            CIMaskedAttnPatternsReconLossConfig(
+                n_heads=n_head,
+                q_proj_path=None,
+                k_proj_path=None,
+                c_attn_path="h_torch.*.attn.c_attn",
+            ),
             model=model,
             device="cpu",
-            n_heads=n_head,
-            q_proj_path=None,
-            k_proj_path=None,
-            c_attn_path="h_torch.*.attn.c_attn",
         )
-        metric.update(batch=batch, pre_weight_acts=pre_weight_acts, ci=ci)
-        loss = metric.compute()
+        ctx = MetricContext(
+            model=model,
+            config=_metric_runtime_config(),
+            batch=batch,
+            target_out=target_output.output,
+            pre_weight_acts=pre_weight_acts,
+            ci=ci,
+            weight_deltas={},
+            step=0,
+            reconstruction_loss=recon_loss_mse,
+            is_eval=True,
+        )
+        metric.update(ctx)
+        loss = cast(torch.Tensor, metric.compute())
 
         assert loss.item() < 1e-4, f"Expected KL ≈ 0 with identity decomposition, got {loss.item()}"
 
@@ -255,15 +344,29 @@ class TestCAttnPatternsReconLoss:
         )
 
         metric = CIMaskedAttnPatternsReconLoss(
+            CIMaskedAttnPatternsReconLossConfig(
+                n_heads=n_head,
+                q_proj_path=None,
+                k_proj_path=None,
+                c_attn_path="h_torch.*.attn.c_attn",
+            ),
             model=model,
             device="cpu",
-            n_heads=n_head,
-            q_proj_path=None,
-            k_proj_path=None,
-            c_attn_path="h_torch.*.attn.c_attn",
         )
-        metric.update(batch=batch, pre_weight_acts=pre_weight_acts, ci=ci)
-        loss = metric.compute()
+        ctx = MetricContext(
+            model=model,
+            config=_metric_runtime_config(),
+            batch=batch,
+            target_out=target_output.output,
+            pre_weight_acts=pre_weight_acts,
+            ci=ci,
+            weight_deltas={},
+            step=0,
+            reconstruction_loss=recon_loss_mse,
+            is_eval=True,
+        )
+        metric.update(ctx)
+        loss = cast(torch.Tensor, metric.compute())
 
         assert loss.item() > 0.01, f"Expected KL > 0 with random init, got {loss.item()}"
 
@@ -323,15 +426,29 @@ class TestRoPEAttnPatternsReconLoss:
         )
 
         metric = CIMaskedAttnPatternsReconLoss(
+            CIMaskedAttnPatternsReconLossConfig(
+                n_heads=n_head,
+                q_proj_path="h.*.attn.q_proj",
+                k_proj_path="h.*.attn.k_proj",
+                c_attn_path=None,
+            ),
             model=model,
             device="cpu",
-            n_heads=n_head,
-            q_proj_path="h.*.attn.q_proj",
-            k_proj_path="h.*.attn.k_proj",
-            c_attn_path=None,
         )
-        metric.update(batch=batch, pre_weight_acts=pre_weight_acts, ci=ci)
-        loss = metric.compute()
+        ctx = MetricContext(
+            model=model,
+            config=_metric_runtime_config(),
+            batch=batch,
+            target_out=target_output.output,
+            pre_weight_acts=pre_weight_acts,
+            ci=ci,
+            weight_deltas={},
+            step=0,
+            reconstruction_loss=recon_loss_mse,
+            is_eval=True,
+        )
+        metric.update(ctx)
+        loss = cast(torch.Tensor, metric.compute())
 
         assert loss.item() < 1e-4, f"Expected KL ≈ 0 with identity decomposition, got {loss.item()}"
 
@@ -350,15 +467,29 @@ class TestRoPEAttnPatternsReconLoss:
         )
 
         metric = CIMaskedAttnPatternsReconLoss(
+            CIMaskedAttnPatternsReconLossConfig(
+                n_heads=n_head,
+                q_proj_path="h.*.attn.q_proj",
+                k_proj_path="h.*.attn.k_proj",
+                c_attn_path=None,
+            ),
             model=model,
             device="cpu",
-            n_heads=n_head,
-            q_proj_path="h.*.attn.q_proj",
-            k_proj_path="h.*.attn.k_proj",
-            c_attn_path=None,
         )
-        metric.update(batch=batch, pre_weight_acts=pre_weight_acts, ci=ci)
-        loss = metric.compute()
+        ctx = MetricContext(
+            model=model,
+            config=_metric_runtime_config(),
+            batch=batch,
+            target_out=target_output.output,
+            pre_weight_acts=pre_weight_acts,
+            ci=ci,
+            weight_deltas={},
+            step=0,
+            reconstruction_loss=recon_loss_mse,
+            is_eval=True,
+        )
+        metric.update(ctx)
+        loss = cast(torch.Tensor, metric.compute())
 
         assert loss.item() > 0.01, f"Expected KL > 0 with random init, got {loss.item()}"
 

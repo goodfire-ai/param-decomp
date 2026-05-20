@@ -28,7 +28,7 @@ def test_resolve_wandb_run_files_uses_fixed_checkpoint_filename(
         raise AssertionError("fixed checkpoint filenames should not use latest-checkpoint lookup")
 
     monkeypatch.setattr("param_decomp.utils.run_files.wandb.Api", FakeApi)
-    monkeypatch.setattr(run_files, "fetch_wandb_run_dir", lambda _run_id: tmp_path)
+    monkeypatch.setattr(run_files, "PARAM_DECOMP_OUT_DIR", tmp_path)
     monkeypatch.setattr(run_files, "download_wandb_file", fake_download_wandb_file)
     monkeypatch.setattr(
         run_files, "fetch_latest_wandb_checkpoint", fail_fetch_latest_wandb_checkpoint
@@ -41,9 +41,53 @@ def test_resolve_wandb_run_files_uses_fixed_checkpoint_filename(
         extras_from_config_path=lambda _path: ["extra.json"],
     )
 
-    assert resolved.config_path == tmp_path / "target_config.yaml"
-    assert resolved.checkpoint_path == tmp_path / "target_model.pth"
-    assert resolved.extras == {"extra.json": tmp_path / "extra.json"}
+    cache_dir = tmp_path / "runs" / "project-abcdef12"
+    assert resolved.config_path == cache_dir / "target_config.yaml"
+    assert resolved.checkpoint_path == cache_dir / "target_model.pth"
+    assert resolved.extras == {"extra.json": cache_dir / "extra.json"}
+
+
+def test_resolve_wandb_run_files_reuses_download_cache(monkeypatch: Any, tmp_path: Path) -> None:
+    class FakeRun:
+        id = "abcdef12"
+
+    api_calls = 0
+
+    class FakeApi:
+        def run(self, wandb_path: str) -> FakeRun:
+            nonlocal api_calls
+            api_calls += 1
+            assert wandb_path == "entity/project/abcdef12"
+            return FakeRun()
+
+    def fake_download_wandb_file(_run: FakeRun, run_dir: Path, file_name: str) -> Path:
+        path = run_dir / file_name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(file_name)
+        return path
+
+    monkeypatch.setattr("param_decomp.utils.run_files.wandb.Api", FakeApi)
+    monkeypatch.setattr(run_files, "PARAM_DECOMP_OUT_DIR", tmp_path)
+    monkeypatch.setattr(run_files, "download_wandb_file", fake_download_wandb_file)
+
+    first = run_files.resolve_run_files(
+        "wandb:entity/project/runs/abcdef12",
+        config_filename="target_config.yaml",
+        checkpoint_filename="target_model.pth",
+        extras_from_config_path=lambda _path: ["extra.json"],
+    )
+    second = run_files.resolve_run_files(
+        "wandb:entity/project/runs/abcdef12",
+        config_filename="target_config.yaml",
+        checkpoint_filename="target_model.pth",
+        extras_from_config_path=lambda _path: ["extra.json"],
+    )
+
+    cache_dir = tmp_path / "runs" / "project-abcdef12"
+    assert first.config_path == second.config_path == cache_dir / "target_config.yaml"
+    assert first.checkpoint_path == second.checkpoint_path == cache_dir / "target_model.pth"
+    assert first.extras == second.extras == {"extra.json": cache_dir / "extra.json"}
+    assert api_calls == 1
 
 
 def test_pretrain_info_dataset_short_reads_new_data_config() -> None:

@@ -11,9 +11,16 @@ from pydantic import BaseModel
 from torch import Tensor
 from tqdm.auto import tqdm
 
-from param_decomp.configs import ImportanceMinimalityLossConfig, PGDInitStrategy, SamplingType
-from param_decomp.metrics import importance_minimality_loss
-from param_decomp.metrics.pgd_utils import get_pgd_init_tensor, interpolate_pgd_mask
+from param_decomp.configs import SamplingType
+from param_decomp.metrics.builtin.importance_minimality_loss import (
+    ImportanceMinimalityLossConfig,
+    importance_minimality_loss,
+)
+from param_decomp.metrics.pgd_utils import (
+    PGDInitStrategy,
+    get_pgd_init_tensor,
+    interpolate_pgd_mask,
+)
 from param_decomp.models.component_model import CIOutputs, ComponentModel, OutputWithCache
 from param_decomp.models.components import make_mask_infos
 from param_decomp.routing import AllLayersRouter

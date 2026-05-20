@@ -48,13 +48,16 @@ Score types: `detection`, `fuzzing`.
 
 Current strategies:
 - `CompactSkepticalConfig` — compact prompt, skeptical tone, structured JSON output
+- `DualViewConfig` — dual-view prompt (separate input/output token framings)
+- `RichExamplesConfig` — richer per-example formatting
+- `CanonConfig` — canonical baseline prompt
 
-Also contains `AutointerpEvalConfig` for eval jobs (detection, fuzzing).
+Also contains `DetectionEvalConfig` / `FuzzingEvalConfig` for eval jobs.
 
 ### Strategies (`strategies/`)
 
 Each strategy config type has a corresponding prompt implementation:
-- `strategies/compact_skeptical.py` — prompt formatting for `CompactSkepticalConfig`
+- `strategies/compact_skeptical.py`, `dual_view.py`, `rich_examples.py`, `canon.py`
 - `strategies/dispatch.py` — routes `AutointerpConfig` → strategy implementation via `match`
 
 ### Database (`db.py`)

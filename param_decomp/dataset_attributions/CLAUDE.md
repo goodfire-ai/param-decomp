@@ -5,9 +5,14 @@ Multi-GPU pipeline for computing component-to-component attribution strengths ag
 ## Usage (SLURM)
 
 ```bash
-pd-attributions <wandb_path> --n_batches 1000 --n_gpus 8
-pd-attributions <wandb_path> --n_gpus 24  # whole dataset
+pd-attributions <wandb_path> --config attr_slurm_config.yaml --harvest_subrun_id h-YYYYMMDD_HHMMSS
+pd-attributions <wandb_path> --config attr_slurm_config.yaml --harvest_subrun_id h-... --job_suffix v2
 ```
+
+The YAML/JSON config is an `AttributionsSlurmConfig` — wraps `DatasetAttributionConfig`
+(which carries `wandb_path`, `n_batches`, `batch_size`, `ci_threshold`) plus SLURM knobs
+(`n_gpus`, `partition`, `time`, `merge_time`, `merge_mem`). The harvest subrun supplies the
+alive-mask set the attribution pass restricts to.
 
 The command:
 1. Creates a git snapshot branch for reproducibility
@@ -19,15 +24,19 @@ The command:
 
 ```bash
 # Single GPU
-python -m param_decomp.dataset_attributions.scripts.run_worker <wandb_path>
+python -m param_decomp.dataset_attributions.scripts.run_worker <wandb_path> \
+    --config_json '{"wandb_path": "<wandb_path>", "n_batches": 1000}' \
+    --harvest_subrun_id h-YYYYMMDD_HHMMSS --rank 0 --world_size 1 --subrun_id da-xxx
 
 # Multi-GPU
 SUBRUN="da-$(date +%Y%m%d_%H%M%S)"
-python -m param_decomp.dataset_attributions.scripts.run_worker <path> --config_json '{"n_batches": 1000}' --rank 0 --world_size 4 --subrun_id $SUBRUN &
-python -m param_decomp.dataset_attributions.scripts.run_worker <path> --config_json '{"n_batches": 1000}' --rank 1 --world_size 4 --subrun_id $SUBRUN &
-# ...
+CFG='{"wandb_path": "<wandb_path>", "n_batches": 1000}'
+for r in 0 1 2 3; do
+  python -m param_decomp.dataset_attributions.scripts.run_worker <wandb_path> \
+    --config_json "$CFG" --harvest_subrun_id h-... --rank $r --world_size 4 --subrun_id $SUBRUN &
+done
 wait
-python -m param_decomp.dataset_attributions.scripts.run_merge --wandb_path <path> --subrun_id $SUBRUN
+python -m param_decomp.dataset_attributions.scripts.run_merge --wandb_path <wandb_path> --subrun_id $SUBRUN
 ```
 
 ## Data Storage

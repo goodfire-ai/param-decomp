@@ -1,18 +1,24 @@
-from typing import Any, ClassVar, override
+from typing import Any, override
 
 import torch
-from jaxtyping import Float, Int
+from jaxtyping import Float
 from torch import Tensor
 from torch.distributed import ReduceOp
 
 from param_decomp.configs import SamplingType
-from param_decomp.metrics.base import Metric
+from param_decomp.metrics.base import LossMetricConfig, Metric, MetricResult
+from param_decomp.metrics.context import MetricContext
+from param_decomp.metrics.registry import register_metric
 from param_decomp.models.batch_and_loss_fns import ReconstructionLoss
-from param_decomp.models.component_model import CIOutputs, ComponentModel
+from param_decomp.models.component_model import ComponentModel
 from param_decomp.routing import AllLayersRouter
 from param_decomp.utils.component_utils import calc_stochastic_component_mask_info
 from param_decomp.utils.distributed_utils import all_reduce
 from param_decomp.utils.general_utils import get_obj_device
+
+
+class StochasticReconLossConfig(LossMetricConfig):
+    pass
 
 
 def _stochastic_recon_loss_update(
@@ -26,10 +32,8 @@ def _stochastic_recon_loss_update(
     reconstruction_loss: ReconstructionLoss,
 ) -> tuple[Float[Tensor, ""], int]:
     assert ci, "Empty ci"
-    device = get_obj_device(ci)
-    sum_loss = torch.tensor(0.0, device=device)
+    sum_loss = torch.zeros((), device=get_obj_device(ci))
     n_examples = 0
-
     for _ in range(n_mask_samples):
         stoch_mask_infos = calc_stochastic_component_mask_info(
             causal_importances=ci,
@@ -38,17 +42,10 @@ def _stochastic_recon_loss_update(
             router=AllLayersRouter(),
         )
         out = model(batch, mask_infos=stoch_mask_infos)
-        loss, batch_n_examples = reconstruction_loss(out, target_out)
-        sum_loss += loss
-        n_examples += batch_n_examples
-
+        loss, batch_n = reconstruction_loss(out, target_out)
+        sum_loss = sum_loss + loss
+        n_examples += batch_n
     return sum_loss, n_examples
-
-
-def _stochastic_recon_loss_compute(
-    sum_loss: Float[Tensor, ""], n_examples: Int[Tensor, ""] | int
-) -> Float[Tensor, ""]:
-    return sum_loss / n_examples
 
 
 def stochastic_recon_loss(
@@ -61,7 +58,8 @@ def stochastic_recon_loss(
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
     reconstruction_loss: ReconstructionLoss,
 ) -> Float[Tensor, ""]:
-    sum_loss, n_examples = _stochastic_recon_loss_update(
+    """Pure compute helper preserved for direct callers (tests, notebooks)."""
+    sum_loss, n = _stochastic_recon_loss_update(
         model=model,
         sampling=sampling,
         n_mask_samples=n_mask_samples,
@@ -71,56 +69,49 @@ def stochastic_recon_loss(
         weight_deltas=weight_deltas,
         reconstruction_loss=reconstruction_loss,
     )
-    return _stochastic_recon_loss_compute(sum_loss, n_examples)
+    return sum_loss / n
 
 
-class StochasticReconLoss(Metric):
+@register_metric
+class StochasticReconLoss(Metric[StochasticReconLossConfig]):
     """Recon loss when sampling with stochastic masks on all component layers."""
 
-    metric_section: ClassVar[str] = "loss"
+    section = "loss"
+    config_type = StochasticReconLossConfig
+    short_name = "StochRecon"
 
     def __init__(
-        self,
-        model: ComponentModel,
-        device: str,
-        sampling: SamplingType,
-        use_delta_component: bool,
-        n_mask_samples: int,
-        reconstruction_loss: ReconstructionLoss,
+        self, cfg: StochasticReconLossConfig, *, model: ComponentModel, device: str
     ) -> None:
+        self.cfg = cfg
         self.model = model
-        self.sampling: SamplingType = sampling
-        self.use_delta_component: bool = use_delta_component
-        self.n_mask_samples: int = n_mask_samples
-        self.reconstruction_loss = reconstruction_loss
-        self.sum_loss = torch.tensor(0.0, device=device)
-        self.n_examples = torch.tensor(0, device=device)
+        self.device = device
+        self.reset()
 
     @override
-    def update(
-        self,
-        *,
-        batch: Any,
-        target_out: Tensor,
-        ci: CIOutputs,
-        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
-        **_: Any,
-    ) -> None:
-        sum_loss, n_examples = _stochastic_recon_loss_update(
+    def reset(self) -> None:
+        self.sum_loss = torch.zeros((), device=self.device)
+        self.n_examples = torch.zeros((), device=self.device, dtype=torch.long)
+
+    @override
+    def update(self, ctx: MetricContext) -> Tensor:
+        wd = ctx.weight_deltas if ctx.config.use_delta_component else None
+        sum_loss, n = _stochastic_recon_loss_update(
             model=self.model,
-            sampling=self.sampling,
-            n_mask_samples=self.n_mask_samples,
-            batch=batch,
-            target_out=target_out,
-            ci=ci.lower_leaky,
-            weight_deltas=weight_deltas if self.use_delta_component else None,
-            reconstruction_loss=self.reconstruction_loss,
+            sampling=ctx.config.sampling,
+            n_mask_samples=ctx.config.n_mask_samples,
+            batch=ctx.batch,
+            target_out=ctx.target_out,
+            ci=ctx.ci.lower_leaky,
+            weight_deltas=wd,
+            reconstruction_loss=ctx.reconstruction_loss,
         )
-        self.sum_loss += sum_loss
-        self.n_examples += n_examples
+        self.sum_loss += sum_loss.detach()
+        self.n_examples += n
+        return sum_loss / n
 
     @override
-    def compute(self) -> Float[Tensor, ""]:
+    def compute(self) -> MetricResult:
         sum_loss = all_reduce(self.sum_loss, op=ReduceOp.SUM)
         n_examples = all_reduce(self.n_examples, op=ReduceOp.SUM)
-        return _stochastic_recon_loss_compute(sum_loss, n_examples)
+        return sum_loss / n_examples

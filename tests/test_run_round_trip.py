@@ -65,7 +65,6 @@ def _pd_config() -> PDConfig:
 
 def _logging_config() -> LoggingConfig:
     return LoggingConfig(
-        ci_alive_threshold=0.0,
         eval_batch_size=4,
         train_log_freq=1,
         eval_freq=1,

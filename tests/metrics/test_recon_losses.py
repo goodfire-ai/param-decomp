@@ -1,6 +1,8 @@
 """Sanity checks for stochastic, CI, PGD, and persistent PGD reconstruction losses."""
 
 from collections.abc import Callable
+from types import SimpleNamespace
+from typing import Literal, cast
 
 import pytest
 import torch
@@ -9,22 +11,26 @@ from torch import Tensor
 
 from param_decomp.configs import (
     PersistentPGDReconLossConfig,
-    PGDConfig,
     ScheduleConfig,
     SignPGDConfig,
     SingleSourceScope,
 )
-from param_decomp.metrics import ci_masked_recon_loss, pgd_recon_loss, stochastic_recon_loss
-from param_decomp.metrics.hidden_acts_recon_loss import (
+from param_decomp.metrics.builtin.ci_masked_recon_loss import ci_masked_recon_loss
+from param_decomp.metrics.builtin.hidden_acts_recon_loss import (
     CIHiddenActsReconLoss,
+    CIHiddenActsReconLossConfig,
     _sum_per_module_mse,
     calc_hidden_acts_mse,
 )
-from param_decomp.metrics.ppgd_eval_losses import PPGDReconEval
+from param_decomp.metrics.builtin.persistent_pgd_recon import PersistentPGDReconLoss
+from param_decomp.metrics.builtin.pgd_masked_recon_loss import pgd_recon_loss
+from param_decomp.metrics.builtin.stochastic_recon_loss import stochastic_recon_loss
+from param_decomp.metrics.context import MetricRuntimeConfig
+from param_decomp.metrics.pgd_utils import PGDConfig
 from param_decomp.models.batch_and_loss_fns import recon_loss_mse
 from param_decomp.models.component_model import CIOutputs, ComponentModel
 from param_decomp.models.components import make_mask_infos
-from param_decomp.persistent_pgd import PersistentPGDState, PPGDSources, get_ppgd_mask_infos
+from param_decomp.persistent_pgd import PPGDSources, get_ppgd_mask_infos
 from tests.metrics.fixtures import (
     OneLayerLinearModel,
     TwoLayerLinearModel,
@@ -33,6 +39,27 @@ from tests.metrics.fixtures import (
 )
 
 ReconLossFn = Callable[[ComponentModel, Tensor, Tensor, dict[str, Tensor]], Tensor]
+
+
+def _metric_runtime_config(
+    *,
+    steps: int = 1,
+    use_delta_component: bool = False,
+    sampling: Literal["continuous", "binomial"] = "continuous",
+    n_mask_samples: int = 1,
+) -> MetricRuntimeConfig:
+    return cast(
+        MetricRuntimeConfig,
+        cast(
+            object,
+            SimpleNamespace(
+                steps=steps,
+                use_delta_component=use_delta_component,
+                sampling=sampling,
+                n_mask_samples=n_mask_samples,
+            ),
+        ),
+    )
 
 
 def _stochastic(
@@ -206,6 +233,8 @@ def test_per_module_recon_manual_calculation() -> None:
 
 def test_per_module_recon_metric_keys() -> None:
     """CIHiddenActsReconLoss.compute() returns per-module + total keys."""
+    from param_decomp.metrics.context import MetricContext
+
     torch.manual_seed(42)
 
     model = make_two_layer_component_model(weight1=torch.randn(3, 2), weight2=torch.randn(2, 3))
@@ -214,16 +243,30 @@ def test_per_module_recon_metric_keys() -> None:
     target_output = model(batch, cache_type="input")
     ci = model.calc_causal_importances(pre_weight_acts=target_output.cache, sampling="continuous")
 
-    metric = CIHiddenActsReconLoss(model=model, device="cpu")
-    metric.update(batch=batch, ci=ci)
+    metric = CIHiddenActsReconLoss(CIHiddenActsReconLossConfig(), model=model, device="cpu")
+    ctx = MetricContext(
+        model=model,
+        config=_metric_runtime_config(),
+        batch=batch,
+        target_out=target_output.output,
+        pre_weight_acts=target_output.cache,
+        ci=ci,
+        weight_deltas={},
+        step=0,
+        reconstruction_loss=recon_loss_mse,
+        is_eval=True,
+    )
+    metric.update(ctx)
     result = metric.compute()
+    assert isinstance(result, dict)
+    tensor_result = cast(dict[str, Tensor], result)
 
-    assert set(result.keys()) == {
+    assert set(tensor_result.keys()) == {
         "CIHiddenActsReconLoss",
         "CIHiddenActsReconLoss/fc1",
         "CIHiddenActsReconLoss/fc2",
     }
-    for v in result.values():
+    for v in tensor_result.values():
         assert v.item() >= 0
 
 
@@ -236,7 +279,10 @@ def _make_ci_outputs(ci: dict[str, Tensor]) -> CIOutputs:
 
 
 def test_ppgd_recon_eval_metric_keys() -> None:
-    """PPGDReconEval.compute() returns hidden_acts (total + per-module) and output_recon keys."""
+    """PersistentPGDReconLoss.compute() returns hidden_acts (total + per-module) and output_recon
+    keys when run in eval mode."""
+    from param_decomp.metrics.context import MetricContext
+
     torch.manual_seed(42)
 
     model = make_two_layer_component_model(weight1=torch.randn(3, 2), weight2=torch.randn(2, 3))
@@ -245,41 +291,37 @@ def test_ppgd_recon_eval_metric_keys() -> None:
     ci = {"fc1": torch.ones(2, 1), "fc2": torch.ones(2, 1)}
 
     ppgd_cfg = PersistentPGDReconLossConfig(
+        coeff=1.0,
         optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
         scope=SingleSourceScope(),
     )
-    ppgd_state = PersistentPGDState(
-        module_to_c=model.module_to_c,
-        batch_dims=batch.shape[:1],
-        device="cpu",
-        use_delta_component=False,
-        cfg=ppgd_cfg,
-        reconstruction_loss=recon_loss_mse,
-    )
+    metric = PersistentPGDReconLoss(ppgd_cfg, model=model, device="cpu")
 
-    metric = PPGDReconEval(
+    ctx = MetricContext(
         model=model,
-        device="cpu",
-        ppgd_state=ppgd_state,
-        use_delta_component=False,
-        reconstruction_loss=recon_loss_mse,
-        metric_name="my_ppgd",
-    )
-    metric.update(
+        config=_metric_runtime_config(use_delta_component=False, steps=100),
         batch=batch,
+        target_out=target_out,
+        pre_weight_acts={},
         ci=_make_ci_outputs(ci),
         weight_deltas={},
-        target_out=target_out,
+        step=0,
+        reconstruction_loss=recon_loss_mse,
+        is_eval=True,
     )
+    metric.update(ctx)
     result = metric.compute()
+    assert isinstance(result, dict)
+    tensor_result = cast(dict[str, Tensor], result)
 
-    assert set(result.keys()) == {
-        "my_ppgd/hidden_acts",
-        "my_ppgd/hidden_acts/fc1",
-        "my_ppgd/hidden_acts/fc2",
-        "my_ppgd/output_recon",
+    cls_name = type(metric).__name__
+    assert set(tensor_result.keys()) == {
+        f"{cls_name}/hidden_acts",
+        f"{cls_name}/hidden_acts/fc1",
+        f"{cls_name}/hidden_acts/fc2",
+        f"{cls_name}/output_recon",
     }
-    for v in result.values():
+    for v in tensor_result.values():
         assert v.item() >= 0
 
 
