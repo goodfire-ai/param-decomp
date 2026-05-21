@@ -6,6 +6,12 @@ resolution-markers = [
     "sys_platform != 'linux'",
 ]
 
+[manifest]
+members = [
+    "param-decomp",
+    "param-decomp-lab",
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
@@ -1338,39 +1344,25 @@ name = "param-decomp"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [
-    { name = "aiolimiter" },
     { name = "datasets" },
     { name = "einops" },
-    { name = "fastapi" },
-    { name = "fire" },
-    { name = "httpx" },
-    { name = "ipykernel" },
     { name = "jaxtyping" },
-    { name = "kaleido" },
     { name = "matplotlib" },
-    { name = "numba" },
     { name = "numpy" },
-    { name = "openrouter" },
-    { name = "orjson" },
+    { name = "pillow" },
     { name = "pydantic" },
     { name = "python-dotenv" },
-    { name = "scipy" },
-    { name = "streamlit" },
-    { name = "streamlit-antd-components" },
-    { name = "sympy" },
+    { name = "pyyaml" },
     { name = "torch" },
-    { name = "torchvision" },
     { name = "tqdm" },
     { name = "transformers" },
-    { name = "uvicorn" },
     { name = "wandb" },
-    { name = "wandb-workspaces" },
-    { name = "zstandard" },
 ]
 
 [package.dev-dependencies]
 dev = [
     { name = "basedpyright" },
+    { name = "ipykernel" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -1382,39 +1374,25 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiolimiter", specifier = ">=1.2" },
     { name = "datasets", specifier = ">=2.21.0" },
     { name = "einops" },
-    { name = "fastapi" },
-    { name = "fire" },
-    { name = "httpx", specifier = ">=0.28.0" },
-    { name = "ipykernel" },
     { name = "jaxtyping" },
-    { name = "kaleido", specifier = "==0.2.1" },
     { name = "matplotlib" },
-    { name = "numba", specifier = ">=0.64.0" },
     { name = "numpy" },
-    { name = "openrouter", specifier = ">=0.1.1" },
-    { name = "orjson" },
+    { name = "pillow" },
     { name = "pydantic", specifier = "<2.12" },
     { name = "python-dotenv" },
-    { name = "scipy", specifier = ">=1.14.1" },
-    { name = "streamlit" },
-    { name = "streamlit-antd-components" },
-    { name = "sympy" },
+    { name = "pyyaml" },
     { name = "torch", specifier = ">=2.6" },
-    { name = "torchvision", specifier = ">=0.23,<0.24" },
     { name = "tqdm" },
     { name = "transformers" },
-    { name = "uvicorn" },
     { name = "wandb", specifier = ">=0.20.1" },
-    { name = "wandb-workspaces", specifier = "==0.1.12" },
-    { name = "zstandard" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "basedpyright", specifier = "<1.32.0" },
+    { name = "ipykernel" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -1422,6 +1400,53 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
     { name = "scikit-learn" },
+]
+
+[[package]]
+name = "param-decomp-lab"
+version = "0.0.1"
+source = { editable = "param_decomp_lab" }
+dependencies = [
+    { name = "aiolimiter" },
+    { name = "fastapi" },
+    { name = "fire" },
+    { name = "httpx" },
+    { name = "kaleido" },
+    { name = "numba" },
+    { name = "openrouter" },
+    { name = "orjson" },
+    { name = "param-decomp" },
+    { name = "requests" },
+    { name = "scipy" },
+    { name = "streamlit" },
+    { name = "streamlit-antd-components" },
+    { name = "sympy" },
+    { name = "torchvision" },
+    { name = "uvicorn" },
+    { name = "wandb-workspaces" },
+    { name = "zstandard" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiolimiter", specifier = ">=1.2" },
+    { name = "fastapi" },
+    { name = "fire" },
+    { name = "httpx", specifier = ">=0.28.0" },
+    { name = "kaleido", specifier = "==0.2.1" },
+    { name = "numba", specifier = ">=0.64.0" },
+    { name = "openrouter", specifier = ">=0.1.1" },
+    { name = "orjson" },
+    { name = "param-decomp", editable = "." },
+    { name = "requests" },
+    { name = "scipy", specifier = ">=1.14.1" },
+    { name = "streamlit" },
+    { name = "streamlit-antd-components" },
+    { name = "sympy" },
+    { name = "torchvision", specifier = ">=0.23,<0.24" },
+    { name = "uvicorn" },
+    { name = "wandb-workspaces", specifier = "==0.1.12" },
+    { name = "zstandard" },
 ]
 
 [[package]]

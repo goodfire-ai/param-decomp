@@ -1,8 +1,8 @@
+# pyright: reportImportCycles=false
 """Config classes of various types."""
 
-import importlib
 from functools import cached_property
-from typing import Annotated, Any, Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import (
     Field,
@@ -16,8 +16,7 @@ from pydantic import (
 )
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.metrics.base import LossMetricConfig, MetricConfig
-from param_decomp.metrics.registry import METRIC_REGISTRY
+from param_decomp.metrics.base import LossMetricConfig
 from param_decomp.types import (
     GlobalCiFnType,
     LayerwiseCiFnType,
@@ -181,78 +180,6 @@ class StaticProbabilityRoutingConfig(BaseConfig):
 SubsetRoutingType = UniformKSubsetRoutingConfig | StaticProbabilityRoutingConfig
 
 
-# --- Persistent PGD shared types (also imported by `metrics.persistent_pgd_recon`) ---
-
-
-class SignPGDConfig(BaseConfig):
-    type: Literal["sign"] = "sign"
-    lr_schedule: ScheduleConfig
-
-
-class AdamPGDConfig(BaseConfig):
-    type: Literal["adam"] = "adam"
-    beta1: Probability = Field(default=0.9, description="Adam beta1 for masks")
-    beta2: Probability = Field(default=0.999, description="Adam beta2 for masks")
-    eps: NonNegativeFloat = Field(default=1e-8, description="Adam epsilon for masks")
-    lr_schedule: ScheduleConfig
-
-
-PGDOptimizerConfig = SignPGDConfig | AdamPGDConfig
-
-
-class SingleSourceScope(BaseConfig):
-    type: Literal["single_source"] = "single_source"
-
-
-class BroadcastAcrossBatchScope(BaseConfig):
-    type: Literal["broadcast_across_batch"] = "broadcast_across_batch"
-
-
-class RepeatAcrossBatchScope(BaseConfig):
-    type: Literal["repeat_across_batch"] = "repeat_across_batch"
-    n_sources: PositiveInt
-
-
-class PerBatchPerPositionScope(BaseConfig):
-    type: Literal["per_batch_per_position"] = "per_batch_per_position"
-
-
-PersistentPGDSourceScope = Annotated[
-    SingleSourceScope
-    | BroadcastAcrossBatchScope
-    | RepeatAcrossBatchScope
-    | PerBatchPerPositionScope,
-    Field(discriminator="type"),
-]
-
-
-class _PersistentPGDBaseConfig(LossMetricConfig):
-    """Shared fields for persistent PGD configs."""
-
-    optimizer: Annotated[PGDOptimizerConfig, Field(discriminator="type")]
-    scope: PersistentPGDSourceScope
-    use_sigmoid_parameterization: bool = False
-    n_warmup_steps: NonNegativeInt = Field(
-        default=0,
-        description=(
-            "Extra inner PGD source-optimization steps on each train batch before the final loss"
-            " computation."
-        ),
-    )
-    start_frac: Probability = 0.0
-    n_samples: PositiveInt = 1
-
-
-class PersistentPGDReconLossConfig(_PersistentPGDBaseConfig):
-    pass
-
-
-class PersistentPGDReconSubsetLossConfig(_PersistentPGDBaseConfig):
-    routing: Annotated[
-        SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
-    ]
-
-
 SamplingType = Literal["continuous", "binomial"]
 
 
@@ -260,12 +187,18 @@ SamplingType = Literal["continuous", "binomial"]
 
 
 def _parse_loss_metric_cfg(metric_name: str, raw: Any) -> LossMetricConfig:
-    """Look up a loss-capable metric by class name in METRIC_REGISTRY and validate its config."""
-    assert metric_name in METRIC_REGISTRY, (
-        f"unknown metric {metric_name!r} (registered: {sorted(METRIC_REGISTRY)})"
+    """Look up a loss-capable metric by class name in `LOSS_METRICS` and validate its config."""
+    from param_decomp.metrics.loss_metrics import LOSS_METRICS
+
+    assert metric_name in LOSS_METRICS, (
+        f"unknown loss metric {metric_name!r} (known: {sorted(LOSS_METRICS)})"
     )
-    metric_cls = METRIC_REGISTRY[metric_name]
-    cfg = raw if isinstance(raw, MetricConfig) else metric_cls.config_type.model_validate(raw or {})
+    metric_cls = LOSS_METRICS[metric_name]
+    cfg = (
+        raw
+        if isinstance(raw, LossMetricConfig)
+        else metric_cls.config_type.model_validate(raw or {})
+    )
     assert isinstance(cfg, LossMetricConfig), (
         f"{metric_name!r} is eval-only; only loss-capable metrics belong in pd.loss_metrics"
     )
@@ -371,39 +304,15 @@ class PDConfig(BaseConfig):
         "After init, tgt's U/V are set to src's V.T / U.T. Ties make training nondeterministic.",
     )
 
-    metric_modules: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Extra Python modules to import before validating `loss_metrics` / `eval_metrics`."
-            " Each entry is a dotted module name (`my_pkg.my_metrics`) importable from the"
-            " current environment. Imported side-effects (`@register_metric` decorators) expand"
-            " `METRIC_REGISTRY` so user-defined metrics can be referenced by class name."
-        ),
-    )
-
     loss_metrics: dict[str, SerializeAsAny[LossMetricConfig]] = Field(
         default_factory=dict,
         description=(
-            "Training-loss metrics keyed by metric class name. Each value's `coeff` weights the"
-            " metric in the total training loss. Active loss metrics are automatically also"
-            " evaluated."
+            "Training-loss metrics keyed by metric class name (see"
+            " `param_decomp.metrics.loss_metrics.LOSS_METRICS`). Each value's `coeff` weights"
+            " the metric in"
+            " the total training loss. Active loss metrics are automatically also evaluated."
         ),
     )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _import_metric_modules(cls, data: Any) -> Any:
-        """Import metric modules so their `@register_metric` decorators fire
-        before the `loss_metrics` field validator looks names up in `METRIC_REGISTRY`.
-        Idempotent: re-validation in the same process is a no-op.
-        """
-        from param_decomp.metrics import discover_metrics
-
-        discover_metrics()
-        if isinstance(data, dict):
-            for spec in data.get("metric_modules", []) or []:
-                importlib.import_module(spec)
-        return data
 
     @field_validator("loss_metrics", mode="before")
     @classmethod
@@ -454,6 +363,12 @@ class PDConfig(BaseConfig):
         doesn't have to know about distributed plumbing. Callers pass
         ``dist_state.world_size if dist_state is not None else 1``.
         """
+        from param_decomp.metrics.persistent_pgd import (
+            PersistentPGDReconLossConfig,
+            PersistentPGDReconSubsetLossConfig,
+            RepeatAcrossBatchScope,
+        )
+
         assert self.batch_size % world_size == 0, (
             f"batch_size {self.batch_size} not divisible by world size {world_size}"
         )

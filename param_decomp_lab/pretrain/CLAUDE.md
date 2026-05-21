@@ -1,4 +1,4 @@
-# param_decomp/pretrain - Language Model Pretraining
+# param_decomp_lab/pretrain - Language Model Pretraining
 
 This module provides infrastructure for pretraining language models that can
 later be decomposed using PD.
@@ -13,7 +13,7 @@ later be decomposed using PD.
 
 ```bash
 # Submit to SLURM (default)
-pd-pretrain --config_path param_decomp/pretrain/configs/pile_llama_simple_mlp_4L.yaml
+pd-pretrain --config_path param_decomp_lab/pretrain/configs/pile_llama_simple_mlp-4L-768.yaml
 
 # Run locally
 pd-pretrain --config_path ... --local
@@ -57,8 +57,8 @@ the data config should have `max_seq_len: 513`. This is enforced by an assertion
 ## Loading Trained Models
 
 ```python
-from param_decomp.pretrain.run_info import PretrainRunInfo
-from param_decomp.pretrain.models import MODEL_CLASSES
+from param_decomp_lab.pretrain.run_info import PretrainRunInfo
+from param_decomp_lab.pretrain.models import MODEL_CLASSES
 
 # Load from W&B
 run_info = PretrainRunInfo.from_path("wandb:entity/project/runs/run_id")
@@ -93,9 +93,9 @@ PARAM_DECOMP_OUT_DIR/target_models/
 After training, models can be decomposed using PD:
 
 ```yaml
-# In param_decomp/experiments/lm/*.yaml, under `target:`
+# In param_decomp_lab/experiments/lm/*.yaml, under `target:`
 target:
-  model_class: param_decomp.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
+  model_class: param_decomp_lab.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
   model_name: goodfire/spd/runs/<run_id>
   model_path: null
 ```

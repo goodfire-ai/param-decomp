@@ -9,10 +9,11 @@ from typing import Any
 
 import yaml
 
+from param_decomp.base_config import BaseConfig
 from param_decomp.configs import PDConfig, RuntimeConfig
-from param_decomp.metrics import METRIC_REGISTRY, discover_metrics
-from param_decomp.metrics.base import Metric, MetricConfig
-from param_decomp.run_sink import RunSink
+from param_decomp.metrics.base import Metric
+from param_decomp_lab.eval_metrics import EVAL_METRICS
+from param_decomp_lab.run_sink import RunSink
 
 RUN_META_FILENAME = "run_meta.yaml"
 
@@ -25,24 +26,23 @@ def load_yaml(path: Path | str) -> dict[str, Any]:
     return data
 
 
-def build_eval_metrics(eval_metrics_dict: dict[str, Any] | None) -> list[Metric[MetricConfig]]:
+def build_eval_metrics(eval_metrics_dict: dict[str, Any] | None) -> list[Metric[BaseConfig]]:
     """Turn a dict-of-config (from YAML) into instantiated eval `Metric` objects.
 
     The metrics are not yet bound to a `ComponentModel` — `optimize()` binds them after
     constructing the model.
     """
-    discover_metrics()
     if not eval_metrics_dict:
         return []
-    instances: list[Metric[MetricConfig]] = []
+    instances: list[Metric[BaseConfig]] = []
     for metric_name, raw_cfg in eval_metrics_dict.items():
-        assert metric_name in METRIC_REGISTRY, (
-            f"unknown metric {metric_name!r} (registered: {sorted(METRIC_REGISTRY)})"
+        assert metric_name in EVAL_METRICS, (
+            f"unknown eval metric {metric_name!r} (known: {sorted(EVAL_METRICS)})"
         )
-        cls = METRIC_REGISTRY[metric_name]
+        cls = EVAL_METRICS[metric_name]
         cfg = (
             raw_cfg
-            if isinstance(raw_cfg, MetricConfig)
+            if isinstance(raw_cfg, BaseConfig)
             else cls.config_type.model_validate(raw_cfg or {})
         )
         instances.append(cls(cfg))

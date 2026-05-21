@@ -1,14 +1,14 @@
 harvest:
   model_path: wandb:goodfire/spd/runs/zxbu57pt  # WandB path to the decomposed model
   batch_size: 8  # Batch size for processing -- number of samples for each run in the ensemble
-  dataset_seed: 0  # Note, overridden if run in the pipeline (param_decomp/clustering/scripts/run_pipeline.py)
+  dataset_seed: 0  # Note, overridden if run in the pipeline (param_decomp_lab/clustering/scripts/run_pipeline.py)
   activation_threshold: 0.01  # threshold for considering a component active
   filter_dead_threshold: 0.001  # Threshold for filtering dead components
   filter_dead_stat: "max"  # Dead-component statistic: "max" or "mean"
   module_name_filter: null  # Can be a string prefix like "model.layers.0." if you want to do only some modules
 
-# output_dir: .data/clustering/clustering_runs  # Note, overridden if run in the pipeline (param_decomp/clustering/scripts/run_pipeline.py)
-# ensemble_id: 1234567890  # Note, overridden if run in the pipeline (param_decomp/clustering/scripts/run_pipeline.py)
+# output_dir: .data/clustering/clustering_runs  # Note, overridden if run in the pipeline (param_decomp_lab/clustering/scripts/run_pipeline.py)
+# ensemble_id: 1234567890  # Note, overridden if run in the pipeline (param_decomp_lab/clustering/scripts/run_pipeline.py)
 
 merge:
   alpha: 1.0  # rank penalty term

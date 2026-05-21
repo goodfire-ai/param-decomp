@@ -126,7 +126,8 @@ def get_command(
     return shlex.join(
         [
             "python",
-            "param_decomp/clustering/scripts/calc_distances.py",
+            "-m",
+            "param_decomp_lab.clustering.scripts.calc_distances",
             "--pipeline-run-id",
             pipeline_run_id,
             "--clustering-run-ids",

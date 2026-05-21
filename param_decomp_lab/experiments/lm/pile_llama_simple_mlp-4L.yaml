@@ -115,7 +115,7 @@ logging:
       n_steps: 20
       mask_scope: shared_across_batch
 target:
-  model_class: param_decomp.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
+  model_class: param_decomp_lab.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
   model_name: goodfire/spd/runs/t-9d2b8f02
   model_path: null
   output_extract: 0

@@ -6,4 +6,4 @@ slurm_partition: null
 wandb_project: "param-decomp"
 wandb_entity: "goodfire"
 create_git_snapshot: false
-clustering_run_config_path: "param_decomp/clustering/configs/crc/ss_llama_simple_mlp.json"
+clustering_run_config_path: "param_decomp_lab/clustering/configs/crc/ss_llama_simple_mlp.json"

@@ -9,7 +9,7 @@ Context-aware component labeling using network graph structure. Unlike standard 
 pd-graph-interp <decomposition_id> --config config.yaml --harvest_subrun_id h-YYYYMMDD_HHMMSS
 
 # Direct execution (one process; the SLURM wrapper picks the subrun id automatically)
-python -m param_decomp.graph_interp.scripts.run <decomposition_id> \
+python -m param_decomp_lab.graph_interp.scripts.run <decomposition_id> \
     --config_json '{...}' --subrun_id ti-YYYYMMDD_HHMMSS --harvest_subrun_id h-...
 ```
 
@@ -62,8 +62,8 @@ PARAM_DECOMP_OUT_DIR/graph_interp/<decomposition_id>/
 
 - Harvest data (component stats, correlations, token stats)
 - Dataset attributions (component-to-component attribution strengths)
-- Reuses `map_llm_calls` from `param_decomp/autointerp/llm_api.py`
-- Reuses prompt helpers from `param_decomp/autointerp/prompt_helpers.py`
+- Reuses `map_llm_calls` from `param_decomp_lab/autointerp/llm_api.py`
+- Reuses prompt helpers from `param_decomp_lab/autointerp/prompt_helpers.py`
 
 ## SLURM Integration
 

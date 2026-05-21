@@ -8,7 +8,7 @@ from torch import Tensor
 from torch.types import Number
 from wandb.plot.custom_chart import CustomChart
 
-from param_decomp.metrics.base import Metric, MetricConfig
+from param_decomp.metrics.base import Metric
 from param_decomp.metrics.context import MetricContext
 from param_decomp.utils.general_utils import combine_nonoverlapping_dicts
 
@@ -46,7 +46,7 @@ def _clean_metric_output(
 
 
 def evaluate(
-    instances: dict[str, Metric[MetricConfig]],
+    instances: dict[str, Metric[Any]],
     eval_iterator: Iterator[Any],
     ctx_builder: Callable[[Any], MetricContext],
     n_eval_steps: int,

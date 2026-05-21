@@ -12,19 +12,27 @@ the core method, see [`nano_param_decomp/`](nano_param_decomp/).
 
 ## Install
 
+This repo contains two Python distributions:
+
+- `param-decomp`: the core library, importing as `param_decomp`
+- `param-decomp-lab`: in-repo experiments, app, postprocessing, and CLI tooling, importing as
+  `param_decomp_lab`
+
 ```bash
-make install-dev  # package, dev dependencies, pre-commit hooks
-make install      # package only
+make install-dev  # workspace dev install: core + lab + dev dependencies + pre-commit hooks
+make install      # core package only
+make install-lab  # core + lab packages, without dev dependencies
 ```
 
 ## Run Experiments
 
-Each in-repo experiment is a self-contained script that reads a YAML and calls `optimize()`:
+The `pd-*` commands are installed by `param-decomp-lab`. Each in-repo experiment is a
+self-contained script that reads a YAML and calls `optimize()`:
 
 ```bash
-pd-tms       param_decomp/experiments/tms/tms_5-2_config.yaml
-pd-resid-mlp param_decomp/experiments/resid_mlp/resid_mlp1_config.yaml
-pd-lm        param_decomp/experiments/lm/ss_llama_simple_mlp-2L.yaml
+pd-tms       param_decomp_lab/experiments/tms/tms_5-2_config.yaml
+pd-resid-mlp param_decomp_lab/experiments/resid_mlp/resid_mlp1_config.yaml
+pd-lm        param_decomp_lab/experiments/lm/ss_llama_simple_mlp-2L.yaml
 ```
 
 For a brand-new experiment, write your own `run.py` that builds the target model, the
@@ -32,8 +40,9 @@ train/eval dataloaders, the eval `Metric` list, the `PDConfig` and `RuntimeConfi
 `RunSink`, then calls `optimize(...)`:
 
 ```python
-from param_decomp import PDConfig, RunSink, RuntimeConfig, optimize
+from param_decomp import PDConfig, RuntimeConfig, optimize
 from param_decomp.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
+from param_decomp_lab.run_sink import RunSink
 
 optimize(
     target_model=my_target_module,
@@ -51,39 +60,33 @@ optimize(
 ```
 
 The three in-repo `run.py` files
-([tms](param_decomp/experiments/tms/run.py),
- [resid_mlp](param_decomp/experiments/resid_mlp/run.py),
- [lm](param_decomp/experiments/lm/run.py)) are reference examples.
+([tms](param_decomp_lab/experiments/tms/run.py),
+ [resid_mlp](param_decomp_lab/experiments/resid_mlp/run.py),
+ [lm](param_decomp_lab/experiments/lm/run.py)) are reference examples.
 
 ## Metrics
 
-Configure training losses in `pd.loss_metrics`; keys are registered metric class names. Loss
-metrics must set `coeff`; they are evaluated automatically.
+Configure training losses in `pd.loss_metrics`; keys are class names from
+`param_decomp.metrics.loss_metrics.LOSS_METRICS`. Loss metrics must set `coeff`; they are
+evaluated automatically. New loss metrics are added by defining the class in
+`param_decomp/metrics/` and appending it to that table.
 
-Eval-only metrics are constructed by your `run.py` and passed to `optimize(eval_metrics=...)`.
-The `experiments.utils.build_eval_metrics(...)` helper converts a YAML
-`logging.eval_metrics` dict-of-config into a `list[Metric]`.
+Eval metrics are caller-supplied: instantiate `Metric` objects in your `run.py` and pass them
+to `optimize(eval_metrics=...)`. The in-repo experiments use
+`experiments.utils.build_eval_metrics(...)` to convert a YAML `logging.eval_metrics`
+dict-of-config into a `list[Metric]`, backed by
+`param_decomp_lab.eval_metrics.EVAL_METRICS`.
 
-You can register your own metrics by listing importable dotted modules in `pd.metric_modules`.
-`PDConfig` imports those modules before resolving metric names, so any classes decorated with
-`@register_metric` are available from YAML:
+## Packaging
 
-```yaml
-pd:
-  metric_modules:
-    - my_project.pd_metrics
-  loss_metrics:
-    MyCustomLoss:
-      coeff: 0.1
-      scale: 3.0
-logging:
-  eval_metrics:
-    MyCustomEvalMetric: {}
-```
+The root `pyproject.toml` builds only the core `param-decomp` distribution. Lab scripts
+and experiment tooling live in `param_decomp_lab/pyproject.toml` as the separate
+`param-decomp-lab` distribution. Local development uses the uv workspace, so absolute
+imports for both packages work after `make install-dev`.
 
-Custom metric modules define a Pydantic config plus a metric class satisfying `__init__(cfg)`,
-`bind(*, model, device)`, `reset()`, `update(ctx)`, and `compute()`. Use `LossMetricConfig` for
-trainable losses and `MetricConfig` for eval-only metrics; see
+Metric classes define a Pydantic config plus a class satisfying `__init__(cfg)`,
+`bind(*, model, device)`, `reset()`, `update(ctx)`, and `compute()`. Use `LossMetricConfig`
+for trainable losses and subclass `BaseConfig` directly for eval-only metrics; see
 [`param_decomp/metrics/base.py`](param_decomp/metrics/base.py).
 
 ## Development

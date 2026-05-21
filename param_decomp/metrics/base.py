@@ -1,9 +1,11 @@
 """Metric protocol and config base classes.
 
-Metrics are auto-registered via `@register_metric` and looked up by their class name from
-`PDConfig.loss_metrics`. Each metric file defines its pydantic config class (subclassing
-`MetricConfig` for eval-only or `LossMetricConfig` for loss-capable) alongside the `Metric`
-class itself.
+Each metric file defines its pydantic config class alongside the `Metric` class itself. Eval
+metric configs subclass `BaseConfig` directly; loss metrics subclass `LossMetricConfig` (which
+carries the required `coeff` field for training). Loss metrics are referenced from
+`PDConfig.loss_metrics` by class name, resolved via
+`param_decomp.metrics.loss_metrics.LOSS_METRICS`. Eval
+metrics are instantiated by the caller and passed to `optimize(eval_metrics=...)`.
 
 Metrics are instantiated with just the validated config (`MyMetric(cfg)`). The training loop
 calls `metric.bind(model=component_model, device=...)` once before any other method, then
@@ -25,11 +27,7 @@ from torch import Tensor
 from param_decomp.base_config import BaseConfig
 
 
-class MetricConfig(BaseConfig):
-    """Pydantic config for an eval-only metric. Subclass and add fields as needed."""
-
-
-class LossMetricConfig(MetricConfig):
+class LossMetricConfig(BaseConfig):
     """Pydantic config for a metric that can also be used as a training loss.
 
     `coeff` is required when this metric is listed under `loss_metrics` (asserted by PDConfig's
@@ -44,11 +42,11 @@ MetricResult = (
 )
 
 
-class Metric[TConfig: MetricConfig](ABC):
+class Metric[TConfig: BaseConfig](ABC):
     """Abstract base class that every metric must subclass."""
 
     section: ClassVar[str]
-    config_type: ClassVar[type[MetricConfig]]
+    config_type: ClassVar[type[BaseConfig]]
     slow: ClassVar[bool] = False
     short_name: ClassVar[str | None] = None
     cfg: TConfig

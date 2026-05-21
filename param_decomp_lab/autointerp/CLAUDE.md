@@ -1,15 +1,15 @@
 # Autointerp Module
 
-LLM-based automated interpretation of PD components. Consumes pre-harvested data from `param_decomp/harvest/` (see `param_decomp/harvest/CLAUDE.md`).
+LLM-based automated interpretation of PD components. Consumes pre-harvested data from `param_decomp_lab/harvest/` (see `param_decomp_lab/harvest/CLAUDE.md`).
 
 ## Usage
 
 ```bash
 # Run interpretation with a config file
-python -m param_decomp.autointerp.scripts.run_interpret <wandb_path> --config_path path/to/config.yaml
+python -m param_decomp_lab.autointerp.scripts.run_interpret <wandb_path> --config_path path/to/config.yaml
 
 # Run with inline config JSON
-python -m param_decomp.autointerp.scripts.run_interpret <wandb_path> --config_json '{"model": "google/gemini-3-flash-preview", "reasoning_effort": null}'
+python -m param_decomp_lab.autointerp.scripts.run_interpret <wandb_path> --config_json '{"model": "google/gemini-3-flash-preview", "reasoning_effort": null}'
 
 # Or via SLURM
 pd-autointerp <wandb_path>
@@ -38,7 +38,7 @@ The `interp.db` schema has three tables:
 
 Score types: `detection`, `fuzzing`.
 
-**Note on intruder scores**: Intruder evaluation lives in `param_decomp/harvest/` (not here) because it tests decomposition quality, not label quality. Intruder scores are stored in `harvest.db`. Detection and fuzzing evaluate interpretation labels and belong here.
+**Note on intruder scores**: Intruder evaluation lives in `param_decomp_lab/harvest/` (not here) because it tests decomposition quality, not label quality. Intruder scores are stored in `harvest.db`. Detection and fuzzing evaluate interpretation labels and belong here.
 
 ## Architecture
 

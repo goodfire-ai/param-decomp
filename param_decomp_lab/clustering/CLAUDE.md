@@ -31,13 +31,13 @@ pd-cluster-merge /path/to/ch-<id>/ merge_alpha_10.json
 
 ```bash
 # Run clustering pipeline via SLURM (ensemble of runs + distance calculation)
-pd-clustering --config param_decomp/clustering/configs/pipeline_config.yaml
+pd-clustering --config param_decomp_lab/clustering/configs/pipeline_config.yaml
 
 # Run locally instead of SLURM
-pd-clustering --config param_decomp/clustering/configs/pipeline_config.yaml --local
+pd-clustering --config param_decomp_lab/clustering/configs/pipeline_config.yaml --local
 
 # Single clustering run (usually called by pipeline)
-python -m param_decomp.clustering.scripts.run_clustering --config <clustering_run_config.json>
+python -m param_decomp_lab.clustering.scripts.run_clustering --config <clustering_run_config.json>
 ```
 
 ## Data Storage
@@ -138,7 +138,7 @@ DistancesArray            # Float[np.ndarray, "n_iters n_ens n_ens"]
 **`get_cluster_mapping.py`**: Extracts cluster assignments at a specific iteration from a clustering run, outputs JSON mapping component labels to cluster indices (singletons mapped to `null`).
 
 ```bash
-python -m param_decomp.clustering.scripts.get_cluster_mapping /path/to/clustering_run --iteration 299
+python -m param_decomp_lab.clustering.scripts.get_cluster_mapping /path/to/clustering_run --iteration 299
 ```
 
 ## Run ID Prefixes
@@ -149,17 +149,17 @@ Subrun prefixes are **not** centralized yet — each module hardcodes its own in
 
 ## App Integration
 
-To make a cluster mapping available in the app's dropdown for a run, add its path to `CANONICAL_RUNS` in `param_decomp/app/frontend/src/lib/registry.ts` under the corresponding run's `clusterMappings` array.
+To make a cluster mapping available in the app's dropdown for a run, add its path to `CANONICAL_RUNS` in `param_decomp_lab/app/frontend/src/lib/registry.ts` under the corresponding run's `clusterMappings` array.
 
 ## Config Files
 
-Configs live in `param_decomp/clustering/configs/`:
+Configs live in `param_decomp_lab/clustering/configs/`:
 - Pipeline configs: `*.yaml` files with `ClusteringPipelineConfig`
 - Run configs: `crc/*.json` files with `ClusteringRunConfig`
 
 Example pipeline config:
 ```yaml
-clustering_run_config_path: "param_decomp/clustering/configs/crc/ss_llama_simple_mlp-1L.json"
+clustering_run_config_path: "param_decomp_lab/clustering/configs/crc/ss_llama_simple_mlp-1L.json"
 n_runs: 10
 distances_methods: ["perm_invariant_hamming"]
 wandb_project: "param-decomp"

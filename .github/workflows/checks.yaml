@@ -33,7 +33,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
-          version: "0.7.15"
+          version: "0.8.19"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
@@ -62,7 +62,7 @@ jobs:
         run: |
           NUM_PROCESSES=$(nproc | awk '{print ($1<4?$1:4)}')
           echo "Using $NUM_PROCESSES pytest workers"
-          uv run pytest tests/ --runslow --durations 10 --numprocesses $NUM_PROCESSES --dist worksteal
+          uv run pytest param_decomp/tests/ param_decomp_lab/tests/ --runslow --durations 10 --numprocesses $NUM_PROCESSES --dist worksteal
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           OMPI_ALLOW_RUN_AS_ROOT: 1
@@ -71,7 +71,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: param_decomp/app/frontend
+        working-directory: param_decomp_lab/app/frontend
     steps:
       - name: Checkout
         uses: actions/checkout@v6

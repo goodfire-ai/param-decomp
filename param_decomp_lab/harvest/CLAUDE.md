@@ -1,6 +1,6 @@
 # Harvest Module
 
-Offline GPU pipeline that collects component statistics in a single pass over training data. Produces data consumed by the autointerp module (`param_decomp/autointerp/`) and the app (`param_decomp/app/`).
+Offline GPU pipeline that collects component statistics in a single pass over training data. Produces data consumed by the autointerp module (`param_decomp_lab/autointerp/`) and the app (`param_decomp_lab/app/`).
 
 ## Usage (SLURM)
 
@@ -26,16 +26,16 @@ The launcher:
 
 ```bash
 # Single GPU (auto-generates subrun ID)
-python -m param_decomp.harvest.scripts.run_worker --config_json '{"method_config": {...}, "n_batches": 1000}'
+python -m param_decomp_lab.harvest.scripts.run_worker --config_json '{"method_config": {...}, "n_batches": 1000}'
 
 # Multi-GPU: all workers + merge must share the same --subrun_id
 SUBRUN="h-$(date +%Y%m%d_%H%M%S)"
 CFG='{"method_config": {...}, "n_batches": 1000}'
 for r in 0 1 2 3; do
-  python -m param_decomp.harvest.scripts.run_worker --config_json "$CFG" --rank $r --world_size 4 --subrun_id $SUBRUN &
+  python -m param_decomp_lab.harvest.scripts.run_worker --config_json "$CFG" --rank $r --world_size 4 --subrun_id $SUBRUN &
 done
 wait
-python -m param_decomp.harvest.scripts.run_merge --subrun_id $SUBRUN --config_json "$CFG"
+python -m param_decomp_lab.harvest.scripts.run_merge --subrun_id $SUBRUN --config_json "$CFG"
 ```
 
 ## Data Storage
@@ -62,7 +62,7 @@ Legacy layout (pre sub-run, `activation_contexts/` + `correlations/`) is no long
 
 Entry point via `pd-harvest`. Submits array job + dependent merge job.
 
-**Intruder evaluation** (`param_decomp/harvest/intruder.py`) evaluates the quality of the *decomposition itself* — whether component activation patterns are coherent — without relying on LLM-generated labels. Intruder scores are stored in `harvest.db`, not `interp.db`. Intruder eval is submitted as a top-level postprocess stage (via `pd-postprocess`), not as part of the harvest pipeline.
+**Intruder evaluation** (`param_decomp_lab/harvest/intruder.py`) evaluates the quality of the *decomposition itself* — whether component activation patterns are coherent — without relying on LLM-generated labels. Intruder scores are stored in `harvest.db`, not `interp.db`. Intruder eval is submitted as a top-level postprocess stage (via `pd-postprocess`), not as part of the harvest pipeline.
 
 ### Worker Script (`scripts/run_worker.py`)
 

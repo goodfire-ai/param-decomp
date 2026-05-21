@@ -12,7 +12,7 @@ Two environments exist in this codebase:
 2. **App database** (prompt_attr.db):
    - Lives at PARAM_DECOMP_OUT_DIR/app/ on NFS (shared across team)
    - Uses DELETE journal mode with fcntl.flock write locking
-   - Managed by PromptAttrDB in param_decomp/app/backend/database.py
+   - Managed by PromptAttrDB in param_decomp_lab/app/backend/database.py
 """
 
 import sqlite3

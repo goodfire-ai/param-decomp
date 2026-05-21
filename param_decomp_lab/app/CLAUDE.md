@@ -64,7 +64,7 @@ backend/
     └── mcp.py             # MCP (Model Context Protocol) endpoint for Claude Code
 ```
 
-Note: Activation contexts, correlations, and token stats are now loaded from pre-harvested data (see `param_decomp/harvest/`). The app no longer computes these on-the-fly.
+Note: Activation contexts, correlations, and token stats are now loaded from pre-harvested data (see `param_decomp_lab/harvest/`). The app no longer computes these on-the-fly.
 
 ### Frontend Structure
 
@@ -335,7 +335,7 @@ Located at `PARAM_DECOMP_OUT_DIR/app/prompt_attr.db` (shared via NFS). Uses DELE
 | `graphs`            | `(prompt_id, optimization_params)` | Attribution edges + CI/target logits + node CI values    |
 | `intervention_runs` | `graph_id`                         | Saved `InterventionResult` JSON (single `result` column) |
 
-Note: Activation contexts, correlations, token stats, and interpretations are loaded from pre-harvested data at `PARAM_DECOMP_OUT_DIR/{harvest,autointerp}/` (see `param_decomp/harvest/` and `param_decomp/autointerp/`).
+Note: Activation contexts, correlations, token stats, and interpretations are loaded from pre-harvested data at `PARAM_DECOMP_OUT_DIR/{harvest,autointerp}/` (see `param_decomp_lab/harvest/` and `param_decomp_lab/autointerp/`).
 
 ---
 

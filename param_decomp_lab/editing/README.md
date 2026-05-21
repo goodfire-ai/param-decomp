@@ -1,13 +1,13 @@
-# param_decomp.editing
+# param_decomp_lab.editing
 
 Component-level model editing for VPD decompositions.
 
 ## Setup
 
 ```python
-from param_decomp.editing import EditableModel, generate, measure_kl, measure_token_probs
-from param_decomp.harvest.repo import HarvestRepo
-from param_decomp.autointerp.repo import InterpRepo
+from param_decomp_lab.editing import EditableModel, generate, measure_kl, measure_token_probs
+from param_decomp_lab.harvest.repo import HarvestRepo
+from param_decomp_lab.autointerp.repo import InterpRepo
 
 em, tok = EditableModel.from_wandb("wandb:goodfire/spd/s-892f140b")
 harvest = HarvestRepo("s-892f140b")
@@ -18,14 +18,14 @@ interp = InterpRepo("s-892f140b")
 
 By autointerp label:
 ```python
-from param_decomp.editing import search_interpretations
+from param_decomp_lab.editing import search_interpretations
 matches = search_interpretations(harvest, interp, r"male pronoun")
 # -> [ComponentMatch(key='h.1.attn.v_proj:52', label='male pronouns', ...)]
 ```
 
 By output token PMI (best for ablation targets):
 ```python
-from param_decomp.editing import search_by_token_pmi
+from param_decomp_lab.editing import search_by_token_pmi
 he_id = tok.encode("he")
 matches = search_by_token_pmi(harvest, he_id, side="output", min_pmi=1.0)
 ```
@@ -40,7 +40,7 @@ components = em.find_components_by_examples(examples, optim_steps=100)
 ## Inspecting components
 
 ```python
-from param_decomp.editing import inspect_component
+from param_decomp_lab.editing import inspect_component
 data = inspect_component(harvest, interp, "h.1.mlp.down_proj:798", tok)
 # Prints: label, input/output PMI tokens, activation examples
 ```

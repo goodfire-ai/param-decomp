@@ -251,7 +251,8 @@ def get_command(
 
     parts = [
         "python",
-        "param_decomp/clustering/scripts/run_clustering.py",
+        "-m",
+        "param_decomp_lab.clustering.scripts.run_clustering",
         "--config",
         config_path.as_posix(),
         "--run-id",

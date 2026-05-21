@@ -17,16 +17,18 @@ Caller builds:
     - `pd_config`: `PDConfig` — the PD algorithm spec (CI fn, loss-metric mix,
       module patterns, optimizers, schedules, seed, tied weights).
     - `runtime_config`: `RuntimeConfig` — substrate (device, autocast, dp).
-    - `sink`: `RunSink` — output channels + cadence. Use
-      `RunSink.local(out_dir, train_log_freq=..., eval_freq=..., ...)`,
-      `RunSink.with_wandb(out_dir, project=..., train_log_freq=..., ...)`, or
-      `RunSink.silent(...)` for tests / quick interactive runs.
+    - `sink`: any object satisfying the `RunSink` Protocol — cadence gates
+      (`should_log_train`, `should_eval`, `should_run_slow_eval`, `should_save`)
+      plus `log` / `console` / `checkpoint`. Concrete implementations live with
+      the caller; the in-repo experiments use
+      `param_decomp_lab.run_sink.RunSink`, which provides `.local(...)`,
+      `.with_wandb(...)`, and `.silent(...)` constructors.
     - `eval_metrics`: list of pre-instantiated eval `Metric` objects. `optimize`
       binds them to the built `ComponentModel` internally.
 """
 
 from param_decomp.configs import PDConfig, RuntimeConfig
-from param_decomp.metrics.base import LossMetricConfig, Metric, MetricConfig
+from param_decomp.metrics.base import LossMetricConfig, Metric
 from param_decomp.models.batch_and_loss_fns import ReconstructionLoss, RunBatch
 from param_decomp.optimize import optimize
 from param_decomp.run_sink import RunSink
@@ -34,7 +36,6 @@ from param_decomp.run_sink import RunSink
 __all__ = [
     "LossMetricConfig",
     "Metric",
-    "MetricConfig",
     "PDConfig",
     "ReconstructionLoss",
     "RunBatch",

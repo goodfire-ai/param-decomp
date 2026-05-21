@@ -52,5 +52,5 @@ class PostprocessConfig(BaseConfig):
 if __name__ == "__main__":
     import json
 
-    with open("param_decomp/postprocess/postprocess.schema.json", "w") as f:
+    with open("param_decomp_lab/postprocess/postprocess.schema.json", "w") as f:
         json.dump(PostprocessConfig.model_json_schema(), f, indent=2)

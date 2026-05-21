@@ -8,35 +8,20 @@ license = { text = "MIT" }
 readme = "README.md"
 dependencies = [
     "torch>=2.6",
-    "torchvision>=0.23,<0.24",
     "pydantic<2.12", # https://github.com/goodfire-ai/param-decomp/pull/232 , https://github.com/goodfire-ai/param-decomp/issues/221
     "wandb>=0.20.1", # Avoid wandb.sdk.wandb_manager.ManagerConnectionRefusedError
-    "fire",
     "tqdm",
-    "ipykernel",
     "transformers",
     "jaxtyping",
     "einops",
     "matplotlib",
     "numpy",
     "python-dotenv",
-    "wandb-workspaces==0.1.12", # See https://github.com/wandb/wandb-workspaces/issues/65
-    "sympy",
-    "streamlit",
-    "streamlit-antd-components",
     # `datasets` less than 2.21.0 causes issues due to incompatibility with numpy>=2.0
     # see:  https://github.com/huggingface/datasets/issues/6980  https://github.com/huggingface/datasets/pull/6991  (fixed in https://github.com/huggingface/datasets/releases/tag/2.21.0 )
     "datasets>=2.21.0",
-    "scipy>=1.14.1",
-    "fastapi",
-    "uvicorn",
-    "orjson",
-    "aiolimiter>=1.2",
-    "openrouter>=0.1.1",
-    "httpx>=0.28.0",
-    "zstandard", # For streaming datasets
-    "kaleido==0.2.1",
-    "numba>=0.64.0",
+    "pillow",
+    "pyyaml",
 ]
 
 [dependency-groups]
@@ -49,33 +34,26 @@ dev = [
     "basedpyright<1.32.0", # pyright and wandb issues, see https://github.com/goodfire-ai/param-decomp/pull/232
     "pre-commit",
     "scikit-learn",
+    "ipykernel",
 ]
-
-[project.scripts]
-# Per-experiment runners — directly invoke the experiment's `main`.
-pd-tms = "param_decomp_lab.experiments.tms.run:cli"
-pd-resid-mlp = "param_decomp_lab.experiments.resid_mlp.run:cli"
-pd-lm = "param_decomp_lab.experiments.lm.run:cli"
-pd-pretrain = "param_decomp_lab.pretrain.scripts.run_slurm:cli"
-# Post-processing pipeline CLIs (SLURM-driven; lab subtrees).
-pd-clustering = "param_decomp_lab.clustering.scripts.run_pipeline:cli"
-pd-cluster-harvest = "param_decomp_lab.clustering.scripts.run_harvest:cli"
-pd-cluster-merge = "param_decomp_lab.clustering.scripts.run_merge:cli"
-pd-harvest = "param_decomp_lab.harvest.scripts.run_slurm_cli:cli"
-pd-intruder = "param_decomp_lab.harvest.scripts.run_intruder_slurm_cli:cli"
-pd-autointerp = "param_decomp_lab.autointerp.scripts.run_slurm_cli:cli"
-pd-attributions = "param_decomp_lab.dataset_attributions.scripts.run_slurm_cli:cli"
-pd-investigate = "param_decomp_lab.investigate.scripts.run_slurm_cli:cli"
-pd-postprocess = "param_decomp_lab.postprocess.cli:cli"
-pd-graph-interp = "param_decomp_lab.graph_interp.scripts.run_slurm_cli:cli"
 
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["param_decomp*", "param_decomp_lab*"]
+include = ["param_decomp", "param_decomp.*"]
+namespaces = false
+
+[tool.uv.workspace]
+members = ["param_decomp_lab"]
+
+[tool.uv.sources]
+param-decomp = { workspace = true }
 
 [tool.ruff]
 line-length = 100
@@ -111,7 +89,7 @@ docstring-code-format = true
 known-third-party = ["wandb"]
 
 [tool.pyright]
-include = ["param_decomp", "param_decomp_lab", "tests", "nano_param_decomp"]
+include = ["param_decomp", "param_decomp_lab", "nano_param_decomp"]
 exclude = ["**/wandb/**", "param_decomp/utils/linear_sum_assignment.py", "param_decomp_lab/app/frontend"]
 stubPath = "typings" # Having type stubs for transformers shaves 10 seconds off basedpyright calls
 

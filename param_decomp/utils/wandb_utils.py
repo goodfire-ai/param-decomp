@@ -30,14 +30,20 @@ _WANDB_URL_RE = re.compile(
 
 
 def _build_short_names() -> dict[str, str]:
-    """Derive the metric class-name to short-name map from the registry."""
-    from param_decomp.metrics import METRIC_REGISTRY, discover_metrics
+    """Build the loss-metric class-name to short-name map. Lazy to avoid circular imports."""
+    from param_decomp.metrics.loss_metrics import LOSS_METRICS
 
-    discover_metrics()
-    return {cls.__name__: cls.short_name for cls in METRIC_REGISTRY.values() if cls.short_name}
+    return {cls.__name__: cls.short_name for cls in LOSS_METRICS.values() if cls.short_name}
 
 
-METRIC_CONFIG_SHORT_NAMES: dict[str, str] = _build_short_names()
+_metric_short_names_cache: dict[str, str] | None = None
+
+
+def _metric_short_names() -> dict[str, str]:
+    global _metric_short_names_cache
+    if _metric_short_names_cache is None:
+        _metric_short_names_cache = _build_short_names()
+    return _metric_short_names_cache
 
 
 def get_wandb_entity() -> str:
@@ -136,7 +142,7 @@ def flatten_metric_configs(config_dict: dict[str, Any]) -> dict[str, Any]:
         prefix = container_name.split("_")[0]  # "loss" or "eval"
         for metric_field, cfg in container.items():
             assert isinstance(cfg, dict), f"{container_name}.{metric_field} should be a dict"
-            short_name = METRIC_CONFIG_SHORT_NAMES.get(metric_field, metric_field)
+            short_name = _metric_short_names().get(metric_field, metric_field)
             for key, value in cfg.items():
                 flattened[f"{prefix}.{short_name}.{key}"] = value
 

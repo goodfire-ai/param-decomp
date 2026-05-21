@@ -1,0 +1,3 @@
+prune param_decomp/tests
+prune param_decomp_lab
+global-exclude __pycache__ *.py[cod]

@@ -1,0 +1,111 @@
+[project]
+name = "param-decomp-lab"
+version = "0.0.1"
+description = "Lab experiments and tooling for Parameter Decomposition"
+requires-python = "==3.13.*"
+urls = { "Homepage" = "https://github.com/goodfire-ai/param-decomp" }
+license = { text = "MIT" }
+readme = "README.md"
+dependencies = [
+    "param-decomp==0.0.1",
+    "fire",
+    "torchvision>=0.23,<0.24",
+    "wandb-workspaces==0.1.12", # See https://github.com/wandb/wandb-workspaces/issues/65
+    "sympy",
+    "streamlit",
+    "streamlit-antd-components",
+    "scipy>=1.14.1",
+    "fastapi",
+    "uvicorn",
+    "orjson",
+    "aiolimiter>=1.2",
+    "openrouter>=0.1.1",
+    "httpx>=0.28.0",
+    "zstandard", # For streaming datasets
+    "kaleido==0.2.1",
+    "numba>=0.64.0",
+    "requests",
+]
+
+[project.scripts]
+# Per-experiment runners — directly invoke the experiment's `main`.
+pd-tms = "param_decomp_lab.experiments.tms.run:cli"
+pd-resid-mlp = "param_decomp_lab.experiments.resid_mlp.run:cli"
+pd-lm = "param_decomp_lab.experiments.lm.run:cli"
+pd-pretrain = "param_decomp_lab.pretrain.scripts.run_slurm:cli"
+# Post-processing pipeline CLIs (SLURM-driven; lab subtrees).
+pd-clustering = "param_decomp_lab.clustering.scripts.run_pipeline:cli"
+pd-cluster-harvest = "param_decomp_lab.clustering.scripts.run_harvest:cli"
+pd-cluster-merge = "param_decomp_lab.clustering.scripts.run_merge:cli"
+pd-harvest = "param_decomp_lab.harvest.scripts.run_slurm_cli:cli"
+pd-intruder = "param_decomp_lab.harvest.scripts.run_intruder_slurm_cli:cli"
+pd-autointerp = "param_decomp_lab.autointerp.scripts.run_slurm_cli:cli"
+pd-attributions = "param_decomp_lab.dataset_attributions.scripts.run_slurm_cli:cli"
+pd-investigate = "param_decomp_lab.investigate.scripts.run_slurm_cli:cli"
+pd-postprocess = "param_decomp_lab.postprocess.cli:cli"
+pd-graph-interp = "param_decomp_lab.graph_interp.scripts.run_slurm_cli:cli"
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = [
+    "param_decomp_lab",
+    "param_decomp_lab.adapters",
+    "param_decomp_lab.app",
+    "param_decomp_lab.app.backend",
+    "param_decomp_lab.app.backend.routers",
+    "param_decomp_lab.autointerp",
+    "param_decomp_lab.autointerp.scoring",
+    "param_decomp_lab.autointerp.scoring.scripts",
+    "param_decomp_lab.autointerp.scripts",
+    "param_decomp_lab.autointerp.strategies",
+    "param_decomp_lab.clustering",
+    "param_decomp_lab.clustering.math",
+    "param_decomp_lab.clustering.plotting",
+    "param_decomp_lab.clustering.scripts",
+    "param_decomp_lab.dataset_attributions",
+    "param_decomp_lab.dataset_attributions.scripts",
+    "param_decomp_lab.editing",
+    "param_decomp_lab.eval_metrics",
+    "param_decomp_lab.experiments",
+    "param_decomp_lab.experiments.lm",
+    "param_decomp_lab.experiments.resid_mlp",
+    "param_decomp_lab.experiments.tms",
+    "param_decomp_lab.graph_interp",
+    "param_decomp_lab.graph_interp.scripts",
+    "param_decomp_lab.harvest",
+    "param_decomp_lab.harvest.harvest_fn",
+    "param_decomp_lab.harvest.scripts",
+    "param_decomp_lab.investigate",
+    "param_decomp_lab.investigate.scripts",
+    "param_decomp_lab.postprocess",
+    "param_decomp_lab.pretrain",
+    "param_decomp_lab.pretrain.models",
+    "param_decomp_lab.pretrain.scripts",
+    "param_decomp_lab.scripts",
+    "param_decomp_lab.topology",
+]
+
+[tool.setuptools.package-dir]
+param_decomp_lab = "."
+
+[tool.setuptools.package-data]
+param_decomp_lab = [
+    "app/frontend/**/*",
+    "clustering/configs/**/*.json",
+    "clustering/configs/**/*.yaml",
+    "experiments/**/*.yaml",
+    "postprocess/*.yaml",
+    "pretrain/configs/*.yaml",
+]
+
+[tool.setuptools.exclude-package-data]
+param_decomp_lab = [
+    "app/frontend/**/node_modules/**",
+    "app/frontend/**/dist/**",
+    "app/logs/**",
+    "**/__pycache__/**",
+    "**/*.pyc",
+]

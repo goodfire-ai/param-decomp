@@ -14,7 +14,7 @@ For parallel investigations, run the command multiple times with different promp
 ## Architecture
 
 ```
-param_decomp/investigate/
+param_decomp_lab/investigate/
 ├── __init__.py           # Public exports
 ├── CLAUDE.md             # This file
 ├── schemas.py            # Pydantic models for outputs (BehaviorExplanation, InvestigationEvent)

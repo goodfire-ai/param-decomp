@@ -24,7 +24,7 @@ The command:
 
 ```bash
 # Single GPU
-python -m param_decomp.dataset_attributions.scripts.run_worker <wandb_path> \
+python -m param_decomp_lab.dataset_attributions.scripts.run_worker <wandb_path> \
     --config_json '{"wandb_path": "<wandb_path>", "n_batches": 1000}' \
     --harvest_subrun_id h-YYYYMMDD_HHMMSS --rank 0 --world_size 1 --subrun_id da-xxx
 
@@ -32,11 +32,11 @@ python -m param_decomp.dataset_attributions.scripts.run_worker <wandb_path> \
 SUBRUN="da-$(date +%Y%m%d_%H%M%S)"
 CFG='{"wandb_path": "<wandb_path>", "n_batches": 1000}'
 for r in 0 1 2 3; do
-  python -m param_decomp.dataset_attributions.scripts.run_worker <wandb_path> \
+  python -m param_decomp_lab.dataset_attributions.scripts.run_worker <wandb_path> \
     --config_json "$CFG" --harvest_subrun_id h-... --rank $r --world_size 4 --subrun_id $SUBRUN &
 done
 wait
-python -m param_decomp.dataset_attributions.scripts.run_merge --wandb_path <wandb_path> --subrun_id $SUBRUN
+python -m param_decomp_lab.dataset_attributions.scripts.run_merge --wandb_path <wandb_path> --subrun_id $SUBRUN
 ```
 
 ## Data Storage

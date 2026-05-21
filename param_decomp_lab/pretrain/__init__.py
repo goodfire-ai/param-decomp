@@ -5,7 +5,7 @@ language models that can later be decomposed using PD.
 
 Usage:
     # Submit training job to SLURM
-    pd-pretrain --config_path param_decomp/pretrain/configs/pile_llama_simple_mlp_4L.yaml
+    pd-pretrain --config_path param_decomp_lab/pretrain/configs/pile_llama_simple_mlp-4L-768.yaml
 
     # Run locally
     pd-pretrain --config_path ... --local

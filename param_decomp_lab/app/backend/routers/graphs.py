@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from param_decomp.configs import SamplingType
 from param_decomp.log import logger
-from param_decomp.metrics.builtin.importance_minimality_loss import ImportanceMinimalityLossConfig
+from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.utils.distributed_utils import get_device
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer

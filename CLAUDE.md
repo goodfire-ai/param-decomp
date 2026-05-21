@@ -27,6 +27,19 @@ The codebase supports three experimental domains: TMS (Toy Model of Superpositio
 The `lm` experiment can decompose any HuggingFace-loadable model whose target modules are
 `nn.Linear`, `nn.Embedding`, or `transformers.modeling_utils.Conv1D`.
 
+## Package Layout
+
+This repo contains two flat-layout Python distributions:
+
+- `param-decomp` is configured by the root `pyproject.toml`, installs only
+  `param_decomp`, and exposes the core public API.
+- `param-decomp-lab` is configured by `param_decomp_lab/pyproject.toml`, installs
+  `param_decomp_lab`, depends on `param-decomp`, and owns all `pd-*` CLI entry points.
+
+Local development uses the uv workspace in the root `pyproject.toml`; `make install-dev`
+syncs all workspace packages editably so both `import param_decomp` and
+`import param_decomp_lab` work.
+
 ## Public API
 
 The core PD framework exposes a single training entrypoint:
@@ -34,7 +47,7 @@ The core PD framework exposes a single training entrypoint:
 ```python
 from param_decomp import (
     optimize, PDConfig, RuntimeConfig, RunSink, Metric,
-    MetricConfig, LossMetricConfig, RunBatch, ReconstructionLoss,
+    LossMetricConfig, RunBatch, ReconstructionLoss,
 )
 ```
 
@@ -48,16 +61,19 @@ from param_decomp import (
   tied weights, faithfulness warmup, …). Loss metrics live here as
   `loss_metrics: dict[str, LossMetricConfig]`.
 - `RuntimeConfig`: substrate (autocast_bf16, device, dp).
-- `RunSink`: output channels + cadence. Construct via `RunSink.local(out_dir, ...)`,
-  `RunSink.with_wandb(out_dir, project=..., ...)`, or `RunSink.silent(...)` for tests.
-  Frequency fields (`train_log_freq`, `eval_freq`, `slow_eval_freq`, `n_eval_steps`,
-  `slow_eval_on_first_step`, `save_freq`) live on the sink. Cadence gating
-  (`should_log_train`, `should_eval`, `should_run_slow_eval`, `should_save`) and side
-  effects (`log`, `console`, `checkpoint`, `finish`) are methods on `RunSink`.
-- `Metric` base class with `__init__(cfg)` and `bind(*, model, device)`. Built-in
-  metrics live under `param_decomp/metrics/builtin/` and self-register via
-  `@register_metric`. Loss metrics (subclasses of `LossMetricConfig`) are instantiated
-  inside `optimize()` from `pd_config.loss_metrics`; eval metrics are caller-supplied.
+- `RunSink`: a `Protocol` in `param_decomp/run_sink.py` describing the cadence
+  gates (`should_log_train`, `should_eval`, `should_run_slow_eval`, `should_save`)
+  and side-effect methods (`log`, `console`, `checkpoint`) that `optimize()` calls.
+  Concrete implementations live with the caller. The lab ships
+  `param_decomp_lab.run_sink.RunSink` (local files + wandb + non-main-rank no-op)
+  with `.local(...)`, `.with_wandb(...)`, and `.silent(...)` constructors; tests
+  and in-repo experiments use it.
+- `Metric` base class with `__init__(cfg)` and `bind(*, model, device)`. Loss metrics ship
+  in `param_decomp/metrics/`; the dict `param_decomp.metrics.loss_metrics.LOSS_METRICS`
+  maps class name to class. `optimize()` instantiates each loss metric from
+  `pd_config.loss_metrics`. Eval metrics are caller-supplied — the lab ships its own set
+  under `param_decomp_lab/eval_metrics/`, exposed via `param_decomp_lab.eval_metrics.EVAL_METRICS`
+  for the in-repo experiments' YAML wiring.
 
 ### Adding a new experiment
 
@@ -68,7 +84,7 @@ then calls `optimize()`. The three in-repo experiments
 Shared YAML-parsing helpers live in `param_decomp_lab/experiments/utils.py`
 (`load_yaml`, `build_eval_metrics`, `run_sink_from_logging_block`).
 
-Per-experiment console entry points are declared in `pyproject.toml`:
+Per-experiment console entry points are declared in `param_decomp_lab/pyproject.toml`:
 
 ```bash
 pd-tms        path/to/config.yaml
@@ -79,31 +95,18 @@ pd-lm         path/to/config.yaml
 For a brand-new experiment, drop a `run.py` next to a YAML config in your own package
 and either call its `main(...)` directly or wire it up to a console script.
 
-### Custom Metrics
+### Metrics
 
-Built-in metrics live under `param_decomp/metrics/builtin/` and self-register via
-`@register_metric` (see `param_decomp/metrics/registry.py`). External users can register
-their own metrics by listing import targets in `pd.metric_modules`:
+Loss metrics ship in `param_decomp/metrics/` and are listed in
+`param_decomp/metrics/loss_metrics.py::LOSS_METRICS`. Adding a new loss metric means
+defining the `Metric` subclass + its `LossMetricConfig` and appending the class to that
+table — there is no auto-registration.
 
-```yaml
-pd:
-  metric_modules:
-    - my_pkg.my_metrics                   # dotted module name, importable from the env
-  loss_metrics:
-    MyLoss:
-      coeff: 1.0
-      my_param: 0.5
-```
-
-The user's module imports `register_metric` and `LossMetricConfig` / `MetricConfig` /
-`MetricContext` from `param_decomp.metrics`, defines a `@register_metric` Metric class
-with a `config_type` ClassVar pointing at their pydantic config, and that's it. A
-`@model_validator(mode="before")` on `PDConfig` imports these modules before
-`loss_metrics` is validated.
-
-For **eval** metrics, the experiment `run.py` instantiates them directly (using
-`build_eval_metrics(eval_metrics_dict)` from `experiments.utils` if loading from a YAML
-dict-of-configs) and passes the list to `optimize(eval_metrics=...)`.
+Eval metrics are caller-supplied. Users instantiate `Metric` objects in their `run.py`
+and pass them to `optimize(eval_metrics=...)`. The in-repo experiments share a YAML-driven
+helper `build_eval_metrics(eval_metrics_dict)` in `experiments/utils.py`, backed by
+`param_decomp_lab.eval_metrics.EVAL_METRICS` — adding a new lab eval metric means dropping the
+class in `param_decomp_lab/eval_metrics/` and appending it there.
 
 ### Configs
 
@@ -113,7 +116,7 @@ The PD trainer is configured by two pydantic configs plus a `RunSink`:
   tied_weights, faithfulness warmup. Flipping any field here changes what algorithm runs.
 - **`RuntimeConfig`** — compute substrate: autocast_bf16, device, dp. Perturbs numerics
   without changing the algorithm.
-- **`RunSink`** — observation + outputs: train/eval/save cadence, on-disk `out_dir`, and
+- **`RunSink`** (caller-supplied, Protocol in core) — observation + outputs: train/eval/save cadence and
   optional W&B session. Sink methods own all side effects.
 
 ### Saved run layout
@@ -148,8 +151,9 @@ This repository implements methods from two key research papers on parameter dec
 
 **Setup:**
 
-- `make install-dev` - Install package with dev dependencies and pre-commit hooks
-- `make install` - Install package only (`pip install -e .`)
+- `make install-dev` - Install all workspace packages with dev dependencies and pre-commit hooks
+- `make install` - Install the core `param-decomp` package only
+- `make install-lab` - Install core + lab packages without dev dependencies
 
 **Code Quality:**
 
@@ -161,8 +165,8 @@ This repository implements methods from two key research papers on parameter dec
 
 - `make test` - Run tests (excluding slow tests)
 - `make test-all` - Run all tests including slow ones
-- `python -m pytest tests/test_specific.py` - Run specific test file
-- `python -m pytest tests/test_specific.py::test_function` - Run specific test
+- `python -m pytest param_decomp/tests/test_specific.py` - Run a specific core test file
+- `python -m pytest param_decomp_lab/tests/test_specific.py::test_function` - Run a specific lab test
 
 **Running the App:**
 
@@ -175,15 +179,17 @@ This repository implements methods from two key research papers on parameter dec
 - `param_decomp/optimize.py` - The PD optimization loop (`optimize(...)`). The sole core entrypoint.
 - `param_decomp/configs.py` - `PDConfig` (algorithm) + `RuntimeConfig` (substrate) + their nested
   helpers (`ScheduleConfig`, `OptimizerConfig`, `LayerwiseCiConfig`, etc.).
-- `param_decomp/run_sink.py` - `RunSink`: output channels (local + wandb) + cadence + checkpointing.
+- `param_decomp/run_sink.py` - `RunSink` Protocol: the contract `optimize()` calls (cadence + log/console/checkpoint).
+- `param_decomp_lab/run_sink.py` - Concrete `RunSink` for in-repo use: local files + wandb, with `.local`/`.with_wandb`/`.silent` constructors and rank-aware no-op fan-out.
 - `param_decomp/eval.py` - `evaluate(...)` over a `dict[name, Metric]`.
 - `param_decomp/models/component_model.py` - Core ComponentModel that wraps target models.
 - `param_decomp/models/components.py` - Component types (LinearComponent, EmbeddingComponent, etc.).
 - `param_decomp/models/batch_and_loss_fns.py` - `RunBatch` / `ReconstructionLoss` protocols +
   `run_batch_*` / `recon_loss_*` helpers.
-- `param_decomp/metrics/` - Self-registering `Metric` classes (losses, eval metrics, figures).
-  `metrics/base.py` defines the `Metric` ABC with `__init__(cfg)` + `bind(model, device)`.
-  `metrics/builtin/*.py` ship the in-tree implementations.
+- `param_decomp/metrics/` - Loss `Metric` classes (one per file). `metrics/base.py` defines
+  the `Metric` ABC with `__init__(cfg)` + `bind(model, device)`.
+  `metrics/loss_metrics.py` exposes `LOSS_METRICS`, the class-name -> class lookup that
+  `PDConfig.loss_metrics` resolves against. Eval metrics ship in `param_decomp_lab/eval_metrics/`.
 
 **In-repo experiment scripts** (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`) build the
 target model + dataloaders + eval metrics + configs + sink and call `optimize()`. They share
@@ -192,7 +198,7 @@ YAML-parsing helpers in `param_decomp_lab/experiments/utils.py` (`load_yaml`, `b
 
 **Terminology: Sources vs Masks:**
 
-- **Sources** (`adv_sources`, `PPGDSources`, `self.sources`): The raw values that PGD optimizes adversarially. These are interpolated with CI to produce component masks: `mask = ci + (1 - ci) * source`. Used in both regular PGD (`param_decomp/metrics/pgd_utils.py`) and persistent PGD (`param_decomp/persistent_pgd.py`).
+- **Sources** (`adv_sources`, `PPGDSources`, `self.sources`): The raw values that PGD optimizes adversarially. These are interpolated with CI to produce component masks: `mask = ci + (1 - ci) * source`. Used in both regular PGD (`param_decomp/metrics/pgd_utils.py`) and persistent PGD (`param_decomp/metrics/persistent_pgd.py`).
 - **Masks** (`component_masks`, `RoutingMasks`, `make_mask_infos`, `n_mask_samples`): The materialized per-component masks used during forward passes. These are produced from sources (in PGD) or from stochastic sampling, and are a general PD concept across the whole codebase.
 
 **Experiment Structure:**
@@ -234,14 +240,14 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 <repo-root>/
 ├── papers/                          # Research papers (SPD, APD)
 ├── scripts/                         # Standalone utility scripts
-├── tests/                           # Test suite
 ├── param_decomp/                    # Core library (the only thing externals import)
-│   ├── metrics/                     # Self-registering Metric classes (losses, eval metrics, figures)
+│   ├── metrics/                     # Loss Metric classes + LOSS_METRICS lookup table
 │   ├── models/                      # ComponentModel + components + batch_and_loss_fns
 │   ├── utils/                       # Distributed / wandb / general helpers
+│   ├── tests/                       # Core-library test suite
 │   ├── configs.py                   # PDConfig, RuntimeConfig (+ ScheduleConfig/OptimizerConfig/...)
 │   ├── optimize.py                  # optimize() — the core entrypoint
-│   ├── run_sink.py                  # RunSink (output + cadence)
+│   ├── run_sink.py                  # RunSink Protocol — contract optimize() calls
 │   ├── eval.py                      # evaluate(instances, ...)
 │   └── settings.py                  # PARAM_DECOMP_OUT_DIR, SLURM_LOGS_DIR, SBATCH_SCRIPTS_DIR
 ├── param_decomp_lab/                # Lab tooling — experiments, post-processing, app
@@ -250,6 +256,7 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 │   │   ├── spec.py                  # ExperimentSpec (compositional dispatch dataclass)
 │   │   ├── utils.py                 # load_yaml / build_eval_metrics / run_sink_from_logging_block / save_run_meta
 │   │   └── __init__.py              # EXPERIMENTS registry (name → ExperimentSpec)
+│   ├── eval_metrics/                # Eval Metric classes + EVAL_METRICS lookup table
 │   ├── pretrain/                    # Target model pretraining (see pretrain/CLAUDE.md)
 │   ├── harvest/                     # Statistics collection (see harvest/CLAUDE.md)
 │   ├── autointerp/                  # LLM interpretation (see autointerp/CLAUDE.md)
@@ -261,9 +268,12 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 │   ├── app/                         # Web visualization app (see app/CLAUDE.md)
 │   ├── topology/, adapters/, editing/  # Model-topology utilities
 │   ├── scripts/                     # alpha_sweep, prompt_utils
+│   ├── tests/                       # Lab test suite (experiments, app, autointerp, clustering, ...)
+│   ├── run_sink.py                  # Concrete RunSink (local files + wandb + rank-aware no-op)
 │   └── saved_run.py                 # SavedRun: reload a PD run via its ExperimentSpec
 ├── Makefile                         # Dev commands (make check, make test)
-└── pyproject.toml                   # Package config (both packages exported)
+├── pyproject.toml                   # Core param-decomp package + workspace config
+└── param_decomp_lab/pyproject.toml  # Lab param-decomp-lab package + pd-* entry points
 ```
 
 ## Quick Navigation
@@ -303,7 +313,7 @@ Use `param_decomp/` as the search root (not repo root) to avoid noise.
 
 **Usually skip unless relevant:**
 
-- `tests/` - Test files (unless debugging test failures)
+- `param_decomp/tests/`, `param_decomp_lab/tests/` - Test files (unless debugging test failures)
 - `papers/` - Research paper drafts
 
 ### Common Call Chains
@@ -326,8 +336,8 @@ pd-resid-mlp param_decomp_lab/experiments/resid_mlp/resid_mlp1_config.yaml
 pd-lm        param_decomp_lab/experiments/lm/ss_llama_simple_mlp-2L.yaml
 ```
 
-For a new experiment, drop a new `run.py` next to your YAML and either invoke it
-directly with Python or wire it up to a console script in `pyproject.toml`.
+For a new lab experiment, drop a new `run.py` next to your YAML and either invoke it
+directly with Python or wire it up to a console script in `param_decomp_lab/pyproject.toml`.
 
 ### Cluster Usage Guidelines
 

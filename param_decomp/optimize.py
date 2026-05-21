@@ -24,10 +24,10 @@ from param_decomp.configs import PDConfig, RuntimeConfig
 from param_decomp.eval import evaluate
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.log import logger
-from param_decomp.metrics import METRIC_REGISTRY
-from param_decomp.metrics.base import LossMetricConfig, Metric, MetricConfig
-from param_decomp.metrics.builtin.faithfulness_loss import faithfulness_loss
+from param_decomp.metrics.base import LossMetricConfig, Metric
 from param_decomp.metrics.context import MetricContext
+from param_decomp.metrics.faithfulness_loss import faithfulness_loss
+from param_decomp.metrics.loss_metrics import LOSS_METRICS
 from param_decomp.models.batch_and_loss_fns import (
     ReconstructionLoss,
     RunBatch,
@@ -122,11 +122,11 @@ def _build_loss_instances(
     config: PDConfig,
     component_model: ComponentModel,
     device: str,
-) -> dict[str, Metric[MetricConfig]]:
+) -> dict[str, Metric[Any]]:
     """Instantiate one loss-metric instance per `pd_config.loss_metrics` entry."""
-    instances: dict[str, Metric[MetricConfig]] = {}
+    instances: dict[str, Metric[Any]] = {}
     for metric_name, cfg in config.loss_metrics.items():
-        cls = METRIC_REGISTRY[metric_name]
+        cls = LOSS_METRICS[metric_name]
         m = cls(cfg)
         m.bind(model=component_model, device=device)
         instances[metric_name] = m
@@ -134,7 +134,7 @@ def _build_loss_instances(
 
 
 def compute_losses(
-    loss_instances: dict[str, Metric[MetricConfig]],
+    loss_instances: dict[str, Metric[Any]],
     ctx: MetricContext,
 ) -> dict[str, Float[Tensor, ""] | None]:
     """Compute per-metric live loss tensors for the current training step.
@@ -176,9 +176,6 @@ def optimize(
 
     train_iterator = loop_dataloader(train_loader)
     eval_iterator = loop_dataloader(eval_loader)
-
-    if sink.out_dir is not None:
-        logger.info(f"Train+eval logs saved to directory: {sink.out_dir}")
 
     if pd_config.identity_module_info is not None:
         insert_identity_operations_(
@@ -254,9 +251,7 @@ def optimize(
 
     # Loss metrics are auto-evaluated alongside dedicated eval metrics. We disallow duplicate
     # registry names across the two pools because `evaluate()` keys metrics by class name.
-    eval_only_instances: dict[str, Metric[MetricConfig]] = {
-        type(m).__name__: m for m in eval_metrics
-    }
+    eval_only_instances: dict[str, Metric[Any]] = {type(m).__name__: m for m in eval_metrics}
     overlap = sorted(set(loss_instances) & set(eval_only_instances))
     assert not overlap, (
         f"eval_metrics overlap with pd_config.loss_metrics: {overlap}. Loss metrics are "
