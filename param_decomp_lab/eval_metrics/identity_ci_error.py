@@ -1,9 +1,9 @@
 from typing import ClassVar, override
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.configs import SamplingType
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
+from param_decomp.routing import SamplingType
 from param_decomp.utils.target_ci_solutions import compute_target_metrics, make_target_ci_solution
 from param_decomp_lab.eval_metrics.plotting import get_single_feature_causal_importances
 

@@ -13,7 +13,7 @@ from torch import Tensor
 from torch.distributed import ReduceOp
 from torch.types import Number
 
-from param_decomp.configs import PDConfig
+from param_decomp.base_config import BaseConfig
 from param_decomp.log import logger
 from param_decomp.utils.general_utils import runtime_cast
 
@@ -271,5 +271,5 @@ def seed_per_rank(base_seed: int) -> None:
         torch.cuda.manual_seed(seed)
 
 
-def get_config_json(config: PDConfig) -> str:
+def get_config_json(config: BaseConfig) -> str:
     return f"json:{json.dumps(config.model_dump(mode='json'))}"

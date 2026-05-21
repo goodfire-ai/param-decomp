@@ -11,13 +11,7 @@ from torch import Tensor, nn
 from torch.utils.hooks import RemovableHandle
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
-from param_decomp.configs import (
-    CiConfig,
-    GlobalCiConfig,
-    LayerwiseCiConfig,
-    PDConfig,
-    SamplingType,
-)
+from param_decomp.ci_config import CiConfig, GlobalCiConfig, LayerwiseCiConfig
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.models.batch_and_loss_fns import RunBatch
 from param_decomp.models.components import (
@@ -36,6 +30,8 @@ from param_decomp.models.components import (
     VectorSharedMLPCiFn,
 )
 from param_decomp.models.sigmoids import SIGMOID_TYPES, SigmoidType
+from param_decomp.module_info import ModulePatternInfoConfig
+from param_decomp.routing import SamplingType
 from param_decomp.types import LayerwiseCiFnType
 from param_decomp.utils.module_utils import ModulePathInfo, expand_module_patterns
 
@@ -487,7 +483,11 @@ class ComponentModel(nn.Module):
     @classmethod
     def from_checkpoint(
         cls,
-        config: PDConfig,
+        *,
+        ci_config: CiConfig,
+        sigmoid_type: SigmoidType,
+        module_info: list[ModulePatternInfoConfig],
+        identity_module_info: list[ModulePatternInfoConfig] | None,
         checkpoint_path: Path,
         target_model: nn.Module,
         run_batch: RunBatch,
@@ -497,28 +497,38 @@ class ComponentModel(nn.Module):
 
         The caller owns target loading (HF, in-repo pretrain runs, custom user models),
         so this method takes the already-instantiated target plus its run_batch function.
+        Pass the slices of `PDConfig` that affect model construction directly — this keeps
+        `component_model` cycle-free with respect to `configs`.
         """
         target_model.eval()
         target_model.requires_grad_(False)
 
-        if config.identity_module_info is not None:
+        if identity_module_info is not None:
             insert_identity_operations_(
                 target_model,
-                identity_module_info=config.identity_module_info,
+                identity_module_info=identity_module_info,
             )
 
-        module_path_info = expand_module_patterns(target_model, config.all_module_info)
+        all_info = list(module_info)
+        if identity_module_info is not None:
+            for info in identity_module_info:
+                all_info.append(
+                    ModulePatternInfoConfig(
+                        module_pattern=f"{info.module_pattern}.pre_identity", C=info.C
+                    )
+                )
+        module_path_info = expand_module_patterns(target_model, all_info)
 
         comp_model = cls(
             target_model=target_model,
             run_batch=run_batch,
             module_path_info=module_path_info,
-            ci_config=config.ci_config,
-            sigmoid_type=config.sigmoid_type,
+            ci_config=ci_config,
+            sigmoid_type=sigmoid_type,
         )
 
         comp_model_weights = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-        _validate_checkpoint_ci_config_compatibility(comp_model_weights, config.ci_config)
+        _validate_checkpoint_ci_config_compatibility(comp_model_weights, ci_config)
         comp_model.load_state_dict(comp_model_weights)
 
         if tied_weights is not None:

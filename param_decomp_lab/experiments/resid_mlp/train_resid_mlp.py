@@ -7,8 +7,8 @@ from jaxtyping import Float
 from torch import Tensor, nn
 from tqdm import tqdm
 
-from param_decomp.configs import ScheduleConfig
 from param_decomp.log import logger
+from param_decomp.schedule import ScheduleConfig
 from param_decomp.settings import DEFAULT_PROJECT_NAME
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader
 from param_decomp.utils.distributed_utils import get_device

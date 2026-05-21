@@ -50,7 +50,7 @@ pd:
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_weight_decay: 0.0
   loss_metrics:
-    ImportanceMinimalityLoss:
+    - type: ImportanceMinimalityLoss
       coeff: 0.001
       pnorm: 2.0
       beta: 0.5
@@ -58,11 +58,11 @@ pd:
       p_anneal_final_p: 0.4
       p_anneal_end_frac: 1.0
       eps: 1.0e-12
-    StochasticReconSubsetLoss:
+    - type: StochasticReconSubsetLoss
       coeff: 0.5
       routing:
         type: uniform_k_subset
-    PersistentPGDReconLoss:
+    - type: PersistentPGDReconLoss
       coeff: 0.5
       optimizer:
         type: adam
@@ -78,7 +78,7 @@ pd:
         type: per_batch_per_position
       use_sigmoid_parameterization: false
       n_warmup_steps: 2
-    FaithfulnessLoss:
+    - type: FaithfulnessLoss
       coeff: 10000000.0
 logging:
   train_log_freq: 200

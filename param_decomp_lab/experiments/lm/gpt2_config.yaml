@@ -31,14 +31,14 @@ pd:
   faithfulness_warmup_lr: 0.01
   faithfulness_warmup_weight_decay: 0.1
   loss_metrics:
-    ImportanceMinimalityLoss:
+    - type: ImportanceMinimalityLoss
       coeff: 0.0003
       pnorm: 2.0
       beta: 0
       p_anneal_start_frac: 0.0
       p_anneal_final_p: 0.3
       p_anneal_end_frac: 1.0
-    StochasticReconLayerwiseLoss:
+    - type: StochasticReconLayerwiseLoss
       coeff: 2.0
 logging:
   train_log_freq: 100

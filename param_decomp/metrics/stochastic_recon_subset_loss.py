@@ -1,4 +1,4 @@
-from typing import Annotated, Any, override
+from typing import Annotated, Any, Literal, override
 
 import torch
 from jaxtyping import Float
@@ -6,18 +6,24 @@ from pydantic import Field
 from torch import Tensor
 from torch.distributed import ReduceOp
 
-from param_decomp.configs import SamplingType, SubsetRoutingType, UniformKSubsetRoutingConfig
 from param_decomp.metrics.base import LossMetricConfig, Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.models.batch_and_loss_fns import ReconstructionLoss
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.routing import Router, get_subset_router
+from param_decomp.routing import (
+    Router,
+    SamplingType,
+    SubsetRoutingType,
+    UniformKSubsetRoutingConfig,
+    get_subset_router,
+)
 from param_decomp.utils.component_utils import calc_stochastic_component_mask_info
 from param_decomp.utils.distributed_utils import all_reduce
 from param_decomp.utils.general_utils import get_obj_device
 
 
 class StochasticReconSubsetLossConfig(LossMetricConfig):
+    type: Literal["StochasticReconSubsetLoss"] = "StochasticReconSubsetLoss"
     routing: Annotated[
         SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
     ]

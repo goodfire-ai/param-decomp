@@ -5,12 +5,7 @@ import torch
 from torch import nn
 
 from param_decomp import PDConfig, RuntimeConfig, optimize
-from param_decomp.configs import (
-    LayerwiseCiConfig,
-    ModulePatternInfoConfig,
-    OptimizerConfig,
-    ScheduleConfig,
-)
+from param_decomp.ci_config import LayerwiseCiConfig
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.metrics.faithfulness_loss import FaithfulnessLossConfig
 from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
@@ -19,6 +14,9 @@ from param_decomp.metrics.stochastic_recon_layerwise_loss import (
 )
 from param_decomp.metrics.stochastic_recon_loss import StochasticReconLossConfig
 from param_decomp.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
+from param_decomp.module_info import ModulePatternInfoConfig
+from param_decomp.optimizer import OptimizerConfig
+from param_decomp.schedule import ScheduleConfig
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
 from param_decomp.utils.general_utils import set_seed
 from param_decomp_lab.experiments.tms.models import TMSModel, TMSModelConfig, TMSTrainConfig
@@ -52,14 +50,12 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
         identity_module_info=[
             ModulePatternInfoConfig(module_pattern="linear1", C=10),
         ],
-        loss_metrics={
-            "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
-                coeff=3e-3, pnorm=2.0, beta=0.5, eps=1e-12
-            ),
-            "StochasticReconLayerwiseLoss": StochasticReconLayerwiseLossConfig(coeff=1.0),
-            "StochasticReconLoss": StochasticReconLossConfig(coeff=1.0),
-            "FaithfulnessLoss": FaithfulnessLossConfig(coeff=1.0),
-        },
+        loss_metrics=[
+            ImportanceMinimalityLossConfig(coeff=3e-3, pnorm=2.0, beta=0.5, eps=1e-12),
+            StochasticReconLayerwiseLossConfig(coeff=1.0),
+            StochasticReconLossConfig(coeff=1.0),
+            FaithfulnessLossConfig(coeff=1.0),
+        ],
         components_optimizer=OptimizerConfig(
             lr_schedule=ScheduleConfig(
                 start_val=1e-3, fn_type="cosine", warmup_pct=0.0, final_val_frac=0.0

@@ -1,4 +1,4 @@
-from typing import Annotated, Any, override
+from typing import Annotated, Any, Literal, override
 
 import torch
 from jaxtyping import Float
@@ -6,17 +6,22 @@ from pydantic import Field
 from torch import Tensor
 from torch.distributed import ReduceOp
 
-from param_decomp.configs import SubsetRoutingType, UniformKSubsetRoutingConfig
 from param_decomp.metrics.base import LossMetricConfig, Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.models.batch_and_loss_fns import ReconstructionLoss
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import make_mask_infos
-from param_decomp.routing import Router, get_subset_router
+from param_decomp.routing import (
+    Router,
+    SubsetRoutingType,
+    UniformKSubsetRoutingConfig,
+    get_subset_router,
+)
 from param_decomp.utils.distributed_utils import all_reduce
 
 
 class CIMaskedReconSubsetLossConfig(LossMetricConfig):
+    type: Literal["CIMaskedReconSubsetLoss"] = "CIMaskedReconSubsetLoss"
     routing: Annotated[
         SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
     ]

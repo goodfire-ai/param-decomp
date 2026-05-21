@@ -9,9 +9,9 @@ from matplotlib import pyplot as plt
 from PIL import Image
 from torch import Tensor
 
-from param_decomp.configs import SamplingType
 from param_decomp.models.component_model import CIOutputs, ComponentModel
 from param_decomp.models.components import Components
+from param_decomp.routing import SamplingType
 from param_decomp.utils.general_utils import get_obj_device
 from param_decomp.utils.target_ci_solutions import permute_to_dense, permute_to_identity
 

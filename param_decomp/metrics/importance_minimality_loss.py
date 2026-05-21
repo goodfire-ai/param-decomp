@@ -1,4 +1,4 @@
-from typing import override
+from typing import Literal, override
 
 import torch
 from jaxtyping import Float
@@ -13,6 +13,7 @@ from param_decomp.utils.distributed_utils import all_reduce, get_distributed_sta
 
 
 class ImportanceMinimalityLossConfig(LossMetricConfig):
+    type: Literal["ImportanceMinimalityLoss"] = "ImportanceMinimalityLoss"
     pnorm: NonNegativeFloat
     beta: NonNegativeFloat
     p_anneal_start_frac: Probability = 1.0

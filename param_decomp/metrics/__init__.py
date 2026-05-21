@@ -1,14 +1,13 @@
 """Metrics package.
 
-Loss metrics ship in this package and are referenced from `PDConfig.loss_metrics` by class
-name. The mapping from class name to class is `param_decomp.metrics.loss_metrics.LOSS_METRICS`
-— there is no auto-registration; new loss metrics are added by appending them there.
+Loss metrics ship in this package and form a pydantic discriminated union over their
+`type` literals. `PDConfig.loss_metrics` validates each entry into the right
+`*LossMetricConfig` subclass directly — there is no class-name registry for validation.
+The runtime `type` → `Metric` class dispatch (used by `optimize()` for instantiation)
+lives in `param_decomp.metrics.loss_metrics.LOSS_METRIC_CLASSES`.
 
 Eval metrics are caller-supplied: experiments instantiate `Metric` objects directly and pass
 them to `optimize(eval_metrics=...)`.
-
-`LOSS_METRICS` lives in its own submodule to keep this package's top-level imports cheap and
-avoid circular imports through `param_decomp.configs`.
 """
 
 from param_decomp.metrics.base import LossMetricConfig, Metric

@@ -1,4 +1,4 @@
-from typing import override
+from typing import Literal, override
 
 import torch
 from torch import Tensor
@@ -12,7 +12,7 @@ from param_decomp.utils.distributed_utils import all_reduce
 
 
 class PGDReconLayerwiseLossConfig(PGDConfig):
-    pass
+    type: Literal["PGDReconLayerwiseLoss"] = "PGDReconLayerwiseLoss"
 
 
 class PGDReconLayerwiseLoss(Metric[PGDReconLayerwiseLossConfig]):

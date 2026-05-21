@@ -1,4 +1,4 @@
-from typing import Any, override
+from typing import Any, Literal, override
 
 import torch
 from jaxtyping import Float
@@ -15,7 +15,7 @@ from param_decomp.utils.distributed_utils import all_reduce
 
 
 class PGDReconLossConfig(PGDConfig):
-    pass
+    type: Literal["PGDReconLoss"] = "PGDReconLoss"
 
 
 def pgd_recon_loss(

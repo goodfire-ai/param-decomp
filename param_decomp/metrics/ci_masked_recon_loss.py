@@ -1,4 +1,4 @@
-from typing import Any, override
+from typing import Any, Literal, override
 
 import torch
 from jaxtyping import Float
@@ -14,7 +14,7 @@ from param_decomp.utils.distributed_utils import all_reduce
 
 
 class CIMaskedReconLossConfig(LossMetricConfig):
-    pass
+    type: Literal["CIMaskedReconLoss"] = "CIMaskedReconLoss"
 
 
 def _ci_masked_recon_loss_update(

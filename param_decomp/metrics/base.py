@@ -3,9 +3,10 @@
 Each metric file defines its pydantic config class alongside the `Metric` class itself. Eval
 metric configs subclass `BaseConfig` directly; loss metrics subclass `LossMetricConfig` (which
 carries the required `coeff` field for training). Loss metrics are referenced from
-`PDConfig.loss_metrics` by class name, resolved via
-`param_decomp.metrics.loss_metrics.LOSS_METRICS`. Eval
-metrics are instantiated by the caller and passed to `optimize(eval_metrics=...)`.
+`PDConfig.loss_metrics` as a pydantic discriminated union keyed on each subclass's `type`
+literal; the runtime dispatch to the matching `Metric` class lives in
+`param_decomp.metrics.loss_metrics.LOSS_METRIC_CLASSES`. Eval metrics are instantiated by
+the caller and passed to `optimize(eval_metrics=...)`.
 
 Metrics are instantiated with just the validated config (`MyMetric(cfg)`). The training loop
 calls `metric.bind(model=component_model, device=...)` once before any other method, then

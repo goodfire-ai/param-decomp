@@ -13,8 +13,8 @@ from matplotlib import collections as mc
 from torch import Tensor, nn
 from tqdm import tqdm, trange
 
-from param_decomp.configs import ScheduleConfig
 from param_decomp.log import logger
+from param_decomp.schedule import ScheduleConfig
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
 from param_decomp.utils.distributed_utils import get_device
 from param_decomp.utils.general_utils import get_scheduled_value, set_seed

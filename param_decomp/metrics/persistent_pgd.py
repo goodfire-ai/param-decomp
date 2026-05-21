@@ -7,14 +7,13 @@ Over many steps, these sources converge to strong adversarial configurations.
 The key insight is that this amortizes PGD optimization across training steps - getting the
 benefit of many PGD steps without the per-step computational cost.
 
-This module also defines the PPGD config types (`PersistentPGDReconLossConfig`,
-`PersistentPGDReconSubsetLossConfig`, plus the nested optimizer/scope helpers). They live here
-rather than in `param_decomp.configs` because they are PPGD plumbing — the only consumers are
-this module and `metrics.persistent_pgd_recon`. `PDConfig.validate_pgd_scope` imports them
-locally to avoid a configs <-> metrics import cycle.
+This module owns the PPGD config types (`PersistentPGDReconLossConfig`,
+`PersistentPGDReconSubsetLossConfig`, plus the nested optimizer/scope helpers) and the
+`validate_pgd_scope` invariant check that the optimizer applies before training.
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from typing import Annotated, Literal, override
 
 import torch
@@ -24,12 +23,18 @@ from torch import Tensor
 from torch.distributed import ReduceOp
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.configs import ScheduleConfig, SubsetRoutingType, UniformKSubsetRoutingConfig
 from param_decomp.metrics.base import LossMetricConfig
 from param_decomp.models.batch_and_loss_fns import ReconstructionLoss
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import ComponentsMaskInfo, RoutingMasks, make_mask_infos
-from param_decomp.routing import AllLayersRouter, Router, get_subset_router
+from param_decomp.routing import (
+    AllLayersRouter,
+    Router,
+    SubsetRoutingType,
+    UniformKSubsetRoutingConfig,
+    get_subset_router,
+)
+from param_decomp.schedule import ScheduleConfig
 from param_decomp.types import Probability
 from param_decomp.utils.distributed_utils import all_reduce, broadcast_tensor
 from param_decomp.utils.general_utils import get_scheduled_value
@@ -97,10 +102,11 @@ class _PersistentPGDBaseConfig(LossMetricConfig):
 
 
 class PersistentPGDReconLossConfig(_PersistentPGDBaseConfig):
-    pass
+    type: Literal["PersistentPGDReconLoss"] = "PersistentPGDReconLoss"
 
 
 class PersistentPGDReconSubsetLossConfig(_PersistentPGDBaseConfig):
+    type: Literal["PersistentPGDReconSubsetLoss"] = "PersistentPGDReconSubsetLoss"
     routing: Annotated[
         SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
     ]
@@ -423,3 +429,30 @@ def _compute_ppgd_recon_loss(
     out = model(batch, mask_infos=mask_infos)
     loss, n_examples = reconstruction_loss(pred=out, target=target_out)
     return loss, n_examples
+
+
+def validate_pgd_scope(
+    loss_metrics: Iterable[LossMetricConfig],
+    *,
+    batch_size: int,
+    world_size: int,
+) -> None:
+    """Assert persistent-PGD `repeat_across_batch` divides the per-rank training batch size.
+
+    Takes ``world_size`` directly (not a ``DistributedState``) so this module
+    doesn't have to know about distributed plumbing. Callers pass
+    ``dist_state.world_size if dist_state is not None else 1``.
+    """
+    assert batch_size % world_size == 0, (
+        f"batch_size {batch_size} not divisible by world size {world_size}"
+    )
+    per_rank = batch_size // world_size
+    for cfg in loss_metrics:
+        if isinstance(
+            cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
+        ) and isinstance(cfg.scope, RepeatAcrossBatchScope):
+            n = cfg.scope.n_sources
+            assert per_rank % n == 0, (
+                f"{cfg.type}: repeat_across_batch n_sources={n} must divide "
+                f"per-rank batch_size={per_rank}"
+            )

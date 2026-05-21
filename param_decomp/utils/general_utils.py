@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from pydantic.v1.utils import deep_update
 from torch import Tensor
 
-from param_decomp.configs import ScheduleConfig
+from param_decomp.schedule import ScheduleConfig
 
 # Avoid seaborn package installation (sns.color_palette("colorblind").as_hex())
 COLOR_PALETTE = [

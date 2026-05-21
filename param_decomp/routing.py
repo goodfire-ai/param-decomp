@@ -5,12 +5,24 @@ import torch
 from jaxtyping import Bool, Int
 from torch import Tensor
 
-from param_decomp.configs import (
-    StaticProbabilityRoutingConfig,
-    SubsetRoutingType,
-    UniformKSubsetRoutingConfig,
-)
+from param_decomp.base_config import BaseConfig
 from param_decomp.models.components import RoutingMasks
+from param_decomp.types import Probability
+
+
+class UniformKSubsetRoutingConfig(BaseConfig):
+    type: Literal["uniform_k_subset"] = "uniform_k_subset"
+
+
+class StaticProbabilityRoutingConfig(BaseConfig):
+    type: Literal["static_probability"] = "static_probability"
+    p: Probability
+
+
+SubsetRoutingType = UniformKSubsetRoutingConfig | StaticProbabilityRoutingConfig
+
+
+SamplingType = Literal["continuous", "binomial"]
 
 
 class Router(ABC):

@@ -13,8 +13,8 @@ from typing import Any
 import torch.nn as nn
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
-from param_decomp.configs import ModulePatternInfoConfig
 from param_decomp.models.components import Identity
+from param_decomp.module_info import ModulePatternInfoConfig
 
 
 def _pre_id_hook(

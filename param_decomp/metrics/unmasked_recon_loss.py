@@ -1,4 +1,4 @@
-from typing import Any, override
+from typing import Any, Literal, override
 
 import torch
 from jaxtyping import Float
@@ -15,7 +15,7 @@ from param_decomp.utils.general_utils import get_obj_device
 
 
 class UnmaskedReconLossConfig(LossMetricConfig):
-    pass
+    type: Literal["UnmaskedReconLoss"] = "UnmaskedReconLoss"
 
 
 def _unmasked_recon_loss_update(

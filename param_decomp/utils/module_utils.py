@@ -9,7 +9,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch.nn.init import calculate_gain
 
-from param_decomp.configs import ModulePatternInfoConfig
+from param_decomp.module_info import ModulePatternInfoConfig
 
 
 @dataclass

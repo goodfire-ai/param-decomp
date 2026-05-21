@@ -1,6 +1,6 @@
 from collections import defaultdict
 from fnmatch import fnmatch
-from typing import override
+from typing import Literal, override
 
 import einops
 import torch
@@ -9,18 +9,18 @@ from jaxtyping import Float, Int
 from torch import Tensor
 from torch.distributed import ReduceOp
 
-from param_decomp.configs import SamplingType
 from param_decomp.metrics.base import LossMetricConfig, Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import ComponentsMaskInfo, make_mask_infos
-from param_decomp.routing import AllLayersRouter
+from param_decomp.routing import AllLayersRouter, SamplingType
 from param_decomp.utils.component_utils import calc_stochastic_component_mask_info
 from param_decomp.utils.distributed_utils import all_reduce
 from param_decomp.utils.general_utils import calc_kl_divergence_lm
 
 
 class StochasticReconSubsetCEAndKLConfig(LossMetricConfig):
+    type: Literal["StochasticReconSubsetCEAndKL"] = "StochasticReconSubsetCEAndKL"
     include_patterns: dict[str, list[str]] | None
     exclude_patterns: dict[str, list[str]] | None
 

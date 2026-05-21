@@ -29,19 +29,19 @@ pd:
   faithfulness_warmup_lr: 0.01
   faithfulness_warmup_weight_decay: 0.0
   loss_metrics:
-    ImportanceMinimalityLoss:
+    - type: ImportanceMinimalityLoss
       coeff: 0.0001
       pnorm: 2.0
       beta: 0
-    StochasticReconSubsetLoss:
+    - type: StochasticReconSubsetLoss
       coeff: 2.0
-    PGDReconSubsetLoss:
+    - type: PGDReconSubsetLoss
       coeff: 2.0
       init: random
       step_size: 1.0
       n_steps: 1
       mask_scope: shared_across_batch
-    FaithfulnessLoss:
+    - type: FaithfulnessLoss
       coeff: 0.0
 logging:
   train_log_freq: 50

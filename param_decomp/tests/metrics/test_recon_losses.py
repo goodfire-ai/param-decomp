@@ -9,7 +9,6 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from param_decomp.configs import ScheduleConfig
 from param_decomp.metrics.ci_masked_recon_loss import ci_masked_recon_loss
 from param_decomp.metrics.context import MetricRuntimeConfig
 from param_decomp.metrics.hidden_acts_recon_loss import (
@@ -30,6 +29,7 @@ from param_decomp.metrics.stochastic_recon_loss import stochastic_recon_loss
 from param_decomp.models.batch_and_loss_fns import recon_loss_mse
 from param_decomp.models.component_model import CIOutputs, ComponentModel
 from param_decomp.models.components import make_mask_infos
+from param_decomp.schedule import ScheduleConfig
 from param_decomp.tests.metrics.fixtures import (
     OneLayerLinearModel,
     TwoLayerLinearModel,

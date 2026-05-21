@@ -31,9 +31,9 @@ _WANDB_URL_RE = re.compile(
 
 def _build_short_names() -> dict[str, str]:
     """Build the loss-metric class-name to short-name map. Lazy to avoid circular imports."""
-    from param_decomp.metrics.loss_metrics import LOSS_METRICS
+    from param_decomp.metrics.loss_metrics import LOSS_METRIC_CLASSES
 
-    return {cls.__name__: cls.short_name for cls in LOSS_METRICS.values() if cls.short_name}
+    return {cls.__name__: cls.short_name for cls in LOSS_METRIC_CLASSES.values() if cls.short_name}
 
 
 _metric_short_names_cache: dict[str, str] | None = None

@@ -1,4 +1,4 @@
-from typing import override
+from typing import Literal, override
 
 import torch
 from jaxtyping import Float
@@ -11,7 +11,7 @@ from param_decomp.utils.distributed_utils import all_reduce
 
 
 class FaithfulnessLossConfig(LossMetricConfig):
-    pass
+    type: Literal["FaithfulnessLoss"] = "FaithfulnessLoss"
 
 
 def faithfulness_loss(

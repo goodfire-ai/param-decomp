@@ -2,9 +2,8 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 
-from param_decomp.configs import SamplingType
 from param_decomp.models.components import ComponentsMaskInfo, WeightDeltaAndMask, make_mask_infos
-from param_decomp.routing import Router
+from param_decomp.routing import Router, SamplingType
 
 
 def calc_stochastic_component_mask_info(

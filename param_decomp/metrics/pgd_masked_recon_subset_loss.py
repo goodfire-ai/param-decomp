@@ -1,20 +1,20 @@
-from typing import Annotated, override
+from typing import Annotated, Literal, override
 
 import torch
 from pydantic import Field
 from torch import Tensor
 from torch.distributed import ReduceOp
 
-from param_decomp.configs import SubsetRoutingType, UniformKSubsetRoutingConfig
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.pgd_utils import PGDConfig, pgd_masked_recon_loss_update
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.routing import get_subset_router
+from param_decomp.routing import SubsetRoutingType, UniformKSubsetRoutingConfig, get_subset_router
 from param_decomp.utils.distributed_utils import all_reduce
 
 
 class PGDReconSubsetLossConfig(PGDConfig):
+    type: Literal["PGDReconSubsetLoss"] = "PGDReconSubsetLoss"
     routing: Annotated[
         SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
     ]

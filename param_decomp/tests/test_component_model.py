@@ -8,14 +8,8 @@ from jaxtyping import Float, Int
 from torch import Tensor, nn
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
-from param_decomp.configs import (
-    GlobalCiConfig,
-    LayerwiseCiConfig,
-    ModulePatternInfoConfig,
-    OptimizerConfig,
-    PDConfig,
-    ScheduleConfig,
-)
+from param_decomp.ci_config import GlobalCiConfig, LayerwiseCiConfig
+from param_decomp.configs import PDConfig
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
 from param_decomp.models.batch_and_loss_fns import run_batch_passthrough
@@ -36,6 +30,9 @@ from param_decomp.models.components import (
     VectorSharedMLPCiFn,
     make_mask_infos,
 )
+from param_decomp.module_info import ModulePatternInfoConfig
+from param_decomp.optimizer import OptimizerConfig
+from param_decomp.schedule import ScheduleConfig
 from param_decomp.utils.module_utils import ModulePathInfo, expand_module_patterns
 from param_decomp.utils.run_utils import save_file
 
@@ -128,11 +125,7 @@ def test_from_checkpoint():
             steps=1,
             components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
             ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
-            loss_metrics={
-                "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
-                    coeff=1.0, pnorm=1.0, beta=0.5
-                ),
-            },
+            loss_metrics=[ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)],
             n_mask_samples=1,
         )
 
@@ -160,7 +153,10 @@ def test_from_checkpoint():
         fresh_target.eval()
         fresh_target.requires_grad_(False)
         cm_loaded = ComponentModel.from_checkpoint(
-            config=config,
+            ci_config=config.ci_config,
+            sigmoid_type=config.sigmoid_type,
+            module_info=config.module_info,
+            identity_module_info=config.identity_module_info,
             checkpoint_path=checkpoint_path,
             target_model=fresh_target,
             run_batch=run_batch_passthrough,
@@ -528,11 +524,7 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             steps=1,
             components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
             ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
-            loss_metrics={
-                "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
-                    coeff=1.0, pnorm=1.0, beta=0.5
-                ),
-            },
+            loss_metrics=[ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)],
             n_mask_samples=1,
         )
 
@@ -560,11 +552,7 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             steps=1,
             components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
             ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
-            loss_metrics={
-                "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
-                    coeff=1.0, pnorm=1.0, beta=0.5
-                ),
-            },
+            loss_metrics=[ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)],
             n_mask_samples=1,
         )
 
@@ -575,7 +563,10 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             match="Config specifies layerwise CI but checkpoint has no ci_fn._ci_fns keys",
         ):
             ComponentModel.from_checkpoint(
-                config=config_layerwise,
+                ci_config=config_layerwise.ci_config,
+                sigmoid_type=config_layerwise.sigmoid_type,
+                module_info=config_layerwise.module_info,
+                identity_module_info=config_layerwise.identity_module_info,
                 checkpoint_path=global_checkpoint_path,
                 target_model=SimpleTestModel(),
                 run_batch=run_batch_passthrough,
@@ -609,11 +600,7 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             steps=1,
             components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
             ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
-            loss_metrics={
-                "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
-                    coeff=1.0, pnorm=1.0, beta=0.5
-                ),
-            },
+            loss_metrics=[ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)],
             n_mask_samples=1,
         )
 
@@ -641,11 +628,7 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             steps=1,
             components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
             ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
-            loss_metrics={
-                "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
-                    coeff=1.0, pnorm=1.0, beta=0.5
-                ),
-            },
+            loss_metrics=[ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)],
             n_mask_samples=1,
         )
 
@@ -656,7 +639,10 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             match="Config specifies global CI but checkpoint has no ci_fn._global_ci_fn keys",
         ):
             ComponentModel.from_checkpoint(
-                config=config_global,
+                ci_config=config_global.ci_config,
+                sigmoid_type=config_global.sigmoid_type,
+                module_info=config_global.module_info,
+                identity_module_info=config_global.identity_module_info,
                 checkpoint_path=layerwise_checkpoint_path,
                 target_model=SimpleTestModel(),
                 run_batch=run_batch_passthrough,
@@ -1257,11 +1243,7 @@ def test_global_ci_save_and_load():
             steps=1,
             components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
             ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
-            loss_metrics={
-                "ImportanceMinimalityLoss": ImportanceMinimalityLossConfig(
-                    coeff=1.0, pnorm=1.0, beta=0.5
-                ),
-            },
+            loss_metrics=[ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=0.5)],
             n_mask_samples=1,
         )
 
@@ -1281,7 +1263,10 @@ def test_global_ci_save_and_load():
 
         # Load and verify
         cm_loaded = ComponentModel.from_checkpoint(
-            config=config,
+            ci_config=config.ci_config,
+            sigmoid_type=config.sigmoid_type,
+            module_info=config.module_info,
+            identity_module_info=config.identity_module_info,
             checkpoint_path=checkpoint_path,
             target_model=SimpleTestModel(),
             run_batch=run_batch_passthrough,

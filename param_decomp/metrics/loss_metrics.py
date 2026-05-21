@@ -1,7 +1,8 @@
-"""The set of loss-capable metrics shipped in the core library.
+"""Type-literal to Metric-class dispatch table for loss-capable metrics.
 
-`LOSS_METRICS` maps class name to class. Loss metric YAML entries under
-`pd.loss_metrics` are resolved through this dict by `PDConfig` and `optimize()`.
+`PDConfig.loss_metrics` is a discriminated union keyed by each config's `type` literal.
+This table maps the same literal to the matching `Metric` subclass so that `optimize()`
+can instantiate the right metric for each configured entry.
 """
 
 from typing import Any
@@ -26,7 +27,7 @@ from param_decomp.metrics.stochastic_recon_subset_ce_and_kl import StochasticRec
 from param_decomp.metrics.stochastic_recon_subset_loss import StochasticReconSubsetLoss
 from param_decomp.metrics.unmasked_recon_loss import UnmaskedReconLoss
 
-LOSS_METRICS: dict[str, type[Metric[Any]]] = {
+LOSS_METRIC_CLASSES: dict[str, type[Metric[Any]]] = {
     cls.__name__: cls
     for cls in (
         CIMaskedReconLayerwiseLoss,

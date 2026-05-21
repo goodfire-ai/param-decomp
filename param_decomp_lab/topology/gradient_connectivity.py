@@ -7,9 +7,9 @@ import torch
 from jaxtyping import Float
 from torch import Tensor, nn
 
-from param_decomp.configs import SamplingType
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
 from param_decomp.models.components import make_mask_infos
+from param_decomp.routing import SamplingType
 from param_decomp.utils.general_utils import bf16_autocast
 from param_decomp_lab.topology.topology import TransformerTopology
 

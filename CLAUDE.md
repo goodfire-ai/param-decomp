@@ -59,7 +59,8 @@ from param_decomp import (
   `Metric.bind(model, device)` on every eval metric before the loop.
 - `PDConfig`: algorithm spec (CI fn, loss metrics, module patterns, optimizers, seed,
   tied weights, faithfulness warmup, …). Loss metrics live here as
-  `loss_metrics: dict[str, LossMetricConfig]`.
+  `loss_metrics: list[AnyLossMetricConfig]` — a pydantic discriminated union over each
+  metric's `type` literal.
 - `RuntimeConfig`: substrate (autocast_bf16, device, dp).
 - `RunSink`: a `Protocol` in `param_decomp/run_sink.py` describing the cadence
   gates (`should_log_train`, `should_eval`, `should_run_slow_eval`, `should_save`)
@@ -69,11 +70,13 @@ from param_decomp import (
   with `.local(...)`, `.with_wandb(...)`, and `.silent(...)` constructors; tests
   and in-repo experiments use it.
 - `Metric` base class with `__init__(cfg)` and `bind(*, model, device)`. Loss metrics ship
-  in `param_decomp/metrics/`; the dict `param_decomp.metrics.loss_metrics.LOSS_METRICS`
-  maps class name to class. `optimize()` instantiates each loss metric from
-  `pd_config.loss_metrics`. Eval metrics are caller-supplied — the lab ships its own set
-  under `param_decomp_lab/eval_metrics/`, exposed via `param_decomp_lab.eval_metrics.EVAL_METRICS`
-  for the in-repo experiments' YAML wiring.
+  in `param_decomp/metrics/`. Pydantic validates each `pd_config.loss_metrics` entry
+  directly via the `AnyLossMetricConfig` discriminated union; `optimize()` then
+  instantiates the matching `Metric` subclass using the type→class dispatch table
+  `param_decomp.metrics.loss_metrics.LOSS_METRIC_CLASSES`. Eval metrics are
+  caller-supplied — the lab ships its own set under `param_decomp_lab/eval_metrics/`,
+  exposed via `param_decomp_lab.eval_metrics.EVAL_METRICS` for the in-repo experiments'
+  YAML wiring.
 
 ### Adding a new experiment
 
@@ -97,10 +100,15 @@ and either call its `main(...)` directly or wire it up to a console script.
 
 ### Metrics
 
-Loss metrics ship in `param_decomp/metrics/` and are listed in
-`param_decomp/metrics/loss_metrics.py::LOSS_METRICS`. Adding a new loss metric means
-defining the `Metric` subclass + its `LossMetricConfig` and appending the class to that
-table — there is no auto-registration.
+Loss metrics ship in `param_decomp/metrics/`. Each `LossMetricConfig` carries a
+`type: Literal["<ClassName>"]` discriminator. `configs.py` assembles them into
+`AnyLossMetricConfig` (the discriminated union) so pydantic validates every
+`pd.loss_metrics` entry without a custom validator. The runtime dispatch from `type`
+literal to `Metric` subclass lives in
+`param_decomp/metrics/loss_metrics.py::LOSS_METRIC_CLASSES`. Adding a new loss metric
+means: (1) define the `Metric` subclass + its `LossMetricConfig` with a unique `type`
+literal, (2) append the config to the `AnyLossMetricConfig` union in `configs.py`, and
+(3) append the class to `LOSS_METRIC_CLASSES`.
 
 Eval metrics are caller-supplied. Users instantiate `Metric` objects in their `run.py`
 and pass them to `optimize(eval_metrics=...)`. The in-repo experiments share a YAML-driven
@@ -118,6 +126,14 @@ The PD trainer is configured by two pydantic configs plus a `RunSink`:
   without changing the algorithm.
 - **`RunSink`** (caller-supplied, Protocol in core) — observation + outputs: train/eval/save cadence and
   optional W&B session. Sink methods own all side effects.
+
+`PDConfig` and `RuntimeConfig` are top-level aggregators living in `configs.py`. Every
+subsystem owns its own config in a leaf module — `schedule.py` (`ScheduleConfig`),
+`optimizer.py` (`OptimizerConfig`), `routing.py` (`SamplingType`, `SubsetRoutingType` +
+its members), `ci_config.py` (`CiConfig` and friends), `module_info.py`
+(`ModulePatternInfoConfig`), and `metrics/<name>.py` (one `LossMetricConfig` subclass
+per metric). `configs.py` imports each subsystem config and composes them — no cycles,
+no custom validators.
 
 ### Saved run layout
 
@@ -177,8 +193,11 @@ This repository implements methods from two key research papers on parameter dec
 **Core PD Framework:**
 
 - `param_decomp/optimize.py` - The PD optimization loop (`optimize(...)`). The sole core entrypoint.
-- `param_decomp/configs.py` - `PDConfig` (algorithm) + `RuntimeConfig` (substrate) + their nested
-  helpers (`ScheduleConfig`, `OptimizerConfig`, `LayerwiseCiConfig`, etc.).
+- `param_decomp/configs.py` - `PDConfig` (algorithm) + `RuntimeConfig` (substrate) +
+  `AnyLossMetricConfig` discriminated union. Strictly aggregates subsystem configs.
+- `param_decomp/schedule.py` / `optimizer.py` / `ci_config.py` / `module_info.py` /
+  `routing.py` - Subsystem configs (and, for `routing.py`, the Router implementations).
+  Each is a leaf w.r.t. `configs.py`.
 - `param_decomp/run_sink.py` - `RunSink` Protocol: the contract `optimize()` calls (cadence + log/console/checkpoint).
 - `param_decomp_lab/run_sink.py` - Concrete `RunSink` for in-repo use: local files + wandb, with `.local`/`.with_wandb`/`.silent` constructors and rank-aware no-op fan-out.
 - `param_decomp/eval.py` - `evaluate(...)` over a `dict[name, Metric]`.
@@ -186,10 +205,11 @@ This repository implements methods from two key research papers on parameter dec
 - `param_decomp/models/components.py` - Component types (LinearComponent, EmbeddingComponent, etc.).
 - `param_decomp/models/batch_and_loss_fns.py` - `RunBatch` / `ReconstructionLoss` protocols +
   `run_batch_*` / `recon_loss_*` helpers.
-- `param_decomp/metrics/` - Loss `Metric` classes (one per file). `metrics/base.py` defines
-  the `Metric` ABC with `__init__(cfg)` + `bind(model, device)`.
-  `metrics/loss_metrics.py` exposes `LOSS_METRICS`, the class-name -> class lookup that
-  `PDConfig.loss_metrics` resolves against. Eval metrics ship in `param_decomp_lab/eval_metrics/`.
+- `param_decomp/metrics/` - Loss `Metric` classes + their `LossMetricConfig`s (one per file).
+  `metrics/base.py` defines the `Metric` ABC with `__init__(cfg)` + `bind(model, device)`.
+  `metrics/loss_metrics.py` exposes `LOSS_METRIC_CLASSES`, the `type` literal → class
+  dispatch table that `optimize()` uses to instantiate metrics from each
+  `pd_config.loss_metrics` entry. Eval metrics ship in `param_decomp_lab/eval_metrics/`.
 
 **In-repo experiment scripts** (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`) build the
 target model + dataloaders + eval metrics + configs + sink and call `optimize()`. They share
@@ -241,11 +261,16 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 ├── papers/                          # Research papers (SPD, APD)
 ├── scripts/                         # Standalone utility scripts
 ├── param_decomp/                    # Core library (the only thing externals import)
-│   ├── metrics/                     # Loss Metric classes + LOSS_METRICS lookup table
+│   ├── metrics/                     # Loss Metric classes (cfg+impl per file) + LOSS_METRIC_CLASSES dispatch
 │   ├── models/                      # ComponentModel + components + batch_and_loss_fns
 │   ├── utils/                       # Distributed / wandb / general helpers
 │   ├── tests/                       # Core-library test suite
-│   ├── configs.py                   # PDConfig, RuntimeConfig (+ ScheduleConfig/OptimizerConfig/...)
+│   ├── configs.py                   # PDConfig + RuntimeConfig (aggregator) + AnyLossMetricConfig union
+│   ├── schedule.py                  # ScheduleConfig (leaf)
+│   ├── optimizer.py                 # OptimizerConfig (leaf)
+│   ├── ci_config.py                 # LayerwiseCiConfig / GlobalCiConfig / CiConfig (leaf)
+│   ├── module_info.py               # ModulePatternInfoConfig (leaf)
+│   ├── routing.py                   # Router impls + SamplingType / SubsetRoutingType configs
 │   ├── optimize.py                  # optimize() — the core entrypoint
 │   ├── run_sink.py                  # RunSink Protocol — contract optimize() calls
 │   ├── eval.py                      # evaluate(instances, ...)

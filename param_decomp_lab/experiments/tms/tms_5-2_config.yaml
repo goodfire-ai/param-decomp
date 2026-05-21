@@ -14,13 +14,13 @@ pd:
     C: 20
   use_delta_component: true
   loss_metrics:
-    ImportanceMinimalityLoss:
+    - type: ImportanceMinimalityLoss
       coeff: 3e-3
       pnorm: 1.0
       beta: 0
-    StochasticReconLoss:
+    - type: StochasticReconLoss
       coeff: 1.0
-    StochasticReconLayerwiseLoss:
+    - type: StochasticReconLayerwiseLoss
       coeff: 1.0
   batch_size: 4096
   steps: 10000

@@ -27,7 +27,8 @@ from param_decomp.log import logger
 from param_decomp.metrics.base import LossMetricConfig, Metric
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.faithfulness_loss import faithfulness_loss
-from param_decomp.metrics.loss_metrics import LOSS_METRICS
+from param_decomp.metrics.loss_metrics import LOSS_METRIC_CLASSES
+from param_decomp.metrics.persistent_pgd import validate_pgd_scope
 from param_decomp.models.batch_and_loss_fns import (
     ReconstructionLoss,
     RunBatch,
@@ -125,11 +126,12 @@ def _build_loss_instances(
 ) -> dict[str, Metric[Any]]:
     """Instantiate one loss-metric instance per `pd_config.loss_metrics` entry."""
     instances: dict[str, Metric[Any]] = {}
-    for metric_name, cfg in config.loss_metrics.items():
-        cls = LOSS_METRICS[metric_name]
+    for cfg in config.loss_metrics:
+        assert cfg.type not in instances, f"duplicate loss metric {cfg.type!r}"
+        cls = LOSS_METRIC_CLASSES[cfg.type]
         m = cls(cfg)
         m.bind(model=component_model, device=device)
-        instances[metric_name] = m
+        instances[cfg.type] = m
     return instances
 
 
@@ -172,7 +174,11 @@ def optimize(
     All ranks call this function; `sink` is automatically a no-op on non-main ranks.
     """
     dist_state = get_distributed_state()
-    pd_config.validate_pgd_scope(world_size=dist_state.world_size if dist_state is not None else 1)
+    validate_pgd_scope(
+        pd_config.loss_metrics,
+        batch_size=pd_config.batch_size,
+        world_size=dist_state.world_size if dist_state is not None else 1,
+    )
 
     train_iterator = loop_dataloader(train_loader)
     eval_iterator = loop_dataloader(eval_loader)
