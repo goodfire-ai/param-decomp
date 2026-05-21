@@ -1,0 +1,140 @@
+:root {
+    /* Goodfire-inspired - warm whites, navy text, vibrant blue accent */
+    --bg-base: #ffffff;
+    --bg-surface: #ffffff;
+    --bg-elevated: #ffffff;
+    --bg-inset: #f7f6f2;
+    --bg-hover: #f0efeb;
+
+    --border-subtle: #e5e3dc;
+    --border-default: #c8c5bc;
+    --border-strong: #8a8780;
+
+    --text-primary: #1d272a;
+    --text-secondary: #646464;
+    --text-muted: #b4b4b4;
+
+    --accent-primary: #7c4d33;
+    --accent-primary-bright: #96613f;
+    --accent-primary-dim: #5e3a27;
+
+    --status-positive: #16a34a;
+    --status-positive-bright: #22c55e;
+    --status-negative: #dc2626;
+    --status-negative-bright: #ef4444;
+    --status-warning: #eab308;
+    --status-warning-bright: #facc15;
+    --status-info: #4d65ff;
+    --status-info-bright: #6b7fff;
+
+    --focus-ring: #4d65ff;
+
+    /* Typography - Clean system fonts with mono for code */
+    --font-mono: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+
+    --text-xs: 0.75rem;
+    --text-sm: 0.8125rem;
+    --text-base: 0.875rem;
+    --text-lg: 1rem;
+
+    /* Spacing */
+    --space-1: 0.25rem;
+    --space-2: 0.5rem;
+    --space-3: 0.75rem;
+    --space-4: 1rem;
+    --space-6: 1.5rem;
+
+    /* Radius */
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+
+    /* Shadows - standardized opacity levels */
+    --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.08);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.12);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.16);
+
+    /* Transitions - standardized timing */
+    --transition-fast: 0.1s ease;
+    --transition-normal: 0.15s ease;
+    --transition-slow: 0.2s ease;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: var(--font-sans);
+    background: var(--bg-base);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+#app {
+    width: 100%;
+    min-height: 100vh;
+    background: var(--bg-base);
+}
+
+/* Base button reset and styles */
+button {
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition:
+        background-color var(--transition-fast),
+        border-color var(--transition-fast),
+        color var(--transition-fast);
+}
+
+button:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+/* Reusable tooltip pattern */
+.info-icon {
+    position: relative;
+    cursor: help;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    width: 14px;
+    height: 14px;
+    line-height: 14px;
+    text-align: center;
+    border: 1px solid var(--border-default);
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.info-icon::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    padding: var(--space-2) var(--space-2);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    font-family: var(--font-sans);
+    line-height: 1.4;
+    width: 200px;
+    white-space: normal;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 1000;
+    box-shadow: var(--shadow-md);
+    transition: opacity var(--transition-slow);
+}
+
+.info-icon:hover::after {
+    opacity: 1;
+}

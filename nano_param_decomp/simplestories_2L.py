@@ -27,8 +27,8 @@ import torch.nn as nn
 from torch import Tensor
 from transformers import AutoTokenizer
 
-from param_decomp.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
-from param_decomp.pretrain.run_info import PretrainRunInfo
+from param_decomp_lab.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
+from param_decomp_lab.pretrain.run_info import PretrainRunInfo
 
 from .run import Config, decompose
 

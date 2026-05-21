@@ -1,0 +1,1 @@
+this folder `configs/` contains files with `ClusteringPipelineConfig`s. the folder `configs/crc/` contains files with `ClusteringRunConfig`s, which may be referenced by the `clustering_run_config_path` field in the pipeline configs.

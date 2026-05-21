@@ -9,7 +9,20 @@ install-dev:
 	uv run pre-commit install
 
 .PHONY: install-all
-install-all: install-dev
+install-all: install-dev install-app
+
+
+.PHONY: app
+app:
+	@uv run python param_decomp_lab/app/run_app.py
+
+.PHONY: install-app
+install-app:
+	(cd param_decomp_lab/app/frontend && npm install)
+
+.PHONY: check-app
+check-app:
+	(cd param_decomp_lab/app/frontend && npm run format && npm run check && npm run lint)
 
 # special install for CI (GitHub Actions) that reduces disk usage and install time
 # 1. create a fresh venv with `--clear` -- this is mostly only for local testing of the CI install

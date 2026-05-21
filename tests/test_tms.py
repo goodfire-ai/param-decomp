@@ -11,8 +11,6 @@ from param_decomp.configs import (
     OptimizerConfig,
     ScheduleConfig,
 )
-from param_decomp.experiments.tms.models import TMSModel, TMSModelConfig, TMSTrainConfig
-from param_decomp.experiments.tms.train_tms import get_model_and_dataloader, train
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.metrics.builtin.faithfulness_loss import FaithfulnessLossConfig
 from param_decomp.metrics.builtin.importance_minimality_loss import ImportanceMinimalityLossConfig
@@ -23,6 +21,8 @@ from param_decomp.metrics.builtin.stochastic_recon_loss import StochasticReconLo
 from param_decomp.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
 from param_decomp.utils.general_utils import set_seed
+from param_decomp_lab.experiments.tms.models import TMSModel, TMSModelConfig, TMSTrainConfig
+from param_decomp_lab.experiments.tms.train_tms import get_model_and_dataloader, train
 
 
 def test_tms_decomposition_happy_path(tmp_path: Path) -> None:

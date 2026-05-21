@@ -64,8 +64,8 @@ from param_decomp import (
 Experiments are plain Python scripts, not drivers/subclasses. A "new experiment" is just
 a `run.py` that builds the target model, dataloaders, eval metrics, configs, and sink,
 then calls `optimize()`. The three in-repo experiments
-(`param_decomp/experiments/{tms,resid_mlp,lm}/run.py`) are the canonical references.
-Shared YAML-parsing helpers live in `param_decomp/experiments/utils.py`
+(`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`) are the canonical references.
+Shared YAML-parsing helpers live in `param_decomp_lab/experiments/utils.py`
 (`load_yaml`, `build_eval_metrics`, `run_sink_from_logging_block`).
 
 Per-experiment console entry points are declared in `pyproject.toml`:
@@ -185,9 +185,9 @@ This repository implements methods from two key research papers on parameter dec
   `metrics/base.py` defines the `Metric` ABC with `__init__(cfg)` + `bind(model, device)`.
   `metrics/builtin/*.py` ship the in-tree implementations.
 
-**In-repo experiment scripts** (`param_decomp/experiments/{tms,resid_mlp,lm}/run.py`) build the
+**In-repo experiment scripts** (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`) build the
 target model + dataloaders + eval metrics + configs + sink and call `optimize()`. They share
-YAML-parsing helpers in `param_decomp/experiments/utils.py` (`load_yaml`, `build_eval_metrics`,
+YAML-parsing helpers in `param_decomp_lab/experiments/utils.py` (`load_yaml`, `build_eval_metrics`,
 `run_sink_from_logging_block`).
 
 **Terminology: Sources vs Masks:**
@@ -197,7 +197,7 @@ YAML-parsing helpers in `param_decomp/experiments/utils.py` (`load_yaml`, `build
 
 **Experiment Structure:**
 
-Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
+Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 
 - `run.py` - Composition root: parses YAML, builds target/loaders/metrics/configs/sink, calls `optimize()`.
 - `*_config.yaml` - Built-in YAML configs.
@@ -207,7 +207,7 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
 **Key Data Flow:**
 
-1. The experiment script (`python -m param_decomp.experiments.<kind>.run config.yaml`) reads
+1. The experiment script (`python -m param_decomp_lab.experiments.<kind>.run config.yaml`) reads
    the YAML, validates `PDConfig` / `RuntimeConfig` / per-experiment `target` + `data` blocks,
    and builds the target `nn.Module`, train/eval dataloaders, and eval `Metric` list.
 2. The script builds a `RunSink` (local + optional wandb) from the YAML `logging:` block.
@@ -235,26 +235,35 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 ├── papers/                          # Research papers (SPD, APD)
 ├── scripts/                         # Standalone utility scripts
 ├── tests/                           # Test suite
-├── param_decomp/                    # Core library
-│   ├── experiments/                 # Experiment scripts
-│   │   ├── tms/                     # Toy Model of Superposition
-│   │   ├── resid_mlp/               # Residual MLP
-│   │   ├── lm/                      # Language models
-│   │   └── utils.py                 # YAML → optimize() args helpers
+├── param_decomp/                    # Core library (the only thing externals import)
 │   ├── metrics/                     # Self-registering Metric classes (losses, eval metrics, figures)
-│   ├── models/
-│   │   ├── component_model.py       # ComponentModel
-│   │   ├── components.py            # LinearComponent, EmbeddingComponent, etc.
-│   │   └── batch_and_loss_fns.py    # RunBatch / ReconstructionLoss protocols + helpers
-│   ├── pretrain/                    # Target model pretraining (see pretrain/CLAUDE.md)
+│   ├── models/                      # ComponentModel + components + batch_and_loss_fns
 │   ├── utils/                       # Distributed / wandb / general helpers
 │   ├── configs.py                   # PDConfig, RuntimeConfig (+ ScheduleConfig/OptimizerConfig/...)
 │   ├── optimize.py                  # optimize() — the core entrypoint
 │   ├── run_sink.py                  # RunSink (output + cadence)
 │   ├── eval.py                      # evaluate(instances, ...)
 │   └── settings.py                  # PARAM_DECOMP_OUT_DIR, SLURM_LOGS_DIR, SBATCH_SCRIPTS_DIR
+├── param_decomp_lab/                # Lab tooling — experiments, post-processing, app
+│   ├── experiments/
+│   │   ├── tms/, resid_mlp/, lm/    # Each: run.py + YAMLs + per-experiment helpers
+│   │   ├── spec.py                  # ExperimentSpec (compositional dispatch dataclass)
+│   │   ├── utils.py                 # load_yaml / build_eval_metrics / run_sink_from_logging_block / save_run_meta
+│   │   └── __init__.py              # EXPERIMENTS registry (name → ExperimentSpec)
+│   ├── pretrain/                    # Target model pretraining (see pretrain/CLAUDE.md)
+│   ├── harvest/                     # Statistics collection (see harvest/CLAUDE.md)
+│   ├── autointerp/                  # LLM interpretation (see autointerp/CLAUDE.md)
+│   ├── clustering/                  # Component clustering (see clustering/CLAUDE.md)
+│   ├── dataset_attributions/        # Dataset attributions (see dataset_attributions/CLAUDE.md)
+│   ├── graph_interp/                # Context-aware interpretation (see graph_interp/CLAUDE.md)
+│   ├── postprocess/                 # Unified postprocessing pipeline
+│   ├── investigate/                 # Agent investigation (see investigate/CLAUDE.md)
+│   ├── app/                         # Web visualization app (see app/CLAUDE.md)
+│   ├── topology/, adapters/, editing/  # Model-topology utilities
+│   ├── scripts/                     # alpha_sweep, prompt_utils
+│   └── saved_run.py                 # SavedRun: reload a PD run via its ExperimentSpec
 ├── Makefile                         # Dev commands (make check, make test)
-└── pyproject.toml                   # Package config
+└── pyproject.toml                   # Package config (both packages exported)
 ```
 
 ## Quick Navigation
@@ -263,10 +272,20 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
 | Command | Entry Point | Description |
 |---------|-------------|-------------|
-| `pd-tms` | `param_decomp/experiments/tms/run.py` | Run the TMS experiment for the given YAML config |
-| `pd-resid-mlp` | `param_decomp/experiments/resid_mlp/run.py` | Run the ResidMLP experiment for the given YAML config |
-| `pd-lm` | `param_decomp/experiments/lm/run.py` | Run the LM experiment for the given YAML config |
-| `pd-pretrain` | `param_decomp/pretrain/scripts/run_slurm.py` | Pretrain target models |
+| `pd-tms` | `param_decomp_lab/experiments/tms/run.py` | Run the TMS experiment for the given YAML config |
+| `pd-resid-mlp` | `param_decomp_lab/experiments/resid_mlp/run.py` | Run the ResidMLP experiment for the given YAML config |
+| `pd-lm` | `param_decomp_lab/experiments/lm/run.py` | Run the LM experiment for the given YAML config |
+| `pd-pretrain` | `param_decomp_lab/pretrain/scripts/run_slurm.py` | Pretrain target models |
+| `pd-harvest` | `param_decomp_lab/harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
+| `pd-autointerp` | `param_decomp_lab/autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
+| `pd-attributions` | `param_decomp_lab/dataset_attributions/scripts/run_slurm_cli.py` | Submit dataset-attribution SLURM job |
+| `pd-postprocess` | `param_decomp_lab/postprocess/cli.py` | Unified postprocessing pipeline |
+| `pd-graph-interp` | `param_decomp_lab/graph_interp/scripts/run_slurm_cli.py` | Submit graph-interpretation SLURM job |
+| `pd-clustering` | `param_decomp_lab/clustering/scripts/run_pipeline.py` | Clustering ensemble pipeline |
+| `pd-cluster-harvest` | `param_decomp_lab/clustering/scripts/run_harvest.py` | Harvest activations → membership snapshot |
+| `pd-cluster-merge` | `param_decomp_lab/clustering/scripts/run_merge.py` | Merge from snapshot (CPU-only) |
+| `pd-intruder` | `param_decomp_lab/harvest/scripts/run_intruder_slurm_cli.py` | Submit intruder eval job |
+| `pd-investigate` | `param_decomp_lab/investigate/scripts/run_slurm_cli.py` | Submit agent-investigation job |
 
 ### Files to Skip When Searching
 
@@ -291,7 +310,7 @@ Use `param_decomp/` as the search root (not repo root) to avoid noise.
 
 **Running Experiments:**
 
-- `python -m param_decomp.experiments.<kind>.run path/to/config.yaml` (also exposed as
+- `python -m param_decomp_lab.experiments.<kind>.run path/to/config.yaml` (also exposed as
   `pd-tms` / `pd-resid-mlp` / `pd-lm`) → reads YAML → builds target/loaders/metrics →
   calls `optimize(...)`.
 
@@ -302,9 +321,9 @@ Use `param_decomp/` as the search root (not repo root) to avoid noise.
 In-place experiment scripts read a YAML and call `optimize()`:
 
 ```bash
-pd-tms       param_decomp/experiments/tms/tms_5-2_config.yaml
-pd-resid-mlp param_decomp/experiments/resid_mlp/resid_mlp1_config.yaml
-pd-lm        param_decomp/experiments/lm/ss_llama_simple_mlp-2L.yaml
+pd-tms       param_decomp_lab/experiments/tms/tms_5-2_config.yaml
+pd-resid-mlp param_decomp_lab/experiments/resid_mlp/resid_mlp1_config.yaml
+pd-lm        param_decomp_lab/experiments/lm/ss_llama_simple_mlp-2L.yaml
 ```
 
 For a new experiment, drop a new `run.py` next to your YAML and either invoke it

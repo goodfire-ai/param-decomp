@@ -53,10 +53,21 @@ dev = [
 
 [project.scripts]
 # Per-experiment runners — directly invoke the experiment's `main`.
-pd-tms = "param_decomp.experiments.tms.run:cli"
-pd-resid-mlp = "param_decomp.experiments.resid_mlp.run:cli"
-pd-lm = "param_decomp.experiments.lm.run:cli"
-pd-pretrain = "param_decomp.pretrain.scripts.run_slurm:cli"
+pd-tms = "param_decomp_lab.experiments.tms.run:cli"
+pd-resid-mlp = "param_decomp_lab.experiments.resid_mlp.run:cli"
+pd-lm = "param_decomp_lab.experiments.lm.run:cli"
+pd-pretrain = "param_decomp_lab.pretrain.scripts.run_slurm:cli"
+# Post-processing pipeline CLIs (SLURM-driven; lab subtrees).
+pd-clustering = "param_decomp_lab.clustering.scripts.run_pipeline:cli"
+pd-cluster-harvest = "param_decomp_lab.clustering.scripts.run_harvest:cli"
+pd-cluster-merge = "param_decomp_lab.clustering.scripts.run_merge:cli"
+pd-harvest = "param_decomp_lab.harvest.scripts.run_slurm_cli:cli"
+pd-intruder = "param_decomp_lab.harvest.scripts.run_intruder_slurm_cli:cli"
+pd-autointerp = "param_decomp_lab.autointerp.scripts.run_slurm_cli:cli"
+pd-attributions = "param_decomp_lab.dataset_attributions.scripts.run_slurm_cli:cli"
+pd-investigate = "param_decomp_lab.investigate.scripts.run_slurm_cli:cli"
+pd-postprocess = "param_decomp_lab.postprocess.cli:cli"
+pd-graph-interp = "param_decomp_lab.graph_interp.scripts.run_slurm_cli:cli"
 
 [build-system]
 requires = ["setuptools", "wheel"]
@@ -64,12 +75,12 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["param_decomp*"]
+include = ["param_decomp*", "param_decomp_lab*"]
 
 [tool.ruff]
 line-length = 100
 fix = true
-extend-exclude = ["param_decomp/app/frontend"]
+extend-exclude = ["param_decomp_lab/app/frontend"]
 
 [tool.ruff.lint]
 ignore = [
@@ -100,8 +111,8 @@ docstring-code-format = true
 known-third-party = ["wandb"]
 
 [tool.pyright]
-include = ["param_decomp", "tests", "nano_param_decomp"]
-exclude = ["**/wandb/**", "param_decomp/utils/linear_sum_assignment.py", "param_decomp/app/frontend"]
+include = ["param_decomp", "param_decomp_lab", "tests", "nano_param_decomp"]
+exclude = ["**/wandb/**", "param_decomp/utils/linear_sum_assignment.py", "param_decomp_lab/app/frontend"]
 stubPath = "typings" # Having type stubs for transformers shaves 10 seconds off basedpyright calls
 
 strictListInference = true

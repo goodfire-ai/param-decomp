@@ -1,0 +1,24 @@
+{
+    "harvest": {
+        "model_path": "wandb:goodfire/spd/runs/vjbol27n",
+        "batch_size": 64,
+        "n_tokens": 4096,
+        "n_tokens_per_seq": 5,
+        "activation_threshold": 0.1,
+        "filter_dead_threshold": 0.1,
+        "module_name_filter": null
+    },
+    "merge": {
+        "alpha": 1,
+        "iters": 1000,
+        "merge_pair_sampling_method": "range",
+        "merge_pair_sampling_kwargs": {"threshold": 0.001}
+    },
+    "wandb_project": null,
+    "logging_intervals": {
+        "stat": 10,
+        "tensor": 200,
+        "plot": 2000,
+        "artifact": 2000
+    }
+}
