@@ -137,21 +137,9 @@ class StochasticHiddenActsReconLoss(Metric[StochasticHiddenActsReconLossConfig])
     slow = True
     short_name = "StochHiddenActRecon"
 
-    def __init__(
-        self,
-        cfg: StochasticHiddenActsReconLossConfig,
-        *,
-        model: ComponentModel,
-        device: str,
-    ) -> None:
-        self.cfg = cfg
-        self.model = model
-        self.device = device
-        self._accum = _HiddenActsAccumulator(device)
-
     @override
     def reset(self) -> None:
-        self._accum.reset()
+        self._accum = _HiddenActsAccumulator(self.device)
 
     @override
     def update(self, ctx: MetricContext) -> Tensor:
@@ -185,17 +173,9 @@ class CIHiddenActsReconLoss(Metric[CIHiddenActsReconLossConfig]):
     slow = True
     short_name = "CIHiddenActRecon"
 
-    def __init__(
-        self, cfg: CIHiddenActsReconLossConfig, *, model: ComponentModel, device: str
-    ) -> None:
-        self.cfg = cfg
-        self.model = model
-        self.device = device
-        self._accum = _HiddenActsAccumulator(device)
-
     @override
     def reset(self) -> None:
-        self._accum.reset()
+        self._accum = _HiddenActsAccumulator(self.device)
 
     @override
     def update(self, ctx: MetricContext) -> None:

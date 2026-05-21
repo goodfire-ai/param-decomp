@@ -52,12 +52,6 @@ class PGDReconLoss(Metric[PGDReconLossConfig]):
     config_type = PGDReconLossConfig
     short_name = "PGDRecon"
 
-    def __init__(self, cfg: PGDReconLossConfig, *, model: ComponentModel, device: str) -> None:
-        self.cfg = cfg
-        self.model = model
-        self.device = device
-        self.reset()
-
     @override
     def reset(self) -> None:
         self.sum_loss = torch.zeros((), device=self.device)

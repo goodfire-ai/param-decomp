@@ -89,14 +89,10 @@ class StochasticReconSubsetLoss(Metric[StochasticReconSubsetLossConfig]):
     config_type = StochasticReconSubsetLossConfig
     short_name = "StochReconSub"
 
-    def __init__(
-        self, cfg: StochasticReconSubsetLossConfig, *, model: ComponentModel, device: str
-    ) -> None:
-        self.cfg = cfg
-        self.model = model
-        self.device = device
-        self.router = get_subset_router(cfg.routing, device)
-        self.reset()
+    @override
+    def bind(self, *, model: ComponentModel, device: str) -> None:
+        super().bind(model=model, device=device)
+        self.router = get_subset_router(self.cfg.routing, device)
 
     @override
     def reset(self) -> None:

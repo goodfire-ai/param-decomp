@@ -50,12 +50,6 @@ class CIMaskedReconLoss(Metric[CIMaskedReconLossConfig]):
     config_type = CIMaskedReconLossConfig
     short_name = "CIMaskRecon"
 
-    def __init__(self, cfg: CIMaskedReconLossConfig, *, model: ComponentModel, device: str) -> None:
-        self.cfg = cfg
-        self.model = model
-        self.device = device
-        self.reset()
-
     @override
     def reset(self) -> None:
         self.sum_loss = torch.zeros((), device=self.device)

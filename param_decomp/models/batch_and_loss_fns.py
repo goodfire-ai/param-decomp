@@ -8,7 +8,6 @@ by config (e.g. LM experiments). Import a concrete helper like ``run_batch_first
 """
 
 import math
-from dataclasses import dataclass
 from typing import Any, Protocol
 
 import torch
@@ -40,22 +39,6 @@ def move_batch_to_device(batch: Any, device: str | torch.device) -> Any:
     if isinstance(batch, dict):
         return {k: move_batch_to_device(v, device) for k, v in batch.items()}
     return batch
-
-
-@dataclass(frozen=True)
-class PDTarget:
-    """Target model bundle for PD.
-
-    Bundles the model with everything needed to run a forward pass through it and compare
-    its output to the component model's output. `reconstruction_loss` lives here (not
-    separately) because it's coupled to `run_batch`'s output type: KL only makes sense for
-    logits; MSE only makes sense for everything else.
-    """
-
-    model: nn.Module
-    run_batch: RunBatch
-    reconstruction_loss: ReconstructionLoss
-    tied_weights: list[tuple[str, str]] | None = None
 
 
 def run_batch_passthrough(model: nn.Module, batch: Any) -> Tensor:

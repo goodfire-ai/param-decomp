@@ -1,4 +1,3 @@
-driver_path: param_decomp.experiments.resid_mlp.experiment:Driver
 pd:
   seed: 0
   n_mask_samples: 1

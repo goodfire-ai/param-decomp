@@ -34,17 +34,8 @@ class StochasticReconSubsetCEAndKL(Metric[StochasticReconSubsetCEAndKLConfig]):
     config_type = StochasticReconSubsetCEAndKLConfig
     short_name = "StochReconSubCEKL"
 
-    def __init__(
-        self,
-        cfg: StochasticReconSubsetCEAndKLConfig,
-        *,
-        model: ComponentModel,
-        device: str,
-    ) -> None:
-        self.cfg = cfg
-        self.model = model
-        self.device = device
-
+    def __init__(self, cfg: StochasticReconSubsetCEAndKLConfig) -> None:
+        super().__init__(cfg)
         include_patterns = cfg.include_patterns or {}
         exclude_patterns = cfg.exclude_patterns or {}
         if not include_patterns and not exclude_patterns:
@@ -52,6 +43,11 @@ class StochasticReconSubsetCEAndKL(Metric[StochasticReconSubsetCEAndKLConfig]):
                 "At least one of include_patterns or exclude_patterns must be provided"
             )
 
+    @override
+    def bind(self, *, model: ComponentModel, device: str) -> None:
+        super().bind(model=model, device=device)
+        include_patterns = self.cfg.include_patterns or {}
+        exclude_patterns = self.cfg.exclude_patterns or {}
         all_modules: list[str] = model.target_module_paths
         self.subset_modules: dict[str, list[str]] = {}
         for subset_name, patterns in include_patterns.items():
@@ -70,7 +66,6 @@ class StochasticReconSubsetCEAndKL(Metric[StochasticReconSubsetCEAndKLConfig]):
                     f"Available modules: {all_modules}"
                 )
             self.subset_modules[subset_name] = remaining
-        self.reset()
 
     @override
     def reset(self) -> None:

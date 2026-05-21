@@ -7,7 +7,6 @@ from torch.distributed import ReduceOp
 from param_decomp.metrics.base import Metric, MetricConfig, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
-from param_decomp.models.component_model import ComponentModel
 from param_decomp.plotting import plot_mean_component_cis_both_scales
 from param_decomp.utils.distributed_utils import all_reduce
 
@@ -23,24 +22,15 @@ class CIMeanPerComponent(Metric[CIMeanPerComponentConfig]):
     slow = True
     short_name = "CIMeanPerComp"
 
-    def __init__(
-        self, cfg: CIMeanPerComponentConfig, *, model: ComponentModel, device: str
-    ) -> None:
-        self.cfg = cfg
-        self.model = model
-        self.components = model.components
-        self.device = device
-        self.reset()
-
     @override
     def reset(self) -> None:
         self.component_ci_sums: dict[str, Tensor] = {
             module_name: torch.zeros(self.model.module_to_c[module_name], device=self.device)
-            for module_name in self.components
+            for module_name in self.model.components
         }
         self.examples_seen: dict[str, Tensor] = {
             module_name: torch.zeros((), device=self.device, dtype=torch.long)
-            for module_name in self.components
+            for module_name in self.model.components
         }
 
     @override
@@ -56,7 +46,7 @@ class CIMeanPerComponent(Metric[CIMeanPerComponentConfig]):
     @override
     def compute(self) -> MetricResult:
         mean_component_cis = {}
-        for module_name in self.components:
+        for module_name in self.model.components:
             summed_ci = all_reduce(self.component_ci_sums[module_name], op=ReduceOp.SUM)
             examples_reduced = all_reduce(self.examples_seen[module_name], op=ReduceOp.SUM)
             mean_component_cis[module_name] = summed_ci / examples_reduced

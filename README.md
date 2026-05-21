@@ -1,7 +1,7 @@
 # Parameter Decomposition
 
-Training, post-processing, and visualization tools for parameter decomposition on neural networks.
-For a compact implementation of the core method, see [`nano_param_decomp/`](nano_param_decomp/).
+Training tools for parameter decomposition on neural networks. For a compact implementation of
+the core method, see [`nano_param_decomp/`](nano_param_decomp/).
 
 ## References
 
@@ -19,54 +19,52 @@ make install      # package only
 
 ## Run Experiments
 
+Each in-repo experiment is a self-contained script that reads a YAML and calls `optimize()`:
+
 ```bash
-pd-run <name>          # submit a SLURM job
-pd-run <name> --local  # run in this process
+pd-tms       param_decomp/experiments/tms/tms_5-2_config.yaml
+pd-resid-mlp param_decomp/experiments/resid_mlp/resid_mlp1_config.yaml
+pd-lm        param_decomp/experiments/lm/ss_llama_simple_mlp-2L.yaml
 ```
 
-Useful built-ins:
+For a brand-new experiment, write your own `run.py` that builds the target model, the
+train/eval dataloaders, the eval `Metric` list, the `PDConfig` and `RuntimeConfig`, and a
+`RunSink`, then calls `optimize(...)`:
 
-Run an experiment with `pd-run <name>`. This submits a SLURM job by default (with a git snapshot
-for reproducibility); add `--local` to run in this process instead. Compute substrate (device,
-data parallelism, autocast) lives in the YAML's `runtime:` block — there are no CLI overrides.
-Sweeps run as `pd-run --sweep_generator_path /abs/path/file.py:func --n_agents N`. The two main
-language-model decompositions:
+```python
+from param_decomp import PDConfig, RunSink, RuntimeConfig, optimize
+from param_decomp.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
 
-- **`pile_llama_simple_mlp-4L`** — 4-layer Llama (MLP-only) on the Pile; the VPD paper run
-  [`goodfire/spd/runs/s-55ea3f9b`](https://wandb.ai/goodfire/spd/runs/s-55ea3f9b)
-  ([config](param_decomp/experiments/lm/pile_llama_simple_mlp-4L.yaml)).
-- `ss_llama_simple_mlp-2L`: smaller SimpleStories LM decomposition
-  ([config](param_decomp/experiments/lm/ss_llama_simple_mlp-2L.yaml)).
+optimize(
+    target_model=my_target_module,
+    train_loader=train_loader,
+    eval_loader=eval_loader,
+    run_batch=run_batch_first_element,
+    reconstruction_loss=recon_loss_mse,
+    pd_config=PDConfig(...),
+    runtime_config=RuntimeConfig(),
+    sink=RunSink.local(out_dir, train_log_freq=100, eval_freq=1000, slow_eval_freq=5000,
+                       n_eval_steps=10),
+    eval_metrics=[...],   # list of pre-instantiated Metric objects
+    device=device,
+)
+```
 
-Other YAML configs under [`param_decomp/experiments/`](param_decomp/experiments) are
-auto-discovered. The LM experiment supports HuggingFace-loadable models with `nn.Linear`,
-`nn.Embedding`, or `transformers.modeling_utils.Conv1D` target modules.
-
-For custom experiments, either call `optimize(...)` directly or provide a YAML-driven
-`ExperimentDriver`:
-
-- **Call `optimize` directly** — build a `PDTarget` (model + `run_batch` + reconstruction loss;
-  helpers in [`batch_and_loss_fns.py`](param_decomp/models/batch_and_loss_fns.py)) plus a
-  `PDConfig` / `LoggingConfig` / `RuntimeConfig` triple and a `RunSink`, then call
-  `optimize(target=..., train_loader=..., eval_loader=..., pd_config=..., logging_config=...,
-  runtime_config=..., device=..., sink=...)`.
-  Reload with `ComponentModel.from_checkpoint(...)`. Best for notebooks/scripts.
-- **Package it as a YAML-driven experiment** — define your experiment as a Pydantic `RunConfig`
-  subclass (adding `target` / `data` fields) plus an `ExperimentDriver` class (a small adapter
-  exposing `build_target` and `build_dataloaders`; see
-  [`driver.py`](param_decomp/experiments/driver.py) for the interface and
-  [`tms/experiment.py`](param_decomp/experiments/tms/experiment.py) for the smallest example),
-  put `driver_path: my_pkg.my_exp:MyDriver` at the top of your YAML, then run
-  `pd-run --config_path my_config.yaml`. This is what built-in experiments do, and is needed for
-  sweeps and for self-reloading runs via `load_component_model(path)` or `SavedRun.from_path(...)`.
+The three in-repo `run.py` files
+([tms](param_decomp/experiments/tms/run.py),
+ [resid_mlp](param_decomp/experiments/resid_mlp/run.py),
+ [lm](param_decomp/experiments/lm/run.py)) are reference examples.
 
 ## Metrics
 
-Configure training losses in `pd.loss_metrics` and extra eval-only metrics in
-`logging.eval_metrics`. Keys are registered metric class names. Loss metrics must set `coeff`;
-they are evaluated automatically, so do not repeat them under `eval_metrics`.
+Configure training losses in `pd.loss_metrics`; keys are registered metric class names. Loss
+metrics must set `coeff`; they are evaluated automatically.
 
-You can pass your own metrics by listing importable dotted modules in `pd.metric_modules`.
+Eval-only metrics are constructed by your `run.py` and passed to `optimize(eval_metrics=...)`.
+The `experiments.utils.build_eval_metrics(...)` helper converts a YAML
+`logging.eval_metrics` dict-of-config into a `list[Metric]`.
+
+You can register your own metrics by listing importable dotted modules in `pd.metric_modules`.
 `PDConfig` imports those modules before resolving metric names, so any classes decorated with
 `@register_metric` are available from YAML:
 
@@ -83,25 +81,10 @@ logging:
     MyCustomEvalMetric: {}
 ```
 
-Custom metric modules define a Pydantic config plus a metric class satisfying
-`__init__(cfg, *, model, device)`, `reset()`, `update(ctx)`, and `compute()`. Use
-`LossMetricConfig` for trainable losses and `MetricConfig` for eval-only metrics; see
+Custom metric modules define a Pydantic config plus a metric class satisfying `__init__(cfg)`,
+`bind(*, model, device)`, `reset()`, `update(ctx)`, and `compute()`. Use `LossMetricConfig` for
+trainable losses and `MetricConfig` for eval-only metrics; see
 [`param_decomp/metrics/base.py`](param_decomp/metrics/base.py).
-
-## App And Post-Processing
-
-```bash
-make install-app
-make app
-```
-
-The app reads post-processed artifacts. Run all post-processing stages from one config with:
-
-```bash
-pd-postprocess param_decomp/postprocess/pile.yaml
-```
-
-The stages are Harvest, Autointerp, Dataset attributions, Graph interpretation, and Clustering.
 
 ## Development
 

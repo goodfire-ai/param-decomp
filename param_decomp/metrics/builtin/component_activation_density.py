@@ -8,7 +8,6 @@ from torch.distributed import ReduceOp
 from param_decomp.metrics.base import Metric, MetricConfig, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
-from param_decomp.models.component_model import ComponentModel
 from param_decomp.plotting import plot_component_activation_density
 from param_decomp.utils.distributed_utils import all_reduce
 
@@ -25,14 +24,6 @@ class ComponentActivationDensity(Metric[ComponentActivationDensityConfig]):
     config_type = ComponentActivationDensityConfig
     slow = True
     short_name = "CompActDens"
-
-    def __init__(
-        self, cfg: ComponentActivationDensityConfig, *, model: ComponentModel, device: str
-    ) -> None:
-        self.cfg = cfg
-        self.model = model
-        self.device = device
-        self.reset()
 
     @override
     def reset(self) -> None:

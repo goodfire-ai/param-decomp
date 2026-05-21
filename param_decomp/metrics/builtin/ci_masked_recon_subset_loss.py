@@ -74,14 +74,10 @@ class CIMaskedReconSubsetLoss(Metric[CIMaskedReconSubsetLossConfig]):
     config_type = CIMaskedReconSubsetLossConfig
     short_name = "CIMaskReconSub"
 
-    def __init__(
-        self, cfg: CIMaskedReconSubsetLossConfig, *, model: ComponentModel, device: str
-    ) -> None:
-        self.cfg = cfg
-        self.model = model
-        self.device = device
-        self.router = get_subset_router(cfg.routing, device)
-        self.reset()
+    @override
+    def bind(self, *, model: ComponentModel, device: str) -> None:
+        super().bind(model=model, device=device)
+        self.router = get_subset_router(self.cfg.routing, device)
 
     @override
     def reset(self) -> None:

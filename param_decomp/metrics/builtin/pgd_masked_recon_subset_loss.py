@@ -30,14 +30,10 @@ class PGDReconSubsetLoss(Metric[PGDReconSubsetLossConfig]):
     config_type = PGDReconSubsetLossConfig
     short_name = "PGDReconSub"
 
-    def __init__(
-        self, cfg: PGDReconSubsetLossConfig, *, model: ComponentModel, device: str
-    ) -> None:
-        self.cfg = cfg
-        self.model = model
-        self.device = device
-        self.router = get_subset_router(cfg.routing, device)
-        self.reset()
+    @override
+    def bind(self, *, model: ComponentModel, device: str) -> None:
+        super().bind(model=model, device=device)
+        self.router = get_subset_router(self.cfg.routing, device)
 
     @override
     def reset(self) -> None:

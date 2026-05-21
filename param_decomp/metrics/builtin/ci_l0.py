@@ -9,7 +9,6 @@ from torch.distributed import ReduceOp
 from param_decomp.metrics.base import Metric, MetricConfig, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
-from param_decomp.models.component_model import ComponentModel
 from param_decomp.utils.component_utils import calc_ci_l_zero
 from param_decomp.utils.distributed_utils import all_reduce
 
@@ -26,12 +25,6 @@ class CI_L0(Metric[CI_L0Config]):
     section = "l0"
     config_type = CI_L0Config
     short_name = "CI_L0"
-
-    def __init__(self, cfg: CI_L0Config, *, model: ComponentModel, device: str) -> None:
-        self.cfg = cfg
-        self.device = device
-        self.model = model
-        self.reset()
 
     @override
     def reset(self) -> None:

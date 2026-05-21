@@ -24,7 +24,6 @@ from param_decomp.metrics.builtin.hidden_acts_recon_loss import (
 )
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
-from param_decomp.models.component_model import ComponentModel
 from param_decomp.persistent_pgd import PersistentPGDState, PPGDSources, get_ppgd_mask_infos
 from param_decomp.utils.distributed_utils import all_reduce
 
@@ -37,13 +36,10 @@ class _PersistentPGDReconBase[
     section: ClassVar[str] = "loss"
     slow: ClassVar[bool] = True
 
-    def __init__(self, cfg: TConfig, *, model: ComponentModel, device: str) -> None:
-        self.cfg = cfg
-        self.model = model
-        self.device = device
+    def __init__(self, cfg: TConfig) -> None:
+        super().__init__(cfg)
         self.state: PersistentPGDState | None = None
         self._pending_source_grads: PPGDSources | None = None
-        self.reset()
 
     def _ensure_state(self, ctx: MetricContext) -> None:
         if self.state is not None:
@@ -71,7 +67,6 @@ class _PersistentPGDReconBase[
             return None
         self._ensure_state(ctx)
         assert self.state is not None
-        # The optimizer-loop calls `update_lr` once per step in run_pd.py today.
         # The schedule is keyed on training step, so we only step it when not in eval.
         if not ctx.is_eval:
             self.state.update_lr(step=ctx.step, total_steps=ctx.config.steps)

@@ -1,5 +1,0 @@
-autointerp:
-  config:
-    type: compact_skeptical
-    forbidden_words: []
-  cost_limit_usd: 100

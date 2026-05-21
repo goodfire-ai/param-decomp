@@ -1,65 +1,44 @@
 """Public PD API.
 
-Three-phase lifecycle:
+One entry point:
 
-    RunConfig   →   RunSink    →   SavedRun
-    (recipe)        (writer        (reader
-                     during          after)
-                     training)
+    optimize(target_model, train_loader, eval_loader, *, run_batch, reconstruction_loss,
+             pd_config, runtime_config, sink, eval_metrics, device)
 
-Each phase is its own type — separate concerns, separate lifetimes.
-
-Two ways to train:
-    - `optimize(target, train_loader, eval_loader, *, pd_config, logging_config,
-      runtime_config, device, sink)` — notebook / script entry point. Pure
-      trainer. Caller provides target/loaders/configs explicitly, plus a
-      `RunSink` for outputs.
-    - `run_pd(run_cfg, *, device, ...)` — driver-mediated entry point. Reads a
-      `RunConfig`, materializes target+loaders from the driver, builds a
-      `RunSink.for_run`, then calls `optimize`. Used by `pd-run` / `_worker.py`.
-
-Reload:
-    - `load_component_model(path)` — driver-mediated reload.
-    - `SavedRun.from_path(path)` — handle to a saved run for full reload
-      (model + dataloaders + target via the driver).
-
-Core types:
-    - `PDConfig`: training/algorithm config.
-    - `PDTarget`: target model + run_batch + reconstruction_loss.
-    - `RunConfig`: serializable spec for a driver-mediated run.
-      Driver-specific subclasses (LMRunConfig, TMSRunConfig, ResidMLPRunConfig) add target/data.
-    - `ExperimentDriver`: Protocol for the open-world experiment extension point.
-    - `RunSink`: output channels (local files + opportunistic wandb +
-      checkpoints) for a training run. Constructors:
-      `RunSink.for_run(run_cfg, ...)` (driver-mediated),
-      `RunSink.local(out_dir)` / `RunSink.with_wandb(out_dir, project=..., ...)`
-      (notebook), `RunSink.silent()` (no persistence).
-    - `SavedRun`: handle to a completed run on disk / W&B.
-      `SavedRun.from_path(path)` resolves spec + checkpoint + driver.
-
-Composition root:
-    - `materialize_run(run_cfg, *, device, dist_state=None, driver=None) ->
-      (target, train_loader, eval_loader)` — driver-mediated callers turn a
-      `RunConfig` into the tuple `optimize` needs.
+Caller builds:
+    - `target_model`: the `nn.Module` whose weights you want to decompose.
+    - `train_loader` / `eval_loader`: dataloaders. `optimize` re-iters them with
+      `loop_dataloader`, so finite loaders restart.
+    - `run_batch`: `(model, batch) -> Tensor` — how a forward pass is invoked.
+      Pre-built helpers: `run_batch_passthrough`, `run_batch_first_element`,
+      `make_run_batch(output_extract)` in `param_decomp.models.batch_and_loss_fns`.
+    - `reconstruction_loss`: `(pred, target) -> (loss, n_examples)`. Helpers:
+      `recon_loss_mse`, `recon_loss_kl` in the same module.
+    - `pd_config`: `PDConfig` — the PD algorithm spec (CI fn, loss-metric mix,
+      module patterns, optimizers, schedules, seed, tied weights).
+    - `runtime_config`: `RuntimeConfig` — substrate (device, autocast, dp).
+    - `sink`: `RunSink` — output channels + cadence. Use
+      `RunSink.local(out_dir, train_log_freq=..., eval_freq=..., ...)`,
+      `RunSink.with_wandb(out_dir, project=..., train_log_freq=..., ...)`, or
+      `RunSink.silent(...)` for tests / quick interactive runs.
+    - `eval_metrics`: list of pre-instantiated eval `Metric` objects. `optimize`
+      binds them to the built `ComponentModel` internally.
 """
 
-from param_decomp.configs import PDConfig
-from param_decomp.experiments.driver import ExperimentDriver
-from param_decomp.models.batch_and_loss_fns import PDTarget
-from param_decomp.run import RunConfig
-from param_decomp.run_pd import materialize_run, optimize, run_pd
+from param_decomp.configs import PDConfig, RuntimeConfig
+from param_decomp.metrics.base import LossMetricConfig, Metric, MetricConfig
+from param_decomp.models.batch_and_loss_fns import ReconstructionLoss, RunBatch
+from param_decomp.optimize import optimize
 from param_decomp.run_sink import RunSink
-from param_decomp.saved_run import SavedRun, load_component_model
 
 __all__ = [
-    "ExperimentDriver",
+    "LossMetricConfig",
+    "Metric",
+    "MetricConfig",
     "PDConfig",
-    "PDTarget",
-    "RunConfig",
+    "ReconstructionLoss",
+    "RunBatch",
     "RunSink",
-    "SavedRun",
-    "load_component_model",
-    "materialize_run",
+    "RuntimeConfig",
     "optimize",
-    "run_pd",
 ]

@@ -243,7 +243,8 @@ def test_per_module_recon_metric_keys() -> None:
     target_output = model(batch, cache_type="input")
     ci = model.calc_causal_importances(pre_weight_acts=target_output.cache, sampling="continuous")
 
-    metric = CIHiddenActsReconLoss(CIHiddenActsReconLossConfig(), model=model, device="cpu")
+    metric = CIHiddenActsReconLoss(CIHiddenActsReconLossConfig())
+    metric.bind(model=model, device="cpu")
     ctx = MetricContext(
         model=model,
         config=_metric_runtime_config(),
@@ -295,7 +296,8 @@ def test_ppgd_recon_eval_metric_keys() -> None:
         optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
         scope=SingleSourceScope(),
     )
-    metric = PersistentPGDReconLoss(ppgd_cfg, model=model, device="cpu")
+    metric = PersistentPGDReconLoss(ppgd_cfg)
+    metric.bind(model=model, device="cpu")
 
     ctx = MetricContext(
         model=model,

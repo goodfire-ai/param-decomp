@@ -8,7 +8,6 @@ from torch.distributed import ReduceOp
 from param_decomp.metrics.base import LossMetricConfig, Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
-from param_decomp.models.component_model import ComponentModel
 from param_decomp.utils.distributed_utils import all_reduce
 
 
@@ -37,11 +36,6 @@ class FaithfulnessLoss(Metric[FaithfulnessLossConfig]):
     section = "loss"
     config_type = FaithfulnessLossConfig
     short_name = "Faith"
-
-    def __init__(self, cfg: FaithfulnessLossConfig, *, model: ComponentModel, device: str) -> None:
-        self.cfg = cfg
-        self.device = device
-        self.reset()
 
     @override
     def reset(self) -> None:

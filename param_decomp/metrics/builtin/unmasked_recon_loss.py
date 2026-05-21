@@ -44,12 +44,6 @@ class UnmaskedReconLoss(Metric[UnmaskedReconLossConfig]):
     config_type = UnmaskedReconLossConfig
     short_name = "UnmaskedRecon"
 
-    def __init__(self, cfg: UnmaskedReconLossConfig, *, model: ComponentModel, device: str) -> None:
-        self.cfg = cfg
-        self.model = model
-        self.device = device
-        self.reset()
-
     @override
     def reset(self) -> None:
         self.sum_loss = torch.zeros((), device=self.device)

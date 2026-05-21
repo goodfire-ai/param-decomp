@@ -52,18 +52,11 @@ dev = [
 ]
 
 [project.scripts]
-pd-run = "param_decomp.experiments.runner:cli"
+# Per-experiment runners — directly invoke the experiment's `main`.
+pd-tms = "param_decomp.experiments.tms.run:cli"
+pd-resid-mlp = "param_decomp.experiments.resid_mlp.run:cli"
+pd-lm = "param_decomp.experiments.lm.run:cli"
 pd-pretrain = "param_decomp.pretrain.scripts.run_slurm:cli"
-pd-clustering = "param_decomp.clustering.scripts.run_pipeline:cli"
-pd-cluster-harvest = "param_decomp.clustering.scripts.run_harvest:cli"
-pd-cluster-merge = "param_decomp.clustering.scripts.run_merge:cli"
-pd-harvest = "param_decomp.harvest.scripts.run_slurm_cli:cli"
-pd-intruder = "param_decomp.harvest.scripts.run_intruder_slurm_cli:cli"
-pd-autointerp = "param_decomp.autointerp.scripts.run_slurm_cli:cli"
-pd-attributions = "param_decomp.dataset_attributions.scripts.run_slurm_cli:cli"
-pd-investigate = "param_decomp.investigate.scripts.run_slurm_cli:cli"
-pd-postprocess = "param_decomp.postprocess.cli:cli"
-pd-graph-interp = "param_decomp.graph_interp.scripts.run_slurm_cli:cli"
 
 [build-system]
 requires = ["setuptools", "wheel"]

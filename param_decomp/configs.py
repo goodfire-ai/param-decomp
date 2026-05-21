@@ -259,19 +259,17 @@ SamplingType = Literal["continuous", "binomial"]
 # --- Metric resolution -------------------------------------------------------------
 
 
-def _parse_metric_cfg(metric_name: str, raw: Any, *, train_loss: bool) -> MetricConfig:
-    """Look up the metric by class name in METRIC_REGISTRY and validate its config."""
+def _parse_loss_metric_cfg(metric_name: str, raw: Any) -> LossMetricConfig:
+    """Look up a loss-capable metric by class name in METRIC_REGISTRY and validate its config."""
     assert metric_name in METRIC_REGISTRY, (
         f"unknown metric {metric_name!r} (registered: {sorted(METRIC_REGISTRY)})"
     )
     metric_cls = METRIC_REGISTRY[metric_name]
     cfg = raw if isinstance(raw, MetricConfig) else metric_cls.config_type.model_validate(raw or {})
-
-    if train_loss:
-        assert isinstance(cfg, LossMetricConfig), (
-            f"{metric_name!r} is eval-only; move it under eval_metrics"
-        )
-        assert cfg.coeff is not None, f"loss_metrics.{metric_name!r} must set `coeff`"
+    assert isinstance(cfg, LossMetricConfig), (
+        f"{metric_name!r} is eval-only; only loss-capable metrics belong in pd.loss_metrics"
+    )
+    assert cfg.coeff is not None, f"loss_metrics.{metric_name!r} must set `coeff`"
     return cfg
 
 
@@ -279,8 +277,7 @@ class RuntimeConfig(BaseConfig):
     """Compute substrate: device, precision, data-parallelism degree.
 
     Perturbs numerics but doesn't change the algorithm. Future home for NCCL flags,
-    gradient accumulation steps, fp8 variants, etc. See CLAUDE.md for how the
-    ``PDConfig`` / ``RuntimeConfig`` / ``LoggingConfig`` triple splits.
+    gradient accumulation steps, fp8 variants, etc.
     """
 
     autocast_bf16: bool = Field(
@@ -312,90 +309,11 @@ class RuntimeConfig(BaseConfig):
         return self
 
 
-class LoggingConfig(BaseConfig):
-    """Observation-only settings: cadence, eval-only metrics, display thresholds.
-
-    Fields here don't touch the optimizer. See CLAUDE.md for how the
-    ``PDConfig`` / ``RuntimeConfig`` / ``LoggingConfig`` triple splits.
-    """
-
-    train_log_freq: PositiveInt = Field(
-        ...,
-        description="Interval (in steps) at which to log training metrics",
-    )
-    eval_freq: PositiveInt = Field(
-        ...,
-        description="Interval (in steps) at which to log evaluation metrics",
-    )
-    eval_batch_size: PositiveInt = Field(
-        ...,
-        description="Batch size used for evaluation.",
-    )
-    slow_eval_freq: PositiveInt = Field(
-        ...,
-        description="Interval (in steps) at which to run slow evaluation metrics. "
-        "Must be a multiple of `eval_freq`.",
-    )
-    n_eval_steps: PositiveInt = Field(
-        ...,
-        description="Number of steps to run evaluation for",
-    )
-    slow_eval_on_first_step: bool = Field(
-        default=True,
-        description="Whether to run slow evaluation on the first step",
-    )
-    save_freq: PositiveInt | None = Field(
-        default=None,
-        description="Interval (in steps) at which to save model checkpoints (None disables saving "
-        "until the end of training).",
-    )
-    eval_metrics: dict[str, SerializeAsAny[MetricConfig]] = Field(
-        default_factory=dict,
-        description=(
-            "Eval-only metrics keyed by metric class name. Metrics already set in"
-            " `pd.loss_metrics` are evaluated automatically and should not be repeated here."
-        ),
-    )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _discover_builtin_metrics(cls, data: Any) -> Any:
-        """Ensure built-in `@register_metric` decorators have fired before `eval_metrics`
-        looks names up in `METRIC_REGISTRY`. External metric modules are imported by
-        `PDConfig._import_metric_modules`; rely on field ordering on the parent
-        parent `RunConfig` (pd validated before logging) for those to be visible here.
-        """
-        from param_decomp.metrics import discover_metrics
-
-        discover_metrics()
-        return data
-
-    @field_validator("eval_metrics", mode="before")
-    @classmethod
-    def _parse_eval_metrics(cls, v: Any) -> dict[str, MetricConfig]:
-        if v is None:
-            return {}
-        return {
-            metric_name: _parse_metric_cfg(metric_name, raw, train_loss=False)
-            for metric_name, raw in v.items()
-        }
-
-    @model_validator(mode="after")
-    def validate_model(self) -> Self:
-        assert self.slow_eval_freq % self.eval_freq == 0, (
-            "slow_eval_freq must be a multiple of eval_freq"
-        )
-        assert self.slow_eval_freq // self.eval_freq >= 1, (
-            "slow_eval_freq must be at least eval_freq"
-        )
-        return self
-
-
 class PDConfig(BaseConfig):
     """Algorithm specification: seed, CI function, losses, optimizers, module info.
 
-    Flipping any field here changes what algorithm runs. See CLAUDE.md for how the
-    ``PDConfig`` / ``RuntimeConfig`` / ``LoggingConfig`` triple splits.
+    Flipping any field here changes what algorithm runs. Pair with `RuntimeConfig`
+    (substrate) and `RunSink` (cadence + outputs) when calling `optimize`.
     """
 
     # --- General ---
@@ -447,6 +365,12 @@ class PDConfig(BaseConfig):
         "model and component weights.",
     )
 
+    tied_weights: list[tuple[str, str]] | None = Field(
+        default=None,
+        description="Pairs (src, tgt) of component module names whose weights should be tied. "
+        "After init, tgt's U/V are set to src's V.T / U.T. Ties make training nondeterministic.",
+    )
+
     metric_modules: list[str] = Field(
         default_factory=list,
         description=(
@@ -471,9 +395,7 @@ class PDConfig(BaseConfig):
     def _import_metric_modules(cls, data: Any) -> Any:
         """Import metric modules so their `@register_metric` decorators fire
         before the `loss_metrics` field validator looks names up in `METRIC_REGISTRY`.
-        Idempotent: re-validation in the same process is a no-op. External-metric
-        visibility on the sibling `LoggingConfig.eval_metrics` relies on field ordering
-        in the parent `RunConfig` (pd validated before logging).
+        Idempotent: re-validation in the same process is a no-op.
         """
         from param_decomp.metrics import discover_metrics
 
@@ -485,12 +407,11 @@ class PDConfig(BaseConfig):
 
     @field_validator("loss_metrics", mode="before")
     @classmethod
-    def _parse_loss_metrics(cls, v: Any) -> dict[str, MetricConfig]:
+    def _parse_loss_metrics(cls, v: Any) -> dict[str, LossMetricConfig]:
         if v is None:
             return {}
         return {
-            metric_name: _parse_metric_cfg(metric_name, raw, train_loss=True)
-            for metric_name, raw in v.items()
+            metric_name: _parse_loss_metric_cfg(metric_name, raw) for metric_name, raw in v.items()
         }
 
     # --- Training ---

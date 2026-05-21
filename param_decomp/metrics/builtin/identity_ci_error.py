@@ -4,7 +4,6 @@ from param_decomp.configs import SamplingType
 from param_decomp.metrics.base import Metric, MetricConfig, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
-from param_decomp.models.component_model import ComponentModel
 from param_decomp.plotting import get_single_feature_causal_importances
 from param_decomp.utils.target_ci_solutions import compute_target_metrics, make_target_ci_solution
 
@@ -24,12 +23,6 @@ class IdentityCIError(Metric[IdentityCIErrorConfig]):
     short_name = "IdCIErr"
 
     input_magnitude: ClassVar[float] = 0.75
-
-    def __init__(self, cfg: IdentityCIErrorConfig, *, model: ComponentModel, device: str) -> None:
-        self.cfg = cfg
-        self.model = model
-        self.device = device
-        self.reset()
 
     @override
     def reset(self) -> None:

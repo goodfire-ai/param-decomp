@@ -1,14 +1,16 @@
 """Metric protocol and config base classes.
 
 Metrics are auto-registered via `@register_metric` and looked up by their class name from
-`PDConfig.loss_metrics` / `LoggingConfig.eval_metrics`. Each metric file defines its pydantic
-config class (subclassing `MetricConfig` for eval-only or `LossMetricConfig` for loss-capable)
-alongside the `Metric` class itself.
+`PDConfig.loss_metrics`. Each metric file defines its pydantic config class (subclassing
+`MetricConfig` for eval-only or `LossMetricConfig` for loss-capable) alongside the `Metric`
+class itself.
 
-A metric's `update(ctx)` is called once per training step (returning the live loss for
-loss-capable metrics) and once per eval batch. Eval reads `compute()` after the last batch.
-`reset()` is called before each eval pass; loss-capable metrics' accumulators must `.detach()`
-before adding to avoid retaining the autograd graph across training steps.
+Metrics are instantiated with just the validated config (`MyMetric(cfg)`). The training loop
+calls `metric.bind(model=component_model, device=...)` once before any other method, then
+`update(ctx)` per step / per eval batch and `compute()` per eval pass. `reset()` is called
+inside `bind()` to initialise stateful tensors on the bound device, and before each eval pass.
+Loss-capable metrics' accumulators must `.detach()` before adding to avoid retaining the
+autograd graph across training steps.
 """
 
 from abc import ABC, abstractmethod
@@ -31,7 +33,7 @@ class LossMetricConfig(MetricConfig):
     """Pydantic config for a metric that can also be used as a training loss.
 
     `coeff` is required when this metric is listed under `loss_metrics` (asserted by PDConfig's
-    field validator) and ignored when listed under `eval_metrics`.
+    field validator) and ignored when an eval-only instance is constructed directly.
     """
 
     coeff: float | None = None
@@ -50,15 +52,31 @@ class Metric[TConfig: MetricConfig](ABC):
     slow: ClassVar[bool] = False
     short_name: ClassVar[str | None] = None
     cfg: TConfig
+    model: Any
+    device: str
 
-    @abstractmethod
-    def __init__(self, cfg: TConfig, *, model: Any, device: str) -> None:
-        """Initialize one metric instance from validated config and shared runtime objects.
+    def __init__(self, cfg: TConfig) -> None:
+        """Initialize the metric from its validated config.
 
-        `model` is the component model being optimized or evaluated, and `device` is the target
-        torch device string used by the run.
+        Construction does not bind runtime resources. The training loop calls
+        :meth:`bind` once with the live `ComponentModel` and device before any
+        other method on the metric is invoked.
         """
-        ...
+        self.cfg = cfg
+        self._bound = False
+
+    def bind(self, *, model: Any, device: str) -> None:
+        """Attach the component model and device, then call `reset()`.
+
+        Called by the training loop after the `ComponentModel` is constructed. Subclasses
+        that need additional bind-time setup (e.g. resolving module paths against the model)
+        should override and call `super().bind(...)` first.
+        """
+        assert not self._bound, f"{type(self).__name__} is already bound"
+        self.model = model
+        self.device = device
+        self._bound = True
+        self.reset()
 
     @abstractmethod
     def reset(self) -> None:
@@ -66,7 +84,8 @@ class Metric[TConfig: MetricConfig](ABC):
 
         Stateless metrics may implement this as a no-op. Stateful metrics should reset counters,
         sums, cached examples, plots, or adversarial eval state so a subsequent `compute()` only
-        reflects batches processed after this call.
+        reflects batches processed after this call. Called automatically inside `bind()` to
+        initialise device-typed accumulators.
         """
         ...
 

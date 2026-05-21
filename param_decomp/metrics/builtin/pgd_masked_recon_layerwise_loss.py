@@ -8,7 +8,6 @@ from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.pgd_utils import PGDConfig, pgd_masked_recon_loss_update
 from param_decomp.metrics.registry import register_metric
-from param_decomp.models.component_model import ComponentModel
 from param_decomp.routing import LayerRouter
 from param_decomp.utils.distributed_utils import all_reduce
 
@@ -25,14 +24,6 @@ class PGDReconLayerwiseLoss(Metric[PGDReconLayerwiseLossConfig]):
     section = "loss"
     config_type = PGDReconLayerwiseLossConfig
     short_name = "PGDReconLayer"
-
-    def __init__(
-        self, cfg: PGDReconLayerwiseLossConfig, *, model: ComponentModel, device: str
-    ) -> None:
-        self.cfg = cfg
-        self.model = model
-        self.device = device
-        self.reset()
 
     @override
     def reset(self) -> None:

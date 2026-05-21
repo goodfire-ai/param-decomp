@@ -84,14 +84,6 @@ class StochasticReconLayerwiseLoss(Metric[StochasticReconLayerwiseLossConfig]):
     config_type = StochasticReconLayerwiseLossConfig
     short_name = "StochReconLayer"
 
-    def __init__(
-        self, cfg: StochasticReconLayerwiseLossConfig, *, model: ComponentModel, device: str
-    ) -> None:
-        self.cfg = cfg
-        self.model = model
-        self.device = device
-        self.reset()
-
     @override
     def reset(self) -> None:
         self.sum_loss = torch.zeros((), device=self.device)

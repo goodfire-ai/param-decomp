@@ -21,9 +21,7 @@ from matplotlib.figure import Figure
 from torch import Tensor
 
 from param_decomp.experiments.tms.models import TMSModel
-from param_decomp.log import logger
 from param_decomp.models.components import Components
-from param_decomp.settings import REPO_ROOT
 
 
 @dataclass
@@ -956,89 +954,3 @@ class TMSPlotter:
         output["Std L2 ratio"] = l2_ratio.std().item()
 
         return output
-
-
-def main():
-    """Main execution function."""
-
-    # Define run configurations with custom PlotConfig for each
-    run_configs = {
-        # "wandb:goodfire/spd-tms/runs/f63itpo1": {"config": PlotConfig(), "name": "5-2"},
-        "wandb:goodfire/spd-tms/runs/8bxfjeu5": {
-            "config": PlotConfig(subnet_norm_threshold=0.03, hidden_layer_threshold=0.0115),
-            "name": "5-2-identity",
-        },
-        # "wandb:goodfire/spd-tms/runs/xq1ivc6b": {"config": PlotConfig(), "name": "40-10"},
-        # "wandb:goodfire/spd-tms/runs/xyq22lbc": {"config": PlotConfig(), "name": "40-10-identity"},
-    }
-
-    for run_id, run_info in run_configs.items():
-        run_id_stem = run_id.split("/")[-1]
-
-        # Setup output directory
-        out_dir = REPO_ROOT / "param_decomp/experiments/tms/out/figures" / run_id_stem
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        # Load models
-        from param_decomp.saved_run import SavedRun
-
-        model = SavedRun.from_path(run_id).load_model()
-        assert isinstance(model.target_model, TMSModel)
-
-        # Get custom config and name for this run
-        plot_config = run_info["config"]
-        assert isinstance(plot_config, PlotConfig)
-        run_name = run_info["name"]
-
-        # Create plotter with custom config
-        plotter = TMSPlotter(
-            model=model.target_model, components=model.components, config=plot_config
-        )
-
-        # log analysis
-        logger.section(f"TMS Analysis Summary - {run_name}")
-        logger.values(plotter.get_analysis_summary())
-
-        # Generate plots based on model architecture
-        if model.target_model.config.n_hidden == 2:
-            if model.target_model.config.n_hidden_layers == 0:
-                # Model without hidden layers - use combined plot
-                fig = plotter.plot_combined_diagram()
-                filename = f"tms_combined_diagram_{run_name}.png"
-                fig.savefig(
-                    out_dir / filename,
-                    bbox_inches="tight",
-                    dpi=plotter.config.dpi,
-                )
-                logger.info(f"Saved combined diagram to {out_dir / filename}")
-            else:
-                # Model with hidden layers - use separate plots
-                # Vector plot
-                fig = plotter.plot_vectors()
-                filename = f"tms_vectors_{run_name}.png"
-                fig.savefig(out_dir / filename, bbox_inches="tight", dpi=plotter.config.dpi)
-                logger.info(f"Saved vectors plot to {out_dir / filename}")
-
-                # Full network plot
-                fig = plotter.plot_full_network()
-                filename = f"tms_full_network_{run_name}.png"
-                fig.savefig(out_dir / filename, bbox_inches="tight", dpi=plotter.config.dpi)
-                logger.info(f"Saved full network diagram to {out_dir / filename}")
-
-        # Hidden layer heatmaps (if applicable)
-        if model.target_model.config.n_hidden_layers > 0:
-            fig = plotter.plot_hidden_layers()
-            if fig:
-                filename = f"tms_hidden_layers_{run_name}.png"
-                fig.savefig(out_dir / filename, bbox_inches="tight", dpi=plotter.config.dpi)
-                logger.info(f"Saved hidden layers plot to {out_dir / filename}")
-
-        # Plot cosine similarity analysis
-        fig = plotter.plot_cosine_similarity_analysis()
-        filename = f"cosine_similarity_analysis_{run_name}.png"
-        fig.savefig(out_dir / filename, bbox_inches="tight", dpi=plotter.config.dpi)
-        logger.info(f"Saved cosine similarity analysis to {out_dir / filename}")
-
-
-if __name__ == "__main__":
-    main()

@@ -5,34 +5,23 @@ import torch
 from torch import Tensor
 from transformers import GPT2LMHeadModel
 
+from param_decomp import PDConfig, RunSink, RuntimeConfig, optimize
 from param_decomp.configs import (
     LayerwiseCiConfig,
-    LoggingConfig,
     ModulePatternInfoConfig,
     OptimizerConfig,
-    PDConfig,
-    RuntimeConfig,
     ScheduleConfig,
 )
-from param_decomp.experiments.lm.data import (
-    LMDataConfig,
-    create_lm_data_loader,
-)
+from param_decomp.experiments.lm.data import LMDataConfig, create_lm_data_loader
 from param_decomp.identity_insertion import insert_identity_operations_
-from param_decomp.metrics.builtin.ci_l0 import CI_L0Config
+from param_decomp.metrics.builtin.ci_l0 import CI_L0, CI_L0Config
 from param_decomp.metrics.builtin.faithfulness_loss import FaithfulnessLossConfig
 from param_decomp.metrics.builtin.importance_minimality_loss import ImportanceMinimalityLossConfig
 from param_decomp.metrics.builtin.stochastic_recon_layerwise_loss import (
     StochasticReconLayerwiseLossConfig,
 )
 from param_decomp.metrics.builtin.stochastic_recon_loss import StochasticReconLossConfig
-from param_decomp.models.batch_and_loss_fns import (
-    PDTarget,
-    make_run_batch,
-    recon_loss_kl,
-)
-from param_decomp.run_pd import optimize
-from param_decomp.run_sink import RunSink
+from param_decomp.models.batch_and_loss_fns import make_run_batch, recon_loss_kl
 from param_decomp.utils.general_utils import set_seed
 
 
@@ -42,7 +31,7 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
     set_seed(0)
     device = "cpu"
 
-    config = PDConfig(
+    pd_config = PDConfig(
         seed=0,
         n_mask_samples=1,
         ci_config=LayerwiseCiConfig(fn_type="vector_mlp", hidden_dims=[128]),
@@ -74,25 +63,15 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         batch_size=4,
         steps=2,
     )
-    logging_config = LoggingConfig(
-        n_eval_steps=1,
-        train_log_freq=50,
-        eval_freq=500,
-        eval_batch_size=1,
-        slow_eval_freq=500,
-        slow_eval_on_first_step=False,
-        save_freq=None,
-        eval_metrics={
-            "CI_L0": CI_L0Config(ci_alive_threshold=0.1, groups=None),
-        },
-    )
 
     model_name = "SimpleStories/test-SimpleStories-gpt2-1.25M"
     target_model = GPT2LMHeadModel.from_pretrained(model_name)
     target_model.eval()
 
-    if config.identity_module_info is not None:
-        insert_identity_operations_(target_model, identity_module_info=config.identity_module_info)
+    if pd_config.identity_module_info is not None:
+        insert_identity_operations_(
+            target_model, identity_module_info=pd_config.identity_module_info
+        )
 
     data_config = LMDataConfig(
         dataset_name="SimpleStories/SimpleStories",
@@ -111,33 +90,37 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
     train_loader, _tokenizer = create_lm_data_loader(
         data_config,
         split=data_config.train_split,
-        batch_size=config.batch_size,
-        seed=config.seed,
+        batch_size=pd_config.batch_size,
+        seed=pd_config.seed,
         collate_fn=collate_input_ids,
     )
     eval_loader, _ = create_lm_data_loader(
         data_config,
         split=data_config.eval_split,
-        batch_size=config.batch_size,
-        seed=config.seed + 1,
+        batch_size=1,
+        seed=pd_config.seed + 1,
         collate_fn=collate_input_ids,
     )
 
-    target = PDTarget(
-        model=target_model,
-        run_batch=make_run_batch("logits"),
-        reconstruction_loss=recon_loss_kl,
+    sink = RunSink.local(
+        tmp_path,
+        train_log_freq=50,
+        eval_freq=500,
+        slow_eval_freq=500,
+        slow_eval_on_first_step=False,
+        n_eval_steps=1,
+        save_freq=None,
     )
 
     optimize(
-        target=target,
+        target_model=target_model,
         train_loader=train_loader,
         eval_loader=eval_loader,
-        pd_config=config,
-        logging_config=logging_config,
+        run_batch=make_run_batch("logits"),
+        reconstruction_loss=recon_loss_kl,
+        pd_config=pd_config,
         runtime_config=RuntimeConfig(),
+        sink=sink,
+        eval_metrics=[CI_L0(CI_L0Config(ci_alive_threshold=0.1, groups=None))],
         device=device,
-        sink=RunSink.local(tmp_path),
     )
-
-    assert True, "Test completed successfully"

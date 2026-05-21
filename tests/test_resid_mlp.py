@@ -1,12 +1,10 @@
 from pathlib import Path
 
+from param_decomp import PDConfig, RunSink, RuntimeConfig, optimize
 from param_decomp.configs import (
     LayerwiseCiConfig,
-    LoggingConfig,
     ModulePatternInfoConfig,
     OptimizerConfig,
-    PDConfig,
-    RuntimeConfig,
     ScheduleConfig,
 )
 from param_decomp.experiments.resid_mlp.models import ResidMLP, ResidMLPModelConfig
@@ -15,13 +13,7 @@ from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.metrics.builtin.faithfulness_loss import FaithfulnessLossConfig
 from param_decomp.metrics.builtin.importance_minimality_loss import ImportanceMinimalityLossConfig
 from param_decomp.metrics.builtin.stochastic_recon_loss import StochasticReconLossConfig
-from param_decomp.models.batch_and_loss_fns import (
-    PDTarget,
-    recon_loss_mse,
-    run_batch_first_element,
-)
-from param_decomp.run_pd import optimize
-from param_decomp.run_sink import RunSink
+from param_decomp.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader
 from param_decomp.utils.general_utils import set_seed
 
@@ -31,7 +23,6 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
     set_seed(0)
     device = "cpu"
 
-    # Create a 2-layer ResidMLP config
     resid_mlp_model_config = ResidMLPModelConfig(
         n_features=5,
         d_embed=4,
@@ -42,7 +33,7 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         out_bias=True,
     )
 
-    config = PDConfig(
+    pd_config = PDConfig(
         seed=0,
         n_mask_samples=1,
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[8]),
@@ -73,21 +64,14 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         batch_size=4,
         steps=3,
     )
-    logging_config = LoggingConfig(
-        n_eval_steps=1,
-        eval_freq=10,
-        eval_batch_size=4,
-        slow_eval_freq=10,
-        slow_eval_on_first_step=True,
-        train_log_freq=50,
-        save_freq=None,
-    )
 
     target_model = ResidMLP(config=resid_mlp_model_config).to(device)
     target_model.requires_grad_(False)
 
-    if config.identity_module_info is not None:
-        insert_identity_operations_(target_model, identity_module_info=config.identity_module_info)
+    if pd_config.identity_module_info is not None:
+        insert_identity_operations_(
+            target_model, identity_module_info=pd_config.identity_module_info
+        )
 
     dataset = ResidMLPDataset(
         n_features=resid_mlp_model_config.n_features,
@@ -102,28 +86,30 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         synced_inputs=None,
     )
 
-    train_loader = DatasetGeneratedDataLoader(dataset, batch_size=config.batch_size, shuffle=False)
-    eval_loader = DatasetGeneratedDataLoader(
-        dataset, batch_size=logging_config.eval_batch_size, shuffle=False
+    eval_batch_size = 4
+    train_loader = DatasetGeneratedDataLoader(
+        dataset, batch_size=pd_config.batch_size, shuffle=False
+    )
+    eval_loader = DatasetGeneratedDataLoader(dataset, batch_size=eval_batch_size, shuffle=False)
+
+    sink = RunSink.local(
+        tmp_path,
+        train_log_freq=50,
+        eval_freq=10,
+        slow_eval_freq=10,
+        n_eval_steps=1,
+        save_freq=None,
     )
 
-    target = PDTarget(
-        model=target_model,
-        run_batch=run_batch_first_element,
-        reconstruction_loss=recon_loss_mse,
-    )
-
-    # Run optimize function
     optimize(
-        target=target,
+        target_model=target_model,
         train_loader=train_loader,
         eval_loader=eval_loader,
-        pd_config=config,
-        logging_config=logging_config,
+        run_batch=run_batch_first_element,
+        reconstruction_loss=recon_loss_mse,
+        pd_config=pd_config,
         runtime_config=RuntimeConfig(),
+        sink=sink,
+        eval_metrics=[],
         device=device,
-        sink=RunSink.local(tmp_path),
     )
-
-    # Basic assertion to ensure the test ran
-    assert True, "Test completed successfully"

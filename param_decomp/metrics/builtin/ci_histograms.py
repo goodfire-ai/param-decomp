@@ -8,7 +8,6 @@ from torch import Tensor
 from param_decomp.metrics.base import Metric, MetricConfig, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
-from param_decomp.models.component_model import ComponentModel
 from param_decomp.plotting import plot_ci_values_histograms
 from param_decomp.utils.distributed_utils import gather_all_tensors
 
@@ -23,11 +22,6 @@ class CIHistograms(Metric[CIHistogramsConfig]):
     config_type = CIHistogramsConfig
     slow = True
     short_name = "CIHist"
-
-    def __init__(self, cfg: CIHistogramsConfig, *, model: ComponentModel, device: str) -> None:
-        self.cfg = cfg
-        self.device = device
-        self.reset()
 
     @override
     def reset(self) -> None:

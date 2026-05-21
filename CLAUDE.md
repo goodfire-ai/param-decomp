@@ -24,97 +24,66 @@ PD is a research framework for analyzing neural network components and their int
 
 The codebase supports three experimental domains: TMS (Toy Model of Superposition), ResidualMLP (residual MLP analysis), and Language Models.
 
-Built-in experiments are auto-discovered from YAML configs under `param_decomp/experiments/<kind>/`
-(TMS variants, ResidualMLP variants, and MLP-only Llama variants). See
-`param_decomp/experiments/discovery.py` or run `pd-run --help` for the live list.
-
 The `lm` experiment can decompose any HuggingFace-loadable model whose target modules are
 `nn.Linear`, `nn.Embedding`, or `transformers.modeling_utils.Conv1D`.
 
 ## Public API
 
-The core PD framework exposes these entrypoints, re-exported from `param_decomp/__init__.py`:
+The core PD framework exposes a single training entrypoint:
 
 ```python
 from param_decomp import (
-    run_pd, optimize, materialize_run, load_component_model,
-    PDConfig, PDTarget, RunConfig, RunSink, SavedRun, ExperimentDriver,
+    optimize, PDConfig, RuntimeConfig, RunSink, Metric,
+    MetricConfig, LossMetricConfig, RunBatch, ReconstructionLoss,
 )
 ```
 
-- `optimize(*, target, train_loader, eval_loader, pd_config, logging_config, runtime_config,
-  device, sink, dist_state=None)`: notebook/script entry point. Pure trainer — caller supplies
-  the target bundle, dataloaders, the three config tiers, the device, and a `RunSink` for
-  outputs. `PDTarget` bundles the target model + `run_batch` + reconstruction loss + optional
-  tied weights; helpers for the two `PDTarget` callables live in
-  `param_decomp/models/batch_and_loss_fns.py`: `run_batch_passthrough`, `run_batch_first_element`,
-  `make_run_batch(output_extract)`; and `recon_loss_mse`, `recon_loss_kl`. Callers can pass their
-  own functions instead. Pair with `RunSink.local(...)`, `RunSink.with_wandb(...)`, or
-  `RunSink.silent()` depending on whether you want files / W&B / nothing persisted.
-- `run_pd(run_cfg, *, device, dist_state=None, wandb_project=None, launch_id=None)`:
-  driver-mediated entry point used by `pd-run` / `_worker.py`. Loads the driver from
-  `run_cfg.driver_path`, calls `materialize_run` to build target+loaders, builds a
-  `RunSink.for_run(...)`, then delegates to `optimize`.
-- `materialize_run(run_cfg, *, device, dist_state=None, driver=None) ->
-  (target, train_loader, eval_loader)`: composition root that turns a `RunConfig` into the
-  tuple `optimize` needs. Exposed so other tooling can reuse the same materialization.
-- `load_component_model(path)`: reload a saved driver-mediated run as a `ComponentModel`. Thin
-  convenience over `SavedRun.from_path(path).load_model()` — the run's driver reconstructs the
-  target from the saved `RunConfig`. Notebook-only runs (trained via `optimize` without a
-  `RunConfig`) reload with `ComponentModel.from_checkpoint(...)` directly.
-- `SavedRun.from_path(path)`: handle to a saved driver-mediated run. Exposes `run_cfg`
-  (`RunConfig`), `driver` (resolved at construction), `pd_config`, `load_target()`,
-  `build_train_loader(...)`, `build_eval_loader(...)`, and `load_model()`.
+- `optimize(target_model, train_loader, eval_loader, *, run_batch, reconstruction_loss,
+  pd_config, runtime_config, sink, eval_metrics, device)`: the only entrypoint. Caller
+  supplies the target `nn.Module`, dataloaders, the run-batch / reconstruction callables,
+  the two configs, a `RunSink` for outputs and cadence, and a list of pre-instantiated
+  eval `Metric` objects. `optimize()` builds the `ComponentModel` internally and calls
+  `Metric.bind(model, device)` on every eval metric before the loop.
+- `PDConfig`: algorithm spec (CI fn, loss metrics, module patterns, optimizers, seed,
+  tied weights, faithfulness warmup, …). Loss metrics live here as
+  `loss_metrics: dict[str, LossMetricConfig]`.
+- `RuntimeConfig`: substrate (autocast_bf16, device, dp).
+- `RunSink`: output channels + cadence. Construct via `RunSink.local(out_dir, ...)`,
+  `RunSink.with_wandb(out_dir, project=..., ...)`, or `RunSink.silent(...)` for tests.
+  Frequency fields (`train_log_freq`, `eval_freq`, `slow_eval_freq`, `n_eval_steps`,
+  `slow_eval_on_first_step`, `save_freq`) live on the sink. Cadence gating
+  (`should_log_train`, `should_eval`, `should_run_slow_eval`, `should_save`) and side
+  effects (`log`, `console`, `checkpoint`, `finish`) are methods on `RunSink`.
+- `Metric` base class with `__init__(cfg)` and `bind(*, model, device)`. Built-in
+  metrics live under `param_decomp/metrics/builtin/` and self-register via
+  `@register_metric`. Loss metrics (subclasses of `LossMetricConfig`) are instantiated
+  inside `optimize()` from `pd_config.loss_metrics`; eval metrics are caller-supplied.
 
-### Experiment Drivers
+### Adding a new experiment
 
-Experiments are open-world drivers, not a closed discriminated union in core code. A driver owns a
-pure Pydantic `RunConfig` subclass and converts it to runtime objects:
+Experiments are plain Python scripts, not drivers/subclasses. A "new experiment" is just
+a `run.py` that builds the target model, dataloaders, eval metrics, configs, and sink,
+then calls `optimize()`. The three in-repo experiments
+(`param_decomp/experiments/{tms,resid_mlp,lm}/run.py`) are the canonical references.
+Shared YAML-parsing helpers live in `param_decomp/experiments/utils.py`
+(`load_yaml`, `build_eval_metrics`, `run_sink_from_logging_block`).
 
-```python
-class MyRunConfig(RunConfig):
-    target: MyTargetConfig
-    data: MyDataConfig
-
-class MyDriver:
-    name = "my_exp"                  # ClassVar[str] — wandb tag
-    config_type = MyRunConfig        # ClassVar[type[RunConfig]]
-
-    def build_target(self, run_cfg: MyRunConfig) -> PDTarget: ...
-    def build_dataloaders(self, run_cfg: MyRunConfig, *, train_batch_size, eval_batch_size, ...): ...
-```
-
-`build_target` and `build_dataloaders` always fetch from upstream (wandb pretrain run, HF, …);
-reload calls them exactly like a fresh run. Saved PD runs therefore depend on their upstream
-continuing to exist — the wandb run path / HF model name in the config is the pin.
-
-Built-in runtime definitions live in `param_decomp/experiments/{lm,tms,resid_mlp}/experiment.py`.
-Custom users can run without editing core code by declaring the driver at the top of their YAML:
-
-```yaml
-driver_path: my_pkg.my_exp:MyDriver
-pd: {...}
-# ...
-```
+Per-experiment console entry points are declared in `pyproject.toml`:
 
 ```bash
-pd-run --config_path my_config.yaml
+pd-tms        path/to/config.yaml
+pd-resid-mlp  path/to/config.yaml
+pd-lm         path/to/config.yaml
 ```
 
-The driver import path is part of the saved `RunConfig`, so reloading the run via `load_component_model(path)` can reconstruct the target without any extra arguments.
-
-Callers can also bypass drivers entirely and call `optimize(...)` directly with their own
-`PDTarget`, dataloaders, configs, and `RunSink` — the right choice for notebook/script-driven
-use where `pd-run`, sweeps, and post-processing tooling are not needed. Those runs reload with
-`ComponentModel.from_checkpoint(...)` (no `RunConfig` was written). The README's "Custom
-experiments" section walks through both routes side-by-side.
+For a brand-new experiment, drop a `run.py` next to a YAML config in your own package
+and either call its `main(...)` directly or wire it up to a console script.
 
 ### Custom Metrics
 
-Metrics follow the same open-world pattern as drivers. Built-in metrics live under
-`param_decomp/metrics/builtin/` and self-register via `@register_metric` (see
-`param_decomp/metrics/registry.py`). External users can register their own metrics by listing
-import targets in `pd.metric_modules`:
+Built-in metrics live under `param_decomp/metrics/builtin/` and self-register via
+`@register_metric` (see `param_decomp/metrics/registry.py`). External users can register
+their own metrics by listing import targets in `pd.metric_modules`:
 
 ```yaml
 pd:
@@ -127,72 +96,33 @@ pd:
 ```
 
 The user's module imports `register_metric` and `LossMetricConfig` / `MetricConfig` /
-`MetricContext` from `param_decomp.metrics`, defines a `@register_metric` Metric class with a
-`config_type` ClassVar pointing at their pydantic config, and that's it. A
+`MetricContext` from `param_decomp.metrics`, defines a `@register_metric` Metric class
+with a `config_type` ClassVar pointing at their pydantic config, and that's it. A
 `@model_validator(mode="before")` on `PDConfig` imports these modules before
-`loss_metrics` / `eval_metrics` are validated, and the same hook fires on reload so saved
-`RunConfig`s that referenced custom metrics deserialize without manual setup. The module must be
-installed in (or otherwise importable from) the Python environment used to run / reload the
-experiment — including SLURM workers.
+`loss_metrics` is validated.
 
-### Per-experiment `RunConfig` subclasses
+For **eval** metrics, the experiment `run.py` instantiates them directly (using
+`build_eval_metrics(eval_metrics_dict)` from `experiments.utils` if loading from a YAML
+dict-of-configs) and passes the list to `optimize(eval_metrics=...)`.
 
-Built-in YAML configs are pure `RunConfig` configs nested under `driver_path:`, `pd:`,
-`logging:`, `runtime:`, `target:`, and `data:`:
+### Configs
 
-- `LMRunConfig(driver_path, pd, logging, runtime, target: LMTargetConfig, data: LMDataConfig)`
-- `TMSRunConfig(driver_path, pd, logging, runtime, target, data)`
-- `ResidMLPRunConfig(driver_path, pd, logging, runtime, target, data)`
+The PD trainer is configured by two pydantic configs plus a `RunSink`:
 
-The three configs split by **what they affect**:
-
-- **`PDConfig`** — algorithm specification: seed, ci_config, losses, optimizers,
-  module_info. Flipping any field here changes what algorithm runs.
-- **`RuntimeConfig`** — compute substrate: autocast_bf16, device, dp; future home for
-  NCCL flags, gradient accumulation, fp8 variants. Perturbs numerics without changing
-  the algorithm. **Config-only — no CLI overrides.** Edit the YAML (or copy it) to
-  change substrate; you can't silently run "the same experiment" on different hardware.
-  Cluster topology (GPUs per node) is `settings.GPUS_PER_NODE`, overridable via
-  `PARAM_DECOMP_GPUS_PER_NODE` env var.
-- **`LoggingConfig` (class 3)** — observation: cadence (`*_freq`), `eval_batch_size`,
-  `ci_alive_threshold`, eval-only metrics. Never touches the optimizer. (Run identity
-  fields — `name` for the W&B display name and `view_meta` for free-form sweep labels —
-  live on `RunConfig` itself, not in `LoggingConfig`.) **Note:** the W&B *project* lives
-  outside the `RunConfig` too (it's a deploy-time parameter — which account/team to log
-  to) and is passed via `--project` to `pd-run` or `wandb_project=` to `run_pd`.
-
-`RunConfig` should not perform I/O. Put target loading and dataloader construction in
-the driver.
+- **`PDConfig`** — algorithm: seed, ci_config, loss_metrics, optimizers, module_info,
+  tied_weights, faithfulness warmup. Flipping any field here changes what algorithm runs.
+- **`RuntimeConfig`** — compute substrate: autocast_bf16, device, dp. Perturbs numerics
+  without changing the algorithm.
+- **`RunSink`** — observation + outputs: train/eval/save cadence, on-disk `out_dir`, and
+  optional W&B session. Sink methods own all side effects.
 
 ### Saved run layout
 
 ```
 PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/
-  run_config.yaml          # RunConfig: driver_path + name + pd + logging + runtime + view_meta + target + data
-  model_<step>.pth           # PD checkpoints
-
-PARAM_DECOMP_OUT_DIR/sweeps/<launch_id>/
-  spec.yaml                  # SweepSpec snapshot (sweep launches only; single runs don't write this)
+  model_<step>.pth           # PD checkpoints (written by RunSink.checkpoint(...))
+  <step>.json                # local logs (written by RunSink.log(...))
 ```
-
-`RunConfig` is a Pydantic model (defined in `param_decomp/run.py`):
-
-```yaml
-driver_path: "param_decomp.experiments.lm.experiment:Driver"   # null for notebook/custom runs
-name: "seed=0_lr=1e-3"                      # W&B display name; null lets W&B auto-name
-pd: {...}
-logging: {...}                              # observation-only (cadence, eval batch size, …)
-runtime: {...}                              # compute substrate
-view_meta:                                  # free-form labels (populated by sweep generators)
-  lr_ratio: 0.1
-  size: medium
-target: {...}                               # driver-specific (on the RunConfig subclass)
-data: {...}                                 # driver-specific (on the RunConfig subclass)
-```
-
-`view_meta` is surfaced to W&B under a `view_meta/` prefix in `wandb.config` so the
-UI can group/color runs by researcher-facing axes (not raw config fields). Populate
-it from your sweep generator.
 
 ## Research Papers
 
@@ -220,21 +150,12 @@ This repository implements methods from two key research papers on parameter dec
 
 - `make install-dev` - Install package with dev dependencies and pre-commit hooks
 - `make install` - Install package only (`pip install -e .`)
-- `make install-app` - Install frontend dependencies (`npm install` in `param_decomp/app/frontend/`)
 
 **Code Quality:**
 
 - `make check` - Run full pre-commit suite (basedpyright, ruff lint, ruff format)
 - `make type` - Run basedpyright type checking only
 - `make format` - Run ruff linter and formatter
-
-**Frontend (when working on `param_decomp/app/frontend/`):**
-
-- `make check-app` - Run frontend checks (format, type check, lint)
-- Or run individually from `param_decomp/app/frontend/`:
-  - `npm run format` - Format code with Prettier
-  - `npm run check` - Run Svelte type checking
-  - `npm run lint` - Run ESLint
 
 **Testing:**
 
@@ -251,16 +172,23 @@ This repository implements methods from two key research papers on parameter dec
 
 **Core PD Framework:**
 
-- `param_decomp/run_pd.py` - Main PD optimization logic called by all experiments
-- `param_decomp/configs.py` - Core PD config and loss/metric config classes
-- `param_decomp/experiments/runner.py` - `pd-run` CLI: submits to SLURM by default, runs in-process with `--local`
-- `param_decomp/experiments/_worker.py` - Internal worker entrypoint each SLURM array task invokes
-- `param_decomp/experiments/*/experiment.py` - Experiment configs and drivers that prepare targets,
-  dataloaders, and artifacts
-- `param_decomp/experiments/discovery.py` - Auto-discovery of built-in experiments from `experiments/<kind>/*.yaml`
-- `param_decomp/models/component_model.py` - Core ComponentModel that wraps target models
-- `param_decomp/models/components.py` - Component types (LinearComponent, EmbeddingComponent, etc.)
-- `param_decomp/metrics/` - Self-registering `Metric` classes: losses, eval metrics, and W&B figures all live here (`metrics/base.py`, `metrics/registry.py`, `metrics/builtin/*.py`)
+- `param_decomp/optimize.py` - The PD optimization loop (`optimize(...)`). The sole core entrypoint.
+- `param_decomp/configs.py` - `PDConfig` (algorithm) + `RuntimeConfig` (substrate) + their nested
+  helpers (`ScheduleConfig`, `OptimizerConfig`, `LayerwiseCiConfig`, etc.).
+- `param_decomp/run_sink.py` - `RunSink`: output channels (local + wandb) + cadence + checkpointing.
+- `param_decomp/eval.py` - `evaluate(...)` over a `dict[name, Metric]`.
+- `param_decomp/models/component_model.py` - Core ComponentModel that wraps target models.
+- `param_decomp/models/components.py` - Component types (LinearComponent, EmbeddingComponent, etc.).
+- `param_decomp/models/batch_and_loss_fns.py` - `RunBatch` / `ReconstructionLoss` protocols +
+  `run_batch_*` / `recon_loss_*` helpers.
+- `param_decomp/metrics/` - Self-registering `Metric` classes (losses, eval metrics, figures).
+  `metrics/base.py` defines the `Metric` ABC with `__init__(cfg)` + `bind(model, device)`.
+  `metrics/builtin/*.py` ship the in-tree implementations.
+
+**In-repo experiment scripts** (`param_decomp/experiments/{tms,resid_mlp,lm}/run.py`) build the
+target model + dataloaders + eval metrics + configs + sink and call `optimize()`. They share
+YAML-parsing helpers in `param_decomp/experiments/utils.py` (`load_yaml`, `build_eval_metrics`,
+`run_sink_from_logging_block`).
 
 **Terminology: Sources vs Masks:**
 
@@ -271,50 +199,34 @@ This repository implements methods from two key research papers on parameter dec
 
 Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
-- `experiment.py` - `RunConfig` subclass + driver (target/dataloader builders)
-- `*_config.yaml` - Built-in YAML configs (auto-discovered)
-- `models.py` (TMS/ResidMLP) / `data.py` (LM) - Model/data helpers
-- `train_*.py` (TMS/ResidMLP) - Target-model pretraining scripts
-- `plotting.py` (TMS/ResidMLP) - Visualization utilities
+- `run.py` - Composition root: parses YAML, builds target/loaders/metrics/configs/sink, calls `optimize()`.
+- `*_config.yaml` - Built-in YAML configs.
+- `models.py` (TMS/ResidMLP) / `data.py` (LM) - Model/data helpers.
+- `train_*.py` (TMS/ResidMLP) - Target-model pretraining scripts.
+- `plotting.py` (TMS/ResidMLP) - Visualization utilities.
 
 **Key Data Flow:**
 
-1. `pd-run` (`experiments/runner.py`) resolves the input source — either a built-in experiment name, `--config_path`, `--rerun`, or `--sweep_generator_path` — into a `RunConfig` (single launch) or a `SweepSpec` (many `RunConfig`s sharing one driver and substrate). Every YAML/saved `RunConfig` declares its driver via a top-level `driver_path:` field. With `--local` it dispatches in-process; otherwise `scripts/run_slurm.py:launch_run_slurm` submits a plain SLURM job (single `RunConfig`) and `launch_sweep_slurm` submits an array — one task per run — (`SweepSpec`).
-2. Each worker invocation (`experiments/_worker.py`, called as `python -m param_decomp.experiments._worker` from SLURM tasks, or directly from runner.py in --local mode) loads the driver, checks that the parsed `RunConfig` matches the driver's `config_type`, and calls the driver to build `PDTarget` plus train/eval loaders.
-3. The worker passes the typed `RunConfig` through to `run_pd`.
-4. `run_pd` saves the `RunConfig` / artifacts and trains a `ComponentModel` via `optimize()` with config-driven losses.
-5. Post-processing reloads runs through `SavedRun.load_target()` / `SavedRun.build_train_loader(...)` / `SavedRun.build_eval_loader(...)` (or just `SavedRun.load_model()` / `load_component_model(path)`).
+1. The experiment script (`python -m param_decomp.experiments.<kind>.run config.yaml`) reads
+   the YAML, validates `PDConfig` / `RuntimeConfig` / per-experiment `target` + `data` blocks,
+   and builds the target `nn.Module`, train/eval dataloaders, and eval `Metric` list.
+2. The script builds a `RunSink` (local + optional wandb) from the YAML `logging:` block.
+3. It calls `optimize(...)` with all of the above. `optimize()` constructs `ComponentModel`,
+   binds eval metrics, instantiates loss metrics from `pd_config.loss_metrics`, and runs the
+   training loop. Side effects (logging, checkpoints) flow through `RunSink`.
 
 **Configuration System:**
 
-- YAML experiment configs define parameters under `pd:`, `target:`, and `data:`
-- Pydantic models provide type safety and validation
-- WandB integration for experiment tracking and model storage
-- Supports both local paths and `wandb:project/runs/run_id` format for model loading
-- Built-in experiments are auto-discovered from YAML configs in `param_decomp/experiments/<kind>/`; custom
-  experiments declare their driver in the YAML (`driver_path: module:MyDriver`) and run via
-  `pd-run --config_path config.yaml`
-
-**Harvest, Autointerp & Dataset Attributions Modules:**
-
-- `param_decomp/harvest/` - Offline GPU pipeline for collecting component statistics (correlations, token stats, activation examples)
-- `param_decomp/autointerp/` - LLM-based automated interpretation of components
-- `param_decomp/dataset_attributions/` - Multi-GPU pipeline for computing component-to-component attribution strengths aggregated over training data
-- `param_decomp/graph_interp/` - Context-aware component labeling using graph structure (attributions + correlations)
-- Data stored at `PARAM_DECOMP_OUT_DIR/{harvest,autointerp,dataset_attributions,graph_interp}/<run_id>/`
-- See `param_decomp/harvest/CLAUDE.md`, `param_decomp/autointerp/CLAUDE.md`, `param_decomp/dataset_attributions/CLAUDE.md`, and `param_decomp/graph_interp/CLAUDE.md` for details
+- YAML experiment configs define parameters under `pd:`, `runtime:`, `target:`, `data:`, `logging:`.
+- Pydantic models provide type safety and validation.
+- WandB integration for experiment tracking and model storage (via `RunSink.with_wandb(...)`).
 
 **Output Directory (`PARAM_DECOMP_OUT_DIR`):**
 
-- Defined in `param_decomp/settings.py`
-- On cluster: `/mnt/polished-lake/artifacts/mechanisms/param-decomp/`
-- Off cluster: `~/param_decomp_out/`
-- Contains: runs, SLURM logs, sbatch scripts, clustering outputs, harvest data, autointerp results
-
-**Experiment Logging:**
-
-- Uses WandB for experiment tracking and model storage
-- All runs generate timestamped output directories with configs, models, and plots
+- Defined in `param_decomp/settings.py`.
+- On cluster: `/mnt/polished-lake/artifacts/mechanisms/param-decomp/`.
+- Off cluster: `~/param_decomp_out/`.
+- Contains decompositions/ and pretrain run outputs.
 
 ## Directory Structure
 
@@ -323,38 +235,23 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 ├── papers/                          # Research papers (SPD, APD)
 ├── scripts/                         # Standalone utility scripts
 ├── tests/                           # Test suite
-├── param_decomp/                             # Main source code
-│   ├── investigate/                 # Agent investigation (see investigate/CLAUDE.md)
-│   ├── app/                         # Web visualization app (see app/CLAUDE.md)
-│   ├── autointerp/                  # LLM interpretation (see autointerp/CLAUDE.md)
-│   ├── clustering/                  # Component clustering (see clustering/CLAUDE.md)
-│   ├── dataset_attributions/        # Dataset attributions (see dataset_attributions/CLAUDE.md)
-│   ├── harvest/                     # Statistics collection (see harvest/CLAUDE.md)
-│   ├── postprocess/                 # Unified postprocessing pipeline (harvest + attributions + autointerp)
-│   ├── graph_interp/                # Context-aware interpretation (see graph_interp/CLAUDE.md)
-│   ├── pretrain/                    # Target model pretraining (see pretrain/CLAUDE.md)
-│   ├── experiments/                 # Experiment implementations
-│   │   ├── runner.py                # `pd-run` CLI (public)
-│   │   ├── _worker.py               # internal worker each SLURM task invokes
-│   │   ├── discovery.py             # built-in experiment auto-discovery
-│   │   ├── driver.py                # ExperimentDriver protocol + load_driver
+├── param_decomp/                    # Core library
+│   ├── experiments/                 # Experiment scripts
 │   │   ├── tms/                     # Toy Model of Superposition
 │   │   ├── resid_mlp/               # Residual MLP
-│   │   └── lm/                      # Language models
-│   ├── metrics/                     # Self-registering Metric classes (losses, eval metrics, figures) in metrics/builtin/
+│   │   ├── lm/                      # Language models
+│   │   └── utils.py                 # YAML → optimize() args helpers
+│   ├── metrics/                     # Self-registering Metric classes (losses, eval metrics, figures)
 │   ├── models/
-│   │   ├── component_model.py       # ComponentModel.from_checkpoint(...)
+│   │   ├── component_model.py       # ComponentModel
 │   │   ├── components.py            # LinearComponent, EmbeddingComponent, etc.
-│   │   └── batch_and_loss_fns.py    # PDTarget + run_batch_*/recon_loss_* helpers
-│   ├── saved_run.py                 # SavedRun + load_component_model
-│   ├── scripts/
-│   │   └── run_slurm.py             # launch_run_slurm / launch_sweep_slurm — called by pd-run
-│   ├── sweeps/                      # SweepSpec / SweepGenerator protocol + cartesian helper + example sweep
-│   ├── utils/
-│   │   └── slurm.py                 # SlurmConfig, submit functions
-│   ├── configs.py                   # PDConfig, LoggingConfig, RuntimeConfig, ModuleInfo
-│   ├── run.py                       # RunConfig (driver_path + pd/logging/runtime + per-driver target/data)
-│   ├── run_pd.py                    # Main optimization loop
+│   │   └── batch_and_loss_fns.py    # RunBatch / ReconstructionLoss protocols + helpers
+│   ├── pretrain/                    # Target model pretraining (see pretrain/CLAUDE.md)
+│   ├── utils/                       # Distributed / wandb / general helpers
+│   ├── configs.py                   # PDConfig, RuntimeConfig (+ ScheduleConfig/OptimizerConfig/...)
+│   ├── optimize.py                  # optimize() — the core entrypoint
+│   ├── run_sink.py                  # RunSink (output + cadence)
+│   ├── eval.py                      # evaluate(instances, ...)
 │   └── settings.py                  # PARAM_DECOMP_OUT_DIR, SLURM_LOGS_DIR, SBATCH_SCRIPTS_DIR
 ├── Makefile                         # Dev commands (make check, make test)
 └── pyproject.toml                   # Package config
@@ -366,17 +263,10 @@ Each experiment (`param_decomp/experiments/{tms,resid_mlp,lm}/`) contains:
 
 | Command | Entry Point | Description |
 |---------|-------------|-------------|
-| `pd-run` | `param_decomp/experiments/runner.py` | Run a PD experiment. SLURM by default; `--local` runs in-process. Entry points are mutually exclusive: `<experiment>`, `--config_path`, `--rerun`, or `--sweep_generator_path /abs/path/file.py:func`. Every config (built-in YAML, user YAML, saved `RunConfig`) declares its driver via a top-level `driver_path:` field. Compute substrate (`device`/`dp`) is declared in the experiment YAML's `runtime:` block. |
-| `pd-harvest` | `param_decomp/harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
-| `pd-autointerp` | `param_decomp/autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
-| `pd-attributions` | `param_decomp/dataset_attributions/scripts/run_slurm_cli.py` | Submit dataset attribution SLURM job |
-| `pd-postprocess` | `param_decomp/postprocess/cli.py` | Unified postprocessing pipeline (harvest + attributions + interpret + evals) |
-| `pd-graph-interp` | `param_decomp/graph_interp/scripts/run_slurm_cli.py` | Submit graph interpretation SLURM job |
-| `pd-clustering` | `param_decomp/clustering/scripts/run_pipeline.py` | Clustering ensemble pipeline |
-| `pd-cluster-harvest` | `param_decomp/clustering/scripts/run_harvest.py` | Harvest activations → membership snapshot |
-| `pd-cluster-merge` | `param_decomp/clustering/scripts/run_merge.py` | Merge from snapshot (CPU-only) |
+| `pd-tms` | `param_decomp/experiments/tms/run.py` | Run the TMS experiment for the given YAML config |
+| `pd-resid-mlp` | `param_decomp/experiments/resid_mlp/run.py` | Run the ResidMLP experiment for the given YAML config |
+| `pd-lm` | `param_decomp/experiments/lm/run.py` | Run the LM experiment for the given YAML config |
 | `pd-pretrain` | `param_decomp/pretrain/scripts/run_slurm.py` | Pretrain target models |
-| `pd-investigate` | `param_decomp/investigate/scripts/run_slurm_cli.py` | Launch investigation agent |
 
 ### Files to Skip When Searching
 
@@ -401,249 +291,24 @@ Use `param_decomp/` as the search root (not repo root) to avoid noise.
 
 **Running Experiments:**
 
-- `pd-run --local`: `runner.py` → `_worker.run_experiment` → `run_pd` (in-process)
-- `pd-run` (SLURM, default): `runner.py` → `scripts/run_slurm.py:launch_run_slurm` / `launch_sweep_slurm` → `utils/slurm.py` → SLURM array → `python -m param_decomp.experiments._worker` (one per task) → `run_pd`
-
-**Harvest Pipeline:**
-
-- `pd-harvest` → `param_decomp/harvest/scripts/run_slurm_cli.py` → `param_decomp/utils/slurm.py` → SLURM array → `param_decomp/harvest/scripts/run_worker.py` → `param_decomp/harvest/harvest.py`, then merge job → `param_decomp/harvest/scripts/run_merge.py`
-
-**Autointerp Pipeline:**
-
-- `pd-autointerp` → `param_decomp/autointerp/scripts/run_slurm_cli.py` → `param_decomp/utils/slurm.py` → `param_decomp/autointerp/interpret.py`
-
-**Dataset Attributions Pipeline:**
-
-- `pd-attributions` → `param_decomp/dataset_attributions/scripts/run_slurm_cli.py` → `param_decomp/utils/slurm.py` → SLURM array → `param_decomp/dataset_attributions/harvest.py`
-
-**Clustering Pipeline:**
-
-- `pd-clustering` → `param_decomp/clustering/scripts/run_pipeline.py` → `param_decomp/utils/slurm.py` → `param_decomp/clustering/scripts/run_clustering.py`
-
-**Investigation Pipeline:**
-
-- `pd-investigate` → `param_decomp/investigate/scripts/run_slurm_cli.py` → `param_decomp/utils/slurm.py` → SLURM → `param_decomp/investigate/scripts/run_agent.py` → Claude Code
+- `python -m param_decomp.experiments.<kind>.run path/to/config.yaml` (also exposed as
+  `pd-tms` / `pd-resid-mlp` / `pd-lm`) → reads YAML → builds target/loaders/metrics →
+  calls `optimize(...)`.
 
 ## Common Usage Patterns
 
-### Running Experiments (`pd-run`)
+### Running Experiments
 
-`pd-run` is the only CLI for running PD experiments. By default it submits a SLURM job (with a
-git snapshot for reproducibility). Pass `--local` to run in this process instead — no SLURM, no
-snapshot — useful for quick checks. Off-cluster `pd-run` fails fast unless `--local` is set.
+In-place experiment scripts read a YAML and call `optimize()`:
 
 ```bash
-pd-run tms_5-2                                                            # one SLURM job
-pd-run --sweep_generator_path /abs/path/my_sweep.py:my_sweep --n_agents 4 # SLURM array sweep
-pd-run tms_5-2                                                            # CPU/GPU/dp determined by YAML's runtime: block
-pd-run --config_path my.yaml                                              # custom config (declares driver_path: in YAML)
-pd-run --rerun <path-or-wandb-url>                                        # rerun from a saved run_config.yaml
-pd-run tms_5-2 --local                                                    # in-process; no SLURM
+pd-tms       param_decomp/experiments/tms/tms_5-2_config.yaml
+pd-resid-mlp param_decomp/experiments/resid_mlp/resid_mlp1_config.yaml
+pd-lm        param_decomp/experiments/lm/ss_llama_simple_mlp-2L.yaml
 ```
 
-One experiment per invocation. Multi-experiment campaigns are no longer a built-in workflow —
-compose your own deploy script if you need that.
-
-### Web App for Visualization
-
-The PD app provides interactive visualization of component decompositions and attributions:
-
-```bash
-make app              # Launch backend + frontend dev servers
-# or
-python -m param_decomp.app.run_app
-```
-
-The app has its own detailed documentation in `param_decomp/app/CLAUDE.md` and `param_decomp/app/README.md`.
-
-### Harvesting Component Statistics (`pd-harvest`)
-
-Collect component statistics (activation examples, correlations, token stats) for a run:
-
-```bash
-pd-harvest <wandb_path> --n_batches 1000 --n_gpus 8    # Submit SLURM job to harvest statistics
-```
-
-See `param_decomp/harvest/CLAUDE.md` for details.
-
-### Automated Component Interpretation (`pd-autointerp`)
-
-Generate LLM interpretations for harvested components:
-
-```bash
-pd-autointerp <wandb_path>            # Submit SLURM job to interpret components
-```
-
-Requires `OPENROUTER_API_KEY` env var. See `param_decomp/autointerp/CLAUDE.md` for details.
-
-### Agent Investigation (`pd-investigate`)
-
-Launch a Claude Code agent to investigate a specific question about a PD model:
-
-```bash
-pd-investigate <wandb_path> "How does the model handle gendered pronouns?"
-pd-investigate <wandb_path> "What components are involved in verb agreement?" --time 4:00:00
-```
-
-Each investigation:
-
-- Runs in its own SLURM job with 1 GPU
-- Starts an isolated app backend instance
-- Investigates the specific research question using PD tools via MCP
-- Writes findings to append-only JSONL files
-
-Output: `PARAM_DECOMP_OUT_DIR/investigations/<inv_id>/`
-
-For parallel investigations, run the command multiple times with different prompts.
-
-See `param_decomp/investigate/CLAUDE.md` for details.
-
-### Unified Postprocessing (`pd-postprocess`)
-
-Run all postprocessing steps for a completed PD run with a single command. The CLI takes a
-positional path to a `PostprocessConfig` YAML (the wandb run is specified inside the config):
-
-```bash
-pd-postprocess config.yaml                    # Submit the pipeline defined by this config
-pd-postprocess config.yaml --dependency 123   # Wait for SLURM job 123 before starting
-pd-postprocess config.yaml --dry_run          # Print the resolved config without submitting
-```
-
-The config schema is `PostprocessConfig` in `param_decomp/postprocess/config.py`. Set any optional
-section to `null` to skip it:
-
-- `attributions: null` — skip dataset attributions
-- `autointerp: null` — skip autointerp entirely (interpret + evals)
-- `autointerp.evals: null` — skip evals but still run interpret
-- `intruder: null` — skip intruder eval
-- `graph_interp: null` — skip context-aware graph interpretation (requires `attributions`)
-
-SLURM dependency graph:
-
-```
-harvest (GPU array → merge)
-├── intruder eval    (CPU, depends on harvest merge, label-free)
-└── autointerp       (depends on harvest merge)
-    ├── interpret    (CPU, LLM calls)
-    │   ├── detection (CPU, depends on interpret)
-    │   └── fuzzing   (CPU, depends on interpret)
-attributions (GPU array → merge, parallel with harvest)
-graph_interp         (CPU, depends on harvest merge + attributions merge)
-```
-
-**Metrics and Figures:**
-
-Metrics (losses, eval metrics, and W&B figures) are all `Metric` subclasses living in
-`param_decomp/metrics/builtin/`, self-registered via `@register_metric` from
-`param_decomp/metrics/registry.py`. They are selected and parameterized in the experiment YAML
-under `pd.loss_metrics` / `logging.eval_metrics` (keyed by class name). External users can register
-their own metrics by listing import targets in `pd.metric_modules` — see the "Custom Metrics"
-section above.
-
-### Sweeps
-
-A sweep generator is a zero-arg callable returning a `SweepSpec`. The generator
-loads whatever base config it wants, builds per-run configs, and declares the
-driver in the returned spec — so `--sweep_generator_path` is a self-contained
-entry point, mutually exclusive with `<experiment>`, `--config_path`, and `--rerun`.
-
-```bash
-pd-run --sweep_generator_path /abs/path/my_sweep.py:my_sweep --n_agents 4
-```
-
-The framework ships `example_cartesian_sweep` in `param_decomp/sweeps/cartesian.py`
-as a reference — a TMS 5-2 seed sweep that uses the public `cartesian_product`
-helper. Copy that file to start a new sweep.
-
-**How It Works:**
-
-1. `pd-run` imports the file at the given absolute path and looks up the named function.
-2. The generator is called (no args) and returns a `SweepSpec` carrying the
-   shared `driver_path`, `logging`, `runtime`, and `n_agents` (one per sweep),
-   plus a `list[SweepData]` of per-run varying data — each `SweepData` is
-   `name` + `pd_config` + `view_meta`. The `SweepSpec.run_cfgs()` method
-   materializes the implied `list[RunConfig]` for the worker. The W&B project
-   is not part of the spec; it's supplied via `--project` at launch.
-3. The materialized `SweepSpec` is written to
-   `PARAM_DECOMP_OUT_DIR/sweeps/<launch_id>/spec.yaml` for reproducibility.
-4. A SLURM array is submitted, capped at `SweepSpec.n_agents` concurrent tasks.
-   Per-config validation happens worker-side at launch.
-5. A git snapshot is created so all tasks run the same code, regardless of later edits.
-
-This is **not** a W&B sweep agent — W&B sees independent runs sharing a `launch_id` tag.
-`view_meta` from each run is surfaced under `view_meta/<key>` in `wandb.config` so you
-can group/color by it in the UI.
-
-**Cartesian helper (the 80% case):**
-
-```python
-# my_sweep.py
-import yaml
-from param_decomp.run import RunConfig
-from param_decomp.sweeps import SweepSpec
-from param_decomp.sweeps.cartesian import cartesian_product
-
-def my_sweep() -> SweepSpec:
-    with open("/abs/path/to/base_config.yaml") as f:
-        base = RunConfig.from_dict(yaml.safe_load(f))
-    return cartesian_product(
-        base_config=base,
-        grid={
-            "pd.seed": [0, 1, 2],
-            "pd.loss_metrics.importance_minimality.coeff": [0.1, 0.2, 0.5],
-        },
-        n_agents=4,
-        description="lr x recon coeff sweep",
-        driver_path="param_decomp.experiments.tms.experiment:Driver",
-    )
-```
-
-Dot-paths in the grid address into the base config. Each axis is recorded in
-`view_meta` so the W&B UI can pivot on it.
-
-**Custom sweeps** can build their `SweepSpec` however they like — there is no class
-hierarchy. The function just has to return a `SweepSpec`; conformance to the
-`SweepGenerator` protocol is structural.
-
-**Rerunning runs from before the `RunConfig` refactor:** `pd-run --rerun` will fail
-pydantic validation on `run_config.yaml` files written before this refactor.
-Old files have `driver:` / `config:` / top-level `wandb_*` / nested `logging.wandb_run_name`
-/ nested `logging.view_meta`; the new shape is top-level `driver_path:` / `name:` /
-`pd:` / `logging:` / `runtime:` / `view_meta:` / `target:` / `data:`, with the run name
-and view metadata hoisted out of `logging:` and up to the top level. (W&B project is
-not recorded on the `RunConfig` — pass `--project` explicitly when rerunning if you want
-anything other than the default project.) Edit the saved YAML to match the new shape
-before rerunning.
-
-**Logs:** `~/slurm_logs/slurm-<job_id>_<task_id>.out`
-
-### Loading Models from WandB
-
-Load trained PD models from wandb or local paths using these methods:
-
-```python
-from param_decomp import load_component_model, SavedRun
-
-# Common case: path → ComponentModel. The driver reconstructs the target from the saved run spec.
-model = load_component_model("wandb:entity/project/runs/run_id")
-
-# When you also need run/config access, use SavedRun directly:
-pd_run = SavedRun.from_path("wandb:entity/project/runs/run_id")
-print(pd_run.run_cfg)                    # RunConfig (the driver-specific subclass, e.g. LMRunConfig)
-print(pd_run.pd_config)                  # PDConfig
-model = pd_run.load_model()              # equivalent to load_component_model(path)
-
-# Notebook-only runs (trained via optimize(...) without a RunConfig) reload directly:
-# from param_decomp.models.component_model import ComponentModel
-# model = ComponentModel.from_checkpoint(...)
-```
-
-**Path Formats:**
-
-- WandB: `wandb:entity/project/run_id` or `wandb:entity/project/runs/run_id`
-- Local: Direct path to checkpoint file (config must be in same directory as `run_config.yaml`)
-
-Downloaded runs are cached in `PARAM_DECOMP_OUT_DIR/runs/<project>-<run_id>/`.
+For a new experiment, drop a new `run.py` next to your YAML and either invoke it
+directly with Python or wire it up to a console script in `pyproject.toml`.
 
 ### Cluster Usage Guidelines
 

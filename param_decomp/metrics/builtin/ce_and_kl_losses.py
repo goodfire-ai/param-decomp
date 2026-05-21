@@ -11,7 +11,6 @@ from param_decomp.configs import SamplingType
 from param_decomp.metrics.base import Metric, MetricConfig, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
-from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import make_mask_infos
 from param_decomp.routing import AllLayersRouter
 from param_decomp.utils.component_utils import calc_stochastic_component_mask_info
@@ -52,12 +51,6 @@ class CEandKLLosses(Metric[CEandKLLossesConfig]):
         "ce_unrecovered_random_masked",
         "ce_unrecovered_rounded_masked",
     ]
-
-    def __init__(self, cfg: CEandKLLossesConfig, *, model: ComponentModel, device: str) -> None:
-        self.cfg = cfg
-        self.model = model
-        self.device = device
-        self.reset()
 
     @override
     def reset(self) -> None:

@@ -4,13 +4,11 @@ from typing import cast
 import torch
 from torch import nn
 
+from param_decomp import PDConfig, RunSink, RuntimeConfig, optimize
 from param_decomp.configs import (
     LayerwiseCiConfig,
-    LoggingConfig,
     ModulePatternInfoConfig,
     OptimizerConfig,
-    PDConfig,
-    RuntimeConfig,
     ScheduleConfig,
 )
 from param_decomp.experiments.tms.models import TMSModel, TMSModelConfig, TMSTrainConfig
@@ -22,13 +20,7 @@ from param_decomp.metrics.builtin.stochastic_recon_layerwise_loss import (
     StochasticReconLayerwiseLossConfig,
 )
 from param_decomp.metrics.builtin.stochastic_recon_loss import StochasticReconLossConfig
-from param_decomp.models.batch_and_loss_fns import (
-    PDTarget,
-    recon_loss_mse,
-    run_batch_first_element,
-)
-from param_decomp.run_pd import optimize
-from param_decomp.run_sink import RunSink
+from param_decomp.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
 from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
 from param_decomp.utils.general_utils import set_seed
 
@@ -38,7 +30,6 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
     set_seed(0)
     device = "cpu"
 
-    # Create a TMS model config similar to the one in tms_config.yaml
     tms_model_config = TMSModelConfig(
         n_features=5,
         n_hidden=2,
@@ -48,8 +39,7 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
         device=device,
     )
 
-    # Create config similar to tms_config.yaml
-    config = PDConfig(
+    pd_config = PDConfig(
         seed=0,
         n_mask_samples=1,
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[8]),
@@ -84,21 +74,16 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
         faithfulness_warmup_steps=2,
         faithfulness_warmup_lr=0.001,
         faithfulness_warmup_weight_decay=0.0,
-    )
-    logging_config = LoggingConfig(
-        n_eval_steps=1,
-        train_log_freq=2,
-        save_freq=None,
-        eval_batch_size=4,
-        eval_freq=10,
-        slow_eval_freq=10,
+        tied_weights=[("linear1", "linear2")],
     )
 
     target_model = TMSModel(config=tms_model_config).to(device)
     target_model.eval()
 
-    if config.identity_module_info is not None:
-        insert_identity_operations_(target_model, identity_module_info=config.identity_module_info)
+    if pd_config.identity_module_info is not None:
+        insert_identity_operations_(
+            target_model, identity_module_info=pd_config.identity_module_info
+        )
 
     dataset = SparseFeatureDataset(
         n_features=target_model.config.n_features,
@@ -109,44 +94,42 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
         synced_inputs=None,
     )
 
-    train_loader = DatasetGeneratedDataLoader(dataset, batch_size=config.batch_size, shuffle=False)
-    eval_loader = DatasetGeneratedDataLoader(dataset, batch_size=config.batch_size, shuffle=False)
-
-    tied_weights = None
-    if target_model.config.tied_weights:
-        tied_weights = [("linear1", "linear2")]
-
-    target = PDTarget(
-        model=target_model,
-        run_batch=run_batch_first_element,
-        reconstruction_loss=recon_loss_mse,
-        tied_weights=tied_weights,
+    train_loader = DatasetGeneratedDataLoader(
+        dataset, batch_size=pd_config.batch_size, shuffle=False
+    )
+    eval_loader = DatasetGeneratedDataLoader(
+        dataset, batch_size=pd_config.batch_size, shuffle=False
     )
 
-    # Run optimize function
+    sink = RunSink.local(
+        tmp_path,
+        train_log_freq=2,
+        eval_freq=10,
+        slow_eval_freq=10,
+        n_eval_steps=1,
+        save_freq=None,
+    )
+
     optimize(
-        target=target,
+        target_model=target_model,
         train_loader=train_loader,
         eval_loader=eval_loader,
-        pd_config=config,
-        logging_config=logging_config,
+        run_batch=run_batch_first_element,
+        reconstruction_loss=recon_loss_mse,
+        pd_config=pd_config,
         runtime_config=RuntimeConfig(),
+        sink=sink,
+        eval_metrics=[],
         device=device,
-        sink=RunSink.local(tmp_path),
     )
 
-    # The test passes if optimize runs without errors
     print("TMS PD optimization completed successfully")
-
-    # Basic assertion to ensure the test ran
-    assert True, "Test completed successfully"
 
 
 def test_train_tms_happy_path():
     """Test training a TMS model from scratch."""
     device = "cpu"
     set_seed(0)
-    # Set up a small configuration
     config = TMSTrainConfig(
         tms_model_config=TMSModelConfig(
             n_features=3,
@@ -167,7 +150,6 @@ def test_train_tms_happy_path():
 
     model, dataloader = get_model_and_dataloader(config, device)
 
-    # Run training
     train(
         model,
         dataloader,
@@ -178,9 +160,7 @@ def test_train_tms_happy_path():
         log_wandb=False,
     )
 
-    # The test passes if training runs without errors
     print("TMS training completed successfully")
-    assert True, "Test completed successfully"
 
 
 def test_tms_train_fixed_identity():
@@ -210,7 +190,6 @@ def test_tms_train_fixed_identity():
     eye = torch.eye(config.tms_model_config.n_hidden, device=device)
 
     assert model.hidden_layers is not None
-    # Assert that this is an identity matrix
     initial_hidden = cast(nn.Linear, model.hidden_layers[0]).weight.data.clone()
     assert torch.allclose(initial_hidden, eye), "Initial hidden layer is not identity"
 
@@ -224,7 +203,6 @@ def test_tms_train_fixed_identity():
         log_wandb=False,
     )
 
-    # Assert that the hidden layers remains identity
     assert torch.allclose(cast(nn.Linear, model.hidden_layers[0]).weight.data, eye), (
         "Hidden layer changed"
     )
@@ -267,7 +245,6 @@ def test_tms_train_fixed_random():
         log_wandb=False,
     )
 
-    # Assert that the hidden layers are unchanged
     assert torch.allclose(cast(nn.Linear, model.hidden_layers[0]).weight.data, initial_hidden), (
         "Hidden layer changed"
     )

@@ -4,7 +4,6 @@ from param_decomp.configs import SamplingType
 from param_decomp.metrics.base import Metric, MetricConfig, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.registry import register_metric
-from param_decomp.models.component_model import ComponentModel
 from param_decomp.plotting import plot_causal_importance_vals
 
 
@@ -21,12 +20,6 @@ class PermutedCIPlots(Metric[PermutedCIPlotsConfig]):
     short_name = "PermCIPlots"
 
     input_magnitude: ClassVar[float] = 0.75
-
-    def __init__(self, cfg: PermutedCIPlotsConfig, *, model: ComponentModel, device: str) -> None:
-        self.cfg = cfg
-        self.model = model
-        self.device = device
-        self.reset()
 
     @override
     def reset(self) -> None:

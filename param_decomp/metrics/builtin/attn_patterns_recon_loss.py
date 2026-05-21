@@ -177,16 +177,14 @@ def _attn_patterns_recon_loss_update(
 class _AttnPatternsBase(Metric[_AttnPatternsBaseConfig], ABC):
     """Shared init/accumulator/compute for both attn-pattern metrics."""
 
-    def __init__(self, cfg: _AttnPatternsBaseConfig, *, model: ComponentModel, device: str) -> None:
-        self.cfg = cfg
-        self.model = model
-        self.device = device
-        self.n_heads = cfg.n_heads
+    @override
+    def bind(self, *, model: ComponentModel, device: str) -> None:
+        super().bind(model=model, device=device)
+        self.n_heads = self.cfg.n_heads
         self.q_paths, self.k_paths, self.is_combined = _resolve_qk_paths(
-            model, cfg.q_proj_path, cfg.k_proj_path, cfg.c_attn_path
+            model, self.cfg.q_proj_path, self.cfg.k_proj_path, self.cfg.c_attn_path
         )
         self.attn_modules = _resolve_attn_modules(model, self.q_paths)
-        self.reset()
 
     @override
     def reset(self) -> None:
