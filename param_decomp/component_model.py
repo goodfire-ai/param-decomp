@@ -346,8 +346,13 @@ def component_grad_norms(
     out: dict[str, float] = {}
 
     comp_grad_norm_sq_sum: Float[Tensor, ""] = torch.zeros((), device=device)
+    missing_component_grad = False
     for target_module_path, component in component_model.components.items():
         for local_param_name, local_param in component.named_parameters():
+            if local_param.grad is None:
+                missing_component_grad = True
+                out[f"components/{target_module_path}.{local_param_name}"] = float("nan")
+                continue
             param_grad = runtime_cast(Tensor, local_param.grad)
             param_grad_sum_sq = param_grad.pow(2).sum()
             key = f"components/{target_module_path}.{local_param_name}"
@@ -355,7 +360,14 @@ def component_grad_norms(
             comp_grad_norm_sq_sum += param_grad_sum_sq
 
     ci_fn_grad_norm_sq_sum: Float[Tensor, ""] = torch.zeros((), device=device)
+    missing_ci_fn_grad = False
     for local_param_name, local_param in component_model.ci_fn.named_parameters():
+        if local_param.grad is None:
+            missing_ci_fn_grad = True
+            key = f"ci_fns/{local_param_name}"
+            assert key not in out, f"Key {key} already exists in grad norms log"
+            out[key] = float("nan")
+            continue
         ci_fn_grad = runtime_cast(Tensor, local_param.grad)
         ci_fn_grad_sum_sq = ci_fn_grad.pow(2).sum()
         key = f"ci_fns/{local_param_name}"
@@ -363,7 +375,15 @@ def component_grad_norms(
         out[key] = ci_fn_grad_sum_sq.sqrt().item()
         ci_fn_grad_norm_sq_sum += ci_fn_grad_sum_sq
 
-    out["summary/components"] = comp_grad_norm_sq_sum.sqrt().item()
-    out["summary/ci_fns"] = ci_fn_grad_norm_sq_sum.sqrt().item()
-    out["summary/total"] = (comp_grad_norm_sq_sum + ci_fn_grad_norm_sq_sum).sqrt().item()
+    out["summary/components"] = (
+        float("nan") if missing_component_grad else comp_grad_norm_sq_sum.sqrt().item()
+    )
+    out["summary/ci_fns"] = (
+        float("nan") if missing_ci_fn_grad else ci_fn_grad_norm_sq_sum.sqrt().item()
+    )
+    out["summary/total"] = (
+        float("nan")
+        if missing_component_grad or missing_ci_fn_grad
+        else (comp_grad_norm_sq_sum + ci_fn_grad_norm_sq_sum).sqrt().item()
+    )
     return out

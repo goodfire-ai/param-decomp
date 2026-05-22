@@ -116,6 +116,7 @@ def main(config_path: str | Path) -> None:
 
     set_seed(pd_config.seed)
     device = get_device()
+    runtime_config = RuntimeConfig.model_validate({**runtime_config.model_dump(), "device": device})
     logger.info(f"Using device: {device}")
 
     target_model = build_target(target_cfg)
@@ -152,7 +153,6 @@ def main(config_path: str | Path) -> None:
             runtime_config=runtime_config,
             sink=sink,
             eval_metrics=eval_metrics,
-            device=device,
         )
     finally:
         sink.finish()

@@ -82,9 +82,9 @@ class RuntimeConfig(BaseConfig):
         default=True,
         description="Use torch.autocast with bfloat16 mixed precision in training and eval.",
     )
-    device: Literal["cuda", "cpu"] = Field(
+    device: str = Field(
         default="cuda",
-        description="Device to run on. Overridable ad-hoc with ``pd-run --device cpu``.",
+        description="Device to run on, e.g. 'cuda', 'cuda:0', or 'cpu'.",
     )
     dp: PositiveInt | None = Field(
         default=None,
@@ -95,8 +95,11 @@ class RuntimeConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_device_dp(self) -> Self:
+        assert self.device == "cpu" or self.device == "cuda" or self.device.startswith("cuda:"), (
+            f"device must be 'cpu', 'cuda', or 'cuda:<index>', got {self.device!r}"
+        )
         if self.dp is not None:
-            assert self.device == "cuda", "dp requires device='cuda'"
+            assert self.device.startswith("cuda"), "dp requires a cuda device"
             assert self.dp >= 2, "if set, dp must be at least 2 (pass None for single device)."
         return self
 
@@ -179,7 +182,7 @@ class PDConfig(BaseConfig):
     ci_fn_optimizer: OptimizerConfig = Field(
         ..., description="Optimizer config for the CI function parameters"
     )
-    steps: NonNegativeInt = Field(..., description="Total number of optimisation steps")
+    steps: PositiveInt = Field(..., description="Total number of optimisation steps")
     batch_size: PositiveInt = Field(
         ...,
         description="Total batch size (may be divided across multiple devices).",
@@ -201,6 +204,7 @@ class PDConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_loss_metrics_have_coeff(self) -> Self:
+        assert self.loss_metrics, "loss_metrics must contain at least one training loss"
         for cfg in self.loss_metrics:
             assert cfg.coeff is not None, f"loss_metrics.{cfg.type!r} must set `coeff`"
         return self

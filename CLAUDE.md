@@ -54,11 +54,12 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 ```
 
 - `optimize(target_model, train_loader, eval_loader, *, run_batch, reconstruction_loss,
-  pd_config, runtime_config, sink, eval_metrics, device)`: the only entrypoint. Caller
+  pd_config, runtime_config, sink, eval_metrics)`: the only entrypoint. Caller
   supplies the target `nn.Module`, dataloaders, the run-batch / reconstruction callables,
   the two configs, a `RunSink` for outputs and cadence, and a list of pre-instantiated
-  eval `Metric` objects. `optimize()` builds the `ComponentModel` internally and calls
-  `Metric.bind(model, device)` on every eval metric before the loop.
+  eval `Metric` objects. `runtime_config.device` is the device source. `optimize()` builds
+  the `ComponentModel` internally and calls `Metric.bind(model, device)` on every eval metric
+  before the loop.
 - `PDConfig`: algorithm spec (CI fn, loss metrics, module patterns, optimizers, seed,
   tied weights, faithfulness warmup, …). Loss metrics live here as
   `loss_metrics: list[AnyLossMetricConfig]` — a pydantic discriminated union over each

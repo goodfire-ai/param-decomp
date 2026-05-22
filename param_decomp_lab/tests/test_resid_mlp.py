@@ -107,8 +107,7 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         run_batch=run_batch_first_element,
         reconstruction_loss=recon_loss_mse,
         pd_config=pd_config,
-        runtime_config=RuntimeConfig(),
+        runtime_config=RuntimeConfig(device=device),
         sink=sink,
         eval_metrics=[],
-        device=device,
     )

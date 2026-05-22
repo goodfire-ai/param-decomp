@@ -118,8 +118,7 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         run_batch=make_run_batch("logits"),
         reconstruction_loss=recon_loss_kl,
         pd_config=pd_config,
-        runtime_config=RuntimeConfig(),
+        runtime_config=RuntimeConfig(device=device),
         sink=sink,
         eval_metrics=[CI_L0(CI_L0Config(ci_alive_threshold=0.1, groups=None))],
-        device=device,
     )

@@ -33,6 +33,7 @@ from param_decomp.distributed import (
     avg_metrics_across_ranks,
     get_distributed_state,
     is_main_process,
+    seed_all_ranks,
     seed_per_rank,
     sync_across_processes,
 )
@@ -97,7 +98,6 @@ def optimize(
     runtime_config: RuntimeConfig,
     sink: RunSink,
     eval_metrics: list[Metric[Any]],
-    device: str,
 ) -> None:
     """Run the PD optimization loop.
 
@@ -112,6 +112,7 @@ def optimize(
     All ranks call this function; `sink` is automatically a no-op on non-main ranks.
     """
     dist_state = get_distributed_state()
+    device = runtime_config.device
     validate_pgd_scope(
         pd_config.loss_metrics,
         batch_size=pd_config.batch_size,
@@ -132,6 +133,7 @@ def optimize(
         target_model, pd_config.all_decomposition_target_configs
     )
 
+    seed_all_ranks(pd_config.seed)
     model = ComponentModel(
         target_model=target_model,
         run_batch=run_batch,
@@ -197,7 +199,11 @@ def optimize(
 
     # Loss metrics are auto-evaluated alongside dedicated eval metrics. We disallow duplicate
     # registry names across the two pools because `evaluate()` keys metrics by class name.
-    eval_only_instances: dict[str, Metric[Any]] = {type(m).__name__: m for m in eval_metrics}
+    eval_only_instances: dict[str, Metric[Any]] = {}
+    for m in eval_metrics:
+        metric_name = type(m).__name__
+        assert metric_name not in eval_only_instances, f"duplicate eval metric {metric_name!r}"
+        eval_only_instances[metric_name] = m
     overlap = sorted(set(loss_instances) & set(eval_only_instances))
     assert not overlap, (
         f"eval_metrics overlap with pd_config.loss_metrics: {overlap}. Loss metrics are "
@@ -238,13 +244,19 @@ def optimize(
             losses = {name: m.update(ctx) for name, m in loss_instances.items()}
 
         total_loss = torch.zeros((), device=device)
+        active_loss_names: list[str] = []
         for metric_name, loss_val in losses.items():
             if loss_val is None:
                 continue
+            active_loss_names.append(metric_name)
             cfg = cast(LossMetricConfig, loss_instances[metric_name].cfg)
             assert cfg.coeff is not None
             total_loss = total_loss + cfg.coeff * loss_val
             batch_log_data[f"loss/{type(loss_instances[metric_name]).__name__}"] = loss_val.item()
+        assert active_loss_names, (
+            f"No active loss metrics returned a loss at step {step}. "
+            f"Configured loss metrics: {list(loss_instances)}"
+        )
         batch_log_data["loss/total"] = total_loss.item()
 
         for metric_name, m in loss_instances.items():

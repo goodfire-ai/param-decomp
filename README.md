@@ -40,8 +40,9 @@ train/eval dataloaders, the eval `Metric` list, the `PDConfig` and `RuntimeConfi
 `RunSink`, then calls `optimize(...)`:
 
 ```python
-from param_decomp import PDConfig, RuntimeConfig, optimize
-from param_decomp.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
+from param_decomp.configs import PDConfig, RuntimeConfig
+from param_decomp.optimize import optimize
+from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
 from param_decomp_lab.run_sink import RunSink
 
 optimize(
@@ -51,11 +52,10 @@ optimize(
     run_batch=run_batch_first_element,
     reconstruction_loss=recon_loss_mse,
     pd_config=PDConfig(...),
-    runtime_config=RuntimeConfig(),
+    runtime_config=RuntimeConfig(device=device),
     sink=RunSink.local(out_dir, train_log_freq=100, eval_freq=1000, slow_eval_freq=5000,
                        n_eval_steps=10),
     eval_metrics=[...],   # list of pre-instantiated Metric objects
-    device=device,
 )
 ```
 

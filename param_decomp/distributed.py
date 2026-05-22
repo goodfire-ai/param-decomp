@@ -151,6 +151,13 @@ def gather_all_tensors(tensor: Tensor) -> list[Tensor]:
     return gathered
 
 
+def seed_all_ranks(seed: int) -> None:
+    """Set the same torch RNG seed on every rank."""
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+
+
 def seed_per_rank(base_seed: int) -> None:
     """Set global RNG to a unique seed per rank, so stochastic operations diverge across DDP ranks.
 
@@ -161,6 +168,4 @@ def seed_per_rank(base_seed: int) -> None:
     world_size = dist_state.world_size if dist_state is not None else 1
     rank = dist_state.rank if dist_state is not None else 0
     seed = base_seed * world_size + rank
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
+    seed_all_ranks(seed)
