@@ -5,7 +5,6 @@ import torch.nn as nn
 from jaxtyping import Float
 from torch import Tensor
 
-from param_decomp.configs import LayerwiseCiConfig, ScheduleConfig
 from param_decomp.decomposition_targets import DecompositionTarget
 from param_decomp.masks import UniformKSubsetRoutingConfig
 from param_decomp.metrics.ci_masked_recon_layerwise_loss import (
@@ -27,7 +26,9 @@ from param_decomp.metrics.stochastic_recon_layerwise_loss import (
 )
 from param_decomp.metrics.stochastic_recon_loss import stochastic_recon_loss
 from param_decomp.metrics.stochastic_recon_subset_loss import stochastic_recon_subset_loss
+from param_decomp.models.ci_fns import LayerwiseCiConfig
 from param_decomp.models.component_model import ComponentModel
+from param_decomp.schedule import ScheduleConfig
 from param_decomp_lab.models.batch_and_loss_fns import (
     recon_loss_kl,
     recon_loss_mse,

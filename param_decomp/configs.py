@@ -1,10 +1,4 @@
-"""Top-level PD configs: `PDConfig` (algorithm) and `RuntimeConfig` (substrate).
-
-Configs that live next to their implementation are re-exported here so that the full
-PD config surface is reachable from `param_decomp.configs`. See CLAUDE.md
-"Config placement and import cycles" for the rule used to decide where each
-config lives.
-"""
+"""Top-level PD configs: `PDConfig` (algorithm) and `RuntimeConfig` (substrate)."""
 
 from functools import cached_property
 from typing import Annotated, Literal, Self
@@ -39,34 +33,9 @@ from param_decomp.metrics.stochastic_recon_layerwise_loss import StochasticRecon
 from param_decomp.metrics.stochastic_recon_loss import StochasticReconLossConfig
 from param_decomp.metrics.stochastic_recon_subset_loss import StochasticReconSubsetLossConfig
 from param_decomp.metrics.unmasked_recon_loss import UnmaskedReconLossConfig
-from param_decomp.models.ci_fns import (
-    AttnConfig as AttnConfig,
-)
-from param_decomp.models.ci_fns import (
-    CiConfig,
-    GlobalCiConfig,
-    LayerwiseCiConfig,
-)
-from param_decomp.models.ci_fns import (
-    GlobalSharedTransformerCiConfig as GlobalSharedTransformerCiConfig,
-)
+from param_decomp.models.ci_fns import CiConfig
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.types import Probability
-
-# Re-export so `from param_decomp.configs import X` keeps working for callers.
-__all__ = [
-    "AnyLossMetricConfig",
-    "AttnConfig",
-    "CiConfig",
-    "DecompositionTargetConfig",
-    "GlobalCiConfig",
-    "GlobalSharedTransformerCiConfig",
-    "LayerwiseCiConfig",
-    "OptimizerConfig",
-    "PDConfig",
-    "RuntimeConfig",
-    "ScheduleConfig",
-]
 
 
 class OptimizerConfig(BaseConfig):

@@ -8,22 +8,21 @@ from jaxtyping import Float, Int
 from torch import Tensor, nn
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
-from param_decomp.configs import (
+from param_decomp.configs import OptimizerConfig, PDConfig
+from param_decomp.decomposition_targets import (
+    DecompositionTarget,
     DecompositionTargetConfig,
-    GlobalCiConfig,
-    LayerwiseCiConfig,
-    OptimizerConfig,
-    PDConfig,
-    ScheduleConfig,
+    resolve_decomposition_targets,
 )
-from param_decomp.decomposition_targets import DecompositionTarget, resolve_decomposition_targets
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.masks import ComponentsMaskInfo, make_mask_infos
 from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
 from param_decomp.models.ci_fns import (
+    GlobalCiConfig,
     GlobalCiFnWrapper,
     GlobalSharedMLPCiFn,
     GlobalSharedTransformerCiFn,
+    LayerwiseCiConfig,
     MLPCiFn,
     TargetLayerConfig,
     VectorMLPCiFn,
@@ -37,6 +36,7 @@ from param_decomp.models.components import (
     EmbeddingComponents,
     LinearComponents,
 )
+from param_decomp.schedule import ScheduleConfig
 from param_decomp_lab.infra.run_files import save_file
 from param_decomp_lab.models.batch_and_loss_fns import run_batch_passthrough
 from param_decomp_lab.models.component_model_utils import load_component_model_from_checkpoint

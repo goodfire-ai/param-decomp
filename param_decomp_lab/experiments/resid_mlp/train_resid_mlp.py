@@ -7,9 +7,8 @@ from jaxtyping import Float
 from torch import Tensor, nn
 from tqdm import tqdm
 
-from param_decomp.configs import ScheduleConfig
 from param_decomp.log import logger
-from param_decomp.schedule import get_scheduled_value
+from param_decomp.schedule import ScheduleConfig, get_scheduled_value
 from param_decomp_lab.experiments.resid_mlp.feature_importances import compute_feature_importances
 from param_decomp_lab.experiments.resid_mlp.models import (
     ResidMLP,

@@ -7,8 +7,8 @@ import torch.nn as nn
 from jaxtyping import Float
 from torch import Tensor
 
-from param_decomp.configs import LayerwiseCiConfig
 from param_decomp.decomposition_targets import DecompositionTarget
+from param_decomp.models.ci_fns import LayerwiseCiConfig
 from param_decomp.models.component_model import ComponentModel
 from param_decomp_lab.models.batch_and_loss_fns import run_batch_passthrough
 

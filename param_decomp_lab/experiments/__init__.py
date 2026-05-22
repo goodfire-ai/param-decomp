@@ -19,5 +19,3 @@ EXPERIMENTS: dict[str, ExperimentSpec] = {
     _RESID_MLP_SPEC.name: _RESID_MLP_SPEC,
     _LM_SPEC.name: _LM_SPEC,
 }
-
-__all__ = ["EXPERIMENTS", "ExperimentSpec"]

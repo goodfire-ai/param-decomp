@@ -42,13 +42,15 @@ syncs all workspace packages editably so both `import param_decomp` and
 
 ## Public API
 
-The core PD framework exposes a single training entrypoint:
+Import every name from where it is defined — there are no package-level re-exports. The
+core training entrypoint and the configs/protocols it consumes:
 
 ```python
-from param_decomp import (
-    optimize, PDConfig, RuntimeConfig, RunSink, Metric,
-    LossMetricConfig, RunBatch, ReconstructionLoss,
-)
+from param_decomp.optimize import optimize
+from param_decomp.configs import PDConfig, RuntimeConfig
+from param_decomp.run_sink import RunSink
+from param_decomp.metrics.base import LossMetricConfig, Metric
+from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 ```
 
 - `optimize(target_model, train_loader, eval_loader, *, run_batch, reconstruction_loss,
@@ -129,37 +131,40 @@ The PD trainer is configured by two pydantic configs plus a `RunSink`:
 
 `PDConfig`, `RuntimeConfig`, `OptimizerConfig`, and `AnyLossMetricConfig` live in
 `configs.py`. Configs that have a clear implementation home live next to that
-implementation and are re-exported from `configs.py`:
+implementation, and callers import them from that implementation module directly:
 
-- `ScheduleConfig` ↔ `utils/schedule.py` (next to `get_scheduled_value`)
-- `DecompositionTargetConfig` ↔ `decomposition_targets.py` (next to `DecompositionTarget` and
-  `resolve_decomposition_targets`)
+- `ScheduleConfig` → `param_decomp.schedule` (next to `get_scheduled_value`)
+- `DecompositionTargetConfig` → `param_decomp.decomposition_targets` (next to
+  `DecompositionTarget` and `resolve_decomposition_targets`)
 - `CiConfig` and friends (`LayerwiseCiConfig`, `AttnConfig`,
-  `GlobalSharedTransformerCiConfig`, `GlobalCiConfig`) ↔ `models/ci_fns.py`
+  `GlobalSharedTransformerCiConfig`, `GlobalCiConfig`) → `param_decomp.models.ci_fns`
   (next to the CI-fn `nn.Module` classes they configure)
-- `masks.py` configs (`SamplingType`, `SubsetRoutingType` + members) ↔ the
+- `masks.py` configs (`SamplingType`, `SubsetRoutingType` + members) → the
   Router implementations and runtime mask payload helpers in the same file
-- Each metric's `LossMetricConfig` subclass ↔ its `Metric` class in `metrics/<name>.py`
+- Each metric's `LossMetricConfig` subclass → its `Metric` class in `metrics/<name>.py`
 
 #### Config placement and import cycles
 
 The rule used to decide where each config lives:
 
 1. **Default:** keep the config in `configs.py`.
-2. **Move (or re-home) the config next to its implementation when leaving it in
-   `configs.py` would close an import cycle.** Concretely: if module `M` defines
-   the implementation that consumes the config and is also (transitively)
-   imported by `configs.py` — usually via the metric union — then `M → configs`
-   closes the loop. Put the config in `M` instead, and add a re-export from
-   `configs.py` so callers can still `from param_decomp.configs import X`.
+2. **Move the config next to its implementation when leaving it in `configs.py`
+   would close an import cycle.** Concretely: if module `M` defines the
+   implementation that consumes the config and is also (transitively) imported
+   by `configs.py` — usually via the metric union — then `M → configs` closes
+   the loop. Put the config in `M` instead and update callers to import it from
+   `M` directly. Do not add a re-export to `configs.py`.
 3. **Never use `if TYPE_CHECKING:` + forward-reference strings to paper over an
    import cycle.** If you find yourself reaching for it, the placement is wrong;
    apply rule 2 instead.
-4. **Modules that are themselves transitively imported by `configs.py` must
-   import a re-homed config from its real home, not via the `configs.py`
-   re-export.** Otherwise the re-export gets read mid-init and explodes at
-   runtime. Test files, scripts, and other "leaf" callers may freely use the
-   re-export.
+
+#### No package-level re-exports
+
+`__init__.py` files are bare. Every name is imported from the module that
+defines it (e.g. `from param_decomp.schedule import ScheduleConfig`, not
+`from param_decomp.configs import ScheduleConfig` and not `from param_decomp
+import optimize`). This keeps the import path canonical and avoids stale
+intermediary indirection.
 
 ### Saved run layout
 
@@ -220,10 +225,11 @@ This repository implements methods from two key research papers on parameter dec
 
 - `param_decomp/optimize.py` - The PD optimization loop (`optimize(...)`). The sole core entrypoint.
 - `param_decomp/configs.py` - `PDConfig` (algorithm) + `RuntimeConfig` (substrate) +
-  `OptimizerConfig` + `AnyLossMetricConfig` discriminated union. Also re-exports
-  `ScheduleConfig`, `DecompositionTargetConfig`, and the `CiConfig` family from
-  their implementation files so the full config surface is reachable from one
-  place. See "Config placement and import cycles" above for the placement rule.
+  `OptimizerConfig` + `AnyLossMetricConfig` discriminated union. Configs that live
+  in other modules (`ScheduleConfig`, `DecompositionTargetConfig`, the `CiConfig`
+  family, etc.) are imported here only to wire up `PDConfig` / `AnyLossMetricConfig`
+  — callers import them from their implementation modules directly. See "Config
+  placement and import cycles" above for the placement rule.
 - `param_decomp/masks.py` - Runtime mask payloads (`ComponentsMaskInfo`,
   `RoutingMasks`, `WeightDeltaAndMask`, `make_mask_infos`) plus `SamplingType` /
   `SubsetRoutingType` configs, Router implementations, and stochastic mask helpers.
@@ -297,7 +303,7 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 │   ├── metrics/                     # Loss Metric classes (cfg+impl per file) + LOSS_METRIC_CLASSES dispatch
 │   ├── models/                      # ComponentModel + components + ci_fns + ci_nn_blocks + sigmoids
 │   ├── tests/                       # Core-library test suite
-│   ├── configs.py                   # PDConfig + RuntimeConfig + OptimizerConfig + AnyLossMetricConfig + re-exports
+│   ├── configs.py                   # PDConfig + RuntimeConfig + OptimizerConfig + AnyLossMetricConfig
 │   ├── masks.py                     # Runtime mask payloads, Router impls, SamplingType / SubsetRoutingType configs, stochastic mask helpers
 │   ├── optimize.py                  # optimize() — the core entrypoint (also holds the loop_dataloader helper)
 │   ├── run_sink.py                  # RunSink Protocol — contract optimize() calls

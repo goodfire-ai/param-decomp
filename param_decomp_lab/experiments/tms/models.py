@@ -9,7 +9,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.configs import ScheduleConfig
+from param_decomp.schedule import ScheduleConfig
 from param_decomp_lab.experiments.loadable_module import LoadableModule
 from param_decomp_lab.infra.paths import ModelPath
 from param_decomp_lab.infra.run_files import resolve_run_files

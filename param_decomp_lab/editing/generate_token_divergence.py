@@ -29,7 +29,7 @@ import yaml
 from datasets import load_dataset
 
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
-from param_decomp_lab.editing import EditableModel, ForwardFn
+from param_decomp_lab.editing.model import EditableModel, ForwardFn
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 
 TokenData = dict[str, Any]

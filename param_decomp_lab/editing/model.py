@@ -5,7 +5,7 @@ methods for component analysis, editing, and measurement. It's callable
 (tokens → logits) so it works as a ForwardFn anywhere.
 
 Usage:
-    from param_decomp_lab.editing import EditableModel, search_interpretations, generate
+    from param_decomp_lab.editing.model import EditableModel, search_interpretations, generate
 
     em = EditableModel.from_wandb("wandb:goodfire/spd/s-892f140b")
     matches = search_interpretations(harvest, interp, r"male pronoun")

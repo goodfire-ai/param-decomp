@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from torch.testing import assert_close
 
-from param_decomp.configs import DecompositionTargetConfig
+from param_decomp.decomposition_targets import DecompositionTargetConfig
 from param_decomp.identity_insertion import Identity, insert_identity_operations_
 
 

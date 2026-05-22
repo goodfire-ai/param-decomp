@@ -1,16 +1,14 @@
 from pathlib import Path
 
-from param_decomp import PDConfig, RuntimeConfig, optimize
-from param_decomp.configs import (
-    DecompositionTargetConfig,
-    LayerwiseCiConfig,
-    OptimizerConfig,
-    ScheduleConfig,
-)
+from param_decomp.configs import OptimizerConfig, PDConfig, RuntimeConfig
+from param_decomp.decomposition_targets import DecompositionTargetConfig
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.metrics.faithfulness_loss import FaithfulnessLossConfig
 from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
 from param_decomp.metrics.stochastic_recon_loss import StochasticReconLossConfig
+from param_decomp.models.ci_fns import LayerwiseCiConfig
+from param_decomp.optimize import optimize
+from param_decomp.schedule import ScheduleConfig
 from param_decomp_lab.experiments.resid_mlp.models import ResidMLP, ResidMLPModelConfig
 from param_decomp_lab.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
 from param_decomp_lab.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element

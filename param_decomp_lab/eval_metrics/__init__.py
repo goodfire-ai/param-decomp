@@ -38,6 +38,3 @@ EVAL_METRICS: dict[str, type[Metric[Any]]] = {
         UVPlots,
     )
 }
-
-
-__all__ = ["EVAL_METRICS"]

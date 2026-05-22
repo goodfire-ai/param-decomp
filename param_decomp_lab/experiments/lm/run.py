@@ -13,11 +13,12 @@ import fire
 from pydantic import Field, model_validator
 from torch.utils.data import DataLoader
 
-from param_decomp import PDConfig, RuntimeConfig, optimize
 from param_decomp.base_config import BaseConfig
 from param_decomp.batch_and_loss_fns import RunBatch
+from param_decomp.configs import PDConfig, RuntimeConfig
 from param_decomp.distributed import DistributedState, is_main_process
 from param_decomp.log import logger
+from param_decomp.optimize import optimize
 from param_decomp_lab.experiments.lm.data import (
     LMDataConfig,
     build_lm_eval_loader,
