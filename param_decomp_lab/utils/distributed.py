@@ -21,7 +21,7 @@ from param_decomp.distributed import (
     sync_across_processes,
 )
 from param_decomp.log import logger
-from param_decomp.torch_helpers import runtime_cast
+from param_decomp.types import runtime_cast
 
 
 def init_distributed() -> DistributedState | None:

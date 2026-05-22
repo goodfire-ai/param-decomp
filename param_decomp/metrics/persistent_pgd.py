@@ -23,6 +23,7 @@ from torch import Tensor
 from torch.distributed import ReduceOp
 
 from param_decomp.base_config import BaseConfig
+from param_decomp.batch_and_loss_fns import ReconstructionLoss
 from param_decomp.distributed import all_reduce, broadcast_tensor
 from param_decomp.masks import (
     AllLayersRouter,
@@ -36,7 +37,6 @@ from param_decomp.masks import (
     make_mask_infos,
 )
 from param_decomp.metrics.base import LossMetricConfig
-from param_decomp.models.batch_and_loss_fns import ReconstructionLoss
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.schedule import ScheduleConfig, get_scheduled_value
 from param_decomp.types import Probability

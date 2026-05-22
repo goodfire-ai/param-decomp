@@ -230,13 +230,3 @@ class EmbeddingComponents(Components):
             )
 
         return out
-
-
-class Identity(nn.Module):
-    def __init__(self, d: int):
-        super().__init__()
-        self.d = d
-
-    @override
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x

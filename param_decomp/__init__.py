@@ -29,9 +29,9 @@ Caller builds:
       binds them to the built `ComponentModel` internally.
 """
 
+from param_decomp.batch_and_loss_fns import ReconstructionLoss, RunBatch
 from param_decomp.configs import PDConfig, RuntimeConfig
 from param_decomp.metrics.base import LossMetricConfig, Metric
-from param_decomp.models.batch_and_loss_fns import ReconstructionLoss, RunBatch
 from param_decomp.optimize import optimize
 from param_decomp.run_sink import RunSink
 

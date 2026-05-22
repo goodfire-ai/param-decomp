@@ -25,11 +25,11 @@ from param_decomp.models.ci_fns import (
     GlobalSharedMLPCiFn,
     GlobalSharedTransformerCiFn,
     MLPCiFn,
-    ParallelLinear,
     TargetLayerConfig,
     VectorMLPCiFn,
     VectorSharedMLPCiFn,
 )
+from param_decomp.models.ci_nn_blocks import ParallelLinear
 from param_decomp.models.component_model import (
     ComponentModel,
 )

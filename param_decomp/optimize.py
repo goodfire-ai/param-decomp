@@ -21,6 +21,11 @@ from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
 
+from param_decomp.batch_and_loss_fns import (
+    ReconstructionLoss,
+    RunBatch,
+    move_batch_to_device,
+)
 from param_decomp.configs import PDConfig, RuntimeConfig
 from param_decomp.decomposition_targets import resolve_decomposition_targets
 from param_decomp.distributed import (
@@ -38,19 +43,11 @@ from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.faithfulness_loss import faithfulness_loss
 from param_decomp.metrics.loss_metrics import LOSS_METRIC_CLASSES
 from param_decomp.metrics.persistent_pgd import validate_pgd_scope
-from param_decomp.models.batch_and_loss_fns import (
-    ReconstructionLoss,
-    RunBatch,
-    move_batch_to_device,
-)
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
 from param_decomp.run_sink import RunSink
 from param_decomp.schedule import get_scheduled_value
-from param_decomp.torch_helpers import (
-    bf16_autocast,
-    combine_nonoverlapping_dicts,
-    runtime_cast,
-)
+from param_decomp.torch_helpers import bf16_autocast
+from param_decomp.types import runtime_cast
 
 
 def loop_dataloader[T](dl: DataLoader[T]) -> Generator[T]:
@@ -374,9 +371,9 @@ def optimize(
             batch_log_data = cast(defaultdict[str, float], avg_metrics)
 
             grad_norms = _grad_norms_dict(component_model, device)
-            combine_nonoverlapping_dicts(
-                batch_log_data, {f"grad_norms/{k}": v for k, v in grad_norms.items()}
-            )
+            grad_norm_log_data = {f"grad_norms/{k}": v for k, v in grad_norms.items()}
+            assert not set(batch_log_data) & set(grad_norm_log_data)
+            batch_log_data.update(grad_norm_log_data)
             batch_log_data["schedules/lr/components"] = components_lr
             batch_log_data["schedules/lr/ci_fn"] = ci_fn_lr
 

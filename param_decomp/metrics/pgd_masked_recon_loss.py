@@ -5,12 +5,12 @@ from jaxtyping import Float
 from torch import Tensor
 from torch.distributed import ReduceOp
 
+from param_decomp.batch_and_loss_fns import ReconstructionLoss
 from param_decomp.distributed import all_reduce
 from param_decomp.masks import AllLayersRouter
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.pgd_utils import PGDConfig, pgd_masked_recon_loss_update
-from param_decomp.models.batch_and_loss_fns import ReconstructionLoss
 from param_decomp.models.component_model import ComponentModel
 
 

@@ -21,7 +21,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.models.batch_and_loss_fns import ReconstructionLoss, RunBatch
+from param_decomp.batch_and_loss_fns import ReconstructionLoss, RunBatch
 
 
 @dataclass(frozen=True)

@@ -8,7 +8,6 @@ from torch.types import Number
 from wandb.plot.custom_chart import CustomChart
 
 from param_decomp.metrics.base import Metric
-from param_decomp.torch_helpers import combine_nonoverlapping_dicts
 
 MetricOutType = dict[str, str | Number | Image.Image | CustomChart]
 
@@ -52,5 +51,6 @@ def collect_metric_outputs(active: list[Metric[Any]]) -> MetricOutType:
             metric_name=type(m).__name__,
             computed_raw=m.compute(),
         )
-        combine_nonoverlapping_dicts(outputs, cleaned)
+        assert not set(outputs) & set(cleaned)
+        outputs.update(cleaned)
     return outputs

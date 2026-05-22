@@ -6,7 +6,7 @@ import torch
 from jaxtyping import Bool, Float
 from torch import Tensor
 
-from param_decomp.models.batch_and_loss_fns import move_batch_to_device
+from param_decomp.batch_and_loss_fns import move_batch_to_device
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
 from param_decomp_lab.clustering.formatting import DeadComponentFilterStat, ModuleFilterFunc
 from param_decomp_lab.clustering.types import (

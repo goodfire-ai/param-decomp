@@ -15,9 +15,9 @@ from torch import Tensor
 
 from param_decomp import PDConfig, RuntimeConfig, optimize
 from param_decomp.base_config import BaseConfig
+from param_decomp.batch_and_loss_fns import RunBatch
 from param_decomp.distributed import DistributedState
 from param_decomp.log import logger
-from param_decomp.models.batch_and_loss_fns import RunBatch
 from param_decomp.types import Probability
 from param_decomp_lab.experiments.spec import ExperimentSpec
 from param_decomp_lab.experiments.tms.models import TMSModel, TMSTargetRunInfo

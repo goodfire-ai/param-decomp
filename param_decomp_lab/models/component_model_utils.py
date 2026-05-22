@@ -12,12 +12,12 @@ import torch
 from jaxtyping import Float, Int
 from torch import Tensor, nn
 
+from param_decomp.batch_and_loss_fns import RunBatch
 from param_decomp.decomposition_targets import (
     DecompositionTargetConfig,
     resolve_decomposition_targets,
 )
 from param_decomp.identity_insertion import insert_identity_operations_
-from param_decomp.models.batch_and_loss_fns import RunBatch
 from param_decomp.models.ci_fns import (
     CiConfig,
     GlobalCiConfig,

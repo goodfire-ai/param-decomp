@@ -10,9 +10,10 @@ from torch import Tensor, nn
 from torch.utils.hooks import RemovableHandle
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
+from param_decomp.batch_and_loss_fns import RunBatch
 from param_decomp.decomposition_targets import DecompositionTarget
+from param_decomp.identity_insertion import Identity
 from param_decomp.masks import ComponentsMaskInfo, SamplingType
-from param_decomp.models.batch_and_loss_fns import RunBatch
 from param_decomp.models.ci_fns import (
     CiConfig,
     GlobalCiConfig,
@@ -29,7 +30,6 @@ from param_decomp.models.ci_fns import (
 from param_decomp.models.components import (
     Components,
     EmbeddingComponents,
-    Identity,
     LinearComponents,
 )
 from param_decomp.models.sigmoids import SIGMOID_TYPES, SigmoidType

@@ -14,7 +14,7 @@ from einops import rearrange, repeat
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
-from param_decomp.torch_helpers import runtime_cast
+from param_decomp.types import runtime_cast
 from param_decomp_lab.harvest.schemas import ActivationExample
 
 WINDOW_PAD_SENTINEL = -1

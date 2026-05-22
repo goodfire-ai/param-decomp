@@ -8,13 +8,23 @@ the model, namely, allowing us to decompose the identity operation.
 """
 
 import fnmatch
-from typing import Any
+from typing import Any, override
 
+import torch
 import torch.nn as nn
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
 from param_decomp.decomposition_targets import DecompositionTargetConfig
-from param_decomp.models.components import Identity
+
+
+class Identity(nn.Module):
+    def __init__(self, d: int):
+        super().__init__()
+        self.d = d
+
+    @override
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x
 
 
 def _pre_id_hook(

@@ -231,11 +231,13 @@ This repository implements methods from two key research papers on parameter dec
 - `param_decomp_lab/run_sink.py` - Concrete `RunSink` for in-repo use: local files + wandb, with `.local`/`.with_wandb`/`.silent` constructors and rank-aware no-op fan-out.
 - `param_decomp/eval.py` - `collect_metric_outputs(active)` — flattens each metric's `compute()` output.
 - `param_decomp/models/component_model.py` - Core ComponentModel that wraps target models.
-- `param_decomp/models/components.py` - Component types (LinearComponent, EmbeddingComponent, etc.) + `init_param_` / `Identity`.
-- `param_decomp/models/ci_fns.py` - CI configs (`CiConfig` family + `AttnConfig`) + CI-fn modules (`MLPCiFn`, `VectorMLPCiFn`, `VectorSharedMLPCiFn`, `GlobalSharedMLPCiFn`, `GlobalSharedTransformerCiFn`) + wrappers (`LayerwiseCiFnWrapper`, `GlobalCiFnWrapper`) and their transformer building blocks.
-- `param_decomp/models/batch_and_loss_fns.py` - `RunBatch` / `ReconstructionLoss` protocols
+- `param_decomp/models/components.py` - Component types (LinearComponent, EmbeddingComponent, etc.) + `init_param_`.
+- `param_decomp/models/ci_fns.py` - CI configs (`CiConfig` family + `AttnConfig`) + CI-fn modules (`MLPCiFn`, `VectorMLPCiFn`, `VectorSharedMLPCiFn`, `GlobalSharedMLPCiFn`, `GlobalSharedTransformerCiFn`) + wrappers (`LayerwiseCiFnWrapper`, `GlobalCiFnWrapper`).
+- `param_decomp/models/ci_nn_blocks.py` - Generic transformer building blocks used by the CI fns (`Linear`, `ParallelLinear`, `RoPEEmbedding`, `SelfAttention`, `TransformerBlock`).
+- `param_decomp/batch_and_loss_fns.py` - `RunBatch` / `ReconstructionLoss` protocols
   + `move_batch_to_device`. The concrete `run_batch_*` / `recon_loss_*` helpers live in
   `param_decomp_lab/models/batch_and_loss_fns.py` (caller-supplied; `optimize()` doesn't import them).
+- `param_decomp/identity_insertion.py` - `Identity` shim + `insert_identity_operations_` that registers it on target modules before decomposition.
 - `param_decomp/metrics/` - Loss `Metric` classes + their `LossMetricConfig`s (one per file).
   `metrics/base.py` defines the `Metric` ABC with `__init__(cfg)` + `bind(model, device)`.
   `metrics/loss_metrics.py` exposes `LOSS_METRIC_CLASSES`, the `type` literal → class
@@ -293,7 +295,7 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 ├── scripts/                         # Standalone utility scripts
 ├── param_decomp/                    # Core library: training loop, configs, models, loss metrics
 │   ├── metrics/                     # Loss Metric classes (cfg+impl per file) + LOSS_METRIC_CLASSES dispatch
-│   ├── models/                      # ComponentModel + components + sigmoids + batch_and_loss_fns Protocols
+│   ├── models/                      # ComponentModel + components + ci_fns + ci_nn_blocks + sigmoids
 │   ├── tests/                       # Core-library test suite
 │   ├── configs.py                   # PDConfig + RuntimeConfig + OptimizerConfig + AnyLossMetricConfig + re-exports
 │   ├── masks.py                     # Runtime mask payloads, Router impls, SamplingType / SubsetRoutingType configs, stochastic mask helpers
@@ -302,12 +304,13 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 │   ├── eval.py                      # evaluate(instances, ...)
 │   ├── distributed.py               # DistributedState + read-only state + reduce/gather collectives
 │   ├── schedule.py                  # ScheduleConfig + get_scheduled_value
-│   ├── torch_helpers.py             # bf16_autocast, runtime_cast, get_obj_device, etc.
-│   ├── identity_insertion.py        # Insert identity ops into target model before optimize
+│   ├── torch_helpers.py             # bf16_autocast, get_obj_device, etc.
+│   ├── batch_and_loss_fns.py        # RunBatch / ReconstructionLoss Protocols + move_batch_to_device
+│   ├── identity_insertion.py        # Identity shim + insert_identity_operations_
 │   ├── decomposition_targets.py   # Decomposition target config + module-pattern resolution
 │   ├── log.py                       # `logger` shared across the library
 │   ├── base_config.py               # Pydantic `BaseConfig` with YAML/JSON load/save
-│   └── types.py                     # `Probability`, `LayerwiseCiFnType`, `GlobalCiFnType`
+│   └── types.py                     # `Probability`, CI-fn type aliases, runtime_cast
 ├── param_decomp_lab/                # Lab tooling — experiments, post-processing, app, infra
 │   ├── infra/                       # Cross-subsystem plumbing: settings, paths, slurm, wandb, sqlite, git, run_files, markdown, pydantic
 │   ├── experiments/

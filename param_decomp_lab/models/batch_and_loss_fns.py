@@ -1,7 +1,7 @@
 """Caller-supplied conveniences for `optimize(run_batch=..., reconstruction_loss=...)`.
 
 `optimize()` does not call any of these directly — it just invokes whatever the caller
-hands it via the `RunBatch` / `ReconstructionLoss` protocols (in `param_decomp.models.batch_and_loss_fns`).
+hands it via the `RunBatch` / `ReconstructionLoss` protocols (in `param_decomp.batch_and_loss_fns`).
 The helpers below are the implementations the in-repo experiments and tests use.
 """
 
@@ -12,8 +12,8 @@ import torch.nn.functional as F
 from jaxtyping import Float
 from torch import Tensor, nn
 
-from param_decomp.models.batch_and_loss_fns import RunBatch
-from param_decomp.torch_helpers import runtime_cast
+from param_decomp.batch_and_loss_fns import RunBatch
+from param_decomp.types import runtime_cast
 
 
 def run_batch_passthrough(model: nn.Module, batch: Any) -> Tensor:
