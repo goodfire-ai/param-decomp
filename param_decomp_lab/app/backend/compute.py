@@ -16,10 +16,8 @@ from pydantic import BaseModel
 from torch import Tensor, nn
 
 from param_decomp.log import logger
-from param_decomp.metrics.pgd_utils import interpolate_pgd_mask
+from param_decomp.masks import SamplingType, interpolate_component_mask, make_mask_infos
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
-from param_decomp.models.components import make_mask_infos
-from param_decomp.routing import SamplingType
 from param_decomp.torch_helpers import bf16_autocast
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.app.backend.optim_cis import (
@@ -977,7 +975,7 @@ def compute_intervention(
         loss_config=loss_config,
     )
     # Non-alive positions get uniform random fill
-    adv_masks = interpolate_pgd_mask(ci_masks, adv_sources)
+    adv_masks = interpolate_component_mask(ci_masks, adv_sources)
     with torch.no_grad():
         for layer in adv_masks:
             non_alive = ~alive_masks[layer]

@@ -25,9 +25,8 @@ from jaxtyping import Float, Int
 from torch import Tensor
 
 from param_decomp.log import logger
+from param_decomp.masks import SamplingType, make_mask_infos
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.models.components import make_mask_infos
-from param_decomp.routing import SamplingType
 from param_decomp_lab.experiments.lm.data import LMDataConfig, create_lm_data_loader
 from param_decomp_lab.infra.paths import ModelPath
 from param_decomp_lab.saved_run import SavedRun

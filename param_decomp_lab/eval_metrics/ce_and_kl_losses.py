@@ -9,11 +9,15 @@ from torch.distributed import ReduceOp
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.distributed import all_reduce
+from param_decomp.masks import (
+    AllLayersRouter,
+    SamplingType,
+    calc_stochastic_component_mask_info,
+    make_mask_infos,
+)
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
-from param_decomp.models.components import make_mask_infos
-from param_decomp.routing import AllLayersRouter, SamplingType, calc_stochastic_component_mask_info
-from param_decomp.torch_helpers import calc_kl_divergence_lm
+from param_decomp_lab.models.batch_and_loss_fns import calc_kl_divergence_lm
 
 
 class CEandKLLossesConfig(BaseConfig):

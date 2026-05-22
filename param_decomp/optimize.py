@@ -22,6 +22,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
 
 from param_decomp.configs import PDConfig, RuntimeConfig
+from param_decomp.decomposition_targets import resolve_decomposition_targets
 from param_decomp.distributed import (
     avg_metrics_across_ranks,
     get_distributed_state,
@@ -43,7 +44,6 @@ from param_decomp.models.batch_and_loss_fns import (
     move_batch_to_device,
 )
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
-from param_decomp.module_info import expand_module_patterns
 from param_decomp.run_sink import RunSink
 from param_decomp.schedule import get_scheduled_value
 from param_decomp.torch_helpers import (
@@ -234,19 +234,21 @@ def optimize(
     train_iterator = loop_dataloader(train_loader)
     eval_iterator = loop_dataloader(eval_loader)
 
-    if pd_config.identity_module_info is not None:
+    if pd_config.identity_decomposition_targets is not None:
         insert_identity_operations_(
             target_model,
-            identity_module_info=pd_config.identity_module_info,
+            identity_decomposition_targets=pd_config.identity_decomposition_targets,
         )
 
     target_model.requires_grad_(False)
-    module_path_info = expand_module_patterns(target_model, pd_config.all_module_info)
+    decomposition_targets = resolve_decomposition_targets(
+        target_model, pd_config.all_decomposition_target_configs
+    )
 
     model = ComponentModel(
         target_model=target_model,
         run_batch=run_batch,
-        module_path_info=module_path_info,
+        decomposition_targets=decomposition_targets,
         ci_config=pd_config.ci_config,
         sigmoid_type=pd_config.sigmoid_type,
     )

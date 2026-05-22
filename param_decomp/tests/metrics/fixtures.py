@@ -8,8 +8,8 @@ from jaxtyping import Float
 from torch import Tensor
 
 from param_decomp.configs import LayerwiseCiConfig
+from param_decomp.decomposition_targets import DecompositionTarget
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.module_info import ModulePathInfo
 from param_decomp_lab.models.batch_and_loss_fns import run_batch_passthrough
 
 
@@ -60,7 +60,7 @@ def make_one_layer_component_model(
     comp_model = ComponentModel(
         target_model=target,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path="fc", C=C)],
+        decomposition_targets=[DecompositionTarget(module_path="fc", C=C)],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
     )
@@ -93,9 +93,9 @@ def make_two_layer_component_model(
     comp_model = ComponentModel(
         target_model=target,
         run_batch=run_batch_passthrough,
-        module_path_info=[
-            ModulePathInfo(module_path="fc1", C=1),
-            ModulePathInfo(module_path="fc2", C=1),
+        decomposition_targets=[
+            DecompositionTarget(module_path="fc1", C=1),
+            DecompositionTarget(module_path="fc2", C=1),
         ],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",

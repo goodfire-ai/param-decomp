@@ -11,6 +11,13 @@ from pydantic import BaseModel
 from torch import Tensor
 from tqdm.auto import tqdm
 
+from param_decomp.masks import (
+    AllLayersRouter,
+    SamplingType,
+    calc_stochastic_component_mask_info,
+    interpolate_component_mask,
+    make_mask_infos,
+)
 from param_decomp.metrics.importance_minimality_loss import (
     ImportanceMinimalityLossConfig,
     importance_minimality_loss,
@@ -18,15 +25,8 @@ from param_decomp.metrics.importance_minimality_loss import (
 from param_decomp.metrics.pgd_utils import (
     PGDInitStrategy,
     get_pgd_init_tensor,
-    interpolate_pgd_mask,
 )
 from param_decomp.models.component_model import CIOutputs, ComponentModel, OutputWithCache
-from param_decomp.models.components import make_mask_infos
-from param_decomp.routing import (
-    AllLayersRouter,
-    SamplingType,
-    calc_stochastic_component_mask_info,
-)
 from param_decomp.torch_helpers import bf16_autocast
 from param_decomp.types import Probability
 from param_decomp_lab.eval_metrics.ci_l0 import calc_ci_l_zero
@@ -297,7 +297,7 @@ def run_adv_pgd(
     source_list = list(adv_sources.values())
 
     for _ in range(adv_config.n_steps):
-        mask_infos = make_mask_infos(interpolate_pgd_mask(ci_detached, adv_sources))
+        mask_infos = make_mask_infos(interpolate_component_mask(ci_detached, adv_sources))
 
         with bf16_autocast():
             out = model(tokens, mask_infos=mask_infos)
@@ -436,7 +436,7 @@ def optimize_ci_values(
                 target_out=target_out,
             )
             pgd_mask_infos = make_mask_infos(
-                interpolate_pgd_mask(ci_outputs.lower_leaky, adv_sources)
+                interpolate_component_mask(ci_outputs.lower_leaky, adv_sources)
             )
 
             with bf16_autocast():
@@ -495,7 +495,7 @@ def optimize_ci_values(
         )
         with torch.no_grad():
             adv_pgd_masks = make_mask_infos(
-                interpolate_pgd_mask(final_ci_outputs.lower_leaky, final_adv_sources)
+                interpolate_component_mask(final_ci_outputs.lower_leaky, final_adv_sources)
             )
             with bf16_autocast():
                 adv_logits = model(tokens, mask_infos=adv_pgd_masks)
@@ -594,7 +594,7 @@ def run_adv_pgd_batched(
     source_list = list(adv_sources.values())
 
     for _ in range(adv_config.n_steps):
-        mask_infos = make_mask_infos(interpolate_pgd_mask(ci_detached, adv_sources))
+        mask_infos = make_mask_infos(interpolate_component_mask(ci_detached, adv_sources))
 
         with bf16_autocast():
             out = model(tokens, mask_infos=mask_infos)
@@ -758,7 +758,7 @@ def optimize_ci_values_batched(
                 target_out=target_out_batched,
                 loss_config=config.loss_config,
             )
-            pgd_masks = interpolate_pgd_mask(batched_ci_lower_leaky, adv_sources)
+            pgd_masks = interpolate_component_mask(batched_ci_lower_leaky, adv_sources)
             pgd_mask_infos = make_mask_infos(pgd_masks)
             with bf16_autocast():
                 pgd_out = model(tokens_batched, mask_infos=pgd_mask_infos)
@@ -814,7 +814,7 @@ def optimize_ci_values_batched(
             )
             with torch.no_grad():
                 adv_masks = make_mask_infos(
-                    interpolate_pgd_mask(final_ci.lower_leaky, final_adv_sources)
+                    interpolate_component_mask(final_ci.lower_leaky, final_adv_sources)
                 )
                 with bf16_autocast():
                     adv_logits = model(tokens, mask_infos=adv_masks)

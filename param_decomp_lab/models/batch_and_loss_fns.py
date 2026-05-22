@@ -5,7 +5,6 @@ hands it via the `RunBatch` / `ReconstructionLoss` protocols (in `param_decomp.m
 The helpers below are the implementations the in-repo experiments and tests use.
 """
 
-import math
 from typing import Any
 
 import torch
@@ -58,6 +57,15 @@ def recon_loss_mse(
     return squared_errors.sum(), pred.numel()
 
 
+def calc_kl_divergence_lm(
+    pred: Float[Tensor, "... vocab"],
+    target: Float[Tensor, "... vocab"],
+) -> Float[Tensor, ""]:
+    """Calculate mean per-position KL divergence between two logits tensors."""
+    sum_kl, n_positions = recon_loss_kl(pred=pred, target=target)
+    return sum_kl / n_positions
+
+
 def recon_loss_kl(
     pred: Float[Tensor, "... vocab"],
     target: Float[Tensor, "... vocab"],
@@ -66,5 +74,5 @@ def recon_loss_kl(
     assert pred.shape == target.shape
     log_q = torch.log_softmax(pred, dim=-1)  # log Q
     p = torch.softmax(target, dim=-1)  # P
-    kl_per_position = F.kl_div(log_q, p, reduction="none").sum(dim=-1)  # P · (log P − log Q)
-    return kl_per_position.sum(), math.prod(pred.shape[:-1])
+    n_positions = pred.numel() // pred.shape[-1]
+    return F.kl_div(log_q, p, reduction="sum"), n_positions

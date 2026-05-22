@@ -13,8 +13,8 @@ from typing import Any
 import torch.nn as nn
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
+from param_decomp.decomposition_targets import DecompositionTargetConfig
 from param_decomp.models.components import Identity
-from param_decomp.module_info import ModulePatternInfoConfig
 
 
 def _pre_id_hook(
@@ -34,27 +34,31 @@ def _pre_id_hook(
 
 
 def insert_identity_operations_(
-    target_model: nn.Module, identity_module_info: list[ModulePatternInfoConfig]
+    target_model: nn.Module, identity_decomposition_targets: list[DecompositionTargetConfig]
 ) -> None:
     """Insert identity layers before specified modules.
 
     Args:
         target_model: The model to modify
-        identity_module_info: List of ModulePatternInfoConfig. The C values are ignored here
-            (used later when creating components), only patterns are used for matching.
+        identity_decomposition_targets: Decomposition targets whose patterns select modules that
+            should receive a pre-identity. C is used later when creating components.
     """
     # Extract just the patterns (ignore C values for insertion)
     identity_module_paths: list[str] = []
     matched_patterns: set[str] = set()
-    for info in identity_module_info:
-        if info.module_pattern in matched_patterns:
-            raise ValueError(f"Duplicate pattern '{info.module_pattern}' in identity_module_info")
+    for target in identity_decomposition_targets:
+        if target.module_pattern in matched_patterns:
+            raise ValueError(
+                f"Duplicate pattern '{target.module_pattern}' in identity_decomposition_targets"
+            )
         for name, _ in target_model.named_modules():
-            if fnmatch.fnmatch(name, info.module_pattern):
-                matched_patterns.add(info.module_pattern)
+            if fnmatch.fnmatch(name, target.module_pattern):
+                matched_patterns.add(target.module_pattern)
                 identity_module_paths.append(name)
 
-    unmatched = {info.module_pattern for info in identity_module_info} - matched_patterns
+    unmatched = {
+        target.module_pattern for target in identity_decomposition_targets
+    } - matched_patterns
     if unmatched:
         raise ValueError(f"Identity patterns did not match any modules: {sorted(unmatched)}")
 

@@ -3,9 +3,14 @@ from unittest.mock import patch
 import torch
 from torch import Tensor
 
+from param_decomp.masks import (
+    ComponentsMaskInfo,
+    Router,
+    SamplingType,
+    UniformKSubsetRoutingConfig,
+    make_mask_infos,
+)
 from param_decomp.metrics.stochastic_recon_subset_loss import stochastic_recon_subset_loss
-from param_decomp.models.components import ComponentsMaskInfo, make_mask_infos
-from param_decomp.routing import Router, SamplingType, UniformKSubsetRoutingConfig
 from param_decomp.tests.metrics.fixtures import make_one_layer_component_model
 from param_decomp_lab.models.batch_and_loss_fns import recon_loss_mse
 

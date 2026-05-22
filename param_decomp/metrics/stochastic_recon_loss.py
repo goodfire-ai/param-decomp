@@ -6,11 +6,11 @@ from torch import Tensor
 from torch.distributed import ReduceOp
 
 from param_decomp.distributed import all_reduce
+from param_decomp.masks import AllLayersRouter, SamplingType, calc_stochastic_component_mask_info
 from param_decomp.metrics.base import LossMetricConfig, Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.models.batch_and_loss_fns import ReconstructionLoss
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.routing import AllLayersRouter, SamplingType, calc_stochastic_component_mask_info
 from param_decomp.torch_helpers import get_obj_device
 
 

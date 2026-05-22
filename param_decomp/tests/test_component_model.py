@@ -9,33 +9,34 @@ from torch import Tensor, nn
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
 from param_decomp.configs import (
+    DecompositionTargetConfig,
     GlobalCiConfig,
     LayerwiseCiConfig,
-    ModulePatternInfoConfig,
     OptimizerConfig,
     PDConfig,
     ScheduleConfig,
 )
+from param_decomp.decomposition_targets import DecompositionTarget, resolve_decomposition_targets
 from param_decomp.identity_insertion import insert_identity_operations_
+from param_decomp.masks import ComponentsMaskInfo, make_mask_infos
 from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
-from param_decomp.models.component_model import (
-    ComponentModel,
-)
-from param_decomp.models.components import (
-    ComponentsMaskInfo,
-    EmbeddingComponents,
+from param_decomp.models.ci_fns import (
     GlobalCiFnWrapper,
     GlobalSharedMLPCiFn,
     GlobalSharedTransformerCiFn,
-    LinearComponents,
     MLPCiFn,
     ParallelLinear,
     TargetLayerConfig,
     VectorMLPCiFn,
     VectorSharedMLPCiFn,
-    make_mask_infos,
 )
-from param_decomp.module_info import ModulePathInfo, expand_module_patterns
+from param_decomp.models.component_model import (
+    ComponentModel,
+)
+from param_decomp.models.components import (
+    EmbeddingComponents,
+    LinearComponents,
+)
 from param_decomp_lab.infra.run_files import save_file
 from param_decomp_lab.models.batch_and_loss_fns import run_batch_passthrough
 from param_decomp_lab.models.component_model_utils import load_component_model_from_checkpoint
@@ -74,12 +75,12 @@ def test_correct_parameters_require_grad():
     component_model = ComponentModel(
         target_model=target_model,
         run_batch=run_batch_passthrough,
-        module_path_info=[
-            ModulePathInfo(module_path="linear1", C=4),
-            ModulePathInfo(module_path="linear2", C=8),
-            ModulePathInfo(module_path="embedding", C=6),
-            ModulePathInfo(module_path="conv1d1", C=10),
-            ModulePathInfo(module_path="conv1d2", C=5),
+        decomposition_targets=[
+            DecompositionTarget(module_path="linear1", C=4),
+            DecompositionTarget(module_path="linear2", C=8),
+            DecompositionTarget(module_path="embedding", C=6),
+            DecompositionTarget(module_path="conv1d1", C=10),
+            DecompositionTarget(module_path="conv1d2", C=5),
         ],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[4]),
         sigmoid_type="leaky_hard",
@@ -116,14 +117,16 @@ def test_from_checkpoint():
         comp_model_dir.mkdir(parents=True, exist_ok=True)
 
         config = PDConfig(
-            module_info=[
-                ModulePatternInfoConfig(module_pattern="linear1", C=4),
-                ModulePatternInfoConfig(module_pattern="linear2", C=4),
-                ModulePatternInfoConfig(module_pattern="embedding", C=4),
-                ModulePatternInfoConfig(module_pattern="conv1d1", C=4),
-                ModulePatternInfoConfig(module_pattern="conv1d2", C=4),
+            decomposition_targets=[
+                DecompositionTargetConfig(module_pattern="linear1", C=4),
+                DecompositionTargetConfig(module_pattern="linear2", C=4),
+                DecompositionTargetConfig(module_pattern="embedding", C=4),
+                DecompositionTargetConfig(module_pattern="conv1d1", C=4),
+                DecompositionTargetConfig(module_pattern="conv1d2", C=4),
             ],
-            identity_module_info=[ModulePatternInfoConfig(module_pattern="linear1", C=4)],
+            identity_decomposition_targets=[
+                DecompositionTargetConfig(module_pattern="linear1", C=4)
+            ],
             ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[4]),
             batch_size=1,
             steps=1,
@@ -133,17 +136,19 @@ def test_from_checkpoint():
             n_mask_samples=1,
         )
 
-        if config.identity_module_info is not None:
+        if config.identity_decomposition_targets is not None:
             insert_identity_operations_(
                 target_model,
-                identity_module_info=config.identity_module_info,
+                identity_decomposition_targets=config.identity_decomposition_targets,
             )
 
-        module_path_info = expand_module_patterns(target_model, config.all_module_info)
+        decomposition_targets = resolve_decomposition_targets(
+            target_model, config.all_decomposition_target_configs
+        )
         cm = ComponentModel(
             target_model=target_model,
             run_batch=run_batch_passthrough,
-            module_path_info=module_path_info,
+            decomposition_targets=decomposition_targets,
             ci_config=config.ci_config,
             sigmoid_type=config.sigmoid_type,
         )
@@ -159,8 +164,8 @@ def test_from_checkpoint():
         cm_loaded = load_component_model_from_checkpoint(
             ci_config=config.ci_config,
             sigmoid_type=config.sigmoid_type,
-            module_info=config.module_info,
-            identity_module_info=config.identity_module_info,
+            decomposition_targets=config.decomposition_targets,
+            identity_decomposition_targets=config.identity_decomposition_targets,
             checkpoint_path=checkpoint_path,
             target_model=fresh_target,
             run_batch=run_batch_passthrough,
@@ -260,7 +265,9 @@ def test_full_weight_delta_matches_target_behaviour():
     cm = ComponentModel(
         target_model=target_model,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path=p, C=C) for p in target_module_paths],
+        decomposition_targets=[
+            DecompositionTarget(module_path=p, C=C) for p in target_module_paths
+        ],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[4]),
         sigmoid_type="leaky_hard",
     )
@@ -291,7 +298,9 @@ def test_input_cache_captures_pre_weight_input():
     cm = ComponentModel(
         target_model=target_model,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path=p, C=2) for p in target_module_paths],
+        decomposition_targets=[
+            DecompositionTarget(module_path=p, C=2) for p in target_module_paths
+        ],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
     )
@@ -325,7 +334,9 @@ def test_weight_deltas():
     cm = ComponentModel(
         target_model=target_model,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path=p, C=3) for p in target_module_paths],
+        decomposition_targets=[
+            DecompositionTarget(module_path=p, C=3) for p in target_module_paths
+        ],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
     )
@@ -359,7 +370,7 @@ def test_replacement_effects_fwd_pass():
     cm = ComponentModel(
         target_model=model,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path="linear", C=C)],
+        decomposition_targets=[DecompositionTarget(module_path="linear", C=C)],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
     )
@@ -407,14 +418,14 @@ def test_replacing_identity():
     # with another prepended identity layer
     insert_identity_operations_(
         target_model=model,
-        identity_module_info=[ModulePatternInfoConfig(module_pattern="linear", C=C)],
+        identity_decomposition_targets=[DecompositionTargetConfig(module_pattern="linear", C=C)],
     )
 
     # wrapped in a component model that decomposes the prepended identity layer
     cm = ComponentModel(
         target_model=model,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path="linear.pre_identity", C=C)],
+        decomposition_targets=[DecompositionTarget(module_path="linear.pre_identity", C=C)],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
     )
@@ -463,7 +474,7 @@ def test_routing():
     cm = ComponentModel(
         target_model=model,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path="linear", C=C)],
+        decomposition_targets=[DecompositionTarget(module_path="linear", C=C)],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
     )
@@ -519,9 +530,9 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
 
         # Create and save a component model with GLOBAL CI
         config_global = PDConfig(
-            module_info=[
-                ModulePatternInfoConfig(module_pattern="linear1", C=4),
-                ModulePatternInfoConfig(module_pattern="linear2", C=4),
+            decomposition_targets=[
+                DecompositionTargetConfig(module_pattern="linear1", C=4),
+                DecompositionTargetConfig(module_pattern="linear2", C=4),
             ],
             ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[4]),
             batch_size=1,
@@ -532,11 +543,13 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             n_mask_samples=1,
         )
 
-        module_path_info = expand_module_patterns(target_model, config_global.all_module_info)
+        decomposition_targets = resolve_decomposition_targets(
+            target_model, config_global.all_decomposition_target_configs
+        )
         cm_global = ComponentModel(
             target_model=target_model,
             run_batch=run_batch_passthrough,
-            module_path_info=module_path_info,
+            decomposition_targets=decomposition_targets,
             ci_config=config_global.ci_config,
             sigmoid_type=config_global.sigmoid_type,
         )
@@ -547,9 +560,9 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
 
         # Now try to load it with LAYERWISE config - should fail
         config_layerwise = PDConfig(
-            module_info=[
-                ModulePatternInfoConfig(module_pattern="linear1", C=4),
-                ModulePatternInfoConfig(module_pattern="linear2", C=4),
+            decomposition_targets=[
+                DecompositionTargetConfig(module_pattern="linear1", C=4),
+                DecompositionTargetConfig(module_pattern="linear2", C=4),
             ],
             ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[4]),
             batch_size=1,
@@ -569,8 +582,8 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             load_component_model_from_checkpoint(
                 ci_config=config_layerwise.ci_config,
                 sigmoid_type=config_layerwise.sigmoid_type,
-                module_info=config_layerwise.module_info,
-                identity_module_info=config_layerwise.identity_module_info,
+                decomposition_targets=config_layerwise.decomposition_targets,
+                identity_decomposition_targets=config_layerwise.identity_decomposition_targets,
                 checkpoint_path=global_checkpoint_path,
                 target_model=SimpleTestModel(),
                 run_batch=run_batch_passthrough,
@@ -595,9 +608,9 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
 
         # Create and save a component model with LAYERWISE CI
         config_layerwise = PDConfig(
-            module_info=[
-                ModulePatternInfoConfig(module_pattern="linear1", C=4),
-                ModulePatternInfoConfig(module_pattern="linear2", C=4),
+            decomposition_targets=[
+                DecompositionTargetConfig(module_pattern="linear1", C=4),
+                DecompositionTargetConfig(module_pattern="linear2", C=4),
             ],
             ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[4]),
             batch_size=1,
@@ -608,11 +621,13 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             n_mask_samples=1,
         )
 
-        module_path_info = expand_module_patterns(target_model, config_layerwise.all_module_info)
+        decomposition_targets = resolve_decomposition_targets(
+            target_model, config_layerwise.all_decomposition_target_configs
+        )
         cm_layerwise = ComponentModel(
             target_model=target_model,
             run_batch=run_batch_passthrough,
-            module_path_info=module_path_info,
+            decomposition_targets=decomposition_targets,
             ci_config=config_layerwise.ci_config,
             sigmoid_type=config_layerwise.sigmoid_type,
         )
@@ -623,9 +638,9 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
 
         # Now try to load it with GLOBAL config - should fail
         config_global = PDConfig(
-            module_info=[
-                ModulePatternInfoConfig(module_pattern="linear1", C=4),
-                ModulePatternInfoConfig(module_pattern="linear2", C=4),
+            decomposition_targets=[
+                DecompositionTargetConfig(module_pattern="linear1", C=4),
+                DecompositionTargetConfig(module_pattern="linear2", C=4),
             ],
             ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[4]),
             batch_size=1,
@@ -645,8 +660,8 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             load_component_model_from_checkpoint(
                 ci_config=config_global.ci_config,
                 sigmoid_type=config_global.sigmoid_type,
-                module_info=config_global.module_info,
-                identity_module_info=config_global.identity_module_info,
+                decomposition_targets=config_global.decomposition_targets,
+                identity_decomposition_targets=config_global.identity_decomposition_targets,
                 checkpoint_path=layerwise_checkpoint_path,
                 target_model=SimpleTestModel(),
                 run_batch=run_batch_passthrough,
@@ -884,7 +899,9 @@ def test_component_model_with_global_ci():
     cm = ComponentModel(
         target_model=target_model,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path=p, C=C) for p in target_module_paths],
+        decomposition_targets=[
+            DecompositionTarget(module_path=p, C=C) for p in target_module_paths
+        ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
@@ -909,7 +926,9 @@ def test_component_model_global_ci_calc_causal_importances():
     cm = ComponentModel(
         target_model=target_model,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path=p, C=C) for p in target_module_paths],
+        decomposition_targets=[
+            DecompositionTarget(module_path=p, C=C) for p in target_module_paths
+        ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
@@ -953,7 +972,9 @@ def test_component_model_global_ci_different_inputs_different_ci():
     cm = ComponentModel(
         target_model=target_model,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path=p, C=C) for p in target_module_paths],
+        decomposition_targets=[
+            DecompositionTarget(module_path=p, C=C) for p in target_module_paths
+        ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
@@ -984,7 +1005,9 @@ def test_component_model_global_ci_binomial_sampling():
     cm = ComponentModel(
         target_model=target_model,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path=p, C=C) for p in target_module_paths],
+        decomposition_targets=[
+            DecompositionTarget(module_path=p, C=C) for p in target_module_paths
+        ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
@@ -1009,7 +1032,9 @@ def test_component_model_global_ci_with_embeddings():
     cm = ComponentModel(
         target_model=target_model,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path=p, C=C) for p in target_module_paths],
+        decomposition_targets=[
+            DecompositionTarget(module_path=p, C=C) for p in target_module_paths
+        ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
@@ -1049,7 +1074,9 @@ def test_component_model_global_ci_gradient_flow():
     cm = ComponentModel(
         target_model=target_model,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path=p, C=C) for p in target_module_paths],
+        decomposition_targets=[
+            DecompositionTarget(module_path=p, C=C) for p in target_module_paths
+        ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
@@ -1086,7 +1113,9 @@ def test_component_model_global_ci_detach_inputs_blocks_gradients():
     cm = ComponentModel(
         target_model=target_model,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path=p, C=C) for p in target_module_paths],
+        decomposition_targets=[
+            DecompositionTarget(module_path=p, C=C) for p in target_module_paths
+        ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
@@ -1123,7 +1152,9 @@ def test_component_model_global_ci_masking_zeros():
     cm = ComponentModel(
         target_model=target_model,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path=p, C=C) for p in target_module_paths],
+        decomposition_targets=[
+            DecompositionTarget(module_path=p, C=C) for p in target_module_paths
+        ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
@@ -1169,7 +1200,9 @@ def test_component_model_global_ci_partial_masking():
     cm = ComponentModel(
         target_model=target_model,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path=p, C=C) for p in target_module_paths],
+        decomposition_targets=[
+            DecompositionTarget(module_path=p, C=C) for p in target_module_paths
+        ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
@@ -1201,7 +1234,9 @@ def test_component_model_global_ci_weight_deltas_all_ones_matches_target():
     cm = ComponentModel(
         target_model=target_model,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path=p, C=C) for p in target_module_paths],
+        decomposition_targets=[
+            DecompositionTarget(module_path=p, C=C) for p in target_module_paths
+        ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
     )
@@ -1238,9 +1273,9 @@ def test_global_ci_save_and_load():
         save_file(target_model.state_dict(), base_model_path)
 
         config = PDConfig(
-            module_info=[
-                ModulePatternInfoConfig(module_pattern="linear1", C=4),
-                ModulePatternInfoConfig(module_pattern="linear2", C=4),
+            decomposition_targets=[
+                DecompositionTargetConfig(module_pattern="linear1", C=4),
+                DecompositionTargetConfig(module_pattern="linear2", C=4),
             ],
             ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[8]),
             batch_size=1,
@@ -1251,11 +1286,13 @@ def test_global_ci_save_and_load():
             n_mask_samples=1,
         )
 
-        module_path_info = expand_module_patterns(target_model, config.all_module_info)
+        decomposition_targets = resolve_decomposition_targets(
+            target_model, config.all_decomposition_target_configs
+        )
         cm = ComponentModel(
             target_model=target_model,
             run_batch=run_batch_passthrough,
-            module_path_info=module_path_info,
+            decomposition_targets=decomposition_targets,
             ci_config=config.ci_config,
             sigmoid_type=config.sigmoid_type,
         )
@@ -1269,8 +1306,8 @@ def test_global_ci_save_and_load():
         cm_loaded = load_component_model_from_checkpoint(
             ci_config=config.ci_config,
             sigmoid_type=config.sigmoid_type,
-            module_info=config.module_info,
-            identity_module_info=config.identity_module_info,
+            decomposition_targets=config.decomposition_targets,
+            identity_decomposition_targets=config.identity_decomposition_targets,
             checkpoint_path=checkpoint_path,
             target_model=SimpleTestModel(),
             run_batch=run_batch_passthrough,

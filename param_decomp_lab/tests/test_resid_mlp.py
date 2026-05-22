@@ -2,8 +2,8 @@ from pathlib import Path
 
 from param_decomp import PDConfig, RuntimeConfig, optimize
 from param_decomp.configs import (
+    DecompositionTargetConfig,
     LayerwiseCiConfig,
-    ModulePatternInfoConfig,
     OptimizerConfig,
     ScheduleConfig,
 )
@@ -43,12 +43,12 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
             StochasticReconLossConfig(coeff=1.0),
             FaithfulnessLossConfig(coeff=1.0),
         ],
-        module_info=[
-            ModulePatternInfoConfig(module_pattern="layers.*.mlp_in", C=10),
-            ModulePatternInfoConfig(module_pattern="layers.*.mlp_out", C=10),
+        decomposition_targets=[
+            DecompositionTargetConfig(module_pattern="layers.*.mlp_in", C=10),
+            DecompositionTargetConfig(module_pattern="layers.*.mlp_out", C=10),
         ],
-        identity_module_info=[
-            ModulePatternInfoConfig(module_pattern="layers.*.mlp_in", C=10),
+        identity_decomposition_targets=[
+            DecompositionTargetConfig(module_pattern="layers.*.mlp_in", C=10),
         ],
         components_optimizer=OptimizerConfig(
             lr_schedule=ScheduleConfig(
@@ -67,9 +67,9 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
     target_model = ResidMLP(config=resid_mlp_model_config).to(device)
     target_model.requires_grad_(False)
 
-    if pd_config.identity_module_info is not None:
+    if pd_config.identity_decomposition_targets is not None:
         insert_identity_operations_(
-            target_model, identity_module_info=pd_config.identity_module_info
+            target_model, identity_decomposition_targets=pd_config.identity_decomposition_targets
         )
 
     dataset = ResidMLPDataset(

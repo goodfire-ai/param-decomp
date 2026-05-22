@@ -7,10 +7,10 @@ pd:
     hidden_dims:
     - 12
   sigmoid_type: leaky_hard
-  module_info:
+  decomposition_targets:
   - module_pattern: transformer.h.1.attn.c_attn
     C: 768
-  identity_module_info: null
+  identity_decomposition_targets: null
   sampling: continuous
   use_delta_component: true
   batch_size: 2

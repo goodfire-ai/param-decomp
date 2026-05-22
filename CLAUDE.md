@@ -120,7 +120,7 @@ class in `param_decomp_lab/eval_metrics/` and appending it there.
 
 The PD trainer is configured by two pydantic configs plus a `RunSink`:
 
-- **`PDConfig`** — algorithm: seed, ci_config, loss_metrics, optimizers, module_info,
+- **`PDConfig`** — algorithm: seed, ci_config, loss_metrics, optimizers, decomposition targets,
   tied_weights, faithfulness warmup. Flipping any field here changes what algorithm runs.
 - **`RuntimeConfig`** — compute substrate: autocast_bf16, device, dp. Perturbs numerics
   without changing the algorithm.
@@ -132,13 +132,13 @@ The PD trainer is configured by two pydantic configs plus a `RunSink`:
 implementation and are re-exported from `configs.py`:
 
 - `ScheduleConfig` ↔ `utils/schedule.py` (next to `get_scheduled_value`)
-- `ModulePatternInfoConfig` ↔ `module_info.py` (next to `ModulePathInfo` and
-  `expand_module_patterns`)
+- `DecompositionTargetConfig` ↔ `decomposition_targets.py` (next to `DecompositionTarget` and
+  `resolve_decomposition_targets`)
 - `CiConfig` and friends (`LayerwiseCiConfig`, `AttnConfig`,
-  `GlobalSharedTransformerCiConfig`, `GlobalCiConfig`) ↔ `models/components.py`
+  `GlobalSharedTransformerCiConfig`, `GlobalCiConfig`) ↔ `models/ci_fns.py`
   (next to the CI-fn `nn.Module` classes they configure)
-- `routing.py` configs (`SamplingType`, `SubsetRoutingType` + members) ↔ the
-  Router implementations in the same file
+- `masks.py` configs (`SamplingType`, `SubsetRoutingType` + members) ↔ the
+  Router implementations and runtime mask payload helpers in the same file
 - Each metric's `LossMetricConfig` subclass ↔ its `Metric` class in `metrics/<name>.py`
 
 #### Config placement and import cycles
@@ -221,16 +221,18 @@ This repository implements methods from two key research papers on parameter dec
 - `param_decomp/optimize.py` - The PD optimization loop (`optimize(...)`). The sole core entrypoint.
 - `param_decomp/configs.py` - `PDConfig` (algorithm) + `RuntimeConfig` (substrate) +
   `OptimizerConfig` + `AnyLossMetricConfig` discriminated union. Also re-exports
-  `ScheduleConfig`, `ModulePatternInfoConfig`, and the `CiConfig` family from
+  `ScheduleConfig`, `DecompositionTargetConfig`, and the `CiConfig` family from
   their implementation files so the full config surface is reachable from one
   place. See "Config placement and import cycles" above for the placement rule.
-- `param_decomp/routing.py` - `SamplingType` / `SubsetRoutingType` configs +
-  Router implementations co-located.
+- `param_decomp/masks.py` - Runtime mask payloads (`ComponentsMaskInfo`,
+  `RoutingMasks`, `WeightDeltaAndMask`, `make_mask_infos`) plus `SamplingType` /
+  `SubsetRoutingType` configs, Router implementations, and stochastic mask helpers.
 - `param_decomp/run_sink.py` - `RunSink` Protocol: the contract `optimize()` calls (cadence + log/console/checkpoint).
 - `param_decomp_lab/run_sink.py` - Concrete `RunSink` for in-repo use: local files + wandb, with `.local`/`.with_wandb`/`.silent` constructors and rank-aware no-op fan-out.
-- `param_decomp/eval.py` - `evaluate(...)` over a `dict[name, Metric]`.
+- `param_decomp/eval.py` - `collect_metric_outputs(active)` — flattens each metric's `compute()` output.
 - `param_decomp/models/component_model.py` - Core ComponentModel that wraps target models.
-- `param_decomp/models/components.py` - Component types (LinearComponent, EmbeddingComponent, etc.).
+- `param_decomp/models/components.py` - Component types (LinearComponent, EmbeddingComponent, etc.) + `init_param_` / `Identity`.
+- `param_decomp/models/ci_fns.py` - CI configs (`CiConfig` family + `AttnConfig`) + CI-fn modules (`MLPCiFn`, `VectorMLPCiFn`, `VectorSharedMLPCiFn`, `GlobalSharedMLPCiFn`, `GlobalSharedTransformerCiFn`) + wrappers (`LayerwiseCiFnWrapper`, `GlobalCiFnWrapper`) and their transformer building blocks.
 - `param_decomp/models/batch_and_loss_fns.py` - `RunBatch` / `ReconstructionLoss` protocols
   + `move_batch_to_device`. The concrete `run_batch_*` / `recon_loss_*` helpers live in
   `param_decomp_lab/models/batch_and_loss_fns.py` (caller-supplied; `optimize()` doesn't import them).
@@ -294,15 +296,15 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 │   ├── models/                      # ComponentModel + components + sigmoids + batch_and_loss_fns Protocols
 │   ├── tests/                       # Core-library test suite
 │   ├── configs.py                   # PDConfig + RuntimeConfig + OptimizerConfig + AnyLossMetricConfig + re-exports
-│   ├── routing.py                   # Router impls + SamplingType / SubsetRoutingType configs + stochastic mask helpers
+│   ├── masks.py                     # Runtime mask payloads, Router impls, SamplingType / SubsetRoutingType configs, stochastic mask helpers
 │   ├── optimize.py                  # optimize() — the core entrypoint (also holds the loop_dataloader helper)
 │   ├── run_sink.py                  # RunSink Protocol — contract optimize() calls
 │   ├── eval.py                      # evaluate(instances, ...)
 │   ├── distributed.py               # DistributedState + read-only state + reduce/gather collectives
 │   ├── schedule.py                  # ScheduleConfig + get_scheduled_value
-│   ├── torch_helpers.py             # bf16_autocast, runtime_cast, calc_kl_divergence_lm, etc.
+│   ├── torch_helpers.py             # bf16_autocast, runtime_cast, get_obj_device, etc.
 │   ├── identity_insertion.py        # Insert identity ops into target model before optimize
-│   ├── module_info.py               # Module pattern expansion (fnmatch)
+│   ├── decomposition_targets.py   # Decomposition target config + module-pattern resolution
 │   ├── log.py                       # `logger` shared across the library
 │   ├── base_config.py               # Pydantic `BaseConfig` with YAML/JSON load/save
 │   └── types.py                     # `Probability`, `LayerwiseCiFnType`, `GlobalCiFnType`
@@ -325,7 +327,7 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 │   ├── investigate/                 # Agent investigation (see investigate/CLAUDE.md)
 │   ├── app/                         # Web visualization app (see app/CLAUDE.md)
 │   ├── topology/, adapters/, editing/  # Model-topology utilities
-│   ├── models/                      # batch_and_loss_fns helpers (run_batch_*, recon_loss_*) + component_model_utils (from_checkpoint, get_all_component_acts)
+│   ├── models/                      # batch_and_loss_fns helpers (run_batch_*, recon_loss_*, calc_kl_divergence_lm) + component_model_utils (from_checkpoint, get_all_component_acts)
 │   ├── utils/                       # seed.py (set_seed), data.py (SparseFeatureDataset, DatasetGeneratedDataLoader), distributed.py (init/cleanup/log0/get_device/ensure_cached_and_call)
 │   ├── scripts/                     # alpha_sweep, prompt_utils
 │   ├── tests/                       # Lab test suite

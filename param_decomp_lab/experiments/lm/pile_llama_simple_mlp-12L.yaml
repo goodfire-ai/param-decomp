@@ -16,7 +16,7 @@ pd:
         rope_base: 10000.0
   sampling: continuous
   sigmoid_type: leaky_hard
-  module_info:
+  decomposition_targets:
   - module_pattern: h.*.mlp.c_fc
     C: 3072
   - module_pattern: h.*.mlp.down_proj
@@ -29,7 +29,7 @@ pd:
     C: 1024
   - module_pattern: h.*.attn.o_proj
     C: 1024
-  identity_module_info: null
+  identity_decomposition_targets: null
   use_delta_component: true
   components_optimizer:
     lr_schedule:

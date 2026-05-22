@@ -7,12 +7,12 @@ pd:
     hidden_dims:
     - 16
   sigmoid_type: leaky_hard
-  module_info:
+  decomposition_targets:
   - module_pattern: layers.*.mlp_in
     C: 100
   - module_pattern: layers.*.mlp_out
     C: 100
-  identity_module_info: null
+  identity_decomposition_targets: null
   use_delta_component: true
   batch_size: 2048
   steps: 20000

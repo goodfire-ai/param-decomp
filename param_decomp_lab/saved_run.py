@@ -149,8 +149,8 @@ class SavedRun:
         return load_component_model_from_checkpoint(
             ci_config=self.pd_config.ci_config,
             sigmoid_type=self.pd_config.sigmoid_type,
-            module_info=self.pd_config.module_info,
-            identity_module_info=self.pd_config.identity_module_info,
+            decomposition_targets=self.pd_config.decomposition_targets,
+            identity_decomposition_targets=self.pd_config.identity_decomposition_targets,
             checkpoint_path=self.checkpoint_path,
             target_model=target_model,
             run_batch=self.spec.make_run_batch(self.target_cfg),

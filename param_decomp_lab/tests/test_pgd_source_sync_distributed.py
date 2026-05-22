@@ -24,16 +24,16 @@ import torch.nn as nn
 from torch import Tensor
 
 from param_decomp.configs import LayerwiseCiConfig
+from param_decomp.decomposition_targets import DecompositionTarget
 from param_decomp.distributed import (
     gather_all_tensors,
     get_distributed_state,
     sync_across_processes,
 )
+from param_decomp.masks import AllLayersRouter
 from param_decomp.metrics.pgd_masked_recon_loss import PGDReconLossConfig
 from param_decomp.metrics.pgd_utils import pgd_masked_recon_loss_update
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.module_info import ModulePathInfo
-from param_decomp.routing import AllLayersRouter
 from param_decomp_lab.models.batch_and_loss_fns import recon_loss_mse, run_batch_passthrough
 from param_decomp_lab.utils.distributed import cleanup_distributed, init_distributed
 
@@ -57,7 +57,7 @@ def _make_component_model(fc_weight: Tensor) -> ComponentModel:
     return ComponentModel(
         target_model=target,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path="fc", C=1)],
+        decomposition_targets=[DecompositionTarget(module_path="fc", C=1)],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
     )

@@ -3,12 +3,11 @@ from unittest.mock import patch
 import torch
 from torch import Tensor
 
+from param_decomp.masks import ComponentsMaskInfo, Router, SamplingType, make_mask_infos
 from param_decomp.metrics.stochastic_recon_layerwise_loss import (
     stochastic_recon_layerwise_loss,
 )
 from param_decomp.metrics.stochastic_recon_loss import stochastic_recon_loss
-from param_decomp.models.components import ComponentsMaskInfo, make_mask_infos
-from param_decomp.routing import Router, SamplingType
 from param_decomp.tests.metrics.fixtures import (
     make_one_layer_component_model,
     make_two_layer_component_model,

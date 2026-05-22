@@ -7,7 +7,7 @@ pd:
     hidden_dims:
     - 256
   sigmoid_type: leaky_hard
-  module_info:
+  decomposition_targets:
   - module_pattern: layers.*.mlp_in
     C: 400
   - module_pattern: layers.*.mlp_out

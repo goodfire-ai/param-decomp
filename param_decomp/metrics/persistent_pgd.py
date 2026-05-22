@@ -24,17 +24,20 @@ from torch.distributed import ReduceOp
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.distributed import all_reduce, broadcast_tensor
-from param_decomp.metrics.base import LossMetricConfig
-from param_decomp.models.batch_and_loss_fns import ReconstructionLoss
-from param_decomp.models.component_model import ComponentModel
-from param_decomp.models.components import ComponentsMaskInfo, RoutingMasks, make_mask_infos
-from param_decomp.routing import (
+from param_decomp.masks import (
     AllLayersRouter,
+    ComponentsMaskInfo,
     Router,
+    RoutingMasks,
     SubsetRoutingType,
     UniformKSubsetRoutingConfig,
     get_subset_router,
+    interpolate_component_mask,
+    make_mask_infos,
 )
+from param_decomp.metrics.base import LossMetricConfig
+from param_decomp.models.batch_and_loss_fns import ReconstructionLoss
+from param_decomp.models.component_model import ComponentModel
 from param_decomp.schedule import ScheduleConfig, get_scheduled_value
 from param_decomp.types import Probability
 
@@ -394,21 +397,13 @@ def get_ppgd_mask_infos(
             }
             adv_sources_components = {k: v[..., :-1] for k, v in expanded_adv_sources.items()}
 
-    component_masks = _interpolate_component_mask(ci, adv_sources_components)
+    component_masks = interpolate_component_mask(ci, adv_sources_components)
 
     return make_mask_infos(
         component_masks=component_masks,
         weight_deltas_and_masks=weight_deltas_and_masks,
         routing_masks=routing_masks,
     )
-
-
-def _interpolate_component_mask(
-    ci: dict[str, Float[Tensor, "... C"]],
-    adv_sources: dict[str, Float[Tensor, "... C"]],
-) -> dict[str, Float[Tensor, "... C"]]:
-    """Interpolate CI with adversarial sources: mask = ci + (1 - ci) * adv."""
-    return {name: ci[name] + (1 - ci[name]) * adv_sources[name] for name in ci}
 
 
 def _compute_ppgd_recon_loss(

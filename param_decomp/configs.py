@@ -20,6 +20,8 @@ from pydantic import (
 )
 
 from param_decomp.base_config import BaseConfig
+from param_decomp.decomposition_targets import DecompositionTargetConfig
+from param_decomp.masks import SamplingType
 from param_decomp.metrics.ci_masked_recon_layerwise_loss import CIMaskedReconLayerwiseLossConfig
 from param_decomp.metrics.ci_masked_recon_loss import CIMaskedReconLossConfig
 from param_decomp.metrics.ci_masked_recon_subset_loss import CIMaskedReconSubsetLossConfig
@@ -37,19 +39,17 @@ from param_decomp.metrics.stochastic_recon_layerwise_loss import StochasticRecon
 from param_decomp.metrics.stochastic_recon_loss import StochasticReconLossConfig
 from param_decomp.metrics.stochastic_recon_subset_loss import StochasticReconSubsetLossConfig
 from param_decomp.metrics.unmasked_recon_loss import UnmaskedReconLossConfig
-from param_decomp.models.components import (
+from param_decomp.models.ci_fns import (
     AttnConfig as AttnConfig,
 )
-from param_decomp.models.components import (
+from param_decomp.models.ci_fns import (
     CiConfig,
     GlobalCiConfig,
     LayerwiseCiConfig,
 )
-from param_decomp.models.components import (
+from param_decomp.models.ci_fns import (
     GlobalSharedTransformerCiConfig as GlobalSharedTransformerCiConfig,
 )
-from param_decomp.module_info import ModulePatternInfoConfig
-from param_decomp.routing import SamplingType
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.types import Probability
 
@@ -58,10 +58,10 @@ __all__ = [
     "AnyLossMetricConfig",
     "AttnConfig",
     "CiConfig",
+    "DecompositionTargetConfig",
     "GlobalCiConfig",
     "GlobalSharedTransformerCiConfig",
     "LayerwiseCiConfig",
-    "ModulePatternInfoConfig",
     "OptimizerConfig",
     "PDConfig",
     "RuntimeConfig",
@@ -134,7 +134,7 @@ class RuntimeConfig(BaseConfig):
 
 
 class PDConfig(BaseConfig):
-    """Algorithm specification: seed, CI function, losses, optimizers, module info.
+    """Algorithm specification: seed, CI function, losses, optimizers, target modules.
 
     Flipping any field here changes what algorithm runs. Pair with `RuntimeConfig`
     (substrate) and `RunSink` (cadence + outputs) when calling `optimize`.
@@ -162,23 +162,23 @@ class PDConfig(BaseConfig):
         default="leaky_hard",
         description="Type of sigmoid to use for causal importance calculation",
     )
-    module_info: list[ModulePatternInfoConfig] = Field(
+    decomposition_targets: list[DecompositionTargetConfig] = Field(
         ...,
         description="List of module patterns with C values specifying which modules to decompose.",
     )
-    identity_module_info: list[ModulePatternInfoConfig] | None = Field(
+    identity_decomposition_targets: list[DecompositionTargetConfig] | None = Field(
         default=None,
         description="List of identity module patterns with C values.",
     )
 
     @cached_property
-    def all_module_info(self) -> list[ModulePatternInfoConfig]:
-        result = list(self.module_info)
-        if self.identity_module_info is not None:
-            for info in self.identity_module_info:
+    def all_decomposition_target_configs(self) -> list[DecompositionTargetConfig]:
+        result = list(self.decomposition_targets)
+        if self.identity_decomposition_targets is not None:
+            for target in self.identity_decomposition_targets:
                 result.append(
-                    ModulePatternInfoConfig(
-                        module_pattern=f"{info.module_pattern}.pre_identity", C=info.C
+                    DecompositionTargetConfig(
+                        module_pattern=f"{target.module_pattern}.pre_identity", C=target.C
                     )
                 )
         return result

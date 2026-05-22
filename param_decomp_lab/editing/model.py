@@ -27,8 +27,8 @@ import torch.nn.functional as F
 from jaxtyping import Float, Int
 from torch import Tensor
 
+from param_decomp.masks import make_mask_infos
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.models.components import make_mask_infos
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.app.backend.compute import OptimizedPromptAttributionResult
 from param_decomp_lab.autointerp.repo import InterpRepo

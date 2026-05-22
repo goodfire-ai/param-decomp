@@ -10,28 +10,29 @@ from torch import Tensor, nn
 from torch.utils.hooks import RemovableHandle
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
+from param_decomp.decomposition_targets import DecompositionTarget
+from param_decomp.masks import ComponentsMaskInfo, SamplingType
 from param_decomp.models.batch_and_loss_fns import RunBatch
-from param_decomp.models.components import (
+from param_decomp.models.ci_fns import (
     CiConfig,
-    Components,
-    ComponentsMaskInfo,
-    EmbeddingComponents,
     GlobalCiConfig,
     GlobalCiFnWrapper,
     GlobalSharedMLPCiFn,
     GlobalSharedTransformerCiFn,
-    Identity,
     LayerwiseCiConfig,
     LayerwiseCiFnWrapper,
-    LinearComponents,
     MLPCiFn,
     TargetLayerConfig,
     VectorMLPCiFn,
     VectorSharedMLPCiFn,
 )
+from param_decomp.models.components import (
+    Components,
+    EmbeddingComponents,
+    Identity,
+    LinearComponents,
+)
 from param_decomp.models.sigmoids import SIGMOID_TYPES, SigmoidType
-from param_decomp.module_info import ModulePathInfo
-from param_decomp.routing import SamplingType
 from param_decomp.types import LayerwiseCiFnType
 
 
@@ -54,7 +55,7 @@ class ComponentModel(nn.Module):
 
     The underlying *base model* can be any subclass of `nn.Module` (e.g.
     `LlamaForCausalLM`, `AutoModelForCausalLM`) as long as its sub-module names
-    are provided in the `module_path_info` list.
+    are provided in the `decomposition_targets` list.
 
     Forward passes support optional component replacement and/or caching:
     - No args: Standard forward pass of the target model
@@ -72,7 +73,7 @@ class ComponentModel(nn.Module):
         self,
         target_model: nn.Module,
         run_batch: RunBatch,
-        module_path_info: list[ModulePathInfo],
+        decomposition_targets: list[DecompositionTarget],
         ci_config: CiConfig,
         sigmoid_type: SigmoidType,
     ):
@@ -86,7 +87,7 @@ class ComponentModel(nn.Module):
             )
 
         self.target_model = target_model
-        self.module_to_c = {info.module_path: info.C for info in module_path_info}
+        self.module_to_c = {target.module_path: target.C for target in decomposition_targets}
         self.target_module_paths = list(self.module_to_c.keys())
 
         self.components = ComponentModel._create_components(

@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from torch.testing import assert_close
 
-from param_decomp.configs import ModulePatternInfoConfig
+from param_decomp.configs import DecompositionTargetConfig
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.models.components import Identity
 
@@ -47,9 +47,9 @@ def test_inserts_identity_layers():
 
     insert_identity_operations_(
         target_model=model,
-        identity_module_info=[
-            ModulePatternInfoConfig(module_pattern="layer1", C=1),
-            ModulePatternInfoConfig(module_pattern="layer2", C=1),
+        identity_decomposition_targets=[
+            DecompositionTargetConfig(module_pattern="layer1", C=1),
+            DecompositionTargetConfig(module_pattern="layer2", C=1),
         ],
     )
 
@@ -73,9 +73,9 @@ def test_adds_hooks():
 
     insert_identity_operations_(
         target_model=model,
-        identity_module_info=[
-            ModulePatternInfoConfig(module_pattern="layer1", C=1),
-            ModulePatternInfoConfig(module_pattern="layer2", C=1),
+        identity_decomposition_targets=[
+            DecompositionTargetConfig(module_pattern="layer1", C=1),
+            DecompositionTargetConfig(module_pattern="layer2", C=1),
         ],
     )
 
@@ -93,7 +93,8 @@ def test_preserves_output():
     original_output = model(input_ids)
 
     insert_identity_operations_(
-        model, identity_module_info=[ModulePatternInfoConfig(module_pattern="layer1", C=1)]
+        model,
+        identity_decomposition_targets=[DecompositionTargetConfig(module_pattern="layer1", C=1)],
     )
 
     new_output = model(input_ids)
@@ -126,9 +127,9 @@ def test_uses_correct_dims():
     # Insert identity only before layer1 (which takes 64-dim input)
     insert_identity_operations_(
         target_model=model,
-        identity_module_info=[
-            ModulePatternInfoConfig(module_pattern="layer1", C=1),
-            ModulePatternInfoConfig(module_pattern="layer2", C=1),
+        identity_decomposition_targets=[
+            DecompositionTargetConfig(module_pattern="layer1", C=1),
+            DecompositionTargetConfig(module_pattern="layer2", C=1),
         ],
     )
 
@@ -148,7 +149,7 @@ def test_empty_patterns():
     model = SimpleModel().to(DEVICE)
 
     # No patterns should result in no modifications
-    insert_identity_operations_(target_model=model, identity_module_info=[])
+    insert_identity_operations_(target_model=model, identity_decomposition_targets=[])
 
     # No identity layers should be added
     assert not hasattr(model.embedding, "pre_identity")
@@ -163,7 +164,9 @@ def test_embedding_raises_error():
     with pytest.raises(ValueError, match="Embedding modules not supported"):
         insert_identity_operations_(
             target_model=model,
-            identity_module_info=[ModulePatternInfoConfig(module_pattern="embedding", C=1)],
+            identity_decomposition_targets=[
+                DecompositionTargetConfig(module_pattern="embedding", C=1)
+            ],
         )
 
 
@@ -173,5 +176,7 @@ def test_unmatched_pattern_raises_error():
     with pytest.raises(ValueError, match="did not match any modules"):
         insert_identity_operations_(
             target_model=model,
-            identity_module_info=[ModulePatternInfoConfig(module_pattern="does.not.exist*", C=1)],
+            identity_decomposition_targets=[
+                DecompositionTargetConfig(module_pattern="does.not.exist*", C=1)
+            ],
         )

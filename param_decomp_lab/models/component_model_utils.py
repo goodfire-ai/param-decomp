@@ -12,16 +12,19 @@ import torch
 from jaxtyping import Float, Int
 from torch import Tensor, nn
 
+from param_decomp.decomposition_targets import (
+    DecompositionTargetConfig,
+    resolve_decomposition_targets,
+)
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.models.batch_and_loss_fns import RunBatch
-from param_decomp.models.component_model import ComponentModel
-from param_decomp.models.components import (
+from param_decomp.models.ci_fns import (
     CiConfig,
     GlobalCiConfig,
     LayerwiseCiConfig,
 )
+from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.sigmoids import SigmoidType
-from param_decomp.module_info import ModulePatternInfoConfig, expand_module_patterns
 
 
 def _validate_checkpoint_ci_config_compatibility(
@@ -48,8 +51,8 @@ def load_component_model_from_checkpoint(
     *,
     ci_config: CiConfig,
     sigmoid_type: SigmoidType,
-    module_info: list[ModulePatternInfoConfig],
-    identity_module_info: list[ModulePatternInfoConfig] | None,
+    decomposition_targets: list[DecompositionTargetConfig],
+    identity_decomposition_targets: list[DecompositionTargetConfig] | None,
     checkpoint_path: Path,
     target_model: nn.Module,
     run_batch: RunBatch,
@@ -64,26 +67,26 @@ def load_component_model_from_checkpoint(
     target_model.eval()
     target_model.requires_grad_(False)
 
-    if identity_module_info is not None:
+    if identity_decomposition_targets is not None:
         insert_identity_operations_(
             target_model,
-            identity_module_info=identity_module_info,
+            identity_decomposition_targets=identity_decomposition_targets,
         )
 
-    all_info = list(module_info)
-    if identity_module_info is not None:
-        for info in identity_module_info:
-            all_info.append(
-                ModulePatternInfoConfig(
-                    module_pattern=f"{info.module_pattern}.pre_identity", C=info.C
+    all_targets = list(decomposition_targets)
+    if identity_decomposition_targets is not None:
+        for target in identity_decomposition_targets:
+            all_targets.append(
+                DecompositionTargetConfig(
+                    module_pattern=f"{target.module_pattern}.pre_identity", C=target.C
                 )
             )
-    module_path_info = expand_module_patterns(target_model, all_info)
+    resolved_targets = resolve_decomposition_targets(target_model, all_targets)
 
     comp_model = ComponentModel(
         target_model=target_model,
         run_batch=run_batch,
-        module_path_info=module_path_info,
+        decomposition_targets=resolved_targets,
         ci_config=ci_config,
         sigmoid_type=sigmoid_type,
     )

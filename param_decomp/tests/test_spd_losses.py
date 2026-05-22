@@ -6,6 +6,8 @@ from jaxtyping import Float
 from torch import Tensor
 
 from param_decomp.configs import LayerwiseCiConfig, ScheduleConfig
+from param_decomp.decomposition_targets import DecompositionTarget
+from param_decomp.masks import UniformKSubsetRoutingConfig
 from param_decomp.metrics.ci_masked_recon_layerwise_loss import (
     ci_masked_recon_layerwise_loss,
 )
@@ -26,8 +28,6 @@ from param_decomp.metrics.stochastic_recon_layerwise_loss import (
 from param_decomp.metrics.stochastic_recon_loss import stochastic_recon_loss
 from param_decomp.metrics.stochastic_recon_subset_loss import stochastic_recon_subset_loss
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.module_info import ModulePathInfo
-from param_decomp.routing import UniformKSubsetRoutingConfig
 from param_decomp_lab.models.batch_and_loss_fns import (
     recon_loss_kl,
     recon_loss_mse,
@@ -72,7 +72,7 @@ def _make_component_model(weight: Float[Tensor, "d_out d_in"]) -> ComponentModel
     comp_model = ComponentModel(
         target_model=target,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path="fc", C=1)],
+        decomposition_targets=[DecompositionTarget(module_path="fc", C=1)],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
     )
@@ -91,7 +91,7 @@ def _make_seq_component_model(weight: Float[Tensor, "d_out d_in"]) -> ComponentM
     comp_model = ComponentModel(
         target_model=target,
         run_batch=run_batch_passthrough,
-        module_path_info=[ModulePathInfo(module_path="fc", C=1)],
+        decomposition_targets=[DecompositionTarget(module_path="fc", C=1)],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
     )

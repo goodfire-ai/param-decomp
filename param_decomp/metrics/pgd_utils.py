@@ -8,11 +8,16 @@ from torch import Tensor
 from torch.distributed import ReduceOp
 
 from param_decomp.distributed import all_reduce, broadcast_tensor
+from param_decomp.masks import (
+    ComponentsMaskInfo,
+    Router,
+    RoutingMasks,
+    interpolate_component_mask,
+    make_mask_infos,
+)
 from param_decomp.metrics.base import LossMetricConfig
 from param_decomp.models.batch_and_loss_fns import ReconstructionLoss
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.models.components import ComponentsMaskInfo, RoutingMasks, make_mask_infos
-from param_decomp.routing import Router
 
 PGDInitStrategy = Literal["random", "ones", "zeroes"]
 MaskScope = Literal["unique_per_datapoint", "shared_across_batch"]
@@ -40,20 +45,6 @@ def get_pgd_init_tensor(
             return torch.ones(shape, device=device)
         case "zeroes":
             return torch.zeros(shape, device=device)
-
-
-def interpolate_pgd_mask(
-    ci: dict[str, Float[Tensor, "*batch_dims C"]],
-    adv_sources_components: dict[str, Float[Tensor, "*batch_dims C"]],
-) -> dict[str, Float[Tensor, "*batch_dims C"]]:
-    """Set the mask value to ci + (1 - ci) * adv_sources_components."""
-    component_masks: dict[str, Float[Tensor, "*batch_dims C"]] = {}
-    for module_name in ci:
-        adv_source = adv_sources_components[module_name]
-        assert ci[module_name].shape[-1] == adv_source.shape[-1]
-        scaled_noise_to_add = (1 - ci[module_name]) * adv_source
-        component_masks[module_name] = ci[module_name] + scaled_noise_to_add
-    return component_masks
 
 
 def _init_adv_sources(
@@ -126,7 +117,7 @@ def _construct_mask_infos_from_adv_sources(
             adv_sources_components = {k: v[..., :-1] for k, v in expanded_adv_sources.items()}
 
     return make_mask_infos(
-        component_masks=interpolate_pgd_mask(ci, adv_sources_components),
+        component_masks=interpolate_component_mask(ci, adv_sources_components),
         weight_deltas_and_masks=weight_deltas_and_masks,
         routing_masks=routing_masks,
     )

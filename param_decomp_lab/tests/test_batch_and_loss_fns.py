@@ -4,7 +4,12 @@ import pytest
 import torch
 from torch import Tensor, nn
 
-from param_decomp_lab.models.batch_and_loss_fns import make_run_batch, recon_loss_kl, recon_loss_mse
+from param_decomp_lab.models.batch_and_loss_fns import (
+    calc_kl_divergence_lm,
+    make_run_batch,
+    recon_loss_kl,
+    recon_loss_mse,
+)
 
 
 class _TensorModel(nn.Module):
@@ -86,6 +91,9 @@ def test_recon_loss_kl_matches_manual_computation() -> None:
 
     assert n_positions == 3 * 5
     assert torch.isclose(sum_kl, expected_sum, atol=1e-5)
+    assert torch.isclose(
+        calc_kl_divergence_lm(pred=pred, target=target), expected_sum / n_positions
+    )
 
 
 def test_recon_loss_kl_n_positions_counts_all_leading_dims() -> None:

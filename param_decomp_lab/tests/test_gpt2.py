@@ -7,8 +7,8 @@ from transformers import GPT2LMHeadModel
 
 from param_decomp import PDConfig, RuntimeConfig, optimize
 from param_decomp.configs import (
+    DecompositionTargetConfig,
     LayerwiseCiConfig,
-    ModulePatternInfoConfig,
     OptimizerConfig,
     ScheduleConfig,
 )
@@ -36,12 +36,12 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         seed=0,
         n_mask_samples=1,
         ci_config=LayerwiseCiConfig(fn_type="vector_mlp", hidden_dims=[128]),
-        module_info=[
-            ModulePatternInfoConfig(module_pattern="transformer.h.2.attn.c_attn", C=10),
-            ModulePatternInfoConfig(module_pattern="transformer.h.3.mlp.c_fc", C=10),
+        decomposition_targets=[
+            DecompositionTargetConfig(module_pattern="transformer.h.2.attn.c_attn", C=10),
+            DecompositionTargetConfig(module_pattern="transformer.h.3.mlp.c_fc", C=10),
         ],
-        identity_module_info=[
-            ModulePatternInfoConfig(module_pattern="transformer.h.1.attn.c_attn", C=10),
+        identity_decomposition_targets=[
+            DecompositionTargetConfig(module_pattern="transformer.h.1.attn.c_attn", C=10),
         ],
         loss_metrics=[
             ImportanceMinimalityLossConfig(coeff=1e-2, pnorm=0.9, beta=0.5, eps=1e-12),
@@ -67,9 +67,9 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
     target_model = GPT2LMHeadModel.from_pretrained(model_name)
     target_model.eval()
 
-    if pd_config.identity_module_info is not None:
+    if pd_config.identity_decomposition_targets is not None:
         insert_identity_operations_(
-            target_model, identity_module_info=pd_config.identity_module_info
+            target_model, identity_decomposition_targets=pd_config.identity_decomposition_targets
         )
 
     data_config = LMDataConfig(

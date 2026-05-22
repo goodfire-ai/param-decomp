@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Literal, override
 
 import torch
@@ -6,13 +7,24 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.models.components import (
-    ComponentsMaskInfo,
-    RoutingMasks,
-    WeightDeltaAndMask,
-    make_mask_infos,
-)
 from param_decomp.types import Probability
+
+WeightDeltaAndMask = tuple[Float[Tensor, "d_out d_in"], Float[Tensor, "..."]]
+RoutingMasks = dict[str, Bool[Tensor, "..."]] | Literal["all"]
+
+
+@dataclass
+class ComponentsMaskInfo:
+    """Specifies the mask information that will be applied to a component module."""
+
+    component_mask: Float[Tensor, "... C"]
+    """when components are routed to, this specifies which subcomponents to use"""
+
+    routing_mask: Bool[Tensor, "..."] | Literal["all"] = "all"
+    """Which (batch,) or (batch, seq_len) positions to route to components vs target modules.
+    If "all", all positions are routed to components."""
+
+    weight_delta_and_mask: WeightDeltaAndMask | None = None
 
 
 class UniformKSubsetRoutingConfig(BaseConfig):
@@ -107,7 +119,6 @@ def rand_perm(
     """
 
     noise = torch.rand(shape, device=device, generator=generator)
-    # turn values into ranks via double argsort trick. (for example: [0.8, 0.2, 0.3] -> [2, 0, 1])
     return noise.argsort(dim=dim).argsort(dim=dim)
 
 
@@ -155,6 +166,59 @@ def get_subset_router(routing: SubsetRoutingType, device: torch.device | str) ->
             return UniformKSubsetRouter(device=device)
         case StaticProbabilityRoutingConfig(p=p):
             return StaticProbabilityRouter(p=p, device=device)
+
+
+def interpolate_component_mask(
+    ci: dict[str, Float[Tensor, "*batch_dims C"]],
+    sources: dict[str, Float[Tensor, "*batch_dims C"]],
+) -> dict[str, Float[Tensor, "*batch_dims C"]]:
+    """Set mask values to ci + (1 - ci) * source."""
+    component_masks: dict[str, Float[Tensor, "*batch_dims C"]] = {}
+    for module_name in ci:
+        source = sources[module_name]
+        assert ci[module_name].shape[-1] == source.shape[-1]
+        component_masks[module_name] = ci[module_name] + (1 - ci[module_name]) * source
+    return component_masks
+
+
+def make_mask_infos(
+    component_masks: dict[str, Float[Tensor, "... C"]],
+    routing_masks: RoutingMasks = "all",
+    weight_deltas_and_masks: dict[str, WeightDeltaAndMask] | None = None,
+) -> dict[str, ComponentsMaskInfo]:
+    """Create ComponentsMaskInfo dict from dicts of component masks, and optionally routing masks,
+    weight deltas, and weight delta masks.
+    Keys of all dicts must be the same.
+
+    Args:
+        component_masks: Dict mapping module names to component masks. routing_masks: Dict mapping
+        module names to routing masks. weight_deltas_and_masks: Dict mapping module names to tuples
+        of weight deltas and masks for each module to be decomposed. Defaults to None (disable
+        weight delta component) if not provided.
+    Returns:
+        Dict mapping module names to ComponentsMaskInfo objects.
+    """
+    if isinstance(routing_masks, dict):
+        assert set(routing_masks) == set(component_masks)
+
+    if weight_deltas_and_masks is not None:
+        assert set(weight_deltas_and_masks) == set(component_masks)
+
+    result: dict[str, ComponentsMaskInfo] = {}
+    for name in component_masks:
+        routing_mask = routing_masks[name] if isinstance(routing_masks, dict) else "all"
+
+        weight_delta_and_mask = (
+            weight_deltas_and_masks[name] if weight_deltas_and_masks is not None else None
+        )
+
+        result[name] = ComponentsMaskInfo(
+            component_mask=component_masks[name],
+            routing_mask=routing_mask,
+            weight_delta_and_mask=weight_delta_and_mask,
+        )
+
+    return result
 
 
 def calc_stochastic_component_mask_info(

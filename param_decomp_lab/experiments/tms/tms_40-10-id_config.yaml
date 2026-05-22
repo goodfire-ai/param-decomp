@@ -7,7 +7,7 @@ pd:
     hidden_dims:
     - 16
   sigmoid_type: leaky_hard
-  module_info:
+  decomposition_targets:
   - module_pattern: linear1
     C: 200
   - module_pattern: linear2

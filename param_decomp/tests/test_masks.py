@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from param_decomp.routing import rand_perm, sample_uniform_k_subset_routing_masks
+from param_decomp.masks import rand_perm, sample_uniform_k_subset_routing_masks
 
 
 class TestRandPerm:
