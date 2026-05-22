@@ -12,7 +12,10 @@ import wandb.sdk.wandb_run
 from jaxtyping import Float, Int
 from torch import Tensor
 
-from param_decomp_lab.clustering.activations import ProcessedActivations, compute_coactivatons
+from param_decomp_lab.clustering.activations import (
+    ProcessedActivations,
+    compute_coactivatons,
+)
 from param_decomp_lab.clustering.types import (
     ActivationsTensor,
     ClusterCoactivationShaped,

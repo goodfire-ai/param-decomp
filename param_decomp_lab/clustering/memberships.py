@@ -21,11 +21,19 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from param_decomp.component_model import ComponentModel
 from param_decomp.log import logger
-from param_decomp.models.component_model import ComponentModel
-from param_decomp_lab.clustering.activations import ProcessedActivations, component_activations
-from param_decomp_lab.clustering.formatting import DeadComponentFilterStat, ModuleFilterFunc
-from param_decomp_lab.clustering.harvest_config import HarvestConfig
+from param_decomp_lab.clustering.activations import (
+    ProcessedActivations,
+    component_activations,
+)
+from param_decomp_lab.clustering.formatting import (
+    DeadComponentFilterStat,
+    ModuleFilterFunc,
+)
+from param_decomp_lab.clustering.harvest_config import (
+    HarvestConfig,
+)
 from param_decomp_lab.clustering.sample_membership import CompressedMembership
 from param_decomp_lab.clustering.types import ComponentLabels
 

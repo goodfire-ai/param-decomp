@@ -4,9 +4,9 @@ import torch
 from torch import Tensor
 
 from param_decomp.masks import UniformKSubsetRoutingConfig
-from param_decomp.metrics.ci_masked_recon_subset_loss import ci_masked_recon_subset_loss
+from param_decomp.metrics.ci_masked_recon_subset import ci_masked_recon_subset_loss
 from param_decomp.tests.metrics.fixtures import make_one_layer_component_model
-from param_decomp_lab.models.batch_and_loss_fns import recon_loss_mse
+from param_decomp_lab.batch_and_loss_fns import recon_loss_mse
 
 
 class TestCIMaskedReconSubsetLoss:

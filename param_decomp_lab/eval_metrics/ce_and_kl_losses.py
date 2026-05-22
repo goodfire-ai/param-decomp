@@ -17,7 +17,7 @@ from param_decomp.masks import (
 )
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
-from param_decomp_lab.models.batch_and_loss_fns import calc_kl_divergence_lm
+from param_decomp_lab.batch_and_loss_fns import calc_kl_divergence_lm
 
 
 class CEandKLLossesConfig(BaseConfig):
@@ -68,7 +68,7 @@ class CEandKLLosses(Metric[CEandKLLossesConfig]):
             target_out=ctx.target_out,
             ci=ctx.ci.lower_leaky,
             weight_deltas=ctx.weight_deltas,
-            sampling_type=ctx.config.sampling,
+            sampling_type=ctx.sampling,
         )
         n_positions_in_batch = ctx.batch.shape[0] * ctx.batch.shape[1]
         for key in self.loss_keys:

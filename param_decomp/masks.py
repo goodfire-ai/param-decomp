@@ -6,8 +6,7 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
-from param_decomp.base_config import BaseConfig
-from param_decomp.types import Probability
+from param_decomp.base_config import BaseConfig, Probability
 
 WeightDeltaAndMask = tuple[Float[Tensor, "d_out d_in"], Float[Tensor, "..."]]
 RoutingMasks = dict[str, Bool[Tensor, "..."]] | Literal["all"]

@@ -51,8 +51,8 @@ from param_decomp_lab.app.backend.routers.prompts import router as prompts_route
 from param_decomp_lab.app.backend.routers.run_registry import router as run_registry_router
 from param_decomp_lab.app.backend.routers.runs import router as runs_router
 from param_decomp_lab.app.backend.state import StateManager
+from param_decomp_lab.distributed import get_device
 from param_decomp_lab.infra.settings import PARAM_DECOMP_APP_DEFAULT_RUN
-from param_decomp_lab.utils.distributed import get_device
 
 DEVICE = get_device()
 

@@ -18,8 +18,8 @@ from param_decomp_lab.app.backend.schemas import (
     SubcomponentMetadata,
 )
 from param_decomp_lab.app.backend.utils import log_errors
+from param_decomp_lab.distributed import get_device
 from param_decomp_lab.harvest.schemas import ComponentData
-from param_decomp_lab.utils.distributed import get_device
 
 
 class ComponentProbeRequest(BaseModel):

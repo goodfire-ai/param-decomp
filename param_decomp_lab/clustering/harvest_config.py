@@ -2,8 +2,7 @@
 
 from pydantic import PositiveInt, field_validator
 
-from param_decomp.base_config import BaseConfig
-from param_decomp.types import Probability
+from param_decomp.base_config import BaseConfig, Probability
 from param_decomp_lab.clustering.formatting import (
     DeadComponentFilterStat,
     ModuleFilterFunc,

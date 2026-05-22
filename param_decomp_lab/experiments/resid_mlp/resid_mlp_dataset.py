@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from jaxtyping import Float
 from torch import Tensor
 
-from param_decomp_lab.utils.data import SparseFeatureDataset
+from param_decomp_lab.experiments.synthetic_data import SparseFeatureDataset
 
 
 class ResidMLPDataset(SparseFeatureDataset):

@@ -15,6 +15,7 @@ from param_decomp_lab.app.backend.state import RunState
 from param_decomp_lab.app.backend.utils import log_errors
 from param_decomp_lab.autointerp.repo import InterpRepo
 from param_decomp_lab.dataset_attributions.repo import AttributionRepo
+from param_decomp_lab.distributed import get_device
 from param_decomp_lab.experiments.lm.data import LMDataConfig
 from param_decomp_lab.experiments.lm.run import LMTargetConfig
 from param_decomp_lab.graph_interp.repo import GraphInterpRepo
@@ -22,7 +23,6 @@ from param_decomp_lab.harvest.repo import HarvestRepo
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
 from param_decomp_lab.saved_run import SavedRun
 from param_decomp_lab.topology import TransformerTopology, get_sources_by_target
-from param_decomp_lab.utils.distributed import get_device
 
 # Datasets small enough to load into memory for search
 _SEARCHABLE_DATASETS = {"SimpleStories/SimpleStories"}

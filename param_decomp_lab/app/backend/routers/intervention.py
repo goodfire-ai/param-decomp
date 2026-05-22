@@ -12,8 +12,8 @@ from param_decomp_lab.app.backend.compute import (
 from param_decomp_lab.app.backend.dependencies import DepDB, DepLoadedRun, DepStateManager
 from param_decomp_lab.app.backend.optim_cis import AdvPGDConfig, LossConfig, MeanKLLossConfig
 from param_decomp_lab.app.backend.utils import log_errors
+from param_decomp_lab.distributed import get_device
 from param_decomp_lab.topology import TransformerTopology
-from param_decomp_lab.utils.distributed import get_device
 
 # =============================================================================
 # Schemas

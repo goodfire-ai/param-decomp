@@ -9,7 +9,6 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 # Merge arrays and distances (numpy-based for storage/analysis)
-MergesAtIterArray = Int[np.ndarray, "n_ens n_components"]
 MergesArray = Int[np.ndarray, "n_ens n_iters n_components"]
 DistancesMethod = Literal["perm_invariant_hamming", "matching_dist", "matching_dist_vec"]
 DistancesArray = Float[np.ndarray, "n_iters n_ens n_ens"]
@@ -30,7 +29,6 @@ ActivationsTensor = Float[Tensor, "samples n_components"]
 BoolActivationsTensor = Bool[Tensor, "samples n_components"]
 ClusterCoactivationShaped = Float[Tensor, "k_groups k_groups"]
 GroupIdxsTensor = Int[Tensor, " n_components"]
-BatchTensor = Int[Tensor, "batch_size seq_len"]
 
 
 class SaveableObject(ABC):

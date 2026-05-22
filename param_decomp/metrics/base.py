@@ -5,7 +5,7 @@ metric configs subclass `BaseConfig` directly; loss metrics subclass `LossMetric
 carries the required `coeff` field for training). Loss metrics are referenced from
 `PDConfig.loss_metrics` as a pydantic discriminated union keyed on each subclass's `type`
 literal; the runtime dispatch to the matching `Metric` class lives in
-`param_decomp.metrics.loss_metrics.LOSS_METRIC_CLASSES`. Eval metrics are instantiated by
+`param_decomp.metrics.dispatch.LOSS_METRIC_CLASSES`. Eval metrics are instantiated by
 the caller and passed to `optimize(eval_metrics=...)`.
 
 Metrics are instantiated with just the validated config (`MyMetric(cfg)`). The training loop
@@ -26,6 +26,7 @@ from PIL import Image
 from torch import Tensor
 
 from param_decomp.base_config import BaseConfig
+from param_decomp.component_model import ComponentModel
 
 
 class LossMetricConfig(BaseConfig):
@@ -51,7 +52,7 @@ class Metric[TConfig: BaseConfig](ABC):
     slow: ClassVar[bool] = False
     short_name: ClassVar[str | None] = None
     cfg: TConfig
-    model: Any
+    model: ComponentModel
     device: str
 
     def __init__(self, cfg: TConfig) -> None:
@@ -64,7 +65,7 @@ class Metric[TConfig: BaseConfig](ABC):
         self.cfg = cfg
         self._bound = False
 
-    def bind(self, *, model: Any, device: str) -> None:
+    def bind(self, *, model: ComponentModel, device: str) -> None:
         """Attach the component model and device, then call `reset()`.
 
         Called by the training loop after the `ComponentModel` is constructed. Subclasses

@@ -13,7 +13,11 @@ import yaml
 
 from param_decomp_lab.autointerp.db import DONE_MARKER
 from param_decomp_lab.graph_interp.db import GraphInterpDB
-from param_decomp_lab.graph_interp.schemas import LabelResult, PromptEdge, get_graph_interp_dir
+from param_decomp_lab.graph_interp.schemas import (
+    LabelResult,
+    PromptEdge,
+    get_graph_interp_dir,
+)
 
 
 class GraphInterpRepo:

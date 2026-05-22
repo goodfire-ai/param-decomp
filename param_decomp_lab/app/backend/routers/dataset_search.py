@@ -20,7 +20,7 @@ from param_decomp.log import logger
 from param_decomp_lab.app.backend.dependencies import DepLoadedRun, DepStateManager
 from param_decomp_lab.app.backend.state import DatasetSearchState
 from param_decomp_lab.app.backend.utils import log_errors
-from param_decomp_lab.utils.distributed import get_device
+from param_decomp_lab.distributed import get_device
 
 # =============================================================================
 # Schemas

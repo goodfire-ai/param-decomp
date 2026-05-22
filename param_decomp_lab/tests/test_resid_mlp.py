@@ -1,20 +1,22 @@
 from pathlib import Path
 
+from param_decomp.ci_fns import LayerwiseCiConfig
 from param_decomp.configs import OptimizerConfig, PDConfig, RuntimeConfig
-from param_decomp.decomposition_targets import DecompositionTargetConfig
-from param_decomp.identity_insertion import insert_identity_operations_
-from param_decomp.metrics.faithfulness_loss import FaithfulnessLossConfig
-from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
-from param_decomp.metrics.stochastic_recon_loss import StochasticReconLossConfig
-from param_decomp.models.ci_fns import LayerwiseCiConfig
+from param_decomp.decomposition_targets import (
+    DecompositionTargetConfig,
+    insert_identity_operations_,
+)
+from param_decomp.metrics.faithfulness import FaithfulnessLossConfig
+from param_decomp.metrics.importance_minimality import ImportanceMinimalityLossConfig
+from param_decomp.metrics.stochastic_recon import StochasticReconLossConfig
 from param_decomp.optimize import optimize
 from param_decomp.schedule import ScheduleConfig
+from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
 from param_decomp_lab.experiments.resid_mlp.models import ResidMLP, ResidMLPModelConfig
 from param_decomp_lab.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
-from param_decomp_lab.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
+from param_decomp_lab.experiments.synthetic_data import DatasetGeneratedDataLoader
 from param_decomp_lab.run_sink import RunSink
-from param_decomp_lab.utils.data import DatasetGeneratedDataLoader
-from param_decomp_lab.utils.seed import set_seed
+from param_decomp_lab.seed import set_seed
 
 
 def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:

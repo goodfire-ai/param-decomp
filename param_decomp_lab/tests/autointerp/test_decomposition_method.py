@@ -1,6 +1,9 @@
 from typing import get_args
 
-from param_decomp_lab.autointerp.schemas import DECOMPOSITION_DESCRIPTIONS, DecompositionMethod
+from param_decomp_lab.autointerp.schemas import (
+    DECOMPOSITION_DESCRIPTIONS,
+    DecompositionMethod,
+)
 
 
 def test_pd_is_only_param_decomp_method_key() -> None:

@@ -17,10 +17,10 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from param_decomp.component_model import ComponentModel
 from param_decomp.log import logger
 from param_decomp.masks import SamplingType
-from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
-from param_decomp.models.component_model import ComponentModel
+from param_decomp.metrics.importance_minimality import ImportanceMinimalityLossConfig
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.app.backend.compute import (
     DEFAULT_EVAL_PGD_CONFIG,
@@ -53,8 +53,8 @@ from param_decomp_lab.app.backend.optim_cis import (
 )
 from param_decomp_lab.app.backend.schemas import OutputProbability
 from param_decomp_lab.app.backend.utils import log_errors
+from param_decomp_lab.distributed import get_device
 from param_decomp_lab.topology import TransformerTopology
-from param_decomp_lab.utils.distributed import get_device
 
 NON_INTERVENTABLE_LAYERS = {"embed", "output"}
 
@@ -260,29 +260,6 @@ class GraphDataWithOptimization(GraphData):
     optimization: OptimizationResult
 
 
-class ComponentStats(BaseModel):
-    """Statistics for a component across prompts."""
-
-    prompt_count: int
-    avg_max_ci: float
-    prompt_ids: list[int]
-
-
-class PromptSearchQuery(BaseModel):
-    """Query parameters for prompt search."""
-
-    components: list[str]
-    mode: str
-
-
-class PromptSearchResponse(BaseModel):
-    """Response from prompt search endpoint."""
-
-    query: PromptSearchQuery
-    count: int
-    results: list[PromptPreview]
-
-
 class TokenizeResponse(BaseModel):
     """Response from tokenize endpoint."""
 
@@ -290,37 +267,6 @@ class TokenizeResponse(BaseModel):
     tokens: list[str]
     text: str
     next_token_probs: list[float | None]  # Probability of next token (last token is None)
-
-
-# SSE streaming message types
-class ProgressMessage(BaseModel):
-    """Progress update during streaming computation."""
-
-    type: Literal["progress"]
-    current: int
-    total: int
-    stage: str
-
-
-class ErrorMessage(BaseModel):
-    """Error message during streaming computation."""
-
-    type: Literal["error"]
-    error: str
-
-
-class CompleteMessage(BaseModel):
-    """Completion message with result data."""
-
-    type: Literal["complete"]
-    data: GraphData
-
-
-class CompleteMessageWithOptimization(BaseModel):
-    """Completion message with optimization result data."""
-
-    type: Literal["complete"]
-    data: GraphDataWithOptimization
 
 
 class BatchGraphResult(BaseModel):

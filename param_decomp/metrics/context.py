@@ -1,46 +1,35 @@
 """Per-step state passed to every metric's `update()`.
 
-Built once per training step (after the DDP forward + CI calc) and once per eval batch. Replaces
-the multi-kwarg `update(...)` signature each metric used to take.
+Built once per training step (after the DDP forward + CI calc) and once per eval batch.
 """
 
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Any
 
 from jaxtyping import Float
 from torch import Tensor
 
-
-class MetricRuntimeConfig(Protocol):
-    steps: int
-    use_delta_component: bool
-    sampling: Literal["continuous", "binomial"]
-    n_mask_samples: int
-
-
-class MetricCIOutputs(Protocol):
-    lower_leaky: dict[str, Float[Tensor, "... C"]]
-    upper_leaky: dict[str, Float[Tensor, "... C"]]
-    pre_sigmoid: dict[str, Tensor]
-
-
-class MetricReconstructionLoss(Protocol):
-    def __call__(self, pred: Tensor, target: Tensor) -> tuple[Float[Tensor, ""], int]: ...
+from param_decomp.batch_and_loss_fns import ReconstructionLoss
+from param_decomp.component_model import CIOutputs, ComponentModel
+from param_decomp.masks import SamplingType
 
 
 @dataclass(frozen=True)
 class MetricContext:
-    model: Any
-    config: MetricRuntimeConfig
+    model: ComponentModel
     batch: Any
     target_out: Tensor
     pre_weight_acts: dict[str, Float[Tensor, "..."]]
-    ci: MetricCIOutputs
+    ci: CIOutputs
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]]
     step: int
-    reconstruction_loss: MetricReconstructionLoss
+    total_steps: int
+    use_delta_component: bool
+    sampling: SamplingType
+    n_mask_samples: int
+    reconstruction_loss: ReconstructionLoss
     is_eval: bool
 
     @property
     def current_frac_of_training(self) -> float:
-        return self.step / self.config.steps if self.config.steps > 0 else 1.0
+        return self.step / self.total_steps if self.total_steps > 0 else 1.0

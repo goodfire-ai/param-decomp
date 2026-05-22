@@ -10,8 +10,8 @@ import wandb
 from torch import Tensor
 from torch.utils.data import DataLoader
 
+from param_decomp_lab.adapters._vendor.transcoder_model import BatchTopKTranscoder, EncoderConfig
 from param_decomp_lab.adapters.base import DecompositionAdapter, pretrain_dataloader
-from param_decomp_lab.adapters.transcoder_model import BatchTopKTranscoder, EncoderConfig
 from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.harvest.config import TranscoderHarvestConfig
 from param_decomp_lab.pretrain.models.llama_simple_mlp import LlamaSimpleMLP

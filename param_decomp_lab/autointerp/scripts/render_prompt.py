@@ -9,7 +9,11 @@ from param_decomp_lab.autointerp.config import RichExamplesConfig
 from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.autointerp.strategies.rich_examples import format_prompt
 from param_decomp_lab.harvest.analysis import TokenPRLift
-from param_decomp_lab.harvest.schemas import ActivationExample, ComponentData, ComponentTokenPMI
+from param_decomp_lab.harvest.schemas import (
+    ActivationExample,
+    ComponentData,
+    ComponentTokenPMI,
+)
 
 TOKENIZER_NAME = "openai-community/gpt2"
 

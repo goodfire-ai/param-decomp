@@ -30,7 +30,7 @@ class PermutedCIPlots(Metric[PermutedCIPlotsConfig]):
         if self.batch_shape is None:
             input_tensor = ctx.batch[0] if isinstance(ctx.batch, tuple) else ctx.batch
             self.batch_shape = tuple(input_tensor.shape)
-            self.sampling = ctx.config.sampling
+            self.sampling = ctx.sampling
         return None
 
     @override

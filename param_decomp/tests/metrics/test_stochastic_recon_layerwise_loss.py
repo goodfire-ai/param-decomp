@@ -4,15 +4,15 @@ import torch
 from torch import Tensor
 
 from param_decomp.masks import ComponentsMaskInfo, Router, SamplingType, make_mask_infos
-from param_decomp.metrics.stochastic_recon_layerwise_loss import (
+from param_decomp.metrics.stochastic_recon import stochastic_recon_loss
+from param_decomp.metrics.stochastic_recon_layerwise import (
     stochastic_recon_layerwise_loss,
 )
-from param_decomp.metrics.stochastic_recon_loss import stochastic_recon_loss
 from param_decomp.tests.metrics.fixtures import (
     make_one_layer_component_model,
     make_two_layer_component_model,
 )
-from param_decomp_lab.models.batch_and_loss_fns import recon_loss_mse
+from param_decomp_lab.batch_and_loss_fns import recon_loss_mse
 
 
 class TestStochasticReconLayerwiseLoss:
@@ -78,7 +78,7 @@ class TestStochasticReconLayerwiseLoss:
             )
 
         with patch(
-            "param_decomp.metrics.stochastic_recon_layerwise_loss.calc_stochastic_component_mask_info",
+            "param_decomp.metrics.stochastic_recon_layerwise.calc_stochastic_component_mask_info",
             side_effect=mock_calc_stochastic_component_mask_info,
         ):
             # Calculate expected loss manually

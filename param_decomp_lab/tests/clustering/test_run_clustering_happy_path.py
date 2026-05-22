@@ -5,7 +5,9 @@ from typing import Any
 import pytest
 
 from param_decomp_lab.clustering.clustering_run_config import ClusteringRunConfig
-from param_decomp_lab.clustering.harvest_config import HarvestConfig
+from param_decomp_lab.clustering.harvest_config import (
+    HarvestConfig,
+)
 from param_decomp_lab.clustering.merge_config import MergeConfig
 from param_decomp_lab.clustering.scripts.run_clustering import main
 

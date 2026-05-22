@@ -1,33 +1,33 @@
 """Sanity checks for stochastic, CI, PGD, and persistent PGD reconstruction losses."""
 
 from collections.abc import Callable
-from types import SimpleNamespace
-from typing import Literal, cast
+from typing import cast
 
 import pytest
 import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from param_decomp.component_model import CIOutputs, ComponentModel
 from param_decomp.masks import make_mask_infos
-from param_decomp.metrics.ci_masked_recon_loss import ci_masked_recon_loss
-from param_decomp.metrics.context import MetricRuntimeConfig
-from param_decomp.metrics.hidden_acts_recon_loss import (
-    _sum_per_module_mse,
-    calc_hidden_acts_mse,
-)
-from param_decomp.metrics.persistent_pgd import (
+from param_decomp.metrics.ci_masked_recon import ci_masked_recon_loss
+from param_decomp.metrics.persistent_pgd_recon import (
+    PersistentPGDReconLoss,
     PersistentPGDReconLossConfig,
+)
+from param_decomp.metrics.persistent_pgd_state import (
     PPGDSources,
     SignPGDConfig,
     SingleSourceScope,
     get_ppgd_mask_infos,
 )
-from param_decomp.metrics.persistent_pgd_recon import PersistentPGDReconLoss
-from param_decomp.metrics.pgd_masked_recon_loss import pgd_recon_loss
+from param_decomp.metrics.pgd_masked_recon import pgd_recon_loss
 from param_decomp.metrics.pgd_utils import PGDConfig
-from param_decomp.metrics.stochastic_recon_loss import stochastic_recon_loss
-from param_decomp.models.component_model import CIOutputs, ComponentModel
+from param_decomp.metrics.stochastic_hidden_acts_recon import (
+    _sum_per_module_mse,
+    calc_hidden_acts_mse,
+)
+from param_decomp.metrics.stochastic_recon import stochastic_recon_loss
 from param_decomp.schedule import ScheduleConfig
 from param_decomp.tests.metrics.fixtures import (
     OneLayerLinearModel,
@@ -35,34 +35,13 @@ from param_decomp.tests.metrics.fixtures import (
     make_one_layer_component_model,
     make_two_layer_component_model,
 )
+from param_decomp_lab.batch_and_loss_fns import recon_loss_mse
 from param_decomp_lab.eval_metrics.ci_hidden_acts_recon_loss import (
     CIHiddenActsReconLoss,
     CIHiddenActsReconLossConfig,
 )
-from param_decomp_lab.models.batch_and_loss_fns import recon_loss_mse
 
 ReconLossFn = Callable[[ComponentModel, Tensor, Tensor, dict[str, Tensor]], Tensor]
-
-
-def _metric_runtime_config(
-    *,
-    steps: int = 1,
-    use_delta_component: bool = False,
-    sampling: Literal["continuous", "binomial"] = "continuous",
-    n_mask_samples: int = 1,
-) -> MetricRuntimeConfig:
-    return cast(
-        MetricRuntimeConfig,
-        cast(
-            object,
-            SimpleNamespace(
-                steps=steps,
-                use_delta_component=use_delta_component,
-                sampling=sampling,
-                n_mask_samples=n_mask_samples,
-            ),
-        ),
-    )
 
 
 def _stochastic(
@@ -250,13 +229,16 @@ def test_per_module_recon_metric_keys() -> None:
     metric.bind(model=model, device="cpu")
     ctx = MetricContext(
         model=model,
-        config=_metric_runtime_config(),
         batch=batch,
         target_out=target_output.output,
         pre_weight_acts=target_output.cache,
         ci=ci,
         weight_deltas={},
         step=0,
+        total_steps=1,
+        use_delta_component=False,
+        sampling="continuous",
+        n_mask_samples=1,
         reconstruction_loss=recon_loss_mse,
         is_eval=True,
     )
@@ -304,13 +286,16 @@ def test_ppgd_recon_eval_metric_keys() -> None:
 
     ctx = MetricContext(
         model=model,
-        config=_metric_runtime_config(use_delta_component=False, steps=100),
         batch=batch,
         target_out=target_out,
         pre_weight_acts={},
         ci=_make_ci_outputs(ci),
         weight_deltas={},
         step=0,
+        total_steps=100,
+        use_delta_component=False,
+        sampling="continuous",
+        n_mask_samples=1,
         reconstruction_loss=recon_loss_mse,
         is_eval=True,
     )

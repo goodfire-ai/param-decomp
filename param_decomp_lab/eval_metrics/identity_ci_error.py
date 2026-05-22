@@ -5,7 +5,7 @@ from param_decomp.masks import SamplingType
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp_lab.eval_metrics.plotting import get_single_feature_causal_importances
-from param_decomp_lab.target_ci import compute_target_metrics, make_target_ci_solution
+from param_decomp_lab.toy_models.target_ci import compute_target_metrics, make_target_ci_solution
 
 
 class IdentityCIErrorConfig(BaseConfig):
@@ -35,7 +35,7 @@ class IdentityCIError(Metric[IdentityCIErrorConfig]):
         if self.batch_shape is None:
             input_tensor = ctx.batch[0] if isinstance(ctx.batch, tuple) else ctx.batch
             self.batch_shape = tuple(input_tensor.shape)
-            self.sampling = ctx.config.sampling
+            self.sampling = ctx.sampling
         return None
 
     @override

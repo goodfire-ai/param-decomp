@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 from param_decomp.log import logger
 from param_decomp_lab.adapters import adapter_from_id
-from param_decomp_lab.adapters.param_decomp import PDAdapter
+from param_decomp_lab.adapters.pd import PDAdapter
 from param_decomp_lab.dataset_attributions.repo import AttributionRepo
 from param_decomp_lab.graph_interp.config import GraphInterpConfig
 from param_decomp_lab.graph_interp.interpret import run_graph_interp

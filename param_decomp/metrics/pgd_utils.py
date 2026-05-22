@@ -8,6 +8,7 @@ from torch import Tensor
 from torch.distributed import ReduceOp
 
 from param_decomp.batch_and_loss_fns import ReconstructionLoss
+from param_decomp.component_model import ComponentModel
 from param_decomp.distributed import all_reduce, broadcast_tensor
 from param_decomp.masks import (
     ComponentsMaskInfo,
@@ -17,7 +18,6 @@ from param_decomp.masks import (
     make_mask_infos,
 )
 from param_decomp.metrics.base import LossMetricConfig
-from param_decomp.models.component_model import ComponentModel
 
 PGDInitStrategy = Literal["random", "ones", "zeroes"]
 MaskScope = Literal["unique_per_datapoint", "shared_across_batch"]

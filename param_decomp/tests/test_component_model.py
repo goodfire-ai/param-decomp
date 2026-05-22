@@ -8,16 +8,7 @@ from jaxtyping import Float, Int
 from torch import Tensor, nn
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
-from param_decomp.configs import OptimizerConfig, PDConfig
-from param_decomp.decomposition_targets import (
-    DecompositionTarget,
-    DecompositionTargetConfig,
-    resolve_decomposition_targets,
-)
-from param_decomp.identity_insertion import insert_identity_operations_
-from param_decomp.masks import ComponentsMaskInfo, make_mask_infos
-from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
-from param_decomp.models.ci_fns import (
+from param_decomp.ci_fns import (
     GlobalCiConfig,
     GlobalCiFnWrapper,
     GlobalSharedMLPCiFn,
@@ -28,18 +19,28 @@ from param_decomp.models.ci_fns import (
     VectorMLPCiFn,
     VectorSharedMLPCiFn,
 )
-from param_decomp.models.ci_nn_blocks import ParallelLinear
-from param_decomp.models.component_model import (
+from param_decomp.ci_nn_blocks import ParallelLinear
+from param_decomp.component_model import (
     ComponentModel,
 )
-from param_decomp.models.components import (
+from param_decomp.components import (
     EmbeddingComponents,
     LinearComponents,
+    make_components,
 )
+from param_decomp.configs import OptimizerConfig, PDConfig
+from param_decomp.decomposition_targets import (
+    DecompositionTarget,
+    DecompositionTargetConfig,
+    insert_identity_operations_,
+    resolve_decomposition_targets,
+)
+from param_decomp.masks import ComponentsMaskInfo, make_mask_infos
+from param_decomp.metrics.importance_minimality import ImportanceMinimalityLossConfig
 from param_decomp.schedule import ScheduleConfig
+from param_decomp_lab.batch_and_loss_fns import run_batch_passthrough
+from param_decomp_lab.component_model_io import load_component_model_from_checkpoint
 from param_decomp_lab.infra.run_files import save_file
-from param_decomp_lab.models.batch_and_loss_fns import run_batch_passthrough
-from param_decomp_lab.models.component_model_utils import load_component_model_from_checkpoint
 
 
 class SimpleTestModel(nn.Module):
@@ -211,7 +212,7 @@ def test_patch_modules_unsupported_component_type_raises() -> None:
     wrong_module_path = "other_layer"
 
     with pytest.raises(AttributeError):
-        ComponentModel._create_components(
+        make_components(
             target_model=model,
             module_to_c={wrong_module_path: 2},
         )
@@ -840,6 +841,7 @@ def test_global_shared_transformer_ci_fn_shapes_and_values():
         d_model=8,
         n_layers=2,
         n_heads=2,
+        max_len=1,
         mlp_hidden_dims=[16],
     )
 
@@ -872,6 +874,7 @@ def test_global_shared_transformer_ci_fn_with_seq_dim():
         d_model=8,
         n_layers=3,
         n_heads=2,
+        max_len=seq_len,
         mlp_hidden_dims=[16],
     )
 

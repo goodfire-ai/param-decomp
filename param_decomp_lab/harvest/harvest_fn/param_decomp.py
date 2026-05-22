@@ -2,11 +2,11 @@ from typing import override
 
 import torch
 
-from param_decomp_lab.adapters.param_decomp import PDAdapter
+from param_decomp_lab.adapters.pd import PDAdapter
+from param_decomp_lab.component_model_io import get_all_component_acts
 from param_decomp_lab.harvest.config import ParamDecompHarvestConfig
 from param_decomp_lab.harvest.harvest_fn.base import HarvestFn
 from param_decomp_lab.harvest.schemas import HarvestBatch
-from param_decomp_lab.models.component_model_utils import get_all_component_acts
 
 
 class ParamDecompHarvestFn(HarvestFn):

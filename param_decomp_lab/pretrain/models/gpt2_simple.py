@@ -13,9 +13,9 @@ from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
 
 from param_decomp.base_config import BaseConfig
+from param_decomp_lab.distributed import log0
 from param_decomp_lab.experiments.loadable_module import LoadableModule
 from param_decomp_lab.pretrain.run_info import PretrainRunInfo
-from param_decomp_lab.utils.distributed import log0
 
 # Suppress issues with nn.Module buffer access and @torch.no_grad() decorator
 # pyright: reportIndexIssue=false, reportUntypedFunctionDecorator=false

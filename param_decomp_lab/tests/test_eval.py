@@ -1,30 +1,31 @@
 """Tests for evaluation metrics and figures, particularly CIHistograms."""
 
-from types import SimpleNamespace
 from typing import cast
 from unittest.mock import Mock
 
 import pytest
 import torch
 
-from param_decomp.configs import PDConfig
+from param_decomp.component_model import CIOutputs, ComponentModel
 from param_decomp.metrics.context import MetricContext
-from param_decomp.models.component_model import CIOutputs, ComponentModel
-from param_decomp.models.sigmoids import lower_leaky_hard_sigmoid, upper_leaky_hard_sigmoid
+from param_decomp.sigmoids import lower_leaky_hard_sigmoid, upper_leaky_hard_sigmoid
+from param_decomp_lab.batch_and_loss_fns import recon_loss_mse
 from param_decomp_lab.eval_metrics.ci_histograms import CIHistograms, CIHistogramsConfig
-from param_decomp_lab.models.batch_and_loss_fns import recon_loss_mse
 
 
 def _make_ctx(batch: torch.Tensor, target_out: torch.Tensor, ci: CIOutputs) -> MetricContext:
     return MetricContext(
-        model=Mock(spec=ComponentModel),
-        config=cast(PDConfig, cast(object, SimpleNamespace(steps=1))),
+        model=cast(ComponentModel, Mock(spec=ComponentModel)),
         batch=batch,
         target_out=target_out,
         pre_weight_acts={},
         ci=ci,
         weight_deltas={},
         step=0,
+        total_steps=1,
+        use_delta_component=False,
+        sampling="continuous",
+        n_mask_samples=1,
         reconstruction_loss=recon_loss_mse,
         is_eval=True,
     )

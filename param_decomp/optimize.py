@@ -8,17 +8,14 @@ list of eval `Metric` instances themselves, then hand them in.
 
 import gc
 from collections import defaultdict
-from collections.abc import Generator
 from typing import Any, cast
 
 import torch
 import torch.nn as nn
 import torch.nn.parallel
-from datasets import IterableDataset
-from jaxtyping import Float
-from torch import Tensor, optim
+from torch import optim
 from torch.nn.utils import clip_grad_norm_
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from param_decomp.batch_and_loss_fns import (
@@ -26,8 +23,12 @@ from param_decomp.batch_and_loss_fns import (
     RunBatch,
     move_batch_to_device,
 )
+from param_decomp.component_model import ComponentModel, OutputWithCache, component_grad_norms
 from param_decomp.configs import PDConfig, RuntimeConfig
-from param_decomp.decomposition_targets import resolve_decomposition_targets
+from param_decomp.decomposition_targets import (
+    insert_identity_operations_,
+    resolve_decomposition_targets,
+)
 from param_decomp.distributed import (
     avg_metrics_across_ranks,
     get_distributed_state,
@@ -35,104 +36,19 @@ from param_decomp.distributed import (
     seed_per_rank,
     sync_across_processes,
 )
-from param_decomp.eval import collect_metric_outputs
-from param_decomp.identity_insertion import insert_identity_operations_
+from param_decomp.faithfulness_warmup import run_faithfulness_warmup
 from param_decomp.log import logger
 from param_decomp.metrics.base import LossMetricConfig, Metric
 from param_decomp.metrics.context import MetricContext
-from param_decomp.metrics.faithfulness_loss import faithfulness_loss
-from param_decomp.metrics.loss_metrics import LOSS_METRIC_CLASSES
-from param_decomp.metrics.persistent_pgd import validate_pgd_scope
-from param_decomp.models.component_model import ComponentModel, OutputWithCache
+from param_decomp.metrics.dispatch import instantiate_loss_metrics
+from param_decomp.metrics.output import collect_metric_outputs
+from param_decomp.metrics.persistent_pgd_recon import validate_pgd_scope
 from param_decomp.run_sink import RunSink
 from param_decomp.schedule import get_scheduled_value
-from param_decomp.torch_helpers import bf16_autocast
-from param_decomp.types import runtime_cast
+from param_decomp.torch_helpers import bf16_autocast, loop_dataloader
 
 
-def loop_dataloader[T](dl: DataLoader[T]) -> Generator[T]:
-    """Loop over a dataloader, resetting the iterator when it is exhausted.
-
-    Ensures that each epoch gets different data, even when using a distributed sampler.
-    """
-    epoch = 0
-    dl_iter = iter(dl)
-    while True:
-        try:
-            yield next(dl_iter)
-        except StopIteration:
-            logger.warning("Dataloader exhausted, resetting iterator.")
-            epoch += 1
-            if isinstance(dl.sampler, DistributedSampler):
-                dl.sampler.set_epoch(epoch)
-            if isinstance(dl.dataset, IterableDataset):
-                dl.dataset.set_epoch(epoch)
-            dl_iter = iter(dl)
-            yield next(dl_iter)
-
-
-def _grad_norms_dict(
-    component_model: ComponentModel, device: torch.device | str
-) -> dict[str, float]:
-    """Per-parameter gradient norms for component params and CI fn params."""
-    out: dict[str, float] = {}
-
-    comp_grad_norm_sq_sum: Float[Tensor, ""] = torch.zeros((), device=device)
-    for target_module_path, component in component_model.components.items():
-        for local_param_name, local_param in component.named_parameters():
-            param_grad = runtime_cast(Tensor, local_param.grad)
-            param_grad_sum_sq = param_grad.pow(2).sum()
-            key = f"components/{target_module_path}.{local_param_name}"
-            out[key] = param_grad_sum_sq.sqrt().item()
-            comp_grad_norm_sq_sum += param_grad_sum_sq
-
-    ci_fn_grad_norm_sq_sum: Float[Tensor, ""] = torch.zeros((), device=device)
-    for local_param_name, local_param in component_model.ci_fn.named_parameters():
-        ci_fn_grad = runtime_cast(Tensor, local_param.grad)
-        ci_fn_grad_sum_sq = ci_fn_grad.pow(2).sum()
-        key = f"ci_fns/{local_param_name}"
-        assert key not in out, f"Key {key} already exists in grad norms log"
-        out[key] = ci_fn_grad_sum_sq.sqrt().item()
-        ci_fn_grad_norm_sq_sum += ci_fn_grad_sum_sq
-
-    out["summary/components"] = comp_grad_norm_sq_sum.sqrt().item()
-    out["summary/ci_fns"] = ci_fn_grad_norm_sq_sum.sqrt().item()
-    out["summary/total"] = (comp_grad_norm_sq_sum + ci_fn_grad_norm_sq_sum).sqrt().item()
-    return out
-
-
-def run_faithfulness_warmup(
-    component_model: ComponentModel,
-    component_params: list[torch.nn.Parameter],
-    config: PDConfig,
-) -> None:
-    """Run faithfulness warmup phase to improve initialization."""
-    logger.info("Starting faithfulness warmup phase...")
-    assert component_params, "component_params is empty"
-
-    faithfulness_warmup_optimizer = optim.AdamW(
-        component_params,
-        lr=config.faithfulness_warmup_lr,
-        weight_decay=config.faithfulness_warmup_weight_decay,
-    )
-
-    for warmup_step in range(config.faithfulness_warmup_steps):
-        faithfulness_warmup_optimizer.zero_grad()
-        loss = faithfulness_loss(component_model.calc_weight_deltas())
-        loss.backward()
-        faithfulness_warmup_optimizer.step()
-
-        if warmup_step % 100 == 0 or warmup_step == config.faithfulness_warmup_steps - 1:
-            logger.info(
-                f"Faithfulness warmup step {warmup_step + 1} / {config.faithfulness_warmup_steps}; "
-                f"Faithfulness loss: {loss.item():.9f}"
-            )
-    del faithfulness_warmup_optimizer
-    torch.cuda.empty_cache()
-    gc.collect()
-
-
-def _build_metric_args(
+def _build_metric_context(
     batch: Any,
     *,
     step: int,
@@ -155,45 +71,19 @@ def _build_metric_args(
     weight_deltas = component_model.calc_weight_deltas()
     return MetricContext(
         model=component_model,
-        config=config,
         batch=batch,
         target_out=target_model_output.output,
         pre_weight_acts=target_model_output.cache,
         ci=ci,
         weight_deltas=weight_deltas,
         step=step,
+        total_steps=config.steps,
+        use_delta_component=config.use_delta_component,
+        sampling=config.sampling,
+        n_mask_samples=config.n_mask_samples,
         reconstruction_loss=reconstruction_loss,
         is_eval=is_eval,
     )
-
-
-def _build_loss_instances(
-    config: PDConfig,
-    component_model: ComponentModel,
-    device: str,
-) -> dict[str, Metric[Any]]:
-    """Instantiate one loss-metric instance per `pd_config.loss_metrics` entry."""
-    instances: dict[str, Metric[Any]] = {}
-    for cfg in config.loss_metrics:
-        assert cfg.type not in instances, f"duplicate loss metric {cfg.type!r}"
-        cls = LOSS_METRIC_CLASSES[cfg.type]
-        m = cls(cfg)
-        m.bind(model=component_model, device=device)
-        instances[cfg.type] = m
-    return instances
-
-
-def compute_losses(
-    loss_instances: dict[str, Metric[Any]],
-    ctx: MetricContext,
-) -> dict[str, Float[Tensor, ""] | None]:
-    """Compute per-metric live loss tensors for the current training step.
-
-    Each metric's `update(ctx)` returns the per-batch scalar (a graph-attached tensor that the
-    caller will backprop through), or None if the metric is gated off (e.g. PPGD before its
-    `start_frac`).
-    """
-    return {metric_name: m.update(ctx) for metric_name, m in loss_instances.items()}
 
 
 def optimize(
@@ -301,7 +191,7 @@ def optimize(
     if pd_config.faithfulness_warmup_steps > 0:
         run_faithfulness_warmup(component_model, component_params, pd_config)
 
-    loss_instances = _build_loss_instances(pd_config, component_model, device)
+    loss_instances = instantiate_loss_metrics(pd_config, component_model, device)
     for m in eval_metrics:
         m.bind(model=component_model, device=device)
 
@@ -335,7 +225,7 @@ def optimize(
         batch_log_data: defaultdict[str, float] = defaultdict(float)
 
         with bf16_autocast(enabled=runtime_config.autocast_bf16):
-            ctx = _build_metric_args(
+            ctx = _build_metric_context(
                 next(train_iterator),
                 step=step,
                 is_eval=False,
@@ -345,7 +235,7 @@ def optimize(
                 config=pd_config,
                 reconstruction_loss=reconstruction_loss,
             )
-            losses = compute_losses(loss_instances, ctx)
+            losses = {name: m.update(ctx) for name, m in loss_instances.items()}
 
         total_loss = torch.zeros((), device=device)
         for metric_name, loss_val in losses.items():
@@ -370,7 +260,7 @@ def optimize(
             avg_metrics = avg_metrics_across_ranks(batch_log_data, device=device)
             batch_log_data = cast(defaultdict[str, float], avg_metrics)
 
-            grad_norms = _grad_norms_dict(component_model, device)
+            grad_norms = component_grad_norms(component_model, device)
             grad_norm_log_data = {f"grad_norms/{k}": v for k, v in grad_norms.items()}
             assert not set(batch_log_data) & set(grad_norm_log_data)
             batch_log_data.update(grad_norm_log_data)
@@ -393,7 +283,7 @@ def optimize(
                 for m in active:
                     m.reset()
                 for _ in range(sink.n_eval_steps):
-                    ctx = _build_metric_args(
+                    ctx = _build_metric_context(
                         next(eval_iterator),
                         step=step,
                         is_eval=True,

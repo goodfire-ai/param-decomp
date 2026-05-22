@@ -1,8 +1,9 @@
 """Language-model PD experiment: YAML -> `optimize()` glue.
 
-Exposes ``EXPERIMENT_SPEC`` for lab-side tools to rebuild the target and dataloaders from a
-saved run. Run via ``python -m param_decomp_lab.experiments.lm.run path/to/config.yaml``;
-multi-process (DDP) entry via ``torchrun`` of the same module.
+`SavedRun` rebuilds saved LM runs by accessing this module's dispatch interface
+(`TargetConfig`, `DataConfig`, `build_target`, `build_train_loader`, `build_eval_loader`,
+`make_run_batch`). Run via ``pd-lm path/to/config.yaml``; multi-process (DDP) entry via
+``torchrun`` of the same module.
 """
 
 import importlib
@@ -19,12 +20,20 @@ from param_decomp.configs import PDConfig, RuntimeConfig
 from param_decomp.distributed import DistributedState, is_main_process
 from param_decomp.log import logger
 from param_decomp.optimize import optimize
+from param_decomp_lab.batch_and_loss_fns import make_run_batch as _make_run_batch
+from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
+from param_decomp_lab.distributed import (
+    ensure_cached_and_call,
+    get_device,
+    init_distributed,
+    with_distributed_cleanup,
+)
 from param_decomp_lab.experiments.lm.data import (
     LMDataConfig,
-    build_lm_eval_loader,
-    build_lm_train_loader,
+    collate_fn_for,
+    create_lm_data_loader,
+    rank_batch_size,
 )
-from param_decomp_lab.experiments.spec import ExperimentSpec
 from param_decomp_lab.experiments.utils import (
     build_eval_metrics,
     load_yaml,
@@ -34,14 +43,7 @@ from param_decomp_lab.experiments.utils import (
 from param_decomp_lab.infra.paths import ModelPath
 from param_decomp_lab.infra.run_files import generate_run_id
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
-from param_decomp_lab.models.batch_and_loss_fns import make_run_batch, recon_loss_kl
-from param_decomp_lab.utils.distributed import (
-    ensure_cached_and_call,
-    get_device,
-    init_distributed,
-    with_distributed_cleanup,
-)
-from param_decomp_lab.utils.seed import set_seed
+from param_decomp_lab.seed import set_seed
 
 
 def _resolve_class(path: str) -> type:
@@ -93,6 +95,10 @@ class LMTargetConfig(BaseConfig):
         return self
 
 
+TargetConfig = LMTargetConfig
+DataConfig = LMDataConfig
+
+
 def build_target(target_cfg: LMTargetConfig) -> Any:
     """Load the target LM from HuggingFace, a `param_decomp_lab.pretrain.*` wandb run, or a
     local/wandb checkpoint path."""
@@ -133,7 +139,15 @@ def build_train_loader(
     seed: int = 0,
 ) -> DataLoader[Any]:
     del target_cfg, device
-    return build_lm_train_loader(data_cfg, batch_size=batch_size, seed=seed, dist_state=dist_state)
+    loader, _ = create_lm_data_loader(
+        data_cfg,
+        split=data_cfg.train_split,
+        batch_size=rank_batch_size(batch_size, dist_state, label="train_batch_size"),
+        seed=seed,
+        dist_state=dist_state,
+        collate_fn=collate_fn_for(data_cfg),
+    )
+    return loader
 
 
 def build_eval_loader(
@@ -145,24 +159,22 @@ def build_eval_loader(
     dist_state: DistributedState | None = None,
     seed: int = 0,
 ) -> DataLoader[Any]:
+    """Seed is offset by 1 so the eval split shuffles differently from the train split
+    when both are constructed from the same ``pd_config.seed``."""
     del target_cfg, device
-    return build_lm_eval_loader(data_cfg, batch_size=batch_size, seed=seed, dist_state=dist_state)
+    loader, _ = create_lm_data_loader(
+        data_cfg,
+        split=data_cfg.eval_split,
+        batch_size=rank_batch_size(batch_size, dist_state, label="eval_batch_size"),
+        seed=seed + 1,
+        dist_state=dist_state,
+        collate_fn=collate_fn_for(data_cfg),
+    )
+    return loader
 
 
-def make_run_batch_for(target_cfg: LMTargetConfig) -> RunBatch:
-    return make_run_batch(target_cfg.output_extract)
-
-
-EXPERIMENT_SPEC = ExperimentSpec(
-    name="lm",
-    target_config_cls=LMTargetConfig,
-    data_config_cls=LMDataConfig,
-    build_target=build_target,
-    build_train_loader=build_train_loader,
-    build_eval_loader=build_eval_loader,
-    make_run_batch=make_run_batch_for,
-    reconstruction_loss=recon_loss_kl,
-)
+def make_run_batch(target_cfg: LMTargetConfig) -> RunBatch:
+    return _make_run_batch(target_cfg.output_extract)
 
 
 @with_distributed_cleanup
@@ -206,7 +218,7 @@ def main(config_path: str | Path) -> None:
     sink = run_sink_from_logging_block(out_dir, logging_block)
     save_run_meta(
         out_dir,
-        experiment_name=EXPERIMENT_SPEC.name,
+        experiment_name="lm",
         pd_config=pd_config,
         runtime_config=runtime_config,
         target_dict=target_cfg.model_dump(mode="json"),
@@ -218,8 +230,8 @@ def main(config_path: str | Path) -> None:
             target_model=target_model,
             train_loader=train_loader,
             eval_loader=eval_loader,
-            run_batch=make_run_batch_for(target_cfg),
-            reconstruction_loss=EXPERIMENT_SPEC.reconstruction_loss,
+            run_batch=make_run_batch(target_cfg),
+            reconstruction_loss=recon_loss_kl,
             pd_config=pd_config,
             runtime_config=runtime_config,
             sink=sink,

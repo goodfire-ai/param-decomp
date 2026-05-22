@@ -1,6 +1,6 @@
 import torch
 
-from param_decomp_lab.target_ci import (
+from param_decomp_lab.toy_models.target_ci import (
     permute_to_dense,
     permute_to_identity_greedy,
     permute_to_identity_hungarian,

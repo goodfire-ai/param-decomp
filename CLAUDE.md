@@ -107,7 +107,7 @@ Loss metrics ship in `param_decomp/metrics/`. Each `LossMetricConfig` carries a
 `AnyLossMetricConfig` (the discriminated union) so pydantic validates every
 `pd.loss_metrics` entry without a custom validator. The runtime dispatch from `type`
 literal to `Metric` subclass lives in
-`param_decomp/metrics/loss_metrics.py::LOSS_METRIC_CLASSES`. Adding a new loss metric
+`param_decomp/metrics/dispatch.py::LOSS_METRIC_CLASSES`. Adding a new loss metric
 means: (1) define the `Metric` subclass + its `LossMetricConfig` with a unique `type`
 literal, (2) append the config to the `AnyLossMetricConfig` union in `configs.py`, and
 (3) append the class to `LOSS_METRIC_CLASSES`.
@@ -137,7 +137,7 @@ implementation, and callers import them from that implementation module directly
 - `DecompositionTargetConfig` → `param_decomp.decomposition_targets` (next to
   `DecompositionTarget` and `resolve_decomposition_targets`)
 - `CiConfig` and friends (`LayerwiseCiConfig`, `AttnConfig`,
-  `GlobalSharedTransformerCiConfig`, `GlobalCiConfig`) → `param_decomp.models.ci_fns`
+  `GlobalSharedTransformerCiConfig`, `GlobalCiConfig`) → `param_decomp.ci_fns`
   (next to the CI-fn `nn.Module` classes they configure)
 - `masks.py` configs (`SamplingType`, `SubsetRoutingType` + members) → the
   Router implementations and runtime mask payload helpers in the same file
@@ -235,20 +235,23 @@ This repository implements methods from two key research papers on parameter dec
   `SubsetRoutingType` configs, Router implementations, and stochastic mask helpers.
 - `param_decomp/run_sink.py` - `RunSink` Protocol: the contract `optimize()` calls (cadence + log/console/checkpoint).
 - `param_decomp_lab/run_sink.py` - Concrete `RunSink` for in-repo use: local files + wandb, with `.local`/`.with_wandb`/`.silent` constructors and rank-aware no-op fan-out.
-- `param_decomp/eval.py` - `collect_metric_outputs(active)` — flattens each metric's `compute()` output.
-- `param_decomp/models/component_model.py` - Core ComponentModel that wraps target models.
-- `param_decomp/models/components.py` - Component types (LinearComponent, EmbeddingComponent, etc.) + `init_param_`.
-- `param_decomp/models/ci_fns.py` - CI configs (`CiConfig` family + `AttnConfig`) + CI-fn modules (`MLPCiFn`, `VectorMLPCiFn`, `VectorSharedMLPCiFn`, `GlobalSharedMLPCiFn`, `GlobalSharedTransformerCiFn`) + wrappers (`LayerwiseCiFnWrapper`, `GlobalCiFnWrapper`).
-- `param_decomp/models/ci_nn_blocks.py` - Generic transformer building blocks used by the CI fns (`Linear`, `ParallelLinear`, `RoPEEmbedding`, `SelfAttention`, `TransformerBlock`).
+- `param_decomp/component_model.py` - Core ComponentModel that wraps target models.
+- `param_decomp/components.py` - Component types (LinearComponent, EmbeddingComponent, etc.) + `init_param_` + `make_components` / `get_module_input_dim` factories.
+- `param_decomp/ci_fns.py` - CI configs (`CiConfig` family + `AttnConfig`) + CI-fn modules (`MLPCiFn`, `VectorMLPCiFn`, `VectorSharedMLPCiFn`, `GlobalSharedMLPCiFn`, `GlobalSharedTransformerCiFn`) + wrappers (`LayerwiseCiFnWrapper`, `GlobalCiFnWrapper`) + `make_ci_fn_wrapper` factory.
+- `param_decomp/ci_nn_blocks.py` - Generic transformer building blocks used by the CI fns (`Linear`, `ParallelLinear`, `RoPEEmbedding`, `SelfAttention`, `TransformerBlock`).
+- `param_decomp/sigmoids.py` - Sigmoid variants (`SIGMOID_TYPES`) used by CI fn output squashing.
 - `param_decomp/batch_and_loss_fns.py` - `RunBatch` / `ReconstructionLoss` protocols
   + `move_batch_to_device`. The concrete `run_batch_*` / `recon_loss_*` helpers live in
-  `param_decomp_lab/models/batch_and_loss_fns.py` (caller-supplied; `optimize()` doesn't import them).
-- `param_decomp/identity_insertion.py` - `Identity` shim + `insert_identity_operations_` that registers it on target modules before decomposition.
+  `param_decomp_lab/batch_and_loss_fns.py` (caller-supplied; `optimize()` doesn't import them).
+- `param_decomp/decomposition_targets.py` - `DecompositionTargetConfig` + `resolve_decomposition_targets` for fnmatch-driven target selection, plus the `Identity` shim + `insert_identity_operations_` that registers it on target modules before decomposition.
 - `param_decomp/metrics/` - Loss `Metric` classes + their `LossMetricConfig`s (one per file).
   `metrics/base.py` defines the `Metric` ABC with `__init__(cfg)` + `bind(model, device)`.
-  `metrics/loss_metrics.py` exposes `LOSS_METRIC_CLASSES`, the `type` literal → class
-  dispatch table that `optimize()` uses to instantiate metrics from each
-  `pd_config.loss_metrics` entry. Eval metrics ship in `param_decomp_lab/eval_metrics/`.
+  `metrics/context.py` defines `MetricContext` (the per-step bundle passed to every
+  `Metric.update(ctx)`). `metrics/dispatch.py` exposes `LOSS_METRIC_CLASSES`, the
+  `type` literal → class dispatch table that `optimize()` uses to instantiate metrics
+  from each `pd_config.loss_metrics` entry. PPGD's state machine lives in
+  `metrics/persistent_pgd_state.py`; its configs + metric classes live in
+  `metrics/persistent_pgd_recon.py`. Eval metrics ship in `param_decomp_lab/eval_metrics/`.
 
 **In-repo experiment scripts** (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`) build the
 target model + dataloaders + eval metrics + configs + sink and call `optimize()`. They share
@@ -257,7 +260,7 @@ YAML-parsing helpers in `param_decomp_lab/experiments/utils.py` (`load_yaml`, `b
 
 **Terminology: Sources vs Masks:**
 
-- **Sources** (`adv_sources`, `PPGDSources`, `self.sources`): The raw values that PGD optimizes adversarially. These are interpolated with CI to produce component masks: `mask = ci + (1 - ci) * source`. Used in both regular PGD (`param_decomp/metrics/pgd_utils.py`) and persistent PGD (`param_decomp/metrics/persistent_pgd.py`).
+- **Sources** (`adv_sources`, `PPGDSources`, `self.sources`): The raw values that PGD optimizes adversarially. These are interpolated with CI to produce component masks: `mask = ci + (1 - ci) * source`. Used in both regular PGD (`param_decomp/metrics/pgd_utils.py`) and persistent PGD (`param_decomp/metrics/persistent_pgd_state.py`).
 - **Masks** (`component_masks`, `RoutingMasks`, `make_mask_infos`, `n_mask_samples`): The materialized per-component masks used during forward passes. These are produced from sources (in PGD) or from stochastic sampling, and are a general PD concept across the whole codebase.
 
 **Experiment Structure:**
@@ -299,32 +302,32 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 <repo-root>/
 ├── papers/                          # Research papers (SPD, APD)
 ├── scripts/                         # Standalone utility scripts
-├── param_decomp/                    # Core library: training loop, configs, models, loss metrics
-│   ├── metrics/                     # Loss Metric classes (cfg+impl per file) + LOSS_METRIC_CLASSES dispatch
-│   ├── models/                      # ComponentModel + components + ci_fns + ci_nn_blocks + sigmoids
+├── param_decomp/                    # Core library: training loop, configs, ComponentModel, loss metrics
+│   ├── metrics/                     # Loss Metric classes (cfg+impl per file) + dispatch.py (LOSS_METRIC_CLASSES)
 │   ├── tests/                       # Core-library test suite
 │   ├── configs.py                   # PDConfig + RuntimeConfig + OptimizerConfig + AnyLossMetricConfig
 │   ├── masks.py                     # Runtime mask payloads, Router impls, SamplingType / SubsetRoutingType configs, stochastic mask helpers
-│   ├── optimize.py                  # optimize() — the core entrypoint (also holds the loop_dataloader helper)
+│   ├── optimize.py                  # optimize() — the core entrypoint (also holds loop_dataloader + collect_metric_outputs)
 │   ├── run_sink.py                  # RunSink Protocol — contract optimize() calls
-│   ├── eval.py                      # evaluate(instances, ...)
+│   ├── component_model.py           # ComponentModel wrapper (target model + components + CI fn)
+│   ├── components.py                # Components ABC + LinearComponents / EmbeddingComponents + make_components + get_module_input_dim
+│   ├── ci_fns.py                    # CI configs (CiConfig family) + CI-fn nn.Modules + wrappers + make_ci_fn_wrapper
+│   ├── ci_nn_blocks.py              # Generic NN scaffolding consumed by ci_fns (Linear, ParallelLinear, TransformerBlock, RoPE)
+│   ├── sigmoids.py                  # Sigmoid variants used by CI fn output squashing
 │   ├── distributed.py               # DistributedState + read-only state + reduce/gather collectives
 │   ├── schedule.py                  # ScheduleConfig + get_scheduled_value
 │   ├── torch_helpers.py             # bf16_autocast, get_obj_device, etc.
 │   ├── batch_and_loss_fns.py        # RunBatch / ReconstructionLoss Protocols + move_batch_to_device
-│   ├── identity_insertion.py        # Identity shim + insert_identity_operations_
-│   ├── decomposition_targets.py   # Decomposition target config + module-pattern resolution
+│   ├── decomposition_targets.py     # Decomposition target config + module-pattern resolution + Identity shim + insert_identity_operations_
 │   ├── log.py                       # `logger` shared across the library
-│   ├── base_config.py               # Pydantic `BaseConfig` with YAML/JSON load/save
-│   └── types.py                     # `Probability`, CI-fn type aliases, runtime_cast
+│   └── base_config.py               # Pydantic `BaseConfig` with YAML/JSON load/save, plus `Probability` annotated float and `runtime_cast`
 ├── param_decomp_lab/                # Lab tooling — experiments, post-processing, app, infra
 │   ├── infra/                       # Cross-subsystem plumbing: settings, paths, slurm, wandb, sqlite, git, run_files, markdown, pydantic
 │   ├── experiments/
 │   │   ├── tms/, resid_mlp/, lm/    # Each: run.py + YAMLs + per-experiment helpers
-│   │   ├── spec.py                  # ExperimentSpec (compositional dispatch dataclass)
 │   │   ├── utils.py                 # load_yaml / build_eval_metrics / run_sink_from_logging_block / save_run_meta
 │   │   ├── loadable_module.py       # LoadableModule ABC used by lab experiment models
-│   │   └── __init__.py              # EXPERIMENTS registry (name → ExperimentSpec)
+│   │   └── __init__.py              # EXPERIMENTS registry (name → experiment module)
 │   ├── eval_metrics/                # Eval Metric classes + EVAL_METRICS lookup table
 │   ├── pretrain/                    # Target model pretraining (see pretrain/CLAUDE.md)
 │   ├── harvest/                     # Statistics collection: pipeline + accumulator (see harvest/CLAUDE.md)
@@ -343,7 +346,7 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 │   ├── target_ci.py                 # TargetCIPattern (Identity/Dense), TargetCISolution — for toy-model eval
 │   ├── _linear_sum_assignment.py    # Vendored Hungarian algorithm (impl detail of target_ci)
 │   ├── run_sink.py                  # Concrete RunSink (local files + wandb + rank-aware no-op)
-│   └── saved_run.py                 # SavedRun: reload a PD run via its ExperimentSpec
+│   └── saved_run.py                 # SavedRun: reload a PD run via its experiment module
 ├── Makefile                         # Dev commands (make check, make test)
 ├── pyproject.toml                   # Core param-decomp package + workspace config
 └── param_decomp_lab/pyproject.toml  # Lab param-decomp-lab package + pd-* entry points

@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from param_decomp.log import logger
-from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
+from param_decomp.metrics.importance_minimality import ImportanceMinimalityLossConfig
 from param_decomp_lab.app.backend.compute import (
     compute_ci_only,
     compute_prompt_attributions_optimized,
@@ -34,8 +34,8 @@ from param_decomp_lab.app.backend.optim_cis import CELossConfig, OptimCIConfig
 from param_decomp_lab.app.backend.routers.graphs import _build_out_probs
 from param_decomp_lab.app.backend.routers.pretrain_info import _get_pretrain_info
 from param_decomp_lab.app.backend.state import StateManager
+from param_decomp_lab.distributed import get_device
 from param_decomp_lab.harvest import analysis
-from param_decomp_lab.utils.distributed import get_device
 
 router = APIRouter(tags=["mcp"])
 
@@ -1009,7 +1009,11 @@ def _tool_update_research_log(params: dict[str, Any]) -> dict[str, Any]:
 
 def _tool_save_explanation(params: dict[str, Any]) -> dict[str, Any]:
     """Save a behavior explanation to explanations.jsonl."""
-    from param_decomp_lab.investigate.schemas import BehaviorExplanation, ComponentInfo, Evidence
+    from param_decomp_lab.investigate.schemas import (
+        BehaviorExplanation,
+        ComponentInfo,
+        Evidence,
+    )
 
     config = _require_investigation_config()
 

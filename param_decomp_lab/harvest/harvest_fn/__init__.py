@@ -2,7 +2,7 @@ import torch
 
 from param_decomp_lab.adapters.base import DecompositionAdapter
 from param_decomp_lab.adapters.clt import CLTAdapter
-from param_decomp_lab.adapters.param_decomp import PDAdapter
+from param_decomp_lab.adapters.pd import PDAdapter
 from param_decomp_lab.adapters.transcoder import TranscoderAdapter
 from param_decomp_lab.harvest.config import (
     CLTHarvestConfig,

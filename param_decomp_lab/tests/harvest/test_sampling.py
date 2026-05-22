@@ -4,7 +4,11 @@ import math
 
 import torch
 
-from param_decomp_lab.harvest.sampling import compute_pmi, sample_at_most_n_per_group, top_k_pmi
+from param_decomp_lab.harvest.sampling import (
+    compute_pmi,
+    sample_at_most_n_per_group,
+    top_k_pmi,
+)
 
 
 class TestSampleAtMostNPerGroup:

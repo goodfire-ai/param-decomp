@@ -1,6 +1,5 @@
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal
 
 import torch
@@ -11,6 +10,8 @@ from pydantic import BaseModel
 from torch import Tensor
 from tqdm.auto import tqdm
 
+from param_decomp.base_config import Probability
+from param_decomp.component_model import CIOutputs, ComponentModel, OutputWithCache
 from param_decomp.masks import (
     AllLayersRouter,
     SamplingType,
@@ -18,7 +19,7 @@ from param_decomp.masks import (
     interpolate_component_mask,
     make_mask_infos,
 )
-from param_decomp.metrics.importance_minimality_loss import (
+from param_decomp.metrics.importance_minimality import (
     ImportanceMinimalityLossConfig,
     importance_minimality_loss,
 )
@@ -26,9 +27,7 @@ from param_decomp.metrics.pgd_utils import (
     PGDInitStrategy,
     get_pgd_init_tensor,
 )
-from param_decomp.models.component_model import CIOutputs, ComponentModel, OutputWithCache
 from param_decomp.torch_helpers import bf16_autocast
-from param_decomp.types import Probability
 from param_decomp_lab.eval_metrics.ci_l0 import calc_ci_l_zero
 
 MaskType = Literal["stochastic", "ci"]
@@ -837,10 +836,3 @@ def optimize_ci_values_batched(
         )
 
     return results
-
-
-def get_out_dir() -> Path:
-    """Get the output directory for optimization results."""
-    out_dir = Path(__file__).parent / "out"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir

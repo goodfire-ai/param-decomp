@@ -1,16 +1,41 @@
 """Small torch helpers used across the training loop and metrics."""
 
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 from typing import Protocol
 
 import torch
 import torch.nn as nn
+from datasets import IterableDataset
 from torch import Tensor
+from torch.utils.data import DataLoader, DistributedSampler
+
+from param_decomp.log import logger
 
 
 def bf16_autocast(enabled: bool = True) -> torch.amp.autocast_mode.autocast:
     device_type = "cuda" if torch.cuda.is_available() else "cpu"
     return torch.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=enabled)
+
+
+def loop_dataloader[T](dl: DataLoader[T]) -> Generator[T]:
+    """Loop over a dataloader, resetting the iterator when it is exhausted.
+
+    Ensures that each epoch gets different data, even when using a distributed sampler.
+    """
+    epoch = 0
+    dl_iter = iter(dl)
+    while True:
+        try:
+            yield next(dl_iter)
+        except StopIteration:
+            logger.warning("Dataloader exhausted, resetting iterator.")
+            epoch += 1
+            if isinstance(dl.sampler, DistributedSampler):
+                dl.sampler.set_epoch(epoch)
+            if isinstance(dl.dataset, IterableDataset):
+                dl.dataset.set_epoch(epoch)
+            dl_iter = iter(dl)
+            yield next(dl_iter)
 
 
 class _HasDevice(Protocol):

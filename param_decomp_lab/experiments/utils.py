@@ -105,7 +105,7 @@ def save_run_meta(
     """Write `{out_dir}/run_meta.yaml` describing how to reload this run.
 
     Schema:
-        experiment: tms                       # ExperimentSpec name (dispatch key)
+        experiment: tms                       # EXPERIMENTS registry key (module dispatch)
         pd: { ... PDConfig.model_dump ... }
         runtime: { ... RuntimeConfig.model_dump ... }
         target: { ... raw experiment target_cfg ... }

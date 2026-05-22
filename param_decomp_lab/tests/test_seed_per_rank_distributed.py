@@ -21,7 +21,7 @@ from param_decomp.distributed import (
     get_distributed_state,
     seed_per_rank,
 )
-from param_decomp_lab.utils.distributed import cleanup_distributed, init_distributed
+from param_decomp_lab.distributed import cleanup_distributed, init_distributed
 
 
 def _run_test():

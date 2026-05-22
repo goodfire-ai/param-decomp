@@ -9,6 +9,7 @@ from tqdm import tqdm
 
 from param_decomp.log import logger
 from param_decomp.schedule import ScheduleConfig, get_scheduled_value
+from param_decomp_lab.distributed import get_device
 from param_decomp_lab.experiments.resid_mlp.feature_importances import compute_feature_importances
 from param_decomp_lab.experiments.resid_mlp.models import (
     ResidMLP,
@@ -18,12 +19,11 @@ from param_decomp_lab.experiments.resid_mlp.models import (
 from param_decomp_lab.experiments.resid_mlp.resid_mlp_dataset import (
     ResidMLPDataset,
 )
+from param_decomp_lab.experiments.synthetic_data import DatasetGeneratedDataLoader
 from param_decomp_lab.infra.run_files import ExecutionStamp, save_file
 from param_decomp_lab.infra.settings import DEFAULT_PROJECT_NAME
 from param_decomp_lab.infra.wandb import init_wandb
-from param_decomp_lab.utils.data import DatasetGeneratedDataLoader
-from param_decomp_lab.utils.distributed import get_device
-from param_decomp_lab.utils.seed import set_seed
+from param_decomp_lab.seed import set_seed
 
 
 def loss_function(

@@ -3,7 +3,7 @@ from typing import Literal
 import pytest
 import torch
 
-from param_decomp_lab.utils.data import SparseFeatureDataset
+from param_decomp_lab.experiments.synthetic_data import SparseFeatureDataset
 
 
 def test_dataset_at_least_zero_active():

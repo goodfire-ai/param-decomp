@@ -11,6 +11,7 @@ from torch import Tensor, nn
 from torch.distributed import ReduceOp
 
 from param_decomp.base_config import BaseConfig
+from param_decomp.component_model import ComponentModel
 from param_decomp.distributed import all_reduce
 from param_decomp.masks import (
     AllLayersRouter,
@@ -20,7 +21,6 @@ from param_decomp.masks import (
 )
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
-from param_decomp.models.component_model import ComponentModel
 
 
 class _AttnPatternsBaseConfig(BaseConfig):
@@ -239,15 +239,15 @@ class StochasticAttnPatternsReconLoss(_AttnPatternsBase):
 
     @override
     def update(self, ctx: MetricContext) -> Tensor:
-        wd = ctx.weight_deltas if ctx.config.use_delta_component else None
+        wd = ctx.weight_deltas if ctx.use_delta_component else None
         mask_infos_list = [
             calc_stochastic_component_mask_info(
                 causal_importances=ctx.ci.lower_leaky,
-                component_mask_sampling=ctx.config.sampling,
+                component_mask_sampling=ctx.sampling,
                 weight_deltas=wd,
                 router=AllLayersRouter(),
             )
-            for _ in range(ctx.config.n_mask_samples)
+            for _ in range(ctx.n_mask_samples)
         ]
         sum_kl, n = _attn_patterns_recon_loss_update(
             model=self.model,

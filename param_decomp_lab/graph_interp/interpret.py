@@ -34,7 +34,10 @@ from param_decomp_lab.dataset_attributions.storage import (
 from param_decomp_lab.graph_interp import graph_context
 from param_decomp_lab.graph_interp.config import GraphInterpConfig
 from param_decomp_lab.graph_interp.db import GraphInterpDB
-from param_decomp_lab.graph_interp.graph_context import RelatedComponent, get_related_components
+from param_decomp_lab.graph_interp.graph_context import (
+    RelatedComponent,
+    get_related_components,
+)
 from param_decomp_lab.graph_interp.ordering import group_and_sort_by_layer
 from param_decomp_lab.graph_interp.prompts import (
     LABEL_SCHEMA,

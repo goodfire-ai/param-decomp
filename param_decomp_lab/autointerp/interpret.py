@@ -5,7 +5,11 @@ from pathlib import Path
 
 from param_decomp.log import logger
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
-from param_decomp_lab.autointerp.config import CanonConfig, RichExamplesConfig, StrategyConfig
+from param_decomp_lab.autointerp.config import (
+    CanonConfig,
+    RichExamplesConfig,
+    StrategyConfig,
+)
 from param_decomp_lab.autointerp.db import InterpDB
 from param_decomp_lab.autointerp.llm_api import (
     LLMError,
@@ -15,7 +19,10 @@ from param_decomp_lab.autointerp.llm_api import (
 )
 from param_decomp_lab.autointerp.providers import LLMProvider
 from param_decomp_lab.autointerp.schemas import InterpretationResult, ModelMetadata
-from param_decomp_lab.autointerp.strategies.dispatch import INTERPRETATION_SCHEMA, format_prompt
+from param_decomp_lab.autointerp.strategies.dispatch import (
+    INTERPRETATION_SCHEMA,
+    format_prompt,
+)
 from param_decomp_lab.harvest.analysis import (
     TokenPRLift,
     get_input_token_stats,

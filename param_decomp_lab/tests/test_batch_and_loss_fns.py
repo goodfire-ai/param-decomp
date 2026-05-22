@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch import Tensor, nn
 
-from param_decomp_lab.models.batch_and_loss_fns import (
+from param_decomp_lab.batch_and_loss_fns import (
     calc_kl_divergence_lm,
     make_run_batch,
     recon_loss_kl,

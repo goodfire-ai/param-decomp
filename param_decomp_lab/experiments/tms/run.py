@@ -1,9 +1,8 @@
 """TMS PD experiment: YAML -> `optimize()` glue.
 
-Exposes ``EXPERIMENT_SPEC`` for lab-side tools (SavedRun, harvest, etc.) to rebuild the
-target model and dataloaders from a saved run.
-
-Run via ``python -m param_decomp_lab.experiments.tms.run path/to/config.yaml``.
+`SavedRun` rebuilds saved TMS runs by accessing this module's dispatch interface
+(`TargetConfig`, `DataConfig`, `build_target`, `build_train_loader`, `build_eval_loader`,
+`make_run_batch`). Run via ``pd-tms path/to/config.yaml``.
 """
 
 from pathlib import Path
@@ -13,14 +12,18 @@ import fire
 from pydantic import Field
 from torch import Tensor
 
-from param_decomp.base_config import BaseConfig
+from param_decomp.base_config import BaseConfig, Probability
 from param_decomp.batch_and_loss_fns import RunBatch
 from param_decomp.configs import PDConfig, RuntimeConfig
 from param_decomp.distributed import DistributedState
 from param_decomp.log import logger
 from param_decomp.optimize import optimize
-from param_decomp.types import Probability
-from param_decomp_lab.experiments.spec import ExperimentSpec
+from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
+from param_decomp_lab.distributed import get_device
+from param_decomp_lab.experiments.synthetic_data import (
+    DatasetGeneratedDataLoader,
+    SparseFeatureDataset,
+)
 from param_decomp_lab.experiments.tms.models import TMSModel, TMSTargetRunInfo
 from param_decomp_lab.experiments.utils import (
     build_eval_metrics,
@@ -30,19 +33,16 @@ from param_decomp_lab.experiments.utils import (
 )
 from param_decomp_lab.infra.run_files import generate_run_id
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
-from param_decomp_lab.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
-from param_decomp_lab.utils.data import DatasetGeneratedDataLoader, SparseFeatureDataset
-from param_decomp_lab.utils.distributed import get_device
-from param_decomp_lab.utils.seed import set_seed
+from param_decomp_lab.seed import set_seed
 
 
-class TMSTargetConfig(BaseConfig):
+class TargetConfig(BaseConfig):
     """Path to the trained TMS target run."""
 
     run_path: str = Field(..., description="Local or wandb path to a TMS pretrain run.")
 
 
-class TMSDataConfig(BaseConfig):
+class DataConfig(BaseConfig):
     """Synthetic-feature dataset settings for TMS PD."""
 
     feature_probability: Probability
@@ -51,7 +51,7 @@ class TMSDataConfig(BaseConfig):
     )
 
 
-def build_target(target_cfg: TMSTargetConfig) -> TMSModel:
+def build_target(target_cfg: TargetConfig) -> TMSModel:
     """Load the TMS target model from disk/wandb. Caller computes tied_weights from the
     returned model's config."""
     run_info = TMSTargetRunInfo.from_path(target_cfg.run_path)
@@ -60,15 +60,11 @@ def build_target(target_cfg: TMSTargetConfig) -> TMSModel:
     return target_model
 
 
-def tied_weights_for(target_model: TMSModel) -> list[tuple[str, str]] | None:
-    return [("linear1", "linear2")] if target_model.config.tied_weights else None
-
-
-def _build_dataset(
-    target_cfg: TMSTargetConfig, data_cfg: TMSDataConfig, device: str
-) -> SparseFeatureDataset:
+def _build_loader(
+    target_cfg: TargetConfig, data_cfg: DataConfig, *, batch_size: int, device: str
+) -> DatasetGeneratedDataLoader[tuple[Tensor, Tensor]]:
     train_config = TMSTargetRunInfo.from_path(target_cfg.run_path).config
-    return SparseFeatureDataset(
+    dataset = SparseFeatureDataset(
         n_features=train_config.tms_model_config.n_features,
         feature_probability=data_cfg.feature_probability,
         device=device,
@@ -76,11 +72,12 @@ def _build_dataset(
         value_range=(0.0, 1.0),
         synced_inputs=train_config.synced_inputs,
     )
+    return DatasetGeneratedDataLoader(dataset, batch_size=batch_size, shuffle=False)
 
 
 def build_train_loader(
-    target_cfg: TMSTargetConfig,
-    data_cfg: TMSDataConfig,
+    target_cfg: TargetConfig,
+    data_cfg: DataConfig,
     *,
     batch_size: int,
     device: str,
@@ -88,13 +85,12 @@ def build_train_loader(
     seed: int = 0,
 ) -> DatasetGeneratedDataLoader[tuple[Tensor, Tensor]]:
     del dist_state, seed  # synthetic dataset; no per-rank state needed
-    dataset = _build_dataset(target_cfg, data_cfg, device)
-    return DatasetGeneratedDataLoader(dataset, batch_size=batch_size, shuffle=False)
+    return _build_loader(target_cfg, data_cfg, batch_size=batch_size, device=device)
 
 
 def build_eval_loader(
-    target_cfg: TMSTargetConfig,
-    data_cfg: TMSDataConfig,
+    target_cfg: TargetConfig,
+    data_cfg: DataConfig,
     *,
     batch_size: int,
     device: str,
@@ -102,33 +98,24 @@ def build_eval_loader(
     seed: int = 0,
 ) -> DatasetGeneratedDataLoader[tuple[Tensor, Tensor]]:
     del dist_state, seed
-    dataset = _build_dataset(target_cfg, data_cfg, device)
-    return DatasetGeneratedDataLoader(dataset, batch_size=batch_size, shuffle=False)
+    return _build_loader(target_cfg, data_cfg, batch_size=batch_size, device=device)
 
 
-def make_run_batch(target_cfg: TMSTargetConfig) -> RunBatch:
+def make_run_batch(target_cfg: TargetConfig) -> RunBatch:
     del target_cfg
     return run_batch_first_element
 
 
-EXPERIMENT_SPEC = ExperimentSpec(
-    name="tms",
-    target_config_cls=TMSTargetConfig,
-    data_config_cls=TMSDataConfig,
-    build_target=build_target,
-    build_train_loader=build_train_loader,
-    build_eval_loader=build_eval_loader,
-    make_run_batch=make_run_batch,
-    reconstruction_loss=recon_loss_mse,
-)
+def _tied_weights_for(target_model: TMSModel) -> list[tuple[str, str]] | None:
+    return [("linear1", "linear2")] if target_model.config.tied_weights else None
 
 
 def main(config_path: str | Path) -> None:
     raw = load_yaml(config_path)
     pd_config = PDConfig.model_validate(raw["pd"])
     runtime_config = RuntimeConfig.model_validate(raw["runtime"])
-    target_cfg = TMSTargetConfig.model_validate(raw["target"])
-    data_cfg = TMSDataConfig.model_validate(raw["data"])
+    target_cfg = TargetConfig.model_validate(raw["target"])
+    data_cfg = DataConfig.model_validate(raw["data"])
     logging_block = raw["logging"]
 
     set_seed(pd_config.seed)
@@ -136,7 +123,7 @@ def main(config_path: str | Path) -> None:
     logger.info(f"Using device: {device}")
 
     target_model = build_target(target_cfg)
-    pd_config = pd_config.model_copy(update={"tied_weights": tied_weights_for(target_model)})
+    pd_config = pd_config.model_copy(update={"tied_weights": _tied_weights_for(target_model)})
 
     train_loader = build_train_loader(
         target_cfg, data_cfg, batch_size=pd_config.batch_size, device=device
@@ -152,7 +139,7 @@ def main(config_path: str | Path) -> None:
     sink = run_sink_from_logging_block(out_dir, logging_block)
     save_run_meta(
         out_dir,
-        experiment_name=EXPERIMENT_SPEC.name,
+        experiment_name="tms",
         pd_config=pd_config,
         runtime_config=runtime_config,
         target_dict=target_cfg.model_dump(mode="json"),
@@ -165,7 +152,7 @@ def main(config_path: str | Path) -> None:
             train_loader=train_loader,
             eval_loader=eval_loader,
             run_batch=make_run_batch(target_cfg),
-            reconstruction_loss=EXPERIMENT_SPEC.reconstruction_loss,
+            reconstruction_loss=recon_loss_mse,
             pd_config=pd_config,
             runtime_config=runtime_config,
             sink=sink,

@@ -6,8 +6,8 @@ from typing import override
 from torch import Tensor
 from torch.utils.data import DataLoader
 
+from param_decomp_lab.adapters._vendor.clt_model import CrossLayerTranscoder
 from param_decomp_lab.adapters.base import DecompositionAdapter, pretrain_dataloader
-from param_decomp_lab.adapters.clt_model import CrossLayerTranscoder
 from param_decomp_lab.adapters.transcoder import _download_artifact
 from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.harvest.config import CLTHarvestConfig

@@ -13,8 +13,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from param_decomp.component_model import ComponentModel
 from param_decomp.configs import PDConfig
-from param_decomp.models.component_model import ComponentModel
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.app.backend.database import PromptAttrDB, Run
 from param_decomp_lab.autointerp.repo import InterpRepo

@@ -8,17 +8,6 @@ from param_decomp.base_config import BaseConfig
 from param_decomp_lab.autointerp.providers import LLMConfig, OpenRouterLLMConfig
 from param_decomp_lab.infra.settings import DEFAULT_PARTITION_NAME
 
-FORBIDDEN_WORDS_DEFAULT = [
-    "narrative",
-    "story",
-    "character",
-    "theme",
-    "descriptive",
-    "content",
-    "transition",
-    "scene",
-]
-
 
 class LegacyDelimitedExamplesConfig(BaseConfig):
     format: Literal["legacy_delimited"] = "legacy_delimited"

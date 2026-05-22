@@ -1,6 +1,6 @@
 import torch
 
-from param_decomp_lab.target_ci import (
+from param_decomp_lab.toy_models.target_ci import (
     DenseCIPattern,
     IdentityCIPattern,
     TargetCISolution,

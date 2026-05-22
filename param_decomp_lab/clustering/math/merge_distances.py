@@ -5,13 +5,17 @@ from typing import TypeVar
 import numpy as np
 from jaxtyping import Float, Int
 
-from param_decomp_lab.clustering.math.matching_dist import matching_dist_np, matching_dist_vec_np
-from param_decomp_lab.clustering.math.perm_invariant_hamming import perm_invariant_hamming_matrix
+from param_decomp_lab.clustering.math.matching_dist import (
+    matching_dist_np,
+    matching_dist_vec_np,
+)
+from param_decomp_lab.clustering.math.perm_invariant_hamming import (
+    perm_invariant_hamming_matrix,
+)
 from param_decomp_lab.clustering.types import (
     DistancesArray,
     DistancesMethod,
     MergesArray,
-    MergesAtIterArray,
 )
 
 _T = TypeVar("_T")
@@ -24,11 +28,6 @@ def _run_parallel(func: Callable[[_T], _R], iterable: Iterable[_T]) -> list[_R]:
     with Pool() as pool:
         return pool.map(func, items)
 
-
-DISTANCES_METHODS: dict[DistancesMethod, Callable[[MergesAtIterArray], DistancesArray]] = {
-    "perm_invariant_hamming": perm_invariant_hamming_matrix,
-    "matching_dist": matching_dist_np,
-}
 
 # pyright: reportUnnecessaryComparison=false, reportUnreachable=false
 

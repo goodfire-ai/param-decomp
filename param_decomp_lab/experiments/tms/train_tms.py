@@ -15,11 +15,14 @@ from tqdm import tqdm, trange
 
 from param_decomp.log import logger
 from param_decomp.schedule import ScheduleConfig, get_scheduled_value
+from param_decomp_lab.distributed import get_device
+from param_decomp_lab.experiments.synthetic_data import (
+    DatasetGeneratedDataLoader,
+    SparseFeatureDataset,
+)
 from param_decomp_lab.experiments.tms.models import TMSModel, TMSModelConfig, TMSTrainConfig
 from param_decomp_lab.infra.run_files import ExecutionStamp, save_file
-from param_decomp_lab.utils.data import DatasetGeneratedDataLoader, SparseFeatureDataset
-from param_decomp_lab.utils.distributed import get_device
-from param_decomp_lab.utils.seed import set_seed
+from param_decomp_lab.seed import set_seed
 
 
 def train(

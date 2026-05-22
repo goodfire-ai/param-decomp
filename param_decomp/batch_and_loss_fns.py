@@ -1,7 +1,7 @@
 """Protocols for the callbacks `optimize()` invokes once per batch.
 
 The caller supplies concrete implementations — the lab ships a set in
-`param_decomp_lab.models.batch_and_loss_fns` (`run_batch_passthrough`,
+`param_decomp_lab.batch_and_loss_fns` (`run_batch_passthrough`,
 `run_batch_first_element`, `make_run_batch`, `recon_loss_mse`, `recon_loss_kl`),
 and tests/experiments compose those into `optimize(run_batch=..., reconstruction_loss=...)`.
 """

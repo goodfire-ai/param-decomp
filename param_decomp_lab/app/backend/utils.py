@@ -1,10 +1,8 @@
 """Shared utilities for the PD backend."""
 
 import functools
-import time
 import traceback
 from collections.abc import Callable
-from contextlib import contextmanager
 from typing import Any
 
 from fastapi import HTTPException
@@ -27,10 +25,6 @@ def log_errors[T: Callable[..., Any]](func: T) -> T:
             raise
 
     return wrapper  # pyright: ignore[reportReturnType]
-
-
-# Characters that don't get a space prefix in wordpiece
-_PUNCT_NO_SPACE = set(".,!?;:'\")-]}>/")
 
 
 def delimit_tokens(tokens: list[tuple[str, bool]]) -> str:
@@ -59,11 +53,3 @@ def delimit_tokens(tokens: list[tuple[str, bool]]) -> str:
     if in_span:
         parts.append(">>")
     return "".join(parts)
-
-
-@contextmanager
-def timer(name: str):
-    start = time.perf_counter()
-    yield
-    end = time.perf_counter()
-    logger.info(f"{name} took {end - start:.1f}ms")

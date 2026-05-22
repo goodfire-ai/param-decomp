@@ -25,7 +25,9 @@ def submit_attributions(
         job_suffix: Optional suffix for SLURM job names (e.g., "v2" -> "pd-attr-v2").
     """
     from param_decomp_lab.dataset_attributions.config import AttributionsSlurmConfig
-    from param_decomp_lab.dataset_attributions.scripts.run_slurm import submit_attributions as impl
+    from param_decomp_lab.dataset_attributions.scripts.run_slurm import (
+        submit_attributions as impl,
+    )
     from param_decomp_lab.infra.wandb import parse_wandb_run_path
 
     parse_wandb_run_path(wandb_path)

@@ -1,32 +1,112 @@
 """Persistent PGD reconstruction metric.
 
-Merges what used to be two separate metrics (PersistentPGDReconLoss + PPGDReconEval): the same
-metric instance owns the persistent adversarial state, returns the live training loss, and at
-eval time additionally tracks hidden-activation MSE breakdowns. The optimizer loop's
-`before_backward(loss)` and `after_backward()` hooks orchestrate the source-grad / source-step
-that needs to bracket `total_loss.backward()`.
+Owns the PPGD loss-metric configs and the two `Metric` subclasses. The same metric instance
+returns the live training loss (driving outer backprop) and, at eval time, additionally
+tracks hidden-activation MSE breakdowns. The optimizer loop's `before_backward(loss)` and
+`after_backward()` hooks orchestrate the source-grad / source-step that brackets
+`total_loss.backward()`.
+
+Persistent state and the optimizer state machine live in
+`param_decomp.metrics.persistent_pgd_state`.
 """
 
-from typing import ClassVar, override
+from collections.abc import Iterable
+from typing import Annotated, ClassVar, Literal, override
 
 import torch
 from jaxtyping import Float
+from pydantic import Field, NonNegativeInt, PositiveInt
 from torch import Tensor
 
+from param_decomp.base_config import Probability
 from param_decomp.distributed import all_reduce
-from param_decomp.metrics.base import Metric, MetricResult
+from param_decomp.masks import (
+    AllLayersRouter,
+    Router,
+    SubsetRoutingType,
+    UniformKSubsetRoutingConfig,
+    get_subset_router,
+)
+from param_decomp.metrics.base import LossMetricConfig, Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
-from param_decomp.metrics.hidden_acts_recon_loss import (
+from param_decomp.metrics.persistent_pgd_state import (
+    PersistentPGDSourceScope,
+    PersistentPGDState,
+    PGDOptimizerConfig,
+    PPGDSources,
+    RepeatAcrossBatchScope,
+    get_ppgd_mask_infos,
+)
+from param_decomp.metrics.stochastic_hidden_acts_recon import (
     calc_hidden_acts_mse,
     compute_per_module_metrics,
 )
-from param_decomp.metrics.persistent_pgd import (
-    PersistentPGDReconLossConfig,
-    PersistentPGDReconSubsetLossConfig,
-    PersistentPGDState,
-    PPGDSources,
-    get_ppgd_mask_infos,
-)
+
+
+class _PersistentPGDBaseConfig(LossMetricConfig):
+    """Shared fields for persistent PGD configs."""
+
+    optimizer: Annotated[PGDOptimizerConfig, Field(discriminator="type")]
+    scope: PersistentPGDSourceScope
+    use_sigmoid_parameterization: bool = False
+    n_warmup_steps: NonNegativeInt = Field(
+        default=0,
+        description=(
+            "Extra inner PGD source-optimization steps on each train batch before the final loss"
+            " computation."
+        ),
+    )
+    start_frac: Probability = 0.0
+    n_samples: PositiveInt = 1
+
+
+class PersistentPGDReconLossConfig(_PersistentPGDBaseConfig):
+    type: Literal["PersistentPGDReconLoss"] = "PersistentPGDReconLoss"
+
+
+class PersistentPGDReconSubsetLossConfig(_PersistentPGDBaseConfig):
+    type: Literal["PersistentPGDReconSubsetLoss"] = "PersistentPGDReconSubsetLoss"
+    routing: Annotated[
+        SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
+    ]
+
+
+def _router_for_cfg(
+    cfg: PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig,
+    device: torch.device | str,
+) -> Router:
+    match cfg:
+        case PersistentPGDReconLossConfig():
+            return AllLayersRouter()
+        case PersistentPGDReconSubsetLossConfig(routing=routing):
+            return get_subset_router(routing, device)
+
+
+def validate_pgd_scope(
+    loss_metrics: Iterable[LossMetricConfig],
+    *,
+    batch_size: int,
+    world_size: int,
+) -> None:
+    """Assert persistent-PGD `repeat_across_batch` divides the per-rank training batch size.
+
+    Takes ``world_size`` directly (not a ``DistributedState``) so this module
+    doesn't have to know about distributed plumbing. Callers pass
+    ``dist_state.world_size if dist_state is not None else 1``.
+    """
+    assert batch_size % world_size == 0, (
+        f"batch_size {batch_size} not divisible by world size {world_size}"
+    )
+    per_rank = batch_size // world_size
+    for cfg in loss_metrics:
+        if isinstance(
+            cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
+        ) and isinstance(cfg.scope, RepeatAcrossBatchScope):
+            n = cfg.scope.n_sources
+            assert per_rank % n == 0, (
+                f"{cfg.type}: repeat_across_batch n_sources={n} must divide "
+                f"per-rank batch_size={per_rank}"
+            )
 
 
 class _PersistentPGDReconBase[
@@ -50,8 +130,13 @@ class _PersistentPGDReconBase[
             module_to_c=self.model.module_to_c,
             batch_dims=batch_dims,
             device=self.device,
-            use_delta_component=ctx.config.use_delta_component,
-            cfg=self.cfg,
+            use_delta_component=ctx.use_delta_component,
+            optimizer_cfg=self.cfg.optimizer,
+            scope=self.cfg.scope,
+            use_sigmoid_parameterization=self.cfg.use_sigmoid_parameterization,
+            n_warmup_steps=self.cfg.n_warmup_steps,
+            n_samples=self.cfg.n_samples,
+            router=_router_for_cfg(self.cfg, self.device),
             reconstruction_loss=ctx.reconstruction_loss,
         )
 
@@ -70,9 +155,9 @@ class _PersistentPGDReconBase[
         assert self.state is not None
         # The schedule is keyed on training step, so we only step it when not in eval.
         if not ctx.is_eval:
-            self.state.update_lr(step=ctx.step, total_steps=ctx.config.steps)
+            self.state.update_lr(step=ctx.step, total_steps=ctx.total_steps)
 
-        wd = ctx.weight_deltas if ctx.config.use_delta_component else None
+        wd = ctx.weight_deltas if ctx.use_delta_component else None
 
         if not ctx.is_eval:
             self.state.warmup(

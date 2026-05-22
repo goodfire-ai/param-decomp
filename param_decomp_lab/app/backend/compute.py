@@ -15,9 +15,9 @@ from jaxtyping import Bool, Float
 from pydantic import BaseModel
 from torch import Tensor, nn
 
+from param_decomp.component_model import ComponentModel, OutputWithCache
 from param_decomp.log import logger
 from param_decomp.masks import SamplingType, interpolate_component_mask, make_mask_infos
-from param_decomp.models.component_model import ComponentModel, OutputWithCache
 from param_decomp.torch_helpers import bf16_autocast
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.app.backend.optim_cis import (
@@ -33,7 +33,7 @@ from param_decomp_lab.app.backend.optim_cis import (
     optimize_ci_values_batched,
     run_adv_pgd,
 )
-from param_decomp_lab.models.component_model_utils import get_all_component_acts
+from param_decomp_lab.component_model_io import get_all_component_acts
 from param_decomp_lab.topology import TransformerTopology
 
 

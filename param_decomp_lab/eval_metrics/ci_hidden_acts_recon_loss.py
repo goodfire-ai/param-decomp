@@ -4,7 +4,7 @@ from param_decomp.base_config import BaseConfig
 from param_decomp.masks import make_mask_infos
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
-from param_decomp.metrics.hidden_acts_recon_loss import (
+from param_decomp.metrics.stochastic_hidden_acts_recon import (
     _HiddenActsAccumulator,
     calc_hidden_acts_mse,
     compute_per_module_metrics,

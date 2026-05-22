@@ -30,7 +30,7 @@ _WANDB_URL_RE = re.compile(
 
 def _build_short_names() -> dict[str, str]:
     """Build the loss-metric class-name to short-name map. Lazy to avoid circular imports."""
-    from param_decomp.metrics.loss_metrics import LOSS_METRIC_CLASSES
+    from param_decomp.metrics.dispatch import LOSS_METRIC_CLASSES
 
     return {cls.__name__: cls.short_name for cls in LOSS_METRIC_CLASSES.values() if cls.short_name}
 
@@ -55,11 +55,6 @@ def get_wandb_entity() -> str:
         "Could not determine WandB entity. Set WANDB_ENTITY in .env or log in with `wandb login`."
     )
     return entity
-
-
-def get_wandb_run_url(project: str, run_id: str) -> str:
-    """Get the direct WandB URL for a run."""
-    return f"https://wandb.ai/{get_wandb_entity()}/{project}/runs/{run_id}"
 
 
 def wandb_path_to_url(wandb_path: str) -> str:
@@ -168,35 +163,6 @@ def fetch_latest_wandb_checkpoint(run: Run, prefix: str | None = None) -> File:
     latest_checkpoint_name = fetch_latest_checkpoint_name(filenames, prefix)
     latest_checkpoint_remote = run.file(latest_checkpoint_name)
     return latest_checkpoint_remote
-
-
-def fetch_wandb_run_dir(run_id: str) -> Path:
-    """Find or create a directory in the W&B cache for a given run.
-
-    We first check if we already have a directory with the suffix "run_id" (if we created the run
-    ourselves, a directory of the name "run-<timestamp>-<run_id>" should exist). If not, we create a
-    new wandb_run_dir.
-    """
-    # Default to REPO_ROOT/wandb
-    base_cache_dir = REPO_ROOT / "wandb"
-    base_cache_dir.mkdir(parents=True, exist_ok=True)
-
-    # Set default wandb_run_dir
-    wandb_run_dir = base_cache_dir / run_id / "files"
-
-    # Check if we already have a directory with the suffix "run_id"
-    presaved_run_dirs = [
-        d for d in base_cache_dir.iterdir() if d.is_dir() and d.name.endswith(run_id)
-    ]
-    # If there is more than one dir, just ignore the presaved dirs and use the new wandb_run_dir
-    if presaved_run_dirs and len(presaved_run_dirs) == 1:
-        presaved_file_path = presaved_run_dirs[0] / "files"
-        if presaved_file_path.exists():
-            # Found a cached run directory, use it
-            wandb_run_dir = presaved_file_path
-
-    wandb_run_dir.mkdir(parents=True, exist_ok=True)
-    return wandb_run_dir
 
 
 def download_wandb_file(run: Run, wandb_run_dir: Path, file_name: str) -> Path:

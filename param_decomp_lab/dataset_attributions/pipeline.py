@@ -20,17 +20,17 @@ import tqdm
 from jaxtyping import Bool
 from torch import Tensor
 
+from param_decomp.component_model import ComponentModel
 from param_decomp.log import logger
-from param_decomp.models.component_model import ComponentModel
 from param_decomp_lab.dataset_attributions.accumulator import AttributionHarvester
 from param_decomp_lab.dataset_attributions.config import DatasetAttributionConfig
 from param_decomp_lab.dataset_attributions.storage import DatasetAttributionStorage
-from param_decomp_lab.experiments.lm.data import LMDataConfig, build_lm_train_loader
+from param_decomp_lab.distributed import get_device
+from param_decomp_lab.experiments.lm.data import LMDataConfig
 from param_decomp_lab.harvest.repo import HarvestRepo
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
 from param_decomp_lab.saved_run import SavedRun
 from param_decomp_lab.topology import TransformerTopology, get_sources_by_target
-from param_decomp_lab.utils.distributed import get_device
 
 
 def _build_alive_masks(
@@ -86,12 +86,7 @@ def harvest_attributions(
     model.eval()
 
     pd_config = pd_run.pd_config
-    train_loader = build_lm_train_loader(
-        data_cfg,
-        batch_size=config.batch_size,
-        dist_state=None,
-        seed=pd_config.seed,
-    )
+    train_loader = pd_run.build_train_loader(device=str(device), batch_size=config.batch_size)
 
     # Get gradient connectivity
     logger.info("Computing sources_by_target...")

@@ -5,35 +5,60 @@ import torch.nn as nn
 from jaxtyping import Float
 from torch import Tensor
 
+from param_decomp.batch_and_loss_fns import ReconstructionLoss
+from param_decomp.ci_fns import LayerwiseCiConfig
+from param_decomp.component_model import ComponentModel
 from param_decomp.decomposition_targets import DecompositionTarget
-from param_decomp.masks import UniformKSubsetRoutingConfig
-from param_decomp.metrics.ci_masked_recon_layerwise_loss import (
+from param_decomp.masks import AllLayersRouter, UniformKSubsetRoutingConfig
+from param_decomp.metrics.ci_masked_recon import ci_masked_recon_loss
+from param_decomp.metrics.ci_masked_recon_layerwise import (
     ci_masked_recon_layerwise_loss,
 )
-from param_decomp.metrics.ci_masked_recon_loss import ci_masked_recon_loss
-from param_decomp.metrics.ci_masked_recon_subset_loss import ci_masked_recon_subset_loss
-from param_decomp.metrics.faithfulness_loss import faithfulness_loss
-from param_decomp.metrics.importance_minimality_loss import importance_minimality_loss
-from param_decomp.metrics.persistent_pgd import (
+from param_decomp.metrics.ci_masked_recon_subset import ci_masked_recon_subset_loss
+from param_decomp.metrics.faithfulness import faithfulness_loss
+from param_decomp.metrics.importance_minimality import importance_minimality_loss
+from param_decomp.metrics.persistent_pgd_recon import PersistentPGDReconLossConfig
+from param_decomp.metrics.persistent_pgd_state import (
     AdamPGDConfig,
-    PersistentPGDReconLossConfig,
     PersistentPGDState,
     SignPGDConfig,
     SingleSourceScope,
 )
-from param_decomp.metrics.stochastic_recon_layerwise_loss import (
+from param_decomp.metrics.stochastic_recon import stochastic_recon_loss
+from param_decomp.metrics.stochastic_recon_layerwise import (
     stochastic_recon_layerwise_loss,
 )
-from param_decomp.metrics.stochastic_recon_loss import stochastic_recon_loss
-from param_decomp.metrics.stochastic_recon_subset_loss import stochastic_recon_subset_loss
-from param_decomp.models.ci_fns import LayerwiseCiConfig
-from param_decomp.models.component_model import ComponentModel
+from param_decomp.metrics.stochastic_recon_subset import stochastic_recon_subset_loss
 from param_decomp.schedule import ScheduleConfig
-from param_decomp_lab.models.batch_and_loss_fns import (
+from param_decomp_lab.batch_and_loss_fns import (
     recon_loss_kl,
     recon_loss_mse,
     run_batch_passthrough,
 )
+
+
+def _ppgd_state_from_cfg(
+    cfg: PersistentPGDReconLossConfig,
+    *,
+    module_to_c: dict[str, int],
+    batch_dims: tuple[int, ...],
+    device: str,
+    use_delta_component: bool,
+    reconstruction_loss: ReconstructionLoss,
+) -> PersistentPGDState:
+    return PersistentPGDState(
+        module_to_c=module_to_c,
+        batch_dims=batch_dims,
+        device=device,
+        use_delta_component=use_delta_component,
+        optimizer_cfg=cfg.optimizer,
+        scope=cfg.scope,
+        use_sigmoid_parameterization=cfg.use_sigmoid_parameterization,
+        n_warmup_steps=cfg.n_warmup_steps,
+        n_samples=cfg.n_samples,
+        router=AllLayersRouter(),
+        reconstruction_loss=reconstruction_loss,
+    )
 
 
 class TinyLinearModel(nn.Module):
@@ -740,12 +765,12 @@ class TestPersistentPGDReconLoss:
         )
 
         # Initialize state
-        state = PersistentPGDState(
+        state = _ppgd_state_from_cfg(
+            cfg,
             module_to_c=model.module_to_c,
             batch_dims=batch.shape[:2],
             device="cpu",
             use_delta_component=False,
-            cfg=cfg,
             reconstruction_loss=recon_loss_mse,
         )
 
@@ -793,12 +818,12 @@ class TestPersistentPGDReconLoss:
             scope=SingleSourceScope(),
         )
 
-        state = PersistentPGDState(
+        state = _ppgd_state_from_cfg(
+            cfg,
             module_to_c=model.module_to_c,
             batch_dims=batch.shape[:2],
             device="cpu",
             use_delta_component=False,
-            cfg=cfg,
             reconstruction_loss=recon_loss_mse,
         )
 
@@ -848,12 +873,12 @@ class TestPersistentPGDReconLoss:
         )
 
         # Initialize state with delta component
-        state = PersistentPGDState(
+        state = _ppgd_state_from_cfg(
+            cfg,
             module_to_c=model.module_to_c,
             batch_dims=batch_dims,
             device="cpu",
             use_delta_component=True,
-            cfg=cfg,
             reconstruction_loss=recon_loss_mse,
         )
 
@@ -912,12 +937,12 @@ class TestPersistentPGDReconLoss:
             scope=SingleSourceScope(),
         )
 
-        state = PersistentPGDState(
+        state = _ppgd_state_from_cfg(
+            cfg,
             module_to_c=model.module_to_c,
             batch_dims=batch_dims,
             device="cpu",
             use_delta_component=False,
-            cfg=cfg,
             reconstruction_loss=recon_loss_mse,
         )
 
@@ -955,12 +980,12 @@ class TestPersistentPGDReconLoss:
             scope=SingleSourceScope(),
         )
 
-        state = PersistentPGDState(
+        state = _ppgd_state_from_cfg(
+            cfg,
             module_to_c=model.module_to_c,
             batch_dims=batch.shape[:2],
             device="cpu",
             use_delta_component=False,
-            cfg=cfg,
             reconstruction_loss=recon_loss_mse,
         )
 

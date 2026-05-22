@@ -1,9 +1,8 @@
 """Residual MLP PD experiment: YAML -> `optimize()` glue.
 
-Exposes ``EXPERIMENT_SPEC`` for lab-side tools (SavedRun, harvest, etc.) to rebuild the
-target model and dataloaders from a saved run.
-
-Run via ``python -m param_decomp_lab.experiments.resid_mlp.run path/to/config.yaml``.
+`SavedRun` rebuilds saved ResidMLP runs by accessing this module's dispatch interface
+(`TargetConfig`, `DataConfig`, `build_target`, `build_train_loader`, `build_eval_loader`,
+`make_run_batch`). Run via ``pd-resid-mlp path/to/config.yaml``.
 """
 
 from pathlib import Path
@@ -13,16 +12,17 @@ import fire
 from pydantic import Field
 from torch import Tensor
 
-from param_decomp.base_config import BaseConfig
+from param_decomp.base_config import BaseConfig, Probability
 from param_decomp.batch_and_loss_fns import RunBatch
 from param_decomp.configs import PDConfig, RuntimeConfig
 from param_decomp.distributed import DistributedState
 from param_decomp.log import logger
 from param_decomp.optimize import optimize
-from param_decomp.types import Probability
+from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
+from param_decomp_lab.distributed import get_device
 from param_decomp_lab.experiments.resid_mlp.models import ResidMLP, ResidMLPTargetRunInfo
 from param_decomp_lab.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
-from param_decomp_lab.experiments.spec import ExperimentSpec
+from param_decomp_lab.experiments.synthetic_data import DatasetGeneratedDataLoader
 from param_decomp_lab.experiments.utils import (
     build_eval_metrics,
     load_yaml,
@@ -31,19 +31,16 @@ from param_decomp_lab.experiments.utils import (
 )
 from param_decomp_lab.infra.run_files import generate_run_id
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
-from param_decomp_lab.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
-from param_decomp_lab.utils.data import DatasetGeneratedDataLoader
-from param_decomp_lab.utils.distributed import get_device
-from param_decomp_lab.utils.seed import set_seed
+from param_decomp_lab.seed import set_seed
 
 
-class ResidMLPTargetConfig(BaseConfig):
+class TargetConfig(BaseConfig):
     """Path to the trained ResidMLP target run."""
 
     run_path: str = Field(..., description="Local or wandb path to a ResidMLP pretrain run.")
 
 
-class ResidMLPDataConfig(BaseConfig):
+class DataConfig(BaseConfig):
     """Synthetic-feature dataset settings for ResidMLP PD."""
 
     feature_probability: Probability
@@ -52,18 +49,18 @@ class ResidMLPDataConfig(BaseConfig):
     ] = "at_least_zero_active"
 
 
-def build_target(target_cfg: ResidMLPTargetConfig) -> ResidMLP:
+def build_target(target_cfg: TargetConfig) -> ResidMLP:
     run_info = ResidMLPTargetRunInfo.from_path(target_cfg.run_path)
     target_model = ResidMLP.from_run_info(run_info)
     target_model.eval()
     return target_model
 
 
-def _build_dataset(
-    target_cfg: ResidMLPTargetConfig, data_cfg: ResidMLPDataConfig, device: str
-) -> ResidMLPDataset:
+def _build_loader(
+    target_cfg: TargetConfig, data_cfg: DataConfig, *, batch_size: int, device: str
+) -> DatasetGeneratedDataLoader[tuple[Tensor, Tensor]]:
     train_config = ResidMLPTargetRunInfo.from_path(target_cfg.run_path).config
-    return ResidMLPDataset(
+    dataset = ResidMLPDataset(
         n_features=train_config.resid_mlp_model_config.n_features,
         feature_probability=data_cfg.feature_probability,
         device=device,
@@ -75,11 +72,12 @@ def _build_dataset(
         data_generation_type=data_cfg.data_generation_type,
         synced_inputs=train_config.synced_inputs,
     )
+    return DatasetGeneratedDataLoader(dataset, batch_size=batch_size, shuffle=False)
 
 
 def build_train_loader(
-    target_cfg: ResidMLPTargetConfig,
-    data_cfg: ResidMLPDataConfig,
+    target_cfg: TargetConfig,
+    data_cfg: DataConfig,
     *,
     batch_size: int,
     device: str,
@@ -87,13 +85,12 @@ def build_train_loader(
     seed: int = 0,
 ) -> DatasetGeneratedDataLoader[tuple[Tensor, Tensor]]:
     del dist_state, seed
-    dataset = _build_dataset(target_cfg, data_cfg, device)
-    return DatasetGeneratedDataLoader(dataset, batch_size=batch_size, shuffle=False)
+    return _build_loader(target_cfg, data_cfg, batch_size=batch_size, device=device)
 
 
 def build_eval_loader(
-    target_cfg: ResidMLPTargetConfig,
-    data_cfg: ResidMLPDataConfig,
+    target_cfg: TargetConfig,
+    data_cfg: DataConfig,
     *,
     batch_size: int,
     device: str,
@@ -101,33 +98,20 @@ def build_eval_loader(
     seed: int = 0,
 ) -> DatasetGeneratedDataLoader[tuple[Tensor, Tensor]]:
     del dist_state, seed
-    dataset = _build_dataset(target_cfg, data_cfg, device)
-    return DatasetGeneratedDataLoader(dataset, batch_size=batch_size, shuffle=False)
+    return _build_loader(target_cfg, data_cfg, batch_size=batch_size, device=device)
 
 
-def make_run_batch(target_cfg: ResidMLPTargetConfig) -> RunBatch:
+def make_run_batch(target_cfg: TargetConfig) -> RunBatch:
     del target_cfg
     return run_batch_first_element
-
-
-EXPERIMENT_SPEC = ExperimentSpec(
-    name="resid_mlp",
-    target_config_cls=ResidMLPTargetConfig,
-    data_config_cls=ResidMLPDataConfig,
-    build_target=build_target,
-    build_train_loader=build_train_loader,
-    build_eval_loader=build_eval_loader,
-    make_run_batch=make_run_batch,
-    reconstruction_loss=recon_loss_mse,
-)
 
 
 def main(config_path: str | Path) -> None:
     raw = load_yaml(config_path)
     pd_config = PDConfig.model_validate(raw["pd"])
     runtime_config = RuntimeConfig.model_validate(raw["runtime"])
-    target_cfg = ResidMLPTargetConfig.model_validate(raw["target"])
-    data_cfg = ResidMLPDataConfig.model_validate(raw["data"])
+    target_cfg = TargetConfig.model_validate(raw["target"])
+    data_cfg = DataConfig.model_validate(raw["data"])
     logging_block = raw["logging"]
 
     set_seed(pd_config.seed)
@@ -150,7 +134,7 @@ def main(config_path: str | Path) -> None:
     sink = run_sink_from_logging_block(out_dir, logging_block)
     save_run_meta(
         out_dir,
-        experiment_name=EXPERIMENT_SPEC.name,
+        experiment_name="resid_mlp",
         pd_config=pd_config,
         runtime_config=runtime_config,
         target_dict=target_cfg.model_dump(mode="json"),
@@ -163,7 +147,7 @@ def main(config_path: str | Path) -> None:
             train_loader=train_loader,
             eval_loader=eval_loader,
             run_batch=make_run_batch(target_cfg),
-            reconstruction_loss=EXPERIMENT_SPEC.reconstruction_loss,
+            reconstruction_loss=recon_loss_mse,
             pd_config=pd_config,
             runtime_config=runtime_config,
             sink=sink,

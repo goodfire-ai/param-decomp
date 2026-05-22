@@ -14,7 +14,10 @@ from param_decomp_lab.autointerp.config import (
     SingleLineExamplesConfig,
     XmlExamplesConfig,
 )
-from param_decomp_lab.autointerp.schemas import DECOMPOSITION_DESCRIPTIONS, DecompositionMethod
+from param_decomp_lab.autointerp.schemas import (
+    DECOMPOSITION_DESCRIPTIONS,
+    DecompositionMethod,
+)
 from param_decomp_lab.harvest.analysis import TokenPRLift
 from param_decomp_lab.harvest.schemas import ComponentData
 from param_decomp_lab.infra.markdown import Md

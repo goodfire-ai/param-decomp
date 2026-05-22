@@ -1,6 +1,6 @@
 """Utilities for distributed data parallel training (torchrun or MPI).
 
-Process-group bring-up and teardown live in `param_decomp_lab.utils.distributed`
+Process-group bring-up and teardown live in `param_decomp_lab.distributed`
 because only the lab experiment runners initialize distributed; core only reads
 the cached state and runs collectives.
 """
@@ -28,7 +28,7 @@ class DistributedState:
 
 
 # Module-level cached state used as a single source of truth.
-# Written by `param_decomp_lab.utils.distributed.init_distributed/cleanup_distributed`.
+# Written by `param_decomp_lab.distributed.init_distributed/cleanup_distributed`.
 _state: DistributedState | None = None
 
 _SHOULD_GET_INITIALIZED: bool = os.environ.get("WORLD_SIZE") is not None

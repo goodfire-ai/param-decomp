@@ -5,7 +5,10 @@ import numpy as np
 import pytest
 import torch
 
-from param_decomp_lab.clustering.activations import ProcessedActivations, process_activations
+from param_decomp_lab.clustering.activations import (
+    ProcessedActivations,
+    process_activations,
+)
 from param_decomp_lab.clustering.formatting import DeadComponentFilterStat
 from param_decomp_lab.clustering.memberships import (
     MembershipBuilder,
