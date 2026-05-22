@@ -30,16 +30,32 @@ class LayerwiseCiConfig(BaseConfig):
 
     mode: Literal["layerwise"] = "layerwise"
     fn_type: LayerwiseCiFnType = Field(
-        ..., description="Type of layerwise CI function: mlp, vector_mlp, or shared_mlp"
+        ...,
+        description="Type of layerwise CI function: mlp, vector_mlp, shared_mlp, or transformer.",
     )
-    hidden_dims: list[PositiveInt] = Field(
-        ..., description="Hidden dimensions for the CI function MLP"
+    hidden_dims: list[PositiveInt] | None = Field(
+        default=None,
+        description="Hidden dimensions for MLP-family layerwise CI functions. "
+        "Required for mlp, vector_mlp, shared_mlp; ignored for transformer.",
+    )
+    transformer_cfg: "GlobalSharedTransformerCiConfig | None" = Field(
+        default=None,
+        description="Transformer config for fn_type='transformer'. Each pool-A rank "
+        "instantiates one of these per owned site (target_model_layer_configs=[that_site]); "
+        "no replication waste vs the global variant.",
     )
 
     @model_validator(mode="after")
-    def validate_hidden_dims(self) -> Self:
-        if self.fn_type in ("mlp", "vector_mlp") and not self.hidden_dims:
-            raise ValueError(f"hidden_dims must be non-empty for fn_type={self.fn_type!r}")
+    def validate_config(self) -> Self:
+        if self.fn_type in ("mlp", "vector_mlp", "shared_mlp"):
+            assert self.hidden_dims, f"hidden_dims must be non-empty for fn_type={self.fn_type!r}"
+            assert self.transformer_cfg is None, (
+                "transformer_cfg is only used for fn_type='transformer'"
+            )
+        elif self.fn_type == "transformer":
+            assert self.transformer_cfg is not None, (
+                "transformer_cfg must be specified when fn_type='transformer'"
+            )
         return self
 
 

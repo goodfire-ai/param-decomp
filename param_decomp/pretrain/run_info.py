@@ -103,6 +103,8 @@ def _migrate_legacy_data_config(config_dict: dict[str, Any]) -> dict[str, Any]:
         return config_dict
     train = config_dict.pop("train_dataset_config")
     val = config_dict.pop("val_dataset_config")
+    if "seed" not in config_dict:
+        config_dict["seed"] = train.get("seed") or 0
     for k in (
         "name",
         "hf_tokenizer_path",

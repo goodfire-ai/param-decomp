@@ -1,0 +1,37 @@
+# Topology for LlamaSimpleMLP-12L 2-pool emulation. Pairs with
+# `llama_simple_mlp_12L.yaml` (the RunConfig).
+#
+# Layout: 48A + 16B = 64 GPUs across 8 nodes.
+#   * 12 attn-block-groups (one per layer, q/k/v/o sites, 2 ranks each)
+#   * 12 mlp-block-groups  (one per layer, c_fc/down_proj sites, 2 ranks each)
+#   * Pool A = ranks 0..47 (nodes 0..5). Pool B = ranks 48..63 (nodes 6..7).
+#
+# batch=32 → A_local=16 (per 2-rank block group), B_local=2 (per pool-B rank).
+block_groups:
+  # ─── 12 attention groups (q/k/v/o per layer) ───
+  - { ranks: [0, 1],     owned_sites: [h.0.attn.q_proj,  h.0.attn.k_proj,  h.0.attn.v_proj,  h.0.attn.o_proj] }
+  - { ranks: [2, 3],     owned_sites: [h.1.attn.q_proj,  h.1.attn.k_proj,  h.1.attn.v_proj,  h.1.attn.o_proj] }
+  - { ranks: [4, 5],     owned_sites: [h.2.attn.q_proj,  h.2.attn.k_proj,  h.2.attn.v_proj,  h.2.attn.o_proj] }
+  - { ranks: [6, 7],     owned_sites: [h.3.attn.q_proj,  h.3.attn.k_proj,  h.3.attn.v_proj,  h.3.attn.o_proj] }
+  - { ranks: [8, 9],     owned_sites: [h.4.attn.q_proj,  h.4.attn.k_proj,  h.4.attn.v_proj,  h.4.attn.o_proj] }
+  - { ranks: [10, 11],   owned_sites: [h.5.attn.q_proj,  h.5.attn.k_proj,  h.5.attn.v_proj,  h.5.attn.o_proj] }
+  - { ranks: [12, 13],   owned_sites: [h.6.attn.q_proj,  h.6.attn.k_proj,  h.6.attn.v_proj,  h.6.attn.o_proj] }
+  - { ranks: [14, 15],   owned_sites: [h.7.attn.q_proj,  h.7.attn.k_proj,  h.7.attn.v_proj,  h.7.attn.o_proj] }
+  - { ranks: [16, 17],   owned_sites: [h.8.attn.q_proj,  h.8.attn.k_proj,  h.8.attn.v_proj,  h.8.attn.o_proj] }
+  - { ranks: [18, 19],   owned_sites: [h.9.attn.q_proj,  h.9.attn.k_proj,  h.9.attn.v_proj,  h.9.attn.o_proj] }
+  - { ranks: [20, 21],   owned_sites: [h.10.attn.q_proj, h.10.attn.k_proj, h.10.attn.v_proj, h.10.attn.o_proj] }
+  - { ranks: [22, 23],   owned_sites: [h.11.attn.q_proj, h.11.attn.k_proj, h.11.attn.v_proj, h.11.attn.o_proj] }
+  # ─── 12 mlp groups (c_fc/down_proj per layer) ───
+  - { ranks: [24, 25],   owned_sites: [h.0.mlp.c_fc,  h.0.mlp.down_proj] }
+  - { ranks: [26, 27],   owned_sites: [h.1.mlp.c_fc,  h.1.mlp.down_proj] }
+  - { ranks: [28, 29],   owned_sites: [h.2.mlp.c_fc,  h.2.mlp.down_proj] }
+  - { ranks: [30, 31],   owned_sites: [h.3.mlp.c_fc,  h.3.mlp.down_proj] }
+  - { ranks: [32, 33],   owned_sites: [h.4.mlp.c_fc,  h.4.mlp.down_proj] }
+  - { ranks: [34, 35],   owned_sites: [h.5.mlp.c_fc,  h.5.mlp.down_proj] }
+  - { ranks: [36, 37],   owned_sites: [h.6.mlp.c_fc,  h.6.mlp.down_proj] }
+  - { ranks: [38, 39],   owned_sites: [h.7.mlp.c_fc,  h.7.mlp.down_proj] }
+  - { ranks: [40, 41],   owned_sites: [h.8.mlp.c_fc,  h.8.mlp.down_proj] }
+  - { ranks: [42, 43],   owned_sites: [h.9.mlp.c_fc,  h.9.mlp.down_proj] }
+  - { ranks: [44, 45],   owned_sites: [h.10.mlp.c_fc, h.10.mlp.down_proj] }
+  - { ranks: [46, 47],   owned_sites: [h.11.mlp.c_fc, h.11.mlp.down_proj] }
+pool_b_ranks: [48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63]

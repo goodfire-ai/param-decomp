@@ -6,7 +6,9 @@
 #   * 28 mlp-block-groups  (one per Qwen3 layer, gate/up/down sites, 2 ranks each)
 #   * Pool A = ranks 0..111 (nodes 0..13). Pool B = ranks 112..119 (node 14).
 #
-# Launch via `param_decomp/scripts/two_pool_benchmark/qwen_2pool_launcher.py`.
+# Launch via `param_decomp/scripts/two_pool_benchmark/lm_2pool_launcher.py
+#   --run_config param_decomp/experiments/lm/qwen3_0p6b.yaml
+#   --topology   param_decomp/experiments/lm/qwen3_0p6b_two_pool_topology.yaml`.
 block_groups:
   # ─── 28 attention groups (q/k/v/o per layer) ───
   - { ranks: [0, 1],     owned_sites: [model.layers.0.self_attn.q_proj,  model.layers.0.self_attn.k_proj,  model.layers.0.self_attn.v_proj,  model.layers.0.self_attn.o_proj] }
@@ -67,24 +69,3 @@ block_groups:
   - { ranks: [108, 109], owned_sites: [model.layers.26.mlp.gate_proj, model.layers.26.mlp.up_proj, model.layers.26.mlp.down_proj] }
   - { ranks: [110, 111], owned_sites: [model.layers.27.mlp.gate_proj, model.layers.27.mlp.up_proj, model.layers.27.mlp.down_proj] }
 pool_b_ranks: [112, 113, 114, 115, 116, 117, 118, 119]
-batch_global: 32
-coeff_faith: 1.0e+06
-coeff_imp: 1.0e-04
-coeff_stoch: 0.5
-coeff_ppgd: 0.5
-lr_components: 5.0e-05
-lr_ci_fn: 5.0e-05
-ppgd:
-  coeff: 1.0
-  optimizer:
-    type: sign
-    lr_schedule:
-      start_val: 0.01
-      warmup_pct: 0.0
-      final_val_frac: 1.0
-      fn_type: constant
-  scope:
-    type: per_batch_per_position
-  use_sigmoid_parameterization: false
-  n_warmup_steps: 2
-  n_samples: 1

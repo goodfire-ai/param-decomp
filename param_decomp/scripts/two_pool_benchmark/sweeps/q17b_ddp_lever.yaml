@@ -1,0 +1,27 @@
+# DDP-as-activation-lever comparison vs the KL kernel.
+# Hypothesis: higher DDP within 1block group reduces per-rank activation
+# pressure linearly. With current fused-KL code, also probes whether higher
+# DDP is faster (more GPUs but less per-rank work + less serialization in
+# the chunked KL loop).
+#
+# Reference point: 1block-4ddp b=64 s=2048 = 112 GB pool A / 6601 ms.
+#
+# Headline question: does 8ddp at the same point land cleanly + faster?
+# Bonus: can we then push to b=128 s=2048 on 8ddp?
+name_prefix: q17b-fkl
+model:
+  name: Qwen/Qwen3-1.7B-Base
+  n_layers: 28
+  vocab_size: 151936
+runtime:
+  qos: null         # normal QoS for the 8ddp (232 GPU, fits team quota)
+  time: "00:30:00"
+  wandb_project: param-decomp
+defaults:
+  seq: 2048
+  steps: 30
+  seed: 0
+  ci: {d: 128, n_blocks: 2}
+  topology: {grouping: fused, ddp: 8}
+grid:
+  batch: [64, 128]

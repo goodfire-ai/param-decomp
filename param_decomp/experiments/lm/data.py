@@ -1,7 +1,8 @@
 """Language-model HuggingFace dataset loading."""
 
 from collections.abc import Callable
-from typing import Any
+from pathlib import Path
+from typing import Any, override
 
 import numpy as np
 import torch
@@ -30,6 +31,41 @@ class LMDataConfig(BaseConfig):
     streaming: bool = Field(default=False)
     buffer_size: PositiveInt = Field(default=1000)
     shuffle_each_epoch: bool = Field(default=True)
+    is_random: bool = Field(
+        default=False,
+        description="Synthesize uniform-random token ids for perf characterization. "
+        "Skips HF dataset loading and tokenization. Requires random_vocab_size.",
+    )
+    random_vocab_size: PositiveInt | None = Field(
+        default=None,
+        description="Vocab range for random tokens. Required iff is_random=True.",
+    )
+
+
+class _RandomTokenIterable(torch.utils.data.IterableDataset[dict[str, Tensor]]):
+    """Yields {'input_ids': randint(0, vocab_size, (seq_len,))} forever.
+
+    Seeded per (rank, dataloader-worker) so ranks see disjoint streams.
+    """
+
+    def __init__(self, vocab_size: int, seq_len: int, seed: int, rank: int):
+        self.vocab_size = vocab_size
+        self.seq_len = seq_len
+        self.seed = seed
+        self.rank = rank
+
+    @override
+    def __iter__(self):
+        g = torch.Generator()
+        info = torch.utils.data.get_worker_info()
+        worker_id = info.id if info is not None else 0
+        g.manual_seed(self.seed + self.rank * 100003 + worker_id * 1009)
+        while True:
+            yield {
+                "input_ids": torch.randint(
+                    0, self.vocab_size, (self.seq_len,), generator=g, dtype=torch.long
+                )
+            }
 
 
 def _keep_single_column(
@@ -151,13 +187,52 @@ def create_lm_data_loader(
     dist_state: DistributedState | None = None,
     collate_fn: Callable[..., Any] | None = None,
 ) -> tuple[DataLoader[Any], PreTrainedTokenizer]:
-    """Create an LM token dataloader from a HuggingFace dataset split."""
-    dataset = load_dataset(
-        cfg.dataset_name,
-        streaming=cfg.streaming,
-        split=split,
-        trust_remote_code=False,
-    )
+    """Create an LM token dataloader from a HuggingFace dataset split.
+
+    ``cfg.dataset_name`` may be either an HF hub id (passed to ``load_dataset``)
+    or a local directory previously produced by ``Dataset.save_to_disk``
+    (e.g. via ``param_decomp/scripts/pretokenize_pile.py``). Local paths are
+    detected by directory existence + ``streaming=False``.
+
+    When ``cfg.is_random=True``, all HF dataset machinery is bypassed and the
+    loader yields uniform-random token ids — for perf/memory characterization
+    where loss values are not meaningful but step time and memory are.
+    """
+    if cfg.is_random:
+        assert cfg.random_vocab_size is not None, "is_random=True requires random_vocab_size"
+        rank = dist_state.rank if dist_state is not None else 0
+        dataset_random = _RandomTokenIterable(
+            vocab_size=cfg.random_vocab_size,
+            seq_len=cfg.max_seq_len,
+            seed=seed,
+            rank=rank,
+        )
+        loader_random = DataLoader[Any](
+            dataset_random,
+            batch_size=batch_size,
+            drop_last=True,
+            collate_fn=collate_fn,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer_name)
+        return loader_random, tokenizer
+
+    dataset_path = Path(cfg.dataset_name)
+    if dataset_path.is_dir():
+        assert not cfg.streaming, (
+            f"Local saved-to-disk datasets cannot be streamed; set streaming=false. "
+            f"Got dataset_name={cfg.dataset_name} (a directory)."
+        )
+        from datasets import load_from_disk
+
+        loaded = load_from_disk(cfg.dataset_name)
+        dataset = loaded if isinstance(loaded, Dataset) else loaded[split]
+    else:
+        dataset = load_dataset(
+            cfg.dataset_name,
+            streaming=cfg.streaming,
+            split=split,
+            trust_remote_code=False,
+        )
     assert isinstance(dataset, Dataset | IterableDataset)
 
     if cfg.streaming:
@@ -175,7 +250,10 @@ def create_lm_data_loader(
     else:
         assert isinstance(dataset, Dataset)
         logger.info("Shuffling dataset (len=%d)", len(dataset))
-        dataset = dataset.shuffle(seed=seed)
+        # keep_in_memory=True avoids HF writing a fingerprint cache file in
+        # the dataset dir — under multi-rank launches (2-pool with 64+ procs),
+        # the race on that cache write triggers SIGBUS from mmap.
+        dataset = dataset.shuffle(seed=seed, keep_in_memory=True)
         logger.info("Shuffled dataset")
 
     tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer_name)

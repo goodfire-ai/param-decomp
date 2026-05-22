@@ -46,5 +46,5 @@ RootPath = Annotated[
 ]
 
 Probability = Annotated[float, Ge(0), Le(1)]
-LayerwiseCiFnType = Literal["mlp", "vector_mlp", "shared_mlp"]
+LayerwiseCiFnType = Literal["mlp", "vector_mlp", "shared_mlp", "transformer"]
 GlobalCiFnType = Literal["global_shared_mlp", "global_shared_transformer"]

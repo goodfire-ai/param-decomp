@@ -16,7 +16,6 @@ Run:
 
 # pyright: reportArgumentType=false, reportOperatorIssue=false, reportIndexIssue=false
 
-import json
 import os
 import time
 from pathlib import Path
@@ -111,18 +110,10 @@ def main() -> None:
     pool_config = TwoPoolConfig(
         block_groups=block_groups,
         pool_b_ranks=list(POOL_B_RANKS),
-        batch_global=BATCH,
-        ppgd=PersistentPGDReconLossConfig(
-            coeff=1.0,
-            scope=PerBatchPerPositionScope(),
-            optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.01)),
-            n_warmup_steps=2,
-            n_samples=1,
-            use_sigmoid_parameterization=False,
-        ),
     )
     pool_runtime = build_two_pool_runtime(
         pool_config,
+        batch_global=BATCH,
         c_per_site=c_per_site,
         ci_config=GlobalCiConfig(
             fn_type="global_shared_transformer",
@@ -135,7 +126,28 @@ def main() -> None:
         sigmoid_type="leaky_hard",
         run_batch=run_batch_passthrough,
         reconstruction_loss=recon_loss_kl,
+        ppgd_cfg=PersistentPGDReconLossConfig(
+            coeff=1.0,
+            scope=PerBatchPerPositionScope(),
+            optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.01)),
+            n_warmup_steps=2,
+            n_samples=1,
+            use_sigmoid_parameterization=False,
+        ),
+        coeff_faith=1e6,
+        coeff_imp=1e-4,
+        coeff_stoch=0.5,
+        coeff_ppgd=0.5,
+        imp_min_pnorm=1.0,
+        imp_min_beta=0.0,
+        imp_min_eps=1e-12,
+        imp_min_p_anneal_start_frac=1.0,
+        imp_min_p_anneal_final_p=None,
+        imp_min_p_anneal_end_frac=1.0,
+        lr_components=5e-5,
+        lr_ci_fn=5e-5,
         bf16_autocast=True,
+        use_fused_kl=True,
     )
 
     if rank == 0:
@@ -176,8 +188,20 @@ def main() -> None:
     step_times.append(time.perf_counter())
 
     profile_mode = os.environ.get("PROFILE_MODE", "off")
-    assert profile_mode in ("sync", "async", "off"), f"PROFILE_MODE={profile_mode}"
-    profiler = PhaseProfiler(enabled=(profile_mode != "off"), sync=(profile_mode == "sync"))
+    assert profile_mode in ("on", "off"), f"PROFILE_MODE={profile_mode}"
+    profile_enabled = profile_mode == "on"
+    profiler = (
+        PhaseProfiler(
+            enabled=rank in (0, POOL_B_RANKS[0]),
+            out_dir=Path(os.environ.get("PROFILE_OUT_DIR", "/tmp/two_pool_profile")),
+            rank=rank,
+            pool="a" if rank == 0 else "b",
+            skip_first=WARMUP_STEPS,
+            active=PROFILE_STEPS,
+        )
+        if profile_enabled
+        else None
+    )
     if rank == 0:
         print(f"[maxA] PROFILE_MODE={profile_mode}", flush=True)
 
@@ -205,24 +229,6 @@ def main() -> None:
             f"[maxA rank0] per-sample throughput: {1000 / per_sample:.1f} samples/sec/world",
             flush=True,
         )
-
-    if rank in (0, POOL_B_RANKS[0]):
-        print(f"\n[maxA rank{rank}] phase breakdown (skipping first {WARMUP_STEPS}):", flush=True)
-        print(profiler.report(warmup=WARMUP_STEPS), flush=True)
-
-        if profile_mode != "off":
-            out_dir = Path(os.environ.get("PROFILE_OUT_DIR", "/tmp/two_pool_profile"))
-            out_dir.mkdir(parents=True, exist_ok=True)
-            pool = "a" if rank == 0 else "b"
-            out_path = out_dir / f"maxA_{profile_mode}_pool{pool}_rank{rank}.json"
-            with open(out_path, "w") as f:
-                json.dump(
-                    profiler.to_json_dict(
-                        warmup=WARMUP_STEPS, rank=rank, pool=pool, mode=profile_mode
-                    ),
-                    f,
-                )
-            print(f"[maxA rank{rank}] wrote spans → {out_path}", flush=True)
 
     dist.destroy_process_group()
 

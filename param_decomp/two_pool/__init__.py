@@ -32,13 +32,11 @@ from param_decomp.two_pool.layout import (
     build_block_ddp_world,
     build_world,
 )
-from param_decomp.two_pool.run import (
-    PhaseProfiler,
-    build_two_pool_runtime,
-    optimize_two_pool,
-    step_pool_a,
-    step_pool_b,
-)
+from param_decomp.two_pool.pool_a import step_pool_a
+from param_decomp.two_pool.pool_b import step_pool_b
+from param_decomp.two_pool.profiler import PhaseProfiler
+from param_decomp.two_pool.run import optimize_two_pool
+from param_decomp.two_pool.runtime import build_two_pool_runtime
 
 __all__ = [
     "BlockDDPLayout",

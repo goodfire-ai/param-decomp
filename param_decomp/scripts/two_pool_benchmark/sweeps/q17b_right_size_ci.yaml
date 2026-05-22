@@ -1,0 +1,33 @@
+# Right-sized CI fn characterization on Qwen3-1.7B.
+# Goal: figure out where the 10x-per-matrix CI fn (~70M per site avg) lands
+# in memory + step-time on our new envelope (1block-8ddp + fused KL, b=64 s=2048).
+#
+# Baseline anchor: q17b-abl-b64-s2048-...-fused-8ddp (32175) ran d=128/n=2
+# (~400K per site) at 73 GB pool A / 4190 ms step.
+#
+# Sizing math (per-site CI fn params, transformer body ~12*n*d^2):
+#   d=512  n=4: ~13 M  per site  (~2x per-attn target)
+#   d=1024 n=6: ~75 M  per site  (≈10x heuristic average)
+#   d=1024 n=8: ~100 M per site  (slightly above)
+#   d=1536 n=8: ~227 M per site  (~3x heuristic, headroom probe)
+name_prefix: q17b-bigci
+model:
+  name: Qwen/Qwen3-1.7B-Base
+  n_layers: 28
+  vocab_size: 151936
+runtime:
+  qos: null
+  time: "00:30:00"
+  wandb_project: param-decomp
+defaults:
+  batch: 64
+  seq: 2048
+  steps: 30
+  seed: 0
+  topology: {grouping: fused, ddp: 8}
+grid:
+  ci:
+    - {d: 512,  n_blocks: 4}
+    - {d: 1024, n_blocks: 6}
+    - {d: 1024, n_blocks: 8}
+    - {d: 1536, n_blocks: 8}

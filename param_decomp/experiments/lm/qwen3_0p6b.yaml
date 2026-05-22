@@ -33,7 +33,7 @@ pd:
   - module_pattern: model.layers.*.mlp.down_proj
     C: 32
   identity_module_info: null
-  use_delta_component: false
+  use_delta_component: true
   components_optimizer:
     lr_schedule:
       start_val: 5.0e-05
@@ -53,6 +53,8 @@ pd:
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_weight_decay: 0.0
   loss_metrics:
+    FaithfulnessLoss:
+      coeff: 1.0e+06
     ImportanceMinimalityLoss:
       coeff: 1.0e-04
       pnorm: 1.0
@@ -61,8 +63,22 @@ pd:
       p_anneal_final_p: 1.0
       p_anneal_end_frac: 1.0
       eps: 1.0e-12
-    FaithfulnessLoss:
-      coeff: 1.0e+06
+    StochasticReconLayerwiseLoss:
+      coeff: 0.5
+    PersistentPGDReconLoss:
+      coeff: 0.5
+      optimizer:
+        type: sign
+        lr_schedule:
+          start_val: 0.01
+          warmup_pct: 0.0
+          final_val_frac: 1.0
+          fn_type: constant
+      scope:
+        type: per_batch_per_position
+      use_sigmoid_parameterization: false
+      n_warmup_steps: 3
+      n_samples: 1
 logging:
   train_log_freq: 50
   eval_freq: 100000   # 2-pool path doesn't do eval yet — effectively disabled

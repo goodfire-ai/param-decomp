@@ -1,0 +1,21 @@
+# First smoke of the fused linear+KL kernel + lm_head bypass in pool A.
+# Reference: same config previously hit 26 GB pool A peak / 1056 ms step.
+# Prediction: pool A peak drops dramatically (~5-10 GB) since the [b, seq, vocab]
+# tensor is no longer materialized in the layerwise loop.
+name_prefix: q17b-fkl
+model:
+  name: Qwen/Qwen3-1.7B-Base
+  n_layers: 28
+  vocab_size: 151936
+runtime:
+  qos: null         # normal QoS so we get scheduled fast
+  time: "00:20:00"
+  wandb_project: param-decomp
+defaults:
+  batch: 8
+  seq: 1024
+  steps: 30
+  seed: 0
+  ci: {d: 128, n_blocks: 2}
+  topology: {grouping: fused, ddp: 4}
+grid: {}

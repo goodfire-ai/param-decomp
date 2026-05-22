@@ -180,3 +180,5 @@ cython_debug/
 *.schema.json
 
 .claude/worktrees
+.mcp.json
+

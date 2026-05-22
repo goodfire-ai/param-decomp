@@ -1,0 +1,35 @@
+# 32-GPU topology for LlamaSimpleMLP-12L: 24 block groups × 1 rank + 8 pool B.
+# Each attn group owns one layer's q/k/v/o (4 sites). Each mlp group owns one
+# layer's c_fc/down_proj (2 sites). Shrunk from the 64-GPU 24×2+16 by halving
+# in-block DDP (now 1 rank/group, no in-block all-reduce needed) and halving
+# pool B (8 ranks instead of 16). batch=32 → A_local=32, B_local=4.
+#
+# Choice driven by cluster contention: 4 fully-free 8-GPU nodes are easier to
+# get than 8. Preserves 24-leader × multi-receiver shape needed to validate
+# the cross-pool NCCL coalescing.
+block_groups:
+  - { ranks: [0], owned_sites: [h.0.attn.q_proj, h.0.attn.k_proj, h.0.attn.v_proj, h.0.attn.o_proj] }
+  - { ranks: [1], owned_sites: [h.1.attn.q_proj, h.1.attn.k_proj, h.1.attn.v_proj, h.1.attn.o_proj] }
+  - { ranks: [2], owned_sites: [h.2.attn.q_proj, h.2.attn.k_proj, h.2.attn.v_proj, h.2.attn.o_proj] }
+  - { ranks: [3], owned_sites: [h.3.attn.q_proj, h.3.attn.k_proj, h.3.attn.v_proj, h.3.attn.o_proj] }
+  - { ranks: [4], owned_sites: [h.4.attn.q_proj, h.4.attn.k_proj, h.4.attn.v_proj, h.4.attn.o_proj] }
+  - { ranks: [5], owned_sites: [h.5.attn.q_proj, h.5.attn.k_proj, h.5.attn.v_proj, h.5.attn.o_proj] }
+  - { ranks: [6], owned_sites: [h.6.attn.q_proj, h.6.attn.k_proj, h.6.attn.v_proj, h.6.attn.o_proj] }
+  - { ranks: [7], owned_sites: [h.7.attn.q_proj, h.7.attn.k_proj, h.7.attn.v_proj, h.7.attn.o_proj] }
+  - { ranks: [8], owned_sites: [h.8.attn.q_proj, h.8.attn.k_proj, h.8.attn.v_proj, h.8.attn.o_proj] }
+  - { ranks: [9], owned_sites: [h.9.attn.q_proj, h.9.attn.k_proj, h.9.attn.v_proj, h.9.attn.o_proj] }
+  - { ranks: [10], owned_sites: [h.10.attn.q_proj, h.10.attn.k_proj, h.10.attn.v_proj, h.10.attn.o_proj] }
+  - { ranks: [11], owned_sites: [h.11.attn.q_proj, h.11.attn.k_proj, h.11.attn.v_proj, h.11.attn.o_proj] }
+  - { ranks: [12], owned_sites: [h.0.mlp.c_fc, h.0.mlp.down_proj] }
+  - { ranks: [13], owned_sites: [h.1.mlp.c_fc, h.1.mlp.down_proj] }
+  - { ranks: [14], owned_sites: [h.2.mlp.c_fc, h.2.mlp.down_proj] }
+  - { ranks: [15], owned_sites: [h.3.mlp.c_fc, h.3.mlp.down_proj] }
+  - { ranks: [16], owned_sites: [h.4.mlp.c_fc, h.4.mlp.down_proj] }
+  - { ranks: [17], owned_sites: [h.5.mlp.c_fc, h.5.mlp.down_proj] }
+  - { ranks: [18], owned_sites: [h.6.mlp.c_fc, h.6.mlp.down_proj] }
+  - { ranks: [19], owned_sites: [h.7.mlp.c_fc, h.7.mlp.down_proj] }
+  - { ranks: [20], owned_sites: [h.8.mlp.c_fc, h.8.mlp.down_proj] }
+  - { ranks: [21], owned_sites: [h.9.mlp.c_fc, h.9.mlp.down_proj] }
+  - { ranks: [22], owned_sites: [h.10.mlp.c_fc, h.10.mlp.down_proj] }
+  - { ranks: [23], owned_sites: [h.11.mlp.c_fc, h.11.mlp.down_proj] }
+pool_b_ranks: [24, 25, 26, 27, 28, 29, 30, 31]

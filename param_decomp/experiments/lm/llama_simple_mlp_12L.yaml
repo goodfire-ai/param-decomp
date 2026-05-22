@@ -1,0 +1,121 @@
+# 2-pool RunConfig emulating Lucius's `p-d6ec3156` (StochReconLayer coeff 18 variant).
+# Pretrained target: `goodfire/spd/runs/t-f99617bb` — LlamaSimpleMLP-12L on pile.
+#
+# Deviation from p-d6ec3156: no grad clipping on components optimizer (Lucius
+# had 0.01). Everything else matches.
+#
+# Deliberate change: CI fn shrunk to ~14M params (~10× avg per-site *target*
+# weight count of ~1.18M; not 10× U+V which would be way too big) vs the
+# original 384M (d=2048, blocks=8, heads=16, mlp=8192). Depth preserved at
+# n_blocks=8; width shrunk. Faster step — whole point of the 2-pool path.
+driver_path: param_decomp.experiments.lm.experiment:Driver
+pd:
+  seed: 0
+  n_mask_samples: 1
+  ci_config:
+    mode: global
+    fn_type: global_shared_transformer
+    hidden_dims: null
+    simple_transformer_ci_cfg:
+      d_model: 384
+      n_blocks: 8
+      mlp_hidden_dim:
+      - 1536
+      attn_config:
+        n_heads: 6
+        max_len: 512
+        rope_base: 10000.0
+  sampling: continuous
+  sigmoid_type: leaky_hard
+  module_info:
+  - module_pattern: h.*.mlp.c_fc
+    C: 3072
+  - module_pattern: h.*.mlp.down_proj
+    C: 3584
+  - module_pattern: h.*.attn.q_proj
+    C: 512
+  - module_pattern: h.*.attn.k_proj
+    C: 512
+  - module_pattern: h.*.attn.v_proj
+    C: 1024
+  - module_pattern: h.*.attn.o_proj
+    C: 1024
+  identity_module_info: null
+  use_delta_component: true
+  components_optimizer:
+    lr_schedule:
+      start_val: 3.0e-04
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+    grad_clip_norm: null
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+  steps: 400000
+  batch_size: 32
+  faithfulness_warmup_steps: 400
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+    FaithfulnessLoss:
+      coeff: 1.0e+07
+    ImportanceMinimalityLoss:
+      coeff: 1.0e-04
+      pnorm: 2.0
+      beta: 0.5
+      p_anneal_start_frac: 0.0
+      p_anneal_final_p: 0.4
+      p_anneal_end_frac: 1.0
+      eps: 1.0e-12
+    StochasticReconLayerwiseLoss:
+      coeff: 18.0
+    PersistentPGDReconLoss:
+      coeff: 0.5
+      optimizer:
+        type: adam
+        beta1: 0.5
+        beta2: 0.99
+        eps: 1.0e-08
+        lr_schedule:
+          start_val: 0.01
+          warmup_pct: 0.025
+          final_val_frac: 1.0
+          fn_type: constant
+      scope:
+        type: per_batch_per_position
+      use_sigmoid_parameterization: false
+      n_warmup_steps: 3
+      n_samples: 1
+logging:
+  train_log_freq: 200
+  eval_freq: 100000   # 2-pool path doesn't do eval yet — effectively disabled
+  slow_eval_freq: 100000
+  slow_eval_on_first_step: false
+  n_eval_steps: 1
+  eval_batch_size: 64
+  save_freq: null
+  eval_metrics: {}
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null
+target:
+  model_class: param_decomp.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
+  model_name: goodfire/spd/runs/t-f99617bb
+  model_path: null
+  output_extract: 0
+data:
+  tokenizer_name: EleutherAI/gpt-neox-20b
+  max_seq_len: 512
+  buffer_size: 1000
+  dataset_name: danbraunai/pile-uncopyrighted-tok-shuffled
+  column_name: input_ids
+  train_split: train
+  eval_split: val
+  shuffle_each_epoch: true
+  is_tokenized: true
+  streaming: true

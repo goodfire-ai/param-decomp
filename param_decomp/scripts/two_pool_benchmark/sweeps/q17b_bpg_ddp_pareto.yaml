@@ -1,0 +1,39 @@
+# Blocks-per-group vs DDP Pareto at the b=64 s=2048 goal envelope.
+#
+# Same total pool-A GPU count, different sharding of layers vs batch:
+# at 224 pool-A ranks (= 232 with pool_b=8) → bpg/ddp pairs (1/8, 2/16, 4/32).
+# At 112 pool-A ranks (= 120 with pool_b=8) → bpg/ddp pairs (1/4, 2/8, 4/16).
+#
+# Each step doubling bpg → 2x sites/rank (more replicated state) but doubles
+# ddp → half b_local (less activation memory).
+#
+# Anchors we already have:
+#   bpg=1 ddp=4 at 120 GPU = 112 GB pool A / 6603 ms (32170)
+#   bpg=1 ddp=8 at 232 GPU =  73 GB pool A / 4190 ms (32175)
+#
+# Predictions: at small CI (d=128/n=2), the resident-cost doubling is trivial
+# (~MBs), so each bpg step should ~halve pool A memory at fixed GPU count.
+# Wall-clock probably worsens as comm cost grows with higher DDP.
+name_prefix: q17b-bpgddp
+model:
+  name: Qwen/Qwen3-1.7B-Base
+  n_layers: 28
+  vocab_size: 151936
+runtime:
+  qos: null
+  time: "00:30:00"
+  wandb_project: param-decomp
+defaults:
+  batch: 64
+  seq: 2048
+  steps: 30
+  seed: 0
+  ci: {d: 128, n_blocks: 2}
+grid:
+  topology:
+    # 232-GPU constant (other two anchors at bpg=1 ddp=8 already done).
+    - {grouping: fused, ddp: 16, blocks_per_group: 2}
+    - {grouping: fused, ddp: 32, blocks_per_group: 4}
+    # 120-GPU constant (bpg=1 ddp=4 already done as 32170).
+    - {grouping: fused, ddp: 8,  blocks_per_group: 2}
+    - {grouping: fused, ddp: 16, blocks_per_group: 4}

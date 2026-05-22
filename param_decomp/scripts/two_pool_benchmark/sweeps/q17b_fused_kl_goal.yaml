@@ -1,0 +1,20 @@
+# Goal validation for the fused KL kernel: can we hit b=64 s=2048?
+# Old-path data: 1block-4ddp b=64 s=1024 = 132 GB pool A.
+# Predict new path: ~50-80 GB at b=64 s=1024, ~100-160 GB at b=64 s=2048.
+name_prefix: q17b-fkl
+model:
+  name: Qwen/Qwen3-1.7B-Base
+  n_layers: 28
+  vocab_size: 151936
+runtime:
+  qos: null
+  time: "00:30:00"
+  wandb_project: param-decomp
+defaults:
+  batch: 64
+  steps: 30
+  seed: 0
+  ci: {d: 128, n_blocks: 2}
+  topology: {grouping: fused, ddp: 4}
+grid:
+  seq: [1024, 2048]

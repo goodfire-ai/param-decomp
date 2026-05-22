@@ -284,6 +284,45 @@ class TargetLayerConfig:
     C: int
 
 
+class LayerwiseTransformerCiFn(nn.Module):
+    """Per-site CI fn using the same transformer/attention architecture as
+    `GlobalSharedTransformerCiFn`, but dedicated to a single target site.
+
+    Each pool-A rank instantiates one of these per owned site (so CI fn params
+    + optimizer state live only on the ranks that need them, no 112x replication
+    of the global variant). Presents the standard single-tensor in/out interface
+    that `LayerwiseCiFnWrapper` expects.
+    """
+
+    def __init__(
+        self,
+        site_name: str,
+        target_layer_config: "TargetLayerConfig",
+        d_model: int,
+        n_blocks: int,
+        n_heads: int,
+        mlp_hidden_dims: list[int] | None,
+        max_len: int,
+        rope_base: float,
+    ):
+        super().__init__()
+        self._site_name = site_name
+        self._inner = GlobalSharedTransformerCiFn(
+            target_model_layer_configs={site_name: target_layer_config},
+            d_model=d_model,
+            n_layers=n_blocks,
+            n_heads=n_heads,
+            mlp_hidden_dims=mlp_hidden_dims,
+            max_len=max_len,
+            rope_base=rope_base,
+        )
+
+    @override
+    def forward(self, input_acts: Float[Tensor, "... d_in"]) -> Float[Tensor, "... C"]:
+        out = self._inner({self._site_name: input_acts})
+        return out[self._site_name]
+
+
 class GlobalSharedTransformerCiFn(nn.Module):
     """Global CI function that projects concatenated activations and attends over sequence."""
 

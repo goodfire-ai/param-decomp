@@ -1,0 +1,110 @@
+driver_path: param_decomp.experiments.lm.experiment:Driver
+pd:
+  seed: 0
+  n_mask_samples: 1
+  ci_config:
+    mode: global
+    fn_type: global_shared_transformer
+    hidden_dims: null
+    simple_transformer_ci_cfg:
+      d_model: 128
+      n_blocks: 2
+      mlp_hidden_dim:
+      - 512
+      attn_config:
+        n_heads: 4
+        max_len: 2048
+        rope_base: 10000.0
+  sampling: continuous
+  sigmoid_type: leaky_hard
+  module_info:
+  - module_pattern: model.layers.*.self_attn.q_proj
+    C: 32
+  - module_pattern: model.layers.*.self_attn.k_proj
+    C: 32
+  - module_pattern: model.layers.*.self_attn.v_proj
+    C: 32
+  - module_pattern: model.layers.*.self_attn.o_proj
+    C: 32
+  - module_pattern: model.layers.*.mlp.gate_proj
+    C: 32
+  - module_pattern: model.layers.*.mlp.up_proj
+    C: 32
+  - module_pattern: model.layers.*.mlp.down_proj
+    C: 32
+  identity_module_info: null
+  use_delta_component: true
+  components_optimizer:
+    lr_schedule:
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+      final_val_frac: 1.0
+      fn_type: constant
+    grad_clip_norm: null
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+      final_val_frac: 1.0
+      fn_type: constant
+  steps: 150
+  batch_size: 8
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+    FaithfulnessLoss:
+      coeff: 1.0e+06
+    ImportanceMinimalityLoss:
+      coeff: 1.0e-04
+      pnorm: 1.0
+      beta: 0.5
+      p_anneal_start_frac: 0.0
+      p_anneal_final_p: 1.0
+      p_anneal_end_frac: 1.0
+      eps: 1.0e-12
+    StochasticReconLayerwiseLoss:
+      coeff: 0.5
+    PersistentPGDReconLoss:
+      coeff: 0.5
+      optimizer:
+        type: sign
+        lr_schedule:
+          start_val: 0.01
+          warmup_pct: 0.0
+          final_val_frac: 1.0
+          fn_type: constant
+      scope:
+        type: per_batch_per_position
+      use_sigmoid_parameterization: false
+      n_warmup_steps: 3
+      n_samples: 1
+logging:
+  train_log_freq: 25
+  eval_freq: 100000   # 2-pool path doesn't do eval yet — effectively disabled
+  slow_eval_freq: 100000
+  slow_eval_on_first_step: false
+  n_eval_steps: 1
+  eval_batch_size: 8
+  save_freq: null
+  eval_metrics: {}
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null
+target:
+  model_class: transformers.AutoModelForCausalLM
+  model_name: Qwen/Qwen3-0.6B-Base
+  model_path: null
+  output_extract: logits
+data:
+  tokenizer_name: Qwen/Qwen3-0.6B-Base
+  max_seq_len: 2048
+  buffer_size: 1000
+  dataset_name: /mnt/polished-lake/home/oli/datasets/pile-qwen-tok-2048
+  column_name: input_ids
+  train_split: train
+  eval_split: train
+  shuffle_each_epoch: true
+  is_tokenized: true
+  streaming: false

@@ -1,0 +1,29 @@
+# Clean fused-KL ablation: same (batch, seq, ci, topology) point with use_fused_kl
+# True vs False. Tests whether the chunked Python KL kernel is doing real work
+# beyond what DDP-as-activation-lever achieves on its own.
+#
+# Hypothesis (user): with high enough DDP, the topology lever alone gives
+# similar memory headroom as the fused kernel, and might be wall-clock faster.
+#
+# Reference: 1block-4ddp b=64 s=2048 fused = 112 GB pool A / 6601 ms (32170).
+# Prediction unfused: ~264 GB pool A → OOM at 4ddp. So this ablation needs
+# higher DDP. At 1block-8ddp s=2048 b=64, predict ~165 GB pool A unfused (cliff).
+name_prefix: q17b-abl
+model:
+  name: Qwen/Qwen3-1.7B-Base
+  n_layers: 28
+  vocab_size: 151936
+runtime:
+  qos: null
+  time: "00:30:00"
+  wandb_project: param-decomp
+defaults:
+  batch: 64
+  seq: 2048
+  steps: 30
+  seed: 0
+  ci: {d: 128, n_blocks: 2}
+grid:
+  topology:
+    - {grouping: fused, ddp: 8, use_fused_kl: true}    # baseline (fused KL on, the new norm)
+    - {grouping: fused, ddp: 8, use_fused_kl: false}   # ablation: DDP alone

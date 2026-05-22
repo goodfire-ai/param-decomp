@@ -1,0 +1,24 @@
+# Batch × DDP Pareto sweep on Qwen3-1.7B with per-site CI fn.
+# Maps the activation-bound regime: more DDP shrinks per-rank activations
+# linearly while resident V/U + per-site CI fn params stay at ~1 block / rank.
+name_prefix: q17b
+model:
+  name: Qwen/Qwen3-1.7B-Base
+  n_layers: 28
+  vocab_size: 151936
+runtime:
+  qos: opportunistic
+  time: "00:25:00"
+  wandb_project: param-decomp
+defaults:
+  seq: 1024
+  steps: 30
+  seed: 0
+  ci: {d: 128, n_blocks: 2}
+grid:
+  batch: [8, 16, 32, 64]
+  topology:
+    - {grouping: fused, ddp: 1}
+    - {grouping: fused, ddp: 2}
+    - {grouping: fused, ddp: 4}
+    - {grouping: fused, ddp: 8}
