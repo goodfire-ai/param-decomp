@@ -8,6 +8,8 @@ lists and pass them directly to `optimize(eval_metrics=...)`.
 from typing import Any
 
 from param_decomp.metrics.base import Metric
+from param_decomp.metrics.pgd_masked_recon import PGDReconLoss
+from param_decomp.metrics.stochastic_hidden_acts_recon import StochasticHiddenActsReconLoss
 from param_decomp_lab.eval_metrics.attn_patterns_recon_loss import (
     CIMaskedAttnPatternsReconLoss,
     StochasticAttnPatternsReconLoss,
@@ -34,7 +36,9 @@ EVAL_METRICS: dict[str, type[Metric[Any]]] = {
         ComponentActivationDensity,
         IdentityCIError,
         PermutedCIPlots,
+        PGDReconLoss,
         StochasticAttnPatternsReconLoss,
+        StochasticHiddenActsReconLoss,
         UVPlots,
     )
 }
