@@ -9,7 +9,10 @@ import numpy as np
 import torch
 from jaxtyping import Float, Int
 
-from param_decomp_lab.clustering.consts import (
+from param_decomp_lab.clustering.math.merge_distances import compute_distances
+from param_decomp_lab.clustering.math.merge_matrix import BatchedGroupMerge, GroupMerge
+from param_decomp_lab.clustering.merge_config import MergeConfig
+from param_decomp_lab.clustering.types import (
     ComponentLabels,
     DistancesArray,
     DistancesMethod,
@@ -17,9 +20,6 @@ from param_decomp_lab.clustering.consts import (
     MergesArray,
     SaveableObject,
 )
-from param_decomp_lab.clustering.math.merge_distances import compute_distances
-from param_decomp_lab.clustering.math.merge_matrix import BatchedGroupMerge, GroupMerge
-from param_decomp_lab.clustering.merge_config import MergeConfig
 
 
 @dataclass(frozen=True)

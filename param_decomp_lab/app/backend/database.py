@@ -19,7 +19,6 @@ from typing import Literal
 import torch
 from pydantic import BaseModel
 
-from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.app.backend.compute import Edge, Node
 from param_decomp_lab.app.backend.optim_cis import (
     CELossConfig,
@@ -28,6 +27,7 @@ from param_decomp_lab.app.backend.optim_cis import (
     MaskType,
     PositionalLossConfig,
 )
+from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 
 GraphType = Literal["standard", "optimized", "manual"]
 

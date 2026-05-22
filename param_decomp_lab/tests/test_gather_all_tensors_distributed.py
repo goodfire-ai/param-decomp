@@ -16,13 +16,12 @@ from pathlib import Path
 import pytest
 import torch
 
-from param_decomp.utils.distributed_utils import (
-    cleanup_distributed,
+from param_decomp.distributed import (
     gather_all_tensors,
     get_distributed_state,
-    init_distributed,
     sync_across_processes,
 )
+from param_decomp_lab.utils.distributed import cleanup_distributed, init_distributed
 
 
 def _test_gather_identical_shapes():

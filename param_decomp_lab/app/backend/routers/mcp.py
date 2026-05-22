@@ -24,7 +24,6 @@ from pydantic import BaseModel
 
 from param_decomp.log import logger
 from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
-from param_decomp.utils.distributed_utils import get_device
 from param_decomp_lab.app.backend.compute import (
     compute_ci_only,
     compute_prompt_attributions_optimized,
@@ -36,6 +35,7 @@ from param_decomp_lab.app.backend.routers.graphs import _build_out_probs
 from param_decomp_lab.app.backend.routers.pretrain_info import _get_pretrain_info
 from param_decomp_lab.app.backend.state import StateManager
 from param_decomp_lab.harvest import analysis
+from param_decomp_lab.utils.distributed import get_device
 
 router = APIRouter(tags=["mcp"])
 

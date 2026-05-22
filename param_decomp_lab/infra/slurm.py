@@ -14,7 +14,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from param_decomp.settings import REPO_ROOT, SBATCH_SCRIPTS_DIR, SLURM_LOGS_DIR
+from param_decomp_lab.infra.settings import REPO_ROOT, SBATCH_SCRIPTS_DIR, SLURM_LOGS_DIR
 
 # Bash expressions that uniquely identify a job invocation, used to name per-job /tmp
 # workspaces. Exposed so other modules building SLURM commands (e.g. multi-node DDP

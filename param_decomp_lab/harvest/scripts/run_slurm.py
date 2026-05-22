@@ -13,8 +13,11 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from param_decomp.log import logger
-from param_decomp.utils.git_utils import create_git_snapshot
-from param_decomp.utils.slurm import (
+from param_decomp_lab.harvest.config import HarvestSlurmConfig
+from param_decomp_lab.harvest.scripts import run_merge as harvest_merge
+from param_decomp_lab.harvest.scripts import run_worker as harvest_worker
+from param_decomp_lab.infra.git import create_git_snapshot
+from param_decomp_lab.infra.slurm import (
     SlurmArrayConfig,
     SlurmConfig,
     SubmitResult,
@@ -22,9 +25,6 @@ from param_decomp.utils.slurm import (
     generate_script,
     submit_slurm_job,
 )
-from param_decomp_lab.harvest.config import HarvestSlurmConfig
-from param_decomp_lab.harvest.scripts import run_merge as harvest_merge
-from param_decomp_lab.harvest.scripts import run_worker as harvest_worker
 
 
 @dataclass

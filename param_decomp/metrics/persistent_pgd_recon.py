@@ -13,6 +13,7 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 
+from param_decomp.distributed import all_reduce
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.hidden_acts_recon_loss import (
@@ -26,7 +27,6 @@ from param_decomp.metrics.persistent_pgd import (
     PPGDSources,
     get_ppgd_mask_infos,
 )
-from param_decomp.utils.distributed_utils import all_reduce
 
 
 class _PersistentPGDReconBase[

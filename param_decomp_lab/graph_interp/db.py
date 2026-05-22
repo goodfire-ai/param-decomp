@@ -3,9 +3,9 @@
 import sqlite3
 from pathlib import Path
 
-from param_decomp.utils.sqlite import open_nfs_sqlite
 from param_decomp_lab.autointerp.db import DONE_MARKER
 from param_decomp_lab.graph_interp.schemas import LabelResult, PromptEdge
+from param_decomp_lab.infra.sqlite import open_nfs_sqlite
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS output_labels (

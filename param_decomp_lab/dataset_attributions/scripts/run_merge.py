@@ -7,9 +7,9 @@ Usage:
 """
 
 from param_decomp.log import logger
-from param_decomp.utils.wandb_utils import parse_wandb_run_path
-from param_decomp_lab.dataset_attributions.harvest import merge_attributions
+from param_decomp_lab.dataset_attributions.pipeline import merge_attributions
 from param_decomp_lab.dataset_attributions.repo import get_attributions_subrun_dir
+from param_decomp_lab.infra.wandb import parse_wandb_run_path
 
 
 def main(

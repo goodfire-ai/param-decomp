@@ -9,11 +9,13 @@ Caller builds:
     - `target_model`: the `nn.Module` whose weights you want to decompose.
     - `train_loader` / `eval_loader`: dataloaders. `optimize` re-iters them with
       `loop_dataloader`, so finite loaders restart.
-    - `run_batch`: `(model, batch) -> Tensor` — how a forward pass is invoked.
-      Pre-built helpers: `run_batch_passthrough`, `run_batch_first_element`,
-      `make_run_batch(output_extract)` in `param_decomp.models.batch_and_loss_fns`.
-    - `reconstruction_loss`: `(pred, target) -> (loss, n_examples)`. Helpers:
-      `recon_loss_mse`, `recon_loss_kl` in the same module.
+    - `run_batch`: callable matching the `RunBatch` Protocol, `(model, batch) -> Tensor`.
+      Write your own, or use one of the pre-built helpers shipped in
+      `param_decomp_lab.models.batch_and_loss_fns`
+      (`run_batch_passthrough`, `run_batch_first_element`, `make_run_batch`).
+    - `reconstruction_loss`: callable matching the `ReconstructionLoss` Protocol,
+      `(pred, target) -> (loss, n_examples)`. The lab ships `recon_loss_mse` and
+      `recon_loss_kl` in the same module.
     - `pd_config`: `PDConfig` — the PD algorithm spec (CI fn, loss-metric mix,
       module patterns, optimizers, schedules, seed, tied weights).
     - `runtime_config`: `RuntimeConfig` — substrate (device, autocast, dp).

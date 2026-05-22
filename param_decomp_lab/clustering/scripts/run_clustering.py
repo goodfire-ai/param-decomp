@@ -26,9 +26,7 @@ from matplotlib.figure import Figure
 from torch import Tensor
 from wandb.sdk.wandb_run import Run
 
-from param_decomp.utils.general_utils import replace_pydantic_model
 from param_decomp_lab.clustering.clustering_run_config import ClusteringRunConfig
-from param_decomp_lab.clustering.consts import ClusterCoactivationShaped, ComponentLabels
 from param_decomp_lab.clustering.math.merge_matrix import GroupMerge
 from param_decomp_lab.clustering.math.semilog import semilog
 from param_decomp_lab.clustering.memberships import ProcessedMemberships
@@ -42,7 +40,9 @@ from param_decomp_lab.clustering.plotting.merge import (
 )
 from param_decomp_lab.clustering.scripts.run_harvest import harvest as harvest_fn
 from param_decomp_lab.clustering.scripts.run_merge import merge
-from param_decomp_lab.clustering.wandb_tensor_info import wandb_log_tensor
+from param_decomp_lab.clustering.types import ClusterCoactivationShaped, ComponentLabels
+from param_decomp_lab.infra.pydantic import replace_pydantic_model
+from param_decomp_lab.infra.wandb_tensor_info import wandb_log_tensor
 
 os.environ["WANDB_QUIET"] = "true"
 

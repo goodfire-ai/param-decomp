@@ -8,14 +8,14 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
-from param_decomp_lab.clustering.consts import (
+from param_decomp_lab.clustering.formatting import format_scientific_latex
+from param_decomp_lab.clustering.math.merge_matrix import GroupMerge
+from param_decomp_lab.clustering.merge_history import MergeHistory
+from param_decomp_lab.clustering.types import (
     ClusterCoactivationShaped,
     ComponentLabels,
     DistancesArray,
 )
-from param_decomp_lab.clustering.math.merge_matrix import GroupMerge
-from param_decomp_lab.clustering.merge_history import MergeHistory
-from param_decomp_lab.clustering.util import format_scientific_latex
 
 DEFAULT_PLOT_CONFIG: dict[str, Any] = dict(
     figsize=(16, 10),

@@ -14,8 +14,10 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from param_decomp.log import logger
-from param_decomp.utils.git_utils import create_git_snapshot
-from param_decomp.utils.slurm import (
+from param_decomp_lab.dataset_attributions.config import AttributionsSlurmConfig
+from param_decomp_lab.dataset_attributions.scripts import run_merge, run_worker
+from param_decomp_lab.infra.git import create_git_snapshot
+from param_decomp_lab.infra.slurm import (
     SlurmArrayConfig,
     SlurmConfig,
     SubmitResult,
@@ -23,9 +25,7 @@ from param_decomp.utils.slurm import (
     generate_script,
     submit_slurm_job,
 )
-from param_decomp.utils.wandb_utils import wandb_path_to_url
-from param_decomp_lab.dataset_attributions.config import AttributionsSlurmConfig
-from param_decomp_lab.dataset_attributions.scripts import run_merge, run_worker
+from param_decomp_lab.infra.wandb import wandb_path_to_url
 
 
 @dataclass

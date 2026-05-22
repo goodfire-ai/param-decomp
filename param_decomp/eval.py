@@ -1,6 +1,5 @@
-"""Evaluation utilities."""
+"""Evaluation output helpers."""
 
-from collections.abc import Callable, Iterator
 from typing import Any
 
 from PIL import Image
@@ -9,8 +8,7 @@ from torch.types import Number
 from wandb.plot.custom_chart import CustomChart
 
 from param_decomp.metrics.base import Metric
-from param_decomp.metrics.context import MetricContext
-from param_decomp.utils.general_utils import combine_nonoverlapping_dicts
+from param_decomp.torch_helpers import combine_nonoverlapping_dicts
 
 MetricOutType = dict[str, str | Number | Image.Image | CustomChart]
 
@@ -45,21 +43,8 @@ def _clean_metric_output(
     return computed
 
 
-def evaluate(
-    instances: dict[str, Metric[Any]],
-    eval_iterator: Iterator[Any],
-    ctx_builder: Callable[[Any], MetricContext],
-    n_eval_steps: int,
-    slow_step: bool,
-) -> MetricOutType:
-    """Run evaluation across `n_eval_steps` batches and return a flattened metrics map."""
-    active = [m for m in instances.values() if not (m.slow and not slow_step)]
-    for m in active:
-        m.reset()
-    for _ in range(n_eval_steps):
-        ctx = ctx_builder(next(eval_iterator))
-        for m in active:
-            m.update(ctx)
+def collect_metric_outputs(active: list[Metric[Any]]) -> MetricOutType:
+    """Compute and flatten each metric's output into a single key→value map."""
     outputs: MetricOutType = {}
     for m in active:
         cleaned = _clean_metric_output(

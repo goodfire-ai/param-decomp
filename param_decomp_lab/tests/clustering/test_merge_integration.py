@@ -3,7 +3,6 @@
 import torch
 
 from param_decomp_lab.clustering.compute_costs import recompute_coacts_merge_pair_memberships
-from param_decomp_lab.clustering.consts import ComponentLabels, MergePair
 from param_decomp_lab.clustering.math.merge_matrix import GroupMerge
 from param_decomp_lab.clustering.merge import merge_iteration_memberships
 from param_decomp_lab.clustering.merge_config import MergeConfig
@@ -12,6 +11,7 @@ from param_decomp_lab.clustering.sample_membership import (
     compute_coactivation_matrix,
     memberships_to_sample_component_csr,
 )
+from param_decomp_lab.clustering.types import ComponentLabels, MergePair
 
 
 def _activations_to_memberships(

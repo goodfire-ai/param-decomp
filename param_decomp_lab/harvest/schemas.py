@@ -7,7 +7,7 @@ from jaxtyping import Bool, Float, Int
 from pydantic import BaseModel
 from torch import Tensor
 
-from param_decomp.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 
 # Base directory for harvest data
 HARVEST_DATA_DIR = PARAM_DECOMP_OUT_DIR / "harvest"

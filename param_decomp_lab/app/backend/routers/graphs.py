@@ -21,7 +21,6 @@ from param_decomp.log import logger
 from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.routing import SamplingType
-from param_decomp.utils.distributed_utils import get_device
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.app.backend.compute import (
     DEFAULT_EVAL_PGD_CONFIG,
@@ -55,6 +54,7 @@ from param_decomp_lab.app.backend.optim_cis import (
 from param_decomp_lab.app.backend.schemas import OutputProbability
 from param_decomp_lab.app.backend.utils import log_errors
 from param_decomp_lab.topology import TransformerTopology
+from param_decomp_lab.utils.distributed import get_device
 
 NON_INTERVENTABLE_LAYERS = {"embed", "output"}
 

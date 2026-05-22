@@ -13,7 +13,7 @@ from transformers import LlamaConfig as HFLlamaConfig
 from transformers import LlamaForCausalLM
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.utils.distributed_utils import log0
+from param_decomp_lab.utils.distributed import log0
 
 # Suppress issues with transformers library types, nn.Module buffer access, and @torch.no_grad() decorator
 # pyright: reportAttributeAccessIssue=false, reportIndexIssue=false, reportArgumentType=false, reportOperatorIssue=false, reportUntypedFunctionDecorator=false

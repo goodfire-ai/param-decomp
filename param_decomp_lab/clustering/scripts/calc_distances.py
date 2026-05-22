@@ -20,11 +20,11 @@ from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
 
 from param_decomp.log import logger
-from param_decomp_lab.clustering.consts import DistancesArray, DistancesMethod
 from param_decomp_lab.clustering.math.merge_distances import compute_distances
 from param_decomp_lab.clustering.merge_history import MergeHistory, MergeHistoryEnsemble
 from param_decomp_lab.clustering.paths import clustering_ensemble_dir, clustering_run_dir
 from param_decomp_lab.clustering.plotting.merge import plot_dists_distribution
+from param_decomp_lab.clustering.types import DistancesArray, DistancesMethod
 
 # Set spawn method for CUDA compatibility with multiprocessing
 # Must be done before any CUDA operations

@@ -42,7 +42,7 @@ python -m param_decomp_lab.clustering.scripts.run_clustering --config <clusterin
 
 ## Data Storage
 
-Data is stored in `PARAM_DECOMP_OUT_DIR/clustering/` (see `param_decomp/settings.py`):
+Data is stored in `PARAM_DECOMP_OUT_DIR/clustering/` (see `param_decomp_lab/infra/settings.py`):
 
 ```
 PARAM_DECOMP_OUT_DIR/clustering/
@@ -116,7 +116,7 @@ MergeHistoryEnsemble      # Collection of histories for distance analysis
 GroupMerge                # Current group assignments (component -> group mapping)
 ```
 
-### Type Aliases (`consts.py`)
+### Type Aliases (`types.py`)
 
 ```python
 ActivationsTensor         # Float[Tensor, "samples n_components"]
@@ -143,7 +143,7 @@ python -m param_decomp_lab.clustering.scripts.get_cluster_mapping /path/to/clust
 
 ## Run ID Prefixes
 
-Top-level run types use `RUN_TYPE_ABBREVIATIONS` in `param_decomp/utils/run_utils.py`: `p` (param_decomp), `t` (train), `c` (clustering/runs), `e` (clustering/ensembles), `ch` (clustering/harvests).
+Top-level run types use `RUN_TYPE_ABBREVIATIONS` in `param_decomp_lab/infra/run_files.py`: `p` (param_decomp), `t` (train), `c` (clustering/runs), `e` (clustering/ensembles), `ch` (clustering/harvests).
 
 Subrun prefixes are **not** centralized yet — each module hardcodes its own in its `repo.py`: `h-` (harvest), `a-` (autointerp), `da-` (dataset_attributions), `ti-` (graph_interp). These should eventually be unified into `RUN_TYPE_ABBREVIATIONS`.
 

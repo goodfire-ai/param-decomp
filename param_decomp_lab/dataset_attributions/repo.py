@@ -9,8 +9,8 @@ Layout: dataset_attributions/<run_id>/da-YYYYMMDD_HHMMSS/dataset_attributions.pt
 
 from pathlib import Path
 
-from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.dataset_attributions.storage import DatasetAttributionStorage
+from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 
 DATASET_ATTRIBUTIONS_DIR = PARAM_DECOMP_OUT_DIR / "dataset_attributions"
 

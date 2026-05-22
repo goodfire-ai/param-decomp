@@ -20,7 +20,7 @@ from param_decomp.metrics.pgd_utils import interpolate_pgd_mask
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
 from param_decomp.models.components import make_mask_infos
 from param_decomp.routing import SamplingType
-from param_decomp.utils.general_utils import bf16_autocast
+from param_decomp.torch_helpers import bf16_autocast
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.app.backend.optim_cis import (
     AdvPGDConfig,
@@ -35,6 +35,7 @@ from param_decomp_lab.app.backend.optim_cis import (
     optimize_ci_values_batched,
     run_adv_pgd,
 )
+from param_decomp_lab.models.component_model_utils import get_all_component_acts
 from param_decomp_lab.topology import TransformerTopology
 
 
@@ -415,7 +416,7 @@ def compute_edges_from_ci(
 
     t0 = time.perf_counter()
     node_ci_vals = extract_node_ci_vals(ci_lower_leaky, topology)
-    component_acts = model.get_all_component_acts(pre_weight_acts)
+    component_acts = get_all_component_acts(model, pre_weight_acts)
     node_subcomp_acts = extract_node_subcomp_acts(
         component_acts, ci_threshold=0.0, ci_lower_leaky=ci_lower_leaky, topology=topology
     )
@@ -740,7 +741,7 @@ def compute_ci_only(
             detach_inputs=False,
         )
         target_out_probs = torch.softmax(output_with_cache.output, dim=-1)
-        component_acts = model.get_all_component_acts(output_with_cache.cache)
+        component_acts = get_all_component_acts(model, output_with_cache.cache)
 
     return CIOnlyResult(
         ci_lower_leaky=ci.lower_leaky,

@@ -5,7 +5,7 @@ Reads the `run_meta.yaml` produced by an experiment's `run.py`, dispatches to th
 that returns a fully-loaded `ComponentModel`.
 
 Notebook-only runs (trained via `optimize(...)` without saving a `run_meta.yaml`) reload
-their checkpoint with `ComponentModel.from_checkpoint(...)` directly.
+their checkpoint with `load_component_model_from_checkpoint(...)` directly.
 """
 
 from dataclasses import dataclass
@@ -16,13 +16,14 @@ import yaml
 from torch.utils.data import DataLoader
 
 from param_decomp.configs import PDConfig, RuntimeConfig
+from param_decomp.distributed import DistributedState
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.types import ModelPath
-from param_decomp.utils.distributed_utils import DistributedState
-from param_decomp.utils.run_files import resolve_config_path, resolve_run_files
 from param_decomp_lab.experiments import EXPERIMENTS
 from param_decomp_lab.experiments.spec import ExperimentSpec
 from param_decomp_lab.experiments.utils import RUN_META_FILENAME
+from param_decomp_lab.infra.paths import ModelPath
+from param_decomp_lab.infra.run_files import resolve_config_path, resolve_run_files
+from param_decomp_lab.models.component_model_utils import load_component_model_from_checkpoint
 
 
 @dataclass(frozen=True)
@@ -53,7 +54,7 @@ class SavedRun:
     """A completed PD run resolved to local paths + parsed meta + the matching `ExperimentSpec`.
 
     Always constructed via :meth:`from_path`. Notebook-only runs (no `run_meta.yaml`) reload
-    checkpoints with `ComponentModel.from_checkpoint(...)` directly.
+    checkpoints with `load_component_model_from_checkpoint(...)` directly.
     """
 
     path: Path
@@ -145,7 +146,7 @@ class SavedRun:
 
     def load_model(self) -> ComponentModel:
         target_model = self.load_target()
-        return ComponentModel.from_checkpoint(
+        return load_component_model_from_checkpoint(
             ci_config=self.pd_config.ci_config,
             sigmoid_type=self.pd_config.sigmoid_type,
             module_info=self.pd_config.module_info,

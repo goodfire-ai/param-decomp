@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from param_decomp.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 
 HARVEST_ROOT = PARAM_DECOMP_OUT_DIR / "harvest"
 OUT_DIR = PARAM_DECOMP_OUT_DIR / "intruder_comparison"

@@ -23,6 +23,7 @@ from torch import Tensor
 from torch.distributed import ReduceOp
 
 from param_decomp.base_config import BaseConfig
+from param_decomp.distributed import all_reduce, broadcast_tensor
 from param_decomp.metrics.base import LossMetricConfig
 from param_decomp.models.batch_and_loss_fns import ReconstructionLoss
 from param_decomp.models.component_model import ComponentModel
@@ -34,10 +35,8 @@ from param_decomp.routing import (
     UniformKSubsetRoutingConfig,
     get_subset_router,
 )
-from param_decomp.schedule import ScheduleConfig
+from param_decomp.schedule import ScheduleConfig, get_scheduled_value
 from param_decomp.types import Probability
-from param_decomp.utils.distributed_utils import all_reduce, broadcast_tensor
-from param_decomp.utils.general_utils import get_scheduled_value
 
 # --- PPGD config types --------------------------------------------------------------
 

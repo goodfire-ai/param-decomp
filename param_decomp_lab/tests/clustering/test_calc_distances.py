@@ -1,6 +1,6 @@
-from param_decomp_lab.clustering.consts import ComponentLabels
 from param_decomp_lab.clustering.merge_config import MergeConfig
 from param_decomp_lab.clustering.merge_history import MergeHistory, MergeHistoryEnsemble
+from param_decomp_lab.clustering.types import ComponentLabels
 
 
 def test_merge_history_normalization_happy_path():

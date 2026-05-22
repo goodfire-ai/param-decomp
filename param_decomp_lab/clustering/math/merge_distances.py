@@ -5,14 +5,14 @@ from typing import TypeVar
 import numpy as np
 from jaxtyping import Float, Int
 
-from param_decomp_lab.clustering.consts import (
+from param_decomp_lab.clustering.math.matching_dist import matching_dist_np, matching_dist_vec_np
+from param_decomp_lab.clustering.math.perm_invariant_hamming import perm_invariant_hamming_matrix
+from param_decomp_lab.clustering.types import (
     DistancesArray,
     DistancesMethod,
     MergesArray,
     MergesAtIterArray,
 )
-from param_decomp_lab.clustering.math.matching_dist import matching_dist_np, matching_dist_vec_np
-from param_decomp_lab.clustering.math.perm_invariant_hamming import perm_invariant_hamming_matrix
 
 _T = TypeVar("_T")
 _R = TypeVar("_R")

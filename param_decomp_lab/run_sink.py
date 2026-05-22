@@ -20,6 +20,7 @@ The core trainer (`param_decomp.optimize`) accepts anything that satisfies the
 contract.
 """
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,11 +30,37 @@ from PIL import Image
 from tqdm import tqdm
 
 from param_decomp.base_config import BaseConfig
+from param_decomp.distributed import is_main_process
 from param_decomp.log import logger
-from param_decomp.utils.distributed_utils import is_main_process
-from param_decomp.utils.logging_utils import local_log
-from param_decomp.utils.run_utils import save_file
-from param_decomp.utils.wandb_utils import init_wandb, try_wandb
+from param_decomp_lab.infra.run_files import save_file
+from param_decomp_lab.infra.wandb import init_wandb, try_wandb
+
+
+def _local_log(data: dict[str, Any], step: int, out_dir: Path) -> None:
+    """Write metrics + figures from a step to disk."""
+    metrics_file = out_dir / "metrics.jsonl"
+    metrics_file.touch(exist_ok=True)
+
+    fig_dir = out_dir / "figures"
+    fig_dir.mkdir(exist_ok=True)
+
+    metrics_without_images: dict[str, Any] = {}
+    for k, v in data.items():
+        if isinstance(v, Image.Image):
+            filename = f"{k.replace('/', '_')}_{step}.png"
+            v.save(fig_dir / filename)
+            logger.info(f"Saved figure {k} to {fig_dir / filename}")
+        elif isinstance(v, wandb.plot.CustomChart):
+            json_path = fig_dir / f"{k.replace('/', '_')}_{step}.json"
+            payload = {"columns": list(v.table.columns), "data": list(v.table.data), "step": step}
+            with open(json_path, "w") as f:
+                json.dump(payload, f, default=str)
+            logger.info(f"Saved custom chart data {k} to {json_path}")
+        else:
+            metrics_without_images[k] = v
+
+    with open(metrics_file, "a") as f:
+        f.write(json.dumps({"step": step, **metrics_without_images}) + "\n")
 
 
 @dataclass(frozen=True)
@@ -229,7 +256,7 @@ class RunSink:
         local logs use the unsectioned keys.
         """
         if self.out_dir is not None:
-            local_log(metrics, step, self.out_dir)
+            _local_log(metrics, step, self.out_dir)
         if self._wandb_active:
             wandb_metrics = (
                 {f"{section}/{k}": _wandb_value(v) for k, v in metrics.items()}

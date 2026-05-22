@@ -22,8 +22,8 @@ from pathlib import Path
 import fire
 import numpy as np
 
-from param_decomp.utils.wandb_utils import parse_wandb_run_path
 from param_decomp_lab.clustering.merge_history import MergeHistory
+from param_decomp_lab.infra.wandb import parse_wandb_run_path
 
 
 def get_cluster_mapping(

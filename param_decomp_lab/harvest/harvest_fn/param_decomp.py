@@ -6,6 +6,7 @@ from param_decomp_lab.adapters.param_decomp import PDAdapter
 from param_decomp_lab.harvest.config import ParamDecompHarvestConfig
 from param_decomp_lab.harvest.harvest_fn.base import HarvestFn
 from param_decomp_lab.harvest.schemas import HarvestBatch
+from param_decomp_lab.models.component_model_utils import get_all_component_acts
 
 
 class ParamDecompHarvestFn(HarvestFn):
@@ -35,7 +36,7 @@ class ParamDecompHarvestFn(HarvestFn):
             sampling=self._adapter.pd_run.pd_config.sampling,
         ).lower_leaky
 
-        per_layer_acts = model.get_all_component_acts(out.cache)
+        per_layer_acts = get_all_component_acts(model, out.cache)
 
         firings = {layer: ci > self._activation_threshold for layer, ci in ci_dict.items()}
 

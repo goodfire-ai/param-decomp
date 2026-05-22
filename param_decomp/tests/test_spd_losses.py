@@ -5,7 +5,7 @@ import torch.nn as nn
 from jaxtyping import Float
 from torch import Tensor
 
-from param_decomp.ci_config import LayerwiseCiConfig
+from param_decomp.configs import LayerwiseCiConfig, ScheduleConfig
 from param_decomp.metrics.ci_masked_recon_layerwise_loss import (
     ci_masked_recon_layerwise_loss,
 )
@@ -25,15 +25,14 @@ from param_decomp.metrics.stochastic_recon_layerwise_loss import (
 )
 from param_decomp.metrics.stochastic_recon_loss import stochastic_recon_loss
 from param_decomp.metrics.stochastic_recon_subset_loss import stochastic_recon_subset_loss
-from param_decomp.models.batch_and_loss_fns import (
+from param_decomp.models.component_model import ComponentModel
+from param_decomp.module_info import ModulePathInfo
+from param_decomp.routing import UniformKSubsetRoutingConfig
+from param_decomp_lab.models.batch_and_loss_fns import (
     recon_loss_kl,
     recon_loss_mse,
     run_batch_passthrough,
 )
-from param_decomp.models.component_model import ComponentModel
-from param_decomp.routing import UniformKSubsetRoutingConfig
-from param_decomp.schedule import ScheduleConfig
-from param_decomp.utils.module_utils import ModulePathInfo
 
 
 class TinyLinearModel(nn.Module):

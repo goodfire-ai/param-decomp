@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 
 import torch.nn as nn
 
-from param_decomp.types import ModelPath
+from param_decomp_lab.infra.paths import ModelPath
 
 
 class LoadableModule(nn.Module, ABC):

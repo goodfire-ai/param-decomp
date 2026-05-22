@@ -8,7 +8,6 @@ annotations, recall + PMI token stats):
 3. Unification: synthesizes output + input labels into a unified description
 """
 
-from param_decomp.utils.markdown import Md
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.autointerp.config import CANON_RENDERING
 from param_decomp_lab.autointerp.prompt_helpers import (
@@ -20,6 +19,7 @@ from param_decomp_lab.graph_interp.graph_context import RelatedComponent
 from param_decomp_lab.graph_interp.schemas import LabelResult
 from param_decomp_lab.harvest.analysis import TokenPRLift
 from param_decomp_lab.harvest.schemas import ComponentData
+from param_decomp_lab.infra.markdown import Md
 
 LABEL_SCHEMA: dict[str, object] = {
     "type": "object",

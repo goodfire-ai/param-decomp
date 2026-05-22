@@ -6,6 +6,7 @@ from pydantic import Field
 from torch import Tensor
 from torch.distributed import ReduceOp
 
+from param_decomp.distributed import all_reduce
 from param_decomp.metrics.base import LossMetricConfig, Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.models.batch_and_loss_fns import ReconstructionLoss
@@ -15,11 +16,10 @@ from param_decomp.routing import (
     SamplingType,
     SubsetRoutingType,
     UniformKSubsetRoutingConfig,
+    calc_stochastic_component_mask_info,
     get_subset_router,
 )
-from param_decomp.utils.component_utils import calc_stochastic_component_mask_info
-from param_decomp.utils.distributed_utils import all_reduce
-from param_decomp.utils.general_utils import get_obj_device
+from param_decomp.torch_helpers import get_obj_device
 
 
 class StochasticReconSubsetLossConfig(LossMetricConfig):

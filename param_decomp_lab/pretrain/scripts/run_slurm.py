@@ -5,9 +5,9 @@ import sys
 from pathlib import Path
 
 from param_decomp.log import logger
-from param_decomp.settings import DEFAULT_PARTITION_NAME, SLURM_LOGS_DIR
-from param_decomp.utils.run_utils import ExecutionStamp
-from param_decomp.utils.slurm import SlurmConfig, generate_script, submit_slurm_job
+from param_decomp_lab.infra.run_files import ExecutionStamp
+from param_decomp_lab.infra.settings import DEFAULT_PARTITION_NAME, SLURM_LOGS_DIR
+from param_decomp_lab.infra.slurm import SlurmConfig, generate_script, submit_slurm_job
 
 
 def main(

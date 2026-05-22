@@ -12,12 +12,12 @@ import fire
 import torch
 
 from param_decomp.log import logger
-from param_decomp.utils.distributed_utils import get_device
 from param_decomp_lab.adapters import adapter_from_config
 from param_decomp_lab.harvest.config import HarvestConfig
-from param_decomp_lab.harvest.harvest import harvest
 from param_decomp_lab.harvest.harvest_fn import make_harvest_fn
+from param_decomp_lab.harvest.pipeline import harvest
 from param_decomp_lab.harvest.schemas import get_harvest_subrun_dir
+from param_decomp_lab.utils.distributed import get_device
 
 
 def main(

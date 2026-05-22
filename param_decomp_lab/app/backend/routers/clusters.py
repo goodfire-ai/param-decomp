@@ -7,9 +7,9 @@ from fastapi import APIRouter, HTTPException
 from pydantic import ValidationError
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.app.backend.state import StateManager
 from param_decomp_lab.app.backend.utils import log_errors
+from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.topology import TransformerTopology
 
 router = APIRouter(prefix="/api/clusters", tags=["clusters"])

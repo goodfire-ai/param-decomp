@@ -8,20 +8,28 @@ list of eval `Metric` instances themselves, then hand them in.
 
 import gc
 from collections import defaultdict
-from functools import partial
+from collections.abc import Generator
 from typing import Any, cast
 
 import torch
 import torch.nn as nn
 import torch.nn.parallel
+from datasets import IterableDataset
 from jaxtyping import Float
 from torch import Tensor, optim
 from torch.nn.utils import clip_grad_norm_
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
 
 from param_decomp.configs import PDConfig, RuntimeConfig
-from param_decomp.eval import evaluate
+from param_decomp.distributed import (
+    avg_metrics_across_ranks,
+    get_distributed_state,
+    is_main_process,
+    seed_per_rank,
+    sync_across_processes,
+)
+from param_decomp.eval import collect_metric_outputs
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.log import logger
 from param_decomp.metrics.base import LossMetricConfig, Metric
@@ -35,22 +43,65 @@ from param_decomp.models.batch_and_loss_fns import (
     move_batch_to_device,
 )
 from param_decomp.models.component_model import ComponentModel, OutputWithCache
+from param_decomp.module_info import expand_module_patterns
 from param_decomp.run_sink import RunSink
-from param_decomp.utils.data_utils import loop_dataloader
-from param_decomp.utils.distributed_utils import (
-    avg_metrics_across_ranks,
-    get_distributed_state,
-    is_main_process,
-    seed_per_rank,
-    sync_across_processes,
-)
-from param_decomp.utils.general_utils import (
+from param_decomp.schedule import get_scheduled_value
+from param_decomp.torch_helpers import (
     bf16_autocast,
     combine_nonoverlapping_dicts,
-    get_scheduled_value,
+    runtime_cast,
 )
-from param_decomp.utils.logging_utils import get_grad_norms_dict
-from param_decomp.utils.module_utils import expand_module_patterns
+
+
+def loop_dataloader[T](dl: DataLoader[T]) -> Generator[T]:
+    """Loop over a dataloader, resetting the iterator when it is exhausted.
+
+    Ensures that each epoch gets different data, even when using a distributed sampler.
+    """
+    epoch = 0
+    dl_iter = iter(dl)
+    while True:
+        try:
+            yield next(dl_iter)
+        except StopIteration:
+            logger.warning("Dataloader exhausted, resetting iterator.")
+            epoch += 1
+            if isinstance(dl.sampler, DistributedSampler):
+                dl.sampler.set_epoch(epoch)
+            if isinstance(dl.dataset, IterableDataset):
+                dl.dataset.set_epoch(epoch)
+            dl_iter = iter(dl)
+            yield next(dl_iter)
+
+
+def _grad_norms_dict(
+    component_model: ComponentModel, device: torch.device | str
+) -> dict[str, float]:
+    """Per-parameter gradient norms for component params and CI fn params."""
+    out: dict[str, float] = {}
+
+    comp_grad_norm_sq_sum: Float[Tensor, ""] = torch.zeros((), device=device)
+    for target_module_path, component in component_model.components.items():
+        for local_param_name, local_param in component.named_parameters():
+            param_grad = runtime_cast(Tensor, local_param.grad)
+            param_grad_sum_sq = param_grad.pow(2).sum()
+            key = f"components/{target_module_path}.{local_param_name}"
+            out[key] = param_grad_sum_sq.sqrt().item()
+            comp_grad_norm_sq_sum += param_grad_sum_sq
+
+    ci_fn_grad_norm_sq_sum: Float[Tensor, ""] = torch.zeros((), device=device)
+    for local_param_name, local_param in component_model.ci_fn.named_parameters():
+        ci_fn_grad = runtime_cast(Tensor, local_param.grad)
+        ci_fn_grad_sum_sq = ci_fn_grad.pow(2).sum()
+        key = f"ci_fns/{local_param_name}"
+        assert key not in out, f"Key {key} already exists in grad norms log"
+        out[key] = ci_fn_grad_sum_sq.sqrt().item()
+        ci_fn_grad_norm_sq_sum += ci_fn_grad_sum_sq
+
+    out["summary/components"] = comp_grad_norm_sq_sum.sqrt().item()
+    out["summary/ci_fns"] = ci_fn_grad_norm_sq_sum.sqrt().item()
+    out["summary/total"] = (comp_grad_norm_sq_sum + ci_fn_grad_norm_sq_sum).sqrt().item()
+    return out
 
 
 def run_faithfulness_warmup(
@@ -84,7 +135,7 @@ def run_faithfulness_warmup(
     gc.collect()
 
 
-def _build_ctx(
+def _build_metric_args(
     batch: Any,
     *,
     step: int,
@@ -284,18 +335,17 @@ def optimize(
 
         batch_log_data: defaultdict[str, float] = defaultdict(float)
 
-        build_ctx = partial(
-            _build_ctx,
-            step=step,
-            device=device,
-            wrapped_model=wrapped_model,
-            component_model=component_model,
-            config=pd_config,
-            reconstruction_loss=reconstruction_loss,
-        )
-
         with bf16_autocast(enabled=runtime_config.autocast_bf16):
-            ctx = build_ctx(next(train_iterator), is_eval=False)
+            ctx = _build_metric_args(
+                next(train_iterator),
+                step=step,
+                is_eval=False,
+                device=device,
+                wrapped_model=wrapped_model,
+                component_model=component_model,
+                config=pd_config,
+                reconstruction_loss=reconstruction_loss,
+            )
             losses = compute_losses(loss_instances, ctx)
 
         total_loss = torch.zeros((), device=device)
@@ -321,7 +371,7 @@ def optimize(
             avg_metrics = avg_metrics_across_ranks(batch_log_data, device=device)
             batch_log_data = cast(defaultdict[str, float], avg_metrics)
 
-            grad_norms = get_grad_norms_dict(component_model, device)
+            grad_norms = _grad_norms_dict(component_model, device)
             combine_nonoverlapping_dicts(
                 batch_log_data, {f"grad_norms/{k}": v for k, v in grad_norms.items()}
             )
@@ -339,13 +389,24 @@ def optimize(
         # --- Evaluation --- #
         if sink.should_eval(step):
             with torch.no_grad(), bf16_autocast(enabled=runtime_config.autocast_bf16):
-                metrics = evaluate(
-                    instances=all_instances,
-                    eval_iterator=eval_iterator,
-                    ctx_builder=partial(build_ctx, is_eval=True),
-                    n_eval_steps=sink.n_eval_steps,
-                    slow_step=sink.should_run_slow_eval(step),
-                )
+                slow_step = sink.should_run_slow_eval(step)
+                active = [m for m in all_instances.values() if not (m.slow and not slow_step)]
+                for m in active:
+                    m.reset()
+                for _ in range(sink.n_eval_steps):
+                    ctx = _build_metric_args(
+                        next(eval_iterator),
+                        step=step,
+                        is_eval=True,
+                        device=device,
+                        wrapped_model=wrapped_model,
+                        component_model=component_model,
+                        config=pd_config,
+                        reconstruction_loss=reconstruction_loss,
+                    )
+                    for m in active:
+                        m.update(ctx)
+                metrics = collect_metric_outputs(active)
 
                 sink.console(*(f"eval/{k}: {v}" for k, v in metrics.items()))
                 sink.log(metrics, step=step, section="eval")

@@ -5,6 +5,7 @@ saved run. Run via ``python -m param_decomp_lab.experiments.lm.run path/to/confi
 multi-process (DDP) entry via ``torchrun`` of the same module.
 """
 
+import importlib
 from pathlib import Path
 from typing import Any, Self
 
@@ -14,20 +15,9 @@ from torch.utils.data import DataLoader
 
 from param_decomp import PDConfig, RuntimeConfig, optimize
 from param_decomp.base_config import BaseConfig
+from param_decomp.distributed import DistributedState, is_main_process
 from param_decomp.log import logger
-from param_decomp.models.batch_and_loss_fns import RunBatch, make_run_batch, recon_loss_kl
-from param_decomp.settings import PARAM_DECOMP_OUT_DIR
-from param_decomp.types import ModelPath
-from param_decomp.utils.distributed_utils import (
-    DistributedState,
-    ensure_cached_and_call,
-    get_device,
-    init_distributed,
-    is_main_process,
-    with_distributed_cleanup,
-)
-from param_decomp.utils.general_utils import resolve_class, set_seed
-from param_decomp.utils.run_utils import generate_run_id
+from param_decomp.models.batch_and_loss_fns import RunBatch
 from param_decomp_lab.experiments.lm.data import (
     LMDataConfig,
     build_lm_eval_loader,
@@ -40,6 +30,24 @@ from param_decomp_lab.experiments.utils import (
     run_sink_from_logging_block,
     save_run_meta,
 )
+from param_decomp_lab.infra.paths import ModelPath
+from param_decomp_lab.infra.run_files import generate_run_id
+from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp_lab.models.batch_and_loss_fns import make_run_batch, recon_loss_kl
+from param_decomp_lab.utils.distributed import (
+    ensure_cached_and_call,
+    get_device,
+    init_distributed,
+    with_distributed_cleanup,
+)
+from param_decomp_lab.utils.seed import set_seed
+
+
+def _resolve_class(path: str) -> type:
+    """Load a class from a string, e.g. 'transformers.LlamaForCausalLM'."""
+    module_path, _, class_name = path.rpartition(".")
+    module = importlib.import_module(module_path)
+    return getattr(module, class_name)
 
 
 class LMTargetConfig(BaseConfig):
@@ -87,7 +95,7 @@ class LMTargetConfig(BaseConfig):
 def build_target(target_cfg: LMTargetConfig) -> Any:
     """Load the target LM from HuggingFace, a `param_decomp_lab.pretrain.*` wandb run, or a
     local/wandb checkpoint path."""
-    model_class = resolve_class(target_cfg.model_class)
+    model_class = _resolve_class(target_cfg.model_class)
     assert hasattr(model_class, "from_pretrained"), (
         f"Model class {model_class} should have a `from_pretrained` method"
     )
@@ -101,15 +109,15 @@ def build_target(target_cfg: LMTargetConfig) -> Any:
         if "model_type" not in run_info.model_config_dict:
             run_info.model_config_dict["model_type"] = target_cfg.model_class.rsplit(".", 1)[-1]
         assert hasattr(model_class, "from_run_info")
-        target_model = model_class.from_run_info(run_info)  # pyright: ignore[reportAttributeAccessIssue]
+        target_model = model_class.from_run_info(run_info)
     elif target_cfg.model_name is not None:
         target_model = ensure_cached_and_call(
-            model_class.from_pretrained,  # pyright: ignore[reportAttributeAccessIssue]
+            model_class.from_pretrained,
             target_cfg.model_name,
         )
     else:
         assert target_cfg.model_path is not None
-        target_model = model_class.from_pretrained(target_cfg.model_path)  # pyright: ignore[reportAttributeAccessIssue]
+        target_model = model_class.from_pretrained(target_cfg.model_path)
     target_model.eval()
     return target_model
 

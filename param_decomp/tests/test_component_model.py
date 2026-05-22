@@ -8,11 +8,16 @@ from jaxtyping import Float, Int
 from torch import Tensor, nn
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
-from param_decomp.ci_config import GlobalCiConfig, LayerwiseCiConfig
-from param_decomp.configs import PDConfig
+from param_decomp.configs import (
+    GlobalCiConfig,
+    LayerwiseCiConfig,
+    ModulePatternInfoConfig,
+    OptimizerConfig,
+    PDConfig,
+    ScheduleConfig,
+)
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
-from param_decomp.models.batch_and_loss_fns import run_batch_passthrough
 from param_decomp.models.component_model import (
     ComponentModel,
 )
@@ -30,11 +35,10 @@ from param_decomp.models.components import (
     VectorSharedMLPCiFn,
     make_mask_infos,
 )
-from param_decomp.module_info import ModulePatternInfoConfig
-from param_decomp.optimizer import OptimizerConfig
-from param_decomp.schedule import ScheduleConfig
-from param_decomp.utils.module_utils import ModulePathInfo, expand_module_patterns
-from param_decomp.utils.run_utils import save_file
+from param_decomp.module_info import ModulePathInfo, expand_module_patterns
+from param_decomp_lab.infra.run_files import save_file
+from param_decomp_lab.models.batch_and_loss_fns import run_batch_passthrough
+from param_decomp_lab.models.component_model_utils import load_component_model_from_checkpoint
 
 
 class SimpleTestModel(nn.Module):
@@ -152,7 +156,7 @@ def test_from_checkpoint():
         fresh_target = SimpleTestModel()
         fresh_target.eval()
         fresh_target.requires_grad_(False)
-        cm_loaded = ComponentModel.from_checkpoint(
+        cm_loaded = load_component_model_from_checkpoint(
             ci_config=config.ci_config,
             sigmoid_type=config.sigmoid_type,
             module_info=config.module_info,
@@ -562,7 +566,7 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             AssertionError,
             match="Config specifies layerwise CI but checkpoint has no ci_fn._ci_fns keys",
         ):
-            ComponentModel.from_checkpoint(
+            load_component_model_from_checkpoint(
                 ci_config=config_layerwise.ci_config,
                 sigmoid_type=config_layerwise.sigmoid_type,
                 module_info=config_layerwise.module_info,
@@ -638,7 +642,7 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             AssertionError,
             match="Config specifies global CI but checkpoint has no ci_fn._global_ci_fn keys",
         ):
-            ComponentModel.from_checkpoint(
+            load_component_model_from_checkpoint(
                 ci_config=config_global.ci_config,
                 sigmoid_type=config_global.sigmoid_type,
                 module_info=config_global.module_info,
@@ -1262,7 +1266,7 @@ def test_global_ci_save_and_load():
         save_file(cm.state_dict(), checkpoint_path)
 
         # Load and verify
-        cm_loaded = ComponentModel.from_checkpoint(
+        cm_loaded = load_component_model_from_checkpoint(
             ci_config=config.ci_config,
             sigmoid_type=config.sigmoid_type,
             module_info=config.module_info,

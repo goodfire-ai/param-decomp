@@ -6,9 +6,9 @@ from jaxtyping import Float
 from torch import Tensor
 
 from param_decomp.base_config import BaseConfig
+from param_decomp.distributed import gather_all_tensors
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
-from param_decomp.utils.distributed_utils import gather_all_tensors
 from param_decomp_lab.eval_metrics.plotting import plot_ci_values_histograms
 
 

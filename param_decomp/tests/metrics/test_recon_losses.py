@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from param_decomp.configs import ScheduleConfig
 from param_decomp.metrics.ci_masked_recon_loss import ci_masked_recon_loss
 from param_decomp.metrics.context import MetricRuntimeConfig
 from param_decomp.metrics.hidden_acts_recon_loss import (
@@ -26,10 +27,8 @@ from param_decomp.metrics.persistent_pgd_recon import PersistentPGDReconLoss
 from param_decomp.metrics.pgd_masked_recon_loss import pgd_recon_loss
 from param_decomp.metrics.pgd_utils import PGDConfig
 from param_decomp.metrics.stochastic_recon_loss import stochastic_recon_loss
-from param_decomp.models.batch_and_loss_fns import recon_loss_mse
 from param_decomp.models.component_model import CIOutputs, ComponentModel
 from param_decomp.models.components import make_mask_infos
-from param_decomp.schedule import ScheduleConfig
 from param_decomp.tests.metrics.fixtures import (
     OneLayerLinearModel,
     TwoLayerLinearModel,
@@ -40,6 +39,7 @@ from param_decomp_lab.eval_metrics.ci_hidden_acts_recon_loss import (
     CIHiddenActsReconLoss,
     CIHiddenActsReconLossConfig,
 )
+from param_decomp_lab.models.batch_and_loss_fns import recon_loss_mse
 
 ReconLossFn = Callable[[ComponentModel, Tensor, Tensor, dict[str, Tensor]], Tensor]
 

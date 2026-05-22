@@ -4,8 +4,8 @@ from pathlib import Path
 
 import orjson
 
-from param_decomp.utils.sqlite import open_nfs_sqlite
 from param_decomp_lab.autointerp.schemas import InterpretationResult
+from param_decomp_lab.infra.sqlite import open_nfs_sqlite
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS interpretations (

@@ -13,8 +13,8 @@ from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
 from param_decomp.base_config import BaseConfig
+from param_decomp.distributed import DistributedState
 from param_decomp.log import logger
-from param_decomp.utils.distributed_utils import DistributedState
 
 
 class LMDataConfig(BaseConfig):

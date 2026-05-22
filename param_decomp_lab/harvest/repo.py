@@ -10,9 +10,9 @@ Layout: harvest/<decomposition_id>/h-YYYYMMDD_HHMMSS/{harvest.db, *.pt}
 from pathlib import Path
 
 from param_decomp.log import logger
+from param_decomp_lab.harvest.accumulator import Harvester
 from param_decomp_lab.harvest.config import HarvestConfig
 from param_decomp_lab.harvest.db import HarvestDB
-from param_decomp_lab.harvest.harvester import Harvester
 from param_decomp_lab.harvest.schemas import (
     ComponentData,
     ComponentSummary,

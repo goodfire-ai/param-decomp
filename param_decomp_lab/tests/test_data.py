@@ -2,11 +2,8 @@ from typing import Literal
 
 import pytest
 import torch
-from jaxtyping import Float
-from torch import Tensor
 
-from param_decomp.utils.data_utils import SparseFeatureDataset
-from param_decomp.utils.general_utils import compute_feature_importances, resolve_class
+from param_decomp_lab.utils.data import SparseFeatureDataset
 
 
 def test_dataset_at_least_zero_active():
@@ -115,32 +112,6 @@ def test_dataset_exactly_n_active(n: int):
     )
 
 
-@pytest.mark.parametrize(
-    "importance_val, expected_tensor",
-    [
-        (
-            1.0,
-            torch.tensor([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]]),
-        ),
-        (
-            0.5,
-            torch.tensor([[1.0, 0.5, 0.25], [1.0, 0.5, 0.25]]),
-        ),
-        (
-            0.0,
-            torch.tensor([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
-        ),
-    ],
-)
-def test_compute_feature_importances(
-    importance_val: float, expected_tensor: Float[Tensor, "batch_size n_features"]
-):
-    importances = compute_feature_importances(
-        batch_size=2, n_features=3, importance_val=importance_val, device="cpu"
-    )
-    torch.testing.assert_close(importances, expected_tensor)
-
-
 def test_sync_inputs_non_overlapping():
     dataset = SparseFeatureDataset(
         n_features=6,
@@ -179,12 +150,3 @@ def test_sync_inputs_overlapping():
     # Should raise an assertion error with the word "overlapping"
     with pytest.raises(AssertionError, match="overlapping"):
         dataset.generate_batch(5)
-
-
-def test_resolve_class():
-    assert resolve_class("torch.nn.Linear") == torch.nn.Linear
-    from transformers import LlamaForCausalLM
-
-    assert resolve_class("transformers.LlamaForCausalLM") == LlamaForCausalLM
-    with pytest.raises(ImportError):
-        resolve_class("fakepackage.fakemodule.FakeClass")

@@ -90,7 +90,7 @@ known-third-party = ["wandb"]
 
 [tool.pyright]
 include = ["param_decomp", "param_decomp_lab", "nano_param_decomp"]
-exclude = ["**/wandb/**", "param_decomp/utils/linear_sum_assignment.py", "param_decomp_lab/app/frontend"]
+exclude = ["**/wandb/**", "param_decomp_lab/_linear_sum_assignment.py", "param_decomp_lab/app/frontend"]
 stubPath = "typings" # Having type stubs for transformers shaves 10 seconds off basedpyright calls
 
 strictListInference = true

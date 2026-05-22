@@ -6,7 +6,7 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
-from param_decomp_lab.clustering.consts import ClusterCoactivationShaped, MergePair
+from param_decomp_lab.clustering.types import ClusterCoactivationShaped, MergePair
 
 MergePairSamplerKey = Literal["range", "mcmc", "exp_rank"]
 

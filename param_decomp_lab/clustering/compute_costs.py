@@ -5,12 +5,12 @@ from jaxtyping import Bool, Float
 from scipy import sparse
 from torch import Tensor
 
-from param_decomp_lab.clustering.consts import ClusterCoactivationShaped, MergePair
 from param_decomp_lab.clustering.math.merge_matrix import GroupMerge
 from param_decomp_lab.clustering.sample_membership import (
     CompressedMembership,
     count_group_overlaps_from_component_rows,
 )
+from param_decomp_lab.clustering.types import ClusterCoactivationShaped, MergePair
 
 
 def compute_mdl_cost(

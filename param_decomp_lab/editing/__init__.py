@@ -1,6 +1,6 @@
 """Component-level model editing for VPD decompositions."""
 
-from param_decomp_lab.editing._editing import (
+from param_decomp_lab.editing.model import (
     AblationEffect,
     AlignmentResult,
     ComponentMatch,

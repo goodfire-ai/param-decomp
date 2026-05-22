@@ -82,12 +82,12 @@ Combines `worker_states/*.pt` from each rank into the final harvest artefacts. A
 `wandb_path` and method-specific options) and `HarvestSlurmConfig` (HarvestConfig + SLURM
 params).
 
-### Harvest Logic (`harvest.py`)
+### Pipeline (`pipeline.py`)
 
 - `harvest(...)`: Run a single rank's pass over a dataloader, writing partial state.
 - `merge_harvest(output_dir, config)`: Combine all `worker_states/` into the final outputs.
 
-### Harvester (`harvester.py`)
+### Accumulator (`accumulator.py`)
 
 Core class that accumulates statistics in a single pass:
 - **Correlations**: Co-occurrence counts between components (for precision/recall/PMI)

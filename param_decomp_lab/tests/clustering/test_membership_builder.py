@@ -6,12 +6,12 @@ import pytest
 import torch
 
 from param_decomp_lab.clustering.activations import ProcessedActivations, process_activations
+from param_decomp_lab.clustering.formatting import DeadComponentFilterStat
 from param_decomp_lab.clustering.memberships import (
     MembershipBuilder,
     ProcessedMemberships,
     collect_memberships_lm,
 )
-from param_decomp_lab.clustering.util import DeadComponentFilterStat
 
 
 def _assert_processed_memberships_match_dense(

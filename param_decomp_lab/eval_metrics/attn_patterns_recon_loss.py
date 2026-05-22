@@ -11,13 +11,12 @@ from torch import Tensor, nn
 from torch.distributed import ReduceOp
 
 from param_decomp.base_config import BaseConfig
+from param_decomp.distributed import all_reduce
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import ComponentsMaskInfo, make_mask_infos
-from param_decomp.routing import AllLayersRouter
-from param_decomp.utils.component_utils import calc_stochastic_component_mask_info
-from param_decomp.utils.distributed_utils import all_reduce
+from param_decomp.routing import AllLayersRouter, calc_stochastic_component_mask_info
 
 
 class _AttnPatternsBaseConfig(BaseConfig):

@@ -1,21 +1,20 @@
-"""Utilities for distributed data parallel training (torchrun or MPI)."""
+"""Utilities for distributed data parallel training (torchrun or MPI).
 
-import json
+Process-group bring-up and teardown live in `param_decomp_lab.utils.distributed`
+because only the lab experiment runners initialize distributed; core only reads
+the cached state and runs collectives.
+"""
+
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
-from functools import wraps
-from typing import Any, Literal
+from typing import Literal
 
 import torch
 import torch.distributed as dist
 from torch import Tensor
 from torch.distributed import ReduceOp
 from torch.types import Number
-
-from param_decomp.base_config import BaseConfig
-from param_decomp.log import logger
-from param_decomp.utils.general_utils import runtime_cast
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +27,8 @@ class DistributedState:
     backend: Literal["nccl", "gloo"]
 
 
-# Module-level cached state used as a single source of truth
+# Module-level cached state used as a single source of truth.
+# Written by `param_decomp_lab.utils.distributed.init_distributed/cleanup_distributed`.
 _state: DistributedState | None = None
 
 _SHOULD_GET_INITIALIZED: bool = os.environ.get("WORLD_SIZE") is not None
@@ -51,69 +51,6 @@ def get_distributed_state() -> DistributedState | None:
         return None
 
 
-def init_distributed() -> DistributedState | None:
-    global _state
-    assert _state is None, "Distributed state already initialized"
-    assert not dist.is_initialized()
-
-    if not _SHOULD_GET_INITIALIZED:
-        return None
-
-    backend = "nccl" if torch.cuda.is_available() else "gloo"
-    logger.info(f"init_distributed: using {backend=}")
-
-    world_size = int(runtime_cast(str, os.environ.get("WORLD_SIZE")))
-    rank = int(runtime_cast(str, os.environ.get("RANK")))
-    local_rank = int(runtime_cast(str, os.environ.get("LOCAL_RANK")))
-    device = torch.device(f"cuda:{local_rank}")
-    logger.info(f"init_distributed: {world_size=}, {rank=}, {local_rank=}, {device=}")
-
-    if backend == "nccl":
-        torch.cuda.set_device(device)
-
-    assert (master_addr := os.environ.get("MASTER_ADDR")) is not None
-    assert (master_port := os.environ.get("MASTER_PORT")) is not None
-    logger.info(f"init_distributed: MASTER_ADDR: {master_addr}, MASTER_PORT: {master_port}")
-
-    dist.init_process_group(
-        backend=backend,
-        init_method="env://",
-        world_size=world_size,
-        rank=rank,
-        device_id=None if backend == "gloo" else device,
-    )
-
-    _state = DistributedState(
-        rank=rank,
-        world_size=world_size,
-        local_rank=local_rank,
-        backend=backend,
-    )
-
-    return _state
-
-
-def cleanup_distributed() -> None:
-    """Clean up distributed process group and reset cached state."""
-    global _state
-    if is_distributed():
-        dist.destroy_process_group()
-    _state = None
-
-
-def with_distributed_cleanup[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
-    """Decorator to clean up distributed state after function execution."""
-
-    @wraps(fn)
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-        try:
-            return fn(*args, **kwargs)
-        finally:
-            cleanup_distributed()
-
-    return wrapper
-
-
 def is_distributed() -> bool:
     """Check if running in distributed mode using cached state."""
     state = get_distributed_state()
@@ -134,34 +71,6 @@ def is_local_main_process() -> bool:
     if state is None:
         return True
     return state.local_rank == 0
-
-
-def print0(*args: Any, **kwargs: Any) -> None:
-    """Print only on rank 0 process.
-
-    Works with both torchrun (RANK env var) and init_distributed() setups.
-    """
-    if int(os.environ.get("RANK", 0)) == 0:
-        print(*args, **kwargs)
-
-
-def log0(msg: str) -> None:
-    """Log only on rank 0 process.
-
-    Works with both torchrun (RANK env var) and init_distributed() setups.
-    """
-    if int(os.environ.get("RANK", 0)) == 0:
-        logger.info(msg)
-
-
-def get_device() -> str:
-    """Get device for current process."""
-    state = get_distributed_state()
-    if state is None:
-        return "cuda" if torch.cuda.is_available() else "cpu"
-    if state.backend == "gloo":
-        return "cpu"
-    return f"cuda:{state.local_rank}"
 
 
 def sync_across_processes() -> None:
@@ -192,20 +101,6 @@ def broadcast_tensor(tensor: Tensor) -> Tensor:
     if is_distributed():
         dist.broadcast(tensor, src=0)
     return tensor
-
-
-def ensure_cached_and_call[**P, T](fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    """Call `fn` on local_rank 0 per node to cache downloads, barrier, then call on all ranks.
-
-    In multi-node setups where /tmp is node-local, this ensures each node downloads once
-    (via local_rank 0) rather than having rank 0 download to a path inaccessible to other nodes.
-    """
-    if is_distributed():
-        if is_local_main_process():
-            _ = fn(*args, **kwargs)
-        sync_across_processes()
-        return fn(*args, **kwargs)
-    return fn(*args, **kwargs)
 
 
 def sum_metrics_across_ranks(
@@ -269,7 +164,3 @@ def seed_per_rank(base_seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
-
-
-def get_config_json(config: BaseConfig) -> str:
-    return f"json:{json.dumps(config.model_dump(mode='json'))}"

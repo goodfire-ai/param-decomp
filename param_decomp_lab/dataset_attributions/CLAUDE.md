@@ -83,16 +83,16 @@ Unembed edges are stored in residual space (d_model dimensions). `w_unembed` is 
 
 Key methods: `get_top_sources(key, k, sign, metric)`, `get_top_targets(key, k, sign, metric)`. Both return `[]` for nonexistent components. `merge(paths)` classmethod for combining worker results via weighted average by n_tokens.
 
-### Harvester (`harvester.py`)
+### Accumulator (`accumulator.py`)
 
 Accumulates attributions using gradient × activation. Uses **concrete module paths** internally (talks to model cache/CI). Four accumulator groups mirror the storage edge types. Key optimizations:
 1. Sum outputs over positions before gradients (reduces backward passes)
 2. Output-residual storage (O(d_model) instead of O(vocab))
 3. `scatter_add_` for embed sources, vectorized `.add_()` for components (>14x faster than per-element loops)
 
-### Harvest (`harvest.py`)
+### Pipeline (`pipeline.py`)
 
-Orchestrates the pipeline: loads model, builds gradient connectivity, runs batches, translates concrete→canonical at storage boundary via `topology.target_to_canon()`.
+Orchestrates the run: loads model, builds gradient connectivity, runs batches, translates concrete→canonical at storage boundary via `topology.target_to_canon()`.
 
 ### Scripts
 

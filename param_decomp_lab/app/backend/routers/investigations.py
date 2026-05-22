@@ -12,9 +12,9 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from param_decomp.settings import PARAM_DECOMP_OUT_DIR
-from param_decomp.utils.wandb_utils import parse_wandb_run_path
 from param_decomp_lab.app.backend.dependencies import DepLoadedRun
+from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp_lab.infra.wandb import parse_wandb_run_path
 
 router = APIRouter(prefix="/api/investigations", tags=["investigations"])
 

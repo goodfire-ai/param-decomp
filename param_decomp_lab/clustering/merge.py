@@ -19,11 +19,6 @@ from param_decomp_lab.clustering.compute_costs import (
     compute_merge_costs,
     recompute_coacts_merge_pair_memberships,
 )
-from param_decomp_lab.clustering.consts import (
-    ClusterCoactivationShaped,
-    ComponentLabels,
-    MergePair,
-)
 from param_decomp_lab.clustering.math.merge_matrix import GroupMerge
 from param_decomp_lab.clustering.merge_config import MergeConfig
 from param_decomp_lab.clustering.merge_history import MergeHistory
@@ -31,6 +26,11 @@ from param_decomp_lab.clustering.sample_membership import (
     CompressedMembership,
     compute_coactivation_matrix_from_csr,
     memberships_to_sample_component_csr,
+)
+from param_decomp_lab.clustering.types import (
+    ClusterCoactivationShaped,
+    ComponentLabels,
+    MergePair,
 )
 
 

@@ -44,7 +44,7 @@ def _download_artifact(artifact_path: str) -> Path:
     import os
     import time
 
-    from param_decomp.settings import PARAM_DECOMP_OUT_DIR
+    from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 
     safe_name = artifact_path.replace("/", "_").replace(":", "_")
     checkpoints_dir = PARAM_DECOMP_OUT_DIR / "checkpoints"

@@ -11,8 +11,7 @@ from wandb.apis.public import File, Run
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.log import logger
-from param_decomp.settings import DEFAULT_PROJECT_NAME, REPO_ROOT
-from param_decomp.utils.general_utils import fetch_latest_checkpoint_name
+from param_decomp_lab.infra.settings import DEFAULT_PROJECT_NAME, REPO_ROOT
 
 # Regex patterns for parsing W&B run references. PD run IDs are formatted as
 # `p-<8 hex chars>` (see `RUN_TYPE_ABBREVIATIONS`). Legacy `s-…` IDs predate the
@@ -147,6 +146,20 @@ def flatten_metric_configs(config_dict: dict[str, Any]) -> dict[str, Any]:
                 flattened[f"{prefix}.{short_name}.{key}"] = value
 
     return flattened
+
+
+def fetch_latest_checkpoint_name(filenames: list[str], prefix: str | None = None) -> str:
+    """Fetch the latest checkpoint name from a list of .pth files.
+
+    Assumes format is <name>_<step>.pth or <name>.pth.
+    """
+    if prefix:
+        filenames = [filename for filename in filenames if filename.startswith(prefix)]
+    if not filenames:
+        raise ValueError(f"No files found with prefix {prefix}")
+    if len(filenames) == 1:
+        return filenames[0]
+    return sorted(filenames, key=lambda x: int(x.split(".pth")[0].split("_")[-1]))[-1]
 
 
 def fetch_latest_wandb_checkpoint(run: Run, prefix: str | None = None) -> File:

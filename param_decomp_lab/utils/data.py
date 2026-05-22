@@ -1,34 +1,10 @@
-from collections.abc import Generator, Iterator
+from collections.abc import Iterator
 from typing import Literal, override
 
 import torch
-from datasets import IterableDataset
 from jaxtyping import Float
 from torch import Tensor
-from torch.utils.data import DataLoader, Dataset, DistributedSampler
-
-from param_decomp.log import logger
-
-
-def loop_dataloader[T](dl: DataLoader[T]) -> Generator[T]:
-    """Loop over a dataloader, resetting the iterator when it is exhausted.
-
-    Ensures that each epoch gets different data, even when using a distributed sampler.
-    """
-    epoch = 0
-    dl_iter = iter(dl)
-    while True:
-        try:
-            yield next(dl_iter)
-        except StopIteration:
-            logger.warning("Dataloader exhausted, resetting iterator.")
-            epoch += 1
-            if isinstance(dl.sampler, DistributedSampler):
-                dl.sampler.set_epoch(epoch)
-            if isinstance(dl.dataset, IterableDataset):
-                dl.dataset.set_epoch(epoch)
-            dl_iter = iter(dl)
-            yield next(dl_iter)
+from torch.utils.data import DataLoader, Dataset
 
 
 class DatasetGeneratedDataLoader[Q](DataLoader[Q]):
@@ -51,94 +27,6 @@ class DatasetGeneratedDataLoader[Q](DataLoader[Q]):
     ) -> Iterator[Q]:
         for _ in range(len(self)):
             yield self.dataset.generate_batch(self.batch_size)  # pyright: ignore[reportAttributeAccessIssue]
-
-
-class BatchedDataLoader[Q](DataLoader[Q]):
-    """DataLoader that unpacks the batch in __getitem__.
-
-    This is used for datasets which generate a whole batch in one call to __getitem__.
-    """
-
-    def __init__(
-        self,
-        dataset: Dataset[Q],
-        num_workers: int = 0,
-    ):
-        super().__init__(dataset, num_workers=num_workers)
-
-    @override
-    def __iter__(self) -> Iterator[tuple[Tensor, Tensor]]:  # pyright: ignore[reportIncompatibleMethodOverride]
-        for batch, label in super().__iter__():
-            yield batch[0], label[0]
-
-
-class InductionDataset(
-    Dataset[
-        tuple[
-            Float[Tensor, "batch seq_len"],
-            Float[Tensor, "batch 1"],
-        ]
-    ]
-):
-    """
-    Generates data of the format TTTTTSMTTT...SM
-    where T is a token from the base vocabulary, S is a special induction token,
-    and M is a memorised token that appears twice in the sequence.
-    """
-
-    def __init__(
-        self,
-        vocab_size: int,
-        seq_len: int,
-        device: str | torch.device,
-        prefix_window: int,
-        size: int = 100_000,
-    ):
-        self.vocab_size = vocab_size
-        self.seq_len = seq_len
-        self.prefix_window = prefix_window
-        self.size = size
-        self.induction_token = vocab_size + 1  # One additional token for the induction token
-        self.device = device
-        assert self.prefix_window < seq_len - 2, "S M … S M must fit."
-
-    def __len__(self) -> int:
-        return 2**31
-
-    @torch.no_grad()  # pyright: ignore[reportUntypedFunctionDecorator]
-    def generate_batch(self, batch_size: int) -> tuple[torch.Tensor, torch.Tensor]:
-        vocab_start = 1  # 0 is reserved for BOS
-        vocab_end = self.vocab_size + vocab_start
-
-        # For each sequence, we sample an `m` which serves as the target.
-        memorised_token = torch.randint(vocab_start, vocab_end, (batch_size, 1), dtype=torch.long)
-
-        # To begin with, our sequence is just `T*`
-        tokens = torch.randint(
-            vocab_start, vocab_end, (batch_size, self.seq_len - 2), dtype=torch.long
-        )
-
-        # We sample a random position in each sequence and insert the induction token
-        # followed by the memory token -- our sequences are now: `T* S M T*`
-        induction_token_location = torch.randint(
-            1, self.prefix_window, (batch_size, 1), dtype=torch.long
-        )
-        tokens.scatter_(1, induction_token_location, self.induction_token)
-        tokens.scatter_(1, induction_token_location + 1, memorised_token)
-
-        # Finally, we add BOS tokens and an induction token at the final position.
-        # Our sequences are now: `[BOS] T* S M T* S`
-        tokens = torch.cat(
-            (
-                torch.zeros((batch_size, 1), dtype=torch.long),  # BOS token
-                tokens,
-                self.induction_token * torch.ones((batch_size, 1), dtype=torch.long),
-            ),
-            dim=1,
-        )
-
-        # Label is the memorised token that appears twice
-        return tokens.to(self.device), memorised_token.to(self.device).squeeze(-1)
 
 
 DataGenerationType = Literal[

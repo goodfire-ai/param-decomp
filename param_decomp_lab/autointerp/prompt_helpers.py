@@ -6,7 +6,6 @@ Pure functions for formatting component data into LLM prompt sections.
 import re
 from typing import Literal
 
-from param_decomp.utils.markdown import Md
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.app.backend.utils import delimit_tokens
 from param_decomp_lab.autointerp.config import (
@@ -18,6 +17,7 @@ from param_decomp_lab.autointerp.config import (
 from param_decomp_lab.autointerp.schemas import DECOMPOSITION_DESCRIPTIONS, DecompositionMethod
 from param_decomp_lab.harvest.analysis import TokenPRLift
 from param_decomp_lab.harvest.schemas import ComponentData
+from param_decomp_lab.infra.markdown import Md
 
 DATASET_DESCRIPTIONS: dict[str, str] = {
     "SimpleStories/SimpleStories": (

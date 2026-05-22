@@ -5,11 +5,11 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 
 from param_decomp.models.component_model import ComponentModel
-from param_decomp.utils.wandb_utils import parse_wandb_run_path
 from param_decomp_lab.adapters.base import DecompositionAdapter
 from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.experiments.lm.data import LMDataConfig
 from param_decomp_lab.experiments.lm.run import LMTargetConfig
+from param_decomp_lab.infra.wandb import parse_wandb_run_path
 from param_decomp_lab.saved_run import SavedRun
 from param_decomp_lab.topology import TransformerTopology
 

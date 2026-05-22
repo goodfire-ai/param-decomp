@@ -10,7 +10,6 @@ import torch
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from param_decomp.utils.distributed_utils import get_device
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.app.backend.compute import compute_ci_only
 from param_decomp_lab.app.backend.dependencies import DepLoadedRun
@@ -20,6 +19,7 @@ from param_decomp_lab.app.backend.schemas import (
 )
 from param_decomp_lab.app.backend.utils import log_errors
 from param_decomp_lab.harvest.schemas import ComponentData
+from param_decomp_lab.utils.distributed import get_device
 
 
 class ComponentProbeRequest(BaseModel):

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from param_decomp.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 
 # Base directory for autointerp data
 AUTOINTERP_DATA_DIR = PARAM_DECOMP_OUT_DIR / "autointerp"

@@ -19,9 +19,6 @@ from pathlib import Path
 import yaml
 
 from param_decomp.log import logger
-from param_decomp.settings import PARAM_DECOMP_OUT_DIR
-from param_decomp.utils.git_utils import create_git_snapshot
-from param_decomp.utils.slurm import SlurmConfig, SubmitResult, generate_script, submit_slurm_job
 from param_decomp_lab.autointerp.scripts.run_slurm import AutointerpSubmitResult, submit_autointerp
 from param_decomp_lab.dataset_attributions.scripts.run_slurm import submit_attributions
 from param_decomp_lab.graph_interp.scripts.run_slurm import (
@@ -31,6 +28,14 @@ from param_decomp_lab.graph_interp.scripts.run_slurm import (
 from param_decomp_lab.harvest.config import ParamDecompHarvestConfig
 from param_decomp_lab.harvest.scripts import run_intruder
 from param_decomp_lab.harvest.scripts.run_slurm import submit_harvest
+from param_decomp_lab.infra.git import create_git_snapshot
+from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp_lab.infra.slurm import (
+    SlurmConfig,
+    SubmitResult,
+    generate_script,
+    submit_slurm_job,
+)
 from param_decomp_lab.postprocess.config import PostprocessConfig
 
 

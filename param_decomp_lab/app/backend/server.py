@@ -26,8 +26,6 @@ from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from param_decomp.log import logger
-from param_decomp.settings import PARAM_DECOMP_APP_DEFAULT_RUN
-from param_decomp.utils.distributed_utils import get_device
 from param_decomp_lab.app.backend.database import PromptAttrDB
 from param_decomp_lab.app.backend.routers import (
     activation_contexts_router,
@@ -49,6 +47,8 @@ from param_decomp_lab.app.backend.routers import (
     runs_router,
 )
 from param_decomp_lab.app.backend.state import StateManager
+from param_decomp_lab.infra.settings import PARAM_DECOMP_APP_DEFAULT_RUN
+from param_decomp_lab.utils.distributed import get_device
 
 DEVICE = get_device()
 

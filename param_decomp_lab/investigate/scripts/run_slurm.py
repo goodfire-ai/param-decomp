@@ -7,10 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from param_decomp.log import logger
-from param_decomp.settings import DEFAULT_PARTITION_NAME, PARAM_DECOMP_OUT_DIR
-from param_decomp.utils.git_utils import create_git_snapshot
-from param_decomp.utils.slurm import SlurmConfig, generate_script, submit_slurm_job
-from param_decomp.utils.wandb_utils import parse_wandb_run_path
+from param_decomp_lab.infra.git import create_git_snapshot
+from param_decomp_lab.infra.settings import DEFAULT_PARTITION_NAME, PARAM_DECOMP_OUT_DIR
+from param_decomp_lab.infra.slurm import SlurmConfig, generate_script, submit_slurm_job
+from param_decomp_lab.infra.wandb import parse_wandb_run_path
 
 
 @dataclass

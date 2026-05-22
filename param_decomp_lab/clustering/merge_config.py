@@ -5,12 +5,12 @@ from typing import Any
 from pydantic import Field, PositiveInt
 
 from param_decomp.base_config import BaseConfig
-from param_decomp_lab.clustering.consts import ClusterCoactivationShaped, MergePair
 from param_decomp_lab.clustering.math.merge_pair_samplers import (
     MERGE_PAIR_SAMPLERS,
     MergePairSampler,
     MergePairSamplerKey,
 )
+from param_decomp_lab.clustering.types import ClusterCoactivationShaped, MergePair
 
 
 class MergeConfig(BaseConfig):

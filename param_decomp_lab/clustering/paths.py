@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from param_decomp.settings import PARAM_DECOMP_OUT_DIR
-from param_decomp.utils.run_utils import generate_run_id
+from param_decomp_lab.infra.run_files import generate_run_id
+from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 
 
 def clustering_run_dir(run_id: str) -> Path:

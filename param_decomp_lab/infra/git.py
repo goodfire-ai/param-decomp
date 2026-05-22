@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 from param_decomp.log import logger
-from param_decomp.settings import REPO_ROOT
+from param_decomp_lab.infra.settings import REPO_ROOT
 
 
 def repo_current_branch() -> str:

@@ -6,13 +6,12 @@ from jaxtyping import Float, Int
 from torch import Tensor
 from torch.distributed import ReduceOp
 
+from param_decomp.distributed import all_reduce
 from param_decomp.metrics.base import LossMetricConfig, Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 from param_decomp.models.component_model import ComponentModel
 from param_decomp.models.components import ComponentsMaskInfo
-from param_decomp.routing import AllLayersRouter, SamplingType
-from param_decomp.utils.component_utils import calc_stochastic_component_mask_info
-from param_decomp.utils.distributed_utils import all_reduce
+from param_decomp.routing import AllLayersRouter, SamplingType, calc_stochastic_component_mask_info
 
 PerModuleMSE = dict[str, tuple[Float[Tensor, ""], int]]
 

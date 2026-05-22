@@ -2,7 +2,6 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
-from pathlib import Path
 from typing import Any, Literal, NamedTuple, overload, override
 
 import torch
@@ -11,17 +10,18 @@ from torch import Tensor, nn
 from torch.utils.hooks import RemovableHandle
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
-from param_decomp.ci_config import CiConfig, GlobalCiConfig, LayerwiseCiConfig
-from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.models.batch_and_loss_fns import RunBatch
 from param_decomp.models.components import (
+    CiConfig,
     Components,
     ComponentsMaskInfo,
     EmbeddingComponents,
+    GlobalCiConfig,
     GlobalCiFnWrapper,
     GlobalSharedMLPCiFn,
     GlobalSharedTransformerCiFn,
     Identity,
+    LayerwiseCiConfig,
     LayerwiseCiFnWrapper,
     LinearComponents,
     MLPCiFn,
@@ -30,30 +30,9 @@ from param_decomp.models.components import (
     VectorSharedMLPCiFn,
 )
 from param_decomp.models.sigmoids import SIGMOID_TYPES, SigmoidType
-from param_decomp.module_info import ModulePatternInfoConfig
+from param_decomp.module_info import ModulePathInfo
 from param_decomp.routing import SamplingType
 from param_decomp.types import LayerwiseCiFnType
-from param_decomp.utils.module_utils import ModulePathInfo, expand_module_patterns
-
-
-def _validate_checkpoint_ci_config_compatibility(
-    state_dict: dict[str, Tensor], ci_config: CiConfig
-) -> None:
-    """Validate that checkpoint CI weights match the config CI mode."""
-    has_layerwise_ci_fns = any(k.startswith("ci_fn._ci_fns") for k in state_dict)
-    has_global_ci_fn = any(k.startswith("ci_fn._global_ci_fn") for k in state_dict)
-
-    match ci_config:
-        case LayerwiseCiConfig():
-            assert has_layerwise_ci_fns, (
-                f"Config specifies layerwise CI but checkpoint has no ci_fn._ci_fns keys "
-                f"(has ci_fn._global_ci_fn: {has_global_ci_fn})"
-            )
-        case GlobalCiConfig():
-            assert has_global_ci_fn, (
-                f"Config specifies global CI but checkpoint has no ci_fn._global_ci_fn keys "
-                f"(has ci_fn._ci_fns: {has_layerwise_ci_fns})"
-            )
 
 
 class OutputWithCache(NamedTuple):
@@ -480,69 +459,6 @@ class ComponentModel(nn.Module):
             for handle in handles:
                 handle.remove()
 
-    @classmethod
-    def from_checkpoint(
-        cls,
-        *,
-        ci_config: CiConfig,
-        sigmoid_type: SigmoidType,
-        module_info: list[ModulePatternInfoConfig],
-        identity_module_info: list[ModulePatternInfoConfig] | None,
-        checkpoint_path: Path,
-        target_model: nn.Module,
-        run_batch: RunBatch,
-        tied_weights: list[tuple[str, str]] | None = None,
-    ) -> "ComponentModel":
-        """Rebuild a ComponentModel from a saved PD checkpoint and a user-supplied target.
-
-        The caller owns target loading (HF, in-repo pretrain runs, custom user models),
-        so this method takes the already-instantiated target plus its run_batch function.
-        Pass the slices of `PDConfig` that affect model construction directly — this keeps
-        `component_model` cycle-free with respect to `configs`.
-        """
-        target_model.eval()
-        target_model.requires_grad_(False)
-
-        if identity_module_info is not None:
-            insert_identity_operations_(
-                target_model,
-                identity_module_info=identity_module_info,
-            )
-
-        all_info = list(module_info)
-        if identity_module_info is not None:
-            for info in identity_module_info:
-                all_info.append(
-                    ModulePatternInfoConfig(
-                        module_pattern=f"{info.module_pattern}.pre_identity", C=info.C
-                    )
-                )
-        module_path_info = expand_module_patterns(target_model, all_info)
-
-        comp_model = cls(
-            target_model=target_model,
-            run_batch=run_batch,
-            module_path_info=module_path_info,
-            ci_config=ci_config,
-            sigmoid_type=sigmoid_type,
-        )
-
-        comp_model_weights = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-        _validate_checkpoint_ci_config_compatibility(comp_model_weights, ci_config)
-        comp_model.load_state_dict(comp_model_weights)
-
-        if tied_weights is not None:
-            for src_name, tgt_name in tied_weights:
-                tgt = comp_model.components[tgt_name]
-                src = comp_model.components[src_name]
-                assert tgt is not None and src is not None, (
-                    f"Cannot tie weights between {src_name} and {tgt_name} - one or both are None"
-                )
-                tgt.U.data = src.V.data.T
-                tgt.V.data = src.U.data.T
-
-        return comp_model
-
     def calc_causal_importances(
         self,
         pre_weight_acts: dict[str, Float[Tensor, "... d_in"] | Int[Tensor, "... pos"]],
@@ -598,24 +514,6 @@ class ComponentModel(nn.Module):
             upper_leaky=causal_importances_upper_leaky,
             pre_sigmoid=pre_sigmoid,
         )
-
-    def get_all_component_acts(
-        self,
-        pre_weight_acts: dict[str, Float[Tensor, "... d_in"] | Int[Tensor, "..."]],
-    ) -> dict[str, Float[Tensor, "... C"]]:
-        """Compute component activations (v_i^T @ x) for all layers.
-
-        Args:
-            pre_weight_acts: Dict mapping layer name to input activations.
-
-        Returns:
-            Dict mapping layer name to component activations tensor.
-        """
-        return {
-            layer: self.components[layer].get_component_acts(acts)
-            for layer, acts in pre_weight_acts.items()
-            if layer in self.components
-        }
 
     def calc_weight_deltas(self) -> dict[str, Float[Tensor, "d_out d_in"]]:
         """Calculate the weight differences between the target and component weights (V@U) for each layer."""

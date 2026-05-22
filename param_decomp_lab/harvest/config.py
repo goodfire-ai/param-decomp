@@ -9,9 +9,9 @@ from typing import Annotated, Any, Literal, override
 from pydantic import Field, PositiveInt
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.settings import DEFAULT_PARTITION_NAME
-from param_decomp.utils.wandb_utils import parse_wandb_run_path
 from param_decomp_lab.autointerp.providers import LLMConfig, OpenRouterLLMConfig
+from param_decomp_lab.infra.settings import DEFAULT_PARTITION_NAME
+from param_decomp_lab.infra.wandb import parse_wandb_run_path
 
 # -- Method-specific harvest configs ------------------------------------------
 

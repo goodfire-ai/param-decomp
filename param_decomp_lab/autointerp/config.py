@@ -5,8 +5,8 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.settings import DEFAULT_PARTITION_NAME
 from param_decomp_lab.autointerp.providers import LLMConfig, OpenRouterLLMConfig
+from param_decomp_lab.infra.settings import DEFAULT_PARTITION_NAME
 
 FORBIDDEN_WORDS_DEFAULT = [
     "narrative",

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from param_decomp_lab.harvest.harvester import Harvester, extract_padding_firing_windows
+from param_decomp_lab.harvest.accumulator import Harvester, extract_padding_firing_windows
 from param_decomp_lab.harvest.reservoir import WINDOW_PAD_SENTINEL, ActivationWindows
 
 DEVICE = torch.device("cpu")

@@ -7,13 +7,13 @@ from param_decomp.metrics.stochastic_recon_layerwise_loss import (
     stochastic_recon_layerwise_loss,
 )
 from param_decomp.metrics.stochastic_recon_loss import stochastic_recon_loss
-from param_decomp.models.batch_and_loss_fns import recon_loss_mse
 from param_decomp.models.components import ComponentsMaskInfo, make_mask_infos
 from param_decomp.routing import Router, SamplingType
 from param_decomp.tests.metrics.fixtures import (
     make_one_layer_component_model,
     make_two_layer_component_model,
 )
+from param_decomp_lab.models.batch_and_loss_fns import recon_loss_mse
 
 
 class TestStochasticReconLayerwiseLoss:

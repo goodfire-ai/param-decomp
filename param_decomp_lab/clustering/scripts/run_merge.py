@@ -14,11 +14,11 @@ import os
 from pathlib import Path
 
 from param_decomp.log import logger
-from param_decomp_lab.clustering.consts import ComponentLabels
 from param_decomp_lab.clustering.memberships import ProcessedMemberships
 from param_decomp_lab.clustering.merge import LogCallback, merge_iteration_memberships
 from param_decomp_lab.clustering.merge_config import MergeConfig
 from param_decomp_lab.clustering.paths import clustering_run_dir, new_run_id
+from param_decomp_lab.clustering.types import ComponentLabels
 
 os.environ["WANDB_QUIET"] = "true"
 

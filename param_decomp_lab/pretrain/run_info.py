@@ -8,8 +8,8 @@ import yaml
 from tokenizers import Tokenizer as HFTokenizer
 from transformers import AutoTokenizer
 
-from param_decomp.settings import PARAM_DECOMP_OUT_DIR
-from param_decomp.utils.wandb_utils import parse_wandb_run_path
+from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp_lab.infra.wandb import parse_wandb_run_path
 
 
 @dataclass

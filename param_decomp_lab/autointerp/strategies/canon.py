@@ -4,7 +4,6 @@ Detailed PD prompt with full decomposition explanation, sign convention,
 CI-vs-act guidance, output PMI, and XML dual-view examples (raw + annotated).
 """
 
-from param_decomp.utils.markdown import Md
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.autointerp.config import CANON_RENDERING, CanonConfig
 from param_decomp_lab.autointerp.prompt_helpers import (
@@ -16,6 +15,7 @@ from param_decomp_lab.autointerp.prompt_helpers import (
 from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.harvest.analysis import TokenPRLift
 from param_decomp_lab.harvest.schemas import ComponentData
+from param_decomp_lab.infra.markdown import Md
 
 
 def format_prompt(

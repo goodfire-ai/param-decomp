@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch import Tensor, nn
 
-from param_decomp.models.batch_and_loss_fns import make_run_batch, recon_loss_kl, recon_loss_mse
+from param_decomp_lab.models.batch_and_loss_fns import make_run_batch, recon_loss_kl, recon_loss_mse
 
 
 class _TensorModel(nn.Module):

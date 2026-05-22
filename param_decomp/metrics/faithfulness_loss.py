@@ -5,9 +5,9 @@ from jaxtyping import Float
 from torch import Tensor
 from torch.distributed import ReduceOp
 
+from param_decomp.distributed import all_reduce
 from param_decomp.metrics.base import LossMetricConfig, Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
-from param_decomp.utils.distributed_utils import all_reduce
 
 
 class FaithfulnessLossConfig(LossMetricConfig):

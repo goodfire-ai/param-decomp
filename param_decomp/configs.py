@@ -1,4 +1,10 @@
-"""Top-level PD configs: `PDConfig` (algorithm) and `RuntimeConfig` (substrate)."""
+"""Top-level PD configs: `PDConfig` (algorithm) and `RuntimeConfig` (substrate).
+
+Configs that live next to their implementation are re-exported here so that the full
+PD config surface is reachable from `param_decomp.configs`. See CLAUDE.md
+"Config placement and import cycles" for the rule used to decide where each
+config lives.
+"""
 
 from functools import cached_property
 from typing import Annotated, Literal, Self
@@ -14,7 +20,6 @@ from pydantic import (
 )
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.ci_config import CiConfig
 from param_decomp.metrics.ci_masked_recon_layerwise_loss import CIMaskedReconLayerwiseLossConfig
 from param_decomp.metrics.ci_masked_recon_loss import CIMaskedReconLossConfig
 from param_decomp.metrics.ci_masked_recon_subset_loss import CIMaskedReconSubsetLossConfig
@@ -30,14 +35,53 @@ from param_decomp.metrics.pgd_masked_recon_loss import PGDReconLossConfig
 from param_decomp.metrics.pgd_masked_recon_subset_loss import PGDReconSubsetLossConfig
 from param_decomp.metrics.stochastic_recon_layerwise_loss import StochasticReconLayerwiseLossConfig
 from param_decomp.metrics.stochastic_recon_loss import StochasticReconLossConfig
-from param_decomp.metrics.stochastic_recon_subset_ce_and_kl import (
-    StochasticReconSubsetCEAndKLConfig,
-)
 from param_decomp.metrics.stochastic_recon_subset_loss import StochasticReconSubsetLossConfig
 from param_decomp.metrics.unmasked_recon_loss import UnmaskedReconLossConfig
+from param_decomp.models.components import (
+    AttnConfig as AttnConfig,
+)
+from param_decomp.models.components import (
+    CiConfig,
+    GlobalCiConfig,
+    LayerwiseCiConfig,
+)
+from param_decomp.models.components import (
+    GlobalSharedTransformerCiConfig as GlobalSharedTransformerCiConfig,
+)
 from param_decomp.module_info import ModulePatternInfoConfig
-from param_decomp.optimizer import OptimizerConfig
 from param_decomp.routing import SamplingType
+from param_decomp.schedule import ScheduleConfig
+from param_decomp.types import Probability
+
+# Re-export so `from param_decomp.configs import X` keeps working for callers.
+__all__ = [
+    "AnyLossMetricConfig",
+    "AttnConfig",
+    "CiConfig",
+    "GlobalCiConfig",
+    "GlobalSharedTransformerCiConfig",
+    "LayerwiseCiConfig",
+    "ModulePatternInfoConfig",
+    "OptimizerConfig",
+    "PDConfig",
+    "RuntimeConfig",
+    "ScheduleConfig",
+]
+
+
+class OptimizerConfig(BaseConfig):
+    """Configuration for one AdamW optimizer."""
+
+    lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule")
+    weight_decay: NonNegativeFloat = Field(default=0.0, description="AdamW weight decay")
+    betas: tuple[Probability, Probability] = Field(
+        default=(0.9, 0.999), description="AdamW (beta1, beta2)"
+    )
+    grad_clip_norm: PositiveFloat | None = Field(
+        default=None,
+        description="If set, clip the grad norm of this group's parameters to this value",
+    )
+
 
 AnyLossMetricConfig = Annotated[
     CIMaskedReconLayerwiseLossConfig
@@ -53,7 +97,6 @@ AnyLossMetricConfig = Annotated[
     | StochasticHiddenActsReconLossConfig
     | StochasticReconLayerwiseLossConfig
     | StochasticReconLossConfig
-    | StochasticReconSubsetCEAndKLConfig
     | StochasticReconSubsetLossConfig
     | UnmaskedReconLossConfig,
     Discriminator("type"),
@@ -84,15 +127,9 @@ class RuntimeConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_device_dp(self) -> Self:
-        from param_decomp.settings import GPUS_PER_NODE
-
         if self.dp is not None:
             assert self.device == "cuda", "dp requires device='cuda'"
             assert self.dp >= 2, "if set, dp must be at least 2 (pass None for single device)."
-            assert self.dp <= GPUS_PER_NODE or self.dp % GPUS_PER_NODE == 0, (
-                f"dp must be <= {GPUS_PER_NODE} (single node) or divisible by {GPUS_PER_NODE} "
-                f"(multi-node), got {self.dp}"
-            )
         return self
 
 

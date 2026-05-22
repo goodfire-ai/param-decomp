@@ -8,9 +8,14 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from param_decomp.log import logger
-from param_decomp.utils.slurm import SlurmConfig, SubmitResult, generate_script, submit_slurm_job
 from param_decomp_lab.graph_interp.config import GraphInterpSlurmConfig
 from param_decomp_lab.graph_interp.scripts import run
+from param_decomp_lab.infra.slurm import (
+    SlurmConfig,
+    SubmitResult,
+    generate_script,
+    submit_slurm_job,
+)
 
 
 @dataclass

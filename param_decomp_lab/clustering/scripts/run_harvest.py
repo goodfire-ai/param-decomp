@@ -16,12 +16,12 @@ from pathlib import Path
 import torch
 
 from param_decomp.log import logger
-from param_decomp.utils.distributed_utils import get_device
 from param_decomp_lab.clustering.harvest_config import HarvestConfig
 from param_decomp_lab.clustering.memberships import collect_memberships
 from param_decomp_lab.clustering.paths import clustering_harvest_dir, new_harvest_id
 from param_decomp_lab.experiments.lm.data import LMDataConfig, build_lm_train_loader
 from param_decomp_lab.saved_run import SavedRun
+from param_decomp_lab.utils.distributed import get_device
 
 os.environ["WANDB_QUIET"] = "true"
 

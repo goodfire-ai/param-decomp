@@ -17,7 +17,7 @@ import torch
 from jaxtyping import Float, Int
 from torch import Tensor
 
-from .linear_sum_assignment import linear_sum_assignment
+from param_decomp_lab._linear_sum_assignment import linear_sum_assignment
 
 
 def permute_to_identity_greedy(

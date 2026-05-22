@@ -23,20 +23,19 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from param_decomp.ci_config import LayerwiseCiConfig
-from param_decomp.metrics.pgd_masked_recon_loss import PGDReconLossConfig
-from param_decomp.metrics.pgd_utils import pgd_masked_recon_loss_update
-from param_decomp.models.batch_and_loss_fns import recon_loss_mse, run_batch_passthrough
-from param_decomp.models.component_model import ComponentModel
-from param_decomp.routing import AllLayersRouter
-from param_decomp.utils.distributed_utils import (
-    cleanup_distributed,
+from param_decomp.configs import LayerwiseCiConfig
+from param_decomp.distributed import (
     gather_all_tensors,
     get_distributed_state,
-    init_distributed,
     sync_across_processes,
 )
-from param_decomp.utils.module_utils import ModulePathInfo
+from param_decomp.metrics.pgd_masked_recon_loss import PGDReconLossConfig
+from param_decomp.metrics.pgd_utils import pgd_masked_recon_loss_update
+from param_decomp.models.component_model import ComponentModel
+from param_decomp.module_info import ModulePathInfo
+from param_decomp.routing import AllLayersRouter
+from param_decomp_lab.models.batch_and_loss_fns import recon_loss_mse, run_batch_passthrough
+from param_decomp_lab.utils.distributed import cleanup_distributed, init_distributed
 
 
 class _OneLayerLinearModel(nn.Module):

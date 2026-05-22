@@ -9,10 +9,10 @@ import torch
 
 from param_decomp.configs import PDConfig
 from param_decomp.metrics.context import MetricContext
-from param_decomp.models.batch_and_loss_fns import recon_loss_mse
 from param_decomp.models.component_model import CIOutputs, ComponentModel
 from param_decomp.models.sigmoids import lower_leaky_hard_sigmoid, upper_leaky_hard_sigmoid
 from param_decomp_lab.eval_metrics.ci_histograms import CIHistograms, CIHistogramsConfig
+from param_decomp_lab.models.batch_and_loss_fns import recon_loss_mse
 
 
 def _make_ctx(batch: torch.Tensor, target_out: torch.Tensor, ci: CIOutputs) -> MetricContext:

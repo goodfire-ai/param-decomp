@@ -6,7 +6,7 @@ import torch
 from numba import njit
 from scipy import sparse
 
-from param_decomp_lab.clustering.consts import ClusterCoactivationShaped
+from param_decomp_lab.clustering.types import ClusterCoactivationShaped
 
 _POPCOUNT_TABLE = np.unpackbits(np.arange(256, dtype=np.uint8)[:, None], axis=1).sum(axis=1)
 

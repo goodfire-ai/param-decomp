@@ -5,7 +5,7 @@ training dataset.
 """
 
 from param_decomp_lab.dataset_attributions.config import DatasetAttributionConfig
-from param_decomp_lab.dataset_attributions.harvest import harvest_attributions
+from param_decomp_lab.dataset_attributions.pipeline import harvest_attributions
 from param_decomp_lab.dataset_attributions.repo import AttributionRepo
 from param_decomp_lab.dataset_attributions.storage import (
     DatasetAttributionEntry,

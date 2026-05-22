@@ -5,7 +5,7 @@ import torch
 from torch import Tensor
 
 from param_decomp_lab.clustering.activations import FilteredActivations, filter_dead_components
-from param_decomp_lab.clustering.consts import ComponentLabels
+from param_decomp_lab.clustering.types import ComponentLabels
 
 
 @pytest.mark.parametrize(

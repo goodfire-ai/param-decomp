@@ -4,7 +4,7 @@ import torch
 from jaxtyping import Bool, Int
 from torch import Tensor
 
-from param_decomp_lab.clustering.consts import GroupIdxsTensor
+from param_decomp_lab.clustering.types import GroupIdxsTensor
 
 
 def _array_summary(arr: Tensor) -> str:

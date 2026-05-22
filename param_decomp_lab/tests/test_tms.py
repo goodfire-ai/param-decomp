@@ -5,7 +5,12 @@ import torch
 from torch import nn
 
 from param_decomp import PDConfig, RuntimeConfig, optimize
-from param_decomp.ci_config import LayerwiseCiConfig
+from param_decomp.configs import (
+    LayerwiseCiConfig,
+    ModulePatternInfoConfig,
+    OptimizerConfig,
+    ScheduleConfig,
+)
 from param_decomp.identity_insertion import insert_identity_operations_
 from param_decomp.metrics.faithfulness_loss import FaithfulnessLossConfig
 from param_decomp.metrics.importance_minimality_loss import ImportanceMinimalityLossConfig
@@ -13,15 +18,12 @@ from param_decomp.metrics.stochastic_recon_layerwise_loss import (
     StochasticReconLayerwiseLossConfig,
 )
 from param_decomp.metrics.stochastic_recon_loss import StochasticReconLossConfig
-from param_decomp.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
-from param_decomp.module_info import ModulePatternInfoConfig
-from param_decomp.optimizer import OptimizerConfig
-from param_decomp.schedule import ScheduleConfig
-from param_decomp.utils.data_utils import DatasetGeneratedDataLoader, SparseFeatureDataset
-from param_decomp.utils.general_utils import set_seed
 from param_decomp_lab.experiments.tms.models import TMSModel, TMSModelConfig, TMSTrainConfig
 from param_decomp_lab.experiments.tms.train_tms import get_model_and_dataloader, train
+from param_decomp_lab.models.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
 from param_decomp_lab.run_sink import RunSink
+from param_decomp_lab.utils.data import DatasetGeneratedDataLoader, SparseFeatureDataset
+from param_decomp_lab.utils.seed import set_seed
 
 
 def test_tms_decomposition_happy_path(tmp_path: Path) -> None:

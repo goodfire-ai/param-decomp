@@ -4,8 +4,8 @@ from typing import Literal
 
 import pytest
 
-from param_decomp.schedule import ScheduleConfig
-from param_decomp.utils.general_utils import get_scheduled_value
+from param_decomp.configs import ScheduleConfig
+from param_decomp.schedule import get_scheduled_value
 
 
 class TestConstantSchedule:
