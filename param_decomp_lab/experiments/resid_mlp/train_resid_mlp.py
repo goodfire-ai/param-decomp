@@ -5,21 +5,19 @@ import torch
 import wandb
 from jaxtyping import Float
 from torch import Tensor, nn
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from param_decomp.log import logger
 from param_decomp.schedule import ScheduleConfig, get_scheduled_value
 from param_decomp_lab.distributed import get_device
+from param_decomp_lab.experiments.resid_mlp.data import ResidMLPDataset
 from param_decomp_lab.experiments.resid_mlp.feature_importances import compute_feature_importances
 from param_decomp_lab.experiments.resid_mlp.models import (
     ResidMLP,
     ResidMLPModelConfig,
     ResidMLPTrainConfig,
 )
-from param_decomp_lab.experiments.resid_mlp.resid_mlp_dataset import (
-    ResidMLPDataset,
-)
-from param_decomp_lab.experiments.synthetic_data import DatasetGeneratedDataLoader
 from param_decomp_lab.infra.run_files import ExecutionStamp, save_file
 from param_decomp_lab.infra.settings import DEFAULT_PROJECT_NAME
 from param_decomp_lab.infra.wandb import init_wandb
@@ -55,7 +53,7 @@ def train(
     config: ResidMLPTrainConfig,
     model: ResidMLP,
     trainable_params: list[nn.Parameter],
-    dataloader: DatasetGeneratedDataLoader[
+    dataloader: DataLoader[
         tuple[
             Float[Tensor, "batch n_features"],
             Float[Tensor, "batch n_features"],
@@ -187,6 +185,7 @@ def run_train(config: ResidMLPTrainConfig, device: str) -> Float[Tensor, ""]:
         n_features=model_cfg.n_features,
         feature_probability=config.feature_probability,
         device=device,
+        batch_size=config.batch_size,
         calc_labels=True,
         label_type=config.label_type,
         act_fn_name=model_cfg.act_fn_name,
@@ -195,7 +194,7 @@ def run_train(config: ResidMLPTrainConfig, device: str) -> Float[Tensor, ""]:
         data_generation_type=config.data_generation_type,
         synced_inputs=config.synced_inputs,
     )
-    dataloader = DatasetGeneratedDataLoader(dataset, batch_size=config.batch_size, shuffle=False)
+    dataloader = DataLoader(dataset, batch_size=None)
 
     feature_importances = compute_feature_importances(
         batch_size=config.batch_size,

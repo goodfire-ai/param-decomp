@@ -3,7 +3,7 @@ from typing import Literal
 import pytest
 import torch
 
-from param_decomp_lab.experiments.synthetic_data import SparseFeatureDataset
+from param_decomp_lab.experiments.tms.data import SparseFeatureDataset
 
 
 def test_dataset_at_least_zero_active():
@@ -16,6 +16,7 @@ def test_dataset_at_least_zero_active():
         n_features=n_features,
         feature_probability=feature_probability,
         device=device,
+        batch_size=batch_size,
         data_generation_type="at_least_zero_active",
         value_range=(0.0, 1.0),
     )
@@ -46,6 +47,7 @@ def test_generate_multi_feature_batch_no_zero_samples():
         n_features=n_features,
         feature_probability=feature_probability,
         device=device,
+        batch_size=batch_size,
         data_generation_type="at_least_zero_active",
         value_range=(0.0, 1.0),
     )
@@ -91,6 +93,7 @@ def test_dataset_exactly_n_active(n: int):
         n_features=n_features,
         feature_probability=feature_probability,
         device=device,
+        batch_size=batch_size,
         data_generation_type=n_map[n],
         value_range=value_range,
     )
@@ -117,6 +120,7 @@ def test_sync_inputs_non_overlapping():
         n_features=6,
         feature_probability=0.5,
         device="cpu",
+        batch_size=5,
         data_generation_type="at_least_zero_active",
         value_range=(0.0, 1.0),
         synced_inputs=[[0, 1], [2, 3, 4]],
@@ -143,6 +147,7 @@ def test_sync_inputs_overlapping():
         n_features=6,
         feature_probability=0.5,
         device="cpu",
+        batch_size=5,
         data_generation_type="at_least_zero_active",
         value_range=(0.0, 1.0),
         synced_inputs=[[0, 1], [1, 2, 3]],

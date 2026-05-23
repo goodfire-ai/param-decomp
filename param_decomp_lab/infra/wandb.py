@@ -75,8 +75,6 @@ def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
     - "p-xxxxxxxx" (bare PD run ID, defaults to goodfire/param-decomp)
     - "entity/project/runId" (compact form)
     - "entity/project/runs/runId" (with /runs/)
-    - "wandb:entity/project/runId" (with wandb: prefix)
-    - "wandb:entity/project/runs/runId" (full wandb: form)
     - "https://wandb.ai/entity/project/runs/runId..." (URL)
 
     The bare-ID shortcut only accepts the current `p-…` prefix; legacy `s-…` IDs
@@ -90,9 +88,13 @@ def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
     """
     s = input_path.strip()
 
-    # Strip wandb: prefix if present
+    # The legacy "wandb:" prefix is no longer accepted. Reject explicitly so old YAMLs
+    # surface a clear error instead of silently parsing with `wandb:foo` as the entity.
     if s.startswith("wandb:"):
-        s = s[6:]
+        raise ValueError(
+            f'Invalid W&B run reference: the "wandb:" prefix is no longer supported. '
+            f'Drop it from "{input_path}".'
+        )
 
     # Bare run ID (e.g. "p-17805b61") → default entity/project
     if m := _BARE_RUN_ID_RE.match(s):
@@ -115,7 +117,6 @@ def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
         f' - "p-xxxxxxxx" (bare PD run ID)\n'
         f' - "entity/project/xxxxxxxx"\n'
         f' - "entity/project/runs/xxxxxxxx"\n'
-        f' - "wandb:entity/project/runs/xxxxxxxx"\n'
         f' - "https://wandb.ai/entity/project/runs/xxxxxxxx"\n'
         f'Got: "{input_path}"'
     )

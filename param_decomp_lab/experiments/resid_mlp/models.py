@@ -14,7 +14,6 @@ from torch import Tensor, nn
 from param_decomp.base_config import BaseConfig
 from param_decomp.components import init_param_
 from param_decomp.schedule import ScheduleConfig
-from param_decomp_lab.experiments.loadable_module import LoadableModule
 from param_decomp_lab.infra.paths import ModelPath
 from param_decomp_lab.infra.run_files import resolve_run_files
 
@@ -125,7 +124,7 @@ class MLP(nn.Module):
         return out
 
 
-class ResidMLP(LoadableModule):
+class ResidMLP(nn.Module):
     def __init__(self, config: ResidMLPModelConfig):
         super().__init__()
         self.config = config
@@ -178,7 +177,6 @@ class ResidMLP(LoadableModule):
         return resid_mlp_model
 
     @classmethod
-    @override
     def from_pretrained(cls, path: ModelPath) -> "ResidMLP":
         """Fetch a pretrained model from wandb or a local path to a checkpoint."""
         run_info = ResidMLPTargetRunInfo.from_path(path)

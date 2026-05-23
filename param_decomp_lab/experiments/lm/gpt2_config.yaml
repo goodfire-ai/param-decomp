@@ -59,9 +59,10 @@ eval:
     - type: CIMeanPerComponent
     - type: StochasticHiddenActsReconLoss
 target:
-  model_class: transformers.GPT2LMHeadModel
-  model_name: openai-community/gpt2
-  model_path: null
+  spec:
+    kind: hf
+    model_class: transformers.GPT2LMHeadModel
+    model_name: openai-community/gpt2
   output_extract: logits
 data:
   tokenizer_name: openai-community/gpt2

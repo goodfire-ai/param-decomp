@@ -10,9 +10,9 @@ from param_decomp_lab.adapters._vendor.clt_model import CrossLayerTranscoder
 from param_decomp_lab.adapters.base import DecompositionAdapter, pretrain_dataloader
 from param_decomp_lab.adapters.transcoder import _download_artifact
 from param_decomp_lab.autointerp.schemas import ModelMetadata
+from param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
+from param_decomp_lab.experiments.lm.pretrain.run_info import PretrainRunInfo
 from param_decomp_lab.harvest.config import CLTHarvestConfig
-from param_decomp_lab.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
-from param_decomp_lab.pretrain.run_info import PretrainRunInfo
 from param_decomp_lab.topology import TransformerTopology
 
 

@@ -7,6 +7,7 @@ from param_decomp_lab.clustering.harvest_config import (
     HarvestConfig,
 )
 from param_decomp_lab.clustering.merge_config import MergeConfig
+from param_decomp_lab.infra.wandb import parse_wandb_run_path
 
 
 class LoggingIntervals(BaseConfig):
@@ -26,6 +27,5 @@ class ClusteringRunConfig(BaseConfig):
 
     @property
     def wandb_decomp_model(self) -> str:
-        parts = self.harvest.model_path.replace("wandb:", "").split("/")
-        assert len(parts) >= 3, f"Invalid wandb path format: {self.harvest.model_path}"
-        return parts[-1] if parts[-1] != "runs" else parts[-2]
+        _, _, run_id = parse_wandb_run_path(self.harvest.model_path)
+        return run_id

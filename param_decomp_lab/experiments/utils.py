@@ -2,7 +2,8 @@
 
 Each experiment subclasses `ExperimentConfig` to fix the concrete `target` / `data` types
 and parses its YAML with `<Experiment>Config.from_file(path)`. `save_run_meta` persists
-the resolved config under `run_meta.yaml`; `SavedRun` reads it back.
+the resolved config under `run_meta.yaml`; `SavedRun` reads it back and dispatches via
+the experiment's `Reloader` class FQN.
 """
 
 from pathlib import Path
@@ -49,17 +50,18 @@ class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
 def save_run_meta(
     out_dir: Path | None,
     *,
-    experiment_name: str,
+    reloader_class: type,
     cfg: ExperimentConfig[Any, Any],
 ) -> None:
     """Write `{out_dir}/run_meta.yaml`: the resolved `ExperimentConfig` plus the
-    `experiment_name` discriminator used by `SavedRun` to find the experiment module.
+    `reloader_class` FQN used by `SavedRun` to rebuild target/loaders/run_batch.
 
     Skipped when `out_dir` is None (non-main ranks / silent sinks).
     """
     if out_dir is None:
         return
     out_dir.mkdir(parents=True, exist_ok=True)
-    payload = {"experiment": experiment_name, **cfg.model_dump(mode="json")}
+    fqn = f"{reloader_class.__module__}:{reloader_class.__qualname__}"
+    payload = {"reloader_class": fqn, **cfg.model_dump(mode="json")}
     with open(out_dir / RUN_META_FILENAME, "w") as f:
         yaml.dump(payload, f, default_flow_style=False, sort_keys=False)

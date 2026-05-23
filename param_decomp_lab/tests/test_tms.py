@@ -3,6 +3,7 @@ from typing import cast
 
 import torch
 from torch import nn
+from torch.utils.data import DataLoader
 
 from param_decomp.ci_fns import LayerwiseCiConfig
 from param_decomp.configs import Cadence, OptimizerConfig, PDConfig, RuntimeConfig
@@ -19,10 +20,7 @@ from param_decomp.metrics.stochastic_recon_layerwise import (
 from param_decomp.optimize import optimize
 from param_decomp.schedule import ScheduleConfig
 from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
-from param_decomp_lab.experiments.synthetic_data import (
-    DatasetGeneratedDataLoader,
-    SparseFeatureDataset,
-)
+from param_decomp_lab.experiments.tms.data import SparseFeatureDataset
 from param_decomp_lab.experiments.tms.models import TMSModel, TMSModelConfig, TMSTrainConfig
 from param_decomp_lab.experiments.tms.train_tms import get_model_and_dataloader, train
 from param_decomp_lab.run_sink import RunSink
@@ -91,17 +89,14 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
         n_features=target_model.config.n_features,
         feature_probability=0.05,
         device=device,
+        batch_size=pd_config.batch_size,
         data_generation_type="at_least_zero_active",
         value_range=(0.0, 1.0),
         synced_inputs=None,
     )
 
-    train_loader = DatasetGeneratedDataLoader(
-        dataset, batch_size=pd_config.batch_size, shuffle=False
-    )
-    eval_loader = DatasetGeneratedDataLoader(
-        dataset, batch_size=pd_config.batch_size, shuffle=False
-    )
+    train_loader = DataLoader(dataset, batch_size=None)
+    eval_loader = DataLoader(dataset, batch_size=None)
 
     sink = RunSink.local(tmp_path)
     cadence = Cadence(

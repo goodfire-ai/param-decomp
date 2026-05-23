@@ -1,3 +1,10 @@
+"""Sparse-feature dataset for the Residual MLP experiment.
+
+Inherits the basic batch-generation logic from `SparseFeatureDataset` in the TMS
+experiment, and optionally computes labels of the form `act_fn(coeffs*x) + x` or
+`abs(coeffs*x)`.
+"""
+
 from typing import Literal, override
 
 import einops
@@ -6,7 +13,7 @@ import torch.nn.functional as F
 from jaxtyping import Float
 from torch import Tensor
 
-from param_decomp_lab.experiments.synthetic_data import SparseFeatureDataset
+from param_decomp_lab.experiments.tms.data import SparseFeatureDataset
 
 
 class ResidMLPDataset(SparseFeatureDataset):
@@ -15,7 +22,8 @@ class ResidMLPDataset(SparseFeatureDataset):
         n_features: int,
         feature_probability: float,
         device: str,
-        calc_labels: bool = True,  # If False, just return the inputs as labels
+        batch_size: int,
+        calc_labels: bool = True,
         label_type: Literal["act_plus_resid", "abs"] | None = None,
         act_fn_name: Literal["relu", "gelu"] | None = None,
         label_fn_seed: int | None = None,
@@ -25,32 +33,11 @@ class ResidMLPDataset(SparseFeatureDataset):
         ] = "at_least_zero_active",
         synced_inputs: list[list[int]] | None = None,
     ):
-        """Sparse feature dataset for use in training a resid_mlp model or running PD on it.
-
-        If calc_labels is True, labels are of the form `act_fn(coeffs*x) + x` or `abs(coeffs*x)`,
-        depending on label_type, act_fn_name, and label_fn_seed.
-
-        Otherwise, the labels are the same as the inputs.
-
-        Args:
-            n_features: The number of features in the model and dataset.
-            feature_probability: The probability that a feature is active in a given instance.
-            device: The device to calculate and store the data on.
-            calc_labels: Whether to calculate labels. If False, labels are the same as the inputs.
-            label_type: The type of labels to calculate. Ignored if calc_labels is False.
-            act_fn_name: Used for labels if calc_labels is True and label_type is act_plus_resid.
-                Ignored if calc_labels is False.
-            label_fn_seed: The seed to use for generating the label coefficients. Ignored if
-                calc_labels is False or label_coeffs is not None.
-            label_coeffs: The label coefficients to use. If None, the coefficients are generated
-                randomly (unless calc_labels is False).
-            data_generation_type: The number of active features in each sample.
-            synced_inputs: The indices of the inputs to sync.
-        """
         super().__init__(
             n_features=n_features,
             feature_probability=feature_probability,
             device=device,
+            batch_size=batch_size,
             data_generation_type=data_generation_type,
             value_range=(-1.0, 1.0),
             synced_inputs=synced_inputs,
@@ -77,7 +64,6 @@ class ResidMLPDataset(SparseFeatureDataset):
     def generate_batch(
         self, batch_size: int
     ) -> tuple[Float[Tensor, "batch n_functions"], Float[Tensor, "batch n_functions"]]:
-        # Note that the parent_labels are just the batch itself
         batch, parent_labels = super().generate_batch(batch_size)
         labels = self.label_fn(batch) if self.label_fn is not None else parent_labels
         return batch, labels

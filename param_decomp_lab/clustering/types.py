@@ -19,7 +19,9 @@ ComponentLabels = NewType("ComponentLabels", list[str])
 BatchId = NewType("BatchId", str)
 
 # Path types
-WandBPath = NewType("WandBPath", str)  # Format: "wandb:entity/project/run_id"
+WandBPath = NewType(
+    "WandBPath", str
+)  # Format: "entity/project/run_id" or "entity/project/runs/run_id"
 
 # Merge types
 MergePair = NewType("MergePair", tuple[int, int])

@@ -74,7 +74,7 @@ eval:
     - type: CIMeanPerComponent
     - type: StochasticHiddenActsReconLoss
 target:
-  run_path: wandb:goodfire/spd-pre-Sep-2025/runs/eggs3wp8
+  run_path: goodfire/spd-pre-Sep-2025/runs/eggs3wp8
 data:
   feature_probability: 0.05
   data_generation_type: at_least_zero_active

@@ -45,11 +45,16 @@ def _run_local(config_path: Path, n_gpus: int) -> None:
             "--standalone",
             f"--nproc_per_node={n_gpus}",
             "-m",
-            "param_decomp_lab.pretrain.train",
+            "param_decomp_lab.experiments.lm.pretrain.train",
             str(config_path),
         ]
     else:
-        cmd = [sys.executable, "-m", "param_decomp_lab.pretrain.train", str(config_path)]
+        cmd = [
+            sys.executable,
+            "-m",
+            "param_decomp_lab.experiments.lm.pretrain.train",
+            str(config_path),
+        ]
 
     print(f"Running: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
@@ -71,7 +76,7 @@ def _submit_slurm(
     logger.info(f"Snapshot ref: {execution_stamp.snapshot_ref}")
 
     # Build the training command
-    train_cmd = f"torchrun --standalone --nproc_per_node={n_gpus} -m param_decomp_lab.pretrain.train {config_path}"
+    train_cmd = f"torchrun --standalone --nproc_per_node={n_gpus} -m param_decomp_lab.experiments.lm.pretrain.train {config_path}"
 
     config = SlurmConfig(
         job_name=job_name,

@@ -7,7 +7,7 @@ methods for component analysis, editing, and measurement. It's callable
 Usage:
     from param_decomp_lab.editing.editable_model import EditableModel, search_interpretations, generate
 
-    em = EditableModel.from_wandb("wandb:goodfire/spd/s-892f140b")
+    em = EditableModel.from_wandb("goodfire/spd/s-892f140b")
     matches = search_interpretations(harvest, interp, r"male pronoun")
 
     edit_fn = em.make_edit_fn({m.key: 0.0 for m in matches[:3]})
@@ -275,10 +275,11 @@ class EditableModel:
     ) -> tuple["EditableModel", AppTokenizer]:
         """Load from wandb path. Returns (editable_model, tokenizer)."""
         from param_decomp_lab.experiments.lm.data import LMDataConfig
+        from param_decomp_lab.experiments.lm.run import LMReloader
 
         pd_run = SavedRun.from_path(wandb_path)
-        assert pd_run.experiment_name == "lm", (
-            f"EditableModel.from_wandb only supports LM runs (got {pd_run.experiment_name!r})"
+        assert isinstance(pd_run.reloader, LMReloader), (
+            f"EditableModel.from_wandb only supports LM runs (got {type(pd_run.reloader).__name__})"
         )
         data_cfg = pd_run.data_cfg
         assert isinstance(data_cfg, LMDataConfig)

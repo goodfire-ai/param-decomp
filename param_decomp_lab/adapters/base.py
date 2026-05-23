@@ -6,7 +6,7 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 
 from param_decomp_lab.autointerp.schemas import ModelMetadata
-from param_decomp_lab.pretrain.run_info import PretrainRunInfo
+from param_decomp_lab.experiments.lm.pretrain.run_info import PretrainRunInfo
 
 
 class DecompositionAdapter(ABC):

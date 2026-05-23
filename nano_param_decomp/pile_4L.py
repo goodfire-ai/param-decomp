@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from param_decomp_lab.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
+from param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
 
 from .run import Config, decompose
 

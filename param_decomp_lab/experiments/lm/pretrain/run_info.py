@@ -141,7 +141,7 @@ def _extract_hf_tokenizer_path(config_dict: dict[str, Any]) -> str | None:
 
 @dataclass
 class PretrainRunInfo:
-    """Run info from training a model with param_decomp_lab.pretrain."""
+    """Run info from training a model with param_decomp_lab.experiments.lm.pretrain."""
 
     checkpoint_path: Path
     config_dict: dict[str, Any]
@@ -157,8 +157,6 @@ class PretrainRunInfo:
         W&B formats:
         - "entity/project/runId" (compact form)
         - "entity/project/runs/runId" (with /runs/)
-        - "wandb:entity/project/runId" (with wandb: prefix)
-        - "wandb:entity/project/runs/runId" (full wandb: form)
         - "https://wandb.ai/entity/project/runs/runId..." (URL)
 
         Local: path to a checkpoint file

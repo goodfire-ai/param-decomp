@@ -8,8 +8,6 @@ from param_decomp_lab.infra.wandb import parse_wandb_run_path
     [
         ("myentity/myproject/abcd1234", ("myentity", "myproject", "abcd1234")),
         ("goodfire/spd/runs/xy7z9abc", ("goodfire", "spd", "xy7z9abc")),
-        ("wandb:myentity/myproject/abcd1234", ("myentity", "myproject", "abcd1234")),
-        ("wandb:myentity/myproject/runs/abcd1234", ("myentity", "myproject", "abcd1234")),
         (
             "https://wandb.ai/myentity/myproject/runs/abcd1234",
             ("myentity", "myproject", "abcd1234"),
@@ -21,7 +19,6 @@ from param_decomp_lab.infra.wandb import parse_wandb_run_path
         ("  myentity/myproject/abcd1234  ", ("myentity", "myproject", "abcd1234")),  # whitespace
         ("my-entity/my_project/abcd1234", ("my-entity", "my_project", "abcd1234")),  # special chars
         ("goodfire/spd/runs/s-d2ec3bfe", ("goodfire", "spd", "s-d2ec3bfe")),  # Newer runid format
-        ("wandb:goodfire/spd/s-d2ec3bfe", ("goodfire", "spd", "s-d2ec3bfe")),
         (
             "https://wandb.ai/goodfire/spd/runs/s-d2ec3bfe",
             ("goodfire", "spd", "s-d2ec3bfe"),
@@ -30,14 +27,11 @@ from param_decomp_lab.infra.wandb import parse_wandb_run_path
     ids=[
         "compact",
         "compact-with-runs",
-        "prefix-compact",
-        "prefix-with-runs",
         "url",
         "url-with-query",
         "whitespace",
         "special-chars",
         "hyphenated-runid",
-        "hyphenated-runid-prefix",
         "hyphenated-runid-url",
     ],
 )
@@ -61,6 +55,8 @@ def test_parse_wandb_run_path_valid(input_path: str, expected: tuple[str, str, s
         "http://wandb.ai/myentity/myproject/runs/abcd1234",
         "https://example.com/myentity/myproject/runs/abcd1234",
         "https://wandb.ai/myentity/myproject/abcd1234",
+        "wandb:myentity/myproject/abcd1234",
+        "wandb:goodfire/spd/runs/s-d2ec3bfe",
     ],
     ids=[
         "is-an-absolute-path",
@@ -76,6 +72,8 @@ def test_parse_wandb_run_path_valid(input_path: str, expected: tuple[str, str, s
         "http-not-https",
         "wrong-domain",
         "url-missing-runs",
+        "legacy-wandb-prefix-compact",
+        "legacy-wandb-prefix-with-runs",
     ],
 )
 def test_parse_wandb_run_path_invalid(input_path: str):

@@ -159,7 +159,7 @@ def list_investigations(loaded: DepLoadedRun) -> list[InvestigationSummary]:
         meta_wandb_path = metadata.get("wandb_path") if metadata else None
         if meta_wandb_path is None:
             continue
-        # Normalize to canonical form for comparison (strips "runs/", "wandb:" prefix, etc.)
+        # Normalize to canonical form for comparison (strips "runs/" etc.)
         try:
             e, p, r = parse_wandb_run_path(meta_wandb_path)
             canonical_meta_path = f"{e}/{p}/{r}"

@@ -89,13 +89,35 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 
 ### Adding a new experiment
 
-Experiments are plain Python scripts, not drivers/subclasses. A "new experiment" is a
-`run.py` that declares an `ExperimentConfig[T, D]` subclass (fixing the concrete `target`
-/ `data` types), parses its YAML with `<Experiment>Config.from_file(path)`, builds the
-target model + dataloaders + eval metrics + sink, then calls `optimize()`. The three
-in-repo experiments (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`) are the
-canonical references. The shared `ExperimentConfig` generic + `EvalConfig` + `save_run_meta`
-live in `param_decomp_lab/experiments/utils.py`.
+Experiments are plain Python scripts. Each `run.py` is self-contained and exposes one
+named class — a **`Reloader`** — that implements the `ExperimentReloader` Protocol in
+`param_decomp_lab/saved_run.py`. The reloader holds the validated `target_cfg` /
+`data_cfg` and exposes three methods postprocessing needs:
+
+```python
+class ExperimentReloader(Protocol):
+    target_cfg: BaseConfig
+    data_cfg: BaseConfig
+
+    @classmethod
+    def from_meta(cls, meta: RunMeta) -> Self: ...
+    def build_target(self) -> nn.Module: ...
+    def build_loader(self, *, split: Literal["train", "eval"], device: str,
+                     batch_size: int, dist_state=None, seed=None) -> DataLoader: ...
+    def make_run_batch(self) -> RunBatch: ...
+```
+
+The reloader does double duty: `main()` instantiates it from the parsed config and uses
+it to build the target + loaders + run_batch, so there's no duplication between "fresh
+run from YAML" and "reload from disk" paths.
+
+`save_run_meta(out_dir, reloader_class=..., cfg=...)` writes the reloader's fully-qualified
+`<module>:<Class>` name into `run_meta.yaml::reloader_class`. There is no central
+registry: `SavedRun.from_path` resolves the FQN via `importlib` and calls
+`Reloader.from_meta(meta)` to rebuild the reloader. The three in-repo experiments
+(`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`) are the canonical references.
+The shared `ExperimentConfig[T, D]` generic + `EvalConfig` + `save_run_meta` live in
+`param_decomp_lab/experiments/utils.py`.
 
 YAML schema (one validated pydantic tree — extra keys raise):
 
@@ -104,9 +126,21 @@ pd:      { ... PDConfig ... }
 runtime: { ... RuntimeConfig ... }
 cadence: { train_log_every, eval_every, slow_eval_every, n_eval_steps,
            save_every, slow_eval_on_first_step }
-target:  { ... per-experiment TargetConfig ... }
-data:    { ... per-experiment DataConfig ... }
+target:  { ... per-experiment target config ... }
+data:    { ... per-experiment data config ... }
 eval:    { batch_size, metrics: [ {type: "...", ...}, ... ] }
+```
+
+For LM runs, `target` carries a discriminated union under `target.spec` (see
+`LMTargetSpec` in `param_decomp_lab/experiments/lm/run.py`):
+
+```yaml
+target:
+  spec:
+    kind: hf          # or "pretrained"
+    model_class: transformers.GPT2LMHeadModel
+    model_name: openai-community/gpt2
+  output_extract: logits
 ```
 
 Per-experiment console entry points are declared in `param_decomp_lab/pyproject.toml`:
@@ -117,8 +151,9 @@ pd-resid-mlp  path/to/config.yaml
 pd-lm         path/to/config.yaml
 ```
 
-For a brand-new experiment, drop a `run.py` next to a YAML config in your own package
-and either call its `main(...)` directly or wire it up to a console script.
+For a brand-new experiment, drop a `run.py` next to a YAML config with its own
+`Reloader` class and either call its `main(...)` directly or wire it up to a console
+script. Nothing central needs to be touched.
 
 ### Metrics
 
@@ -287,10 +322,15 @@ This repository implements methods from two key research papers on parameter dec
   `metrics/persistent_pgd_recon.py`. Eval metrics ship in `param_decomp_lab/eval_metrics/`.
 
 **In-repo experiment scripts** (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`)
-each declare a `<Experiment>ExperimentConfig(ExperimentConfig[TargetConfig, DataConfig])`
-subclass, parse the YAML via `from_file(...)`, build target/loaders/metrics/sink, and call
-`optimize()`. The generic `ExperimentConfig` + `EvalConfig` + `save_run_meta` live in
-`param_decomp_lab/experiments/utils.py`.
+each declare a `<Experiment>ExperimentConfig` subclass of `ExperimentConfig[T, D]` plus a
+`<Experiment>Reloader` class implementing the `ExperimentReloader` Protocol. `main()`
+parses the YAML, instantiates the reloader, uses it to build target/loaders/run_batch,
+and calls `optimize()`. The reloader's FQN (`<module>:<Class>`) is written into
+`run_meta.yaml::reloader_class`, and `SavedRun.from_path(...)` resolves it via
+`importlib` to rebuild the run later — no central registry. The generic
+`ExperimentConfig`, `EvalConfig`, and `save_run_meta` live in
+`param_decomp_lab/experiments/utils.py`; the `ExperimentReloader` Protocol + `SavedRun`
+live in `param_decomp_lab/saved_run.py`.
 
 **Terminology: Sources vs Masks:**
 
@@ -361,12 +401,12 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 ├── param_decomp_lab/                # Lab tooling — experiments, post-processing, app, infra
 │   ├── infra/                       # Cross-subsystem plumbing: settings, paths, slurm, wandb, sqlite, git, run_files, markdown, pydantic
 │   ├── experiments/
-│   │   ├── tms/, resid_mlp/, lm/    # Each: run.py + YAMLs + per-experiment helpers
-│   │   ├── utils.py                 # ExperimentConfig[T, D] + EvalConfig + save_run_meta
-│   │   ├── loadable_module.py       # LoadableModule ABC used by lab experiment models
-│   │   └── __init__.py              # EXPERIMENTS registry (name → experiment module)
+│   │   ├── tms/, resid_mlp/         # Each: run.py (with <Experiment>Reloader) + YAMLs + data.py + train_*.py + helpers
+│   │   ├── lm/                      # run.py (LMReloader + LMTargetSpec discriminated union) + YAMLs + data.py + pretrain/
+│   │   ├── lm/pretrain/             # LM target-model pretraining (see lm/pretrain/CLAUDE.md)
+│   │   ├── utils.py                 # ExperimentConfig[T, D] + EvalConfig + save_run_meta(reloader_class=…)
+│   │   └── __init__.py              # bare package init (no central registry)
 │   ├── eval_metrics/                # Eval Metric classes + AnyEvalMetricConfig union + EVAL_METRIC_CLASSES dispatch
-│   ├── pretrain/                    # Target model pretraining (see pretrain/CLAUDE.md)
 │   ├── harvest/                     # Statistics collection: pipeline + accumulator (see harvest/CLAUDE.md)
 │   ├── autointerp/                  # LLM interpretation (see autointerp/CLAUDE.md)
 │   ├── clustering/                  # Component clustering (see clustering/CLAUDE.md)
@@ -377,7 +417,7 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 │   ├── app/                         # Web visualization app (see app/CLAUDE.md)
 │   ├── topology/, adapters/, editing/  # Model-topology utilities
 │   ├── models/                      # batch_and_loss_fns helpers (run_batch_*, recon_loss_*, calc_kl_divergence_lm) + component_model_utils (from_checkpoint, get_all_component_acts)
-│   ├── utils/                       # seed.py (set_seed), data.py (SparseFeatureDataset, DatasetGeneratedDataLoader), distributed.py (init/cleanup/log0/get_device/ensure_cached_and_call)
+│   ├── utils/                       # seed.py (set_seed), distributed.py (init/cleanup/log0/get_device/ensure_cached_and_call)
 │   ├── scripts/                     # alpha_sweep, prompt_utils
 │   ├── tests/                       # Lab test suite
 │   ├── target_ci.py                 # TargetCIPattern (Identity/Dense), TargetCISolution — for toy-model eval
@@ -398,7 +438,7 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 | `pd-tms` | `param_decomp_lab/experiments/tms/run.py` | Run the TMS experiment for the given YAML config |
 | `pd-resid-mlp` | `param_decomp_lab/experiments/resid_mlp/run.py` | Run the ResidMLP experiment for the given YAML config |
 | `pd-lm` | `param_decomp_lab/experiments/lm/run.py` | Run the LM experiment for the given YAML config |
-| `pd-pretrain` | `param_decomp_lab/pretrain/cli.py` | Pretrain target models |
+| `pd-pretrain` | `param_decomp_lab/experiments/lm/pretrain/cli.py` | Pretrain target models |
 | `pd-harvest` | `param_decomp_lab/harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
 | `pd-autointerp` | `param_decomp_lab/autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
 | `pd-attributions` | `param_decomp_lab/dataset_attributions/scripts/run_slurm_cli.py` | Submit dataset-attribution SLURM job |

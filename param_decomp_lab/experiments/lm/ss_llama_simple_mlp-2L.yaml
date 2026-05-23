@@ -111,9 +111,10 @@ eval:
       n_steps: 20
       mask_scope: shared_across_batch
 target:
-  model_class: param_decomp_lab.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
-  model_name: goodfire/spd/runs/gf6rbga0
-  model_path: null
+  spec:
+    kind: pretrained
+    model_class: param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
+    run_path: goodfire/spd/runs/gf6rbga0
   output_extract: 0
 data:
   tokenizer_name: SimpleStories/test-SimpleStories-gpt2-1.25M

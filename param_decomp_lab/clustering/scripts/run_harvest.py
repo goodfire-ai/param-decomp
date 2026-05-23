@@ -22,6 +22,7 @@ from param_decomp_lab.clustering.harvest_config import (
 from param_decomp_lab.clustering.memberships import collect_memberships
 from param_decomp_lab.clustering.paths import clustering_harvest_dir, new_harvest_id
 from param_decomp_lab.distributed import get_device
+from param_decomp_lab.experiments.lm.run import LMReloader
 from param_decomp_lab.saved_run import SavedRun
 
 os.environ["WANDB_QUIET"] = "true"
@@ -38,13 +39,14 @@ def harvest(config: HarvestConfig) -> Path:
     device = get_device()
 
     pd_run = SavedRun.from_path(config.model_path)
-    dataloader = pd_run.build_train_loader(
-        device=device, batch_size=config.batch_size, seed=config.dataset_seed
+    dataloader = pd_run.reloader.build_loader(
+        split="train", device=device, batch_size=config.batch_size, seed=config.dataset_seed
     )
 
     model = pd_run.load_model().to(device)
 
-    processed = collect_memberships(model, dataloader, pd_run.experiment_name, device, config)
+    task_name = "lm" if isinstance(pd_run.reloader, LMReloader) else "resid_mlp"
+    processed = collect_memberships(model, dataloader, task_name, device, config)
 
     del model
     gc.collect()

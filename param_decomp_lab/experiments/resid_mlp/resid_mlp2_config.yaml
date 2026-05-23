@@ -79,7 +79,7 @@ eval:
       n_steps: 20
       mask_scope: shared_across_batch
 target:
-  run_path: wandb:goodfire/spd-pre-Sep-2025/runs/any9ekl9
+  run_path: goodfire/spd-pre-Sep-2025/runs/any9ekl9
 data:
   feature_probability: 0.01
   data_generation_type: at_least_zero_active

@@ -8,6 +8,7 @@ from param_decomp_lab.clustering.formatting import (
     ModuleFilterFunc,
     ModuleFilterSource,
 )
+from param_decomp_lab.infra.wandb import parse_wandb_run_path
 
 
 def _to_module_filter(source: ModuleFilterSource) -> ModuleFilterFunc:
@@ -36,7 +37,7 @@ class HarvestConfig(BaseConfig):
 
     @field_validator("model_path")
     def validate_model_path(cls, v: str) -> str:
-        assert v.startswith("wandb:"), f"model_path must start with 'wandb:', got: {v}"
+        parse_wandb_run_path(v)  # raises ValueError on invalid wandb ref
         return v
 
     @property

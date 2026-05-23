@@ -46,10 +46,12 @@ class PretrainInfoResponse(BaseModel):
 
 def _load_lm_target_lightweight(wandb_path: str) -> LMTargetConfig | None:
     """Load just the LM target config for an LM run, without downloading checkpoints."""
+    from param_decomp_lab.experiments.lm.run import LMReloader
     from param_decomp_lab.saved_run import SavedRun
 
     meta = SavedRun.meta_from_path(wandb_path)
-    if meta.experiment_name != "lm":
+    expected_fqn = f"{LMReloader.__module__}:{LMReloader.__qualname__}"
+    if meta.reloader_class_fqn != expected_fqn:
         return None
     return LMTargetConfig.model_validate(meta.target_dict)
 
@@ -189,18 +191,18 @@ def _get_pretrain_info(lm_target: LMTargetConfig | None) -> PretrainInfoResponse
             topology=None,
         )
 
-    model_class_name = lm_target.model_class
-    model_type = model_class_name.rsplit(".", 1)[-1]
+    from param_decomp_lab.experiments.lm.run import PretrainedTarget
 
-    pretrain_path = lm_target.model_name or (
-        str(lm_target.model_path) if lm_target.model_path is not None else None
-    )
+    spec = lm_target.spec
+    model_class_name = spec.model_class
+    model_type = model_class_name.rsplit(".", 1)[-1]
 
     target_model_config: dict[str, Any] | None = None
     pretrain_config: dict[str, Any] | None = None
     pretrain_wandb_path: str | None = None
 
-    if pretrain_path and model_class_name.startswith("param_decomp_lab.pretrain.models."):
+    if isinstance(spec, PretrainedTarget):
+        pretrain_path = str(spec.run_path)
         try:
             pretrain_wandb_path = pretrain_path
             target_model_config, pretrain_config = _load_pretrain_configs(pretrain_path)

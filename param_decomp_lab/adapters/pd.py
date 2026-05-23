@@ -8,7 +8,7 @@ from param_decomp.component_model import ComponentModel
 from param_decomp_lab.adapters.base import DecompositionAdapter
 from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.experiments.lm.data import LMDataConfig
-from param_decomp_lab.experiments.lm.run import LMTargetConfig
+from param_decomp_lab.experiments.lm.run import LMReloader, LMTargetConfig
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
 from param_decomp_lab.saved_run import SavedRun
 from param_decomp_lab.topology import TransformerTopology
@@ -24,21 +24,19 @@ class PDAdapter(DecompositionAdapter):
         return SavedRun.from_path(self._wandb_path)
 
     @cached_property
+    def lm_reloader(self) -> LMReloader:
+        assert isinstance(self.pd_run.reloader, LMReloader), (
+            f"This method requires an LM run, got reloader={type(self.pd_run.reloader).__name__}"
+        )
+        return self.pd_run.reloader
+
+    @cached_property
     def lm_target(self) -> LMTargetConfig:
-        assert self.pd_run.experiment_name == "lm", (
-            f"This method requires an LM run, got experiment={self.pd_run.experiment_name!r}"
-        )
-        target = self.pd_run.target_cfg
-        assert isinstance(target, LMTargetConfig), (
-            f"Expected LMTargetConfig, got {type(target).__name__}"
-        )
-        return target
+        return self.lm_reloader.target_cfg
 
     @cached_property
     def lm_data(self) -> LMDataConfig:
-        data = self.pd_run.data_cfg
-        assert isinstance(data, LMDataConfig), f"Expected LMDataConfig, got {type(data).__name__}"
-        return data
+        return self.lm_reloader.data_cfg
 
     @cached_property
     def component_model(self) -> ComponentModel:
@@ -66,10 +64,9 @@ class PDAdapter(DecompositionAdapter):
 
     @override
     def dataloader(self, batch_size: int) -> DataLoader[Tensor]:
-        # PDAdapter is LM-only; the LM build_train_loader ignores `device`
-        # because batches are moved per-step.
-        _ = self.lm_target  # assert this is an LM run
-        return self.pd_run.build_train_loader(device="cpu", batch_size=batch_size)
+        # PDAdapter is LM-only; the LM build_loader ignores `device` because batches are
+        # moved per-step.
+        return self.lm_reloader.build_loader(split="train", device="cpu", batch_size=batch_size)
 
     @property
     @override
@@ -83,7 +80,7 @@ class PDAdapter(DecompositionAdapter):
         data = self.lm_data
         return ModelMetadata(
             n_blocks=self._topology.n_blocks,
-            model_class=target.model_class,
+            model_class=target.spec.model_class,
             dataset_name=data.dataset_name,
             layer_descriptions={
                 path: self._topology.target_to_canon(path)
