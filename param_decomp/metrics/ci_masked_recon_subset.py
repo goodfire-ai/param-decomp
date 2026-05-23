@@ -73,8 +73,7 @@ def ci_masked_recon_subset_loss(
 class CIMaskedReconSubsetLoss(Metric[CIMaskedReconSubsetLossConfig]):
     """Recon loss when masking with raw CI values and routing to subsets of component layers."""
 
-    section = "loss"
-    config_type = CIMaskedReconSubsetLossConfig
+    log_namespace = "loss"
     short_name = "CIMaskReconSub"
 
     @override

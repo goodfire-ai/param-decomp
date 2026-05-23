@@ -31,8 +31,7 @@ def faithfulness_loss(
 class FaithfulnessLoss(Metric[FaithfulnessLossConfig]):
     """MSE between the target weights and the sum of the components."""
 
-    section = "loss"
-    config_type = FaithfulnessLossConfig
+    log_namespace = "loss"
     short_name = "Faith"
 
     @override

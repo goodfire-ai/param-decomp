@@ -36,11 +36,11 @@ pd-lm        param_decomp_lab/experiments/lm/ss_llama_simple_mlp-2L.yaml
 ```
 
 For a brand-new experiment, write your own `run.py` that builds the target model, the
-train/eval dataloaders, the eval `Metric` list, the `PDConfig` and `RuntimeConfig`, and a
-`RunSink`, then calls `optimize(...)`:
+train/eval dataloaders, the eval `Metric` list, the `PDConfig` and `RuntimeConfig`, a
+`Cadence` (when to emit), and a `RunSink` (where output goes), then calls `optimize(...)`:
 
 ```python
-from param_decomp.configs import PDConfig, RuntimeConfig
+from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
 from param_decomp.optimize import optimize
 from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
 from param_decomp_lab.run_sink import RunSink
@@ -53,8 +53,13 @@ optimize(
     reconstruction_loss=recon_loss_mse,
     pd_config=PDConfig(...),
     runtime_config=RuntimeConfig(device=device),
-    sink=RunSink.local(out_dir, train_log_freq=100, eval_freq=1000, slow_eval_freq=5000,
-                       n_eval_steps=10),
+    cadence=Cadence(
+        train_log_every=100,
+        eval_every=1000,
+        slow_eval_every=5000,
+        n_eval_steps=10,
+    ),
+    sink=RunSink.local(out_dir),
     eval_metrics=[...],   # list of pre-instantiated Metric objects
 )
 ```
@@ -66,16 +71,19 @@ The three in-repo `run.py` files
 
 ## Metrics
 
-Configure training losses in `pd.loss_metrics`; keys are class names from
-`param_decomp.metrics.loss_metrics.LOSS_METRICS`. Loss metrics must set `coeff`; they are
-evaluated automatically. New loss metrics are added by defining the class in
-`param_decomp/metrics/` and appending it to that table.
+Configure training losses in `pd.loss_metrics` as a list of `{type: "<ClassName>", ...}`
+entries. The `type` literal dispatches to a `Metric` subclass via
+`param_decomp.metrics.dispatch.LOSS_METRIC_CLASSES`. Loss metrics must set `coeff`; they
+are evaluated automatically alongside dedicated eval metrics. New loss metrics are added
+by defining the class in `param_decomp/metrics/`, appending the config to
+`AnyLossMetricConfig` in `configs.py`, and appending the class to `LOSS_METRIC_CLASSES`.
 
-Eval metrics are caller-supplied: instantiate `Metric` objects in your `run.py` and pass them
-to `optimize(eval_metrics=...)`. The in-repo experiments use
-`experiments.utils.build_eval_metrics(...)` to convert a YAML `logging.eval_metrics`
-dict-of-config into a `list[Metric]`, backed by
-`param_decomp_lab.eval_metrics.EVAL_METRICS`.
+Eval metrics are caller-supplied: instantiate `Metric` objects in your `run.py` and pass
+them to `optimize(eval_metrics=...)`. The in-repo experiments use
+`experiments.utils.build_eval_metrics(...)` to convert a YAML `logging.eval_metrics` list
+into a `list[Metric]`, using the same `type` discriminator pattern as loss metrics —
+backed by `AnyEvalMetricConfig` and `EVAL_METRIC_CLASSES` in
+`param_decomp_lab.eval_metrics`.
 
 ## Packaging
 

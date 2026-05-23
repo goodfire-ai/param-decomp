@@ -9,7 +9,13 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.ci_fns import LayerwiseCiConfig
-from param_decomp.configs import AnyLossMetricConfig, OptimizerConfig, PDConfig, RuntimeConfig
+from param_decomp.configs import (
+    AnyLossMetricConfig,
+    Cadence,
+    OptimizerConfig,
+    PDConfig,
+    RuntimeConfig,
+)
 from param_decomp.decomposition_targets import DecompositionTargetConfig
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.faithfulness import FaithfulnessLossConfig
@@ -44,40 +50,35 @@ def recon_loss_mse(pred: Tensor, target: Tensor) -> tuple[Tensor, int]:
 
 
 class CaptureSink:
-    n_eval_steps = 1
-
-    def __init__(self, *, log_train: bool = False) -> None:
-        self.log_train = log_train
-        self.logged: list[tuple[str | None, int, dict[str, Any]]] = []
+    def __init__(self) -> None:
+        self.logged: list[tuple[int, dict[str, Any]]] = []
         self.checkpoints: list[dict[str, Tensor]] = []
 
-    def should_log_train(self, step: int) -> bool:
-        return self.log_train and step == 0
-
-    def should_eval(self, step: int) -> bool:
-        del step
-        return False
-
-    def should_run_slow_eval(self, step: int) -> bool:
-        del step
-        return False
-
-    def should_save(self, step: int, *, total_steps: int) -> bool:
-        return step == total_steps
-
-    def log(self, metrics: dict[str, Any], *, step: int, section: str | None = None) -> None:
-        self.logged.append((section, step, dict(metrics)))
+    def log(self, metrics: dict[str, Any], step: int) -> None:
+        self.logged.append((step, dict(metrics)))
 
     def console(self, *lines: str) -> None:
         del lines
 
-    def checkpoint(self, state_dict: dict[str, Any], *, step: int) -> None:
+    def checkpoint(self, state_dict: dict[str, Any], step: int) -> None:
         del step
         checkpoint: dict[str, Tensor] = {}
         for key, value in state_dict.items():
             assert isinstance(value, Tensor)
             checkpoint[key] = value.detach().cpu().clone()
         self.checkpoints.append(checkpoint)
+
+
+def make_cadence(*, train_log_every: int = 10**9, eval_every: int = 10**9) -> Cadence:
+    """Default cadence for tests: nothing fires unless we explicitly set the freq."""
+    return Cadence(
+        train_log_every=train_log_every,
+        eval_every=eval_every,
+        slow_eval_every=eval_every,
+        n_eval_steps=1,
+        save_every=None,
+        slow_eval_on_first_step=False,
+    )
 
 
 def make_pd_config(
@@ -115,7 +116,7 @@ def test_pd_config_requires_positive_steps() -> None:
 
 
 def test_optimize_logs_missing_grad_norms_as_nan() -> None:
-    sink = CaptureSink(log_train=True)
+    sink = CaptureSink()
     loader = make_loader()
     optimize(
         target_model=TinyLinear(),
@@ -125,18 +126,22 @@ def test_optimize_logs_missing_grad_norms_as_nan() -> None:
         reconstruction_loss=recon_loss_mse,
         pd_config=make_pd_config(),
         runtime_config=RuntimeConfig(device="cpu", autocast_bf16=False),
+        cadence=make_cadence(train_log_every=1),
         sink=sink,
         eval_metrics=[],
     )
 
-    train_logs = [metrics for section, _, metrics in sink.logged if section == "train"]
-    assert len(train_logs) == 1
+    train_logs = [
+        metrics for _, metrics in sink.logged if any(k.startswith("train/") for k in metrics)
+    ]
+    assert len(train_logs) >= 1
+    first = train_logs[0]
     assert any(
-        key.startswith("grad_norms/ci_fns/") and math.isnan(value)
-        for key, value in train_logs[0].items()
+        key.startswith("train/grad_norms/ci_fns/") and math.isnan(value)
+        for key, value in first.items()
     )
-    assert math.isnan(train_logs[0]["grad_norms/summary/ci_fns"])
-    assert math.isnan(train_logs[0]["grad_norms/summary/total"])
+    assert math.isnan(first["train/grad_norms/summary/ci_fns"])
+    assert math.isnan(first["train/grad_norms/summary/total"])
 
 
 class DummyEvalConfig(BaseConfig):
@@ -144,8 +149,7 @@ class DummyEvalConfig(BaseConfig):
 
 
 class DummyEvalMetric(Metric[DummyEvalConfig]):
-    section = "dummy"
-    config_type = DummyEvalConfig
+    log_namespace = "dummy"
 
     @override
     def reset(self) -> None:
@@ -172,6 +176,7 @@ def test_optimize_rejects_duplicate_eval_metric_names() -> None:
             reconstruction_loss=recon_loss_mse,
             pd_config=make_pd_config(),
             runtime_config=RuntimeConfig(device="cpu", autocast_bf16=False),
+            cadence=make_cadence(),
             sink=CaptureSink(),
             eval_metrics=[DummyEvalMetric(DummyEvalConfig()), DummyEvalMetric(DummyEvalConfig())],
         )
@@ -197,6 +202,7 @@ def run_with_external_seed(seed: int) -> dict[str, Tensor]:
         reconstruction_loss=recon_loss_mse,
         pd_config=make_pd_config(),
         runtime_config=RuntimeConfig(device="cpu", autocast_bf16=False),
+        cadence=make_cadence(),
         sink=sink,
         eval_metrics=[],
     )

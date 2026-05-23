@@ -1,5 +1,7 @@
-"""Top-level PD configs: `PDConfig` (algorithm) and `RuntimeConfig` (substrate)."""
+"""Top-level PD configs: `PDConfig` (algorithm), `RuntimeConfig` (substrate), and `Cadence`
+(when the loop emits)."""
 
+from dataclasses import dataclass
 from functools import cached_property
 from typing import Annotated, Literal, Self
 
@@ -108,7 +110,8 @@ class PDConfig(BaseConfig):
     """Algorithm specification: seed, CI function, losses, optimizers, target modules.
 
     Flipping any field here changes what algorithm runs. Pair with `RuntimeConfig`
-    (substrate) and `RunSink` (cadence + outputs) when calling `optimize`.
+    (substrate), `Cadence` (when to emit) and `RunSink` (where output goes) when
+    calling `optimize`.
     """
 
     # --- General ---
@@ -208,3 +211,51 @@ class PDConfig(BaseConfig):
         for cfg in self.loss_metrics:
             assert cfg.coeff is not None, f"loss_metrics.{cfg.type!r} must set `coeff`"
         return self
+
+
+@dataclass(frozen=True)
+class Cadence:
+    """Step-frequency schedule for the PD training loop.
+
+    Pure data — frequencies (in steps) for train logging, evaluation, slow eval, and
+    checkpointing, plus the eval-batch count. Held separately from `RunSink` so the
+    sink only owns *where* output goes; `Cadence` owns *when*.
+
+    `slow_eval_every` must be a multiple of `eval_every`: the trainer only checks
+    `should_run_slow_eval` on steps where `should_eval` already fired.
+    """
+
+    train_log_every: int
+    eval_every: int
+    slow_eval_every: int
+    n_eval_steps: int
+    save_every: int | None = None
+    slow_eval_on_first_step: bool = True
+
+    def __post_init__(self) -> None:
+        assert self.train_log_every > 0, "train_log_every must be positive"
+        assert self.eval_every > 0, "eval_every must be positive"
+        assert self.slow_eval_every > 0, "slow_eval_every must be positive"
+        assert self.slow_eval_every % self.eval_every == 0, (
+            f"slow_eval_every ({self.slow_eval_every}) must be a multiple of "
+            f"eval_every ({self.eval_every})"
+        )
+        assert self.n_eval_steps > 0, "n_eval_steps must be positive"
+        if self.save_every is not None:
+            assert self.save_every > 0, "save_every must be positive when set"
+
+    def should_log_train(self, step: int) -> bool:
+        return step % self.train_log_every == 0
+
+    def should_eval(self, step: int) -> bool:
+        return step % self.eval_every == 0
+
+    def should_run_slow_eval(self, step: int) -> bool:
+        if step == 0:
+            return self.slow_eval_on_first_step
+        return step % self.slow_eval_every == 0
+
+    def should_save(self, step: int) -> bool:
+        if self.save_every is None or step == 0:
+            return False
+        return step % self.save_every == 0

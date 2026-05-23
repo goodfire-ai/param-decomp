@@ -29,10 +29,15 @@ _WANDB_URL_RE = re.compile(
 
 
 def _build_short_names() -> dict[str, str]:
-    """Build the loss-metric class-name to short-name map. Lazy to avoid circular imports."""
+    """Build the metric class-name to short-name map. Lazy to avoid circular imports."""
     from param_decomp.metrics.dispatch import LOSS_METRIC_CLASSES
+    from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
 
-    return {cls.__name__: cls.short_name for cls in LOSS_METRIC_CLASSES.values() if cls.short_name}
+    return {
+        cls.__name__: cls.short_name
+        for cls in (*LOSS_METRIC_CLASSES.values(), *EVAL_METRIC_CLASSES.values())
+        if cls.short_name
+    }
 
 
 _metric_short_names_cache: dict[str, str] | None = None
@@ -119,8 +124,9 @@ def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
 def flatten_metric_configs(config_dict: dict[str, Any]) -> dict[str, Any]:
     """Flatten `loss_metrics` and `eval_metrics` into dot-notation for wandb searchability.
 
-    Converts:
-        loss_metrics: {"ImportanceMinimalityLoss": {"coeff": 0.1, "pnorm": 1.0}}
+    Both containers are lists of dicts, each carrying a `type` discriminator alongside the
+    metric's config fields. Converts:
+        loss_metrics: [{"type": "ImportanceMinimalityLoss", "coeff": 0.1, "pnorm": 1.0}]
     To:
         loss.ImpMin.coeff: 0.1
         loss.ImpMin.pnorm: 1.0
@@ -131,13 +137,16 @@ def flatten_metric_configs(config_dict: dict[str, Any]) -> dict[str, Any]:
         if container_name not in config_dict:
             continue
         container = config_dict[container_name]
-        assert isinstance(container, dict), f"{container_name} should be a dict"
+        assert isinstance(container, list), f"{container_name} should be a list"
 
         prefix = container_name.split("_")[0]  # "loss" or "eval"
-        for metric_field, cfg in container.items():
-            assert isinstance(cfg, dict), f"{container_name}.{metric_field} should be a dict"
-            short_name = _metric_short_names().get(metric_field, metric_field)
+        for cfg in container:
+            assert isinstance(cfg, dict), f"{container_name} entries should be dicts"
+            metric_type = cfg["type"]
+            short_name = _metric_short_names().get(metric_type, metric_type)
             for key, value in cfg.items():
+                if key == "type":
+                    continue
                 flattened[f"{prefix}.{short_name}.{key}"] = value
 
     return flattened

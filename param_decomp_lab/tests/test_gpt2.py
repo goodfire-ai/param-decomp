@@ -6,7 +6,7 @@ from torch import Tensor
 from transformers import GPT2LMHeadModel
 
 from param_decomp.ci_fns import LayerwiseCiConfig
-from param_decomp.configs import OptimizerConfig, PDConfig, RuntimeConfig
+from param_decomp.configs import Cadence, OptimizerConfig, PDConfig, RuntimeConfig
 from param_decomp.decomposition_targets import (
     DecompositionTargetConfig,
     insert_identity_operations_,
@@ -101,14 +101,14 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         collate_fn=collate_input_ids,
     )
 
-    sink = RunSink.local(
-        tmp_path,
-        train_log_freq=50,
-        eval_freq=500,
-        slow_eval_freq=500,
+    sink = RunSink.local(tmp_path)
+    cadence = Cadence(
+        train_log_every=50,
+        eval_every=500,
+        slow_eval_every=500,
         slow_eval_on_first_step=False,
         n_eval_steps=1,
-        save_freq=None,
+        save_every=None,
     )
 
     optimize(
@@ -119,6 +119,7 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         reconstruction_loss=recon_loss_kl,
         pd_config=pd_config,
         runtime_config=RuntimeConfig(device=device),
+        cadence=cadence,
         sink=sink,
         eval_metrics=[CI_L0(CI_L0Config(ci_alive_threshold=0.1, groups=None))],
     )

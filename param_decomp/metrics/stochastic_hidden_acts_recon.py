@@ -128,8 +128,7 @@ class _HiddenActsAccumulator:
 class StochasticHiddenActsReconLoss(Metric[StochasticHiddenActsReconLossConfig]):
     """Reconstruction loss between target and stochastic hidden activations when sampling with stochastic masks."""
 
-    section = "loss"
-    config_type = StochasticHiddenActsReconLossConfig
+    log_namespace = "loss"
     slow = True
     short_name = "StochHiddenActRecon"
 

@@ -13,10 +13,10 @@ from transformers.pytorch_utils import Conv1D as RadfordConv1D
 from param_decomp.base_config import runtime_cast
 from param_decomp.batch_and_loss_fns import RunBatch
 from param_decomp.ci_fns import CiConfig, make_ci_fn_wrapper
+from param_decomp.ci_sigmoids import SIGMOID_TYPES, SigmoidType
 from param_decomp.components import Components, make_components
 from param_decomp.decomposition_targets import DecompositionTarget, Identity
 from param_decomp.masks import ComponentsMaskInfo, SamplingType
-from param_decomp.sigmoids import SIGMOID_TYPES, SigmoidType
 
 
 class OutputWithCache(NamedTuple):

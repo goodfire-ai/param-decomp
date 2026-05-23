@@ -89,10 +89,10 @@ logging:
   eval_batch_size: 64
   save_freq: null
   eval_metrics:
-    CIHistograms:
+    - type: CIHistograms
       n_batches_accum: 1
-    ComponentActivationDensity: {}
-    CI_L0:
+    - type: ComponentActivationDensity
+    - type: CI_L0
       groups:
         layer_0:
         - h.0.*
@@ -120,12 +120,12 @@ logging:
         - h.11.*
         total:
         - '*'
-    CEandKLLosses:
+    - type: CEandKLLosses
       rounding_threshold: 0.0
-    CIMeanPerComponent: {}
-    StochasticHiddenActsReconLoss: {}
-    CIHiddenActsReconLoss: {}
-    PGDReconLoss:
+    - type: CIMeanPerComponent
+    - type: StochasticHiddenActsReconLoss
+    - type: CIHiddenActsReconLoss
+    - type: PGDReconLoss
       init: random
       step_size: 0.1
       n_steps: 20

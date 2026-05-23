@@ -1,7 +1,7 @@
 import math
 from abc import ABC
 from fnmatch import fnmatch
-from typing import Self, override
+from typing import Literal, Self, override
 
 import torch
 import torch.nn.functional as F
@@ -46,11 +46,11 @@ class _AttnPatternsBaseConfig(BaseConfig):
 
 
 class CIMaskedAttnPatternsReconLossConfig(_AttnPatternsBaseConfig):
-    pass
+    type: Literal["CIMaskedAttnPatternsReconLoss"] = "CIMaskedAttnPatternsReconLoss"
 
 
 class StochasticAttnPatternsReconLossConfig(_AttnPatternsBaseConfig):
-    pass
+    type: Literal["StochasticAttnPatternsReconLoss"] = "StochasticAttnPatternsReconLoss"
 
 
 def _resolve_paths(pattern: str, model: ComponentModel) -> list[str]:
@@ -209,8 +209,7 @@ class _AttnPatternsBase(Metric[_AttnPatternsBaseConfig], ABC):
 class CIMaskedAttnPatternsReconLoss(_AttnPatternsBase):
     """Attention pattern reconstruction loss using CI masks."""
 
-    section = "loss"
-    config_type = CIMaskedAttnPatternsReconLossConfig
+    log_namespace = "loss"
     short_name = "CIAttnRecon"
 
     @override
@@ -233,8 +232,7 @@ class CIMaskedAttnPatternsReconLoss(_AttnPatternsBase):
 class StochasticAttnPatternsReconLoss(_AttnPatternsBase):
     """Attention pattern reconstruction loss with stochastic masks."""
 
-    section = "loss"
-    config_type = StochasticAttnPatternsReconLossConfig
+    log_namespace = "loss"
     short_name = "StochAttnRecon"
 
     @override

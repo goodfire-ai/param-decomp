@@ -48,27 +48,27 @@ logging:
   eval_batch_size: 4096
   save_freq: null
   eval_metrics:
-    CIHistograms:
+    - type: CIHistograms
       n_batches_accum: 5
-    ComponentActivationDensity:
+    - type: ComponentActivationDensity
       ci_alive_threshold: 0.1
-    PermutedCIPlots:
+    - type: PermutedCIPlots
       identity_patterns:
       - linear1
       - linear2
       dense_patterns: null
-    IdentityCIError:
+    - type: IdentityCIError
       identity_ci:
       - layer_pattern: linear1
         n_features: 40
       - layer_pattern: linear2
         n_features: 40
       dense_ci: null
-    CI_L0:
+    - type: CI_L0
       groups: null
       ci_alive_threshold: 0.1
-    CIMeanPerComponent: {}
-    StochasticHiddenActsReconLoss: {}
+    - type: CIMeanPerComponent
+    - type: StochasticHiddenActsReconLoss
 target:
   run_path: wandb:goodfire/spd-pre-Sep-2025/runs/urpntmfu
 data:

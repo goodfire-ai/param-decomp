@@ -76,8 +76,7 @@ def stochastic_recon_layerwise_loss(
 class StochasticReconLayerwiseLoss(Metric[StochasticReconLayerwiseLossConfig]):
     """Recon loss when sampling with stochastic masks one layer at a time."""
 
-    section = "loss"
-    config_type = StochasticReconLayerwiseLossConfig
+    log_namespace = "loss"
     short_name = "StochReconLayer"
 
     @override

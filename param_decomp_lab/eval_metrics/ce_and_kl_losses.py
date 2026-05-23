@@ -1,4 +1,4 @@
-from typing import ClassVar, override
+from typing import ClassVar, Literal, override
 
 import einops
 import torch
@@ -21,6 +21,7 @@ from param_decomp_lab.batch_and_loss_fns import calc_kl_divergence_lm
 
 
 class CEandKLLossesConfig(BaseConfig):
+    type: Literal["CEandKLLosses"] = "CEandKLLosses"
     rounding_threshold: float
 
 
@@ -30,8 +31,7 @@ class CEandKLLosses(Metric[CEandKLLossesConfig]):
     NOTE: Assumes all batches and sequences are the same size.
     """
 
-    section = "ce_kl"
-    config_type = CEandKLLossesConfig
+    log_namespace = "ce_kl"
     short_name = "CEandKL"
 
     loss_keys: ClassVar[list[str]] = [

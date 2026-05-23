@@ -1,4 +1,4 @@
-from typing import override
+from typing import Literal, override
 
 import torch
 from torch import Tensor
@@ -12,12 +12,11 @@ from param_decomp_lab.eval_metrics.plotting import plot_mean_component_cis_both_
 
 
 class CIMeanPerComponentConfig(BaseConfig):
-    pass
+    type: Literal["CIMeanPerComponent"] = "CIMeanPerComponent"
 
 
 class CIMeanPerComponent(Metric[CIMeanPerComponentConfig]):
-    section = "figures"
-    config_type = CIMeanPerComponentConfig
+    log_namespace = "figures"
     slow = True
     short_name = "CIMeanPerComp"
 

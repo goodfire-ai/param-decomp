@@ -8,14 +8,17 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import TypeAdapter
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.configs import PDConfig, RuntimeConfig
+from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
 from param_decomp.metrics.base import Metric
-from param_decomp_lab.eval_metrics import EVAL_METRICS
+from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES, AnyEvalMetricConfig
 from param_decomp_lab.run_sink import RunSink
 
 RUN_META_FILENAME = "run_meta.yaml"
+
+_EVAL_METRIC_LIST_ADAPTER = TypeAdapter(list[AnyEvalMetricConfig])
 
 
 def load_yaml(path: Path | str) -> dict[str, Any]:
@@ -26,32 +29,37 @@ def load_yaml(path: Path | str) -> dict[str, Any]:
     return data
 
 
-def build_eval_metrics(eval_metrics_dict: dict[str, Any] | None) -> list[Metric[BaseConfig]]:
-    """Turn a dict-of-config (from YAML) into instantiated eval `Metric` objects.
+def build_eval_metrics(eval_metrics_list: list[dict[str, Any]] | None) -> list[Metric[BaseConfig]]:
+    """Turn a list of eval-metric configs (from YAML) into instantiated eval `Metric` objects.
+
+    Each entry is a dict with a `type: "<ClassName>"` discriminator plus the metric's config
+    fields, mirroring the loss-metrics YAML pattern. The list is validated by pydantic as
+    `list[AnyEvalMetricConfig]` and each entry is dispatched to its `Metric` class via
+    `EVAL_METRIC_CLASSES`.
 
     The metrics are not yet bound to a `ComponentModel` — `optimize()` binds them after
     constructing the model.
     """
-    if not eval_metrics_dict:
+    if not eval_metrics_list:
         return []
-    instances: list[Metric[BaseConfig]] = []
-    for metric_name, raw_cfg in eval_metrics_dict.items():
-        assert metric_name in EVAL_METRICS, (
-            f"unknown eval metric {metric_name!r} (known: {sorted(EVAL_METRICS)})"
-        )
-        cls = EVAL_METRICS[metric_name]
-        cfg = (
-            raw_cfg
-            if isinstance(raw_cfg, BaseConfig)
-            else cls.config_type.model_validate(raw_cfg or {})
-        )
-        instances.append(cls(cfg))
-    return instances
+    configs = _EVAL_METRIC_LIST_ADAPTER.validate_python(eval_metrics_list)
+    return [EVAL_METRIC_CLASSES[cfg.type](cfg) for cfg in configs]
+
+
+def cadence_from_logging_block(logging_block: dict[str, Any]) -> Cadence:
+    """Build a `Cadence` from the YAML `logging:` block."""
+    return Cadence(
+        train_log_every=logging_block["train_log_freq"],
+        eval_every=logging_block["eval_freq"],
+        slow_eval_every=logging_block["slow_eval_freq"],
+        n_eval_steps=logging_block["n_eval_steps"],
+        save_every=logging_block.get("save_freq"),
+        slow_eval_on_first_step=logging_block.get("slow_eval_on_first_step", True),
+    )
 
 
 def run_sink_from_logging_block(
     out_dir: Path | None,
-    logging_block: dict[str, Any],
     *,
     wandb_project: str | None = None,
     wandb_run_id: str | None = None,
@@ -61,26 +69,13 @@ def run_sink_from_logging_block(
 ) -> RunSink:
     """Build a `RunSink` from the YAML `logging:` block.
 
-    The YAML block carries cadence (train_log_freq, eval_freq, slow_eval_freq, n_eval_steps,
-    slow_eval_on_first_step, save_freq) and historically also a dict-of-eval-metrics-configs.
-    This helper consumes only the cadence keys; the eval-metrics dict is the responsibility of
-    `build_eval_metrics(...)`.
-
-    Pass `out_dir=None` to get a `RunSink.silent(...)`. Pass `wandb_project` to use
+    Pass `out_dir=None` to get a `RunSink.silent()`. Pass `wandb_project` to use
     `RunSink.with_wandb(...)`; otherwise `RunSink.local(...)`.
     """
-    kwargs = dict(
-        train_log_freq=logging_block["train_log_freq"],
-        eval_freq=logging_block["eval_freq"],
-        slow_eval_freq=logging_block["slow_eval_freq"],
-        n_eval_steps=logging_block["n_eval_steps"],
-        save_freq=logging_block.get("save_freq"),
-        slow_eval_on_first_step=logging_block.get("slow_eval_on_first_step", True),
-    )
     if out_dir is None:
-        return RunSink.silent(**kwargs)
+        return RunSink.silent()
     if wandb_project is None:
-        return RunSink.local(out_dir, **kwargs)
+        return RunSink.local(out_dir)
     assert wandb_run_id is not None, "wandb_run_id required when wandb_project is set"
     return RunSink.with_wandb(
         out_dir,
@@ -89,7 +84,6 @@ def run_sink_from_logging_block(
         name=wandb_name,
         tags=wandb_tags,
         configs=wandb_configs,
-        **kwargs,
     )
 
 

@@ -6,9 +6,9 @@ from unittest.mock import Mock
 import pytest
 import torch
 
+from param_decomp.ci_sigmoids import lower_leaky_hard_sigmoid, upper_leaky_hard_sigmoid
 from param_decomp.component_model import CIOutputs, ComponentModel
 from param_decomp.metrics.context import MetricContext
-from param_decomp.sigmoids import lower_leaky_hard_sigmoid, upper_leaky_hard_sigmoid
 from param_decomp_lab.batch_and_loss_fns import recon_loss_mse
 from param_decomp_lab.eval_metrics.ci_histograms import CIHistograms, CIHistogramsConfig
 

@@ -24,7 +24,7 @@ from param_decomp.batch_and_loss_fns import (
     move_batch_to_device,
 )
 from param_decomp.component_model import ComponentModel, OutputWithCache, component_grad_norms
-from param_decomp.configs import PDConfig, RuntimeConfig
+from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
 from param_decomp.decomposition_targets import (
     insert_identity_operations_,
     resolve_decomposition_targets,
@@ -96,14 +96,15 @@ def optimize(
     reconstruction_loss: ReconstructionLoss,
     pd_config: PDConfig,
     runtime_config: RuntimeConfig,
+    cadence: Cadence,
     sink: RunSink,
     eval_metrics: list[Metric[Any]],
 ) -> None:
     """Run the PD optimization loop.
 
     Pure trainer: takes the target model, the two dataloaders, the run-batch / reconstruction
-    callables, the two configs, the sink, and the eval metrics. No `RunConfig`, no driver, no
-    YAML, no wandb-init responsibility — `sink` owns all of that.
+    callables, the two configs, the cadence (when to emit), the sink (where output goes), and
+    the eval metrics. No `RunConfig`, no driver, no YAML, no wandb-init responsibility.
 
     `eval_metrics` is a list of caller-instantiated `Metric` objects. They are bound to the
     `ComponentModel` and device inside this function via `Metric.bind(...)`; the caller does
@@ -268,7 +269,7 @@ def optimize(
             m.after_backward()
 
         # --- Train Logging --- #
-        if sink.should_log_train(step):
+        if cadence.should_log_train(step):
             avg_metrics = avg_metrics_across_ranks(batch_log_data, device=device)
             batch_log_data = cast(defaultdict[str, float], avg_metrics)
 
@@ -285,16 +286,16 @@ def optimize(
                 f"LR[ci_fn]: {ci_fn_lr:.6f}",
                 *(f"train/{name}: {value:.15f}" for name, value in batch_log_data.items()),
             )
-            sink.log(batch_log_data, step=step, section="train")
+            sink.log({f"train/{k}": v for k, v in batch_log_data.items()}, step=step)
 
         # --- Evaluation --- #
-        if sink.should_eval(step):
+        if cadence.should_eval(step):
             with torch.no_grad(), bf16_autocast(enabled=runtime_config.autocast_bf16):
-                slow_step = sink.should_run_slow_eval(step)
+                slow_step = cadence.should_run_slow_eval(step)
                 active = [m for m in all_instances.values() if not (m.slow and not slow_step)]
                 for m in active:
                     m.reset()
-                for _ in range(sink.n_eval_steps):
+                for _ in range(cadence.n_eval_steps):
                     ctx = _build_metric_context(
                         next(eval_iterator),
                         step=step,
@@ -310,14 +311,14 @@ def optimize(
                 metrics = collect_metric_outputs(active)
 
                 sink.console(*(f"eval/{k}: {v}" for k, v in metrics.items()))
-                sink.log(metrics, step=step, section="eval")
+                sink.log({f"eval/{k}": v for k, v in metrics.items()}, step=step)
 
                 del metrics
                 torch.cuda.empty_cache()
                 gc.collect()
 
         # --- Saving Checkpoint --- #
-        if sink.should_save(step, total_steps=pd_config.steps):
+        if step == pd_config.steps or cadence.should_save(step):
             sink.checkpoint(component_model.state_dict(), step=step)
 
         # Skip gradient step at the very last step (last step is just for plotting/logging).

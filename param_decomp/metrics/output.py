@@ -17,7 +17,7 @@ MetricOutType = dict[str, str | Number | Image.Image | wandb.plot.CustomChart]
 
 
 def _clean_metric_output(
-    section: str,
+    log_namespace: str,
     metric_name: str,
     computed_raw: Any,
 ) -> MetricOutType:
@@ -32,7 +32,7 @@ def _clean_metric_output(
             assert computed_raw.numel() == 1, (
                 f"Only scalar tensors supported, got shape {computed_raw.shape}"
             )
-            computed[f"{section}/{metric_name}"] = computed_raw.item()
+            computed[f"{log_namespace}/{metric_name}"] = computed_raw.item()
         case dict():
             for k, v in computed_raw.items():
                 assert isinstance(k, str), f"Only string keys supported, got {type(k)}"
@@ -41,7 +41,7 @@ def _clean_metric_output(
                 ), f"{type(v)} not supported"
                 if isinstance(v, Tensor):
                     v = v.item()
-                computed[f"{section}/{k}"] = v
+                computed[f"{log_namespace}/{k}"] = v
         case _:
             raise ValueError(f"Unsupported type: {type(computed_raw)}")
     return computed
@@ -52,7 +52,7 @@ def collect_metric_outputs(active: list[Metric[Any]]) -> MetricOutType:
     outputs: MetricOutType = {}
     for m in active:
         cleaned = _clean_metric_output(
-            section=m.section,
+            log_namespace=m.log_namespace,
             metric_name=type(m).__name__,
             computed_raw=m.compute(),
         )

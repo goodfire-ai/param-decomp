@@ -1,6 +1,6 @@
 import re
 from collections import defaultdict
-from typing import override
+from typing import Literal, override
 
 import torch
 import wandb.plot
@@ -19,6 +19,7 @@ def calc_ci_l_zero(ci: Float[Tensor, "... C"], threshold: float) -> float:
 
 
 class CI_L0Config(BaseConfig):
+    type: Literal["CI_L0"] = "CI_L0"
     groups: dict[str, list[str]] | None
     ci_alive_threshold: float = 0.0
 
@@ -26,8 +27,7 @@ class CI_L0Config(BaseConfig):
 class CI_L0(Metric[CI_L0Config]):
     """L0 metric for CI values."""
 
-    section = "l0"
-    config_type = CI_L0Config
+    log_namespace = "l0"
     short_name = "CI_L0"
 
     @override

@@ -1,16 +1,14 @@
 """Concrete `RunSink` used by the in-repo experiments and lab tooling.
 
-Owns three things the trainer used to read off `LoggingConfig`:
-
-1. **Output channels**: local files (``out_dir``) + optional wandb.
-2. **Cadence**: when to emit train logs, when to eval, when to checkpoint.
-3. **Console output**.
+Owns two things: **where output goes** (local files + optional wandb) and
+**console output**. Cadence — when the trainer emits — is the separate
+`param_decomp.configs.Cadence` object the caller also hands to `optimize()`.
 
 Three constructors:
 
-    sink = RunSink.local(out_dir, train_log_freq=..., eval_freq=..., ...)
-    sink = RunSink.with_wandb(out_dir, project="...", train_log_freq=..., ...)
-    sink = RunSink.silent(train_log_freq=..., ...)            # tests / quick checks
+    sink = RunSink.local(out_dir)
+    sink = RunSink.with_wandb(out_dir, project=..., run_id=..., ...)
+    sink = RunSink.silent()                                # tests / quick checks
 
 Non-main ranks transparently get a no-op sink (``out_dir=None``, wandb inactive)
 regardless of which constructor is called. The trainer never has to check rank.
@@ -72,62 +70,18 @@ class RunSink:
     """
 
     out_dir: Path | None
-    train_log_freq: int
-    eval_freq: int
-    slow_eval_freq: int
-    n_eval_steps: int
-    slow_eval_on_first_step: bool
-    save_freq: int | None
     _wandb_active: bool
-
-    def __post_init__(self) -> None:
-        assert self.train_log_freq > 0, "train_log_freq must be positive"
-        assert self.eval_freq > 0, "eval_freq must be positive"
-        assert self.slow_eval_freq > 0, "slow_eval_freq must be positive"
-        assert self.slow_eval_freq % self.eval_freq == 0, (
-            f"slow_eval_freq ({self.slow_eval_freq}) must be a multiple of "
-            f"eval_freq ({self.eval_freq})"
-        )
-        assert self.n_eval_steps > 0, "n_eval_steps must be positive"
-        if self.save_freq is not None:
-            assert self.save_freq > 0, "save_freq must be positive when set"
 
     # =========================== Constructors ===========================
 
     @classmethod
-    def local(
-        cls,
-        out_dir: Path,
-        *,
-        train_log_freq: int,
-        eval_freq: int,
-        slow_eval_freq: int,
-        n_eval_steps: int,
-        save_freq: int | None = None,
-        slow_eval_on_first_step: bool = True,
-    ) -> "RunSink":
+    def local(cls, out_dir: Path) -> "RunSink":
         """Notebook / script: local files only, no wandb."""
         if not is_main_process():
-            return cls._silent_noop(
-                train_log_freq=train_log_freq,
-                eval_freq=eval_freq,
-                slow_eval_freq=slow_eval_freq,
-                n_eval_steps=n_eval_steps,
-                save_freq=save_freq,
-                slow_eval_on_first_step=slow_eval_on_first_step,
-            )
+            return cls._silent_noop()
         out_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Train+eval logs saved to directory: {out_dir}")
-        return cls(
-            out_dir=out_dir,
-            train_log_freq=train_log_freq,
-            eval_freq=eval_freq,
-            slow_eval_freq=slow_eval_freq,
-            n_eval_steps=n_eval_steps,
-            slow_eval_on_first_step=slow_eval_on_first_step,
-            save_freq=save_freq,
-            _wandb_active=False,
-        )
+        return cls(out_dir=out_dir, _wandb_active=False)
 
     @classmethod
     def with_wandb(
@@ -136,12 +90,6 @@ class RunSink:
         *,
         project: str,
         run_id: str,
-        train_log_freq: int,
-        eval_freq: int,
-        slow_eval_freq: int,
-        n_eval_steps: int,
-        save_freq: int | None = None,
-        slow_eval_on_first_step: bool = True,
         name: str | None = None,
         tags: list[str] | None = None,
         configs: dict[str, BaseConfig] | None = None,
@@ -149,14 +97,7 @@ class RunSink:
     ) -> "RunSink":
         """Notebook / script: local files + wandb."""
         if not is_main_process():
-            return cls._silent_noop(
-                train_log_freq=train_log_freq,
-                eval_freq=eval_freq,
-                slow_eval_freq=slow_eval_freq,
-                n_eval_steps=n_eval_steps,
-                save_freq=save_freq,
-                slow_eval_on_first_step=slow_eval_on_first_step,
-            )
+            return cls._silent_noop()
         out_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Train+eval logs saved to directory: {out_dir}")
         init_wandb(
@@ -167,103 +108,25 @@ class RunSink:
             tags=tags,
             view_meta=view_meta,
         )
-        return cls(
-            out_dir=out_dir,
-            train_log_freq=train_log_freq,
-            eval_freq=eval_freq,
-            slow_eval_freq=slow_eval_freq,
-            n_eval_steps=n_eval_steps,
-            slow_eval_on_first_step=slow_eval_on_first_step,
-            save_freq=save_freq,
-            _wandb_active=True,
-        )
+        return cls(out_dir=out_dir, _wandb_active=True)
 
     @classmethod
-    def silent(
-        cls,
-        *,
-        train_log_freq: int = 50,
-        eval_freq: int = 100,
-        slow_eval_freq: int = 100,
-        n_eval_steps: int = 1,
-        save_freq: int | None = None,
-        slow_eval_on_first_step: bool = True,
-    ) -> "RunSink":
+    def silent(cls) -> "RunSink":
         """No persistence, no wandb. Useful for tests / quick interactive runs."""
-        return cls._silent_noop(
-            train_log_freq=train_log_freq,
-            eval_freq=eval_freq,
-            slow_eval_freq=slow_eval_freq,
-            n_eval_steps=n_eval_steps,
-            save_freq=save_freq,
-            slow_eval_on_first_step=slow_eval_on_first_step,
-        )
+        return cls._silent_noop()
 
     @classmethod
-    def _silent_noop(
-        cls,
-        *,
-        train_log_freq: int,
-        eval_freq: int,
-        slow_eval_freq: int,
-        n_eval_steps: int,
-        save_freq: int | None,
-        slow_eval_on_first_step: bool,
-    ) -> "RunSink":
-        return cls(
-            out_dir=None,
-            train_log_freq=train_log_freq,
-            eval_freq=eval_freq,
-            slow_eval_freq=slow_eval_freq,
-            n_eval_steps=n_eval_steps,
-            slow_eval_on_first_step=slow_eval_on_first_step,
-            save_freq=save_freq,
-            _wandb_active=False,
-        )
-
-    # =========================== Cadence gating ===========================
-
-    def should_log_train(self, step: int) -> bool:
-        return step % self.train_log_freq == 0
-
-    def should_eval(self, step: int) -> bool:
-        return step % self.eval_freq == 0
-
-    def should_run_slow_eval(self, step: int) -> bool:
-        if step == 0:
-            return self.slow_eval_on_first_step
-        return step % self.slow_eval_freq == 0
-
-    def should_save(self, step: int, *, total_steps: int) -> bool:
-        if step == total_steps:
-            return True
-        if self.save_freq is None or step == 0:
-            return False
-        return step % self.save_freq == 0
+    def _silent_noop(cls) -> "RunSink":
+        return cls(out_dir=None, _wandb_active=False)
 
     # =========================== Output API ===========================
 
-    def log(
-        self,
-        metrics: dict[str, Any],
-        *,
-        step: int,
-        section: str | None = None,
-    ) -> None:
-        """Emit a flat metrics dict to disk (if `out_dir`) and to wandb (if active).
-
-        `section` is prefixed to every W&B key (`"eval"` → `"eval/loss/total"`);
-        local logs use the unsectioned keys.
-        """
+    def log(self, metrics: dict[str, Any], step: int) -> None:
+        """Emit a flat metrics dict to disk (if `out_dir`) and to wandb (if active)."""
         if self.out_dir is not None:
             _local_log(metrics, step, self.out_dir)
         if self._wandb_active:
-            wandb_metrics = (
-                {f"{section}/{k}": _wandb_value(v) for k, v in metrics.items()}
-                if section is not None
-                else {k: _wandb_value(v) for k, v in metrics.items()}
-            )
-            try_wandb(wandb.log, wandb_metrics, step=step)
+            try_wandb(wandb.log, {k: _wandb_value(v) for k, v in metrics.items()}, step=step)
 
     def console(self, *lines: str) -> None:
         """Print lines to stderr via `tqdm.write`. No-op on non-main ranks."""
@@ -272,7 +135,7 @@ class RunSink:
         for line in lines:
             tqdm.write(line)
 
-    def checkpoint(self, state_dict: dict[str, Any], *, step: int) -> None:
+    def checkpoint(self, state_dict: dict[str, Any], step: int) -> None:
         """Save `state_dict` to `{out_dir}/model_{step}.pth` + push to wandb."""
         if self.out_dir is None:
             return

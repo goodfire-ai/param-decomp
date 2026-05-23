@@ -1,4 +1,4 @@
-from typing import ClassVar, override
+from typing import ClassVar, Literal, override
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.masks import SamplingType
@@ -8,13 +8,13 @@ from param_decomp_lab.eval_metrics.plotting import plot_causal_importance_vals
 
 
 class PermutedCIPlotsConfig(BaseConfig):
+    type: Literal["PermutedCIPlots"] = "PermutedCIPlots"
     identity_patterns: list[str] | None
     dense_patterns: list[str] | None
 
 
 class PermutedCIPlots(Metric[PermutedCIPlotsConfig]):
-    section = "figures"
-    config_type = PermutedCIPlotsConfig
+    log_namespace = "figures"
     slow = True
     short_name = "PermCIPlots"
 

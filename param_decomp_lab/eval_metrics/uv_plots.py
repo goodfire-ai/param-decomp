@@ -1,4 +1,4 @@
-from typing import ClassVar, override
+from typing import ClassVar, Literal, override
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.masks import SamplingType
@@ -8,14 +8,13 @@ from param_decomp_lab.eval_metrics.plotting import plot_causal_importance_vals, 
 
 
 class UVPlotsConfig(BaseConfig):
+    type: Literal["UVPlots"] = "UVPlots"
     identity_patterns: list[str] | None
     dense_patterns: list[str] | None
 
 
 class UVPlots(Metric[UVPlotsConfig]):
-    cfg: UVPlotsConfig
-    section = "figures"
-    config_type = UVPlotsConfig
+    log_namespace = "figures"
     slow: ClassVar[bool] = True
     short_name = "UVPlots"
 

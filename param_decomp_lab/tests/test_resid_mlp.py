@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from param_decomp.ci_fns import LayerwiseCiConfig
-from param_decomp.configs import OptimizerConfig, PDConfig, RuntimeConfig
+from param_decomp.configs import Cadence, OptimizerConfig, PDConfig, RuntimeConfig
 from param_decomp.decomposition_targets import (
     DecompositionTargetConfig,
     insert_identity_operations_,
@@ -91,13 +91,13 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
     )
     eval_loader = DatasetGeneratedDataLoader(dataset, batch_size=eval_batch_size, shuffle=False)
 
-    sink = RunSink.local(
-        tmp_path,
-        train_log_freq=50,
-        eval_freq=10,
-        slow_eval_freq=10,
+    sink = RunSink.local(tmp_path)
+    cadence = Cadence(
+        train_log_every=50,
+        eval_every=10,
+        slow_eval_every=10,
         n_eval_steps=1,
-        save_freq=None,
+        save_every=None,
     )
 
     optimize(
@@ -108,6 +108,7 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         reconstruction_loss=recon_loss_mse,
         pd_config=pd_config,
         runtime_config=RuntimeConfig(device=device),
+        cadence=cadence,
         sink=sink,
         eval_metrics=[],
     )

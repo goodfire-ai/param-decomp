@@ -38,8 +38,7 @@ def _unmasked_recon_loss_update(
 class UnmaskedReconLoss(Metric[UnmaskedReconLossConfig]):
     """Recon loss using the unmasked components and without the delta component."""
 
-    section = "loss"
-    config_type = UnmaskedReconLossConfig
+    log_namespace = "loss"
     short_name = "UnmaskedRecon"
 
     @override

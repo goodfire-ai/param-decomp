@@ -1,12 +1,12 @@
 """Metric protocol and config base classes.
 
-Each metric file defines its pydantic config class alongside the `Metric` class itself. Eval
-metric configs subclass `BaseConfig` directly; loss metrics subclass `LossMetricConfig` (which
-carries the required `coeff` field for training). Loss metrics are referenced from
-`PDConfig.loss_metrics` as a pydantic discriminated union keyed on each subclass's `type`
-literal; the runtime dispatch to the matching `Metric` class lives in
-`param_decomp.metrics.dispatch.LOSS_METRIC_CLASSES`. Eval metrics are instantiated by
-the caller and passed to `optimize(eval_metrics=...)`.
+Each metric file defines its pydantic config class alongside the `Metric` class itself. Every
+config carries a `type: Literal["<ClassName>"]` discriminator. Loss metric configs subclass
+`LossMetricConfig` (which adds the `coeff` field for training); eval metric configs subclass
+`BaseConfig` directly. Both pools are pydantic discriminated unions over `type`:
+`AnyLossMetricConfig` in `configs.py` (for `PDConfig.loss_metrics`) and `AnyEvalMetricConfig`
+in `param_decomp_lab.eval_metrics` (for the lab's YAML eval list). Runtime dispatch lives in
+`metrics.dispatch.LOSS_METRIC_CLASSES` and `eval_metrics.EVAL_METRIC_CLASSES`.
 
 Metrics are instantiated with just the validated config (`MyMetric(cfg)`). The training loop
 calls `metric.bind(model=component_model, device=...)` once before any other method, then
@@ -47,8 +47,7 @@ MetricResult = (
 class Metric[TConfig: BaseConfig](ABC):
     """Abstract base class that every metric must subclass."""
 
-    section: ClassVar[str]
-    config_type: ClassVar[type[BaseConfig]]
+    log_namespace: ClassVar[str]
     slow: ClassVar[bool] = False
     short_name: ClassVar[str | None] = None
     cfg: TConfig

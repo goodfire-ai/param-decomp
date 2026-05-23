@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import override
+from typing import Literal, override
 
 import torch
 from jaxtyping import Float
@@ -13,12 +13,12 @@ from param_decomp_lab.eval_metrics.plotting import plot_ci_values_histograms
 
 
 class CIHistogramsConfig(BaseConfig):
+    type: Literal["CIHistograms"] = "CIHistograms"
     n_batches_accum: int | None
 
 
 class CIHistograms(Metric[CIHistogramsConfig]):
-    section = "figures"
-    config_type = CIHistogramsConfig
+    log_namespace = "figures"
     slow = True
     short_name = "CIHist"
 

@@ -1,4 +1,4 @@
-from typing import ClassVar, override
+from typing import ClassVar, Literal, override
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.masks import SamplingType
@@ -9,6 +9,7 @@ from param_decomp_lab.toy_models.target_ci import compute_target_metrics, make_t
 
 
 class IdentityCIErrorConfig(BaseConfig):
+    type: Literal["IdentityCIError"] = "IdentityCIError"
     identity_ci: list[dict[str, str | int]] | None
     dense_ci: list[dict[str, str | int]] | None
 
@@ -16,8 +17,7 @@ class IdentityCIErrorConfig(BaseConfig):
 class IdentityCIError(Metric[IdentityCIErrorConfig]):
     """Error between the CI values and an Identity or Dense CI pattern."""
 
-    section = "target_solution_error"
-    config_type = IdentityCIErrorConfig
+    log_namespace = "target_solution_error"
     slow = True
     short_name = "IdCIErr"
 

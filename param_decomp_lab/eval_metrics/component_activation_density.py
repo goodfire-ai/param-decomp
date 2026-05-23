@@ -1,4 +1,4 @@
-from typing import override
+from typing import Literal, override
 
 import torch
 from einops import reduce
@@ -13,14 +13,14 @@ from param_decomp_lab.eval_metrics.plotting import plot_component_activation_den
 
 
 class ComponentActivationDensityConfig(BaseConfig):
+    type: Literal["ComponentActivationDensity"] = "ComponentActivationDensity"
     ci_alive_threshold: float = 0.0
 
 
 class ComponentActivationDensity(Metric[ComponentActivationDensityConfig]):
     """Activation density for each component."""
 
-    section = "figures"
-    config_type = ComponentActivationDensityConfig
+    log_namespace = "figures"
     slow = True
     short_name = "CompActDens"
 

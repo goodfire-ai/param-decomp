@@ -72,8 +72,7 @@ def stochastic_recon_loss(
 class StochasticReconLoss(Metric[StochasticReconLossConfig]):
     """Recon loss when sampling with stochastic masks on all component layers."""
 
-    section = "loss"
-    config_type = StochasticReconLossConfig
+    log_namespace = "loss"
     short_name = "StochRecon"
 
     @override

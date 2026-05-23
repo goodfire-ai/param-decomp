@@ -19,8 +19,7 @@ class PGDReconLayerwiseLoss(Metric[PGDReconLayerwiseLossConfig]):
     """Recon loss when masking with adversarially-optimized values and routing to one layer at a
     time."""
 
-    section = "loss"
-    config_type = PGDReconLayerwiseLossConfig
+    log_namespace = "loss"
     short_name = "PGDReconLayer"
 
     @override

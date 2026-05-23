@@ -1,4 +1,4 @@
-from typing import override
+from typing import Literal, override
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.masks import make_mask_infos
@@ -12,14 +12,13 @@ from param_decomp.metrics.stochastic_hidden_acts_recon import (
 
 
 class CIHiddenActsReconLossConfig(BaseConfig):
-    pass
+    type: Literal["CIHiddenActsReconLoss"] = "CIHiddenActsReconLoss"
 
 
 class CIHiddenActsReconLoss(Metric[CIHiddenActsReconLossConfig]):
     """Reconstruction loss between target and component hidden activations when masking with CI values."""
 
-    section = "loss"
-    config_type = CIHiddenActsReconLossConfig
+    log_namespace = "loss"
     slow = True
     short_name = "CIHiddenActRecon"
 

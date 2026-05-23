@@ -114,7 +114,7 @@ class _PersistentPGDReconBase[
 ](Metric[TConfig]):
     """Shared logic between all-layers and subset PPGD recon metrics."""
 
-    section: ClassVar[str] = "loss"
+    log_namespace: ClassVar[str] = "loss"
     slow: ClassVar[bool] = True
 
     def __init__(self, cfg: TConfig) -> None:
@@ -244,12 +244,10 @@ class _PersistentPGDReconBase[
 class PersistentPGDReconLoss(_PersistentPGDReconBase[PersistentPGDReconLossConfig]):
     """Persistent PGD adversarial-mask reconstruction loss (routes to all layers)."""
 
-    config_type = PersistentPGDReconLossConfig
     short_name = "PersistPGDRecon"
 
 
 class PersistentPGDReconSubsetLoss(_PersistentPGDReconBase[PersistentPGDReconSubsetLossConfig]):
     """Persistent PGD adversarial-mask reconstruction loss (subset routing)."""
 
-    config_type = PersistentPGDReconSubsetLossConfig
     short_name = "PersistPGDReconSub"

@@ -36,6 +36,7 @@ from param_decomp_lab.experiments.lm.data import (
 )
 from param_decomp_lab.experiments.utils import (
     build_eval_metrics,
+    cadence_from_logging_block,
     load_yaml,
     run_sink_from_logging_block,
     save_run_meta,
@@ -216,7 +217,8 @@ def main(config_path: str | Path) -> None:
 
     run_id = generate_run_id("param_decomp")
     out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id if is_main_process() else None
-    sink = run_sink_from_logging_block(out_dir, logging_block)
+    cadence = cadence_from_logging_block(logging_block)
+    sink = run_sink_from_logging_block(out_dir)
     save_run_meta(
         out_dir,
         experiment_name="lm",
@@ -235,6 +237,7 @@ def main(config_path: str | Path) -> None:
             reconstruction_loss=recon_loss_kl,
             pd_config=pd_config,
             runtime_config=runtime_config,
+            cadence=cadence,
             sink=sink,
             eval_metrics=eval_metrics,
         )

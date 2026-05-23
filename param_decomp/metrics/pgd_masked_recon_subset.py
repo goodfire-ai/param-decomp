@@ -24,8 +24,7 @@ class PGDReconSubsetLoss(Metric[PGDReconSubsetLossConfig]):
     """Recon loss when masking with adversarially-optimized values and routing to subsets of
     component layers."""
 
-    section = "loss"
-    config_type = PGDReconSubsetLossConfig
+    log_namespace = "loss"
     short_name = "PGDReconSub"
 
     @override

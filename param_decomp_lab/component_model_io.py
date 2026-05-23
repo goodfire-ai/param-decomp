@@ -18,13 +18,13 @@ from param_decomp.ci_fns import (
     GlobalCiConfig,
     LayerwiseCiConfig,
 )
+from param_decomp.ci_sigmoids import SigmoidType
 from param_decomp.component_model import ComponentModel
 from param_decomp.decomposition_targets import (
     DecompositionTargetConfig,
     insert_identity_operations_,
     resolve_decomposition_targets,
 )
-from param_decomp.sigmoids import SigmoidType
 
 
 def _validate_checkpoint_ci_config_compatibility(

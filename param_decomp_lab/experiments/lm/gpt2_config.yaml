@@ -49,15 +49,15 @@ logging:
   eval_batch_size: 2
   save_freq: null
   eval_metrics:
-    CIHistograms:
+    - type: CIHistograms
       n_batches_accum: 5
-    ComponentActivationDensity: {}
-    CI_L0:
+    - type: ComponentActivationDensity
+    - type: CI_L0
       groups: null
-    CEandKLLosses:
+    - type: CEandKLLosses
       rounding_threshold: 0.0
-    CIMeanPerComponent: {}
-    StochasticHiddenActsReconLoss: {}
+    - type: CIMeanPerComponent
+    - type: StochasticHiddenActsReconLoss
 target:
   model_class: transformers.GPT2LMHeadModel
   model_name: openai-community/gpt2

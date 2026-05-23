@@ -46,8 +46,7 @@ class PGDReconLoss(Metric[PGDReconLossConfig]):
     """Recon loss when masking with adversarially-optimized values and routing to all component
     layers."""
 
-    section = "loss"
-    config_type = PGDReconLossConfig
+    log_namespace = "loss"
     short_name = "PGDRecon"
 
     @override
