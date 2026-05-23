@@ -41,11 +41,11 @@ pd:
   faithfulness_warmup_weight_decay: 0.1
 cadence:
   train_log_every: 100
-  eval_every: 1000
-  slow_eval_every: 5000
 eval:
   n_steps: 100
   batch_size: 4096
+  every: 1000
+  slow_every: 5000
   metrics:
     - type: CIHistograms
       n_batches_accum: 5

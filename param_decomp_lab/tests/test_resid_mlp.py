@@ -11,7 +11,7 @@ from param_decomp.decomposition_targets import (
 from param_decomp.metrics.faithfulness import FaithfulnessLossConfig
 from param_decomp.metrics.importance_minimality import ImportanceMinimalityLossConfig
 from param_decomp.metrics.stochastic_recon import StochasticReconLossConfig
-from param_decomp.optimize import optimize
+from param_decomp.optimize import EvalLoop, optimize
 from param_decomp.schedule import ScheduleConfig
 from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
 from param_decomp_lab.experiments.resid_mlp.data import ResidMLPDataset
@@ -104,11 +104,14 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
     eval_loader = DataLoader(eval_dataset, batch_size=None)
 
     sink = RunSink.local(tmp_path)
-    cadence = Cadence(
-        train_log_every=50,
-        eval_every=10,
-        slow_eval_every=10,
-        save_every=None,
+    cadence = Cadence(train_log_every=50, save_every=None)
+    eval_loop = EvalLoop(
+        loader=eval_loader,
+        metrics=[],
+        n_steps=1,
+        every=10,
+        slow_every=10,
+        slow_on_first_step=False,
     )
 
     optimize(
@@ -118,9 +121,7 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         reconstruction_loss=recon_loss_mse,
         pd_config=pd_config,
         runtime_config=RuntimeConfig(device=device),
-        cadence=cadence,
         sink=sink,
-        eval_loader=eval_loader,
-        eval_metrics=[],
-        n_eval_steps=1,
+        cadence=cadence,
+        eval_loop=eval_loop,
     )

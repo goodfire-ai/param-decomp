@@ -17,7 +17,7 @@ from param_decomp.base_config import BaseConfig, Probability
 from param_decomp.batch_and_loss_fns import RunBatch
 from param_decomp.distributed import DistributedState
 from param_decomp.log import logger
-from param_decomp.optimize import optimize
+from param_decomp.optimize import EvalLoop, optimize
 from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
 from param_decomp_lab.distributed import get_device
 from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
@@ -118,8 +118,7 @@ def main(config_path: str | Path) -> None:
     )
 
     train_loader = reloader.build_loader(split="train", device=device, batch_size=cfg.pd.batch_size)
-    eval_loader = reloader.build_loader(split="eval", device=device, batch_size=cfg.eval.batch_size)
-    eval_metrics = [EVAL_METRIC_CLASSES[m.type](m) for m in cfg.eval.metrics]
+    eval_loop = _build_eval_loop(cfg, reloader, device)
 
     run_id = generate_run_id("param_decomp")
     out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
@@ -134,14 +133,27 @@ def main(config_path: str | Path) -> None:
             reconstruction_loss=recon_loss_mse,
             pd_config=cfg.pd,
             runtime_config=cfg.runtime,
-            cadence=cfg.cadence,
             sink=sink,
-            eval_loader=eval_loader,
-            eval_metrics=eval_metrics,
-            n_eval_steps=cfg.eval.n_steps,
+            cadence=cfg.cadence,
+            eval_loop=eval_loop,
         )
     finally:
         sink.finish()
+
+
+def _build_eval_loop(
+    cfg: TMSExperimentConfig, reloader: TMSReloader, device: str
+) -> EvalLoop | None:
+    if cfg.eval is None:
+        return None
+    return EvalLoop(
+        loader=reloader.build_loader(split="eval", device=device, batch_size=cfg.eval.batch_size),
+        metrics=[EVAL_METRIC_CLASSES[m.type](m) for m in cfg.eval.metrics],
+        n_steps=cfg.eval.n_steps,
+        every=cfg.eval.every,
+        slow_every=cfg.eval.slow_every,
+        slow_on_first_step=cfg.eval.slow_on_first_step,
+    )
 
 
 def cli() -> None:

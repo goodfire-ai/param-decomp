@@ -19,7 +19,7 @@ from param_decomp.base_config import BaseConfig
 from param_decomp.batch_and_loss_fns import RunBatch
 from param_decomp.distributed import DistributedState, is_main_process
 from param_decomp.log import logger
-from param_decomp.optimize import optimize
+from param_decomp.optimize import EvalLoop, optimize
 from param_decomp_lab.batch_and_loss_fns import make_run_batch as _make_run_batch
 from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
 from param_decomp_lab.distributed import (
@@ -172,14 +172,7 @@ def main(config_path: str | Path) -> None:
         dist_state=dist_state,
         seed=cfg.pd.seed,
     )
-    eval_loader = reloader.build_loader(
-        split="eval",
-        device=device,
-        batch_size=cfg.eval.batch_size,
-        dist_state=dist_state,
-        seed=cfg.pd.seed,
-    )
-    eval_metrics = [EVAL_METRIC_CLASSES[m.type](m) for m in cfg.eval.metrics]
+    eval_loop = _build_eval_loop(cfg, reloader, device, dist_state)
 
     run_id = generate_run_id("param_decomp")
     out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id if is_main_process() else None
@@ -194,14 +187,37 @@ def main(config_path: str | Path) -> None:
             reconstruction_loss=recon_loss_kl,
             pd_config=cfg.pd,
             runtime_config=cfg.runtime,
-            cadence=cfg.cadence,
             sink=sink,
-            eval_loader=eval_loader,
-            eval_metrics=eval_metrics,
-            n_eval_steps=cfg.eval.n_steps,
+            cadence=cfg.cadence,
+            eval_loop=eval_loop,
         )
     finally:
         sink.finish()
+
+
+def _build_eval_loop(
+    cfg: LMExperimentConfig,
+    reloader: LMReloader,
+    device: str,
+    dist_state: DistributedState | None,
+) -> EvalLoop | None:
+    if cfg.eval is None:
+        return None
+    eval_loader = reloader.build_loader(
+        split="eval",
+        device=device,
+        batch_size=cfg.eval.batch_size,
+        dist_state=dist_state,
+        seed=cfg.pd.seed,
+    )
+    return EvalLoop(
+        loader=eval_loader,
+        metrics=[EVAL_METRIC_CLASSES[m.type](m) for m in cfg.eval.metrics],
+        n_steps=cfg.eval.n_steps,
+        every=cfg.eval.every,
+        slow_every=cfg.eval.slow_every,
+        slow_on_first_step=cfg.eval.slow_on_first_step,
+    )
 
 
 def cli() -> None:

@@ -4,9 +4,11 @@ Defined here as a runtime-checkable `Protocol` so the core trainer can document
 exactly what it requires of the caller without committing to an output format
 or any specific dependency (wandb, tqdm, filesystem).
 
-Cadence — when to log/eval/save — lives separately in `param_decomp.configs.Cadence`.
-This Protocol describes side effects only: where structured metrics, free-form
-console output, and checkpoint state dicts go.
+Timing — when the loop emits — lives separately: `param_decomp.configs.Cadence`
+owns train-log + checkpoint periods, and `param_decomp.optimize.EvalLoop` owns
+the eval period (alongside the runtime eval objects). This Protocol describes
+side effects only: where structured metrics, free-form console output, and
+checkpoint state dicts go.
 
 Concrete implementations live with the caller. The in-repo experiments use
 ``param_decomp_lab.run_sink.RunSink`` (local files + wandb + `is_main_process`

@@ -19,7 +19,7 @@ from param_decomp.configs import (
 from param_decomp.decomposition_targets import DecompositionTargetConfig
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.faithfulness import FaithfulnessLossConfig
-from param_decomp.optimize import optimize
+from param_decomp.optimize import EvalLoop, optimize
 from param_decomp.schedule import ScheduleConfig
 
 
@@ -69,14 +69,24 @@ class CaptureSink:
         self.checkpoints.append(checkpoint)
 
 
-def make_cadence(*, train_log_every: int = 10**9, eval_every: int = 10**9) -> Cadence:
+def make_cadence(*, train_log_every: int = 10**9) -> Cadence:
     """Default cadence for tests: nothing fires unless we explicitly set the freq."""
-    return Cadence(
-        train_log_every=train_log_every,
-        eval_every=eval_every,
-        slow_eval_every=eval_every,
-        save_every=None,
-        slow_eval_on_first_step=False,
+    return Cadence(train_log_every=train_log_every, save_every=None)
+
+
+def make_eval_loop(
+    loader: DataLoader[Any],
+    *,
+    metrics: list[Metric[Any]] | None = None,
+    every: int = 10**9,
+) -> EvalLoop:
+    return EvalLoop(
+        loader=loader,
+        metrics=metrics if metrics is not None else [],
+        n_steps=1,
+        every=every,
+        slow_every=every,
+        slow_on_first_step=False,
     )
 
 
@@ -124,11 +134,9 @@ def test_optimize_logs_missing_grad_norms_as_nan() -> None:
         reconstruction_loss=recon_loss_mse,
         pd_config=make_pd_config(),
         runtime_config=RuntimeConfig(device="cpu", autocast_bf16=False),
-        cadence=make_cadence(train_log_every=1),
         sink=sink,
-        eval_loader=loader,
-        eval_metrics=[],
-        n_eval_steps=1,
+        cadence=make_cadence(train_log_every=1),
+        eval_loop=None,
     )
 
     train_logs = [
@@ -175,12 +183,30 @@ def test_optimize_rejects_duplicate_eval_metric_names() -> None:
             reconstruction_loss=recon_loss_mse,
             pd_config=make_pd_config(),
             runtime_config=RuntimeConfig(device="cpu", autocast_bf16=False),
-            cadence=make_cadence(),
             sink=CaptureSink(),
-            eval_loader=loader,
-            eval_metrics=[DummyEvalMetric(DummyEvalConfig()), DummyEvalMetric(DummyEvalConfig())],
-            n_eval_steps=1,
+            cadence=make_cadence(),
+            eval_loop=make_eval_loop(
+                loader,
+                metrics=[DummyEvalMetric(DummyEvalConfig()), DummyEvalMetric(DummyEvalConfig())],
+            ),
         )
+
+
+def test_optimize_runs_without_eval_loop() -> None:
+    sink = CaptureSink()
+    loader = make_loader()
+    optimize(
+        target_model=TinyLinear(),
+        train_loader=loader,
+        run_batch=run_batch_passthrough,
+        reconstruction_loss=recon_loss_mse,
+        pd_config=make_pd_config(steps=2),
+        runtime_config=RuntimeConfig(device="cpu", autocast_bf16=False),
+        sink=sink,
+        cadence=make_cadence(train_log_every=1),
+        eval_loop=None,
+    )
+    assert not any(any(k.startswith("eval/") for k in metrics) for _, metrics in sink.logged)
 
 
 def test_optimize_seeds_component_model_construction() -> None:
@@ -202,11 +228,9 @@ def run_with_external_seed(seed: int) -> dict[str, Tensor]:
         reconstruction_loss=recon_loss_mse,
         pd_config=make_pd_config(),
         runtime_config=RuntimeConfig(device="cpu", autocast_bf16=False),
-        cadence=make_cadence(),
         sink=sink,
-        eval_loader=loader,
-        eval_metrics=[],
-        n_eval_steps=1,
+        cadence=make_cadence(),
+        eval_loop=None,
     )
     assert len(sink.checkpoints) == 1
     return sink.checkpoints[0]

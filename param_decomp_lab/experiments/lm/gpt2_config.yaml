@@ -42,12 +42,12 @@ pd:
       coeff: 2.0
 cadence:
   train_log_every: 100
-  eval_every: 1000
-  slow_eval_every: 5000
-  slow_eval_on_first_step: true
 eval:
   n_steps: 5
   batch_size: 2
+  every: 1000
+  slow_every: 5000
+  slow_on_first_step: true
   metrics:
     - type: CIHistograms
       n_batches_accum: 5

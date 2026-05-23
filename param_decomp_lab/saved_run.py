@@ -69,7 +69,7 @@ class RunMeta:
     pd_config: PDConfig
     runtime_config: RuntimeConfig
     cadence: Cadence
-    eval_cfg: EvalConfig
+    eval_cfg: EvalConfig | None
     target_dict: dict[str, Any]
     data_dict: dict[str, Any]
 
@@ -77,12 +77,13 @@ class RunMeta:
     def from_path(cls, path: Path) -> "RunMeta":
         with open(path) as f:
             payload = yaml.safe_load(f)
+        eval_payload = payload.get("eval")
         return cls(
             reloader_class_fqn=payload["reloader_class"],
             pd_config=PDConfig.model_validate(payload["pd"]),
             runtime_config=RuntimeConfig.model_validate(payload["runtime"]),
             cadence=Cadence.model_validate(payload["cadence"]),
-            eval_cfg=EvalConfig.model_validate(payload["eval"]),
+            eval_cfg=EvalConfig.model_validate(eval_payload) if eval_payload is not None else None,
             target_dict=payload["target"],
             data_dict=payload["data"],
         )

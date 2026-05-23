@@ -6,8 +6,8 @@ These ship for the in-repo experiments and are referenced from YAML
 the pydantic discriminated union used to validate each entry; `EVAL_METRIC_CLASSES` is the
 runtime dispatch from the `type` literal to the matching `Metric` subclass.
 
-External users defining their own eval metric instantiate it directly in `run.py` and pass
-it to `optimize(eval_metrics=...)`.
+External users defining their own eval metric instantiate it directly in `run.py` and
+include it in the `EvalLoop(metrics=...)` they pass to `optimize`.
 """
 
 from typing import Annotated, Any

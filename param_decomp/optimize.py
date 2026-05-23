@@ -8,11 +8,13 @@ list of eval `Metric` instances themselves, then hand them in.
 
 import gc
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Any, cast
 
 import torch
 import torch.nn as nn
 import torch.nn.parallel
+from pydantic import PositiveInt
 from torch import optim
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
@@ -47,6 +49,39 @@ from param_decomp.metrics.persistent_pgd_recon import validate_pgd_scope
 from param_decomp.run_sink import RunSink
 from param_decomp.schedule import get_scheduled_value
 from param_decomp.torch_helpers import bf16_autocast, loop_dataloader
+
+
+@dataclass(frozen=True)
+class EvalLoop:
+    """Everything needed to run periodic eval passes — runtime objects + timing.
+
+    Pass `eval_loop=None` to `optimize()` to skip eval entirely. When set, the
+    trainer evaluates every `every` steps; on steps that are also multiples of
+    `slow_every`, slow metrics fire too.
+
+    `slow_every` must be a multiple of `every`: the trainer only checks
+    `should_run_slow_eval` on steps where `should_eval` already fired.
+    """
+
+    loader: DataLoader[Any]
+    metrics: list[Metric[Any]]
+    n_steps: PositiveInt
+    every: PositiveInt
+    slow_every: PositiveInt
+    slow_on_first_step: bool = True
+
+    def __post_init__(self) -> None:
+        assert self.slow_every % self.every == 0, (
+            f"slow_every ({self.slow_every}) must be a multiple of every ({self.every})"
+        )
+
+    def should_eval(self, step: int) -> bool:
+        return step % self.every == 0
+
+    def should_run_slow_eval(self, step: int) -> bool:
+        if step == 0:
+            return self.slow_on_first_step
+        return step % self.slow_every == 0
 
 
 def _build_metric_context(
@@ -94,23 +129,20 @@ def optimize(
     reconstruction_loss: ReconstructionLoss,
     pd_config: PDConfig,
     runtime_config: RuntimeConfig,
-    cadence: Cadence,
     sink: RunSink,
-    eval_loader: DataLoader[Any],
-    eval_metrics: list[Metric[Any]],
-    n_eval_steps: int,
+    cadence: Cadence,
+    eval_loop: EvalLoop | None = None,
 ) -> None:
     """Run the PD optimization loop.
 
     Pure trainer: takes the target model, the train loader, the run-batch / reconstruction
-    callables, the two configs, the cadence (when to emit), the sink (where output goes), and
-    the eval-pass triple (`eval_loader`, `eval_metrics`, `n_eval_steps`). No `RunConfig`, no
-    driver, no YAML, no wandb-init responsibility.
+    callables, the two configs, the sink (where output goes), the cadence (when train logs
+    and checkpoints fire), and optionally an `EvalLoop` bundling the eval runtime objects
+    with eval timing. Pass `eval_loop=None` to skip eval entirely.
 
-    `eval_metrics` is a list of caller-instantiated `Metric` objects. They are bound to the
-    `ComponentModel` and device inside this function via `Metric.bind(...)`; the caller does
-    not have to construct them with model/device. `n_eval_steps` is the number of eval-loader
-    batches consumed on each eval tick.
+    `EvalLoop.metrics` is a list of caller-instantiated `Metric` objects. They are bound to
+    the `ComponentModel` and device inside this function via `Metric.bind(...)`; the caller
+    does not have to construct them with model/device.
 
     All ranks call this function; `sink` is automatically a no-op on non-main ranks.
     """
@@ -123,7 +155,7 @@ def optimize(
     )
 
     train_iterator = loop_dataloader(train_loader)
-    eval_iterator = loop_dataloader(eval_loader)
+    eval_iterator = loop_dataloader(eval_loop.loader) if eval_loop is not None else None
 
     if pd_config.identity_decomposition_targets is not None:
         insert_identity_operations_(
@@ -197,21 +229,23 @@ def optimize(
         run_faithfulness_warmup(component_model, component_params, pd_config)
 
     loss_instances = instantiate_loss_metrics(pd_config, component_model, device)
-    for m in eval_metrics:
-        m.bind(model=component_model, device=device)
-
-    # Loss metrics are auto-evaluated alongside dedicated eval metrics. We disallow duplicate
-    # registry names across the two pools because `evaluate()` keys metrics by class name.
     eval_only_instances: dict[str, Metric[Any]] = {}
-    for m in eval_metrics:
-        metric_name = type(m).__name__
-        assert metric_name not in eval_only_instances, f"duplicate eval metric {metric_name!r}"
-        eval_only_instances[metric_name] = m
-    overlap = sorted(set(loss_instances) & set(eval_only_instances))
-    assert not overlap, (
-        f"eval_metrics overlap with pd_config.loss_metrics: {overlap}. Loss metrics are "
-        "automatically evaluated; remove the duplicates from eval_metrics."
-    )
+    if eval_loop is not None:
+        for m in eval_loop.metrics:
+            m.bind(model=component_model, device=device)
+
+        # Loss metrics are auto-evaluated alongside dedicated eval metrics. We disallow
+        # duplicate registry names across the two pools because `evaluate()` keys metrics by
+        # class name.
+        for m in eval_loop.metrics:
+            metric_name = type(m).__name__
+            assert metric_name not in eval_only_instances, f"duplicate eval metric {metric_name!r}"
+            eval_only_instances[metric_name] = m
+        overlap = sorted(set(loss_instances) & set(eval_only_instances))
+        assert not overlap, (
+            f"eval_loop.metrics overlap with pd_config.loss_metrics: {overlap}. Loss metrics "
+            "are automatically evaluated; remove the duplicates from eval_loop.metrics."
+        )
     all_instances = {**loss_instances, **eval_only_instances}
 
     for step in tqdm(range(pd_config.steps + 1), ncols=0, disable=not is_main_process()):
@@ -291,13 +325,14 @@ def optimize(
             sink.log({f"train/{k}": v for k, v in batch_log_data.items()}, step=step)
 
         # --- Evaluation --- #
-        if cadence.should_eval(step):
+        if eval_loop is not None and eval_loop.should_eval(step):
+            assert eval_iterator is not None
             with torch.no_grad(), bf16_autocast(enabled=runtime_config.autocast_bf16):
-                slow_step = cadence.should_run_slow_eval(step)
+                slow_step = eval_loop.should_run_slow_eval(step)
                 active = [m for m in all_instances.values() if not (m.slow and not slow_step)]
                 for m in active:
                     m.reset()
-                for _ in range(n_eval_steps):
+                for _ in range(eval_loop.n_steps):
                     ctx = _build_metric_context(
                         next(eval_iterator),
                         step=step,

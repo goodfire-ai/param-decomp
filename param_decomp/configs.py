@@ -213,42 +213,18 @@ class PDConfig(BaseConfig):
 
 
 class Cadence(BaseConfig):
-    """Rhythm of the PD training loop: periods (in steps) for train logging,
-    evaluation, slow eval, and checkpointing.
+    """Rhythm of non-eval loop emissions: train-log and checkpoint periods.
 
     Held separately from `RunSink` so the sink only owns *where* output goes;
-    `Cadence` owns *when* the loop emits. The *what* of an eval pass —
-    `n_eval_steps`, `eval_loader`, `eval_metrics` — is passed directly to
-    `optimize()`.
-
-    `slow_eval_every` must be a multiple of `eval_every`: the trainer only checks
-    `should_run_slow_eval` on steps where `should_eval` already fired.
+    `Cadence` owns *when* train logs and checkpoints fire. Eval timing lives on
+    `EvalLoop`, alongside the runtime objects it depends on.
     """
 
     train_log_every: PositiveInt
-    eval_every: PositiveInt
-    slow_eval_every: PositiveInt
     save_every: PositiveInt | None = None
-    slow_eval_on_first_step: bool = True
-
-    @model_validator(mode="after")
-    def validate_slow_eval_multiple(self) -> Self:
-        assert self.slow_eval_every % self.eval_every == 0, (
-            f"slow_eval_every ({self.slow_eval_every}) must be a multiple of "
-            f"eval_every ({self.eval_every})"
-        )
-        return self
 
     def should_log_train(self, step: int) -> bool:
         return step % self.train_log_every == 0
-
-    def should_eval(self, step: int) -> bool:
-        return step % self.eval_every == 0
-
-    def should_run_slow_eval(self, step: int) -> bool:
-        if step == 0:
-            return self.slow_eval_on_first_step
-        return step % self.slow_eval_every == 0
 
     def should_save(self, step: int) -> bool:
         if self.save_every is None or step == 0:

@@ -1,8 +1,9 @@
 """Concrete `RunSink` used by the in-repo experiments and lab tooling.
 
 Owns two things: **where output goes** (local files + optional wandb) and
-**console output**. Cadence — when the trainer emits — is the separate
-`param_decomp.configs.Cadence` object the caller also hands to `optimize()`.
+**console output**. Timing — when the trainer emits — lives elsewhere:
+`param_decomp.configs.Cadence` (train-log + checkpoint periods) and
+`param_decomp.optimize.EvalLoop` (eval period).
 
 Three constructors:
 

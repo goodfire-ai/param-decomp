@@ -21,10 +21,13 @@ RUN_META_FILENAME = "run_meta.yaml"
 
 class EvalConfig(BaseConfig):
     """Eval-pass settings: loader batch size, how many batches to consume per eval tick,
-    and the list of eval `Metric` configs to instantiate."""
+    when eval fires, and the list of eval `Metric` configs to instantiate."""
 
     batch_size: PositiveInt
     n_steps: PositiveInt
+    every: PositiveInt
+    slow_every: PositiveInt
+    slow_on_first_step: bool = True
     metrics: list[AnyEvalMetricConfig] = Field(default_factory=list)
 
 
@@ -35,6 +38,8 @@ class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
 
         class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
             pass
+
+    Omit the `eval:` block to skip eval entirely.
     """
 
     pd: PDConfig
@@ -42,7 +47,7 @@ class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
     cadence: Cadence
     target: T
     data: D
-    eval: EvalConfig
+    eval: EvalConfig | None = None
 
 
 def save_run_meta(
