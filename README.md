@@ -79,11 +79,14 @@ by defining the class in `param_decomp/metrics/`, appending the config to
 `AnyLossMetricConfig` in `configs.py`, and appending the class to `LOSS_METRIC_CLASSES`.
 
 Eval metrics are caller-supplied: instantiate `Metric` objects in your `run.py` and pass
-them to `optimize(eval_metrics=...)`. The in-repo experiments use
-`experiments.utils.build_eval_metrics(...)` to convert a YAML `logging.eval_metrics` list
-into a `list[Metric]`, using the same `type` discriminator pattern as loss metrics —
-backed by `AnyEvalMetricConfig` and `EVAL_METRIC_CLASSES` in
-`param_decomp_lab.eval_metrics`.
+them to `optimize(eval_metrics=...)`. The in-repo experiments validate the YAML
+`eval.metrics` list via the `AnyEvalMetricConfig` discriminated union on `EvalConfig`,
+then dispatch each entry through `EVAL_METRIC_CLASSES` (both in
+`param_decomp_lab.eval_metrics`):
+
+```python
+eval_metrics = [EVAL_METRIC_CLASSES[m.type](m) for m in cfg.eval.metrics]
+```
 
 ## Packaging
 

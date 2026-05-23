@@ -80,15 +80,15 @@ pd:
       n_warmup_steps: 2
     - type: FaithfulnessLoss
       coeff: 10000000.0
-logging:
-  train_log_freq: 200
-  eval_freq: 1000
-  slow_eval_freq: 10000
+cadence:
+  train_log_every: 200
+  eval_every: 1000
+  slow_eval_every: 10000
   slow_eval_on_first_step: true
   n_eval_steps: 1
-  eval_batch_size: 64
-  save_freq: null
-  eval_metrics:
+eval:
+  batch_size: 64
+  metrics:
     - type: CIHistograms
       n_batches_accum: 1
     - type: ComponentActivationDensity

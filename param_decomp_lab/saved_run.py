@@ -17,22 +17,26 @@ import yaml
 from torch.utils.data import DataLoader
 
 from param_decomp.component_model import ComponentModel
-from param_decomp.configs import PDConfig, RuntimeConfig
+from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
 from param_decomp.distributed import DistributedState
 from param_decomp_lab.component_model_io import load_component_model_from_checkpoint
 from param_decomp_lab.experiments import EXPERIMENTS
-from param_decomp_lab.experiments.utils import RUN_META_FILENAME
+from param_decomp_lab.experiments.utils import RUN_META_FILENAME, EvalConfig
 from param_decomp_lab.infra.paths import ModelPath
 from param_decomp_lab.infra.run_files import resolve_config_path, resolve_run_files
 
 
 @dataclass(frozen=True)
 class RunMeta:
-    """The deserialized shape of ``run_meta.yaml``."""
+    """The deserialized shape of ``run_meta.yaml`` — the resolved ExperimentConfig dump
+    plus the `experiment` discriminator. `target` and `data` remain raw dicts; SavedRun
+    validates them lazily against the experiment module's TargetConfig / DataConfig."""
 
     experiment_name: str
     pd_config: PDConfig
     runtime_config: RuntimeConfig
+    cadence: Cadence
+    eval_cfg: EvalConfig
     target_dict: dict[str, Any]
     data_dict: dict[str, Any]
 
@@ -44,6 +48,8 @@ class RunMeta:
             experiment_name=payload["experiment"],
             pd_config=PDConfig.model_validate(payload["pd"]),
             runtime_config=RuntimeConfig.model_validate(payload["runtime"]),
+            cadence=Cadence.model_validate(payload["cadence"]),
+            eval_cfg=EvalConfig.model_validate(payload["eval"]),
             target_dict=payload["target"],
             data_dict=payload["data"],
         )

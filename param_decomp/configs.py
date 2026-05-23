@@ -1,7 +1,6 @@
 """Top-level PD configs: `PDConfig` (algorithm), `RuntimeConfig` (substrate), and `Cadence`
 (when the loop emits)."""
 
-from dataclasses import dataclass
 from functools import cached_property
 from typing import Annotated, Literal, Self
 
@@ -213,36 +212,32 @@ class PDConfig(BaseConfig):
         return self
 
 
-@dataclass(frozen=True)
-class Cadence:
-    """Step-frequency schedule for the PD training loop.
+class Cadence(BaseConfig):
+    """Rhythm of the PD training loop: periods (in steps) for train logging,
+    evaluation, slow eval, and checkpointing, plus `n_eval_steps` — the number
+    of eval-loader batches consumed on each eval tick.
 
-    Pure data — frequencies (in steps) for train logging, evaluation, slow eval, and
-    checkpointing, plus the eval-batch count. Held separately from `RunSink` so the
-    sink only owns *where* output goes; `Cadence` owns *when*.
+    Held separately from `RunSink` so the sink only owns *where* output goes;
+    `Cadence` owns *when* (and how much) the loop emits.
 
     `slow_eval_every` must be a multiple of `eval_every`: the trainer only checks
     `should_run_slow_eval` on steps where `should_eval` already fired.
     """
 
-    train_log_every: int
-    eval_every: int
-    slow_eval_every: int
-    n_eval_steps: int
-    save_every: int | None = None
+    train_log_every: PositiveInt
+    eval_every: PositiveInt
+    slow_eval_every: PositiveInt
+    n_eval_steps: PositiveInt
+    save_every: PositiveInt | None = None
     slow_eval_on_first_step: bool = True
 
-    def __post_init__(self) -> None:
-        assert self.train_log_every > 0, "train_log_every must be positive"
-        assert self.eval_every > 0, "eval_every must be positive"
-        assert self.slow_eval_every > 0, "slow_eval_every must be positive"
+    @model_validator(mode="after")
+    def validate_slow_eval_multiple(self) -> Self:
         assert self.slow_eval_every % self.eval_every == 0, (
             f"slow_eval_every ({self.slow_eval_every}) must be a multiple of "
             f"eval_every ({self.eval_every})"
         )
-        assert self.n_eval_steps > 0, "n_eval_steps must be positive"
-        if self.save_every is not None:
-            assert self.save_every > 0, "save_every must be positive when set"
+        return self
 
     def should_log_train(self, step: int) -> bool:
         return step % self.train_log_every == 0

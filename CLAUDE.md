@@ -65,7 +65,7 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
   `loss_metrics: list[AnyLossMetricConfig]` — a pydantic discriminated union over each
   metric's `type` literal.
 - `RuntimeConfig`: substrate (autocast_bf16, device, dp).
-- `Cadence`: frozen dataclass with `train_log_every`, `eval_every`, `slow_eval_every`,
+- `Cadence`: frozen `BaseConfig` with `train_log_every`, `eval_every`, `slow_eval_every`,
   `n_eval_steps`, `save_every`, `slow_eval_on_first_step`. Methods (`should_log_train`,
   `should_eval`, `should_run_slow_eval`, `should_save`) are pure modular arithmetic on
   `step`. `optimize()` always checkpoints at `step == pd_config.steps`; periodic saves
@@ -89,12 +89,25 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 
 ### Adding a new experiment
 
-Experiments are plain Python scripts, not drivers/subclasses. A "new experiment" is just
-a `run.py` that builds the target model, dataloaders, eval metrics, configs, and sink,
-then calls `optimize()`. The three in-repo experiments
-(`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`) are the canonical references.
-Shared YAML-parsing helpers live in `param_decomp_lab/experiments/utils.py`
-(`load_yaml`, `build_eval_metrics`, `cadence_from_logging_block`, `run_sink_from_logging_block`).
+Experiments are plain Python scripts, not drivers/subclasses. A "new experiment" is a
+`run.py` that declares an `ExperimentConfig[T, D]` subclass (fixing the concrete `target`
+/ `data` types), parses its YAML with `<Experiment>Config.from_file(path)`, builds the
+target model + dataloaders + eval metrics + sink, then calls `optimize()`. The three
+in-repo experiments (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`) are the
+canonical references. The shared `ExperimentConfig` generic + `EvalConfig` + `save_run_meta`
+live in `param_decomp_lab/experiments/utils.py`.
+
+YAML schema (one validated pydantic tree — extra keys raise):
+
+```yaml
+pd:      { ... PDConfig ... }
+runtime: { ... RuntimeConfig ... }
+cadence: { train_log_every, eval_every, slow_eval_every, n_eval_steps,
+           save_every, slow_eval_on_first_step }
+target:  { ... per-experiment TargetConfig ... }
+data:    { ... per-experiment DataConfig ... }
+eval:    { batch_size, metrics: [ {type: "...", ...}, ... ] }
+```
 
 Per-experiment console entry points are declared in `param_decomp_lab/pyproject.toml`:
 
@@ -120,16 +133,21 @@ literal, (2) append the config to the `AnyLossMetricConfig` union in `configs.py
 (3) append the class to `LOSS_METRIC_CLASSES`.
 
 Eval metrics are caller-supplied. Users instantiate `Metric` objects in their `run.py`
-and pass them to `optimize(eval_metrics=...)`. The in-repo experiments share a YAML-driven
-helper `build_eval_metrics(eval_metrics_list)` in `experiments/utils.py`. The lab's set of
-eval metrics mirrors the loss-metrics wiring: each `BaseConfig` carries a
-`type: Literal["<ClassName>"]` discriminator, `AnyEvalMetricConfig` in
-`param_decomp_lab/eval_metrics/__init__.py` is the pydantic discriminated union used to
-validate every YAML entry, and `EVAL_METRIC_CLASSES` is the type→class dispatch table.
-YAML form is a list of dicts: `[{type: "CI_L0", ...config_fields}, ...]`. Adding a new lab
-eval metric means: (1) define the `Metric` subclass + its `BaseConfig` with a unique
-`type` literal, (2) append the config to the `AnyEvalMetricConfig` union, and (3) append
-the class to `EVAL_METRIC_CLASSES`.
+and pass them to `optimize(eval_metrics=...)`. The in-repo experiments validate the YAML
+`eval.metrics` list via the `AnyEvalMetricConfig` discriminated union on `EvalConfig`,
+then dispatch each entry to its `Metric` class with `EVAL_METRIC_CLASSES`:
+
+```python
+eval_metrics = [EVAL_METRIC_CLASSES[m.type](m) for m in cfg.eval.metrics]
+```
+
+The lab's set of eval metrics mirrors the loss-metrics wiring: each `BaseConfig` carries
+a `type: Literal["<ClassName>"]` discriminator, `AnyEvalMetricConfig` in
+`param_decomp_lab/eval_metrics/__init__.py` is the pydantic discriminated union, and
+`EVAL_METRIC_CLASSES` is the type→class dispatch table. Adding a new lab eval metric
+means: (1) define the `Metric` subclass + its `BaseConfig` with a unique `type` literal,
+(2) append the config to the `AnyEvalMetricConfig` union, and (3) append the class to
+`EVAL_METRIC_CLASSES`.
 
 ### Configs
 
@@ -139,8 +157,8 @@ The PD trainer is configured by two pydantic configs plus a `Cadence` and a `Run
   tied_weights, faithfulness warmup. Flipping any field here changes what algorithm runs.
 - **`RuntimeConfig`** — compute substrate: autocast_bf16, device, dp. Perturbs numerics
   without changing the algorithm.
-- **`Cadence`** (frozen dataclass in `param_decomp.configs`) — when the loop emits: train log
-  / eval / slow-eval / checkpoint frequencies and eval-batch count. Pure data; no I/O.
+- **`Cadence`** (frozen `BaseConfig` in `param_decomp.configs`) — when the loop emits:
+  train-log / eval / slow-eval / checkpoint periods and eval-batch count. Pure data; no I/O.
 - **`RunSink`** (caller-supplied, Protocol in core) — where output goes: `log` / `console` /
   `checkpoint`. Sink methods own all side effects.
 
@@ -268,10 +286,11 @@ This repository implements methods from two key research papers on parameter dec
   `metrics/persistent_pgd_state.py`; its configs + metric classes live in
   `metrics/persistent_pgd_recon.py`. Eval metrics ship in `param_decomp_lab/eval_metrics/`.
 
-**In-repo experiment scripts** (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`) build the
-target model + dataloaders + eval metrics + configs + sink and call `optimize()`. They share
-YAML-parsing helpers in `param_decomp_lab/experiments/utils.py` (`load_yaml`, `build_eval_metrics`,
-`cadence_from_logging_block`, `run_sink_from_logging_block`).
+**In-repo experiment scripts** (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`)
+each declare a `<Experiment>ExperimentConfig(ExperimentConfig[TargetConfig, DataConfig])`
+subclass, parse the YAML via `from_file(...)`, build target/loaders/metrics/sink, and call
+`optimize()`. The generic `ExperimentConfig` + `EvalConfig` + `save_run_meta` live in
+`param_decomp_lab/experiments/utils.py`.
 
 **Terminology: Sources vs Masks:**
 
@@ -290,19 +309,21 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 
 **Key Data Flow:**
 
-1. The experiment script (`python -m param_decomp_lab.experiments.<kind>.run config.yaml`) reads
-   the YAML, validates `PDConfig` / `RuntimeConfig` / per-experiment `target` + `data` blocks,
-   and builds the target `nn.Module`, train/eval dataloaders, and eval `Metric` list.
-2. The script builds a `Cadence` and a `RunSink` (local + optional wandb) from the YAML
-   `logging:` block.
+1. The experiment script (`python -m param_decomp_lab.experiments.<kind>.run config.yaml`)
+   validates the whole YAML as a single `<Experiment>ExperimentConfig` tree (pydantic — extra
+   keys raise), then builds the target `nn.Module`, train/eval dataloaders, and eval `Metric`
+   list from `cfg.target` / `cfg.data` / `cfg.eval`.
+2. The script picks a `RunSink` (local files, or `RunSink.with_wandb(...)`); `cfg.cadence`
+   controls when the trainer emits.
 3. It calls `optimize(...)` with all of the above. `optimize()` constructs `ComponentModel`,
    binds eval metrics, instantiates loss metrics from `pd_config.loss_metrics`, and runs the
    training loop. Side effects (logging, checkpoints) flow through `RunSink`.
 
 **Configuration System:**
 
-- YAML experiment configs define parameters under `pd:`, `runtime:`, `target:`, `data:`, `logging:`.
-- Pydantic models provide type safety and validation.
+- YAML experiment configs are one validated `ExperimentConfig` tree with blocks `pd:`,
+  `runtime:`, `cadence:`, `target:`, `data:`, `eval:` (see "Adding a new experiment" above).
+- Pydantic models provide type safety and validation across the whole tree.
 - WandB integration for experiment tracking and model storage (via `RunSink.with_wandb(...)`).
 
 **Output Directory (`PARAM_DECOMP_OUT_DIR`):**
@@ -321,8 +342,7 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 ├── param_decomp/                    # Core library: training loop, configs, ComponentModel, loss metrics
 │   ├── metrics/                     # Loss Metric classes (cfg+impl per file) + dispatch.py (LOSS_METRIC_CLASSES)
 │   ├── tests/                       # Core-library test suite
-│   ├── cadence.py                   # Cadence dataclass (when the loop emits)
-│   ├── configs.py                   # PDConfig + RuntimeConfig + OptimizerConfig + AnyLossMetricConfig
+│   ├── configs.py                   # PDConfig + RuntimeConfig + Cadence + OptimizerConfig + AnyLossMetricConfig
 │   ├── masks.py                     # Runtime mask payloads, Router impls, SamplingType / SubsetRoutingType configs, stochastic mask helpers
 │   ├── optimize.py                  # optimize() — the core entrypoint (also holds loop_dataloader + collect_metric_outputs)
 │   ├── run_sink.py                  # RunSink Protocol — 3-method output contract optimize() calls
@@ -342,7 +362,7 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 │   ├── infra/                       # Cross-subsystem plumbing: settings, paths, slurm, wandb, sqlite, git, run_files, markdown, pydantic
 │   ├── experiments/
 │   │   ├── tms/, resid_mlp/, lm/    # Each: run.py + YAMLs + per-experiment helpers
-│   │   ├── utils.py                 # load_yaml / build_eval_metrics / cadence_from_logging_block / run_sink_from_logging_block / save_run_meta
+│   │   ├── utils.py                 # ExperimentConfig[T, D] + EvalConfig + save_run_meta
 │   │   ├── loadable_module.py       # LoadableModule ABC used by lab experiment models
 │   │   └── __init__.py              # EXPERIMENTS registry (name → experiment module)
 │   ├── eval_metrics/                # Eval Metric classes + AnyEvalMetricConfig union + EVAL_METRIC_CLASSES dispatch
