@@ -52,7 +52,7 @@ the data config should have `max_seq_len: 513`. This is enforced by an assertion
 - `run_info.py` - Load trained models from W&B or local paths
 - `models/` - Model implementations
 - `configs/` - Training configuration YAML files
-- `scripts/run_slurm.py` - CLI entry point + SLURM submission + local run logic
+- `cli.py` - CLI entry point + SLURM submission + local run logic
 
 ## Loading Trained Models
 
