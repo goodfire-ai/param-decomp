@@ -75,7 +75,6 @@ def make_cadence(*, train_log_every: int = 10**9, eval_every: int = 10**9) -> Ca
         train_log_every=train_log_every,
         eval_every=eval_every,
         slow_eval_every=eval_every,
-        n_eval_steps=1,
         save_every=None,
         slow_eval_on_first_step=False,
     )
@@ -121,14 +120,15 @@ def test_optimize_logs_missing_grad_norms_as_nan() -> None:
     optimize(
         target_model=TinyLinear(),
         train_loader=loader,
-        eval_loader=loader,
         run_batch=run_batch_passthrough,
         reconstruction_loss=recon_loss_mse,
         pd_config=make_pd_config(),
         runtime_config=RuntimeConfig(device="cpu", autocast_bf16=False),
         cadence=make_cadence(train_log_every=1),
         sink=sink,
+        eval_loader=loader,
         eval_metrics=[],
+        n_eval_steps=1,
     )
 
     train_logs = [
@@ -171,14 +171,15 @@ def test_optimize_rejects_duplicate_eval_metric_names() -> None:
         optimize(
             target_model=TinyLinear(),
             train_loader=loader,
-            eval_loader=loader,
             run_batch=run_batch_passthrough,
             reconstruction_loss=recon_loss_mse,
             pd_config=make_pd_config(),
             runtime_config=RuntimeConfig(device="cpu", autocast_bf16=False),
             cadence=make_cadence(),
             sink=CaptureSink(),
+            eval_loader=loader,
             eval_metrics=[DummyEvalMetric(DummyEvalConfig()), DummyEvalMetric(DummyEvalConfig())],
+            n_eval_steps=1,
         )
 
 
@@ -197,14 +198,15 @@ def run_with_external_seed(seed: int) -> dict[str, Tensor]:
     optimize(
         target_model=TinyLinear(),
         train_loader=loader,
-        eval_loader=loader,
         run_batch=run_batch_passthrough,
         reconstruction_loss=recon_loss_mse,
         pd_config=make_pd_config(),
         runtime_config=RuntimeConfig(device="cpu", autocast_bf16=False),
         cadence=make_cadence(),
         sink=sink,
+        eval_loader=loader,
         eval_metrics=[],
+        n_eval_steps=1,
     )
     assert len(sink.checkpoints) == 1
     return sink.checkpoints[0]

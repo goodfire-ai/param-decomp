@@ -190,14 +190,15 @@ def main(config_path: str | Path) -> None:
         optimize(
             target_model=target_model,
             train_loader=train_loader,
-            eval_loader=eval_loader,
             run_batch=reloader.make_run_batch(),
             reconstruction_loss=recon_loss_kl,
             pd_config=cfg.pd,
             runtime_config=cfg.runtime,
             cadence=cfg.cadence,
             sink=sink,
+            eval_loader=eval_loader,
             eval_metrics=eval_metrics,
+            n_eval_steps=cfg.eval.n_steps,
         )
     finally:
         sink.finish()

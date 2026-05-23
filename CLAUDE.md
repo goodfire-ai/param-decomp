@@ -53,23 +53,25 @@ from param_decomp.metrics.base import LossMetricConfig, Metric
 from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 ```
 
-- `optimize(target_model, train_loader, eval_loader, *, run_batch, reconstruction_loss,
-  pd_config, runtime_config, cadence, sink, eval_metrics)`: the only entrypoint. Caller
-  supplies the target `nn.Module`, dataloaders, the run-batch / reconstruction callables,
-  the two configs, a `Cadence` for *when* the loop emits, a `RunSink` for *where* output
-  goes, and a list of pre-instantiated eval `Metric` objects. `runtime_config.device` is the
-  device source. `optimize()` builds the `ComponentModel` internally and calls
-  `Metric.bind(model, device)` on every eval metric before the loop.
+- `optimize(target_model, train_loader, run_batch, reconstruction_loss, pd_config,
+  runtime_config, cadence, sink, eval_loader, eval_metrics, n_eval_steps)`: the only
+  entrypoint. Caller supplies the target `nn.Module`, the train loader, the run-batch /
+  reconstruction callables, the two configs, a `Cadence` for *when* the loop emits, a
+  `RunSink` for *where* output goes, and the eval-pass triple (`eval_loader`,
+  `eval_metrics`, `n_eval_steps`). `runtime_config.device` is the device source.
+  `optimize()` builds the `ComponentModel` internally and calls `Metric.bind(model, device)`
+  on every eval metric before the loop.
 - `PDConfig`: algorithm spec (CI fn, loss metrics, module patterns, optimizers, seed,
   tied weights, faithfulness warmup, …). Loss metrics live here as
   `loss_metrics: list[AnyLossMetricConfig]` — a pydantic discriminated union over each
   metric's `type` literal.
 - `RuntimeConfig`: substrate (autocast_bf16, device, dp).
 - `Cadence`: frozen `BaseConfig` with `train_log_every`, `eval_every`, `slow_eval_every`,
-  `n_eval_steps`, `save_every`, `slow_eval_on_first_step`. Methods (`should_log_train`,
-  `should_eval`, `should_run_slow_eval`, `should_save`) are pure modular arithmetic on
-  `step`. `optimize()` always checkpoints at `step == pd_config.steps`; periodic saves
-  use `should_save`.
+  `save_every`, `slow_eval_on_first_step`. Methods (`should_log_train`, `should_eval`,
+  `should_run_slow_eval`, `should_save`) are pure modular arithmetic on `step`. `optimize()`
+  always checkpoints at `step == pd_config.steps`; periodic saves use `should_save`.
+  `n_eval_steps` is passed directly to `optimize()` (not on `Cadence`), since it's about
+  what an eval pass does rather than when eval fires.
 - `RunSink`: a `Protocol` in `param_decomp/run_sink.py` with three side-effect methods:
   `log(metrics, step)`, `console(*lines)`, `checkpoint(state_dict, step)`. Metric keys
   are already namespaced (`train/...`, `eval/...`) by `optimize()` before being handed
@@ -124,11 +126,11 @@ YAML schema (one validated pydantic tree — extra keys raise):
 ```yaml
 pd:      { ... PDConfig ... }
 runtime: { ... RuntimeConfig ... }
-cadence: { train_log_every, eval_every, slow_eval_every, n_eval_steps,
+cadence: { train_log_every, eval_every, slow_eval_every,
            save_every, slow_eval_on_first_step }
 target:  { ... per-experiment target config ... }
 data:    { ... per-experiment data config ... }
-eval:    { batch_size, metrics: [ {type: "...", ...}, ... ] }
+eval:    { batch_size, n_steps, metrics: [ {type: "...", ...}, ... ] }
 ```
 
 For LM runs, `target` carries a discriminated union under `target.spec` (see
@@ -193,7 +195,9 @@ The PD trainer is configured by two pydantic configs plus a `Cadence` and a `Run
 - **`RuntimeConfig`** — compute substrate: autocast_bf16, device, dp. Perturbs numerics
   without changing the algorithm.
 - **`Cadence`** (frozen `BaseConfig` in `param_decomp.configs`) — when the loop emits:
-  train-log / eval / slow-eval / checkpoint periods and eval-batch count. Pure data; no I/O.
+  train-log / eval / slow-eval / checkpoint periods. Pure data; no I/O. The eval-batch
+  count (`n_eval_steps`) lives next to `eval_loader` / `eval_metrics` as a kwarg on
+  `optimize()`, not here.
 - **`RunSink`** (caller-supplied, Protocol in core) — where output goes: `log` / `console` /
   `checkpoint`. Sink methods own all side effects.
 

@@ -108,19 +108,19 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         train_log_every=50,
         eval_every=10,
         slow_eval_every=10,
-        n_eval_steps=1,
         save_every=None,
     )
 
     optimize(
         target_model=target_model,
         train_loader=train_loader,
-        eval_loader=eval_loader,
         run_batch=run_batch_first_element,
         reconstruction_loss=recon_loss_mse,
         pd_config=pd_config,
         runtime_config=RuntimeConfig(device=device),
         cadence=cadence,
         sink=sink,
+        eval_loader=eval_loader,
         eval_metrics=[],
+        n_eval_steps=1,
     )

@@ -20,13 +20,11 @@ RUN_META_FILENAME = "run_meta.yaml"
 
 
 class EvalConfig(BaseConfig):
-    """Eval-loader batch size + the list of eval `Metric` configs to instantiate.
-
-    Note: how many batches per eval call lives on `Cadence.n_eval_steps` since the
-    trainer owns that loop count.
-    """
+    """Eval-pass settings: loader batch size, how many batches to consume per eval tick,
+    and the list of eval `Metric` configs to instantiate."""
 
     batch_size: PositiveInt
+    n_steps: PositiveInt
     metrics: list[AnyEvalMetricConfig] = Field(default_factory=list)
 
 

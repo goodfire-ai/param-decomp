@@ -90,25 +90,27 @@ def _build_metric_context(
 def optimize(
     target_model: nn.Module,
     train_loader: DataLoader[Any],
-    eval_loader: DataLoader[Any],
-    *,
     run_batch: RunBatch,
     reconstruction_loss: ReconstructionLoss,
     pd_config: PDConfig,
     runtime_config: RuntimeConfig,
     cadence: Cadence,
     sink: RunSink,
+    eval_loader: DataLoader[Any],
     eval_metrics: list[Metric[Any]],
+    n_eval_steps: int,
 ) -> None:
     """Run the PD optimization loop.
 
-    Pure trainer: takes the target model, the two dataloaders, the run-batch / reconstruction
+    Pure trainer: takes the target model, the train loader, the run-batch / reconstruction
     callables, the two configs, the cadence (when to emit), the sink (where output goes), and
-    the eval metrics. No `RunConfig`, no driver, no YAML, no wandb-init responsibility.
+    the eval-pass triple (`eval_loader`, `eval_metrics`, `n_eval_steps`). No `RunConfig`, no
+    driver, no YAML, no wandb-init responsibility.
 
     `eval_metrics` is a list of caller-instantiated `Metric` objects. They are bound to the
     `ComponentModel` and device inside this function via `Metric.bind(...)`; the caller does
-    not have to construct them with model/device.
+    not have to construct them with model/device. `n_eval_steps` is the number of eval-loader
+    batches consumed on each eval tick.
 
     All ranks call this function; `sink` is automatically a no-op on non-main ranks.
     """
@@ -295,7 +297,7 @@ def optimize(
                 active = [m for m in all_instances.values() if not (m.slow and not slow_step)]
                 for m in active:
                     m.reset()
-                for _ in range(cadence.n_eval_steps):
+                for _ in range(n_eval_steps):
                     ctx = _build_metric_context(
                         next(eval_iterator),
                         step=step,

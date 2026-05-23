@@ -45,8 +45,8 @@ cadence:
   train_log_every: 100
   eval_every: 1000
   slow_eval_every: 5000
-  n_eval_steps: 100
 eval:
+  n_steps: 100
   batch_size: 4096
   metrics:
     - type: CIHistograms

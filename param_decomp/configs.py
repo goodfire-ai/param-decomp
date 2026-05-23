@@ -214,11 +214,12 @@ class PDConfig(BaseConfig):
 
 class Cadence(BaseConfig):
     """Rhythm of the PD training loop: periods (in steps) for train logging,
-    evaluation, slow eval, and checkpointing, plus `n_eval_steps` — the number
-    of eval-loader batches consumed on each eval tick.
+    evaluation, slow eval, and checkpointing.
 
     Held separately from `RunSink` so the sink only owns *where* output goes;
-    `Cadence` owns *when* (and how much) the loop emits.
+    `Cadence` owns *when* the loop emits. The *what* of an eval pass —
+    `n_eval_steps`, `eval_loader`, `eval_metrics` — is passed directly to
+    `optimize()`.
 
     `slow_eval_every` must be a multiple of `eval_every`: the trainer only checks
     `should_run_slow_eval` on steps where `should_eval` already fired.
@@ -227,7 +228,6 @@ class Cadence(BaseConfig):
     train_log_every: PositiveInt
     eval_every: PositiveInt
     slow_eval_every: PositiveInt
-    n_eval_steps: PositiveInt
     save_every: PositiveInt | None = None
     slow_eval_on_first_step: bool = True
 

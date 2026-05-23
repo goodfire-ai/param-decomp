@@ -107,19 +107,19 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         eval_every=500,
         slow_eval_every=500,
         slow_eval_on_first_step=False,
-        n_eval_steps=1,
         save_every=None,
     )
 
     optimize(
         target_model=target_model,
         train_loader=train_loader,
-        eval_loader=eval_loader,
         run_batch=make_run_batch("logits"),
         reconstruction_loss=recon_loss_kl,
         pd_config=pd_config,
         runtime_config=RuntimeConfig(device=device),
         cadence=cadence,
         sink=sink,
+        eval_loader=eval_loader,
         eval_metrics=[CI_L0(CI_L0Config(ci_alive_threshold=0.1, groups=None))],
+        n_eval_steps=1,
     )

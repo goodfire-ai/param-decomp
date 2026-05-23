@@ -42,8 +42,8 @@ cadence:
   eval_every: 500
   slow_eval_every: 5000
   slow_eval_on_first_step: true
-  n_eval_steps: 100
 eval:
+  n_steps: 100
   batch_size: 2048
   metrics:
     - type: CIHistograms
