@@ -27,7 +27,6 @@ from param_decomp_lab.dataset_attributions.config import DatasetAttributionConfi
 from param_decomp_lab.dataset_attributions.storage import DatasetAttributionStorage
 from param_decomp_lab.distributed import get_device
 from param_decomp_lab.experiments.lm.data import LMDataConfig
-from param_decomp_lab.experiments.lm.run import LMReloader
 from param_decomp_lab.harvest.repo import HarvestRepo
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
 from param_decomp_lab.saved_run import SavedRun
@@ -77,9 +76,8 @@ def harvest_attributions(
     _, _, run_id = parse_wandb_run_path(config.wandb_path)
 
     pd_run = SavedRun.from_path(config.wandb_path)
-    assert isinstance(pd_run.reloader, LMReloader), (
-        f"Dataset attributions currently only support LM runs, got "
-        f"reloader={type(pd_run.reloader).__name__}"
+    assert pd_run.kind == "lm", (
+        f"Dataset attributions currently only support LM runs, got kind={pd_run.kind!r}"
     )
     data_cfg = pd_run.data_cfg
     assert isinstance(data_cfg, LMDataConfig)
@@ -87,7 +85,7 @@ def harvest_attributions(
     model.eval()
 
     pd_config = pd_run.pd_config
-    train_loader = pd_run.reloader.build_loader(
+    train_loader = pd_run.build_loader(
         split="train", device=str(device), batch_size=config.batch_size
     )
 

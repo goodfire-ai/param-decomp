@@ -94,35 +94,31 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 
 ### Adding a new experiment
 
-Experiments are plain Python scripts. Each `run.py` is self-contained and exposes one
-named class — a **`Reloader`** — that implements the `ExperimentReloader` Protocol in
-`param_decomp_lab/saved_run.py`. The reloader holds the validated `target_cfg` /
-`data_cfg` and exposes three methods postprocessing needs:
+Experiments are plain Python scripts. Each `run.py` is self-contained and exposes a flat
+module API consumed by both the fresh-run path (`main()`) and the reload path
+(`SavedRun`):
 
 ```python
-class ExperimentReloader(Protocol):
-    target_cfg: BaseConfig
-    data_cfg: BaseConfig
+TARGET_CONFIG_TYPE: type[BaseConfig]   # validates the YAML `target:` block
+DATA_CONFIG_TYPE:   type[BaseConfig]   # validates the YAML `data:` block
 
-    @classmethod
-    def from_meta(cls, meta: RunMeta) -> Self: ...
-    def build_target(self) -> nn.Module: ...
-    def build_loader(self, *, split: Literal["train", "eval"], device: str,
-                     batch_size: int, dist_state=None, seed=None) -> DataLoader: ...
-    def make_run_batch(self) -> RunBatch: ...
+def build_target(target_cfg) -> nn.Module: ...
+def build_loader(target_cfg, data_cfg, *, split: Literal["train", "eval"], device: str,
+                 batch_size: int, dist_state=None, seed=None) -> DataLoader: ...
+def make_run_batch(target_cfg) -> RunBatch: ...
 ```
 
-The reloader does double duty: `main()` instantiates it from the parsed config and uses
-it to build the target + loaders + run_batch, so there's no duplication between "fresh
-run from YAML" and "reload from disk" paths.
+`main()` calls these directly, so there's no duplication between "fresh run from YAML"
+and "reload from disk" paths.
 
-`save_run_meta(out_dir, reloader_class=..., cfg=...)` writes the reloader's fully-qualified
-`<module>:<Class>` name into `run_meta.yaml::reloader_class`. There is no central
-registry: `SavedRun.from_path` resolves the FQN via `importlib` and calls
-`Reloader.from_meta(meta)` to rebuild the reloader. The three in-repo experiments
+`save_run_meta(out_dir, kind=..., cfg=...)` writes the experiment kind literal into
+`run_meta.yaml::experiment_kind`. The kind→module dispatch lives in
+`param_decomp_lab/saved_run.py::_RUN_MODULE_PATHS`; `SavedRun.from_path` imports the
+matching module on demand and validates `meta.target_dict` / `meta.data_dict` against
+its `TARGET_CONFIG_TYPE` / `DATA_CONFIG_TYPE`. The three in-repo experiments
 (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`) are the canonical references.
-The shared `ExperimentConfig[T, D]` generic + `EvalConfig` + `save_run_meta` live in
-`param_decomp_lab/experiments/utils.py`.
+The shared `ExperimentConfig[T, D]` generic + `EvalConfig` + `RunKind` + `save_run_meta`
+live in `param_decomp_lab/experiments/utils.py`.
 
 YAML schema (one validated pydantic tree — extra keys raise):
 
@@ -156,9 +152,11 @@ pd-resid-mlp  path/to/config.yaml
 pd-lm         path/to/config.yaml
 ```
 
-For a brand-new experiment, drop a `run.py` next to a YAML config with its own
-`Reloader` class and either call its `main(...)` directly or wire it up to a console
-script. Nothing central needs to be touched.
+For a brand-new experiment, drop a `run.py` exposing `TARGET_CONFIG_TYPE` /
+`DATA_CONFIG_TYPE` and the three `build_target` / `build_loader` / `make_run_batch`
+functions next to a YAML config, add the new `kind` to `RunKind` and `_RUN_MODULE_PATHS`
+in `saved_run.py`, and either call its `main(...)` directly or wire it up to a console
+script.
 
 ### Metrics
 
@@ -332,14 +330,14 @@ This repository implements methods from two key research papers on parameter dec
   `metrics/persistent_pgd_recon.py`. Eval metrics ship in `param_decomp_lab/eval_metrics/`.
 
 **In-repo experiment scripts** (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`)
-each declare a `<Experiment>ExperimentConfig` subclass of `ExperimentConfig[T, D]` plus a
-`<Experiment>Reloader` class implementing the `ExperimentReloader` Protocol. `main()`
-parses the YAML, instantiates the reloader, uses it to build target/loaders/run_batch,
-and calls `optimize()`. The reloader's FQN (`<module>:<Class>`) is written into
-`run_meta.yaml::reloader_class`, and `SavedRun.from_path(...)` resolves it via
-`importlib` to rebuild the run later — no central registry. The generic
-`ExperimentConfig`, `EvalConfig`, and `save_run_meta` live in
-`param_decomp_lab/experiments/utils.py`; the `ExperimentReloader` Protocol + `SavedRun`
+each declare a `<Experiment>ExperimentConfig` subclass of `ExperimentConfig[T, D]` plus
+module-level `TARGET_CONFIG_TYPE` / `DATA_CONFIG_TYPE` and `build_target` /
+`build_loader` / `make_run_batch` functions. `main()` parses the YAML and calls those
+functions directly, then `optimize()`. `save_run_meta` writes the run's `experiment_kind`
+into `run_meta.yaml`, and `SavedRun.from_path(...)` dispatches on that kind via
+`_RUN_MODULE_PATHS` to the matching module. The generic `ExperimentConfig`,
+`EvalConfig`, `RunKind`, and `save_run_meta` live in
+`param_decomp_lab/experiments/utils.py`; `SavedRun` + `RunMeta` + the dispatch table
 live in `param_decomp_lab/saved_run.py`.
 
 **Terminology: Sources vs Masks:**
@@ -413,10 +411,10 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 ├── param_decomp_lab/                # Lab tooling — experiments, post-processing, app, infra
 │   ├── infra/                       # Cross-subsystem plumbing: settings, paths, slurm, wandb, sqlite, git, run_files, markdown, pydantic
 │   ├── experiments/
-│   │   ├── tms/, resid_mlp/         # Each: run.py (with <Experiment>Reloader) + YAMLs + data.py + train_*.py + helpers
-│   │   ├── lm/                      # run.py (LMReloader + LMTargetSpec discriminated union) + YAMLs + data.py + pretrain/
+│   │   ├── tms/, resid_mlp/         # Each: run.py (TARGET_CONFIG_TYPE/DATA_CONFIG_TYPE + build_*/make_run_batch) + YAMLs + data.py + train_*.py + helpers
+│   │   ├── lm/                      # run.py (LMTargetSpec discriminated union + build_*/make_run_batch) + YAMLs + data.py + pretrain/
 │   │   ├── lm/pretrain/             # LM target-model pretraining (see lm/pretrain/CLAUDE.md)
-│   │   ├── utils.py                 # ExperimentConfig[T, D] + EvalConfig + save_run_meta(reloader_class=…)
+│   │   ├── utils.py                 # ExperimentConfig[T, D] + EvalConfig + RunKind + save_run_meta(kind=…)
 │   │   └── __init__.py              # bare package init (no central registry)
 │   ├── eval_metrics/                # Eval Metric classes + AnyEvalMetricConfig union + EVAL_METRIC_CLASSES dispatch
 │   ├── harvest/                     # Statistics collection: pipeline + accumulator (see harvest/CLAUDE.md)

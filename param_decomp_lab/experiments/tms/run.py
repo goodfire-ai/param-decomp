@@ -1,13 +1,12 @@
 """TMS PD experiment: YAML -> `optimize()` glue.
 
-`TMSReloader` is the single class `SavedRun` resolves via the FQN written into
-`run_meta.yaml::reloader_class`. It owns target / loader / run_batch construction so the
-same code path is used for "fresh run from YAML" and "reload from disk". Run via
-``pd-tms path/to/config.yaml``.
+Exposes module-level `TARGET_CONFIG_TYPE`, `DATA_CONFIG_TYPE`, `build_target`,
+`build_loader`, and `make_run_batch` so `SavedRun` can rebuild a run by dispatching
+on `run_meta.yaml::experiment_kind`. Run via ``pd-tms path/to/config.yaml``.
 """
 
 from pathlib import Path
-from typing import Any, ClassVar, Literal, Self
+from typing import Any, Literal
 
 import fire
 from pydantic import Field
@@ -27,7 +26,6 @@ from param_decomp_lab.experiments.utils import ExperimentConfig, save_run_meta
 from param_decomp_lab.infra.run_files import generate_run_id
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.run_sink import RunSink
-from param_decomp_lab.saved_run import RunMeta
 from param_decomp_lab.seed import set_seed
 
 
@@ -50,51 +48,44 @@ class TMSExperimentConfig(ExperimentConfig[TMSTargetConfig, TMSDataConfig]):
     pass
 
 
-class TMSReloader:
-    target_config_type: ClassVar[type[TMSTargetConfig]] = TMSTargetConfig
-    data_config_type: ClassVar[type[TMSDataConfig]] = TMSDataConfig
+TARGET_CONFIG_TYPE = TMSTargetConfig
+DATA_CONFIG_TYPE = TMSDataConfig
 
-    def __init__(self, target_cfg: TMSTargetConfig, data_cfg: TMSDataConfig):
-        self.target_cfg = target_cfg
-        self.data_cfg = data_cfg
 
-    @classmethod
-    def from_meta(cls, meta: RunMeta) -> Self:
-        return cls(
-            target_cfg=cls.target_config_type.model_validate(meta.target_dict),
-            data_cfg=cls.data_config_type.model_validate(meta.data_dict),
-        )
+def build_target(target_cfg: TMSTargetConfig) -> TMSModel:
+    run_info = TMSTargetRunInfo.from_path(target_cfg.run_path)
+    target_model = TMSModel.from_run_info(run_info)
+    target_model.eval()
+    return target_model
 
-    def build_target(self) -> TMSModel:
-        run_info = TMSTargetRunInfo.from_path(self.target_cfg.run_path)
-        target_model = TMSModel.from_run_info(run_info)
-        target_model.eval()
-        return target_model
 
-    def build_loader(
-        self,
-        *,
-        split: Literal["train", "eval"],
-        device: str,
-        batch_size: int,
-        dist_state: DistributedState | None = None,
-        seed: int | None = None,
-    ) -> DataLoader[Any]:
-        del split, dist_state, seed  # synthetic dataset; same loader for train/eval
-        train_config = TMSTargetRunInfo.from_path(self.target_cfg.run_path).config
-        dataset = SparseFeatureDataset(
-            n_features=train_config.tms_model_config.n_features,
-            feature_probability=self.data_cfg.feature_probability,
-            device=device,
-            batch_size=batch_size,
-            data_generation_type=self.data_cfg.data_generation_type,
-            value_range=(0.0, 1.0),
-            synced_inputs=train_config.synced_inputs,
-        )
-        return DataLoader(dataset, batch_size=None)
+def build_loader(
+    target_cfg: TMSTargetConfig,
+    data_cfg: TMSDataConfig,
+    *,
+    split: Literal["train", "eval"],
+    device: str,
+    batch_size: int,
+    dist_state: DistributedState | None = None,
+    seed: int | None = None,
+) -> DataLoader[Any]:
+    del split, dist_state, seed  # synthetic dataset; same loader for train/eval
+    train_config = TMSTargetRunInfo.from_path(target_cfg.run_path).config
+    dataset = SparseFeatureDataset(
+        n_features=train_config.tms_model_config.n_features,
+        feature_probability=data_cfg.feature_probability,
+        device=device,
+        batch_size=batch_size,
+        data_generation_type=data_cfg.data_generation_type,
+        value_range=(0.0, 1.0),
+        synced_inputs=train_config.synced_inputs,
+    )
+    return DataLoader(dataset, batch_size=None)
 
-    def make_run_batch(self) -> RunBatch:
-        return run_batch_first_element
+
+def make_run_batch(target_cfg: TMSTargetConfig) -> RunBatch:
+    del target_cfg
+    return run_batch_first_element
 
 
 def _tied_weights_for(target_model: TMSModel) -> list[tuple[str, str]] | None:
@@ -108,8 +99,7 @@ def main(config_path: str | Path) -> None:
     device = get_device()
     logger.info(f"Using device: {device}")
 
-    reloader = TMSReloader(target_cfg=cfg.target, data_cfg=cfg.data)
-    target_model = reloader.build_target().to(device)
+    target_model = build_target(cfg.target).to(device)
     cfg = cfg.model_copy(
         update={
             "pd": cfg.pd.model_copy(update={"tied_weights": _tied_weights_for(target_model)}),
@@ -117,19 +107,21 @@ def main(config_path: str | Path) -> None:
         }
     )
 
-    train_loader = reloader.build_loader(split="train", device=device, batch_size=cfg.pd.batch_size)
-    eval_loop = _build_eval_loop(cfg, reloader, device)
+    train_loader = build_loader(
+        cfg.target, cfg.data, split="train", device=device, batch_size=cfg.pd.batch_size
+    )
+    eval_loop = _build_eval_loop(cfg, device)
 
     run_id = generate_run_id("param_decomp")
     out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
     sink = RunSink.local(out_dir)
-    save_run_meta(out_dir, reloader_class=TMSReloader, cfg=cfg)
+    save_run_meta(out_dir, kind="tms", cfg=cfg)
 
     try:
         optimize(
             target_model=target_model,
             train_loader=train_loader,
-            run_batch=reloader.make_run_batch(),
+            run_batch=make_run_batch(cfg.target),
             reconstruction_loss=recon_loss_mse,
             pd_config=cfg.pd,
             runtime_config=cfg.runtime,
@@ -141,13 +133,13 @@ def main(config_path: str | Path) -> None:
         sink.finish()
 
 
-def _build_eval_loop(
-    cfg: TMSExperimentConfig, reloader: TMSReloader, device: str
-) -> EvalLoop | None:
+def _build_eval_loop(cfg: TMSExperimentConfig, device: str) -> EvalLoop | None:
     if cfg.eval is None:
         return None
     return EvalLoop(
-        loader=reloader.build_loader(split="eval", device=device, batch_size=cfg.eval.batch_size),
+        loader=build_loader(
+            cfg.target, cfg.data, split="eval", device=device, batch_size=cfg.eval.batch_size
+        ),
         metrics=[EVAL_METRIC_CLASSES[m.type](m) for m in cfg.eval.metrics],
         n_steps=cfg.eval.n_steps,
         every=cfg.eval.every,

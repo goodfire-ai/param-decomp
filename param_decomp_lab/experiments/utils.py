@@ -3,11 +3,11 @@
 Each experiment subclasses `ExperimentConfig` to fix the concrete `target` / `data` types
 and parses its YAML with `<Experiment>Config.from_file(path)`. `save_run_meta` persists
 the resolved config under `run_meta.yaml`; `SavedRun` reads it back and dispatches via
-the experiment's `Reloader` class FQN.
+the `experiment_kind` field to the matching `experiments/<kind>/run.py` module.
 """
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import Field, PositiveInt
@@ -17,6 +17,8 @@ from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
 from param_decomp_lab.eval_metrics import AnyEvalMetricConfig
 
 RUN_META_FILENAME = "run_meta.yaml"
+
+RunKind = Literal["lm", "tms", "resid_mlp"]
 
 
 class EvalConfig(BaseConfig):
@@ -53,18 +55,18 @@ class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
 def save_run_meta(
     out_dir: Path | None,
     *,
-    reloader_class: type,
+    kind: RunKind,
     cfg: ExperimentConfig[Any, Any],
 ) -> None:
     """Write `{out_dir}/run_meta.yaml`: the resolved `ExperimentConfig` plus the
-    `reloader_class` FQN used by `SavedRun` to rebuild target/loaders/run_batch.
+    `experiment_kind` literal `SavedRun` uses to dispatch to the matching
+    `experiments/<kind>/run.py` module when rebuilding target/loaders/run_batch.
 
     Skipped when `out_dir` is None (non-main ranks / silent sinks).
     """
     if out_dir is None:
         return
     out_dir.mkdir(parents=True, exist_ok=True)
-    fqn = f"{reloader_class.__module__}:{reloader_class.__qualname__}"
-    payload = {"reloader_class": fqn, **cfg.model_dump(mode="json")}
+    payload = {"experiment_kind": kind, **cfg.model_dump(mode="json")}
     with open(out_dir / RUN_META_FILENAME, "w") as f:
         yaml.dump(payload, f, default_flow_style=False, sort_keys=False)

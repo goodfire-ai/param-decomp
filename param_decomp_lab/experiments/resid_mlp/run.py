@@ -1,13 +1,12 @@
 """Residual MLP PD experiment: YAML -> `optimize()` glue.
 
-`ResidMLPReloader` is the single class `SavedRun` resolves via the FQN written into
-`run_meta.yaml::reloader_class`. It owns target / loader / run_batch construction so the
-same code path is used for "fresh run from YAML" and "reload from disk". Run via
-``pd-resid-mlp path/to/config.yaml``.
+Exposes module-level `TARGET_CONFIG_TYPE`, `DATA_CONFIG_TYPE`, `build_target`,
+`build_loader`, and `make_run_batch` so `SavedRun` can rebuild a run by dispatching
+on `run_meta.yaml::experiment_kind`. Run via ``pd-resid-mlp path/to/config.yaml``.
 """
 
 from pathlib import Path
-from typing import Any, ClassVar, Literal, Self
+from typing import Any, Literal
 
 import fire
 from pydantic import Field
@@ -27,7 +26,6 @@ from param_decomp_lab.experiments.utils import ExperimentConfig, save_run_meta
 from param_decomp_lab.infra.run_files import generate_run_id
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.run_sink import RunSink
-from param_decomp_lab.saved_run import RunMeta
 from param_decomp_lab.seed import set_seed
 
 
@@ -50,55 +48,48 @@ class ResidMLPExperimentConfig(ExperimentConfig[ResidMLPTargetConfig, ResidMLPDa
     pass
 
 
-class ResidMLPReloader:
-    target_config_type: ClassVar[type[ResidMLPTargetConfig]] = ResidMLPTargetConfig
-    data_config_type: ClassVar[type[ResidMLPDataConfig]] = ResidMLPDataConfig
+TARGET_CONFIG_TYPE = ResidMLPTargetConfig
+DATA_CONFIG_TYPE = ResidMLPDataConfig
 
-    def __init__(self, target_cfg: ResidMLPTargetConfig, data_cfg: ResidMLPDataConfig):
-        self.target_cfg = target_cfg
-        self.data_cfg = data_cfg
 
-    @classmethod
-    def from_meta(cls, meta: RunMeta) -> Self:
-        return cls(
-            target_cfg=cls.target_config_type.model_validate(meta.target_dict),
-            data_cfg=cls.data_config_type.model_validate(meta.data_dict),
-        )
+def build_target(target_cfg: ResidMLPTargetConfig) -> ResidMLP:
+    run_info = ResidMLPTargetRunInfo.from_path(target_cfg.run_path)
+    target_model = ResidMLP.from_run_info(run_info)
+    target_model.eval()
+    return target_model
 
-    def build_target(self) -> ResidMLP:
-        run_info = ResidMLPTargetRunInfo.from_path(self.target_cfg.run_path)
-        target_model = ResidMLP.from_run_info(run_info)
-        target_model.eval()
-        return target_model
 
-    def build_loader(
-        self,
-        *,
-        split: Literal["train", "eval"],
-        device: str,
-        batch_size: int,
-        dist_state: DistributedState | None = None,
-        seed: int | None = None,
-    ) -> DataLoader[Any]:
-        del split, dist_state, seed
-        train_config = ResidMLPTargetRunInfo.from_path(self.target_cfg.run_path).config
-        dataset = ResidMLPDataset(
-            n_features=train_config.resid_mlp_model_config.n_features,
-            feature_probability=self.data_cfg.feature_probability,
-            device=device,
-            batch_size=batch_size,
-            calc_labels=False,
-            label_type=None,
-            act_fn_name=None,
-            label_fn_seed=None,
-            label_coeffs=None,
-            data_generation_type=self.data_cfg.data_generation_type,
-            synced_inputs=train_config.synced_inputs,
-        )
-        return DataLoader(dataset, batch_size=None)
+def build_loader(
+    target_cfg: ResidMLPTargetConfig,
+    data_cfg: ResidMLPDataConfig,
+    *,
+    split: Literal["train", "eval"],
+    device: str,
+    batch_size: int,
+    dist_state: DistributedState | None = None,
+    seed: int | None = None,
+) -> DataLoader[Any]:
+    del split, dist_state, seed
+    train_config = ResidMLPTargetRunInfo.from_path(target_cfg.run_path).config
+    dataset = ResidMLPDataset(
+        n_features=train_config.resid_mlp_model_config.n_features,
+        feature_probability=data_cfg.feature_probability,
+        device=device,
+        batch_size=batch_size,
+        calc_labels=False,
+        label_type=None,
+        act_fn_name=None,
+        label_fn_seed=None,
+        label_coeffs=None,
+        data_generation_type=data_cfg.data_generation_type,
+        synced_inputs=train_config.synced_inputs,
+    )
+    return DataLoader(dataset, batch_size=None)
 
-    def make_run_batch(self) -> RunBatch:
-        return run_batch_first_element
+
+def make_run_batch(target_cfg: ResidMLPTargetConfig) -> RunBatch:
+    del target_cfg
+    return run_batch_first_element
 
 
 def main(config_path: str | Path) -> None:
@@ -109,22 +100,23 @@ def main(config_path: str | Path) -> None:
     logger.info(f"Using device: {device}")
     cfg = cfg.model_copy(update={"runtime": cfg.runtime.model_copy(update={"device": device})})
 
-    reloader = ResidMLPReloader(target_cfg=cfg.target, data_cfg=cfg.data)
-    target_model = reloader.build_target().to(device)
+    target_model = build_target(cfg.target).to(device)
 
-    train_loader = reloader.build_loader(split="train", device=device, batch_size=cfg.pd.batch_size)
-    eval_loop = _build_eval_loop(cfg, reloader, device)
+    train_loader = build_loader(
+        cfg.target, cfg.data, split="train", device=device, batch_size=cfg.pd.batch_size
+    )
+    eval_loop = _build_eval_loop(cfg, device)
 
     run_id = generate_run_id("param_decomp")
     out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
     sink = RunSink.local(out_dir)
-    save_run_meta(out_dir, reloader_class=ResidMLPReloader, cfg=cfg)
+    save_run_meta(out_dir, kind="resid_mlp", cfg=cfg)
 
     try:
         optimize(
             target_model=target_model,
             train_loader=train_loader,
-            run_batch=reloader.make_run_batch(),
+            run_batch=make_run_batch(cfg.target),
             reconstruction_loss=recon_loss_mse,
             pd_config=cfg.pd,
             runtime_config=cfg.runtime,
@@ -136,13 +128,13 @@ def main(config_path: str | Path) -> None:
         sink.finish()
 
 
-def _build_eval_loop(
-    cfg: ResidMLPExperimentConfig, reloader: ResidMLPReloader, device: str
-) -> EvalLoop | None:
+def _build_eval_loop(cfg: ResidMLPExperimentConfig, device: str) -> EvalLoop | None:
     if cfg.eval is None:
         return None
     return EvalLoop(
-        loader=reloader.build_loader(split="eval", device=device, batch_size=cfg.eval.batch_size),
+        loader=build_loader(
+            cfg.target, cfg.data, split="eval", device=device, batch_size=cfg.eval.batch_size
+        ),
         metrics=[EVAL_METRIC_CLASSES[m.type](m) for m in cfg.eval.metrics],
         n_steps=cfg.eval.n_steps,
         every=cfg.eval.every,

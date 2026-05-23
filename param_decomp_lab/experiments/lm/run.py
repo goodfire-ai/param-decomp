@@ -1,15 +1,15 @@
 """Language-model PD experiment: YAML -> `optimize()` glue.
 
-`LMReloader` is the single class `SavedRun` resolves via the FQN written into
-`run_meta.yaml::reloader_class`. It owns target / loader / run_batch construction so the
-same code path is used for "fresh run from YAML" and "reload from disk". Run via
-``pd-lm path/to/config.yaml``; multi-process (DDP) entry via ``torchrun`` of the same
-module.
+Exposes module-level `TARGET_CONFIG_TYPE`, `DATA_CONFIG_TYPE`, `build_target`,
+`build_loader`, and `make_run_batch` so `SavedRun` can rebuild a run by dispatching
+on `run_meta.yaml::experiment_kind`. The fresh-run path (`main`) calls the same
+functions. Run via ``pd-lm path/to/config.yaml``; multi-process (DDP) entry via
+``torchrun`` of the same module.
 """
 
 import importlib
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Literal, Self
+from typing import Annotated, Any, Literal
 
 import fire
 from pydantic import Discriminator
@@ -40,7 +40,6 @@ from param_decomp_lab.infra.paths import ModelPath
 from param_decomp_lab.infra.run_files import generate_run_id
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.run_sink import RunSink
-from param_decomp_lab.saved_run import RunMeta
 from param_decomp_lab.seed import set_seed
 
 
@@ -89,7 +88,12 @@ class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
     pass
 
 
-def _build_target_from_spec(spec: LMTargetSpec) -> Any:
+TARGET_CONFIG_TYPE = LMTargetConfig
+DATA_CONFIG_TYPE = LMDataConfig
+
+
+def build_target(target_cfg: LMTargetConfig) -> Any:
+    spec = target_cfg.spec
     cls = _resolve_class(spec.model_class)
     match spec:
         case HFTarget():
@@ -105,50 +109,34 @@ def _build_target_from_spec(spec: LMTargetSpec) -> Any:
     return target_model
 
 
-class LMReloader:
-    target_config_type: ClassVar[type[LMTargetConfig]] = LMTargetConfig
-    data_config_type: ClassVar[type[LMDataConfig]] = LMDataConfig
+def build_loader(
+    target_cfg: LMTargetConfig,
+    data_cfg: LMDataConfig,
+    *,
+    split: Literal["train", "eval"],
+    device: str,
+    batch_size: int,
+    dist_state: DistributedState | None = None,
+    seed: int | None = None,
+) -> DataLoader[Any]:
+    """Eval seed is offset by 1 so eval shuffles differently from train when both
+    are constructed from the same `pd_config.seed`."""
+    del target_cfg, device
+    effective_seed = (seed or 0) + (1 if split == "eval" else 0)
+    split_name = data_cfg.eval_split if split == "eval" else data_cfg.train_split
+    loader, _ = create_lm_data_loader(
+        data_cfg,
+        split=split_name,
+        batch_size=rank_batch_size(batch_size, dist_state, label=f"{split}_batch_size"),
+        seed=effective_seed,
+        dist_state=dist_state,
+        collate_fn=collate_fn_for(data_cfg),
+    )
+    return loader
 
-    def __init__(self, target_cfg: LMTargetConfig, data_cfg: LMDataConfig):
-        self.target_cfg = target_cfg
-        self.data_cfg = data_cfg
 
-    @classmethod
-    def from_meta(cls, meta: RunMeta) -> Self:
-        return cls(
-            target_cfg=cls.target_config_type.model_validate(meta.target_dict),
-            data_cfg=cls.data_config_type.model_validate(meta.data_dict),
-        )
-
-    def build_target(self) -> Any:
-        return _build_target_from_spec(self.target_cfg.spec)
-
-    def build_loader(
-        self,
-        *,
-        split: Literal["train", "eval"],
-        device: str,
-        batch_size: int,
-        dist_state: DistributedState | None = None,
-        seed: int | None = None,
-    ) -> DataLoader[Any]:
-        """Eval seed is offset by 1 so eval shuffles differently from train when both
-        are constructed from the same `pd_config.seed`."""
-        del device
-        effective_seed = (seed or 0) + (1 if split == "eval" else 0)
-        split_name = self.data_cfg.eval_split if split == "eval" else self.data_cfg.train_split
-        loader, _ = create_lm_data_loader(
-            self.data_cfg,
-            split=split_name,
-            batch_size=rank_batch_size(batch_size, dist_state, label=f"{split}_batch_size"),
-            seed=effective_seed,
-            dist_state=dist_state,
-            collate_fn=collate_fn_for(self.data_cfg),
-        )
-        return loader
-
-    def make_run_batch(self) -> RunBatch:
-        return _make_run_batch(self.target_cfg.output_extract)
+def make_run_batch(target_cfg: LMTargetConfig) -> RunBatch:
+    return _make_run_batch(target_cfg.output_extract)
 
 
 @with_distributed_cleanup
@@ -162,28 +150,29 @@ def main(config_path: str | Path) -> None:
     device = get_device()
     cfg = cfg.model_copy(update={"runtime": cfg.runtime.model_copy(update={"device": device})})
 
-    reloader = LMReloader(target_cfg=cfg.target, data_cfg=cfg.data)
-    target_model = reloader.build_target()
+    target_model = build_target(cfg.target)
 
-    train_loader = reloader.build_loader(
+    train_loader = build_loader(
+        cfg.target,
+        cfg.data,
         split="train",
         device=device,
         batch_size=cfg.pd.batch_size,
         dist_state=dist_state,
         seed=cfg.pd.seed,
     )
-    eval_loop = _build_eval_loop(cfg, reloader, device, dist_state)
+    eval_loop = _build_eval_loop(cfg, device, dist_state)
 
     run_id = generate_run_id("param_decomp")
     out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id if is_main_process() else None
     sink = RunSink.local(out_dir) if out_dir is not None else RunSink.silent()
-    save_run_meta(out_dir, reloader_class=LMReloader, cfg=cfg)
+    save_run_meta(out_dir, kind="lm", cfg=cfg)
 
     try:
         optimize(
             target_model=target_model,
             train_loader=train_loader,
-            run_batch=reloader.make_run_batch(),
+            run_batch=make_run_batch(cfg.target),
             reconstruction_loss=recon_loss_kl,
             pd_config=cfg.pd,
             runtime_config=cfg.runtime,
@@ -197,13 +186,14 @@ def main(config_path: str | Path) -> None:
 
 def _build_eval_loop(
     cfg: LMExperimentConfig,
-    reloader: LMReloader,
     device: str,
     dist_state: DistributedState | None,
 ) -> EvalLoop | None:
     if cfg.eval is None:
         return None
-    eval_loader = reloader.build_loader(
+    eval_loader = build_loader(
+        cfg.target,
+        cfg.data,
         split="eval",
         device=device,
         batch_size=cfg.eval.batch_size,

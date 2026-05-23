@@ -275,11 +275,10 @@ class EditableModel:
     ) -> tuple["EditableModel", AppTokenizer]:
         """Load from wandb path. Returns (editable_model, tokenizer)."""
         from param_decomp_lab.experiments.lm.data import LMDataConfig
-        from param_decomp_lab.experiments.lm.run import LMReloader
 
         pd_run = SavedRun.from_path(wandb_path)
-        assert isinstance(pd_run.reloader, LMReloader), (
-            f"EditableModel.from_wandb only supports LM runs (got {type(pd_run.reloader).__name__})"
+        assert pd_run.kind == "lm", (
+            f"EditableModel.from_wandb only supports LM runs (got kind={pd_run.kind!r})"
         )
         data_cfg = pd_run.data_cfg
         assert isinstance(data_cfg, LMDataConfig)

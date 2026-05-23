@@ -46,12 +46,10 @@ class PretrainInfoResponse(BaseModel):
 
 def _load_lm_target_lightweight(wandb_path: str) -> LMTargetConfig | None:
     """Load just the LM target config for an LM run, without downloading checkpoints."""
-    from param_decomp_lab.experiments.lm.run import LMReloader
     from param_decomp_lab.saved_run import SavedRun
 
     meta = SavedRun.meta_from_path(wandb_path)
-    expected_fqn = f"{LMReloader.__module__}:{LMReloader.__qualname__}"
-    if meta.reloader_class_fqn != expected_fqn:
+    if meta.kind != "lm":
         return None
     return LMTargetConfig.model_validate(meta.target_dict)
 

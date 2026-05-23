@@ -8,7 +8,7 @@ from param_decomp.component_model import ComponentModel
 from param_decomp_lab.adapters.base import DecompositionAdapter
 from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.experiments.lm.data import LMDataConfig
-from param_decomp_lab.experiments.lm.run import LMReloader, LMTargetConfig
+from param_decomp_lab.experiments.lm.run import LMTargetConfig
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
 from param_decomp_lab.saved_run import SavedRun
 from param_decomp_lab.topology import TransformerTopology
@@ -21,22 +21,21 @@ class PDAdapter(DecompositionAdapter):
 
     @cached_property
     def pd_run(self) -> SavedRun:
-        return SavedRun.from_path(self._wandb_path)
-
-    @cached_property
-    def lm_reloader(self) -> LMReloader:
-        assert isinstance(self.pd_run.reloader, LMReloader), (
-            f"This method requires an LM run, got reloader={type(self.pd_run.reloader).__name__}"
-        )
-        return self.pd_run.reloader
+        run = SavedRun.from_path(self._wandb_path)
+        assert run.kind == "lm", f"This adapter requires an LM run, got kind={run.kind!r}"
+        return run
 
     @cached_property
     def lm_target(self) -> LMTargetConfig:
-        return self.lm_reloader.target_cfg
+        target_cfg = self.pd_run.target_cfg
+        assert isinstance(target_cfg, LMTargetConfig)
+        return target_cfg
 
     @cached_property
     def lm_data(self) -> LMDataConfig:
-        return self.lm_reloader.data_cfg
+        data_cfg = self.pd_run.data_cfg
+        assert isinstance(data_cfg, LMDataConfig)
+        return data_cfg
 
     @cached_property
     def component_model(self) -> ComponentModel:
@@ -66,7 +65,7 @@ class PDAdapter(DecompositionAdapter):
     def dataloader(self, batch_size: int) -> DataLoader[Tensor]:
         # PDAdapter is LM-only; the LM build_loader ignores `device` because batches are
         # moved per-step.
-        return self.lm_reloader.build_loader(split="train", device="cpu", batch_size=batch_size)
+        return self.pd_run.build_loader(split="train", device="cpu", batch_size=batch_size)
 
     @property
     @override

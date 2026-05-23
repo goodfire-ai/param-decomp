@@ -17,7 +17,7 @@ from param_decomp_lab.autointerp.repo import InterpRepo
 from param_decomp_lab.dataset_attributions.repo import AttributionRepo
 from param_decomp_lab.distributed import get_device
 from param_decomp_lab.experiments.lm.data import LMDataConfig
-from param_decomp_lab.experiments.lm.run import LMReloader, LMTargetConfig
+from param_decomp_lab.experiments.lm.run import LMTargetConfig
 from param_decomp_lab.graph_interp.repo import GraphInterpRepo
 from param_decomp_lab.harvest.repo import HarvestRepo
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
@@ -72,11 +72,11 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
 
     logger.info(f"[API] Loading {clean_wandb_path}")
     pd_run = SavedRun.from_path(clean_wandb_path)
-    if not isinstance(pd_run.reloader, LMReloader):
+    if pd_run.kind != "lm":
         raise HTTPException(
             status_code=400,
             detail=(
-                f"This run uses {type(pd_run.reloader).__name__} and is not compatible with "
+                f"This run is a {pd_run.kind!r} run and is not compatible with "
                 "the token-based app. Use an LM run."
             ),
         )
