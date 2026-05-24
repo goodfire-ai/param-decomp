@@ -86,8 +86,21 @@ class PretrainedTarget(BaseConfig):
     run_path: ModelPath
 
 
+class HFWeightsInVendored(BaseConfig):
+    """Load HF pretrained weights into a vendored `param_decomp_lab.experiments.lm.pretrain.models.*`
+    architecture via `<class>.from_hf_pretrained(<hub_id>)`.
+
+    Useful when the decomposition target needs structural changes vs HF — e.g.
+    `GPT2Simple`'s separate q/k/v projections vs HF's fused `c_attn`.
+    """
+
+    kind: Literal["hf_weights_in_vendored"] = "hf_weights_in_vendored"
+    model_class: str  # must expose `from_hf_pretrained`
+    model_name: str   # HF hub id
+
+
 LMTargetSpec = Annotated[
-    HFTarget | PretrainedTarget,
+    HFTarget | PretrainedTarget | HFWeightsInVendored,
     Discriminator("kind"),
 ]
 """Discriminated union over LM target sources, keyed on ``kind`` (`"hf"` vs `"pretrained"`)."""
@@ -105,6 +118,11 @@ class LMTargetConfig(BaseConfig):
 
     spec: LMTargetSpec
     output_extract: int | str | None = "logits"
+    activation_checkpointing: bool = False
+    """If True and the target model exposes `enable_activation_checkpointing()`, turn on
+    per-block gradient checkpointing on the frozen target forward. Trades ~33% extra
+    compute for ~10-15x less stored activation memory under 2-pool — the main lever for
+    raising `b_per_rank` on deep targets."""
 
 
 class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
@@ -127,8 +145,25 @@ def build_target(target_cfg: LMTargetConfig) -> Any:
             if "model_type" not in run_info.model_config_dict:
                 run_info.model_config_dict["model_type"] = spec.model_class.rsplit(".", 1)[-1]
             target_model = cls.from_run_info(run_info)
+        case HFWeightsInVendored():
+            assert hasattr(cls, "from_hf_pretrained"), (
+                f"HFWeightsInVendored target requires {spec.model_class!r} to expose a "
+                "`from_hf_pretrained` classmethod"
+            )
+            target_model = ensure_cached_and_call(cls.from_hf_pretrained, spec.model_name)
+    _maybe_enable_activation_checkpointing(target_model, target_cfg)
     target_model.eval()
     return target_model
+
+
+def _maybe_enable_activation_checkpointing(target_model: Any, target_cfg: LMTargetConfig) -> None:
+    if not target_cfg.activation_checkpointing:
+        return
+    assert hasattr(target_model, "enable_activation_checkpointing"), (
+        f"activation_checkpointing=True but {type(target_model).__name__} has no "
+        "`enable_activation_checkpointing()` method"
+    )
+    target_model.enable_activation_checkpointing()
 
 
 def build_loader(

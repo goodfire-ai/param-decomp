@@ -3,18 +3,27 @@
 import inspect
 import math
 from pathlib import Path
-from typing import Literal, override
+from typing import Any, Literal, cast, override
 
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint
 from jaxtyping import Float, Int
 from torch import Tensor
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
+from transformers import GPT2LMHeadModel
 
 from param_decomp.base_config import BaseConfig
 from param_decomp_lab.distributed import log0
 from param_decomp_lab.experiments.lm.pretrain.run_info import PretrainRunInfo
+
+HF_GPT2_VARIANTS: dict[str, dict[str, int]] = {
+    "gpt2": {"n_layer": 12, "n_head": 12, "n_embd": 768},
+    "gpt2-medium": {"n_layer": 24, "n_head": 16, "n_embd": 1024},
+    "gpt2-large": {"n_layer": 36, "n_head": 20, "n_embd": 1280},
+    "gpt2-xl": {"n_layer": 48, "n_head": 25, "n_embd": 1600},
+}
 
 # Suppress issues with nn.Module buffer access and @torch.no_grad() decorator
 # pyright: reportIndexIssue=false, reportUntypedFunctionDecorator=false
@@ -171,10 +180,24 @@ class GPT2Simple(nn.Module):
         object.__setattr__(self.lm_head, "LLMC_SKIP_INIT", True)
         self.wte.weight = self.lm_head.weight  # type: ignore[assignment]
 
+        # Per-block gradient checkpointing toggle. Off by default; enabled at PD-training
+        # time via `enable_activation_checkpointing()` to trade ~33% extra compute for
+        # ~10-15x less stored activation memory through the target forward.
+        self._use_activation_checkpointing: bool = False
+
         # init all weights, use a torch rng object to be very careful
         self.init_rng = torch.Generator()
         self.init_rng.manual_seed(42)
         self.apply(self._init_weights)
+
+    def enable_activation_checkpointing(self) -> None:
+        """Turn on per-block activation checkpointing for the target forward.
+
+        Each Block is run inside `torch.utils.checkpoint.checkpoint(..., use_reentrant=False)`,
+        so only block inputs are stored; intermediates (q/k/v, mlp.c_fc out, gelu out) are
+        recomputed during backward. Saves ~10-15x activation memory at ~33% extra compute.
+        """
+        self._use_activation_checkpointing = True
 
     def _init_weights(self, module: nn.Module) -> None:
         if isinstance(module, nn.Linear):
@@ -211,8 +234,12 @@ class GPT2Simple(nn.Module):
         pos_emb = self.wpe(pos)  # (t, n_embd)
         x = tok_emb + pos_emb
 
-        for block in self._h:
-            x = block(x)
+        if self._use_activation_checkpointing:
+            for block in self._h:
+                x = torch.utils.checkpoint.checkpoint(block, x, use_reentrant=False)
+        else:
+            for block in self._h:
+                x = block(x)
         x = self.ln_f(x)
 
         logits: Tensor = self.lm_head(x)
@@ -249,6 +276,78 @@ class GPT2Simple(nn.Module):
 
         run_info = PretrainRunInfo.from_path(model_path)
         return cls.from_run_info(run_info)
+
+    @classmethod
+    def from_hf_pretrained(cls, model_type: str) -> "GPT2Simple":
+        """Load HF GPT-2 pretrained weights, splitting fused c_attn into q/k/v.
+
+        Args:
+            model_type: ``gpt2`` / ``gpt2-medium`` / ``gpt2-large`` / ``gpt2-xl``,
+                or any equivalent HF id (e.g. ``openai-community/gpt2-xl``).
+        """
+        short_name = model_type.split("/")[-1]
+        assert short_name in HF_GPT2_VARIANTS, (
+            f"Unknown GPT-2 variant {model_type!r}; expected one of {list(HF_GPT2_VARIANTS)}"
+        )
+        log0(f"loading HF weights into vendored unfused GPT2Simple: {model_type}")
+
+        config_args = HF_GPT2_VARIANTS[short_name] | {"vocab_size": 50257, "block_size": 1024}
+        config = GPT2SimpleConfig(model_type="GPT2Simple", **cast(dict[str, Any], config_args))
+        model = cls(config)
+
+        model_hf = GPT2LMHeadModel.from_pretrained(model_type)
+        sd_hf = model_hf.state_dict()
+        sd = model.state_dict()
+        n_embd = config.n_embd
+
+        with torch.no_grad():
+            for i in range(config.n_layer):
+                # Split fused c_attn into q/k/v. HF Conv1D stores weight as
+                # [in_features=n_embd, out_features=3*n_embd] (transpose of nn.Linear),
+                # so we split along dim=1 (out) and transpose before assigning.
+                c_attn_w = sd_hf[f"transformer.h.{i}.attn.c_attn.weight"]
+                c_attn_b = sd_hf[f"transformer.h.{i}.attn.c_attn.bias"]
+                assert c_attn_w.shape == (n_embd, 3 * n_embd)
+                assert c_attn_b.shape == (3 * n_embd,)
+                q_w, k_w, v_w = c_attn_w.split(n_embd, dim=1)
+                q_b, k_b, v_b = c_attn_b.split(n_embd, dim=0)
+                sd[f"h.{i}.attn.q_proj.weight"].copy_(q_w.t())
+                sd[f"h.{i}.attn.q_proj.bias"].copy_(q_b)
+                sd[f"h.{i}.attn.k_proj.weight"].copy_(k_w.t())
+                sd[f"h.{i}.attn.k_proj.bias"].copy_(k_b)
+                sd[f"h.{i}.attn.v_proj.weight"].copy_(v_w.t())
+                sd[f"h.{i}.attn.v_proj.bias"].copy_(v_b)
+
+                # attn.c_proj → o_proj. Conv1D weight is transpose of nn.Linear.
+                sd[f"h.{i}.attn.o_proj.weight"].copy_(
+                    sd_hf[f"transformer.h.{i}.attn.c_proj.weight"].t()
+                )
+                sd[f"h.{i}.attn.o_proj.bias"].copy_(sd_hf[f"transformer.h.{i}.attn.c_proj.bias"])
+
+                # mlp.c_fc: transpose; same name.
+                sd[f"h.{i}.mlp.c_fc.weight"].copy_(sd_hf[f"transformer.h.{i}.mlp.c_fc.weight"].t())
+                sd[f"h.{i}.mlp.c_fc.bias"].copy_(sd_hf[f"transformer.h.{i}.mlp.c_fc.bias"])
+
+                # mlp.c_proj → down_proj: transpose.
+                sd[f"h.{i}.mlp.down_proj.weight"].copy_(
+                    sd_hf[f"transformer.h.{i}.mlp.c_proj.weight"].t()
+                )
+                sd[f"h.{i}.mlp.down_proj.bias"].copy_(sd_hf[f"transformer.h.{i}.mlp.c_proj.bias"])
+
+                # LayerNorms: direct copy.
+                sd[f"h.{i}.ln_1.weight"].copy_(sd_hf[f"transformer.h.{i}.ln_1.weight"])
+                sd[f"h.{i}.ln_1.bias"].copy_(sd_hf[f"transformer.h.{i}.ln_1.bias"])
+                sd[f"h.{i}.ln_2.weight"].copy_(sd_hf[f"transformer.h.{i}.ln_2.weight"])
+                sd[f"h.{i}.ln_2.bias"].copy_(sd_hf[f"transformer.h.{i}.ln_2.bias"])
+
+            # Embeddings + final LN. wte ties to lm_head; copying wte updates both.
+            sd["wte.weight"].copy_(sd_hf["transformer.wte.weight"])
+            sd["wpe.weight"].copy_(sd_hf["transformer.wpe.weight"])
+            sd["ln_f.weight"].copy_(sd_hf["transformer.ln_f.weight"])
+            sd["ln_f.bias"].copy_(sd_hf["transformer.ln_f.bias"])
+
+        del model_hf
+        return model
 
     def configure_optimizers(
         self,
