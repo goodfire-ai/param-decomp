@@ -1,11 +1,12 @@
 """Language-model HuggingFace dataset loading."""
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
-from datasets import Dataset, IterableDataset, load_dataset
+from datasets import Dataset, IterableDataset, load_dataset, load_from_disk
 from numpy.typing import NDArray
 from pydantic import Field, PositiveInt
 from torch import Tensor
@@ -151,13 +152,28 @@ def create_lm_data_loader(
     dist_state: DistributedState | None = None,
     collate_fn: Callable[..., Any] | None = None,
 ) -> tuple[DataLoader[Any], PreTrainedTokenizer]:
-    """Create an LM token dataloader from a HuggingFace dataset split."""
-    dataset = load_dataset(
-        cfg.dataset_name,
-        streaming=cfg.streaming,
-        split=split,
-        trust_remote_code=False,
-    )
+    """Create an LM token dataloader from a HuggingFace dataset split.
+
+    ``cfg.dataset_name`` may be either an HF hub id (passed to ``load_dataset``)
+    or a local directory previously produced by ``Dataset.save_to_disk``
+    (e.g. via the pile pre-tokenization scripts). Local paths are detected by
+    directory existence + ``streaming=False``.
+    """
+    dataset_path = Path(cfg.dataset_name)
+    if dataset_path.is_dir():
+        assert not cfg.streaming, (
+            "Local saved-to-disk datasets cannot be streamed; set streaming=False. "
+            f"Got dataset_name={cfg.dataset_name} (a directory)."
+        )
+        loaded = load_from_disk(cfg.dataset_name)
+        dataset = loaded if isinstance(loaded, Dataset) else loaded[split]
+    else:
+        dataset = load_dataset(
+            cfg.dataset_name,
+            streaming=cfg.streaming,
+            split=split,
+            trust_remote_code=False,
+        )
     assert isinstance(dataset, Dataset | IterableDataset)
 
     if cfg.streaming:
@@ -175,7 +191,10 @@ def create_lm_data_loader(
     else:
         assert isinstance(dataset, Dataset)
         logger.info("Shuffling dataset (len=%d)", len(dataset))
-        dataset = dataset.shuffle(seed=seed)
+        # keep_in_memory=True avoids HF writing a fingerprint cache file in the
+        # dataset dir — under multi-rank launches (2-pool with 64+ procs) the race
+        # on that cache write can trigger SIGBUS from mmap.
+        dataset = dataset.shuffle(seed=seed, keep_in_memory=True)
         logger.info("Shuffled dataset")
 
     tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer_name)
