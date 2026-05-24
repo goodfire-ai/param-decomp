@@ -109,12 +109,12 @@ def submit_lm_layerwise(
     base_config: str | Path,
     *,
     n_layers: int,
-    include: list[str] | None = None,
-    layers: list[int] | None = None,
-    partition: str = DEFAULT_PARTITION_NAME,
-    time: str = "12:00:00",
-    max_concurrent: int | None = None,
-    no_snapshot: bool = False,
+    include: list[str] | None,
+    layers: list[int] | None,
+    partition: str,
+    time: str,
+    max_concurrent: int | None,
+    no_snapshot: bool,
 ) -> None:
     """Generate per-matrix configs and submit them as a SLURM array of pd-lm jobs."""
     base_cfg = LMExperimentConfig.from_file(base_config)
