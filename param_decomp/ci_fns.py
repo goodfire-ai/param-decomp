@@ -14,7 +14,7 @@ from param_decomp.base_config import BaseConfig
 from param_decomp.ci_nn_blocks import Linear, ParallelLinear, TransformerBlock
 from param_decomp.components import Components, EmbeddingComponents, get_module_input_dim
 
-LayerwiseCiFnType = Literal["mlp", "vector_mlp", "shared_mlp"]
+LayerwiseCiFnType = Literal["mlp", "vector_mlp", "shared_mlp", "transformer"]
 GlobalCiFnType = Literal["global_shared_mlp", "global_shared_transformer"]
 
 
@@ -30,16 +30,32 @@ class LayerwiseCiConfig(BaseConfig):
 
     mode: Literal["layerwise"] = "layerwise"
     fn_type: LayerwiseCiFnType = Field(
-        ..., description="Type of layerwise CI function: mlp, vector_mlp, or shared_mlp"
+        ...,
+        description="Type of layerwise CI function: mlp, vector_mlp, shared_mlp, or transformer.",
     )
-    hidden_dims: list[PositiveInt] = Field(
-        ..., description="Hidden dimensions for the CI function MLP"
+    hidden_dims: list[PositiveInt] | None = Field(
+        default=None,
+        description="Hidden dimensions for MLP-family layerwise CI functions. "
+        "Required for mlp/vector_mlp/shared_mlp; ignored for transformer.",
+    )
+    transformer_cfg: "GlobalSharedTransformerCiConfig | None" = Field(
+        default=None,
+        description="Transformer config for fn_type='transformer'. Each rank instantiates "
+        "one of these per owned site, so CI-fn parameters live only on the ranks that need "
+        "them — no replication waste vs the global-shared variant.",
     )
 
     @model_validator(mode="after")
-    def validate_hidden_dims(self) -> Self:
-        if self.fn_type in ("mlp", "vector_mlp") and not self.hidden_dims:
-            raise ValueError(f"hidden_dims must be non-empty for fn_type={self.fn_type!r}")
+    def validate_config(self) -> Self:
+        if self.fn_type in ("mlp", "vector_mlp", "shared_mlp"):
+            assert self.hidden_dims, f"hidden_dims required for fn_type={self.fn_type!r}"
+            assert self.transformer_cfg is None, (
+                "transformer_cfg only meaningful for fn_type='transformer'"
+            )
+        elif self.fn_type == "transformer":
+            assert self.transformer_cfg is not None, (
+                "transformer_cfg required when fn_type='transformer'"
+            )
         return self
 
 
@@ -373,6 +389,43 @@ class GlobalSharedTransformerCiFn(nn.Module):
         return outputs
 
 
+class LayerwiseTransformerCiFn(nn.Module):
+    """Per-site CI fn using the same transformer architecture as
+    `GlobalSharedTransformerCiFn`, dedicated to a single target site.
+
+    Presents the single-tensor in/out interface that `LayerwiseCiFnWrapper`
+    expects, while internally reusing the multi-site transformer machinery with
+    a single-key dict.
+    """
+
+    def __init__(
+        self,
+        site_name: str,
+        target_layer_config: TargetLayerConfig,
+        d_model: int,
+        n_blocks: int,
+        n_heads: int,
+        mlp_hidden_dims: list[int] | None,
+        max_len: int,
+        rope_base: float,
+    ):
+        super().__init__()
+        self._site_name = site_name
+        self._inner = GlobalSharedTransformerCiFn(
+            target_model_layer_configs={site_name: target_layer_config},
+            d_model=d_model,
+            n_layers=n_blocks,
+            n_heads=n_heads,
+            mlp_hidden_dims=mlp_hidden_dims,
+            max_len=max_len,
+            rope_base=rope_base,
+        )
+
+    @override
+    def forward(self, input_acts: Float[Tensor, "... d_in"]) -> Float[Tensor, "... C"]:
+        return self._inner({self._site_name: input_acts})[self._site_name]
+
+
 class LayerwiseCiFnWrapper(nn.Module):
     """Bundle a dict of per-layer CI fns behind a single dict-in/dict-out interface.
 
@@ -459,22 +512,39 @@ class GlobalCiFnWrapper(nn.Module):
 
 def _make_layerwise_ci_fn(
     target_module: nn.Module,
+    path: str,
     C: int,
-    ci_fn_type: LayerwiseCiFnType,
-    ci_fn_hidden_dims: list[int],
+    ci_config: LayerwiseCiConfig,
 ) -> nn.Module:
+    ci_fn_type = ci_config.fn_type
     if isinstance(target_module, nn.Embedding):
         assert ci_fn_type == "mlp", "Embedding modules only supported for ci_fn_type='mlp'"
 
     if ci_fn_type == "mlp":
-        return MLPCiFn(C=C, hidden_dims=ci_fn_hidden_dims)
+        assert ci_config.hidden_dims is not None
+        return MLPCiFn(C=C, hidden_dims=ci_config.hidden_dims)
 
     input_dim = get_module_input_dim(target_module)
     match ci_fn_type:
         case "vector_mlp":
-            return VectorMLPCiFn(C=C, input_dim=input_dim, hidden_dims=ci_fn_hidden_dims)
+            assert ci_config.hidden_dims is not None
+            return VectorMLPCiFn(C=C, input_dim=input_dim, hidden_dims=ci_config.hidden_dims)
         case "shared_mlp":
-            return VectorSharedMLPCiFn(C=C, input_dim=input_dim, hidden_dims=ci_fn_hidden_dims)
+            assert ci_config.hidden_dims is not None
+            return VectorSharedMLPCiFn(C=C, input_dim=input_dim, hidden_dims=ci_config.hidden_dims)
+        case "transformer":
+            t = ci_config.transformer_cfg
+            assert t is not None  # validated by pydantic
+            return LayerwiseTransformerCiFn(
+                site_name=path,
+                target_layer_config=TargetLayerConfig(input_dim=input_dim, C=C),
+                d_model=t.d_model,
+                n_blocks=t.n_blocks,
+                n_heads=t.attn_config.n_heads,
+                mlp_hidden_dims=t.mlp_hidden_dim,
+                max_len=t.attn_config.max_len,
+                rope_base=t.attn_config.rope_base,
+            )
 
 
 def _make_global_ci_fn(
@@ -544,9 +614,9 @@ def make_ci_fn_wrapper(
             raw_ci_fns = {
                 path: _make_layerwise_ci_fn(
                     target_module=target_model.get_submodule(path),
+                    path=path,
                     C=C,
-                    ci_fn_type=ci_config.fn_type,
-                    ci_fn_hidden_dims=ci_config.hidden_dims,
+                    ci_config=ci_config,
                 )
                 for path, C in module_to_c.items()
             }
