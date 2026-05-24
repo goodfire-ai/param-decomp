@@ -1,4 +1,4 @@
-"""2-pool training architecture for SPD on large frozen target models.
+"""2-pool training strategy for SPD on large frozen target models.
 
 Splits GPUs into two heterogeneous pools that run in wall-clock parallel:
 
@@ -9,50 +9,17 @@ Splits GPUs into two heterogeneous pools that run in wall-clock parallel:
                        full-model PPGD forward. Returns per-site V/U grads and
                        gradients w.r.t. the CI values it received.
 
-See `param_decomp/two_pool/layout.py` for the topology data model and the
-cross-pool comm primitives, and `param_decomp/scripts/two_pool_benchmark/`
-for runnable training scripts.
-
-Origin: prototyped in `nano_param_decomp/two_pool/` and verified across single-node
-and multi-node profiles at scales from 880K to 1B target / 10B CI fn before being
-brought into the core codebase.
+``optimize_two_pool`` mirrors :func:`param_decomp.optimize.optimize`'s call
+shape. ``TwoPoolConfig`` declares the topology (block groups + pool-B ranks).
 """
 
 from param_decomp.two_pool.config import BlockGroupSpec, TwoPoolConfig
-from param_decomp.two_pool.install import (
-    build_pool_a_module_path_info,
-    build_pool_b_module_path_info,
-)
-from param_decomp.two_pool.layout import (
-    BlockDDPLayout,
-    BlockDDPWorld,
-    BlockGroup,
-    TwoPoolLayout,
-    World,
-    build_block_ddp_world,
-    build_world,
-)
-from param_decomp.two_pool.pool_a import step_pool_a
-from param_decomp.two_pool.pool_b import step_pool_b
+from param_decomp.two_pool.optimize import optimize_two_pool
 from param_decomp.two_pool.profiler import PhaseProfiler
-from param_decomp.two_pool.run import optimize_two_pool
-from param_decomp.two_pool.runtime import build_two_pool_runtime
 
 __all__ = [
-    "BlockDDPLayout",
-    "BlockDDPWorld",
-    "BlockGroup",
     "BlockGroupSpec",
     "PhaseProfiler",
     "TwoPoolConfig",
-    "TwoPoolLayout",
-    "World",
-    "build_block_ddp_world",
-    "build_pool_a_module_path_info",
-    "build_pool_b_module_path_info",
-    "build_two_pool_runtime",
-    "build_world",
     "optimize_two_pool",
-    "step_pool_a",
-    "step_pool_b",
 ]
