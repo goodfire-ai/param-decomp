@@ -25,45 +25,45 @@ flowchart TD
     classDef pgd  fill:#fff4ec,stroke:#b9692a,color:#000
     classDef cross fill:#fff,stroke:#999,color:#000,stroke-dasharray:3 3
 
-    subgraph CI[CI pool · multi-rank DP across batch]
+    subgraph CI["CI pool · multi-rank DP across batch"]
         direction TB
-        A0[H_T ready · prefetched in T-1 dead time]:::ci
-        A1[A1 · CI fn fwd on H_T → CI_T]:::ci
-        A2_LW[A2a · send CI_T per-site → Layerwise<br/>routed by owner + batch slice]:::ci
-        A2_PG[A2b · send CI_T full-model → PPGD<br/>routed by batch slice]:::ci
-        A3[A3 · imp_min loss on CI_T<br/>backward to leaf grad g_CI_imp]:::ci
-        A4[A4 · target_fwd batch T+1 → H_{T+1}<br/>dead-time fill]:::ci
-        A5[A5 · recv g_CI_LW from Layerwise<br/>per-site, per-LW-rank slice]:::ci
-        A6[A6 · recv g_CI_PPGD from PPGD<br/>full-model, per-PPGD-rank slice]:::ci
-        A7[A7 · assemble g_CI_total per CI rank's batch slice<br/>= g_CI_imp + slice of g_CI_LW + slice of g_CI_PPGD]:::ci
-        A8[A8 · backward through CI-fn graph]:::ci
-        A9[A9 · in-pool all-reduce on CI fn grads]:::ci
-        A10[A10 · AdamW step on CI fn]:::ci
+        A0["H_T ready · prefetched in T-1 dead time"]:::ci
+        A1["A1 · CI fn fwd on H_T → CI_T"]:::ci
+        A2_LW["A2a · send CI_T per-site → Layerwise<br/>routed by owner + batch slice"]:::ci
+        A2_PG["A2b · send CI_T full-model → PPGD<br/>routed by batch slice"]:::ci
+        A3["A3 · imp_min loss on CI_T<br/>backward to leaf grad g_CI_imp"]:::ci
+        A4["A4 · target_fwd batch T+1 → H_T+1<br/>dead-time fill"]:::ci
+        A5["A5 · recv g_CI_LW from Layerwise<br/>per-site, per-LW-rank slice"]:::ci
+        A6["A6 · recv g_CI_PPGD from PPGD<br/>full-model, per-PPGD-rank slice"]:::ci
+        A7["A7 · assemble g_CI_total per CI rank's batch slice<br/>= g_CI_imp + slice of g_CI_LW + slice of g_CI_PPGD"]:::ci
+        A8["A8 · backward through CI-fn graph"]:::ci
+        A9["A9 · in-pool all-reduce on CI fn grads"]:::ci
+        A10["A10 · AdamW step on CI fn"]:::ci
 
         A0 --> A1 --> A2_LW
         A1 --> A2_PG
         A1 --> A3 --> A4
-        A4 -.->|H_{T+1} for T+1.A1| A11_next[T+1 · A1]:::cross
+        A4 -.->|"H_T+1 for T+1.A1"| A11_next["T+1 · A1"]:::cross
         A5 --> A7
         A6 --> A7
         A3 --> A7
         A7 --> A8 --> A9 --> A10
-        A10 -.->|CI fn weights for T+1.A1| A11_next
+        A10 -.->|"CI fn weights for T+1.A1"| A11_next
     end
 
-    subgraph LW[Layerwise pool · sharded by site · DP within block group]
+    subgraph LW["Layerwise pool · sharded by site · DP within block group"]
         direction TB
-        B0[V/U updated in T-1 dead time]:::lw
-        B1[B1 · target_fwd batch T → L_T<br/>per LW rank's batch slice]:::lw
-        B2[B2 · wait for CI_T owned sites/slice]:::lw
-        B3[B3 · layerwise stoch recon, per owned site, streaming<br/>→ g_VU_LW owned, g_CI_LW owned/slice]:::lw
-        B4[B4 · faithfulness loss sharded across owned sites<br/>→ g_VU_faith owned]:::lw
-        B5[B5 · send g_CI_LW → CI pool]:::lw
-        B6[B6 · recv g_VU_PPGD owned ← PPGD]:::lw
-        B7[B7 · combine V/U grads: g_VU_LW + g_VU_faith + g_VU_PPGD]:::lw
-        B8[B8 · in-block all-reduce on V/U grads + faithfulness grads]:::lw
-        B9[B9 · AdamW step on V/U]:::lw
-        B10[B10 · isend updated V/U → PPGD]:::lw
+        B0["V/U updated in T-1 dead time"]:::lw
+        B1["B1 · target_fwd batch T → L_T<br/>per LW rank's batch slice"]:::lw
+        B2["B2 · wait for CI_T owned sites/slice"]:::lw
+        B3["B3 · layerwise stoch recon, per owned site, streaming<br/>→ g_VU_LW owned, g_CI_LW owned/slice"]:::lw
+        B4["B4 · faithfulness loss sharded across owned sites<br/>→ g_VU_faith owned"]:::lw
+        B5["B5 · send g_CI_LW → CI pool"]:::lw
+        B6["B6 · recv g_VU_PPGD owned ← PPGD"]:::lw
+        B7["B7 · combine V/U grads: g_VU_LW + g_VU_faith + g_VU_PPGD"]:::lw
+        B8["B8 · in-block all-reduce on V/U grads + faithfulness grads"]:::lw
+        B9["B9 · AdamW step on V/U"]:::lw
+        B10["B10 · isend updated V/U → PPGD"]:::lw
 
         B0 --> B1
         B1 --> B3
@@ -73,21 +73,21 @@ flowchart TD
         B4 --> B7
         B6 --> B7
         B7 --> B8 --> B9 --> B10
-        B9 -.->|V/U for T+1.B3| B11_next[T+1 · B3]:::cross
+        B9 -.->|"V/U for T+1.B3"| B11_next["T+1 · B3"]:::cross
     end
 
-    subgraph PG[PPGD pool · DP across batch · replicated V/U]
+    subgraph PG["PPGD pool · DP across batch · replicated V/U"]
         direction TB
-        C0[fresh V/U received in T-1 dead time]:::pgd
-        C1[C1 · target_fwd batch T → L_T<br/>per PPGD rank's batch slice]:::pgd
-        C2[C2 · wait for CI_T full-model/slice]:::pgd
-        C3[C3 · PPGD warmup: refines sources in-place<br/>inner loop owns the source updates]:::pgd
-        C4[C4 · PPGD final recon with refined sources]:::pgd
-        C5[C5 · backward: g_VU_PPGD, g_CI_PPGD<br/>no source backward at this stage]:::pgd
-        C6[C6 · sum-reduce g_VU_PPGD across PPGD ranks]:::pgd
-        C7[C7 · send g_VU_PPGD owned → owning LW rank]:::pgd
-        C8[C8 · send g_CI_PPGD slice → CI pool]:::pgd
-        C9[C9 · recv updated V/U ← Layerwise<br/>completes during T+1's CI window]:::pgd
+        C0["fresh V/U received in T-1 dead time"]:::pgd
+        C1["C1 · target_fwd batch T → L_T<br/>per PPGD rank's batch slice"]:::pgd
+        C2["C2 · wait for CI_T full-model/slice"]:::pgd
+        C3["C3 · PPGD warmup: refines sources in-place<br/>inner loop owns the source updates"]:::pgd
+        C4["C4 · PPGD final recon with refined sources"]:::pgd
+        C5["C5 · backward: g_VU_PPGD, g_CI_PPGD<br/>no source backward at this stage"]:::pgd
+        C6["C6 · sum-reduce g_VU_PPGD across PPGD ranks"]:::pgd
+        C7["C7 · send g_VU_PPGD owned → owning LW rank"]:::pgd
+        C8["C8 · send g_CI_PPGD slice → CI pool"]:::pgd
+        C9["C9 · recv updated V/U ← Layerwise<br/>completes during T+1's CI window"]:::pgd
 
         C0 --> C1
         C1 --> C3
@@ -95,7 +95,7 @@ flowchart TD
         C3 --> C4 --> C5
         C5 --> C6 --> C7
         C5 --> C8
-        C9 -.->|V/U for T+1.C3| C11_next[T+1 · C3]:::cross
+        C9 -.->|"V/U for T+1.C3"| C11_next["T+1 · C3"]:::cross
     end
 
     %% Cross-pool edges within step T
