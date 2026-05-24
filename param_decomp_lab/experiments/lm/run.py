@@ -21,6 +21,7 @@ from param_decomp.component_model import ComponentModel
 from param_decomp.distributed import DistributedState, is_main_process
 from param_decomp.log import logger
 from param_decomp.optimize import EvalLoop, optimize
+from param_decomp.three_pool import ThreePoolConfig, optimize_three_pool
 from param_decomp.two_pool import TwoPoolConfig, optimize_two_pool
 from param_decomp_lab.batch_and_loss_fns import make_run_batch as _make_run_batch
 from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
@@ -134,6 +135,14 @@ class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
     (:func:`param_decomp.two_pool.optimize_two_pool`) instead of the single-process
     :func:`param_decomp.optimize.optimize`. The ``eval`` block is currently ignored
     on the 2-pool path."""
+
+    three_pool: ThreePoolConfig | None = None
+    """When set, training runs under the 3-pool strategy
+    (:func:`param_decomp.three_pool.optimize_three_pool`). Mutually exclusive
+    with ``two_pool``. The ``eval`` block is currently ignored on the 3-pool
+    path. Requires the data loader to read the FULL global batch on every
+    rank — the ``main()`` dispatch below builds the loader with
+    ``dist_state=None`` when this is set."""
 
 
 def build_target(target_cfg: LMTargetConfig) -> Any:
@@ -290,15 +299,24 @@ def main(config_path: str | Path) -> None:
     device = get_device()
     cfg = cfg.model_copy(update={"runtime": cfg.runtime.model_copy(update={"device": device})})
 
+    assert not (cfg.two_pool is not None and cfg.three_pool is not None), (
+        "two_pool and three_pool are mutually exclusive; set only one."
+    )
+
     target_model = build_target(cfg.target)
 
+    # 3-pool requires the FULL global batch on every rank (cross-pool routing
+    # slices locally). Build the loader with dist_state=None so the data path
+    # doesn't shard the batch across ranks. 2-pool + single-pool keep the
+    # standard sharded loader.
+    loader_dist_state = None if cfg.three_pool is not None else dist_state
     train_loader = build_loader(
         cfg.target,
         cfg.data,
         split="train",
         device=device,
         batch_size=cfg.pd.batch_size,
-        dist_state=dist_state,
+        dist_state=loader_dist_state,
         seed=cfg.pd.seed,
     )
     if is_main_process():
@@ -310,7 +328,20 @@ def main(config_path: str | Path) -> None:
         sink = RunSink.silent()
 
     try:
-        if cfg.two_pool is not None:
+        if cfg.three_pool is not None:
+            # 3-pool path: eval not wired through yet — cfg.eval (if set) is ignored.
+            optimize_three_pool(
+                target_model=target_model,
+                train_loader=train_loader,
+                run_batch=make_run_batch(cfg.target),
+                reconstruction_loss=recon_loss_kl,
+                pd_config=cfg.pd,
+                runtime_config=cfg.runtime,
+                three_pool_config=cfg.three_pool,
+                cadence=cfg.cadence,
+                sink=sink,
+            )
+        elif cfg.two_pool is not None:
             # 2-pool path: eval not wired through yet — cfg.eval (if set) is ignored.
             optimize_two_pool(
                 target_model=target_model,
