@@ -11,11 +11,14 @@
 pd:
   seed: 0
   n_mask_samples: 1
+  # 2-pool requires `mode: layerwise` (sites are sharded across pool-A ranks,
+  # so a single CI fn over all sites isn't physically possible). `fn_type: transformer`
+  # gives each owned site its own transformer CI fn — same architecture as
+  # `global_shared_transformer` would use, but instantiated per-site instead of shared.
   ci_config:
-    mode: global
-    fn_type: global_shared_transformer
-    hidden_dims: null
-    simple_transformer_ci_cfg:
+    mode: layerwise
+    fn_type: transformer
+    transformer_cfg:
       d_model: 128
       n_blocks: 2
       mlp_hidden_dim: [512]

@@ -87,6 +87,7 @@ def _layerwise_loss_streaming(
     owned_sites: tuple[str, ...],
     recon_loss: ReconstructionLoss,
     coeff_stoch: float,
+    n_sites_total: int,
 ) -> float:
     """Per-site layerwise loss, backpropagated per-iter so peak memory stays bounded.
 
@@ -100,9 +101,14 @@ def _layerwise_loss_streaming(
     in chunks. When unfused, pred/target are logits. See
     :class:`LayerwiseLossStrategy`.
 
-    Returns the scalar mean loss value (logging only — no gradient).
+    Per-site contribution is ``coeff_stoch * sum_kl_s / (n_positions *
+    n_sites_total)`` — matches single-pool layerwise's
+    ``coeff_stoch * sum_kl / (n_sites_total * n_positions)`` so the same YAML
+    coefficient transfers between the two trainers.
+
+    Returns the scalar mean per-token-per-site loss value (logging only).
     """
-    n = len(owned_sites)
+    n_owned = len(owned_sites)
     total_value = 0.0
     for s in owned_sites:
         ci_s = ci_lower_leaves[s]
@@ -116,11 +122,11 @@ def _layerwise_loss_streaming(
             routing_masks="all",
         )
         pred = component_model(batch_local, mask_infos=mask_infos)
-        loss, _ = recon_loss(pred=pred, target=target_local)
-        scaled = coeff_stoch * loss / n
+        loss, n_positions = recon_loss(pred=pred, target=target_local)
+        scaled = coeff_stoch * loss / (n_positions * n_sites_total)
         scaled.backward()  # retain_graph=False — iter-local graph freed
-        total_value += loss.item()
-    return total_value / n
+        total_value += (loss / n_positions).item()
+    return total_value / n_owned
 
 
 def step_pool_a(
@@ -211,6 +217,7 @@ def step_pool_a(
                 layout.my_owned_sites,
                 strategy.recon_loss,
                 cfg.coeff_stoch,
+                n_sites_total=len(cfg.c_per_site),
             )
 
     # 4. Cross-pool: receive per-site V/U grads + per-slice ci grads from pool B

@@ -29,6 +29,7 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 
 from param_decomp.batch_and_loss_fns import ReconstructionLoss, RunBatch
+from param_decomp.ci_fns import LayerwiseCiConfig
 from param_decomp.component_model import ComponentModel
 from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
 from param_decomp.decomposition_targets import (
@@ -115,11 +116,12 @@ def optimize_two_pool(
         "init the distributed process group before calling optimize_two_pool"
     )
 
-    _validate_pd_config_for_two_pool(pd_config, two_pool_config)
+    _validate_pd_config_for_two_pool(pd_config, two_pool_config, cadence)
+    # PPGD runs only on pool B; the relevant per-rank batch is batch // n_pool_b.
     validate_pgd_scope(
         pd_config.loss_metrics,
         batch_size=pd_config.batch_size,
-        world_size=dist.get_world_size(),
+        world_size=len(two_pool_config.pool_b_ranks),
     )
 
     runtime = _build_runtime(
@@ -289,7 +291,9 @@ def optimize_two_pool(
                 profiler.step()
 
 
-def _validate_pd_config_for_two_pool(pd_config: PDConfig, two_pool_config: TwoPoolConfig) -> None:
+def _validate_pd_config_for_two_pool(
+    pd_config: PDConfig, two_pool_config: TwoPoolConfig, cadence: Cadence
+) -> None:
     """Fail loudly on any PDConfig the 2-pool path can't honour."""
     by_type: dict[str, LossMetricConfig] = {m.type: m for m in pd_config.loss_metrics}
 
@@ -324,6 +328,42 @@ def _validate_pd_config_for_two_pool(pd_config: PDConfig, two_pool_config: TwoPo
     assert pd_config.use_delta_component, (
         "2-pool requires pd_config.use_delta_component=True (hardcoded in pool A's "
         "layerwise stoch recon + pool B's PPGD)."
+    )
+
+    # Global CI fns can't span all sites under 2-pool because pool A shards
+    # sites across ranks — each rank only sees its owned sites' activations.
+    # Use `mode: layerwise` (with `fn_type: transformer` for the transformer variant).
+    assert isinstance(pd_config.ci_config, LayerwiseCiConfig), (
+        "2-pool requires `pd.ci_config.mode == 'layerwise'`. Global CI fns can't "
+        "span all sites under 2-pool (sites are sharded across pool-A ranks). "
+        f"Got mode={pd_config.ci_config.mode!r}."
+    )
+
+    # Pool A's layerwise streaming loop hardcodes continuous sampling and one
+    # mask per site; let the user know if their YAML disagrees.
+    assert pd_config.sampling == "continuous", (
+        "2-pool hardcodes `sampling='continuous'` in pool A's CI computation; "
+        f"got pd_config.sampling={pd_config.sampling!r}."
+    )
+    assert pd_config.n_mask_samples == 1, (
+        "2-pool draws exactly one stochastic mask per site per step; "
+        f"got pd_config.n_mask_samples={pd_config.n_mask_samples}."
+    )
+
+    # insert_identity_operations_ isn't called from the 2-pool path, so any
+    # identity-layer decomposition target would be silently ignored.
+    assert pd_config.identity_decomposition_targets is None, (
+        "2-pool path does not call `insert_identity_operations_`; "
+        "`identity_decomposition_targets` would be silently ignored."
+    )
+
+    # No distributed-aware checkpoint gather yet — rank 0 only holds its
+    # block's V/U + CI fn, so saving would produce a structurally partial file.
+    assert cadence.save_every is None, (
+        "2-pool does not yet implement distributed checkpointing. "
+        "rank 0 only holds its own block's V/U + CI fn, so `cadence.save_every` "
+        "would produce a partial checkpoint that can't be reloaded. "
+        "Set `cadence.save_every: null` for now."
     )
 
     ppgd_cfg = by_type["PersistentPGDReconLoss"]
