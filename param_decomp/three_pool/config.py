@@ -93,6 +93,18 @@ class ThreePoolConfig(BaseConfig):
         "defaults to fused because the kernel reliably cuts peak memory ~50%% on "
         "large-vocab targets with negligible step-time cost.",
     )
+    defer_vu_opt: bool = Field(
+        default=False,
+        description="If True, defer the Layerwise pool's V/U AdamW step + the "
+        "V/U ship-back to PPGD from end-of-step-T to start-of-step-T+1, so they "
+        "hide behind T+1's CI fn forward window. Requires symmetric deferral on "
+        "the PPGD pool (recv_updated_vu also moves to start-of-step-T+1) — "
+        "otherwise deadlock. Sync and deferred modes are mathematically "
+        "equivalent (the deferred tail still uses step-T's grads with step-T's "
+        "LR via `get_scheduled_value(step-1, ...)`); the toggle is purely a "
+        "wall-clock perf knob. A/B by flipping the flag and comparing "
+        "`perf/step_ms` traces.",
+    )
 
     @model_validator(mode="after")
     def validate_topology(self) -> Self:

@@ -121,6 +121,14 @@ data:
 
 three_pool:
   use_fused_kl: true
+  # defer_vu_opt: async-pipeline the LW V/U opt step + V/U ship-back so the
+  # in-block all_reduce (NCCL stream) overlaps with the next iter's target_fwd
+  # (default CUDA stream). PPGD's V/U recv is symmetrically deferred (must be —
+  # else LW's deferred send would deadlock with PPGD's blocking recv).
+  # For N_per_block=1 (as below), the in-block all_reduce is a no-op so this
+  # toggle has no observable wall-clock effect; flip True once you have a
+  # topology with N_per_block > 1 to A/B-measure the win.
+  defer_vu_opt: false
   ci_ranks: [28]
   ppgd_ranks: [29, 30, 31]
   layerwise_block_groups:

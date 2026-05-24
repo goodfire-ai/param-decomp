@@ -628,23 +628,59 @@ class ThreePoolLayout:
     def all_reduce_grads_in_block(self, params: Iterable[nn.Parameter]) -> None:
         """Coalesced in-block DDP all-reduce over V/U + faithfulness grads.
 
+        Synchronous variant — Python blocks until the collective completes.
         Identical pattern to ``two_pool.BlockDDPLayout.all_reduce_grads_in_block``.
+        Used by the sync path in ``step_layerwise_tail``.
+        """
+        states = self.async_all_reduce_grads_in_block_kickoff(params)
+        self.wait_and_unflatten_all_reduce(states)
+
+    def async_all_reduce_grads_in_block_kickoff(
+        self, params: Iterable[nn.Parameter]
+    ) -> list[tuple[list[Tensor], Tensor, "dist.Work"]]:
+        """Kick off async coalesced in-block all-reduce. Returns one
+        ``(bucket, flat, work)`` tuple per (dtype, device) bucket. Caller MUST
+        keep these alive (storing them across iteration boundaries) until
+        ``wait_and_unflatten_all_reduce`` runs — the ``flat`` tensors are the
+        NCCL buffers, and freeing them while NCCL is still operating would be
+        undefined.
+
+        Empty return when the block group is 1-rank (no-op) or no grads.
+
+        The async variant lets the caller overlap the all-reduce with other
+        compute on the default CUDA stream (e.g. the next iteration's
+        target_fwd, which is V/U-independent and runs on a different stream).
         """
         assert self.my_pool == "layerwise" and self.my_block_idx is not None
         block_group = self.world.block_group_groups[self.my_block_idx]
         if dist.get_world_size(block_group) <= 1:
-            return
+            return []
         grads: list[Tensor] = [p.grad for p in params if p.grad is not None]
         if not grads:
-            return
+            return []
         buckets: dict[tuple[torch.dtype, torch.device], list[Tensor]] = {}
         for g in grads:
             buckets.setdefault((g.dtype, g.device), []).append(g)
-        from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
+        from torch._utils import _flatten_dense_tensors
 
+        states: list[tuple[list[Tensor], Tensor, dist.Work]] = []
         for bucket in buckets.values():
             flat = _flatten_dense_tensors(bucket)
-            dist.all_reduce(flat, op=dist.ReduceOp.AVG, group=block_group)
+            w = dist.all_reduce(flat, op=dist.ReduceOp.AVG, group=block_group, async_op=True)
+            assert w is not None
+            states.append((bucket, flat, w))
+        return states
+
+    def wait_and_unflatten_all_reduce(
+        self,
+        states: list[tuple[list[Tensor], Tensor, "dist.Work"]],
+    ) -> None:
+        """Wait on each async all-reduce work and copy the reduced flat tensor
+        back to the original ``.grad`` buffers."""
+        from torch._utils import _unflatten_dense_tensors
+
+        for bucket, flat, w in states:
+            w.wait()
             for orig, reduced in zip(bucket, _unflatten_dense_tensors(flat, bucket), strict=True):
                 orig.copy_(reduced)
 
@@ -752,13 +788,28 @@ class ThreePoolLayout:
     ) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
         """PPGD ← LW: coalesced + pipelined recv of updated V/U from each LW block leader.
 
-        Mirrors two_pool's recv_updated_weights_from_owners: post all
-        N_blocks broadcasts upfront so they pipeline on independent NCCL
-        communicators, then wait + unpack.
+        Synchronous variant — kicks off all broadcasts then waits + unpacks.
+        Use ``async_recv_updated_vu_from_layerwise_kickoff`` +
+        ``wait_and_unpack_updated_vu`` to overlap with PPGD's target_fwd.
+        """
+        states = self.async_recv_updated_vu_from_layerwise_kickoff(v_templates, u_templates)
+        return self.wait_and_unpack_updated_vu(states, v_templates, u_templates)
+
+    def async_recv_updated_vu_from_layerwise_kickoff(
+        self,
+        v_templates: dict[str, Tensor],
+        u_templates: dict[str, Tensor],
+    ) -> list[tuple["LayerwiseBlockGroup", Tensor, "dist.Work"]]:
+        """Kick off async coalesced V/U recv from every LW block leader. Returns
+        per-block ``(block_group, packed_buf, work)`` tuples. Caller holds
+        these across iteration boundaries until
+        ``wait_and_unpack_updated_vu`` runs.
+
+        Overlap target: PPGD's next-iter target_fwd, which runs on the default
+        CUDA stream and doesn't depend on V/U. The broadcasts run on NCCL
+        streams (one per block group's bcast group), so they pipeline.
         """
         assert self.my_pool == "ppgd"
-        v_new: dict[str, Tensor] = {}
-        u_new: dict[str, Tensor] = {}
         bufs: list[tuple[LayerwiseBlockGroup, Tensor, dist.Work]] = []
         for bg_idx, bg in enumerate(self.world.layerwise_block_groups):
             owned = bg.owned_sites
@@ -769,7 +820,21 @@ class ThreePoolLayout:
             w = dist.broadcast(packed, src=bg.leader, group=bcast_group, async_op=True)
             assert w is not None
             bufs.append((bg, packed, w))
-        for bg, packed, w in bufs:
+        return bufs
+
+    def wait_and_unpack_updated_vu(
+        self,
+        states: list[tuple["LayerwiseBlockGroup", Tensor, "dist.Work"]],
+        v_templates: dict[str, Tensor],
+        u_templates: dict[str, Tensor],
+    ) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
+        """Wait on each block's broadcast and unpack the contiguous packed
+        tensor back into per-site V/U dicts (upcasting to the templates' dtype).
+        Returns ``(v_new, u_new)`` ready for ``components[s].V.copy_(...)``.
+        """
+        v_new: dict[str, Tensor] = {}
+        u_new: dict[str, Tensor] = {}
+        for bg, packed, w in states:
             w.wait()
             owned = bg.owned_sites
             offset = 0

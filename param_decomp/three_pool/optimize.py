@@ -77,10 +77,11 @@ from param_decomp.three_pool.reductions import (
 from param_decomp.three_pool.runtime import _ThreePoolRuntime
 from param_decomp.three_pool.step_ci import step_ci
 from param_decomp.three_pool.step_layerwise import (
+    finalize_layerwise_async_drain,
     run_faithfulness_warmup_layerwise,
     step_layerwise,
 )
-from param_decomp.three_pool.step_ppgd import step_ppgd
+from param_decomp.three_pool.step_ppgd import finalize_ppgd_async_drain, step_ppgd
 from param_decomp.torch_helpers import loop_dataloader
 from param_decomp.two_pool.loss_strategy import LayerwiseLossStrategy
 
@@ -250,6 +251,13 @@ def optimize_three_pool(
     n_steps = pd_config.steps
     profiler_ctx = profiler if profiler is not None else nullcontext()
     h_cache_ci: dict[str, Tensor] | None = None  # CI pool's H_T cache (threaded across steps)
+    # Async-pipeline state threaded across iterations on LW + PPGD pools.
+    # In sync mode both stay None forever; in async mode they hold the previous
+    # iter's pending async work (in-block all_reduce on LW; V/U recv broadcast
+    # on PPGD), which the next iter's "finalize prev" phase consumes.
+    pending_all_reduce_lw: list[tuple[list[Tensor], Tensor, dist.Work]] | None = None
+    pending_recv_vu_ppgd: list[tuple[Any, Tensor, dist.Work]] | None = None
+    defer_vu_opt = three_pool_config.defer_vu_opt
 
     with profiler_ctx:
         # Pre-fetch the next batch each step so CI pool can prefetch its
@@ -264,13 +272,18 @@ def optimize_three_pool(
             if optimizer is not None:
                 # LR schedules. CI pool has one param group (CI fn); LW pool has
                 # one (components). PPGD pool has no optimizer.
+                # In async mode on LW, the opt step inside step_layerwise's
+                # "finalize prev" block uses iter-(T-1)'s grads — so we set the
+                # LR to the schedule value at step-1 (clamped to 0 on iter 0).
+                # CI pool's opt is not deferred, so it always uses step's LR.
                 if layout.my_pool == "ci":
                     optimizer.param_groups[0]["lr"] = get_scheduled_value(
                         step, n_steps, ci_fn_lr_schedule
                     )
                 elif layout.my_pool == "layerwise":
+                    lr_step = max(step - 1, 0) if defer_vu_opt else step
                     optimizer.param_groups[0]["lr"] = get_scheduled_value(
-                        step, n_steps, components_lr_schedule
+                        lr_step, n_steps, components_lr_schedule
                     )
 
             # When profiling, barrier ranks at step boundary so all pools share
@@ -299,7 +312,7 @@ def optimize_three_pool(
                     )
                 case "layerwise":
                     assert optimizer is not None
-                    metrics = step_layerwise(
+                    metrics, pending_all_reduce_lw = step_layerwise(
                         layout,
                         component_model,
                         optimizer,
@@ -307,11 +320,13 @@ def optimize_three_pool(
                         batch_T,
                         runtime,
                         strategy,
+                        defer_vu_opt=defer_vu_opt,
+                        prev_pending_all_reduce=pending_all_reduce_lw,
                         profiler=profiler,
                     )
                 case "ppgd":
                     assert ppgd_state is not None
-                    metrics = step_ppgd(
+                    metrics, pending_recv_vu_ppgd = step_ppgd(
                         layout,
                         component_model,
                         ppgd_state,
@@ -320,6 +335,8 @@ def optimize_three_pool(
                         strategy,
                         step=step,
                         n_steps=n_steps,
+                        defer_vu_opt=defer_vu_opt,
+                        prev_pending_recv_vu=pending_recv_vu_ppgd,
                         profiler=profiler,
                     )
 
@@ -357,6 +374,34 @@ def optimize_three_pool(
 
             if profiler is not None:
                 profiler.step()
+
+        # Drain the final iter's deferred opt (async mode only). Without this,
+        # the saved checkpoint would be missing the last iter's update.
+        if defer_vu_opt:
+            match layout.my_pool:
+                case "layerwise":
+                    assert optimizer is not None
+                    if pending_all_reduce_lw is not None:
+                        optimizer.param_groups[0]["lr"] = get_scheduled_value(
+                            n_steps - 1, n_steps, components_lr_schedule
+                        )
+                        finalize_layerwise_async_drain(
+                            layout,
+                            component_model,
+                            optimizer,
+                            pending_all_reduce_lw,
+                        )
+                        pending_all_reduce_lw = None
+                case "ppgd":
+                    if pending_recv_vu_ppgd is not None:
+                        finalize_ppgd_async_drain(
+                            layout,
+                            component_model,
+                            pending_recv_vu_ppgd,  # type: ignore[arg-type]
+                        )
+                        pending_recv_vu_ppgd = None
+                case "ci":
+                    pass  # CI pool doesn't defer
 
         # Final save after the loop (matches single-pool optimize() behavior).
         _gather_and_save(
