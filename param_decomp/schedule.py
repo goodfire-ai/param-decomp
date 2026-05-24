@@ -9,7 +9,17 @@ from param_decomp.base_config import BaseConfig, Probability
 
 
 class ScheduleConfig(BaseConfig):
-    """Configuration for a schedule with warmup and decay."""
+    """Configuration for a schedule with linear warmup followed by an optional decay.
+
+    Attributes:
+        start_val: Starting/peak value reached at the end of warmup.
+        warmup_pct: Fraction of total steps spent linearly ramping from 0 to ``start_val``.
+        final_val_frac: End value as a fraction of ``start_val``. Must be 1.0 for the
+            ``"constant"`` schedule.
+        fn_type: Decay function applied after warmup. ``"constant"`` holds ``start_val``;
+            ``"linear"`` linearly interpolates to ``final_val_frac * start_val``;
+            ``"cosine"`` follows a half-cosine to the same endpoint.
+    """
 
     start_val: PositiveFloat = Field(..., description="Starting/peak value (after warmup)")
     warmup_pct: Probability = Field(
@@ -31,14 +41,17 @@ class ScheduleConfig(BaseConfig):
 
 
 def get_scheduled_value(step: int, total_steps: int, config: ScheduleConfig) -> float:
-    """Get the scheduled value at a given step.
+    """Compute the scheduled value at ``step``.
 
-    Handles warmup and decay according to the schedule config.
+    For ``step < warmup_steps`` the value ramps linearly from 0 to ``config.start_val``.
+    After warmup, it follows ``config.fn_type``: ``"constant"`` holds ``start_val``,
+    ``"linear"`` decays linearly, and ``"cosine"`` decays along a half-cosine. All decays
+    end at ``config.final_val_frac * config.start_val``.
 
     Args:
-        step: Current step (0-indexed)
-        total_steps: Total number of steps
-        config: Schedule configuration
+        step: Current step, 0-indexed and at most ``total_steps``.
+        total_steps: Total number of steps; sets the warmup and decay horizons.
+        config: Schedule shape.
     """
     assert step >= 0, f"step must be non-negative, got {step}"
     assert total_steps > 0, f"total_steps must be positive, got {total_steps}"

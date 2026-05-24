@@ -9,13 +9,21 @@ from param_decomp_lab.toy_models.target_ci import compute_target_metrics, make_t
 
 
 class IdentityCIErrorConfig(BaseConfig):
+    """Config for `IdentityCIError`.
+
+    Attributes:
+        type: Discriminator literal for this metric.
+        identity_ci: Specs of layers expected to produce an Identity CI pattern.
+        dense_ci: Specs of layers expected to produce a Dense CI pattern.
+    """
+
     type: Literal["IdentityCIError"] = "IdentityCIError"
     identity_ci: list[dict[str, str | int]] | None
     dense_ci: list[dict[str, str | int]] | None
 
 
 class IdentityCIError(Metric[IdentityCIErrorConfig]):
-    """Error between the CI values and an Identity or Dense CI pattern."""
+    """Distance between observed CI and a target Identity / Dense CI pattern."""
 
     log_namespace = "target_solution_error"
     slow = True

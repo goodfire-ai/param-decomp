@@ -22,15 +22,20 @@ from typing import Any, Protocol, runtime_checkable
 class RunSink(Protocol):
     """Side-effect sink for a PD training run.
 
-    The trainer treats this object as opaque: it tells it what happened, never
-    *where* the record should go. Callers implement the methods to point at
-    whatever output channels they want (local files, wandb, S3, a no-op handle
-    on non-main DP ranks, …).
+    The trainer treats this object as opaque: it reports what happened, never *where*
+    the record should go. Callers implement the methods to point at whatever output
+    channels they want (local files, wandb, S3, a no-op handle on non-main DP ranks,
+    ...).
     """
 
     def log(self, metrics: dict[str, Any], step: int) -> None:
-        """Record a flat metrics dict at `step`. Keys are already namespaced
-        (e.g. `train/loss/total`, `eval/ci_l0/L0`) by the caller."""
+        """Record a flat metrics dict at ``step``.
+
+        Args:
+            metrics: Flat dict whose keys are already namespaced (e.g. ``train/loss/total``,
+                ``eval/ci_l0/L0``) by the trainer.
+            step: Train step at which the metrics were recorded.
+        """
         ...
 
     def console(self, *lines: str) -> None:
@@ -38,5 +43,5 @@ class RunSink(Protocol):
         ...
 
     def checkpoint(self, state_dict: dict[str, Any], step: int) -> None:
-        """Persist a model state dict at the given step."""
+        """Persist a model state dict at ``step``."""
         ...

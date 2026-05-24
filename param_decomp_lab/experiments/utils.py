@@ -19,11 +19,21 @@ from param_decomp_lab.eval_metrics import AnyEvalMetricConfig
 RUN_META_FILENAME = "run_meta.yaml"
 
 RunKind = Literal["lm", "tms", "resid_mlp"]
+"""Discriminator literal naming the in-repo experiment kinds dispatched on by `SavedRun`."""
 
 
 class EvalConfig(BaseConfig):
-    """Eval-pass settings: loader batch size, how many batches to consume per eval tick,
-    when eval fires, and the list of eval `Metric` configs to instantiate."""
+    """Eval-pass settings consumed by `EvalLoop`.
+
+    Attributes:
+        batch_size: Loader batch size for the eval split.
+        n_steps: Number of batches to consume per eval tick.
+        every: Run eval every N optimizer steps.
+        slow_every: Run the slow-eval subset every N optimizer steps; must be a multiple
+            of `every`.
+        slow_on_first_step: If True, also run slow-eval metrics on the first step.
+        metrics: Discriminated-union eval metric configs to instantiate.
+    """
 
     batch_size: PositiveInt
     n_steps: PositiveInt
@@ -42,6 +52,14 @@ class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
             pass
 
     Omit the `eval:` block to skip eval entirely.
+
+    Attributes:
+        pd: PD algorithm config.
+        runtime: Compute-substrate config (autocast, device, DP).
+        cadence: Train-log + checkpoint cadence.
+        target: Per-experiment target-model config.
+        data: Per-experiment data config.
+        eval: Optional eval-pass config; `None` skips eval entirely.
     """
 
     pd: PDConfig
@@ -58,11 +76,17 @@ def save_run_meta(
     kind: RunKind,
     cfg: ExperimentConfig[Any, Any],
 ) -> None:
-    """Write `{out_dir}/run_meta.yaml`: the resolved `ExperimentConfig` plus the
-    `experiment_kind` literal `SavedRun` uses to dispatch to the matching
-    `experiments/<kind>/run.py` module when rebuilding target/loaders/run_batch.
+    """Write `{out_dir}/run_meta.yaml` with the resolved config + `experiment_kind`.
 
-    Skipped when `out_dir` is None (non-main ranks / silent sinks).
+    The `experiment_kind` literal lets `SavedRun` dispatch to the matching
+    `experiments/<kind>/run.py` module when rebuilding target / loaders / run_batch.
+    No-op when `out_dir` is None (non-main ranks / silent sinks).
+
+    Args:
+        out_dir: Destination directory; the file is written at
+            `out_dir / RUN_META_FILENAME`. Pass `None` to skip writing.
+        kind: Experiment kind literal saved under `experiment_kind`.
+        cfg: Resolved `ExperimentConfig` to serialize.
     """
     if out_dir is None:
         return

@@ -36,7 +36,12 @@ from param_decomp_lab.infra.wandb import init_wandb, try_wandb
 
 
 def _local_log(data: dict[str, Any], step: int, out_dir: Path) -> None:
-    """Write metrics + figures from a step to disk."""
+    """Write a step's metrics, figures, and custom charts to disk.
+
+    PIL images go to ``{out_dir}/figures/<key>_<step>.png``; ``wandb.plot.CustomChart``
+    payloads go to ``{out_dir}/figures/<key>_<step>.json``; everything else is appended
+    as one JSON line to ``{out_dir}/metrics.jsonl``.
+    """
     metrics_file = out_dir / "metrics.jsonl"
     metrics_file.touch(exist_ok=True)
 
@@ -66,8 +71,14 @@ def _local_log(data: dict[str, Any], step: int, out_dir: Path) -> None:
 class RunSink:
     """Side-effect sink for a training run.
 
-    Construct via one of the classmethods rather than the dataclass directly.
-    Non-main ranks always get a no-op handle (`out_dir=None`, `_wandb_active=False`).
+    Construct via one of the classmethods (`local`, `with_wandb`, `silent`) rather than
+    the dataclass directly. Non-main ranks always get a no-op handle regardless of which
+    constructor is called.
+
+    Attributes:
+        out_dir: Local directory for metrics/figures/checkpoints; ``None`` disables disk
+            output (silent sink or non-main rank).
+        _wandb_active: Whether wandb logging is live for this process.
     """
 
     out_dir: Path | None
@@ -77,7 +88,14 @@ class RunSink:
 
     @classmethod
     def local(cls, out_dir: Path) -> "RunSink":
-        """Notebook / script: local files only, no wandb."""
+        """Build a sink that writes to local files only (no wandb).
+
+        Args:
+            out_dir: Directory to create and write all run artifacts into.
+
+        Returns:
+            A sink writing to ``out_dir`` on the main rank, or a silent no-op on others.
+        """
         if not is_main_process():
             return cls._silent_noop()
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -96,7 +114,24 @@ class RunSink:
         configs: dict[str, BaseConfig] | None = None,
         view_meta: dict[str, Any] | None = None,
     ) -> "RunSink":
-        """Notebook / script: local files + wandb."""
+        """Build a sink that writes to local files and a wandb run.
+
+        Initializes wandb on the main rank via `init_wandb` before returning. Non-main
+        ranks skip both disk and wandb init and return a silent no-op.
+
+        Args:
+            out_dir: Directory to create and write all run artifacts into.
+            project: wandb project name.
+            run_id: Stable identifier for the wandb run.
+            name: Display name for the wandb run.
+            tags: Tags to attach to the wandb run.
+            configs: Named pydantic configs to log under wandb config.
+            view_meta: Extra metadata passed to `init_wandb` for the in-house viewer.
+
+        Returns:
+            A sink writing to ``out_dir`` and wandb on the main rank, a silent no-op
+            on others.
+        """
         if not is_main_process():
             return cls._silent_noop()
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -113,7 +148,11 @@ class RunSink:
 
     @classmethod
     def silent(cls) -> "RunSink":
-        """No persistence, no wandb. Useful for tests / quick interactive runs."""
+        """Build a sink that drops everything (no disk, no wandb).
+
+        Returns:
+            A no-op sink suitable for tests and quick interactive runs.
+        """
         return cls._silent_noop()
 
     @classmethod
@@ -123,21 +162,41 @@ class RunSink:
     # =========================== Output API ===========================
 
     def log(self, metrics: dict[str, Any], step: int) -> None:
-        """Emit a flat metrics dict to disk (if `out_dir`) and to wandb (if active)."""
+        """Emit a flat metrics dict to disk and/or wandb.
+
+        Args:
+            metrics: Pre-namespaced metric keys (``train/...``, ``eval/...``) to values.
+                Values may be scalars, PIL images, or ``wandb.plot.CustomChart`` payloads.
+            step: Training step the values were measured at.
+        """
         if self.out_dir is not None:
             _local_log(metrics, step, self.out_dir)
         if self._wandb_active:
             try_wandb(wandb.log, {k: _wandb_value(v) for k, v in metrics.items()}, step=step)
 
     def console(self, *lines: str) -> None:
-        """Print lines to stderr via `tqdm.write`. No-op on non-main ranks."""
+        """Print lines to stderr via `tqdm.write`, one per line.
+
+        No-op on non-main ranks.
+
+        Args:
+            *lines: Lines to print.
+        """
         if not is_main_process():
             return
         for line in lines:
             tqdm.write(line)
 
     def checkpoint(self, state_dict: dict[str, Any], step: int) -> None:
-        """Save `state_dict` to `{out_dir}/model_{step}.pth` + push to wandb."""
+        """Save `state_dict` to ``{out_dir}/model_{step}.pth`` and push to wandb.
+
+        No-op when ``out_dir`` is ``None``. Wandb upload happens only when wandb is
+        active for this process.
+
+        Args:
+            state_dict: Tensor state dict to serialize via `save_file`.
+            step: Training step used in the checkpoint filename.
+        """
         if self.out_dir is None:
             return
         path = self.out_dir / f"model_{step}.pth"

@@ -8,12 +8,22 @@ from param_decomp_lab.eval_metrics.plotting import plot_causal_importance_vals
 
 
 class PermutedCIPlotsConfig(BaseConfig):
+    """Config for `PermutedCIPlots`.
+
+    Attributes:
+        type: Discriminator literal for this metric.
+        identity_patterns: fnmatch patterns for layers permuted to align with identity.
+        dense_patterns: fnmatch patterns for layers permuted to align with dense.
+    """
+
     type: Literal["PermutedCIPlots"] = "PermutedCIPlots"
     identity_patterns: list[str] | None
     dense_patterns: list[str] | None
 
 
 class PermutedCIPlots(Metric[PermutedCIPlotsConfig]):
+    """Single-feature CI value plots with components permuted to identity / dense."""
+
     log_namespace = "figures"
     slow = True
     short_name = "PermCIPlots"

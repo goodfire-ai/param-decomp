@@ -20,7 +20,12 @@ from param_decomp.base_config import BaseConfig
 
 
 class DecompositionTargetConfig(BaseConfig):
-    """Pattern selecting target modules and the number of components to use for each."""
+    """Pattern selecting target modules and the number of components used for each.
+
+    Attributes:
+        module_pattern: ``fnmatch``-style pattern matched against ``model.named_modules()``.
+        C: Number of components for modules matching this pattern.
+    """
 
     module_pattern: str = Field(..., description="fnmatch-style pattern to match module names")
     C: PositiveInt = Field(
@@ -30,7 +35,12 @@ class DecompositionTargetConfig(BaseConfig):
 
 @dataclass(frozen=True)
 class DecompositionTarget:
-    """Resolved module path and the number of components to use for that module."""
+    """Resolved module path and the number of components used for that module.
+
+    Attributes:
+        module_path: Dotted path of a single concrete module within the target model.
+        C: Number of components to decompose ``module_path`` into.
+    """
 
     module_path: str
     C: int
@@ -39,7 +49,11 @@ class DecompositionTarget:
 def resolve_decomposition_targets(
     model: nn.Module, decomposition_targets: Sequence[DecompositionTargetConfig]
 ) -> list[DecompositionTarget]:
-    """Resolve module patterns to concrete module paths with their C values."""
+    """Resolve module patterns to concrete module paths paired with their ``C`` values.
+
+    Each pattern must match at least one module, and no module may match more than one pattern.
+    Raises ``ValueError`` on either violation.
+    """
     module_to_pattern_and_c: dict[str, tuple[str, int]] = {}
 
     for target in decomposition_targets:
@@ -71,6 +85,12 @@ def resolve_decomposition_targets(
 
 
 class Identity(nn.Module):
+    """Identity shim inserted before a target module so the identity op itself can be decomposed.
+
+    Carries the input dimension ``d`` so downstream component construction can size its weight
+    matrices.
+    """
+
     def __init__(self, d: int):
         super().__init__()
         self.d = d
@@ -99,12 +119,16 @@ def _pre_id_hook(
 def insert_identity_operations_(
     target_model: nn.Module, identity_decomposition_targets: list[DecompositionTargetConfig]
 ) -> None:
-    """Insert identity layers before specified modules.
+    """Attach an ``Identity`` shim before each selected module via a forward pre-hook.
+
+    For every module matched by an identity pattern, sets ``module.pre_identity = Identity(d_in)``
+    and registers a pre-hook that routes the input through it before the module's forward. ``C``
+    on each target is used later by the component factory and is ignored here.
 
     Args:
-        target_model: The model to modify
+        target_model: The model to modify in place.
         identity_decomposition_targets: Decomposition targets whose patterns select modules that
-            should receive a pre-identity. C is used later when creating components.
+            should receive a pre-identity.
     """
     # Extract just the patterns (ignore C values for insertion)
     identity_module_paths: list[str] = []

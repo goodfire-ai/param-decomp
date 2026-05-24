@@ -30,13 +30,23 @@ from param_decomp_lab.seed import set_seed
 
 
 class TMSTargetConfig(BaseConfig):
-    """Path to the trained TMS target run."""
+    """Path to the trained TMS target run.
+
+    Attributes:
+        run_path: Local or wandb path to a TMS pretrain run.
+    """
 
     run_path: str = Field(..., description="Local or wandb path to a TMS pretrain run.")
 
 
 class TMSDataConfig(BaseConfig):
-    """Synthetic-feature dataset settings for TMS PD."""
+    """Synthetic-feature dataset settings for TMS PD.
+
+    Attributes:
+        feature_probability: Probability that any individual feature is active in a sample.
+        data_generation_type: Whether each sample activates exactly one feature or any
+            subset (including the empty set).
+    """
 
     feature_probability: Probability
     data_generation_type: Literal["exactly_one_active", "at_least_zero_active"] = (
@@ -45,6 +55,8 @@ class TMSDataConfig(BaseConfig):
 
 
 class TMSExperimentConfig(ExperimentConfig[TMSTargetConfig, TMSDataConfig]):
+    """Full YAML schema for a TMS PD run."""
+
     pass
 
 
@@ -53,6 +65,7 @@ DATA_CONFIG_TYPE = TMSDataConfig
 
 
 def build_target(target_cfg: TMSTargetConfig) -> TMSModel:
+    """Load the pretrained TMS target model from `target_cfg.run_path` in eval mode."""
     run_info = TMSTargetRunInfo.from_path(target_cfg.run_path)
     target_model = TMSModel.from_run_info(run_info)
     target_model.eval()
@@ -69,7 +82,12 @@ def build_loader(
     dist_state: DistributedState | None = None,
     seed: int | None = None,
 ) -> DataLoader[Any]:
-    del split, dist_state, seed  # synthetic dataset; same loader for train/eval
+    """Build a synthetic `SparseFeatureDataset` loader for TMS.
+
+    The dataset is synthetic and infinite, so `split`, `dist_state`, and `seed` are
+    ignored — train and eval loaders are constructed identically.
+    """
+    del split, dist_state, seed
     train_config = TMSTargetRunInfo.from_path(target_cfg.run_path).config
     dataset = SparseFeatureDataset(
         n_features=train_config.tms_model_config.n_features,
@@ -84,6 +102,7 @@ def build_loader(
 
 
 def make_run_batch(target_cfg: TMSTargetConfig) -> RunBatch:
+    """Return the `RunBatch` callable for TMS — unwraps the (inputs, labels) tuple."""
     del target_cfg
     return run_batch_first_element
 
@@ -93,6 +112,14 @@ def _tied_weights_for(target_model: TMSModel) -> list[tuple[str, str]] | None:
 
 
 def main(config_path: str | Path) -> None:
+    """Run a TMS PD experiment end-to-end from a YAML config.
+
+    Parses the YAML into `TMSExperimentConfig`, builds the target / loaders / eval loop,
+    writes `run_meta.yaml`, and calls `optimize(...)`.
+
+    Args:
+        config_path: Path to the experiment YAML config.
+    """
     cfg = TMSExperimentConfig.from_file(config_path)
 
     set_seed(cfg.pd.seed)
@@ -134,6 +161,7 @@ def main(config_path: str | Path) -> None:
 
 
 def _build_eval_loop(cfg: TMSExperimentConfig, device: str) -> EvalLoop | None:
+    """Build the optional `EvalLoop` from `cfg.eval`, returning None when eval is disabled."""
     if cfg.eval is None:
         return None
     return EvalLoop(

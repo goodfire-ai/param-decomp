@@ -15,6 +15,12 @@ from param_decomp.metrics.pgd_utils import PGDConfig, pgd_masked_recon_loss_upda
 
 
 class PGDReconLossConfig(PGDConfig):
+    """Config for `PGDReconLoss`.
+
+    Attributes:
+        type: Discriminator literal `"PGDReconLoss"`.
+    """
+
     type: Literal["PGDReconLoss"] = "PGDReconLoss"
 
 
@@ -28,7 +34,7 @@ def pgd_recon_loss(
     pgd_config: PGDConfig,
     reconstruction_loss: ReconstructionLoss,
 ) -> Float[Tensor, ""]:
-    """Pure compute helper preserved for direct callers (tests, notebooks)."""
+    """Compute PGD masked recon loss directly (helper for tests/notebooks)."""
     sum_loss, n = pgd_masked_recon_loss_update(
         model=model,
         batch=batch,
@@ -43,8 +49,11 @@ def pgd_recon_loss(
 
 
 class PGDReconLoss(Metric[PGDReconLossConfig]):
-    """Recon loss when masking with adversarially-optimized values and routing to all component
-    layers."""
+    """Recon loss with adversarially-optimized masks routing to all component layers.
+
+    Runs `cfg.n_steps` of per-step PGD on fresh adversarial sources each batch (no
+    cross-step persistence) and scores reconstruction at the final sources.
+    """
 
     log_namespace = "loss"
     short_name = "PGDRecon"

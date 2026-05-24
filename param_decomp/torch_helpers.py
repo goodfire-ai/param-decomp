@@ -13,14 +13,23 @@ from param_decomp.log import logger
 
 
 def bf16_autocast(enabled: bool = True) -> torch.amp.autocast_mode.autocast:
+    """Build a bfloat16 autocast context manager for the current device type.
+
+    Selects ``"cuda"`` when CUDA is available, otherwise ``"cpu"``.
+
+    Args:
+        enabled: If False, returns an autocast context that is a no-op, so callers can
+            wrap code unconditionally and disable bf16 by config.
+    """
     device_type = "cuda" if torch.cuda.is_available() else "cpu"
     return torch.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=enabled)
 
 
 def loop_dataloader[T](dl: DataLoader[T]) -> Generator[T]:
-    """Loop over a dataloader, resetting the iterator when it is exhausted.
+    """Yield batches from ``dl`` forever, recreating the iterator on exhaustion.
 
-    Ensures that each epoch gets different data, even when using a distributed sampler.
+    Bumps the epoch on ``DistributedSampler`` and ``IterableDataset`` so each pass through
+    the underlying data sees a different shuffle / shard ordering.
     """
     epoch = 0
     dl_iter = iter(dl)
@@ -66,7 +75,11 @@ def _get_obj_devices(d: CanGetDevice) -> set[torch.device]:
 
 
 def get_obj_device(d: CanGetDevice) -> torch.device:
-    """Get the device of an object. Asserts all parameters live on the same device."""
+    """Return the single device that holds ``d``.
+
+    Accepts a tensor, a module, an object with a ``device`` attribute, or a mapping/sequence
+    of those. Asserts that all contained tensors/parameters live on the same device.
+    """
     devices = _get_obj_devices(d)
     assert len(devices) == 1, f"Object parameters are on multiple devices: {devices}"
     return devices.pop()

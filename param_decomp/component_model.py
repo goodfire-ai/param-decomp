@@ -20,7 +20,15 @@ from param_decomp.masks import ComponentsMaskInfo, SamplingType
 
 
 class OutputWithCache(NamedTuple):
-    """Output tensor and cached activations."""
+    """Forward output paired with cached activations.
+
+    Attributes:
+        output: Model output tensor from the forward pass.
+        cache: Per-module activations captured by forward hooks. Keys are
+            target-module paths (or ``f"{path}_{kind}"`` for component-acts
+            entries); the contents depend on ``cache_type`` chosen at the call
+            site.
+    """
 
     output: Tensor
     cache: dict[str, Tensor]
@@ -28,28 +36,45 @@ class OutputWithCache(NamedTuple):
 
 @dataclass
 class CIOutputs:
+    """Triple of CI tensors keyed by target module path.
+
+    Attributes:
+        lower_leaky: CI values squashed by the lower-leaky sigmoid. Multiplied
+            into component contributions; bounded above by 1.
+        upper_leaky: CI values squashed by the upper-leaky sigmoid. Used by
+            importance-minimality losses; bounded below by 0.
+        pre_sigmoid: Raw CI-fn outputs before any sigmoid.
+    """
+
     lower_leaky: dict[str, Float[Tensor, "... C"]]
     upper_leaky: dict[str, Float[Tensor, "... C"]]
     pre_sigmoid: dict[str, Tensor]
 
 
 class ComponentModel(nn.Module):
-    """Wrapper around an arbitrary pytorch model for running PD.
+    """Wrapper around a frozen target model that exposes parameter components.
 
-    The underlying *base model* can be any subclass of `nn.Module` (e.g.
-    `LlamaForCausalLM`, `AutoModelForCausalLM`) as long as its sub-module names
-    are provided in the `decomposition_targets` list.
+    The underlying *base model* can be any subclass of ``nn.Module`` (e.g.
+    ``LlamaForCausalLM``, ``AutoModelForCausalLM``) as long as the sub-module
+    paths to decompose are provided in ``decomposition_targets``. The wrapper
+    registers components and the causal-importance function (``ci_fn``) as
+    submodules so they participate in ``DistributedDataParallel`` parameter
+    sync and ``.to(device)`` semantics.
 
-    Forward passes support optional component replacement and/or caching:
-    - No args: Standard forward pass of the target model
-    - With mask_infos: Components replace the specified modules via forward hooks
-    - With cache_type="input": Input activations are cached for the specified modules
-    - With cache_type="component_acts": Component activations are cached for the specified modules
-    - Both can be used simultaneously for component forward pass with input caching
+    Forward pass supports four cache modes and optional component replacement.
+    See :meth:`forward` for the matrix of behaviors.
 
-    We register components and causal importance functions (ci_fns) as modules in this class in order to have them update
-    correctly when the model is wrapped in a `DistributedDataParallel` wrapper (and for other
-    conveniences).
+    Attributes:
+        target_model: The frozen base model. Its parameters must not require
+            grad — the constructor asserts this.
+        module_to_c: Map from decomposition-target module path to the number of
+            components ``C`` for that module.
+        target_module_paths: Ordered list of ``module_to_c`` keys.
+        components: ``Components`` instance per decomposition-target path.
+        ci_fn: The CI-fn wrapper (layerwise or global) that maps activations to
+            per-component CI values.
+        lower_leaky_fn: Sigmoid applied to produce ``CIOutputs.lower_leaky``.
+        upper_leaky_fn: Sigmoid applied to produce ``CIOutputs.upper_leaky``.
     """
 
     def __init__(
@@ -94,6 +119,18 @@ class ComponentModel(nn.Module):
             self.upper_leaky_fn = SIGMOID_TYPES[sigmoid_type]
 
     def target_weight(self, module_name: str) -> Float[Tensor, "rows cols"]:
+        """Return the weight matrix of a target module in PD's row-major convention.
+
+        For ``transformers.pytorch_utils.Conv1D`` (Radford-style) the stored
+        weight is transposed relative to ``nn.Linear``; this method returns it
+        transposed back so all targets share the same ``[d_out, d_in]`` shape.
+        For an :class:`Identity` shim the returned tensor is the identity matrix
+        of size ``target_module.d`` on the model's device/dtype.
+
+        Args:
+            module_name: Path of the target module as registered in
+                ``module_to_c``.
+        """
         target_module = self.target_model.get_submodule(module_name)
 
         match target_module:
@@ -150,17 +187,27 @@ class ComponentModel(nn.Module):
         mask_infos: dict[str, ComponentsMaskInfo] | None = None,
         cache_type: Literal["component_acts", "input", "output", "none"] = "none",
     ) -> Tensor | OutputWithCache:
-        """Forward pass with optional component replacement and/or input/output caching.
+        """Run the target model with optional component replacement and/or caching.
+
+        With no extra args, this is just a forward pass through the frozen
+        target model. If ``mask_infos`` is given, those modules' outputs are
+        replaced by their components' forward pass under the supplied masks.
+        ``cache_type`` controls what each hooked module records.
 
         Args:
-            mask_infos: Dictionary mapping module names to ComponentsMaskInfo.
-                If provided, those modules will be replaced with their components.
-            cache_type: What to cache for each hooked module. "input" caches pre-weight
-                activations, "output" caches post-weight activations, "component_acts" caches
-                per-component activations, "none" disables caching.
+            batch: The input batch, passed unchanged to ``self._run_batch``.
+            mask_infos: Per-module mask info. If provided, the listed modules
+                are replaced via forward hooks; if ``None`` and ``cache_type``
+                is set, hooks are attached to every target module for caching
+                only.
+            cache_type: What each hooked module caches. ``"input"`` caches
+                pre-weight activations, ``"output"`` caches post-weight
+                activations, ``"component_acts"`` caches per-component
+                activations, ``"none"`` disables caching.
 
         Returns:
-            OutputWithCache object if cache_type is not "none", otherwise the model output tensor.
+            An :class:`OutputWithCache` when ``cache_type != "none"``,
+            otherwise the bare output tensor.
         """
         if mask_infos is None and cache_type == "none":
             return self._run_batch(self.target_model, batch)
@@ -204,22 +251,26 @@ class ComponentModel(nn.Module):
         cache_type: Literal["component_acts", "input", "output", "none"],
         cache: dict[str, Tensor],
     ) -> Any | None:
-        """Unified hook function that handles both component replacement and caching.
+        """Forward hook that handles both component replacement and caching.
 
         Args:
-            module: The module being hooked
-            args: Module forward args
-            kwargs: Module forward kwargs
-            output: Module forward output
-            module_name: Name of the module in the target model
-            components: Component replacement (if using components)
-            mask_info: Mask information (if using components)
-            cache_type: Whether to cache the component acts, input, or none
-            cache: Cache dictionary to populate (if cache_type is not None)
+            args: Positional args to the hooked module. Must be a single tensor.
+            kwargs: Keyword args to the hooked module. Must be empty.
+            output: Original module output (returned unchanged unless
+                components replace it).
+            module_name: Path of the module in ``self.target_model``.
+            components: ``Components`` for this module, or ``None`` for
+                cache-only mode.
+            mask_info: Mask payload for this module, or ``None`` for cache-only
+                mode.
+            cache_type: ``"input"``, ``"output"``, ``"component_acts"``, or
+                ``"none"``.
+            cache: Dict to populate; keyed by ``module_name`` (or
+                ``f"{module_name}_{kind}"`` for component-acts entries).
 
         Returns:
-            If using components: modified output (or None to keep original)
-            If not using components: None (keeps original output)
+            The replaced output when components are applied, otherwise
+            ``None`` (which tells PyTorch to keep the original output).
         """
         assert len(args) == 1, "Expected 1 argument"
         assert len(kwargs) == 0, "Expected no keyword arguments"
@@ -263,7 +314,7 @@ class ComponentModel(nn.Module):
 
     @contextmanager
     def _attach_forward_hooks(self, hooks: dict[str, Callable[..., Any]]) -> Generator[None]:
-        """Context manager to temporarily attach forward hooks to the target model."""
+        """Attach forward hooks to the listed target modules for the block's lifetime."""
         handles: list[RemovableHandle] = []
         for module_name, hook in hooks.items():
             target_module = self.target_model.get_submodule(module_name)
@@ -281,15 +332,24 @@ class ComponentModel(nn.Module):
         sampling: SamplingType,
         detach_inputs: bool = False,
     ) -> CIOutputs:
-        """Calculate causal importances using the unified CI function interface.
+        """Compute causal-importance values for every decomposition target.
+
+        Runs the CI fn on the pre-weight activations, then squashes the outputs
+        through the lower-leaky and upper-leaky sigmoids. Under
+        ``sampling="binomial"`` the lower-leaky branch additionally has a small
+        amount of uniform noise mixed in before squashing.
 
         Args:
-            pre_weight_acts: The activations before each layer in the target model.
-            sampling: The sampling type for stochastic masks.
-            detach_inputs: Whether to detach the inputs to the causal importance function.
+            pre_weight_acts: Per-module activations entering each target layer.
+                For embedding targets these are integer token indices.
+            sampling: Sampling regime for stochastic masks. Controls the noise
+                injection on the lower-leaky branch.
+            detach_inputs: If ``True``, gradients do not flow from the CI fn
+                back into ``pre_weight_acts``.
 
         Returns:
-            CIOutputs containing lower_leaky, upper_leaky, and pre_sigmoid CI values.
+            :class:`CIOutputs` containing the lower-leaky, upper-leaky, and
+            pre-sigmoid CI values keyed by target-module path.
         """
         if detach_inputs:
             pre_weight_acts = {k: v.detach() for k, v in pre_weight_acts.items()}
@@ -302,7 +362,7 @@ class ComponentModel(nn.Module):
         ci_fn_outputs: dict[str, Float[Tensor, "... C"]],
         sampling: SamplingType,
     ) -> CIOutputs:
-        """Apply sigmoid functions to CI function outputs."""
+        """Squash raw CI-fn outputs through the lower- and upper-leaky sigmoids."""
         causal_importances_lower_leaky = {}
         causal_importances_upper_leaky = {}
         pre_sigmoid = {}
@@ -332,7 +392,13 @@ class ComponentModel(nn.Module):
         )
 
     def calc_weight_deltas(self) -> dict[str, Float[Tensor, "d_out d_in"]]:
-        """Calculate the weight differences between the target and component weights (V@U) for each layer."""
+        """Per-target ``target_weight - sum_components`` deltas.
+
+        Returns:
+            For each decomposition target, the difference between its target
+            weight and the summed component weights (``V @ U``). Used by the
+            delta-component pathway and by faithfulness diagnostics.
+        """
         weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] = {}
         for comp_name, components in self.components.items():
             weight_deltas[comp_name] = self.target_weight(comp_name) - components.weight
@@ -342,7 +408,24 @@ class ComponentModel(nn.Module):
 def component_grad_norms(
     component_model: ComponentModel, device: torch.device | str
 ) -> dict[str, float]:
-    """Per-parameter gradient norms for component params and CI fn params, with summaries."""
+    """Per-parameter and summary gradient norms for components and the CI fn.
+
+    Args:
+        component_model: The unwrapped model whose ``.components`` and
+            ``.ci_fn`` are inspected.
+        device: Device the running sums are accumulated on.
+
+    Returns:
+        A flat dict with three families of keys:
+
+        - ``components/<module_path>.<param>`` — L2 norm of each component
+          parameter's gradient. ``NaN`` if its grad was never populated.
+        - ``ci_fns/<param>`` — L2 norm of each CI-fn parameter's gradient.
+          ``NaN`` if its grad was never populated.
+        - ``summary/components``, ``summary/ci_fns``, ``summary/total`` —
+          aggregate L2 norms over each pool and over both pools. ``NaN`` if
+          any contributing grad was missing.
+    """
     out: dict[str, float] = {}
 
     comp_grad_norm_sq_sum: Float[Tensor, ""] = torch.zeros((), device=device)

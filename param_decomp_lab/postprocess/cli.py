@@ -14,6 +14,13 @@ import argparse
 
 
 def main() -> None:
+    """Parse CLI args and submit (or dry-run) the postprocessing pipeline.
+
+    Parses ``config`` (path to a ``PostprocessConfig`` YAML), optional ``--dependency``
+    (a SLURM job ID to wait on), and ``--dry_run`` (log the resolved config without
+    submitting). On a real run, dispatches to
+    :func:`param_decomp_lab.postprocess.postprocess` and logs the metadata path.
+    """
     parser = argparse.ArgumentParser(description="Submit all postprocessing jobs for a PD run.")
     parser.add_argument("config", help="Path to PostprocessConfig YAML.")
     parser.add_argument(

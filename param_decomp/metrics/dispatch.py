@@ -58,8 +58,14 @@ def instantiate_loss_metrics(
 ) -> dict[str, Metric[Any]]:
     """Instantiate and bind one `Metric` per entry in `pd_config.loss_metrics`.
 
-    Returned dict is keyed by each config's `type` literal (e.g. `"FaithfulnessLoss"`);
-    duplicates are rejected.
+    Args:
+        pd_config: The validated PD config; its `loss_metrics` list drives instantiation.
+        component_model: Live `ComponentModel` passed to each metric's `bind`.
+        device: Device string passed to each metric's `bind`.
+
+    Returns:
+        Dict keyed by each config's `type` literal (e.g. `"FaithfulnessLoss"`).
+        Duplicate `type` literals are rejected.
     """
     instances: dict[str, Metric[Any]] = {}
     for cfg in pd_config.loss_metrics:

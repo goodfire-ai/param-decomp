@@ -30,7 +30,7 @@ from param_decomp.decomposition_targets import (
 def _validate_checkpoint_ci_config_compatibility(
     state_dict: dict[str, Tensor], ci_config: CiConfig
 ) -> None:
-    """Validate that checkpoint CI weights match the config CI mode."""
+    """Assert the checkpoint's CI weight keys match the layerwise/global mode in `ci_config`."""
     has_layerwise_ci_fns = any(k.startswith("ci_fn._ci_fns") for k in state_dict)
     has_global_ci_fn = any(k.startswith("ci_fn._global_ci_fn") for k in state_dict)
 
@@ -58,11 +58,26 @@ def load_component_model_from_checkpoint(
     run_batch: RunBatch,
     tied_weights: list[tuple[str, str]] | None = None,
 ) -> ComponentModel:
-    """Rebuild a ComponentModel from a saved PD checkpoint and a user-supplied target.
+    """Rebuild a ComponentModel from a saved PD checkpoint plus a user-supplied target.
 
-    The caller owns target loading (HF, in-repo pretrain runs, custom user models),
-    so this function takes the already-instantiated target plus its run_batch function.
-    Pass the slices of `PDConfig` that affect model construction directly.
+    The caller owns target loading (HF, in-repo pretrain runs, custom user models), so
+    this function takes the already-instantiated target plus its run-batch function and
+    only the slices of `PDConfig` that affect model construction.
+
+    Args:
+        ci_config: CI-fn configuration the checkpoint was trained with.
+        sigmoid_type: Output sigmoid variant the CI fn squashes through.
+        decomposition_targets: Module patterns to decompose into components.
+        identity_decomposition_targets: Module patterns that get an `Identity` shim
+            inserted before decomposition; ``None`` to skip.
+        checkpoint_path: ``model_<step>.pth`` produced by `RunSink.checkpoint`.
+        target_model: Frozen target model the components decompose.
+        run_batch: Callable that runs `target_model` on a batch.
+        tied_weights: Pairs of (src, tgt) component names whose ``U``/``V`` are tied
+            via transpose after loading.
+
+    Returns:
+        A `ComponentModel` with weights loaded from `checkpoint_path`.
     """
     target_model.eval()
     target_model.requires_grad_(False)
@@ -112,7 +127,19 @@ def get_all_component_acts(
     model: ComponentModel,
     pre_weight_acts: dict[str, Float[Tensor, "... d_in"] | Int[Tensor, "..."]],
 ) -> dict[str, Float[Tensor, "... C"]]:
-    """Compute component activations (v_i^T @ x) for all layers covered by `model`."""
+    """Compute per-component activations ``V^T @ x`` for every decomposed layer.
+
+    Layers in `pre_weight_acts` that have no matching entry in `model.components` are
+    skipped silently.
+
+    Args:
+        model: ComponentModel holding the per-layer `Components` modules.
+        pre_weight_acts: Cached pre-weight activations keyed by target module path;
+            shape ``(..., d_in)`` (or integer indices for embeddings).
+
+    Returns:
+        Dict mapping layer name to component-space activations of shape ``(..., C)``.
+    """
     return {
         layer: model.components[layer].get_component_acts(acts)
         for layer, acts in pre_weight_acts.items()

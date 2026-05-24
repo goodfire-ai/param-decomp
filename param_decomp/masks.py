@@ -1,3 +1,11 @@
+"""Runtime mask payloads and routing for stochastic parameter decomposition.
+
+``SamplingType`` selects between continuous (``rand_like``) and binomial (Bernoulli)
+stochastic sources used by the recon losses. ``SubsetRoutingType`` is the
+discriminated-union of subset routing configs accepted by metrics that randomly
+route a subset of modules per position.
+"""
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Literal, override
@@ -9,47 +17,78 @@ from torch import Tensor
 from param_decomp.base_config import BaseConfig, Probability
 
 WeightDeltaAndMask = tuple[Float[Tensor, "d_out d_in"], Float[Tensor, "..."]]
+"""Pair of ``(weight_delta, delta_mask)``.
+
+``weight_delta`` is the residual ``W_target - sum(components)``; ``delta_mask`` is the per-position
+scalar that gates how much of the delta is applied on each position.
+"""
+
 RoutingMasks = dict[str, Bool[Tensor, "..."]] | Literal["all"]
+"""Per-module boolean routing masks, or the sentinel ``"all"`` meaning route everywhere."""
 
 
 @dataclass
 class ComponentsMaskInfo:
-    """Specifies the mask information that will be applied to a component module."""
+    """Mask payload applied to a single component module during a forward pass.
+
+    Attributes:
+        component_mask: ``[..., C]`` per-component mask. When the position is routed to components,
+            this selects which subcomponents are active.
+        routing_mask: Which ``(batch,)`` or ``(batch, seq_len)`` positions route to components vs
+            the target module. ``"all"`` routes every position to components.
+        weight_delta_and_mask: Optional ``(delta_weight, delta_mask)`` for the residual weight
+            delta component. ``None`` disables the delta component.
+    """
 
     component_mask: Float[Tensor, "... C"]
-    """when components are routed to, this specifies which subcomponents to use"""
-
     routing_mask: Bool[Tensor, "..."] | Literal["all"] = "all"
-    """Which (batch,) or (batch, seq_len) positions to route to components vs target modules.
-    If "all", all positions are routed to components."""
-
     weight_delta_and_mask: WeightDeltaAndMask | None = None
 
 
 class UniformKSubsetRoutingConfig(BaseConfig):
+    """Subset-routing config: route to a uniformly-sized random subset per position."""
+
     type: Literal["uniform_k_subset"] = "uniform_k_subset"
 
 
 class StaticProbabilityRoutingConfig(BaseConfig):
+    """Subset-routing config: each position independently routes with probability ``p``.
+
+    Attributes:
+        p: Per-position routing probability.
+    """
+
     type: Literal["static_probability"] = "static_probability"
     p: Probability
 
 
+# Discriminated union over the subset-routing configs (keyed by ``type``).
 SubsetRoutingType = UniformKSubsetRoutingConfig | StaticProbabilityRoutingConfig
 
 
+# ``"continuous"`` draws uniform [0, 1) sources; ``"binomial"`` draws Bernoulli sources.
 SamplingType = Literal["continuous", "binomial"]
 
 
 class Router(ABC):
+    """Strategy that produces per-module routing masks for a given leading shape.
+
+    Implementations decide which positions route to component modules versus the original
+    target modules. Returning the sentinel ``"all"`` is a fast path meaning "route everywhere".
+    """
+
     @abstractmethod
     def get_masks(self, module_names: list[str], mask_shape: tuple[int, ...]) -> RoutingMasks:
+        """Return routing masks for ``module_names`` at the given leading shape."""
         pass
 
 
 class UniformKSubsetRouter(Router):
-    """for each position, sample k from [1, n_modules], then route to components for k out of
-    `n_modules` modules"""
+    """For each position, sample ``k`` from ``[1, n_modules]`` and route to a random ``k``-subset.
+
+    The number of modules routed at each position is independent and uniform; the chosen subset
+    is a uniformly random ``k``-sized subset of ``module_names``.
+    """
 
     def __init__(self, device: torch.device | str):
         self.device = device
@@ -62,12 +101,16 @@ class UniformKSubsetRouter(Router):
 
 
 class AllLayersRouter(Router):
+    """Route every position to every module (returns the ``"all"`` sentinel)."""
+
     @override
     def get_masks(self, module_names: list[str], mask_shape: tuple[int, ...]) -> Literal["all"]:
         return "all"
 
 
 class StaticProbabilityRouter(Router):
+    """Route each position to each module independently with fixed probability ``p``."""
+
     def __init__(self, p: float, device: torch.device | str):
         self.p = p
         self.device = device
@@ -76,12 +119,15 @@ class StaticProbabilityRouter(Router):
     def get_masks(
         self, module_names: list[str], mask_shape: tuple[int, ...]
     ) -> dict[str, Bool[Tensor, "..."]]:
-        """returns a { <layer>: [batch, seq] } dict of tensors, where each batch (batch_idx,
-        seq_idx) is routed to with probability p"""
         return {mod: torch.rand(*mask_shape, device=self.device) < self.p for mod in module_names}
 
 
 class LayerRouter(Router):
+    """Route every position to a single named layer only.
+
+    The mask for ``layer_name`` is all-ones; masks for the other modules are all-zeros.
+    """
+
     def __init__(self, device: torch.device | str, layer_name: str):
         self.device = device
         self.layer_name = layer_name
@@ -103,18 +149,16 @@ def rand_perm(
     device: torch.device | str = "cpu",
     generator: torch.Generator | None = None,
 ) -> Int[Tensor, "... k"]:
-    """Create a LongTensor of shape `shape` containing random permutations along dimension `dim`.
-    For example, if shape is (2, 3) and dim is 1, the returned tensor will be a 2x3 tensor with
-    each row having a random permutation of [0, 1, 2].
+    """Return a LongTensor of shape ``shape`` with random permutations along ``dim``.
+
+    For example, with ``shape=(2, 3)`` and ``dim=1`` each row is a random permutation of
+    ``[0, 1, 2]``.
 
     Args:
-        shape: Shape of the tensor to create
-        dim: Dimension along which to make the permutations
-        device: Device to create the tensor on
-        generator: Generator to use for the random values
-
-    Returns:
-        LongTensor of shape `shape` with randomly ordered permutation along dimension `dim`.
+        shape: Shape of the tensor to create.
+        dim: Dimension along which to make the permutations.
+        device: Device to create the tensor on.
+        generator: Generator to use for the random values.
     """
 
     noise = torch.rand(shape, device=device, generator=generator)
@@ -127,19 +171,19 @@ def sample_uniform_k_subset_routing_masks(
     device: torch.device | str = "cpu",
     generator: torch.Generator | None = None,
 ) -> dict[str, Bool[Tensor, "..."]]:
-    """Creates routing masks for each module such that the number of modules routed to for each
-    position is independent and uniformly sampled from [1, len(module_names)]
+    """Sample routing masks where each position routes to a uniform-``k`` random subset.
 
-    Achieves this by:
-    - for each position, k is independent and uniformly sampled from [1, len(module_names)]
-    - for each position, a k-sized random subset of modules are routed to
+    For each position, ``k`` is drawn independently and uniformly from
+    ``[1, len(module_names)]``, then a ``k``-sized random subset of modules is chosen.
 
     Args:
-        mask_shape: Shape of the routing masks, likely (batch,) or (batch, seq_len)
-        module_names: List of module names to route to
+        mask_shape: Shape of the routing masks, likely ``(batch,)`` or ``(batch, seq_len)``.
+        module_names: Module names to route to.
+        device: Device to place the masks on.
+        generator: Optional generator for reproducibility.
 
     Returns:
-        Dict mapping module names to routing masks of shape `mask_shape`.
+        Mapping from module name to a boolean routing mask of shape ``mask_shape``.
     """
     k_modules_to_route: Int[Tensor, " ..."] = torch.randint(
         low=1,
@@ -185,17 +229,18 @@ def make_mask_infos(
     routing_masks: RoutingMasks = "all",
     weight_deltas_and_masks: dict[str, WeightDeltaAndMask] | None = None,
 ) -> dict[str, ComponentsMaskInfo]:
-    """Create ComponentsMaskInfo dict from dicts of component masks, and optionally routing masks,
-    weight deltas, and weight delta masks.
-    Keys of all dicts must be the same.
+    """Bundle component masks, routing masks, and weight deltas into ``ComponentsMaskInfo``s.
+
+    All inputs must share the same set of module-name keys.
 
     Args:
-        component_masks: Dict mapping module names to component masks. routing_masks: Dict mapping
-        module names to routing masks. weight_deltas_and_masks: Dict mapping module names to tuples
-        of weight deltas and masks for each module to be decomposed. Defaults to None (disable
-        weight delta component) if not provided.
+        component_masks: Per-module ``[..., C]`` component masks.
+        routing_masks: Per-module routing masks, or the ``"all"`` sentinel.
+        weight_deltas_and_masks: Per-module ``(delta_weight, delta_mask)`` tuples. ``None``
+            disables the weight-delta component.
+
     Returns:
-        Dict mapping module names to ComponentsMaskInfo objects.
+        Mapping from module name to its ``ComponentsMaskInfo``.
     """
     if isinstance(routing_masks, dict):
         assert set(routing_masks) == set(component_masks)

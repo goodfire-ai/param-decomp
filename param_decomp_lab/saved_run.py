@@ -48,9 +48,22 @@ def _run_module(kind: RunKind) -> ModuleType:
 
 @dataclass(frozen=True)
 class RunMeta:
-    """The deserialized shape of ``run_meta.yaml`` — the resolved ExperimentConfig dump
-    plus the `experiment_kind` literal. `target` and `data` remain raw dicts; the
-    matching experiment module's config types validate them in `SavedRun.from_path`."""
+    """Deserialized shape of ``run_meta.yaml``.
+
+    The shared `ExperimentConfig` blocks are validated up front; `target` and `data`
+    remain raw dicts because their concrete schemas depend on `kind` — the matching
+    experiment module's `TARGET_CONFIG_TYPE` / `DATA_CONFIG_TYPE` validate them in
+    `SavedRun.from_path`.
+
+    Attributes:
+        kind: Experiment kind literal (e.g. `"tms"`, `"resid_mlp"`, `"lm"`).
+        pd_config: Resolved PD algorithm config.
+        runtime_config: Resolved runtime substrate config.
+        cadence: Resolved train-log + checkpoint cadence.
+        eval_cfg: Resolved eval config, or `None` if eval was disabled.
+        target_dict: Raw `target:` YAML block, pending experiment-specific validation.
+        data_dict: Raw `data:` YAML block, pending experiment-specific validation.
+    """
 
     kind: RunKind
     pd_config: PDConfig
@@ -62,6 +75,11 @@ class RunMeta:
 
     @classmethod
     def from_path(cls, path: Path) -> "RunMeta":
+        """Load and validate a `run_meta.yaml` file at `path`.
+
+        Returns:
+            The parsed `RunMeta`. The `target` / `data` blocks remain as raw dicts.
+        """
         with open(path) as f:
             payload = yaml.safe_load(f)
         eval_payload = payload.get("eval")
@@ -80,10 +98,19 @@ class RunMeta:
 
 @dataclass(frozen=True)
 class SavedRun:
-    """A completed PD run resolved to local paths + parsed meta + validated configs.
+    """Handle to a completed PD run resolved to local paths + parsed meta + validated configs.
 
-    Always constructed via :meth:`from_path`. Notebook-only runs (no `run_meta.yaml`) reload
-    checkpoints with `load_component_model_from_checkpoint(...)` directly.
+    Always constructed via :meth:`from_path`. Notebook-only runs (no `run_meta.yaml`)
+    should reload checkpoints with `load_component_model_from_checkpoint(...)` directly.
+
+    Attributes:
+        path: Directory containing `run_meta.yaml` and the checkpoint.
+        meta: Parsed `RunMeta` (shared blocks + raw target/data dicts).
+        checkpoint_path: Resolved path to the chosen `model_<step>.pth` checkpoint.
+        target_cfg: `meta.target_dict` validated against the experiment module's
+            `TARGET_CONFIG_TYPE`.
+        data_cfg: `meta.data_dict` validated against the experiment module's
+            `DATA_CONFIG_TYPE`.
     """
 
     path: Path
@@ -94,6 +121,14 @@ class SavedRun:
 
     @classmethod
     def from_path(cls, path: ModelPath) -> "SavedRun":
+        """Resolve a run directory or W&B path into a fully-validated `SavedRun`.
+
+        Reads `run_meta.yaml`, imports the matching experiment module on demand, and
+        validates the raw `target` / `data` blocks against its config types.
+
+        Args:
+            path: Local directory or W&B path containing the run files.
+        """
         files = resolve_run_files(
             path, config_filename=RUN_META_FILENAME, checkpoint_prefix="model"
         )
@@ -129,6 +164,7 @@ class SavedRun:
     # ---------- Rebuild ----------
 
     def build_target(self) -> nn.Module:
+        """Rebuild the target `nn.Module` via the experiment module's `build_target`."""
         return _run_module(self.kind).build_target(self.target_cfg)
 
     def build_loader(
@@ -140,6 +176,7 @@ class SavedRun:
         dist_state: DistributedState | None = None,
         seed: int | None = None,
     ) -> DataLoader[Any]:
+        """Rebuild a `DataLoader` for the requested split via the experiment module."""
         return _run_module(self.kind).build_loader(
             self.target_cfg,
             self.data_cfg,
@@ -151,9 +188,11 @@ class SavedRun:
         )
 
     def make_run_batch(self) -> RunBatch:
+        """Rebuild the `RunBatch` callable via the experiment module's `make_run_batch`."""
         return _run_module(self.kind).make_run_batch(self.target_cfg)
 
     def load_model(self) -> ComponentModel:
+        """Materialize the `ComponentModel` from the saved checkpoint and configs."""
         return load_component_model_from_checkpoint(
             ci_config=self.pd_config.ci_config,
             sigmoid_type=self.pd_config.sigmoid_type,

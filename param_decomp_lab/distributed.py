@@ -25,6 +25,17 @@ from param_decomp.log import logger
 
 
 def init_distributed() -> DistributedState | None:
+    """Bring up the torch process group and populate the cached `DistributedState`.
+
+    Reads ``WORLD_SIZE``, ``RANK``, ``LOCAL_RANK``, ``MASTER_ADDR``, and ``MASTER_PORT``
+    from the environment (as torchrun sets them) and picks the ``nccl`` backend when
+    CUDA is available, else ``gloo``. As a side effect, writes the constructed state
+    into ``param_decomp.distributed._state`` so the core read-only accessors return it.
+
+    Returns:
+        The `DistributedState` for this process, or ``None`` when distributed should
+        not be initialized (see ``_SHOULD_GET_INITIALIZED``).
+    """
     # Import inside the function so we can mutate the cached module-level state.
     import param_decomp.distributed as core_dist
 
@@ -69,7 +80,10 @@ def init_distributed() -> DistributedState | None:
 
 
 def cleanup_distributed() -> None:
-    """Clean up distributed process group and reset cached state."""
+    """Destroy the torch process group and clear the cached `DistributedState`.
+
+    Safe to call when distributed was never initialized.
+    """
     import param_decomp.distributed as core_dist
 
     if is_distributed():
@@ -78,7 +92,7 @@ def cleanup_distributed() -> None:
 
 
 def with_distributed_cleanup[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
-    """Decorator to clean up distributed state after function execution."""
+    """Wrap `fn` so `cleanup_distributed` runs in a ``finally`` block on return/raise."""
 
     @wraps(fn)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
@@ -91,16 +105,21 @@ def with_distributed_cleanup[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
 
 
 def log0(msg: str) -> None:
-    """Log only on rank 0 process.
+    """Log `msg` at info level on rank 0 only.
 
-    Works with both torchrun (RANK env var) and init_distributed() setups.
+    Reads ``RANK`` directly from the environment, so this works before
+    `init_distributed` has been called.
     """
     if int(os.environ.get("RANK", 0)) == 0:
         logger.info(msg)
 
 
 def get_device() -> str:
-    """Get device for current process."""
+    """Return the device string for the current process.
+
+    Falls back to ``"cuda"`` or ``"cpu"`` outside distributed. With ``gloo`` returns
+    ``"cpu"``; with ``nccl`` returns ``"cuda:{local_rank}"``.
+    """
     from param_decomp.distributed import get_distributed_state
 
     state = get_distributed_state()
@@ -112,10 +131,19 @@ def get_device() -> str:
 
 
 def ensure_cached_and_call[**P, T](fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    """Call `fn` on local_rank 0 per node to cache downloads, barrier, then call on all ranks.
+    """Run `fn` once per node to populate caches, barrier, then run on every rank.
 
-    In multi-node setups where /tmp is node-local, this ensures each node downloads once
-    (via local_rank 0) rather than having rank 0 download to a path inaccessible to other nodes.
+    In multi-node setups where ``/tmp`` is node-local, this ensures each node downloads
+    once (via local-rank 0) rather than having global rank 0 download to a path
+    inaccessible to other nodes. Outside distributed, `fn` runs once.
+
+    Args:
+        fn: Callable whose side effect is to populate a node-local cache.
+        *args: Positional args forwarded to `fn`.
+        **kwargs: Keyword args forwarded to `fn`.
+
+    Returns:
+        The result of `fn(*args, **kwargs)` on the current rank.
     """
     if is_distributed():
         if is_local_main_process():

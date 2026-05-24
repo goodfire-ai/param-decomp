@@ -15,17 +15,28 @@ from param_decomp.metrics.context import MetricContext
 
 
 def calc_ci_l_zero(ci: Float[Tensor, "... C"], threshold: float) -> float:
+    """Return the mean number of CI entries above `threshold` per example."""
     return (ci > threshold).float().sum(-1).mean().item()
 
 
 class CI_L0Config(BaseConfig):
+    """Config for `CI_L0`.
+
+    Attributes:
+        type: Discriminator literal for this metric.
+        groups: Optional ``{group_name: [layer_glob, ...]}`` map. Each layer-glob is an
+            fnmatch-style pattern (``*`` -> ``.*``); matching layers' L0s are summed
+            into the group and logged under the group's name.
+        ci_alive_threshold: CI value above which a component counts as active.
+    """
+
     type: Literal["CI_L0"] = "CI_L0"
     groups: dict[str, list[str]] | None
     ci_alive_threshold: float = 0.0
 
 
 class CI_L0(Metric[CI_L0Config]):
-    """L0 metric for CI values."""
+    """Mean L0 of CI values per layer, with optional grouped aggregates."""
 
     log_namespace = "l0"
     short_name = "CI_L0"
