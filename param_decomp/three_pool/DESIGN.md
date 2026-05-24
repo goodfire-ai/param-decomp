@@ -107,6 +107,69 @@ flowchart TD
     B10 -.->|updated V/U| C9
 ```
 
+## Synchronized timeline (one step T, all three pools share a vertical axis)
+
+`sequenceDiagram` gives every actor the same vertical time axis, so you can
+read across rows to see what each pool is doing at the same moment. Cross-pool
+arrows are the actual sends. `Note over` annotations cover work that happens
+inside a pool without messaging.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CI as CI pool
+    participant LW as Layerwise pool
+    participant PG as PPGD pool
+
+    Note over CI: A1 · CI fn fwd on H_T → CI_T
+    Note over LW: B1 · target_fwd batch T → L_T (LW rank's slice)
+    Note over PG: C1 · target_fwd batch T → L_T (PPGD rank's slice)
+
+    CI->>LW: A2a · CI_T per-site, owned + LW-rank slice
+    CI->>PG: A2b · CI_T full-model, PPGD-rank slice
+
+    par CI does imp_min + dead-time prefetch
+        Note over CI: A3 · imp_min loss → g_CI_imp (leaf grad)
+        Note over CI: A4 · target_fwd batch T+1 → H_T+1 (prefetch)
+    and Layerwise recon
+        Note over LW: B3 · layerwise stoch recon (per owned site, streaming)<br/>→ g_VU_LW owned, g_CI_LW owned/slice
+        Note over LW: B4 · faithfulness (sharded over owned sites)<br/>→ g_VU_faith owned
+    and PPGD recon
+        Note over PG: C3 · PPGD warmup (inner loop owns source updates)
+        Note over PG: C4-C5 · final recon + bwd<br/>→ g_VU_PPGD full, g_CI_PPGD full
+        Note over PG: C6 · sum-reduce g_VU_PPGD within PPGD pool
+    end
+
+    LW->>CI: B5 · g_CI_LW (per-site, per-LW-rank slice)
+    PG->>CI: C8 · g_CI_PPGD (full-model, per-PPGD-rank slice)
+    PG->>LW: C7 · g_VU_PPGD (per-owned-site, to owning LW rank)
+
+    Note over CI: A7 · assemble g_CI_total per CI rank's slice
+    Note over CI: A8 · backward through CI-fn graph
+    Note over CI: A9 · in-pool all-reduce on CI fn grads
+    Note over CI: A10 · AdamW step on CI fn
+
+    Note over LW: B7 · combine V/U grads (LW + faith + PPGD)
+    Note over LW: B8 · in-block all-reduce on V/U grads
+
+    rect rgb(245, 245, 245)
+        Note over CI,PG: ===== step boundary =====<br/>CI starts T+1.A1 (CI fn fwd) immediately;<br/>LW + PPGD use this window to hide V/U opt + V/U ship-back
+    end
+
+    Note over CI: T+1.A1 · CI fn fwd on H_T+1 → CI_T+1
+    Note over LW: B9 · AdamW step on V/U (hidden behind T+1.A1)
+    LW-->>PG: B10/C9 · isend updated V/U → PPGD (hidden behind T+1.A1)
+
+    CI->>LW: T+1.A2a · CI_T+1 per-site
+    CI->>PG: T+1.A2b · CI_T+1 full-model
+```
+
+The `par` block is where the visible sync shines: all three pools fire in
+parallel and you can see at-a-glance that the recon pools' heavy lifting
+(B3-B4, C3-C5) happens concurrently with CI's dead-time prefetch (A3-A4).
+The `rect` is the step boundary, with the deferred V/U opt + ship-back drawn
+as happening *during* T+1's CI-fn-fwd window.
+
 ## Cross-step pipeline (the overlap that hides the V/U opt step)
 
 ```mermaid
