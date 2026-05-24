@@ -21,6 +21,7 @@ from param_decomp.component_model import ComponentModel
 from param_decomp.distributed import DistributedState, is_main_process
 from param_decomp.log import logger
 from param_decomp.optimize import EvalLoop, optimize
+from param_decomp.two_pool import TwoPoolConfig, optimize_two_pool
 from param_decomp_lab.batch_and_loss_fns import make_run_batch as _make_run_batch
 from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
 from param_decomp_lab.component_model_io import load_component_model
@@ -96,7 +97,7 @@ class HFWeightsInVendored(BaseConfig):
 
     kind: Literal["hf_weights_in_vendored"] = "hf_weights_in_vendored"
     model_class: str  # must expose `from_hf_pretrained`
-    model_name: str   # HF hub id
+    model_name: str  # HF hub id
 
 
 LMTargetSpec = Annotated[
@@ -128,7 +129,11 @@ class LMTargetConfig(BaseConfig):
 class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
     """Full YAML schema for an LM PD run."""
 
-    pass
+    two_pool: TwoPoolConfig | None = None
+    """When set, training runs under the 2-pool strategy
+    (:func:`param_decomp.two_pool.optimize_two_pool`) instead of the single-process
+    :func:`param_decomp.optimize.optimize`. The ``eval`` block is currently ignored
+    on the 2-pool path."""
 
 
 def build_target(target_cfg: LMTargetConfig) -> Any:
@@ -296,8 +301,6 @@ def main(config_path: str | Path) -> None:
         dist_state=dist_state,
         seed=cfg.pd.seed,
     )
-    eval_loop = _build_eval_loop(cfg, device, dist_state)
-
     if is_main_process():
         run_id = generate_run_id("param_decomp")
         out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
@@ -307,17 +310,31 @@ def main(config_path: str | Path) -> None:
         sink = RunSink.silent()
 
     try:
-        optimize(
-            target_model=target_model,
-            train_loader=train_loader,
-            run_batch=make_run_batch(cfg.target),
-            reconstruction_loss=recon_loss_kl,
-            pd_config=cfg.pd,
-            runtime_config=cfg.runtime,
-            sink=sink,
-            cadence=cfg.cadence,
-            eval_loop=eval_loop,
-        )
+        if cfg.two_pool is not None:
+            # 2-pool path: eval not wired through yet — cfg.eval (if set) is ignored.
+            optimize_two_pool(
+                target_model=target_model,
+                train_loader=train_loader,
+                run_batch=make_run_batch(cfg.target),
+                reconstruction_loss=recon_loss_kl,
+                pd_config=cfg.pd,
+                runtime_config=cfg.runtime,
+                two_pool_config=cfg.two_pool,
+                cadence=cfg.cadence,
+                sink=sink,
+            )
+        else:
+            optimize(
+                target_model=target_model,
+                train_loader=train_loader,
+                run_batch=make_run_batch(cfg.target),
+                reconstruction_loss=recon_loss_kl,
+                pd_config=cfg.pd,
+                runtime_config=cfg.runtime,
+                sink=sink,
+                cadence=cfg.cadence,
+                eval_loop=_build_eval_loop(cfg, device, dist_state),
+            )
     finally:
         sink.finish()
 
