@@ -44,11 +44,6 @@ class PretrainInfoResponse(BaseModel):
     topology: TopologyInfo | None
 
 
-def _load_lm_target_lightweight(wandb_path: str) -> LMTargetConfig:
-    """Load just the LM target config from ``run_meta.yaml`` (no checkpoint download)."""
-    return SavedLMRun.cfg_from_path(wandb_path).target
-
-
 def _load_pretrain_configs(pretrain_path: str) -> tuple[dict[str, Any], dict[str, Any]]:
     """Load model config and training config from a pretrain run, config files only."""
     import yaml
@@ -218,7 +213,7 @@ def get_pretrain_info_for_run(wandb_path: str) -> PretrainInfoResponse:
 
     Fetches only config files (no checkpoints) for efficiency.
     """
-    return _get_pretrain_info(_load_lm_target_lightweight(wandb_path))
+    return _get_pretrain_info(SavedLMRun.cfg_from_path(wandb_path).target)
 
 
 @router.get("/loaded")

@@ -7,8 +7,7 @@ from torch.utils.data import DataLoader
 from param_decomp.component_model import ComponentModel
 from param_decomp_lab.adapters.base import DecompositionAdapter
 from param_decomp_lab.autointerp.schemas import ModelMetadata
-from param_decomp_lab.experiments.lm.data import LMDataConfig
-from param_decomp_lab.experiments.lm.run import LMTargetConfig, SavedLMRun
+from param_decomp_lab.experiments.lm.run import SavedLMRun
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
 from param_decomp_lab.topology import TransformerTopology
 
@@ -21,14 +20,6 @@ class PDAdapter(DecompositionAdapter):
     @cached_property
     def pd_run(self) -> SavedLMRun:
         return SavedLMRun.from_path(self._wandb_path)
-
-    @property
-    def lm_target(self) -> LMTargetConfig:
-        return self.pd_run.cfg.target
-
-    @property
-    def lm_data(self) -> LMDataConfig:
-        return self.pd_run.cfg.data
 
     @cached_property
     def component_model(self) -> ComponentModel:
@@ -63,21 +54,20 @@ class PDAdapter(DecompositionAdapter):
     @property
     @override
     def tokenizer_name(self) -> str:
-        return self.lm_data.tokenizer_name
+        return self.pd_run.cfg.data.tokenizer_name
 
     @property
     @override
     def model_metadata(self) -> ModelMetadata:
-        target = self.lm_target
-        data = self.lm_data
+        cfg = self.pd_run.cfg
         return ModelMetadata(
             n_blocks=self._topology.n_blocks,
-            model_class=target.spec.model_class,
-            dataset_name=data.dataset_name,
+            model_class=cfg.target.spec.model_class,
+            dataset_name=cfg.data.dataset_name,
             layer_descriptions={
                 path: self._topology.target_to_canon(path)
                 for path in self.component_model.target_module_paths
             },
-            seq_len=data.max_seq_len,
+            seq_len=cfg.data.max_seq_len,
             decomposition_method="pd",
         )
