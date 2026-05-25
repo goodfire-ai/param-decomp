@@ -187,6 +187,10 @@ def main(smoke: bool = False) -> None:
 
     if smoke:
         cfg_dict = _make_yaml_dict(steps=50, save_every=None, warmup_steps=0)
+        # Quarter the batch for the smoke so it fits without us yet knowing the
+        # memory profile. Once we have a working baseline + train/mem readings,
+        # we can scale back up to the production batch knowingly.
+        cfg_dict["pd"]["batch_size"] = 32
         yaml_path = out_dir / "gpt2_xl_qk_smoke.yaml"
         job_name = "xl-qk-smoke"
         time_limit = "01:00:00"
