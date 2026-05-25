@@ -101,16 +101,66 @@ canon settings.
    runtime-build time from resolved decomposition targets) so per-element grad
    matches single-pool exactly.
 
-**Multi-seed result after both fixes (N=10 each, canon config):**
+**Multi-seed result after grad-clip + faith-scaling fixes (N=10 each, canon
+config):** 1-pool ≡ 2-pool 5×1, delta = -0.009%, t = -1.18 (not significant).
 
-| metric | 1-pool | 2-pool (5×1) | delta | t-stat |
-|--------|--------|--------------|-------|--------|
-| step-0 faith (post-warmup) | 0.010572 ± 0.000002 | 0.010571 ± 0.000003 | -0.000001 | -0.57 |
-| mean(stoch) over training | 0.0866 ± 0.0035 | 0.0905 ± 0.0062 | +0.0039 | +1.72 |
-| step-190 total | 1018600 ± 166 | 1018507 ± 186 | -93 (-0.009%) | -1.18 |
+## 2026-05-25 (RNG sync bug — DDP partners had different V/U init)
 
-Step-0 faith identical to 6 decimal places — warmup now converges to the
-same V/U in both pools. Step-190 total agrees within ~0.01%, t-stat
-well below significance.
+7-way sweep after the previous two fixes showed single-rank-block topologies
+matching 1-pool to 0.01%, but multi-rank-block topologies (3×2, 1×4) still
+drifting up to 1.4%. Diagnosed by logging the pre-clip global grad norm:
+2-pool 1×4 reported 785 at step 0, vs 1-pool's 992 (20% lower).
 
-**Final verdict.** 1-pool ≡ 2-pool 5×1 under the canon config, modulo RNG.
+**Root cause.** ``seed_all_ranks`` was never called before ComponentModel
+construction in 2-pool / 3-pool. The single-pool trainer (
+``param_decomp.optimize.Trainer.__init__``) does this explicitly so DDP
+partners initialize V/U + CI fn from the same RNG state. Between
+``set_seed(pd.seed)`` in ``_fresh_main`` and ``ComponentModel.__init__`` in
+the multi-pool trainers, the dataloader build + distributed setup advance the
+RNG by rank-dependent amounts, so partners initialized with different V/U.
+The in-block grad all-reduce averages grads but cannot bring divergent params
+back into sync — partners stayed at slightly different points in V/U space
+through training, biasing the trajectory.
+
+**Fix:** call ``seed_all_ranks(pd_config.seed)`` immediately before
+``ComponentModel(...)`` in both ``TwoPoolTrainer.__init__`` and
+``ThreePoolTrainer.__init__``, then ``seed_per_rank(pd_config.seed)``
+afterwards (matches single-pool's order).
+
+**Final 7-way (N=1, canon config, all 3 fixes):**
+
+| variant | step-190 total | rel vs 1pool |
+|---------|---------------:|-------------:|
+| 1pool DDP=2 | 1018578 | (ref) |
+| 2pool 5×1 | 1018717 | +0.014% |
+| 2pool poolb2 | 1018716 | +0.014% |
+| 2pool nperblock2 (3×2) | 1018781 | +0.020% |
+| 2pool 1block4r (1×4) | 1018512 | -0.007% |
+| 3pool 1×4 | 1018505 | -0.007% |
+| 3pool 2blocks (2×2) | 1018411 | -0.016% |
+
+All within ±0.02% of 1-pool. Bias direction is RNG-consistent (mixed signs,
+not systematic).
+
+**Final multi-seed verdict (N=10, 1pool DDP=2 vs 2pool 5×1):**
+
+| metric | 1-pool | 2-pool 5×1 | delta | t |
+|--------|--------|------------|-------|---|
+| step-0 faith (post-warmup) | 0.010572 ± 2e-6 | 0.010572 ± 2e-6 | -1e-7 | -0.10 |
+| step-190 total | 1018600 ± 166 | 1018557 ± 142 | -43 (-0.004%) | -0.63 |
+
+t-stat well below 1 → statistically indistinguishable. Warmup converges to
+identical V/U; training trajectory is equivalent up to RNG variance.
+
+**Summary of bugs surfaced and fixed:**
+
+1. Per-loss aggregator AVG'd per-rank scalars across pool, wrong for
+   disjoint-site sums and ratios. → raw `(num, den)` + cross-block SUM.
+2. `grad_clip_norm` silently ignored in 2-pool / 3-pool.
+   → `cross_pool_clip_grad_norm` with `/n_replicas` dedup.
+3. `_faithfulness_loss` divided by `numel_owned`, not `numel_global`.
+   → divide by `numel_global` so per-element grad matches single-pool.
+4. RNG diverged across DDP partners before V/U init.
+   → `seed_all_ranks` before ComponentModel construction.
+
+**Ready to scale to GPT-2 XL.**
