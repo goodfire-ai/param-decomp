@@ -1,7 +1,7 @@
 """Language-model PD experiment: YAML -> `optimize()` glue, plus the saved-run reload class.
 
 The fresh-run path (`main`) and the reload path (`SavedLMRun`) both consume the
-module-level `build_target` / `build_loader` / `make_run_batch` functions so there's
+module-level `build_target` / `build_lm_loader` / `make_run_batch` functions so there's
 no duplication between them. Run via ``pd-lm path/to/config.yaml``; multi-process
 (DDP) entry via ``torchrun`` of the same module.
 """
@@ -131,7 +131,7 @@ def build_target(target_cfg: LMTargetConfig) -> Any:
     return target_model
 
 
-def build_loader(
+def build_lm_loader(
     target_cfg: LMTargetConfig,
     data_cfg: LMDataConfig,
     *,
@@ -165,6 +165,18 @@ def make_run_batch(target_cfg: LMTargetConfig) -> RunBatch:
     return _make_run_batch(target_cfg.output_extract)
 
 
+def load_lm_cfg(path: ModelPath) -> LMExperimentConfig:
+    """Load just ``run_meta.yaml`` as a validated `LMExperimentConfig`.
+
+    Skips checkpoint resolution — useful for app endpoints that only need config
+    introspection (e.g. the run picker showing architecture summaries) and want to
+    avoid the W&B checkpoint download that `SavedLMRun.from_path` triggers.
+    """
+    return LMExperimentConfig.from_file(
+        resolve_config_path(path, config_filename=RUN_META_FILENAME)
+    )
+
+
 @dataclass(frozen=True)
 class SavedLMRun:
     """Handle to a completed LM PD run on disk or in W&B.
@@ -188,18 +200,6 @@ class SavedLMRun:
             checkpoint_path=files.checkpoint_path,
         )
 
-    @classmethod
-    def cfg_from_path(cls, path: ModelPath) -> LMExperimentConfig:
-        """Load just ``run_meta.yaml`` without resolving the checkpoint.
-
-        Useful for app endpoints that only need config introspection (e.g. the run
-        picker showing architecture summaries) and want to avoid the W&B checkpoint
-        download that ``from_path`` triggers.
-        """
-        return LMExperimentConfig.from_file(
-            resolve_config_path(path, config_filename=RUN_META_FILENAME)
-        )
-
     def load_model(self) -> ComponentModel:
         """Materialize the `ComponentModel` from the saved checkpoint."""
         return load_component_model(
@@ -207,26 +207,6 @@ class SavedLMRun:
             checkpoint_path=self.checkpoint_path,
             target_model=build_target(self.cfg.target),
             run_batch=make_run_batch(self.cfg.target),
-        )
-
-    def build_loader(
-        self,
-        *,
-        split: Literal["train", "eval"],
-        device: str,
-        batch_size: int,
-        dist_state: DistributedState | None = None,
-        seed: int | None = None,
-    ) -> DataLoader[Any]:
-        """Rebuild a `DataLoader` for the requested split."""
-        return build_loader(
-            self.cfg.target,
-            self.cfg.data,
-            split=split,
-            device=device,
-            batch_size=batch_size,
-            dist_state=dist_state,
-            seed=seed,
         )
 
 
@@ -252,7 +232,7 @@ def main(config_path: str | Path) -> None:
 
     target_model = build_target(cfg.target)
 
-    train_loader = build_loader(
+    train_loader = build_lm_loader(
         cfg.target,
         cfg.data,
         split="train",
@@ -295,7 +275,7 @@ def _build_eval_loop(
     """Build the optional `EvalLoop` from `cfg.eval`, returning None when eval is disabled."""
     if cfg.eval is None:
         return None
-    eval_loader = build_loader(
+    eval_loader = build_lm_loader(
         cfg.target,
         cfg.data,
         split="eval",

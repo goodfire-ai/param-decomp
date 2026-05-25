@@ -104,8 +104,8 @@ class <Name>ExperimentConfig(ExperimentConfig[<Name>TargetConfig, <Name>DataConf
     pass
 
 def build_target(target_cfg) -> nn.Module: ...
-def build_loader(target_cfg, data_cfg, *, split: Literal["train", "eval"], device: str,
-                 batch_size: int, dist_state=None, seed=None) -> DataLoader: ...
+def build_<name>_loader(target_cfg, data_cfg, *, split: Literal["train", "eval"], device: str,
+                       batch_size: int, dist_state=None, seed=None) -> DataLoader: ...
 def make_run_batch(target_cfg) -> RunBatch: ...
 
 @dataclass(frozen=True)
@@ -116,8 +116,13 @@ class Saved<Name>Run:
     @classmethod
     def from_path(cls, path: ModelPath) -> "Saved<Name>Run": ...
     def load_model(self) -> ComponentModel: ...
-    def build_loader(self, *, split, device, batch_size, ...) -> DataLoader: ...
 ```
+
+The loader function is per-experiment-named (`build_lm_loader` / `build_tms_loader` /
+`build_resid_mlp_loader`) so callers that cross-import don't shadow each other. The
+reload class deliberately does *not* re-export `build_<name>_loader` as a method:
+post-processing code calls the free function directly with `pd_run.cfg.target` and
+`pd_run.cfg.data` so the indirection isn't paying for itself.
 
 `main()` calls the module-level functions directly; the `Saved<Name>Run` reload class
 delegates to those same functions, so there's no duplication between "fresh run from
@@ -168,7 +173,7 @@ pd-lm         path/to/config.yaml
 ```
 
 For a brand-new experiment, drop a `run.py` exposing the
-`<Name>ExperimentConfig`, the three `build_target` / `build_loader` /
+`<Name>ExperimentConfig`, the three `build_target` / `build_<name>_loader` /
 `make_run_batch` functions, and a `Saved<Name>Run` reload class next to a YAML
 config. Either call its `main(...)` directly or wire it up to a console script in
 `param_decomp_lab/pyproject.toml`. No central registry needs touching — post-processing
@@ -347,7 +352,7 @@ This repository implements methods from two key research papers on parameter dec
 
 **In-repo experiment scripts** (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`)
 each declare a `<Experiment>ExperimentConfig` subclass of `ExperimentConfig[T, D]`, the
-three module-level `build_target` / `build_loader` / `make_run_batch` functions, and a
+three module-level `build_target` / `build_<name>_loader` / `make_run_batch` functions, and a
 `Saved<Name>Run` frozen dataclass. `main()` parses the YAML, calls the build functions,
 writes `cfg.to_file(out_dir / "run_meta.yaml")`, then `optimize()`. Reload-side callers
 import the concrete `Saved<Name>Run` class for the experiment they're operating on (e.g.

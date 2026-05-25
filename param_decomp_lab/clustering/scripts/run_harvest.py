@@ -20,7 +20,7 @@ from param_decomp_lab.clustering.harvest_config import HarvestConfig
 from param_decomp_lab.clustering.memberships import collect_memberships
 from param_decomp_lab.clustering.paths import clustering_harvest_dir, new_harvest_id
 from param_decomp_lab.distributed import get_device
-from param_decomp_lab.experiments.lm.run import SavedLMRun
+from param_decomp_lab.experiments.lm.run import SavedLMRun, build_lm_loader
 
 os.environ["WANDB_QUIET"] = "true"
 
@@ -35,7 +35,9 @@ def harvest(config: HarvestConfig) -> Path:
 
     device = get_device()
     pd_run = SavedLMRun.from_path(config.model_path)
-    dataloader = pd_run.build_loader(
+    dataloader = build_lm_loader(
+        pd_run.cfg.target,
+        pd_run.cfg.data,
         split="train",
         device=device,
         batch_size=config.batch_size,

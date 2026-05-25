@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 from param_decomp.component_model import ComponentModel
 from param_decomp_lab.adapters.base import DecompositionAdapter
 from param_decomp_lab.autointerp.schemas import ModelMetadata
-from param_decomp_lab.experiments.lm.run import SavedLMRun
+from param_decomp_lab.experiments.lm.run import SavedLMRun, build_lm_loader
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
 from param_decomp_lab.topology import TransformerTopology
 
@@ -47,9 +47,15 @@ class PDAdapter(DecompositionAdapter):
 
     @override
     def dataloader(self, batch_size: int) -> DataLoader[Tensor]:
-        # PDAdapter is LM-only; the LM build_loader ignores `device` because batches are
+        # PDAdapter is LM-only; build_lm_loader ignores `device` because batches are
         # moved per-step.
-        return self.pd_run.build_loader(split="train", device="cpu", batch_size=batch_size)
+        return build_lm_loader(
+            self.pd_run.cfg.target,
+            self.pd_run.cfg.data,
+            split="train",
+            device="cpu",
+            batch_size=batch_size,
+        )
 
     @property
     @override

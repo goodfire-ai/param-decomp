@@ -26,7 +26,7 @@ from param_decomp_lab.dataset_attributions.accumulator import AttributionHarvest
 from param_decomp_lab.dataset_attributions.config import DatasetAttributionConfig
 from param_decomp_lab.dataset_attributions.storage import DatasetAttributionStorage
 from param_decomp_lab.distributed import get_device
-from param_decomp_lab.experiments.lm.run import SavedLMRun
+from param_decomp_lab.experiments.lm.run import SavedLMRun, build_lm_loader
 from param_decomp_lab.harvest.repo import HarvestRepo
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
 from param_decomp_lab.topology import TransformerTopology, get_sources_by_target
@@ -79,8 +79,12 @@ def harvest_attributions(
     model.eval()
 
     pd_config = pd_run.cfg.pd
-    train_loader = pd_run.build_loader(
-        split="train", device=str(device), batch_size=config.batch_size
+    train_loader = build_lm_loader(
+        pd_run.cfg.target,
+        pd_run.cfg.data,
+        split="train",
+        device=str(device),
+        batch_size=config.batch_size,
     )
 
     # Get gradient connectivity

@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from param_decomp.log import logger
 from param_decomp_lab.app.backend.routers.pretrain_info import _get_pretrain_info
 from param_decomp_lab.app.backend.utils import log_errors
-from param_decomp_lab.experiments.lm.run import SavedLMRun
+from param_decomp_lab.experiments.lm.run import load_lm_cfg
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
 
@@ -58,7 +58,7 @@ def _check_availability(run_id: str) -> DataAvailability:
 def _get_architecture_summary(wandb_path: str) -> str | None:
     """Get a short architecture label for a run. Returns None on failure."""
     try:
-        info = _get_pretrain_info(SavedLMRun.cfg_from_path(wandb_path).target)
+        info = _get_pretrain_info(load_lm_cfg(wandb_path).target)
         parts: list[str] = []
         if info.dataset_short:
             parts.append(info.dataset_short)

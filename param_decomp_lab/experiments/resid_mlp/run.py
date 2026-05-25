@@ -1,7 +1,7 @@
 """Residual MLP PD experiment: YAML -> `optimize()` glue, plus the saved-run reload class.
 
 The fresh-run path (`main`) and the reload path (`SavedResidMLPRun`) both consume the
-module-level `build_target` / `build_loader` / `make_run_batch` functions so there's
+module-level `build_target` / `build_resid_mlp_loader` / `make_run_batch` functions so there's
 no duplication between them. Run via ``pd-resid-mlp path/to/config.yaml``.
 """
 
@@ -72,7 +72,7 @@ def build_target(target_cfg: ResidMLPTargetConfig) -> ResidMLP:
     return target_model
 
 
-def build_loader(
+def build_resid_mlp_loader(
     target_cfg: ResidMLPTargetConfig,
     data_cfg: ResidMLPDataConfig,
     *,
@@ -143,26 +143,6 @@ class SavedResidMLPRun:
             run_batch=make_run_batch(self.cfg.target),
         )
 
-    def build_loader(
-        self,
-        *,
-        split: Literal["train", "eval"],
-        device: str,
-        batch_size: int,
-        dist_state: DistributedState | None = None,
-        seed: int | None = None,
-    ) -> DataLoader[Any]:
-        """Rebuild a `DataLoader` for the requested split."""
-        return build_loader(
-            self.cfg.target,
-            self.cfg.data,
-            split=split,
-            device=device,
-            batch_size=batch_size,
-            dist_state=dist_state,
-            seed=seed,
-        )
-
 
 def main(config_path: str | Path) -> None:
     """Run a ResidMLP PD experiment end-to-end from a YAML config.
@@ -182,7 +162,7 @@ def main(config_path: str | Path) -> None:
 
     target_model = build_target(cfg.target).to(device)
 
-    train_loader = build_loader(
+    train_loader = build_resid_mlp_loader(
         cfg.target, cfg.data, split="train", device=device, batch_size=cfg.pd.batch_size
     )
     eval_loop = _build_eval_loop(cfg, device)
@@ -213,7 +193,7 @@ def _build_eval_loop(cfg: ResidMLPExperimentConfig, device: str) -> EvalLoop | N
     if cfg.eval is None:
         return None
     return EvalLoop(
-        loader=build_loader(
+        loader=build_resid_mlp_loader(
             cfg.target, cfg.data, split="eval", device=device, batch_size=cfg.eval.batch_size
         ),
         metrics=[EVAL_METRIC_CLASSES[m.type](m) for m in cfg.eval.metrics],
