@@ -217,10 +217,10 @@ class _HFGpt2PathSchema(_PathSchema):
 def get_path_schema(model: nn.Module) -> _PathSchema:
     from transformers.models.gpt2 import GPT2LMHeadModel
 
-    from param_decomp_lab.pretrain.models.gpt2 import GPT2
-    from param_decomp_lab.pretrain.models.gpt2_simple import GPT2Simple
-    from param_decomp_lab.pretrain.models.llama_simple import LlamaSimple
-    from param_decomp_lab.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
+    from param_decomp_lab.experiments.lm.pretrain.models.gpt2 import GPT2
+    from param_decomp_lab.experiments.lm.pretrain.models.gpt2_simple import GPT2Simple
+    from param_decomp_lab.experiments.lm.pretrain.models.llama_simple import LlamaSimple
+    from param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
 
     match model:
         case LlamaSimple():

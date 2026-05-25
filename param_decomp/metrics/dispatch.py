@@ -58,8 +58,14 @@ def instantiate_loss_metrics(
 ) -> dict[str, Metric[Any]]:
     """Instantiate and bind one `Metric` per entry in `pd_config.loss_metrics`.
 
-    Returned dict is keyed by each config's `type` literal (e.g. `"FaithfulnessLoss"`);
-    duplicates are rejected.
+    Args:
+        pd_config: The validated PD config; its `loss_metrics` list drives instantiation.
+        component_model: Live `ComponentModel` passed to each metric's `bind`.
+        device: Device string passed to each metric's `bind`.
+
+    Returns:
+        Dict keyed by each config's `type` literal (e.g. `"FaithfulnessLoss"`).
+        Duplicate `type` literals are rejected.
     """
     instances: dict[str, Metric[Any]] = {}
     for cfg in pd_config.loss_metrics:
@@ -68,3 +74,44 @@ def instantiate_loss_metrics(
         m.bind(model=component_model, device=device)
         instances[cfg.type] = m
     return instances
+
+
+def instantiate_metrics(
+    pd_config: PDConfig,
+    component_model: ComponentModel,
+    device: str,
+    eval_metrics: list[Metric[Any]] | None = None,
+) -> tuple[dict[str, Metric[Any]], dict[str, Metric[Any]]]:
+    """Instantiate loss metrics from config and bind caller-supplied eval metrics.
+
+    Loss metrics are auto-evaluated alongside dedicated eval metrics, so eval metrics
+    whose class name collides with a loss metric are rejected.
+
+    Args:
+        pd_config: The validated PD config; its `loss_metrics` list drives instantiation.
+        component_model: Live `ComponentModel` passed to each metric's `bind`.
+        device: Device string passed to each metric's `bind`.
+        eval_metrics: Caller-instantiated eval `Metric`s. Each is bound here. Pass
+            `None` to skip eval entirely.
+
+    Returns:
+        `(loss_instances, eval_instances)` — `loss_instances` are just the loss metrics
+        (keyed by their `type` literal); `eval_instances` is the full set of metrics
+        evaluated during an eval pass: loss metrics plus the eval-only metrics
+        (keyed by class name).
+    """
+    loss_instances = instantiate_loss_metrics(pd_config, component_model, device)
+    eval_only_instances: dict[str, Metric[Any]] = {}
+    if eval_metrics is not None:
+        for m in eval_metrics:
+            m.bind(model=component_model, device=device)
+            metric_name = type(m).__name__
+            assert metric_name not in eval_only_instances, f"duplicate eval metric {metric_name!r}"
+            eval_only_instances[metric_name] = m
+        overlap = sorted(set(loss_instances) & set(eval_only_instances))
+        assert not overlap, (
+            f"eval metrics overlap with pd_config.loss_metrics: {overlap}. Loss metrics "
+            "are automatically evaluated; remove the duplicates from eval metrics."
+        )
+    eval_instances = {**loss_instances, **eval_only_instances}
+    return loss_instances, eval_instances

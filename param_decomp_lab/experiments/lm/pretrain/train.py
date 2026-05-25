@@ -5,13 +5,13 @@ This script is adapted from https://github.com/goodfire-ai/simple_stories_train
 
 Usage:
 ```bash
-python -m param_decomp_lab.pretrain.train [CONFIG.yaml]
+python -m param_decomp_lab.experiments.lm.pretrain.train [CONFIG.yaml]
 ```
 - CONFIG.yaml contains the training config. If not provided, a default config is used.
 
 To run on multiple GPUs:
 ```bash
-torchrun --standalone --nproc_per_node=N -m param_decomp_lab.pretrain.train ...
+torchrun --standalone --nproc_per_node=N -m param_decomp_lab.experiments.lm.pretrain.train ...
 ```
 where N is the number of GPUs.
 """
@@ -53,9 +53,9 @@ from param_decomp_lab.experiments.lm.data import (
     LMDataConfig,
     create_lm_data_loader,
 )
+from param_decomp_lab.experiments.lm.pretrain.models import MODEL_CLASSES, ModelConfig
 from param_decomp_lab.infra.run_files import ExecutionStamp
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
-from param_decomp_lab.pretrain.models import MODEL_CLASSES, ModelConfig
 
 
 def is_checkpoint_step(step: int) -> bool:

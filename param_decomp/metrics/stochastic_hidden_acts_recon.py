@@ -21,6 +21,12 @@ PerModuleMSE = dict[str, tuple[Float[Tensor, ""], int]]
 
 
 class StochasticHiddenActsReconLossConfig(LossMetricConfig):
+    """Config for `StochasticHiddenActsReconLoss`.
+
+    Attributes:
+        type: Discriminator literal `"StochasticHiddenActsReconLoss"`.
+    """
+
     type: Literal["StochasticHiddenActsReconLoss"] = "StochasticHiddenActsReconLoss"
 
 
@@ -30,7 +36,19 @@ def calc_hidden_acts_mse(
     mask_infos: dict[str, ComponentsMaskInfo],
     target_acts: dict[str, Float[Tensor, "..."]],
 ) -> tuple[PerModuleMSE, Float[Tensor, "..."]]:
-    """Forward with mask_infos and compute per-module MSE against target output activations."""
+    """Forward with `mask_infos` and compute per-module MSE against target output activations.
+
+    Args:
+        model: The component model to run.
+        batch: Raw batch input.
+        mask_infos: Per-module mask info used to mask components on this forward pass.
+        target_acts: Reference output activations keyed by module path.
+
+    Returns:
+        A `(per_module, output)` pair, where `per_module` maps each module path to a
+        `(summed MSE, element count)` tuple, and `output` is the model's top-level
+        output for the masked forward.
+    """
     result = model(batch, mask_infos=mask_infos, cache_type="output")
     per_module: PerModuleMSE = {}
     for layer_name, target in target_acts.items():
@@ -126,7 +144,13 @@ class _HiddenActsAccumulator:
 
 
 class StochasticHiddenActsReconLoss(Metric[StochasticHiddenActsReconLossConfig]):
-    """Reconstruction loss between target and stochastic hidden activations when sampling with stochastic masks."""
+    """Reconstruction loss between target and stochastic hidden activations.
+
+    For each of `ctx.n_mask_samples` draws, samples a stochastic component mask on
+    every layer and accumulates per-module MSE between the masked-model and
+    target-model output activations. `compute()` returns one entry per module plus a
+    combined total.
+    """
 
     log_namespace = "loss"
     slow = True

@@ -18,12 +18,12 @@ def test_run_clustering_happy_path(monkeypatch: Any):
     """Test that run_clustering.py runs without errors."""
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
-        monkeypatch.setattr("param_decomp.settings.PARAM_DECOMP_OUT_DIR", temp_path)
-        monkeypatch.setattr("param_decomp.utils.run_utils.PARAM_DECOMP_OUT_DIR", temp_path)
+        monkeypatch.setattr("param_decomp_lab.infra.settings.PARAM_DECOMP_OUT_DIR", temp_path)
+        monkeypatch.setattr("param_decomp_lab.clustering.paths.PARAM_DECOMP_OUT_DIR", temp_path)
 
         config = ClusteringRunConfig(
             harvest=HarvestConfig(
-                model_path="wandb:goodfire/param-decomp/runs/p-2bbbb3b5",
+                model_path="goodfire/param-decomp/runs/p-2bbbb3b5",
                 batch_size=2,
                 n_tokens=16,
                 n_tokens_per_seq=4,

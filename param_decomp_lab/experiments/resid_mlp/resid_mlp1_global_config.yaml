@@ -41,12 +41,12 @@ pd:
       coeff: 1.0
 cadence:
   train_log_every: 100
-  eval_every: 500
-  slow_eval_every: 5000
-  slow_eval_on_first_step: true
-  n_eval_steps: 100
 eval:
+  n_steps: 100
   batch_size: 2048
+  every: 500
+  slow_every: 5000
+  slow_on_first_step: true
   metrics:
     - type: CIHistograms
       n_batches_accum: 5
@@ -70,7 +70,7 @@ eval:
     - type: CIMeanPerComponent
     - type: StochasticHiddenActsReconLoss
 target:
-  run_path: wandb:goodfire/spd-pre-Sep-2025/runs/pziyck78
+  run_path: goodfire/spd-pre-Sep-2025/runs/pziyck78
 data:
   feature_probability: 0.01
   data_generation_type: at_least_zero_active

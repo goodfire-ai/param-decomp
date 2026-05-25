@@ -10,10 +10,11 @@ from param_decomp_lab.clustering.activations import (
     process_activations,
 )
 from param_decomp_lab.clustering.formatting import DeadComponentFilterStat
+from param_decomp_lab.clustering.harvest_config import HarvestConfig
 from param_decomp_lab.clustering.memberships import (
     MembershipBuilder,
     ProcessedMemberships,
-    collect_memberships_lm,
+    collect_memberships,
 )
 
 
@@ -125,7 +126,7 @@ def test_membership_builder_matches_dense_thresholded_path(
 
 
 @pytest.mark.parametrize("batch_as_dict", [True, False])
-def test_collect_memberships_lm_all_tokens_matches_dense(
+def test_collect_memberships_all_tokens_matches_dense(
     monkeypatch: Any, batch_as_dict: bool
 ) -> None:
     activation_threshold = 0.1
@@ -160,19 +161,22 @@ def test_collect_memberships_lm_all_tokens_matches_dense(
 
     input_ids = torch.tensor([[0, 1, 2, 3], [4, 5, 6, 7]])
     batch = {"input_ids": input_ids} if batch_as_dict else input_ids
-    processed_memberships = collect_memberships_lm(
-        model=None,  # pyright: ignore[reportArgumentType]
-        dataloader=[batch],  # pyright: ignore[reportArgumentType]
+    config = HarvestConfig(
+        model_path="entity/project/runs/p-deadbeef",  # unused: collect_memberships only reads sampling fields
+        batch_size=2,
         n_tokens=6,
         n_tokens_per_seq=None,
-        device="cpu",
-        seed=0,
+        use_all_tokens_per_seq=True,
+        dataset_seed=0,
         activation_threshold=activation_threshold,
         filter_dead_threshold=filter_dead_threshold,
         filter_dead_stat="max",
-        filter_modules=None,
-        preview_n_samples=6,
-        use_all_tokens_per_seq=True,
+    )
+    processed_memberships = collect_memberships(
+        model=None,  # pyright: ignore[reportArgumentType]
+        dataloader=[batch],  # pyright: ignore[reportArgumentType]
+        device="cpu",
+        config=config,
     )
 
     raw_activations = fake_component_activations(None, "cpu", input_ids)

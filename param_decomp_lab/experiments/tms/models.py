@@ -10,7 +10,6 @@ from torch.nn import functional as F
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.schedule import ScheduleConfig
-from param_decomp_lab.experiments.loadable_module import LoadableModule
 from param_decomp_lab.infra.paths import ModelPath
 from param_decomp_lab.infra.run_files import resolve_run_files
 
@@ -74,7 +73,7 @@ class TMSTargetRunInfo:
         )
 
 
-class TMSModel(LoadableModule):
+class TMSModel(nn.Module):
     def __init__(self, config: TMSModelConfig):
         super().__init__()
         self.config = config
@@ -128,7 +127,6 @@ class TMSModel(LoadableModule):
         return tms_model
 
     @classmethod
-    @override
     def from_pretrained(cls, path: ModelPath) -> "TMSModel":
         """Fetch a pretrained model from wandb or a local path to a checkpoint."""
         run_info = TMSTargetRunInfo.from_path(path)

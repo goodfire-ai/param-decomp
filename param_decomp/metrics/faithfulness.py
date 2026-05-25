@@ -11,13 +11,19 @@ from param_decomp.metrics.context import MetricContext
 
 
 class FaithfulnessLossConfig(LossMetricConfig):
+    """Config for `FaithfulnessLoss`.
+
+    Attributes:
+        type: Discriminator literal `"FaithfulnessLoss"`.
+    """
+
     type: Literal["FaithfulnessLoss"] = "FaithfulnessLoss"
 
 
 def faithfulness_loss(
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]],
 ) -> Float[Tensor, ""]:
-    """MSE between target weights and the sum of components, averaged over all parameters."""
+    """Compute MSE between target weights and the sum of components, averaged over all params."""
     assert weight_deltas, "Empty weight deltas"
     device = next(iter(weight_deltas.values())).device
     sum_loss = torch.zeros((), device=device)
@@ -29,7 +35,11 @@ def faithfulness_loss(
 
 
 class FaithfulnessLoss(Metric[FaithfulnessLossConfig]):
-    """MSE between the target weights and the sum of the components."""
+    """MSE between the target weights and the sum of the components.
+
+    Drives components toward reconstructing the target weight matrix when used as a
+    training loss; the loss is averaged across all decomposed parameters.
+    """
 
     log_namespace = "loss"
     short_name = "Faith"

@@ -5,7 +5,7 @@ computes KL, reverse KL, JSD, and CE diff per token, writes JSON.
 
 Usage:
     python -m param_decomp_lab.editing.generate_token_divergence \\
-        wandb:goodfire/spd/s-892f140b \\
+        goodfire/spd/s-892f140b \\
         --edits edits.yaml \\
         --n_tokens 1500 \\
         --out_path /path/to/www/data/kl_tokens.json

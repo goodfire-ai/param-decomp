@@ -32,8 +32,11 @@ from param_decomp.component_model import ComponentModel
 class LossMetricConfig(BaseConfig):
     """Pydantic config for a metric that can also be used as a training loss.
 
-    `coeff` is required when this metric is listed under `loss_metrics` (asserted by PDConfig's
-    field validator) and ignored when an eval-only instance is constructed directly.
+    Attributes:
+        coeff: Multiplier applied to this metric's live loss before it joins the total
+            training loss. Required when this metric is listed under `loss_metrics`
+            (asserted by `PDConfig`'s field validator); ignored when an eval-only
+            instance is constructed directly.
     """
 
     coeff: float | None = None
@@ -45,7 +48,18 @@ MetricResult = (
 
 
 class Metric[TConfig: BaseConfig](ABC):
-    """Abstract base class that every metric must subclass."""
+    """Abstract base class that every metric must subclass.
+
+    Metrics are constructed from their validated config alone; runtime resources are
+    attached later via `bind`. The training loop drives the lifecycle as
+    `bind` -> repeated `update(ctx)` -> `compute()`, with `reset` called inside
+    `bind` and before each eval pass.
+
+    Attributes:
+        log_namespace: Namespace prefix used when emitting this metric's outputs.
+        slow: Whether this metric is gated behind the slow-eval cadence.
+        short_name: Optional short label used in console summaries.
+    """
 
     log_namespace: ClassVar[str]
     slow: ClassVar[bool] = False
@@ -57,9 +71,9 @@ class Metric[TConfig: BaseConfig](ABC):
     def __init__(self, cfg: TConfig) -> None:
         """Initialize the metric from its validated config.
 
-        Construction does not bind runtime resources. The training loop calls
-        :meth:`bind` once with the live `ComponentModel` and device before any
-        other method on the metric is invoked.
+        Construction does not bind runtime resources. The training loop calls `bind`
+        once with the live `ComponentModel` and device before any other method on the
+        metric is invoked.
         """
         self.cfg = cfg
         self._bound = False
@@ -67,9 +81,13 @@ class Metric[TConfig: BaseConfig](ABC):
     def bind(self, *, model: ComponentModel, device: str) -> None:
         """Attach the component model and device, then call `reset()`.
 
-        Called by the training loop after the `ComponentModel` is constructed. Subclasses
-        that need additional bind-time setup (e.g. resolving module paths against the model)
-        should override and call `super().bind(...)` first.
+        Called by the training loop after the `ComponentModel` is constructed.
+        Subclasses that need additional bind-time setup (e.g. resolving module paths
+        against the model) should override and call `super().bind(...)` first.
+
+        Args:
+            model: The live `ComponentModel` this metric will observe.
+            device: Device string used for accumulators and any other allocated state.
         """
         assert not self._bound, f"{type(self).__name__} is already bound"
         self.model = model
@@ -81,10 +99,10 @@ class Metric[TConfig: BaseConfig](ABC):
     def reset(self) -> None:
         """Clear accumulated state before an evaluation pass.
 
-        Stateless metrics may implement this as a no-op. Stateful metrics should reset counters,
-        sums, cached examples, plots, or adversarial eval state so a subsequent `compute()` only
-        reflects batches processed after this call. Called automatically inside `bind()` to
-        initialise device-typed accumulators.
+        Stateless metrics may implement this as a no-op. Stateful metrics should reset
+        counters, sums, cached examples, plots, or adversarial eval state so a
+        subsequent `compute()` only reflects batches processed after this call. Called
+        automatically inside `bind()` to initialise device-typed accumulators.
         """
         ...
 
@@ -92,12 +110,17 @@ class Metric[TConfig: BaseConfig](ABC):
     def update(self, ctx: Any) -> Tensor | None:
         """Process one batch from the metric context and update metric state.
 
-        Return the per-batch scalar when one exists. For loss-capable metrics, that scalar is the
-        live loss used for backprop. Metrics that only accumulate evaluation state should return
-        None.
+        Loss-capable metrics must call `.detach()` before adding tensors to
+        accumulators; otherwise the autograd graph is retained across steps and leaks
+        memory.
 
-        Loss-capable metrics must call `.detach()` before adding tensors to accumulators;
-        otherwise the autograd graph is retained across steps and leaks memory.
+        Args:
+            ctx: The per-step `MetricContext` bundle.
+
+        Returns:
+            The per-batch scalar when one exists. For loss-capable metrics, that scalar
+            is the live loss used for backprop. Metrics that only accumulate evaluation
+            state should return None.
         """
         ...
 
@@ -109,19 +132,20 @@ class Metric[TConfig: BaseConfig](ABC):
     def before_backward(self, live_loss: Tensor | None) -> None:
         """Hook called for each loss metric right before `total_loss.backward()`.
 
-        Default is a no-op. Override when a metric needs to extract gradients before the
-        outer backward consumes them — e.g. `PersistentPGDReconLoss` uses this to grab
-        source gradients with `retain_graph=True` before the outer step.
+        Default is a no-op. Override when a metric needs to extract gradients before
+        the outer backward consumes them — e.g. `PersistentPGDReconLoss` uses this to
+        grab source gradients with `retain_graph=True` before the outer step.
 
-        `live_loss` is whatever this metric's `update()` returned for the current batch
-        (or `None` if the metric was gated off this step).
+        Args:
+            live_loss: Whatever this metric's `update()` returned for the current batch,
+                or `None` if the metric was gated off this step.
         """
         del live_loss
 
     def after_backward(self) -> None:  # noqa: B027 — intentional no-op default
         """Hook called for each loss metric right after `total_loss.backward()`.
 
-        Default is a no-op. Override when a metric needs to step internal state coupled
-        to the outer backward — e.g. `PersistentPGDReconLoss` steps its adversarial
-        sources here.
+        Default is a no-op. Override when a metric needs to step internal state
+        coupled to the outer backward — e.g. `PersistentPGDReconLoss` steps its
+        adversarial sources here.
         """

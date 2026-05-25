@@ -13,11 +13,21 @@ from param_decomp_lab.eval_metrics.plotting import plot_ci_values_histograms
 
 
 class CIHistogramsConfig(BaseConfig):
+    """Config for `CIHistograms`.
+
+    Attributes:
+        type: Discriminator literal for this metric.
+        n_batches_accum: Max number of batches to accumulate before freezing; ``None``
+            accumulates every batch in the eval pass.
+    """
+
     type: Literal["CIHistograms"] = "CIHistograms"
     n_batches_accum: int | None
 
 
 class CIHistograms(Metric[CIHistogramsConfig]):
+    """Per-layer histograms of CI values (lower-leaky and pre-sigmoid)."""
+
     log_namespace = "figures"
     slow = True
     short_name = "CIHist"

@@ -14,6 +14,14 @@ from param_decomp.metrics.pgd_utils import PGDConfig, pgd_masked_recon_loss_upda
 
 
 class PGDReconSubsetLossConfig(PGDConfig):
+    """Config for `PGDReconSubsetLoss`.
+
+    Attributes:
+        type: Discriminator literal `"PGDReconSubsetLoss"`.
+        routing: Subset-routing strategy that selects which layers receive masks on
+            each forward.
+    """
+
     type: Literal["PGDReconSubsetLoss"] = "PGDReconSubsetLoss"
     routing: Annotated[
         SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
@@ -21,8 +29,11 @@ class PGDReconSubsetLossConfig(PGDConfig):
 
 
 class PGDReconSubsetLoss(Metric[PGDReconSubsetLossConfig]):
-    """Recon loss when masking with adversarially-optimized values and routing to subsets of
-    component layers."""
+    """Recon loss with adversarially-optimized masks routed to subsets of component layers.
+
+    Runs `cfg.n_steps` of per-step PGD on fresh adversarial sources each batch, with
+    masks applied only on a routed subset of layers (per `cfg.routing`).
+    """
 
     log_namespace = "loss"
     short_name = "PGDReconSub"

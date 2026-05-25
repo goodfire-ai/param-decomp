@@ -2,11 +2,17 @@ from typing import Annotated
 
 from pydantic import Field
 
-from param_decomp_lab.pretrain.models.gpt2 import GPT2, GPT2Config
-from param_decomp_lab.pretrain.models.gpt2_simple import GPT2Simple, GPT2SimpleConfig
-from param_decomp_lab.pretrain.models.llama import Llama, LlamaConfig
-from param_decomp_lab.pretrain.models.llama_simple import LlamaSimple, LlamaSimpleConfig
-from param_decomp_lab.pretrain.models.llama_simple_mlp import LlamaSimpleMLP, LlamaSimpleMLPConfig
+from param_decomp_lab.experiments.lm.pretrain.models.gpt2 import GPT2, GPT2Config
+from param_decomp_lab.experiments.lm.pretrain.models.gpt2_simple import GPT2Simple, GPT2SimpleConfig
+from param_decomp_lab.experiments.lm.pretrain.models.llama import Llama, LlamaConfig
+from param_decomp_lab.experiments.lm.pretrain.models.llama_simple import (
+    LlamaSimple,
+    LlamaSimpleConfig,
+)
+from param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp import (
+    LlamaSimpleMLP,
+    LlamaSimpleMLPConfig,
+)
 
 # Discriminated union for model configs - Pydantic auto-selects based on model_type
 ModelConfig = Annotated[

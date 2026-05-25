@@ -1,14 +1,11 @@
 """Shared config schema for in-repo experiment YAMLs.
 
 Each experiment subclasses `ExperimentConfig` to fix the concrete `target` / `data` types
-and parses its YAML with `<Experiment>Config.from_file(path)`. `save_run_meta` persists
-the resolved config under `run_meta.yaml`; `SavedRun` reads it back.
+and parses its YAML with `<Experiment>Config.from_file(path)`. The resolved config is
+persisted as ``run_meta.yaml`` via `BaseConfig.to_file` and rebuilt on reload by the
+matching per-experiment ``SavedXRun`` class.
 """
 
-from pathlib import Path
-from typing import Any
-
-import yaml
 from pydantic import Field, PositiveInt
 
 from param_decomp.base_config import BaseConfig
@@ -19,13 +16,23 @@ RUN_META_FILENAME = "run_meta.yaml"
 
 
 class EvalConfig(BaseConfig):
-    """Eval-loader batch size + the list of eval `Metric` configs to instantiate.
+    """Eval-pass settings consumed by `EvalLoop`.
 
-    Note: how many batches per eval call lives on `Cadence.n_eval_steps` since the
-    trainer owns that loop count.
+    Attributes:
+        batch_size: Loader batch size for the eval split.
+        n_steps: Number of batches to consume per eval tick.
+        every: Run eval every N optimizer steps.
+        slow_every: Run the slow-eval subset every N optimizer steps; must be a multiple
+            of `every`.
+        slow_on_first_step: If True, also run slow-eval metrics on the first step.
+        metrics: Discriminated-union eval metric configs to instantiate.
     """
 
     batch_size: PositiveInt
+    n_steps: PositiveInt
+    every: PositiveInt
+    slow_every: PositiveInt
+    slow_on_first_step: bool = True
     metrics: list[AnyEvalMetricConfig] = Field(default_factory=list)
 
 
@@ -36,6 +43,16 @@ class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
 
         class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
             pass
+
+    Omit the `eval:` block to skip eval entirely.
+
+    Attributes:
+        pd: PD algorithm config.
+        runtime: Compute-substrate config (autocast, device, DP).
+        cadence: Train-log + checkpoint cadence.
+        target: Per-experiment target-model config.
+        data: Per-experiment data config.
+        eval: Optional eval-pass config; `None` skips eval entirely.
     """
 
     pd: PDConfig
@@ -43,23 +60,4 @@ class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
     cadence: Cadence
     target: T
     data: D
-    eval: EvalConfig
-
-
-def save_run_meta(
-    out_dir: Path | None,
-    *,
-    experiment_name: str,
-    cfg: ExperimentConfig[Any, Any],
-) -> None:
-    """Write `{out_dir}/run_meta.yaml`: the resolved `ExperimentConfig` plus the
-    `experiment_name` discriminator used by `SavedRun` to find the experiment module.
-
-    Skipped when `out_dir` is None (non-main ranks / silent sinks).
-    """
-    if out_dir is None:
-        return
-    out_dir.mkdir(parents=True, exist_ok=True)
-    payload = {"experiment": experiment_name, **cfg.model_dump(mode="json")}
-    with open(out_dir / RUN_META_FILENAME, "w") as f:
-        yaml.dump(payload, f, default_flow_style=False, sort_keys=False)
+    eval: EvalConfig | None = None

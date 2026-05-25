@@ -18,15 +18,15 @@ def main(
     job_name: str = "pd-pretrain",
     local: bool = False,
 ) -> None:
-    """Submit pretraining job to SLURM or run locally.
+    """Submit a pretraining job to SLURM or run it locally.
 
     Args:
-        config_path: Path to training config YAML file
-        n_gpus: Number of GPUs to use
-        partition: SLURM partition
-        time: SLURM time limit
-        job_name: SLURM job name
-        local: If True, run locally instead of submitting to SLURM
+        config_path: Path to the training config YAML file.
+        n_gpus: Number of GPUs to use.
+        partition: SLURM partition.
+        time: SLURM time limit.
+        job_name: SLURM job name.
+        local: Run locally instead of submitting to SLURM.
     """
     config_path_resolved = Path(config_path)
     assert config_path_resolved.exists(), f"Config not found: {config_path}"
@@ -38,18 +38,28 @@ def main(
 
 
 def _run_local(config_path: Path, n_gpus: int) -> None:
-    """Run training locally."""
+    """Run training in the current shell via ``torchrun`` (multi-GPU) or ``python -m`` (single).
+
+    Args:
+        config_path: Path to the training config YAML file.
+        n_gpus: Number of GPUs; ``> 1`` launches ``torchrun``.
+    """
     if n_gpus > 1:
         cmd = [
             "torchrun",
             "--standalone",
             f"--nproc_per_node={n_gpus}",
             "-m",
-            "param_decomp_lab.pretrain.train",
+            "param_decomp_lab.experiments.lm.pretrain.train",
             str(config_path),
         ]
     else:
-        cmd = [sys.executable, "-m", "param_decomp_lab.pretrain.train", str(config_path)]
+        cmd = [
+            sys.executable,
+            "-m",
+            "param_decomp_lab.experiments.lm.pretrain.train",
+            str(config_path),
+        ]
 
     print(f"Running: {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
@@ -62,7 +72,18 @@ def _submit_slurm(
     time: str,
     job_name: str,
 ) -> None:
-    """Submit job to SLURM."""
+    """Generate a SLURM batch script for the training command and submit it via ``sbatch``.
+
+    Creates an ``ExecutionStamp`` (with a git snapshot for reproducibility) and wraps
+    a ``torchrun`` invocation of ``param_decomp_lab.experiments.lm.pretrain.train``.
+
+    Args:
+        config_path: Path to the training config YAML file.
+        n_gpus: Number of GPUs for the SLURM allocation.
+        partition: SLURM partition.
+        time: SLURM time limit.
+        job_name: SLURM job name.
+    """
     SLURM_LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Create git snapshot for reproducibility
@@ -71,7 +92,7 @@ def _submit_slurm(
     logger.info(f"Snapshot ref: {execution_stamp.snapshot_ref}")
 
     # Build the training command
-    train_cmd = f"torchrun --standalone --nproc_per_node={n_gpus} -m param_decomp_lab.pretrain.train {config_path}"
+    train_cmd = f"torchrun --standalone --nproc_per_node={n_gpus} -m param_decomp_lab.experiments.lm.pretrain.train {config_path}"
 
     config = SlurmConfig(
         job_name=job_name,

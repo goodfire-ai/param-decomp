@@ -11,15 +11,13 @@ import torch
 import wandb
 from matplotlib import collections as mc
 from torch import Tensor, nn
+from torch.utils.data import DataLoader
 from tqdm import tqdm, trange
 
 from param_decomp.log import logger
 from param_decomp.schedule import ScheduleConfig, get_scheduled_value
 from param_decomp_lab.distributed import get_device
-from param_decomp_lab.experiments.synthetic_data import (
-    DatasetGeneratedDataLoader,
-    SparseFeatureDataset,
-)
+from param_decomp_lab.experiments.tms.data import SparseFeatureDataset
 from param_decomp_lab.experiments.tms.models import TMSModel, TMSModelConfig, TMSTrainConfig
 from param_decomp_lab.infra.run_files import ExecutionStamp, save_file
 from param_decomp_lab.seed import set_seed
@@ -27,7 +25,7 @@ from param_decomp_lab.seed import set_seed
 
 def train(
     model: TMSModel,
-    dataloader: DatasetGeneratedDataLoader[tuple[Tensor, Tensor]],
+    dataloader: DataLoader[tuple[Tensor, Tensor]],
     log_wandb: bool,
     importance: float,
     steps: int,
@@ -130,7 +128,7 @@ def plot_cosine_similarity_distribution(
 
 def get_model_and_dataloader(
     config: TMSTrainConfig, device: str
-) -> tuple[TMSModel, DatasetGeneratedDataLoader[tuple[Tensor, Tensor]]]:
+) -> tuple[TMSModel, DataLoader[tuple[Tensor, Tensor]]]:
     model = TMSModel(config=config.tms_model_config)
     model.to(device)
     if (
@@ -149,11 +147,12 @@ def get_model_and_dataloader(
         n_features=config.tms_model_config.n_features,
         feature_probability=config.feature_probability,
         device=device,
+        batch_size=config.batch_size,
         data_generation_type=config.data_generation_type,
         value_range=(0.0, 1.0),
         synced_inputs=config.synced_inputs,
     )
-    dataloader = DatasetGeneratedDataLoader(dataset, batch_size=config.batch_size)
+    dataloader = DataLoader(dataset, batch_size=None)
     return model, dataloader
 
 

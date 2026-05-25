@@ -23,6 +23,14 @@ from param_decomp.torch_helpers import get_obj_device
 
 
 class StochasticReconSubsetLossConfig(LossMetricConfig):
+    """Config for `StochasticReconSubsetLoss`.
+
+    Attributes:
+        type: Discriminator literal `"StochasticReconSubsetLoss"`.
+        routing: Subset-routing strategy that selects which layers receive stochastic
+            masks on each forward pass.
+    """
+
     type: Literal["StochasticReconSubsetLoss"] = "StochasticReconSubsetLoss"
     routing: Annotated[
         SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
@@ -71,7 +79,7 @@ def stochastic_recon_subset_loss(
     routing: SubsetRoutingType,
     reconstruction_loss: ReconstructionLoss,
 ) -> Float[Tensor, ""]:
-    """Pure compute helper preserved for direct callers (tests, notebooks)."""
+    """Compute stochastic subset recon loss directly (helper for tests/notebooks)."""
     sum_loss, n = _stochastic_recon_subset_loss_update(
         model=model,
         sampling=sampling,
@@ -87,7 +95,12 @@ def stochastic_recon_subset_loss(
 
 
 class StochasticReconSubsetLoss(Metric[StochasticReconSubsetLossConfig]):
-    """Recon loss when sampling with stochastic masks and routing to subsets of component layers."""
+    """Recon loss when sampling stochastic masks and routing to subsets of component layers.
+
+    Each sample draws stochastic component masks on a routed subset of layers (per
+    `cfg.routing`) and forwards the whole batch through that masked model; results are
+    summed across `ctx.n_mask_samples` draws.
+    """
 
     log_namespace = "loss"
     short_name = "StochReconSub"

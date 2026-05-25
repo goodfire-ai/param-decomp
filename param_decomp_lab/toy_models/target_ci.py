@@ -23,11 +23,13 @@ from param_decomp_lab.toy_models._linear_sum_assignment import linear_sum_assign
 def permute_to_identity_greedy(
     ci_vals: Float[Tensor, "batch C"],
 ) -> tuple[Float[Tensor, "batch C"], Int[Tensor, " C"]]:
-    """Permute matrix to make it as close to identity as possible using greedy algorithm.
+    """Permute columns to make the matrix as close to identity as possible (greedy).
+
+    Args:
+        ci_vals: Causal importance values matrix.
 
     Returns:
-        - Permuted mask
-        - Permutation indices
+        Tuple of the permuted matrix and the permutation indices.
     """
     if ci_vals.ndim != 2:
         raise ValueError(f"Mask must have 2 dimensions, got {ci_vals.ndim}")
@@ -57,11 +59,13 @@ def permute_to_identity_greedy(
 def permute_to_identity_hungarian(
     ci_vals: Float[Tensor, "batch C"],
 ) -> tuple[Float[Tensor, "batch C"], Int[Tensor, " C"]]:
-    """Permute matrix to make it as close to identity as possible using Hungarian algorithm.
+    """Permute columns to make the matrix as close to identity as possible (Hungarian).
+
+    Args:
+        ci_vals: Causal importance values matrix.
 
     Returns:
-        - Permuted mask
-        - Permutation indices
+        Tuple of the permuted matrix and the permutation indices.
     """
     if ci_vals.ndim != 2:
         raise ValueError(f"Mask must have 2 dimensions, got {ci_vals.ndim}")
@@ -88,18 +92,16 @@ def permute_to_identity(
     ci_vals: Float[Tensor, "batch C"],
     method: Literal["hungarian", "greedy", "auto"] = "auto",
 ) -> tuple[Float[Tensor, "batch C"], Int[Tensor, " C"]]:
-    """Permute matrix to make it as close to identity as possible.
+    """Permute columns to make the matrix as close to identity as possible.
 
     Args:
-        ci_vals: The causal importance values matrix
-        method: Algorithm to use for permutation:
-            - "hungarian": Use Hungarian algorithm (optimal but O(n³))
-            - "greedy": Use greedy algorithm (faster but suboptimal)
-            - "auto": Choose Hungarian for small matrices (< 500), greedy for larger ones
+        ci_vals: Causal importance values matrix.
+        method: Algorithm to use for permutation. "hungarian" is optimal but O(n^3);
+            "greedy" is faster but suboptimal; "auto" picks Hungarian for matrices
+            with min dimension < 500 and greedy otherwise.
 
     Returns:
-        - Permuted mask
-        - Permutation indices
+        Tuple of the permuted matrix and the permutation indices.
     """
     if method == "hungarian" or (method == "auto" and min(ci_vals.shape) < 500):
         return permute_to_identity_hungarian(ci_vals)
@@ -110,14 +112,13 @@ def permute_to_identity(
 def permute_to_dense(
     ci_vals: Float[Tensor, "batch C"],
 ) -> tuple[Float[Tensor, "batch C"], Int[Tensor, " C"]]:
-    """Permute columns by density, placing highest mass columns first.
+    """Permute columns by total mass, densest first.
 
     Args:
-        ci_vals: The causal importance values matrix
+        ci_vals: Causal importance values matrix.
 
     Returns:
-        - Permuted matrix with densest columns first
-        - Permutation indices
+        Tuple of the permuted matrix (densest columns first) and the permutation indices.
     """
     if ci_vals.ndim != 2:
         raise ValueError(f"Matrix must have 2 dimensions, got {ci_vals.ndim}")
@@ -130,29 +131,45 @@ def permute_to_dense(
 
 
 class TargetCIPattern(ABC):
-    """Base class for target patterns."""
+    """Base class for target sparsity patterns."""
 
     def _verify_inputs(self, ci_array: Float[Tensor, "batch C"]) -> None:
-        """Verify that input is a 2D torch tensor."""
+        """Verify that the input is a 2D tensor.
+
+        Args:
+            ci_array: Causal importance matrix to validate.
+        """
         if ci_array.ndim != 2:
             raise ValueError(f"Expected 2D tensor, got shape {ci_array.shape}")
 
     @abstractmethod
     def distance_from(self, ci_array: Float[Tensor, "batch C"], tolerance: float = 0.1) -> int:
-        """Discrete distance: count of elements deviating from expected pattern.
+        """Count elements that deviate from the expected pattern beyond tolerance.
 
-        Uses a tolerance threshold to avoid sensitivity to small values from
-        inactive components. Elements are counted as "off" if they deviate
-        from the expected value by more than the tolerance.
+        The tolerance threshold avoids sensitivity to small values from inactive
+        components: elements are counted as off only if they deviate from the
+        expected value by more than ``tolerance``.
+
+        Args:
+            ci_array: Causal importance matrix to evaluate.
+            tolerance: Per-element deviation threshold.
+
+        Returns:
+            Number of elements that violate the pattern.
         """
         pass
 
 
 class IdentityCIPattern(TargetCIPattern):
-    """Identity pattern: expects one-to-one feature to component mapping.
+    """Expect a one-to-one feature-to-component mapping.
 
     Each feature should activate exactly one component (up to permutation).
     Counts elements that violate this pattern beyond the tolerance threshold.
+
+    Attributes:
+        n_features: Expected number of features (rows).
+        apply_permutation: Whether to align columns to the identity before scoring.
+        method: Permutation algorithm: ``"hungarian"``, ``"greedy"``, or ``"auto"``.
     """
 
     def __init__(
@@ -195,19 +212,17 @@ class IdentityCIPattern(TargetCIPattern):
 
 
 class DenseCIPattern(TargetCIPattern):
-    """Dense columns pattern: exactly K components should be active.
+    """Expect exactly ``k`` active components (columns with strong activations).
 
-    Expects sparsity where exactly K columns (components) have non-zero entries.
+    Error is computed against the column-sorted matrix: the first ``k`` columns
+    contribute one error per missing strong activation (below ``min_entries``),
+    and the remaining columns contribute one error per weak activation above
+    tolerance (they should be fully inactive).
 
-    Args:
-        k: Number of columns that should be active
-        min_entries: Minimum number of strong activations (> 1-tolerance)
-                    required for a column to be considered "active"
-
-    Error computation:
-        - For first k columns: count how many are missing required strong activations
-        - For remaining columns: count any activations (should be completely inactive)
-        - Total error = active_column_deficits + inactive_column_violations
+    Attributes:
+        k: Number of columns that should be active.
+        min_entries: Minimum number of strong activations (> 1 - tolerance)
+            required for a column to be considered active.
     """
 
     def __init__(self, k: int, min_entries: int = 1):
@@ -241,26 +256,33 @@ class DenseCIPattern(TargetCIPattern):
 class TargetCISolution:
     """Collection of expected patterns for different modules in a model.
 
-    The module_targets dictionary can use fnmatch-style patterns as keys:
-    - Explicit module names: {"layers.0.mlp_in": IdentityCIPattern(...)}
-    - Wildcard patterns: {"layers.*.mlp_in": IdentityCIPattern(...)}
-    - Mixed patterns: {"layers.*.mlp_*": pattern, "specific.module": pattern}
+    Keys of ``module_targets`` may be exact module names or fnmatch-style
+    patterns (e.g. ``"layers.0.mlp_in"``, ``"layers.*.mlp_in"``,
+    ``"layers.*.mlp_*"``). Patterns are expanded at runtime against actual
+    module names; the first matching pattern wins for each module.
 
-    Patterns are expanded at runtime when given actual module names.
-    First matching pattern wins for each module name.
+    Attributes:
+        module_targets: Mapping from module name pattern to target pattern.
     """
 
     def __init__(self, module_targets: dict[str, TargetCIPattern]):
-        """Initialize target solution with pattern mappings.
+        """Initialize the solution with pattern mappings.
 
         Args:
-            module_targets: Dictionary mapping module name patterns to target patterns.
-                Keys can be exact module names or fnmatch-style patterns (e.g., "layers.*.mlp_in").
+            module_targets: Mapping from module name pattern (exact or fnmatch-style,
+                e.g. ``"layers.*.mlp_in"``) to its target pattern.
         """
         self.module_targets = module_targets
 
     def expand_module_targets(self, module_names: list[str]) -> dict[str, TargetCIPattern]:
-        """Expand patterns to concrete module name -> TargetCIPattern mappings."""
+        """Resolve patterns to a concrete module-name to pattern mapping.
+
+        Args:
+            module_names: Concrete module names to match against the stored patterns.
+
+        Returns:
+            Mapping from each matched module name to its target pattern.
+        """
         result = {}
         for name in module_names:
             for pattern, target in self.module_targets.items():
@@ -273,7 +295,15 @@ class TargetCISolution:
     def distance_from(
         self, ci_arrays: dict[str, Float[Tensor, "batch C"]], tolerance: float = 0.1
     ) -> int:
-        """Total number of elements that are off across all modules."""
+        """Sum the per-module pattern distances across all modules.
+
+        Args:
+            ci_arrays: Mapping from module name to causal importance matrix.
+            tolerance: Per-element deviation threshold.
+
+        Returns:
+            Total number of off elements across all modules.
+        """
         expanded_targets = self.expand_module_targets(list(ci_arrays.keys()))
 
         return sum(
@@ -287,15 +317,16 @@ def compute_target_metrics(
     target_solution: TargetCISolution,
     tolerance: float = 0.1,
 ) -> dict[str, float]:
-    """Compute target solution distance metrics.
+    """Compute total and per-module target-solution distance metrics.
 
     Args:
-        causal_importances: Dictionary of causal importance tensors
-        target_solution: The target solution to compare against
-        tolerance: Tolerance for pattern matching
+        causal_importances: Mapping from module name to causal importance tensor.
+        target_solution: Target solution to compare against.
+        tolerance: Per-element deviation threshold for pattern matching.
 
     Returns:
-        Dictionary of target distance metrics
+        Mapping with ``"total"`` and ``"total_0p2"`` aggregate distances plus one
+        entry per matched module name.
     """
     metrics = {}
 
@@ -316,14 +347,14 @@ def make_target_ci_solution(
     identity_ci: list[dict[str, str | int]] | None = None,
     dense_ci: list[dict[str, str | int]] | None = None,
 ) -> TargetCISolution | None:
-    """Create a TargetCISolution from config specifications.
+    """Build a ``TargetCISolution`` from config-style pattern specifications.
 
     Args:
-        identity_ci: List of identity CI pattern specifications with layer_pattern and n_features
-        dense_ci: List of dense CI pattern specifications with layer_pattern and k
+        identity_ci: Identity-pattern specs, each with ``layer_pattern`` and ``n_features``.
+        dense_ci: Dense-pattern specs, each with ``layer_pattern`` and ``k``.
 
     Returns:
-        TargetCISolution instance or None if no patterns provided
+        Assembled ``TargetCISolution``, or ``None`` when both lists are empty.
     """
     if not identity_ci and not dense_ci:
         return None

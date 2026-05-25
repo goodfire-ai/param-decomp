@@ -12,10 +12,18 @@ from param_decomp_lab.eval_metrics.plotting import plot_mean_component_cis_both_
 
 
 class CIMeanPerComponentConfig(BaseConfig):
+    """Config for `CIMeanPerComponent`.
+
+    Attributes:
+        type: Discriminator literal for this metric.
+    """
+
     type: Literal["CIMeanPerComponent"] = "CIMeanPerComponent"
 
 
 class CIMeanPerComponent(Metric[CIMeanPerComponentConfig]):
+    """Per-layer plot of mean CI per component, sorted descending (linear + log y)."""
+
     log_namespace = "figures"
     slow = True
     short_name = "CIMeanPerComp"

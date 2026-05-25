@@ -7,7 +7,7 @@ methods for component analysis, editing, and measurement. It's callable
 Usage:
     from param_decomp_lab.editing.editable_model import EditableModel, search_interpretations, generate
 
-    em = EditableModel.from_wandb("wandb:goodfire/spd/s-892f140b")
+    em = EditableModel.from_wandb("goodfire/spd/s-892f140b")
     matches = search_interpretations(harvest, interp, r"male pronoun")
 
     edit_fn = em.make_edit_fn({m.key: 0.0 for m in matches[:3]})
@@ -32,9 +32,9 @@ from param_decomp.masks import make_mask_infos
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.app.backend.compute import OptimizedPromptAttributionResult
 from param_decomp_lab.autointerp.repo import InterpRepo
+from param_decomp_lab.experiments.lm.run import SavedLMRun
 from param_decomp_lab.harvest.repo import HarvestRepo
 from param_decomp_lab.harvest.schemas import ComponentData
-from param_decomp_lab.saved_run import SavedRun
 from param_decomp_lab.topology.topology import TransformerTopology
 
 ForwardFn = Callable[[Int[Tensor, " seq"]], Float[Tensor, "seq vocab"]]
@@ -274,16 +274,9 @@ class EditableModel:
         cls, wandb_path: str, device: str = "cuda"
     ) -> tuple["EditableModel", AppTokenizer]:
         """Load from wandb path. Returns (editable_model, tokenizer)."""
-        from param_decomp_lab.experiments.lm.data import LMDataConfig
-
-        pd_run = SavedRun.from_path(wandb_path)
-        assert pd_run.experiment_name == "lm", (
-            f"EditableModel.from_wandb only supports LM runs (got {pd_run.experiment_name!r})"
-        )
-        data_cfg = pd_run.data_cfg
-        assert isinstance(data_cfg, LMDataConfig)
+        pd_run = SavedLMRun.from_path(wandb_path)
         model = pd_run.load_model().to(device).eval()
-        tokenizer = AppTokenizer.from_pretrained(data_cfg.tokenizer_name)
+        tokenizer = AppTokenizer.from_pretrained(pd_run.cfg.data.tokenizer_name)
         return cls(model), tokenizer
 
     def __call__(self, tokens: Int[Tensor, " seq"]) -> Float[Tensor, "seq vocab"]:

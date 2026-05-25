@@ -33,7 +33,7 @@ class ParamDecompHarvestFn(HarvestFn):
         ci_dict = model.calc_causal_importances(
             pre_weight_acts=out.cache,
             detach_inputs=True,
-            sampling=self._adapter.pd_run.pd_config.sampling,
+            sampling=self._adapter.pd_run.cfg.pd.sampling,
         ).lower_leaky
 
         per_layer_acts = get_all_component_acts(model, out.cache)

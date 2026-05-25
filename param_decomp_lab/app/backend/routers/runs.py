@@ -6,7 +6,7 @@ from urllib.parse import unquote
 import torch
 import yaml
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from param_decomp.log import logger
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
@@ -16,12 +16,10 @@ from param_decomp_lab.app.backend.utils import log_errors
 from param_decomp_lab.autointerp.repo import InterpRepo
 from param_decomp_lab.dataset_attributions.repo import AttributionRepo
 from param_decomp_lab.distributed import get_device
-from param_decomp_lab.experiments.lm.data import LMDataConfig
-from param_decomp_lab.experiments.lm.run import LMTargetConfig
+from param_decomp_lab.experiments.lm.run import SavedLMRun
 from param_decomp_lab.graph_interp.repo import GraphInterpRepo
 from param_decomp_lab.harvest.repo import HarvestRepo
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
-from param_decomp_lab.saved_run import SavedRun
 from param_decomp_lab.topology import TransformerTopology, get_sources_by_target
 
 # Datasets small enough to load into memory for search
@@ -61,8 +59,6 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
     Accepts various W&B run reference formats:
     - "entity/project/runId" (compact form)
     - "entity/project/runs/runId" (with /runs/)
-    - "wandb:entity/project/runId" (with wandb: prefix)
-    - "wandb:entity/project/runs/runId" (full wandb: form)
     - "https://wandb.ai/entity/project/runs/runId..." (URL)
 
     This loads the model onto GPU and makes it available for attribution computation.
@@ -73,19 +69,18 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
     clean_wandb_path = f"{entity}/{project}/{run_id}"
 
     logger.info(f"[API] Loading {clean_wandb_path}")
-    pd_run = SavedRun.from_path(clean_wandb_path)
-    if pd_run.experiment_name != "lm":
+    try:
+        pd_run = SavedLMRun.from_path(clean_wandb_path)
+    except ValidationError as e:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"This run is a `{pd_run.experiment_name}` PD run and is not compatible with "
-                "the token-based app. Use an LM run."
+                f"This run is not a valid LM run and is not compatible with the "
+                f"token-based app. Use an LM run.\n\n{e}"
             ),
-        )
-    lm_target = pd_run.target_cfg
-    lm_data = pd_run.data_cfg
-    assert isinstance(lm_target, LMTargetConfig)
-    assert isinstance(lm_data, LMDataConfig)
+        ) from e
+    lm_target = pd_run.cfg.target
+    lm_data = pd_run.cfg.data
 
     run = db.get_run_by_wandb_path(clean_wandb_path)
     if run is None:
@@ -119,7 +114,7 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
     model = pd_run.load_model().to(DEVICE)
     model.eval()
 
-    pd_config = pd_run.pd_config
+    pd_config = pd_run.cfg.pd
     logger.info(f"[API] Loading tokenizer for run {run.id}: {lm_data.tokenizer_name}")
     app_tokenizer = AppTokenizer.from_pretrained(lm_data.tokenizer_name)
 

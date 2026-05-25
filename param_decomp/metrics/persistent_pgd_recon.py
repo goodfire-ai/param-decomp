@@ -44,7 +44,20 @@ from param_decomp.metrics.stochastic_hidden_acts_recon import (
 
 
 class _PersistentPGDBaseConfig(LossMetricConfig):
-    """Shared fields for persistent PGD configs."""
+    """Shared fields for persistent PGD configs.
+
+    Attributes:
+        optimizer: Optimizer used to step the adversarial sources (sign-PGD or Adam).
+        scope: Source-shape scope (single shared source, broadcast/repeat over batch,
+            or per-position).
+        use_sigmoid_parameterization: When True, sources are unconstrained and read
+            via sigmoid; when False, sources are clamped to `[0, 1]` after each step.
+        n_warmup_steps: Extra inner PGD source-optimization steps on each train batch
+            before the final loss computation.
+        start_frac: Fraction of training before this metric is gated off; before this
+            point `update` returns `None`.
+        n_samples: Number of mask draws per batch.
+    """
 
     optimizer: Annotated[PGDOptimizerConfig, Field(discriminator="type")]
     scope: PersistentPGDSourceScope
@@ -61,10 +74,24 @@ class _PersistentPGDBaseConfig(LossMetricConfig):
 
 
 class PersistentPGDReconLossConfig(_PersistentPGDBaseConfig):
+    """Config for `PersistentPGDReconLoss` (all-layers routing).
+
+    Attributes:
+        type: Discriminator literal `"PersistentPGDReconLoss"`.
+    """
+
     type: Literal["PersistentPGDReconLoss"] = "PersistentPGDReconLoss"
 
 
 class PersistentPGDReconSubsetLossConfig(_PersistentPGDBaseConfig):
+    """Config for `PersistentPGDReconSubsetLoss` (subset routing).
+
+    Attributes:
+        type: Discriminator literal `"PersistentPGDReconSubsetLoss"`.
+        routing: Subset-routing strategy that selects which layers receive masks on
+            each forward.
+    """
+
     type: Literal["PersistentPGDReconSubsetLoss"] = "PersistentPGDReconSubsetLoss"
     routing: Annotated[
         SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
@@ -90,9 +117,14 @@ def validate_pgd_scope(
 ) -> None:
     """Assert persistent-PGD `repeat_across_batch` divides the per-rank training batch size.
 
-    Takes ``world_size`` directly (not a ``DistributedState``) so this module
-    doesn't have to know about distributed plumbing. Callers pass
-    ``dist_state.world_size if dist_state is not None else 1``.
+    Takes `world_size` directly (not a `DistributedState`) so this module doesn't have
+    to know about distributed plumbing. Callers pass
+    `dist_state.world_size if dist_state is not None else 1`.
+
+    Args:
+        loss_metrics: All configured loss-metric configs to scan.
+        batch_size: Global training batch size.
+        world_size: Number of distributed ranks.
     """
     assert batch_size % world_size == 0, (
         f"batch_size {batch_size} not divisible by world size {world_size}"
@@ -112,7 +144,14 @@ def validate_pgd_scope(
 class _PersistentPGDReconBase[
     TConfig: PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig
 ](Metric[TConfig]):
-    """Shared logic between all-layers and subset PPGD recon metrics."""
+    """Shared logic between all-layers and subset PPGD recon metrics.
+
+    Lazily constructs the `PersistentPGDState` on the first `update` call so it can
+    snapshot the live batch shape. Returns the live recon loss on training steps and,
+    on eval batches, additionally accumulates output and per-module hidden-activation
+    MSE for `compute()`. The outer optimizer loop drives source updates via
+    `before_backward` and `after_backward`.
+    """
 
     log_namespace: ClassVar[str] = "loss"
     slow: ClassVar[bool] = True
@@ -242,12 +281,20 @@ class _PersistentPGDReconBase[
 
 
 class PersistentPGDReconLoss(_PersistentPGDReconBase[PersistentPGDReconLossConfig]):
-    """Persistent PGD adversarial-mask reconstruction loss (routes to all layers)."""
+    """Persistent PGD adversarial-mask reconstruction loss (routes to all layers).
+
+    Drives components to reconstruct the target output under adversarially-optimized
+    masks whose source tensors persist across training steps.
+    """
 
     short_name = "PersistPGDRecon"
 
 
 class PersistentPGDReconSubsetLoss(_PersistentPGDReconBase[PersistentPGDReconSubsetLossConfig]):
-    """Persistent PGD adversarial-mask reconstruction loss (subset routing)."""
+    """Persistent PGD adversarial-mask reconstruction loss (subset routing).
+
+    Variant of `PersistentPGDReconLoss` that masks only a routed subset of layers per
+    forward.
+    """
 
     short_name = "PersistPGDReconSub"

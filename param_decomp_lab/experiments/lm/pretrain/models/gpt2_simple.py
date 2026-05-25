@@ -14,8 +14,7 @@ from torch.nn import functional as F
 
 from param_decomp.base_config import BaseConfig
 from param_decomp_lab.distributed import log0
-from param_decomp_lab.experiments.loadable_module import LoadableModule
-from param_decomp_lab.pretrain.run_info import PretrainRunInfo
+from param_decomp_lab.experiments.lm.pretrain.run_info import PretrainRunInfo
 
 # Suppress issues with nn.Module buffer access and @torch.no_grad() decorator
 # pyright: reportIndexIssue=false, reportUntypedFunctionDecorator=false
@@ -158,7 +157,7 @@ class Block(nn.Module):
         return x
 
 
-class GPT2Simple(LoadableModule):
+class GPT2Simple(nn.Module):
     def __init__(self, config: GPT2SimpleConfig):
         super().__init__()
         self.config = config
@@ -244,10 +243,9 @@ class GPT2Simple(LoadableModule):
         return model
 
     @classmethod
-    @override
     def from_pretrained(cls, model_path: str | Path) -> "GPT2Simple":
         """Create a GPT-2 model from a wandb string or a local path."""
-        from param_decomp_lab.pretrain.run_info import PretrainRunInfo
+        from param_decomp_lab.experiments.lm.pretrain.run_info import PretrainRunInfo
 
         run_info = PretrainRunInfo.from_path(model_path)
         return cls.from_run_info(run_info)

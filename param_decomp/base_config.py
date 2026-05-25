@@ -8,21 +8,27 @@ from annotated_types import Ge, Le
 from pydantic import BaseModel, ConfigDict
 
 Probability = Annotated[float, Ge(0), Le(1)]
+"""A float constrained to the closed interval ``[0, 1]`` for pydantic validation."""
 
 
 def runtime_cast[T](type_: type[T], obj: Any) -> T:
-    """Typecast with a runtime check."""
+    """Cast ``obj`` to ``type_``, raising ``TypeError`` if it is not actually an instance.
+
+    Use this when a wider static type needs to be narrowed for the type checker and the
+    narrowing should be enforced at runtime.
+    """
     if not isinstance(obj, type_):
         raise TypeError(f"Expected {type_}, got {type(obj)}")
     return obj
 
 
 class BaseConfig(BaseModel):
-    """Pydantic BaseModel suited for configs.
+    """Pydantic ``BaseModel`` base class tailored for configuration objects.
 
-    Uses the pydantic `model_config` to enforce `extra="forbid"` and `frozen=True` and add loading
-    and saving from/to YAML, JSON. ``cached_property`` is in ``ignored_types`` so subclasses can
-    use it for derived state on frozen models.
+    Enforces ``extra="forbid"`` (unknown keys raise) and ``frozen=True`` (instances are
+    immutable), and adds ``from_file`` / ``to_file`` round-trip helpers for JSON and YAML.
+    ``cached_property`` is added to ``ignored_types`` so subclasses can attach derived
+    state to frozen models.
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
@@ -31,7 +37,11 @@ class BaseConfig(BaseModel):
 
     @classmethod
     def from_file(cls, path: Path | str) -> Self:
-        """Load config from path to a JSON or YAML file."""
+        """Load and validate a config from a ``.json``, ``.yaml``, or ``.yml`` file.
+
+        Raises ``ValueError`` for any other extension. Validation errors are re-raised with
+        a note that includes the source path and the parsed data for debugging.
+        """
         if isinstance(path, str):
             path = Path(path)
 
@@ -51,7 +61,11 @@ class BaseConfig(BaseModel):
         return cfg
 
     def to_file(self, path: Path | str) -> None:
-        """Save config to file (format inferred from extension)."""
+        """Serialize this config to ``path``; format is inferred from the extension.
+
+        Supports ``.json`` (indent 2) and ``.yaml`` / ``.yml`` (JSON-mode dump). Creates
+        parent directories as needed; raises ``ValueError`` for any other extension.
+        """
         if isinstance(path, str):
             path = Path(path)
 

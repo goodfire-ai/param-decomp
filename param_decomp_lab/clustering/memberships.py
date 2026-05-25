@@ -6,7 +6,7 @@ ProcessedMemberships is the core data type: a sparse boolean membership matrix
 MembershipBuilder streams activations into compressed memberships without
 materializing the full dense [n_samples, n_components] matrix.
 
-collect_memberships() dispatches LM vs ResidMLP collection.
+collect_memberships() drives the streaming collection from an LM dataloader.
 """
 
 from dataclasses import dataclass
@@ -386,27 +386,28 @@ def _flatten_lm_activations(
     return act[batch_indices, positions].reshape(batch_size * positions.shape[1], -1)
 
 
-def collect_memberships_lm(
+def collect_memberships(
     model: ComponentModel,
     dataloader: DataLoader[Any],
-    n_tokens: int,
-    n_tokens_per_seq: int | None,
     device: torch.device | str,
-    seed: int,
-    activation_threshold: float,
-    filter_dead_threshold: float,
-    filter_dead_stat: DeadComponentFilterStat = "max",
-    filter_modules: ModuleFilterFunc | None = None,
-    preview_n_samples: int = 256,
-    use_all_tokens_per_seq: bool = False,
+    config: HarvestConfig,
 ) -> ProcessedMemberships:
-    rng = torch.Generator().manual_seed(seed)
+    """Stream LM component activations into a `ProcessedMemberships` snapshot.
+
+    Iterates ``dataloader``, samples ``n_tokens_per_seq`` token positions per batch
+    (or all positions when ``use_all_tokens_per_seq``), and accumulates into a
+    `MembershipBuilder` until ``config.n_tokens`` are collected.
+    """
+    assert config.use_all_tokens_per_seq or config.n_tokens_per_seq is not None, (
+        "n_tokens_per_seq required when use_all_tokens_per_seq is False"
+    )
+
+    rng = torch.Generator().manual_seed(config.dataset_seed)
     builder = MembershipBuilder(
-        activation_threshold=activation_threshold,
-        filter_dead_threshold=filter_dead_threshold,
-        filter_dead_stat=filter_dead_stat,
-        filter_modules=filter_modules,
-        preview_n_samples=preview_n_samples,
+        activation_threshold=config.activation_threshold,
+        filter_dead_threshold=config.filter_dead_threshold,
+        filter_dead_stat=config.filter_dead_stat,
+        filter_modules=config.filter_modules,
     )
     n_collected = 0
 
@@ -416,18 +417,18 @@ def collect_memberships_lm(
         batch_size, n_ctx = input_ids.shape
         activations = component_activations(model=model, batch=input_ids, device=device)
 
-        tokens_per_seq = n_ctx if use_all_tokens_per_seq else n_tokens_per_seq
+        tokens_per_seq = n_ctx if config.use_all_tokens_per_seq else config.n_tokens_per_seq
         assert tokens_per_seq is not None
 
-        n_remaining = n_tokens - n_collected
+        n_remaining = config.n_tokens - n_collected
         batch_take = min(batch_size * tokens_per_seq, n_remaining)
         sampled: dict[str, Float[Tensor, "samples C"]] = {
             key: _flatten_lm_activations(
                 act,
                 batch_size=batch_size,
                 n_ctx=n_ctx,
-                n_tokens_per_seq=n_tokens_per_seq,
-                use_all_tokens_per_seq=use_all_tokens_per_seq,
+                n_tokens_per_seq=config.n_tokens_per_seq,
+                use_all_tokens_per_seq=config.use_all_tokens_per_seq,
                 rng=rng,
             )[:batch_take]
             for key, act in activations.items()
@@ -436,88 +437,12 @@ def collect_memberships_lm(
         del sampled, activations
 
         n_collected += batch_take
-        pbar.set_postfix(tokens=f"{n_collected}/{n_tokens}")
-        if n_collected >= n_tokens:
+        pbar.set_postfix(tokens=f"{n_collected}/{config.n_tokens}")
+        if n_collected >= config.n_tokens:
             break
 
-    assert n_collected >= n_tokens, (
-        f"Dataloader exhausted: collected {n_collected} tokens but needed {n_tokens}"
+    assert n_collected >= config.n_tokens, (
+        f"Dataloader exhausted: collected {n_collected} tokens but needed {config.n_tokens}"
     )
-    logger.info(f"Collected {n_collected} token activations (requested {n_tokens})")
+    logger.info(f"Collected {n_collected} token activations (requested {config.n_tokens})")
     return builder.finalize()
-
-
-def collect_memberships_resid_mlp(
-    model: ComponentModel,
-    dataloader: DataLoader[Any],
-    n_samples: int,
-    device: torch.device | str,
-    activation_threshold: float,
-    filter_dead_threshold: float,
-    filter_dead_stat: DeadComponentFilterStat = "max",
-    filter_modules: ModuleFilterFunc | None = None,
-    preview_n_samples: int = 256,
-) -> ProcessedMemberships:
-    builder = MembershipBuilder(
-        activation_threshold=activation_threshold,
-        filter_dead_threshold=filter_dead_threshold,
-        filter_dead_stat=filter_dead_stat,
-        filter_modules=filter_modules,
-        preview_n_samples=preview_n_samples,
-    )
-    n_collected = 0
-
-    pbar = tqdm(dataloader, desc="Collecting activations", unit="batch")
-    for batch_data in pbar:
-        batch, _ = batch_data
-        activations = component_activations(model=model, batch=batch_data, device=device)
-        batch_take = min(batch.shape[0], n_samples - n_collected)
-        builder.add_batch({key: act[:batch_take] for key, act in activations.items()})
-
-        n_collected += batch_take
-        pbar.set_postfix(samples=f"{n_collected}/{n_samples}")
-        if n_collected >= n_samples:
-            break
-
-    assert n_collected >= n_samples, (
-        f"Dataloader exhausted: collected {n_collected} samples but needed {n_samples}"
-    )
-    logger.info(f"Collected {n_collected} resid_mlp activations (requested {n_samples})")
-    return builder.finalize()
-
-
-def collect_memberships(
-    model: ComponentModel,
-    dataloader: DataLoader[Any],
-    task_name: str,
-    device: torch.device | str,
-    config: HarvestConfig,
-) -> ProcessedMemberships:
-    if task_name == "lm":
-        assert config.n_tokens is not None, "n_tokens required for LM tasks"
-        assert config.use_all_tokens_per_seq or config.n_tokens_per_seq is not None
-        return collect_memberships_lm(
-            model=model,
-            dataloader=dataloader,
-            n_tokens=config.n_tokens,
-            n_tokens_per_seq=config.n_tokens_per_seq,
-            device=device,
-            seed=config.dataset_seed,
-            activation_threshold=config.activation_threshold,
-            filter_dead_threshold=config.filter_dead_threshold,
-            filter_dead_stat=config.filter_dead_stat,
-            filter_modules=config.filter_modules,
-            use_all_tokens_per_seq=config.use_all_tokens_per_seq,
-        )
-
-    n_samples = config.n_samples or config.batch_size
-    return collect_memberships_resid_mlp(
-        model=model,
-        dataloader=dataloader,
-        n_samples=n_samples,
-        device=device,
-        activation_threshold=config.activation_threshold,
-        filter_dead_threshold=config.filter_dead_threshold,
-        filter_dead_stat=config.filter_dead_stat,
-        filter_modules=config.filter_modules,
-    )

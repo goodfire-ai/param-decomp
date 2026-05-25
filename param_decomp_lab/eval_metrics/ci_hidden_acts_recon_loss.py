@@ -12,11 +12,17 @@ from param_decomp.metrics.stochastic_hidden_acts_recon import (
 
 
 class CIHiddenActsReconLossConfig(BaseConfig):
+    """Config for `CIHiddenActsReconLoss`.
+
+    Attributes:
+        type: Discriminator literal for this metric.
+    """
+
     type: Literal["CIHiddenActsReconLoss"] = "CIHiddenActsReconLoss"
 
 
 class CIHiddenActsReconLoss(Metric[CIHiddenActsReconLossConfig]):
-    """Reconstruction loss between target and component hidden activations when masking with CI values."""
+    """Per-module MSE between target and CI-masked component hidden activations."""
 
     log_namespace = "loss"
     slow = True

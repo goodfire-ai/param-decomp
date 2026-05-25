@@ -13,6 +13,21 @@ from param_decomp.metrics.context import MetricContext
 
 
 class ImportanceMinimalityLossConfig(LossMetricConfig):
+    """Config for `ImportanceMinimalityLoss`.
+
+    Attributes:
+        type: Discriminator literal `"ImportanceMinimalityLoss"`.
+        pnorm: Initial `p` of the `L_p`-like penalty on upper-leaky CI values.
+        beta: Weight on the entropy-like `mean * log2(1 + sum)` term added to the
+            straight `L_p` term.
+        p_anneal_start_frac: Fraction of training at which to start annealing `pnorm`
+            toward `p_anneal_final_p`. `1.0` (default) means no annealing.
+        p_anneal_final_p: Target `p` after annealing. `None` means no annealing.
+        p_anneal_end_frac: Fraction of training at which annealing should reach
+            `p_anneal_final_p`. Must satisfy `>= p_anneal_start_frac`.
+        eps: Small constant added to CI values inside `(.)^p` for numerical stability.
+    """
+
     type: Literal["ImportanceMinimalityLoss"] = "ImportanceMinimalityLoss"
     pnorm: NonNegativeFloat
     beta: NonNegativeFloat
@@ -85,7 +100,7 @@ def importance_minimality_loss(
     p_anneal_final_p: float | None,
     p_anneal_end_frac: float,
 ) -> Float[Tensor, ""]:
-    """Pure compute helper preserved for external callers (e.g. app/optim_cis)."""
+    """Compute the importance-minimality loss directly (helper for external callers)."""
     annealed_p = _get_linear_annealed_p(
         current_frac_of_training=current_frac_of_training,
         initial_p=pnorm,
@@ -107,7 +122,13 @@ def importance_minimality_loss(
 
 
 class ImportanceMinimalityLoss(Metric[ImportanceMinimalityLossConfig]):
-    """L_p loss on the sum of CI values."""
+    """`L_p`-style penalty on the upper-leaky CI values.
+
+    Drives CI sparsity by penalising `(ci + eps)^p` summed across components and added
+    to a `beta`-weighted entropy-like term. The exponent `p` can be linearly annealed
+    from `cfg.pnorm` toward `cfg.p_anneal_final_p` between
+    `cfg.p_anneal_start_frac` and `cfg.p_anneal_end_frac` of training.
+    """
 
     log_namespace = "loss"
     short_name = "ImpMin"

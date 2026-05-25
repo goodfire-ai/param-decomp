@@ -12,12 +12,21 @@ from param_decomp.metrics.pgd_utils import PGDConfig, pgd_masked_recon_loss_upda
 
 
 class PGDReconLayerwiseLossConfig(PGDConfig):
+    """Config for `PGDReconLayerwiseLoss`.
+
+    Attributes:
+        type: Discriminator literal `"PGDReconLayerwiseLoss"`.
+    """
+
     type: Literal["PGDReconLayerwiseLoss"] = "PGDReconLayerwiseLoss"
 
 
 class PGDReconLayerwiseLoss(Metric[PGDReconLayerwiseLossConfig]):
-    """Recon loss when masking with adversarially-optimized values and routing to one layer at a
-    time."""
+    """Recon loss with adversarially-optimized masks applied one layer at a time.
+
+    For each target layer, runs `cfg.n_steps` of per-step PGD on fresh adversarial
+    sources routed to only that layer, then sums the resulting per-layer recon losses.
+    """
 
     log_namespace = "loss"
     short_name = "PGDReconLayer"

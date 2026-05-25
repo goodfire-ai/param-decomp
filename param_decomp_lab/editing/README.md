@@ -9,7 +9,7 @@ from param_decomp_lab.editing.editable_model import EditableModel, generate, mea
 from param_decomp_lab.harvest.repo import HarvestRepo
 from param_decomp_lab.autointerp.repo import InterpRepo
 
-em, tok = EditableModel.from_wandb("wandb:goodfire/spd/s-892f140b")
+em, tok = EditableModel.from_wandb("goodfire/spd/s-892f140b")
 harvest = HarvestRepo("s-892f140b")
 interp = InterpRepo("s-892f140b")
 ```

@@ -13,9 +13,9 @@ from torch.utils.data import DataLoader
 from param_decomp_lab.adapters._vendor.transcoder_model import BatchTopKTranscoder, EncoderConfig
 from param_decomp_lab.adapters.base import DecompositionAdapter, pretrain_dataloader
 from param_decomp_lab.autointerp.schemas import ModelMetadata
+from param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
+from param_decomp_lab.experiments.lm.pretrain.run_info import PretrainRunInfo
 from param_decomp_lab.harvest.config import TranscoderHarvestConfig
-from param_decomp_lab.pretrain.models.llama_simple_mlp import LlamaSimpleMLP
-from param_decomp_lab.pretrain.run_info import PretrainRunInfo
 from param_decomp_lab.topology import TransformerTopology
 
 # E2e-trained transcoders save extra fields in config.json ("e2e", "e2e_cascading")

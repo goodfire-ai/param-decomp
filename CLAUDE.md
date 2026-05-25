@@ -46,30 +46,35 @@ Import every name from where it is defined — there are no package-level re-exp
 core training entrypoint and the configs/protocols it consumes:
 
 ```python
-from param_decomp.optimize import optimize
+from param_decomp.optimize import EvalLoop, optimize
 from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
 from param_decomp.run_sink import RunSink
 from param_decomp.metrics.base import LossMetricConfig, Metric
 from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 ```
 
-- `optimize(target_model, train_loader, eval_loader, *, run_batch, reconstruction_loss,
-  pd_config, runtime_config, cadence, sink, eval_metrics)`: the only entrypoint. Caller
-  supplies the target `nn.Module`, dataloaders, the run-batch / reconstruction callables,
-  the two configs, a `Cadence` for *when* the loop emits, a `RunSink` for *where* output
-  goes, and a list of pre-instantiated eval `Metric` objects. `runtime_config.device` is the
-  device source. `optimize()` builds the `ComponentModel` internally and calls
-  `Metric.bind(model, device)` on every eval metric before the loop.
+- `optimize(target_model, train_loader, run_batch, reconstruction_loss, pd_config,
+  runtime_config, sink, cadence, eval_loop=None)`: the only entrypoint. Caller supplies
+  the target `nn.Module`, the train loader, the run-batch / reconstruction callables,
+  the two configs, a `RunSink` for *where* output goes, a `Cadence` for non-eval timing
+  (train-log + checkpoint periods), and optionally an `EvalLoop` bundling the eval
+  runtime objects together with their timing. Pass `eval_loop=None` to skip eval
+  entirely. `runtime_config.device` is the device source. `optimize()` builds the
+  `ComponentModel` internally and calls `Metric.bind(model, device)` on every
+  `eval_loop.metrics` before the loop.
 - `PDConfig`: algorithm spec (CI fn, loss metrics, module patterns, optimizers, seed,
   tied weights, faithfulness warmup, …). Loss metrics live here as
   `loss_metrics: list[AnyLossMetricConfig]` — a pydantic discriminated union over each
   metric's `type` literal.
 - `RuntimeConfig`: substrate (autocast_bf16, device, dp).
-- `Cadence`: frozen `BaseConfig` with `train_log_every`, `eval_every`, `slow_eval_every`,
-  `n_eval_steps`, `save_every`, `slow_eval_on_first_step`. Methods (`should_log_train`,
-  `should_eval`, `should_run_slow_eval`, `should_save`) are pure modular arithmetic on
-  `step`. `optimize()` always checkpoints at `step == pd_config.steps`; periodic saves
-  use `should_save`.
+- `Cadence`: frozen `BaseConfig` with `train_log_every` and `save_every`. Methods
+  (`should_log_train`, `should_save`) are pure modular arithmetic on `step`. `optimize()`
+  always checkpoints at `step == pd_config.steps`; periodic saves use `should_save`.
+- `EvalLoop`: frozen dataclass in `param_decomp/optimize.py` bundling the eval-loop
+  triple (`loader`, `metrics`, `n_steps`) with the eval timing (`every`, `slow_every`,
+  `slow_on_first_step`) and the matching `should_eval` / `should_run_slow_eval`
+  predicates. `slow_every` must be a multiple of `every`. Atomic optional: pass
+  `eval_loop=None` to disable eval; pass an `EvalLoop(...)` to enable it.
 - `RunSink`: a `Protocol` in `param_decomp/run_sink.py` with three side-effect methods:
   `log(metrics, step)`, `console(*lines)`, `checkpoint(state_dict, step)`. Metric keys
   are already namespaced (`train/...`, `eval/...`) by `optimize()` before being handed
@@ -89,24 +94,74 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 
 ### Adding a new experiment
 
-Experiments are plain Python scripts, not drivers/subclasses. A "new experiment" is a
-`run.py` that declares an `ExperimentConfig[T, D]` subclass (fixing the concrete `target`
-/ `data` types), parses its YAML with `<Experiment>Config.from_file(path)`, builds the
-target model + dataloaders + eval metrics + sink, then calls `optimize()`. The three
-in-repo experiments (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`) are the
-canonical references. The shared `ExperimentConfig` generic + `EvalConfig` + `save_run_meta`
-live in `param_decomp_lab/experiments/utils.py`.
+Experiments are plain Python scripts. Each `run.py` is self-contained and exposes a
+concretely typed config, three build/run-batch functions, and a per-experiment
+`Saved<Name>Run` reload class — consumed by both the fresh-run path (`main()`) and
+the reload path:
+
+```python
+class <Name>ExperimentConfig(ExperimentConfig[<Name>TargetConfig, <Name>DataConfig]):
+    pass
+
+def build_target(target_cfg) -> nn.Module: ...
+def build_<name>_loader(target_cfg, data_cfg, *, split: Literal["train", "eval"], device: str,
+                       batch_size: int, dist_state=None, seed=None) -> DataLoader: ...
+def make_run_batch(target_cfg) -> RunBatch: ...
+
+@dataclass(frozen=True)
+class Saved<Name>Run:
+    cfg: <Name>ExperimentConfig
+    checkpoint_path: Path
+
+    @classmethod
+    def from_path(cls, path: ModelPath) -> "Saved<Name>Run": ...
+    def load_model(self) -> ComponentModel: ...
+```
+
+The loader function is per-experiment-named (`build_lm_loader` / `build_tms_loader` /
+`build_resid_mlp_loader`) so callers that cross-import don't shadow each other. The
+reload class deliberately does *not* re-export `build_<name>_loader` as a method:
+post-processing code calls the free function directly with `pd_run.cfg.target` and
+`pd_run.cfg.data` so the indirection isn't paying for itself.
+
+`main()` calls the module-level functions directly; the `Saved<Name>Run` reload class
+delegates to those same functions, so there's no duplication between "fresh run from
+YAML" and "reload from disk" paths.
+
+`main()` writes the resolved `<Name>ExperimentConfig` to `run_meta.yaml` via
+`cfg.to_file(out_dir / RUN_META_FILENAME)`. There is no separate experiment-kind
+discriminator on disk — each post-processing caller imports the concrete
+`Saved<Name>Run` class it expects (e.g. `from
+param_decomp_lab.experiments.lm.run import SavedLMRun`); pydantic validation of the
+YAML against the wrong `ExperimentConfig` subclass fails fast at load time.
+
+The shared `ExperimentConfig[T, D]` generic, `EvalConfig`, and `RUN_META_FILENAME`
+live in `param_decomp_lab/experiments/utils.py`. The three in-repo experiments
+(`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`) are the canonical
+references.
 
 YAML schema (one validated pydantic tree — extra keys raise):
 
 ```yaml
 pd:      { ... PDConfig ... }
 runtime: { ... RuntimeConfig ... }
-cadence: { train_log_every, eval_every, slow_eval_every, n_eval_steps,
-           save_every, slow_eval_on_first_step }
-target:  { ... per-experiment TargetConfig ... }
-data:    { ... per-experiment DataConfig ... }
-eval:    { batch_size, metrics: [ {type: "...", ...}, ... ] }
+cadence: { train_log_every, save_every }
+target:  { ... per-experiment target config ... }
+data:    { ... per-experiment data config ... }
+eval:    { batch_size, n_steps, every, slow_every, slow_on_first_step,
+           metrics: [ {type: "...", ...}, ... ] }  # optional: omit to skip eval
+```
+
+For LM runs, `target` carries a discriminated union under `target.spec` (see
+`LMTargetSpec` in `param_decomp_lab/experiments/lm/run.py`):
+
+```yaml
+target:
+  spec:
+    kind: hf          # or "pretrained"
+    model_class: transformers.GPT2LMHeadModel
+    model_name: openai-community/gpt2
+  output_extract: logits
 ```
 
 Per-experiment console entry points are declared in `param_decomp_lab/pyproject.toml`:
@@ -117,8 +172,12 @@ pd-resid-mlp  path/to/config.yaml
 pd-lm         path/to/config.yaml
 ```
 
-For a brand-new experiment, drop a `run.py` next to a YAML config in your own package
-and either call its `main(...)` directly or wire it up to a console script.
+For a brand-new experiment, drop a `run.py` exposing the
+`<Name>ExperimentConfig`, the three `build_target` / `build_<name>_loader` /
+`make_run_batch` functions, and a `Saved<Name>Run` reload class next to a YAML
+config. Either call its `main(...)` directly or wire it up to a console script in
+`param_decomp_lab/pyproject.toml`. No central registry needs touching — post-processing
+callers import the new `Saved<Name>Run` directly from its module.
 
 ### Metrics
 
@@ -133,12 +192,13 @@ literal, (2) append the config to the `AnyLossMetricConfig` union in `configs.py
 (3) append the class to `LOSS_METRIC_CLASSES`.
 
 Eval metrics are caller-supplied. Users instantiate `Metric` objects in their `run.py`
-and pass them to `optimize(eval_metrics=...)`. The in-repo experiments validate the YAML
-`eval.metrics` list via the `AnyEvalMetricConfig` discriminated union on `EvalConfig`,
-then dispatch each entry to its `Metric` class with `EVAL_METRIC_CLASSES`:
+and include them in the `EvalLoop(metrics=...)` bundle they pass to `optimize`. The
+in-repo experiments validate the YAML `eval.metrics` list via the `AnyEvalMetricConfig`
+discriminated union on `EvalConfig`, then dispatch each entry to its `Metric` class
+with `EVAL_METRIC_CLASSES`:
 
 ```python
-eval_metrics = [EVAL_METRIC_CLASSES[m.type](m) for m in cfg.eval.metrics]
+metrics = [EVAL_METRIC_CLASSES[m.type](m) for m in cfg.eval.metrics]
 ```
 
 The lab's set of eval metrics mirrors the loss-metrics wiring: each `BaseConfig` carries
@@ -151,14 +211,18 @@ means: (1) define the `Metric` subclass + its `BaseConfig` with a unique `type` 
 
 ### Configs
 
-The PD trainer is configured by two pydantic configs plus a `Cadence` and a `RunSink`:
+The PD trainer is configured by two pydantic configs, a `Cadence`, a `RunSink`, and
+an optional `EvalLoop`:
 
 - **`PDConfig`** — algorithm: seed, ci_config, loss_metrics, optimizers, decomposition targets,
   tied_weights, faithfulness warmup. Flipping any field here changes what algorithm runs.
 - **`RuntimeConfig`** — compute substrate: autocast_bf16, device, dp. Perturbs numerics
   without changing the algorithm.
-- **`Cadence`** (frozen `BaseConfig` in `param_decomp.configs`) — when the loop emits:
-  train-log / eval / slow-eval / checkpoint periods and eval-batch count. Pure data; no I/O.
+- **`Cadence`** (frozen `BaseConfig` in `param_decomp.configs`) — rhythm of non-eval
+  emissions: `train_log_every` (required) and `save_every` (optional). Pure data; no I/O.
+- **`EvalLoop`** (frozen dataclass in `param_decomp.optimize`, *optional* — pass `None` to
+  skip eval) — runtime objects (`loader`, `metrics`, `n_steps`) bundled with eval timing
+  (`every`, `slow_every`, `slow_on_first_step`). Owns its own predicates.
 - **`RunSink`** (caller-supplied, Protocol in core) — where output goes: `log` / `console` /
   `checkpoint`. Sink methods own all side effects.
 
@@ -287,10 +351,14 @@ This repository implements methods from two key research papers on parameter dec
   `metrics/persistent_pgd_recon.py`. Eval metrics ship in `param_decomp_lab/eval_metrics/`.
 
 **In-repo experiment scripts** (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`)
-each declare a `<Experiment>ExperimentConfig(ExperimentConfig[TargetConfig, DataConfig])`
-subclass, parse the YAML via `from_file(...)`, build target/loaders/metrics/sink, and call
-`optimize()`. The generic `ExperimentConfig` + `EvalConfig` + `save_run_meta` live in
-`param_decomp_lab/experiments/utils.py`.
+each declare a `<Experiment>ExperimentConfig` subclass of `ExperimentConfig[T, D]`, the
+three module-level `build_target` / `build_<name>_loader` / `make_run_batch` functions, and a
+`Saved<Name>Run` frozen dataclass. `main()` parses the YAML, calls the build functions,
+writes `cfg.to_file(out_dir / "run_meta.yaml")`, then `optimize()`. Reload-side callers
+import the concrete `Saved<Name>Run` class for the experiment they're operating on (e.g.
+`from param_decomp_lab.experiments.lm.run import SavedLMRun`) — there is no kind
+discriminator on disk and no dispatch table. The generic `ExperimentConfig`,
+`EvalConfig`, and `RUN_META_FILENAME` live in `param_decomp_lab/experiments/utils.py`.
 
 **Terminology: Sources vs Masks:**
 
@@ -301,28 +369,29 @@ subclass, parse the YAML via `from_file(...)`, build target/loaders/metrics/sink
 
 Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 
-- `run.py` - Composition root: parses YAML, builds target/loaders/metrics/configs/sink, calls `optimize()`.
+- `run.py` - Composition root: parses YAML, builds target/loaders/metrics/configs/sink, calls `optimize()`. Also defines the per-experiment `Saved<Name>Run` reload class.
 - `*_config.yaml` - Built-in YAML configs.
 - `models.py` (TMS/ResidMLP) / `data.py` (LM) - Model/data helpers.
 - `train_*.py` (TMS/ResidMLP) - Target-model pretraining scripts.
-- `plotting.py` (TMS/ResidMLP) - Visualization utilities.
 
 **Key Data Flow:**
 
 1. The experiment script (`python -m param_decomp_lab.experiments.<kind>.run config.yaml`)
    validates the whole YAML as a single `<Experiment>ExperimentConfig` tree (pydantic — extra
-   keys raise), then builds the target `nn.Module`, train/eval dataloaders, and eval `Metric`
-   list from `cfg.target` / `cfg.data` / `cfg.eval`.
+   keys raise), then builds the target `nn.Module`, train loader, and — when `cfg.eval`
+   is set — an `EvalLoop` from `cfg.target` / `cfg.data` / `cfg.eval`.
 2. The script picks a `RunSink` (local files, or `RunSink.with_wandb(...)`); `cfg.cadence`
-   controls when the trainer emits.
-3. It calls `optimize(...)` with all of the above. `optimize()` constructs `ComponentModel`,
-   binds eval metrics, instantiates loss metrics from `pd_config.loss_metrics`, and runs the
-   training loop. Side effects (logging, checkpoints) flow through `RunSink`.
+   controls when train logs and checkpoints fire; `EvalLoop` carries its own eval timing.
+3. It calls `optimize(...)` with all of the above (or `eval_loop=None` to skip eval).
+   `optimize()` constructs `ComponentModel`, binds eval metrics, instantiates loss metrics
+   from `pd_config.loss_metrics`, and runs the training loop. Side effects (logging,
+   checkpoints) flow through `RunSink`.
 
 **Configuration System:**
 
 - YAML experiment configs are one validated `ExperimentConfig` tree with blocks `pd:`,
-  `runtime:`, `cadence:`, `target:`, `data:`, `eval:` (see "Adding a new experiment" above).
+  `runtime:`, `cadence:`, `target:`, `data:`, and an optional `eval:` block (see
+  "Adding a new experiment" above). Omit `eval:` to disable eval.
 - Pydantic models provide type safety and validation across the whole tree.
 - WandB integration for experiment tracking and model storage (via `RunSink.with_wandb(...)`).
 
@@ -344,7 +413,7 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 │   ├── tests/                       # Core-library test suite
 │   ├── configs.py                   # PDConfig + RuntimeConfig + Cadence + OptimizerConfig + AnyLossMetricConfig
 │   ├── masks.py                     # Runtime mask payloads, Router impls, SamplingType / SubsetRoutingType configs, stochastic mask helpers
-│   ├── optimize.py                  # optimize() — the core entrypoint (also holds loop_dataloader + collect_metric_outputs)
+│   ├── optimize.py                  # optimize() + EvalLoop — the core entrypoint and optional eval bundle
 │   ├── run_sink.py                  # RunSink Protocol — 3-method output contract optimize() calls
 │   ├── component_model.py           # ComponentModel wrapper (target model + components + CI fn)
 │   ├── components.py                # Components ABC + LinearComponents / EmbeddingComponents + make_components + get_module_input_dim
@@ -361,12 +430,12 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 ├── param_decomp_lab/                # Lab tooling — experiments, post-processing, app, infra
 │   ├── infra/                       # Cross-subsystem plumbing: settings, paths, slurm, wandb, sqlite, git, run_files, markdown, pydantic
 │   ├── experiments/
-│   │   ├── tms/, resid_mlp/, lm/    # Each: run.py + YAMLs + per-experiment helpers
-│   │   ├── utils.py                 # ExperimentConfig[T, D] + EvalConfig + save_run_meta
-│   │   ├── loadable_module.py       # LoadableModule ABC used by lab experiment models
-│   │   └── __init__.py              # EXPERIMENTS registry (name → experiment module)
+│   │   ├── tms/, resid_mlp/         # Each: run.py (<Name>ExperimentConfig + build_*/make_run_batch + Saved<Name>Run) + YAMLs + data.py + train_*.py + helpers
+│   │   ├── lm/                      # run.py (LMTargetSpec discriminated union + build_*/make_run_batch + SavedLMRun) + YAMLs + data.py + pretrain/
+│   │   ├── lm/pretrain/             # LM target-model pretraining (see lm/pretrain/CLAUDE.md)
+│   │   ├── utils.py                 # ExperimentConfig[T, D] + EvalConfig + RUN_META_FILENAME
+│   │   └── __init__.py              # bare package init (no central registry)
 │   ├── eval_metrics/                # Eval Metric classes + AnyEvalMetricConfig union + EVAL_METRIC_CLASSES dispatch
-│   ├── pretrain/                    # Target model pretraining (see pretrain/CLAUDE.md)
 │   ├── harvest/                     # Statistics collection: pipeline + accumulator (see harvest/CLAUDE.md)
 │   ├── autointerp/                  # LLM interpretation (see autointerp/CLAUDE.md)
 │   ├── clustering/                  # Component clustering (see clustering/CLAUDE.md)
@@ -377,13 +446,12 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 │   ├── app/                         # Web visualization app (see app/CLAUDE.md)
 │   ├── topology/, adapters/, editing/  # Model-topology utilities
 │   ├── models/                      # batch_and_loss_fns helpers (run_batch_*, recon_loss_*, calc_kl_divergence_lm) + component_model_utils (from_checkpoint, get_all_component_acts)
-│   ├── utils/                       # seed.py (set_seed), data.py (SparseFeatureDataset, DatasetGeneratedDataLoader), distributed.py (init/cleanup/log0/get_device/ensure_cached_and_call)
+│   ├── utils/                       # seed.py (set_seed), distributed.py (init/cleanup/log0/get_device/ensure_cached_and_call)
 │   ├── scripts/                     # alpha_sweep, prompt_utils
 │   ├── tests/                       # Lab test suite
 │   ├── target_ci.py                 # TargetCIPattern (Identity/Dense), TargetCISolution — for toy-model eval
 │   ├── _linear_sum_assignment.py    # Vendored Hungarian algorithm (impl detail of target_ci)
-│   ├── run_sink.py                  # Concrete RunSink (local files + wandb + rank-aware no-op)
-│   └── saved_run.py                 # SavedRun: reload a PD run via its experiment module
+│   └── run_sink.py                  # Concrete RunSink (local files + wandb + rank-aware no-op)
 ├── Makefile                         # Dev commands (make check, make test)
 ├── pyproject.toml                   # Core param-decomp package + workspace config
 └── param_decomp_lab/pyproject.toml  # Lab param-decomp-lab package + pd-* entry points
@@ -399,7 +467,7 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 | `pd-resid-mlp` | `param_decomp_lab/experiments/resid_mlp/run.py` | Run the ResidMLP experiment for the given YAML config |
 | `pd-lm` | `param_decomp_lab/experiments/lm/run.py` | Run the LM experiment for the given YAML config |
 | `pd-lm-layerwise` | `param_decomp_lab/experiments/lm/layerwise.py` | Split an LM YAML into per-matrix configs and submit as a SLURM array |
-| `pd-pretrain` | `param_decomp_lab/pretrain/cli.py` | Pretrain target models |
+| `pd-pretrain` | `param_decomp_lab/experiments/lm/pretrain/cli.py` | Pretrain target models |
 | `pd-harvest` | `param_decomp_lab/harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |
 | `pd-autointerp` | `param_decomp_lab/autointerp/scripts/run_slurm_cli.py` | Submit autointerp SLURM job |
 | `pd-attributions` | `param_decomp_lab/dataset_attributions/scripts/run_slurm_cli.py` | Submit dataset-attribution SLURM job |

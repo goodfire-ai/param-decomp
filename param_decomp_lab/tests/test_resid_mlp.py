@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from torch.utils.data import DataLoader
+
 from param_decomp.ci_fns import LayerwiseCiConfig
 from param_decomp.configs import Cadence, OptimizerConfig, PDConfig, RuntimeConfig
 from param_decomp.decomposition_targets import (
@@ -9,12 +11,11 @@ from param_decomp.decomposition_targets import (
 from param_decomp.metrics.faithfulness import FaithfulnessLossConfig
 from param_decomp.metrics.importance_minimality import ImportanceMinimalityLossConfig
 from param_decomp.metrics.stochastic_recon import StochasticReconLossConfig
-from param_decomp.optimize import optimize
+from param_decomp.optimize import EvalLoop, optimize
 from param_decomp.schedule import ScheduleConfig
 from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
+from param_decomp_lab.experiments.resid_mlp.data import ResidMLPDataset
 from param_decomp_lab.experiments.resid_mlp.models import ResidMLP, ResidMLPModelConfig
-from param_decomp_lab.experiments.resid_mlp.resid_mlp_dataset import ResidMLPDataset
-from param_decomp_lab.experiments.synthetic_data import DatasetGeneratedDataLoader
 from param_decomp_lab.run_sink import RunSink
 from param_decomp_lab.seed import set_seed
 
@@ -72,10 +73,12 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
             target_model, identity_decomposition_targets=pd_config.identity_decomposition_targets
         )
 
-    dataset = ResidMLPDataset(
+    eval_batch_size = 4
+    train_dataset = ResidMLPDataset(
         n_features=resid_mlp_model_config.n_features,
         feature_probability=0.01,
         device=device,
+        batch_size=pd_config.batch_size,
         calc_labels=False,
         label_type=None,
         act_fn_name=None,
@@ -84,31 +87,41 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         data_generation_type="at_least_zero_active",
         synced_inputs=None,
     )
-
-    eval_batch_size = 4
-    train_loader = DatasetGeneratedDataLoader(
-        dataset, batch_size=pd_config.batch_size, shuffle=False
+    eval_dataset = ResidMLPDataset(
+        n_features=resid_mlp_model_config.n_features,
+        feature_probability=0.01,
+        device=device,
+        batch_size=eval_batch_size,
+        calc_labels=False,
+        label_type=None,
+        act_fn_name=None,
+        label_fn_seed=None,
+        label_coeffs=None,
+        data_generation_type="at_least_zero_active",
+        synced_inputs=None,
     )
-    eval_loader = DatasetGeneratedDataLoader(dataset, batch_size=eval_batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=None)
+    eval_loader = DataLoader(eval_dataset, batch_size=None)
 
     sink = RunSink.local(tmp_path)
-    cadence = Cadence(
-        train_log_every=50,
-        eval_every=10,
-        slow_eval_every=10,
-        n_eval_steps=1,
-        save_every=None,
+    cadence = Cadence(train_log_every=50, save_every=None)
+    eval_loop = EvalLoop(
+        loader=eval_loader,
+        metrics=[],
+        n_steps=1,
+        every=10,
+        slow_every=10,
+        slow_on_first_step=False,
     )
 
     optimize(
         target_model=target_model,
         train_loader=train_loader,
-        eval_loader=eval_loader,
         run_batch=run_batch_first_element,
         reconstruction_loss=recon_loss_mse,
         pd_config=pd_config,
         runtime_config=RuntimeConfig(device=device),
-        cadence=cadence,
         sink=sink,
-        eval_metrics=[],
+        cadence=cadence,
+        eval_loop=eval_loop,
     )

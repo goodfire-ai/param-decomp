@@ -13,12 +13,19 @@ from param_decomp_lab.eval_metrics.plotting import plot_component_activation_den
 
 
 class ComponentActivationDensityConfig(BaseConfig):
+    """Config for `ComponentActivationDensity`.
+
+    Attributes:
+        type: Discriminator literal for this metric.
+        ci_alive_threshold: CI value above which a component counts as active.
+    """
+
     type: Literal["ComponentActivationDensity"] = "ComponentActivationDensity"
     ci_alive_threshold: float = 0.0
 
 
 class ComponentActivationDensity(Metric[ComponentActivationDensityConfig]):
-    """Activation density for each component."""
+    """Per-layer histogram of each component's activation density across the eval set."""
 
     log_namespace = "figures"
     slow = True

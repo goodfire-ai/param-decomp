@@ -1,6 +1,6 @@
 """Configuration for harvesting component activations into membership snapshots."""
 
-from pydantic import PositiveInt, field_validator
+from pydantic import PositiveInt
 
 from param_decomp.base_config import BaseConfig, Probability
 from param_decomp_lab.clustering.formatting import (
@@ -8,6 +8,7 @@ from param_decomp_lab.clustering.formatting import (
     ModuleFilterFunc,
     ModuleFilterSource,
 )
+from param_decomp_lab.infra.paths import ModelPath
 
 
 def _to_module_filter(source: ModuleFilterSource) -> ModuleFilterFunc:
@@ -22,10 +23,15 @@ def _to_module_filter(source: ModuleFilterSource) -> ModuleFilterFunc:
 
 
 class HarvestConfig(BaseConfig):
-    model_path: str
+    """Settings for an LM-run clustering harvest.
+
+    Clustering currently only consumes LM PD runs — `model_path` must point at one
+    (a local checkpoint directory or a W&B run reference).
+    """
+
+    model_path: ModelPath
     batch_size: PositiveInt
-    n_samples: PositiveInt | None = None
-    n_tokens: PositiveInt | None = None
+    n_tokens: PositiveInt
     n_tokens_per_seq: PositiveInt | None = None
     use_all_tokens_per_seq: bool = False
     dataset_seed: int = 0
@@ -33,11 +39,6 @@ class HarvestConfig(BaseConfig):
     filter_dead_threshold: float = 0.001
     filter_dead_stat: DeadComponentFilterStat = "max"
     module_name_filter: ModuleFilterSource = None
-
-    @field_validator("model_path")
-    def validate_model_path(cls, v: str) -> str:
-        assert v.startswith("wandb:"), f"model_path must start with 'wandb:', got: {v}"
-        return v
 
     @property
     def filter_modules(self) -> ModuleFilterFunc:

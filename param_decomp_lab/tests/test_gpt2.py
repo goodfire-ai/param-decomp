@@ -17,7 +17,7 @@ from param_decomp.metrics.stochastic_recon import StochasticReconLossConfig
 from param_decomp.metrics.stochastic_recon_layerwise import (
     StochasticReconLayerwiseLossConfig,
 )
-from param_decomp.optimize import optimize
+from param_decomp.optimize import EvalLoop, optimize
 from param_decomp.schedule import ScheduleConfig
 from param_decomp_lab.batch_and_loss_fns import make_run_batch, recon_loss_kl
 from param_decomp_lab.eval_metrics.ci_l0 import CI_L0, CI_L0Config
@@ -102,24 +102,24 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
     )
 
     sink = RunSink.local(tmp_path)
-    cadence = Cadence(
-        train_log_every=50,
-        eval_every=500,
-        slow_eval_every=500,
-        slow_eval_on_first_step=False,
-        n_eval_steps=1,
-        save_every=None,
+    cadence = Cadence(train_log_every=50, save_every=None)
+    eval_loop = EvalLoop(
+        loader=eval_loader,
+        metrics=[CI_L0(CI_L0Config(ci_alive_threshold=0.1, groups=None))],
+        n_steps=1,
+        every=500,
+        slow_every=500,
+        slow_on_first_step=False,
     )
 
     optimize(
         target_model=target_model,
         train_loader=train_loader,
-        eval_loader=eval_loader,
         run_batch=make_run_batch("logits"),
         reconstruction_loss=recon_loss_kl,
         pd_config=pd_config,
         runtime_config=RuntimeConfig(device=device),
-        cadence=cadence,
         sink=sink,
-        eval_metrics=[CI_L0(CI_L0Config(ci_alive_threshold=0.1, groups=None))],
+        cadence=cadence,
+        eval_loop=eval_loop,
     )

@@ -23,8 +23,16 @@ def _clean_metric_output(
 ) -> MetricOutType:
     """Normalize a single metric's `compute()` return into a flat map.
 
-    Accepts either a scalar tensor or a dict whose values are scalars, tensors, images,
-    or charts.
+    Accepts either a scalar tensor or a dict whose values are scalars, tensors,
+    images, or charts.
+
+    Args:
+        log_namespace: Namespace prefix to use when emitting keys.
+        metric_name: Fallback key when `computed_raw` is a single scalar tensor.
+        computed_raw: The raw return value of one `Metric.compute()` call.
+
+    Returns:
+        A flat `{namespaced_key: value}` map ready for `RunSink.log`.
     """
     computed: MetricOutType = {}
     match computed_raw:

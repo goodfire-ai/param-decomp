@@ -1,5 +1,10 @@
 """Top-level PD configs: `PDConfig` (algorithm), `RuntimeConfig` (substrate), and `Cadence`
-(when the loop emits)."""
+(when the loop emits).
+
+``AnyLossMetricConfig`` is a pydantic discriminated-union alias over every
+``LossMetricConfig`` in ``param_decomp.metrics``. It is keyed by each config's
+``type`` literal so pydantic can validate ``PDConfig.loss_metrics`` entries directly.
+"""
 
 from functools import cached_property
 from typing import Annotated, Literal, Self
@@ -39,7 +44,14 @@ from param_decomp.schedule import ScheduleConfig
 
 
 class OptimizerConfig(BaseConfig):
-    """Configuration for one AdamW optimizer."""
+    """Configuration for one AdamW optimizer.
+
+    Attributes:
+        lr_schedule: Learning rate schedule.
+        weight_decay: AdamW weight decay.
+        betas: AdamW ``(beta1, beta2)``.
+        grad_clip_norm: If set, clip the grad norm of this group's parameters to this value.
+    """
 
     lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule")
     weight_decay: NonNegativeFloat = Field(default=0.0, description="AdamW weight decay")
@@ -77,6 +89,14 @@ class RuntimeConfig(BaseConfig):
 
     Perturbs numerics but doesn't change the algorithm. Future home for NCCL flags,
     gradient accumulation steps, fp8 variants, etc.
+
+    Attributes:
+        autocast_bf16: Use ``torch.autocast`` with bfloat16 mixed precision in training and eval.
+        device: Device to run on, e.g. ``'cuda'``, ``'cuda:0'``, or ``'cpu'``.
+        dp: Number of GPUs for data parallelism. ``None`` means single GPU/CPU. Bounded by the
+            cluster's GPUs-per-node for single-node DDP; multiples of that for multi-node.
+            Declares the experiment's compute requirement; overridable ad-hoc by
+            ``pd-run --dp N``.
     """
 
     autocast_bf16: bool = Field(
@@ -108,9 +128,35 @@ class RuntimeConfig(BaseConfig):
 class PDConfig(BaseConfig):
     """Algorithm specification: seed, CI function, losses, optimizers, target modules.
 
-    Flipping any field here changes what algorithm runs. Pair with `RuntimeConfig`
-    (substrate), `Cadence` (when to emit) and `RunSink` (where output goes) when
-    calling `optimize`.
+    Flipping any field here changes what algorithm runs. Pair with ``RuntimeConfig``
+    (substrate), ``Cadence`` (when to emit) and ``RunSink`` (where output goes) when
+    calling ``optimize``.
+
+    Attributes:
+        seed: Random seed for reproducibility, including LM dataset shuffling.
+        n_mask_samples: Number of stochastic masks to sample when using stochastic recon losses.
+        ci_config: Configuration for the causal importance function.
+        sampling: Sampling mode for stochastic elements (``"continuous"`` or ``"binomial"``).
+        sigmoid_type: Sigmoid variant used for causal importance squashing.
+        decomposition_targets: Module patterns + ``C`` values selecting which modules to decompose.
+        identity_decomposition_targets: Patterns selecting modules to receive a pre-identity shim
+            so the identity op itself can be decomposed.
+        use_delta_component: If true, add an extra component holding the difference between target
+            and decomposed weights.
+        tied_weights: Pairs ``(src, tgt)`` of component module names whose weights should be tied.
+            After init, ``tgt``'s ``U`` / ``V`` are set to ``src``'s ``V.T`` / ``U.T``. Ties make
+            training nondeterministic.
+        loss_metrics: Training-loss metrics. Each entry's ``type`` selects the concrete metric;
+            ``coeff`` weights it in the total loss. Active loss metrics are also evaluated.
+        components_optimizer: Optimizer config for the component (``LinearComponent`` etc.)
+            parameters.
+        ci_fn_optimizer: Optimizer config for the CI function parameters.
+        steps: Total number of optimisation steps.
+        batch_size: Total batch size (may be divided across multiple devices).
+        faithfulness_warmup_steps: Number of warmup steps to optimize faithfulness loss before
+            main training.
+        faithfulness_warmup_lr: Learning rate for the warmup phase.
+        faithfulness_warmup_weight_decay: Weight decay for the warmup phase optimizer.
     """
 
     # --- General ---
@@ -213,44 +259,30 @@ class PDConfig(BaseConfig):
 
 
 class Cadence(BaseConfig):
-    """Rhythm of the PD training loop: periods (in steps) for train logging,
-    evaluation, slow eval, and checkpointing, plus `n_eval_steps` — the number
-    of eval-loader batches consumed on each eval tick.
+    """Rhythm of non-eval loop emissions: train-log and checkpoint periods.
 
-    Held separately from `RunSink` so the sink only owns *where* output goes;
-    `Cadence` owns *when* (and how much) the loop emits.
+    Held separately from ``RunSink`` so the sink only owns *where* output goes;
+    ``Cadence`` owns *when* train logs and checkpoints fire. Eval timing lives on
+    ``EvalLoop``, alongside the runtime objects it depends on.
 
-    `slow_eval_every` must be a multiple of `eval_every`: the trainer only checks
-    `should_run_slow_eval` on steps where `should_eval` already fired.
+    Attributes:
+        train_log_every: Period (in train steps) between train-log emissions.
+        save_every: Period (in train steps) between checkpoint saves. ``None`` disables periodic
+            saves; ``optimize()`` still checkpoints at the final step.
     """
 
     train_log_every: PositiveInt
-    eval_every: PositiveInt
-    slow_eval_every: PositiveInt
-    n_eval_steps: PositiveInt
     save_every: PositiveInt | None = None
-    slow_eval_on_first_step: bool = True
-
-    @model_validator(mode="after")
-    def validate_slow_eval_multiple(self) -> Self:
-        assert self.slow_eval_every % self.eval_every == 0, (
-            f"slow_eval_every ({self.slow_eval_every}) must be a multiple of "
-            f"eval_every ({self.eval_every})"
-        )
-        return self
 
     def should_log_train(self, step: int) -> bool:
+        """Return whether the train log should fire at ``step``."""
         return step % self.train_log_every == 0
 
-    def should_eval(self, step: int) -> bool:
-        return step % self.eval_every == 0
-
-    def should_run_slow_eval(self, step: int) -> bool:
-        if step == 0:
-            return self.slow_eval_on_first_step
-        return step % self.slow_eval_every == 0
-
     def should_save(self, step: int) -> bool:
+        """Return whether a periodic checkpoint should fire at ``step``.
+
+        Always false when ``save_every`` is unset or ``step == 0``.
+        """
         if self.save_every is None or step == 0:
             return False
         return step % self.save_every == 0
