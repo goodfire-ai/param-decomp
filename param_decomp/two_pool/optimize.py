@@ -20,6 +20,7 @@ hidden behind the function boundary.
 import itertools
 import time
 from contextlib import nullcontext
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -58,6 +59,23 @@ from param_decomp.two_pool.reductions import (
     aggregate_max_memory_to_rank0,
 )
 from param_decomp.two_pool.runtime import _TwoPoolRuntime
+
+
+@dataclass
+class _PreGatheredStateDictShim:
+    """TEMPORARY adapter — wraps a pre-gathered model state_dict to satisfy
+    ``RunSink.checkpoint``'s `TrainerLike` protocol. Removed when
+    `TwoPoolTrainer` lands (Task #5) and the loop body is restructured.
+    """
+
+    _state_dict: dict[str, Tensor]
+
+    def consumable_model_state_dict(self) -> dict[str, Tensor]:
+        return self._state_dict
+
+    def state_blob(self) -> dict[str, Any]:
+        raise NotImplementedError("resume not yet wired for the 2-pool path")
+
 
 # Loss-metric type discriminators required for the 2-pool training path.
 # Each MUST appear in ``pd_config.loss_metrics`` with a non-None ``coeff``.
@@ -285,7 +303,10 @@ def optimize_two_pool(
                 and step % cadence.save_every == 0
                 and layout.my_rank == 0
             ):
-                sink.checkpoint(component_model.state_dict(), step=step)
+                # TODO(Task #5): replace with `sink.checkpoint(trainer, step=step)` once
+                # TwoPoolTrainer lands. For now we adapt the rank-0-only state_dict to the
+                # new TrainerLike protocol.
+                sink.checkpoint(_PreGatheredStateDictShim(component_model.state_dict()), step=step)
 
             if profiler is not None:
                 profiler.step()

@@ -31,6 +31,7 @@ from tqdm import tqdm
 from param_decomp.base_config import BaseConfig
 from param_decomp.distributed import is_main_process
 from param_decomp.log import logger
+from param_decomp.run_sink import TrainerLike
 from param_decomp_lab.infra.run_files import save_file
 from param_decomp_lab.infra.wandb import init_wandb, try_wandb
 
@@ -187,20 +188,21 @@ class RunSink:
         for line in lines:
             tqdm.write(line)
 
-    def checkpoint(self, state_dict: dict[str, Any], step: int) -> None:
-        """Save `state_dict` to ``{out_dir}/model_{step}.pth`` and push to wandb.
+    def checkpoint(self, trainer: TrainerLike, step: int) -> None:
+        """Save ``trainer.consumable_model_state_dict()`` to ``{out_dir}/model_{step}.pth``
+        and push to wandb.
 
         No-op when ``out_dir`` is ``None``. Wandb upload happens only when wandb is
         active for this process.
 
         Args:
-            state_dict: Tensor state dict to serialize via `save_file`.
+            trainer: The trainer whose consumable model state we serialize.
             step: Training step used in the checkpoint filename.
         """
         if self.out_dir is None:
             return
         path = self.out_dir / f"model_{step}.pth"
-        save_file(state_dict, path)
+        save_file(trainer.consumable_model_state_dict(), path)
         logger.info(f"Saved checkpoint to {path}")
         if self._wandb_active:
             try_wandb(wandb.save, str(path), base_path=str(self.out_dir), policy="now")

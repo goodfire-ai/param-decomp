@@ -37,6 +37,7 @@ sliced-from-global pattern.
 import itertools
 import time
 from contextlib import nullcontext
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -84,6 +85,23 @@ from param_decomp.three_pool.step_layerwise import (
 from param_decomp.three_pool.step_ppgd import finalize_ppgd_async_drain, step_ppgd
 from param_decomp.torch_helpers import loop_dataloader
 from param_decomp.two_pool.loss_strategy import LayerwiseLossStrategy
+
+
+@dataclass
+class _PreGatheredStateDictShim:
+    """TEMPORARY adapter — wraps a pre-gathered model state_dict to satisfy
+    ``RunSink.checkpoint``'s `TrainerLike` protocol. Removed when
+    `ThreePoolTrainer` lands (Task #6) and the loop body is restructured.
+    """
+
+    _state_dict: dict[str, Tensor]
+
+    def consumable_model_state_dict(self) -> dict[str, Tensor]:
+        return self._state_dict
+
+    def state_blob(self) -> dict[str, Any]:
+        raise NotImplementedError("resume not yet wired for the 3-pool path")
+
 
 # Loss-metric type discriminators required for the 3-pool training path.
 # Same set as two_pool — three-pool reuses the same loss-metric vocabulary.
@@ -626,7 +644,9 @@ def _gather_and_save(
     )
     if layout.my_rank == 0:
         assert state_dict is not None
-        sink.checkpoint(state_dict, step=step)
+        # TODO(Task #6): replace with `sink.checkpoint(trainer, step=step)` once
+        # ThreePoolTrainer lands and owns the gather.
+        sink.checkpoint(_PreGatheredStateDictShim(state_dict), step=step)
 
 
 def _seq_dims_from_batch(batch: Any) -> tuple[int, ...]:

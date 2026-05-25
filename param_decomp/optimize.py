@@ -1,17 +1,24 @@
-"""PD optimization loop.
+"""The PD trainer.
 
-Exposes one entrypoint, :func:`optimize`. It is the sole way to run PD from the
-core library — there is no driver-mediated wrapper, no ``RunConfig``, no
-registry. Callers build their target model, dataloaders, loss objective (via
-``PDConfig.loss_metrics``), and list of eval ``Metric`` instances themselves,
-then hand them in. :class:`EvalLoop` bundles the eval runtime objects with their
-timing.
+Two entry points:
+
+- :class:`Trainer` — stateful training class. Construction sets up the
+  `ComponentModel`, the two optimizers, and the loss-metric instances from
+  ``pd_config``. :meth:`Trainer.run` advances the training loop from
+  ``self.step`` to ``pd_config.steps``. :meth:`Trainer.state_blob` and
+  :meth:`Trainer.from_blob` round-trip an atomic cfg + state dict that lets a
+  caller persist and restore the full training state (used by resumption).
+- :func:`optimize` — thin convenience wrapper that constructs a `Trainer` and
+  calls :meth:`Trainer.run`. Preserves the original function-style entry point
+  for callers that don't need resumption.
+
+Both go through the same code path.
 """
 
 import gc
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Self, cast
 
 import torch
 import torch.nn as nn
@@ -45,7 +52,7 @@ from param_decomp.faithfulness_warmup import run_faithfulness_warmup
 from param_decomp.log import logger
 from param_decomp.metrics.base import LossMetricConfig, Metric
 from param_decomp.metrics.context import MetricContext
-from param_decomp.metrics.dispatch import instantiate_metrics
+from param_decomp.metrics.dispatch import instantiate_loss_metrics
 from param_decomp.metrics.output import collect_metric_outputs
 from param_decomp.metrics.persistent_pgd_recon import validate_pgd_scope
 from param_decomp.run_sink import RunSink
@@ -57,11 +64,11 @@ from param_decomp.torch_helpers import bf16_autocast, loop_dataloader
 class EvalLoop:
     """Eval-loop runtime objects bundled with their timing.
 
-    Pass ``eval_loop=None`` to :func:`optimize` to skip eval entirely. When set,
-    the trainer evaluates every ``every`` steps; on steps that are also multiples
-    of ``slow_every``, slow metrics fire too. ``slow_every`` must be a multiple
-    of ``every`` — the trainer only checks :meth:`should_run_slow_eval` on steps
-    where :meth:`should_eval` already fired.
+    Pass ``eval_loop=None`` to :meth:`Trainer.run` (or :func:`optimize`) to skip
+    eval entirely. When set, the trainer evaluates every ``every`` steps; on steps
+    that are also multiples of ``slow_every``, slow metrics fire too. ``slow_every``
+    must be a multiple of ``every`` — the trainer only checks :meth:`should_run_slow_eval`
+    on steps where :meth:`should_eval` already fired.
 
     Attributes:
         loader: Eval data loader. Looped for the lifetime of training.
@@ -152,6 +159,375 @@ def tie_component_weights(
         tgt.V.data = src.U.data.T
 
 
+class Trainer:
+    """Stateful PD trainer.
+
+    Construction wires up the `ComponentModel`, both AdamW optimizers, and the
+    loss-metric instances declared in ``pd_config.loss_metrics``. :meth:`run`
+    advances the training loop from ``self.step`` to ``pd_config.steps``.
+    :meth:`state_blob` and :meth:`from_blob` round-trip an atomic cfg + state
+    dict that a caller can persist and restore.
+
+    All ranks construct a `Trainer`. Sink output and the loader-replay skip on
+    resume are governed by ``self.step`` (advanced by :meth:`run`,
+    overwritten by :meth:`_load_state`).
+    """
+
+    pd_config: PDConfig
+    runtime_config: RuntimeConfig
+    reconstruction_loss: ReconstructionLoss
+    component_model: ComponentModel
+    components_optimizer: optim.Optimizer
+    ci_fn_optimizer: optim.Optimizer
+    loss_metrics: dict[str, Metric[Any]]
+    step: int
+
+    def __init__(
+        self,
+        *,
+        target_model: nn.Module,
+        run_batch: RunBatch,
+        reconstruction_loss: ReconstructionLoss,
+        pd_config: PDConfig,
+        runtime_config: RuntimeConfig,
+    ) -> None:
+        self.pd_config = pd_config
+        self.runtime_config = runtime_config
+        self.reconstruction_loss = reconstruction_loss
+        self.step = 0
+
+        dist_state = get_distributed_state()
+        device = runtime_config.device
+        validate_pgd_scope(
+            pd_config.loss_metrics,
+            batch_size=pd_config.batch_size,
+            world_size=dist_state.world_size if dist_state is not None else 1,
+        )
+
+        if pd_config.identity_decomposition_targets is not None:
+            insert_identity_operations_(
+                target_model,
+                identity_decomposition_targets=pd_config.identity_decomposition_targets,
+            )
+
+        target_model.requires_grad_(False)
+        target_model.eval()
+        decomposition_targets = resolve_decomposition_targets(
+            target_model, pd_config.all_decomposition_target_configs
+        )
+
+        seed_all_ranks(pd_config.seed)
+        model = ComponentModel(
+            target_model=target_model,
+            run_batch=run_batch,
+            decomposition_targets=decomposition_targets,
+            ci_config=pd_config.ci_config,
+            sigmoid_type=pd_config.sigmoid_type,
+        )
+        model.to(device)
+
+        # Diverge global RNG per rank so stochastic masks/sources differ across DP workers.
+        seed_per_rank(pd_config.seed)
+
+        if dist_state is not None:
+            if dist_state.backend == "nccl":
+                device_id = dist_state.local_rank
+                self._wrapped_model: nn.Module = torch.nn.parallel.DistributedDataParallel(
+                    model, device_ids=[device_id], output_device=device_id
+                )
+            else:
+                self._wrapped_model = torch.nn.parallel.DistributedDataParallel(model)
+            component_model = cast(ComponentModel, self._wrapped_model.module)
+        else:
+            self._wrapped_model = model
+            component_model = model
+        assert isinstance(component_model, ComponentModel)
+        self.component_model = component_model
+
+        if pd_config.tied_weights is not None:
+            tie_component_weights(component_model, pd_config.tied_weights)
+
+        self._component_params: list[torch.nn.Parameter] = []
+        for name in component_model.target_module_paths:
+            self._component_params.extend(component_model.components[name].parameters())
+        self._ci_fn_params = list(component_model.ci_fn.parameters())
+        assert len(self._component_params) > 0, "No parameters found in components to optimize"
+
+        self.components_optimizer = optim.AdamW(
+            self._component_params,
+            lr=pd_config.components_optimizer.lr_schedule.start_val,
+            betas=pd_config.components_optimizer.betas,
+            weight_decay=pd_config.components_optimizer.weight_decay,
+        )
+        self.ci_fn_optimizer = optim.AdamW(
+            self._ci_fn_params,
+            lr=pd_config.ci_fn_optimizer.lr_schedule.start_val,
+            betas=pd_config.ci_fn_optimizer.betas,
+            weight_decay=pd_config.ci_fn_optimizer.weight_decay,
+        )
+
+        self.loss_metrics = instantiate_loss_metrics(pd_config, component_model, device)
+
+    # ============================ Atomic cfg + state ============================
+
+    def state_blob(self) -> dict[str, Any]:
+        """A self-contained dict — cfg + state — describing this trainer right now.
+
+        Caller persists this however they like (e.g. ``torch.save``). Reconstruct
+        via :meth:`from_blob`. The cfg half and the state half travel together as
+        one blob, so a caller can't construct a Trainer with mismatched cfg and
+        state through the documented API.
+        """
+        return {
+            "pd_config": self.pd_config.model_dump(),
+            "runtime_config": self.runtime_config.model_dump(),
+            "state": {
+                "step": self.step,
+                "component_model": self.component_model.state_dict(),
+                "components_optimizer": self.components_optimizer.state_dict(),
+                "ci_fn_optimizer": self.ci_fn_optimizer.state_dict(),
+                "loss_metrics": {n: m.state_dict() for n, m in self.loss_metrics.items()},
+            },
+        }
+
+    @classmethod
+    def from_blob(
+        cls,
+        blob: dict[str, Any],
+        *,
+        target_model: nn.Module,
+        run_batch: RunBatch,
+        reconstruction_loss: ReconstructionLoss,
+        cfg_overrides: dict[str, Any] | None = None,
+    ) -> Self:
+        """Construct a Trainer from a :meth:`state_blob` dict.
+
+        ``cfg_overrides`` is a flat patch applied to the saved ``pd_config`` dict
+        before pydantic validation — used for narrow resume-time overrides such
+        as extending ``steps``.
+        """
+        pd_dict = blob["pd_config"]
+        if cfg_overrides is not None:
+            pd_dict = {**pd_dict, **cfg_overrides}
+        pd_config = PDConfig.model_validate(pd_dict)
+        runtime_config = RuntimeConfig.model_validate(blob["runtime_config"])
+        trainer = cls(
+            target_model=target_model,
+            run_batch=run_batch,
+            reconstruction_loss=reconstruction_loss,
+            pd_config=pd_config,
+            runtime_config=runtime_config,
+        )
+        trainer._load_state(blob["state"])
+        return trainer
+
+    def _load_state(self, state: dict[str, Any]) -> None:
+        """In-place load of the trainer's runtime state. Caller's responsibility
+        to have constructed self with a matching cfg (use :meth:`from_blob` to
+        guarantee this).
+        """
+        self.step = state["step"]
+        self.component_model.load_state_dict(state["component_model"])
+        self.components_optimizer.load_state_dict(state["components_optimizer"])
+        self.ci_fn_optimizer.load_state_dict(state["ci_fn_optimizer"])
+        for name, m in self.loss_metrics.items():
+            m.load_state_dict(state["loss_metrics"][name])
+
+    def consumable_model_state_dict(self) -> dict[str, torch.Tensor]:
+        """Return the model state_dict in the form downstream tools expect.
+
+        For the 1-pool trainer this is just ``component_model.state_dict()``.
+        2-pool / 3-pool subclasses override to gather sharded V/U to rank 0.
+        """
+        return self.component_model.state_dict()
+
+    # ============================ Training loop ============================
+
+    def run(
+        self,
+        train_loader: DataLoader[Any],
+        sink: RunSink,
+        cadence: Cadence,
+        eval_loop: EvalLoop | None = None,
+    ) -> None:
+        """Advance training from ``self.step`` to ``self.pd_config.steps``.
+
+        When ``self.step == 0`` and ``pd_config.faithfulness_warmup_steps > 0``,
+        faithfulness warmup runs once before the loop. When ``self.step > 0``
+        (i.e. resumed mid-trajectory), warmup is skipped and the train loader is
+        skip-advanced by ``self.step`` batches to reproduce the corresponding
+        position in the data stream.
+        """
+        pd_config = self.pd_config
+        runtime_config = self.runtime_config
+        device = runtime_config.device
+
+        train_iterator = loop_dataloader(train_loader)
+        eval_iterator = loop_dataloader(eval_loop.loader) if eval_loop is not None else None
+
+        # Loader replay: if we're starting from non-zero step, advance the iterator to
+        # the matching position. Deterministic given the loader's seed.
+        for _ in range(self.step):
+            next(train_iterator)
+
+        if self.step == 0 and pd_config.faithfulness_warmup_steps > 0:
+            run_faithfulness_warmup(self.component_model, self._component_params, pd_config)
+
+        eval_only_instances: dict[str, Metric[Any]] = {}
+        if eval_loop is not None:
+            for m in eval_loop.metrics:
+                m.bind(model=self.component_model, device=device)
+
+            # Loss metrics are auto-evaluated alongside dedicated eval metrics. We disallow
+            # duplicate registry names across the two pools because `evaluate()` keys metrics
+            # by class name.
+            for m in eval_loop.metrics:
+                metric_name = type(m).__name__
+                assert metric_name not in eval_only_instances, (
+                    f"duplicate eval metric {metric_name!r}"
+                )
+                eval_only_instances[metric_name] = m
+            overlap = sorted(set(self.loss_metrics) & set(eval_only_instances))
+            assert not overlap, (
+                f"eval_loop.metrics overlap with pd_config.loss_metrics: {overlap}. Loss "
+                "metrics are automatically evaluated; remove the duplicates from "
+                "eval_loop.metrics."
+            )
+        all_instances = {**self.loss_metrics, **eval_only_instances}
+
+        for step in tqdm(
+            range(self.step, pd_config.steps + 1), ncols=0, disable=not is_main_process()
+        ):
+            self.step = step
+            self.components_optimizer.zero_grad()
+            self.ci_fn_optimizer.zero_grad()
+
+            components_lr = get_scheduled_value(
+                step=step,
+                total_steps=pd_config.steps,
+                config=pd_config.components_optimizer.lr_schedule,
+            )
+            ci_fn_lr = get_scheduled_value(
+                step=step,
+                total_steps=pd_config.steps,
+                config=pd_config.ci_fn_optimizer.lr_schedule,
+            )
+            for group in self.components_optimizer.param_groups:
+                group["lr"] = components_lr
+            for group in self.ci_fn_optimizer.param_groups:
+                group["lr"] = ci_fn_lr
+
+            batch_log_data: defaultdict[str, float] = defaultdict(float)
+
+            with bf16_autocast(enabled=runtime_config.autocast_bf16):
+                ctx = _build_metric_context(
+                    next(train_iterator),
+                    step=step,
+                    is_eval=False,
+                    device=device,
+                    wrapped_model=self._wrapped_model,
+                    component_model=self.component_model,
+                    config=pd_config,
+                    reconstruction_loss=self.reconstruction_loss,
+                )
+                losses = {name: m.update(ctx) for name, m in self.loss_metrics.items()}
+
+            total_loss = torch.zeros((), device=device)
+            active_loss_names: list[str] = []
+            for metric_name, loss_val in losses.items():
+                if loss_val is None:
+                    continue
+                active_loss_names.append(metric_name)
+                cfg = cast(LossMetricConfig, self.loss_metrics[metric_name].cfg)
+                assert cfg.coeff is not None
+                total_loss = total_loss + cfg.coeff * loss_val
+                batch_log_data[f"loss/{type(self.loss_metrics[metric_name]).__name__}"] = (
+                    loss_val.item()
+                )
+            assert active_loss_names, (
+                f"No active loss metrics returned a loss at step {step}. "
+                f"Configured loss metrics: {list(self.loss_metrics)}"
+            )
+            batch_log_data["loss/total"] = total_loss.item()
+
+            for metric_name, m in self.loss_metrics.items():
+                m.before_backward(losses[metric_name])
+
+            total_loss.backward()
+
+            for m in self.loss_metrics.values():
+                m.after_backward()
+
+            # --- Train Logging --- #
+            if cadence.should_log_train(step):
+                avg_metrics = avg_metrics_across_ranks(batch_log_data, device=device)
+                batch_log_data = cast(defaultdict[str, float], avg_metrics)
+
+                grad_norms = component_grad_norms(self.component_model, device)
+                grad_norm_log_data = {f"grad_norms/{k}": v for k, v in grad_norms.items()}
+                assert not set(batch_log_data) & set(grad_norm_log_data)
+                batch_log_data.update(grad_norm_log_data)
+                batch_log_data["schedules/lr/components"] = components_lr
+                batch_log_data["schedules/lr/ci_fn"] = ci_fn_lr
+
+                sink.console(
+                    f"--- Step {step} ---",
+                    f"LR[components]: {components_lr:.6f}",
+                    f"LR[ci_fn]: {ci_fn_lr:.6f}",
+                    *(f"train/{name}: {value:.15f}" for name, value in batch_log_data.items()),
+                )
+                sink.log({f"train/{k}": v for k, v in batch_log_data.items()}, step=step)
+
+            # --- Evaluation --- #
+            if eval_loop is not None and eval_loop.should_eval(step):
+                assert eval_iterator is not None
+                with torch.no_grad(), bf16_autocast(enabled=runtime_config.autocast_bf16):
+                    slow_step = eval_loop.should_run_slow_eval(step)
+                    active = [m for m in all_instances.values() if not (m.slow and not slow_step)]
+                    for m in active:
+                        m.reset()
+                    for _ in range(eval_loop.n_steps):
+                        ctx = _build_metric_context(
+                            next(eval_iterator),
+                            step=step,
+                            is_eval=True,
+                            device=device,
+                            wrapped_model=self._wrapped_model,
+                            component_model=self.component_model,
+                            config=pd_config,
+                            reconstruction_loss=self.reconstruction_loss,
+                        )
+                        for m in active:
+                            m.update(ctx)
+                    metrics = collect_metric_outputs(active)
+
+                    sink.console(*(f"eval/{k}: {v}" for k, v in metrics.items()))
+                    sink.log({f"eval/{k}": v for k, v in metrics.items()}, step=step)
+
+                    del metrics
+                    torch.cuda.empty_cache()
+                    gc.collect()
+
+            # --- Saving Checkpoint --- #
+            if step == pd_config.steps or cadence.should_save(step):
+                sink.checkpoint(self, step=step)
+
+            # Skip gradient step at the very last step (last step is just for plotting/logging).
+            if step != pd_config.steps:
+                sync_across_processes()
+                if pd_config.components_optimizer.grad_clip_norm is not None:
+                    clip_grad_norm_(
+                        self._component_params, pd_config.components_optimizer.grad_clip_norm
+                    )
+                if pd_config.ci_fn_optimizer.grad_clip_norm is not None:
+                    clip_grad_norm_(self._ci_fn_params, pd_config.ci_fn_optimizer.grad_clip_norm)
+                self.components_optimizer.step()
+                self.ci_fn_optimizer.step()
+
+        if is_main_process():
+            logger.info("Finished training loop.")
+
+
 def optimize(
     target_model: nn.Module,
     train_loader: DataLoader[Any],
@@ -165,244 +541,14 @@ def optimize(
 ) -> None:
     """Run the PD optimization loop.
 
-    Builds the ``ComponentModel`` internally, instantiates loss metrics from
-    ``pd_config.loss_metrics``, optionally runs a faithfulness warmup, then loops
-    for ``pd_config.steps + 1`` training steps. Every step computes losses from
-    ``loss_metrics``, accumulates them weighted by their ``coeff``, and backprops.
-    Train logging, checkpointing, and eval each fire on their own schedule.
-
-    All ranks call this function; ``sink`` is automatically a no-op on
-    non-main ranks. Under DDP, ``ComponentModel`` is wrapped in
-    :class:`torch.nn.parallel.DistributedDataParallel` for gradient sync.
-
-    Args:
-        target_model: The frozen model whose parameters are being decomposed.
-            ``optimize`` sets ``requires_grad=False`` on all parameters and
-            puts it in ``eval()`` mode.
-        train_loader: Train data loader. Looped indefinitely until ``steps`` is
-            reached.
-        run_batch: Callable that runs one batch through the wrapped target model
-            and returns its output tensor.
-        reconstruction_loss: Callable returning ``(loss_sum, n_elements)`` used
-            by recon-style loss metrics.
-        pd_config: Algorithm specification — CI fn, loss metrics, optimizers,
-            decomposition targets, seed, tied weights, warmup, etc.
-        runtime_config: Compute substrate — device, autocast, data-parallelism.
-        sink: Output destination. ``optimize`` calls ``sink.log`` /
-            ``sink.console`` / ``sink.checkpoint``; metric keys are already
-            namespaced (``train/...``, ``eval/...``) before being passed.
-        cadence: Train-log + checkpoint timing. The final step always
-            checkpoints regardless of ``cadence.save_every``.
-        eval_loop: Optional eval bundle. Pass ``None`` to skip eval entirely.
-
-    Raises:
-        AssertionError: If the target model has trainable parameters, if no
-            components were found to optimize, if eval and loss metrics have
-            overlapping class names, or if no loss metric returned a loss at
-            some step.
+    Thin wrapper over :class:`Trainer` for callers that don't need resumption
+    or interactive control. Identical signature to the pre-Trainer ``optimize``.
     """
-    dist_state = get_distributed_state()
-    device = runtime_config.device
-    validate_pgd_scope(
-        pd_config.loss_metrics,
-        batch_size=pd_config.batch_size,
-        world_size=dist_state.world_size if dist_state is not None else 1,
-    )
-
-    train_iterator = loop_dataloader(train_loader)
-    eval_iterator = loop_dataloader(eval_loop.loader) if eval_loop is not None else None
-
-    if pd_config.identity_decomposition_targets is not None:
-        insert_identity_operations_(
-            target_model,
-            identity_decomposition_targets=pd_config.identity_decomposition_targets,
-        )
-
-    target_model.requires_grad_(False)
-    target_model.eval()
-    decomposition_targets = resolve_decomposition_targets(
-        target_model, pd_config.all_decomposition_target_configs
-    )
-
-    seed_all_ranks(pd_config.seed)
-    model = ComponentModel(
+    trainer = Trainer(
         target_model=target_model,
         run_batch=run_batch,
-        decomposition_targets=decomposition_targets,
-        ci_config=pd_config.ci_config,
-        sigmoid_type=pd_config.sigmoid_type,
+        reconstruction_loss=reconstruction_loss,
+        pd_config=pd_config,
+        runtime_config=runtime_config,
     )
-    model.to(device)
-
-    # Diverge global RNG per rank so stochastic masks/sources differ across DP workers.
-    seed_per_rank(pd_config.seed)
-
-    wrapped_model: nn.Module = model
-    component_model: ComponentModel
-    if dist_state is not None:
-        if dist_state.backend == "nccl":
-            device_id = dist_state.local_rank
-            wrapped_model = torch.nn.parallel.DistributedDataParallel(
-                model, device_ids=[device_id], output_device=device_id
-            )
-        else:
-            wrapped_model = torch.nn.parallel.DistributedDataParallel(model)
-        component_model = cast(ComponentModel, wrapped_model.module)
-    else:
-        component_model = model
-    assert isinstance(component_model, ComponentModel), "component_model is not a ComponentModel"
-
-    if pd_config.tied_weights is not None:
-        tie_component_weights(component_model, pd_config.tied_weights)
-
-    component_params: list[torch.nn.Parameter] = []
-    for name in component_model.target_module_paths:
-        component_params.extend(component_model.components[name].parameters())
-    ci_fn_params = list(component_model.ci_fn.parameters())
-    assert len(component_params) > 0, "No parameters found in components to optimize"
-
-    components_optimizer = optim.AdamW(
-        component_params,
-        lr=pd_config.components_optimizer.lr_schedule.start_val,
-        betas=pd_config.components_optimizer.betas,
-        weight_decay=pd_config.components_optimizer.weight_decay,
-    )
-    ci_fn_optimizer = optim.AdamW(
-        ci_fn_params,
-        lr=pd_config.ci_fn_optimizer.lr_schedule.start_val,
-        betas=pd_config.ci_fn_optimizer.betas,
-        weight_decay=pd_config.ci_fn_optimizer.weight_decay,
-    )
-
-    if pd_config.faithfulness_warmup_steps > 0:
-        run_faithfulness_warmup(component_model, component_params, pd_config)
-
-    loss_instances, eval_instances = instantiate_metrics(
-        pd_config,
-        component_model,
-        device,
-        eval_metrics=eval_loop.metrics if eval_loop is not None else None,
-    )
-
-    for step in tqdm(range(pd_config.steps + 1), ncols=0, disable=not is_main_process()):
-        components_optimizer.zero_grad()
-        ci_fn_optimizer.zero_grad()
-
-        components_lr = get_scheduled_value(
-            step=step,
-            total_steps=pd_config.steps,
-            config=pd_config.components_optimizer.lr_schedule,
-        )
-        ci_fn_lr = get_scheduled_value(
-            step=step, total_steps=pd_config.steps, config=pd_config.ci_fn_optimizer.lr_schedule
-        )
-        for group in components_optimizer.param_groups:
-            group["lr"] = components_lr
-        for group in ci_fn_optimizer.param_groups:
-            group["lr"] = ci_fn_lr
-
-        batch_log_data: defaultdict[str, float] = defaultdict(float)
-
-        with bf16_autocast(enabled=runtime_config.autocast_bf16):
-            ctx = _build_metric_context(
-                next(train_iterator),
-                step=step,
-                is_eval=False,
-                device=device,
-                wrapped_model=wrapped_model,
-                component_model=component_model,
-                config=pd_config,
-                reconstruction_loss=reconstruction_loss,
-            )
-            losses = {name: m.update(ctx) for name, m in loss_instances.items()}
-
-        total_loss = torch.zeros((), device=device)
-        active_loss_names: list[str] = []
-        for metric_name, loss_val in losses.items():
-            if loss_val is None:
-                continue
-            active_loss_names.append(metric_name)
-            cfg = cast(LossMetricConfig, loss_instances[metric_name].cfg)
-            assert cfg.coeff is not None
-            total_loss = total_loss + cfg.coeff * loss_val
-            batch_log_data[f"loss/{type(loss_instances[metric_name]).__name__}"] = loss_val.item()
-        assert active_loss_names, (
-            f"No active loss metrics returned a loss at step {step}. "
-            f"Configured loss metrics: {list(loss_instances)}"
-        )
-        batch_log_data["loss/total"] = total_loss.item()
-
-        for metric_name, m in loss_instances.items():
-            m.before_backward(losses[metric_name])
-
-        total_loss.backward()
-
-        for m in loss_instances.values():
-            m.after_backward()
-
-        # --- Train Logging --- #
-        if cadence.should_log_train(step):
-            avg_metrics = avg_metrics_across_ranks(batch_log_data, device=device)
-            batch_log_data = cast(defaultdict[str, float], avg_metrics)
-
-            grad_norms = component_grad_norms(component_model, device)
-            grad_norm_log_data = {f"grad_norms/{k}": v for k, v in grad_norms.items()}
-            assert not set(batch_log_data) & set(grad_norm_log_data)
-            batch_log_data.update(grad_norm_log_data)
-            batch_log_data["schedules/lr/components"] = components_lr
-            batch_log_data["schedules/lr/ci_fn"] = ci_fn_lr
-
-            sink.console(
-                f"--- Step {step} ---",
-                f"LR[components]: {components_lr:.6f}",
-                f"LR[ci_fn]: {ci_fn_lr:.6f}",
-                *(f"train/{name}: {value:.15f}" for name, value in batch_log_data.items()),
-            )
-            sink.log({f"train/{k}": v for k, v in batch_log_data.items()}, step=step)
-
-        # --- Evaluation --- #
-        if eval_loop is not None and eval_loop.should_eval(step):
-            assert eval_iterator is not None
-            with torch.no_grad(), bf16_autocast(enabled=runtime_config.autocast_bf16):
-                slow_step = eval_loop.should_run_slow_eval(step)
-                active = [m for m in eval_instances.values() if not (m.slow and not slow_step)]
-                for m in active:
-                    m.reset()
-                for _ in range(eval_loop.n_steps):
-                    ctx = _build_metric_context(
-                        next(eval_iterator),
-                        step=step,
-                        is_eval=True,
-                        device=device,
-                        wrapped_model=wrapped_model,
-                        component_model=component_model,
-                        config=pd_config,
-                        reconstruction_loss=reconstruction_loss,
-                    )
-                    for m in active:
-                        m.update(ctx)
-                metrics = collect_metric_outputs(active)
-
-                sink.console(*(f"eval/{k}: {v}" for k, v in metrics.items()))
-                sink.log({f"eval/{k}": v for k, v in metrics.items()}, step=step)
-
-                del metrics
-                torch.cuda.empty_cache()
-                gc.collect()
-
-        # --- Saving Checkpoint --- #
-        if step == pd_config.steps or cadence.should_save(step):
-            sink.checkpoint(component_model.state_dict(), step=step)
-
-        # Skip gradient step at the very last step (last step is just for plotting/logging).
-        if step != pd_config.steps:
-            sync_across_processes()
-            if pd_config.components_optimizer.grad_clip_norm is not None:
-                clip_grad_norm_(component_params, pd_config.components_optimizer.grad_clip_norm)
-            if pd_config.ci_fn_optimizer.grad_clip_norm is not None:
-                clip_grad_norm_(ci_fn_params, pd_config.ci_fn_optimizer.grad_clip_norm)
-            components_optimizer.step()
-            ci_fn_optimizer.step()
-
-    if is_main_process():
-        logger.info("Finished training loop.")
+    trainer.run(train_loader, sink, cadence, eval_loop)
