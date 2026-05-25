@@ -1,11 +1,11 @@
 # 3-pool equivalence test: same pd/runtime/target/data as equiv_5L_1pool.yaml,
 # but trained via the 3-pool strategy.
 #
-# Topology: 8 GPUs single node (fills a B200 node completely — odd GPU counts
-# can stall NCCL discovery on a partial NVLink topology).
-#   * Layerwise: 5 block_groups (one per layer), 1 rank each. Ranks 0..4.
-#   * CI: rank 5 (single-rank).
-#   * PPGD: ranks 6, 7 (2-rank DDP across PPGD pool).
+# Topology: 8 GPUs single node, deliberately no single-rank groups.
+#   * Layerwise: 1 block_group with 4 ranks owning all 30 sites (5 layers × 6
+#     sites). Ranks 0..3. N_per_block_lw=4 → exercises in-block DDP.
+#   * CI: ranks 4, 5 (N_ci=2). N_per_block_lw ≥ N_ci constraint satisfied.
+#   * PPGD: ranks 6, 7 (N_ppgd=2).
 #
 # Launch: torchrun --standalone --nproc_per_node=8 -m param_decomp_lab.experiments.lm.run \
 #         param_decomp_lab/experiments/lm/equiv_5L_3pool.yaml
@@ -99,11 +99,38 @@ data:
 three_pool:
   use_fused_kl: true
   defer_vu_opt: false
-  ci_ranks: [5]
+  ci_ranks: [4, 5]
   ppgd_ranks: [6, 7]
   layerwise_block_groups:
-    - { ranks: [0], owned_sites: [h.0.attn.q_proj, h.0.attn.k_proj, h.0.attn.v_proj, h.0.attn.o_proj, h.0.mlp.c_fc, h.0.mlp.down_proj] }
-    - { ranks: [1], owned_sites: [h.1.attn.q_proj, h.1.attn.k_proj, h.1.attn.v_proj, h.1.attn.o_proj, h.1.mlp.c_fc, h.1.mlp.down_proj] }
-    - { ranks: [2], owned_sites: [h.2.attn.q_proj, h.2.attn.k_proj, h.2.attn.v_proj, h.2.attn.o_proj, h.2.mlp.c_fc, h.2.mlp.down_proj] }
-    - { ranks: [3], owned_sites: [h.3.attn.q_proj, h.3.attn.k_proj, h.3.attn.v_proj, h.3.attn.o_proj, h.3.mlp.c_fc, h.3.mlp.down_proj] }
-    - { ranks: [4], owned_sites: [h.4.attn.q_proj, h.4.attn.k_proj, h.4.attn.v_proj, h.4.attn.o_proj, h.4.mlp.c_fc, h.4.mlp.down_proj] }
+    - ranks: [0, 1, 2, 3]
+      owned_sites:
+        - h.0.attn.q_proj
+        - h.0.attn.k_proj
+        - h.0.attn.v_proj
+        - h.0.attn.o_proj
+        - h.0.mlp.c_fc
+        - h.0.mlp.down_proj
+        - h.1.attn.q_proj
+        - h.1.attn.k_proj
+        - h.1.attn.v_proj
+        - h.1.attn.o_proj
+        - h.1.mlp.c_fc
+        - h.1.mlp.down_proj
+        - h.2.attn.q_proj
+        - h.2.attn.k_proj
+        - h.2.attn.v_proj
+        - h.2.attn.o_proj
+        - h.2.mlp.c_fc
+        - h.2.mlp.down_proj
+        - h.3.attn.q_proj
+        - h.3.attn.k_proj
+        - h.3.attn.v_proj
+        - h.3.attn.o_proj
+        - h.3.mlp.c_fc
+        - h.3.mlp.down_proj
+        - h.4.attn.q_proj
+        - h.4.attn.k_proj
+        - h.4.attn.v_proj
+        - h.4.attn.o_proj
+        - h.4.mlp.c_fc
+        - h.4.mlp.down_proj
