@@ -44,7 +44,7 @@ SPECS: tuple[_RunSpec, ...] = (
     _RunSpec(
         name="equiv-3pool",
         yaml=REPO_ROOT / "param_decomp_lab/experiments/lm/equiv_5L_3pool.yaml",
-        n_gpus=7,
+        n_gpus=8,
     ),
 )
 
