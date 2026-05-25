@@ -9,6 +9,7 @@ It handles:
 - Job submission with script renaming and log file creation
 """
 
+import shlex
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -320,64 +321,87 @@ uv sync --all-packages --no-dev --link-mode copy -q
 source .venv/bin/activate"""
 
 
-def multi_node_torchrun_command(
+# Recommended CUDA / NCCL environment for distributed training.
+# Mirrors what was on main pre-modular-refactor (``param_decomp/utils/compute_utils.py``):
+# NCCL_DEBUG=WARN keeps logs quiet but surfaces real problems; the async-error flag
+# makes NCCL collectives fail fast rather than hang on first-error.
+CUDA_FLAGS: dict[str, str] = {
+    "NCCL_DEBUG": "WARN",
+    "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
+}
+
+# B200 nodes ship with 8 GPUs each. Multi-node DDP requires ``n_gpus`` to be a
+# multiple of this — single-node DDP otherwise.
+GPUS_PER_NODE: int = 8
+
+
+def torchrun_command(
+    *,
     job_name: str,
     snapshot_ref: str,
-    yaml_path: str,
-    nproc_per_node: int,
-    python_module: str = "param_decomp_lab.experiments.lm.run",
+    python_module: str,
+    script_args: str,
+    n_gpus: int,
     master_port: int = 29500,
 ) -> str:
-    """Build a multi-node ``srun bash -c 'setup; torchrun ...'`` command.
+    """Build the right launch command for ``n_gpus``, dispatching by scale.
 
-    Each node's bash block clones the snapshot to its own ``/tmp`` workspace,
-    activates the venv, then launches torchrun with the right
-    ``--nnodes / --node-rank / --master-addr``. SLURM is responsible for
-    placing ``--ntasks-per-node=1`` (one bash per node), then each torchrun
-    fans out to ``nproc_per_node`` ranks on its node.
+    Direct port of ``param_decomp.utils.compute_utils.get_command`` from main
+    (lost in the modular refactor). Same dispatch rules:
+
+    * ``n_gpus == 1``: plain ``python -m <module> <args>``.
+    * ``1 < n_gpus <= 8``: single-node DDP via
+      ``torchrun --standalone --nproc_per_node=N --master_port=P``.
+    * ``n_gpus > 8`` (must be a multiple of 8): multi-node DDP via
+      ``srun --nodes=N --ntasks=N --ntasks-per-node=1 bash -c '<setup>; torchrun ...'``
+      with each node's torchrun pulling ``--node_rank`` from ``$SLURM_PROCID``
+      and ``--master_addr`` from ``$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)``.
 
     Args:
-        job_name: SlurmConfig.job_name (used to namespace the per-node /tmp dir).
-        snapshot_ref: Fully-qualified git ref (e.g. ``refs/runs/snapshot/<id>``)
-            to fetch and checkout on each node.
-        yaml_path: Path (or arg list) to pass to the experiment script.
-        nproc_per_node: Local-rank count on each node (typically 8 for B200).
-        python_module: Module to launch via torchrun (default: lm experiment).
-        master_port: TCP port for torch elastic rendezvous (default 29500).
+        job_name: Used to namespace per-node ``/tmp`` workspace in multi-node mode.
+        snapshot_ref: Fully-qualified git ref to checkout (e.g. ``refs/runs/snapshot/<id>``).
+        python_module: Module to launch (e.g. ``param_decomp_lab.experiments.lm.run``).
+        script_args: Positional args passed to the module (e.g. ``/path/to/config.yaml``).
+        n_gpus: Total GPU count. >8 must be a multiple of 8.
+        master_port: TCP port for torch elastic rendezvous. Pick a unique value per job
+            if multiple multi-GPU jobs may share a host.
 
     Returns:
-        Bash command string. Embed inside an SBATCH script via
-        ``generate_script``. Caller's ``SlurmConfig`` must set
-        ``n_nodes = ceil(total_ranks / nproc_per_node)`` and
-        ``n_gpus = nproc_per_node``.
+        A bash command string. Embed inside an SBATCH script via ``generate_script``.
+        Caller's ``SlurmConfig`` must set ``n_gpus`` / ``n_nodes`` consistently with
+        ``n_gpus`` here.
     """
-    setup = generate_git_snapshot_setup(
-        work_dir=(
-            f"/tmp/param-decomp/workspace-{job_name}-${{SLURM_JOB_ID}}-node${{SLURM_NODEID}}"
-        ),
-        snapshot_ref=snapshot_ref,
+    if n_gpus == 1:
+        return f"python -m {python_module} {script_args}"
+
+    if n_gpus <= GPUS_PER_NODE:
+        return (
+            f"torchrun --standalone --nproc_per_node={n_gpus} --master_port={master_port} "
+            f"-m {python_module} {script_args}"
+        )
+
+    # Multi-node DDP via srun + torchrun. Each node runs the workspace setup
+    # and its own torchrun (with --node_rank from $SLURM_PROCID, the global
+    # task index — equivalent to node index here because we ask srun for
+    # --ntasks-per-node=1 across exactly --nodes=n nodes).
+    assert n_gpus % GPUS_PER_NODE == 0, (
+        f"multi-node DDP requires n_gpus to be a multiple of {GPUS_PER_NODE}; got {n_gpus}"
     )
-    # ``srun --nodes=$SLURM_NNODES --ntasks=$SLURM_NNODES --ntasks-per-node=1``
-    # forces ONE task per node and refuses to pack tasks onto fewer nodes
-    # (SLURM packs silently when only ``--ntasks-per-node=1`` is set). Each
-    # task then runs the heredoc bash which sets up its own /tmp workspace and
-    # launches torchrun for that node's GPU group.
-    #
-    # Heredoc delimiter is single-quoted ('MN_SHELL') so the outer bash doesn't
-    # expand ``$SLURM_*`` — those get expanded on each remote node when the
-    # heredoc-fed bash actually runs.
-    return f"""srun --nodes=$SLURM_NNODES --ntasks=$SLURM_NNODES --ntasks-per-node=1 bash -e <<'MN_SHELL'
-{setup}
-MASTER=$(scontrol show hostnames "$SLURM_NODELIST" | head -1)
-echo "[node $SLURM_NODEID/${{SLURM_NNODES}}] host=$(hostname) master=$MASTER work_dir=$WORK_DIR"
-torchrun \\
-  --nnodes=$SLURM_NNODES \\
-  --node-rank=$SLURM_NODEID \\
-  --master-addr=$MASTER \\
-  --master-port={master_port} \\
-  --nproc-per-node={nproc_per_node} \\
-  -m {python_module} {yaml_path}
-MN_SHELL"""
+    n_nodes = n_gpus // GPUS_PER_NODE
+    work_dir = f"/tmp/param-decomp/workspace-{job_name}-$SLURM_JOB_ID-node$SLURM_PROCID"
+    setup = generate_git_snapshot_setup(work_dir, snapshot_ref)
+    torchrun_cmd = (
+        f"torchrun "
+        f"--nnodes={n_nodes} "
+        f"--node_rank=$SLURM_PROCID "
+        f"--nproc_per_node={GPUS_PER_NODE} "
+        f'--master_addr=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1) '
+        f"--master_port={master_port} "
+        f"-m {python_module} {script_args}"
+    )
+    srun_flags = f"--nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1"
+    inner = f"{setup}\n{torchrun_cmd}"
+    return f"srun {srun_flags} bash -c {shlex.quote(inner)}"
 
 
 def _workspace_setup(config: SlurmConfig, workspace_suffix: str) -> str:

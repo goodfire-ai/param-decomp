@@ -22,14 +22,13 @@ import yaml
 from param_decomp_lab.infra.run_files import ExecutionStamp
 from param_decomp_lab.infra.settings import REPO_ROOT
 from param_decomp_lab.infra.slurm import (
+    CUDA_FLAGS,
+    GPUS_PER_NODE,
     SlurmConfig,
     generate_script,
-    multi_node_torchrun_command,
     submit_slurm_job,
+    torchrun_command,
 )
-
-GPUS_PER_NODE = 8
-
 
 N_LAYERS = 48
 SITES_PER_LAYER = ("attn.q_proj", "attn.k_proj")
@@ -197,7 +196,13 @@ def _materialize_yaml(topo: Topology, out_dir: Path) -> Path:
                 "model_name": "openai-community/gpt2-xl",
             },
             "output_extract": 0,
-            "activation_checkpointing": True,
+            # activation_checkpointing=True triggers
+            # ``torch.utils.checkpoint.CheckpointError: A different number of
+            # tensors was saved during the original forward and recomputation``
+            # — our forward graph has RNG-dependent ops (mask sampling) that
+            # produce structurally different recomputations. Disabled for the
+            # sweep; revisit if activation memory becomes the bottleneck.
+            "activation_checkpointing": False,
         },
         "data": {
             "tokenizer_name": "openai-community/gpt2",
@@ -253,26 +258,27 @@ def main() -> None:
     for topo, yaml_path in paths:
         assert topo.total_ranks % GPUS_PER_NODE == 0, (
             f"topology {topo.name} has {topo.total_ranks} ranks, not a multiple of "
-            f"{GPUS_PER_NODE} GPUs/node — torchrun expects uniform nproc-per-node"
+            f"{GPUS_PER_NODE} GPUs/node — multi-node torchrun expects uniform nproc-per-node"
         )
         n_nodes = topo.total_ranks // GPUS_PER_NODE
         job_name = f"xl-qk-{topo.name}"
-        cmd = multi_node_torchrun_command(
+        cmd = torchrun_command(
             job_name=job_name,
             snapshot_ref=stamp.snapshot_ref,
-            yaml_path=str(yaml_path),
-            nproc_per_node=GPUS_PER_NODE,
+            python_module="param_decomp_lab.experiments.lm.run",
+            script_args=str(yaml_path),
+            n_gpus=topo.total_ranks,
         )
         cfg = SlurmConfig(
             job_name=job_name,
             partition=None,
-            n_gpus=GPUS_PER_NODE,
+            n_gpus=GPUS_PER_NODE if n_nodes > 1 else topo.total_ranks,
             n_nodes=n_nodes,
             time="01:00:00",
             snapshot_ref=stamp.snapshot_ref,
             comment=f"xl qk topology sweep — {topo.name}",
         )
-        r = submit_slurm_job(generate_script(cfg, cmd), job_name)
+        r = submit_slurm_job(generate_script(cfg, cmd, env=CUDA_FLAGS), job_name)
         print(f"{topo.name}: nodes={n_nodes} job_id={r.job_id}")
 
 
