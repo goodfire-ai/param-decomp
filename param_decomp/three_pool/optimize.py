@@ -1,8 +1,10 @@
-"""``optimize_three_pool`` — 3-pool sibling of :func:`param_decomp.optimize.optimize`.
+"""``ThreePoolTrainer`` and ``optimize_three_pool`` — 3-pool sibling of
+:class:`param_decomp.optimize.Trainer` / :func:`param_decomp.optimize.optimize`.
 
-Mirrors the call shape of the single-process entrypoint. Internal validation,
-per-pool wiring, cross-pool comms, and the layerwise streaming loss strategy
-are all hidden behind the function boundary.
+Mirrors the single-pool call shape: caller hands in ``target_model``,
+dataloader, configs, sink. Internal validation, per-pool wiring, cross-pool
+comms, and the layerwise streaming loss strategy are all hidden behind the
+class boundary.
 
   * **CI pool** trains the CI fn (replicated across ranks; DP-sharded across
     batch). Holds CI fn + AdamW state. Each step: target_fwd → CI fn fwd →
@@ -37,8 +39,7 @@ sliced-from-global pattern.
 import itertools
 import time
 from contextlib import nullcontext
-from dataclasses import dataclass
-from typing import Any
+from typing import Any, Self
 
 import torch
 import torch.distributed as dist
@@ -86,23 +87,6 @@ from param_decomp.three_pool.step_ppgd import finalize_ppgd_async_drain, step_pp
 from param_decomp.torch_helpers import loop_dataloader
 from param_decomp.two_pool.loss_strategy import LayerwiseLossStrategy
 
-
-@dataclass
-class _PreGatheredStateDictShim:
-    """TEMPORARY adapter — wraps a pre-gathered model state_dict to satisfy
-    ``RunSink.checkpoint``'s `TrainerLike` protocol. Removed when
-    `ThreePoolTrainer` lands (Task #6) and the loop body is restructured.
-    """
-
-    _state_dict: dict[str, Tensor]
-
-    def consumable_model_state_dict(self) -> dict[str, Tensor]:
-        return self._state_dict
-
-    def state_blob(self) -> dict[str, Any]:
-        raise NotImplementedError("resume not yet wired for the 3-pool path")
-
-
 # Loss-metric type discriminators required for the 3-pool training path.
 # Same set as two_pool — three-pool reuses the same loss-metric vocabulary.
 REQUIRED_LOSS_METRIC_TYPES: frozenset[str] = frozenset(
@@ -135,6 +119,459 @@ FORBIDDEN_LOSS_METRIC_TYPES: frozenset[str] = frozenset(
 )
 
 
+class ThreePoolTrainer:
+    """Stateful 3-pool trainer.
+
+    Construction wires up the runtime bundle, world layout, ComponentModel,
+    layerwise loss strategy, and the per-pool optimizer (CI / LW have one;
+    PPGD has none — see module docstring). The PPGD state itself is built on
+    the first batch of :meth:`run` because its source tensor shapes depend on
+    the data's sequence dims.
+
+    Resume support is rank-local: :meth:`state_blob` produces a self-contained
+    cfg + state dict for the current rank, and :meth:`from_blob` reconstructs
+    one from that dict. The lab's resume loader composes these across ranks.
+
+    Unlike 2-pool, the consumable checkpoint path IS wired:
+    :meth:`consumable_model_state_dict` returns the gathered full state on
+    rank 0 (caller must call ``_gather_to_rank0_for_consumable`` from all
+    ranks before reading rank 0's view, which the run loop handles).
+    """
+
+    pd_config: PDConfig
+    runtime_config: RuntimeConfig
+    three_pool_config: ThreePoolConfig
+    reconstruction_loss: ReconstructionLoss
+    component_model: ComponentModel
+    layout: ThreePoolLayout
+    strategy: LayerwiseLossStrategy
+    optimizer: torch.optim.Optimizer | None
+    ppgd_state: PersistentPGDState | None
+    step: int
+
+    def __init__(
+        self,
+        *,
+        target_model: nn.Module,
+        run_batch: RunBatch,
+        reconstruction_loss: ReconstructionLoss,
+        pd_config: PDConfig,
+        runtime_config: RuntimeConfig,
+        three_pool_config: ThreePoolConfig,
+    ) -> None:
+        assert dist.is_initialized(), (
+            "init the distributed process group before constructing ThreePoolTrainer"
+        )
+        self.pd_config = pd_config
+        self.runtime_config = runtime_config
+        self.three_pool_config = three_pool_config
+        self.reconstruction_loss = reconstruction_loss
+        self._run_batch = run_batch
+        self._target_model = target_model
+        self.step = 0
+
+        _validate_pd_config_for_three_pool(pd_config, three_pool_config)
+        # PPGD runs only on PPGD pool; the relevant per-rank batch is batch // n_ppgd.
+        validate_pgd_scope(
+            pd_config.loss_metrics,
+            batch_size=pd_config.batch_size,
+            world_size=len(three_pool_config.ppgd_ranks),
+        )
+
+        self.runtime = _build_runtime(
+            target_model=target_model,
+            pd_config=pd_config,
+            runtime_config=runtime_config,
+            three_pool_config=three_pool_config,
+            run_batch=run_batch,
+            reconstruction_loss=reconstruction_loss,
+        )
+
+        torch.set_float32_matmul_precision("high")
+
+        self._device = torch.device(runtime_config.device)
+        block_groups = [
+            LayerwiseBlockGroup(ranks=tuple(bg.ranks), owned_sites=tuple(bg.owned_sites))
+            for bg in three_pool_config.layerwise_block_groups
+        ]
+        world = build_world(
+            ci_ranks=list(three_pool_config.ci_ranks),
+            layerwise_block_groups=block_groups,
+            ppgd_ranks=list(three_pool_config.ppgd_ranks),
+            batch_global=self.runtime.batch_global,
+        )
+        self.layout = ThreePoolLayout.from_world(world, dist.get_rank())
+        decomposition_targets = _decomposition_targets_for_pool(
+            self.layout, self.runtime.c_per_site
+        )
+
+        target_model.requires_grad_(False)
+        self.component_model = ComponentModel(
+            target_model=target_model,
+            run_batch=run_batch,
+            decomposition_targets=decomposition_targets,
+            ci_config=pd_config.ci_config,
+            sigmoid_type=pd_config.sigmoid_type,
+        ).to(self._device)
+
+        self.strategy = LayerwiseLossStrategy.from_cfg(
+            target_model,
+            use_fused_kl=three_pool_config.use_fused_kl,
+            unfused_recon=reconstruction_loss,
+        )
+
+        self.optimizer = None
+        self._all_params: list[nn.Parameter] = []
+        self._ci_fn_params: list[nn.Parameter] = []
+        self._component_params: list[nn.Parameter] = []
+        self.ppgd_state = None
+        self._pending_ppgd_resume_state: dict[str, Any] | None = None
+        self._consumable_cache: dict[str, Tensor] | None = None
+
+        match self.layout.my_pool:
+            case "ci":
+                self._ci_fn_params = list(self.component_model.ci_fn.parameters())
+                self.optimizer = torch.optim.AdamW(
+                    [
+                        {
+                            "params": self._ci_fn_params,
+                            "lr": pd_config.ci_fn_optimizer.lr_schedule.start_val,
+                        }
+                    ],
+                    weight_decay=0.0,
+                    fused=True,
+                )
+            case "layerwise":
+                for name in self.layout.my_owned_sites:
+                    self._component_params.extend(
+                        self.component_model.components[name].parameters()
+                    )
+                self._all_params = self._component_params
+                self.optimizer = torch.optim.AdamW(
+                    [
+                        {
+                            "params": self._component_params,
+                            "lr": pd_config.components_optimizer.lr_schedule.start_val,
+                        }
+                    ],
+                    weight_decay=0.0,
+                    fused=True,
+                )
+            case "ppgd":
+                pass  # ppgd_state constructed lazily from first batch in run()
+
+    # ============================ Atomic cfg + state ============================
+
+    def state_blob(self) -> dict[str, Any]:
+        """Self-contained cfg + rank-local state for this trainer.
+
+        Each rank's blob carries only the state this rank owns:
+          * CI pool: ComponentModel state (CI fn dominates) + AdamW state.
+          * LW pool: component_model state (owned sites' V/U) + AdamW state.
+          * PPGD pool: PPGD state (sources + Adam moments) + replicated V/U.
+        """
+        state: dict[str, Any] = {
+            "step": self.step,
+            "component_model": self.component_model.state_dict(),
+            "pool": self.layout.my_pool,
+        }
+        if self.optimizer is not None:
+            state["optimizer"] = self.optimizer.state_dict()
+        if self.ppgd_state is not None:
+            state["ppgd"] = self.ppgd_state.state_dict()
+        return {
+            "pd_config": self.pd_config.model_dump(),
+            "runtime_config": self.runtime_config.model_dump(),
+            "three_pool_config": self.three_pool_config.model_dump(),
+            "layout_fingerprint": _layout_fingerprint(self.layout),
+            "state": state,
+        }
+
+    @classmethod
+    def from_blob(
+        cls,
+        blob: dict[str, Any],
+        *,
+        target_model: nn.Module,
+        run_batch: RunBatch,
+        reconstruction_loss: ReconstructionLoss,
+        cfg_overrides: dict[str, Any] | None = None,
+    ) -> Self:
+        pd_dict = blob["pd_config"]
+        if cfg_overrides is not None:
+            pd_dict = {**pd_dict, **cfg_overrides}
+        pd_config = PDConfig.model_validate(pd_dict)
+        runtime_config = RuntimeConfig.model_validate(blob["runtime_config"])
+        three_pool_config = ThreePoolConfig.model_validate(blob["three_pool_config"])
+
+        trainer = cls(
+            target_model=target_model,
+            run_batch=run_batch,
+            reconstruction_loss=reconstruction_loss,
+            pd_config=pd_config,
+            runtime_config=runtime_config,
+            three_pool_config=three_pool_config,
+        )
+        saved_fp = blob["layout_fingerprint"]
+        current_fp = _layout_fingerprint(trainer.layout)
+        assert saved_fp == current_fp, (
+            f"3-pool layout fingerprint mismatch on resume:\n"
+            f"  saved:   {saved_fp}\n"
+            f"  current: {current_fp}\n"
+        )
+        trainer._load_state(blob["state"])
+        return trainer
+
+    def _load_state(self, state: dict[str, Any]) -> None:
+        self.step = state["step"]
+        assert state["pool"] == self.layout.my_pool, (
+            f"pool mismatch on resume: rank {self.layout.my_rank} was in pool "
+            f"{state['pool']!r} when saved, now {self.layout.my_pool!r}"
+        )
+        self.component_model.load_state_dict(state["component_model"])
+        if self.optimizer is not None:
+            self.optimizer.load_state_dict(state["optimizer"])
+        if self.layout.my_pool == "ppgd":
+            # ppgd_state is constructed lazily in run() — defer load until then.
+            self._pending_ppgd_resume_state = state.get("ppgd")
+
+    def consumable_model_state_dict(self) -> dict[str, Tensor]:
+        """Return the cached gathered full state dict (rank 0) or an empty
+        dict elsewhere.
+
+        Callers must call :meth:`_gather_consumable_to_rank0` (on all ranks,
+        in sync) before invoking this on rank 0. The run loop and any
+        resume-aware caller handles the orchestration; outside-the-loop
+        callers should gather explicitly.
+        """
+        return self._consumable_cache if self._consumable_cache is not None else {}
+
+    def _gather_consumable_to_rank0(self) -> dict[str, Tensor] | None:
+        """All ranks participate in the gather; rank 0 caches and returns the
+        full state dict. Non-rank-0 returns None.
+        """
+        gathered = gather_full_state_dict_to_rank0(
+            layout=self.layout,
+            component_model=self.component_model,
+            target_model=self._target_model,
+            run_batch=self._run_batch,
+            ci_config=self.pd_config.ci_config,
+            sigmoid_type=self.pd_config.sigmoid_type,
+            c_per_site=self.runtime.c_per_site,
+            device=self._device,
+        )
+        if self.layout.my_rank == 0:
+            assert gathered is not None
+            self._consumable_cache = gathered
+            return gathered
+        return None
+
+    # ============================ Training loop ============================
+
+    def run(
+        self,
+        train_loader: DataLoader[Any],
+        sink: RunSink,
+        cadence: Cadence,
+        profiler: PhaseProfiler | None = None,
+    ) -> None:
+        """Advance training from ``self.step`` to ``self.pd_config.steps``."""
+        pd_config = self.pd_config
+        layout = self.layout
+        runtime = self.runtime
+        n_steps = pd_config.steps
+        defer_vu_opt = self.three_pool_config.defer_vu_opt
+        device = self._device
+
+        train_iterator = loop_dataloader(train_loader)
+        # Loader skip-replay (resumed mid-trajectory).
+        for _ in range(self.step):
+            next(train_iterator)
+
+        # Peek first batch (after any skip) for PPGD source-shape sizing.
+        first_batch = next(train_iterator)
+        train_iterator = itertools.chain([first_batch], train_iterator)
+        _assert_full_global_batch(first_batch, runtime.batch_global)
+
+        if layout.my_pool == "ppgd" and self.ppgd_state is None:
+            ppgd_cfg = runtime.ppgd_cfg
+            self.ppgd_state = PersistentPGDState(
+                module_to_c=runtime.c_per_site,
+                batch_dims=(layout.world.batch_local_ppgd, *_seq_dims_from_batch(first_batch)),
+                device=device,
+                use_delta_component=True,
+                optimizer_cfg=ppgd_cfg.optimizer,
+                scope=ppgd_cfg.scope,
+                use_sigmoid_parameterization=ppgd_cfg.use_sigmoid_parameterization,
+                n_warmup_steps=ppgd_cfg.n_warmup_steps,
+                n_samples=ppgd_cfg.n_samples,
+                router=AllLayersRouter(),
+                reconstruction_loss=self.strategy.recon_loss,
+            )
+            if self._pending_ppgd_resume_state is not None:
+                self.ppgd_state.load_state_dict(self._pending_ppgd_resume_state)
+                self._pending_ppgd_resume_state = None
+
+        if (
+            self.step == 0
+            and layout.my_pool == "layerwise"
+            and pd_config.faithfulness_warmup_steps > 0
+        ):
+            run_faithfulness_warmup_layerwise(
+                component_model=self.component_model,
+                component_params=self._component_params,
+                n_steps=pd_config.faithfulness_warmup_steps,
+                lr=pd_config.faithfulness_warmup_lr,
+                weight_decay=pd_config.faithfulness_warmup_weight_decay,
+            )
+
+        components_lr_schedule = pd_config.components_optimizer.lr_schedule
+        ci_fn_lr_schedule = pd_config.ci_fn_optimizer.lr_schedule
+
+        profiler_ctx = profiler if profiler is not None else nullcontext()
+        h_cache_ci: dict[str, Tensor] | None = None
+        # Async-pipeline state threaded across iterations on LW + PPGD pools.
+        pending_all_reduce_lw: list[tuple[list[Tensor], Tensor, dist.Work]] | None = None
+        pending_recv_vu_ppgd: list[tuple[Any, Tensor, dist.Work]] | None = None
+
+        with profiler_ctx:
+            # 2-batch peek window: batch_T is the step's batch, batch_T_plus_1 is the
+            # next-step batch peeked early for CI pool's dead-time prefetch.
+            batch_T = next(train_iterator)
+            batch_T_plus_1 = next(train_iterator, None)
+
+            for step in range(self.step, n_steps):
+                self.step = step
+                _assert_full_global_batch(batch_T, runtime.batch_global)
+
+                if self.optimizer is not None:
+                    # CI pool: one param group (CI fn); LW pool: one (components).
+                    # PPGD pool has no optimizer.
+                    if layout.my_pool == "ci":
+                        self.optimizer.param_groups[0]["lr"] = get_scheduled_value(
+                            step, n_steps, ci_fn_lr_schedule
+                        )
+                    elif layout.my_pool == "layerwise":
+                        lr_step = max(step - 1, 0) if defer_vu_opt else step
+                        self.optimizer.param_groups[0]["lr"] = get_scheduled_value(
+                            lr_step, n_steps, components_lr_schedule
+                        )
+
+                if profiler is not None:
+                    dist.barrier()
+
+                torch.cuda.synchronize(device)
+                step_start = time.perf_counter()
+
+                match layout.my_pool:
+                    case "ci":
+                        assert self.optimizer is not None
+                        next_batch_for_prefetch = batch_T_plus_1 if step < n_steps - 1 else None
+                        metrics, h_cache_ci = step_ci(
+                            layout,
+                            self.component_model,
+                            self.optimizer,
+                            self._ci_fn_params,
+                            batch_T=batch_T,
+                            batch_T_plus_1=next_batch_for_prefetch,
+                            h_cache_T=h_cache_ci,
+                            cfg=runtime,
+                            current_frac_of_training=step / n_steps if n_steps > 0 else 0.0,
+                            profiler=profiler,
+                        )
+                    case "layerwise":
+                        assert self.optimizer is not None
+                        metrics, pending_all_reduce_lw = step_layerwise(
+                            layout,
+                            self.component_model,
+                            self.optimizer,
+                            self._all_params,
+                            batch_T,
+                            runtime,
+                            self.strategy,
+                            defer_vu_opt=defer_vu_opt,
+                            prev_pending_all_reduce=pending_all_reduce_lw,
+                            profiler=profiler,
+                        )
+                    case "ppgd":
+                        assert self.ppgd_state is not None
+                        metrics, pending_recv_vu_ppgd = step_ppgd(
+                            layout,
+                            self.component_model,
+                            self.ppgd_state,
+                            batch_T,
+                            runtime,
+                            self.strategy,
+                            step=step,
+                            n_steps=n_steps,
+                            defer_vu_opt=defer_vu_opt,
+                            prev_pending_recv_vu=pending_recv_vu_ppgd,
+                            profiler=profiler,
+                        )
+
+                torch.cuda.synchronize(device)
+                step_ms = (time.perf_counter() - step_start) * 1000.0
+
+                if step % cadence.train_log_every == 0:
+                    _log_train_metrics(
+                        metrics=metrics,
+                        layout=layout,
+                        device=device,
+                        step=step,
+                        step_ms=step_ms,
+                        runtime=runtime,
+                        optimizer=self.optimizer,
+                        sink=sink,
+                    )
+
+                if cadence.should_save(step):
+                    self._save_checkpoint(sink, step)
+
+                batch_T = batch_T_plus_1 if batch_T_plus_1 is not None else next(train_iterator)
+                batch_T_plus_1 = next(train_iterator, None)
+
+                if profiler is not None:
+                    profiler.step()
+
+            # Drain the final iter's deferred opt (async mode only). Without this,
+            # the saved checkpoint would be missing the last iter's update.
+            if defer_vu_opt:
+                match layout.my_pool:
+                    case "layerwise":
+                        assert self.optimizer is not None
+                        if pending_all_reduce_lw is not None:
+                            self.optimizer.param_groups[0]["lr"] = get_scheduled_value(
+                                n_steps - 1, n_steps, components_lr_schedule
+                            )
+                            finalize_layerwise_async_drain(
+                                layout,
+                                self.component_model,
+                                self.optimizer,
+                                pending_all_reduce_lw,
+                            )
+                            pending_all_reduce_lw = None
+                    case "ppgd":
+                        if pending_recv_vu_ppgd is not None:
+                            finalize_ppgd_async_drain(
+                                layout,
+                                self.component_model,
+                                pending_recv_vu_ppgd,  # type: ignore[arg-type]
+                            )
+                            pending_recv_vu_ppgd = None
+                    case "ci":
+                        pass  # CI pool doesn't defer
+
+            self.step = n_steps
+            self._save_checkpoint(sink, n_steps)
+
+    def _save_checkpoint(self, sink: RunSink, step: int) -> None:
+        """Gather full state across all ranks; dispatch to ``sink`` on rank 0."""
+        self._gather_consumable_to_rank0()  # all ranks participate
+        if self.layout.my_rank == 0:
+            sink.checkpoint(self, step=step)
+        self._consumable_cache = None
+
+
 def optimize_three_pool(
     target_model: nn.Module,
     train_loader: DataLoader[Any],
@@ -150,289 +587,31 @@ def optimize_three_pool(
 ) -> None:
     """Train a ComponentModel under the 3-pool strategy.
 
-    Sibling of :func:`param_decomp.optimize.optimize` with the same call shape
-    plus the explicit ``three_pool_config``. ``dist.init_process_group`` must
-    already be set up; the per-rank device is read from ``runtime_config.device``.
+    Thin wrapper over :class:`ThreePoolTrainer` for callers that don't need
+    resumption or interactive control.
     """
-    assert dist.is_initialized(), (
-        "init the distributed process group before calling optimize_three_pool"
-    )
-
-    _validate_pd_config_for_three_pool(pd_config, three_pool_config)
-    # PPGD runs only on PPGD pool; the relevant per-rank batch is batch // n_ppgd.
-    validate_pgd_scope(
-        pd_config.loss_metrics,
-        batch_size=pd_config.batch_size,
-        world_size=len(three_pool_config.ppgd_ranks),
-    )
-
-    runtime = _build_runtime(
+    trainer = ThreePoolTrainer(
         target_model=target_model,
+        run_batch=run_batch,
+        reconstruction_loss=reconstruction_loss,
         pd_config=pd_config,
         runtime_config=runtime_config,
         three_pool_config=three_pool_config,
-        run_batch=run_batch,
-        reconstruction_loss=reconstruction_loss,
     )
+    trainer.run(train_loader, sink, cadence, profiler=profiler)
 
-    torch.set_float32_matmul_precision("high")
 
-    device = torch.device(runtime_config.device)
-    block_groups = [
-        LayerwiseBlockGroup(ranks=tuple(bg.ranks), owned_sites=tuple(bg.owned_sites))
-        for bg in three_pool_config.layerwise_block_groups
-    ]
-    world = build_world(
-        ci_ranks=list(three_pool_config.ci_ranks),
-        layerwise_block_groups=block_groups,
-        ppgd_ranks=list(three_pool_config.ppgd_ranks),
-        batch_global=runtime.batch_global,
-    )
-    layout = ThreePoolLayout.from_world(world, dist.get_rank())
-    decomposition_targets = _decomposition_targets_for_pool(layout, runtime.c_per_site)
-
-    target_model.requires_grad_(False)
-    component_model = ComponentModel(
-        target_model=target_model,
-        run_batch=run_batch,
-        decomposition_targets=decomposition_targets,
-        ci_config=pd_config.ci_config,
-        sigmoid_type=pd_config.sigmoid_type,
-    ).to(device)
-
-    # Built once; consumed by LW + PPGD step functions. CI pool doesn't need it
-    # (target_fwd on CI pool runs through the full model with LM head — we
-    # discard the output and only use cached pre-weight acts for the CI fn).
-    strategy = LayerwiseLossStrategy.from_cfg(
-        target_model,
-        use_fused_kl=three_pool_config.use_fused_kl,
-        unfused_recon=reconstruction_loss,
-    )
-
-    # Peek the first batch so PPGD can size its source tensors; all pools
-    # synchronise here so the batch-shape contract is honoured.
-    train_iterator = loop_dataloader(train_loader)
-    first_batch = next(train_iterator)
-    train_iterator = itertools.chain([first_batch], train_iterator)
-    _assert_full_global_batch(first_batch, runtime.batch_global)
-
-    components_lr_schedule = pd_config.components_optimizer.lr_schedule
-    ci_fn_lr_schedule = pd_config.ci_fn_optimizer.lr_schedule
-
-    optimizer: torch.optim.Optimizer | None = None
-    all_params: list[nn.Parameter] = []
-    ci_fn_params: list[nn.Parameter] = []
-    ppgd_state: PersistentPGDState | None = None
-
-    match layout.my_pool:
-        case "ci":
-            ci_fn_params = list(component_model.ci_fn.parameters())
-            optimizer = torch.optim.AdamW(
-                [{"params": ci_fn_params, "lr": ci_fn_lr_schedule.start_val}],
-                weight_decay=0.0,
-                fused=True,
-            )
-        case "layerwise":
-            component_params: list[nn.Parameter] = []
-            for name in layout.my_owned_sites:
-                component_params.extend(component_model.components[name].parameters())
-            all_params = component_params
-            optimizer = torch.optim.AdamW(
-                [{"params": component_params, "lr": components_lr_schedule.start_val}],
-                weight_decay=0.0,
-                fused=True,
-            )
-            if pd_config.faithfulness_warmup_steps > 0:
-                run_faithfulness_warmup_layerwise(
-                    component_model=component_model,
-                    component_params=component_params,
-                    n_steps=pd_config.faithfulness_warmup_steps,
-                    lr=pd_config.faithfulness_warmup_lr,
-                    weight_decay=pd_config.faithfulness_warmup_weight_decay,
-                )
-        case "ppgd":
-            ppgd_cfg = runtime.ppgd_cfg
-            ppgd_state = PersistentPGDState(
-                module_to_c=runtime.c_per_site,
-                batch_dims=(layout.world.batch_local_ppgd, *_seq_dims_from_batch(first_batch)),
-                device=device,
-                use_delta_component=True,
-                optimizer_cfg=ppgd_cfg.optimizer,
-                scope=ppgd_cfg.scope,
-                use_sigmoid_parameterization=ppgd_cfg.use_sigmoid_parameterization,
-                n_warmup_steps=ppgd_cfg.n_warmup_steps,
-                n_samples=ppgd_cfg.n_samples,
-                router=AllLayersRouter(),
-                reconstruction_loss=strategy.recon_loss,
-            )
-
-    n_steps = pd_config.steps
-    profiler_ctx = profiler if profiler is not None else nullcontext()
-    h_cache_ci: dict[str, Tensor] | None = None  # CI pool's H_T cache (threaded across steps)
-    # Async-pipeline state threaded across iterations on LW + PPGD pools.
-    # In sync mode both stay None forever; in async mode they hold the previous
-    # iter's pending async work (in-block all_reduce on LW; V/U recv broadcast
-    # on PPGD), which the next iter's "finalize prev" phase consumes.
-    pending_all_reduce_lw: list[tuple[list[Tensor], Tensor, dist.Work]] | None = None
-    pending_recv_vu_ppgd: list[tuple[Any, Tensor, dist.Work]] | None = None
-    defer_vu_opt = three_pool_config.defer_vu_opt
-
-    with profiler_ctx:
-        # Pre-fetch the next batch each step so CI pool can prefetch its
-        # target_fwd. batch_T is the current step's batch; batch_T_plus_1 is
-        # peeked so CI's dead-time prefetch has something to chew on.
-        batch_T = next(train_iterator)
-        batch_T_plus_1 = next(train_iterator, None)
-
-        for step in range(n_steps):
-            _assert_full_global_batch(batch_T, runtime.batch_global)
-
-            if optimizer is not None:
-                # LR schedules. CI pool has one param group (CI fn); LW pool has
-                # one (components). PPGD pool has no optimizer.
-                # In async mode on LW, the opt step inside step_layerwise's
-                # "finalize prev" block uses iter-(T-1)'s grads — so we set the
-                # LR to the schedule value at step-1 (clamped to 0 on iter 0).
-                # CI pool's opt is not deferred, so it always uses step's LR.
-                if layout.my_pool == "ci":
-                    optimizer.param_groups[0]["lr"] = get_scheduled_value(
-                        step, n_steps, ci_fn_lr_schedule
-                    )
-                elif layout.my_pool == "layerwise":
-                    lr_step = max(step - 1, 0) if defer_vu_opt else step
-                    optimizer.param_groups[0]["lr"] = get_scheduled_value(
-                        lr_step, n_steps, components_lr_schedule
-                    )
-
-            # When profiling, barrier ranks at step boundary so all pools share
-            # a common time origin in the trace.
-            if profiler is not None:
-                dist.barrier()
-
-            torch.cuda.synchronize(device)
-            step_start = time.perf_counter()
-
-            match layout.my_pool:
-                case "ci":
-                    assert optimizer is not None
-                    next_batch_for_prefetch = batch_T_plus_1 if step < n_steps - 1 else None
-                    metrics, h_cache_ci = step_ci(
-                        layout,
-                        component_model,
-                        optimizer,
-                        ci_fn_params,
-                        batch_T=batch_T,
-                        batch_T_plus_1=next_batch_for_prefetch,
-                        h_cache_T=h_cache_ci,
-                        cfg=runtime,
-                        current_frac_of_training=step / n_steps if n_steps > 0 else 0.0,
-                        profiler=profiler,
-                    )
-                case "layerwise":
-                    assert optimizer is not None
-                    metrics, pending_all_reduce_lw = step_layerwise(
-                        layout,
-                        component_model,
-                        optimizer,
-                        all_params,
-                        batch_T,
-                        runtime,
-                        strategy,
-                        defer_vu_opt=defer_vu_opt,
-                        prev_pending_all_reduce=pending_all_reduce_lw,
-                        profiler=profiler,
-                    )
-                case "ppgd":
-                    assert ppgd_state is not None
-                    metrics, pending_recv_vu_ppgd = step_ppgd(
-                        layout,
-                        component_model,
-                        ppgd_state,
-                        batch_T,
-                        runtime,
-                        strategy,
-                        step=step,
-                        n_steps=n_steps,
-                        defer_vu_opt=defer_vu_opt,
-                        prev_pending_recv_vu=pending_recv_vu_ppgd,
-                        profiler=profiler,
-                    )
-
-            torch.cuda.synchronize(device)
-            step_ms = (time.perf_counter() - step_start) * 1000.0
-
-            if step % cadence.train_log_every == 0:
-                _log_train_metrics(
-                    metrics=metrics,
-                    layout=layout,
-                    device=device,
-                    step=step,
-                    step_ms=step_ms,
-                    runtime=runtime,
-                    optimizer=optimizer,
-                    sink=sink,
-                )
-
-            if cadence.should_save(step):
-                _gather_and_save(
-                    layout=layout,
-                    component_model=component_model,
-                    target_model=target_model,
-                    run_batch=run_batch,
-                    pd_config=pd_config,
-                    runtime=runtime,
-                    device=device,
-                    sink=sink,
-                    step=step,
-                )
-
-            # Advance the 2-batch peek window for the next step.
-            batch_T = batch_T_plus_1 if batch_T_plus_1 is not None else next(train_iterator)
-            batch_T_plus_1 = next(train_iterator, None)
-
-            if profiler is not None:
-                profiler.step()
-
-        # Drain the final iter's deferred opt (async mode only). Without this,
-        # the saved checkpoint would be missing the last iter's update.
-        if defer_vu_opt:
-            match layout.my_pool:
-                case "layerwise":
-                    assert optimizer is not None
-                    if pending_all_reduce_lw is not None:
-                        optimizer.param_groups[0]["lr"] = get_scheduled_value(
-                            n_steps - 1, n_steps, components_lr_schedule
-                        )
-                        finalize_layerwise_async_drain(
-                            layout,
-                            component_model,
-                            optimizer,
-                            pending_all_reduce_lw,
-                        )
-                        pending_all_reduce_lw = None
-                case "ppgd":
-                    if pending_recv_vu_ppgd is not None:
-                        finalize_ppgd_async_drain(
-                            layout,
-                            component_model,
-                            pending_recv_vu_ppgd,  # type: ignore[arg-type]
-                        )
-                        pending_recv_vu_ppgd = None
-                case "ci":
-                    pass  # CI pool doesn't defer
-
-        # Final save after the loop (matches single-pool optimize() behavior).
-        _gather_and_save(
-            layout=layout,
-            component_model=component_model,
-            target_model=target_model,
-            run_batch=run_batch,
-            pd_config=pd_config,
-            runtime=runtime,
-            device=device,
-            sink=sink,
-            step=n_steps,
-        )
+def _layout_fingerprint(layout: ThreePoolLayout) -> dict[str, Any]:
+    """Compact summary of the 3-pool world layout. Compared at resume time."""
+    return {
+        "world_size": layout.world.world_size,
+        "ci_ranks": list(layout.world.ci_ranks),
+        "ppgd_ranks": list(layout.world.ppgd_ranks),
+        "n_layerwise_blocks": len(layout.world.layerwise_block_groups),
+        "my_rank": layout.my_rank,
+        "my_pool": layout.my_pool,
+        "owned_sites": list(layout.my_owned_sites) if layout.my_pool == "layerwise" else [],
+    }
 
 
 def _validate_pd_config_for_three_pool(
@@ -478,12 +657,6 @@ def _validate_pd_config_for_three_pool(
         "layerwise stoch recon + PPGD's PPGD warmup)."
     )
 
-    # 3-pool allows either layerwise OR global CI fns. The whole point of the
-    # CI-pool split is to make global_shared_transformer physically realizable
-    # — but smaller targets can still use layerwise (validated by pydantic
-    # discriminated union; we just don't restrict here).
-    # No additional CI-mode assertion needed.
-
     assert pd_config.sampling == "continuous", (
         "3-pool hardcodes `sampling='continuous'` in CI pool's CI computation; "
         f"got pd_config.sampling={pd_config.sampling!r}."
@@ -493,16 +666,12 @@ def _validate_pd_config_for_three_pool(
         f"got pd_config.n_mask_samples={pd_config.n_mask_samples}."
     )
 
-    # insert_identity_operations_ isn't called from the 3-pool path, so any
-    # identity-layer decomposition target would be silently ignored.
     assert pd_config.identity_decomposition_targets is None, (
         "3-pool path does not call `insert_identity_operations_`; "
         "`identity_decomposition_targets` would be silently ignored."
     )
 
-    # Convention: rank 0 must be the Layerwise pool's block 0 leader. The
-    # reductions module assumes this so it can collect ci + ppgd pool's
-    # averaged losses on rank 0.
+    # Convention: rank 0 must be the Layerwise pool's block 0 leader.
     assert three_pool_config.layerwise_block_groups[0].ranks[0] == 0, (
         "Convention: rank 0 must be the LW pool's block 0 leader (so reductions "
         "can ship CI/PPGD pool losses to rank 0). Reorder layerwise_block_groups "
@@ -596,8 +765,7 @@ def _decomposition_targets_for_pool(
 
 def _assert_full_global_batch(batch: Any, batch_global: int) -> None:
     """The 3-pool data contract: every rank reads the FULL global batch on
-    every step so each pool can slice to its own DP shard. See
-    ``optimize_three_pool`` docstring for setup notes.
+    every step so each pool can slice to its own DP shard.
     """
     if isinstance(batch, Tensor):
         actual = batch.shape[0]
@@ -613,40 +781,6 @@ def _assert_full_global_batch(batch: Any, batch_global: int) -> None:
         f"loader was built with a non-None dist_state (which shards the batch). "
         f"For 3-pool, pass dist_state=None to build_loader."
     )
-
-
-def _gather_and_save(
-    *,
-    layout: ThreePoolLayout,
-    component_model: ComponentModel,
-    target_model: nn.Module,
-    run_batch: RunBatch,
-    pd_config: PDConfig,
-    runtime: _ThreePoolRuntime,
-    device: torch.device,
-    sink: RunSink,
-    step: int,
-) -> None:
-    """Gather full state to rank 0 and dispatch to ``sink.checkpoint``.
-
-    All ranks must enter this in sync — the gather uses ordered P2P sends/recvs.
-    Only rank 0 actually writes via the sink.
-    """
-    state_dict = gather_full_state_dict_to_rank0(
-        layout=layout,
-        component_model=component_model,
-        target_model=target_model,
-        run_batch=run_batch,
-        ci_config=pd_config.ci_config,
-        sigmoid_type=pd_config.sigmoid_type,
-        c_per_site=runtime.c_per_site,
-        device=device,
-    )
-    if layout.my_rank == 0:
-        assert state_dict is not None
-        # TODO(Task #6): replace with `sink.checkpoint(trainer, step=step)` once
-        # ThreePoolTrainer lands and owns the gather.
-        sink.checkpoint(_PreGatheredStateDictShim(state_dict), step=step)
 
 
 def _seq_dims_from_batch(batch: Any) -> tuple[int, ...]:
@@ -675,8 +809,7 @@ def _log_train_metrics(
     combined = aggregate_losses_to_rank0(metrics, layout, device)
     mem_combined = aggregate_max_memory_to_rank0(layout, device)
 
-    # Reduce step_ms with MAX across LW pool (slowest LW rank is the wall-clock
-    # floor; CI + PPGD should track it).
+    # Reduce step_ms with MAX across LW pool (slowest LW rank is the wall-clock floor).
     step_ms_t = torch.tensor([step_ms], device=device)
     if layout.my_pool == "layerwise":
         dist.all_reduce(step_ms_t, op=dist.ReduceOp.MAX, group=layout.world.layerwise_pool_group)
@@ -696,9 +829,6 @@ def _log_train_metrics(
     assert layout.my_pool == "layerwise", "rank 0 must be in LW pool (per validator)"
     assert optimizer is not None
     combined["schedules/lr/components"] = optimizer.param_groups[0]["lr"]
-    # CI fn LR is set on a different rank's optimizer (CI pool rank 0); skip
-    # logging it here for MVP — could be plumbed via the loss aggregation if
-    # needed later.
     sink.console(
         f"--- Step {step} ---",
         *(f"train/{name}: {value:.6g}" for name, value in combined.items()),

@@ -21,12 +21,13 @@ See ``DESIGN.md`` for the per-step dependency graph + the pipelining tricks.
 """
 
 from param_decomp.three_pool.config import LayerwiseBlockGroupSpec, ThreePoolConfig
-from param_decomp.three_pool.optimize import optimize_three_pool
+from param_decomp.three_pool.optimize import ThreePoolTrainer, optimize_three_pool
 from param_decomp.three_pool.profiler import PhaseProfiler
 
 __all__ = [
     "LayerwiseBlockGroupSpec",
     "PhaseProfiler",
     "ThreePoolConfig",
+    "ThreePoolTrainer",
     "optimize_three_pool",
 ]
