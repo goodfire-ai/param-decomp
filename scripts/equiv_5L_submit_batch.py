@@ -77,7 +77,7 @@ def main() -> None:
             job_name=spec.name,
             partition=None,
             n_gpus=spec.n_gpus,
-            time="01:00:00",
+            time="02:00:00",
             snapshot_ref=execution_stamp.snapshot_ref,
             comment=f"equivalence test — {spec.name}",
         )
