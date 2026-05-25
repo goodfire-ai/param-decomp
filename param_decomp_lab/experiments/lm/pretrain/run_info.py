@@ -127,6 +127,8 @@ def _migrate_legacy_data_config(config_dict: dict[str, Any]) -> dict[str, Any]:
         "train_split": train["split"],
         "eval_split": val["split"],
     }
+    if "seed" not in config_dict:
+        config_dict["seed"] = train["seed"]
     return config_dict
 
 
