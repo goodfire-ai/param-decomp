@@ -300,22 +300,24 @@ def step_pool_a(
     # block DDP partners hold identical grads after step 6, so the
     # all-reduce SUM over pool A double-counts by ``n_per_block``; divide
     # back out.
+    components_norm = 0.0
+    ci_fn_norm = 0.0
     with p.phase("a/8b_grad_clip"):
         n_per_block = layout.world.n_per_block
         if cfg.grad_clip_norm_components is not None:
-            cross_pool_clip_grad_norm(
+            components_norm = cross_pool_clip_grad_norm(
                 component_params,
                 cfg.grad_clip_norm_components,
                 group=layout.world.pool_a_group,
                 n_replicas=n_per_block,
-            )
+            ).item()
         if cfg.grad_clip_norm_ci_fn is not None:
-            cross_pool_clip_grad_norm(
+            ci_fn_norm = cross_pool_clip_grad_norm(
                 ci_fn_params,
                 cfg.grad_clip_norm_ci_fn,
                 group=layout.world.pool_a_group,
                 n_replicas=n_per_block,
-            )
+            ).item()
 
     # 7. AdamW step.
     with p.phase("a/9_opt_step"):
@@ -360,6 +362,9 @@ def step_pool_a(
         "_raw/imp_num": loss_imp.item(),
         "_raw/stoch_num": stoch_total_value,
         "_raw/stoch_den": float(stoch_n_owned),
+        # Pre-clip global L2 norms (same on every pool-A rank).
+        "grad_norm/components": components_norm,
+        "grad_norm/ci_fn": ci_fn_norm,
     }
 
 

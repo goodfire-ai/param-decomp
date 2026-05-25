@@ -720,6 +720,12 @@ def _log_train_metrics(
     if mem_combined is not None:
         combined.update(mem_combined)
     combined["perf/step_ms"] = step_ms_t.item()
+    # grad_norm/* on rank 0 holds the pre-clip global L2 norm (computed by
+    # cross_pool_clip_grad_norm via an all-reduce SUM across pool A, so it's
+    # identical on every pool-A rank — rank 0's value is the right one to log).
+    for k in ("grad_norm/components", "grad_norm/ci_fn"):
+        if k in metrics:
+            combined[k] = metrics[k]
     combined["loss/total"] = (
         runtime.coeff_faith * combined["loss/faith"]
         + runtime.coeff_imp * combined["loss/imp"]
