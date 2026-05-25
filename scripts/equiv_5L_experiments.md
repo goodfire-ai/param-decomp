@@ -76,3 +76,41 @@ Re-ran 7 variants with the new aggregator (all sharing git snapshot
 equivalent to 1-pool modulo well-understood RNG variance. The earlier-observed
 "3-pool drift" was logging artifact + mask-sampling noise, not algorithmic
 bug. Ready to scale to longer GPT-2 XL runs.
+
+## 2026-05-25 (canon config audit + faith scaling fix)
+
+**Setup change.** All 7 equiv yamls re-ported to mirror ``gpt2_xl_full.yaml``
+exactly: LR 5e-4/1e-4 cosine to 0.1× final, ``grad_clip_norm=0.01`` on
+components, faith coeff 1e8, stoch coeff 50, ImpMin pnorm=2.0 with anneal to
+0.3, PPGD adam (β1=0.5 β2=0.99), warmup=400 steps. Multi-seed sweep with
+canon settings.
+
+**Two new bugs surfaced**:
+
+1. ``grad_clip_norm`` was silently ignored in 2-pool / 3-pool — the field was
+   only implemented in ``param_decomp.optimize`` (1-pool). Implemented
+   ``param_decomp.grad_clip.cross_pool_clip_grad_norm`` that all-reduces the
+   sum-of-squares across the relevant pool group with ``/n_replicas``
+   deduplication, then scales grads uniformly.
+2. ``_faithfulness_loss`` divided by ``numel_owned`` (rank-local) not
+   ``numel_global``. Single-pool's per-element gradient is ``∝ 1 / numel_global``;
+   multi-pool's was ``n_blocks×`` larger, so the unclipped 400-step
+   faithfulness warmup over-converged V/U. Step-0 faith differed by ~5% and
+   training never caught up (step-190 total ~2% lower in 2-pool across all
+   seeds, t=-377). Fix: divide by ``numel_global`` (computed once at
+   runtime-build time from resolved decomposition targets) so per-element grad
+   matches single-pool exactly.
+
+**Multi-seed result after both fixes (N=10 each, canon config):**
+
+| metric | 1-pool | 2-pool (5×1) | delta | t-stat |
+|--------|--------|--------------|-------|--------|
+| step-0 faith (post-warmup) | 0.010572 ± 0.000002 | 0.010571 ± 0.000003 | -0.000001 | -0.57 |
+| mean(stoch) over training | 0.0866 ± 0.0035 | 0.0905 ± 0.0062 | +0.0039 | +1.72 |
+| step-190 total | 1018600 ± 166 | 1018507 ± 186 | -93 (-0.009%) | -1.18 |
+
+Step-0 faith identical to 6 decimal places — warmup now converges to the
+same V/U in both pools. Step-190 total agrees within ~0.01%, t-stat
+well below significance.
+
+**Final verdict.** 1-pool ≡ 2-pool 5×1 under the canon config, modulo RNG.
