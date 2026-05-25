@@ -197,7 +197,13 @@ def _materialize_yaml(topo: Topology, out_dir: Path) -> Path:
                 "model_name": "openai-community/gpt2-xl",
             },
             "output_extract": 0,
-            "activation_checkpointing": True,
+            # activation_checkpointing=True triggers
+            # ``torch.utils.checkpoint.CheckpointError: A different number of
+            # tensors was saved during the original forward and recomputation``
+            # — our forward graph has RNG-dependent ops (mask sampling) that
+            # produce structurally different recomputations. Disabled for the
+            # sweep; revisit if activation memory becomes the bottleneck.
+            "activation_checkpointing": False,
         },
         "data": {
             "tokenizer_name": "openai-community/gpt2",
