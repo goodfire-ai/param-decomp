@@ -60,12 +60,15 @@ from param_decomp.two_pool.loss_strategy import LayerwiseLossStrategy
 from param_decomp.two_pool.runtime import autocast_bf16
 
 
-def _faithfulness_loss(component_model: ComponentModel, device: torch.device) -> Tensor:
+def _faithfulness_loss(
+    component_model: ComponentModel, device: torch.device
+) -> tuple[Tensor, Tensor, int]:
     """‖W_target − VU.T‖²_F / numel, summed across this rank's owned sites.
 
-    Same formula as two_pool's ``_faithfulness_loss``. Pool sharding means each
-    LW rank only iterates over its owned sites' weight_deltas, but the
-    coefficient is left as-is (same per-site magnitude as in single-pool).
+    Returns ``(scalar_loss, sum_sq, numel)`` so the logger can aggregate the
+    raw ``(num, den)`` into a global ratio across LW blocks (each rank's
+    per-site numel differs, so AVG'ing per-rank ratios doesn't give the global
+    ratio). See ``two_pool.pool_a._faithfulness_loss``.
     """
     weight_deltas = component_model.calc_weight_deltas()
     sum_sq = torch.zeros((), device=device)
@@ -73,7 +76,7 @@ def _faithfulness_loss(component_model: ComponentModel, device: torch.device) ->
     for d in weight_deltas.values():
         sum_sq = sum_sq + (d**2).sum()
         numel += d.numel()
-    return sum_sq / numel
+    return sum_sq / numel, sum_sq, numel
 
 
 def _layerwise_loss_streaming(
@@ -85,7 +88,7 @@ def _layerwise_loss_streaming(
     recon_loss: Any,
     coeff_stoch: float,
     n_sites_total: int,
-) -> float:
+) -> tuple[float, float, int]:
     """Per-site streaming layerwise loss. Identical contract to
     ``two_pool.pool_a._layerwise_loss_streaming`` — backward per iter so peak
     memory stays bounded to ~1×iter.
@@ -93,6 +96,10 @@ def _layerwise_loss_streaming(
     Per-site contribution scales as
     ``coeff_stoch * sum_kl_s / (n_positions * n_sites_total)`` so the same
     YAML coefficient transfers from 2-pool / single-pool trainers.
+
+    Returns ``(scalar_value, raw_num, raw_den)``: scalar is per-rank
+    ``total_value / n_owned``; raw num/den let the logger compute global mean
+    via ``SUM(num) / SUM(den)`` across the LW pool.
     """
     n_owned = len(owned_sites)
     total_value = 0.0
@@ -112,7 +119,7 @@ def _layerwise_loss_streaming(
         scaled = coeff_stoch * loss / (n_positions * n_sites_total)
         scaled.backward()
         total_value += (loss / n_positions).item()
-    return total_value / n_owned
+    return total_value / n_owned, total_value, n_owned
 
 
 def step_layerwise(
@@ -206,7 +213,7 @@ def step_layerwise(
     # ── Phase D: V/U-dependent work.
     with strategy.context(component_model.target_model):
         with p.phase("lw/D1_faith"):
-            loss_faith = _faithfulness_loss(component_model, device)
+            loss_faith, faith_sum_sq_t, faith_numel = _faithfulness_loss(component_model, device)
             (cfg.coeff_faith * loss_faith).backward()
 
         with p.phase("lw/D2_wait_ci_recv"):
@@ -218,7 +225,7 @@ def step_layerwise(
         }
 
         with p.phase("lw/D3_layerwise"), autocast_bf16(cfg.bf16_autocast):
-            loss_stoch_value = _layerwise_loss_streaming(
+            loss_stoch_value, stoch_total_value, stoch_n_owned = _layerwise_loss_streaming(
                 component_model,
                 batch_local,
                 target_local,
@@ -251,7 +258,16 @@ def step_layerwise(
                 comp.U.grad.add_(u_grads_pgd[s])
 
     # ── Phase E: tail. Async kickoff (deferred) or sync all_reduce + opt + send.
-    metrics = {"loss/faith": loss_faith.item(), "loss/stoch": loss_stoch_value}
+    # See ``three_pool.reductions`` for how the raw (num, den) is combined into
+    # global faith and stoch on rank 0.
+    metrics = {
+        "loss/faith": loss_faith.item(),
+        "loss/stoch": loss_stoch_value,
+        "_raw/faith_num": faith_sum_sq_t.item(),
+        "_raw/faith_den": float(faith_numel),
+        "_raw/stoch_num": stoch_total_value,
+        "_raw/stoch_den": float(stoch_n_owned),
+    }
 
     if defer_vu_opt:
         with p.phase("lw/E_kickoff_async_allreduce"):

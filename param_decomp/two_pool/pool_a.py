@@ -38,15 +38,22 @@ from param_decomp.two_pool.profiler import PhaseProfiler
 from param_decomp.two_pool.runtime import _TwoPoolRuntime, autocast_bf16
 
 
-def _faithfulness_loss(component_model: ComponentModel, device: torch.device) -> Tensor:
-    """Standard faithfulness loss: ‖W_target − VU.T‖²_F / numel, summed across sites."""
+def _faithfulness_loss(
+    component_model: ComponentModel, device: torch.device
+) -> tuple[Tensor, Tensor, int]:
+    """Standard faithfulness loss: ``‖W_target − VU.T‖²_F / numel`` over this rank's
+    owned sites. Returns ``(scalar_loss, sum_sq, numel)`` so the logger can
+    aggregate the raw ``(num, den)`` into a global ratio across blocks (each
+    rank's per-site numel differs, so AVG'ing the per-rank ratios does NOT give
+    the global ratio).
+    """
     weight_deltas = component_model.calc_weight_deltas()
     sum_sq = torch.zeros((), device=device)
     numel = 0
     for d in weight_deltas.values():
         sum_sq = sum_sq + (d**2).sum()
         numel += d.numel()
-    return sum_sq / numel
+    return sum_sq / numel, sum_sq, numel
 
 
 def _importance_minimality_loss(
@@ -57,9 +64,12 @@ def _importance_minimality_loss(
     """Importance-minimality loss matching single-pool semantics.
 
     Mirrors ``param_decomp.metrics.builtin.importance_minimality_loss`` —
-    annealed L_p penalty with a logarithmic beta term. ``world_size=1`` since
-    every pool-A rank computes CI for ALL sites against the FULL batch (no
-    DP sharding within pool A), so the local sum already equals the global sum.
+    annealed L_p penalty with a logarithmic beta term. ``world_size=1`` because
+    the pool-A target+CI forward (phase a/1) runs on the FULL global batch
+    (only the layerwise stoch loss slices the batch by within_block_idx, NOT
+    the CI fn forward). So each rank's local ``sum`` over its owned sites
+    already equals the global sum for those sites; the cross-block aggregation
+    is SUM-across-disjoint-site-sets and lives entirely in the logger.
     """
     annealed_p = _get_linear_annealed_p(
         current_frac_of_training=current_frac_of_training,
@@ -88,7 +98,7 @@ def _layerwise_loss_streaming(
     recon_loss: ReconstructionLoss,
     coeff_stoch: float,
     n_sites_total: int,
-) -> float:
+) -> tuple[float, float, int]:
     """Per-site layerwise loss, backpropagated per-iter so peak memory stays bounded.
 
     Each iter masks one site, runs the component-model forward to produce
@@ -106,7 +116,14 @@ def _layerwise_loss_streaming(
     ``coeff_stoch * sum_kl / (n_sites_total * n_positions)`` so the same YAML
     coefficient transfers between the two trainers.
 
-    Returns the scalar mean per-token-per-site loss value (logging only).
+    Returns ``(scalar_value, raw_num, raw_den)`` where:
+      * ``scalar_value = total_value / n_owned`` is the per-rank logging scalar.
+      * ``raw_num = total_value`` (sum over owned sites of ``loss / n_positions``)
+        and ``raw_den = n_owned`` are the additive ingredients the logger
+        combines as ``SUM(num) / SUM(den)`` across blocks to recover the global
+        mean over (sites, positions). Intra-block AVG of ``raw_num`` is the
+        cross-slice mean per site per position; intra-block AVG of ``raw_den``
+        is trivial (identical on all partners).
     """
     n_owned = len(owned_sites)
     total_value = 0.0
@@ -126,7 +143,7 @@ def _layerwise_loss_streaming(
         scaled = coeff_stoch * loss / (n_positions * n_sites_total)
         scaled.backward()  # retain_graph=False — iter-local graph freed
         total_value += (loss / n_positions).item()
-    return total_value / n_owned
+    return total_value / n_owned, total_value, n_owned
 
 
 def step_pool_a(
@@ -191,7 +208,7 @@ def step_pool_a(
         # 3. Home losses (forward only; backward happens after streaming layerwise)
         device = target_out.device
         with p.phase("a/3_faith"):
-            loss_faith = _faithfulness_loss(component_model, device)
+            loss_faith, faith_sum_sq_t, faith_numel = _faithfulness_loss(component_model, device)
         with p.phase("a/4_imp"):
             loss_imp = _importance_minimality_loss(ci.upper_leaky, current_frac_of_training, cfg)
 
@@ -209,7 +226,7 @@ def step_pool_a(
                 s: ci.lower_leaky[s][sl].detach().requires_grad_(True)
                 for s in layout.my_owned_sites
             }
-            loss_stoch_value = _layerwise_loss_streaming(
+            loss_stoch_value, stoch_total_value, stoch_n_owned = _layerwise_loss_streaming(
                 component_model,
                 batch_local,
                 target_local,
@@ -293,6 +310,19 @@ def step_pool_a(
         "loss/faith": loss_faith.item(),
         "loss/imp": loss_imp.item(),
         "loss/stoch": loss_stoch_value,
+        # Raw (numerator, denominator) per loss for cross-block aggregation in
+        # the logger. Faith and stoch are ratios — the global ratio is
+        # ``SUM(num) / SUM(den)`` across blocks, NOT the AVG of per-rank
+        # ratios. Imp is a SUM-across-disjoint-site-sets: raw "num" is the
+        # per-rank scalar, raw "den" is fixed at 1 so SUM(num)/SUM(den) gives
+        # the cross-block SUM after dividing by n_blocks — which the logger
+        # un-divides by multiplying back. (Equivalent to: aggregator does
+        # straight cross-block SUM for imp; den=1 is a uniform tag.)
+        "_raw/faith_num": faith_sum_sq_t.item(),
+        "_raw/faith_den": float(faith_numel),
+        "_raw/imp_num": loss_imp.item(),
+        "_raw/stoch_num": stoch_total_value,
+        "_raw/stoch_den": float(stoch_n_owned),
     }
 
 

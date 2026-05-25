@@ -425,8 +425,10 @@ class TwoPoolTrainer:
                         )
                 # Loss values produced by either pool should be finite — non-finite means a
                 # silent NaN somewhere upstream (PPGD update blew up, autocast overflow, etc.).
+                # Covers both the per-rank display scalars (``loss/*``) and the raw
+                # aggregation ingredients (``_raw/*``) that the logger sums across blocks.
                 for k, v in metrics.items():
-                    if k.startswith("loss/"):
+                    if k.startswith("loss/") or k.startswith("_raw/"):
                         assert v == v, f"NaN in metrics[{k!r}] at step {step}"  # NaN != NaN
                 torch.cuda.synchronize(self._device)
                 step_ms = (time.perf_counter() - step_start) * 1000.0

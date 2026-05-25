@@ -177,7 +177,16 @@ def step_ppgd(
         layout.send_g_ci_to_ci_pool_ppgd(ci_grads)
 
     # ── Phase E: recv updated V/U. Async kickoff (deferred) or sync recv.
-    metrics = {"loss/ppgd": loss_ppgd.item()}
+    # Raw num/den are the pool-B-style additive ingredients: SUM across PPGD
+    # pool gives global ``sum_loss / global_n_examples`` = global mean per
+    # position. (n_examples is uniform across PPGD ranks so AVG would
+    # numerically coincide, but using raw keeps the contract identical to the
+    # LW pool's faith/stoch path.)
+    metrics = {
+        "loss/ppgd": loss_ppgd.item(),
+        "_raw/ppgd_num": sum_loss.item(),
+        "_raw/ppgd_den": float(n_examples),
+    }
 
     if defer_vu_opt:
         with p.phase("pgd/E_kickoff_async_recv_vu"):

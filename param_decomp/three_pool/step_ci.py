@@ -240,4 +240,14 @@ def step_ci(
             w.wait()
         del send_bufs_lw, send_bufs_pgd
 
-    return {"loss/imp": loss_imp.item()}, h_cache_T_plus_1
+    # imp is already globally aggregated (per_component_sums + n_examples are
+    # all-reduced SUM across the CI pool inside ``_importance_minimality_loss``),
+    # so every CI rank holds the same scalar. The logger forwards it as-is —
+    # the "raw num" is that scalar and the "raw den" stays 1 because pool-wide
+    # SUM-of-identical-values would over-count by ``n_ci``. We mark this by
+    # dividing by ``n_ci`` so that the all-reduce SUM gives back the global
+    # value exactly once.
+    return {
+        "loss/imp": loss_imp.item(),
+        "_raw/imp_num": loss_imp.item() / layout.world.n_ci,
+    }, h_cache_T_plus_1

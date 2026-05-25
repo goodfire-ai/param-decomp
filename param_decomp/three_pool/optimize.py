@@ -527,9 +527,11 @@ class ThreePoolTrainer:
                             prev_pending_recv_vu=pending_recv_vu_ppgd,
                             profiler=profiler,
                         )
-                # Catch silent NaN propagation early.
+                # Catch silent NaN propagation early. Covers both the per-rank
+                # display scalars (``loss/*``) and the raw aggregation
+                # ingredients (``_raw/*``) the logger sums across the pool.
                 for k, v in metrics.items():
-                    if k.startswith("loss/"):
+                    if k.startswith("loss/") or k.startswith("_raw/"):
                         assert v == v, f"NaN in metrics[{k!r}] at step {step}"  # NaN != NaN
 
                 torch.cuda.synchronize(device)

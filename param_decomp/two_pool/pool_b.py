@@ -148,4 +148,13 @@ def step_pool_b(
                 component_model.components[s].V.copy_(v_new[s])
                 component_model.components[s].U.copy_(u_new[s])
 
-    return {"loss/ppgd": loss_ppgd.item()}
+    return {
+        "loss/ppgd": loss_ppgd.item(),
+        # Raw (numerator, denominator) for cross-pool-B aggregation. Pool B
+        # batch-shards across its ranks, so global mean per position is
+        # ``SUM(sum_loss) / SUM(n_examples)`` — NOT AVG of per-rank ratios
+        # (n_examples is the same on every PPGD rank so AVG happens to
+        # coincide, but reporting raw keeps the contract uniform with pool A).
+        "_raw/ppgd_num": sum_loss.item(),
+        "_raw/ppgd_den": float(n_examples),
+    }
