@@ -1,0 +1,152 @@
+pd:
+  seed: 0
+  n_mask_samples: 1
+  ci_config:
+    mode: layerwise
+    fn_type: transformer
+    transformer_cfg:
+      d_model: 128
+      n_blocks: 2
+      mlp_hidden_dim:
+      - 512
+      attn_config:
+        n_heads: 4
+        max_len: 1024
+        rope_base: 10000.0
+  sampling: continuous
+  sigmoid_type: leaky_hard
+  decomposition_targets:
+  - module_pattern: h.[01234].attn.q_proj
+    C: 64
+  - module_pattern: h.[01234].attn.k_proj
+    C: 64
+  - module_pattern: h.[01234].attn.v_proj
+    C: 64
+  - module_pattern: h.[01234].attn.o_proj
+    C: 64
+  - module_pattern: h.[01234].mlp.c_fc
+    C: 64
+  - module_pattern: h.[01234].mlp.down_proj
+    C: 64
+  identity_decomposition_targets: null
+  use_delta_component: true
+  batch_size: 24
+  steps: 200
+  components_optimizer:
+    lr_schedule:
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+      final_val_frac: 1.0
+      fn_type: constant
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+      final_val_frac: 1.0
+      fn_type: constant
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - type: FaithfulnessLoss
+    coeff: 1000000.0
+  - type: StochasticReconLayerwiseLoss
+    coeff: 0.5
+  - type: ImportanceMinimalityLoss
+    coeff: 0.0001
+    pnorm: 1.0
+    beta: 0.5
+    p_anneal_start_frac: 0.0
+    p_anneal_final_p: 1.0
+    p_anneal_end_frac: 1.0
+    eps: 1.0e-12
+  - type: PersistentPGDReconLoss
+    coeff: 0.5
+    optimizer:
+      type: sign
+      lr_schedule:
+        start_val: 0.01
+        warmup_pct: 0.0
+        final_val_frac: 1.0
+        fn_type: constant
+    scope:
+      type: per_batch_per_position
+    use_sigmoid_parameterization: false
+    n_warmup_steps: 2
+    n_samples: 1
+cadence:
+  train_log_every: 10
+  save_every: null
+eval: null
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null
+target:
+  spec:
+    kind: hf_weights_in_vendored
+    model_class: param_decomp_lab.experiments.lm.pretrain.models.gpt2_simple.GPT2Simple
+    model_name: openai-community/gpt2
+  output_extract: 0
+  activation_checkpointing: false
+data:
+  tokenizer_name: openai-community/gpt2
+  max_seq_len: 256
+  dataset_name: monology/pile-uncopyrighted
+  column_name: text
+  train_split: train
+  eval_split: train
+  is_tokenized: false
+  streaming: true
+  buffer_size: 1000
+  shuffle_each_epoch: true
+two_pool:
+  use_fused_kl: true
+  pool_b_ranks:
+  - 5
+  block_groups:
+  - ranks:
+    - 0
+    owned_sites:
+    - h.0.attn.q_proj
+    - h.0.attn.k_proj
+    - h.0.attn.v_proj
+    - h.0.attn.o_proj
+    - h.0.mlp.c_fc
+    - h.0.mlp.down_proj
+  - ranks:
+    - 1
+    owned_sites:
+    - h.1.attn.q_proj
+    - h.1.attn.k_proj
+    - h.1.attn.v_proj
+    - h.1.attn.o_proj
+    - h.1.mlp.c_fc
+    - h.1.mlp.down_proj
+  - ranks:
+    - 2
+    owned_sites:
+    - h.2.attn.q_proj
+    - h.2.attn.k_proj
+    - h.2.attn.v_proj
+    - h.2.attn.o_proj
+    - h.2.mlp.c_fc
+    - h.2.mlp.down_proj
+  - ranks:
+    - 3
+    owned_sites:
+    - h.3.attn.q_proj
+    - h.3.attn.k_proj
+    - h.3.attn.v_proj
+    - h.3.attn.o_proj
+    - h.3.mlp.c_fc
+    - h.3.mlp.down_proj
+  - ranks:
+    - 4
+    owned_sites:
+    - h.4.attn.q_proj
+    - h.4.attn.k_proj
+    - h.4.attn.v_proj
+    - h.4.attn.o_proj
+    - h.4.mlp.c_fc
+    - h.4.mlp.down_proj
