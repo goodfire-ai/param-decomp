@@ -39,11 +39,7 @@ from param_decomp_lab.experiments.lm.data import (
 )
 from param_decomp_lab.experiments.utils import RUN_META_FILENAME, ExperimentConfig
 from param_decomp_lab.infra.paths import ModelPath
-from param_decomp_lab.infra.run_files import (
-    generate_run_id,
-    resolve_config_path,
-    resolve_run_files,
-)
+from param_decomp_lab.infra.run_files import generate_run_id, resolve_run_files
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.run_sink import RunSink
 from param_decomp_lab.seed import set_seed
@@ -163,18 +159,6 @@ def build_lm_loader(
 def make_run_batch(target_cfg: LMTargetConfig) -> RunBatch:
     """Return the `RunBatch` callable bound to `target_cfg.output_extract`."""
     return _make_run_batch(target_cfg.output_extract)
-
-
-def load_lm_cfg(path: ModelPath) -> LMExperimentConfig:
-    """Load just ``run_meta.yaml`` as a validated `LMExperimentConfig`.
-
-    Skips checkpoint resolution — useful for app endpoints that only need config
-    introspection (e.g. the run picker showing architecture summaries) and want to
-    avoid the W&B checkpoint download that `SavedLMRun.from_path` triggers.
-    """
-    return LMExperimentConfig.from_file(
-        resolve_config_path(path, config_filename=RUN_META_FILENAME)
-    )
 
 
 @dataclass(frozen=True)

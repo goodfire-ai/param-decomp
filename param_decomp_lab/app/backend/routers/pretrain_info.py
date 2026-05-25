@@ -14,7 +14,9 @@ from pydantic import BaseModel
 from param_decomp.log import logger
 from param_decomp_lab.app.backend.dependencies import DepLoadedRun
 from param_decomp_lab.app.backend.utils import log_errors
-from param_decomp_lab.experiments.lm.run import LMTargetConfig, load_lm_cfg
+from param_decomp_lab.experiments.lm.run import LMExperimentConfig, LMTargetConfig
+from param_decomp_lab.experiments.utils import RUN_META_FILENAME
+from param_decomp_lab.infra.run_files import resolve_config_path
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
 
@@ -213,7 +215,10 @@ def get_pretrain_info_for_run(wandb_path: str) -> PretrainInfoResponse:
 
     Fetches only config files (no checkpoints) for efficiency.
     """
-    return _get_pretrain_info(load_lm_cfg(wandb_path).target)
+    cfg = LMExperimentConfig.from_file(
+        resolve_config_path(wandb_path, config_filename=RUN_META_FILENAME)
+    )
+    return _get_pretrain_info(cfg.target)
 
 
 @router.get("/loaded")
