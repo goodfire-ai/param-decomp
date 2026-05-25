@@ -335,7 +335,7 @@ def run_faithfulness_warmup_layerwise(
     for _ in range(n_steps):
         warmup_opt.zero_grad()
         device = component_params[0].device
-        loss = _faithfulness_loss(component_model, device)
+        loss, _, _ = _faithfulness_loss(component_model, device)
         loss.backward()
         warmup_opt.step()
     del warmup_opt

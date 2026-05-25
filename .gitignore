@@ -180,3 +180,4 @@ cython_debug/
 *.schema.json
 
 .claude/worktrees
+param_decomp_lab/experiments/lm/_multiseed/
