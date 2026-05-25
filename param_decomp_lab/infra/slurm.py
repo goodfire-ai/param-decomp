@@ -352,16 +352,24 @@ def multi_node_torchrun_command(
         ``n_gpus = nproc_per_node``.
     """
     setup = generate_git_snapshot_setup(
-        work_dir=(f"/tmp/param-decomp/workspace-{job_name}-${{SLURM_JOB_ID}}-${{SLURM_NODEID}}"),
+        work_dir=(
+            f"/tmp/param-decomp/workspace-{job_name}-${{SLURM_JOB_ID}}-node${{SLURM_NODEID}}"
+        ),
         snapshot_ref=snapshot_ref,
     )
-    # Heredoc with quoted delimiter ('MN_SHELL') so the outer bash doesn't expand
-    # $SLURM_* — those get expanded on each remote node when the heredoc-fed bash
-    # actually runs.
-    return f"""srun --ntasks-per-node=1 bash -e <<'MN_SHELL'
+    # ``srun --nodes=$SLURM_NNODES --ntasks=$SLURM_NNODES --ntasks-per-node=1``
+    # forces ONE task per node and refuses to pack tasks onto fewer nodes
+    # (SLURM packs silently when only ``--ntasks-per-node=1`` is set). Each
+    # task then runs the heredoc bash which sets up its own /tmp workspace and
+    # launches torchrun for that node's GPU group.
+    #
+    # Heredoc delimiter is single-quoted ('MN_SHELL') so the outer bash doesn't
+    # expand ``$SLURM_*`` — those get expanded on each remote node when the
+    # heredoc-fed bash actually runs.
+    return f"""srun --nodes=$SLURM_NNODES --ntasks=$SLURM_NNODES --ntasks-per-node=1 bash -e <<'MN_SHELL'
 {setup}
 MASTER=$(scontrol show hostnames "$SLURM_NODELIST" | head -1)
-echo "[node $SLURM_NODEID/${{SLURM_NNODES}}] master=$MASTER work_dir=$WORK_DIR"
+echo "[node $SLURM_NODEID/${{SLURM_NNODES}}] host=$(hostname) master=$MASTER work_dir=$WORK_DIR"
 torchrun \\
   --nnodes=$SLURM_NNODES \\
   --node-rank=$SLURM_NODEID \\
