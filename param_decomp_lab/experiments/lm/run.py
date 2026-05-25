@@ -263,8 +263,8 @@ def main(config_path: str | Path) -> None:
     )
     eval_loop = _build_eval_loop(cfg, device, dist_state)
 
-    run_id = generate_run_id("param_decomp")
     if is_main_process():
+        run_id = generate_run_id("param_decomp")
         out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
         sink = RunSink.local(out_dir)
         cfg.to_file(out_dir / RUN_META_FILENAME)
