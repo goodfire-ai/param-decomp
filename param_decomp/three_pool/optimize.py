@@ -565,10 +565,14 @@ class ThreePoolTrainer:
             self._save_checkpoint(sink, n_steps)
 
     def _save_checkpoint(self, sink: RunSink, step: int) -> None:
-        """Gather full state across all ranks; dispatch to ``sink`` on rank 0."""
-        self._gather_consumable_to_rank0()  # all ranks participate
-        if self.layout.my_rank == 0:
-            sink.checkpoint(self, step=step)
+        """Gather full state across all ranks; dispatch to ``sink`` on every rank.
+
+        The default lab `RunSink` is rank-0-only no-op, so a non-resume-aware sink
+        will only write on rank 0. A resume-aware sink uses every rank's call to
+        write its rank-local resume shard alongside the consumable model on rank 0.
+        """
+        self._gather_consumable_to_rank0()  # all ranks participate in the gather
+        sink.checkpoint(self, step=step)  # all ranks call; sink decides per-rank behaviour
         self._consumable_cache = None
 
 
