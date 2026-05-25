@@ -164,3 +164,30 @@ identical V/U; training trajectory is equivalent up to RNG variance.
    → `seed_all_ranks` before ComponentModel construction.
 
 **Ready to scale to GPT-2 XL.**
+
+## 2026-05-25 (multi-node equivalence — jobs 33757-33771)
+
+`compute_utils.py` from main was lost in the modular refactor. Restored as
+``param_decomp_lab.infra.slurm.torchrun_command`` (1-GPU / single-node DDP /
+multi-node DDP under one function), with ``CUDA_FLAGS`` plumbing.
+
+N=5 seeds × 3 cohorts on the 5L canon config (batch=64 to divide both 16
+and 4):
+
+| cohort | step-0 faith | step-190 faith | step-190 total |
+|--------|--------------|----------------|----------------|
+| 1pool DDP=16 (2-node) | 0.010572 ± 2e-6 | 0.010186 ± 2e-6 | 1018583 ± 156 |
+| 2pool 6×2+4PPGD (2-node) | 0.010571 ± 1e-6 | 0.010185 ± 1e-6 | 1018533 ± 115 |
+| 3pool 5×2+2CI+4PPGD (2-node) | 0.010572 ± 1e-6 | 0.010185 ± 1e-6 | 1018558 ± 139 |
+
+Pairwise vs 1pool-mnode (Welch t):
+* 2pool: delta=-50.14 (−0.005%), t=-0.58 — NS
+* 3pool: delta=-25.47 (−0.003%), t=-0.27 — NS
+
+Faith trajectories track within 1e-6 across all three pools at every logged
+step. ``seed_all_ranks`` works correctly across nodes (step-0 faith identical
+to 6 decimals after 400-step warmup).
+
+(1pool DDP=2 at batch=64 OOMs — pre-existing memory issue in
+``_stochastic_recon_layerwise_loss_update`` which accumulates 30 forward
+graphs before backward at single-pool scale. Independent of multi-node.)
