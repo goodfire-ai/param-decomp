@@ -1,0 +1,185 @@
+# GPT-2 XL (1.5B) SPD via the 3-pool training strategy.
+#
+# Direct port of the gpt2_xl_full.yaml (old top-level YAML) canon. All knobs —
+# loss coefficients, optimizer schedules, ImpMin annealing, PPGD inner loop,
+# faithfulness warmup, grad clip, decomposition C per site — match the canon.
+# Differences vs canon (deliberate):
+#   * Target loaded via HFWeightsInVendored → GPT2Simple so q/k/v are separate
+#     nn.Linear modules (canon decomposes them separately, which requires the
+#     vendored model — HF's fused c_attn does not expose them).
+#   * `mode: global` with `fn_type: global_shared_transformer` — 3-pool's
+#     headline feature (a CI fn that spans all 288 sites, held replicated on
+#     every CI-pool rank).
+#   * Topology block (three_pool) at the bottom — needs to be filled in for
+#     the target GPU budget.
+#
+# Memory budget per LW rank (rough):
+#   * GPT-2 XL target model: 1.5B params × 2 bytes (bf16) = 3 GB
+#   * Per-layer components (V + U) — 6 sites × ~65M params/site = ~390M params
+#     per layer × 4 bytes (fp32) = 1.6 GB per layer
+#   * If 12 LW ranks each own 4 layers: 12 × (3 GB target + 6.4 GB components)
+#     ≈ 10 GB per rank, fits easily on B200 with activations.
+#   * If 48 LW ranks each own 1 layer (one per layer): ~5 GB/rank.
+#
+# Launch: torchrun --standalone --nproc_per_node=<n_gpus> \
+#         -m param_decomp_lab.experiments.lm.run \
+#         param_decomp_lab/experiments/lm/gpt2_xl_three_pool.yaml
+
+pd:
+  seed: 0
+  n_mask_samples: 1
+  ci_config:
+    mode: global
+    fn_type: global_shared_transformer
+    transformer_cfg:
+      d_model: 1024
+      n_blocks: 2
+      mlp_hidden_dim:
+      - 2048
+      attn_config:
+        n_heads: 16
+        max_len: 1024
+        rope_base: 10000.0
+  sampling: continuous
+  sigmoid_type: leaky_hard
+  decomposition_targets:
+  - module_pattern: h.*.attn.q_proj
+    C: 1024
+  - module_pattern: h.*.attn.k_proj
+    C: 1024
+  - module_pattern: h.*.attn.v_proj
+    C: 2048
+  - module_pattern: h.*.attn.o_proj
+    C: 2048
+  - module_pattern: h.*.mlp.c_fc
+    C: 8192
+  - module_pattern: h.*.mlp.down_proj
+    C: 8192
+  identity_decomposition_targets: null
+  use_delta_component: true
+  batch_size: 256
+  steps: 200000
+  components_optimizer:
+    lr_schedule:
+      start_val: 5.0e-04
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+    grad_clip_norm: 0.01
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 1.0e-04
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+  faithfulness_warmup_steps: 400
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - type: FaithfulnessLoss
+    coeff: 1.0e+08
+  - type: StochasticReconLayerwiseLoss
+    coeff: 50.0
+  - type: ImportanceMinimalityLoss
+    coeff: 4.0e-05
+    pnorm: 2.0
+    beta: 0.5
+    p_anneal_start_frac: 0.0
+    p_anneal_final_p: 0.3
+    p_anneal_end_frac: 1.0
+    eps: 1.0e-12
+  - type: PersistentPGDReconLoss
+    coeff: 1.0
+    optimizer:
+      type: adam
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        start_val: 0.01
+        warmup_pct: 0.025
+        final_val_frac: 1.0
+        fn_type: constant
+    scope:
+      type: per_batch_per_position
+    use_sigmoid_parameterization: false
+    n_warmup_steps: 2
+    n_samples: 1
+
+cadence:
+  train_log_every: 200
+  save_every: 1000
+
+eval: null
+
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null
+
+target:
+  spec:
+    kind: hf_weights_in_vendored
+    model_class: param_decomp_lab.experiments.lm.pretrain.models.gpt2_simple.GPT2Simple
+    model_name: openai-community/gpt2-xl
+  output_extract: 0
+  # Critical for 3-pool: each pool runs its own target forward on the FULL
+  # global batch, so activation checkpointing keeps target-fwd memory low on
+  # both LW (which also does layerwise stoch recon) and PPGD (which does
+  # PPGD warmup).
+  activation_checkpointing: true
+
+data:
+  tokenizer_name: openai-community/gpt2
+  max_seq_len: 1024
+  dataset_name: apollo-research/Skylion007-openwebtext-tokenizer-gpt2
+  column_name: input_ids
+  train_split: train
+  eval_split: train
+  is_tokenized: true
+  streaming: true
+  buffer_size: 1000
+  shuffle_each_epoch: true
+
+# === Topology block (fill in for the target GPU budget) ===
+# The schema requires `three_pool` but the actual ranks/blocks layout is
+# left to a separate "topology" override yaml so the same hyperparameters
+# can be reused across cluster sizes. See gpt2_xl_three_pool_topology_*.yaml
+# variants for concrete layouts.
+three_pool:
+  use_fused_kl: true
+  defer_vu_opt: true
+  # PLACEHOLDER — replace with concrete ranks list. Example layout for 28 GPUs:
+  #   * 24 LW ranks = 12 blocks × 2 ranks (4 layers per block)
+  #   * 2 CI ranks
+  #   * 2 PPGD ranks
+  ci_ranks: [24, 25]
+  ppgd_ranks: [26, 27]
+  layerwise_block_groups:
+  - ranks: [0, 1]
+    owned_sites:
+    - h.0.attn.q_proj
+    - h.0.attn.k_proj
+    - h.0.attn.v_proj
+    - h.0.attn.o_proj
+    - h.0.mlp.c_fc
+    - h.0.mlp.down_proj
+    - h.1.attn.q_proj
+    - h.1.attn.k_proj
+    - h.1.attn.v_proj
+    - h.1.attn.o_proj
+    - h.1.mlp.c_fc
+    - h.1.mlp.down_proj
+    - h.2.attn.q_proj
+    - h.2.attn.k_proj
+    - h.2.attn.v_proj
+    - h.2.attn.o_proj
+    - h.2.mlp.c_fc
+    - h.2.mlp.down_proj
+    - h.3.attn.q_proj
+    - h.3.attn.k_proj
+    - h.3.attn.v_proj
+    - h.3.attn.o_proj
+    - h.3.mlp.c_fc
+    - h.3.mlp.down_proj
+  # ... 11 more blocks would follow; each holds 4 consecutive layers.
