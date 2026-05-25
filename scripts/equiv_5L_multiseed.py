@@ -42,6 +42,8 @@ SPECS: tuple[_Spec, ...] = (
 SEEDS: tuple[int, ...] = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
 
 # Materialized yamls live under repo (so they're picked up by the snapshot).
+# Untracked — each run wipes & re-materializes so stale yamls from a prior
+# sweep don't leak into the snapshot.
 OUT_DIR = REPO_ROOT / "param_decomp_lab/experiments/lm/_multiseed"
 
 
@@ -56,7 +58,16 @@ def _materialize(spec: _Spec, seed: int) -> Path:
     return out
 
 
+def _wipe_out_dir() -> None:
+    """Remove any stale materialized yamls before re-generating."""
+    if OUT_DIR.is_dir():
+        for p in OUT_DIR.iterdir():
+            if p.is_file():
+                p.unlink()
+
+
 def main() -> None:
+    _wipe_out_dir()
     paths: list[tuple[_Spec, int, Path]] = []
     for spec in SPECS:
         assert spec.base_yaml.is_file(), f"base yaml not found: {spec.base_yaml}"
@@ -77,7 +88,7 @@ def main() -> None:
             job_name=job_name,
             partition=None,
             n_gpus=spec.n_gpus,
-            time="01:00:00",
+            time="02:00:00",  # warmup=400 + steps=200 → ~3× longer than old runs
             snapshot_ref=execution_stamp.snapshot_ref,
             comment=f"multi-seed equivalence — {job_name}",
         )
