@@ -54,6 +54,7 @@ from param_decomp.decomposition_targets import (
     DecompositionTarget,
     resolve_decomposition_targets,
 )
+from param_decomp.distributed import seed_all_ranks, seed_per_rank
 from param_decomp.masks import AllLayersRouter
 from param_decomp.metrics.base import LossMetricConfig
 from param_decomp.metrics.importance_minimality import ImportanceMinimalityLossConfig
@@ -206,6 +207,9 @@ class ThreePoolTrainer:
         )
 
         target_model.requires_grad_(False)
+        # Resync RNG across ranks before V/U + CI fn init — see
+        # ``two_pool.optimize.TwoPoolTrainer.__init__`` for rationale.
+        seed_all_ranks(pd_config.seed)
         self.component_model = ComponentModel(
             target_model=target_model,
             run_batch=run_batch,
@@ -213,6 +217,8 @@ class ThreePoolTrainer:
             ci_config=pd_config.ci_config,
             sigmoid_type=pd_config.sigmoid_type,
         ).to(self._device)
+        # Diverge stochastic RNG per rank for mask sampling.
+        seed_per_rank(pd_config.seed)
 
         self.strategy = LayerwiseLossStrategy.from_cfg(
             target_model,

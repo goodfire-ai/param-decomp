@@ -37,6 +37,7 @@ from param_decomp.decomposition_targets import (
     DecompositionTarget,
     resolve_decomposition_targets,
 )
+from param_decomp.distributed import seed_all_ranks, seed_per_rank
 from param_decomp.masks import AllLayersRouter
 from param_decomp.metrics.base import LossMetricConfig
 from param_decomp.metrics.importance_minimality import ImportanceMinimalityLossConfig
@@ -179,6 +180,13 @@ class TwoPoolTrainer:
         )
 
         target_model.requires_grad_(False)
+        # Resync RNG across ranks before V/U + CI fn init. DDP partners within
+        # a block must start with identical params, but anything between
+        # ``set_seed(pd.seed)`` in _fresh_main and here (loader build, distributed
+        # init, etc.) can advance the RNG by rank-dependent amounts. Without
+        # this, partners initialize different V/U and the in-block grad
+        # all-reduce can't bring them back into sync.
+        seed_all_ranks(pd_config.seed)
         self.component_model = ComponentModel(
             target_model=target_model,
             run_batch=run_batch,
@@ -186,6 +194,9 @@ class TwoPoolTrainer:
             ci_config=pd_config.ci_config,
             sigmoid_type=pd_config.sigmoid_type,
         ).to(self._device)
+        # Diverge stochastic RNG per rank again now that init is done (matches
+        # single-pool's order — see param_decomp.optimize.Trainer.__init__).
+        seed_per_rank(pd_config.seed)
 
         self.strategy = LayerwiseLossStrategy.from_cfg(
             target_model,
