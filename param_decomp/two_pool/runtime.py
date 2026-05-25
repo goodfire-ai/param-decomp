@@ -50,6 +50,10 @@ class _TwoPoolRuntime:
     lr_ci_fn: float
     grad_clip_norm_components: float | None
     grad_clip_norm_ci_fn: float | None
+    # Total numel across all pool-A blocks' V/U weight_deltas. Used by
+    # ``_faithfulness_loss`` to match single-pool's per-element gradient scale
+    # (which divides by global numel, not rank-local owned numel).
+    numel_global: int
     bf16_autocast: bool
     use_fused_kl: bool
 

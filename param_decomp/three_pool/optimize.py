@@ -408,6 +408,7 @@ class ThreePoolTrainer:
                 n_steps=pd_config.faithfulness_warmup_steps,
                 lr=pd_config.faithfulness_warmup_lr,
                 weight_decay=pd_config.faithfulness_warmup_weight_decay,
+                numel_global=self.runtime.numel_global,
             )
 
         components_lr_schedule = pd_config.components_optimizer.lr_schedule
@@ -721,6 +722,11 @@ def _build_runtime(
     """Assemble the step-context bundle from configs + target."""
     targets = resolve_decomposition_targets(target_model, pd_config.decomposition_targets)
     c_per_site = {t.module_path: t.C for t in targets}
+    numel_global = 0
+    for t in targets:
+        w = target_model.get_submodule(t.module_path).weight
+        assert isinstance(w, Tensor)
+        numel_global += w.numel()
 
     for bg in three_pool_config.layerwise_block_groups:
         for site in bg.owned_sites:
@@ -771,6 +777,7 @@ def _build_runtime(
         lr_ci_fn=pd_config.ci_fn_optimizer.lr_schedule.start_val,
         grad_clip_norm_components=pd_config.components_optimizer.grad_clip_norm,
         grad_clip_norm_ci_fn=pd_config.ci_fn_optimizer.grad_clip_norm,
+        numel_global=numel_global,
         bf16_autocast=runtime_config.autocast_bf16,
         use_fused_kl=three_pool_config.use_fused_kl,
     )

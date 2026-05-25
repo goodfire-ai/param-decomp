@@ -360,6 +360,7 @@ class TwoPoolTrainer:
                 n_steps=pd_config.faithfulness_warmup_steps,
                 lr=pd_config.faithfulness_warmup_lr,
                 weight_decay=pd_config.faithfulness_warmup_weight_decay,
+                numel_global=self.runtime.numel_global,
             )
 
         n_steps = pd_config.steps
@@ -596,6 +597,14 @@ def _build_runtime(
     """Assemble the step-context bundle from configs + target."""
     targets = resolve_decomposition_targets(target_model, pd_config.decomposition_targets)
     c_per_site = {t.module_path: t.C for t in targets}
+    # Total numel across all decomposition sites' weight tensors. Used by
+    # ``_faithfulness_loss`` so multi-pool's per-element grad matches single-
+    # pool's (which divides faith by the global numel, not the rank-local one).
+    numel_global = 0
+    for t in targets:
+        w = target_model.get_submodule(t.module_path).weight
+        assert isinstance(w, Tensor)
+        numel_global += w.numel()
 
     for bg in two_pool_config.block_groups:
         for site in bg.owned_sites:
@@ -644,6 +653,7 @@ def _build_runtime(
         lr_ci_fn=pd_config.ci_fn_optimizer.lr_schedule.start_val,
         grad_clip_norm_components=pd_config.components_optimizer.grad_clip_norm,
         grad_clip_norm_ci_fn=pd_config.ci_fn_optimizer.grad_clip_norm,
+        numel_global=numel_global,
         bf16_autocast=runtime_config.autocast_bf16,
         use_fused_kl=two_pool_config.use_fused_kl,
     )

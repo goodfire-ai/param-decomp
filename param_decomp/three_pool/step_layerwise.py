@@ -62,22 +62,26 @@ from param_decomp.two_pool.runtime import autocast_bf16
 
 
 def _faithfulness_loss(
-    component_model: ComponentModel, device: torch.device
+    component_model: ComponentModel, device: torch.device, numel_global: int
 ) -> tuple[Tensor, Tensor, int]:
-    """‖W_target − VU.T‖²_F / numel, summed across this rank's owned sites.
+    """‖W_target − VU.T‖²_F / numel_global, summed across this rank's owned sites.
 
-    Returns ``(scalar_loss, sum_sq, numel)`` so the logger can aggregate the
-    raw ``(num, den)`` into a global ratio across LW blocks (each rank's
-    per-site numel differs, so AVG'ing per-rank ratios doesn't give the global
-    ratio). See ``two_pool.pool_a._faithfulness_loss``.
+    See ``two_pool.pool_a._faithfulness_loss`` for why we divide by
+    ``numel_global`` not ``numel_owned`` — keeps per-element grad scale aligned
+    with single-pool's, so the unclipped faithfulness warmup converges to the
+    same V/U as single-pool.
+
+    Returns ``(scalar_loss, sum_sq, numel_owned)`` — the ``numel_owned`` is the
+    denominator the logger uses for ``SUM(num) / SUM(den)`` global-ratio
+    reconstruction across blocks.
     """
     weight_deltas = component_model.calc_weight_deltas()
     sum_sq = torch.zeros((), device=device)
-    numel = 0
+    numel_owned = 0
     for d in weight_deltas.values():
         sum_sq = sum_sq + (d**2).sum()
-        numel += d.numel()
-    return sum_sq / numel, sum_sq, numel
+        numel_owned += d.numel()
+    return sum_sq / numel_global, sum_sq, numel_owned
 
 
 def _layerwise_loss_streaming(
@@ -224,7 +228,9 @@ def step_layerwise(
     # ── Phase D: V/U-dependent work.
     with strategy.context(component_model.target_model):
         with p.phase("lw/D1_faith"):
-            loss_faith, faith_sum_sq_t, faith_numel = _faithfulness_loss(component_model, device)
+            loss_faith, faith_sum_sq_t, faith_numel = _faithfulness_loss(
+                component_model, device, cfg.numel_global
+            )
             (cfg.coeff_faith * loss_faith).backward()
 
         with p.phase("lw/D2_wait_ci_recv"):
@@ -352,6 +358,7 @@ def run_faithfulness_warmup_layerwise(
     n_steps: int,
     lr: float,
     weight_decay: float,
+    numel_global: int,
 ) -> None:
     """Single-pool-equivalent faithfulness warmup on the Layerwise pool only.
 
@@ -363,7 +370,7 @@ def run_faithfulness_warmup_layerwise(
     for _ in range(n_steps):
         warmup_opt.zero_grad()
         device = component_params[0].device
-        loss, _, _ = _faithfulness_loss(component_model, device)
+        loss, _, _ = _faithfulness_loss(component_model, device, numel_global)
         loss.backward()
         warmup_opt.step()
     del warmup_opt

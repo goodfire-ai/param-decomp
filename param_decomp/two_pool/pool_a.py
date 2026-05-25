@@ -40,21 +40,31 @@ from param_decomp.two_pool.runtime import _TwoPoolRuntime, autocast_bf16
 
 
 def _faithfulness_loss(
-    component_model: ComponentModel, device: torch.device
+    component_model: ComponentModel, device: torch.device, numel_global: int
 ) -> tuple[Tensor, Tensor, int]:
-    """Standard faithfulness loss: ``‖W_target − VU.T‖²_F / numel`` over this rank's
-    owned sites. Returns ``(scalar_loss, sum_sq, numel)`` so the logger can
-    aggregate the raw ``(num, den)`` into a global ratio across blocks (each
-    rank's per-site numel differs, so AVG'ing the per-rank ratios does NOT give
-    the global ratio).
+    """Standard faithfulness loss: ``‖W_target − VU.T‖²_F / numel_global`` over this
+    rank's owned sites.
+
+    Single-pool computes ``sum_sq_global / numel_global``; the per-element
+    gradient on each ``V_i`` / ``U_i`` is then ``∝ 1 / numel_global``. To match
+    that gradient scale in multi-pool, where each rank only sees its owned
+    subset of sites, we still divide by ``numel_global`` (not the rank-local
+    ``numel_owned``). Otherwise per-element gradients scale up by
+    ``numel_global / numel_owned`` and the trajectory diverges from single-pool
+    — most visibly during the unclipped faithfulness warmup, where 2-pool's
+    V/U over-converges relative to 1-pool's after 400 steps.
+
+    Returns ``(scalar_loss, sum_sq, numel_owned)`` — the raw ``numel_owned`` is
+    still what the logger needs as the denominator for the ``SUM(num) /
+    SUM(den)`` global-ratio reconstruction across blocks.
     """
     weight_deltas = component_model.calc_weight_deltas()
     sum_sq = torch.zeros((), device=device)
-    numel = 0
+    numel_owned = 0
     for d in weight_deltas.values():
         sum_sq = sum_sq + (d**2).sum()
-        numel += d.numel()
-    return sum_sq / numel, sum_sq, numel
+        numel_owned += d.numel()
+    return sum_sq / numel_global, sum_sq, numel_owned
 
 
 def _importance_minimality_loss(
@@ -211,7 +221,9 @@ def step_pool_a(
         # 3. Home losses (forward only; backward happens after streaming layerwise)
         device = target_out.device
         with p.phase("a/3_faith"):
-            loss_faith, faith_sum_sq_t, faith_numel = _faithfulness_loss(component_model, device)
+            loss_faith, faith_sum_sq_t, faith_numel = _faithfulness_loss(
+                component_model, device, cfg.numel_global
+            )
         with p.phase("a/4_imp"):
             loss_imp = _importance_minimality_loss(ci.upper_leaky, current_frac_of_training, cfg)
 
@@ -358,6 +370,7 @@ def run_faithfulness_warmup_pool_a(
     n_steps: int,
     lr: float,
     weight_decay: float,
+    numel_global: int,
 ) -> None:
     """Single-pool-equivalent faithfulness warmup on pool A only.
 
@@ -368,7 +381,7 @@ def run_faithfulness_warmup_pool_a(
     for _ in range(n_steps):
         warmup_opt.zero_grad()
         device = component_params[0].device
-        loss, _, _ = _faithfulness_loss(component_model, device)
+        loss, _, _ = _faithfulness_loss(component_model, device, numel_global)
         loss.backward()
         warmup_opt.step()
     del warmup_opt

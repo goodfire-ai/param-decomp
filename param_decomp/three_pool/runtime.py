@@ -70,6 +70,10 @@ class _ThreePoolRuntime:
     lr_ci_fn: float
     grad_clip_norm_components: float | None
     grad_clip_norm_ci_fn: float | None
+    # Total numel across all decomposition sites' weight tensors. Used by the
+    # LW pool's ``_faithfulness_loss`` so multi-pool's per-element grad matches
+    # single-pool's (which divides faith by global numel, not rank-local).
+    numel_global: int
 
     # Substrate
     bf16_autocast: bool
