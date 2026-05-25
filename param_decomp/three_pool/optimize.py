@@ -419,11 +419,28 @@ class ThreePoolTrainer:
         pending_all_reduce_lw: list[tuple[list[Tensor], Tensor, dist.Work]] | None = None
         pending_recv_vu_ppgd: list[tuple[Any, Tensor, dist.Work]] | None = None
 
+        def _to_device(b: Any) -> Any:
+            """Move a batch yielded by the train loader to this rank's GPU.
+
+            3-pool's step functions assume the batch is already on-device
+            (mirroring 2-pool's `_extract_batch_tensor`). The loader produces
+            CPU tensors; moving here keeps the step functions thin.
+            """
+            if b is None:
+                return None
+            if isinstance(b, Tensor):
+                return b.to(device)
+            if isinstance(b, dict) and "input_ids" in b:
+                return {**b, "input_ids": b["input_ids"].to(device)}
+            if isinstance(b, list | tuple) and len(b) > 0 and isinstance(b[0], Tensor):
+                return type(b)([b[0].to(device), *b[1:]])
+            raise TypeError(f"Unsupported batch type from DataLoader: {type(b).__name__}")
+
         with profiler_ctx:
             # 2-batch peek window: batch_T is the step's batch, batch_T_plus_1 is the
             # next-step batch peeked early for CI pool's dead-time prefetch.
-            batch_T = next(train_iterator)
-            batch_T_plus_1 = next(train_iterator, None)
+            batch_T = _to_device(next(train_iterator))
+            batch_T_plus_1 = _to_device(next(train_iterator, None))
 
             for step in range(self.step, n_steps):
                 self.step = step
@@ -512,8 +529,12 @@ class ThreePoolTrainer:
                 if cadence.should_save(step):
                     sink.checkpoint(self.snapshot())
 
-                batch_T = batch_T_plus_1 if batch_T_plus_1 is not None else next(train_iterator)
-                batch_T_plus_1 = next(train_iterator, None)
+                batch_T = (
+                    batch_T_plus_1
+                    if batch_T_plus_1 is not None
+                    else _to_device(next(train_iterator))
+                )
+                batch_T_plus_1 = _to_device(next(train_iterator, None))
 
                 if profiler is not None:
                     profiler.step()
