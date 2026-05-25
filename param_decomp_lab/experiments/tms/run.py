@@ -1,10 +1,11 @@
-"""TMS PD experiment: YAML -> `optimize()` glue.
+"""TMS PD experiment: YAML -> `optimize()` glue, plus the saved-run reload class.
 
-Exposes module-level `TARGET_CONFIG_TYPE`, `DATA_CONFIG_TYPE`, `build_target`,
-`build_loader`, and `make_run_batch` so `SavedRun` can rebuild a run by dispatching
-on `run_meta.yaml::experiment_kind`. Run via ``pd-tms path/to/config.yaml``.
+The fresh-run path (`main`) and the reload path (`SavedTMSRun`) both consume the
+module-level `build_target` / `build_loader` / `make_run_batch` functions so there's
+no duplication between them. Run via ``pd-tms path/to/config.yaml``.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -14,16 +15,19 @@ from torch.utils.data import DataLoader
 
 from param_decomp.base_config import BaseConfig, Probability
 from param_decomp.batch_and_loss_fns import RunBatch
+from param_decomp.component_model import ComponentModel
 from param_decomp.distributed import DistributedState
 from param_decomp.log import logger
 from param_decomp.optimize import EvalLoop, optimize
 from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
+from param_decomp_lab.component_model_io import load_component_model
 from param_decomp_lab.distributed import get_device
 from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
 from param_decomp_lab.experiments.tms.data import SparseFeatureDataset
 from param_decomp_lab.experiments.tms.models import TMSModel, TMSTargetRunInfo
-from param_decomp_lab.experiments.utils import ExperimentConfig, save_run_meta
-from param_decomp_lab.infra.run_files import generate_run_id
+from param_decomp_lab.experiments.utils import RUN_META_FILENAME, ExperimentConfig
+from param_decomp_lab.infra.paths import ModelPath
+from param_decomp_lab.infra.run_files import generate_run_id, resolve_run_files
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.run_sink import RunSink
 from param_decomp_lab.seed import set_seed
@@ -58,10 +62,6 @@ class TMSExperimentConfig(ExperimentConfig[TMSTargetConfig, TMSDataConfig]):
     """Full YAML schema for a TMS PD run."""
 
     pass
-
-
-TARGET_CONFIG_TYPE = TMSTargetConfig
-DATA_CONFIG_TYPE = TMSDataConfig
 
 
 def build_target(target_cfg: TMSTargetConfig) -> TMSModel:
@@ -111,11 +111,64 @@ def _tied_weights_for(target_model: TMSModel) -> list[tuple[str, str]] | None:
     return [("linear1", "linear2")] if target_model.config.tied_weights else None
 
 
+@dataclass(frozen=True)
+class SavedTMSRun:
+    """Handle to a completed TMS PD run on disk or in W&B.
+
+    Attributes:
+        cfg: The resolved `TMSExperimentConfig` from ``run_meta.yaml``.
+        checkpoint_path: Resolved local path to the chosen ``model_<step>.pth`` file.
+    """
+
+    cfg: TMSExperimentConfig
+    checkpoint_path: Path
+
+    @classmethod
+    def from_path(cls, path: ModelPath) -> "SavedTMSRun":
+        """Resolve a run directory or W&B path into a fully-validated `SavedTMSRun`."""
+        files = resolve_run_files(
+            path, config_filename=RUN_META_FILENAME, checkpoint_prefix="model"
+        )
+        return cls(
+            cfg=TMSExperimentConfig.from_file(files.config_path),
+            checkpoint_path=files.checkpoint_path,
+        )
+
+    def load_model(self) -> ComponentModel:
+        """Materialize the `ComponentModel` from the saved checkpoint."""
+        return load_component_model(
+            pd_config=self.cfg.pd,
+            checkpoint_path=self.checkpoint_path,
+            target_model=build_target(self.cfg.target),
+            run_batch=make_run_batch(self.cfg.target),
+        )
+
+    def build_loader(
+        self,
+        *,
+        split: Literal["train", "eval"],
+        device: str,
+        batch_size: int,
+        dist_state: DistributedState | None = None,
+        seed: int | None = None,
+    ) -> DataLoader[Any]:
+        """Rebuild a `DataLoader` for the requested split."""
+        return build_loader(
+            self.cfg.target,
+            self.cfg.data,
+            split=split,
+            device=device,
+            batch_size=batch_size,
+            dist_state=dist_state,
+            seed=seed,
+        )
+
+
 def main(config_path: str | Path) -> None:
     """Run a TMS PD experiment end-to-end from a YAML config.
 
     Parses the YAML into `TMSExperimentConfig`, builds the target / loaders / eval loop,
-    writes `run_meta.yaml`, and calls `optimize(...)`.
+    writes ``run_meta.yaml``, and calls `optimize(...)`.
 
     Args:
         config_path: Path to the experiment YAML config.
@@ -142,7 +195,7 @@ def main(config_path: str | Path) -> None:
     run_id = generate_run_id("param_decomp")
     out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
     sink = RunSink.local(out_dir)
-    save_run_meta(out_dir, kind="tms", cfg=cfg)
+    cfg.to_file(out_dir / RUN_META_FILENAME)
 
     try:
         optimize(

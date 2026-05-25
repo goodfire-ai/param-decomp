@@ -1,6 +1,6 @@
 {
     "harvest": {
-        "model_path": "wandb:goodfire/spd/runs/vjbol27n",
+        "model_path": "goodfire/spd/runs/vjbol27n",
         "batch_size": 64,
         "n_tokens": 4096,
         "n_tokens_per_seq": 5,

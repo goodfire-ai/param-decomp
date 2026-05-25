@@ -1,13 +1,13 @@
-"""Language-model PD experiment: YAML -> `optimize()` glue.
+"""Language-model PD experiment: YAML -> `optimize()` glue, plus the saved-run reload class.
 
-Exposes module-level `TARGET_CONFIG_TYPE`, `DATA_CONFIG_TYPE`, `build_target`,
-`build_loader`, and `make_run_batch` so `SavedRun` can rebuild a run by dispatching
-on `run_meta.yaml::experiment_kind`. The fresh-run path (`main`) calls the same
-functions. Run via ``pd-lm path/to/config.yaml``; multi-process (DDP) entry via
-``torchrun`` of the same module.
+The fresh-run path (`main`) and the reload path (`SavedLMRun`) both consume the
+module-level `build_target` / `build_loader` / `make_run_batch` functions so there's
+no duplication between them. Run via ``pd-lm path/to/config.yaml``; multi-process
+(DDP) entry via ``torchrun`` of the same module.
 """
 
 import importlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -17,11 +17,13 @@ from torch.utils.data import DataLoader
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.batch_and_loss_fns import RunBatch
+from param_decomp.component_model import ComponentModel
 from param_decomp.distributed import DistributedState, is_main_process
 from param_decomp.log import logger
 from param_decomp.optimize import EvalLoop, optimize
 from param_decomp_lab.batch_and_loss_fns import make_run_batch as _make_run_batch
 from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
+from param_decomp_lab.component_model_io import load_component_model
 from param_decomp_lab.distributed import (
     ensure_cached_and_call,
     get_device,
@@ -35,9 +37,13 @@ from param_decomp_lab.experiments.lm.data import (
     create_lm_data_loader,
     rank_batch_size,
 )
-from param_decomp_lab.experiments.utils import ExperimentConfig, save_run_meta
+from param_decomp_lab.experiments.utils import RUN_META_FILENAME, ExperimentConfig
 from param_decomp_lab.infra.paths import ModelPath
-from param_decomp_lab.infra.run_files import generate_run_id
+from param_decomp_lab.infra.run_files import (
+    generate_run_id,
+    resolve_config_path,
+    resolve_run_files,
+)
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.run_sink import RunSink
 from param_decomp_lab.seed import set_seed
@@ -107,10 +113,6 @@ class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
     pass
 
 
-TARGET_CONFIG_TYPE = LMTargetConfig
-DATA_CONFIG_TYPE = LMDataConfig
-
-
 def build_target(target_cfg: LMTargetConfig) -> Any:
     """Load the LM target model in eval mode, dispatching on `target_cfg.spec.kind`."""
     spec = target_cfg.spec
@@ -163,12 +165,77 @@ def make_run_batch(target_cfg: LMTargetConfig) -> RunBatch:
     return _make_run_batch(target_cfg.output_extract)
 
 
+@dataclass(frozen=True)
+class SavedLMRun:
+    """Handle to a completed LM PD run on disk or in W&B.
+
+    Attributes:
+        cfg: The resolved `LMExperimentConfig` from ``run_meta.yaml``.
+        checkpoint_path: Resolved local path to the chosen ``model_<step>.pth`` file.
+    """
+
+    cfg: LMExperimentConfig
+    checkpoint_path: Path
+
+    @classmethod
+    def from_path(cls, path: ModelPath) -> "SavedLMRun":
+        """Resolve a run directory or W&B path into a fully-validated `SavedLMRun`."""
+        files = resolve_run_files(
+            path, config_filename=RUN_META_FILENAME, checkpoint_prefix="model"
+        )
+        return cls(
+            cfg=LMExperimentConfig.from_file(files.config_path),
+            checkpoint_path=files.checkpoint_path,
+        )
+
+    @classmethod
+    def cfg_from_path(cls, path: ModelPath) -> LMExperimentConfig:
+        """Load just ``run_meta.yaml`` without resolving the checkpoint.
+
+        Useful for app endpoints that only need config introspection (e.g. the run
+        picker showing architecture summaries) and want to avoid the W&B checkpoint
+        download that ``from_path`` triggers.
+        """
+        return LMExperimentConfig.from_file(
+            resolve_config_path(path, config_filename=RUN_META_FILENAME)
+        )
+
+    def load_model(self) -> ComponentModel:
+        """Materialize the `ComponentModel` from the saved checkpoint."""
+        return load_component_model(
+            pd_config=self.cfg.pd,
+            checkpoint_path=self.checkpoint_path,
+            target_model=build_target(self.cfg.target),
+            run_batch=make_run_batch(self.cfg.target),
+        )
+
+    def build_loader(
+        self,
+        *,
+        split: Literal["train", "eval"],
+        device: str,
+        batch_size: int,
+        dist_state: DistributedState | None = None,
+        seed: int | None = None,
+    ) -> DataLoader[Any]:
+        """Rebuild a `DataLoader` for the requested split."""
+        return build_loader(
+            self.cfg.target,
+            self.cfg.data,
+            split=split,
+            device=device,
+            batch_size=batch_size,
+            dist_state=dist_state,
+            seed=seed,
+        )
+
+
 @with_distributed_cleanup
 def main(config_path: str | Path) -> None:
     """Run an LM PD experiment end-to-end from a YAML config.
 
     Parses the YAML into `LMExperimentConfig`, initialises DDP, builds the target /
-    loaders / eval loop, writes `run_meta.yaml` on the main rank, and calls
+    loaders / eval loop, writes ``run_meta.yaml`` on the main rank, and calls
     `optimize(...)`. Non-main ranks use a silent sink.
 
     Args:
@@ -197,9 +264,12 @@ def main(config_path: str | Path) -> None:
     eval_loop = _build_eval_loop(cfg, device, dist_state)
 
     run_id = generate_run_id("param_decomp")
-    out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id if is_main_process() else None
-    sink = RunSink.local(out_dir) if out_dir is not None else RunSink.silent()
-    save_run_meta(out_dir, kind="lm", cfg=cfg)
+    if is_main_process():
+        out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
+        sink = RunSink.local(out_dir)
+        cfg.to_file(out_dir / RUN_META_FILENAME)
+    else:
+        sink = RunSink.silent()
 
     try:
         optimize(

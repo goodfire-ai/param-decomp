@@ -20,6 +20,7 @@ from param_decomp.ci_fns import (
 )
 from param_decomp.ci_sigmoids import SigmoidType
 from param_decomp.component_model import ComponentModel
+from param_decomp.configs import PDConfig
 from param_decomp.decomposition_targets import (
     DecompositionTargetConfig,
     insert_identity_operations_,
@@ -121,6 +122,31 @@ def load_component_model_from_checkpoint(
             tgt.V.data = src.U.data.T
 
     return comp_model
+
+
+def load_component_model(
+    pd_config: PDConfig,
+    checkpoint_path: Path,
+    target_model: nn.Module,
+    run_batch: RunBatch,
+) -> ComponentModel:
+    """Rebuild a ComponentModel from a saved checkpoint, taking model-construction
+    fields directly from ``pd_config``.
+
+    Thin wrapper over :func:`load_component_model_from_checkpoint` that single-sources
+    the mapping from ``PDConfig`` to construction args, so the three per-experiment
+    ``SavedXRun`` classes don't each duplicate it.
+    """
+    return load_component_model_from_checkpoint(
+        ci_config=pd_config.ci_config,
+        sigmoid_type=pd_config.sigmoid_type,
+        decomposition_targets=pd_config.decomposition_targets,
+        identity_decomposition_targets=pd_config.identity_decomposition_targets,
+        checkpoint_path=checkpoint_path,
+        target_model=target_model,
+        run_batch=run_batch,
+        tied_weights=pd_config.tied_weights,
+    )
 
 
 def get_all_component_acts(

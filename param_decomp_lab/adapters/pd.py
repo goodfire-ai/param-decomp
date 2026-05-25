@@ -8,9 +8,8 @@ from param_decomp.component_model import ComponentModel
 from param_decomp_lab.adapters.base import DecompositionAdapter
 from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.experiments.lm.data import LMDataConfig
-from param_decomp_lab.experiments.lm.run import LMTargetConfig
+from param_decomp_lab.experiments.lm.run import LMTargetConfig, SavedLMRun
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
-from param_decomp_lab.saved_run import SavedRun
 from param_decomp_lab.topology import TransformerTopology
 
 
@@ -20,22 +19,16 @@ class PDAdapter(DecompositionAdapter):
         _, _, self._run_id = parse_wandb_run_path(wandb_path)
 
     @cached_property
-    def pd_run(self) -> SavedRun:
-        run = SavedRun.from_path(self._wandb_path)
-        assert run.kind == "lm", f"This adapter requires an LM run, got kind={run.kind!r}"
-        return run
+    def pd_run(self) -> SavedLMRun:
+        return SavedLMRun.from_path(self._wandb_path)
 
-    @cached_property
+    @property
     def lm_target(self) -> LMTargetConfig:
-        target_cfg = self.pd_run.target_cfg
-        assert isinstance(target_cfg, LMTargetConfig)
-        return target_cfg
+        return self.pd_run.cfg.target
 
-    @cached_property
+    @property
     def lm_data(self) -> LMDataConfig:
-        data_cfg = self.pd_run.data_cfg
-        assert isinstance(data_cfg, LMDataConfig)
-        return data_cfg
+        return self.pd_run.cfg.data
 
     @cached_property
     def component_model(self) -> ComponentModel:

@@ -94,31 +94,46 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 
 ### Adding a new experiment
 
-Experiments are plain Python scripts. Each `run.py` is self-contained and exposes a flat
-module API consumed by both the fresh-run path (`main()`) and the reload path
-(`SavedRun`):
+Experiments are plain Python scripts. Each `run.py` is self-contained and exposes a
+concretely typed config, three build/run-batch functions, and a per-experiment
+`Saved<Name>Run` reload class — consumed by both the fresh-run path (`main()`) and
+the reload path:
 
 ```python
-TARGET_CONFIG_TYPE: type[BaseConfig]   # validates the YAML `target:` block
-DATA_CONFIG_TYPE:   type[BaseConfig]   # validates the YAML `data:` block
+class <Name>ExperimentConfig(ExperimentConfig[<Name>TargetConfig, <Name>DataConfig]):
+    pass
 
 def build_target(target_cfg) -> nn.Module: ...
 def build_loader(target_cfg, data_cfg, *, split: Literal["train", "eval"], device: str,
                  batch_size: int, dist_state=None, seed=None) -> DataLoader: ...
 def make_run_batch(target_cfg) -> RunBatch: ...
+
+@dataclass(frozen=True)
+class Saved<Name>Run:
+    cfg: <Name>ExperimentConfig
+    checkpoint_path: Path
+
+    @classmethod
+    def from_path(cls, path: ModelPath) -> "Saved<Name>Run": ...
+    def load_model(self) -> ComponentModel: ...
+    def build_loader(self, *, split, device, batch_size, ...) -> DataLoader: ...
 ```
 
-`main()` calls these directly, so there's no duplication between "fresh run from YAML"
-and "reload from disk" paths.
+`main()` calls the module-level functions directly; the `Saved<Name>Run` reload class
+delegates to those same functions, so there's no duplication between "fresh run from
+YAML" and "reload from disk" paths.
 
-`save_run_meta(out_dir, kind=..., cfg=...)` writes the experiment kind literal into
-`run_meta.yaml::experiment_kind`. The kind→module dispatch lives in
-`param_decomp_lab/saved_run.py::_RUN_MODULE_PATHS`; `SavedRun.from_path` imports the
-matching module on demand and validates `meta.target_dict` / `meta.data_dict` against
-its `TARGET_CONFIG_TYPE` / `DATA_CONFIG_TYPE`. The three in-repo experiments
-(`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`) are the canonical references.
-The shared `ExperimentConfig[T, D]` generic + `EvalConfig` + `RunKind` + `save_run_meta`
-live in `param_decomp_lab/experiments/utils.py`.
+`main()` writes the resolved `<Name>ExperimentConfig` to `run_meta.yaml` via
+`cfg.to_file(out_dir / RUN_META_FILENAME)`. There is no separate experiment-kind
+discriminator on disk — each post-processing caller imports the concrete
+`Saved<Name>Run` class it expects (e.g. `from
+param_decomp_lab.experiments.lm.run import SavedLMRun`); pydantic validation of the
+YAML against the wrong `ExperimentConfig` subclass fails fast at load time.
+
+The shared `ExperimentConfig[T, D]` generic, `EvalConfig`, and `RUN_META_FILENAME`
+live in `param_decomp_lab/experiments/utils.py`. The three in-repo experiments
+(`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`) are the canonical
+references.
 
 YAML schema (one validated pydantic tree — extra keys raise):
 
@@ -152,11 +167,12 @@ pd-resid-mlp  path/to/config.yaml
 pd-lm         path/to/config.yaml
 ```
 
-For a brand-new experiment, drop a `run.py` exposing `TARGET_CONFIG_TYPE` /
-`DATA_CONFIG_TYPE` and the three `build_target` / `build_loader` / `make_run_batch`
-functions next to a YAML config, add the new `kind` to `RunKind` and `_RUN_MODULE_PATHS`
-in `saved_run.py`, and either call its `main(...)` directly or wire it up to a console
-script.
+For a brand-new experiment, drop a `run.py` exposing the
+`<Name>ExperimentConfig`, the three `build_target` / `build_loader` /
+`make_run_batch` functions, and a `Saved<Name>Run` reload class next to a YAML
+config. Either call its `main(...)` directly or wire it up to a console script in
+`param_decomp_lab/pyproject.toml`. No central registry needs touching — post-processing
+callers import the new `Saved<Name>Run` directly from its module.
 
 ### Metrics
 
@@ -330,15 +346,14 @@ This repository implements methods from two key research papers on parameter dec
   `metrics/persistent_pgd_recon.py`. Eval metrics ship in `param_decomp_lab/eval_metrics/`.
 
 **In-repo experiment scripts** (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py`)
-each declare a `<Experiment>ExperimentConfig` subclass of `ExperimentConfig[T, D]` plus
-module-level `TARGET_CONFIG_TYPE` / `DATA_CONFIG_TYPE` and `build_target` /
-`build_loader` / `make_run_batch` functions. `main()` parses the YAML and calls those
-functions directly, then `optimize()`. `save_run_meta` writes the run's `experiment_kind`
-into `run_meta.yaml`, and `SavedRun.from_path(...)` dispatches on that kind via
-`_RUN_MODULE_PATHS` to the matching module. The generic `ExperimentConfig`,
-`EvalConfig`, `RunKind`, and `save_run_meta` live in
-`param_decomp_lab/experiments/utils.py`; `SavedRun` + `RunMeta` + the dispatch table
-live in `param_decomp_lab/saved_run.py`.
+each declare a `<Experiment>ExperimentConfig` subclass of `ExperimentConfig[T, D]`, the
+three module-level `build_target` / `build_loader` / `make_run_batch` functions, and a
+`Saved<Name>Run` frozen dataclass. `main()` parses the YAML, calls the build functions,
+writes `cfg.to_file(out_dir / "run_meta.yaml")`, then `optimize()`. Reload-side callers
+import the concrete `Saved<Name>Run` class for the experiment they're operating on (e.g.
+`from param_decomp_lab.experiments.lm.run import SavedLMRun`) — there is no kind
+discriminator on disk and no dispatch table. The generic `ExperimentConfig`,
+`EvalConfig`, and `RUN_META_FILENAME` live in `param_decomp_lab/experiments/utils.py`.
 
 **Terminology: Sources vs Masks:**
 
@@ -349,11 +364,10 @@ live in `param_decomp_lab/saved_run.py`.
 
 Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 
-- `run.py` - Composition root: parses YAML, builds target/loaders/metrics/configs/sink, calls `optimize()`.
+- `run.py` - Composition root: parses YAML, builds target/loaders/metrics/configs/sink, calls `optimize()`. Also defines the per-experiment `Saved<Name>Run` reload class.
 - `*_config.yaml` - Built-in YAML configs.
 - `models.py` (TMS/ResidMLP) / `data.py` (LM) - Model/data helpers.
 - `train_*.py` (TMS/ResidMLP) - Target-model pretraining scripts.
-- `plotting.py` (TMS/ResidMLP) - Visualization utilities.
 
 **Key Data Flow:**
 
@@ -411,10 +425,10 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 ├── param_decomp_lab/                # Lab tooling — experiments, post-processing, app, infra
 │   ├── infra/                       # Cross-subsystem plumbing: settings, paths, slurm, wandb, sqlite, git, run_files, markdown, pydantic
 │   ├── experiments/
-│   │   ├── tms/, resid_mlp/         # Each: run.py (TARGET_CONFIG_TYPE/DATA_CONFIG_TYPE + build_*/make_run_batch) + YAMLs + data.py + train_*.py + helpers
-│   │   ├── lm/                      # run.py (LMTargetSpec discriminated union + build_*/make_run_batch) + YAMLs + data.py + pretrain/
+│   │   ├── tms/, resid_mlp/         # Each: run.py (<Name>ExperimentConfig + build_*/make_run_batch + Saved<Name>Run) + YAMLs + data.py + train_*.py + helpers
+│   │   ├── lm/                      # run.py (LMTargetSpec discriminated union + build_*/make_run_batch + SavedLMRun) + YAMLs + data.py + pretrain/
 │   │   ├── lm/pretrain/             # LM target-model pretraining (see lm/pretrain/CLAUDE.md)
-│   │   ├── utils.py                 # ExperimentConfig[T, D] + EvalConfig + RunKind + save_run_meta(kind=…)
+│   │   ├── utils.py                 # ExperimentConfig[T, D] + EvalConfig + RUN_META_FILENAME
 │   │   └── __init__.py              # bare package init (no central registry)
 │   ├── eval_metrics/                # Eval Metric classes + AnyEvalMetricConfig union + EVAL_METRIC_CLASSES dispatch
 │   ├── harvest/                     # Statistics collection: pipeline + accumulator (see harvest/CLAUDE.md)
@@ -432,8 +446,7 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 │   ├── tests/                       # Lab test suite
 │   ├── target_ci.py                 # TargetCIPattern (Identity/Dense), TargetCISolution — for toy-model eval
 │   ├── _linear_sum_assignment.py    # Vendored Hungarian algorithm (impl detail of target_ci)
-│   ├── run_sink.py                  # Concrete RunSink (local files + wandb + rank-aware no-op)
-│   └── saved_run.py                 # SavedRun: reload a PD run via its experiment module
+│   └── run_sink.py                  # Concrete RunSink (local files + wandb + rank-aware no-op)
 ├── Makefile                         # Dev commands (make check, make test)
 ├── pyproject.toml                   # Core param-decomp package + workspace config
 └── param_decomp_lab/pyproject.toml  # Lab param-decomp-lab package + pd-* entry points
