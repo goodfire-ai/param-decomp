@@ -23,27 +23,43 @@ class _Spec:
 
 
 SPECS: tuple[_Spec, ...] = (
-    # 2-pool variants — verify equivalence holds under different DDP arities.
+    # Baselines (all 3 strategies, simplest topologies).
+    _Spec(
+        name="equiv-1pool",
+        yaml=REPO_ROOT / "param_decomp_lab/experiments/lm/equiv_5L_1pool.yaml",
+        n_gpus=2,
+    ),
+    _Spec(
+        name="equiv-2pool",
+        yaml=REPO_ROOT / "param_decomp_lab/experiments/lm/equiv_5L_2pool.yaml",
+        n_gpus=6,
+    ),
+    _Spec(
+        name="equiv-3pool",
+        yaml=REPO_ROOT / "param_decomp_lab/experiments/lm/equiv_5L_3pool.yaml",
+        n_gpus=8,
+    ),
+    # 2-pool topology variants — different DDP arities.
     _Spec(
         name="equiv-2pool-nperblock2",
         yaml=REPO_ROOT / "param_decomp_lab/experiments/lm/equiv_5L_2pool_nperblock2.yaml",
-        n_gpus=8,  # 5 LW × 2 ranks reordered to fit + headroom; see yaml
+        n_gpus=8,
     ),
     _Spec(
         name="equiv-2pool-poolb2",
         yaml=REPO_ROOT / "param_decomp_lab/experiments/lm/equiv_5L_2pool_poolb2.yaml",
-        n_gpus=7,  # 5 LW + 2 pool-B
+        n_gpus=7,
     ),
     _Spec(
         name="equiv-2pool-1block4r",
         yaml=REPO_ROOT / "param_decomp_lab/experiments/lm/equiv_5L_2pool_1block4r.yaml",
-        n_gpus=5,  # 1 block × 4 + 1 pool-B
+        n_gpus=5,
     ),
-    # 3-pool variant — different LW topology.
+    # 3-pool topology variant.
     _Spec(
         name="equiv-3pool-2blocks",
         yaml=REPO_ROOT / "param_decomp_lab/experiments/lm/equiv_5L_3pool_2blocks.yaml",
-        n_gpus=8,  # 2 LW blocks × 2 ranks + 2 CI + 2 PPGD
+        n_gpus=8,
     ),
 )
 
