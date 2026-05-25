@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import fire
+import torch.distributed as dist
 from pydantic import Discriminator
 from torch.utils.data import DataLoader
 
@@ -20,9 +21,9 @@ from param_decomp.batch_and_loss_fns import RunBatch
 from param_decomp.component_model import ComponentModel
 from param_decomp.distributed import DistributedState, is_main_process
 from param_decomp.log import logger
-from param_decomp.optimize import EvalLoop, optimize
-from param_decomp.three_pool import ThreePoolConfig, optimize_three_pool
-from param_decomp.two_pool import TwoPoolConfig, optimize_two_pool
+from param_decomp.optimize import EvalLoop, Trainer
+from param_decomp.three_pool import ThreePoolConfig, ThreePoolTrainer
+from param_decomp.two_pool import TwoPoolConfig, TwoPoolTrainer
 from param_decomp_lab.batch_and_loss_fns import make_run_batch as _make_run_batch
 from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
 from param_decomp_lab.component_model_io import load_component_model
@@ -47,6 +48,14 @@ from param_decomp_lab.infra.run_files import (
     resolve_run_files,
 )
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp_lab.resumption import (
+    ResumableRunSink,
+    ResumeConfig,
+    ResumeProvenance,
+    read_resume_snapshot,
+    resolve_step,
+    write_provenance,
+)
 from param_decomp_lab.run_sink import RunSink
 from param_decomp_lab.seed import set_seed
 
@@ -280,16 +289,48 @@ class SavedLMRun:
 
 
 @with_distributed_cleanup
-def main(config_path: str | Path) -> None:
-    """Run an LM PD experiment end-to-end from a YAML config.
+def main(config_path: str | Path | None = None, *, resume: str | Path | None = None) -> None:
+    """Run an LM PD experiment end-to-end.
 
-    Parses the YAML into `LMExperimentConfig`, initialises DDP, builds the target /
-    loaders / eval loop, writes ``run_meta.yaml`` on the main rank, and calls
-    `optimize(...)`. Non-main ranks use a silent sink.
+    Exactly one of ``config_path`` (fresh run) or ``--resume`` (continue a
+    prior run) must be provided.
 
     Args:
-        config_path: Path to the experiment YAML config.
+        config_path: Path to the experiment YAML config. Required for a fresh
+            run; ignored when ``--resume`` is set.
+        resume: Path to a :class:`ResumeConfig` YAML pointing at a prior run
+            to continue. When set, the parent run's ``run_meta.yaml`` is the
+            source of cfg truth (modulo narrow ``overrides``).
     """
+    if resume is not None:
+        assert config_path is None, "pass either config_path or --resume, not both"
+        _resume_main(Path(resume))
+    else:
+        assert config_path is not None, "must provide either config_path or --resume"
+        _fresh_main(Path(config_path))
+
+
+def _broadcast_out_dir(dist_state: DistributedState | None) -> Path:
+    """Generate a run_id on rank 0 and broadcast to all ranks so the
+    ResumableRunSink can write to a consistent path everywhere.
+    """
+    run_id = generate_run_id("param_decomp") if is_main_process() else None
+    if dist_state is not None:
+        run_id_box: list[str | None] = [run_id]
+        dist.broadcast_object_list(run_id_box, src=0)
+        run_id = run_id_box[0]
+    assert isinstance(run_id, str)
+    return PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
+
+
+def _build_resumable_sink(out_dir: Path, *, rank: int) -> ResumableRunSink:
+    """Wrap a (rank-aware) :class:`RunSink` with per-rank resume-shard writes."""
+    base = RunSink.local(out_dir)  # silent-noop off main rank
+    return ResumableRunSink(base, run_dir=out_dir, rank=rank)
+
+
+def _fresh_main(config_path: Path) -> None:
+    """Fresh-run path: parse YAML, build everything, train from step 0."""
     cfg = LMExperimentConfig.from_file(config_path)
 
     dist_state = init_distributed()
@@ -303,14 +344,100 @@ def main(config_path: str | Path) -> None:
         "two_pool and three_pool are mutually exclusive; set only one."
     )
 
-    target_model = build_target(cfg.target)
+    out_dir = _broadcast_out_dir(dist_state)
+    if is_main_process():
+        cfg.to_file(out_dir / RUN_META_FILENAME)
+    rank = dist_state.rank if dist_state is not None else 0
+    sink = _build_resumable_sink(out_dir, rank=rank)
 
+    target_model = build_target(cfg.target)
+    train_loader = _build_train_loader(cfg, device, dist_state)
+
+    try:
+        _construct_and_run_trainer(
+            cfg=cfg,
+            target_model=target_model,
+            train_loader=train_loader,
+            sink=sink,
+            device=device,
+            dist_state=dist_state,
+        )
+    finally:
+        sink.finish()
+
+
+def _resume_main(resume_cfg_path: Path) -> None:
+    """Resume-run path: load parent cfg + per-rank shard, continue training."""
+    resume_cfg = ResumeConfig.from_file(resume_cfg_path)
+    parent_cfg = LMExperimentConfig.from_file(resume_cfg.from_run / RUN_META_FILENAME)
+
+    dist_state = init_distributed()
+    if is_main_process():
+        logger.info(f"Distributed state: {dist_state}")
+        logger.info(f"Resuming from {resume_cfg.from_run} @ step {resume_cfg.step}")
+    set_seed(parent_cfg.pd.seed)
+    device = get_device()
+    rank = dist_state.rank if dist_state is not None else 0
+
+    # Apply ResumeOverrides to the parent cfg for the rest of the lab's wiring
+    # (eval, cadence, loader, etc.). Trainer.from_snapshot applies the same
+    # patch internally to validate the saved pd_config.
+    cfg_overrides = (
+        resume_cfg.overrides.to_pd_config_patch() if resume_cfg.overrides is not None else None
+    )
+    effective_pd = (
+        parent_cfg.pd.model_copy(update=cfg_overrides)
+        if cfg_overrides is not None
+        else parent_cfg.pd
+    )
+    effective_cfg = parent_cfg.model_copy(
+        update={
+            "pd": effective_pd,
+            "runtime": parent_cfg.runtime.model_copy(update={"device": device}),
+        }
+    )
+
+    assert not (effective_cfg.two_pool is not None and effective_cfg.three_pool is not None), (
+        "parent's two_pool and three_pool are both set — corrupt run_meta.yaml"
+    )
+
+    out_dir = _broadcast_out_dir(dist_state)
+    if is_main_process():
+        effective_cfg.to_file(out_dir / RUN_META_FILENAME)
+        resolved_step = resolve_step(resume_cfg.from_run, resume_cfg.step)
+        write_provenance(
+            out_dir,
+            ResumeProvenance(parent_run_dir=resume_cfg.from_run, parent_step=resolved_step),
+        )
+    sink = _build_resumable_sink(out_dir, rank=rank)
+
+    target_model = build_target(effective_cfg.target)
+    train_loader = _build_train_loader(effective_cfg, device, dist_state)
+    snapshot = read_resume_snapshot(resume_cfg, rank=rank, current_device=device)
+
+    try:
+        _construct_and_run_trainer(
+            cfg=effective_cfg,
+            target_model=target_model,
+            train_loader=train_loader,
+            sink=sink,
+            device=device,
+            dist_state=dist_state,
+            resume_snapshot=snapshot,
+            cfg_overrides=cfg_overrides,
+        )
+    finally:
+        sink.finish()
+
+
+def _build_train_loader(
+    cfg: LMExperimentConfig, device: str, dist_state: DistributedState | None
+) -> DataLoader[Any]:
+    """Construct the train loader, accounting for 3-pool's full-batch-on-every-rank rule."""
     # 3-pool requires the FULL global batch on every rank (cross-pool routing
-    # slices locally). Build the loader with dist_state=None so the data path
-    # doesn't shard the batch across ranks. 2-pool + single-pool keep the
-    # standard sharded loader.
+    # slices locally); 2-pool + single-pool use the standard sharded loader.
     loader_dist_state = None if cfg.three_pool is not None else dist_state
-    train_loader = build_loader(
+    return build_loader(
         cfg.target,
         cfg.data,
         split="train",
@@ -319,55 +446,86 @@ def main(config_path: str | Path) -> None:
         dist_state=loader_dist_state,
         seed=cfg.pd.seed,
     )
-    if is_main_process():
-        run_id = generate_run_id("param_decomp")
-        out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
-        sink = RunSink.local(out_dir)
-        cfg.to_file(out_dir / RUN_META_FILENAME)
-    else:
-        sink = RunSink.silent()
 
-    try:
-        if cfg.three_pool is not None:
-            # 3-pool path: eval not wired through yet — cfg.eval (if set) is ignored.
-            optimize_three_pool(
+
+def _construct_and_run_trainer(
+    *,
+    cfg: LMExperimentConfig,
+    target_model: Any,
+    train_loader: DataLoader[Any],
+    sink: ResumableRunSink,
+    device: str,
+    dist_state: DistributedState | None,
+    resume_snapshot: Any | None = None,
+    cfg_overrides: dict[str, Any] | None = None,
+) -> None:
+    """Build the right concrete trainer for the cfg's pool kind and run it.
+
+    Fresh and resume share this code path; ``resume_snapshot`` switches
+    between :meth:`Trainer` and :meth:`Trainer.from_snapshot` construction.
+    """
+    run_batch = make_run_batch(cfg.target)
+    if cfg.three_pool is not None:
+        # 3-pool path: eval not wired through yet — cfg.eval (if set) is ignored.
+        if resume_snapshot is not None:
+            trainer = ThreePoolTrainer.from_snapshot(
+                resume_snapshot,
                 target_model=target_model,
-                train_loader=train_loader,
-                run_batch=make_run_batch(cfg.target),
+                run_batch=run_batch,
+                reconstruction_loss=recon_loss_kl,
+                cfg_overrides=cfg_overrides,
+            )
+        else:
+            trainer = ThreePoolTrainer(
+                target_model=target_model,
+                run_batch=run_batch,
                 reconstruction_loss=recon_loss_kl,
                 pd_config=cfg.pd,
                 runtime_config=cfg.runtime,
                 three_pool_config=cfg.three_pool,
-                cadence=cfg.cadence,
-                sink=sink,
             )
-        elif cfg.two_pool is not None:
-            # 2-pool path: eval not wired through yet — cfg.eval (if set) is ignored.
-            optimize_two_pool(
+        trainer.run(train_loader, sink, cfg.cadence)
+    elif cfg.two_pool is not None:
+        # 2-pool path: eval not wired through yet — cfg.eval (if set) is ignored.
+        if resume_snapshot is not None:
+            two_trainer = TwoPoolTrainer.from_snapshot(
+                resume_snapshot,
                 target_model=target_model,
-                train_loader=train_loader,
-                run_batch=make_run_batch(cfg.target),
+                run_batch=run_batch,
+                reconstruction_loss=recon_loss_kl,
+                cadence=cfg.cadence,
+                cfg_overrides=cfg_overrides,
+            )
+        else:
+            two_trainer = TwoPoolTrainer(
+                target_model=target_model,
+                run_batch=run_batch,
                 reconstruction_loss=recon_loss_kl,
                 pd_config=cfg.pd,
                 runtime_config=cfg.runtime,
                 two_pool_config=cfg.two_pool,
                 cadence=cfg.cadence,
-                sink=sink,
+            )
+        two_trainer.run(train_loader, sink, cfg.cadence)
+    else:
+        eval_loop = _build_eval_loop(cfg, device, dist_state)
+        if resume_snapshot is not None:
+            one_trainer = Trainer.from_snapshot(
+                resume_snapshot,
+                target_model=target_model,
+                run_batch=run_batch,
+                reconstruction_loss=recon_loss_kl,
+                cfg_overrides=cfg_overrides,
             )
         else:
-            optimize(
+            one_trainer = Trainer(
                 target_model=target_model,
-                train_loader=train_loader,
-                run_batch=make_run_batch(cfg.target),
+                run_batch=run_batch,
                 reconstruction_loss=recon_loss_kl,
                 pd_config=cfg.pd,
                 runtime_config=cfg.runtime,
-                sink=sink,
-                cadence=cfg.cadence,
-                eval_loop=_build_eval_loop(cfg, device, dist_state),
             )
-    finally:
-        sink.finish()
+        one_trainer.run(train_loader, sink, cfg.cadence, eval_loop)
 
 
 def _build_eval_loop(

@@ -11,6 +11,13 @@ save-side wrapper that writes per-rank shards alongside the consumable model.
 """
 
 from param_decomp_lab.resumption.config import ResumeConfig, ResumeOverrides
+from param_decomp_lab.resumption.loader import read_resume_snapshot
+from param_decomp_lab.resumption.provenance import (
+    RESUME_PROVENANCE_FILENAME,
+    ResumeProvenance,
+    read_provenance,
+    write_provenance,
+)
 from param_decomp_lab.resumption.shards import (
     list_resume_steps,
     load_shard,
@@ -21,12 +28,17 @@ from param_decomp_lab.resumption.shards import (
 from param_decomp_lab.resumption.sink import ResumableRunSink
 
 __all__ = [
+    "RESUME_PROVENANCE_FILENAME",
     "ResumableRunSink",
     "ResumeConfig",
     "ResumeOverrides",
+    "ResumeProvenance",
     "list_resume_steps",
     "load_shard",
+    "read_provenance",
+    "read_resume_snapshot",
     "resolve_step",
     "save_shard",
     "shard_path",
+    "write_provenance",
 ]
