@@ -36,13 +36,13 @@ class LMDataConfig(BaseConfig):
 def _keep_single_column(
     dataset: Dataset | IterableDataset, col_name: str
 ) -> Dataset | IterableDataset:
-    """Remove all HuggingFace dataset columns except `col_name`."""
-    features = dataset.features
-    assert features is not None, "Dataset features must be known to drop unused columns."
-    for key in features:
-        if key != col_name:
-            dataset = dataset.remove_columns(key)
-    return dataset
+    """Keep only ``col_name`` on the dataset, dropping all other columns.
+
+    Uses ``select_columns`` rather than iterating ``dataset.features`` because
+    streaming datasets sometimes return ``features=None`` until the first batch
+    is consumed.
+    """
+    return dataset.select_columns(col_name)
 
 
 def _tokenize_and_concatenate(
