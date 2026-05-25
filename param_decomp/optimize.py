@@ -148,6 +148,29 @@ def _build_metric_context(
     )
 
 
+def _assert_ctx_invariants(ctx: MetricContext, device: str, step: int) -> None:
+    """Fail loudly if anything is off about the metric context handed to the
+    loss metrics — wrong device, non-finite target output, empty ci dict, etc.
+    These would otherwise propagate silently through the loss + backward path.
+    """
+    assert isinstance(ctx.target_out, torch.Tensor)
+    device_prefix = str(device).split(":")[0]
+    assert str(ctx.target_out.device).startswith(device_prefix), (
+        f"ctx.target_out device mismatch at step {step}: target_out on "
+        f"{ctx.target_out.device}, trainer on {device}"
+    )
+    assert torch.isfinite(ctx.target_out).all(), f"non-finite values in target_out at step {step}"
+    assert ctx.ci.lower_leaky, f"empty ci.lower_leaky dict at step {step}"
+    assert ctx.ci.upper_leaky.keys() == ctx.ci.lower_leaky.keys(), (
+        f"ci upper/lower leaky key mismatch at step {step}"
+    )
+    for name, t in ctx.ci.lower_leaky.items():
+        assert torch.isfinite(t).all(), f"non-finite ci.lower_leaky[{name!r}] at step {step}"
+        assert str(t.device).startswith(device_prefix), (
+            f"ci.lower_leaky[{name!r}] device mismatch at step {step}: {t.device} vs {device}"
+        )
+
+
 def tie_component_weights(
     component_model: ComponentModel, tied_weights: list[tuple[str, str]]
 ) -> None:
@@ -441,6 +464,7 @@ class Trainer:
                     config=pd_config,
                     reconstruction_loss=self.reconstruction_loss,
                 )
+                _assert_ctx_invariants(ctx, device, step)
                 losses = {name: m.update(ctx) for name, m in self.loss_metrics.items()}
 
             total_loss = torch.zeros((), device=device)
@@ -449,6 +473,9 @@ class Trainer:
                 if loss_val is None:
                     continue
                 active_loss_names.append(metric_name)
+                assert torch.isfinite(loss_val).all(), (
+                    f"non-finite loss from metric {metric_name!r} at step {step}: {loss_val}"
+                )
                 cfg = cast(LossMetricConfig, self.loss_metrics[metric_name].cfg)
                 assert cfg.coeff is not None
                 total_loss = total_loss + cfg.coeff * loss_val
@@ -458,6 +485,9 @@ class Trainer:
             assert active_loss_names, (
                 f"No active loss metrics returned a loss at step {step}. "
                 f"Configured loss metrics: {list(self.loss_metrics)}"
+            )
+            assert torch.isfinite(total_loss).all(), (
+                f"total_loss is non-finite at step {step}: {total_loss}"
             )
             batch_log_data["loss/total"] = total_loss.item()
 

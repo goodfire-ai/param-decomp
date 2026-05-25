@@ -39,7 +39,7 @@ reduction (downstream ranks → one CI rank). See "Batch-split routing" below.
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import torch
 import torch.distributed as dist
@@ -247,14 +247,26 @@ def build_world(
     all_sites = tuple(s for bg in layerwise_block_groups for s in bg.owned_sites)
     assert len(set(all_sites)) == len(all_sites), "a site is owned by more than one block group"
 
-    ci_pool_group = dist.new_group(ranks=ci_ranks)
-    layerwise_pool_group = dist.new_group(ranks=layerwise_ranks)
-    ppgd_pool_group = dist.new_group(ranks=ppgd_ranks)
+    my_rank = dist.get_rank()
+
+    def _make_group(name: str, ranks: list[int]) -> Any:
+        # Per-rank trace before/after each collective new_group. Lets us
+        # localize precisely where the world wedges if NCCL deadlocks.
+        print(f"[build_world rank={my_rank}] before {name} ranks={ranks}", flush=True)
+        g = dist.new_group(ranks=ranks)
+        print(f"[build_world rank={my_rank}] after  {name} ranks={ranks}", flush=True)
+        return g
+
+    ci_pool_group = _make_group("ci_pool_group", ci_ranks)
+    layerwise_pool_group = _make_group("layerwise_pool_group", layerwise_ranks)
+    ppgd_pool_group = _make_group("ppgd_pool_group", ppgd_ranks)
     block_group_groups = tuple(
-        dist.new_group(ranks=list(bg.ranks)) for bg in layerwise_block_groups
+        _make_group(f"block_group_groups[{i}]", list(bg.ranks))
+        for i, bg in enumerate(layerwise_block_groups)
     )
     cross_pool_bcast_groups = tuple(
-        dist.new_group(ranks=[bg.leader, *ppgd_ranks]) for bg in layerwise_block_groups
+        _make_group(f"cross_pool_bcast_groups[{i}]", [bg.leader, *ppgd_ranks])
+        for i, bg in enumerate(layerwise_block_groups)
     )
 
     return World(
