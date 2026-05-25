@@ -320,6 +320,61 @@ uv sync --all-packages --no-dev --link-mode copy -q
 source .venv/bin/activate"""
 
 
+def multi_node_torchrun_command(
+    job_name: str,
+    snapshot_ref: str,
+    yaml_path: str,
+    nproc_per_node: int,
+    python_module: str = "param_decomp_lab.experiments.lm.run",
+    master_port: int = 29500,
+) -> str:
+    """Build a multi-node ``srun bash -c 'setup; torchrun ...'`` command.
+
+    Each node's bash block clones the snapshot to its own ``/tmp`` workspace,
+    activates the venv, then launches torchrun with the right
+    ``--nnodes / --node-rank / --master-addr``. SLURM is responsible for
+    placing ``--ntasks-per-node=1`` (one bash per node), then each torchrun
+    fans out to ``nproc_per_node`` ranks on its node.
+
+    Args:
+        job_name: SlurmConfig.job_name (used to namespace the per-node /tmp dir).
+        snapshot_ref: Fully-qualified git ref (e.g. ``refs/runs/snapshot/<id>``)
+            to fetch and checkout on each node.
+        yaml_path: Path (or arg list) to pass to the experiment script.
+        nproc_per_node: Local-rank count on each node (typically 8 for B200).
+        python_module: Module to launch via torchrun (default: lm experiment).
+        master_port: TCP port for torch elastic rendezvous (default 29500).
+
+    Returns:
+        Bash command string. Embed inside an SBATCH script via
+        ``generate_script``. Caller's ``SlurmConfig`` must set
+        ``n_nodes = ceil(total_ranks / nproc_per_node)`` and
+        ``n_gpus = nproc_per_node``.
+    """
+    setup = generate_git_snapshot_setup(
+        work_dir=(
+            f"/tmp/param-decomp/workspace-{job_name}"
+            "-${SLURM_JOB_ID}-${SLURM_NODEID}"
+        ),
+        snapshot_ref=snapshot_ref,
+    )
+    # Heredoc with quoted delimiter ('MN_SHELL') so the outer bash doesn't expand
+    # $SLURM_* — those get expanded on each remote node when the heredoc-fed bash
+    # actually runs.
+    return f"""srun --ntasks-per-node=1 bash -e <<'MN_SHELL'
+{setup}
+MASTER=$(scontrol show hostnames "$SLURM_NODELIST" | head -1)
+echo "[node $SLURM_NODEID/${{SLURM_NNODES}}] master=$MASTER work_dir=$WORK_DIR"
+torchrun \\
+  --nnodes=$SLURM_NNODES \\
+  --node-rank=$SLURM_NODEID \\
+  --master-addr=$MASTER \\
+  --master-port={master_port} \\
+  --nproc-per-node={nproc_per_node} \\
+  -m {python_module} {yaml_path}
+MN_SHELL"""
+
+
 def _workspace_setup(config: SlurmConfig, workspace_suffix: str) -> str:
     """Generate workspace creation and git/venv setup, parameterized by the bash
     expression that uniquely identifies this job invocation."""
