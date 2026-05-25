@@ -1,14 +1,6 @@
-# 3-pool equivalence test: same pd/runtime/target/data as equiv_5L_1pool.yaml,
-# but trained via the 3-pool strategy.
-#
-# Topology: 8 GPUs single node, deliberately no single-rank groups.
-#   * Layerwise: 1 block_group with 4 ranks owning all 30 sites (5 layers × 6
-#     sites). Ranks 0..3. N_per_block_lw=4 → exercises in-block DDP.
-#   * CI: ranks 4, 5 (N_ci=2). N_per_block_lw ≥ N_ci constraint satisfied.
-#   * PPGD: ranks 6, 7 (N_ppgd=2).
-#
-# Launch: torchrun --standalone --nproc_per_node=8 -m param_decomp_lab.experiments.lm.run \
-#         param_decomp_lab/experiments/lm/equiv_5L_3pool.yaml
+# 3-pool variant: 2 LW blocks × 2 ranks each + 2 CI + 2 PPGD.
+# Tests per-block fanout without single-rank groups.
+# 8 GPUs single node.
 
 pd:
   seed: 0
@@ -20,10 +12,7 @@ pd:
       d_model: 128
       n_blocks: 2
       mlp_hidden_dim: [512]
-      attn_config:
-        n_heads: 4
-        max_len: 1024
-        rope_base: 10000.0
+      attn_config: { n_heads: 4, max_len: 1024, rope_base: 10000.0 }
   sampling: continuous
   sigmoid_type: leaky_hard
   decomposition_targets:
@@ -65,16 +54,9 @@ pd:
       n_warmup_steps: 2
       n_samples: 1
 
-cadence:
-  train_log_every: 10
-  save_every: null
-
+cadence: { train_log_every: 10, save_every: null }
 eval: null
-
-runtime:
-  autocast_bf16: true
-  device: cuda
-  dp: null
+runtime: { autocast_bf16: true, device: cuda, dp: null }
 
 target:
   spec:
@@ -102,7 +84,7 @@ three_pool:
   ci_ranks: [4, 5]
   ppgd_ranks: [6, 7]
   layerwise_block_groups:
-    - ranks: [0, 1, 2, 3]
+    - ranks: [0, 1]
       owned_sites:
         - h.0.attn.q_proj
         - h.0.attn.k_proj
@@ -122,6 +104,8 @@ three_pool:
         - h.2.attn.o_proj
         - h.2.mlp.c_fc
         - h.2.mlp.down_proj
+    - ranks: [2, 3]
+      owned_sites:
         - h.3.attn.q_proj
         - h.3.attn.k_proj
         - h.3.attn.v_proj
