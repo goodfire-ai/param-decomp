@@ -1,0 +1,129 @@
+wandb_project: param-decomp
+wandb_run_name: null
+wandb_run_name_prefix: ''
+seed: 0
+autocast_bf16: true
+n_mask_samples: 1
+# Needs to be wide enough to have ci values for the layer in residual stream without too much compression. More depth would maybe be better, but I'll take what we can afford.
+ci_config:
+  mode: layerwise
+  fn_type: transformer
+  hidden_dims: null
+  simple_transformer_ci_cfg:
+    d_model: 1024
+    n_blocks: 2
+    mlp_hidden_dim:
+    - 2048
+    attn_config:
+      n_heads: 16
+      max_len: 1024
+      rope_base: 10000.0
+  lr_schedule:
+    start_val: 1.0e-04
+    warmup_pct: 0.0
+    final_val_frac: 0.1
+    fn_type: cosine
+sampling: continuous
+sigmoid_type: leaky_hard
+# q and k tend to be small, and too much overparameterization tends to be bad for them. Can probably reduce widths for c_fc and down_proj, but I want to do an exploratory run to check. Can probably see the answer 1/4 to 1/2 way into the run.
+module_info:
+- module_pattern: h.*.mlp.c_fc
+  C: 8192
+- module_pattern: h.*.mlp.down_proj
+  C: 8192
+- module_pattern: h.*.attn.q_proj
+  C: 1024
+- module_pattern: h.*.attn.k_proj
+  C: 1024
+- module_pattern: h.*.attn.v_proj
+  C: 2048
+- module_pattern: h.*.attn.o_proj
+  C: 2048
+identity_module_info: null
+init_pd_checkpoint: null
+use_delta_component: true
+# This will need a lot of adjustment. Especially the importance minimality loss.
+loss_metric_configs:
+- coeff: 0.00004
+  classname: ImportanceMinimalityLoss
+  pnorm: 2.0
+  beta: 0.5
+  p_anneal_start_frac: 0.0
+  p_anneal_final_p: 0.3
+  p_anneal_end_frac: 1.0
+  eps: 1.0e-12
+- coeff: 50
+  classname: StochasticReconLayerwiseLoss
+- coeff: 1
+  optimizer:
+    type: adam
+    beta1: 0.5
+    beta2: 0.99
+    eps: 1.0e-08
+    lr_schedule:
+      start_val: 0.01
+      warmup_pct: 0.025
+      final_val_frac: 1.0
+      fn_type: constant
+  scope:
+    type: per_batch_per_position
+  use_sigmoid_parameterization: false
+  n_warmup_steps: 2
+  start_frac: 0.0
+  n_samples: 1
+  classname: PersistentPGDReconLoss
+- coeff: 100000000.0
+  classname: FaithfulnessLoss
+lr_schedule:
+  start_val: 0.0005
+  warmup_pct: 0.0
+  final_val_frac: 0.1
+  fn_type: cosine
+steps: 200000
+# We can try doing different batch sizes and step counts.
+batch_size: 256
+grad_clip_norm_components: 0.01
+grad_clip_norm_ci_fns: null
+faithfulness_warmup_steps: 400
+faithfulness_warmup_lr: 0.001
+faithfulness_warmup_weight_decay: 0.0
+train_log_freq: 200
+eval_freq: 1000
+eval_batch_size: 64
+slow_eval_freq: 10000
+n_eval_steps: 1
+slow_eval_on_first_step: true
+save_freq: null
+eval_metric_configs:
+- classname: CIHistograms
+  n_batches_accum: 1
+- classname: ComponentActivationDensity
+- classname: CI_L0
+  groups:
+    layer_0:
+    - h.0.*
+    layer_1:
+    - h.1.*
+    layer_2:
+    - h.2.*
+    layer_3:
+    - h.3.*
+    total:
+    - '*'
+- classname: CEandKLLosses
+  rounding_threshold: 0.0
+- classname: CIMeanPerComponent
+- classname: StochasticHiddenActsReconLoss # not obvious how this should be implemented two pool. probably do on pool b only
+- classname: CIHiddenActsReconLoss
+- classname: PGDReconLoss
+  init: random
+  step_size: 0.1
+  n_steps: 20
+  mask_scope: shared_across_batch
+ci_alive_threshold: 0.0
+pretrained_model_class: # gpt2
+pretrained_model_path:
+pretrained_model_name: 
+output_extract: 0
+tokenizer_name: 
+task_config: # apollo-research/Skylion007-openwebtext-tokenizer-gpt2 with seq len 1024
