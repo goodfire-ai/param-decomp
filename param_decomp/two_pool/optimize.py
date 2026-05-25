@@ -1,9 +1,10 @@
-"""``optimize_two_pool`` — 2-pool sibling of :func:`param_decomp.optimize.optimize`.
+"""``TwoPoolTrainer`` and ``optimize_two_pool`` — 2-pool sibling of
+:class:`param_decomp.optimize.Trainer` / :func:`param_decomp.optimize.optimize`.
 
-Mirrors the call shape of the single-process entrypoint: caller hands in
-``target_model``, dataloader, configs, sink. Internal validation, per-pool
-wiring, cross-pool comms, and the layerwise streaming loss strategy are all
-hidden behind the function boundary.
+Mirrors the single-pool call shape: caller hands in ``target_model``,
+dataloader, configs, sink. Internal validation, per-pool wiring, cross-pool
+comms, and the layerwise streaming loss strategy are all hidden behind the
+class boundary.
 
   - **Pool A** trains V/U + CI fn. Each pool-A rank holds the components for its
     owned sites and runs target+CI forward, per-site streaming layerwise loss,
@@ -20,8 +21,7 @@ hidden behind the function boundary.
 import itertools
 import time
 from contextlib import nullcontext
-from dataclasses import dataclass
-from typing import Any
+from typing import Any, Self
 
 import torch
 import torch.distributed as dist
@@ -60,23 +60,6 @@ from param_decomp.two_pool.reductions import (
 )
 from param_decomp.two_pool.runtime import _TwoPoolRuntime
 
-
-@dataclass
-class _PreGatheredStateDictShim:
-    """TEMPORARY adapter — wraps a pre-gathered model state_dict to satisfy
-    ``RunSink.checkpoint``'s `TrainerLike` protocol. Removed when
-    `TwoPoolTrainer` lands (Task #5) and the loop body is restructured.
-    """
-
-    _state_dict: dict[str, Tensor]
-
-    def consumable_model_state_dict(self) -> dict[str, Tensor]:
-        return self._state_dict
-
-    def state_blob(self) -> dict[str, Any]:
-        raise NotImplementedError("resume not yet wired for the 2-pool path")
-
-
 # Loss-metric type discriminators required for the 2-pool training path.
 # Each MUST appear in ``pd_config.loss_metrics`` with a non-None ``coeff``.
 REQUIRED_LOSS_METRIC_TYPES: frozenset[str] = frozenset(
@@ -111,6 +94,351 @@ FORBIDDEN_LOSS_METRIC_TYPES: frozenset[str] = frozenset(
 )
 
 
+class TwoPoolTrainer:
+    """Stateful 2-pool trainer.
+
+    Construction wires up the runtime bundle, world layout, ComponentModel,
+    layerwise loss strategy, and the per-pool training state (pool-A optimizer
+    or pool-B PPGD config stash). The PPGD state itself is built on the first
+    batch of :meth:`run` because its source tensor shapes depend on the data's
+    sequence dims.
+
+    Resume support is rank-local: :meth:`state_blob` produces a self-contained
+    cfg + state dict for the current rank, and :meth:`from_blob` reconstructs
+    one from that dict. The lab's resume loader composes these across ranks.
+
+    Consumable-checkpoint gathering is still TODO (the runtime currently
+    asserts ``cadence.save_every is None``); the trainer's
+    :meth:`consumable_model_state_dict` returns this rank's partial view for
+    now, matching the pre-Trainer behaviour.
+    """
+
+    pd_config: PDConfig
+    runtime_config: RuntimeConfig
+    two_pool_config: TwoPoolConfig
+    reconstruction_loss: ReconstructionLoss
+    component_model: ComponentModel
+    layout: BlockDDPLayout
+    strategy: LayerwiseLossStrategy
+    optimizer: torch.optim.Optimizer | None
+    ppgd_state: PersistentPGDState | None
+    step: int
+
+    def __init__(
+        self,
+        *,
+        target_model: nn.Module,
+        run_batch: RunBatch,
+        reconstruction_loss: ReconstructionLoss,
+        pd_config: PDConfig,
+        runtime_config: RuntimeConfig,
+        two_pool_config: TwoPoolConfig,
+        cadence: Cadence,
+    ) -> None:
+        assert dist.is_initialized(), (
+            "init the distributed process group before constructing TwoPoolTrainer"
+        )
+        self.pd_config = pd_config
+        self.runtime_config = runtime_config
+        self.two_pool_config = two_pool_config
+        self.reconstruction_loss = reconstruction_loss
+        self._run_batch = run_batch
+        self.step = 0
+
+        _validate_pd_config_for_two_pool(pd_config, two_pool_config, cadence)
+        # PPGD runs only on pool B; the relevant per-rank batch is batch // n_pool_b.
+        validate_pgd_scope(
+            pd_config.loss_metrics,
+            batch_size=pd_config.batch_size,
+            world_size=len(two_pool_config.pool_b_ranks),
+        )
+
+        self.runtime = _build_runtime(
+            target_model=target_model,
+            pd_config=pd_config,
+            runtime_config=runtime_config,
+            two_pool_config=two_pool_config,
+            run_batch=run_batch,
+            reconstruction_loss=reconstruction_loss,
+        )
+
+        # TF32 matmuls are ~2-3x faster on H200 with sub-ULP precision loss — fine
+        # for SPD training where we already use fp32 throughout.
+        torch.set_float32_matmul_precision("high")
+
+        self._device = torch.device(runtime_config.device)
+        world = build_block_ddp_world(
+            block_groups=list(self.runtime.block_groups),
+            pool_b_ranks=list(self.runtime.pool_b_ranks),
+            batch_global=self.runtime.batch_global,
+        )
+        self.layout = BlockDDPLayout.from_world(world, dist.get_rank())
+        decomposition_targets = _decomposition_targets_for_pool(
+            self.layout, self.runtime.c_per_site
+        )
+
+        target_model.requires_grad_(False)
+        self.component_model = ComponentModel(
+            target_model=target_model,
+            run_batch=run_batch,
+            decomposition_targets=decomposition_targets,
+            ci_config=pd_config.ci_config,
+            sigmoid_type=pd_config.sigmoid_type,
+        ).to(self._device)
+
+        self.strategy = LayerwiseLossStrategy.from_cfg(
+            target_model,
+            use_fused_kl=two_pool_config.use_fused_kl,
+            unfused_recon=reconstruction_loss,
+        )
+
+        self.optimizer = None
+        self._all_params: list[nn.Parameter] = []
+        self._component_params: list[nn.Parameter] = []
+        self._ci_fn_params: list[nn.Parameter] = []
+        self.ppgd_state = None
+
+        if self.layout.my_pool == "a":
+            for name in self.component_model.target_module_paths:
+                self._component_params.extend(self.component_model.components[name].parameters())
+            self._ci_fn_params = list(self.component_model.ci_fn.parameters())
+            self._all_params = self._component_params + self._ci_fn_params
+            self.optimizer = torch.optim.AdamW(
+                [
+                    {
+                        "params": self._component_params,
+                        "lr": pd_config.components_optimizer.lr_schedule.start_val,
+                    },
+                    {
+                        "params": self._ci_fn_params,
+                        "lr": pd_config.ci_fn_optimizer.lr_schedule.start_val,
+                    },
+                ],
+                weight_decay=0.0,
+                fused=True,
+            )
+        # Pool B's PPGD state is constructed lazily in `run` once batch_dims is known
+        # from the first batch; pending resume state (if any) is applied at that point.
+        self._pending_ppgd_resume_state: dict[str, Any] | None = None
+
+    # ============================ Atomic cfg + state ============================
+
+    def state_blob(self) -> dict[str, Any]:
+        """Self-contained cfg + rank-local state for this trainer.
+
+        Each rank's blob carries only the state this rank owns: pool-A ranks
+        save the model + AdamW state; pool-B ranks save the PPGD state. A
+        layout fingerprint is included so resume can refuse a world-shape
+        mismatch loudly.
+        """
+        state: dict[str, Any] = {
+            "step": self.step,
+            "component_model": self.component_model.state_dict(),
+            "pool": self.layout.my_pool,
+        }
+        if self.layout.my_pool == "a":
+            assert self.optimizer is not None
+            state["optimizer"] = self.optimizer.state_dict()
+        elif self.ppgd_state is not None:
+            state["ppgd"] = self.ppgd_state.state_dict()
+        return {
+            "pd_config": self.pd_config.model_dump(),
+            "runtime_config": self.runtime_config.model_dump(),
+            "two_pool_config": self.two_pool_config.model_dump(),
+            "layout_fingerprint": _layout_fingerprint(self.layout),
+            "state": state,
+        }
+
+    @classmethod
+    def from_blob(
+        cls,
+        blob: dict[str, Any],
+        *,
+        target_model: nn.Module,
+        run_batch: RunBatch,
+        reconstruction_loss: ReconstructionLoss,
+        cadence: Cadence,
+        cfg_overrides: dict[str, Any] | None = None,
+    ) -> Self:
+        """Reconstruct a TwoPoolTrainer from a :meth:`state_blob` dict.
+
+        ``cfg_overrides`` is a flat patch applied to the saved ``pd_config``
+        dict before validation — narrow resume-time overrides only.
+        """
+        pd_dict = blob["pd_config"]
+        if cfg_overrides is not None:
+            pd_dict = {**pd_dict, **cfg_overrides}
+        pd_config = PDConfig.model_validate(pd_dict)
+        runtime_config = RuntimeConfig.model_validate(blob["runtime_config"])
+        two_pool_config = TwoPoolConfig.model_validate(blob["two_pool_config"])
+
+        trainer = cls(
+            target_model=target_model,
+            run_batch=run_batch,
+            reconstruction_loss=reconstruction_loss,
+            pd_config=pd_config,
+            runtime_config=runtime_config,
+            two_pool_config=two_pool_config,
+            cadence=cadence,
+        )
+        saved_fp = blob["layout_fingerprint"]
+        current_fp = _layout_fingerprint(trainer.layout)
+        assert saved_fp == current_fp, (
+            f"2-pool layout fingerprint mismatch on resume:\n"
+            f"  saved:   {saved_fp}\n"
+            f"  current: {current_fp}\n"
+        )
+        trainer._load_state(blob["state"])
+        return trainer
+
+    def _load_state(self, state: dict[str, Any]) -> None:
+        self.step = state["step"]
+        assert state["pool"] == self.layout.my_pool, (
+            f"pool mismatch on resume: rank {self.layout.my_rank} was in pool "
+            f"{state['pool']!r} when saved, now {self.layout.my_pool!r}"
+        )
+        self.component_model.load_state_dict(state["component_model"])
+        if self.layout.my_pool == "a":
+            assert self.optimizer is not None
+            self.optimizer.load_state_dict(state["optimizer"])
+        else:
+            # Pool B's PPGD state isn't constructed until the first batch in run() —
+            # defer the load until then.
+            self._pending_ppgd_resume_state = state.get("ppgd")
+
+    def consumable_model_state_dict(self) -> dict[str, Tensor]:
+        """This rank's partial view of the model state dict.
+
+        For a proper distributed checkpoint we'd gather V/U from every block
+        leader to rank 0 (mirroring 3-pool's ``gather_full_state_dict_to_rank0``);
+        TODO when 2-pool moves out of experimental.
+        """
+        return self.component_model.state_dict()
+
+    # ============================ Training loop ============================
+
+    def run(
+        self,
+        train_loader: DataLoader[Any],
+        sink: RunSink,
+        cadence: Cadence,
+        profiler: PhaseProfiler | None = None,
+    ) -> None:
+        """Advance training from ``self.step`` to ``self.pd_config.steps``."""
+        pd_config = self.pd_config
+        layout = self.layout
+        runtime = self.runtime
+
+        train_iterator = loop_dataloader(train_loader)
+
+        # Loader skip-replay (resumed mid-trajectory) and first-batch peek for
+        # pool-B PPGD shape — done in one pass.
+        for _ in range(self.step):
+            next(train_iterator)
+        first_batch = next(train_iterator)
+        train_iterator = itertools.chain([first_batch], train_iterator)
+
+        if layout.my_pool == "b" and self.ppgd_state is None:
+            ppgd_cfg = runtime.ppgd_cfg
+            self.ppgd_state = PersistentPGDState(
+                module_to_c=runtime.c_per_site,
+                batch_dims=(layout.world.batch_local_b, *_seq_dims_from_batch(first_batch)),
+                device=self._device,
+                use_delta_component=True,
+                optimizer_cfg=ppgd_cfg.optimizer,
+                scope=ppgd_cfg.scope,
+                use_sigmoid_parameterization=ppgd_cfg.use_sigmoid_parameterization,
+                n_warmup_steps=ppgd_cfg.n_warmup_steps,
+                n_samples=ppgd_cfg.n_samples,
+                router=AllLayersRouter(),
+                reconstruction_loss=self.strategy.recon_loss,
+            )
+            if self._pending_ppgd_resume_state is not None:
+                self.ppgd_state.load_state_dict(self._pending_ppgd_resume_state)
+                self._pending_ppgd_resume_state = None
+
+        if self.step == 0 and layout.my_pool == "a" and pd_config.faithfulness_warmup_steps > 0:
+            run_faithfulness_warmup_pool_a(
+                component_model=self.component_model,
+                component_params=self._component_params,
+                n_steps=pd_config.faithfulness_warmup_steps,
+                lr=pd_config.faithfulness_warmup_lr,
+                weight_decay=pd_config.faithfulness_warmup_weight_decay,
+            )
+
+        n_steps = pd_config.steps
+        profiler_ctx = profiler if profiler is not None else nullcontext()
+        with profiler_ctx:
+            for step in range(self.step, n_steps):
+                self.step = step
+                if layout.my_pool == "a" and self.optimizer is not None:
+                    self.optimizer.param_groups[0]["lr"] = get_scheduled_value(
+                        step, n_steps, pd_config.components_optimizer.lr_schedule
+                    )
+                    self.optimizer.param_groups[1]["lr"] = get_scheduled_value(
+                        step, n_steps, pd_config.ci_fn_optimizer.lr_schedule
+                    )
+
+                # When profiling, barrier ranks at step boundary so both pools share
+                # a common time origin in the trace.
+                if profiler is not None:
+                    dist.barrier()
+
+                batch = _extract_batch_tensor(next(train_iterator), self._device)
+
+                torch.cuda.synchronize(self._device)
+                step_start = time.perf_counter()
+                match layout.my_pool:
+                    case "a":
+                        assert self.optimizer is not None
+                        metrics = step_pool_a(
+                            layout,
+                            self.component_model,
+                            self.optimizer,
+                            self._all_params,
+                            batch,
+                            runtime,
+                            self.strategy,
+                            current_frac_of_training=step / n_steps if n_steps > 0 else 0.0,
+                            profiler=profiler,
+                        )
+                    case "b":
+                        assert self.ppgd_state is not None
+                        metrics = step_pool_b(
+                            layout,
+                            self.component_model,
+                            self.ppgd_state,
+                            batch,
+                            runtime,
+                            self.strategy,
+                            step=step,
+                            n_steps=n_steps,
+                            profiler=profiler,
+                        )
+                torch.cuda.synchronize(self._device)
+                step_ms = (time.perf_counter() - step_start) * 1000.0
+
+                if step % cadence.train_log_every == 0:
+                    _log_train_metrics(
+                        metrics=metrics,
+                        layout=layout,
+                        device=self._device,
+                        step=step,
+                        step_ms=step_ms,
+                        runtime=runtime,
+                        optimizer=self.optimizer,
+                        sink=sink,
+                    )
+
+                if cadence.save_every is not None and step > 0 and step % cadence.save_every == 0:
+                    # All ranks call; the sink (resume-aware variant) decides per-rank
+                    # behaviour. The default rank-0-only `RunSink` is a no-op elsewhere.
+                    sink.checkpoint(self, step=step)
+
+                if profiler is not None:
+                    profiler.step()
+
+
 def optimize_two_pool(
     target_model: nn.Module,
     train_loader: DataLoader[Any],
@@ -126,190 +454,33 @@ def optimize_two_pool(
 ) -> None:
     """Train a ComponentModel under the 2-pool strategy.
 
-    Sibling of :func:`param_decomp.optimize.optimize` with the same call shape.
-    ``dist.init_process_group`` must already be set up; the per-rank device
-    is read from ``runtime_config.device``.
+    Thin wrapper over :class:`TwoPoolTrainer` for callers that don't need
+    resumption or interactive control. Identical call shape to the pre-Trainer
+    function.
     """
-    assert dist.is_initialized(), (
-        "init the distributed process group before calling optimize_two_pool"
-    )
-
-    _validate_pd_config_for_two_pool(pd_config, two_pool_config, cadence)
-    # PPGD runs only on pool B; the relevant per-rank batch is batch // n_pool_b.
-    validate_pgd_scope(
-        pd_config.loss_metrics,
-        batch_size=pd_config.batch_size,
-        world_size=len(two_pool_config.pool_b_ranks),
-    )
-
-    runtime = _build_runtime(
+    trainer = TwoPoolTrainer(
         target_model=target_model,
+        run_batch=run_batch,
+        reconstruction_loss=reconstruction_loss,
         pd_config=pd_config,
         runtime_config=runtime_config,
         two_pool_config=two_pool_config,
-        run_batch=run_batch,
-        reconstruction_loss=reconstruction_loss,
+        cadence=cadence,
     )
+    trainer.run(train_loader, sink, cadence, profiler=profiler)
 
-    # TF32 matmuls are ~2-3x faster on H200 with sub-ULP precision loss — fine
-    # for SPD training where we already use fp32 throughout.
-    torch.set_float32_matmul_precision("high")
 
-    device = torch.device(runtime_config.device)
-    world = build_block_ddp_world(
-        block_groups=list(runtime.block_groups),
-        pool_b_ranks=list(runtime.pool_b_ranks),
-        batch_global=runtime.batch_global,
-    )
-    layout = BlockDDPLayout.from_world(world, dist.get_rank())
-    decomposition_targets = _decomposition_targets_for_pool(layout, runtime.c_per_site)
-
-    target_model.requires_grad_(False)
-    component_model = ComponentModel(
-        target_model=target_model,
-        run_batch=run_batch,
-        decomposition_targets=decomposition_targets,
-        ci_config=pd_config.ci_config,
-        sigmoid_type=pd_config.sigmoid_type,
-    ).to(device)
-
-    # Build the layerwise-loss strategy once. Both pools consume it; the rest
-    # of the runner doesn't see `use_fused_kl` at all.
-    strategy = LayerwiseLossStrategy.from_cfg(
-        target_model,
-        use_fused_kl=two_pool_config.use_fused_kl,
-        unfused_recon=reconstruction_loss,
-    )
-
-    # Peek one batch so pool B can size its PPGD source tensors; both pools
-    # synchronise here so the layout's batch-shape contract is honoured.
-    train_iterator = loop_dataloader(train_loader)
-    first_batch = next(train_iterator)
-    train_iterator = itertools.chain([first_batch], train_iterator)
-
-    components_lr_schedule = pd_config.components_optimizer.lr_schedule
-    ci_fn_lr_schedule = pd_config.ci_fn_optimizer.lr_schedule
-
-    optimizer: torch.optim.Optimizer | None = None
-    all_params: list[nn.Parameter] = []
-    ppgd_state: PersistentPGDState | None = None
-
-    match layout.my_pool:
-        case "a":
-            component_params: list[nn.Parameter] = []
-            for name in component_model.target_module_paths:
-                component_params.extend(component_model.components[name].parameters())
-            ci_fn_params = list(component_model.ci_fn.parameters())
-            all_params = component_params + ci_fn_params
-            optimizer = torch.optim.AdamW(
-                [
-                    {"params": component_params, "lr": components_lr_schedule.start_val},
-                    {"params": ci_fn_params, "lr": ci_fn_lr_schedule.start_val},
-                ],
-                weight_decay=0.0,
-                fused=True,
-            )
-
-            if pd_config.faithfulness_warmup_steps > 0:
-                run_faithfulness_warmup_pool_a(
-                    component_model=component_model,
-                    component_params=component_params,
-                    n_steps=pd_config.faithfulness_warmup_steps,
-                    lr=pd_config.faithfulness_warmup_lr,
-                    weight_decay=pd_config.faithfulness_warmup_weight_decay,
-                )
-        case "b":
-            ppgd_cfg = runtime.ppgd_cfg
-            ppgd_state = PersistentPGDState(
-                module_to_c=runtime.c_per_site,
-                batch_dims=(layout.world.batch_local_b, *_seq_dims_from_batch(first_batch)),
-                device=device,
-                use_delta_component=True,
-                optimizer_cfg=ppgd_cfg.optimizer,
-                scope=ppgd_cfg.scope,
-                use_sigmoid_parameterization=ppgd_cfg.use_sigmoid_parameterization,
-                n_warmup_steps=ppgd_cfg.n_warmup_steps,
-                n_samples=ppgd_cfg.n_samples,
-                router=AllLayersRouter(),
-                reconstruction_loss=strategy.recon_loss,
-            )
-
-    n_steps = pd_config.steps
-    profiler_ctx = profiler if profiler is not None else nullcontext()
-    with profiler_ctx:
-        for step in range(n_steps):
-            if layout.my_pool == "a" and optimizer is not None:
-                optimizer.param_groups[0]["lr"] = get_scheduled_value(
-                    step, n_steps, components_lr_schedule
-                )
-                optimizer.param_groups[1]["lr"] = get_scheduled_value(
-                    step, n_steps, ci_fn_lr_schedule
-                )
-
-            # When profiling, barrier ranks at step boundary so both pools share a
-            # common time origin in the trace.
-            if profiler is not None:
-                dist.barrier()
-
-            batch = _extract_batch_tensor(next(train_iterator), device)
-
-            torch.cuda.synchronize(device)
-            step_start = time.perf_counter()
-            match layout.my_pool:
-                case "a":
-                    assert optimizer is not None
-                    metrics = step_pool_a(
-                        layout,
-                        component_model,
-                        optimizer,
-                        all_params,
-                        batch,
-                        runtime,
-                        strategy,
-                        current_frac_of_training=step / n_steps if n_steps > 0 else 0.0,
-                        profiler=profiler,
-                    )
-                case "b":
-                    assert ppgd_state is not None
-                    metrics = step_pool_b(
-                        layout,
-                        component_model,
-                        ppgd_state,
-                        batch,
-                        runtime,
-                        strategy,
-                        step=step,
-                        n_steps=n_steps,
-                        profiler=profiler,
-                    )
-            torch.cuda.synchronize(device)
-            step_ms = (time.perf_counter() - step_start) * 1000.0
-
-            if step % cadence.train_log_every == 0:
-                _log_train_metrics(
-                    metrics=metrics,
-                    layout=layout,
-                    device=device,
-                    step=step,
-                    step_ms=step_ms,
-                    runtime=runtime,
-                    optimizer=optimizer,
-                    sink=sink,
-                )
-
-            if (
-                cadence.save_every is not None
-                and step > 0
-                and step % cadence.save_every == 0
-                and layout.my_rank == 0
-            ):
-                # TODO(Task #5): replace with `sink.checkpoint(trainer, step=step)` once
-                # TwoPoolTrainer lands. For now we adapt the rank-0-only state_dict to the
-                # new TrainerLike protocol.
-                sink.checkpoint(_PreGatheredStateDictShim(component_model.state_dict()), step=step)
-
-            if profiler is not None:
-                profiler.step()
+def _layout_fingerprint(layout: BlockDDPLayout) -> dict[str, Any]:
+    """Compact summary of the 2-pool world layout. Compared at resume time."""
+    return {
+        "world_size": layout.world.world_size,
+        "n_blocks": layout.world.n_blocks,
+        "n_per_block": layout.world.n_per_block,
+        "n_pool_b": layout.world.n_pool_b,
+        "my_rank": layout.my_rank,
+        "my_pool": layout.my_pool,
+        "owned_sites": list(layout.my_owned_sites) if layout.my_pool == "a" else [],
+    }
 
 
 def _validate_pd_config_for_two_pool(
@@ -378,10 +549,12 @@ def _validate_pd_config_for_two_pool(
         "`identity_decomposition_targets` would be silently ignored."
     )
 
-    # No distributed-aware checkpoint gather yet — rank 0 only holds its
-    # block's V/U + CI fn, so saving would produce a structurally partial file.
+    # No distributed-aware consumable checkpoint gather yet — rank 0 only holds
+    # its block's V/U + CI fn, so saving would produce a structurally partial
+    # file. Resume shards (per-rank) work fine; the assertion guards the
+    # consumable-model path until the gather is wired up.
     assert cadence.save_every is None, (
-        "2-pool does not yet implement distributed checkpointing. "
+        "2-pool does not yet implement distributed consumable checkpointing. "
         "rank 0 only holds its own block's V/U + CI fn, so `cadence.save_every` "
         "would produce a partial checkpoint that can't be reloaded. "
         "Set `cadence.save_every: null` for now."
