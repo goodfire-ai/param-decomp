@@ -433,10 +433,15 @@ def _resume_main(resume_cfg_path: Path) -> None:
 def _build_train_loader(
     cfg: LMExperimentConfig, device: str, dist_state: DistributedState | None
 ) -> DataLoader[Any]:
-    """Construct the train loader, accounting for 3-pool's full-batch-on-every-rank rule."""
-    # 3-pool requires the FULL global batch on every rank (cross-pool routing
-    # slices locally); 2-pool + single-pool use the standard sharded loader.
-    loader_dist_state = None if cfg.three_pool is not None else dist_state
+    """Construct the train loader, accounting for the multi-pool full-batch rule.
+
+    Both 2-pool and 3-pool require the FULL global batch on every rank: each
+    pool slices it locally (``my_batch_slice_a`` / ``my_batch_slice_b`` in
+    2-pool; pool-specific helpers in 3-pool). Only the single-pool path uses
+    the standard `DistributedSampler`-sharded loader.
+    """
+    is_multi_pool = cfg.two_pool is not None or cfg.three_pool is not None
+    loader_dist_state = None if is_multi_pool else dist_state
     return build_loader(
         cfg.target,
         cfg.data,
