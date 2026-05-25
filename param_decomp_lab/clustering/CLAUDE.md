@@ -75,11 +75,12 @@ Entry point via `pd-clustering`. Submits clustering runs as SLURM job array, the
 
 ### Single Run (`scripts/run_clustering.py`)
 
-Performs one clustering run:
-1. Load decomposed model from WandB
-2. Compute component activations:
-   - **LM tasks**: Uses `n_tokens` and `n_tokens_per_seq` parameters. Iterates through batches of size `batch_size`, picks `n_tokens_per_seq` random token positions per sequence, collects CI values until `n_tokens` samples gathered. Result: `(n_tokens, C)` per layer.
-   - **resid_mlp tasks**: Single batch of size `batch_size`, no sequence dimension. Uses `component_activations()` directly.
+Performs one clustering run (LM PD runs only):
+1. Load decomposed model from WandB via `SavedLMRun.from_path`
+2. Compute component activations. Uses `n_tokens` and `n_tokens_per_seq` parameters:
+   iterate through batches of size `batch_size`, pick `n_tokens_per_seq` random token
+   positions per sequence (or all positions if `use_all_tokens_per_seq`), and collect
+   CI values until `n_tokens` samples are gathered. Result: `(n_tokens, C)` per layer.
 3. Run merge iteration (greedy MDL-based clustering)
 4. Save `MergeHistory` with group assignments per iteration
 

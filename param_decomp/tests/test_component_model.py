@@ -39,7 +39,7 @@ from param_decomp.masks import ComponentsMaskInfo, make_mask_infos
 from param_decomp.metrics.importance_minimality import ImportanceMinimalityLossConfig
 from param_decomp.schedule import ScheduleConfig
 from param_decomp_lab.batch_and_loss_fns import run_batch_passthrough
-from param_decomp_lab.component_model_io import load_component_model_from_checkpoint
+from param_decomp_lab.component_model_io import load_component_model
 from param_decomp_lab.infra.run_files import save_file
 
 
@@ -162,11 +162,8 @@ def test_from_checkpoint():
         fresh_target = SimpleTestModel()
         fresh_target.eval()
         fresh_target.requires_grad_(False)
-        cm_loaded = load_component_model_from_checkpoint(
-            ci_config=config.ci_config,
-            sigmoid_type=config.sigmoid_type,
-            decomposition_targets=config.decomposition_targets,
-            identity_decomposition_targets=config.identity_decomposition_targets,
+        cm_loaded = load_component_model(
+            pd_config=config,
             checkpoint_path=checkpoint_path,
             target_model=fresh_target,
             run_batch=run_batch_passthrough,
@@ -580,11 +577,8 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             AssertionError,
             match="Config specifies layerwise CI but checkpoint has no ci_fn._ci_fns keys",
         ):
-            load_component_model_from_checkpoint(
-                ci_config=config_layerwise.ci_config,
-                sigmoid_type=config_layerwise.sigmoid_type,
-                decomposition_targets=config_layerwise.decomposition_targets,
-                identity_decomposition_targets=config_layerwise.identity_decomposition_targets,
+            load_component_model(
+                pd_config=config_layerwise,
                 checkpoint_path=global_checkpoint_path,
                 target_model=SimpleTestModel(),
                 run_batch=run_batch_passthrough,
@@ -658,11 +652,8 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             AssertionError,
             match="Config specifies global CI but checkpoint has no ci_fn._global_ci_fn keys",
         ):
-            load_component_model_from_checkpoint(
-                ci_config=config_global.ci_config,
-                sigmoid_type=config_global.sigmoid_type,
-                decomposition_targets=config_global.decomposition_targets,
-                identity_decomposition_targets=config_global.identity_decomposition_targets,
+            load_component_model(
+                pd_config=config_global,
                 checkpoint_path=layerwise_checkpoint_path,
                 target_model=SimpleTestModel(),
                 run_batch=run_batch_passthrough,
@@ -1306,11 +1297,8 @@ def test_global_ci_save_and_load():
         save_file(cm.state_dict(), checkpoint_path)
 
         # Load and verify
-        cm_loaded = load_component_model_from_checkpoint(
-            ci_config=config.ci_config,
-            sigmoid_type=config.sigmoid_type,
-            decomposition_targets=config.decomposition_targets,
-            identity_decomposition_targets=config.identity_decomposition_targets,
+        cm_loaded = load_component_model(
+            pd_config=config,
             checkpoint_path=checkpoint_path,
             target_model=SimpleTestModel(),
             run_batch=run_batch_passthrough,

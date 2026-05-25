@@ -1,15 +1,11 @@
 """Shared config schema for in-repo experiment YAMLs.
 
 Each experiment subclasses `ExperimentConfig` to fix the concrete `target` / `data` types
-and parses its YAML with `<Experiment>Config.from_file(path)`. `save_run_meta` persists
-the resolved config under `run_meta.yaml`; `SavedRun` reads it back and dispatches via
-the `experiment_kind` field to the matching `experiments/<kind>/run.py` module.
+and parses its YAML with `<Experiment>Config.from_file(path)`. The resolved config is
+persisted as ``run_meta.yaml`` via `BaseConfig.to_file` and rebuilt on reload by the
+matching per-experiment ``SavedXRun`` class.
 """
 
-from pathlib import Path
-from typing import Any, Literal
-
-import yaml
 from pydantic import Field, PositiveInt
 
 from param_decomp.base_config import BaseConfig
@@ -17,9 +13,6 @@ from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
 from param_decomp_lab.eval_metrics import AnyEvalMetricConfig
 
 RUN_META_FILENAME = "run_meta.yaml"
-
-RunKind = Literal["lm", "tms", "resid_mlp"]
-"""Discriminator literal naming the in-repo experiment kinds dispatched on by `SavedRun`."""
 
 
 class EvalConfig(BaseConfig):
@@ -68,29 +61,3 @@ class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
     target: T
     data: D
     eval: EvalConfig | None = None
-
-
-def save_run_meta(
-    out_dir: Path | None,
-    *,
-    kind: RunKind,
-    cfg: ExperimentConfig[Any, Any],
-) -> None:
-    """Write `{out_dir}/run_meta.yaml` with the resolved config + `experiment_kind`.
-
-    The `experiment_kind` literal lets `SavedRun` dispatch to the matching
-    `experiments/<kind>/run.py` module when rebuilding target / loaders / run_batch.
-    No-op when `out_dir` is None (non-main ranks / silent sinks).
-
-    Args:
-        out_dir: Destination directory; the file is written at
-            `out_dir / RUN_META_FILENAME`. Pass `None` to skip writing.
-        kind: Experiment kind literal saved under `experiment_kind`.
-        cfg: Resolved `ExperimentConfig` to serialize.
-    """
-    if out_dir is None:
-        return
-    out_dir.mkdir(parents=True, exist_ok=True)
-    payload = {"experiment_kind": kind, **cfg.model_dump(mode="json")}
-    with open(out_dir / RUN_META_FILENAME, "w") as f:
-        yaml.dump(payload, f, default_flow_style=False, sort_keys=False)

@@ -14,7 +14,9 @@ from pydantic import BaseModel
 from param_decomp.log import logger
 from param_decomp_lab.app.backend.dependencies import DepLoadedRun
 from param_decomp_lab.app.backend.utils import log_errors
-from param_decomp_lab.experiments.lm.run import LMTargetConfig
+from param_decomp_lab.experiments.lm.run import LMExperimentConfig, LMTargetConfig
+from param_decomp_lab.experiments.utils import RUN_META_FILENAME
+from param_decomp_lab.infra.run_files import resolve_config_path
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
 
@@ -42,16 +44,6 @@ class PretrainInfoResponse(BaseModel):
     pretrain_config: dict[str, Any] | None
     pretrain_wandb_path: str | None
     topology: TopologyInfo | None
-
-
-def _load_lm_target_lightweight(wandb_path: str) -> LMTargetConfig | None:
-    """Load just the LM target config for an LM run, without downloading checkpoints."""
-    from param_decomp_lab.saved_run import SavedRun
-
-    meta = SavedRun.meta_from_path(wandb_path)
-    if meta.kind != "lm":
-        return None
-    return LMTargetConfig.model_validate(meta.target_dict)
 
 
 def _load_pretrain_configs(pretrain_path: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -176,19 +168,8 @@ def _get_dataset_short(pretrain_config: dict[str, Any] | None) -> str | None:
     return None
 
 
-def _get_pretrain_info(lm_target: LMTargetConfig | None) -> PretrainInfoResponse:
+def _get_pretrain_info(lm_target: LMTargetConfig) -> PretrainInfoResponse:
     """Extract pretrain info from an LM target config."""
-    if lm_target is None:
-        return PretrainInfoResponse(
-            model_type="unknown",
-            summary="unknown",
-            dataset_short=None,
-            target_model_config=None,
-            pretrain_config=None,
-            pretrain_wandb_path=None,
-            topology=None,
-        )
-
     from param_decomp_lab.experiments.lm.run import PretrainedTarget
 
     spec = lm_target.spec
@@ -234,7 +215,10 @@ def get_pretrain_info_for_run(wandb_path: str) -> PretrainInfoResponse:
 
     Fetches only config files (no checkpoints) for efficiency.
     """
-    return _get_pretrain_info(_load_lm_target_lightweight(wandb_path))
+    cfg = LMExperimentConfig.from_file(
+        resolve_config_path(wandb_path, config_filename=RUN_META_FILENAME)
+    )
+    return _get_pretrain_info(cfg.target)
 
 
 @router.get("/loaded")

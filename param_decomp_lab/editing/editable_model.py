@@ -32,9 +32,9 @@ from param_decomp.masks import make_mask_infos
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.app.backend.compute import OptimizedPromptAttributionResult
 from param_decomp_lab.autointerp.repo import InterpRepo
+from param_decomp_lab.experiments.lm.run import SavedLMRun
 from param_decomp_lab.harvest.repo import HarvestRepo
 from param_decomp_lab.harvest.schemas import ComponentData
-from param_decomp_lab.saved_run import SavedRun
 from param_decomp_lab.topology.topology import TransformerTopology
 
 ForwardFn = Callable[[Int[Tensor, " seq"]], Float[Tensor, "seq vocab"]]
@@ -274,16 +274,9 @@ class EditableModel:
         cls, wandb_path: str, device: str = "cuda"
     ) -> tuple["EditableModel", AppTokenizer]:
         """Load from wandb path. Returns (editable_model, tokenizer)."""
-        from param_decomp_lab.experiments.lm.data import LMDataConfig
-
-        pd_run = SavedRun.from_path(wandb_path)
-        assert pd_run.kind == "lm", (
-            f"EditableModel.from_wandb only supports LM runs (got kind={pd_run.kind!r})"
-        )
-        data_cfg = pd_run.data_cfg
-        assert isinstance(data_cfg, LMDataConfig)
+        pd_run = SavedLMRun.from_path(wandb_path)
         model = pd_run.load_model().to(device).eval()
-        tokenizer = AppTokenizer.from_pretrained(data_cfg.tokenizer_name)
+        tokenizer = AppTokenizer.from_pretrained(pd_run.cfg.data.tokenizer_name)
         return cls(model), tokenizer
 
     def __call__(self, tokens: Int[Tensor, " seq"]) -> Float[Tensor, "seq vocab"]:

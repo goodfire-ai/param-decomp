@@ -1,6 +1,8 @@
 harvest:
-  model_path: goodfire/spd/runs/zxbu57pt  # WandB path to the decomposed model
-  batch_size: 8  # Batch size for processing -- number of samples for each run in the ensemble
+  model_path: goodfire/spd/runs/zxbu57pt  # WandB path to the decomposed LM run
+  batch_size: 8  # Batch size for processing
+  n_tokens: 100000  # Total number of token activations to collect before stopping
+  n_tokens_per_seq: 10  # Random token positions to sample per sequence (or set use_all_tokens_per_seq)
   dataset_seed: 0  # Note, overridden if run in the pipeline (param_decomp_lab/clustering/scripts/run_pipeline.py)
   activation_threshold: 0.01  # threshold for considering a component active
   filter_dead_threshold: 0.001  # Threshold for filtering dead components

@@ -27,5 +27,10 @@ class ClusteringRunConfig(BaseConfig):
 
     @property
     def wandb_decomp_model(self) -> str:
-        _, _, run_id = parse_wandb_run_path(self.harvest.model_path)
+        """W&B run-id slug used in the clustering run's wandb tags.
+
+        Only valid when `harvest.model_path` is a W&B reference — raises
+        `ValueError` for local checkpoint paths.
+        """
+        _, _, run_id = parse_wandb_run_path(str(self.harvest.model_path))
         return run_id
