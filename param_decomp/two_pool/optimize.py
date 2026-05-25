@@ -381,12 +381,22 @@ class TwoPoolTrainer:
                     dist.barrier()
 
                 batch = _extract_batch_tensor(next(train_iterator), self._device)
+                assert batch.device == self._device, (
+                    f"2-pool batch device mismatch at step {step}: {batch.device} vs {self._device}"
+                )
+                assert batch.shape[0] == runtime.batch_global, (
+                    f"2-pool batch_global mismatch at step {step}: "
+                    f"got {batch.shape[0]}, expected {runtime.batch_global}"
+                )
 
                 torch.cuda.synchronize(self._device)
                 step_start = time.perf_counter()
                 match layout.my_pool:
                     case "a":
                         assert self.optimizer is not None
+                        assert layout.my_owned_sites, (
+                            f"pool-A rank {layout.my_rank} has no owned_sites — empty block"
+                        )
                         metrics = step_pool_a(
                             layout,
                             self.component_model,
@@ -399,7 +409,9 @@ class TwoPoolTrainer:
                             profiler=profiler,
                         )
                     case "b":
-                        assert self.ppgd_state is not None
+                        assert self.ppgd_state is not None, (
+                            f"pool-B rank {layout.my_rank} has no ppgd_state — lazy init failed"
+                        )
                         metrics = step_pool_b(
                             layout,
                             self.component_model,
@@ -411,6 +423,11 @@ class TwoPoolTrainer:
                             n_steps=n_steps,
                             profiler=profiler,
                         )
+                # Loss values produced by either pool should be finite — non-finite means a
+                # silent NaN somewhere upstream (PPGD update blew up, autocast overflow, etc.).
+                for k, v in metrics.items():
+                    if k.startswith("loss/"):
+                        assert v == v, f"NaN in metrics[{k!r}] at step {step}"  # NaN != NaN
                 torch.cuda.synchronize(self._device)
                 step_ms = (time.perf_counter() - step_start) * 1000.0
 

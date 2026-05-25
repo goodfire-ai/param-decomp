@@ -465,9 +465,19 @@ class ThreePoolTrainer:
                 torch.cuda.synchronize(device)
                 step_start = time.perf_counter()
 
+                # batch_T should already be on this rank's device (placed by _to_device).
+                if isinstance(batch_T, Tensor):
+                    assert batch_T.device == device, (
+                        f"3-pool batch device drift at step {step}: {batch_T.device} vs {device}"
+                    )
                 match layout.my_pool:
                     case "ci":
-                        assert self.optimizer is not None
+                        assert self.optimizer is not None, (
+                            f"CI rank {layout.my_rank} missing optimizer"
+                        )
+                        assert len(self._ci_fn_params) > 0, (
+                            f"CI rank {layout.my_rank} has no ci_fn params to optimize"
+                        )
                         next_batch_for_prefetch = batch_T_plus_1 if step < n_steps - 1 else None
                         metrics, h_cache_ci = step_ci(
                             layout,
@@ -482,7 +492,12 @@ class ThreePoolTrainer:
                             profiler=profiler,
                         )
                     case "layerwise":
-                        assert self.optimizer is not None
+                        assert self.optimizer is not None, (
+                            f"LW rank {layout.my_rank} missing optimizer"
+                        )
+                        assert layout.my_owned_sites, (
+                            f"LW rank {layout.my_rank} has no owned_sites — empty block"
+                        )
                         metrics, pending_all_reduce_lw = step_layerwise(
                             layout,
                             self.component_model,
@@ -496,7 +511,9 @@ class ThreePoolTrainer:
                             profiler=profiler,
                         )
                     case "ppgd":
-                        assert self.ppgd_state is not None
+                        assert self.ppgd_state is not None, (
+                            f"PPGD rank {layout.my_rank} has no ppgd_state — lazy init failed"
+                        )
                         metrics, pending_recv_vu_ppgd = step_ppgd(
                             layout,
                             self.component_model,
@@ -510,6 +527,10 @@ class ThreePoolTrainer:
                             prev_pending_recv_vu=pending_recv_vu_ppgd,
                             profiler=profiler,
                         )
+                # Catch silent NaN propagation early.
+                for k, v in metrics.items():
+                    if k.startswith("loss/"):
+                        assert v == v, f"NaN in metrics[{k!r}] at step {step}"  # NaN != NaN
 
                 torch.cuda.synchronize(device)
                 step_ms = (time.perf_counter() - step_start) * 1000.0
