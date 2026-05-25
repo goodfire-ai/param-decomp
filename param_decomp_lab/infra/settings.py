@@ -19,10 +19,8 @@ PARAM_DECOMP_OUT_DIR.mkdir(parents=True, exist_ok=True)
 SLURM_LOGS_DIR = PARAM_DECOMP_OUT_DIR / "slurm_logs"
 SBATCH_SCRIPTS_DIR = PARAM_DECOMP_OUT_DIR / "sbatch_scripts"
 
-# SLURM partition for GPU jobs. Default matches the H200 cluster; override per-cluster
-# via `PARAM_DECOMP_PARTITION` env var. The pd-run CLI's `--partition` flag overrides
-# this further for ad-hoc launches.
-DEFAULT_PARTITION_NAME = os.environ.get("PARAM_DECOMP_PARTITION", "h200-reserved")
+# The pd-run CLI's `--partition` flag overrides this further for ad-hoc launches.
+DEFAULT_PARTITION_NAME = os.environ.get("PARTITION_RESERVED", "h200-reserved")
 
 DEFAULT_PROJECT_NAME = "param-decomp"
 
