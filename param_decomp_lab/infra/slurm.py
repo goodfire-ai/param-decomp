@@ -50,6 +50,7 @@ class SlurmConfig:
     snapshot_ref: str | None = None
     dependency_job_id: str | None = None
     comment: str | None = None
+    qos: str | None = None  # e.g. "scavenge", "opportunistic"
 
 
 @dataclass
@@ -267,6 +268,8 @@ def _common_sbatch_lines(config: SlurmConfig, log_pattern: str) -> list[str]:
     ]
     if config.partition is not None:
         lines.insert(1, f"#SBATCH --partition={config.partition}")
+    if config.qos is not None:
+        lines.append(f"#SBATCH --qos={config.qos}")
     if config.cpus_per_task is not None:
         lines.append(f"#SBATCH --cpus-per-task={config.cpus_per_task}")
     if config.mem is not None:

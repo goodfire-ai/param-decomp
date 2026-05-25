@@ -182,6 +182,7 @@ def main() -> None:
                 time="01:00:00",
                 snapshot_ref=stamp.snapshot_ref,
                 comment=f"multi-node equiv — {job_name}",
+                qos="scavenge",
             )
             r = submit_slurm_job(generate_script(cfg, cmd, env=CUDA_FLAGS), job_name)
             print(f"{job_name}: nodes={n_nodes_required} gpus={cohort.n_gpus} job_id={r.job_id}")
