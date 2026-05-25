@@ -323,7 +323,7 @@ def _workspace_setup(config: SlurmConfig, workspace_suffix: str) -> str:
     """Generate workspace creation and git/venv setup, parameterized by the bash
     expression that uniquely identifies this job invocation."""
     if config.snapshot_ref is not None:
-        work_dir = f"/tmp/param-decomp/workspace-{config.job_name}-{workspace_suffix}"
+        work_dir = f"/tmp/$USER/param-decomp/workspace-{config.job_name}-{workspace_suffix}"
         return generate_git_snapshot_setup(work_dir, config.snapshot_ref)
     else:
         return f"""\
