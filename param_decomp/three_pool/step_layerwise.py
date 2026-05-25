@@ -25,11 +25,9 @@ Phases (numbered to match ``DESIGN.md`` ``lw/N``):
   E.  Tail. Sync mode: in-block all_reduce → grad clip → AdamW → async send
       V/U. Async mode: kickoff async all_reduce, return its pending state.
 
-``step_layerwise`` reads as ~50 lines of orchestration; the helpers below
-correspond one-to-one with the phases above. Phases 1 + 3 give the headline
-overlap (CI recv on the NIC while faithfulness runs on the GPU). The phase-B
-+ phase-E async kickoff give the deferred-mode overlap (they hide behind
-T+1's CI fn forward window on CI pool).
+Phases 1 + 3 give the headline overlap (CI recv on the NIC while
+faithfulness runs on the GPU). The phase-B + phase-E async kickoff give the
+deferred-mode overlap (they hide behind T+1's CI fn forward window on CI pool).
 """
 
 # pyright: reportArgumentType=false, reportOperatorIssue=false, reportAttributeAccessIssue=false
@@ -83,22 +81,33 @@ def step_layerwise(
     batch_local, seq_len = _slice_batch_for_layerwise(batch, layout)
 
     with strategy.context(component_model.target_model):
-        ci_recv, ci_recv_works = _async_recv_ci_from_ci_pool(layout, cfg, seq_len, device, p)
-        target_local = _target_forward_no_grad(component_model, batch_local, cfg, p)
+        with p.phase("lw/A1_post_async_recv_ci"):
+            ci_recv, ci_recv_works = layout.async_recv_ci_from_ci_pool(
+                {s: cfg.c_per_site[s] for s in layout.my_owned_sites},
+                seq_len=seq_len,
+                device=device,
+            )
+        with p.phase("lw/A2_target_fwd"), torch.no_grad(), autocast_bf16(cfg.bf16_autocast):
+            target_local = component_model(batch_local).detach()
 
     if defer_vu_opt and prev_pending_all_reduce is not None:
         _finalize_prev_iter_async(
             layout, component_model, optimizer, all_params, prev_pending_all_reduce, cfg, p
         )
 
-    _zero_grads(all_params)
+    for param in all_params:
+        param.grad = None
 
     with strategy.context(component_model.target_model):
-        loss_faith, faith_sum_sq_t, faith_numel = _faithfulness_loss_and_backward(
-            component_model, cfg, device, p
-        )
+        with p.phase("lw/D1_faith"):
+            loss_faith, faith_sum_sq_t, faith_numel = _faithfulness_loss(
+                component_model, device, cfg.numel_global
+            )
+            (cfg.coeff_faith * loss_faith).backward()
 
-        _wait_ci_recv(ci_recv_works, p)
+        with p.phase("lw/D2_wait_ci_recv"):
+            for w in ci_recv_works:
+                w.wait()
         ci_recv_leaves = _releaf_ci_fp32_for_grads(ci_recv, layout.my_owned_sites)
         _assert_ci_recv_shapes(ci_recv_leaves, layout, seq_len, cfg)
 
@@ -114,21 +123,28 @@ def step_layerwise(
             stoch_n_owned = len(layout.my_owned_sites)
             loss_stoch_value = stoch_total_value / stoch_n_owned
 
-        _send_g_ci_to_ci_pool(layout, ci_recv_leaves, p)
+        with p.phase("lw/D4_send_g_ci"):
+            g_ci_owned = {s: ci_recv_leaves[s].grad for s in layout.my_owned_sites}
+            assert all(g is not None for g in g_ci_owned.values()), (
+                "layerwise backward should have populated ci_recv_leaves[s].grad"
+            )
+            layout.send_g_ci_to_ci_pool(g_ci_owned)
+
         v_grads_pgd, u_grads_pgd = _recv_g_vu_from_ppgd(layout, component_model, p)
         _combine_vu_grads_in_place(component_model, layout, v_grads_pgd, u_grads_pgd, p)
 
-    metrics = _step_metrics(
-        loss_faith=loss_faith,
-        faith_sum_sq_t=faith_sum_sq_t,
-        faith_numel=faith_numel,
-        loss_stoch_value=loss_stoch_value,
-        stoch_total_value=stoch_total_value,
-        stoch_n_owned=stoch_n_owned,
-    )
+    metrics = {
+        "loss/faith": loss_faith.item(),
+        "loss/stoch": loss_stoch_value,
+        "_raw/faith_num": faith_sum_sq_t.item(),
+        "_raw/faith_den": float(faith_numel),
+        "_raw/stoch_num": stoch_total_value,
+        "_raw/stoch_den": float(stoch_n_owned),
+    }
 
     if defer_vu_opt:
-        new_pending = _kickoff_async_allreduce(layout, all_params, p)
+        with p.phase("lw/E_kickoff_async_allreduce"):
+            new_pending = layout.async_all_reduce_grads_in_block_kickoff(all_params)
         return metrics, new_pending
 
     _sync_tail(layout, component_model, optimizer, all_params, cfg, p)
@@ -185,11 +201,6 @@ def run_faithfulness_warmup_layerwise(
     torch.cuda.empty_cache()
 
 
-# =============================================================================
-# Phase helpers.
-# =============================================================================
-
-
 def _slice_batch_for_layerwise(batch: Any, layout: ThreePoolLayout) -> tuple[Any, int]:
     """Pull this LW rank's batch slice + extract its seq_len."""
     sl = layout.my_batch_slice_lw()
@@ -200,42 +211,6 @@ def _slice_batch_for_layerwise(batch: Any, layout: ThreePoolLayout) -> tuple[Any
         assert isinstance(batch_local, dict) and "input_ids" in batch_local
         seq_len = batch_local["input_ids"].shape[1]
     return batch_local, seq_len
-
-
-def _async_recv_ci_from_ci_pool(
-    layout: ThreePoolLayout,
-    cfg: _ThreePoolRuntime,
-    seq_len: int,
-    device: torch.device,
-    p: PhaseProfiler,
-) -> tuple[dict[str, Tensor], list[Any]]:
-    """Phase lw/A1. Post irecvs for owned-site CI values from the CI pool.
-
-    Recv handles run on NIC concurrently with the A2 target_fwd kernels
-    enqueued just below — that's the headline phase-A overlap.
-    """
-    with p.phase("lw/A1_post_async_recv_ci"):
-        return layout.async_recv_ci_from_ci_pool(
-            {s: cfg.c_per_site[s] for s in layout.my_owned_sites},
-            seq_len=seq_len,
-            device=device,
-        )
-
-
-def _target_forward_no_grad(
-    component_model: ComponentModel,
-    batch_local: Any,
-    cfg: _ThreePoolRuntime,
-    p: PhaseProfiler,
-) -> Tensor:
-    """Phase lw/A2. Frozen target forward on the LW rank's batch slice.
-
-    Used as the recon target for the per-site layerwise loop. ``no_grad``
-    + bf16 autocast under the strategy context (SDPA picks the flash kernel
-    on H200).
-    """
-    with p.phase("lw/A2_target_fwd"), torch.no_grad(), autocast_bf16(cfg.bf16_autocast):
-        return component_model(batch_local).detach()
 
 
 def _finalize_prev_iter_async(
@@ -272,44 +247,12 @@ def _finalize_prev_iter_async(
         _async_send_owned_vu_to_ppgd(component_model, layout)
 
 
-def _zero_grads(all_params: list[nn.Parameter]) -> None:
-    """Phase lw/C. Zero ``param.grad`` for fresh D-phase accumulation."""
-    for param in all_params:
-        param.grad = None
-
-
-def _faithfulness_loss_and_backward(
-    component_model: ComponentModel,
-    cfg: _ThreePoolRuntime,
-    device: torch.device,
-    p: PhaseProfiler,
-) -> tuple[Tensor, Tensor, int]:
-    """Phase lw/D1. Faithfulness loss + immediate backward (V/U-only).
-
-    Doesn't depend on CI, so we run it before CI recv is waited on.
-    """
-    with p.phase("lw/D1_faith"):
-        loss_faith, faith_sum_sq_t, faith_numel = _faithfulness_loss(
-            component_model, device, cfg.numel_global
-        )
-        (cfg.coeff_faith * loss_faith).backward()
-    return loss_faith, faith_sum_sq_t, faith_numel
-
-
-def _wait_ci_recv(ci_recv_works: list[Any], p: PhaseProfiler) -> None:
-    """Phase lw/D2 (first half). Block on the irecvs from A1."""
-    with p.phase("lw/D2_wait_ci_recv"):
-        for w in ci_recv_works:
-            w.wait()
-
-
 def _releaf_ci_fp32_for_grads(
     ci_recv: dict[str, Tensor], owned_sites: tuple[str, ...]
 ) -> dict[str, Tensor]:
-    """Phase lw/D2 (second half). Re-leaf as fp32 ``requires_grad=True``.
-
-    CI is shipped in bf16; we upcast + re-leaf so the layerwise backward
-    populates ``leaf.grad`` that the CI pool merges into its CI-fn fp32 grads.
+    """Upcast CI (bf16 on the wire) to fp32 and re-leaf with ``requires_grad=True``
+    so the layerwise backward populates ``leaf.grad`` that the CI pool merges
+    into its CI-fn fp32 grads.
     """
     return {
         s: ci_recv[s].detach().to(torch.float32).clone().requires_grad_(True) for s in owned_sites
@@ -365,24 +308,6 @@ def _layerwise_one_site(
     return loss, n_positions
 
 
-def _send_g_ci_to_ci_pool(
-    layout: ThreePoolLayout,
-    ci_recv_leaves: dict[str, Tensor],
-    p: PhaseProfiler,
-) -> None:
-    """Phase lw/D4. Ship owned-site CI grads to the CI pool.
-
-    After the per-site layerwise backwards, ``ci_recv_leaves[s].grad`` holds
-    the LW-side contribution to ∂L/∂CI for site s.
-    """
-    with p.phase("lw/D4_send_g_ci"):
-        g_ci_owned = {s: ci_recv_leaves[s].grad for s in layout.my_owned_sites}
-        assert all(g is not None for g in g_ci_owned.values()), (
-            "layerwise backward should have populated ci_recv_leaves[s].grad"
-        )
-        layout.send_g_ci_to_ci_pool(g_ci_owned)
-
-
 def _recv_g_vu_from_ppgd(
     layout: ThreePoolLayout,
     component_model: ComponentModel,
@@ -421,20 +346,6 @@ def _combine_vu_grads_in_place(
             comp.U.grad.add_(u_grads_pgd[s])
 
 
-def _kickoff_async_allreduce(
-    layout: ThreePoolLayout,
-    all_params: list[nn.Parameter],
-    p: PhaseProfiler,
-) -> PendingAllReduce:
-    """Phase lw/E (async mode). Kickoff async all_reduce on V/U grads in-block.
-
-    The wait + unflatten + opt + send happens at start of next iter's phase B,
-    so it overlaps with next iter's target_fwd kernels.
-    """
-    with p.phase("lw/E_kickoff_async_allreduce"):
-        return layout.async_all_reduce_grads_in_block_kickoff(all_params)
-
-
 def _sync_tail(
     layout: ThreePoolLayout,
     component_model: ComponentModel,
@@ -464,11 +375,6 @@ def _sync_tail(
         optimizer.step()
     with p.phase("lw/E4_async_send_vu"):
         _async_send_owned_vu_to_ppgd(component_model, layout)
-
-
-# =============================================================================
-# Small primitives shared across helpers.
-# =============================================================================
 
 
 def _async_send_owned_vu_to_ppgd(component_model: ComponentModel, layout: ThreePoolLayout) -> None:
@@ -516,25 +422,3 @@ def _faithfulness_loss(
         sum_sq = sum_sq + (d**2).sum()
         numel_owned += d.numel()
     return sum_sq / numel_global, sum_sq, numel_owned
-
-
-def _step_metrics(
-    *,
-    loss_faith: Tensor,
-    faith_sum_sq_t: Tensor,
-    faith_numel: int,
-    loss_stoch_value: float,
-    stoch_total_value: float,
-    stoch_n_owned: int,
-) -> dict[str, float]:
-    """Per-step metrics: per-rank display scalars + raw (num, den) for the
-    cross-LW-pool logger reduction (``SUM(num) / SUM(den)``).
-    """
-    return {
-        "loss/faith": loss_faith.item(),
-        "loss/stoch": loss_stoch_value,
-        "_raw/faith_num": faith_sum_sq_t.item(),
-        "_raw/faith_den": float(faith_numel),
-        "_raw/stoch_num": stoch_total_value,
-        "_raw/stoch_den": float(stoch_n_owned),
-    }

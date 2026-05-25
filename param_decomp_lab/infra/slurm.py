@@ -402,7 +402,11 @@ def torchrun_command(
         f"--master_port={master_port} "
         f"-m {python_module} {script_args}"
     )
-    srun_flags = f"--nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1"
+    # --kill-on-bad-exit=1: any task exiting non-zero immediately terminates
+    # the others. Without it, a rank that OOMs (or any exception) leaves
+    # surviving ranks hanging in NCCL heartbeat zombie state for the rest of
+    # the job's time limit — wasting compute and burying the failure.
+    srun_flags = f"--nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1 --kill-on-bad-exit=1"
     inner = f"{setup}\n{torchrun_cmd}"
     return f"srun {srun_flags} bash -c {shlex.quote(inner)}"
 
