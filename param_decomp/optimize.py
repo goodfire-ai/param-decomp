@@ -45,7 +45,7 @@ from param_decomp.faithfulness_warmup import run_faithfulness_warmup
 from param_decomp.log import logger
 from param_decomp.metrics.base import LossMetricConfig, Metric
 from param_decomp.metrics.context import MetricContext
-from param_decomp.metrics.dispatch import instantiate_loss_metrics
+from param_decomp.metrics.dispatch import instantiate_metrics
 from param_decomp.metrics.output import collect_metric_outputs
 from param_decomp.metrics.persistent_pgd_recon import validate_pgd_scope
 from param_decomp.run_sink import RunSink
@@ -139,6 +139,19 @@ def _build_metric_context(
     )
 
 
+def tie_component_weights(
+    component_model: ComponentModel, tied_weights: list[tuple[str, str]]
+) -> None:
+    for src_name, tgt_name in tied_weights:
+        tgt = component_model.components[tgt_name]
+        src = component_model.components[src_name]
+        assert tgt is not None and src is not None, (
+            f"Cannot tie weights between {src_name} and {tgt_name} - one or both are None"
+        )
+        tgt.U.data = src.V.data.T
+        tgt.V.data = src.U.data.T
+
+
 def optimize(
     target_model: nn.Module,
     train_loader: DataLoader[Any],
@@ -164,8 +177,8 @@ def optimize(
 
     Args:
         target_model: The frozen model whose parameters are being decomposed.
-            Must have ``requires_grad=False`` on all parameters; ``optimize``
-            asserts this.
+            ``optimize`` sets ``requires_grad=False`` on all parameters and
+            puts it in ``eval()`` mode.
         train_loader: Train data loader. Looped indefinitely until ``steps`` is
             reached.
         run_batch: Callable that runs one batch through the wrapped target model
@@ -206,6 +219,7 @@ def optimize(
         )
 
     target_model.requires_grad_(False)
+    target_model.eval()
     decomposition_targets = resolve_decomposition_targets(
         target_model, pd_config.all_decomposition_target_configs
     )
@@ -239,14 +253,7 @@ def optimize(
     assert isinstance(component_model, ComponentModel), "component_model is not a ComponentModel"
 
     if pd_config.tied_weights is not None:
-        for src_name, tgt_name in pd_config.tied_weights:
-            tgt = component_model.components[tgt_name]
-            src = component_model.components[src_name]
-            assert tgt is not None and src is not None, (
-                f"Cannot tie weights between {src_name} and {tgt_name} - one or both are None"
-            )
-            tgt.U.data = src.V.data.T
-            tgt.V.data = src.U.data.T
+        tie_component_weights(component_model, pd_config.tied_weights)
 
     component_params: list[torch.nn.Parameter] = []
     for name in component_model.target_module_paths:
@@ -270,25 +277,12 @@ def optimize(
     if pd_config.faithfulness_warmup_steps > 0:
         run_faithfulness_warmup(component_model, component_params, pd_config)
 
-    loss_instances = instantiate_loss_metrics(pd_config, component_model, device)
-    eval_only_instances: dict[str, Metric[Any]] = {}
-    if eval_loop is not None:
-        for m in eval_loop.metrics:
-            m.bind(model=component_model, device=device)
-
-        # Loss metrics are auto-evaluated alongside dedicated eval metrics. We disallow
-        # duplicate registry names across the two pools because `evaluate()` keys metrics by
-        # class name.
-        for m in eval_loop.metrics:
-            metric_name = type(m).__name__
-            assert metric_name not in eval_only_instances, f"duplicate eval metric {metric_name!r}"
-            eval_only_instances[metric_name] = m
-        overlap = sorted(set(loss_instances) & set(eval_only_instances))
-        assert not overlap, (
-            f"eval_loop.metrics overlap with pd_config.loss_metrics: {overlap}. Loss metrics "
-            "are automatically evaluated; remove the duplicates from eval_loop.metrics."
-        )
-    all_instances = {**loss_instances, **eval_only_instances}
+    loss_instances, eval_instances = instantiate_metrics(
+        pd_config,
+        component_model,
+        device,
+        eval_metrics=eval_loop.metrics if eval_loop is not None else None,
+    )
 
     for step in tqdm(range(pd_config.steps + 1), ncols=0, disable=not is_main_process()):
         components_optimizer.zero_grad()
@@ -371,7 +365,7 @@ def optimize(
             assert eval_iterator is not None
             with torch.no_grad(), bf16_autocast(enabled=runtime_config.autocast_bf16):
                 slow_step = eval_loop.should_run_slow_eval(step)
-                active = [m for m in all_instances.values() if not (m.slow and not slow_step)]
+                active = [m for m in eval_instances.values() if not (m.slow and not slow_step)]
                 for m in active:
                     m.reset()
                 for _ in range(eval_loop.n_steps):
