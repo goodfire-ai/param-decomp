@@ -48,6 +48,7 @@ from param_decomp.metrics.persistent_pgd_state import PersistentPGDState
 from param_decomp.run_sink import RunSink
 from param_decomp.schedule import get_scheduled_value
 from param_decomp.torch_helpers import loop_dataloader
+from param_decomp.trainer_snapshot import TrainerSnapshot
 from param_decomp.two_pool.config import TwoPoolConfig
 from param_decomp.two_pool.layout import BlockDDPLayout, BlockGroup, build_block_ddp_world
 from param_decomp.two_pool.loss_strategy import LayerwiseLossStrategy
@@ -223,13 +224,12 @@ class TwoPoolTrainer:
 
     # ============================ Atomic cfg + state ============================
 
-    def state_blob(self) -> dict[str, Any]:
-        """Self-contained cfg + rank-local state for this trainer.
+    def snapshot(self) -> TrainerSnapshot:
+        """Atomic point-in-time view: rank-local resume + (rank-0-only) consumable.
 
-        Each rank's blob carries only the state this rank owns: pool-A ranks
-        save the model + AdamW state; pool-B ranks save the PPGD state. A
-        layout fingerprint is included so resume can refuse a world-shape
-        mismatch loudly.
+        The 2-pool consumable-side gather is still TODO; for now ``consumable``
+        is ``None`` on every rank, so the only persistence path is the per-rank
+        resume shards written by :class:`ResumableRunSink`.
         """
         state: dict[str, Any] = {
             "step": self.step,
@@ -241,18 +241,22 @@ class TwoPoolTrainer:
             state["optimizer"] = self.optimizer.state_dict()
         elif self.ppgd_state is not None:
             state["ppgd"] = self.ppgd_state.state_dict()
-        return {
-            "pd_config": self.pd_config.model_dump(),
-            "runtime_config": self.runtime_config.model_dump(),
-            "two_pool_config": self.two_pool_config.model_dump(),
-            "layout_fingerprint": _layout_fingerprint(self.layout),
-            "state": state,
-        }
+        return TrainerSnapshot(
+            step=self.step,
+            resume={
+                "pd_config": self.pd_config.model_dump(),
+                "runtime_config": self.runtime_config.model_dump(),
+                "two_pool_config": self.two_pool_config.model_dump(),
+                "layout_fingerprint": _layout_fingerprint(self.layout),
+                "state": state,
+            },
+            consumable=None,  # TODO: gather V/U from all pool-A block leaders to rank 0
+        )
 
     @classmethod
-    def from_blob(
+    def from_snapshot(
         cls,
-        blob: dict[str, Any],
+        snapshot: TrainerSnapshot,
         *,
         target_model: nn.Module,
         run_batch: RunBatch,
@@ -260,17 +264,18 @@ class TwoPoolTrainer:
         cadence: Cadence,
         cfg_overrides: dict[str, Any] | None = None,
     ) -> Self:
-        """Reconstruct a TwoPoolTrainer from a :meth:`state_blob` dict.
+        """Reconstruct a TwoPoolTrainer from the ``resume`` half of a snapshot.
 
         ``cfg_overrides`` is a flat patch applied to the saved ``pd_config``
         dict before validation — narrow resume-time overrides only.
         """
-        pd_dict = blob["pd_config"]
+        resume = snapshot.resume
+        pd_dict = resume["pd_config"]
         if cfg_overrides is not None:
             pd_dict = {**pd_dict, **cfg_overrides}
         pd_config = PDConfig.model_validate(pd_dict)
-        runtime_config = RuntimeConfig.model_validate(blob["runtime_config"])
-        two_pool_config = TwoPoolConfig.model_validate(blob["two_pool_config"])
+        runtime_config = RuntimeConfig.model_validate(resume["runtime_config"])
+        two_pool_config = TwoPoolConfig.model_validate(resume["two_pool_config"])
 
         trainer = cls(
             target_model=target_model,
@@ -281,14 +286,14 @@ class TwoPoolTrainer:
             two_pool_config=two_pool_config,
             cadence=cadence,
         )
-        saved_fp = blob["layout_fingerprint"]
+        saved_fp = resume["layout_fingerprint"]
         current_fp = _layout_fingerprint(trainer.layout)
         assert saved_fp == current_fp, (
             f"2-pool layout fingerprint mismatch on resume:\n"
             f"  saved:   {saved_fp}\n"
             f"  current: {current_fp}\n"
         )
-        trainer._load_state(blob["state"])
+        trainer._load_state(resume["state"])
         return trainer
 
     def _load_state(self, state: dict[str, Any]) -> None:
@@ -305,15 +310,6 @@ class TwoPoolTrainer:
             # Pool B's PPGD state isn't constructed until the first batch in run() —
             # defer the load until then.
             self._pending_ppgd_resume_state = state.get("ppgd")
-
-    def consumable_model_state_dict(self) -> dict[str, Tensor]:
-        """This rank's partial view of the model state dict.
-
-        For a proper distributed checkpoint we'd gather V/U from every block
-        leader to rank 0 (mirroring 3-pool's ``gather_full_state_dict_to_rank0``);
-        TODO when 2-pool moves out of experimental.
-        """
-        return self.component_model.state_dict()
 
     # ============================ Training loop ============================
 
@@ -433,7 +429,7 @@ class TwoPoolTrainer:
                 if cadence.save_every is not None and step > 0 and step % cadence.save_every == 0:
                     # All ranks call; the sink (resume-aware variant) decides per-rank
                     # behaviour. The default rank-0-only `RunSink` is a no-op elsewhere.
-                    sink.checkpoint(self, step=step)
+                    sink.checkpoint(self.snapshot())
 
                 if profiler is not None:
                     profiler.step()

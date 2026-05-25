@@ -85,6 +85,7 @@ from param_decomp.three_pool.step_layerwise import (
 )
 from param_decomp.three_pool.step_ppgd import finalize_ppgd_async_drain, step_ppgd
 from param_decomp.torch_helpers import loop_dataloader
+from param_decomp.trainer_snapshot import TrainerSnapshot
 from param_decomp.two_pool.loss_strategy import LayerwiseLossStrategy
 
 # Loss-metric type discriminators required for the 3-pool training path.
@@ -128,14 +129,13 @@ class ThreePoolTrainer:
     the first batch of :meth:`run` because its source tensor shapes depend on
     the data's sequence dims.
 
-    Resume support is rank-local: :meth:`state_blob` produces a self-contained
-    cfg + state dict for the current rank, and :meth:`from_blob` reconstructs
-    one from that dict. The lab's resume loader composes these across ranks.
-
-    Unlike 2-pool, the consumable checkpoint path IS wired:
-    :meth:`consumable_model_state_dict` returns the gathered full state on
-    rank 0 (caller must call ``_gather_to_rank0_for_consumable`` from all
-    ranks before reading rank 0's view, which the run loop handles).
+    Resume support is rank-local: :meth:`snapshot` produces a self-contained
+    :class:`~param_decomp.trainer_snapshot.TrainerSnapshot` whose ``resume``
+    half carries this rank's slice, and :meth:`from_snapshot` reconstructs
+    one from it. The lab's resume loader composes per-rank shards across
+    ranks. The snapshot's ``consumable`` half is the gathered full state
+    (rank 0 only; ``None`` elsewhere) — the gather happens inside
+    :meth:`snapshot`, so all ranks must call it in sync.
     """
 
     pd_config: PDConfig
@@ -226,7 +226,6 @@ class ThreePoolTrainer:
         self._component_params: list[nn.Parameter] = []
         self.ppgd_state = None
         self._pending_ppgd_resume_state: dict[str, Any] | None = None
-        self._consumable_cache: dict[str, Tensor] | None = None
 
         match self.layout.my_pool:
             case "ci":
@@ -262,14 +261,26 @@ class ThreePoolTrainer:
 
     # ============================ Atomic cfg + state ============================
 
-    def state_blob(self) -> dict[str, Any]:
-        """Self-contained cfg + rank-local state for this trainer.
+    def snapshot(self) -> TrainerSnapshot:
+        """Atomic point-in-time view: rank-local resume + (rank-0-only) consumable.
 
-        Each rank's blob carries only the state this rank owns:
-          * CI pool: ComponentModel state (CI fn dominates) + AdamW state.
-          * LW pool: component_model state (owned sites' V/U) + AdamW state.
-          * PPGD pool: PPGD state (sources + Adam moments) + replicated V/U.
+        All ranks participate in the gather (P2P sends/recvs) that produces the
+        consumable half; rank 0 receives the gathered full state dict, other
+        ranks get ``consumable=None``. The resume half is populated on every rank
+        (its own slice of the model + own optimizer/PPGD state, plus the layout
+        fingerprint for sanity checks on load).
         """
+        gathered_consumable = gather_full_state_dict_to_rank0(
+            layout=self.layout,
+            component_model=self.component_model,
+            target_model=self._target_model,
+            run_batch=self._run_batch,
+            ci_config=self.pd_config.ci_config,
+            sigmoid_type=self.pd_config.sigmoid_type,
+            c_per_site=self.runtime.c_per_site,
+            device=self._device,
+        )
+
         state: dict[str, Any] = {
             "step": self.step,
             "component_model": self.component_model.state_dict(),
@@ -279,30 +290,35 @@ class ThreePoolTrainer:
             state["optimizer"] = self.optimizer.state_dict()
         if self.ppgd_state is not None:
             state["ppgd"] = self.ppgd_state.state_dict()
-        return {
-            "pd_config": self.pd_config.model_dump(),
-            "runtime_config": self.runtime_config.model_dump(),
-            "three_pool_config": self.three_pool_config.model_dump(),
-            "layout_fingerprint": _layout_fingerprint(self.layout),
-            "state": state,
-        }
+        return TrainerSnapshot(
+            step=self.step,
+            resume={
+                "pd_config": self.pd_config.model_dump(),
+                "runtime_config": self.runtime_config.model_dump(),
+                "three_pool_config": self.three_pool_config.model_dump(),
+                "layout_fingerprint": _layout_fingerprint(self.layout),
+                "state": state,
+            },
+            consumable=gathered_consumable,  # rank 0 only; None elsewhere
+        )
 
     @classmethod
-    def from_blob(
+    def from_snapshot(
         cls,
-        blob: dict[str, Any],
+        snapshot: TrainerSnapshot,
         *,
         target_model: nn.Module,
         run_batch: RunBatch,
         reconstruction_loss: ReconstructionLoss,
         cfg_overrides: dict[str, Any] | None = None,
     ) -> Self:
-        pd_dict = blob["pd_config"]
+        resume = snapshot.resume
+        pd_dict = resume["pd_config"]
         if cfg_overrides is not None:
             pd_dict = {**pd_dict, **cfg_overrides}
         pd_config = PDConfig.model_validate(pd_dict)
-        runtime_config = RuntimeConfig.model_validate(blob["runtime_config"])
-        three_pool_config = ThreePoolConfig.model_validate(blob["three_pool_config"])
+        runtime_config = RuntimeConfig.model_validate(resume["runtime_config"])
+        three_pool_config = ThreePoolConfig.model_validate(resume["three_pool_config"])
 
         trainer = cls(
             target_model=target_model,
@@ -312,14 +328,14 @@ class ThreePoolTrainer:
             runtime_config=runtime_config,
             three_pool_config=three_pool_config,
         )
-        saved_fp = blob["layout_fingerprint"]
+        saved_fp = resume["layout_fingerprint"]
         current_fp = _layout_fingerprint(trainer.layout)
         assert saved_fp == current_fp, (
             f"3-pool layout fingerprint mismatch on resume:\n"
             f"  saved:   {saved_fp}\n"
             f"  current: {current_fp}\n"
         )
-        trainer._load_state(blob["state"])
+        trainer._load_state(resume["state"])
         return trainer
 
     def _load_state(self, state: dict[str, Any]) -> None:
@@ -334,37 +350,6 @@ class ThreePoolTrainer:
         if self.layout.my_pool == "ppgd":
             # ppgd_state is constructed lazily in run() — defer load until then.
             self._pending_ppgd_resume_state = state.get("ppgd")
-
-    def consumable_model_state_dict(self) -> dict[str, Tensor]:
-        """Return the cached gathered full state dict (rank 0) or an empty
-        dict elsewhere.
-
-        Callers must call :meth:`_gather_consumable_to_rank0` (on all ranks,
-        in sync) before invoking this on rank 0. The run loop and any
-        resume-aware caller handles the orchestration; outside-the-loop
-        callers should gather explicitly.
-        """
-        return self._consumable_cache if self._consumable_cache is not None else {}
-
-    def _gather_consumable_to_rank0(self) -> dict[str, Tensor] | None:
-        """All ranks participate in the gather; rank 0 caches and returns the
-        full state dict. Non-rank-0 returns None.
-        """
-        gathered = gather_full_state_dict_to_rank0(
-            layout=self.layout,
-            component_model=self.component_model,
-            target_model=self._target_model,
-            run_batch=self._run_batch,
-            ci_config=self.pd_config.ci_config,
-            sigmoid_type=self.pd_config.sigmoid_type,
-            c_per_site=self.runtime.c_per_site,
-            device=self._device,
-        )
-        if self.layout.my_rank == 0:
-            assert gathered is not None
-            self._consumable_cache = gathered
-            return gathered
-        return None
 
     # ============================ Training loop ============================
 
@@ -525,7 +510,7 @@ class ThreePoolTrainer:
                     )
 
                 if cadence.should_save(step):
-                    self._save_checkpoint(sink, step)
+                    sink.checkpoint(self.snapshot())
 
                 batch_T = batch_T_plus_1 if batch_T_plus_1 is not None else next(train_iterator)
                 batch_T_plus_1 = next(train_iterator, None)
@@ -562,18 +547,7 @@ class ThreePoolTrainer:
                         pass  # CI pool doesn't defer
 
             self.step = n_steps
-            self._save_checkpoint(sink, n_steps)
-
-    def _save_checkpoint(self, sink: RunSink, step: int) -> None:
-        """Gather full state across all ranks; dispatch to ``sink`` on every rank.
-
-        The default lab `RunSink` is rank-0-only no-op, so a non-resume-aware sink
-        will only write on rank 0. A resume-aware sink uses every rank's call to
-        write its rank-local resume shard alongside the consumable model on rank 0.
-        """
-        self._gather_consumable_to_rank0()  # all ranks participate in the gather
-        sink.checkpoint(self, step=step)  # all ranks call; sink decides per-rank behaviour
-        self._consumable_cache = None
+            sink.checkpoint(self.snapshot())
 
 
 def optimize_three_pool(

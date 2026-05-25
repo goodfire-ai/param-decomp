@@ -8,7 +8,7 @@ Timing — when the loop emits — lives separately: `param_decomp.configs.Caden
 owns train-log + checkpoint periods, and `param_decomp.optimize.EvalLoop` owns
 the eval period (alongside the runtime eval objects). This Protocol describes
 side effects only: where structured metrics, free-form console output, and
-trainer checkpoints go.
+trainer snapshots go.
 
 Concrete implementations live with the caller. The in-repo experiments use
 ``param_decomp_lab.run_sink.RunSink`` (local files + wandb + `is_main_process`
@@ -17,26 +17,7 @@ no-op fan-out), but external callers are free to bring their own.
 
 from typing import Any, Protocol, runtime_checkable
 
-
-@runtime_checkable
-class TrainerLike(Protocol):
-    """The subset of trainer behaviour `RunSink.checkpoint` may reach for.
-
-    `Trainer` and the pool-specific trainers (`TwoPoolTrainer`,
-    `ThreePoolTrainer`) all satisfy this Protocol structurally — there is no
-    inheritance relationship between them. Sink implementations choose which
-    methods to call: the default lab sink writes only the consumable model
-    state dict; a resume-aware sink additionally writes the full state blob.
-    """
-
-    def consumable_model_state_dict(self) -> dict[str, Any]:
-        """Return the model state dict in the form downstream tools expect
-        (gathered to a single full state dict on rank 0 for sharded pools)."""
-        ...
-
-    def state_blob(self) -> dict[str, Any]:
-        """Return the atomic cfg + state blob used for resumption."""
-        ...
+from param_decomp.trainer_snapshot import TrainerSnapshot
 
 
 @runtime_checkable
@@ -63,11 +44,14 @@ class RunSink(Protocol):
         """Emit free-form lines (e.g. tqdm-friendly progress)."""
         ...
 
-    def checkpoint(self, trainer: TrainerLike, step: int) -> None:
-        """Persist trainer state at the given step.
+    def checkpoint(self, snapshot: TrainerSnapshot) -> None:
+        """Persist a trainer snapshot.
 
-        Implementations choose what to save — typically the consumable model
-        state dict at minimum; resume-aware sinks additionally persist
-        ``trainer.state_blob()`` as a per-rank shard alongside.
+        ``snapshot.step`` is the training step; sinks use it for naming.
+        Implementations choose what to save: the default lab sink writes
+        ``snapshot.consumable`` to ``model_<step>.pth`` on rank 0; a
+        resume-aware sink additionally writes ``snapshot.resume`` as a
+        per-rank shard. Non-rank-0 snapshots of sharded pools have
+        ``consumable=None`` — the default sink no-ops on those.
         """
         ...

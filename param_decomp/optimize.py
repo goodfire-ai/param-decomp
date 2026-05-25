@@ -5,9 +5,10 @@ Two entry points:
 - :class:`Trainer` — stateful training class. Construction sets up the
   `ComponentModel`, the two optimizers, and the loss-metric instances from
   ``pd_config``. :meth:`Trainer.run` advances the training loop from
-  ``self.step`` to ``pd_config.steps``. :meth:`Trainer.state_blob` and
-  :meth:`Trainer.from_blob` round-trip an atomic cfg + state dict that lets a
-  caller persist and restore the full training state (used by resumption).
+  ``self.step`` to ``pd_config.steps``. :meth:`Trainer.snapshot` and
+  :meth:`Trainer.from_snapshot` round-trip an atomic
+  :class:`~param_decomp.trainer_snapshot.TrainerSnapshot` that lets a caller
+  persist and restore the full training state (used by resumption).
 - :func:`optimize` — thin convenience wrapper that constructs a `Trainer` and
   calls :meth:`Trainer.run`. Preserves the original function-style entry point
   for callers that don't need resumption.
@@ -58,6 +59,7 @@ from param_decomp.metrics.persistent_pgd_recon import validate_pgd_scope
 from param_decomp.run_sink import RunSink
 from param_decomp.schedule import get_scheduled_value
 from param_decomp.torch_helpers import bf16_autocast, loop_dataloader
+from param_decomp.trainer_snapshot import TrainerSnapshot
 
 
 @dataclass(frozen=True)
@@ -165,8 +167,9 @@ class Trainer:
     Construction wires up the `ComponentModel`, both AdamW optimizers, and the
     loss-metric instances declared in ``pd_config.loss_metrics``. :meth:`run`
     advances the training loop from ``self.step`` to ``pd_config.steps``.
-    :meth:`state_blob` and :meth:`from_blob` round-trip an atomic cfg + state
-    dict that a caller can persist and restore.
+    :meth:`snapshot` and :meth:`from_snapshot` round-trip a
+    :class:`~param_decomp.trainer_snapshot.TrainerSnapshot` that a caller can
+    persist and restore.
 
     All ranks construct a `Trainer`. Sink output and the loader-replay skip on
     resume are governed by ``self.step`` (advanced by :meth:`run`,
@@ -270,47 +273,63 @@ class Trainer:
 
     # ============================ Atomic cfg + state ============================
 
-    def state_blob(self) -> dict[str, Any]:
-        """A self-contained dict — cfg + state — describing this trainer right now.
+    def snapshot(self) -> "TrainerSnapshot":
+        """A complete, atomic point-in-time view of this trainer.
 
-        Caller persists this however they like (e.g. ``torch.save``). Reconstruct
-        via :meth:`from_blob`. The cfg half and the state half travel together as
-        one blob, so a caller can't construct a Trainer with mismatched cfg and
-        state through the documented API.
+        Returns a :class:`TrainerSnapshot` carrying two halves:
+
+        - ``resume``: the rank-local cfg+state dict every rank uses to
+          reconstruct itself. Every rank produces a populated resume half.
+        - ``consumable``: the full gathered model state dict, in the form
+          downstream tools (e.g. ``SavedLMRun.load_model``) consume. For
+          1-pool this is just ``component_model.state_dict()`` on every rank
+          (DDP replicates). For sharded pools, it's populated only on rank 0
+          (after the gather) and ``None`` on other ranks.
+
+        For sharded pools, this method may trigger a cross-rank gather, so
+        all ranks must call it in sync.
         """
-        return {
-            "pd_config": self.pd_config.model_dump(),
-            "runtime_config": self.runtime_config.model_dump(),
-            "state": {
-                "step": self.step,
-                "component_model": self.component_model.state_dict(),
-                "components_optimizer": self.components_optimizer.state_dict(),
-                "ci_fn_optimizer": self.ci_fn_optimizer.state_dict(),
-                "loss_metrics": {n: m.state_dict() for n, m in self.loss_metrics.items()},
+        return TrainerSnapshot(
+            step=self.step,
+            resume={
+                "pd_config": self.pd_config.model_dump(),
+                "runtime_config": self.runtime_config.model_dump(),
+                "state": {
+                    "step": self.step,
+                    "component_model": self.component_model.state_dict(),
+                    "components_optimizer": self.components_optimizer.state_dict(),
+                    "ci_fn_optimizer": self.ci_fn_optimizer.state_dict(),
+                    "loss_metrics": {n: m.state_dict() for n, m in self.loss_metrics.items()},
+                },
             },
-        }
+            consumable=self.component_model.state_dict(),
+        )
 
     @classmethod
-    def from_blob(
+    def from_snapshot(
         cls,
-        blob: dict[str, Any],
+        snapshot: "TrainerSnapshot",
         *,
         target_model: nn.Module,
         run_batch: RunBatch,
         reconstruction_loss: ReconstructionLoss,
         cfg_overrides: dict[str, Any] | None = None,
     ) -> Self:
-        """Construct a Trainer from a :meth:`state_blob` dict.
+        """Reconstruct a Trainer from the ``resume`` half of a snapshot.
 
-        ``cfg_overrides`` is a flat patch applied to the saved ``pd_config`` dict
-        before pydantic validation — used for narrow resume-time overrides such
-        as extending ``steps``.
+        The ``consumable`` half is ignored — only the rank-local resume state
+        is needed to rebuild the trainer.
+
+        ``cfg_overrides`` is a flat patch applied to the saved ``pd_config``
+        dict before pydantic validation — used for narrow resume-time
+        overrides such as extending ``steps``.
         """
-        pd_dict = blob["pd_config"]
+        resume = snapshot.resume
+        pd_dict = resume["pd_config"]
         if cfg_overrides is not None:
             pd_dict = {**pd_dict, **cfg_overrides}
         pd_config = PDConfig.model_validate(pd_dict)
-        runtime_config = RuntimeConfig.model_validate(blob["runtime_config"])
+        runtime_config = RuntimeConfig.model_validate(resume["runtime_config"])
         trainer = cls(
             target_model=target_model,
             run_batch=run_batch,
@@ -318,13 +337,13 @@ class Trainer:
             pd_config=pd_config,
             runtime_config=runtime_config,
         )
-        trainer._load_state(blob["state"])
+        trainer._load_state(resume["state"])
         return trainer
 
     def _load_state(self, state: dict[str, Any]) -> None:
         """In-place load of the trainer's runtime state. Caller's responsibility
-        to have constructed self with a matching cfg (use :meth:`from_blob` to
-        guarantee this).
+        to have constructed self with a matching cfg (use :meth:`from_snapshot`
+        to guarantee this).
         """
         self.step = state["step"]
         self.component_model.load_state_dict(state["component_model"])
@@ -332,14 +351,6 @@ class Trainer:
         self.ci_fn_optimizer.load_state_dict(state["ci_fn_optimizer"])
         for name, m in self.loss_metrics.items():
             m.load_state_dict(state["loss_metrics"][name])
-
-    def consumable_model_state_dict(self) -> dict[str, torch.Tensor]:
-        """Return the model state_dict in the form downstream tools expect.
-
-        For the 1-pool trainer this is just ``component_model.state_dict()``.
-        2-pool / 3-pool subclasses override to gather sharded V/U to rank 0.
-        """
-        return self.component_model.state_dict()
 
     # ============================ Training loop ============================
 
@@ -510,7 +521,7 @@ class Trainer:
 
             # --- Saving Checkpoint --- #
             if step == pd_config.steps or cadence.should_save(step):
-                sink.checkpoint(self, step=step)
+                sink.checkpoint(self.snapshot())
 
             # Skip gradient step at the very last step (last step is just for plotting/logging).
             if step != pd_config.steps:

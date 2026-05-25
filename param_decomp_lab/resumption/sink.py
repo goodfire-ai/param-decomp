@@ -10,7 +10,8 @@ on non-main ranks it's a no-op. The shard write happens on every rank.
 from pathlib import Path
 from typing import Any
 
-from param_decomp.run_sink import RunSink, TrainerLike
+from param_decomp.run_sink import RunSink
+from param_decomp.trainer_snapshot import TrainerSnapshot
 from param_decomp_lab.resumption.shards import save_shard
 
 
@@ -33,11 +34,11 @@ class ResumableRunSink:
     def console(self, *lines: str) -> None:
         self._base.console(*lines)
 
-    def checkpoint(self, trainer: TrainerLike, step: int) -> None:
+    def checkpoint(self, snapshot: TrainerSnapshot) -> None:
         """Write this rank's resume shard, then delegate to the base sink
         (which writes the consumable model on rank 0 and is a no-op elsewhere)."""
-        save_shard(trainer.state_blob(), self._run_dir, step, self._rank)
-        self._base.checkpoint(trainer, step)
+        save_shard(snapshot.resume, self._run_dir, snapshot.step, self._rank)
+        self._base.checkpoint(snapshot)
 
     def finish(self) -> None:
         finish = getattr(self._base, "finish", None)

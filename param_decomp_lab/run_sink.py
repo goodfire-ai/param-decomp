@@ -31,7 +31,7 @@ from tqdm import tqdm
 from param_decomp.base_config import BaseConfig
 from param_decomp.distributed import is_main_process
 from param_decomp.log import logger
-from param_decomp.run_sink import TrainerLike
+from param_decomp.trainer_snapshot import TrainerSnapshot
 from param_decomp_lab.infra.run_files import save_file
 from param_decomp_lab.infra.wandb import init_wandb, try_wandb
 
@@ -188,21 +188,23 @@ class RunSink:
         for line in lines:
             tqdm.write(line)
 
-    def checkpoint(self, trainer: TrainerLike, step: int) -> None:
-        """Save ``trainer.consumable_model_state_dict()`` to ``{out_dir}/model_{step}.pth``
-        and push to wandb.
+    def checkpoint(self, snapshot: TrainerSnapshot) -> None:
+        """Save the gathered consumable model state dict to
+        ``{out_dir}/model_{snapshot.step}.pth`` and push to wandb.
 
-        No-op when ``out_dir`` is ``None``. Wandb upload happens only when wandb is
+        No-op when ``out_dir`` is ``None`` (silent sink / non-main rank) or when
+        ``snapshot.consumable`` is ``None`` (a sharded-pool rank that doesn't
+        hold the gathered state). Wandb upload happens only when wandb is
         active for this process.
 
         Args:
-            trainer: The trainer whose consumable model state we serialize.
-            step: Training step used in the checkpoint filename.
+            snapshot: A point-in-time view of the trainer; the consumable half
+                is what we save, and ``snapshot.step`` names the file.
         """
-        if self.out_dir is None:
+        if self.out_dir is None or snapshot.consumable is None:
             return
-        path = self.out_dir / f"model_{step}.pth"
-        save_file(trainer.consumable_model_state_dict(), path)
+        path = self.out_dir / f"model_{snapshot.step}.pth"
+        save_file(snapshot.consumable, path)
         logger.info(f"Saved checkpoint to {path}")
         if self._wandb_active:
             try_wandb(wandb.save, str(path), base_path=str(self.out_dir), policy="now")

@@ -60,10 +60,10 @@ class CaptureSink:
     def console(self, *lines: str) -> None:
         del lines
 
-    def checkpoint(self, trainer: Any, step: int) -> None:
-        del step
+    def checkpoint(self, snapshot: Any) -> None:
+        assert snapshot.consumable is not None
         checkpoint: dict[str, Tensor] = {}
-        for key, value in trainer.consumable_model_state_dict().items():
+        for key, value in snapshot.consumable.items():
             assert isinstance(value, Tensor)
             checkpoint[key] = value.detach().cpu().clone()
         self.checkpoints.append(checkpoint)
@@ -236,8 +236,8 @@ def run_with_external_seed(seed: int) -> dict[str, Tensor]:
     return sink.checkpoints[0]
 
 
-def test_trainer_state_blob_round_trips() -> None:
-    """A trainer reconstructed via ``Trainer.from_blob`` produces matching state."""
+def test_trainer_snapshot_round_trips() -> None:
+    """A trainer reconstructed via ``Trainer.from_snapshot`` produces matching state."""
     pd_config = make_pd_config(steps=3)
     runtime_config = RuntimeConfig(device="cpu", autocast_bf16=False)
 
@@ -249,18 +249,19 @@ def test_trainer_state_blob_round_trips() -> None:
         runtime_config=runtime_config,
     )
     trainer_a.run(make_loader(), CaptureSink(), make_cadence(), eval_loop=None)
-    blob = trainer_a.state_blob()
+    snap = trainer_a.snapshot()
 
-    trainer_b = Trainer.from_blob(
-        blob,
+    trainer_b = Trainer.from_snapshot(
+        snap,
         target_model=TinyLinear(),
         run_batch=run_batch_passthrough,
         reconstruction_loss=recon_loss_mse,
     )
 
     assert trainer_b.step == trainer_a.step
-    sd_a = trainer_a.consumable_model_state_dict()
-    sd_b = trainer_b.consumable_model_state_dict()
+    sd_a = trainer_a.snapshot().consumable
+    sd_b = trainer_b.snapshot().consumable
+    assert sd_a is not None and sd_b is not None
     assert sd_a.keys() == sd_b.keys()
     for k in sd_a:
         torch.testing.assert_close(sd_a[k], sd_b[k])
@@ -277,7 +278,7 @@ def test_trainer_state_blob_round_trips() -> None:
                 assert v == opt_b["state"][pid][k]
 
 
-def test_trainer_resumes_from_blob_and_matches_uninterrupted_run() -> None:
+def test_trainer_resumes_from_snapshot_and_matches_uninterrupted_run() -> None:
     """Train K steps in one shot vs train K/2 → save → resume → train K/2;
     the final model weights should match up to RNG drift (we accept some, but
     on CPU with deterministic Adam the trajectory is bit-exact)."""
@@ -293,7 +294,9 @@ def test_trainer_resumes_from_blob_and_matches_uninterrupted_run() -> None:
         runtime_config=runtime_config,
     )
     trainer_full.run(make_loader(), CaptureSink(), make_cadence(), eval_loop=None)
-    final_full = {k: v.clone() for k, v in trainer_full.consumable_model_state_dict().items()}
+    full_consumable = trainer_full.snapshot().consumable
+    assert full_consumable is not None
+    final_full = {k: v.clone() for k, v in full_consumable.items()}
 
     # Same fresh start, but save after step 2 and resume.
     torch.manual_seed(7)
@@ -306,11 +309,11 @@ def test_trainer_resumes_from_blob_and_matches_uninterrupted_run() -> None:
         runtime_config=runtime_config,
     )
     trainer_half.run(make_loader(), CaptureSink(), make_cadence(), eval_loop=None)
-    blob = trainer_half.state_blob()
+    snap = trainer_half.snapshot()
 
     # Resume — extend ``steps`` to 4 via cfg_overrides.
-    trainer_resumed = Trainer.from_blob(
-        blob,
+    trainer_resumed = Trainer.from_snapshot(
+        snap,
         target_model=TinyLinear(),
         run_batch=run_batch_passthrough,
         reconstruction_loss=recon_loss_mse,
@@ -319,7 +322,8 @@ def test_trainer_resumes_from_blob_and_matches_uninterrupted_run() -> None:
     assert trainer_resumed.step == 2
     trainer_resumed.run(make_loader(), CaptureSink(), make_cadence(), eval_loop=None)
 
-    final_resumed = trainer_resumed.consumable_model_state_dict()
-    assert final_full.keys() == final_resumed.keys()
+    resumed_consumable = trainer_resumed.snapshot().consumable
+    assert resumed_consumable is not None
+    assert final_full.keys() == resumed_consumable.keys()
     for k in final_full:
-        torch.testing.assert_close(final_full[k], final_resumed[k])
+        torch.testing.assert_close(final_full[k], resumed_consumable[k])
