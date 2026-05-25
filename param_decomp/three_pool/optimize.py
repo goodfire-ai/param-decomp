@@ -576,7 +576,9 @@ class ThreePoolTrainer:
                                 layout,
                                 self.component_model,
                                 self.optimizer,
+                                self._all_params,
                                 pending_all_reduce_lw,
+                                runtime.grad_clip_norm_components,
                             )
                             pending_all_reduce_lw = None
                     case "ppgd":
@@ -767,6 +769,8 @@ def _build_runtime(
         imp_min_p_anneal_end_frac=imp_min_cfg.p_anneal_end_frac,
         lr_components=pd_config.components_optimizer.lr_schedule.start_val,
         lr_ci_fn=pd_config.ci_fn_optimizer.lr_schedule.start_val,
+        grad_clip_norm_components=pd_config.components_optimizer.grad_clip_norm,
+        grad_clip_norm_ci_fn=pd_config.ci_fn_optimizer.grad_clip_norm,
         bf16_autocast=runtime_config.autocast_bf16,
         use_fused_kl=three_pool_config.use_fused_kl,
     )

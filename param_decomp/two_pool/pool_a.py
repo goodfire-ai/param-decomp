@@ -24,6 +24,7 @@ from torch import Tensor
 
 from param_decomp.batch_and_loss_fns import ReconstructionLoss
 from param_decomp.component_model import ComponentModel
+from param_decomp.grad_clip import cross_pool_clip_grad_norm
 from param_decomp.masks import make_mask_infos
 from param_decomp.metrics.importance_minimality import (
     _finalize as _finalize_imp_min,
@@ -151,6 +152,8 @@ def step_pool_a(
     component_model: ComponentModel,
     optimizer: torch.optim.Optimizer,
     all_params: list[nn.Parameter],
+    component_params: list[nn.Parameter],
+    ci_fn_params: list[nn.Parameter],
     batch: Any,
     cfg: _TwoPoolRuntime,
     strategy: LayerwiseLossStrategy,
@@ -279,6 +282,28 @@ def step_pool_a(
     # 6. In-block DDP sync.
     with p.phase("a/8_in_block_allreduce"):
         layout.all_reduce_grads_in_block(all_params)
+
+    # 6b. Cross-pool grad clip (matches single-pool semantics — clip on the
+    # global norm summed across all pool-A blocks, not per-rank). Within a
+    # block DDP partners hold identical grads after step 6, so the
+    # all-reduce SUM over pool A double-counts by ``n_per_block``; divide
+    # back out.
+    with p.phase("a/8b_grad_clip"):
+        n_per_block = layout.world.n_per_block
+        if cfg.grad_clip_norm_components is not None:
+            cross_pool_clip_grad_norm(
+                component_params,
+                cfg.grad_clip_norm_components,
+                group=layout.world.pool_a_group,
+                n_replicas=n_per_block,
+            )
+        if cfg.grad_clip_norm_ci_fn is not None:
+            cross_pool_clip_grad_norm(
+                ci_fn_params,
+                cfg.grad_clip_norm_ci_fn,
+                group=layout.world.pool_a_group,
+                n_replicas=n_per_block,
+            )
 
     # 7. AdamW step.
     with p.phase("a/9_opt_step"):

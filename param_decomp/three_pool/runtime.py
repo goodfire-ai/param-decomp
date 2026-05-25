@@ -68,6 +68,8 @@ class _ThreePoolRuntime:
     # which mutates optimizer.param_groups[i]['lr'] each step)
     lr_components: float
     lr_ci_fn: float
+    grad_clip_norm_components: float | None
+    grad_clip_norm_ci_fn: float | None
 
     # Substrate
     bf16_autocast: bool

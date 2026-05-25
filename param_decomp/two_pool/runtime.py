@@ -48,6 +48,8 @@ class _TwoPoolRuntime:
     imp_min_p_anneal_end_frac: float
     lr_components: float
     lr_ci_fn: float
+    grad_clip_norm_components: float | None
+    grad_clip_norm_ci_fn: float | None
     bf16_autocast: bool
     use_fused_kl: bool
 

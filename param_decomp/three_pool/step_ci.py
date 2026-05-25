@@ -41,6 +41,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from param_decomp.component_model import ComponentModel
+from param_decomp.grad_clip import cross_pool_clip_grad_norm
 from param_decomp.metrics.importance_minimality import (
     _finalize as _finalize_imp_min,
 )
@@ -226,6 +227,18 @@ def step_ci(
     # 9. In-pool AVG-reduce on CI fn grads.
     with p.phase("ci/9_in_pool_allreduce"):
         layout.all_reduce_ci_fn_grads(ci_fn_params)
+
+    # 9b. Cross-pool grad clip on CI fn (CI fn is replicated across CI pool;
+    # after step 9 every CI rank holds identical grads, so the all-reduce SUM
+    # double-counts by ``n_ci`` — divide back out).
+    if cfg.grad_clip_norm_ci_fn is not None:
+        with p.phase("ci/9b_grad_clip"):
+            cross_pool_clip_grad_norm(
+                ci_fn_params,
+                cfg.grad_clip_norm_ci_fn,
+                group=layout.world.ci_pool_group,
+                n_replicas=layout.world.n_ci,
+            )
 
     # 10. AdamW step.
     with p.phase("ci/10_opt_step"):

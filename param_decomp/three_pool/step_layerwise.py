@@ -52,6 +52,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from param_decomp.component_model import ComponentModel
+from param_decomp.grad_clip import cross_pool_clip_grad_norm
 from param_decomp.masks import make_mask_infos
 from param_decomp.three_pool.layout import ThreePoolLayout
 from param_decomp.three_pool.profiler import PhaseProfiler
@@ -193,6 +194,16 @@ def step_layerwise(
                 component_model._pending_weight_sends = None  # type: ignore[attr-defined]
         with p.phase("lw/B2_wait_and_unflatten_allreduce"):
             layout.wait_and_unflatten_all_reduce(prev_pending_all_reduce)
+        # Cross-pool grad clip on V/U (LW pool's only param group). Matches
+        # single-pool's clip on the global norm across all decomposition sites.
+        if cfg.grad_clip_norm_components is not None:
+            with p.phase("lw/B2b_grad_clip"):
+                cross_pool_clip_grad_norm(
+                    all_params,
+                    cfg.grad_clip_norm_components,
+                    group=layout.world.layerwise_pool_group,
+                    n_replicas=layout.world.n_per_block,
+                )
         with p.phase("lw/B3_opt_step"):
             optimizer.step()
         with p.phase("lw/B4_async_send_vu"):
@@ -283,6 +294,14 @@ def step_layerwise(
             component_model._pending_weight_sends = None  # type: ignore[attr-defined]
     with p.phase("lw/E2_in_block_allreduce"):
         layout.all_reduce_grads_in_block(all_params)
+    if cfg.grad_clip_norm_components is not None:
+        with p.phase("lw/E2b_grad_clip"):
+            cross_pool_clip_grad_norm(
+                all_params,
+                cfg.grad_clip_norm_components,
+                group=layout.world.layerwise_pool_group,
+                n_replicas=layout.world.n_per_block,
+            )
     with p.phase("lw/E3_opt_step"):
         optimizer.step()
     with p.phase("lw/E4_async_send_vu"):
@@ -302,7 +321,9 @@ def finalize_layerwise_async_drain(
     layout: ThreePoolLayout,
     component_model: ComponentModel,
     optimizer: torch.optim.Optimizer,
+    all_params: list[nn.Parameter],
     pending_all_reduce: list[tuple[list[Tensor], Tensor, "dist.Work"]],
+    grad_clip_norm: float | None,
 ) -> None:
     """End-of-training drain in async mode: finish the final iter's deferred
     opt step. Skips the V/U async send since training is over.
@@ -314,6 +335,13 @@ def finalize_layerwise_async_drain(
             w.wait()
         component_model._pending_weight_sends = None  # type: ignore[attr-defined]
     layout.wait_and_unflatten_all_reduce(pending_all_reduce)
+    if grad_clip_norm is not None:
+        cross_pool_clip_grad_norm(
+            all_params,
+            grad_clip_norm,
+            group=layout.world.layerwise_pool_group,
+            n_replicas=layout.world.n_per_block,
+        )
     optimizer.step()
 
 
