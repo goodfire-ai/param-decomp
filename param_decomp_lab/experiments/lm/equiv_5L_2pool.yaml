@@ -1,14 +1,3 @@
-# 2-pool equivalence test: same pd/runtime/target/data as equiv_5L_1pool.yaml,
-# but trained via the 2-pool strategy.
-#
-# Topology: 6 GPUs single node.
-#   * Pool A: 5 block_groups (one per layer), 1 rank each, owning all 6 sites
-#     of its layer. Ranks 0..4. No within-block DDP.
-#   * Pool B: ranks 5. Single-rank PPGD pool.
-#
-# Launch: torchrun --standalone --nproc_per_node=6 -m param_decomp_lab.experiments.lm.run \
-#         param_decomp_lab/experiments/lm/equiv_5L_2pool.yaml
-
 pd:
   seed: 0
   n_mask_samples: 1
@@ -18,7 +7,8 @@ pd:
     transformer_cfg:
       d_model: 128
       n_blocks: 2
-      mlp_hidden_dim: [512]
+      mlp_hidden_dim:
+      - 512
       attn_config:
         n_heads: 4
         max_len: 1024
@@ -26,55 +16,76 @@ pd:
   sampling: continuous
   sigmoid_type: leaky_hard
   decomposition_targets:
-    - { module_pattern: "h.[01234].attn.q_proj", C: 64 }
-    - { module_pattern: "h.[01234].attn.k_proj", C: 64 }
-    - { module_pattern: "h.[01234].attn.v_proj", C: 64 }
-    - { module_pattern: "h.[01234].attn.o_proj", C: 64 }
-    - { module_pattern: "h.[01234].mlp.c_fc",    C: 64 }
-    - { module_pattern: "h.[01234].mlp.down_proj", C: 64 }
+  - module_pattern: h.[01234].attn.q_proj
+    C: 64
+  - module_pattern: h.[01234].attn.k_proj
+    C: 64
+  - module_pattern: h.[01234].attn.v_proj
+    C: 64
+  - module_pattern: h.[01234].attn.o_proj
+    C: 64
+  - module_pattern: h.[01234].mlp.c_fc
+    C: 64
+  - module_pattern: h.[01234].mlp.down_proj
+    C: 64
   identity_decomposition_targets: null
   use_delta_component: true
   batch_size: 24
   steps: 200
   components_optimizer:
-    lr_schedule: { start_val: 5.0e-05, warmup_pct: 0.0, final_val_frac: 1.0, fn_type: constant }
+    lr_schedule:
+      start_val: 0.0005
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+    grad_clip_norm: 0.01
   ci_fn_optimizer:
-    lr_schedule: { start_val: 5.0e-05, warmup_pct: 0.0, final_val_frac: 1.0, fn_type: constant }
-  faithfulness_warmup_steps: 0
+    lr_schedule:
+      start_val: 0.0001
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+  faithfulness_warmup_steps: 400
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_weight_decay: 0.0
   loss_metrics:
-    - { type: FaithfulnessLoss, coeff: 1.0e+06 }
-    - { type: StochasticReconLayerwiseLoss, coeff: 0.5 }
-    - type: ImportanceMinimalityLoss
-      coeff: 1.0e-04
-      pnorm: 1.0
-      beta: 0.5
-      p_anneal_start_frac: 0.0
-      p_anneal_final_p: 1.0
-      p_anneal_end_frac: 1.0
-      eps: 1.0e-12
-    - type: PersistentPGDReconLoss
-      coeff: 0.5
-      optimizer:
-        type: sign
-        lr_schedule: { start_val: 0.01, warmup_pct: 0.0, final_val_frac: 1.0, fn_type: constant }
-      scope: { type: per_batch_per_position }
-      use_sigmoid_parameterization: false
-      n_warmup_steps: 2
-      n_samples: 1
-
+  - type: FaithfulnessLoss
+    coeff: 100000000.0
+  - type: StochasticReconLayerwiseLoss
+    coeff: 50.0
+  - type: ImportanceMinimalityLoss
+    coeff: 4.0e-05
+    pnorm: 2.0
+    beta: 0.5
+    p_anneal_start_frac: 0.0
+    p_anneal_final_p: 0.3
+    p_anneal_end_frac: 1.0
+    eps: 1.0e-12
+  - type: PersistentPGDReconLoss
+    coeff: 1.0
+    optimizer:
+      type: adam
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        start_val: 0.01
+        warmup_pct: 0.025
+        final_val_frac: 1.0
+        fn_type: constant
+    scope:
+      type: per_batch_per_position
+    use_sigmoid_parameterization: false
+    n_warmup_steps: 2
+    n_samples: 1
 cadence:
   train_log_every: 10
   save_every: null
-
 eval: null
-
 runtime:
   autocast_bf16: true
   device: cuda
   dp: null
-
 target:
   spec:
     kind: hf_weights_in_vendored
@@ -82,7 +93,6 @@ target:
     model_name: openai-community/gpt2
   output_extract: 0
   activation_checkpointing: false
-
 data:
   tokenizer_name: openai-community/gpt2
   max_seq_len: 256
@@ -94,13 +104,53 @@ data:
   streaming: true
   buffer_size: 1000
   shuffle_each_epoch: true
-
 two_pool:
   use_fused_kl: true
-  pool_b_ranks: [5]
+  pool_b_ranks:
+  - 5
   block_groups:
-    - { ranks: [0], owned_sites: [h.0.attn.q_proj, h.0.attn.k_proj, h.0.attn.v_proj, h.0.attn.o_proj, h.0.mlp.c_fc, h.0.mlp.down_proj] }
-    - { ranks: [1], owned_sites: [h.1.attn.q_proj, h.1.attn.k_proj, h.1.attn.v_proj, h.1.attn.o_proj, h.1.mlp.c_fc, h.1.mlp.down_proj] }
-    - { ranks: [2], owned_sites: [h.2.attn.q_proj, h.2.attn.k_proj, h.2.attn.v_proj, h.2.attn.o_proj, h.2.mlp.c_fc, h.2.mlp.down_proj] }
-    - { ranks: [3], owned_sites: [h.3.attn.q_proj, h.3.attn.k_proj, h.3.attn.v_proj, h.3.attn.o_proj, h.3.mlp.c_fc, h.3.mlp.down_proj] }
-    - { ranks: [4], owned_sites: [h.4.attn.q_proj, h.4.attn.k_proj, h.4.attn.v_proj, h.4.attn.o_proj, h.4.mlp.c_fc, h.4.mlp.down_proj] }
+  - ranks:
+    - 0
+    owned_sites:
+    - h.0.attn.q_proj
+    - h.0.attn.k_proj
+    - h.0.attn.v_proj
+    - h.0.attn.o_proj
+    - h.0.mlp.c_fc
+    - h.0.mlp.down_proj
+  - ranks:
+    - 1
+    owned_sites:
+    - h.1.attn.q_proj
+    - h.1.attn.k_proj
+    - h.1.attn.v_proj
+    - h.1.attn.o_proj
+    - h.1.mlp.c_fc
+    - h.1.mlp.down_proj
+  - ranks:
+    - 2
+    owned_sites:
+    - h.2.attn.q_proj
+    - h.2.attn.k_proj
+    - h.2.attn.v_proj
+    - h.2.attn.o_proj
+    - h.2.mlp.c_fc
+    - h.2.mlp.down_proj
+  - ranks:
+    - 3
+    owned_sites:
+    - h.3.attn.q_proj
+    - h.3.attn.k_proj
+    - h.3.attn.v_proj
+    - h.3.attn.o_proj
+    - h.3.mlp.c_fc
+    - h.3.mlp.down_proj
+  - ranks:
+    - 4
+    owned_sites:
+    - h.4.attn.q_proj
+    - h.4.attn.k_proj
+    - h.4.attn.v_proj
+    - h.4.attn.o_proj
+    - h.4.mlp.c_fc
+    - h.4.mlp.down_proj
