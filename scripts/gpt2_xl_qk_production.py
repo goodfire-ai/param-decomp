@@ -180,13 +180,25 @@ def _make_yaml_dict(*, steps: int, save_every: int | None, warmup_steps: int) ->
     }
 
 
-def main(smoke: bool = False) -> None:
-    """Submit the production XL Q/K run, or a 50-step smoke test."""
+def main(smoke: bool = False, batch_size: int = 16, profile: bool = True) -> None:
+    """Submit the production XL Q/K run, or a smoke test.
+
+    Args:
+        smoke: If True, submits a 50-step smoke (no save, 1h limit) instead of
+            the full 200k-step production run.
+        batch_size: Smoke batch size override. The yaml's default (128) is the
+            production target; the smoke shrinks it to fit while we figure out
+            the memory profile. Ignored when ``smoke=False``.
+        profile: When ``smoke=True``, enable CUDA memory-history recording on
+            one rank per pool (LW block 0, CI rank 0, PPGD rank 0). Dumps
+            ``mem_rank<R>.pickle`` files loadable at pytorch.org/memory_viz.
+    """
     out_dir = REPO_ROOT / "param_decomp_lab/experiments/lm/_xl_production"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if smoke:
         cfg_dict = _make_yaml_dict(steps=50, save_every=None, warmup_steps=0)
+        cfg_dict["pd"]["batch_size"] = batch_size
         yaml_path = out_dir / "gpt2_xl_qk_smoke.yaml"
         job_name = "xl-qk-smoke"
         time_limit = "01:00:00"
@@ -209,6 +221,16 @@ def main(smoke: bool = False) -> None:
     stamp = ExecutionStamp.create(run_type="param_decomp", create_snapshot=True)
     print(f"Snapshot: {stamp.snapshot_ref}")
 
+    env = dict(CUDA_FLAGS)
+    if smoke and profile:
+        # One rank per pool: LW block-0 rank-0 = 0, CI rank-0 = N_LW_RANKS,
+        # PPGD rank-0 = N_LW_RANKS + N_CI.
+        prof_ranks = [0, N_LW_RANKS, N_LW_RANKS + N_CI]
+        prof_dir = out_dir / "mem_profile" / job_name
+        env["PD_MEMORY_PROFILE_RANKS"] = ",".join(str(r) for r in prof_ranks)
+        env["PD_MEMORY_PROFILE_OUT"] = str(prof_dir)
+        print(f"mem-profile: ranks={prof_ranks} → {prof_dir}")
+
     cmd = torchrun_command(
         job_name=job_name,
         snapshot_ref=stamp.snapshot_ref,
@@ -225,7 +247,7 @@ def main(smoke: bool = False) -> None:
         snapshot_ref=stamp.snapshot_ref,
         comment=("GPT-2 XL Q/K 3-pool smoke test" if smoke else "GPT-2 XL Q/K 3-pool production"),
     )
-    r = submit_slurm_job(generate_script(slurm_cfg, cmd, env=CUDA_FLAGS), job_name)
+    r = submit_slurm_job(generate_script(slurm_cfg, cmd, env=env), job_name)
     print(f"{job_name}: nodes={n_nodes} gpus={TOTAL_RANKS} job_id={r.job_id}")
 
 

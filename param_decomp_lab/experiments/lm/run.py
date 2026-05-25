@@ -6,12 +6,16 @@ no duplication between them. Run via ``pd-lm path/to/config.yaml``; multi-proces
 (DDP) entry via ``torchrun`` of the same module.
 """
 
+import atexit
 import importlib
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import fire
+import torch
 import torch.distributed as dist
 from pydantic import Discriminator
 from torch.utils.data import DataLoader
@@ -329,6 +333,45 @@ def _build_resumable_sink(out_dir: Path, *, rank: int) -> ResumableRunSink:
     return ResumableRunSink(base, run_dir=out_dir, rank=rank)
 
 
+def _maybe_enable_memory_profile(rank: int) -> None:
+    """Opt-in CUDA memory-history recorder for offline ``memory_viz`` analysis.
+
+    Activated by env vars:
+      * ``PD_MEMORY_PROFILE_RANKS=0,32,96`` — comma-separated ranks to profile.
+      * ``PD_MEMORY_PROFILE_OUT=/abs/path/to/dir`` — dump directory.
+
+    Dumps to ``<dir>/mem_rank<R>.pickle`` on normal exit and on uncaught
+    exception. Load the pickle at https://pytorch.org/memory_viz.
+    """
+    prof_ranks_env = os.environ.get("PD_MEMORY_PROFILE_RANKS")
+    if not prof_ranks_env:
+        return
+    if rank not in {int(r) for r in prof_ranks_env.split(",") if r.strip()}:
+        return
+    out_dir = Path(os.environ["PD_MEMORY_PROFILE_OUT"])
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"mem_rank{rank}.pickle"
+    logger.info(f"[mem-profile] recording rank={rank} → {out_path}")
+    torch.cuda.memory._record_memory_history(max_entries=200_000)
+
+    def _dump() -> None:
+        torch.cuda.memory._dump_snapshot(str(out_path))
+        logger.info(f"[mem-profile] dumped rank={rank} → {out_path}")
+
+    atexit.register(_dump)
+    prev_excepthook = sys.excepthook
+
+    def _excepthook(
+        exctype: type[BaseException],
+        value: BaseException,
+        tb: Any,
+    ) -> None:
+        _dump()
+        prev_excepthook(exctype, value, tb)
+
+    sys.excepthook = _excepthook
+
+
 def _fresh_main(config_path: Path) -> None:
     """Fresh-run path: parse YAML, build everything, train from step 0."""
     cfg = LMExperimentConfig.from_file(config_path)
@@ -336,6 +379,7 @@ def _fresh_main(config_path: Path) -> None:
     dist_state = init_distributed()
     if is_main_process():
         logger.info(f"Distributed state: {dist_state}")
+    _maybe_enable_memory_profile(dist_state.rank if dist_state is not None else 0)
     set_seed(cfg.pd.seed)
     device = get_device()
     cfg = cfg.model_copy(update={"runtime": cfg.runtime.model_copy(update={"device": device})})
