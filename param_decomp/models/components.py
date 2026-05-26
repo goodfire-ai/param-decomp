@@ -339,7 +339,8 @@ class GlobalSharedTransformerCiFn(nn.Module):
             F.rms_norm(input_acts[name], (input_acts[name].shape[-1],)) for name in self.layer_order
         ]
         concatenated = torch.cat(inputs_list, dim=-1)
-        projected: Tensor = self._input_projector(concatenated)
+        normalized = F.rms_norm(concatenated, (concatenated.shape[-1],))
+        projected: Tensor = self._input_projector(normalized)
 
         # The transformer blocks expect a sequence dimension, so we add an extra dimension to our
         # activations if we only have 2D acts (e.g. in TMS and resid_mlp).

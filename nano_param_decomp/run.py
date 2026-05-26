@@ -353,9 +353,10 @@ class CITransformer(nn.Module):
     """The causal-importance function: a shared transformer that sees all layers at once.
 
     Inputs: dict of pre-weight activations (one entry per target module, shape [B, S, d_in_m]).
-    Each is RMS-normed (no learned scale) and concatenated along the feature dim; a linear
-    projection maps the concatenation to d_model, `n_blocks` transformer blocks run over the
-    sequence, and a second linear projection maps back to the total component dimension.
+    Each is RMS-normed (no learned scale), concatenated along the feature dim, then RMS-normed
+    again over the concatenation; a linear projection maps to d_model, `n_blocks` transformer
+    blocks run over the sequence, and a second linear projection maps back to the total
+    component dimension.
     The output is split per module and passed through the two leaky-hard sigmoids.
 
     Modules are concatenated in alphabetical-path order (see `module_order`), so the layout
@@ -385,6 +386,7 @@ class CITransformer(nn.Module):
     ) -> tuple[dict[str, Tensor], dict[str, Tensor], dict[str, Tensor]]:
         normed = [F.rms_norm(acts[n], (acts[n].shape[-1],)) for n in self.module_order]
         x = torch.cat(normed, dim=-1)
+        x = F.rms_norm(x, (x.shape[-1],))
         x = self.proj_in(x)
         S = x.shape[1]
         cos, sin = self.rope_cos[:S], self.rope_sin[:S]
