@@ -118,6 +118,36 @@ class ComponentModel(nn.Module):
             self.lower_leaky_fn = SIGMOID_TYPES[sigmoid_type]
             self.upper_leaky_fn = SIGMOID_TYPES[sigmoid_type]
 
+    def drop_ci_fn(self) -> None:
+        """Free the CI fn — for pools that only receive CI values via NCCL.
+
+        Call AFTER ``__init__`` (so RNG draws used to init the CI fn stay
+        identical across pools) but BEFORE ``.to(device)`` (so the unused
+        params never touch GPU memory). Idempotent.
+        """
+        if self.ci_fn is not None:
+            del self.ci_fn
+            self.ci_fn = None
+
+    def drop_components(self) -> None:
+        """Free the per-site V/U components — for pools that don't run V/U.
+
+        Only safe when no component is an ``EmbeddingComponents`` (the CI fn
+        wrapper consults those to convert token IDs to acts). Asserted at
+        runtime. Same lifecycle as ``drop_ci_fn``: post-init, pre-device.
+        """
+        from param_decomp.components import EmbeddingComponents
+
+        assert not any(isinstance(c, EmbeddingComponents) for c in self.components.values()), (
+            "drop_components() called on a ComponentModel with embedding components — "
+            "the CI fn wrapper needs those to convert token IDs to acts."
+        )
+        # Both the in-place clear (for the dict reference held by ci_fn wrapper)
+        # AND ModuleDict re-init (to unregister the children from nn.Module so
+        # .to(device) skips them).
+        self.components.clear()
+        self._components = nn.ModuleDict()
+
     def target_weight(self, module_name: str) -> Float[Tensor, "rows cols"]:
         """Weight matrix of a target module in PD's `[d_out, d_in]` row-major convention.
 
@@ -324,6 +354,7 @@ class ComponentModel(nn.Module):
         if detach_inputs:
             pre_weight_acts = {k: v.detach() for k, v in pre_weight_acts.items()}
 
+        assert self.ci_fn is not None, "calc_causal_importances called after drop_ci_fn"
         ci_fn_outputs = self.ci_fn(pre_weight_acts)
         return self._apply_sigmoid_to_ci_outputs(ci_fn_outputs, sampling)
 
@@ -404,6 +435,7 @@ def component_grad_norms(
 
     ci_fn_grad_norm_sq_sum: Float[Tensor, ""] = torch.zeros((), device=device)
     missing_ci_fn_grad = False
+    assert component_model.ci_fn is not None, "component_grad_norms needs the CI fn"
     for local_param_name, local_param in component_model.ci_fn.named_parameters():
         if local_param.grad is None:
             missing_ci_fn_grad = True

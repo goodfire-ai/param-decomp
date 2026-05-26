@@ -56,7 +56,7 @@ from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.dispatch import instantiate_metrics
 from param_decomp.metrics.output import collect_metric_outputs
 from param_decomp.metrics.persistent_pgd_recon import validate_pgd_scope
-from param_decomp.run_sink import RunSink
+from param_decomp.run_sink import OnePoolRunSink
 from param_decomp.schedule import get_scheduled_value
 from param_decomp.torch_helpers import bf16_autocast, loop_dataloader
 from param_decomp.training_state import TrainingState
@@ -446,7 +446,7 @@ class Trainer:
     def run(
         self,
         train_loader: DataLoader[Any],
-        sink: RunSink,
+        sink: OnePoolRunSink,
         cadence: Cadence,
         eval_loop: EvalLoop | None = None,
     ) -> None:
@@ -616,7 +616,7 @@ class Trainer:
                     gc.collect()
 
             # --- Saving Checkpoint --- #
-            if step == pd_config.steps or cadence.should_save(step):
+            if (step == pd_config.steps or cadence.should_save(step)) and is_main_process():
                 sink.checkpoint(self.snapshot())
 
             # Skip gradient step at the very last step (last step is just for plotting/logging).
@@ -642,7 +642,7 @@ def optimize(
     reconstruction_loss: ReconstructionLoss,
     pd_config: PDConfig,
     runtime_config: RuntimeConfig,
-    sink: RunSink,
+    sink: OnePoolRunSink,
     cadence: Cadence,
     eval_loop: EvalLoop | None = None,
 ) -> None:

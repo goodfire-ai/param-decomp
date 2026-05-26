@@ -30,6 +30,7 @@ from param_decomp_lab.experiments.utils import (
 )
 from param_decomp_lab.infra.paths import ModelPath
 from param_decomp_lab.infra.run_files import resolve_run_files
+from param_decomp_lab.run_sink import OnePoolSink
 from param_decomp_lab.seed import set_seed
 
 
@@ -150,7 +151,7 @@ def main(
     )
     eval_loop = _build_eval_loop(cfg, device)
 
-    sink = init_pd_run(cfg, group=group, tags=tags)
+    sink = init_pd_run(cfg, sink_class=OnePoolSink, group=group, tags=tags)
 
     try:
         optimize(

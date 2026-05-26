@@ -1,12 +1,25 @@
-"""Concrete `RunSink` for the in-repo experiments: local files + optional wandb.
+"""Concrete `RunSink` classes used by the in-repo experiments and lab tooling.
 
-Non-main ranks transparently get a no-op sink regardless of which constructor is used.
+Two pool-specific sinks (`OnePoolSink`, `ThreePoolSink`) share a private base
+(`_LabSinkBase`) for the local-files / wandb / console / log plumbing. The
+subclasses differ only in `checkpoint`'s typed parameter — 1-pool takes
+`TrainingState`, 3-pool takes `ThreePoolTrainingState`. Each delegates to a
+shared `_persist` for the actual save.
+
+Three constructors on each:
+
+    sink = OnePoolSink.local(out_dir)
+    sink = OnePoolSink.with_wandb(out_dir, project=..., run_id=..., ...)
+    sink = OnePoolSink.silent()                                # tests / quick checks
+
+(same shape for `ThreePoolSink`). Non-main ranks transparently get a no-op
+sink regardless of which constructor is called.
 """
 
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import wandb
 from PIL import Image
@@ -15,7 +28,7 @@ from tqdm import tqdm
 from param_decomp.base_config import BaseConfig
 from param_decomp.distributed import is_main_process
 from param_decomp.log import logger
-from param_decomp.training_state import TrainingState
+from param_decomp.training_state import ThreePoolTrainingState, TrainingState
 from param_decomp_lab.infra.run_files import save_file
 from param_decomp_lab.infra.wandb import init_wandb, try_wandb
 
@@ -23,9 +36,9 @@ from param_decomp_lab.infra.wandb import init_wandb, try_wandb
 def _local_log(data: dict[str, Any], step: int, out_dir: Path) -> None:
     """Write a step's metrics, figures, and custom charts to disk.
 
-    PIL images go to `{out_dir}/figures/<key>_<step>.png`; `wandb.plot.CustomChart`
-    payloads go to `{out_dir}/figures/<key>_<step>.json`; everything else is appended
-    as one JSON line to `{out_dir}/metrics.jsonl`.
+    PIL images go to ``{out_dir}/figures/<key>_<step>.png``; ``wandb.plot.CustomChart``
+    payloads go to ``{out_dir}/figures/<key>_<step>.json``; everything else is
+    appended as one JSON line to ``{out_dir}/metrics.jsonl``.
     """
     metrics_file = out_dir / "metrics.jsonl"
     metrics_file.touch(exist_ok=True)
@@ -53,19 +66,18 @@ def _local_log(data: dict[str, Any], step: int, out_dir: Path) -> None:
 
 
 @dataclass(frozen=True)
-class RunSink:
-    """Construct via `local`, `with_wandb`, or `silent` (not the dataclass directly).
+class _LabSinkBase:
+    """Shared local-files + wandb plumbing for `OnePoolSink` / `ThreePoolSink`.
 
-    Non-main ranks always get a no-op handle. `out_dir=None` disables disk output.
+    Pool-specific subclasses inherit constructors and the log / console /
+    finish / `_persist` helpers, and add typed `checkpoint` methods.
     """
 
     out_dir: Path | None
     _wandb_active: bool
 
-    # =========================== Constructors ===========================
-
     @classmethod
-    def local(cls, out_dir: Path) -> "RunSink":
+    def local(cls, out_dir: Path) -> Self:
         """Sink that writes to local files only (no wandb)."""
         if not is_main_process():
             return cls(out_dir=None, _wandb_active=False)
@@ -86,12 +98,8 @@ class RunSink:
         tags: list[str] | None = None,
         group: str | None = None,
         view_meta: dict[str, Any] | None = None,
-    ) -> "RunSink":
-        """Sink that writes to local files and a wandb run.
-
-        Initializes wandb on the main rank via `init_wandb`; non-main ranks return a
-        silent no-op.
-        """
+    ) -> Self:
+        """Sink that writes to local files + a wandb run. Non-main ranks are silent."""
         if not is_main_process():
             return cls(out_dir=None, _wandb_active=False)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -109,39 +117,36 @@ class RunSink:
         return cls(out_dir=out_dir, _wandb_active=True)
 
     @classmethod
-    def silent(cls) -> "RunSink":
+    def silent(cls) -> Self:
         """No-op sink for tests and quick interactive runs."""
         return cls(out_dir=None, _wandb_active=False)
 
-    # =========================== Output API ===========================
-
     def log(self, metrics: dict[str, Any], step: int) -> None:
-        """Emit a flat metrics dict to disk and/or wandb.
-
-        Values may be scalars, PIL images, or `wandb.plot.CustomChart` payloads.
-        """
+        """Emit a flat metrics dict to disk and/or wandb."""
         if self.out_dir is not None:
             _local_log(metrics, step, self.out_dir)
         if self._wandb_active:
             try_wandb(wandb.log, {k: _wandb_value(v) for k, v in metrics.items()}, step=step)
 
     def console(self, *lines: str) -> None:
-        """Print lines to stderr via `tqdm.write`. No-op on non-main ranks."""
+        """Print lines via `tqdm.write`. No-op on non-main ranks."""
         if not is_main_process():
             return
         for line in lines:
             tqdm.write(line)
 
-    def checkpoint(self, snapshot: TrainingState) -> None:
-        """Save the snapshot as two files: `model_<step>.pth` + `training_<step>.pth`.
+    def finish(self) -> None:
+        """End-of-run cleanup."""
+        if self._wandb_active and wandb.run is not None:
+            wandb.finish()
 
-        `model_<step>.pth` is just the component-model state dict — the artifact
-        downstream tools (`SavedRun.load_model`, postprocessing) consume.
-        `training_<step>.pth` is the full `TrainingState` (configs, optimizer
-        state, metric states, step) needed for resumption.
+    def _persist(self, snapshot: TrainingState | ThreePoolTrainingState) -> None:
+        """Save the snapshot as `model_<step>.pth` + `training_<step>.pth`.
 
-        No-op when `out_dir is None` (silent sink / non-main rank); wandb upload
-        only when wandb is active.
+        `model_<step>.pth` is just the component-model state dict — the
+        artifact downstream tools (`SavedRun.load_model`, postprocessing)
+        consume. `training_<step>.pth` is the full canonical state. No-op
+        on a silent / non-main-rank sink.
         """
         if self.out_dir is None:
             return
@@ -154,10 +159,21 @@ class RunSink:
             try_wandb(wandb.save, str(model_path), base_path=str(self.out_dir), policy="now")
             try_wandb(wandb.save, str(training_path), base_path=str(self.out_dir), policy="now")
 
-    def finish(self) -> None:
-        """End-of-run cleanup."""
-        if self._wandb_active and wandb.run is not None:
-            wandb.finish()
+
+@dataclass(frozen=True)
+class OnePoolSink(_LabSinkBase):
+    """Lab sink for 1-pool runs (satisfies `OnePoolRunSink`)."""
+
+    def checkpoint(self, snapshot: TrainingState) -> None:
+        self._persist(snapshot)
+
+
+@dataclass(frozen=True)
+class ThreePoolSink(_LabSinkBase):
+    """Lab sink for 3-pool runs (satisfies `ThreePoolRunSink`)."""
+
+    def checkpoint(self, snapshot: ThreePoolTrainingState) -> None:
+        self._persist(snapshot)
 
 
 def _wandb_value(v: Any) -> Any:

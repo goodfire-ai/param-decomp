@@ -29,7 +29,7 @@ from param_decomp_lab.resumption import (
     read_training_snapshot,
     resolve_step,
 )
-from param_decomp_lab.run_sink import RunSink
+from param_decomp_lab.run_sink import OnePoolSink
 
 
 class TinyLinear(nn.Module):
@@ -87,7 +87,7 @@ def _cadence() -> Cadence:
 def test_run_sink_writes_model_and_training_files(tmp_path: Path) -> None:
     """A fresh run writes both `model_<step>.pth` and `training_<step>.pth` per save."""
     run_dir = tmp_path / "run"
-    sink = RunSink.local(run_dir)
+    sink = OnePoolSink.local(run_dir)
 
     trainer = Trainer(
         target_model=TinyLinear(),
@@ -119,7 +119,7 @@ def test_resume_round_trip_matches_uninterrupted_run(tmp_path: Path) -> None:
         runtime_config=_runtime(),
     )
     full_sink_dir = tmp_path / "full"
-    trainer_full.run(_loader(), RunSink.local(full_sink_dir), _cadence())
+    trainer_full.run(_loader(), OnePoolSink.local(full_sink_dir), _cadence())
     final_full = {k: v.clone() for k, v in trainer_full.component_model.state_dict().items()}
 
     # Phase 1: train 2 steps, the sink writes training_2.pth.
@@ -132,7 +132,7 @@ def test_resume_round_trip_matches_uninterrupted_run(tmp_path: Path) -> None:
         pd_config=_pd_config(steps=2),
         runtime_config=_runtime(),
     )
-    trainer_half.run(_loader(), RunSink.local(parent_dir), _cadence())
+    trainer_half.run(_loader(), OnePoolSink.local(parent_dir), _cadence())
     assert (parent_dir / "training_2.pth").is_file()
 
     # Phase 2: resume from parent's training_2.pth, train to step 4.
@@ -149,7 +149,7 @@ def test_resume_round_trip_matches_uninterrupted_run(tmp_path: Path) -> None:
     )
     assert trainer_resumed.step == 2
     resumed_dir = tmp_path / "resumed"
-    trainer_resumed.run(_loader(), RunSink.local(resumed_dir), _cadence())
+    trainer_resumed.run(_loader(), OnePoolSink.local(resumed_dir), _cadence())
 
     resumed_final = trainer_resumed.component_model.state_dict()
     assert final_full.keys() == resumed_final.keys()
@@ -167,7 +167,7 @@ def test_resolve_step_finds_latest(tmp_path: Path) -> None:
         pd_config=_pd_config(steps=4),
         runtime_config=_runtime(),
     )
-    trainer.run(_loader(), RunSink.local(parent_dir), _cadence())
+    trainer.run(_loader(), OnePoolSink.local(parent_dir), _cadence())
 
     assert resolve_step(parent_dir, "latest") == 4
     assert resolve_step(parent_dir, 2) == 2

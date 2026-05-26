@@ -14,7 +14,7 @@ from param_decomp_lab.eval_metrics import AnyEvalMetricConfig
 from param_decomp_lab.infra.run_files import generate_run_id
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.infra.wandb import try_wandb
-from param_decomp_lab.run_sink import RunSink
+from param_decomp_lab.run_sink import OnePoolSink, ThreePoolSink
 
 RUN_META_FILENAME = "run_meta.yaml"
 
@@ -58,29 +58,34 @@ class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
     wandb: WandbConfig | None = None
 
 
-def init_pd_run[T: BaseConfig, D: BaseConfig](
+def init_pd_run[T: BaseConfig, D: BaseConfig, S: OnePoolSink | ThreePoolSink](
     cfg: ExperimentConfig[T, D],
     *,
+    sink_class: type[S],
     group: str | None,
     tags: str | None,
     run_id: str | None = None,
-) -> RunSink:
+) -> S:
     """Allocate `run_id` + `out_dir`, write `run_meta.yaml`, return a sink.
+
+    `sink_class` picks the pool-specific sink (`OnePoolSink` for 1-pool runs,
+    `ThreePoolSink` for 3-pool). The choice is the caller's; this helper just
+    forwards through to the class's `local` / `with_wandb` / `silent` constructors.
 
     Local-only when `cfg.wandb is None`, else wandb-backed. Non-main DDP ranks get a
     silent no-op sink without touching disk or wandb. `group` is a "launched together"
     id; `tags` is a comma-separated string of orthogonal labels.
     """
     if not is_main_process():
-        return RunSink.silent()
+        return sink_class.silent()
     run_id = run_id or generate_run_id("param_decomp")
     out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
     meta_path = out_dir / RUN_META_FILENAME
     cfg.to_file(meta_path)
     if cfg.wandb is None:
-        return RunSink.local(out_dir)
+        return sink_class.local(out_dir)
     parsed_tags = [s.strip() for s in tags.split(",") if s.strip()] if tags else None
-    sink = RunSink.with_wandb(
+    sink = sink_class.with_wandb(
         out_dir,
         project=cfg.wandb.project,
         entity=cfg.wandb.entity,

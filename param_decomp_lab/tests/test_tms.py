@@ -23,7 +23,7 @@ from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_
 from param_decomp_lab.experiments.tms.data import SparseFeatureDataset
 from param_decomp_lab.experiments.tms.models import TMSModel, TMSModelConfig, TMSTrainConfig
 from param_decomp_lab.experiments.tms.train_tms import get_model_and_dataloader, train
-from param_decomp_lab.run_sink import RunSink
+from param_decomp_lab.run_sink import OnePoolSink
 from param_decomp_lab.seed import set_seed
 
 
@@ -98,7 +98,7 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
     train_loader = DataLoader(dataset, batch_size=None)
     eval_loader = DataLoader(dataset, batch_size=None)
 
-    sink = RunSink.local(tmp_path)
+    sink = OnePoolSink.local(tmp_path)
     cadence = Cadence(train_log_every=2, save_every=None)
     eval_loop = EvalLoop(
         loader=eval_loader,

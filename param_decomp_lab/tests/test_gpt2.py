@@ -22,7 +22,7 @@ from param_decomp.schedule import ScheduleConfig
 from param_decomp_lab.batch_and_loss_fns import make_run_batch, recon_loss_kl
 from param_decomp_lab.eval_metrics.ci_l0 import CI_L0, CI_L0Config
 from param_decomp_lab.experiments.lm.data import LMDataConfig, create_lm_data_loader
-from param_decomp_lab.run_sink import RunSink
+from param_decomp_lab.run_sink import OnePoolSink
 from param_decomp_lab.seed import set_seed
 
 
@@ -101,7 +101,7 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
         collate_fn=collate_input_ids,
     )
 
-    sink = RunSink.local(tmp_path)
+    sink = OnePoolSink.local(tmp_path)
     cadence = Cadence(train_log_every=50, save_every=None)
     eval_loop = EvalLoop(
         loader=eval_loader,

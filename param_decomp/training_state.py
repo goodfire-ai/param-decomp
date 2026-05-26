@@ -1,8 +1,14 @@
-"""`TrainingState`: the canonical persisted state of a 1-pool training run.
+"""Canonical training-state dataclasses persisted to `training_<step>.pth`.
 
-Lives in its own module so both `param_decomp.optimize` (where `Trainer`
-produces it) and `param_decomp.run_sink` (where the `RunSink` Protocol
-consumes it) can import without a cycle.
+`TrainingState` is the 1-pool shape; `ThreePoolTrainingState` is the 3-pool shape.
+The two are deliberately separate (no shared base class) — common fields are
+duplicated. Pool-specific fields (e.g. `three_pool_config`, `ppgd_state_by_rank`)
+live on the concrete dataclass that needs them.
+
+Lives in its own module so both `param_decomp.optimize` /
+`param_decomp.three_pool.optimize` (where trainers produce these) and
+`param_decomp.run_sink` (where they're consumed by the sink protocol) can
+import without a cycle.
 """
 
 from dataclasses import dataclass
@@ -32,3 +38,33 @@ class TrainingState:
     components_optimizer: dict[str, dict[str, Any]]
     ci_fn_optimizer: dict[str, dict[str, Any]]
     loss_metrics: dict[str, dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class ThreePoolTrainingState:
+    """Canonical 3-pool training state, persisted to `training_<step>.pth`.
+
+    Produced by `ThreePoolTrainer.snapshot()` on rank 0 only — non-rank-0 ranks
+    return `None` instead (the lab sink is silent on those ranks anyway).
+    Rank 0 assembles the canonical state from cross-rank gathers:
+
+    * `component_model`: full gathered model state (every site's V/U + the CI fn).
+    * `components_optimizer` / `ci_fn_optimizer`: per-parameter optimizer state
+      keyed by parameter name, merged across the layerwise + CI pools. Same
+      shape as 1-pool's `TrainingState` — topology-independent.
+    * `ppgd_state_by_rank`: PPGD adversarial sources, keyed by PPGD rank id.
+      Genuinely rank-coupled for `PerBatchPerPositionScope` (sized by the
+      rank-local batch slice).
+    * `layout_fingerprint`: 3-pool world layout summary. Checked on resume to
+      flag incompatible topologies.
+    """
+
+    step: int
+    pd_config: dict[str, Any]
+    runtime_config: dict[str, Any]
+    three_pool_config: dict[str, Any]
+    layout_fingerprint: dict[str, Any]
+    component_model: dict[str, Tensor]
+    components_optimizer: dict[str, dict[str, Any]]
+    ci_fn_optimizer: dict[str, dict[str, Any]]
+    ppgd_state_by_rank: dict[int, dict[str, Any]]

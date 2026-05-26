@@ -16,7 +16,7 @@ from param_decomp.schedule import ScheduleConfig
 from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
 from param_decomp_lab.experiments.resid_mlp.data import ResidMLPDataset
 from param_decomp_lab.experiments.resid_mlp.models import ResidMLP, ResidMLPModelConfig
-from param_decomp_lab.run_sink import RunSink
+from param_decomp_lab.run_sink import OnePoolSink
 from param_decomp_lab.seed import set_seed
 
 
@@ -103,7 +103,7 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
     train_loader = DataLoader(train_dataset, batch_size=None)
     eval_loader = DataLoader(eval_dataset, batch_size=None)
 
-    sink = RunSink.local(tmp_path)
+    sink = OnePoolSink.local(tmp_path)
     cadence = Cadence(train_log_every=50, save_every=None)
     eval_loop = EvalLoop(
         loader=eval_loader,

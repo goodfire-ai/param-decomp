@@ -30,6 +30,9 @@ from param_decomp.component_model import ComponentModel
 from param_decomp.distributed import DistributedState, is_main_process
 from param_decomp.log import logger
 from param_decomp.optimize import EvalLoop, Trainer
+from param_decomp.three_pool import ThreePoolConfig, ThreePoolTrainer
+from param_decomp.training_state import ThreePoolTrainingState, TrainingState
+from param_decomp.two_pool import TwoPoolConfig, TwoPoolTrainer
 from param_decomp_lab.batch_and_loss_fns import make_run_batch as _make_run_batch
 from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
 from param_decomp_lab.component_model_io import load_component_model
@@ -64,6 +67,7 @@ from param_decomp_lab.resumption import (
     resolve_step,
     write_provenance,
 )
+from param_decomp_lab.run_sink import OnePoolSink, ThreePoolSink
 from param_decomp_lab.seed import set_seed
 
 
@@ -113,7 +117,15 @@ class LMTargetConfig(BaseConfig):
 
 
 class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
-    pass
+    two_pool: TwoPoolConfig | None = None
+    """When set, training runs under the 2-pool strategy
+    (:class:`param_decomp.two_pool.TwoPoolTrainer`) instead of single-process
+    :class:`param_decomp.optimize.Trainer`. Mutually exclusive with ``three_pool``."""
+
+    three_pool: ThreePoolConfig | None = None
+    """When set, training runs under the 3-pool strategy
+    (:class:`param_decomp.three_pool.ThreePoolTrainer`). Mutually exclusive with
+    ``two_pool``."""
 
 
 def build_target(target_cfg: LMTargetConfig) -> nn.Module:
@@ -255,8 +267,11 @@ def _fresh_main(
     tags: str | None,
     run_id: str | None,
 ) -> None:
-    """Fresh-run path: parse YAML, build everything, train from step 0."""
+    """Fresh-run path: parse YAML, dispatch on pool config, train from step 0."""
     cfg = LMExperimentConfig.from_file(config_path)
+    assert not (cfg.two_pool is not None and cfg.three_pool is not None), (
+        "two_pool and three_pool are mutually exclusive; set only one."
+    )
 
     dist_state = init_distributed()
     if is_main_process():
@@ -275,31 +290,62 @@ def _fresh_main(
     )
 
     target_model = build_target(cfg.target)
-
+    is_multi_pool = cfg.two_pool is not None or cfg.three_pool is not None
     train_loader = build_lm_loader(
         cfg.target,
         cfg.data,
         split="train",
         device=device,
         batch_size=cfg.pd.batch_size,
-        dist_state=dist_state,
+        # Multi-pool requires the full global batch on every rank — each pool
+        # slices it locally. Single-pool uses standard DistributedSampler.
+        dist_state=None if is_multi_pool else dist_state,
         seed=cfg.pd.seed,
     )
-    eval_loop = _build_eval_loop(cfg, device, dist_state)
 
-    sink = init_pd_run(cfg, group=group, tags=tags, run_id=run_id)
-
-    try:
-        trainer = Trainer(
-            target_model=target_model,
-            run_batch=make_run_batch(cfg.target),
-            reconstruction_loss=recon_loss_kl,
-            pd_config=cfg.pd,
-            runtime_config=cfg.runtime,
+    if cfg.three_pool is not None:
+        three_sink = init_pd_run(
+            cfg, sink_class=ThreePoolSink, group=group, tags=tags, run_id=run_id
         )
-        trainer.run(train_loader, sink, cfg.cadence, eval_loop)
+        try:
+            three_trainer = ThreePoolTrainer(
+                target_model=target_model,
+                run_batch=make_run_batch(cfg.target),
+                reconstruction_loss=recon_loss_kl,
+                pd_config=cfg.pd,
+                runtime_config=cfg.runtime,
+                three_pool_config=cfg.three_pool,
+            )
+            three_trainer.run(train_loader, three_sink, cfg.cadence)
+        finally:
+            three_sink.finish()
+        return
+
+    one_sink = init_pd_run(cfg, sink_class=OnePoolSink, group=group, tags=tags, run_id=run_id)
+    eval_loop = _build_eval_loop(cfg, device, dist_state) if cfg.two_pool is None else None
+    try:
+        if cfg.two_pool is not None:
+            two_trainer = TwoPoolTrainer(
+                target_model=target_model,
+                run_batch=make_run_batch(cfg.target),
+                reconstruction_loss=recon_loss_kl,
+                pd_config=cfg.pd,
+                runtime_config=cfg.runtime,
+                two_pool_config=cfg.two_pool,
+                cadence=cfg.cadence,
+            )
+            two_trainer.run(train_loader, one_sink, cfg.cadence)
+        else:
+            trainer = Trainer(
+                target_model=target_model,
+                run_batch=make_run_batch(cfg.target),
+                reconstruction_loss=recon_loss_kl,
+                pd_config=cfg.pd,
+                runtime_config=cfg.runtime,
+            )
+            trainer.run(train_loader, one_sink, cfg.cadence, eval_loop)
     finally:
-        sink.finish()
+        one_sink.finish()
 
 
 def _resume_main(
@@ -310,7 +356,7 @@ def _resume_main(
     run_id: str | None,
 ) -> None:
     """Resume-run path: read parent `run_meta.yaml` + `training_<step>.pth`,
-    rebuild trainer via `Trainer.from_snapshot`, continue training."""
+    rebuild trainer via `from_snapshot`, continue training."""
     resume_cfg = ResumeConfig.from_file(resume_cfg_path)
     parent_cfg = LMExperimentConfig.from_file(resume_cfg.from_run / RUN_META_FILENAME)
 
@@ -343,40 +389,84 @@ def _resume_main(
 
     resolved_step = resolve_step(resume_cfg.from_run, resume_cfg.step)
     snapshot = read_training_snapshot(resume_cfg.from_run, resolved_step)
-    # Override the saved device with the current resume environment. Mutating
-    # the dict (model_dump output) in place is fine even on a frozen dataclass;
-    # we're changing a value the dataclass references, not rebinding the field.
     snapshot.runtime_config["device"] = device
 
     target_model = build_target(effective_cfg.target)
+    is_multi_pool = effective_cfg.two_pool is not None or effective_cfg.three_pool is not None
     train_loader = build_lm_loader(
         effective_cfg.target,
         effective_cfg.data,
         split="train",
         device=device,
         batch_size=effective_cfg.pd.batch_size,
-        dist_state=dist_state,
+        dist_state=None if is_multi_pool else dist_state,
         seed=effective_cfg.pd.seed,
     )
-    eval_loop = _build_eval_loop(effective_cfg, device, dist_state)
-    sink = init_pd_run(effective_cfg, group=group, tags=tags, run_id=run_id)
-    if sink.out_dir is not None:
+    run_batch = make_run_batch(effective_cfg.target)
+
+    if effective_cfg.three_pool is not None:
+        three_sink = init_pd_run(
+            effective_cfg, sink_class=ThreePoolSink, group=group, tags=tags, run_id=run_id
+        )
+        if three_sink.out_dir is not None:
+            write_provenance(
+                three_sink.out_dir,
+                ResumeProvenance(parent_run_dir=resume_cfg.from_run, parent_step=resolved_step),
+            )
+        try:
+            assert isinstance(snapshot, ThreePoolTrainingState), (
+                f"3-pool resume needs ThreePoolTrainingState; got {type(snapshot).__name__}"
+            )
+            three_trainer = ThreePoolTrainer.from_snapshot(
+                snapshot,
+                target_model=target_model,
+                run_batch=run_batch,
+                reconstruction_loss=recon_loss_kl,
+                cfg_overrides=cfg_overrides,
+            )
+            three_trainer.run(train_loader, three_sink, effective_cfg.cadence)
+        finally:
+            three_sink.finish()
+        return
+
+    one_sink = init_pd_run(
+        effective_cfg, sink_class=OnePoolSink, group=group, tags=tags, run_id=run_id
+    )
+    if one_sink.out_dir is not None:
         write_provenance(
-            sink.out_dir,
+            one_sink.out_dir,
             ResumeProvenance(parent_run_dir=resume_cfg.from_run, parent_step=resolved_step),
         )
-
+    eval_loop = (
+        _build_eval_loop(effective_cfg, device, dist_state)
+        if effective_cfg.two_pool is None
+        else None
+    )
     try:
-        trainer = Trainer.from_snapshot(
-            snapshot,
-            target_model=target_model,
-            run_batch=make_run_batch(effective_cfg.target),
-            reconstruction_loss=recon_loss_kl,
-            cfg_overrides=cfg_overrides,
+        assert isinstance(snapshot, TrainingState), (
+            f"1-pool / 2-pool resume needs TrainingState; got {type(snapshot).__name__}"
         )
-        trainer.run(train_loader, sink, effective_cfg.cadence, eval_loop)
+        if effective_cfg.two_pool is not None:
+            two_trainer = TwoPoolTrainer.from_snapshot(
+                snapshot,
+                target_model=target_model,
+                run_batch=run_batch,
+                reconstruction_loss=recon_loss_kl,
+                cadence=effective_cfg.cadence,
+                cfg_overrides=cfg_overrides,
+            )
+            two_trainer.run(train_loader, one_sink, effective_cfg.cadence)
+        else:
+            trainer = Trainer.from_snapshot(
+                snapshot,
+                target_model=target_model,
+                run_batch=run_batch,
+                reconstruction_loss=recon_loss_kl,
+                cfg_overrides=cfg_overrides,
+            )
+            trainer.run(train_loader, one_sink, effective_cfg.cadence, eval_loop)
     finally:
-        sink.finish()
+        one_sink.finish()
 
 
 def _build_eval_loop(
