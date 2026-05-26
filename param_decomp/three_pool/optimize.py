@@ -67,6 +67,7 @@ from param_decomp.metrics.persistent_pgd_recon import (
 from param_decomp.metrics.persistent_pgd_state import PersistentPGDState
 from param_decomp.run_sink import RunSink
 from param_decomp.schedule import get_scheduled_value
+from param_decomp.sdpa_strict import enforce_flash_attention_only
 from param_decomp.three_pool.checkpoint import gather_full_state_dict_to_rank0
 from param_decomp.three_pool.config import ThreePoolConfig
 from param_decomp.three_pool.layout import (
@@ -174,6 +175,8 @@ class ThreePoolTrainer:
         self.step = 0
 
         trace("ThreePoolTrainer.__init__: enter")
+        # Catch silent FA→math fallbacks before they hide perf regressions.
+        enforce_flash_attention_only()
         _validate_pd_config_for_three_pool(pd_config, three_pool_config)
         # PPGD runs only on PPGD pool; the relevant per-rank batch is batch // n_ppgd.
         validate_pgd_scope(

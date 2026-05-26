@@ -7,7 +7,6 @@ import torch
 import torch.nn.functional as F
 from jaxtyping import Float
 from torch import Tensor, nn
-from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from param_decomp.components import _NonlinearityType, init_param_
 
@@ -138,12 +137,12 @@ class SelfAttention(nn.Module):
 
         q, k = self.rope(q, k)
 
-        # Strict FA dispatch — sdpa_kernel raises if the input shapes / dtype
-        # would force a fallback to math / mem-efficient. Catches silent
-        # regressions where a config change knocks the CI fn off the
-        # flash-attn kernel (e.g. head_dim > 128, fp32 acts, mask shape).
-        with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
-            attn_out = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=False)
+        # Strict FA dispatch is enforced GLOBALLY at startup via
+        # ``param_decomp/sdpa_strict.py`` (non-FA backends disabled). Avoid
+        # the per-call ``sdpa_kernel`` context manager here so we compose
+        # cleanly with torch.compile (it can't trace ``sdpa_kernel`` against
+        # fake tensors).
+        attn_out = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=False)
 
         attn_out = attn_out.transpose(-3, -2).contiguous().view(*batch_dims, seq_len, self.d_model)
         return self.out_proj(attn_out)
