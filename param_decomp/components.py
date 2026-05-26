@@ -39,7 +39,16 @@ def init_param_(
     nonlinearity: _NonlinearityType = "linear",
     generator: torch.Generator | None = None,
 ) -> None:
-    """Fill `param` in place from `N(mean, gain(nonlinearity) / sqrt(fan_val))`."""
+    """Fill `param` in place from a Kaiming normal distribution, `N(mean, gain(nonlinearity) / sqrt(fan_val))`.
+
+    Args:
+        param: Parameter tensor to fill in place.
+        fan_val: Value used as `fan` in Kaiming normal; appears under the square root in
+            the denominator of std.
+        mean: Mean of the sampled normal distribution.
+        nonlinearity: Nonlinearity name passed to `torch.nn.init.calculate_gain`.
+        generator: Optional RNG for reproducibility.
+    """
     gain: float = calculate_gain(nonlinearity)
     std: float = gain / math.sqrt(fan_val)
     with torch.no_grad():
@@ -204,7 +213,12 @@ class EmbeddingComponents(Components):
 
 
 def get_module_input_dim(target_module: nn.Module) -> int:
-    """`d_in` of a Linear-like target module (`nn.Linear`, Radford `Conv1D`, or `Identity`). Embeddings have no scalar input dim and must be handled separately."""
+    """Input dimension `d_in` of a Linear-like target module.
+
+    Supports `nn.Linear`, Radford `Conv1D`, and `Identity`. Embeddings have no scalar
+    input dim and must be handled separately by the caller; this function raises
+    `ValueError` for them.
+    """
     match target_module:
         case nn.Linear():
             return target_module.weight.shape[1]
@@ -223,12 +237,23 @@ def make_components(
     target_model: nn.Module,
     module_to_c: dict[str, int],
 ) -> dict[str, Components]:
-    """Build one `Components` instance per target module path. Dispatches by target-module type:
+    """Build one `Components` instance per target module path.
+
+    Dispatches by target-module type:
 
     - `nn.Linear` → `LinearComponents` (frozen bias carried over).
     - Radford `Conv1D` → `LinearComponents` with shapes swapped for the transposed weight layout.
     - `Identity` → `LinearComponents` with `d_in == d_out` and no bias.
     - `nn.Embedding` → `EmbeddingComponents`.
+
+    Args:
+        target_model: Frozen model containing the submodules to decompose.
+        module_to_c: Map from submodule path (as returned by `model.get_submodule`) to
+            the number of components `C` to allocate for that module.
+
+    Returns:
+        Dict keyed by the same submodule paths, mapping to a `Components` instance whose
+        weights have been initialised but not yet trained.
     """
     out: dict[str, Components] = {}
     for path, C in module_to_c.items():

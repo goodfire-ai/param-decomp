@@ -59,6 +59,20 @@ class ComponentModel(nn.Module):
         ci_config: CiConfig,
         sigmoid_type: SigmoidType,
     ):
+        """Wrap `target_model` with parameter-component machinery.
+
+        Args:
+            target_model: Frozen model whose weights are being decomposed. Constructor
+                asserts every parameter has `requires_grad=False`.
+            run_batch: Callable that runs the target model on one batch and returns its
+                output tensor; invoked through the wrapper for caching / DDP.
+            decomposition_targets: Resolved target list — one `(module_path, C)` per
+                module to decompose. Produced by `resolve_decomposition_targets`.
+            ci_config: Discriminated CI-fn config selecting layerwise vs global.
+            sigmoid_type: Sigmoid used to squash raw CI-fn outputs. `"leaky_hard"`
+                splits into lower- and upper-leaky variants; everything else uses one
+                function for both branches.
+        """
         super().__init__()
         self._run_batch: RunBatch = run_batch
 
@@ -159,9 +173,18 @@ class ComponentModel(nn.Module):
 
         With no extra args, this is just a forward pass through the frozen target model.
         If `mask_infos` is given, those modules' outputs are replaced by their
-        components' forward pass under the supplied masks. `cache_type` selects what each
-        hooked module records (`"input"` / `"output"` / `"component_acts"` / `"none"`).
-        Returns an `OutputWithCache` when `cache_type != "none"`, else the bare output.
+        components' forward pass under the supplied masks. Returns an `OutputWithCache`
+        when `cache_type != "none"`, else the bare output.
+
+        Args:
+            batch: Passed unchanged to the wrapped `run_batch` callable.
+            mask_infos: Per-module mask payload. If set, listed modules are replaced via
+                forward hooks running the corresponding `Components` instance.
+            cache_type: What each hooked module records. `"input"` caches pre-weight
+                activations; `"output"` caches post-weight (post-replacement) outputs;
+                `"component_acts"` caches per-component activations under the keys
+                `f"{module_path}_pre_detach"` / `f"{module_path}_post_detach"`;
+                `"none"` disables caching.
         """
         if mask_infos is None and cache_type == "none":
             return self._run_batch(self.target_model, batch)
@@ -266,7 +289,22 @@ class ComponentModel(nn.Module):
         sampling: SamplingType,
         detach_inputs: bool = False,
     ) -> CIOutputs:
-        """CI values for every decomposition target: runs the CI fn on `pre_weight_acts`, squashes through lower- and upper-leaky sigmoids. Under `sampling="binomial"` the lower-leaky branch has a small amount of uniform noise mixed in before squashing."""
+        """CI values for every decomposition target.
+
+        Runs the CI fn on `pre_weight_acts` and squashes through both lower- and
+        upper-leaky sigmoids. Under `sampling="binomial"`, the lower-leaky branch has a
+        small amount of uniform noise mixed in before squashing.
+
+        Args:
+            pre_weight_acts: Per-module input activations (or token-id tensors for
+                embedding targets), typically the cache from a `cache_type="input"`
+                forward pass.
+            sampling: Selects the stochastic mask regime; gates the noise injection on
+                the lower-leaky branch.
+            detach_inputs: When true, gradients do not flow from CI back into
+                `pre_weight_acts`. Used by metrics that want to optimise CI without
+                perturbing the upstream graph.
+        """
         if detach_inputs:
             pre_weight_acts = {k: v.detach() for k, v in pre_weight_acts.items()}
 

@@ -268,7 +268,9 @@ Comments describe what the code is, not what changed about it. No narrativizing:
 
 Docstrings carry information the signature doesn't.
 
-- Default to a single line.
+- Default to a single line — or none at all, even on public classes / configs /
+  functions, when name + type carry everything. `class DistributedState:` doesn't need
+  `"""Immutable snapshot of the distributed runtime state for this process."""`.
 - Skip `Args:` / `Attributes:` entries that just paraphrase the name and type.
 - Don't restate the function name in English. If the name needs translation, fix the name.
 - Keep: non-obvious semantics, invariants, gotchas, shape constraints not in jaxtyping,
@@ -279,6 +281,15 @@ Docstrings carry information the signature doesn't.
 - Don't re-document a Protocol or abstract method in its impl unless there's
   impl-specific behavior to note.
 - Module docstrings: one orienting line. Anything longer belongs in CLAUDE.md.
+
+**Load-bearing public entrypoints in `param_decomp/` are an exception** — there, a full
+Google-style `Args:` block is worth the bookkeeping, because IDE hover surfaces it and
+the callers are external. Concretely: `optimize`, `ComponentModel.__init__` / `forward`
+/ `calc_causal_importances`, `RunSink` protocol methods, `Metric.bind` / `update` /
+`reset` / `compute`, `make_components`, `make_ci_fn_wrapper`. For everything else,
+*including internal helpers in `param_decomp/`*, prefer better parameter names and
+clearer parameterisation over docstrings — name parameters by their role inside the
+function, not just their type.
 
 ## Tests
 

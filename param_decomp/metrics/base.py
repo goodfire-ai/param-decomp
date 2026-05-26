@@ -46,11 +46,21 @@ class Metric[TConfig: BaseConfig](ABC):
     device: str
 
     def __init__(self, cfg: TConfig) -> None:
+        """Construct from a validated config. Runtime resources are attached later by `bind`."""
         self.cfg = cfg
         self._bound = False
 
     def bind(self, *, model: ComponentModel, device: str) -> None:
-        """Attach the component model and device, then call `reset()`. Subclasses that need additional bind-time setup (e.g. resolving module paths against the model) should override and call `super().bind(...)` first."""
+        """Attach the live `ComponentModel` and device, then call `reset()`.
+
+        Called once by the training loop before any other method. Subclasses needing
+        additional bind-time setup (e.g. resolving module paths against the model)
+        should override and call `super().bind(...)` first.
+
+        Args:
+            model: The `ComponentModel` this metric will observe.
+            device: Device string used for accumulators and any other allocated state.
+        """
         assert not self._bound, f"{type(self).__name__} is already bound"
         self.model = model
         self.device = device
@@ -64,24 +74,29 @@ class Metric[TConfig: BaseConfig](ABC):
         Stateless metrics may implement this as a no-op. Stateful metrics should reset
         counters, sums, cached examples, plots, or adversarial eval state so a
         subsequent `compute()` only reflects batches processed after this call.
+        Invoked automatically inside `bind()` to initialise device-typed accumulators.
         """
         ...
 
     @abstractmethod
     def update(self, ctx: Any) -> Tensor | None:
-        """Process one batch and update metric state.
-
-        Returns the per-batch scalar when one exists (for loss-capable metrics this is
-        the live loss used for backprop). Eval-only metrics return `None`.
+        """Process one batch and update accumulated state.
 
         Loss-capable metrics must `.detach()` before adding tensors to accumulators;
         otherwise the autograd graph is retained across steps and leaks memory.
+
+        Args:
+            ctx: The per-step `MetricContext` bundle (see `metrics/context.py`).
+
+        Returns:
+            The per-batch scalar when one exists. For loss-capable metrics that scalar
+            is the live loss used for backprop. Eval-only metrics return `None`.
         """
         ...
 
     @abstractmethod
     def compute(self) -> MetricResult:
-        """Return the scalar, artifact, or keyed metric outputs accumulated by `update()`."""
+        """Return the scalar, artifact, or keyed metric outputs accumulated since the last `reset()`."""
         ...
 
     def before_backward(self, live_loss: Tensor | None) -> None:

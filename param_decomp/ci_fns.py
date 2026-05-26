@@ -462,7 +462,20 @@ def make_ci_fn_wrapper(
     components: dict[str, Components],
     ci_config: CiConfig,
 ) -> LayerwiseCiFnWrapper | GlobalCiFnWrapper:
-    """Build the CI-fn wrapper selected by `ci_config`: `LayerwiseCiConfig` -> one inner CI fn per `module_to_c` entry inside a `LayerwiseCiFnWrapper`; `GlobalCiConfig` -> a single global CI fn inside a `GlobalCiFnWrapper`."""
+    """Build the CI-fn wrapper selected by `ci_config`.
+
+    `LayerwiseCiConfig` → one inner CI fn per `module_to_c` entry inside a
+    `LayerwiseCiFnWrapper`; `GlobalCiConfig` → a single global CI fn inside a
+    `GlobalCiFnWrapper`.
+
+    Args:
+        target_model: Frozen target model; used to look up each decomposition target's
+            input dimensionality.
+        module_to_c: Map from decomposition-target submodule path to component count.
+        components: Map from decomposition-target submodule path to its `Components`
+            instance (used by `MLPCiFn` and embedding-target dispatch).
+        ci_config: Discriminated CI-fn config; runtime type selects the wrapper.
+    """
     match ci_config:
         case LayerwiseCiConfig():
             raw_ci_fns = {
