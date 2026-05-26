@@ -8,11 +8,11 @@ from annotated_types import Ge, Le
 from pydantic import BaseModel, ConfigDict
 
 Probability = Annotated[float, Ge(0), Le(1)]
-"""A float constrained to the closed interval ``[0, 1]`` for pydantic validation."""
+"""A float constrained to `[0, 1]` for pydantic validation."""
 
 
 def runtime_cast[T](type_: type[T], obj: Any) -> T:
-    """Cast ``obj`` to ``type_``, raising ``TypeError`` if it is not actually an instance.
+    """Cast `obj` to `type_`, raising `TypeError` if it is not actually an instance.
 
     Use this when a wider static type needs to be narrowed for the type checker and the
     narrowing should be enforced at runtime.
@@ -23,13 +23,7 @@ def runtime_cast[T](type_: type[T], obj: Any) -> T:
 
 
 class BaseConfig(BaseModel):
-    """Pydantic ``BaseModel`` base class tailored for configuration objects.
-
-    Enforces ``extra="forbid"`` (unknown keys raise) and ``frozen=True`` (instances are
-    immutable), and adds ``from_file`` / ``to_file`` round-trip helpers for JSON and YAML.
-    ``cached_property`` is added to ``ignored_types`` so subclasses can attach derived
-    state to frozen models.
-    """
+    """Pydantic `BaseModel` tailored for configs: `extra="forbid"`, `frozen=True`, plus `from_file` / `to_file` JSON/YAML round-trip helpers."""
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="forbid", frozen=True, ignored_types=(cached_property,)
@@ -37,10 +31,10 @@ class BaseConfig(BaseModel):
 
     @classmethod
     def from_file(cls, path: Path | str) -> Self:
-        """Load and validate a config from a ``.json``, ``.yaml``, or ``.yml`` file.
+        """Load and validate a config from a `.json`, `.yaml`, or `.yml` file.
 
-        Raises ``ValueError`` for any other extension. Validation errors are re-raised with
-        a note that includes the source path and the parsed data for debugging.
+        Validation errors are re-raised with a note that includes the source path and the
+        parsed data for debugging.
         """
         if isinstance(path, str):
             path = Path(path)
@@ -61,11 +55,7 @@ class BaseConfig(BaseModel):
         return cfg
 
     def to_file(self, path: Path | str) -> None:
-        """Serialize this config to ``path``; format is inferred from the extension.
-
-        Supports ``.json`` (indent 2) and ``.yaml`` / ``.yml`` (JSON-mode dump). Creates
-        parent directories as needed; raises ``ValueError`` for any other extension.
-        """
+        """Serialize this config to `path`. `.json` writes indent-2 JSON; `.yaml` / `.yml` writes a JSON-mode YAML dump. Creates parent directories as needed."""
         if isinstance(path, str):
             path = Path(path)
 

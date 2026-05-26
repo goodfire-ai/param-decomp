@@ -1,9 +1,4 @@
-"""TMS PD experiment: YAML -> `optimize()` glue, plus the saved-run reload class.
-
-The fresh-run path (`main`) and the reload path (`SavedTMSRun`) both consume the
-module-level `build_target` / `build_tms_loader` / `make_run_batch` functions so there's
-no duplication between them. Run via ``pd-tms path/to/config.yaml``.
-"""
+"""TMS PD experiment: YAML -> `optimize()` glue, plus the `SavedTMSRun` reload class. Run via `pd-tms path/to/config.yaml`."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,23 +31,11 @@ from param_decomp_lab.seed import set_seed
 
 
 class TMSTargetConfig(BaseConfig):
-    """Path to the trained TMS target run.
-
-    Attributes:
-        run_path: Local or wandb path to a TMS pretrain run.
-    """
-
     run_path: str = Field(..., description="Local or wandb path to a TMS pretrain run.")
 
 
 class TMSDataConfig(BaseConfig):
-    """Synthetic-feature dataset settings for TMS PD.
-
-    Attributes:
-        feature_probability: Probability that any individual feature is active in a sample.
-        data_generation_type: Whether each sample activates exactly one feature or any
-            subset (including the empty set).
-    """
+    """Synthetic-feature dataset settings for TMS PD."""
 
     feature_probability: Probability
     data_generation_type: Literal["exactly_one_active", "at_least_zero_active"] = (
@@ -61,13 +44,11 @@ class TMSDataConfig(BaseConfig):
 
 
 class TMSExperimentConfig(ExperimentConfig[TMSTargetConfig, TMSDataConfig]):
-    """Full YAML schema for a TMS PD run."""
-
     pass
 
 
 def build_target(target_cfg: TMSTargetConfig) -> TMSModel:
-    """Load the pretrained TMS target model from `target_cfg.run_path` in eval mode."""
+    """Load the pretrained TMS target model in eval mode."""
     run_info = TMSTargetRunInfo.from_path(target_cfg.run_path)
     target_model = TMSModel.from_run_info(run_info)
     target_model.eval()
@@ -84,11 +65,7 @@ def build_tms_loader(
     dist_state: DistributedState | None = None,
     seed: int | None = None,
 ) -> DataLoader[Any]:
-    """Build a synthetic `SparseFeatureDataset` loader for TMS.
-
-    The dataset is synthetic and infinite, so `split`, `dist_state`, and `seed` are
-    ignored — train and eval loaders are constructed identically.
-    """
+    """Synthetic `SparseFeatureDataset` loader for TMS. The dataset is infinite, so `split` / `dist_state` / `seed` are ignored — train and eval loaders are identical."""
     del split, dist_state, seed
     train_config = TMSTargetRunInfo.from_path(target_cfg.run_path).config
     dataset = SparseFeatureDataset(
@@ -104,7 +81,7 @@ def build_tms_loader(
 
 
 def make_run_batch(target_cfg: TMSTargetConfig) -> RunBatch:
-    """Return the `RunBatch` callable for TMS — unwraps the (inputs, labels) tuple."""
+    """`RunBatch` for TMS: unwraps the `(inputs, labels)` tuple."""
     del target_cfg
     return run_batch_first_element
 
@@ -115,12 +92,7 @@ def _tied_weights_for(target_model: TMSModel) -> list[tuple[str, str]] | None:
 
 @dataclass(frozen=True)
 class SavedTMSRun:
-    """Handle to a completed TMS PD run on disk or in W&B.
-
-    Attributes:
-        cfg: The resolved `TMSExperimentConfig` from ``run_meta.yaml``.
-        checkpoint_path: Resolved local path to the chosen ``model_<step>.pth`` file.
-    """
+    """Handle to a completed TMS PD run on disk or in W&B."""
 
     cfg: TMSExperimentConfig
     checkpoint_path: Path
@@ -137,7 +109,6 @@ class SavedTMSRun:
         )
 
     def load_model(self) -> ComponentModel:
-        """Materialize the `ComponentModel` from the saved checkpoint."""
         return load_component_model(
             pd_config=self.cfg.pd,
             checkpoint_path=self.checkpoint_path,
@@ -152,16 +123,7 @@ def main(
     group: str | None = None,
     tags: str | None = None,
 ) -> None:
-    """Run a TMS PD experiment end-to-end from a YAML config.
-
-    Parses the YAML into `TMSExperimentConfig`, builds the target / loaders / eval loop,
-    writes ``run_meta.yaml``, and calls `optimize(...)`.
-
-    Args:
-        config_path: Path to the experiment YAML config.
-        group: Wandb group for "launched together" collapsing.
-        tags: Comma-separated wandb tags (orthogonal to `group`; many per run).
-    """
+    """Run a TMS PD experiment end-to-end from a YAML config. `group` / `tags` are wandb-only."""
     cfg = TMSExperimentConfig.from_file(config_path)
 
     set_seed(cfg.pd.seed)
@@ -200,7 +162,7 @@ def main(
 
 
 def _build_eval_loop(cfg: TMSExperimentConfig, device: str) -> EvalLoop | None:
-    """Build the optional `EvalLoop` from `cfg.eval`, returning None when eval is disabled."""
+    """Build the `EvalLoop` from `cfg.eval`, or `None` when eval is disabled."""
     if cfg.eval is None:
         return None
     return EvalLoop(

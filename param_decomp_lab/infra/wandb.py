@@ -51,21 +51,10 @@ def _metric_short_names() -> dict[str, str]:
 
 
 def flatten_typed_lists(config_dict: dict[str, Any]) -> dict[str, Any]:
-    """Walk `config_dict` and flatten any list-of-dicts-with-`type` for wandb searchability.
+    """Flatten every nested list-of-dicts-with-`type` in `config_dict` (loss/eval metrics) into queryable flat keys addressed by metric `short_name` (or raw type when none).
 
-    Any list whose every entry is a dict carrying a `type` discriminator (loss metrics,
-    eval metrics, …) gets flattened in place: each entry's fields become flat keys
-    addressed by short metric name (from the metric class's ``short_name`` attribute, or
-    the raw type string when no short name is registered).
-
-    Example::
-
-        pd: {loss_metrics: [{type: "ImportanceMinimalityLoss", coeff: 0.1, pnorm: 1.0}]}
-
-    flattens to::
-
-        pd.loss_metrics.ImpMin.coeff: 0.1
-        pd.loss_metrics.ImpMin.pnorm: 1.0
+    Example: `pd: {loss_metrics: [{type: "ImportanceMinimalityLoss", coeff: 0.1, pnorm: 1.0}]}`
+    flattens to `pd.loss_metrics.ImpMin.coeff: 0.1`, `pd.loss_metrics.ImpMin.pnorm: 1.0`.
 
     The matching paths are *removed* from `config_dict` in place so wandb doesn't also
     log them as opaque JSON blobs.
@@ -122,22 +111,16 @@ def wandb_path_to_url(wandb_path: str) -> str:
 
 
 def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
-    """Parse various W&B run reference formats into (entity, project, run_id).
+    """Parse various W&B run reference formats into `(entity, project, run_id)`.
 
     Accepts:
-    - "p-xxxxxxxx" (bare PD run ID, defaults to goodfire/param-decomp)
-    - "entity/project/runId" (compact form)
-    - "entity/project/runs/runId" (with /runs/)
-    - "https://wandb.ai/entity/project/runs/runId..." (URL)
+    - `"p-xxxxxxxx"` (bare PD run ID, defaults to `goodfire/param-decomp`)
+    - `"entity/project/runId"` (compact form)
+    - `"entity/project/runs/runId"` (with `/runs/`)
+    - `"https://wandb.ai/entity/project/runs/runId..."` (URL)
 
     The bare-ID shortcut only accepts the current `p-…` prefix; legacy `s-…` IDs
     (pre-refactor) still resolve via the full `entity/project/runs/id` form.
-
-    Returns:
-        Tuple of (entity, project, run_id)
-
-    Raises:
-        ValueError: If the input doesn't match any expected format.
     """
     s = input_path.strip()
 
@@ -198,15 +181,7 @@ def fetch_latest_wandb_checkpoint(run: Run, prefix: str | None = None) -> File:
 
 
 def download_wandb_file(run: Run, wandb_run_dir: Path, file_name: str) -> Path:
-    """Download a file from W&B. Don't overwrite the file if it already exists.
-
-    Args:
-        run: The W&B run to download from
-        file_name: Name of the file to download
-        wandb_run_dir: The directory to download the file to
-    Returns:
-        Path to the downloaded file
-    """
+    """Download `file_name` from `run` to `wandb_run_dir`. No-op when the file already exists."""
     file_on_wandb = run.file(file_name)
     assert isinstance(file_on_wandb, File)
     file_on_wandb.download(exist_ok=True, replace=False, root=str(wandb_run_dir))
@@ -224,25 +199,7 @@ def init_wandb(
     group: str | None = None,
     view_meta: dict[str, Any] | None = None,
 ) -> None:
-    """Initialize Weights & Biases and log the config.
-
-    Dumps `config` into ``wandb.config`` and additionally flattens every nested
-    list-of-typed-dicts (loss/eval metrics) into queryable flat keys (see
-    `flatten_typed_lists`); the un-flattened lists are removed from the dump.
-
-    Args:
-        project: The wandb project name.
-        run_id: The unique run ID (from ExecutionStamp).
-        config: The full experiment config to log to wandb.
-        entity: Wandb entity; falls back to `get_wandb_entity()` when None.
-        name: The display name of the wandb run.
-        tags: Optional list of tags to add to the run.
-        group: Optional wandb group for collecting related runs (e.g. a layerwise
-            sweep) into a single group in the W&B UI.
-        view_meta: Free-form labels (typically populated by a sweep generator)
-            merged into ``wandb.config`` under a ``view_meta/`` prefix so the W&B
-            UI can group/color runs by researcher-facing axes.
-    """
+    """Initialise W&B and log `config`. Nested lists-of-typed-dicts (loss/eval metrics) are flattened into queryable flat keys via `flatten_typed_lists`; the un-flattened lists are removed from the dump. `entity` falls back to `get_wandb_entity()`; `view_meta` is merged under a `view_meta/` prefix so the UI can group runs by researcher-facing axes."""
     wandb.init(
         id=run_id,
         project=project,

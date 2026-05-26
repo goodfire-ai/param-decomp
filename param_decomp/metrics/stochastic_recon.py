@@ -15,12 +15,6 @@ from param_decomp.torch_helpers import get_obj_device
 
 
 class StochasticReconLossConfig(LossMetricConfig):
-    """Config for `StochasticReconLoss`.
-
-    Attributes:
-        type: Discriminator literal `"StochasticReconLoss"`.
-    """
-
     type: Literal["StochasticReconLoss"] = "StochasticReconLoss"
 
 
@@ -76,12 +70,7 @@ def stochastic_recon_loss(
 
 
 class StochasticReconLoss(Metric[StochasticReconLossConfig]):
-    """Recon loss when sampling with stochastic masks on all component layers.
-
-    For each of `ctx.n_mask_samples` draws, samples a stochastic component mask
-    (parameterized by the CI values) on every layer and accumulates the reconstruction
-    loss against the target output.
-    """
+    """Stochastic recon loss: for each of `ctx.n_mask_samples` draws, samples a stochastic component mask (parameterised by CI values) on every layer and accumulates recon loss."""
 
     log_namespace = "loss"
     short_name = "StochRecon"

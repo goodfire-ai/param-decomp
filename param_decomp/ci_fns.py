@@ -19,14 +19,7 @@ GlobalCiFnType = Literal["global_shared_mlp", "global_shared_transformer"]
 
 
 class LayerwiseCiConfig(BaseConfig):
-    """Configuration for layerwise CI fns — one independent CI fn per decomposition target.
-
-    Attributes:
-        mode: Discriminator literal selecting the layerwise variant of :data:`CiConfig`.
-        fn_type: Which layerwise CI architecture to instantiate per target.
-        hidden_dims: Hidden dimensions of the inner MLP. Must be non-empty for
-            ``fn_type in {"mlp", "vector_mlp"}``.
-    """
+    """Layerwise CI fns — one independent CI fn per decomposition target."""
 
     mode: Literal["layerwise"] = "layerwise"
     fn_type: LayerwiseCiFnType = Field(
@@ -44,15 +37,7 @@ class LayerwiseCiConfig(BaseConfig):
 
 
 class AttnConfig(BaseConfig):
-    """Self-attention config for the transformer CI fn.
-
-    Uses RoPE for length generalization.
-
-    Attributes:
-        n_heads: Number of attention heads. Must divide the input dimension.
-        max_len: Maximum sequence length supported by the RoPE buffer.
-        rope_base: Frequency base for RoPE (the standard ``10000`` convention).
-    """
+    """Self-attention config for the transformer CI fn. Uses RoPE for length generalization."""
 
     n_heads: PositiveInt = Field(
         ...,
@@ -69,16 +54,7 @@ class AttnConfig(BaseConfig):
 
 
 class GlobalSharedTransformerCiConfig(BaseConfig):
-    """Config for the global transformer CI fn.
-
-    Attributes:
-        d_model: Residual-stream width inside the CI transformer.
-        n_blocks: Number of transformer blocks.
-        mlp_hidden_dim: Hidden dims for each block's MLP. ``None`` defaults to
-            ``[4 * d_model]``.
-        attn_config: Self-attention config. ``d_model`` must be divisible by
-            ``attn_config.n_heads`` and the resulting per-head dim must be even (RoPE).
-    """
+    """Config for the global transformer CI fn. `d_model` must be divisible by `attn_config.n_heads` and the resulting per-head dim must be even (RoPE). `mlp_hidden_dim` defaults to `[4 * d_model]`."""
 
     d_model: PositiveInt
     n_blocks: PositiveInt
@@ -105,17 +81,7 @@ class GlobalSharedTransformerCiConfig(BaseConfig):
 
 
 class GlobalCiConfig(BaseConfig):
-    """Configuration for a single global CI fn that maps all layers jointly.
-
-    Attributes:
-        mode: Discriminator literal selecting the global variant of :data:`CiConfig`.
-        fn_type: Global CI architecture: ``global_shared_mlp`` or
-            ``global_shared_transformer``.
-        hidden_dims: MLP hidden dims — required when ``fn_type == "global_shared_mlp"``,
-            forbidden otherwise.
-        simple_transformer_ci_cfg: Transformer config — required when
-            ``fn_type == "global_shared_transformer"``.
-    """
+    """A single global CI fn that maps all layers jointly."""
 
     mode: Literal["global"] = "global"
     fn_type: GlobalCiFnType = Field(
@@ -150,12 +116,7 @@ CiConfig = LayerwiseCiConfig | GlobalCiConfig
 
 
 class MLPCiFn(nn.Module):
-    """Per-component scalar-input MLP CI fn.
-
-    Each of the ``C`` components has its own independent MLP that maps that component's
-    scalar activation to a scalar CI value, implemented as a stack of
-    :class:`ParallelLinear` layers operating on a singleton last dim.
-    """
+    """Per-component scalar-input MLP CI fn. Each of `C` components gets its own MLP mapping a scalar component activation to a scalar CI value; built from `ParallelLinear` layers operating on a singleton last dim."""
 
     def __init__(self, C: int, hidden_dims: list[int]):
         super().__init__()
@@ -179,12 +140,7 @@ class MLPCiFn(nn.Module):
 
 
 class VectorMLPCiFn(nn.Module):
-    """Per-component vector-input MLP CI fn.
-
-    Each of the ``C`` components has its own independent MLP that consumes the full layer
-    input vector ``[..., d_in]`` and emits a scalar CI value. Built from
-    :class:`ParallelLinear` so the ``C`` networks run in a single batched einsum.
-    """
+    """Per-component vector-input MLP CI fn. Each of `C` components gets its own MLP consuming the full `[..., d_in]` layer input; built from `ParallelLinear` so all `C` networks run in one batched einsum."""
 
     def __init__(self, C: int, input_dim: int, hidden_dims: list[int]):
         super().__init__()
@@ -208,12 +164,7 @@ class VectorMLPCiFn(nn.Module):
 
 
 class VectorSharedMLPCiFn(nn.Module):
-    """Shared MLP that maps a layer's input vector to a CI value per component.
-
-    A single ordinary MLP (not :class:`ParallelLinear`) takes ``[..., d_in]`` and outputs
-    ``[..., C]``. All components share every hidden layer; only the final projection
-    splits per-component.
-    """
+    """Shared MLP `[..., d_in] -> [..., C]`. All components share every hidden layer; only the final projection splits per-component."""
 
     def __init__(self, C: int, input_dim: int, hidden_dims: list[int]):
         super().__init__()
@@ -232,12 +183,7 @@ class VectorSharedMLPCiFn(nn.Module):
 
 
 class GlobalSharedMLPCiFn(nn.Module):
-    """Global MLP that consumes every layer's input and emits CI for every component.
-
-    Concatenates all decomposition-target inputs along the feature dim, runs one shared
-    MLP, then splits the output back into per-layer ``[..., C]`` slices. Layer order is
-    fixed by sorted layer name so the concatenation is deterministic across runs.
-    """
+    """Global MLP over all layers: concatenates all decomposition-target inputs along the feature dim, runs one shared MLP, then splits the output back into per-layer `[..., C]` slices. Layer order is fixed by sorted layer name so concatenation is deterministic."""
 
     def __init__(
         self,
@@ -276,27 +222,21 @@ class GlobalSharedMLPCiFn(nn.Module):
 
 @dataclass
 class TargetLayerConfig:
-    """Per-target metadata consumed by :class:`GlobalSharedTransformerCiFn`.
-
-    Attributes:
-        input_dim: Width of the activation entering this decomposition target.
-        C: Number of components allocated to this target.
-    """
+    """Per-target metadata consumed by `GlobalSharedTransformerCiFn`."""
 
     input_dim: int
     C: int
 
 
 class GlobalSharedTransformerCiFn(nn.Module):
-    """Global transformer that attends over sequence to produce per-component CI.
+    """Global transformer attending over sequence to produce per-component CI.
 
     Per-layer inputs are RMS-normed, concatenated along the feature dim, projected to
-    ``d_model``, and run through ``n_layers`` :class:`TransformerBlock` s with bidirectional
+    `d_model`, and run through `n_layers` `TransformerBlock`s with bidirectional
     self-attention. A final linear projection produces logits which are split back into
-    per-layer ``[..., C]`` slices in sorted-name order.
-
-    For 2D inputs (e.g. TMS, resid_mlp — no sequence axis) a singleton sequence dim is
-    added before the transformer and squeezed out after.
+    per-layer `[..., C]` slices in sorted-name order. For 2D inputs (e.g. TMS, resid_mlp
+    — no sequence axis) a singleton sequence dim is added before the transformer and
+    squeezed out after.
     """
 
     def __init__(
@@ -376,11 +316,10 @@ class GlobalSharedTransformerCiFn(nn.Module):
 class LayerwiseCiFnWrapper(nn.Module):
     """Bundle a dict of per-layer CI fns behind a single dict-in/dict-out interface.
 
-    Runs each layer's CI fn independently on its own input. For ``ci_fn_type == "mlp"``
-    the per-component scalar activations are obtained via
-    :meth:`Components.get_component_acts` before being passed in; the other variants
-    receive the raw layer input. Layer names are stored under ``ModuleDict`` with ``.``
-    replaced by ``-`` so state-dict keys are well-formed.
+    Runs each layer's CI fn on its own input. For `ci_fn_type == "mlp"` the per-component
+    scalar activations are obtained via `Components.get_component_acts` first; the other
+    variants receive the raw layer input. Layer names are stored under `ModuleDict` with
+    `.` replaced by `-` so state-dict keys are well-formed.
     """
 
     def __init__(
@@ -422,12 +361,11 @@ class LayerwiseCiFnWrapper(nn.Module):
 
 
 class GlobalCiFnWrapper(nn.Module):
-    """Adapter that gives the global CI fns the same dict-in/dict-out interface.
+    """Gives the global CI fns the same dict-in/dict-out interface as the layerwise wrapper.
 
-    For :class:`EmbeddingComponents` the raw input is a tensor of token ids; this wrapper
-    converts those to component activations via
-    :meth:`EmbeddingComponents.get_component_acts` so the underlying global CI fn always
-    sees floating-point activations.
+    For `EmbeddingComponents` the raw input is a tensor of token ids; this wrapper
+    converts them to component activations via `EmbeddingComponents.get_component_acts`
+    so the global CI fn always sees floating-point activations.
     """
 
     def __init__(
@@ -524,21 +462,7 @@ def make_ci_fn_wrapper(
     components: dict[str, Components],
     ci_config: CiConfig,
 ) -> LayerwiseCiFnWrapper | GlobalCiFnWrapper:
-    """Build the CI-fn wrapper (layerwise or global) selected by ``ci_config``.
-
-    Dispatches on the runtime type of ``ci_config``: a :class:`LayerwiseCiConfig` produces
-    one inner CI fn per entry of ``module_to_c`` wrapped in a :class:`LayerwiseCiFnWrapper`;
-    a :class:`GlobalCiConfig` produces a single global CI fn wrapped in a
-    :class:`GlobalCiFnWrapper`.
-
-    Args:
-        target_model: Frozen target model. Used to look up each decomposition target's
-            input dimensionality via :func:`get_module_input_dim`.
-        module_to_c: Map from decomposition-target submodule path to component count.
-        components: Map from decomposition-target submodule path to its
-            :class:`Components` instance.
-        ci_config: Discriminated CI-fn config selecting layerwise vs global.
-    """
+    """Build the CI-fn wrapper selected by `ci_config`: `LayerwiseCiConfig` -> one inner CI fn per `module_to_c` entry inside a `LayerwiseCiFnWrapper`; `GlobalCiConfig` -> a single global CI fn inside a `GlobalCiFnWrapper`."""
     match ci_config:
         case LayerwiseCiConfig():
             raw_ci_fns = {

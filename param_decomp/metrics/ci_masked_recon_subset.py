@@ -21,14 +21,6 @@ from param_decomp.metrics.context import MetricContext
 
 
 class CIMaskedReconSubsetLossConfig(LossMetricConfig):
-    """Config for `CIMaskedReconSubsetLoss`.
-
-    Attributes:
-        type: Discriminator literal `"CIMaskedReconSubsetLoss"`.
-        routing: Subset-routing strategy that selects which layers are masked on each
-            forward pass.
-    """
-
     type: Literal["CIMaskedReconSubsetLoss"] = "CIMaskedReconSubsetLoss"
     routing: Annotated[
         SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
@@ -79,11 +71,7 @@ def ci_masked_recon_subset_loss(
 
 
 class CIMaskedReconSubsetLoss(Metric[CIMaskedReconSubsetLossConfig]):
-    """Recon loss when masking with raw CI values and routing to subsets of component layers.
-
-    Each forward pass selects a subset of layers (per `cfg.routing`) on which to apply
-    the CI mask; the remaining layers run with the original target weights.
-    """
+    """Recon loss: apply the CI mask only on a routed subset of layers (per `cfg.routing`); the remaining layers run with the original target weights."""
 
     log_namespace = "loss"
     short_name = "CIMaskReconSub"

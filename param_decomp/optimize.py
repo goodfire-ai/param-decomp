@@ -1,12 +1,4 @@
-"""PD optimization loop.
-
-Exposes one entrypoint, :func:`optimize`. It is the sole way to run PD from the
-core library — there is no driver-mediated wrapper, no ``RunConfig``, no
-registry. Callers build their target model, dataloaders, loss objective (via
-``PDConfig.loss_metrics``), and list of eval ``Metric`` instances themselves,
-then hand them in. :class:`EvalLoop` bundles the eval runtime objects with their
-timing.
-"""
+"""PD optimization loop. `optimize()` is the sole core entrypoint; `EvalLoop` bundles the eval runtime objects with their timing."""
 
 import gc
 from collections import defaultdict
@@ -57,21 +49,13 @@ from param_decomp.torch_helpers import bf16_autocast, loop_dataloader
 class EvalLoop:
     """Eval-loop runtime objects bundled with their timing.
 
-    Pass ``eval_loop=None`` to :func:`optimize` to skip eval entirely. When set,
-    the trainer evaluates every ``every`` steps; on steps that are also multiples
-    of ``slow_every``, slow metrics fire too. ``slow_every`` must be a multiple
-    of ``every`` — the trainer only checks :meth:`should_run_slow_eval` on steps
-    where :meth:`should_eval` already fired.
+    Pass `eval_loop=None` to `optimize` to skip eval entirely. When set, the trainer
+    evaluates every `every` steps; on steps that are also multiples of `slow_every`,
+    slow metrics fire too. `slow_every` must be a multiple of `every` — `should_run_slow_eval`
+    is only checked on steps where `should_eval` already fired.
 
-    Attributes:
-        loader: Eval data loader. Looped for the lifetime of training.
-        metrics: Caller-instantiated eval ``Metric``s. ``optimize`` calls
-            ``Metric.bind(model, device)`` on each before the loop.
-        n_steps: Number of eval batches per eval pass.
-        every: Period (in train steps) between eval passes.
-        slow_every: Period (in train steps) between *slow* eval passes. Must
-            be a multiple of ``every``.
-        slow_on_first_step: Whether slow eval fires at step 0.
+    `optimize` calls `Metric.bind(model, device)` on every entry of `metrics` before the
+    loop starts.
     """
 
     loader: DataLoader[Any]
@@ -87,15 +71,10 @@ class EvalLoop:
         )
 
     def should_eval(self, step: int) -> bool:
-        """Whether a (regular) eval pass should fire at ``step``."""
         return step % self.every == 0
 
     def should_run_slow_eval(self, step: int) -> bool:
-        """Whether slow eval metrics should fire at ``step``.
-
-        Slow eval is gated on top of ``should_eval``; callers are expected to
-        only call this on steps where ``should_eval`` is already true.
-        """
+        """Slow eval is gated on top of `should_eval`; only call this on steps where `should_eval` is already true."""
         if step == 0:
             return self.slow_on_first_step
         return step % self.slow_every == 0
@@ -165,41 +144,18 @@ def optimize(
 ) -> None:
     """Run the PD optimization loop.
 
-    Builds the ``ComponentModel`` internally, instantiates loss metrics from
-    ``pd_config.loss_metrics``, optionally runs a faithfulness warmup, then loops
-    for ``pd_config.steps + 1`` training steps. Every step computes losses from
-    ``loss_metrics``, accumulates them weighted by their ``coeff``, and backprops.
-    Train logging, checkpointing, and eval each fire on their own schedule.
+    Builds the `ComponentModel` internally, instantiates loss metrics from
+    `pd_config.loss_metrics`, optionally runs a faithfulness warmup, then loops for
+    `pd_config.steps + 1` training steps. Every step computes losses from
+    `loss_metrics`, accumulates them weighted by their `coeff`, and backprops. Train
+    logging, checkpointing, and eval each fire on their own schedule. Metric keys
+    handed to `sink.log` are pre-namespaced (`train/...`, `eval/...`).
 
-    All ranks call this function; ``sink`` is automatically a no-op on
-    non-main ranks. Under DDP, ``ComponentModel`` is wrapped in
-    :class:`torch.nn.parallel.DistributedDataParallel` for gradient sync.
-
-    Args:
-        target_model: The frozen model whose parameters are being decomposed.
-            ``optimize`` sets ``requires_grad=False`` on all parameters and
-            puts it in ``eval()`` mode.
-        train_loader: Train data loader. Looped indefinitely until ``steps`` is
-            reached.
-        run_batch: Callable that runs one batch through the wrapped target model
-            and returns its output tensor.
-        reconstruction_loss: Callable returning ``(loss_sum, n_elements)`` used
-            by recon-style loss metrics.
-        pd_config: Algorithm specification — CI fn, loss metrics, optimizers,
-            decomposition targets, seed, tied weights, warmup, etc.
-        runtime_config: Compute substrate — device, autocast, data-parallelism.
-        sink: Output destination. ``optimize`` calls ``sink.log`` /
-            ``sink.console`` / ``sink.checkpoint``; metric keys are already
-            namespaced (``train/...``, ``eval/...``) before being passed.
-        cadence: Train-log + checkpoint timing. The final step always
-            checkpoints regardless of ``cadence.save_every``.
-        eval_loop: Optional eval bundle. Pass ``None`` to skip eval entirely.
-
-    Raises:
-        AssertionError: If the target model has trainable parameters, if no
-            components were found to optimize, if eval and loss metrics have
-            overlapping class names, or if no loss metric returned a loss at
-            some step.
+    All ranks call this function; `sink` is automatically a no-op on non-main ranks.
+    Under DDP, `ComponentModel` is wrapped in `DistributedDataParallel` for gradient
+    sync. `target_model` is forced to `requires_grad=False` and put in `eval()` mode.
+    Pass `eval_loop=None` to skip eval entirely. The final step always checkpoints
+    regardless of `cadence.save_every`.
     """
     dist_state = get_distributed_state()
     device = runtime_config.device

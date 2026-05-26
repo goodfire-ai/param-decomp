@@ -21,19 +21,12 @@ def run_faithfulness_warmup(
     component_params: list[torch.nn.Parameter],
     config: PDConfig,
 ) -> None:
-    """Pre-train the component parameters to faithfully approximate the target weights.
+    """Pre-train `component_params` to faithfully approximate the target weights.
 
-    Runs ``config.faithfulness_warmup_steps`` of AdamW (with
-    ``config.faithfulness_warmup_lr`` / ``faithfulness_warmup_weight_decay``) that minimizes
-    only the faithfulness loss over ``component_model.calc_weight_deltas()``. This shifts
-    ``component_params`` so the sum of the components reconstructs the frozen target weights
-    before the full PD loss takes over. The optimizer is discarded and CUDA caches cleared
-    on exit.
-
-    Args:
-        component_model: Model whose components' weight deltas are being driven to zero.
-        component_params: Parameters optimized during the warmup. Must be non-empty.
-        config: Source of the warmup step count, learning rate, and weight decay.
+    Runs `config.faithfulness_warmup_steps` of AdamW minimising only the faithfulness loss
+    over `component_model.calc_weight_deltas()`, so the sum of the components reconstructs
+    the frozen target weights before the full PD loss takes over. The optimizer is
+    discarded and CUDA caches cleared on exit.
     """
     logger.info("Starting faithfulness warmup phase...")
     assert component_params, "component_params is empty"

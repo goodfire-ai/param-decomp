@@ -1,10 +1,4 @@
-"""Shared config schema for in-repo experiment YAMLs.
-
-Each experiment subclasses `ExperimentConfig` to fix the concrete `target` / `data` types
-and parses its YAML with `<Experiment>Config.from_file(path)`. The resolved config is
-persisted as ``run_meta.yaml`` via `BaseConfig.to_file` and rebuilt on reload by the
-matching per-experiment ``SavedXRun`` class.
-"""
+"""Shared config schema for in-repo experiment YAMLs. Each experiment subclasses `ExperimentConfig` to fix the concrete `target` / `data` types."""
 
 from pydantic import Field, PositiveInt
 
@@ -19,30 +13,14 @@ RUN_META_FILENAME = "run_meta.yaml"
 
 
 class WandbConfig(BaseConfig):
-    """Wandb logging settings. Presence on ExperimentConfig opts in; omit to skip wandb.
-
-    Attributes:
-        project: Wandb project name.
-        entity: Wandb entity; falls back to ``WANDB_ENTITY`` env / authenticated user
-            when None.
-    """
+    """Wandb logging settings. Presence on `ExperimentConfig` opts in; omit to skip wandb."""
 
     project: str
     entity: str | None = None
 
 
 class EvalConfig(BaseConfig):
-    """Eval-pass settings consumed by `EvalLoop`.
-
-    Attributes:
-        batch_size: Loader batch size for the eval split.
-        n_steps: Number of batches to consume per eval tick.
-        every: Run eval every N optimizer steps.
-        slow_every: Run the slow-eval subset every N optimizer steps; must be a multiple
-            of `every`.
-        slow_on_first_step: If True, also run slow-eval metrics on the first step.
-        metrics: Discriminated-union eval metric configs to instantiate.
-    """
+    """Eval-pass settings consumed by `EvalLoop`. `slow_every` must be a multiple of `every`."""
 
     batch_size: PositiveInt
     n_steps: PositiveInt
@@ -55,22 +33,13 @@ class EvalConfig(BaseConfig):
 class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
     """Full YAML schema for an in-repo experiment.
 
-    Subclass with concrete `target` / `data` types per experiment, e.g.::
+    Subclass with concrete `target` / `data` types per experiment:
 
         class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
             pass
 
-    Omit the `eval:` block to skip eval entirely. Omit the `wandb:` block to skip wandb
-    (the run still writes ``run_meta.yaml`` + checkpoints locally).
-
-    Attributes:
-        pd: PD algorithm config.
-        runtime: Compute-substrate config (autocast, device, DP).
-        cadence: Train-log + checkpoint cadence.
-        target: Per-experiment target-model config.
-        data: Per-experiment data config.
-        eval: Optional eval-pass config; `None` skips eval entirely.
-        wandb: Optional wandb logging config; `None` skips wandb entirely.
+    Omit the `eval:` block to skip eval entirely; omit `wandb:` to skip wandb (the run
+    still writes `run_meta.yaml` + checkpoints locally).
     """
 
     pd: PDConfig
@@ -88,13 +57,7 @@ def init_pd_run[T: BaseConfig, D: BaseConfig](
     group: str | None,
     tags: str | None,
 ) -> RunSink:
-    """Allocate run_id + out_dir, write run_meta, return a sink.
-
-    Returns a local-only sink when `cfg.wandb` is None, or a wandb-backed sink when it
-    is set. `group` collects runs that were launched together (wandb's native collapsing
-    + workspace filter `ws.Metric("Group")`); `tags` is a comma-separated string of
-    orthogonal user-defined labels. Both are no-ops in local-only mode.
-    """
+    """Allocate `run_id` + `out_dir`, write `run_meta.yaml`, return a sink (local-only when `cfg.wandb is None`, else wandb-backed). `group` is a "launched together" id; `tags` is a comma-separated string of orthogonal labels."""
     run_id = generate_run_id("param_decomp")
     out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
     cfg.to_file(out_dir / RUN_META_FILENAME)

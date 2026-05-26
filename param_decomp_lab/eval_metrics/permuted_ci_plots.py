@@ -8,13 +8,7 @@ from param_decomp_lab.eval_metrics.plotting import plot_causal_importance_vals
 
 
 class PermutedCIPlotsConfig(BaseConfig):
-    """Config for `PermutedCIPlots`.
-
-    Attributes:
-        type: Discriminator literal for this metric.
-        identity_patterns: fnmatch patterns for layers permuted to align with identity.
-        dense_patterns: fnmatch patterns for layers permuted to align with dense.
-    """
+    """`identity_patterns` / `dense_patterns` are fnmatch patterns for layers permuted to align with the corresponding target solution."""
 
     type: Literal["PermutedCIPlots"] = "PermutedCIPlots"
     identity_patterns: list[str] | None

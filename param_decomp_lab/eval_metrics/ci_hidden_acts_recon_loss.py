@@ -12,12 +12,6 @@ from param_decomp.metrics.stochastic_hidden_acts_recon import (
 
 
 class CIHiddenActsReconLossConfig(BaseConfig):
-    """Config for `CIHiddenActsReconLoss`.
-
-    Attributes:
-        type: Discriminator literal for this metric.
-    """
-
     type: Literal["CIHiddenActsReconLoss"] = "CIHiddenActsReconLoss"
 
 

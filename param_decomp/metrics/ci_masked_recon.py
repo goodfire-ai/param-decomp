@@ -14,12 +14,6 @@ from param_decomp.metrics.context import MetricContext
 
 
 class CIMaskedReconLossConfig(LossMetricConfig):
-    """Config for `CIMaskedReconLoss`.
-
-    Attributes:
-        type: Discriminator literal `"CIMaskedReconLoss"`.
-    """
-
     type: Literal["CIMaskedReconLoss"] = "CIMaskedReconLoss"
 
 
@@ -48,11 +42,7 @@ def ci_masked_recon_loss(
 
 
 class CIMaskedReconLoss(Metric[CIMaskedReconLossConfig]):
-    """Recon loss when masking with CI values directly on all component layers.
-
-    Forwards the model with `mask = ci.lower_leaky` on every target layer and scores
-    reconstruction against the target output.
-    """
+    """Recon loss: forward with `mask = ci.lower_leaky` on every target layer, score against the target output."""
 
     log_namespace = "loss"
     short_name = "CIMaskRecon"

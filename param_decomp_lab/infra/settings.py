@@ -21,9 +21,7 @@ if CLUSTER_BASE_PATH is not None:
     CLUSTER_BASE_PATH.mkdir(parents=True, exist_ok=True)
 
 # Base directory for outputs (runs, logs, scripts, etc.).
-_default_out_dir = (
-    CLUSTER_BASE_PATH if CLUSTER_BASE_PATH is not None else "out"
-)
+_default_out_dir = CLUSTER_BASE_PATH if CLUSTER_BASE_PATH is not None else "out"
 PARAM_DECOMP_OUT_DIR = Path(os.environ.get("PARAM_DECOMP_OUT_DIR", _default_out_dir))
 PARAM_DECOMP_OUT_DIR.mkdir(parents=True, exist_ok=True)
 

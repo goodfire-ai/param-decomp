@@ -1,10 +1,4 @@
-"""Protocols for the callbacks `optimize()` invokes once per batch.
-
-The caller supplies concrete implementations — the lab ships a set in
-`param_decomp_lab.batch_and_loss_fns` (`run_batch_passthrough`,
-`run_batch_first_element`, `make_run_batch`, `recon_loss_mse`, `recon_loss_kl`),
-and tests/experiments compose those into `optimize(run_batch=..., reconstruction_loss=...)`.
-"""
+"""Protocols for the callbacks `optimize()` invokes once per batch (the lab ships concrete implementations in `param_decomp_lab.batch_and_loss_fns`)."""
 
 from typing import Any, Protocol
 
@@ -14,26 +8,19 @@ from torch import Tensor, nn
 
 
 class RunBatch(Protocol):
-    """Callable that runs one batch through ``model`` and returns the output tensor."""
+    """Callable that runs one batch through `model` and returns the output tensor."""
 
     def __call__(self, model: nn.Module, batch: Any) -> Tensor: ...
 
 
 class ReconstructionLoss(Protocol):
-    """Callable that compares ``pred`` against ``target`` and returns ``(sum, n_elements)``.
-
-    The first entry is the unreduced sum of per-element losses; the second is the number of
-    elements that were summed over. Callers reduce ``sum / n_elements`` to a mean as needed.
-    """
+    """Callable that compares `pred` against `target` and returns `(sum, n_elements)`: the unreduced sum of per-element losses and the count it summed over. Callers reduce `sum / n_elements` to a mean as needed."""
 
     def __call__(self, pred: Tensor, target: Tensor) -> tuple[Float[Tensor, ""], int]: ...
 
 
 def move_batch_to_device(batch: Any, device: str | torch.device) -> Any:
-    """Recursively move every ``Tensor`` in a (possibly nested) ``batch`` to ``device``.
-
-    Supports tensors, tuples, and dicts; passes other types through unchanged.
-    """
+    """Recursively move every `Tensor` in a (possibly nested) `batch` to `device`. Supports tensors, tuples, and dicts; passes other types through unchanged."""
     if isinstance(batch, Tensor):
         return batch.to(device)
     if isinstance(batch, tuple):

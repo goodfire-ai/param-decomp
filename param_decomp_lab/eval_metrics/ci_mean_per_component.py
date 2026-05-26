@@ -12,12 +12,6 @@ from param_decomp_lab.eval_metrics.plotting import plot_mean_component_cis_both_
 
 
 class CIMeanPerComponentConfig(BaseConfig):
-    """Config for `CIMeanPerComponent`.
-
-    Attributes:
-        type: Discriminator literal for this metric.
-    """
-
     type: Literal["CIMeanPerComponent"] = "CIMeanPerComponent"
 
 

@@ -1,14 +1,4 @@
-"""Persistent PGD reconstruction metric.
-
-Owns the PPGD loss-metric configs and the two `Metric` subclasses. The same metric instance
-returns the live training loss (driving outer backprop) and, at eval time, additionally
-tracks hidden-activation MSE breakdowns. The optimizer loop's `before_backward(loss)` and
-`after_backward()` hooks orchestrate the source-grad / source-step that brackets
-`total_loss.backward()`.
-
-Persistent state and the optimizer state machine live in
-`param_decomp.metrics.persistent_pgd_state`.
-"""
+"""PPGD `Metric` subclasses and their configs. The metric returns the live training loss and, at eval time, additionally tracks hidden-activation MSE breakdowns. `before_backward(loss)` and `after_backward()` orchestrate the source-grad / source-step around `total_loss.backward()`. Persistent state + optimizer state machine live in `persistent_pgd_state`."""
 
 from collections.abc import Iterable
 from typing import Annotated, ClassVar, Literal, override
@@ -44,20 +34,7 @@ from param_decomp.metrics.stochastic_hidden_acts_recon import (
 
 
 class _PersistentPGDBaseConfig(LossMetricConfig):
-    """Shared fields for persistent PGD configs.
-
-    Attributes:
-        optimizer: Optimizer used to step the adversarial sources (sign-PGD or Adam).
-        scope: Source-shape scope (single shared source, broadcast/repeat over batch,
-            or per-position).
-        use_sigmoid_parameterization: When True, sources are unconstrained and read
-            via sigmoid; when False, sources are clamped to `[0, 1]` after each step.
-        n_warmup_steps: Extra inner PGD source-optimization steps on each train batch
-            before the final loss computation.
-        start_frac: Fraction of training before this metric is gated off; before this
-            point `update` returns `None`.
-        n_samples: Number of mask draws per batch.
-    """
+    """Shared fields for persistent PGD configs. `update()` returns `None` before `start_frac` of training. Under `use_sigmoid_parameterization=True` sources are unconstrained and read via sigmoid; otherwise sources are clamped to `[0, 1]` after each step."""
 
     optimizer: Annotated[PGDOptimizerConfig, Field(discriminator="type")]
     scope: PersistentPGDSourceScope
@@ -74,24 +51,10 @@ class _PersistentPGDBaseConfig(LossMetricConfig):
 
 
 class PersistentPGDReconLossConfig(_PersistentPGDBaseConfig):
-    """Config for `PersistentPGDReconLoss` (all-layers routing).
-
-    Attributes:
-        type: Discriminator literal `"PersistentPGDReconLoss"`.
-    """
-
     type: Literal["PersistentPGDReconLoss"] = "PersistentPGDReconLoss"
 
 
 class PersistentPGDReconSubsetLossConfig(_PersistentPGDBaseConfig):
-    """Config for `PersistentPGDReconSubsetLoss` (subset routing).
-
-    Attributes:
-        type: Discriminator literal `"PersistentPGDReconSubsetLoss"`.
-        routing: Subset-routing strategy that selects which layers receive masks on
-            each forward.
-    """
-
     type: Literal["PersistentPGDReconSubsetLoss"] = "PersistentPGDReconSubsetLoss"
     routing: Annotated[
         SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
@@ -115,17 +78,7 @@ def validate_pgd_scope(
     batch_size: int,
     world_size: int,
 ) -> None:
-    """Assert persistent-PGD `repeat_across_batch` divides the per-rank training batch size.
-
-    Takes `world_size` directly (not a `DistributedState`) so this module doesn't have
-    to know about distributed plumbing. Callers pass
-    `dist_state.world_size if dist_state is not None else 1`.
-
-    Args:
-        loss_metrics: All configured loss-metric configs to scan.
-        batch_size: Global training batch size.
-        world_size: Number of distributed ranks.
-    """
+    """Assert persistent-PGD `repeat_across_batch` divides the per-rank training batch size. Takes `world_size` as an int (not a `DistributedState`) to avoid pulling distributed plumbing into this module."""
     assert batch_size % world_size == 0, (
         f"batch_size {batch_size} not divisible by world size {world_size}"
     )
@@ -146,11 +99,11 @@ class _PersistentPGDReconBase[
 ](Metric[TConfig]):
     """Shared logic between all-layers and subset PPGD recon metrics.
 
-    Lazily constructs the `PersistentPGDState` on the first `update` call so it can
-    snapshot the live batch shape. Returns the live recon loss on training steps and,
-    on eval batches, additionally accumulates output and per-module hidden-activation
-    MSE for `compute()`. The outer optimizer loop drives source updates via
-    `before_backward` and `after_backward`.
+    Lazily constructs the `PersistentPGDState` on the first `update` so it can snapshot
+    the live batch shape. Returns the live recon loss on training steps and, on eval
+    batches, additionally accumulates output and per-module hidden-activation MSE for
+    `compute()`. The outer optimizer loop drives source updates via `before_backward`
+    and `after_backward`.
     """
 
     log_namespace: ClassVar[str] = "loss"
@@ -281,20 +234,12 @@ class _PersistentPGDReconBase[
 
 
 class PersistentPGDReconLoss(_PersistentPGDReconBase[PersistentPGDReconLossConfig]):
-    """Persistent PGD adversarial-mask reconstruction loss (routes to all layers).
-
-    Drives components to reconstruct the target output under adversarially-optimized
-    masks whose source tensors persist across training steps.
-    """
+    """PPGD adversarial-mask recon loss (routes to all layers). Drives components to reconstruct the target output under adversarially-optimised masks whose source tensors persist across training steps."""
 
     short_name = "PersistPGDRecon"
 
 
 class PersistentPGDReconSubsetLoss(_PersistentPGDReconBase[PersistentPGDReconSubsetLossConfig]):
-    """Persistent PGD adversarial-mask reconstruction loss (subset routing).
-
-    Variant of `PersistentPGDReconLoss` that masks only a routed subset of layers per
-    forward.
-    """
+    """`PersistentPGDReconLoss` variant that masks only a routed subset of layers per forward."""
 
     short_name = "PersistPGDReconSub"

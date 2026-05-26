@@ -24,14 +24,7 @@ MaskScope = Literal["unique_per_datapoint", "shared_across_batch"]
 
 
 class PGDConfig(LossMetricConfig):
-    """Shared base for per-step PGD loss configs.
-
-    Attributes:
-        init: Initialization strategy for the adversarial sources.
-        step_size: Step size applied with `sign(grad)` on each inner PGD step.
-        n_steps: Number of inner PGD source-optimization steps per outer training batch.
-        mask_scope: Whether sources are per-datapoint or shared across the batch.
-    """
+    """Shared base for per-step PGD loss configs."""
 
     init: PGDInitStrategy
     step_size: float
@@ -44,7 +37,6 @@ def get_pgd_init_tensor(
     shape: tuple[int, ...] | torch.Size,
     device: torch.device | str,
 ) -> Float[Tensor, "... shape"]:
-    """Create initial PGD source tensor with the given `init` strategy (random/ones/zeroes)."""
     match init:
         case "random":
             return torch.rand(shape, device=device)
@@ -162,11 +154,7 @@ def pgd_masked_recon_loss_update(
     pgd_config: PGDConfig,
     reconstruction_loss: ReconstructionLoss,
 ) -> tuple[Float[Tensor, ""], int]:
-    """Run per-step PGD masked reconstruction and return `(sum_loss, n_examples)`.
-
-    Initializes fresh adversarial sources, runs `pgd_config.n_steps` of inner sign-PGD
-    against the recon objective, and returns the loss evaluated at the final sources.
-    """
+    """Per-step PGD masked recon: init fresh adversarial sources, run `pgd_config.n_steps` of inner sign-PGD against the recon objective, return `(sum_loss, n_examples)` evaluated at the final sources."""
     batch_dims = next(iter(ci.values())).shape[:-1]
     routing_masks = router.get_masks(module_names=model.target_module_paths, mask_shape=batch_dims)
     adv_sources = _init_adv_sources(model, batch_dims, target_out.device, weight_deltas, pgd_config)

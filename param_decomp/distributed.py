@@ -1,9 +1,4 @@
-"""Utilities for distributed data parallel training (torchrun or MPI).
-
-Process-group bring-up and teardown live in `param_decomp_lab.distributed`
-because only the lab experiment runners initialize distributed; core only reads
-the cached state and runs collectives.
-"""
+"""DDP utilities for the core trainer. Process-group bring-up/teardown lives in `param_decomp_lab.distributed` — core only reads cached state and runs collectives."""
 
 import os
 from collections.abc import Mapping
@@ -19,15 +14,6 @@ from torch.types import Number
 
 @dataclass(frozen=True, slots=True)
 class DistributedState:
-    """Immutable snapshot of the distributed runtime state for this process.
-
-    Attributes:
-        rank: Global rank of this process within the world.
-        world_size: Total number of processes participating in the job.
-        local_rank: Rank of this process within its node (one per GPU on multi-GPU nodes).
-        backend: The torch.distributed backend in use.
-    """
-
     rank: int
     world_size: int
     local_rank: int
@@ -44,10 +30,10 @@ _SHOULD_GET_INITIALIZED: bool = os.environ.get("WORLD_SIZE") is not None
 def get_distributed_state() -> DistributedState | None:
     """Return the cached distributed state for this process, or None when not distributed.
 
-    Whether the process is distributed is determined once at import time from the
-    ``WORLD_SIZE`` environment variable. In a distributed setting the state must have been
-    initialized by ``param_decomp_lab.distributed`` before this is called; otherwise the
-    state must remain unset. Both invariants are asserted.
+    Whether the process is distributed is decided once at import time from the
+    `WORLD_SIZE` env var. In a distributed setting the state must have been initialized
+    by `param_decomp_lab.distributed` before this is called; otherwise it must remain
+    unset. Both invariants are asserted.
     """
     if _SHOULD_GET_INITIALIZED:
         assert _state is not None
@@ -58,13 +44,12 @@ def get_distributed_state() -> DistributedState | None:
 
 
 def is_distributed() -> bool:
-    """Return True if this process is participating in a distributed job."""
     state = get_distributed_state()
     return state is not None
 
 
 def is_main_process() -> bool:
-    """Return True on global rank 0 (or always in non-distributed runs)."""
+    """True on global rank 0, or always in non-distributed runs."""
     state = get_distributed_state()
     if state is None:
         return True
@@ -72,7 +57,7 @@ def is_main_process() -> bool:
 
 
 def is_local_main_process() -> bool:
-    """Return True on local rank 0 (one process per node in multi-node setups)."""
+    """True on local rank 0 (one process per node in multi-node setups)."""
     state = get_distributed_state()
     if state is None:
         return True
@@ -88,19 +73,14 @@ def sync_across_processes() -> None:
 def all_reduce(
     tensor: torch.Tensor, op: dist.ReduceOp.RedOpType = dist.ReduceOp.SUM
 ) -> torch.Tensor:
-    """All-reduce ``tensor`` across all ranks in place; returns the same tensor unchanged
-    in non-distributed mode.
-
-    Args:
-        op: Reduction operation applied across ranks.
-    """
+    """All-reduce `tensor` across ranks in place; no-op in non-distributed mode."""
     if is_distributed():
         dist.all_reduce(tensor, op=op)
     return tensor
 
 
 def broadcast_tensor(tensor: Tensor) -> Tensor:
-    """Broadcast ``tensor`` from rank 0 to every other rank in place."""
+    """Broadcast `tensor` from rank 0 to every other rank in place."""
     if is_distributed():
         dist.broadcast(tensor, src=0)
     return tensor
@@ -109,12 +89,7 @@ def broadcast_tensor(tensor: Tensor) -> Tensor:
 def sum_metrics_across_ranks(
     metrics: Mapping[str, Number], device: str | torch.device
 ) -> Mapping[str, float]:
-    """Sum each metric value across all ranks.
-
-    Args:
-        metrics: Per-key scalar metrics to reduce. All ranks must pass the same keys.
-        device: Device used to stage the reduction tensor.
-    """
+    """Sum each metric value across all ranks. All ranks must pass the same keys."""
     assert is_distributed(), "Can only sum metrics across ranks if running in distributed mode"
     metric_values = torch.tensor([metrics[k] for k in metrics], device=device)
     metric_values = all_reduce(metric_values, op=ReduceOp.SUM)
@@ -124,13 +99,7 @@ def sum_metrics_across_ranks(
 def avg_metrics_across_ranks(
     metrics: Mapping[str, Number], device: str | torch.device
 ) -> Mapping[str, float]:
-    """Average each metric value across all ranks; returns ``metrics`` unchanged when
-    running non-distributed.
-
-    Args:
-        metrics: Per-key scalar metrics to reduce. All ranks must pass the same keys.
-        device: Device used to stage the reduction tensor.
-    """
+    """Average each metric value across all ranks. All ranks must pass the same keys; non-distributed runs return `metrics` unchanged."""
     state = get_distributed_state()
     if state is None:
         return metrics
@@ -141,11 +110,11 @@ def avg_metrics_across_ranks(
 
 
 def gather_all_tensors(tensor: Tensor) -> list[Tensor]:
-    """Gather ``tensor`` from every rank into a list indexed by rank.
+    """Gather `tensor` from every rank into a list indexed by rank.
 
     Requires identical shapes across ranks. The local rank's entry is replaced with the
     original tensor to preserve autograd through this rank's contribution. In
-    non-distributed mode returns ``[tensor]``.
+    non-distributed mode returns `[tensor]`.
     """
     state = get_distributed_state()
     if state is None:
@@ -163,18 +132,13 @@ def gather_all_tensors(tensor: Tensor) -> list[Tensor]:
 
 
 def seed_all_ranks(seed: int) -> None:
-    """Set the same torch CPU and (if available) CUDA RNG seed on every rank."""
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
 
 
 def seed_per_rank(base_seed: int) -> None:
-    """Seed the global RNG with a per-rank value so stochastic ops diverge across ranks.
-
-    The effective seed is ``base_seed * world_size + rank``, which is unique for every
-    ``(base_seed, rank)`` pair. In non-distributed mode this is just ``base_seed``.
-    """
+    """Seed the global RNG with `base_seed * world_size + rank` so stochastic ops diverge across ranks (non-distributed: just `base_seed`)."""
     dist_state = get_distributed_state()
     world_size = dist_state.world_size if dist_state is not None else 1
     rank = dist_state.rank if dist_state is not None else 0

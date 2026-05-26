@@ -37,19 +37,7 @@ def init_param_(
     nonlinearity: _NonlinearityType = "linear",
     generator: torch.Generator | None = None,
 ) -> None:
-    """Initialise ``param`` in place from a Kaiming normal distribution.
-
-    The std used is ``gain(nonlinearity) / sqrt(fan_val)``.
-
-    Args:
-        param: Parameter tensor to fill in place.
-        fan_val: Value used as ``fan`` in Kaiming normal: appears under the
-            square root in the denominator of std.
-        mean: Mean of the sampled normal distribution.
-        nonlinearity: Nonlinearity name passed to
-            :func:`torch.nn.init.calculate_gain`.
-        generator: Optional RNG for reproducibility.
-    """
+    """Fill `param` in place from `N(mean, gain(nonlinearity) / sqrt(fan_val))`."""
     gain: float = calculate_gain(nonlinearity)
     std: float = gain / math.sqrt(fan_val)
     with torch.no_grad():
@@ -57,28 +45,9 @@ def init_param_(
 
 
 class Components(ABC, nn.Module):
-    """Per-layer components that decompose a target weight matrix.
-
-    Subclasses replace the weight of a single ``nn.Linear``,
-    ``transformers.pytorch_utils.Conv1D``, or ``nn.Embedding`` with a sum of
-    ``C`` rank-1 outer products: ``weight ≈ sum_c V[:, c] ⊗ U[c, :]``. ``V`` maps
-    input activations to per-component scalars; ``U`` maps those scalars back to
-    the output space.
-
-    Attributes:
-        C: Number of components.
-        V: Input-projection parameter of shape ``[v_dim, C]``.
-        U: Output-projection parameter of shape ``[C, u_dim]``.
-    """
+    """Per-layer components decomposing a target weight as a sum of `C` rank-1 outer products: `weight ≈ sum_c V[:, c] ⊗ U[c, :]`. `V` maps input activations to per-component scalars; `U` maps them back to the output space."""
 
     def __init__(self, C: int, v_dim: int, u_dim: int):
-        """Initialise ``V`` and ``U`` parameters via Kaiming normal.
-
-        Args:
-            C: Number of components.
-            v_dim: Number of rows in the target weight matrix (input dim).
-            u_dim: Number of columns in the target weight matrix (output dim).
-        """
         super().__init__()
         self.C = C
         self.V = nn.Parameter(torch.empty(v_dim, C))
@@ -89,7 +58,6 @@ class Components(ABC, nn.Module):
     @property
     @abstractmethod
     def weight(self) -> Float[Tensor, "rows cols"]:
-        """Effective weight (``V @ U``, possibly transposed) for this component."""
         raise NotImplementedError()
 
     @override
@@ -100,22 +68,16 @@ class Components(ABC, nn.Module):
         mask: Tensor | None = None,
         weight_delta_and_mask: WeightDeltaAndMask | None = None,
     ) -> Tensor:
-        """Apply the masked decomposition (and optional weight-delta term) to ``x``."""
         raise NotImplementedError()
 
     @abstractmethod
     def get_component_acts(self, x: Tensor) -> Tensor:
-        """Per-component scalar activations ``V^T x`` for the input batch."""
+        """Per-component scalar activations `V^T x`."""
         raise NotImplementedError()
 
 
 class LinearComponents(Components):
-    """Components replacing an ``nn.Linear``-shaped weight.
-
-    The effective weight is ``(V @ U).T`` to match PyTorch's
-    ``[d_out, d_in]`` storage. A frozen bias from the target module may be
-    re-added in the forward; biases are not trained in PD.
-    """
+    """Components replacing an `nn.Linear`-shaped weight. Effective weight is `(V @ U).T` to match PyTorch's `[d_out, d_in]` storage; a frozen bias from the target module is re-added in the forward (biases are not trained in PD)."""
 
     bias: Float[Tensor, "... d_out"] | None
 
@@ -136,7 +98,6 @@ class LinearComponents(Components):
     @property
     @override
     def weight(self) -> Float[Tensor, "d_out d_in"]:
-        """``(V @ U).T`` — transposed to match ``nn.Linear``'s ``[d_out, d_in]``."""
         return einops.einsum(self.V, self.U, "d_in C, C d_out -> d_out d_in")
 
     @override
@@ -151,25 +112,11 @@ class LinearComponents(Components):
         weight_delta_and_mask: WeightDeltaAndMask | None = None,
         component_acts_cache: dict[str, Float[Tensor, "... C"]] | None = None,
     ) -> Float[Tensor, "... d_out"]:
-        """Apply ``mask * (V^T x)`` then project back by ``U``, plus optional delta term.
+        """Apply `mask * (V^T x)` then project back by `U`, plus optional `weight_delta @ x`.
 
-        When ``component_acts_cache`` is given, the pre- and post-detach
-        component activations are stored under the keys ``"pre_detach"`` and
-        ``"post_detach"`` for downstream gradient surgery (e.g. PPGD).
-
-        Args:
-            x: Input activations of shape ``[..., d_in]``.
-            mask: Per-component mask of shape ``[..., C]`` multiplied into the
-                component activations. ``None`` means no masking (unmasked
-                forward).
-            weight_delta_and_mask: Optional ``(weight_delta, weight_delta_mask)``
-                pair adding a residual ``weight_delta @ x`` term scaled by the
-                per-position mask. Enables the delta-component pathway.
-            component_acts_cache: Dict populated with pre/post-detach component
-                acts when provided.
-
-        Returns:
-            Output tensor of shape ``[..., d_out]`` with bias added if present.
+        When `component_acts_cache` is given, the pre- and post-detach component activations
+        are stored under the keys `"pre_detach"` and `"post_detach"` for downstream gradient
+        surgery (e.g. PPGD).
         """
         component_acts = self.get_component_acts(x)
         if component_acts_cache is not None:
@@ -197,12 +144,7 @@ class LinearComponents(Components):
 
 
 class EmbeddingComponents(Components):
-    """Components replacing an ``nn.Embedding`` weight.
-
-    Avoids materialising one-hot vectors by indexing ``V`` directly with the
-    input token ids. The effective weight is ``V @ U`` of shape
-    ``[vocab_size, embedding_dim]``.
-    """
+    """Components replacing an `nn.Embedding` weight. Avoids materialising one-hot vectors by indexing `V` directly with the input token ids."""
 
     def __init__(
         self,
@@ -217,7 +159,6 @@ class EmbeddingComponents(Components):
     @property
     @override
     def weight(self) -> Float[Tensor, "vocab_size embedding_dim"]:
-        """``V @ U`` — the effective embedding matrix."""
         return einops.einsum(
             self.V, self.U, "vocab_size C, C embedding_dim -> vocab_size embedding_dim"
         )
@@ -234,24 +175,7 @@ class EmbeddingComponents(Components):
         weight_delta_and_mask: WeightDeltaAndMask | None = None,
         component_acts_cache: dict[str, Float[Tensor, "... C"]] | None = None,
     ) -> Float[Tensor, "... embedding_dim"]:
-        """Embedding forward via index-into-``V``, masked, then projected by ``U``.
-
-        Equivalent to the ``LinearComponents`` forward but uses ``V[x]`` in
-        place of a one-hot matmul.
-
-        Args:
-            x: Long-tensor of token indices, shape ``[...]``.
-            mask: Per-component mask of shape ``[..., C]``, boolean or float.
-                ``None`` means no masking.
-            weight_delta_and_mask: Optional ``(weight_delta, weight_delta_mask)``
-                pair adding a residual ``weight_delta[x]`` term scaled by the
-                per-position mask.
-            component_acts_cache: Dict populated with pre/post-detach component
-                acts when provided.
-
-        Returns:
-            Output tensor of shape ``[..., embedding_dim]``.
-        """
+        """Embedding forward: index `V[x]`, mask, project by `U` (equivalent to `LinearComponents` forward but uses `V[x]` instead of a one-hot matmul). See `LinearComponents.forward` for `component_acts_cache` semantics."""
         assert x.dtype == torch.long, "x must be an integer tensor"
 
         component_acts: Float[Tensor, "... C"] = self.get_component_acts(x)
@@ -278,19 +202,7 @@ class EmbeddingComponents(Components):
 
 
 def get_module_input_dim(target_module: nn.Module) -> int:
-    """Input dimension of a Linear-like target module.
-
-    Args:
-        target_module: A target module of type ``nn.Linear``, Radford
-            ``Conv1D``, or :class:`Identity`. Embedding modules have no
-            numeric input dim and must be handled by callers separately.
-
-    Returns:
-        Input dimension ``d_in``.
-
-    Raises:
-        ValueError: For unsupported module types (including ``nn.Embedding``).
-    """
+    """`d_in` of a Linear-like target module (`nn.Linear`, Radford `Conv1D`, or `Identity`). Embeddings have no scalar input dim and must be handled separately."""
     match target_module:
         case nn.Linear():
             return target_module.weight.shape[1]
@@ -309,26 +221,12 @@ def make_components(
     target_model: nn.Module,
     module_to_c: dict[str, int],
 ) -> dict[str, Components]:
-    """Build one :class:`Components` instance per target module path.
+    """Build one `Components` instance per target module path. Dispatches by target-module type:
 
-    Dispatches by target-module type:
-
-    - ``nn.Linear`` → :class:`LinearComponents` (frozen bias carried over).
-    - Radford ``Conv1D`` → :class:`LinearComponents` with shapes swapped to
-      account for the transposed weight layout (frozen bias carried over).
-    - :class:`Identity` → :class:`LinearComponents` with ``d_in == d_out``
-      and no bias.
-    - ``nn.Embedding`` → :class:`EmbeddingComponents`.
-
-    Args:
-        target_model: Model that owns the target submodules.
-        module_to_c: Map from submodule path to component count ``C``.
-
-    Returns:
-        Dict keyed by submodule path mapping to the matching ``Components``.
-
-    Raises:
-        ValueError: For unsupported target-module types.
+    - `nn.Linear` → `LinearComponents` (frozen bias carried over).
+    - Radford `Conv1D` → `LinearComponents` with shapes swapped for the transposed weight layout.
+    - `Identity` → `LinearComponents` with `d_in == d_out` and no bias.
+    - `nn.Embedding` → `EmbeddingComponents`.
     """
     out: dict[str, Components] = {}
     for path, C in module_to_c.items():

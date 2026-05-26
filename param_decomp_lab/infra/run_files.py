@@ -52,14 +52,12 @@ def _save_text(data: str, path: Path | str, encoding: str = "utf-8") -> None:
 
 
 def save_file(data: dict[str, Any] | Any, path: Path | str, **kwargs: Any) -> None:
-    """Write ``data`` to ``path``, dispatching on the file extension.
+    """Write `data` to `path`, dispatching on extension. Creates parent dirs.
 
-    Ensures the parent directory exists. Format:
-
-    - ``.json`` → JSON via ``json.dump``
-    - ``.yaml`` / ``.yml`` → YAML via ``yaml.dump`` (sort_keys=False)
-    - ``.pth`` / ``.pt`` → ``torch.save``
-    - anything else → plain text (``data`` must be a string)
+    - `.json` → `json.dump`
+    - `.yaml` / `.yml` → `yaml.dump` (sort_keys=False)
+    - `.pth` / `.pt` → `torch.save`
+    - anything else → plain text (`data` must be a string)
     """
     path = Path(path)
     suffix = path.suffix.lower()

@@ -1,9 +1,4 @@
-"""Residual MLP PD experiment: YAML -> `optimize()` glue, plus the saved-run reload class.
-
-The fresh-run path (`main`) and the reload path (`SavedResidMLPRun`) both consume the
-module-level `build_target` / `build_resid_mlp_loader` / `make_run_batch` functions so there's
-no duplication between them. Run via ``pd-resid-mlp path/to/config.yaml``.
-"""
+"""ResidMLP PD experiment: YAML -> `optimize()` glue, plus the `SavedResidMLPRun` reload class. Run via `pd-resid-mlp path/to/config.yaml`."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,23 +31,11 @@ from param_decomp_lab.seed import set_seed
 
 
 class ResidMLPTargetConfig(BaseConfig):
-    """Path to the trained ResidMLP target run.
-
-    Attributes:
-        run_path: Local or wandb path to a ResidMLP pretrain run.
-    """
-
     run_path: str = Field(..., description="Local or wandb path to a ResidMLP pretrain run.")
 
 
 class ResidMLPDataConfig(BaseConfig):
-    """Synthetic-feature dataset settings for ResidMLP PD.
-
-    Attributes:
-        feature_probability: Probability that any individual feature is active in a sample.
-        data_generation_type: Whether each sample activates exactly one feature, exactly
-            two features, or any subset (including the empty set).
-    """
+    """Synthetic-feature dataset settings for ResidMLP PD."""
 
     feature_probability: Probability
     data_generation_type: Literal[
@@ -61,13 +44,11 @@ class ResidMLPDataConfig(BaseConfig):
 
 
 class ResidMLPExperimentConfig(ExperimentConfig[ResidMLPTargetConfig, ResidMLPDataConfig]):
-    """Full YAML schema for a ResidMLP PD run."""
-
     pass
 
 
 def build_target(target_cfg: ResidMLPTargetConfig) -> ResidMLP:
-    """Load the pretrained ResidMLP target model from `target_cfg.run_path` in eval mode."""
+    """Load the pretrained ResidMLP target model in eval mode."""
     run_info = ResidMLPTargetRunInfo.from_path(target_cfg.run_path)
     target_model = ResidMLP.from_run_info(run_info)
     target_model.eval()
@@ -84,11 +65,7 @@ def build_resid_mlp_loader(
     dist_state: DistributedState | None = None,
     seed: int | None = None,
 ) -> DataLoader[Any]:
-    """Build a synthetic `ResidMLPDataset` loader.
-
-    The dataset is synthetic and infinite, so `split`, `dist_state`, and `seed` are
-    ignored — train and eval loaders are constructed identically.
-    """
+    """Synthetic `ResidMLPDataset` loader. The dataset is infinite, so `split` / `dist_state` / `seed` are ignored — train and eval loaders are identical."""
     del split, dist_state, seed
     train_config = ResidMLPTargetRunInfo.from_path(target_cfg.run_path).config
     dataset = ResidMLPDataset(
@@ -108,19 +85,14 @@ def build_resid_mlp_loader(
 
 
 def make_run_batch(target_cfg: ResidMLPTargetConfig) -> RunBatch:
-    """Return the `RunBatch` callable for ResidMLP — unwraps the (inputs, labels) tuple."""
+    """`RunBatch` for ResidMLP: unwraps the `(inputs, labels)` tuple."""
     del target_cfg
     return run_batch_first_element
 
 
 @dataclass(frozen=True)
 class SavedResidMLPRun:
-    """Handle to a completed ResidMLP PD run on disk or in W&B.
-
-    Attributes:
-        cfg: The resolved `ResidMLPExperimentConfig` from ``run_meta.yaml``.
-        checkpoint_path: Resolved local path to the chosen ``model_<step>.pth`` file.
-    """
+    """Handle to a completed ResidMLP PD run on disk or in W&B."""
 
     cfg: ResidMLPExperimentConfig
     checkpoint_path: Path
@@ -137,7 +109,6 @@ class SavedResidMLPRun:
         )
 
     def load_model(self) -> ComponentModel:
-        """Materialize the `ComponentModel` from the saved checkpoint."""
         return load_component_model(
             pd_config=self.cfg.pd,
             checkpoint_path=self.checkpoint_path,
@@ -152,16 +123,7 @@ def main(
     group: str | None = None,
     tags: str | None = None,
 ) -> None:
-    """Run a ResidMLP PD experiment end-to-end from a YAML config.
-
-    Parses the YAML into `ResidMLPExperimentConfig`, builds the target / loaders /
-    eval loop, writes ``run_meta.yaml``, and calls `optimize(...)`.
-
-    Args:
-        config_path: Path to the experiment YAML config.
-        group: Wandb group for "launched together" collapsing.
-        tags: Comma-separated wandb tags (orthogonal to `group`; many per run).
-    """
+    """Run a ResidMLP PD experiment end-to-end from a YAML config. `group` / `tags` are wandb-only."""
     cfg = ResidMLPExperimentConfig.from_file(config_path)
 
     set_seed(cfg.pd.seed)
@@ -195,7 +157,7 @@ def main(
 
 
 def _build_eval_loop(cfg: ResidMLPExperimentConfig, device: str) -> EvalLoop | None:
-    """Build the optional `EvalLoop` from `cfg.eval`, returning None when eval is disabled."""
+    """Build the `EvalLoop` from `cfg.eval`, or `None` when eval is disabled."""
     if cfg.eval is None:
         return None
     return EvalLoop(

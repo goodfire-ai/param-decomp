@@ -1,10 +1,4 @@
-"""Language-model PD experiment: YAML -> `optimize()` glue, plus the saved-run reload class.
-
-The fresh-run path (`main`) and the reload path (`SavedLMRun`) both consume the
-module-level `build_target` / `build_lm_loader` / `make_run_batch` functions so there's
-no duplication between them. Run via ``pd-lm path/to/config.yaml``; multi-process
-(DDP) entry via ``torchrun`` of the same module.
-"""
+"""LM PD experiment: YAML -> `optimize()` glue, plus the `SavedLMRun` reload class. Both the fresh-run path (`main`) and the reload path share the module-level `build_target` / `build_lm_loader` / `make_run_batch`. Run via `pd-lm path/to/config.yaml` (or `torchrun` for DDP)."""
 
 import importlib
 from dataclasses import dataclass
@@ -56,13 +50,7 @@ def _resolve_class(fqn: str) -> type:
 
 
 class HFTarget(BaseConfig):
-    """Load a HuggingFace model via ``<class>.from_pretrained(<hub_id>)``.
-
-    Attributes:
-        kind: Discriminator literal for `LMTargetSpec`.
-        model_class: Fully-qualified class name, e.g. `transformers.GPT2LMHeadModel`.
-        model_name: Hugging Face Hub identifier passed to `from_pretrained`.
-    """
+    """Load a HuggingFace model via `<model_class>.from_pretrained(<model_name>)`."""
 
     kind: Literal["hf"] = "hf"
     model_class: str
@@ -70,15 +58,7 @@ class HFTarget(BaseConfig):
 
 
 class PretrainedTarget(BaseConfig):
-    """Load an in-repo lab-pretrained model from a wandb/local pretrain run.
-
-    Attributes:
-        kind: Discriminator literal for `LMTargetSpec`.
-        model_class: Fully-qualified class name, e.g. `transformers.LlamaForCausalLM`.
-        run_path: Any form `PretrainRunInfo.from_path` accepts — compact W&B
-            (``entity/project/runId``), full W&B (``entity/project/runs/runId``), or a
-            local checkpoint path.
-    """
+    """Load an in-repo lab-pretrained model. `run_path` accepts any form `PretrainRunInfo.from_path` does — compact W&B (`entity/project/runId`), full W&B (`entity/project/runs/runId`), or a local checkpoint path."""
 
     kind: Literal["pretrained"] = "pretrained"
     model_class: str
@@ -89,26 +69,16 @@ LMTargetSpec = Annotated[
     HFTarget | PretrainedTarget,
     Discriminator("kind"),
 ]
-"""Discriminated union over LM target sources, keyed on ``kind`` (`"hf"` vs `"pretrained"`)."""
 
 
 class LMTargetConfig(BaseConfig):
-    """How to load the LM target plus how to extract its prediction tensor.
-
-    Attributes:
-        spec: Discriminated union selecting between a HuggingFace model and an in-repo
-            lab-pretrained model.
-        output_extract: Key/index passed to the `RunBatch` helper to pull the prediction
-            tensor out of the model's forward output (defaults to `"logits"`).
-    """
+    """`output_extract` (passed to `make_run_batch`) pulls the prediction tensor out of the model's forward output (default `"logits"`)."""
 
     spec: LMTargetSpec
     output_extract: int | str | None = "logits"
 
 
 class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
-    """Full YAML schema for an LM PD run."""
-
     pass
 
 
@@ -140,11 +110,7 @@ def build_lm_loader(
     dist_state: DistributedState | None = None,
     seed: int | None = None,
 ) -> DataLoader[Any]:
-    """Build the LM `DataLoader` for the requested split.
-
-    The eval seed is offset by 1 so eval shuffles differently from train when both are
-    constructed from the same `pd_config.seed`.
-    """
+    """LM `DataLoader` for the requested split. The eval seed is offset by 1 so eval shuffles differently from train when both come from the same `pd_config.seed`."""
     del target_cfg, device
     effective_seed = (seed or 0) + (1 if split == "eval" else 0)
     split_name = data_cfg.eval_split if split == "eval" else data_cfg.train_split
@@ -160,18 +126,12 @@ def build_lm_loader(
 
 
 def make_run_batch(target_cfg: LMTargetConfig) -> RunBatch:
-    """Return the `RunBatch` callable bound to `target_cfg.output_extract`."""
     return _make_run_batch(target_cfg.output_extract)
 
 
 @dataclass(frozen=True)
 class SavedLMRun:
-    """Handle to a completed LM PD run on disk or in W&B.
-
-    Attributes:
-        cfg: The resolved `LMExperimentConfig` from ``run_meta.yaml``.
-        checkpoint_path: Resolved local path to the chosen ``model_<step>.pth`` file.
-    """
+    """Handle to a completed LM PD run on disk or in W&B."""
 
     cfg: LMExperimentConfig
     checkpoint_path: Path
@@ -188,7 +148,6 @@ class SavedLMRun:
         )
 
     def load_model(self) -> ComponentModel:
-        """Materialize the `ComponentModel` from the saved checkpoint."""
         return load_component_model(
             pd_config=self.cfg.pd,
             checkpoint_path=self.checkpoint_path,
@@ -204,19 +163,7 @@ def main(
     group: str | None = None,
     tags: str | None = None,
 ) -> None:
-    """Run an LM PD experiment end-to-end from a YAML config.
-
-    Parses the YAML into `LMExperimentConfig`, initialises DDP, builds the target /
-    loaders / eval loop, writes ``run_meta.yaml`` on the main rank, and calls
-    `optimize(...)`. Non-main ranks use a silent sink.
-
-    Args:
-        config_path: Path to the experiment YAML config.
-        group: Wandb group for "launched together" collapsing. `pd-lm-layerwise`
-            sets this automatically per array; pass it by hand to stamp ad-hoc
-            multi-launches as one experiment.
-        tags: Comma-separated wandb tags (orthogonal to `group`; many per run).
-    """
+    """Run an LM PD experiment end-to-end from a YAML config: parse, init DDP, build target / loaders / eval loop, write `run_meta.yaml`, call `optimize(...)`. Non-main ranks use a silent sink. `group` / `tags` are wandb-only (no-ops without `wandb:`)."""
     cfg = LMExperimentConfig.from_file(config_path)
 
     dist_state = init_distributed()
@@ -262,7 +209,7 @@ def _build_eval_loop(
     device: str,
     dist_state: DistributedState | None,
 ) -> EvalLoop | None:
-    """Build the optional `EvalLoop` from `cfg.eval`, returning None when eval is disabled."""
+    """Build the `EvalLoop` from `cfg.eval`, or `None` when eval is disabled."""
     if cfg.eval is None:
         return None
     eval_loader = build_lm_loader(

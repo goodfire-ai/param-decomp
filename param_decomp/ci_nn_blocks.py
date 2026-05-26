@@ -12,11 +12,7 @@ from param_decomp.components import _NonlinearityType, init_param_
 
 
 class ParallelLinear(nn.Module):
-    """Stack of ``C`` independent linear layers applied in parallel along an extra axis.
-
-    Weights have shape ``[C, d_in, d_out]`` and biases ``[C, d_out]``. Each of the ``C``
-    slices is initialized independently via :func:`init_param_`.
-    """
+    """`C` independent linear layers applied in parallel along an extra axis. Weights `[C, d_in, d_out]`, biases `[C, d_out]`; each slice is initialised independently via `init_param_`."""
 
     def __init__(self, C: int, input_dim: int, output_dim: int, nonlinearity: _NonlinearityType):
         super().__init__()
@@ -32,11 +28,7 @@ class ParallelLinear(nn.Module):
 
 
 class Linear(nn.Module):
-    """Linear layer with zero-initialized bias and fan-in-aware weight init.
-
-    Weights have shape ``[d_in, d_out]`` and are initialized by :func:`init_param_` using
-    the input dimension as the fan value.
-    """
+    """Linear layer with zero-initialised bias and `init_param_` weight init (fan value = `input_dim`)."""
 
     def __init__(self, input_dim: int, output_dim: int, nonlinearity: _NonlinearityType):
         super().__init__()
@@ -52,12 +44,7 @@ class Linear(nn.Module):
 
 
 class RoPEEmbedding(nn.Module):
-    """Rotary Position Embedding applied to query/key tensors.
-
-    Encodes relative position by rotating the query and key vectors in 2D subspaces of the
-    head dimension. Requires an even ``d_head``. Supports any sequence length up to
-    ``max_len``; ``base`` is the standard RoPE frequency base.
-    """
+    """Rotary Position Embedding applied to query/key tensors. Requires even `d_head`; supports sequence lengths up to `max_len`."""
 
     def __init__(self, d_head: int, max_len: int = 2048, base: float = 10000.0):
         super().__init__()
@@ -73,7 +60,6 @@ class RoPEEmbedding(nn.Module):
         q: Float[Tensor, "... n_heads seq d_head"],
         k: Float[Tensor, "... n_heads seq d_head"],
     ) -> tuple[Float[Tensor, "... n_heads seq d_head"], Float[Tensor, "... n_heads seq d_head"]]:
-        """Rotate ``q`` and ``k`` by their per-position RoPE angles and return both."""
         seq_len = q.shape[-2]
         assert seq_len <= self.max_len, f"seq_len {seq_len} exceeds max_len {self.max_len}"
 
@@ -101,11 +87,7 @@ class RoPEEmbedding(nn.Module):
 
 
 class SelfAttention(nn.Module):
-    """Multi-head bidirectional self-attention with RoPE.
-
-    Uses ``scaled_dot_product_attention`` with ``is_causal=False``. ``d_model`` must be
-    divisible by ``n_heads``; the per-head dim is the quotient.
-    """
+    """Multi-head bidirectional self-attention with RoPE (`is_causal=False`). `d_model` must be divisible by `n_heads`."""
 
     def __init__(self, d_model: int, n_heads: int, max_len: int = 2048, rope_base: float = 10000.0):
         super().__init__()
@@ -124,7 +106,6 @@ class SelfAttention(nn.Module):
 
     @override
     def forward(self, x: Float[Tensor, "... seq d_model"]) -> Float[Tensor, "... seq d_model"]:
-        """Run bidirectional self-attention with RoPE applied to queries and keys."""
         *batch_dims, seq_len, _ = x.shape
 
         q = self.q_proj(x)
@@ -146,11 +127,7 @@ class SelfAttention(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    """Pre-norm transformer block: RMSNorm-attn-residual then RMSNorm-MLP-residual.
-
-    The MLP is a stack of :class:`Linear` layers with GELU between hidden layers and a
-    linear projection back to ``d_model`` at the end.
-    """
+    """Pre-norm transformer block: RMSNorm-attn-residual then RMSNorm-MLP-residual. The MLP is `Linear` layers with GELU between hidden layers and a linear projection back to `d_model`."""
 
     def __init__(
         self,

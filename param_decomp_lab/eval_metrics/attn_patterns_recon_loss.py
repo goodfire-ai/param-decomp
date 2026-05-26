@@ -24,21 +24,13 @@ from param_decomp.metrics.context import MetricContext
 
 
 class _AttnPatternsBaseConfig(BaseConfig):
-    """Shared config for attention-pattern reconstruction metrics.
+    """Shared config for attention-pattern recon metrics.
 
-    Supports standard attention and RoPE attention (auto-detected from the parent
-    attention module). Models using ALiBi, QK-norm, sliding window, etc. are not
-    supported.
+    Supports standard attention and RoPE (auto-detected from the parent attention
+    module). ALiBi / QK-norm / sliding window are not supported.
 
-    Attributes:
-        n_heads: Number of query heads in the attention module (used to reshape Q/K).
-        q_proj_path: fnmatch pattern matching the Q-projection module path. Mutually
-            exclusive with `c_attn_path`.
-        k_proj_path: fnmatch pattern matching the K-projection module path. Required
-            iff `q_proj_path` is set.
-        c_attn_path: fnmatch pattern matching a combined QKV projection module path
-            (output split as ``[Q | K | V]`` along the last dim). Mutually exclusive
-            with `q_proj_path` / `k_proj_path`.
+    Either `(q_proj_path, k_proj_path)` or `c_attn_path` must be set (combined QKV with
+    output split as `[Q | K | V]` along the last dim) — not both, not neither.
     """
 
     n_heads: int
@@ -57,14 +49,10 @@ class _AttnPatternsBaseConfig(BaseConfig):
 
 
 class CIMaskedAttnPatternsReconLossConfig(_AttnPatternsBaseConfig):
-    """Config for `CIMaskedAttnPatternsReconLoss`."""
-
     type: Literal["CIMaskedAttnPatternsReconLoss"] = "CIMaskedAttnPatternsReconLoss"
 
 
 class StochasticAttnPatternsReconLossConfig(_AttnPatternsBaseConfig):
-    """Config for `StochasticAttnPatternsReconLoss`."""
-
     type: Literal["StochasticAttnPatternsReconLoss"] = "StochasticAttnPatternsReconLoss"
 
 
@@ -193,11 +181,7 @@ def _attn_patterns_recon_loss_update(
 
 
 class _AttnPatternsBase(Metric[_AttnPatternsBaseConfig], ABC):
-    """Shared bind/reset/accumulate/compute for both attn-pattern metrics.
-
-    Accumulates a sum of per-distribution KLs and a count of distributions across all
-    matched attention layers; `compute` returns the mean.
-    """
+    """Shared bind/reset/accumulate/compute for both attn-pattern metrics. Accumulates per-distribution KLs and a count of distributions across all matched attention layers; `compute` returns the mean."""
 
     @override
     def bind(self, *, model: ComponentModel, device: str) -> None:
@@ -249,10 +233,7 @@ class CIMaskedAttnPatternsReconLoss(_AttnPatternsBase):
 
 
 class StochasticAttnPatternsReconLoss(_AttnPatternsBase):
-    """Attention pattern KL between stochastically-masked components and full ones.
-
-    Averages over ``ctx.n_mask_samples`` mask draws per batch.
-    """
+    """Attention pattern KL between stochastically-masked components and full ones. Averages over `ctx.n_mask_samples` mask draws per batch."""
 
     log_namespace = "loss"
     short_name = "StochAttnRecon"

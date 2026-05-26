@@ -1,13 +1,4 @@
-"""Lab eval metrics shipped for the in-repo experiments.
-
-YAML configs reference these by ``type: "<ClassName>"`` under ``eval.metrics:``,
-mirroring the loss-metric pattern. `AnyEvalMetricConfig` is the pydantic discriminated
-union used to validate each entry; `EVAL_METRIC_CLASSES` is the runtime dispatch from
-the ``type`` literal to the matching `Metric` subclass.
-
-External users defining their own eval metric instantiate it directly in ``run.py`` and
-include it in the `EvalLoop(metrics=...)` they pass to `optimize`.
-"""
+"""Lab eval metrics shipped for the in-repo experiments. YAML `eval.metrics` entries are validated against `AnyEvalMetricConfig` and dispatched to the matching `Metric` subclass via `EVAL_METRIC_CLASSES`. External users instantiate their own eval metrics directly and pass them in `EvalLoop(metrics=...)`."""
 
 from typing import Annotated, Any
 

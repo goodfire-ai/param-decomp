@@ -21,39 +21,28 @@ from param_decomp_lab.batch_and_loss_fns import calc_kl_divergence_lm
 
 
 class CEandKLLossesConfig(BaseConfig):
-    """Config for `CEandKLLosses`.
-
-    Attributes:
-        type: Discriminator literal for this metric.
-        rounding_threshold: Threshold used to binarize CI into the ``*_rounded_masked``
-            mask variant (``ci > threshold`` -> 1, else 0).
-    """
+    """`rounding_threshold` binarises CI into the `*_rounded_masked` variant (`ci > threshold` -> 1)."""
 
     type: Literal["CEandKLLosses"] = "CEandKLLosses"
     rounding_threshold: float
 
 
 class CEandKLLosses(Metric[CEandKLLossesConfig]):
-    """Cross-entropy and KL losses under several CI masking strategies.
+    """Cross-entropy and KL losses under six CI masking strategies.
 
-    Each batch is run through the component model with six mask variants and compared
-    against (a) next-token labels (CE) and (b) the target model's logits (KL):
+    Each batch runs through the component model with six mask variants and is compared
+    against next-token labels (CE) and the target model's logits (KL):
 
-        - ``ci_masked``: components multiplied by CI lower-leaky values.
-        - ``unmasked``: all components on (mask of ones).
-        - ``stoch_masked``: stochastic mask derived from CI via the configured sampler.
-        - ``random_masked``: uniform random mask in [0, 1).
-        - ``rounded_masked``: CI binarized at ``cfg.rounding_threshold``.
-        - ``zero_masked``: all components off (mask of zeros) — used as the CE ceiling.
+    - `ci_masked`: components multiplied by CI lower-leaky values.
+    - `unmasked`: all components on (mask of ones).
+    - `stoch_masked`: stochastic mask derived from CI via the configured sampler.
+    - `random_masked`: uniform random mask in `[0, 1)`.
+    - `rounded_masked`: CI binarised at `cfg.rounding_threshold`.
+    - `zero_masked`: all components off — CE ceiling.
 
-    Three families of result keys are produced:
-
-        - ``kl_<variant>``: mean per-position KL against the target model.
-        - ``ce_difference_<variant>``: CE minus the target model's CE.
-        - ``ce_unrecovered_<variant>``: fraction of the CE gap left, scaled so the
-          target model is 0 and the zero-masked model is 1.
-
-    Assumes all batches and sequences are the same size.
+    Result keys: `kl_<variant>` (mean per-position KL vs target), `ce_difference_<variant>`
+    (CE minus target's CE), `ce_unrecovered_<variant>` (fraction of CE gap left, scaled
+    so target=0 and zero-masked=1). Assumes uniform batch + sequence size.
     """
 
     log_namespace = "ce_kl"

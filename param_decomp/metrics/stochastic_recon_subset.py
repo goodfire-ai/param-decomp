@@ -23,14 +23,6 @@ from param_decomp.torch_helpers import get_obj_device
 
 
 class StochasticReconSubsetLossConfig(LossMetricConfig):
-    """Config for `StochasticReconSubsetLoss`.
-
-    Attributes:
-        type: Discriminator literal `"StochasticReconSubsetLoss"`.
-        routing: Subset-routing strategy that selects which layers receive stochastic
-            masks on each forward pass.
-    """
-
     type: Literal["StochasticReconSubsetLoss"] = "StochasticReconSubsetLoss"
     routing: Annotated[
         SubsetRoutingType, Field(discriminator="type", default=UniformKSubsetRoutingConfig())
@@ -95,12 +87,7 @@ def stochastic_recon_subset_loss(
 
 
 class StochasticReconSubsetLoss(Metric[StochasticReconSubsetLossConfig]):
-    """Recon loss when sampling stochastic masks and routing to subsets of component layers.
-
-    Each sample draws stochastic component masks on a routed subset of layers (per
-    `cfg.routing`) and forwards the whole batch through that masked model; results are
-    summed across `ctx.n_mask_samples` draws.
-    """
+    """Stochastic recon loss with masks applied only on a routed subset of layers (per `cfg.routing`). Sums recon loss across `ctx.n_mask_samples` draws."""
 
     log_namespace = "loss"
     short_name = "StochReconSub"

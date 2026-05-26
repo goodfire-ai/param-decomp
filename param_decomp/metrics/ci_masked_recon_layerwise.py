@@ -15,12 +15,6 @@ from param_decomp.torch_helpers import get_obj_device
 
 
 class CIMaskedReconLayerwiseLossConfig(LossMetricConfig):
-    """Config for `CIMaskedReconLayerwiseLoss`.
-
-    Attributes:
-        type: Discriminator literal `"CIMaskedReconLayerwiseLoss"`.
-    """
-
     type: Literal["CIMaskedReconLayerwiseLoss"] = "CIMaskedReconLayerwiseLoss"
 
 
@@ -57,11 +51,7 @@ def ci_masked_recon_layerwise_loss(
 
 
 class CIMaskedReconLayerwiseLoss(Metric[CIMaskedReconLayerwiseLossConfig]):
-    """Recon loss when masking with CI values directly one layer at a time.
-
-    Sums per-layer reconstruction losses, each obtained by masking only that single
-    layer with `ci.lower_leaky` and leaving the rest of the model untouched.
-    """
+    """Recon loss: mask one layer at a time with `ci.lower_leaky`, sum the per-layer recon losses."""
 
     log_namespace = "loss"
     short_name = "CIMaskReconLayer"

@@ -8,13 +8,7 @@ from param_decomp_lab.eval_metrics.plotting import plot_causal_importance_vals, 
 
 
 class UVPlotsConfig(BaseConfig):
-    """Config for `UVPlots`.
-
-    Attributes:
-        type: Discriminator literal for this metric.
-        identity_patterns: fnmatch patterns for layers permuted to align with identity.
-        dense_patterns: fnmatch patterns for layers permuted to align with dense.
-    """
+    """`identity_patterns` / `dense_patterns` are fnmatch patterns for layers permuted to align with the corresponding target solution."""
 
     type: Literal["UVPlots"] = "UVPlots"
     identity_patterns: list[str] | None

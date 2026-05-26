@@ -1,10 +1,4 @@
-"""Persistent PGD state machine.
-
-Owns the per-step adversarial source tensors, the optimizer that updates them, and the
-recon-forward used to score them. Knows nothing about the higher-level `Metric` API or its
-discriminator-keyed configs — the metric layer (`persistent_pgd_recon.py`) composes these
-primitives.
-"""
+"""Persistent PGD state machine: owns per-step adversarial source tensors, the optimizer that updates them, and the recon-forward used to score them. The metric layer (`persistent_pgd_recon.py`) composes these primitives."""
 
 from abc import ABC, abstractmethod
 from typing import Annotated, Literal, override
@@ -31,27 +25,14 @@ from param_decomp.schedule import ScheduleConfig, get_scheduled_value
 
 
 class SignPGDConfig(BaseConfig):
-    """Sign-PGD optimizer config (adds `lr * sign(grad)` to sources).
-
-    Attributes:
-        type: Discriminator literal `"sign"`.
-        lr_schedule: Schedule driving the step size over training.
-    """
+    """Sign-PGD optimizer config (adds `lr * sign(grad)` to sources)."""
 
     type: Literal["sign"] = "sign"
     lr_schedule: ScheduleConfig
 
 
 class AdamPGDConfig(BaseConfig):
-    """Adam-style PGD optimizer config.
-
-    Attributes:
-        type: Discriminator literal `"adam"`.
-        beta1: Exponential decay for the first moment estimate.
-        beta2: Exponential decay for the second moment estimate.
-        eps: Small constant added to the sqrt of the second-moment estimate.
-        lr_schedule: Schedule driving the learning rate over training.
-    """
+    """Adam-style PGD optimizer config."""
 
     type: Literal["adam"] = "adam"
     beta1: Probability = Field(default=0.9, description="Adam beta1 for masks")
@@ -64,45 +45,26 @@ PGDOptimizerConfig = SignPGDConfig | AdamPGDConfig
 
 
 class SingleSourceScope(BaseConfig):
-    """PPGD source scope: one shared source vector across the whole batch.
-
-    Attributes:
-        type: Discriminator literal `"single_source"`.
-    """
+    """PPGD source scope: one shared source vector across the whole batch."""
 
     type: Literal["single_source"] = "single_source"
 
 
 class BroadcastAcrossBatchScope(BaseConfig):
-    """PPGD source scope: shared across batch elements but free along other batch dims.
-
-    Attributes:
-        type: Discriminator literal `"broadcast_across_batch"`.
-    """
+    """PPGD source scope: shared across batch elements but free along other batch dims."""
 
     type: Literal["broadcast_across_batch"] = "broadcast_across_batch"
 
 
 class RepeatAcrossBatchScope(BaseConfig):
-    """PPGD source scope: `n_sources` source vectors tiled along the batch dim.
-
-    Attributes:
-        type: Discriminator literal `"repeat_across_batch"`.
-        n_sources: Number of distinct sources, must divide the per-rank batch size.
-    """
+    """PPGD source scope: `n_sources` source vectors tiled along the batch dim. `n_sources` must divide the per-rank batch size."""
 
     type: Literal["repeat_across_batch"] = "repeat_across_batch"
     n_sources: PositiveInt
 
 
 class PerBatchPerPositionScope(BaseConfig):
-    """PPGD source scope: an independent source per batch element and position.
-
-    Skips cross-rank synchronization of source state.
-
-    Attributes:
-        type: Discriminator literal `"per_batch_per_position"`.
-    """
+    """PPGD source scope: an independent source per batch element and position. Skips cross-rank synchronization of source state."""
 
     type: Literal["per_batch_per_position"] = "per_batch_per_position"
 
@@ -123,16 +85,14 @@ class PPGDOptimizer(ABC):
     """Interface for persistent PGD optimizers."""
 
     @abstractmethod
-    def init_state(self, sources: PPGDSources) -> None:
-        """Initialize any optimizer-specific state for the given sources."""
+    def init_state(self, sources: PPGDSources) -> None: ...
 
     @abstractmethod
     def step(self, sources: PPGDSources, grads: PPGDSources) -> None:
-        """Perform one update step on `sources` in-place using `grads`."""
+        """One update step on `sources` in-place using `grads`."""
 
     @abstractmethod
-    def set_lr(self, lr: float) -> None:
-        """Update the learning rate / step size."""
+    def set_lr(self, lr: float) -> None: ...
 
 
 class SignPGDOptimizer(PPGDOptimizer):
@@ -199,14 +159,7 @@ def make_ppgd_optimizer(cfg: PGDOptimizerConfig) -> PPGDOptimizer:
 
 
 class PersistentPGDState:
-    """Persistent state for persistent PGD optimization.
-
-    Holds adversarial sources per module that persist across training steps.  Source
-    shape depends on scope: shared across batch (`SingleSourceScope`,
-    `BroadcastAcrossBatchScope`), repeated along the batch dim
-    (`RepeatAcrossBatchScope`), or per-batch-element-per-position with no cross-rank
-    synchronization (`PerBatchPerPositionScope`).
-    """
+    """Per-module adversarial sources that persist across training steps. Source shape depends on scope (`SingleSourceScope`, `BroadcastAcrossBatchScope`, `RepeatAcrossBatchScope`, `PerBatchPerPositionScope`)."""
 
     def __init__(
         self,
@@ -271,12 +224,7 @@ class PersistentPGDState:
         }
 
     def step(self, grads: PPGDSources) -> None:
-        """Perform one PGD update step using the provided gradients.
-
-        Updates sources in-place, then clamps to `[0, 1]` (or leaves unbounded when
-        using sigmoid parameterization, where sigmoid is applied when reading
-        effective sources).
-        """
+        """One PGD update step using `grads`. Sources are clamped to `[0, 1]` after, unless sigmoid parameterization is on (then left unbounded and sigmoid is applied when reading effective sources)."""
         with torch.no_grad():
             self.optimizer.step(self.sources, grads)
 
@@ -285,11 +233,7 @@ class PersistentPGDState:
                     source.clamp_(0.0, 1.0)
 
     def get_effective_sources(self) -> PPGDSources:
-        """Return sources in `[0, 1]` range.
-
-        If using sigmoid parameterization, applies sigmoid to unconstrained values.
-        Otherwise returns raw sources (already clamped to `[0, 1]`).
-        """
+        """Sources in `[0, 1]` range. Under sigmoid parameterization, applies sigmoid to unconstrained values; otherwise returns the raw clamped sources."""
         if self._use_sigmoid_parameterization:
             return {k: torch.sigmoid(v) for k, v in self.sources.items()}
         return self.sources
@@ -306,11 +250,7 @@ class PersistentPGDState:
         ci: dict[str, Float[Tensor, "... C"]],
         weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
     ) -> None:
-        """Run extra PGD steps to refine adversarial sources before the final loss computation.
-
-        Each step computes the recon loss, extracts gradients, and updates sources
-        in-place. When `n_warmup_steps=0` (default), this is a no-op.
-        """
+        """Run extra PGD steps to refine adversarial sources before the final loss computation. No-op when `n_warmup_steps=0`."""
         all_layers = AllLayersRouter()
         for _ in range(self._n_warmup_steps):
             sum_loss, n = self.compute_recon_sum_and_n(
@@ -328,11 +268,7 @@ class PersistentPGDState:
         weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
         router: Router | None = None,
     ) -> tuple[Float[Tensor, ""], int]:
-        """Run the recon forward and return `(sum_loss, n_examples)` over all mask samples.
-
-        Returning the unreduced pair lets eval accumulators weight by example count
-        across batches; training callers divide locally to get a scalar loss.
-        """
+        """Recon forward returning `(sum_loss, n_examples)` over all mask samples. Returning the unreduced pair lets eval accumulators weight by example count across batches."""
         batch_dims = next(iter(ci.values())).shape[:-1]
         router = router or self._router
         ppgd_sources = self.get_effective_sources()
@@ -366,12 +302,7 @@ def get_ppgd_mask_infos(
     routing_masks: RoutingMasks,
     batch_dims: tuple[int, ...],
 ) -> dict[str, ComponentsMaskInfo]:
-    """Build per-module mask infos from PPGD sources, CI values, and routing masks.
-
-    Expands sources to match the per-batch shape (broadcasting or repeating as needed),
-    splits off the weight-delta source channel when present, and interpolates
-    `mask = ci + (1 - ci) * source` to produce the final component masks.
-    """
+    """Build per-module mask infos from PPGD sources, CI values, and routing masks. Expands sources to match the per-batch shape (broadcasting or repeating), splits off the weight-delta source channel when present, and interpolates `mask = ci + (1 - ci) * source`."""
 
     expanded_adv_sources: dict[str, Float[Tensor, "*batch_dims source_c"]] = {}
     for module_name, source in ppgd_sources.items():

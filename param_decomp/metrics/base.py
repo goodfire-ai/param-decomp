@@ -1,17 +1,7 @@
-"""Metric protocol and config base classes.
+"""`Metric` ABC and `LossMetricConfig` base class.
 
-Each metric file defines its pydantic config class alongside the `Metric` class itself. Every
-config carries a `type: Literal["<ClassName>"]` discriminator. Loss metric configs subclass
-`LossMetricConfig` (which adds the `coeff` field for training); eval metric configs subclass
-`BaseConfig` directly. Both pools are pydantic discriminated unions over `type`:
-`AnyLossMetricConfig` in `configs.py` (for `PDConfig.loss_metrics`) and `AnyEvalMetricConfig`
-in `param_decomp_lab.eval_metrics` (for the lab's YAML eval list). Runtime dispatch lives in
-`metrics.dispatch.LOSS_METRIC_CLASSES` and `eval_metrics.EVAL_METRIC_CLASSES`.
-
-Metrics are instantiated with just the validated config (`MyMetric(cfg)`). The training loop
-calls `metric.bind(model=component_model, device=...)` once before any other method, then
-`update(ctx)` per step / per eval batch and `compute()` per eval pass. `reset()` is called
-inside `bind()` to initialise stateful tensors on the bound device, and before each eval pass.
+Lifecycle: `MyMetric(cfg)` -> `bind(model, device)` (calls `reset()`) -> per-step
+`update(ctx)` -> per-eval-pass `compute()`, with `reset()` between eval passes.
 Loss-capable metrics' accumulators must `.detach()` before adding to avoid retaining the
 autograd graph across training steps.
 """
@@ -30,14 +20,7 @@ from param_decomp.component_model import ComponentModel
 
 
 class LossMetricConfig(BaseConfig):
-    """Pydantic config for a metric that can also be used as a training loss.
-
-    Attributes:
-        coeff: Multiplier applied to this metric's live loss before it joins the total
-            training loss. Required when this metric is listed under `loss_metrics`
-            (asserted by `PDConfig`'s field validator); ignored when an eval-only
-            instance is constructed directly.
-    """
+    """Pydantic config for a metric that can also be used as a training loss. `coeff` is required when this metric is listed under `loss_metrics` (`PDConfig`'s field validator asserts this); ignored when an eval-only instance is constructed directly."""
 
     coeff: float | None = None
 
@@ -50,15 +33,9 @@ MetricResult = (
 class Metric[TConfig: BaseConfig](ABC):
     """Abstract base class that every metric must subclass.
 
-    Metrics are constructed from their validated config alone; runtime resources are
-    attached later via `bind`. The training loop drives the lifecycle as
-    `bind` -> repeated `update(ctx)` -> `compute()`, with `reset` called inside
-    `bind` and before each eval pass.
-
-    Attributes:
-        log_namespace: Namespace prefix used when emitting this metric's outputs.
-        slow: Whether this metric is gated behind the slow-eval cadence.
-        short_name: Optional short label used in console summaries.
+    Constructed from the validated config alone; runtime resources are attached later
+    via `bind`. `log_namespace` is the namespace prefix for emitted keys; `slow` gates
+    this metric behind the slow-eval cadence; `short_name` is an optional console label.
     """
 
     log_namespace: ClassVar[str]
@@ -69,26 +46,11 @@ class Metric[TConfig: BaseConfig](ABC):
     device: str
 
     def __init__(self, cfg: TConfig) -> None:
-        """Initialize the metric from its validated config.
-
-        Construction does not bind runtime resources. The training loop calls `bind`
-        once with the live `ComponentModel` and device before any other method on the
-        metric is invoked.
-        """
         self.cfg = cfg
         self._bound = False
 
     def bind(self, *, model: ComponentModel, device: str) -> None:
-        """Attach the component model and device, then call `reset()`.
-
-        Called by the training loop after the `ComponentModel` is constructed.
-        Subclasses that need additional bind-time setup (e.g. resolving module paths
-        against the model) should override and call `super().bind(...)` first.
-
-        Args:
-            model: The live `ComponentModel` this metric will observe.
-            device: Device string used for accumulators and any other allocated state.
-        """
+        """Attach the component model and device, then call `reset()`. Subclasses that need additional bind-time setup (e.g. resolving module paths against the model) should override and call `super().bind(...)` first."""
         assert not self._bound, f"{type(self).__name__} is already bound"
         self.model = model
         self.device = device
@@ -101,26 +63,19 @@ class Metric[TConfig: BaseConfig](ABC):
 
         Stateless metrics may implement this as a no-op. Stateful metrics should reset
         counters, sums, cached examples, plots, or adversarial eval state so a
-        subsequent `compute()` only reflects batches processed after this call. Called
-        automatically inside `bind()` to initialise device-typed accumulators.
+        subsequent `compute()` only reflects batches processed after this call.
         """
         ...
 
     @abstractmethod
     def update(self, ctx: Any) -> Tensor | None:
-        """Process one batch from the metric context and update metric state.
+        """Process one batch and update metric state.
 
-        Loss-capable metrics must call `.detach()` before adding tensors to
-        accumulators; otherwise the autograd graph is retained across steps and leaks
-        memory.
+        Returns the per-batch scalar when one exists (for loss-capable metrics this is
+        the live loss used for backprop). Eval-only metrics return `None`.
 
-        Args:
-            ctx: The per-step `MetricContext` bundle.
-
-        Returns:
-            The per-batch scalar when one exists. For loss-capable metrics, that scalar
-            is the live loss used for backprop. Metrics that only accumulate evaluation
-            state should return None.
+        Loss-capable metrics must `.detach()` before adding tensors to accumulators;
+        otherwise the autograd graph is retained across steps and leaks memory.
         """
         ...
 
@@ -130,22 +85,8 @@ class Metric[TConfig: BaseConfig](ABC):
         ...
 
     def before_backward(self, live_loss: Tensor | None) -> None:
-        """Hook called for each loss metric right before `total_loss.backward()`.
-
-        Default is a no-op. Override when a metric needs to extract gradients before
-        the outer backward consumes them — e.g. `PersistentPGDReconLoss` uses this to
-        grab source gradients with `retain_graph=True` before the outer step.
-
-        Args:
-            live_loss: Whatever this metric's `update()` returned for the current batch,
-                or `None` if the metric was gated off this step.
-        """
+        """Hook called for each loss metric right before `total_loss.backward()`. Override when a metric needs to extract gradients before the outer backward consumes them — e.g. `PersistentPGDReconLoss` uses this to grab source gradients with `retain_graph=True`."""
         del live_loss
 
     def after_backward(self) -> None:  # noqa: B027 — intentional no-op default
-        """Hook called for each loss metric right after `total_loss.backward()`.
-
-        Default is a no-op. Override when a metric needs to step internal state
-        coupled to the outer backward — e.g. `PersistentPGDReconLoss` steps its
-        adversarial sources here.
-        """
+        """Hook called for each loss metric right after `total_loss.backward()`. Override when a metric needs to step internal state coupled to the outer backward — e.g. `PersistentPGDReconLoss` steps its adversarial sources here."""

@@ -15,12 +15,6 @@ from param_decomp.torch_helpers import get_obj_device
 
 
 class UnmaskedReconLossConfig(LossMetricConfig):
-    """Config for `UnmaskedReconLoss`.
-
-    Attributes:
-        type: Discriminator literal `"UnmaskedReconLoss"`.
-    """
-
     type: Literal["UnmaskedReconLoss"] = "UnmaskedReconLoss"
 
 
@@ -42,11 +36,7 @@ def _unmasked_recon_loss_update(
 
 
 class UnmaskedReconLoss(Metric[UnmaskedReconLossConfig]):
-    """Reconstruction loss with all components active and no delta component.
-
-    Drives the components alone (mask of all-ones, no weight-delta residual) to
-    reproduce the target model output.
-    """
+    """Recon loss with all components active and no weight-delta residual. Drives the components alone to reproduce the target model output."""
 
     log_namespace = "loss"
     short_name = "UnmaskedRecon"

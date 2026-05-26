@@ -18,16 +18,7 @@ def main(
     job_name: str = "pd-pretrain",
     local: bool = False,
 ) -> None:
-    """Submit a pretraining job to SLURM or run it locally.
-
-    Args:
-        config_path: Path to the training config YAML file.
-        n_gpus: Number of GPUs to use.
-        partition: SLURM partition.
-        time: SLURM time limit.
-        job_name: SLURM job name.
-        local: Run locally instead of submitting to SLURM.
-    """
+    """Submit a pretraining job to SLURM, or run it locally with `--local`."""
     config_path_resolved = Path(config_path)
     assert config_path_resolved.exists(), f"Config not found: {config_path}"
 
@@ -38,12 +29,7 @@ def main(
 
 
 def _run_local(config_path: Path, n_gpus: int) -> None:
-    """Run training in the current shell via ``torchrun`` (multi-GPU) or ``python -m`` (single).
-
-    Args:
-        config_path: Path to the training config YAML file.
-        n_gpus: Number of GPUs; ``> 1`` launches ``torchrun``.
-    """
+    """Run training in the current shell via `torchrun` (multi-GPU) or `python -m` (single)."""
     if n_gpus > 1:
         cmd = [
             "torchrun",
@@ -72,18 +58,7 @@ def _submit_slurm(
     time: str,
     job_name: str,
 ) -> None:
-    """Generate a SLURM batch script for the training command and submit it via ``sbatch``.
-
-    Creates an ``ExecutionStamp`` (with a git snapshot for reproducibility) and wraps
-    a ``torchrun`` invocation of ``param_decomp_lab.experiments.lm.pretrain.train``.
-
-    Args:
-        config_path: Path to the training config YAML file.
-        n_gpus: Number of GPUs for the SLURM allocation.
-        partition: SLURM partition.
-        time: SLURM time limit.
-        job_name: SLURM job name.
-    """
+    """Generate a SLURM batch script wrapping a `torchrun` invocation of `param_decomp_lab.experiments.lm.pretrain.train` and submit it via `sbatch`. Creates an `ExecutionStamp` with a git snapshot for reproducibility."""
     SLURM_LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Create git snapshot for reproducibility

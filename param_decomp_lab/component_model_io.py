@@ -1,10 +1,4 @@
-"""Lab-side helpers around `ComponentModel` that aren't needed by `optimize()` itself.
-
-`ComponentModel` lives in core because `optimize()` builds and runs it. The two helpers
-below (rebuilding a model from a saved checkpoint, and reading per-component activations
-out of cached pre-weight acts) are only used by lab postprocessing / the app / harvest,
-so they live here as free functions instead of bloating the core class.
-"""
+"""Lab-side `ComponentModel` helpers used by postprocessing / the app / harvest: rebuild from a saved checkpoint, and read per-component activations from cached pre-weight acts."""
 
 from pathlib import Path
 
@@ -53,23 +47,7 @@ def load_component_model(
     target_model: nn.Module,
     run_batch: RunBatch,
 ) -> ComponentModel:
-    """Rebuild a `ComponentModel` from a saved PD checkpoint plus a user-supplied target.
-
-    The caller owns target loading (HF, in-repo pretrain runs, custom user models), so
-    this function takes the already-instantiated target plus its run-batch function;
-    everything else needed to reconstruct the model comes from `pd_config`.
-
-    Args:
-        pd_config: The `PDConfig` the checkpoint was trained with — provides
-            `ci_config`, `sigmoid_type`, `decomposition_targets`,
-            `identity_decomposition_targets`, and `tied_weights`.
-        checkpoint_path: `model_<step>.pth` produced by `RunSink.checkpoint`.
-        target_model: Frozen target model the components decompose.
-        run_batch: Callable that runs `target_model` on a batch.
-
-    Returns:
-        A `ComponentModel` with weights loaded from `checkpoint_path`.
-    """
+    """Rebuild a `ComponentModel` from a saved PD checkpoint plus a caller-supplied target. The caller owns target loading (HF, in-repo pretrain, custom); everything else needed to reconstruct the model comes from `pd_config`."""
     target_model.eval()
     target_model.requires_grad_(False)
 
@@ -116,19 +94,7 @@ def get_all_component_acts(
     model: ComponentModel,
     pre_weight_acts: dict[str, Float[Tensor, "... d_in"] | Int[Tensor, "..."]],
 ) -> dict[str, Float[Tensor, "... C"]]:
-    """Compute per-component activations ``V^T @ x`` for every decomposed layer.
-
-    Layers in `pre_weight_acts` that have no matching entry in `model.components` are
-    skipped silently.
-
-    Args:
-        model: ComponentModel holding the per-layer `Components` modules.
-        pre_weight_acts: Cached pre-weight activations keyed by target module path;
-            shape ``(..., d_in)`` (or integer indices for embeddings).
-
-    Returns:
-        Dict mapping layer name to component-space activations of shape ``(..., C)``.
-    """
+    """Per-component activations `V^T @ x` for every decomposed layer. Layers in `pre_weight_acts` with no matching entry in `model.components` are skipped silently."""
     return {
         layer: model.components[layer].get_component_acts(acts)
         for layer, acts in pre_weight_acts.items()

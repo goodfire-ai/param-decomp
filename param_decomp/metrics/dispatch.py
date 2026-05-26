@@ -1,10 +1,4 @@
-"""Dispatch from PDConfig.loss_metrics entries to bound Metric instances.
-
-`PDConfig.loss_metrics` is a discriminated union keyed by each config's `type` literal.
-`LOSS_METRIC_CLASSES` maps that literal to the matching `Metric` subclass, and
-`instantiate_loss_metrics` walks `pd_config.loss_metrics` to build one bound metric per
-entry — the form the training loop actually consumes.
-"""
+"""Dispatch from `PDConfig.loss_metrics` entries to bound `Metric` instances via the `type` literal -> class table `LOSS_METRIC_CLASSES`."""
 
 from typing import Any
 
@@ -56,17 +50,7 @@ def instantiate_loss_metrics(
     component_model: ComponentModel,
     device: str,
 ) -> dict[str, Metric[Any]]:
-    """Instantiate and bind one `Metric` per entry in `pd_config.loss_metrics`.
-
-    Args:
-        pd_config: The validated PD config; its `loss_metrics` list drives instantiation.
-        component_model: Live `ComponentModel` passed to each metric's `bind`.
-        device: Device string passed to each metric's `bind`.
-
-    Returns:
-        Dict keyed by each config's `type` literal (e.g. `"FaithfulnessLoss"`).
-        Duplicate `type` literals are rejected.
-    """
+    """Instantiate and bind one `Metric` per entry in `pd_config.loss_metrics`, keyed by each config's `type` literal (e.g. `"FaithfulnessLoss"`). Duplicate `type` literals are rejected."""
     instances: dict[str, Metric[Any]] = {}
     for cfg in pd_config.loss_metrics:
         assert cfg.type not in instances, f"duplicate loss metric {cfg.type!r}"
@@ -85,20 +69,9 @@ def instantiate_metrics(
     """Instantiate loss metrics from config and bind caller-supplied eval metrics.
 
     Loss metrics are auto-evaluated alongside dedicated eval metrics, so eval metrics
-    whose class name collides with a loss metric are rejected.
-
-    Args:
-        pd_config: The validated PD config; its `loss_metrics` list drives instantiation.
-        component_model: Live `ComponentModel` passed to each metric's `bind`.
-        device: Device string passed to each metric's `bind`.
-        eval_metrics: Caller-instantiated eval `Metric`s. Each is bound here. Pass
-            `None` to skip eval entirely.
-
-    Returns:
-        `(loss_instances, eval_instances)` — `loss_instances` are just the loss metrics
-        (keyed by their `type` literal); `eval_instances` is the full set of metrics
-        evaluated during an eval pass: loss metrics plus the eval-only metrics
-        (keyed by class name).
+    whose class name collides with a loss metric are rejected. Returns
+    `(loss_instances, eval_instances)`: `loss_instances` is keyed by `type` literal;
+    `eval_instances` is the full eval-pass set (loss + eval-only) keyed by class name.
     """
     loss_instances = instantiate_loss_metrics(pd_config, component_model, device)
     eval_only_instances: dict[str, Metric[Any]] = {}

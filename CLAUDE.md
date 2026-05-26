@@ -641,6 +641,82 @@ value = config.key
 96 +      reservoir: TensorReservoirState
 ```
 
+### Docstrings
+
+Same principle as comments: docstrings should carry information that isn't already in
+the code. The signature, type annotations, and well-chosen names do most of the work —
+the docstring fills the gaps they can't.
+
+- **No docstring at all is fine — even on public classes / configs / functions — when
+  the name and type carry everything.** A class called `DistributedState` does not
+  need `"""Immutable snapshot of the distributed runtime state for this process."""`.
+  A class called `OptimizerConfig` does not need `"""Configuration for the optimizer."""`.
+  If the docstring is a noun phrase that just paraphrases the class name plus the word
+  "config", delete it. Only write one when there's a gotcha, purpose, or non-obvious
+  detail that the name doesn't already convey.
+
+- **When you do write one, default to a single line.** Reach for `Args:` / `Returns:`
+  / `Attributes:` blocks only when there's something to say beyond the type and name.
+
+- **Skip an `Args:` / `Attributes:` entry if it only paraphrases the name and type.**
+  For each entry, ask: "would a reader who saw the signature learn anything from this
+  line?" If no, drop it. If only 1-of-N would, write prose in the body for that one and
+  skip the block.
+
+  ```python
+  # BAD - every entry just paraphrases the type annotation
+  class AdamPGDConfig(BaseConfig):
+      """Adam-style PGD optimizer config.
+
+      Attributes:
+          type: Discriminator literal `"adam"`.
+          beta1: Exponential decay for the first moment estimate.
+          beta2: Exponential decay for the second moment estimate.
+          eps: Small constant added to the sqrt of the second-moment estimate.
+          lr_schedule: Schedule driving the learning rate over training.
+      """
+
+  # GOOD - the class name and field types already say all of this
+  class AdamPGDConfig(BaseConfig):
+      """Adam-style PGD optimizer config."""
+  ```
+
+- **Don't restate the function name in English.** `should_log_train(step) -> bool` does
+  not need `"""Return whether the train log should fire at step."""`. If the name isn't
+  self-explanatory, fix the name.
+
+- **Keep what *isn't* in the signature:** non-obvious semantics, invariants, gotchas,
+  shape constraints not captured by jaxtyping, side effects, ordering requirements,
+  cross-references to related types.
+
+  ```python
+  # GOOD - signature doesn't tell you any of this
+  def update(self, ctx: MetricContext) -> Tensor | None:
+      """Process one batch and update metric state. Returns the per-batch scalar for
+      loss-capable metrics, or None for eval-only metrics.
+
+      Loss-capable metrics must call `.detach()` before adding tensors to accumulators;
+      otherwise the autograd graph is retained across steps and leaks memory.
+      """
+  ```
+
+- **No Sphinx/RST markup.** This codebase doesn't render Sphinx — docstrings are read
+  in editors, in `git diff`, and via `help()`. Skip role markers like `:func:`,
+  `:meth:`, `:class:`, and prefer single backticks (`` `foo` ``) over double
+  (`` ``foo`` ``).
+
+- **No `Raises:` for `AssertionError`.** Asserts are programmer errors, not part of the
+  API contract callers handle. Document `Raises:` only for exceptions a caller is
+  expected to catch.
+
+- **Don't re-document an interface in its implementation.** When a concrete class
+  implements a Protocol or overrides an abstract method, only add a docstring if there
+  is implementation-specific behaviour to call out. Otherwise the Protocol's /
+  base class's docstring is the documentation.
+
+- **Module docstrings: one orienting line.** Anything longer usually belongs in
+  CLAUDE.md, where readers actually look for architectural overviews.
+
 ### Other Important Software Development Practices
 
 - Don't add legacy fallbacks or migration code - just change it and let old data be manually migrated if needed.

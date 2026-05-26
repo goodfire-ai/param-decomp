@@ -1,19 +1,4 @@
-"""`RunSink`: where `optimize()` sends its output.
-
-Defined here as a runtime-checkable `Protocol` so the core trainer can document
-exactly what it requires of the caller without committing to an output format
-or any specific dependency (wandb, tqdm, filesystem).
-
-Timing — when the loop emits — lives separately: `param_decomp.configs.Cadence`
-owns train-log + checkpoint periods, and `param_decomp.optimize.EvalLoop` owns
-the eval period (alongside the runtime eval objects). This Protocol describes
-side effects only: where structured metrics, free-form console output, and
-checkpoint state dicts go.
-
-Concrete implementations live with the caller. The in-repo experiments use
-``param_decomp_lab.run_sink.RunSink`` (local files + wandb + `is_main_process`
-no-op fan-out), but external callers are free to bring their own.
-"""
+"""`RunSink` Protocol: where `optimize()` sends its output (metrics, console lines, checkpoints)."""
 
 from typing import Any, Protocol, runtime_checkable
 
@@ -23,19 +8,12 @@ class RunSink(Protocol):
     """Side-effect sink for a PD training run.
 
     The trainer treats this object as opaque: it reports what happened, never *where*
-    the record should go. Callers implement the methods to point at whatever output
-    channels they want (local files, wandb, S3, a no-op handle on non-main DP ranks,
-    ...).
+    the record should go. Callers point the methods at whatever output channels they
+    want (local files, wandb, S3, a no-op handle on non-main DP ranks, ...).
     """
 
     def log(self, metrics: dict[str, Any], step: int) -> None:
-        """Record a flat metrics dict at ``step``.
-
-        Args:
-            metrics: Flat dict whose keys are already namespaced (e.g. ``train/loss/total``,
-                ``eval/ci_l0/L0``) by the trainer.
-            step: Train step at which the metrics were recorded.
-        """
+        """Record a flat metrics dict at `step`. Keys are pre-namespaced (e.g. `train/loss/total`, `eval/ci_l0/L0`) by the trainer."""
         ...
 
     def console(self, *lines: str) -> None:
@@ -43,5 +21,5 @@ class RunSink(Protocol):
         ...
 
     def checkpoint(self, state_dict: dict[str, Any], step: int) -> None:
-        """Persist a model state dict at ``step``."""
+        """Persist a model state dict at `step`."""
         ...
