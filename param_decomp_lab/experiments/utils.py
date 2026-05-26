@@ -63,6 +63,7 @@ def init_pd_run[T: BaseConfig, D: BaseConfig](
     *,
     group: str | None,
     tags: str | None,
+    run_id: str | None = None,
 ) -> RunSink:
     """Allocate `run_id` + `out_dir`, write `run_meta.yaml`, return a sink.
 
@@ -72,7 +73,7 @@ def init_pd_run[T: BaseConfig, D: BaseConfig](
     """
     if not is_main_process():
         return RunSink.silent()
-    run_id = generate_run_id("param_decomp")
+    run_id = run_id or generate_run_id("param_decomp")
     out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
     meta_path = out_dir / RUN_META_FILENAME
     cfg.to_file(meta_path)

@@ -258,7 +258,7 @@ git fetch "{REPO_ROOT}" "{snapshot_ref}:{snapshot_ref}"
 git checkout "{snapshot_ref}"
 deactivate 2>/dev/null || true
 unset VIRTUAL_ENV
-uv sync --no-dev --link-mode copy -q
+uv sync --all-packages --no-dev --link-mode copy -q
 source .venv/bin/activate"""
 
 
