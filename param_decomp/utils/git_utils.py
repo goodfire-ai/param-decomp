@@ -103,10 +103,21 @@ def create_git_snapshot(snapshot_id: str) -> tuple[str, str]:
                 ["git", "diff", "--cached", "--quiet"], cwd=worktree_path, capture_output=True
             )
 
-            # Commit changes if any exist
+            # Commit changes if any exist. Disable auto-gc: on NFS the background gc forked by
+            # `git commit` keeps `gc.log.lock` open inside the worktree's `.git/worktrees/<id>/`
+            # dir, which becomes an `.nfsXXXX` silly-rename file and makes the subsequent
+            # `git worktree remove` fail with "Directory not empty".
             if diff_result.returncode != 0:  # Non-zero means there are changes
                 subprocess.run(
-                    ["git", "commit", "-m", f"snapshot {snapshot_id}", "--no-verify"],
+                    [
+                        "git",
+                        "-c",
+                        "gc.auto=0",
+                        "commit",
+                        "-m",
+                        f"snapshot {snapshot_id}",
+                        "--no-verify",
+                    ],
                     cwd=worktree_path,
                     check=True,
                     capture_output=True,
