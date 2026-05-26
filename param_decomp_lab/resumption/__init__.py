@@ -10,6 +10,7 @@ See ``ResumeConfig`` for the schema and :class:`ResumableRunSink` for the
 save-side wrapper that writes per-rank shards alongside the consumable model.
 """
 
+from param_decomp_lab.resumption.check import check_snapshot_fidelity
 from param_decomp_lab.resumption.config import ResumeConfig, ResumeOverrides
 from param_decomp_lab.resumption.loader import read_resume_snapshot
 from param_decomp_lab.resumption.provenance import (
@@ -19,6 +20,7 @@ from param_decomp_lab.resumption.provenance import (
     write_provenance,
 )
 from param_decomp_lab.resumption.shards import (
+    ShardEnvelope,
     list_resume_steps,
     load_shard,
     resolve_step,
@@ -33,6 +35,8 @@ __all__ = [
     "ResumeConfig",
     "ResumeOverrides",
     "ResumeProvenance",
+    "ShardEnvelope",
+    "check_snapshot_fidelity",
     "list_resume_steps",
     "load_shard",
     "read_provenance",
