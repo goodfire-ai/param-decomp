@@ -116,7 +116,16 @@ def step_ci(
         g_ci_pgd = layout.recv_g_ci_from_ppgd(cfg.c_per_site, seq_len, device)
     g_ci_total = _assemble_g_ci_total(g_ci_lw, g_ci_pgd, layout, cfg, seq_len)
 
-    optimizer.zero_grad(set_to_none=True)
+    # ``set_to_none=False`` reuses the param.grad tensors across steps instead of
+    # freeing them and reallocating each iter. The CI fn has 2.6B params → ~10.6 GB
+    # of grads; freeing+reallocating that on every step churns the caching allocator,
+    # and under cross-pool memory contention (3-pool: LW/CI/PPGD all hitting cudaMalloc
+    # simultaneously) the next alloc inside ``torch.autograd.backward`` ends up waiting
+    # for prior kernels to drain before memory can be reclaimed. That synchronous
+    # wait is the bulk of ci/8a's ~600 ms wall time (the actual GPU bwd compute is
+    # only ~34 ms — see commit 731ee481's CUDA-event instrumentation). Keep buffers
+    # resident; pay the constant memory cost in exchange for predictable step time.
+    optimizer.zero_grad(set_to_none=False)
     _fused_backward_through_ci_fn(loss_imp, ci, g_ci_total, layout, cfg, p)
     _maybe_emit_ci_fn_bwd_breakdown(component_model)
 
