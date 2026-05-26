@@ -2,11 +2,17 @@
 
 Both the fresh-run path (`main`) and the reload path share the module-level
 `build_target` / `build_lm_loader` / `make_run_batch`. Run via
-`pd-lm path/to/config.yaml` (or `torchrun` for DDP).
+`pd-lm path/to/config.yaml`; pass `--dp N` to submit a single-node DDP SLURM job.
 """
 
 import importlib
+import os
+import secrets
+import shlex
+import subprocess
+import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -42,8 +48,11 @@ from param_decomp_lab.experiments.utils import (
     ExperimentConfig,
     init_pd_run,
 )
+from param_decomp_lab.infra.git import create_git_snapshot
 from param_decomp_lab.infra.paths import ModelPath
 from param_decomp_lab.infra.run_files import resolve_run_files
+from param_decomp_lab.infra.settings import DEFAULT_PARTITION_NAME, REPO_ROOT
+from param_decomp_lab.infra.slurm import SlurmConfig, generate_script, submit_slurm_job
 from param_decomp_lab.seed import set_seed
 
 
@@ -181,13 +190,38 @@ def main(
     *,
     group: str | None = None,
     tags: str | None = None,
+    dp: int | None = None,
+    local: bool = False,
+    partition: str | None = DEFAULT_PARTITION_NAME,
+    time: str = "72:00:00",
+    job_name: str = "pd-lm",
+    no_snapshot: bool = False,
 ) -> None:
     """Run an LM PD experiment end-to-end from a YAML config.
 
     Parses the YAML, initialises DDP, builds the target / loaders / eval loop, writes
     `run_meta.yaml`, and calls `optimize(...)`. Non-main ranks use a silent sink.
-    `group` / `tags` are wandb-only (no-ops without `wandb:`).
+    `group` / `tags` are wandb-only (no-ops without `wandb:`). `dp` submits a
+    single-node SLURM job by default; pass `--local` to launch torchrun immediately.
     """
+    if dp is not None and dp < 2:
+        raise ValueError("--dp must be at least 2 for data parallelism")
+    if dp is not None and os.environ.get("WORLD_SIZE") is None:
+        if local:
+            _launch_torchrun(config_path, dp=dp, group=group, tags=tags)
+        else:
+            _submit_slurm(
+                config_path,
+                dp=dp,
+                group=group,
+                tags=tags,
+                partition=partition,
+                time=time,
+                job_name=job_name,
+                no_snapshot=no_snapshot,
+            )
+        return
+
     cfg = LMExperimentConfig.from_file(config_path)
 
     dist_state = init_distributed()
@@ -195,7 +229,10 @@ def main(
         logger.info(f"Distributed state: {dist_state}")
     set_seed(cfg.pd.seed)
     device = get_device()
-    cfg = cfg.model_copy(update={"runtime": cfg.runtime.model_copy(update={"device": device})})
+    runtime_updates: dict[str, Any] = {"device": device}
+    if dist_state is not None:
+        runtime_updates["dp"] = dist_state.world_size
+    cfg = cfg.model_copy(update={"runtime": cfg.runtime.model_copy(update=runtime_updates)})
 
     target_model = build_target(cfg.target)
 
@@ -252,6 +289,100 @@ def _build_eval_loop(
         every=cfg.eval.every,
         slow_every=cfg.eval.slow_every,
         slow_on_first_step=cfg.eval.slow_on_first_step,
+    )
+
+
+def _launch_torchrun(
+    config_path: str | Path,
+    *,
+    dp: int,
+    group: str | None,
+    tags: str | None,
+) -> None:
+    cmd = [
+        sys.executable,
+        "-m",
+        "torch.distributed.run",
+        "--standalone",
+        "--nproc_per_node",
+        str(dp),
+        str(Path(__file__).resolve()),
+        str(config_path),
+        "--dp",
+        str(dp),
+    ]
+    if group is not None:
+        cmd.extend(["--group", group])
+    if tags is not None:
+        cmd.extend(["--tags", tags])
+    logger.info(f"Launching DDP with {dp} workers: {' '.join(cmd)}")
+    subprocess.run(cmd, check=True)
+
+
+def _config_arg_for_slurm(config_path: str | Path) -> str:
+    path = Path(config_path)
+    if not path.is_absolute():
+        return path.as_posix()
+    try:
+        return path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _submit_slurm(
+    config_path: str | Path,
+    *,
+    dp: int,
+    group: str | None,
+    tags: str | None,
+    partition: str | None,
+    time: str,
+    job_name: str,
+    no_snapshot: bool,
+) -> None:
+    run_id = "lm-" + datetime.now().strftime("%Y%m%d_%H%M%S") + "-" + secrets.token_hex(2)
+    snapshot_ref: str | None = None
+    commit_hash = "no-snapshot"
+    if not no_snapshot:
+        snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=run_id)
+        logger.info(f"Created git snapshot: {snapshot_ref} ({commit_hash[:8]})")
+
+    command_parts = [
+        "torchrun",
+        "--standalone",
+        f"--nproc_per_node={dp}",
+        "-m",
+        "param_decomp_lab.experiments.lm.run",
+        _config_arg_for_slurm(config_path),
+        "--dp",
+        str(dp),
+    ]
+    if group is not None:
+        command_parts.extend(["--group", group])
+    if tags is not None:
+        command_parts.extend(["--tags", tags])
+    command = " ".join(shlex.quote(part) for part in command_parts)
+
+    slurm_config = SlurmConfig(
+        job_name=job_name,
+        partition=partition,
+        n_gpus=dp,
+        time=time,
+        snapshot_ref=snapshot_ref,
+        comment=run_id,
+    )
+    script = generate_script(slurm_config, command)
+    result = submit_slurm_job(script, "lm")
+
+    logger.section("LM PD job submitted!")
+    logger.values(
+        {
+            "Run ID": run_id,
+            "Job ID": result.job_id,
+            "Log file": result.log_pattern,
+            "Script": str(result.script_path),
+            "Snapshot": f"{snapshot_ref} ({commit_hash[:8]})" if snapshot_ref else "(none)",
+        }
     )
 
 
