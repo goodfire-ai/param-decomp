@@ -6,10 +6,10 @@ pd:
     fn_type: global_shared_transformer
     hidden_dims: null
     simple_transformer_ci_cfg:
-      d_model: 512
-      n_blocks: 4
+      d_model: 2048
+      n_blocks: 8
       mlp_hidden_dim:
-      - 1024
+      - 8192
       attn_config:
         n_heads: 16
         max_len: 512
