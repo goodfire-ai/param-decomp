@@ -36,22 +36,32 @@ from param_decomp_lab.infra.slurm import (
 N_LAYERS = 48
 SITES_PER_LAYER = ("attn.q_proj", "attn.k_proj")
 ALL_SITES = [f"h.{layer}.{site}" for layer in range(N_LAYERS) for site in SITES_PER_LAYER]
+N_SITES = len(ALL_SITES)  # 96
+N_LW_RANKS = N_SITES  # by construction (sites_per_block == ddp_per_block keeps this fixed)
 
-SITES_PER_BLOCK = 4
-DDP_PER_BLOCK = 4
+DEFAULT_DDP_PER_BLOCK = 4
 DEFAULT_N_CI = 4
 DEFAULT_N_PPGD = 4
-N_LW_BLOCKS = len(ALL_SITES) // SITES_PER_BLOCK  # 24
-N_LW_RANKS = N_LW_BLOCKS * DDP_PER_BLOCK  # 96
 
 
-def _block_groups() -> list[dict[str, Any]]:
+def _block_groups(ddp_per_block: int) -> list[dict[str, Any]]:
+    """LW block layout: each block owns ``sites_per_block`` consecutive sites
+    and has ``ddp_per_block`` DDP replicas. Total LW ranks =
+    ``N_SITES / sites_per_block * ddp_per_block = N_SITES`` (always 96).
+    Caller picks ``ddp_per_block``; ``sites_per_block`` is derived to keep
+    LW size constant.
+    """
+    assert N_SITES % ddp_per_block == 0, (
+        f"N_SITES={N_SITES} must be divisible by ddp_per_block={ddp_per_block}"
+    )
+    sites_per_block = ddp_per_block  # keeps total LW ranks = N_SITES
+    n_blocks = N_SITES // sites_per_block
     return [
         {
-            "ranks": [b * DDP_PER_BLOCK + r for r in range(DDP_PER_BLOCK)],
-            "owned_sites": ALL_SITES[b * SITES_PER_BLOCK : (b + 1) * SITES_PER_BLOCK],
+            "ranks": [b * ddp_per_block + r for r in range(ddp_per_block)],
+            "owned_sites": ALL_SITES[b * sites_per_block : (b + 1) * sites_per_block],
         }
-        for b in range(N_LW_BLOCKS)
+        for b in range(n_blocks)
     ]
 
 
@@ -62,6 +72,7 @@ def _make_yaml_dict(
     warmup_steps: int,
     n_ci: int,
     n_ppgd: int,
+    ddp_per_block: int,
 ) -> dict[str, Any]:
     base_ci = N_LW_RANKS
     return {
@@ -181,7 +192,7 @@ def _make_yaml_dict(
             "defer_vu_opt": True,
             "ci_ranks": list(range(base_ci, base_ci + n_ci)),
             "ppgd_ranks": list(range(base_ci + n_ci, base_ci + n_ci + n_ppgd)),
-            "layerwise_block_groups": _block_groups(),
+            "layerwise_block_groups": _block_groups(ddp_per_block),
         },
     }
 
@@ -192,6 +203,7 @@ def main(
     profile: bool = True,
     n_ci: int = DEFAULT_N_CI,
     n_ppgd: int = DEFAULT_N_PPGD,
+    ddp_per_block: int = DEFAULT_DDP_PER_BLOCK,
     compile_ci_fn: bool = False,
 ) -> None:
     """Submit the production XL Q/K run, or a smoke test.
@@ -216,7 +228,12 @@ def main(
 
     if smoke:
         cfg_dict = _make_yaml_dict(
-            steps=50, save_every=None, warmup_steps=0, n_ci=n_ci, n_ppgd=n_ppgd
+            steps=50,
+            save_every=None,
+            warmup_steps=0,
+            n_ci=n_ci,
+            n_ppgd=n_ppgd,
+            ddp_per_block=ddp_per_block,
         )
         cfg_dict["pd"]["batch_size"] = batch_size
         yaml_path = out_dir / "gpt2_xl_qk_smoke.yaml"
@@ -224,7 +241,12 @@ def main(
         time_limit = "01:00:00"
     else:
         cfg_dict = _make_yaml_dict(
-            steps=200000, save_every=5000, warmup_steps=400, n_ci=n_ci, n_ppgd=n_ppgd
+            steps=200000,
+            save_every=5000,
+            warmup_steps=400,
+            n_ci=n_ci,
+            n_ppgd=n_ppgd,
+            ddp_per_block=ddp_per_block,
         )
         yaml_path = out_dir / "gpt2_xl_qk_production.yaml"
         job_name = "xl-qk-prod"
@@ -261,7 +283,10 @@ def main(
     if compile_ci_fn:
         env["PD_COMPILE_CI_FN"] = "1"
         print("torch.compile on CI fn: ON")
-    print(f"topology: lw={N_LW_RANKS}, ci={n_ci}, ppgd={n_ppgd}, total={total_ranks}")
+    print(
+        f"topology: lw={N_LW_RANKS} ({N_SITES // ddp_per_block} blocks × DDP={ddp_per_block}, "
+        f"{ddp_per_block} sites/block), ci={n_ci}, ppgd={n_ppgd}, total={total_ranks}"
+    )
 
     cmd = torchrun_command(
         job_name=job_name,
