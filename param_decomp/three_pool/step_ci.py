@@ -245,12 +245,21 @@ def _fused_backward_through_ci_fn(
     """
     assert loss_imp.dim() == 0, f"loss_imp must be scalar; got {loss_imp.shape}"
     scaled_imp = cfg.coeff_imp * loss_imp
-    lower_leaky_tensors = [ci.lower_leaky[s] for s in layout.world.all_sites]
-    g_ci_total_seeds = [g_ci_total[s] for s in layout.world.all_sites]
+
+    # Consolidate the 96 grad seeds into ONE root tensor. The autograd engine
+    # treats each entry in ``backward(tensors=[...])`` as a separate root and
+    # traverses each independently until they merge at shared params, so 96
+    # roots may add meaningful overhead vs. 1 root that fans out via a single
+    # ``cat`` op (cat's backward distributes the seed back to its inputs).
+    with p.phase("ci/8a0_cat_lower_leaky_seeds"):
+        flat_lower = torch.cat(
+            [ci.lower_leaky[s].flatten() for s in layout.world.all_sites]
+        )
+        flat_g_ci = torch.cat([g_ci_total[s].flatten() for s in layout.world.all_sites])
     with p.phase("ci/8a_bwd_lower_leaky_only"):
         torch.autograd.backward(
-            tensors=lower_leaky_tensors,
-            grad_tensors=g_ci_total_seeds,
+            tensors=[flat_lower],
+            grad_tensors=[flat_g_ci],
             retain_graph=True,
         )
     with p.phase("ci/8b_bwd_imp_min_only"):

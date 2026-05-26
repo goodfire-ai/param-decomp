@@ -354,6 +354,12 @@ class ThreePoolTrainer:
             state["optimizer"] = self.optimizer.state_dict()
         if self.ppgd_state is not None:
             state["ppgd"] = self.ppgd_state.state_dict()
+        elif self._pending_ppgd_resume_state is not None:
+            # Snapshot taken before the first run() iteration on a resumed PPGD
+            # rank: ppgd_state hasn't been lazily reconstructed yet, but the
+            # saved-on-disk state lives in _pending_ppgd_resume_state. Emit it
+            # so save→load→re-snapshot round-trips without a gap.
+            state["ppgd"] = self._pending_ppgd_resume_state
         return TrainerSnapshot(
             step=self.step,
             resume={
