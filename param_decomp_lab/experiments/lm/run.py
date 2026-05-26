@@ -354,7 +354,16 @@ def _maybe_enable_memory_profile(rank: int) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"mem_rank{rank}.pickle"
     logger.info(f"[mem-profile] recording rank={rank} → {out_path}")
-    torch.cuda.memory._record_memory_history(max_entries=200_000)
+    # ``stacks='python'`` captures Python tracebacks at each allocation event so
+    # the offline analyzer can blame allocations on the actual nn.Module / step
+    # phase that asked for them. Default is C++ stacks which are unreadable noise
+    # (they all bottom out in the CUDACachingAllocator).
+    torch.cuda.memory._record_memory_history(
+        enabled="all",
+        context="all",
+        stacks="python",
+        max_entries=200_000,
+    )
 
     def _dump() -> None:
         torch.cuda.memory._dump_snapshot(str(out_path))

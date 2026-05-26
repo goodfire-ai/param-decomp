@@ -7,7 +7,7 @@ than imported to keep each subsystem owning its own surface.
 """
 
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -78,19 +78,41 @@ class PhaseProfiler:
     def phase(self, name: str) -> "Iterator[None]":
         """Annotate a logical step phase.
 
-        Always emits an entry trace when ``PD_PHASE_TRACE=1`` (gated by
-        ``PD_TRACE_RANKS`` inside ``trace``) so we can localize hangs in the
-        slurm log in real time, regardless of whether the torch profiler is
-        recording. The ``record_function`` wrapper is only active when the
+        When ``PD_PHASE_TRACE=1``, emits entry + exit traces tagged with
+        memory deltas. Entry: ``cur=X.XXgb``. Exit: ``peak=X.XXgb end=X.XXgb
+        delta=±X.XXgb``. ``peak`` is the within-phase peak (we
+        ``reset_peak_memory_stats`` at entry); ``delta`` is end-current minus
+        entry-current, which captures whether the phase persistently allocates.
+
+        Note: resetting peak per phase makes any concurrent reader of
+        ``max_memory_allocated`` see only this phase's peak, not the
+        whole-step peak. That's fine in debug mode (where this is enabled);
+        in production ``PD_PHASE_TRACE`` is off and this is a no-op.
+
+        The ``record_function`` wrapper is only active when the torch
         profiler is enabled.
         """
-        if phase_trace_enabled():
-            trace(f"phase: {name}")
-        if not self.enabled:
-            yield
-            return
-        with torch.profiler.record_function(name):
-            yield
+        do_trace = phase_trace_enabled()
+        device = None
+        before_gb = 0.0
+        if do_trace:
+            device = torch.cuda.current_device()
+            torch.cuda.reset_peak_memory_stats(device)
+            before_gb = torch.cuda.memory_allocated(device) / 1e9
+            trace(f"phase: {name} cur={before_gb:.2f}gb")
+
+        inner = torch.profiler.record_function(name) if self.enabled else nullcontext()
+        try:
+            with inner:
+                yield
+        finally:
+            if do_trace:
+                peak_gb = torch.cuda.max_memory_allocated(device) / 1e9
+                end_gb = torch.cuda.memory_allocated(device) / 1e9
+                trace(
+                    f"phase: {name} end peak={peak_gb:.2f}gb "
+                    f"end={end_gb:.2f}gb delta={end_gb - before_gb:+.2f}gb"
+                )
 
     def step(self) -> None:
         """Advance the profiler schedule (call once per training iteration)."""
