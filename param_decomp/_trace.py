@@ -39,6 +39,12 @@ def _should_log(rank: int) -> bool:
 def _current_rank() -> int:
     if dist.is_available() and dist.is_initialized():
         return dist.get_rank()
+    # torchrun sets RANK before our Python entrypoint runs. Use it so traces
+    # before init_distributed are still rank-correct (otherwise every rank
+    # logs as rank=0 and the PD_TRACE_RANKS filter is useless).
+    env_rank = os.environ.get("RANK")
+    if env_rank is not None:
+        return int(env_rank)
     return 0
 
 
