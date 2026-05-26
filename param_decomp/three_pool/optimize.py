@@ -566,6 +566,7 @@ class ThreePoolTrainer:
 
                 torch.cuda.synchronize(device)
                 step_start = time.perf_counter()
+                should_log = step % cadence.train_log_every == 0
 
                 # batch_T should already be on this rank's device (placed by _to_device).
                 if isinstance(batch_T, Tensor):
@@ -591,6 +592,7 @@ class ThreePoolTrainer:
                             h_cache_T=h_cache_ci,
                             cfg=runtime,
                             current_frac_of_training=step / n_steps if n_steps > 0 else 0.0,
+                            should_log=should_log,
                             profiler=profiler,
                         )
                     case "layerwise":
@@ -610,6 +612,7 @@ class ThreePoolTrainer:
                             self.strategy,
                             defer_vu_opt=defer_vu_opt,
                             prev_pending_all_reduce=pending_all_reduce_lw,
+                            should_log=should_log,
                             profiler=profiler,
                         )
                     case "ppgd":
@@ -627,14 +630,18 @@ class ThreePoolTrainer:
                             n_steps=n_steps,
                             defer_vu_opt=defer_vu_opt,
                             prev_pending_recv_vu=pending_recv_vu_ppgd,
+                            should_log=should_log,
                             profiler=profiler,
                         )
-                # Catch silent NaN propagation early. Covers both the per-rank
-                # display scalars (``loss/*``) and the raw aggregation
-                # ingredients (``_raw/*``) the logger sums across the pool.
-                for k, v in metrics.items():
-                    if k.startswith("loss/") or k.startswith("_raw/"):
-                        assert v == v, f"NaN in metrics[{k!r}] at step {step}"  # NaN != NaN
+                # NaN check + .item()-bearing metrics only fire on log steps —
+                # the step fns return empty ``metrics={}`` otherwise to avoid
+                # CPU↔GPU syncs on the per-step critical path. NaN won't catch
+                # until the next log step, but train_log_every is small enough
+                # that the propagation distance is bounded.
+                if should_log:
+                    for k, v in metrics.items():
+                        if k.startswith("loss/") or k.startswith("_raw/"):
+                            assert v == v, f"NaN in metrics[{k!r}] at step {step}"  # NaN != NaN
 
                 # current_stream().synchronize() — not torch.cuda.synchronize() — so we
                 # don't wait for *all* CUDA streams. In ``defer_vu_opt=True`` mode, PPGD

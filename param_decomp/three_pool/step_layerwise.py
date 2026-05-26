@@ -63,6 +63,7 @@ def step_layerwise(
     *,
     defer_vu_opt: bool,
     prev_pending_all_reduce: PendingAllReduce | None,
+    should_log: bool,
     profiler: PhaseProfiler | None = None,
 ) -> tuple[dict[str, float], PendingAllReduce | None]:
     """One LW step. Branches on ``defer_vu_opt`` for sync vs async pipeline.
@@ -113,7 +114,11 @@ def step_layerwise(
         _assert_ci_recv_shapes(ci_recv_leaves, layout, seq_len, cfg)
 
         with p.phase("lw/D3_layerwise"), autocast_bf16(cfg.bf16_autocast):
-            stoch_total_value = 0.0
+            # Accumulate the display value as a GPU tensor (not a Python float) so
+            # the per-site ``.item()`` doesn't force a CPU↔GPU sync that serializes
+            # each site's bwd against the next. ``loss_s.detach()`` so accumulator
+            # doesn't retain autograd graph.
+            stoch_total_t = torch.zeros((), device=device)
             for i, s in enumerate(layout.my_owned_sites):
                 if phase_trace_enabled():
                     trace(f"lw/D3 site {i + 1}/{len(layout.my_owned_sites)}: {s} fwd+bwd")
@@ -122,9 +127,8 @@ def step_layerwise(
                 )
                 assert loss_s.dim() == 0, f"layerwise loss for site {s!r} must be scalar"
                 (cfg.coeff_stoch * loss_s / (n_positions * n_sites_total)).backward()
-                stoch_total_value += (loss_s / n_positions).item()
+                stoch_total_t = stoch_total_t + (loss_s.detach() / n_positions)
             stoch_n_owned = len(layout.my_owned_sites)
-            loss_stoch_value = stoch_total_value / stoch_n_owned
 
         with p.phase("lw/D4_send_g_ci"):
             g_ci_owned = {s: ci_recv_leaves[s].grad for s in layout.my_owned_sites}
@@ -136,14 +140,18 @@ def step_layerwise(
         v_grads_pgd, u_grads_pgd = _recv_g_vu_from_ppgd(layout, component_model, p)
         _combine_vu_grads_in_place(component_model, layout, v_grads_pgd, u_grads_pgd, p)
 
-    metrics = {
-        "loss/faith": loss_faith.item(),
-        "loss/stoch": loss_stoch_value,
-        "_raw/faith_num": faith_sum_sq_t.item(),
-        "_raw/faith_den": float(faith_numel),
-        "_raw/stoch_num": stoch_total_value,
-        "_raw/stoch_den": float(stoch_n_owned),
-    }
+    if should_log:
+        stoch_total_value = stoch_total_t.item()
+        metrics = {
+            "loss/faith": loss_faith.item(),
+            "loss/stoch": stoch_total_value / stoch_n_owned,
+            "_raw/faith_num": faith_sum_sq_t.item(),
+            "_raw/faith_den": float(faith_numel),
+            "_raw/stoch_num": stoch_total_value,
+            "_raw/stoch_den": float(stoch_n_owned),
+        }
+    else:
+        metrics = {}
 
     if defer_vu_opt:
         with p.phase("lw/E_kickoff_async_allreduce"):
