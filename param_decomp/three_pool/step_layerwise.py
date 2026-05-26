@@ -84,7 +84,7 @@ def step_layerwise(
 
     with strategy.context(component_model.target_model):
         with p.phase("lw/A1_post_async_recv_ci"):
-            ci_recv, ci_recv_works = layout.async_recv_ci_from_ci_pool(
+            ci_recv_pending = layout.async_recv_ci_from_ci_pool(
                 {s: cfg.c_per_site[s] for s in layout.my_owned_sites},
                 seq_len=seq_len,
                 device=device,
@@ -108,8 +108,7 @@ def step_layerwise(
             (cfg.coeff_faith * loss_faith).backward()
 
         with p.phase("lw/D2_wait_ci_recv"):
-            for w in ci_recv_works:
-                w.wait()
+            ci_recv = ci_recv_pending.wait_and_unpack()
         ci_recv_leaves = _releaf_ci_fp32_for_grads(ci_recv, layout.my_owned_sites)
         _assert_ci_recv_shapes(ci_recv_leaves, layout, seq_len, cfg)
 

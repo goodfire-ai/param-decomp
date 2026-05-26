@@ -123,6 +123,38 @@ def flush_nccl_event_timings() -> None:
 
 
 @dataclass(frozen=True)
+class PendingCiRecv:
+    """One coalesced CI-values irecv, held until ``wait_and_unpack()``.
+
+    The packed buffer carries ``sites`` worth of CI values (in order) as
+    ``b * seq_len * c_s`` ``_WIRE_DTYPE`` elements each. ``wait_and_unpack``
+    blocks on the underlying ``dist.Work`` then materializes per-site
+    ``[b, seq_len, c_s]`` views into the packed buffer (no copy).
+    """
+
+    packed: torch.Tensor
+    work: "dist.Work"
+    sites: tuple[str, ...]
+    site_to_c: dict[str, int]
+    b: int
+    seq_len: int
+
+    def wait_and_unpack(self) -> dict[str, torch.Tensor]:
+        self.work.wait()
+        out: dict[str, torch.Tensor] = {}
+        offset = 0
+        for s in self.sites:
+            c_s = self.site_to_c[s]
+            numel = self.b * self.seq_len * c_s
+            out[s] = self.packed[offset : offset + numel].view(self.b, self.seq_len, c_s)
+            offset += numel
+        assert offset == self.packed.numel(), (
+            f"unpack size mismatch: consumed {offset} of {self.packed.numel()}"
+        )
+        return out
+
+
+@dataclass(frozen=True)
 class LayerwiseBlockGroup:
     """One LW block-DDP group: ranks that replicate V/U for `owned_sites`.
 
@@ -523,10 +555,17 @@ class ThreePoolLayout:
                 for block_rank_idx in my_lw_block_ranks:
                     target_lw_rank = bg.ranks[block_rank_idx]
                     sub = self.world.lw_sub_slice_within_ci(block_rank_idx)
-                    for site in bg.owned_sites:
-                        buf = ci_full[site][sub].detach().to(_WIRE_DTYPE).contiguous()
-                        works.append(dist.isend(buf, dst=target_lw_rank))
-                        buffers.append(buf)
+                    # Coalesce all of this block's owned-sites into one packed
+                    # send per (block, block_rank). Layout (must match recv):
+                    # for each site in bg.owned_sites order, b_lw * seq_len * C_s
+                    # contiguous _WIRE_DTYPE elements.
+                    parts = [
+                        ci_full[site][sub].detach().to(_WIRE_DTYPE).contiguous().flatten()
+                        for site in bg.owned_sites
+                    ]
+                    packed = torch.cat(parts)
+                    works.append(dist.isend(packed, dst=target_lw_rank))
+                    buffers.append(packed)
         return works, buffers
 
     def async_send_ci_to_ppgd(
@@ -543,10 +582,16 @@ class ThreePoolLayout:
             for ppgd_slice_idx in my_ppgd_slice_idxs:
                 target_ppgd_rank = self.world.ppgd_ranks[ppgd_slice_idx]
                 sub = self.world.ppgd_sub_slice_within_ci(ppgd_slice_idx)
-                for site in self.world.all_sites:
-                    buf = ci_full[site][sub].detach().to(_WIRE_DTYPE).contiguous()
-                    works.append(dist.isend(buf, dst=target_ppgd_rank))
-                    buffers.append(buf)
+                # Coalesce all 96 sites into one packed send per PPGD target.
+                # Layout (must match recv): for each site in self.world.all_sites
+                # order, b_pp * seq_len * C_s contiguous _WIRE_DTYPE elements.
+                parts = [
+                    ci_full[site][sub].detach().to(_WIRE_DTYPE).contiguous().flatten()
+                    for site in self.world.all_sites
+                ]
+                packed = torch.cat(parts)
+                works.append(dist.isend(packed, dst=target_ppgd_rank))
+                buffers.append(packed)
         return works, buffers
 
     def recv_g_ci_from_layerwise(
@@ -685,26 +730,34 @@ class ThreePoolLayout:
         site_to_c: dict[str, int],
         seq_len: int,
         device: torch.device,
-    ) -> tuple[dict[str, Tensor], list["dist.Work"]]:
-        """LW ← CI: irecv per-owned-site CI values from the CI rank whose
-        slice contains my LW batch shard. Returns raw bf16 buffers + work
-        handles; caller waits + casts to fp32."""
+    ) -> PendingCiRecv:
+        """LW ← CI: irecv one coalesced packet of CI values for all of this
+        LW rank's owned sites, from the CI rank whose slice contains my LW
+        batch shard.
+
+        Layout (must match ``async_send_ci_to_layerwise``): for each site in
+        ``self.my_owned_sites`` order, ``b_lw * seq_len * C_s`` contiguous
+        ``_WIRE_DTYPE`` elements. Caller calls ``wait_and_unpack()`` to get
+        per-site ``[b_lw, seq_len, C_s]`` views (no copy).
+        """
         assert self.my_pool == "layerwise" and self.my_within_block_idx is not None
         src_ci_slice = self.world.ci_slice_of_lw_block_rank(self.my_within_block_idx)
         src = self.world.ci_ranks[src_ci_slice]
         b_lw = self.world.batch_local_lw
 
-        out: dict[str, Tensor] = {}
-        works: list[dist.Work] = []
+        packed_numel = sum(b_lw * seq_len * site_to_c[s] for s in self.my_owned_sites)
+        packed = torch.empty(packed_numel, device=device, dtype=_WIRE_DTYPE)
         with _time_nccl_op("async_recv_ci_from_ci_pool"):
-            for site in self.my_owned_sites:
-                C = site_to_c[site]
-                buf = torch.empty(b_lw, seq_len, C, device=device, dtype=_WIRE_DTYPE)
-                w = dist.irecv(buf, src=src)
-                assert w is not None
-                out[site] = buf
-                works.append(w)
-        return out, works
+            work = dist.irecv(packed, src=src)
+            assert work is not None
+        return PendingCiRecv(
+            packed=packed,
+            work=work,
+            sites=self.my_owned_sites,
+            site_to_c=site_to_c,
+            b=b_lw,
+            seq_len=seq_len,
+        )
 
     def send_g_ci_to_ci_pool(self, g_ci_owned: dict[str, Tensor]) -> None:
         """LW → CI: send per-owned-site CI grads (full LW batch slice) to the
@@ -870,24 +923,33 @@ class ThreePoolLayout:
         site_to_c: dict[str, int],
         seq_len: int,
         device: torch.device,
-    ) -> tuple[dict[str, Tensor], list["dist.Work"]]:
-        """PPGD ← CI: irecv full-model CI from the CI rank that owns my slice."""
+    ) -> PendingCiRecv:
+        """PPGD ← CI: irecv one coalesced packet of full-model CI values from
+        the CI rank that owns my slice.
+
+        Layout (must match ``async_send_ci_to_ppgd``): for each site in
+        ``self.world.all_sites`` order, ``b_pp * seq_len * C_s`` contiguous
+        ``_WIRE_DTYPE`` elements. Caller calls ``wait_and_unpack()`` to get
+        per-site ``[b_pp, seq_len, C_s]`` views (no copy).
+        """
         assert self.my_pool == "ppgd" and self.my_ppgd_slice_idx is not None
         src_ci_slice = self.world.ci_slice_of_ppgd_slice(self.my_ppgd_slice_idx)
         src = self.world.ci_ranks[src_ci_slice]
         b_pp = self.world.batch_local_ppgd
 
-        out: dict[str, Tensor] = {}
-        works: list[dist.Work] = []
+        packed_numel = sum(b_pp * seq_len * site_to_c[s] for s in self.world.all_sites)
+        packed = torch.empty(packed_numel, device=device, dtype=_WIRE_DTYPE)
         with _time_nccl_op("async_recv_ci_from_ci_pool_ppgd"):
-            for site in self.world.all_sites:
-                C = site_to_c[site]
-                buf = torch.empty(b_pp, seq_len, C, device=device, dtype=_WIRE_DTYPE)
-                w = dist.irecv(buf, src=src)
-                assert w is not None
-                out[site] = buf
-                works.append(w)
-        return out, works
+            work = dist.irecv(packed, src=src)
+            assert work is not None
+        return PendingCiRecv(
+            packed=packed,
+            work=work,
+            sites=self.world.all_sites,
+            site_to_c=site_to_c,
+            b=b_pp,
+            seq_len=seq_len,
+        )
 
     def send_g_ci_to_ci_pool_ppgd(self, g_ci_full: dict[str, Tensor]) -> None:
         """PPGD → CI: send full-model CI grads (PPGD batch slice) to the CI
