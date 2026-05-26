@@ -229,9 +229,14 @@ def build_world(
     layerwise_block_groups: list[LayerwiseBlockGroup],
     ppgd_ranks: list[int],
     batch_global: int,
+    device: torch.device | None = None,
 ) -> World:
     """Construct the World + all process groups. Must be called on every rank
     after ``dist.init_process_group``.
+
+    Pass ``device`` (this rank's GPU) so we can pre-warm the cross-pool NCCL
+    broadcast groups before they're first used inside the training loop. See
+    ``_prewarm_cross_pool_bcast_groups`` for why pre-warming is needed.
     """
     world_size = dist.get_world_size()
     layerwise_ranks = [r for bg in layerwise_block_groups for r in bg.ranks]
@@ -269,6 +274,15 @@ def build_world(
         for i, bg in enumerate(layerwise_block_groups)
     )
 
+    if device is not None:
+        _prewarm_cross_pool_bcast_groups(
+            cross_pool_bcast_groups=cross_pool_bcast_groups,
+            layerwise_block_groups=layerwise_block_groups,
+            ppgd_ranks=ppgd_ranks,
+            my_rank=my_rank,
+            device=device,
+        )
+
     return World(
         world_size=world_size,
         ci_ranks=tuple(ci_ranks),
@@ -282,6 +296,45 @@ def build_world(
         block_group_groups=block_group_groups,
         cross_pool_bcast_groups=cross_pool_bcast_groups,
     )
+
+
+def _prewarm_cross_pool_bcast_groups(
+    *,
+    cross_pool_bcast_groups: tuple[Any, ...],
+    layerwise_block_groups: list[LayerwiseBlockGroup],
+    ppgd_ranks: list[int],
+    my_rank: int,
+    device: torch.device,
+) -> None:
+    """Trigger NCCL communicator init on each cross-pool bcast group.
+
+    First use of a new NCCL process group blocks on a synchronous global
+    communicator init across all participating ranks — even when the user
+    passes ``async_op=True``. In the training loop, PPGD's
+    ``E_kickoff_async_recv_vu`` is the first user of these groups (it does
+    irecv-side broadcasts for the V/U-from-LW pipeline that defer_vu_opt
+    introduces). The matching send-side broadcast doesn't fire until LW
+    step N+1 phase B4 — which means on log steps (``train_log_every`` is up),
+    we end up in a deadlock:
+
+      * LW rank 0 stuck in ``dist.recv`` from PPGD leader inside
+        ``_log_train_metrics`` (PPGD leader hasn't sent yet).
+      * PPGD leader stuck inside the first ``dist.broadcast`` of E_kickoff
+        (communicator init waiting for LW block leaders to call into NCCL).
+      * LW step N+1 (and hence phase B4) can't start until
+        ``_log_train_metrics`` returns.
+
+    Pre-warming each group here with a 1-element dummy broadcast does the
+    NCCL init once at setup time, while every participant is still in
+    lockstep at ``build_world``. After this, the first real broadcast in the
+    training loop is a normal communicator op that can interleave with other
+    work.
+    """
+    dummy = torch.zeros(1, device=device)
+    ppgd_set = set(ppgd_ranks)
+    for bg, group in zip(layerwise_block_groups, cross_pool_bcast_groups, strict=True):
+        if my_rank == bg.leader or my_rank in ppgd_set:
+            dist.broadcast(dummy, src=bg.leader, group=group)
 
 
 @dataclass(frozen=True)

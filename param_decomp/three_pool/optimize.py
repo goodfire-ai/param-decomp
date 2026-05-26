@@ -204,6 +204,7 @@ class ThreePoolTrainer:
             layerwise_block_groups=block_groups,
             ppgd_ranks=list(three_pool_config.ppgd_ranks),
             batch_global=self.runtime.batch_global,
+            device=self._device,
         )
         trace("ThreePoolTrainer.__init__: build_world: done")
         self.layout = ThreePoolLayout.from_world(world, dist.get_rank())
