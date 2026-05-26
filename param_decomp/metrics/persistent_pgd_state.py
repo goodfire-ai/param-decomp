@@ -316,17 +316,43 @@ class PersistentPGDState:
         ci: dict[str, Float[Tensor, "... C"]],
         weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
     ) -> None:
-        """Run extra PGD steps to refine adversarial sources before the final loss computation.
+        """Run ``max(n_warmup_steps - 1, 0)`` source-only PGD iterations.
 
-        No-op when `n_warmup_steps=0`.
+        The final source update is fused into the caller's V/U+CI backward
+        in ``three_pool/step_ppgd.py`` — sources end the step at the same iterate
+        as if we'd run N iterations here, but one full forward pass + source-only
+        backward is saved by sharing the forward with the V/U+CI backward. The
+        V/U+CI gradient is computed at source iterate ``S_{N-1}`` rather than
+        ``S_N``; benign for persistent PGD whose adversarial signal accumulates
+        across many batches.
+
+        At ``n_warmup_steps == 0`` this is a no-op and the caller's fused
+        backward performs a single source update — effectively 1 update per
+        training step. (Old single-pool semantics where N=0 meant "no source
+        updates at all" is gone; set the PGD lr to 0 if you want that ablation.)
         """
         all_layers = AllLayersRouter()
-        for _ in range(self._n_warmup_steps):
+        for _ in range(max(self._n_warmup_steps - 1, 0)):
             sum_loss, n = self.compute_recon_sum_and_n(
                 model, batch, target_out, ci, weight_deltas, router=all_layers
             )
             grads = self.get_grads(sum_loss / n, retain_graph=False)
             self.step(grads)
+
+    def apply_source_step_from_grads(self, grads: PPGDSources) -> None:
+        """Apply the final (fused) PGD source step using pre-reduced source grads.
+
+        Sign-PGD only uses ``sign(grad)``, so the sum-vs-avg in-pool reduction
+        choice for ``grads`` is mathematically equivalent. Caller is responsible
+        for having reduced ``grads`` across the PPGD pool before this call —
+        without it, ranks would step their sources to inconsistent values and
+        drift apart from the broadcast-initialized state.
+        """
+        with torch.no_grad():
+            self.optimizer.step(self.sources, grads)
+            if not self._use_sigmoid_parameterization:
+                for source in self.sources.values():
+                    source.clamp_(0.0, 1.0)
 
     def compute_recon_sum_and_n(
         self,
