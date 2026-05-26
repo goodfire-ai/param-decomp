@@ -82,7 +82,7 @@ def step_ci(
         with p.phase("ci/0_target_fwd_T_sync"):
             h_cache_T = _target_fwd_and_cache(component_model, batch_T_local, cfg.bf16_autocast)
 
-    with p.phase("ci/1_ci_fn_fwd"):
+    with p.phase("ci/1_ci_fn_fwd"), autocast_bf16(cfg.bf16_autocast):
         ci = component_model.calc_causal_importances(
             pre_weight_acts=h_cache_T, sampling="continuous", detach_inputs=False
         )
