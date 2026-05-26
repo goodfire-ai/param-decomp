@@ -74,35 +74,38 @@ def _leaf_frame_key(frames: list[dict[str, Any]] | None) -> str:
     return _frame_summary(frames, depth=1)
 
 
-def _scan_peak_from_traces(snap: dict[str, Any]) -> tuple[int, int] | None:
+def _scan_peak_from_traces(snap: dict[str, Any]) -> tuple[int, bool] | None:
     """Walk ``device_traces`` to find peak total allocated bytes over time.
 
-    Returns ``(peak_bytes, peak_event_index)`` or ``None`` if traces are
-    absent. The snapshot stores trace events per device as ordered lists of
-    ``{action, addr, size, ...}`` dicts; we sum size on "alloc" and subtract
-    on "free" to get a running allocated-bytes signal.
+    Returns ``(peak_bytes, truncated)`` or ``None`` if traces are absent.
+    ``truncated`` is True when the trace buffer rolled over (max_entries hit),
+    in which case peak is a LOWER BOUND only — we lost the build-up phase.
+
+    Truncation heuristic: PyTorch records events in a circular buffer; if the
+    earliest event is a free (rather than an alloc or a segment_alloc), we
+    started recording mid-run.
     """
     traces = snap.get("device_traces")
     if not traces:
         return None
-    # Each device has its own list of events. Combine them and process in order.
     events: list[dict[str, Any]] = []
     for dev_events in traces:
         events.extend(dev_events)
+    if not events:
+        return None
+    truncated = events[0].get("action", "") in ("free_completed", "free_requested")
     current = 0
     peak = 0
-    peak_idx = 0
-    for i, ev in enumerate(events):
+    for ev in events:
         action = ev.get("action", "")
         size = ev.get("size", 0)
         if action == "alloc":
             current += size
             if current > peak:
                 peak = current
-                peak_idx = i
         elif action == "free_completed":
             current -= size
-    return peak, peak_idx
+    return peak, truncated
 
 
 def main(pickle_path: str, top: int = 20) -> None:
@@ -138,9 +141,15 @@ def main(pickle_path: str, top: int = 20) -> None:
         f"live (active):  {_format_gb(live_total)} ({len(live_blocks)} blocks)  ← persistent state"
     )
     if peak_info is not None:
-        peak, _ = peak_info
-        print(f"peak observed:  {_format_gb(peak)}  ← max during run")
-        print(f"transient peak: {_format_gb(peak - live_total)}  ← scales with batch")
+        peak, truncated = peak_info
+        if truncated:
+            print(
+                f"peak observed:  ≥{_format_gb(peak)}  (trace buffer truncated; "
+                "lower bound only — use the per-phase PD_PHASE_TRACE log for accurate peaks)"
+            )
+        else:
+            print(f"peak observed:  {_format_gb(peak)}  ← max during run")
+            print(f"transient peak: {_format_gb(peak - live_total)}  ← scales with batch")
     print(f"free in pool:   {_format_gb(reserved_total - live_total)}")
     print()
 
