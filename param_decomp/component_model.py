@@ -12,7 +12,12 @@ from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
 from param_decomp.base_config import runtime_cast
 from param_decomp.batch_and_loss_fns import RunBatch
-from param_decomp.ci_fns import CiConfig, make_ci_fn_wrapper
+from param_decomp.ci_fns import (
+    CiConfig,
+    GlobalCiFnWrapper,
+    LayerwiseCiFnWrapper,
+    make_ci_fn_wrapper,
+)
 from param_decomp.ci_sigmoids import SIGMOID_TYPES, SigmoidType
 from param_decomp.components import Components, make_components
 from param_decomp.decomposition_targets import DecompositionTarget, Identity
@@ -103,7 +108,7 @@ class ComponentModel(nn.Module):
             {k.replace(".", "-"): self.components[k] for k in sorted(self.components)}
         )
 
-        self.ci_fn = make_ci_fn_wrapper(
+        self.ci_fn: LayerwiseCiFnWrapper | GlobalCiFnWrapper | None = make_ci_fn_wrapper(
             target_model=target_model,
             module_to_c=self.module_to_c,
             components=self.components,
@@ -117,6 +122,36 @@ class ComponentModel(nn.Module):
             # For other sigmoid types, use the same function for both
             self.lower_leaky_fn = SIGMOID_TYPES[sigmoid_type]
             self.upper_leaky_fn = SIGMOID_TYPES[sigmoid_type]
+
+    def drop_ci_fn(self) -> None:
+        """Free the CI fn — for pools that only receive CI values via NCCL.
+
+        Call AFTER ``__init__`` (so RNG draws used to init the CI fn stay
+        identical across pools) but BEFORE ``.to(device)`` (so the unused
+        params never touch GPU memory). Idempotent.
+        """
+        if self.ci_fn is not None:
+            del self.ci_fn
+            self.ci_fn = None
+
+    def drop_components(self) -> None:
+        """Free the per-site V/U components — for pools that don't run V/U.
+
+        Only safe when no component is an ``EmbeddingComponents`` (the CI fn
+        wrapper consults those to convert token IDs to acts). Asserted at
+        runtime. Same lifecycle as ``drop_ci_fn``: post-init, pre-device.
+        """
+        from param_decomp.components import EmbeddingComponents
+
+        assert not any(isinstance(c, EmbeddingComponents) for c in self.components.values()), (
+            "drop_components() called on a ComponentModel with embedding components — "
+            "the CI fn wrapper needs those to convert token IDs to acts."
+        )
+        # Both the in-place clear (for the dict reference held by ci_fn wrapper)
+        # AND ModuleDict re-init (to unregister the children from nn.Module so
+        # .to(device) skips them).
+        self.components.clear()
+        self._components = nn.ModuleDict()
 
     def target_weight(self, module_name: str) -> Float[Tensor, "rows cols"]:
         """Return the weight matrix of a target module in PD's row-major convention.
@@ -351,6 +386,10 @@ class ComponentModel(nn.Module):
             :class:`CIOutputs` containing the lower-leaky, upper-leaky, and
             pre-sigmoid CI values keyed by target-module path.
         """
+        assert self.ci_fn is not None, (
+            "calc_causal_importances called on a pool whose CI fn was dropped "
+            "(see ComponentModel.drop_ci_fn)"
+        )
         if detach_inputs:
             pre_weight_acts = {k: v.detach() for k, v in pre_weight_acts.items()}
 
@@ -444,6 +483,9 @@ def component_grad_norms(
 
     ci_fn_grad_norm_sq_sum: Float[Tensor, ""] = torch.zeros((), device=device)
     missing_ci_fn_grad = False
+    assert component_model.ci_fn is not None, (
+        "compute_grad_norms called on a ComponentModel whose CI fn was dropped"
+    )
     for local_param_name, local_param in component_model.ci_fn.named_parameters():
         if local_param.grad is None:
             missing_ci_fn_grad = True

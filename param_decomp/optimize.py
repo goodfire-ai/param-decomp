@@ -276,6 +276,9 @@ class Trainer:
         self._component_params: list[torch.nn.Parameter] = []
         for name in component_model.target_module_paths:
             self._component_params.extend(component_model.components[name].parameters())
+        assert component_model.ci_fn is not None, (
+            "single-pool Trainer assumes a ComponentModel with the CI fn intact"
+        )
         self._ci_fn_params = list(component_model.ci_fn.parameters())
         assert len(self._component_params) > 0, "No parameters found in components to optimize"
 

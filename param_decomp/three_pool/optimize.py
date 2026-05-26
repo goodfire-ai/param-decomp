@@ -228,7 +228,18 @@ class ThreePoolTrainer:
             ci_config=pd_config.ci_config,
             sigmoid_type=pd_config.sigmoid_type,
         )
-        trace("ThreePoolTrainer.__init__: ComponentModel ctor: done, moving to device")
+        trace("ThreePoolTrainer.__init__: ComponentModel ctor: done")
+        # Drop pool-irrelevant params before moving to GPU. RNG draws used to
+        # init them already happened (in the ctor above), so equivalence with
+        # single-pool / 2-pool is preserved.
+        match self.layout.my_pool:
+            case "layerwise" | "ppgd":
+                self.component_model.drop_ci_fn()
+                trace(f"ThreePoolTrainer.__init__: dropped ci_fn ({self.layout.my_pool} pool)")
+            case "ci":
+                self.component_model.drop_components()
+                trace("ThreePoolTrainer.__init__: dropped V/U components (ci pool)")
+        trace("ThreePoolTrainer.__init__: ComponentModel.to(device): enter")
         self.component_model = self.component_model.to(self._device)
         trace("ThreePoolTrainer.__init__: ComponentModel.to(device): done")
         dump_memory_stats("after ComponentModel.to(device)")
@@ -253,6 +264,7 @@ class ThreePoolTrainer:
         trace(f"ThreePoolTrainer.__init__: optimizer build: enter (pool={self.layout.my_pool})")
         match self.layout.my_pool:
             case "ci":
+                assert self.component_model.ci_fn is not None, "CI pool must keep its CI fn"
                 self._ci_fn_params = list(self.component_model.ci_fn.parameters())
                 n_params = sum(p.numel() for p in self._ci_fn_params)
                 trace(f"ThreePoolTrainer.__init__: CI fn params={n_params / 1e9:.3f}B")

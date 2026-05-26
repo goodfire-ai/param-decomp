@@ -213,6 +213,7 @@ class TwoPoolTrainer:
         if self.layout.my_pool == "a":
             for name in self.component_model.target_module_paths:
                 self._component_params.extend(self.component_model.components[name].parameters())
+            assert self.component_model.ci_fn is not None, "2-pool 'a' pool must keep its CI fn"
             self._ci_fn_params = list(self.component_model.ci_fn.parameters())
             self._all_params = self._component_params + self._ci_fn_params
             self.optimizer = torch.optim.AdamW(

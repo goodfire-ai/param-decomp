@@ -67,6 +67,7 @@ def gather_full_state_dict_to_rank0(
                 dist.send(comp.U.data.contiguous(), dst=0)
             return None
         case "ci" if layout.my_is_pool_leader:
+            assert component_model.ci_fn is not None, "CI pool must keep its CI fn"
             for _, p in component_model.ci_fn.named_parameters():
                 dist.send(p.data.contiguous(), dst=0)
             return None
@@ -126,6 +127,7 @@ def _rank0_assemble(
     # Recv CI fn params from CI pool leader. Same `named_parameters()` iteration
     # order on both sides since the CI fn is constructed from the same config.
     ci_leader = layout.world.ci_ranks[0]
+    assert full_cm.ci_fn is not None, "checkpoint reconstruction needs a CI fn"
     for _, p in full_cm.ci_fn.named_parameters():
         buf = torch.empty_like(p.data)
         dist.recv(buf, src=ci_leader)
