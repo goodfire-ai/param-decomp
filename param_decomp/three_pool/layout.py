@@ -37,7 +37,10 @@ reduction (downstream ranks → one CI rank). See "Batch-split routing" below.
 
 # pyright: reportIndexIssue=false, reportArgumentType=false, reportOperatorIssue=false
 
+import os
+import time
 from collections.abc import Iterable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -46,11 +49,73 @@ import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
 
+from param_decomp._trace import trace
+
 # All cross-pool tensors are cast to this dtype on the wire (halves bytes vs fp32).
 # Downstream pools run inside bf16 autocast already; CI grads and V/U grads
 # accumulating into fp32 .grad upcast back to fp32 on receive — standard bf16
 # mixed-precision pattern.
 _WIRE_DTYPE: torch.dtype = torch.bfloat16
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# NCCL-op event timing (PD_NCCL_EVENT_TIMING=1).
+#
+# Differentiate "peer not ready, CPU spinning in wait()" (large CPU wall, small
+# GPU stream-time) from "actual wire transfer" (large GPU stream-time). NCCL ops
+# enqueue on an internal NCCL stream and stream-sync with the current stream;
+# events recorded on the *current* default stream around a NCCL op capture
+# enqueue → matching downstream-sync, which is a lower bound for the transfer.
+# Good enough to tell "wait for peer" apart from "wait for the wire".
+#
+# Records are buffered and flushed via ``flush_nccl_event_timings()`` once per
+# step (called from optimize.py at the same point ``_maybe_emit_ci_fn_bwd_breakdown``
+# fires) to avoid synchronizing on the hot path.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _nccl_event_timing_enabled() -> bool:
+    return os.environ.get("PD_NCCL_EVENT_TIMING", "").strip() in ("1", "true", "yes")
+
+
+# (op_name, pre_event, post_event, cpu_ms)
+_NCCL_EVENT_BUFFER: list[tuple[str, torch.cuda.Event, torch.cuda.Event, float]] = []
+
+
+@contextmanager
+def _time_nccl_op(op_name: str) -> Any:
+    """Time one NCCL op: CPU wall + GPU stream-time via CUDA events on the current stream.
+
+    No-op (zero overhead, no events created) when ``PD_NCCL_EVENT_TIMING`` is off.
+    """
+    if not _nccl_event_timing_enabled():
+        yield
+        return
+    pre = torch.cuda.Event(enable_timing=True)
+    post = torch.cuda.Event(enable_timing=True)
+    pre.record()
+    cpu_t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        cpu_ms = (time.perf_counter() - cpu_t0) * 1000.0
+        post.record()
+        _NCCL_EVENT_BUFFER.append((op_name, pre, post, cpu_ms))
+
+
+def flush_nccl_event_timings() -> None:
+    """Synchronize, compute per-op GPU stream-time, emit one ``trace()`` line per op, clear buffer.
+
+    Call once per step (cheap when buffer is empty / timing disabled). The
+    ``torch.cuda.synchronize`` is required to make ``elapsed_time`` valid.
+    """
+    if not _NCCL_EVENT_BUFFER:
+        return
+    torch.cuda.synchronize()
+    for op_name, pre, post, cpu_ms in _NCCL_EVENT_BUFFER:
+        gpu_ms = pre.elapsed_time(post)
+        trace(f"nccl-event: {op_name} cpu={cpu_ms:.1f}ms gpu={gpu_ms:.1f}ms")
+    _NCCL_EVENT_BUFFER.clear()
 
 
 @dataclass(frozen=True)
@@ -449,14 +514,15 @@ class ThreePoolLayout:
         buffers: list[Tensor] = []
         my_lw_block_ranks = self.world.lw_block_ranks_for_ci_slice(self.my_ci_slice_idx)
 
-        for bg in self.world.layerwise_block_groups:
-            for block_rank_idx in my_lw_block_ranks:
-                target_lw_rank = bg.ranks[block_rank_idx]
-                sub = self.world.lw_sub_slice_within_ci(block_rank_idx)
-                for site in bg.owned_sites:
-                    buf = ci_full[site][sub].detach().to(_WIRE_DTYPE).contiguous()
-                    works.append(dist.isend(buf, dst=target_lw_rank))
-                    buffers.append(buf)
+        with _time_nccl_op("async_send_ci_to_layerwise"):
+            for bg in self.world.layerwise_block_groups:
+                for block_rank_idx in my_lw_block_ranks:
+                    target_lw_rank = bg.ranks[block_rank_idx]
+                    sub = self.world.lw_sub_slice_within_ci(block_rank_idx)
+                    for site in bg.owned_sites:
+                        buf = ci_full[site][sub].detach().to(_WIRE_DTYPE).contiguous()
+                        works.append(dist.isend(buf, dst=target_lw_rank))
+                        buffers.append(buf)
         return works, buffers
 
     def async_send_ci_to_ppgd(
@@ -469,13 +535,14 @@ class ThreePoolLayout:
         buffers: list[Tensor] = []
         my_ppgd_slice_idxs = self.world.ppgd_slice_idxs_for_ci_slice(self.my_ci_slice_idx)
 
-        for ppgd_slice_idx in my_ppgd_slice_idxs:
-            target_ppgd_rank = self.world.ppgd_ranks[ppgd_slice_idx]
-            sub = self.world.ppgd_sub_slice_within_ci(ppgd_slice_idx)
-            for site in self.world.all_sites:
-                buf = ci_full[site][sub].detach().to(_WIRE_DTYPE).contiguous()
-                works.append(dist.isend(buf, dst=target_ppgd_rank))
-                buffers.append(buf)
+        with _time_nccl_op("async_send_ci_to_ppgd"):
+            for ppgd_slice_idx in my_ppgd_slice_idxs:
+                target_ppgd_rank = self.world.ppgd_ranks[ppgd_slice_idx]
+                sub = self.world.ppgd_sub_slice_within_ci(ppgd_slice_idx)
+                for site in self.world.all_sites:
+                    buf = ci_full[site][sub].detach().to(_WIRE_DTYPE).contiguous()
+                    works.append(dist.isend(buf, dst=target_ppgd_rank))
+                    buffers.append(buf)
         return works, buffers
 
     def recv_g_ci_from_layerwise(
@@ -499,15 +566,16 @@ class ThreePoolLayout:
         # Post all irecvs upfront so they pipeline on the NIC.
         # Per source: one packed buf containing all of that source's owned sites.
         pending: list[tuple[int, int, Tensor, dist.Work, tuple[str, ...]]] = []
-        for bg_idx, bg in enumerate(self.world.layerwise_block_groups):
-            owned = bg.owned_sites
-            packed_numel = sum(b_lw * seq_len * site_to_c[s] for s in owned)
-            for block_rank_idx in my_lw_block_ranks:
-                src = bg.ranks[block_rank_idx]
-                buf = torch.empty(packed_numel, device=device, dtype=_WIRE_DTYPE)
-                w = dist.irecv(buf, src=src)
-                assert w is not None
-                pending.append((bg_idx, block_rank_idx, buf, w, owned))
+        with _time_nccl_op("recv_g_ci_from_layerwise:post_irecvs"):
+            for bg_idx, bg in enumerate(self.world.layerwise_block_groups):
+                owned = bg.owned_sites
+                packed_numel = sum(b_lw * seq_len * site_to_c[s] for s in owned)
+                for block_rank_idx in my_lw_block_ranks:
+                    src = bg.ranks[block_rank_idx]
+                    buf = torch.empty(packed_numel, device=device, dtype=_WIRE_DTYPE)
+                    w = dist.irecv(buf, src=src)
+                    assert w is not None
+                    pending.append((bg_idx, block_rank_idx, buf, w, owned))
 
         # Wait + stitch. Allocate one fp32 dest per site, copy each piece in place.
         out: dict[str, Tensor] = {}
@@ -515,16 +583,17 @@ class ThreePoolLayout:
         for site in self.world.all_sites:
             c_s = site_to_c[site]
             out[site] = torch.empty(b_ci, seq_len, c_s, device=device, dtype=torch.float32)
-        for _bg_idx, block_rank_idx, buf, w, owned in pending:
-            w.wait()
-            sub = self.world.lw_sub_slice_within_ci(block_rank_idx)
-            offset = 0
-            for site in owned:
-                c_s = site_to_c[site]
-                n = b_lw * seq_len * c_s
-                site_view = buf[offset : offset + n].view(b_lw, seq_len, c_s)
-                out[site][sub].copy_(site_view.to(torch.float32))
-                offset += n
+        with _time_nccl_op("recv_g_ci_from_layerwise:wait"):
+            for _bg_idx, block_rank_idx, buf, w, owned in pending:
+                w.wait()
+                sub = self.world.lw_sub_slice_within_ci(block_rank_idx)
+                offset = 0
+                for site in owned:
+                    c_s = site_to_c[site]
+                    n = b_lw * seq_len * c_s
+                    site_view = buf[offset : offset + n].view(b_lw, seq_len, c_s)
+                    out[site][sub].copy_(site_view.to(torch.float32))
+                    offset += n
         return out
 
     def recv_g_ci_from_ppgd(
@@ -553,28 +622,30 @@ class ThreePoolLayout:
         packed_numel = sum(site_numels.values())
 
         pending: list[tuple[int, Tensor, dist.Work]] = []
-        for ppgd_slice_idx in my_ppgd_slice_idxs:
-            src = self.world.ppgd_ranks[ppgd_slice_idx]
-            packed = torch.empty(packed_numel, device=device, dtype=_WIRE_DTYPE)
-            w = dist.irecv(packed, src=src)
-            assert w is not None
-            pending.append((ppgd_slice_idx, packed, w))
+        with _time_nccl_op("recv_g_ci_from_ppgd:post_irecvs"):
+            for ppgd_slice_idx in my_ppgd_slice_idxs:
+                src = self.world.ppgd_ranks[ppgd_slice_idx]
+                packed = torch.empty(packed_numel, device=device, dtype=_WIRE_DTYPE)
+                w = dist.irecv(packed, src=src)
+                assert w is not None
+                pending.append((ppgd_slice_idx, packed, w))
 
         b_ci = self.world.batch_local_ci
         out: dict[str, Tensor] = {
             s: torch.empty(b_ci, seq_len, site_to_c[s], device=device, dtype=torch.float32)
             for s in self.world.all_sites
         }
-        for ppgd_slice_idx, packed, w in pending:
-            w.wait()
-            sub = self.world.ppgd_sub_slice_within_ci(ppgd_slice_idx)
-            offset = 0
-            for site in self.world.all_sites:
-                c_s = site_to_c[site]
-                n = site_numels[site]
-                buf = packed[offset : offset + n].view(b_pp, seq_len, c_s)
-                out[site][sub].copy_(buf.to(torch.float32))
-                offset += n
+        with _time_nccl_op("recv_g_ci_from_ppgd:wait"):
+            for ppgd_slice_idx, packed, w in pending:
+                w.wait()
+                sub = self.world.ppgd_sub_slice_within_ci(ppgd_slice_idx)
+                offset = 0
+                for site in self.world.all_sites:
+                    c_s = site_to_c[site]
+                    n = site_numels[site]
+                    buf = packed[offset : offset + n].view(b_pp, seq_len, c_s)
+                    out[site][sub].copy_(buf.to(torch.float32))
+                    offset += n
         return out
 
     def all_reduce_ci_fn_grads(self, params: Iterable[nn.Parameter]) -> None:
@@ -592,11 +663,14 @@ class ThreePoolLayout:
             buckets.setdefault((g.dtype, g.device), []).append(g)
         from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 
-        for bucket in buckets.values():
-            flat = _flatten_dense_tensors(bucket)
-            dist.all_reduce(flat, op=dist.ReduceOp.AVG, group=self.world.ci_pool_group)
-            for orig, reduced in zip(bucket, _unflatten_dense_tensors(flat, bucket), strict=True):
-                orig.copy_(reduced)
+        with _time_nccl_op("all_reduce_ci_fn_grads"):
+            for bucket in buckets.values():
+                flat = _flatten_dense_tensors(bucket)
+                dist.all_reduce(flat, op=dist.ReduceOp.AVG, group=self.world.ci_pool_group)
+                for orig, reduced in zip(
+                    bucket, _unflatten_dense_tensors(flat, bucket), strict=True
+                ):
+                    orig.copy_(reduced)
 
     # ──────────────────────────────────────────────────────────────────────
     # Layerwise-pool comm methods
@@ -618,13 +692,14 @@ class ThreePoolLayout:
 
         out: dict[str, Tensor] = {}
         works: list[dist.Work] = []
-        for site in self.my_owned_sites:
-            C = site_to_c[site]
-            buf = torch.empty(b_lw, seq_len, C, device=device, dtype=_WIRE_DTYPE)
-            w = dist.irecv(buf, src=src)
-            assert w is not None
-            out[site] = buf
-            works.append(w)
+        with _time_nccl_op("async_recv_ci_from_ci_pool"):
+            for site in self.my_owned_sites:
+                C = site_to_c[site]
+                buf = torch.empty(b_lw, seq_len, C, device=device, dtype=_WIRE_DTYPE)
+                w = dist.irecv(buf, src=src)
+                assert w is not None
+                out[site] = buf
+                works.append(w)
         return out, works
 
     def send_g_ci_to_ci_pool(self, g_ci_owned: dict[str, Tensor]) -> None:
@@ -644,7 +719,8 @@ class ThreePoolLayout:
             for s in self.my_owned_sites
         ]
         packed = torch.cat(parts)
-        dist.send(packed, dst=dst)
+        with _time_nccl_op("send_g_ci_to_ci_pool"):
+            dist.send(packed, dst=dst)
 
     def recv_g_vu_from_ppgd(
         self,
@@ -665,7 +741,8 @@ class ThreePoolLayout:
             sample = v_templates[my_sites[0]]
             packed = torch.empty(packed_numel, dtype=_WIRE_DTYPE, device=sample.device)
             ppgd_leader = self.world.ppgd_ranks[0]
-            dist.recv(packed, src=ppgd_leader)
+            with _time_nccl_op("recv_g_vu_from_ppgd:recv"):
+                dist.recv(packed, src=ppgd_leader)
             offset = 0
             for s in my_sites:
                 v_n = v_templates[s].numel()
@@ -686,11 +763,12 @@ class ThreePoolLayout:
         # In-block broadcast leader → other ranks so all replicas see the same g_VU.
         block_group = self.world.block_group_groups[self.my_block_idx]
         block_leader_rank = self.world.layerwise_block_groups[self.my_block_idx].leader
-        for s in self.my_owned_sites:
-            v_grads[s] = v_grads[s].contiguous()
-            u_grads[s] = u_grads[s].contiguous()
-            dist.broadcast(v_grads[s], src=block_leader_rank, group=block_group)
-            dist.broadcast(u_grads[s], src=block_leader_rank, group=block_group)
+        with _time_nccl_op("recv_g_vu_from_ppgd:in_block_bcast"):
+            for s in self.my_owned_sites:
+                v_grads[s] = v_grads[s].contiguous()
+                u_grads[s] = u_grads[s].contiguous()
+                dist.broadcast(v_grads[s], src=block_leader_rank, group=block_group)
+                dist.broadcast(u_grads[s], src=block_leader_rank, group=block_group)
 
         return v_grads, u_grads
 
@@ -714,7 +792,8 @@ class ThreePoolLayout:
             parts.append(u_owned[s].detach().to(_WIRE_DTYPE).contiguous().flatten())
         packed = torch.cat(parts)
         bcast_group = self.world.cross_pool_bcast_groups[self.my_block_idx]
-        w = dist.broadcast(packed, src=self.my_rank, group=bcast_group, async_op=True)
+        with _time_nccl_op("async_send_updated_vu_to_ppgd"):
+            w = dist.broadcast(packed, src=self.my_rank, group=bcast_group, async_op=True)
         assert w is not None
         return [w], [packed]
 
@@ -757,11 +836,12 @@ class ThreePoolLayout:
         from torch._utils import _flatten_dense_tensors
 
         states: list[tuple[list[Tensor], Tensor, dist.Work]] = []
-        for bucket in buckets.values():
-            flat = _flatten_dense_tensors(bucket)
-            w = dist.all_reduce(flat, op=dist.ReduceOp.AVG, group=block_group, async_op=True)
-            assert w is not None
-            states.append((bucket, flat, w))
+        with _time_nccl_op("async_all_reduce_grads_in_block_kickoff"):
+            for bucket in buckets.values():
+                flat = _flatten_dense_tensors(bucket)
+                w = dist.all_reduce(flat, op=dist.ReduceOp.AVG, group=block_group, async_op=True)
+                assert w is not None
+                states.append((bucket, flat, w))
         return states
 
     def wait_and_unflatten_all_reduce(
@@ -795,13 +875,14 @@ class ThreePoolLayout:
 
         out: dict[str, Tensor] = {}
         works: list[dist.Work] = []
-        for site in self.world.all_sites:
-            C = site_to_c[site]
-            buf = torch.empty(b_pp, seq_len, C, device=device, dtype=_WIRE_DTYPE)
-            w = dist.irecv(buf, src=src)
-            assert w is not None
-            out[site] = buf
-            works.append(w)
+        with _time_nccl_op("async_recv_ci_from_ci_pool_ppgd"):
+            for site in self.world.all_sites:
+                C = site_to_c[site]
+                buf = torch.empty(b_pp, seq_len, C, device=device, dtype=_WIRE_DTYPE)
+                w = dist.irecv(buf, src=src)
+                assert w is not None
+                out[site] = buf
+                works.append(w)
         return out, works
 
     def send_g_ci_to_ci_pool_ppgd(self, g_ci_full: dict[str, Tensor]) -> None:
@@ -822,7 +903,8 @@ class ThreePoolLayout:
             for s in self.world.all_sites
         ]
         packed = torch.cat(parts)
-        dist.send(packed, dst=dst)
+        with _time_nccl_op("send_g_ci_to_ci_pool_ppgd"):
+            dist.send(packed, dst=dst)
 
     def send_g_vu_to_layerwise(
         self,
@@ -839,18 +921,20 @@ class ThreePoolLayout:
             return
         works: list[dist.Work] = []
         buffers: list[Tensor] = []
-        for bg in self.world.layerwise_block_groups:
-            parts: list[Tensor] = []
-            for site in bg.owned_sites:
-                parts.append(v_grads[site].to(_WIRE_DTYPE).contiguous().flatten())
-                parts.append(u_grads[site].to(_WIRE_DTYPE).contiguous().flatten())
-            packed = torch.cat(parts)
-            w = dist.isend(packed, dst=bg.leader)
-            assert w is not None
-            works.append(w)
-            buffers.append(packed)
-        for w in works:
-            w.wait()
+        with _time_nccl_op("send_g_vu_to_layerwise:isends"):
+            for bg in self.world.layerwise_block_groups:
+                parts: list[Tensor] = []
+                for site in bg.owned_sites:
+                    parts.append(v_grads[site].to(_WIRE_DTYPE).contiguous().flatten())
+                    parts.append(u_grads[site].to(_WIRE_DTYPE).contiguous().flatten())
+                packed = torch.cat(parts)
+                w = dist.isend(packed, dst=bg.leader)
+                assert w is not None
+                works.append(w)
+                buffers.append(packed)
+        with _time_nccl_op("send_g_vu_to_layerwise:wait"):
+            for w in works:
+                w.wait()
         del buffers
 
     def sum_reduce_ppgd_grads(self, grads: Iterable[Tensor]) -> None:
@@ -870,11 +954,14 @@ class ThreePoolLayout:
             buckets.setdefault((g.dtype, g.device), []).append(g)
         from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 
-        for bucket in buckets.values():
-            flat = _flatten_dense_tensors(bucket)
-            dist.all_reduce(flat, op=dist.ReduceOp.SUM, group=self.world.ppgd_pool_group)
-            for orig, reduced in zip(bucket, _unflatten_dense_tensors(flat, bucket), strict=True):
-                orig.copy_(reduced)
+        with _time_nccl_op("sum_reduce_ppgd_grads"):
+            for bucket in buckets.values():
+                flat = _flatten_dense_tensors(bucket)
+                dist.all_reduce(flat, op=dist.ReduceOp.SUM, group=self.world.ppgd_pool_group)
+                for orig, reduced in zip(
+                    bucket, _unflatten_dense_tensors(flat, bucket), strict=True
+                ):
+                    orig.copy_(reduced)
 
     def recv_updated_vu_from_layerwise(
         self,
@@ -906,15 +993,16 @@ class ThreePoolLayout:
         """
         assert self.my_pool == "ppgd"
         bufs: list[tuple[LayerwiseBlockGroup, Tensor, dist.Work]] = []
-        for bg_idx, bg in enumerate(self.world.layerwise_block_groups):
-            owned = bg.owned_sites
-            packed_numel = sum(v_templates[s].numel() + u_templates[s].numel() for s in owned)
-            sample = v_templates[owned[0]]
-            packed = torch.empty(packed_numel, dtype=_WIRE_DTYPE, device=sample.device)
-            bcast_group = self.world.cross_pool_bcast_groups[bg_idx]
-            w = dist.broadcast(packed, src=bg.leader, group=bcast_group, async_op=True)
-            assert w is not None
-            bufs.append((bg, packed, w))
+        with _time_nccl_op("async_recv_updated_vu_from_layerwise_kickoff"):
+            for bg_idx, bg in enumerate(self.world.layerwise_block_groups):
+                owned = bg.owned_sites
+                packed_numel = sum(v_templates[s].numel() + u_templates[s].numel() for s in owned)
+                sample = v_templates[owned[0]]
+                packed = torch.empty(packed_numel, dtype=_WIRE_DTYPE, device=sample.device)
+                bcast_group = self.world.cross_pool_bcast_groups[bg_idx]
+                w = dist.broadcast(packed, src=bg.leader, group=bcast_group, async_op=True)
+                assert w is not None
+                bufs.append((bg, packed, w))
         return bufs
 
     def wait_and_unpack_updated_vu(

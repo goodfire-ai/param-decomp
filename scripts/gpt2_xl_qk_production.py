@@ -17,6 +17,7 @@ Usage:
   python scripts/gpt2_xl_qk_production.py --smoke    # 50-step smoke test, no save
 """
 
+import os
 from typing import Any
 
 import fire
@@ -204,6 +205,9 @@ def main(
     torch_profile: bool = False,
     torch_profile_ranks: str | None = None,
     ci_bwd_profile: bool = False,
+    nccl_event_timing: bool = False,
+    sync_debug: bool = False,
+    sync_error: bool = False,
     n_ci: int = DEFAULT_N_CI,
     n_ppgd: int = DEFAULT_N_PPGD,
     ddp_per_block: int = DEFAULT_DDP_PER_BLOCK,
@@ -305,6 +309,22 @@ def main(
     if ci_bwd_profile:
         env["PD_CI_FN_BWD_PROFILE"] = "1"
         print("CI fn bwd-stage profile: ON (per-block bwd ms via CUDA events)")
+    if nccl_event_timing:
+        env["PD_NCCL_EVENT_TIMING"] = "1"
+        print("NCCL-op event timing: ON (cpu vs gpu ms per NCCL op via CUDA events)")
+    # torch.cuda.set_sync_debug_mode hook: --sync-debug warns on every implicit
+    # CPU↔GPU sync (.item(), bool(tensor), .cpu(), etc.); --sync-error crashes
+    # on the first one so the traceback pins the culprit. ``error`` wins if
+    # both are set.
+    if sync_error:
+        env["PD_SYNC_DEBUG"] = "error"
+        print("sync-debug: ERROR (crash on first implicit CPU↔GPU sync)")
+    elif sync_debug:
+        env["PD_SYNC_DEBUG"] = "warn"
+        print("sync-debug: WARN (log every implicit CPU↔GPU sync)")
+    if os.environ.get("PD_SYNC_BEFORE_8A"):
+        env["PD_SYNC_BEFORE_8A"] = os.environ["PD_SYNC_BEFORE_8A"]
+        print(f"PD_SYNC_BEFORE_8A={env['PD_SYNC_BEFORE_8A']} (diagnostic sync before ci/8a)")
     print(
         f"topology: lw={N_LW_RANKS} ({N_SITES // ddp_per_block} blocks × DDP={ddp_per_block}, "
         f"{ddp_per_block} sites/block), ci={n_ci}, ppgd={n_ppgd}, total={total_ranks}"

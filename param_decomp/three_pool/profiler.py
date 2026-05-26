@@ -6,9 +6,10 @@ a Chrome trace JSON readable by Perfetto), parameterized on the 3-pool literal
 than imported to keep each subsystem owning its own surface.
 """
 
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -16,6 +17,24 @@ import torch
 import torch.profiler
 
 from param_decomp._trace import phase_trace_enabled, trace
+
+
+@dataclass
+class _PendingPhase:
+    """Buffered phase-exit info waiting on a CUDA event sync.
+
+    ``entry_event``/``exit_event`` are recorded on the current stream at phase
+    enter/exit. ``elapsed_time`` on these blocks until both events are done, so
+    we defer the call to ``flush_pending_gpu_events`` (after a stream sync).
+    """
+
+    name: str
+    cpu_ms: float
+    peak_gb: float
+    end_gb: float
+    delta_gb: float
+    entry_event: torch.cuda.Event
+    exit_event: torch.cuda.Event
 
 
 @dataclass
@@ -41,6 +60,7 @@ class PhaseProfiler:
     skip_first: int = 20
     active: int = 3
     _prof: torch.profiler.profile | None = None
+    _pending_gpu_events: list[_PendingPhase] = field(default_factory=list)
 
     def __enter__(self) -> "PhaseProfiler":
         if not self.enabled:
@@ -95,11 +115,16 @@ class PhaseProfiler:
         do_trace = phase_trace_enabled()
         device = None
         before_gb = 0.0
+        cpu_start = 0.0
+        entry_event: torch.cuda.Event | None = None
         if do_trace:
             device = torch.cuda.current_device()
             torch.cuda.reset_peak_memory_stats(device)
             before_gb = torch.cuda.memory_allocated(device) / 1e9
             trace(f"phase: {name} cur={before_gb:.2f}gb")
+            entry_event = torch.cuda.Event(enable_timing=True)
+            entry_event.record()
+            cpu_start = time.perf_counter()
 
         inner = torch.profiler.record_function(name) if self.enabled else nullcontext()
         try:
@@ -107,12 +132,43 @@ class PhaseProfiler:
                 yield
         finally:
             if do_trace:
+                assert entry_event is not None
+                exit_event = torch.cuda.Event(enable_timing=True)
+                exit_event.record()
+                cpu_ms = (time.perf_counter() - cpu_start) * 1000.0
                 peak_gb = torch.cuda.max_memory_allocated(device) / 1e9
                 end_gb = torch.cuda.memory_allocated(device) / 1e9
-                trace(
-                    f"phase: {name} end peak={peak_gb:.2f}gb "
-                    f"end={end_gb:.2f}gb delta={end_gb - before_gb:+.2f}gb"
+                self._pending_gpu_events.append(
+                    _PendingPhase(
+                        name=name,
+                        cpu_ms=cpu_ms,
+                        peak_gb=peak_gb,
+                        end_gb=end_gb,
+                        delta_gb=end_gb - before_gb,
+                        entry_event=entry_event,
+                        exit_event=exit_event,
+                    )
                 )
+
+    def flush_pending_gpu_events(self) -> None:
+        """Drain buffered phase exits, emit one trace line per phase.
+
+        ``cuda.Event.elapsed_time`` blocks until both events are recorded on the
+        device, so callers should invoke this after a stream sync (e.g. after
+        ``torch.cuda.current_stream().synchronize()`` at end-of-step) to avoid
+        adding a hidden per-phase sync on the critical path.
+        """
+        if not self._pending_gpu_events:
+            return
+        for ph in self._pending_gpu_events:
+            gpu_ms = ph.entry_event.elapsed_time(ph.exit_event)
+            wait_ms = ph.cpu_ms - gpu_ms
+            trace(
+                f"phase: {ph.name} end peak={ph.peak_gb:.2f}gb "
+                f"end={ph.end_gb:.2f}gb delta={ph.delta_gb:+.2f}gb "
+                f"cpu={ph.cpu_ms:.1f}ms gpu={gpu_ms:.1f}ms wait={wait_ms:+.1f}ms"
+            )
+        self._pending_gpu_events.clear()
 
     def step(self) -> None:
         """Advance the profiler schedule (call once per training iteration)."""

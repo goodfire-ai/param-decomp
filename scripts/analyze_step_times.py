@@ -29,6 +29,13 @@ import fire
 # exit traces — otherwise each phase gets counted twice per step and the
 # "duration" alternates between (real phase work) and (inter-phase gap).
 _PHASE_RE = re.compile(r"\[trace rank=(\d+) \+\s*([0-9.]+)ms\] phase: (\S+) cur=")
+# Phase EXIT trace with the new cpu=/gpu=/wait= columns. The exit line also
+# carries peak/end/delta, but we only need the timing here. Older logs lacking
+# these columns simply won't match — analyzer falls back to phase-entry timing.
+_PHASE_EXIT_RE = re.compile(
+    r"\[trace rank=(\d+) \+\s*[0-9.]+ms\] phase: (\S+) end .*"
+    r"cpu=([0-9.]+)ms gpu=([0-9.]+)ms wait=([+-]?[0-9.]+)ms"
+)
 # [trace rank=R +Tms] Trainer.run: step N: done in Yms
 _STEP_DONE_RE = re.compile(
     r"\[trace rank=(\d+) \+\s*([0-9.]+)ms\] Trainer\.run: step (\d+): done in ([0-9.]+)ms"
@@ -62,6 +69,14 @@ def main(log_path: str, rank: int | None = None, skip_warmup: int = 1) -> None:
     events: dict[int, list[tuple[float, str, str]]] = defaultdict(list)
     step_times: dict[int, dict[int, float]] = defaultdict(dict)
     step_starts: dict[int, dict[int, float]] = defaultdict(dict)
+    # Per (rank, phase): list of (cpu_ms, gpu_ms, wait_ms) from exit traces.
+    # We track which step each exit belongs to so we can honour ``skip_warmup``.
+    gpu_samples: dict[int, dict[str, list[tuple[int, float, float, float]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    # Track the most recent step seen per rank so exit traces can attribute
+    # themselves to a step. The exit trace itself has no step number.
+    current_step_per_rank: dict[int, int] = defaultdict(lambda: -1)
 
     with open(path) as f:
         for line in f:
@@ -69,10 +84,17 @@ def main(log_path: str, rank: int | None = None, skip_warmup: int = 1) -> None:
                 r, t, step, dur = int(m[1]), float(m[2]), int(m[3]), float(m[4])
                 step_times[r][step] = dur
                 events[r].append((t, "step_done", str(step)))
+                current_step_per_rank[r] = -1
             elif m := _STEP_START_RE.search(line):
                 r, t, step = int(m[1]), float(m[2]), int(m[3])
                 step_starts[r][step] = t
                 events[r].append((t, "step_start", str(step)))
+                current_step_per_rank[r] = step
+            elif m := _PHASE_EXIT_RE.search(line):
+                r, name = int(m[1]), m[2]
+                cpu_ms, gpu_ms, wait_ms = float(m[3]), float(m[4]), float(m[5])
+                step = current_step_per_rank[r]
+                gpu_samples[r][name].append((step, cpu_ms, gpu_ms, wait_ms))
             elif m := _PHASE_RE.search(line):
                 r, t, name = int(m[1]), float(m[2]), m[3]
                 events[r].append((t, "phase", name))
@@ -128,19 +150,46 @@ def main(log_path: str, rank: int | None = None, skip_warmup: int = 1) -> None:
             1, len([s for s in step_times[r] if s >= skip_warmup])
         )
 
+        # Per-phase GPU/wait means from exit traces (post-warmup samples only).
+        # Empty dict if the log predates the cpu=/gpu=/wait= format.
+        gpu_means: dict[str, tuple[float, float]] = {}  # name -> (gpu_ms, wait_ms)
+        for name, samples in gpu_samples[r].items():
+            post_warmup = [(g, w) for s, _c, g, w in samples if s >= skip_warmup]
+            if not post_warmup:
+                continue
+            gpu_mean = sum(g for g, _ in post_warmup) / len(post_warmup)
+            wait_mean = sum(w for _, w in post_warmup) / len(post_warmup)
+            gpu_means[name] = (gpu_mean, wait_mean)
+        has_gpu = bool(gpu_means)
+
         # Group by pool prefix (lw/, ci/, pgd/) for tidy output.
         pool = next(iter(means)).split("/", 1)[0]
         print(f"\n=== rank={r} (pool={pool}) — mean step {step_mean:.1f}ms ===")
-        print(f"{'phase':40s} {'mean_ms':>8s} {'count':>5s} {'%step':>6s}")
-        print("-" * 72)
+        if has_gpu:
+            print(
+                f"{'phase':40s} {'cpu_ms':>8s} {'gpu_ms':>8s} {'wait_ms':>8s} "
+                f"{'count':>5s} {'%step':>6s}"
+            )
+            print("-" * 90)
+        else:
+            print(f"{'phase':40s} {'mean_ms':>8s} {'count':>5s} {'%step':>6s}")
+            print("-" * 72)
         sum_phase = 0.0
         for name, mean_ms in sorted(means.items(), key=lambda kv: -kv[1]):
             count = len(phase_durations[name])
             pct = 100 * mean_ms / step_mean if step_mean > 0 else 0
             sum_phase += mean_ms
             bar = _bar(mean_ms / step_mean if step_mean > 0 else 0)
-            print(f"{name:40s} {mean_ms:8.1f} {count:5d} {pct:5.1f}%  {bar}")
-        print("-" * 72)
+            if has_gpu:
+                gpu_ms, wait_ms = gpu_means.get(name, (float("nan"), float("nan")))
+                print(
+                    f"{name:40s} {mean_ms:8.1f} {gpu_ms:8.1f} {wait_ms:+8.1f} "
+                    f"{count:5d} {pct:5.1f}%  {bar}"
+                )
+            else:
+                print(f"{name:40s} {mean_ms:8.1f} {count:5d} {pct:5.1f}%  {bar}")
+        sep_width = 90 if has_gpu else 72
+        print("-" * sep_width)
         overhead = step_mean - sum_phase
         print(f"{'(phase sum)':40s} {sum_phase:8.1f} {'':5s} {100 * sum_phase / step_mean:5.1f}%")
         print(
