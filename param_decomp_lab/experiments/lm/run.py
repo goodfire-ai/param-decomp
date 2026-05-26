@@ -2,10 +2,14 @@
 
 Both the fresh-run path (`main`) and the reload path share the module-level
 `build_target` / `build_lm_loader` / `make_run_batch`. Run via
-`pd-lm path/to/config.yaml` (or `torchrun` for DDP).
+`pd-lm path/to/config.yaml`; pass `--dp N` to submit a single-node DDP SLURM job.
+For local DDP, invoke directly:
+`torchrun --standalone --nproc_per_node=N -m param_decomp_lab.experiments.lm.run config.yaml`.
 """
 
 import importlib
+import os
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -42,8 +46,12 @@ from param_decomp_lab.experiments.utils import (
     ExperimentConfig,
     init_pd_run,
 )
+from param_decomp_lab.infra.git import create_git_snapshot
 from param_decomp_lab.infra.paths import ModelPath
-from param_decomp_lab.infra.run_files import resolve_run_files
+from param_decomp_lab.infra.run_files import generate_run_id, resolve_run_files
+from param_decomp_lab.infra.settings import DEFAULT_PARTITION_NAME, REPO_ROOT
+from param_decomp_lab.infra.slurm import SlurmConfig, generate_script, submit_slurm_job
+from param_decomp_lab.infra.wandb import get_wandb_entity
 from param_decomp_lab.seed import set_seed
 
 
@@ -181,13 +189,37 @@ def main(
     *,
     group: str | None = None,
     tags: str | None = None,
+    dp: int | None = None,
+    partition: str | None = DEFAULT_PARTITION_NAME,
+    time: str = "72:00:00",
+    job_name: str = "pd-lm",
+    no_snapshot: bool = False,
+    run_id: str | None = None,
 ) -> None:
     """Run an LM PD experiment end-to-end from a YAML config.
 
     Parses the YAML, initialises DDP, builds the target / loaders / eval loop, writes
     `run_meta.yaml`, and calls `optimize(...)`. Non-main ranks use a silent sink.
-    `group` / `tags` are wandb-only (no-ops without `wandb:`).
+    `group` / `tags` are wandb-only (no-ops without `wandb:`). Passing `--dp N`
+    outside torchrun submits a single-node SLURM job; for local DDP, invoke via
+    `torchrun --standalone --nproc_per_node=N -m param_decomp_lab.experiments.lm.run`.
     """
+    if dp is not None and dp < 2:
+        raise ValueError("--dp must be at least 2 for data parallelism")
+    if dp is not None and os.environ.get("WORLD_SIZE") is None:
+        _submit_slurm(
+            config_path,
+            dp=dp,
+            group=group,
+            tags=tags,
+            partition=partition,
+            time=time,
+            job_name=job_name,
+            no_snapshot=no_snapshot,
+            run_id=run_id,
+        )
+        return
+
     cfg = LMExperimentConfig.from_file(config_path)
 
     dist_state = init_distributed()
@@ -195,7 +227,16 @@ def main(
         logger.info(f"Distributed state: {dist_state}")
     set_seed(cfg.pd.seed)
     device = get_device()
-    cfg = cfg.model_copy(update={"runtime": cfg.runtime.model_copy(update={"device": device})})
+    cfg = cfg.model_copy(
+        update={
+            "runtime": cfg.runtime.model_copy(
+                update={
+                    "device": device,
+                    "dp": dist_state.world_size if dist_state is not None else None,
+                }
+            )
+        }
+    )
 
     target_model = build_target(cfg.target)
 
@@ -210,7 +251,7 @@ def main(
     )
     eval_loop = _build_eval_loop(cfg, device, dist_state)
 
-    sink = init_pd_run(cfg, group=group, tags=tags)
+    sink = init_pd_run(cfg, group=group, tags=tags, run_id=run_id)
 
     try:
         optimize(
@@ -253,6 +294,82 @@ def _build_eval_loop(
         slow_every=cfg.eval.slow_every,
         slow_on_first_step=cfg.eval.slow_on_first_step,
     )
+
+
+def _submit_slurm(
+    config_path: str | Path,
+    *,
+    dp: int,
+    group: str | None,
+    tags: str | None,
+    partition: str | None,
+    time: str,
+    job_name: str,
+    no_snapshot: bool,
+    run_id: str | None,
+) -> None:
+    run_id = run_id or generate_run_id("param_decomp")
+    snapshot_ref: str | None = None
+    commit_hash = "no-snapshot"
+    if not no_snapshot:
+        snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=run_id)
+        logger.info(f"Created git snapshot: {snapshot_ref} ({commit_hash[:8]})")
+
+    # If the config is an absolute path inside REPO_ROOT, rewrite to repo-relative so
+    # the SLURM job picks up the snapshot's copy rather than the live worktree.
+    path = Path(config_path)
+    if path.is_absolute() and path.is_relative_to(REPO_ROOT):
+        config_arg = path.relative_to(REPO_ROOT).as_posix()
+    else:
+        config_arg = str(config_path)
+
+    command_parts = [
+        "torchrun",
+        "--standalone",
+        f"--nproc_per_node={dp}",
+        "-m",
+        "param_decomp_lab.experiments.lm.run",
+        config_arg,
+    ]
+    if group is not None:
+        command_parts.extend(["--group", group])
+    if tags is not None:
+        command_parts.extend(["--tags", tags])
+    command_parts.extend(["--run_id", run_id])
+    command = " ".join(shlex.quote(part) for part in command_parts)
+
+    slurm_config = SlurmConfig(
+        job_name=job_name,
+        partition=partition,
+        n_gpus=dp,
+        time=time,
+        snapshot_ref=snapshot_ref,
+        comment=run_id,
+    )
+    script = generate_script(slurm_config, command)
+    result = submit_slurm_job(script, "lm")
+
+    wandb_url = _wandb_url_for_config(config_path, run_id)
+
+    logger.section("LM PD job submitted!")
+    summary: dict[str, str | None] = {
+        "Run ID": run_id,
+        "Job ID": result.job_id,
+        "Log file": result.log_pattern,
+        "Script": str(result.script_path),
+        "Snapshot": f"{snapshot_ref} ({commit_hash[:8]})" if snapshot_ref else "(none)",
+    }
+    if wandb_url is not None:
+        summary["WandB run URL"] = wandb_url
+    logger.values(summary)
+
+
+def _wandb_url_for_config(config_path: str | Path, run_id: str) -> str | None:
+    cfg = LMExperimentConfig.from_file(config_path)
+    if cfg.wandb is None:
+        return None
+    entity = cfg.wandb.entity or get_wandb_entity()
+    return f"https://wandb.ai/{entity}/{cfg.wandb.project}/runs/{run_id}"
 
 
 def cli() -> None:

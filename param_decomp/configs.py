@@ -90,9 +90,7 @@ class RuntimeConfig(BaseConfig):
     )
     dp: PositiveInt | None = Field(
         default=None,
-        description="Number of GPUs for data parallelism. None = single GPU/CPU. Bounded by "
-        "the cluster's GPUs-per-node for single-node DDP; multiples of that for multi-node. "
-        "Declares the experiment's compute requirement.",
+        description="DDP world size, or None for single device.",
     )
 
     @model_validator(mode="after")
