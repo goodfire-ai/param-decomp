@@ -227,21 +227,34 @@ def _fused_backward_through_ci_fn(
     cfg: _ThreePoolRuntime,
     p: PhaseProfiler,
 ) -> None:
-    """Phase ci/8. One backward pass through the CI fn graph.
+    """Phase ci/8. Backward through the CI fn graph.
 
     Two gradient seeds enter the graph:
-      * ``coeff_imp * loss_imp`` — flows via ``ci.upper_leaky``.
+      * ``coeff_imp * loss_imp`` — flows via ``ci.upper_leaky``. Its backward
+        traverses the autograd-aware ``dist_fn.all_reduce`` (96 NCCL
+        broadcasts back to every CI rank) before reaching the CI fn output.
       * ``g_CI_total[s]`` per site — injected directly on ``ci.lower_leaky[s]``.
-    Implementation note: ``grad_tensors=[None, ...]`` for the scalar entry
-    means "use autograd's default unit seed" for the scalar loss.
+        96 separate gradient seeds rejoining at the shared CI fn output.
+
+    Diagnostic split: each seed runs its own ``torch.autograd.backward`` call
+    with ``retain_graph=True`` on the first so the second still sees the
+    graph. Gradient accumulation onto the CI fn params is the same as one
+    fused call. This is purely so the per-phase profiler can attribute time
+    between the two backward paths — to find out which one dominates and
+    where to optimize next.
     """
     assert loss_imp.dim() == 0, f"loss_imp must be scalar; got {loss_imp.shape}"
-    with p.phase("ci/8_fused_bwd"):
-        scaled_imp = cfg.coeff_imp * loss_imp
+    scaled_imp = cfg.coeff_imp * loss_imp
+    lower_leaky_tensors = [ci.lower_leaky[s] for s in layout.world.all_sites]
+    g_ci_total_seeds = [g_ci_total[s] for s in layout.world.all_sites]
+    with p.phase("ci/8a_bwd_lower_leaky_only"):
         torch.autograd.backward(
-            tensors=[scaled_imp, *(ci.lower_leaky[s] for s in layout.world.all_sites)],
-            grad_tensors=[None, *(g_ci_total[s] for s in layout.world.all_sites)],
+            tensors=lower_leaky_tensors,
+            grad_tensors=g_ci_total_seeds,
+            retain_graph=True,
         )
+    with p.phase("ci/8b_bwd_imp_min_only"):
+        torch.autograd.backward(tensors=[scaled_imp], grad_tensors=[None])
 
 
 def _target_fwd_and_cache(

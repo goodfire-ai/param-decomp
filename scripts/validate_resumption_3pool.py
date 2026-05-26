@@ -258,11 +258,18 @@ def main() -> None:
     _wait_for_job(r.job_id)
 
     # === Find the parent run dir the baseline wrote ===
-    decomps_dir = PARAM_DECOMP_OUT_DIR / "decompositions"
-    candidates = sorted(decomps_dir.glob("p-*"), key=lambda p: p.stat().st_mtime)
-    parent_dir = candidates[-1] if candidates else None
-    if parent_dir is None:
-        raise RuntimeError(f"no decompositions/ output dir found under {decomps_dir}")
+    # Parse the slurm log for the literal "Saved checkpoint to <path>" — most
+    # reliable; "find latest mtime under decompositions/" loses when concurrent
+    # cluster jobs are also writing run dirs.
+    import re
+
+    baseline_log = PARAM_DECOMP_OUT_DIR / "slurm_logs" / f"slurm-{r.job_id}.out"
+    m = re.search(
+        r"Saved checkpoint to (\S+/decompositions/[^/]+)/model_\d+\.pth", baseline_log.read_text()
+    )
+    if m is None:
+        raise RuntimeError(f"could not find baseline run dir in {baseline_log}")
+    parent_dir = Path(m.group(1))
     print(f"parent run dir: {parent_dir}")
     # Spot-check the resume snapshots are there.
     expected = parent_dir / f"resume/step_{RESUME_FROM_STEP}"

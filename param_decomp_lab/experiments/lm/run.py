@@ -243,14 +243,26 @@ class SavedLMRun:
 
     @classmethod
     def from_path(cls, path: ModelPath) -> "SavedLMRun":
-        """Resolve a run directory or W&B path into a fully-validated `SavedLMRun`."""
+        """Resolve a run directory or W&B path into a fully-validated `SavedLMRun`.
+
+        Assert that the saved ``cfg.run_id`` matches the resolved config
+        directory's name — catches "the wrong run got moved/renamed into this
+        directory" mistakes. Skipped for legacy runs whose ``run_meta.yaml``
+        predates the ``run_id`` field.
+        """
         files = resolve_run_files(
             path, config_filename=RUN_META_FILENAME, checkpoint_prefix="model"
         )
-        return cls(
-            cfg=LMExperimentConfig.from_file(files.config_path),
-            checkpoint_path=files.checkpoint_path,
-        )
+        cfg = LMExperimentConfig.from_file(files.config_path)
+        if cfg.run_id is not None:
+            run_dir_name = files.config_path.parent.name
+            assert cfg.run_id == run_dir_name, (
+                f"SavedLMRun identity mismatch: "
+                f"run_meta.yaml at {files.config_path} has run_id={cfg.run_id!r} "
+                f"but is sitting in directory named {run_dir_name!r}. "
+                f"Either the run was renamed/copied or the wrong yaml landed here."
+            )
+        return cls(cfg=cfg, checkpoint_path=files.checkpoint_path)
 
     @classmethod
     def cfg_from_path(cls, path: ModelPath) -> LMExperimentConfig:
@@ -413,6 +425,12 @@ def _fresh_main(config_path: Path) -> None:
 
     trace("_fresh_main: broadcasting out_dir")
     out_dir = _broadcast_out_dir(dist_state)
+    # Bake the run_id (= out_dir.name) into the saved cfg so a SavedLMRun
+    # loaded later carries its identity explicitly — not just implicit in the
+    # filesystem path. Lets resumption assert that ``run_meta.yaml.run_id``
+    # matches ``run_dir.name`` (catches "wrong-parent" mistakes), and
+    # post-hoc tools (W&B sync, etc.) get the canonical id from one place.
+    cfg = cfg.model_copy(update={"run_id": out_dir.name})
     if is_main_process():
         cfg.to_file(out_dir / RUN_META_FILENAME)
     rank = dist_state.rank if dist_state is not None else 0

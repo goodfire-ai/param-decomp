@@ -53,6 +53,12 @@ class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
         target: Per-experiment target-model config.
         data: Per-experiment data config.
         eval: Optional eval-pass config; `None` skips eval entirely.
+        run_id: Identifier baked into the resolved ``run_meta.yaml`` at fresh-run
+            time (set by ``_fresh_main`` after the rank-0 broadcast). Resumption
+            verifies this against ``run_dir.name`` and against the saved
+            shards' embedded ``run_id`` — so a "wrong parent dir" mistake errors
+            cleanly instead of silently loading mismatched weights. ``None``
+            on the input YAML and pre-existing runs (backward compat).
     """
 
     pd: PDConfig
@@ -61,3 +67,4 @@ class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
     target: T
     data: D
     eval: EvalConfig | None = None
+    run_id: str | None = None

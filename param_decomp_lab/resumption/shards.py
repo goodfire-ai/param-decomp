@@ -20,7 +20,15 @@ def shard_path(run_dir: Path, step: int, rank: int) -> Path:
 
 
 def save_shard(blob: dict[str, Any], run_dir: Path, step: int, rank: int) -> None:
-    """Persist a rank's :meth:`state_blob` dict to its canonical shard path."""
+    """Persist a rank's :meth:`state_blob` dict to its canonical shard path.
+
+    Embeds ``run_id = run_dir.name`` in the blob so ``load_shard`` can assert
+    on retrieval that the shard came from the run the caller pointed at.
+    Catches "I loaded the wrong parent" cleanly before any tensors get copied
+    into the new model — much better than relying on a downstream
+    topology-fingerprint mismatch (which only fires if shapes happen to differ).
+    """
+    blob = {**blob, "run_id": run_dir.name}
     path = shard_path(run_dir, step, rank)
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(blob, path)
@@ -31,10 +39,25 @@ def load_shard(run_dir: Path, step: int, rank: int) -> dict[str, Any]:
 
     ``weights_only=False`` because the blob contains arbitrary cfg dicts
     (model_dump output) alongside the tensors.
+
+    Asserts the shard's saved ``run_id`` matches ``run_dir.name``. If they
+    don't match, the caller pointed at a directory whose contents came from
+    a different run — fail loud before model state gets corrupted.
     """
     path = shard_path(run_dir, step, rank)
     assert path.is_file(), f"resume shard not found: {path}"
-    return torch.load(path, map_location="cpu", weights_only=False)
+    blob: dict[str, Any] = torch.load(path, map_location="cpu", weights_only=False)
+    expected_run_id = run_dir.name
+    actual_run_id = blob.get("run_id")
+    assert actual_run_id == expected_run_id, (
+        f"resume shard identity mismatch at {path}:\n"
+        f"  expected run_id (= dir name): {expected_run_id!r}\n"
+        f"  shard's saved run_id:         {actual_run_id!r}\n"
+        f"the shard came from a different run than the dir it lives in — "
+        f"someone copied / moved shards across runs, or you pointed at the "
+        f"wrong parent."
+    )
+    return blob
 
 
 def list_resume_steps(run_dir: Path) -> list[int]:
