@@ -680,16 +680,11 @@ def test_global_shared_mlp_ci_fn_shapes_and_values(hidden_dims: list[int]):
         "layer2": torch.randn(BATCH_SIZE, 20),
         "layer3": torch.randn(BATCH_SIZE, 15),
     }
-    outputs = ci_fn(inputs)
+    output = ci_fn(inputs)  # unsplit [B, total_c]
 
-    # Check shapes
-    assert outputs["layer1"].shape == (BATCH_SIZE, 5)
-    assert outputs["layer2"].shape == (BATCH_SIZE, 3)
-    assert outputs["layer3"].shape == (BATCH_SIZE, 7)
-
-    # Check values are valid (not NaN, not Inf)
-    for name, out in outputs.items():
-        assert torch.isfinite(out).all(), f"Output {name} contains NaN or Inf"
+    total_c = sum(c for _, c in layer_configs.values())
+    assert output.shape == (BATCH_SIZE, total_c)
+    assert torch.isfinite(output).all()
 
 
 def test_global_shared_mlp_ci_fn_sorted_layer_order():
@@ -724,12 +719,11 @@ def test_global_shared_mlp_ci_fn_different_inputs_produce_different_outputs():
         "layer2": torch.randn(BATCH_SIZE, 8),
     }
 
-    outputs1 = ci_fn(inputs1)
-    outputs2 = ci_fn(inputs2)
+    output1 = ci_fn(inputs1)
+    output2 = ci_fn(inputs2)
 
     # Outputs should differ for different inputs
-    assert not torch.allclose(outputs1["layer1"], outputs2["layer1"])
-    assert not torch.allclose(outputs1["layer2"], outputs2["layer2"])
+    assert not torch.allclose(output1, output2)
 
 
 def test_global_shared_mlp_ci_fn_gradient_flow():
@@ -744,9 +738,9 @@ def test_global_shared_mlp_ci_fn_gradient_flow():
         "layer1": torch.randn(BATCH_SIZE, 10, requires_grad=True),
         "layer2": torch.randn(BATCH_SIZE, 8, requires_grad=True),
     }
-    outputs = ci_fn(inputs)
+    output = ci_fn(inputs)  # unsplit [B, total_c]
 
-    loss = torch.stack([out.sum() for out in outputs.values()]).sum()
+    loss = output.sum()
     loss.backward()
 
     # Check gradients exist for inputs and are meaningful
@@ -777,15 +771,11 @@ def test_global_shared_mlp_ci_fn_with_seq_dim():
         "layer1": torch.randn(BATCH_SIZE, seq_len, 10),
         "layer2": torch.randn(BATCH_SIZE, seq_len, 8),
     }
-    outputs = ci_fn(inputs)
+    output = ci_fn(inputs)  # unsplit [B, S, total_c]
 
-    # Check shapes
-    assert outputs["layer1"].shape == (BATCH_SIZE, seq_len, 4)
-    assert outputs["layer2"].shape == (BATCH_SIZE, seq_len, 3)
-
-    # Check values are valid
-    for name, out in outputs.items():
-        assert torch.isfinite(out).all(), f"Output {name} contains NaN or Inf"
+    total_c = sum(c for _, c in layer_configs.values())
+    assert output.shape == (BATCH_SIZE, seq_len, total_c)
+    assert torch.isfinite(output).all()
 
 
 def test_global_shared_mlp_ci_fn_single_component():
@@ -800,12 +790,10 @@ def test_global_shared_mlp_ci_fn_single_component():
         "layer1": torch.randn(BATCH_SIZE, 10),
         "layer2": torch.randn(BATCH_SIZE, 8),
     }
-    outputs = ci_fn(inputs)
+    output = ci_fn(inputs)  # unsplit [B, total_c]
 
-    assert outputs["layer1"].shape == (BATCH_SIZE, 1)
-    assert outputs["layer2"].shape == (BATCH_SIZE, 1)
-    assert torch.isfinite(outputs["layer1"]).all()
-    assert torch.isfinite(outputs["layer2"]).all()
+    assert output.shape == (BATCH_SIZE, 2)  # 1 + 1
+    assert torch.isfinite(output).all()
 
 
 def test_global_shared_mlp_ci_fn_single_layer():
@@ -814,10 +802,10 @@ def test_global_shared_mlp_ci_fn_single_layer():
     ci_fn = GlobalSharedMLPCiFn(layer_configs=layer_configs, hidden_dims=[8])
 
     inputs = {"only_layer": torch.randn(BATCH_SIZE, 10)}
-    outputs = ci_fn(inputs)
+    output = ci_fn(inputs)  # unsplit [B, total_c]; with one site total_c == 5
 
-    assert outputs["only_layer"].shape == (BATCH_SIZE, 5)
-    assert torch.isfinite(outputs["only_layer"]).all()
+    assert output.shape == (BATCH_SIZE, 5)
+    assert torch.isfinite(output).all()
 
 
 def test_global_shared_transformer_ci_fn_shapes_and_values():
@@ -841,16 +829,11 @@ def test_global_shared_transformer_ci_fn_shapes_and_values():
         "layer2": torch.randn(BATCH_SIZE, 20),
         "layer3": torch.randn(BATCH_SIZE, 15),
     }
-    outputs = ci_fn(inputs)
+    output = ci_fn(inputs)  # unsplit [B, total_c]
 
-    # Check shapes
-    assert outputs["layer1"].shape == (BATCH_SIZE, 5)
-    assert outputs["layer2"].shape == (BATCH_SIZE, 3)
-    assert outputs["layer3"].shape == (BATCH_SIZE, 7)
-
-    # Check values are valid (not NaN, not Inf)
-    for name, out in outputs.items():
-        assert torch.isfinite(out).all(), f"Output {name} contains NaN or Inf"
+    total_c = sum(cfg.C for cfg in layer_configs.values())
+    assert output.shape == (BATCH_SIZE, total_c)
+    assert torch.isfinite(output).all()
 
 
 def test_global_shared_transformer_ci_fn_with_seq_dim():
@@ -873,15 +856,11 @@ def test_global_shared_transformer_ci_fn_with_seq_dim():
         "layer1": torch.randn(BATCH_SIZE, seq_len, 10),
         "layer2": torch.randn(BATCH_SIZE, seq_len, 8),
     }
-    outputs = ci_fn(inputs)
+    output = ci_fn(inputs)  # unsplit [B, S, total_c]
 
-    # Check shapes
-    assert outputs["layer1"].shape == (BATCH_SIZE, seq_len, 4)
-    assert outputs["layer2"].shape == (BATCH_SIZE, seq_len, 3)
-
-    # Check values are valid
-    for name, out in outputs.items():
-        assert torch.isfinite(out).all(), f"Output {name} contains NaN or Inf"
+    total_c = sum(cfg.C for cfg in layer_configs.values())
+    assert output.shape == (BATCH_SIZE, seq_len, total_c)
+    assert torch.isfinite(output).all()
 
 
 def test_component_model_with_global_ci():
@@ -1324,7 +1303,6 @@ def test_global_ci_save_and_load():
             name: torch.randn(BATCH_SIZE, global_ci_fn.layer_configs[name][0])
             for name in global_ci_fn.layer_order
         }
-        outputs_orig = global_ci_fn(test_acts)
-        outputs_loaded = global_ci_fn_loaded(test_acts)
-        for name in global_ci_fn.layer_order:
-            torch.testing.assert_close(outputs_orig[name], outputs_loaded[name])
+        output_orig = global_ci_fn(test_acts)  # unsplit [B, total_c]
+        output_loaded = global_ci_fn_loaded(test_acts)
+        torch.testing.assert_close(output_orig, output_loaded)

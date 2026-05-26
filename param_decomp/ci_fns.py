@@ -233,12 +233,15 @@ class GlobalSharedMLPCiFn(nn.Module):
     def forward(
         self,
         input_acts: dict[str, Float[Tensor, "... d_in"]],
-    ) -> dict[str, Float[Tensor, "... C"]]:
+    ) -> Float[Tensor, "... total_c"]:
+        """Return the unsplit ``[..., total_c]`` output. Caller (``ComponentModel``)
+        applies sigmoid/leaky on the unsplit tensor once and splits afterwards —
+        much cheaper than per-site sigmoid + per-site assertion (one ``elementwise``
+        kernel + one dispatch vs. one per layer × 96 layers).
+        """
         inputs_list = [input_acts[name] for name in self.layer_order]
         concatenated = torch.cat(inputs_list, dim=-1)
-        output = self.layers(concatenated)
-        split_outputs = torch.split(output, self.split_sizes, dim=-1)
-        return {name: split_outputs[i] for i, name in enumerate(self.layer_order)}
+        return self.layers(concatenated)
 
 
 @dataclass
@@ -359,7 +362,11 @@ class GlobalSharedTransformerCiFn(nn.Module):
     def forward(
         self,
         input_acts: dict[str, Float[Tensor, "... d_in"]],
-    ) -> dict[str, Float[Tensor, "... C"]]:
+    ) -> Float[Tensor, "... total_c"]:
+        """Return the unsplit ``[..., total_c]`` output (sites concatenated along the
+        feature dim in ``self.layer_order``). Caller is responsible for sigmoid +
+        split — doing those once on the unsplit tensor avoids 96 separate ops.
+        """
         inputs_list = [
             F.rms_norm(input_acts[name], (input_acts[name].shape[-1],)) for name in self.layer_order
         ]
@@ -385,10 +392,46 @@ class GlobalSharedTransformerCiFn(nn.Module):
             output = output.squeeze(-2)
         self._maybe_hook(output, "output")
 
-        split_outputs = torch.split(output, self.split_sizes, dim=-1)
-        outputs = {name: split_outputs[i] for i, name in enumerate(self.layer_order)}
+        return output
 
-        return outputs
+
+class LayerwiseTransformerCiFn(nn.Module):
+    """Per-site CI fn using the same transformer architecture as
+    `GlobalSharedTransformerCiFn`, dedicated to a single target site.
+
+    Presents the single-tensor in/out interface that `LayerwiseCiFnWrapper`
+    expects, while internally reusing the multi-site transformer machinery with
+    a single-key dict.
+    """
+
+    def __init__(
+        self,
+        site_name: str,
+        target_layer_config: TargetLayerConfig,
+        d_model: int,
+        n_blocks: int,
+        n_heads: int,
+        mlp_hidden_dims: list[int] | None,
+        max_len: int,
+        rope_base: float,
+    ):
+        super().__init__()
+        self._site_name = site_name
+        self._inner = GlobalSharedTransformerCiFn(
+            target_model_layer_configs={site_name: target_layer_config},
+            d_model=d_model,
+            n_layers=n_blocks,
+            n_heads=n_heads,
+            mlp_hidden_dims=mlp_hidden_dims,
+            max_len=max_len,
+            rope_base=rope_base,
+        )
+
+    @override
+    def forward(self, input_acts: Float[Tensor, "... d_in"]) -> Float[Tensor, "... C"]:
+        # Inner returns the unsplit ``[..., total_c]`` tensor. For a single-site
+        # config, ``total_c == C`` and the unsplit tensor *is* the per-site output.
+        return self._inner({self._site_name: input_acts})
 
 
 class LayerwiseCiFnWrapper(nn.Module):
@@ -439,11 +482,13 @@ class LayerwiseCiFnWrapper(nn.Module):
 
 
 class GlobalCiFnWrapper(nn.Module):
-    """Gives the global CI fns the same dict-in/dict-out interface as the layerwise wrapper.
+    """Gives the global CI fns a uniform input interface.
 
     For `EmbeddingComponents` the raw input is a tensor of token ids; this wrapper
     converts them to component activations via `EmbeddingComponents.get_component_acts`
-    so the global CI fn always sees floating-point activations.
+    so the underlying global CI fn always sees floating-point activations. Returns the
+    **unsplit** `[..., total_c]` tensor; the caller is responsible for sigmoid + split.
+    See `ComponentModel.calc_causal_importances` for how the split is consumed.
     """
 
     def __init__(
@@ -455,11 +500,21 @@ class GlobalCiFnWrapper(nn.Module):
         self._global_ci_fn = global_ci_fn
         self.components = components
 
+    @property
+    def layer_order(self) -> list[str]:
+        """Layer name order matching ``split_sizes`` (so the caller can split correctly)."""
+        return self._global_ci_fn.layer_order
+
+    @property
+    def split_sizes(self) -> list[int]:
+        """Per-site ``C`` widths in ``layer_order`` order, for splitting the unsplit output."""
+        return self._global_ci_fn.split_sizes
+
     @override
     def forward(
         self,
         layer_acts: dict[str, Float[Tensor, "..."]],
-    ) -> dict[str, Float[Tensor, "... C"]]:
+    ) -> Float[Tensor, "... total_c"]:
         transformed: dict[str, Float[Tensor, ...]] = {}
 
         for layer_name, acts in layer_acts.items():

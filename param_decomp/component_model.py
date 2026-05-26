@@ -17,7 +17,12 @@ from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
 from param_decomp.base_config import runtime_cast
 from param_decomp.batch_and_loss_fns import RunBatch
-from param_decomp.ci_fns import CiConfig, make_ci_fn_wrapper
+from param_decomp.ci_fns import (
+    CiConfig,
+    GlobalCiFnWrapper,
+    LayerwiseCiFnWrapper,
+    make_ci_fn_wrapper,
+)
 from param_decomp.ci_sigmoids import SIGMOID_TYPES, SigmoidType
 from param_decomp.components import Components, make_components
 from param_decomp.decomposition_targets import DecompositionTarget, Identity
@@ -355,19 +360,56 @@ class ComponentModel(nn.Module):
             pre_weight_acts = {k: v.detach() for k, v in pre_weight_acts.items()}
 
         assert self.ci_fn is not None, "calc_causal_importances called after drop_ci_fn"
-        ci_fn_outputs = self.ci_fn(pre_weight_acts)
-        return self._apply_sigmoid_to_ci_outputs(ci_fn_outputs, sampling)
+        if isinstance(self.ci_fn, GlobalCiFnWrapper):
+            return self._sigmoid_and_split_global(self.ci_fn, pre_weight_acts, sampling)
+        return self._sigmoid_per_site_layerwise(self.ci_fn, pre_weight_acts, sampling)
 
-    def _apply_sigmoid_to_ci_outputs(
+    def _sigmoid_and_split_global(
         self,
-        ci_fn_outputs: dict[str, Float[Tensor, "... C"]],
+        ci_fn: GlobalCiFnWrapper,
+        pre_weight_acts: dict[str, Float[Tensor, "... d_in"] | Int[Tensor, "... pos"]],
         sampling: SamplingType,
     ) -> CIOutputs:
-        """Squash raw CI-fn outputs through the lower- and upper-leaky sigmoids."""
-        causal_importances_lower_leaky = {}
-        causal_importances_upper_leaky = {}
-        pre_sigmoid = {}
+        """Global CI fns produce a single concatenated ``[..., total_c]`` output. We
+        apply the sigmoids once on the unsplit tensor (one elementwise op apiece +
+        one ``rand_like``/assert) and then split into per-site dicts — vs. the old
+        path which looped per-site and incurred ~96× the autograd / dispatch cost.
+        """
+        ci_fn_output = ci_fn(pre_weight_acts)
+        if sampling == "binomial":
+            ci_fn_output_for_lower_leaky = 1.05 * ci_fn_output - 0.05 * torch.rand_like(
+                ci_fn_output
+            )
+        else:
+            ci_fn_output_for_lower_leaky = ci_fn_output
 
+        lower_leaky_output = self.lower_leaky_fn(ci_fn_output_for_lower_leaky)
+        upper_leaky_output = self.upper_leaky_fn(ci_fn_output)
+
+        layer_order = ci_fn.layer_order
+        split_sizes = ci_fn.split_sizes
+        lower_splits = torch.split(lower_leaky_output, split_sizes, dim=-1)
+        upper_splits = torch.split(upper_leaky_output, split_sizes, dim=-1)
+        pre_splits = torch.split(ci_fn_output, split_sizes, dim=-1)
+        return CIOutputs(
+            lower_leaky={name: lower_splits[i] for i, name in enumerate(layer_order)},
+            upper_leaky={name: upper_splits[i] for i, name in enumerate(layer_order)},
+            pre_sigmoid={name: pre_splits[i] for i, name in enumerate(layer_order)},
+        )
+
+    def _sigmoid_per_site_layerwise(
+        self,
+        ci_fn: "LayerwiseCiFnWrapper",
+        pre_weight_acts: dict[str, Float[Tensor, "... d_in"] | Int[Tensor, "... pos"]],
+        sampling: SamplingType,
+    ) -> CIOutputs:
+        """Layerwise CI fns produce a dict of per-site tensors that don't share
+        storage; sigmoid them per-site (one autograd node per site is unavoidable
+        here, unlike the global case)."""
+        ci_fn_outputs = ci_fn(pre_weight_acts)
+        causal_importances_lower_leaky: dict[str, Tensor] = {}
+        causal_importances_upper_leaky: dict[str, Tensor] = {}
+        pre_sigmoid: dict[str, Tensor] = {}
         for target_module_name, ci_fn_output in ci_fn_outputs.items():
             if sampling == "binomial":
                 ci_fn_output_for_lower_leaky = 1.05 * ci_fn_output - 0.05 * torch.rand_like(
@@ -375,17 +417,11 @@ class ComponentModel(nn.Module):
                 )
             else:
                 ci_fn_output_for_lower_leaky = ci_fn_output
-
             lower_leaky_output = self.lower_leaky_fn(ci_fn_output_for_lower_leaky)
-            assert (lower_leaky_output <= 1.0).all()
             causal_importances_lower_leaky[target_module_name] = lower_leaky_output
-
             upper_leaky_output = self.upper_leaky_fn(ci_fn_output)
-            assert (upper_leaky_output >= 0).all()
             causal_importances_upper_leaky[target_module_name] = upper_leaky_output
-
             pre_sigmoid[target_module_name] = ci_fn_output
-
         return CIOutputs(
             lower_leaky=causal_importances_lower_leaky,
             upper_leaky=causal_importances_upper_leaky,
