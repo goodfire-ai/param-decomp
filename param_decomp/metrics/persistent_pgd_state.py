@@ -316,9 +316,18 @@ class PersistentPGDState:
         ci: dict[str, Float[Tensor, "... C"]],
         weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
     ) -> None:
-        """Run extra PGD steps to refine adversarial sources before the final loss computation.
+        """Run ``n_warmup_steps`` supplemental source-only PGD iterations.
 
-        No-op when `n_warmup_steps=0`.
+        "Warmup" is the historical name; semantically these are **supplemental**
+        PGD source-update iterations that happen before the final fwd+bwd of
+        the training step. The final iter (in ``three_pool/step_ppgd.py``)
+        additionally backprops to V/U + CI and uses its own source gradient to
+        apply one more PGD step. So total source updates per training step =
+        ``n_warmup_steps + 1``.
+
+        Each supplemental iter: fwd through the masked target → source-only
+        backward → PGD step on sources. ``retain_graph=False`` since the
+        autograd graph is rebuilt next iter from the updated sources.
         """
         all_layers = AllLayersRouter()
         for _ in range(self._n_warmup_steps):
@@ -327,6 +336,21 @@ class PersistentPGDState:
             )
             grads = self.get_grads(sum_loss / n, retain_graph=False)
             self.step(grads)
+
+    def apply_source_step_from_grads(self, grads: PPGDSources) -> None:
+        """Apply the final (fused) PGD source step using pre-reduced source grads.
+
+        Sign-PGD only uses ``sign(grad)``, so the sum-vs-avg in-pool reduction
+        choice for ``grads`` is mathematically equivalent. Caller is responsible
+        for having reduced ``grads`` across the PPGD pool before this call —
+        without it, ranks would step their sources to inconsistent values and
+        drift apart from the broadcast-initialized state.
+        """
+        with torch.no_grad():
+            self.optimizer.step(self.sources, grads)
+            if not self._use_sigmoid_parameterization:
+                for source in self.sources.values():
+                    source.clamp_(0.0, 1.0)
 
     def compute_recon_sum_and_n(
         self,
