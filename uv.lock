@@ -1356,7 +1356,6 @@ dependencies = [
     { name = "torch" },
     { name = "tqdm" },
     { name = "transformers" },
-    { name = "wandb" },
 ]
 
 [package.dev-dependencies]
@@ -1386,7 +1385,6 @@ requires-dist = [
     { name = "torch", specifier = ">=2.6" },
     { name = "tqdm" },
     { name = "transformers" },
-    { name = "wandb", specifier = ">=0.20.1" },
 ]
 
 [package.metadata.requires-dev]
@@ -1423,6 +1421,7 @@ dependencies = [
     { name = "sympy" },
     { name = "torchvision" },
     { name = "uvicorn" },
+    { name = "wandb" },
     { name = "wandb-workspaces" },
     { name = "zstandard" },
 ]
@@ -1445,6 +1444,7 @@ requires-dist = [
     { name = "sympy" },
     { name = "torchvision", specifier = ">=0.23,<0.24" },
     { name = "uvicorn" },
+    { name = "wandb", specifier = ">=0.20.1" },
     { name = "wandb-workspaces", specifier = "==0.1.12" },
     { name = "zstandard" },
 ]

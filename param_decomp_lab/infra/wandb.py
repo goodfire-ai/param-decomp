@@ -217,9 +217,7 @@ def init_wandb(
         group=group,
     )
     assert wandb.run is not None
-    wandb.run.log_code(
-        root=str(REPO_ROOT / "param_decomp"), exclude_fn=lambda path: "out" in Path(path).parts
-    )
+    wandb.run.log_code(root=str(REPO_ROOT / "param_decomp"))
 
     cfg_dict = config.model_dump(mode="json")
     flattened = flatten_typed_lists(cfg_dict)

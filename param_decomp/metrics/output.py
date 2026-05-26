@@ -1,18 +1,15 @@
 """Normalise each `Metric.compute()` result into a flat key→value map.
 
-Map values are scalars, images, or custom charts that `RunSink.log(...)` accepts.
+Non-tensor map values are passed through for the caller's sink to interpret.
 """
 
 from typing import Any
 
-import wandb.plot
-from PIL import Image
 from torch import Tensor
-from torch.types import Number
 
 from param_decomp.metrics.base import Metric
 
-MetricOutType = dict[str, str | Number | Image.Image | wandb.plot.CustomChart]
+MetricOutType = dict[str, Any]
 
 
 def _clean_metric_output(
@@ -23,7 +20,8 @@ def _clean_metric_output(
     """Normalize one `compute()` return.
 
     Accepts a scalar tensor (emitted as `{log_namespace}/{metric_name}`) or a dict
-    (keys prefixed by `log_namespace`).
+    (keys prefixed by `log_namespace`). Non-tensor dict values pass through to the
+    concrete sink so core stays logging-backend agnostic.
     """
     computed: MetricOutType = {}
     match computed_raw:
@@ -35,10 +33,8 @@ def _clean_metric_output(
         case dict():
             for k, v in computed_raw.items():
                 assert isinstance(k, str), f"Only string keys supported, got {type(k)}"
-                assert isinstance(
-                    v, str | Number | Image.Image | wandb.plot.CustomChart | Tensor
-                ), f"{type(v)} not supported"
                 if isinstance(v, Tensor):
+                    assert v.numel() == 1, f"Only scalar tensors supported, got shape {v.shape}"
                     v = v.item()
                 computed[f"{log_namespace}/{k}"] = v
         case _:

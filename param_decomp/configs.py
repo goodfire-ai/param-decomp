@@ -92,7 +92,7 @@ class RuntimeConfig(BaseConfig):
         default=None,
         description="Number of GPUs for data parallelism. None = single GPU/CPU. Bounded by "
         "the cluster's GPUs-per-node for single-node DDP; multiples of that for multi-node. "
-        "Declares the experiment's compute requirement; overridable ad-hoc by ``pd-run --dp N``.",
+        "Declares the experiment's compute requirement.",
     )
 
     @model_validator(mode="after")

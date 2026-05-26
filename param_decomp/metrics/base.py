@@ -8,11 +8,8 @@ autograd graph across training steps.
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from numbers import Number
 from typing import Any, ClassVar
 
-import wandb.plot
-from PIL import Image
 from torch import Tensor
 
 from param_decomp.base_config import BaseConfig
@@ -29,9 +26,7 @@ class LossMetricConfig(BaseConfig):
     coeff: float | None = None
 
 
-MetricResult = (
-    Tensor | Mapping[str, Tensor | float | Number | str | Image.Image | wandb.plot.CustomChart]
-)
+MetricResult = Tensor | Mapping[str, Any]
 
 
 class Metric[TConfig: BaseConfig](ABC):
@@ -39,8 +34,8 @@ class Metric[TConfig: BaseConfig](ABC):
 
     Constructed from the validated config alone; runtime resources are attached later
     via `bind`. `log_namespace` is the namespace prefix for emitted keys; `slow` gates
-    this metric behind the slow-eval cadence; `short_name` is the wandb config-key
-    short label (consumed by `flatten_typed_lists` in `param_decomp_lab/infra/wandb.py`).
+    this metric behind the slow-eval cadence; `short_name` is the optional config-key
+    short label consumed by lab-side logging helpers.
     """
 
     log_namespace: ClassVar[str]

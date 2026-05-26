@@ -159,8 +159,8 @@ def submit_slurm_job(
     to include the job ID, and `touch`es empty log file(s) for tailing.
     `n_array_tasks=None` is a singleton job.
     """
-    SBATCH_SCRIPTS_DIR.mkdir(exist_ok=True)
-    SLURM_LOGS_DIR.mkdir(exist_ok=True)
+    SBATCH_SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+    SLURM_LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Write script to a unique temporary file (safe for concurrent submissions)
     with tempfile.NamedTemporaryFile(

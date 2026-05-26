@@ -9,7 +9,6 @@ readme = "README.md"
 dependencies = [
     "torch>=2.6",
     "pydantic<2.12", # https://github.com/goodfire-ai/param-decomp/pull/232 , https://github.com/goodfire-ai/param-decomp/issues/221
-    "wandb>=0.20.1", # Avoid wandb.sdk.wandb_manager.ManagerConnectionRefusedError
     "tqdm",
     "transformers",
     "jaxtyping",

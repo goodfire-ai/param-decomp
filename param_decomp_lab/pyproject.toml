@@ -9,6 +9,7 @@ readme = "README.md"
 dependencies = [
     "param-decomp==0.0.1",
     "fire",
+    "wandb>=0.20.1", # Avoid wandb.sdk.wandb_manager.ManagerConnectionRefusedError
     "torchvision>=0.23,<0.24",
     "wandb-workspaces==0.1.12", # See https://github.com/wandb/wandb-workspaces/issues/65
     "sympy",
@@ -54,6 +55,7 @@ build-backend = "setuptools.build_meta"
 packages = [
     "param_decomp_lab",
     "param_decomp_lab.adapters",
+    "param_decomp_lab.adapters._vendor",
     "param_decomp_lab.app",
     "param_decomp_lab.app.backend",
     "param_decomp_lab.app.backend.routers",
@@ -72,6 +74,8 @@ packages = [
     "param_decomp_lab.eval_metrics",
     "param_decomp_lab.experiments",
     "param_decomp_lab.experiments.lm",
+    "param_decomp_lab.experiments.lm.pretrain",
+    "param_decomp_lab.experiments.lm.pretrain.models",
     "param_decomp_lab.experiments.resid_mlp",
     "param_decomp_lab.experiments.tms",
     "param_decomp_lab.graph_interp",
@@ -79,13 +83,13 @@ packages = [
     "param_decomp_lab.harvest",
     "param_decomp_lab.harvest.harvest_fn",
     "param_decomp_lab.harvest.scripts",
+    "param_decomp_lab.infra",
     "param_decomp_lab.investigate",
     "param_decomp_lab.investigate.scripts",
     "param_decomp_lab.postprocess",
-    "param_decomp_lab.experiments.lm.pretrain",
-    "param_decomp_lab.experiments.lm.pretrain.models",
     "param_decomp_lab.scripts",
     "param_decomp_lab.topology",
+    "param_decomp_lab.toy_models",
 ]
 
 [tool.setuptools.package-dir]

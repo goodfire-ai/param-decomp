@@ -40,26 +40,29 @@ train/eval dataloaders, the eval `Metric` list, the `PDConfig` and `RuntimeConfi
 
 ```python
 from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
-from param_decomp.optimize import optimize
+from param_decomp.optimize import EvalLoop, optimize
 from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
 from param_decomp_lab.run_sink import RunSink
 
 optimize(
     target_model=my_target_module,
     train_loader=train_loader,
-    eval_loader=eval_loader,
     run_batch=run_batch_first_element,
     reconstruction_loss=recon_loss_mse,
     pd_config=PDConfig(...),
     runtime_config=RuntimeConfig(device=device),
     cadence=Cadence(
         train_log_every=100,
-        eval_every=1000,
-        slow_eval_every=5000,
-        n_eval_steps=10,
+        save_every=5000,
     ),
     sink=RunSink.local(out_dir),
-    eval_metrics=[...],   # list of pre-instantiated Metric objects
+    eval_loop=EvalLoop(
+        loader=eval_loader,
+        metrics=[...],  # list of pre-instantiated Metric objects
+        n_steps=10,
+        every=1000,
+        slow_every=5000,
+    ),
 )
 ```
 
@@ -78,7 +81,7 @@ by defining the class in `param_decomp/metrics/`, appending the config to
 `AnyLossMetricConfig` in `configs.py`, and appending the class to `LOSS_METRIC_CLASSES`.
 
 Eval metrics are caller-supplied: instantiate `Metric` objects in your `run.py` and pass
-them to `optimize(eval_metrics=...)`. The in-repo experiments validate the YAML
+them via `EvalLoop(metrics=...)`. The in-repo experiments validate the YAML
 `eval.metrics` list via the `AnyEvalMetricConfig` discriminated union on `EvalConfig`,
 then dispatch each entry through `EVAL_METRIC_CLASSES` (both in
 `param_decomp_lab.eval_metrics`):
