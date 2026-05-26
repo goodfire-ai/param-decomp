@@ -47,6 +47,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch.utils.data import DataLoader
 
+from param_decomp._trace import trace
 from param_decomp.batch_and_loss_fns import ReconstructionLoss, RunBatch
 from param_decomp.component_model import ComponentModel
 from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
@@ -171,6 +172,7 @@ class ThreePoolTrainer:
         self._target_model = target_model
         self.step = 0
 
+        trace("ThreePoolTrainer.__init__: enter")
         _validate_pd_config_for_three_pool(pd_config, three_pool_config)
         # PPGD runs only on PPGD pool; the relevant per-rank batch is batch // n_ppgd.
         validate_pgd_scope(
@@ -179,6 +181,7 @@ class ThreePoolTrainer:
             world_size=len(three_pool_config.ppgd_ranks),
         )
 
+        trace("ThreePoolTrainer.__init__: building runtime")
         self.runtime = _build_runtime(
             target_model=target_model,
             pd_config=pd_config,
@@ -195,36 +198,48 @@ class ThreePoolTrainer:
             LayerwiseBlockGroup(ranks=tuple(bg.ranks), owned_sites=tuple(bg.owned_sites))
             for bg in three_pool_config.layerwise_block_groups
         ]
+        trace("ThreePoolTrainer.__init__: build_world: enter")
         world = build_world(
             ci_ranks=list(three_pool_config.ci_ranks),
             layerwise_block_groups=block_groups,
             ppgd_ranks=list(three_pool_config.ppgd_ranks),
             batch_global=self.runtime.batch_global,
         )
+        trace("ThreePoolTrainer.__init__: build_world: done")
         self.layout = ThreePoolLayout.from_world(world, dist.get_rank())
         decomposition_targets = _decomposition_targets_for_pool(
             self.layout, self.runtime.c_per_site
+        )
+        trace(
+            f"ThreePoolTrainer.__init__: my_pool={self.layout.my_pool} "
+            f"n_decomp_targets={len(decomposition_targets)}"
         )
 
         target_model.requires_grad_(False)
         # Resync RNG across ranks before V/U + CI fn init — see
         # ``two_pool.optimize.TwoPoolTrainer.__init__`` for rationale.
         seed_all_ranks(pd_config.seed)
+        trace("ThreePoolTrainer.__init__: ComponentModel ctor: enter")
         self.component_model = ComponentModel(
             target_model=target_model,
             run_batch=run_batch,
             decomposition_targets=decomposition_targets,
             ci_config=pd_config.ci_config,
             sigmoid_type=pd_config.sigmoid_type,
-        ).to(self._device)
+        )
+        trace("ThreePoolTrainer.__init__: ComponentModel ctor: done, moving to device")
+        self.component_model = self.component_model.to(self._device)
+        trace("ThreePoolTrainer.__init__: ComponentModel.to(device): done")
         # Diverge stochastic RNG per rank for mask sampling.
         seed_per_rank(pd_config.seed)
 
+        trace("ThreePoolTrainer.__init__: building LayerwiseLossStrategy")
         self.strategy = LayerwiseLossStrategy.from_cfg(
             target_model,
             use_fused_kl=three_pool_config.use_fused_kl,
             unfused_recon=reconstruction_loss,
         )
+        trace("ThreePoolTrainer.__init__: LayerwiseLossStrategy: done")
 
         self.optimizer = None
         self._all_params: list[nn.Parameter] = []
@@ -233,9 +248,12 @@ class ThreePoolTrainer:
         self.ppgd_state = None
         self._pending_ppgd_resume_state: dict[str, Any] | None = None
 
+        trace(f"ThreePoolTrainer.__init__: optimizer build: enter (pool={self.layout.my_pool})")
         match self.layout.my_pool:
             case "ci":
                 self._ci_fn_params = list(self.component_model.ci_fn.parameters())
+                n_params = sum(p.numel() for p in self._ci_fn_params)
+                trace(f"ThreePoolTrainer.__init__: CI fn params={n_params / 1e9:.3f}B")
                 self.optimizer = torch.optim.AdamW(
                     [
                         {
@@ -264,6 +282,8 @@ class ThreePoolTrainer:
                 )
             case "ppgd":
                 pass  # ppgd_state constructed lazily from first batch in run()
+        trace("ThreePoolTrainer.__init__: optimizer build: done")
+        trace("ThreePoolTrainer.__init__: exit")
 
     # ============================ Atomic cfg + state ============================
 
@@ -367,6 +387,7 @@ class ThreePoolTrainer:
         profiler: PhaseProfiler | None = None,
     ) -> None:
         """Advance training from ``self.step`` to ``self.pd_config.steps``."""
+        trace("Trainer.run: enter")
         pd_config = self.pd_config
         layout = self.layout
         runtime = self.runtime
@@ -380,11 +401,14 @@ class ThreePoolTrainer:
             next(train_iterator)
 
         # Peek first batch (after any skip) for PPGD source-shape sizing.
+        trace("Trainer.run: first_batch peek: enter")
         first_batch = next(train_iterator)
+        trace("Trainer.run: first_batch peek: done")
         train_iterator = itertools.chain([first_batch], train_iterator)
         _assert_full_global_batch(first_batch, runtime.batch_global)
 
         if layout.my_pool == "ppgd" and self.ppgd_state is None:
+            trace("Trainer.run: PPGDState ctor: enter")
             ppgd_cfg = runtime.ppgd_cfg
             self.ppgd_state = PersistentPGDState(
                 module_to_c=runtime.c_per_site,
@@ -402,12 +426,16 @@ class ThreePoolTrainer:
             if self._pending_ppgd_resume_state is not None:
                 self.ppgd_state.load_state_dict(self._pending_ppgd_resume_state)
                 self._pending_ppgd_resume_state = None
+            trace("Trainer.run: PPGDState ctor: done")
 
         if (
             self.step == 0
             and layout.my_pool == "layerwise"
             and pd_config.faithfulness_warmup_steps > 0
         ):
+            trace(
+                f"Trainer.run: faithfulness warmup: enter ({pd_config.faithfulness_warmup_steps} steps)"
+            )
             run_faithfulness_warmup_layerwise(
                 component_model=self.component_model,
                 component_params=self._component_params,
@@ -416,6 +444,7 @@ class ThreePoolTrainer:
                 weight_decay=pd_config.faithfulness_warmup_weight_decay,
                 numel_global=self.runtime.numel_global,
             )
+            trace("Trainer.run: faithfulness warmup: done")
 
         components_lr_schedule = pd_config.components_optimizer.lr_schedule
         ci_fn_lr_schedule = pd_config.ci_fn_optimizer.lr_schedule
@@ -446,12 +475,15 @@ class ThreePoolTrainer:
         with profiler_ctx:
             # 2-batch peek window: batch_T is the step's batch, batch_T_plus_1 is the
             # next-step batch peeked early for CI pool's dead-time prefetch.
+            trace("Trainer.run: pre-loop batch peek: enter")
             batch_T = _to_device(next(train_iterator))
             batch_T_plus_1 = _to_device(next(train_iterator, None))
+            trace("Trainer.run: pre-loop batch peek: done, entering training loop")
 
             for step in range(self.step, n_steps):
                 self.step = step
                 _assert_full_global_batch(batch_T, runtime.batch_global)
+                trace(f"Trainer.run: step {step}: start (pool={layout.my_pool})")
 
                 if self.optimizer is not None:
                     # CI pool: one param group (CI fn); LW pool: one (components).
@@ -543,6 +575,7 @@ class ThreePoolTrainer:
 
                 torch.cuda.synchronize(device)
                 step_ms = (time.perf_counter() - step_start) * 1000.0
+                trace(f"Trainer.run: step {step}: done in {step_ms:.1f}ms")
 
                 if step % cadence.train_log_every == 0:
                     _log_train_metrics(

@@ -15,6 +15,8 @@ from typing import Any, Literal
 import torch
 import torch.profiler
 
+from param_decomp._trace import phase_trace_enabled, trace
+
 
 @dataclass
 class PhaseProfiler:
@@ -74,7 +76,16 @@ class PhaseProfiler:
 
     @contextmanager
     def phase(self, name: str) -> "Iterator[None]":
-        """Annotate a logical step phase. No-op when disabled."""
+        """Annotate a logical step phase.
+
+        Always emits an entry trace when ``PD_PHASE_TRACE=1`` (gated by
+        ``PD_TRACE_RANKS`` inside ``trace``) so we can localize hangs in the
+        slurm log in real time, regardless of whether the torch profiler is
+        recording. The ``record_function`` wrapper is only active when the
+        profiler is enabled.
+        """
+        if phase_trace_enabled():
+            trace(f"phase: {name}")
         if not self.enabled:
             yield
             return

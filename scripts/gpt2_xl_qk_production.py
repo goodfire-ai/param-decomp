@@ -229,7 +229,13 @@ def main(smoke: bool = False, batch_size: int = 16, profile: bool = True) -> Non
         prof_dir = out_dir / "mem_profile" / job_name
         env["PD_MEMORY_PROFILE_RANKS"] = ",".join(str(r) for r in prof_ranks)
         env["PD_MEMORY_PROFILE_OUT"] = str(prof_dir)
+        # Restrict the very-chatty per-phase trace to one rank per pool;
+        # the macro-boundary trace() calls in run/optimize stay rank-prefixed
+        # but unrestricted so we see if any rank diverges.
+        env["PD_TRACE_RANKS"] = ",".join(str(r) for r in prof_ranks)
+        env["PD_PHASE_TRACE"] = "1"
         print(f"mem-profile: ranks={prof_ranks} → {prof_dir}")
+        print(f"trace: ranks={prof_ranks}, phase_trace=on")
 
     cmd = torchrun_command(
         job_name=job_name,

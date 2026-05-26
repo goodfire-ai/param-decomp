@@ -39,6 +39,7 @@ import torch.distributed as dist  # noqa: F401  (used in type hints)
 import torch.nn as nn
 from torch import Tensor
 
+from param_decomp._trace import phase_trace_enabled, trace
 from param_decomp.component_model import ComponentModel
 from param_decomp.grad_clip import cross_pool_clip_grad_norm
 from param_decomp.masks import make_mask_infos
@@ -113,7 +114,9 @@ def step_layerwise(
 
         with p.phase("lw/D3_layerwise"), autocast_bf16(cfg.bf16_autocast):
             stoch_total_value = 0.0
-            for s in layout.my_owned_sites:
+            for i, s in enumerate(layout.my_owned_sites):
+                if phase_trace_enabled():
+                    trace(f"lw/D3 site {i + 1}/{len(layout.my_owned_sites)}: {s} fwd+bwd")
                 loss_s, n_positions = _layerwise_one_site(
                     component_model, batch_local, target_local, ci_recv_leaves, s, strategy
                 )

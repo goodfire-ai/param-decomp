@@ -21,6 +21,7 @@ import torch.distributed as dist
 from pydantic import Discriminator
 from torch.utils.data import DataLoader
 
+from param_decomp._trace import trace
 from param_decomp.base_config import BaseConfig
 from param_decomp.batch_and_loss_fns import RunBatch
 from param_decomp.component_model import ComponentModel
@@ -384,9 +385,12 @@ def _maybe_enable_memory_profile(rank: int) -> None:
 
 def _fresh_main(config_path: Path) -> None:
     """Fresh-run path: parse YAML, build everything, train from step 0."""
+    trace("_fresh_main: enter")
     cfg = LMExperimentConfig.from_file(config_path)
+    trace("_fresh_main: cfg loaded")
 
     dist_state = init_distributed()
+    trace("_fresh_main: init_distributed done")
     if is_main_process():
         logger.info(f"Distributed state: {dist_state}")
     _maybe_enable_memory_profile(dist_state.rank if dist_state is not None else 0)
@@ -398,16 +402,22 @@ def _fresh_main(config_path: Path) -> None:
         "two_pool and three_pool are mutually exclusive; set only one."
     )
 
+    trace("_fresh_main: broadcasting out_dir")
     out_dir = _broadcast_out_dir(dist_state)
     if is_main_process():
         cfg.to_file(out_dir / RUN_META_FILENAME)
     rank = dist_state.rank if dist_state is not None else 0
     sink = _build_resumable_sink(out_dir, rank=rank)
 
+    trace("_fresh_main: build_target: enter")
     target_model = build_target(cfg.target)
+    trace("_fresh_main: build_target: done")
+    trace("_fresh_main: _build_train_loader: enter")
     train_loader = _build_train_loader(cfg, device, dist_state)
+    trace("_fresh_main: _build_train_loader: done")
 
     try:
+        trace("_fresh_main: calling _construct_and_run_trainer")
         _construct_and_run_trainer(
             cfg=cfg,
             target_model=target_model,
