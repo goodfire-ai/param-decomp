@@ -369,7 +369,12 @@ def torchrun_command(
         job_name: Used to namespace per-node ``/tmp`` workspace in multi-node mode.
         snapshot_ref: Fully-qualified git ref to checkout (e.g. ``refs/runs/snapshot/<id>``).
         python_module: Module to launch (e.g. ``param_decomp_lab.experiments.lm.run``).
-        script_args: Positional args passed to the module (e.g. ``/path/to/config.yaml``).
+        script_args: Positional args passed to the module. **Pass paths to in-repo
+            files as paths RELATIVE to REPO_ROOT** (e.g. ``param_decomp_lab/...yaml``,
+            not ``/mnt/.../REPO_ROOT/...yaml``). The snapshot setup ``cd``'s into the
+            per-node snapshot checkout, so relative paths resolve to the snapshot's
+            copy of the file. Absolute live-FS paths would bypass the snapshot and
+            see whatever a concurrent launch most recently wrote.
         n_gpus: Total GPU count. >8 must be a multiple of 8.
         master_port: TCP port for torch elastic rendezvous. Pick a unique value per job
             if multiple multi-GPU jobs may share a host.

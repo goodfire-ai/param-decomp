@@ -266,7 +266,7 @@ def main() -> None:
             job_name=job_name,
             snapshot_ref=stamp.snapshot_ref,
             python_module="param_decomp_lab.experiments.lm.run",
-            script_args=str(yaml_path),
+            script_args=str(yaml_path.relative_to(REPO_ROOT)),
             n_gpus=topo.total_ranks,
         )
         cfg = SlurmConfig(
