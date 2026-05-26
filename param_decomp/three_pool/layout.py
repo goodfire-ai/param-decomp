@@ -484,23 +484,30 @@ class ThreePoolLayout:
         seq_len: int,
         device: torch.device,
     ) -> dict[str, Tensor]:
-        """CI ← LW: recv per-site CI grads. Stitch K_lw sub-slices per site
-        into one [B_local_ci, S, C_s] tensor (fp32 after upcast)."""
+        """CI ← LW: recv per-site CI grads, coalesced per (LW block leader, LW
+        block rank index) channel.
+
+        Each LW rank coalesces its owned sites into one packed buffer (see
+        ``send_g_ci_to_ci_pool``); we receive one packed buf per source. Pack
+        layout (must match sender): for each site in the LW block's owned
+        sites, ``b_lw * seq_len * c_s`` contiguous ``_WIRE_DTYPE`` elements.
+        """
         assert self.my_pool == "ci" and self.my_ci_slice_idx is not None
         my_lw_block_ranks = self.world.lw_block_ranks_for_ci_slice(self.my_ci_slice_idx)
         b_lw = self.world.batch_local_lw
 
         # Post all irecvs upfront so they pipeline on the NIC.
-        pending: list[tuple[str, int, Tensor, dist.Work]] = []
-        for site in self.world.all_sites:
-            bg = self.world.layerwise_block_groups[self.world.block_idx_of_site(site)]
-            c_s = site_to_c[site]
+        # Per source: one packed buf containing all of that source's owned sites.
+        pending: list[tuple[int, int, Tensor, dist.Work, tuple[str, ...]]] = []
+        for bg_idx, bg in enumerate(self.world.layerwise_block_groups):
+            owned = bg.owned_sites
+            packed_numel = sum(b_lw * seq_len * site_to_c[s] for s in owned)
             for block_rank_idx in my_lw_block_ranks:
                 src = bg.ranks[block_rank_idx]
-                buf = torch.empty(b_lw, seq_len, c_s, device=device, dtype=_WIRE_DTYPE)
+                buf = torch.empty(packed_numel, device=device, dtype=_WIRE_DTYPE)
                 w = dist.irecv(buf, src=src)
                 assert w is not None
-                pending.append((site, block_rank_idx, buf, w))
+                pending.append((bg_idx, block_rank_idx, buf, w, owned))
 
         # Wait + stitch. Allocate one fp32 dest per site, copy each piece in place.
         out: dict[str, Tensor] = {}
@@ -508,10 +515,16 @@ class ThreePoolLayout:
         for site in self.world.all_sites:
             c_s = site_to_c[site]
             out[site] = torch.empty(b_ci, seq_len, c_s, device=device, dtype=torch.float32)
-        for site, block_rank_idx, buf, w in pending:
+        for _bg_idx, block_rank_idx, buf, w, owned in pending:
             w.wait()
             sub = self.world.lw_sub_slice_within_ci(block_rank_idx)
-            out[site][sub].copy_(buf.to(torch.float32))
+            offset = 0
+            for site in owned:
+                c_s = site_to_c[site]
+                n = b_lw * seq_len * c_s
+                site_view = buf[offset : offset + n].view(b_lw, seq_len, c_s)
+                out[site][sub].copy_(site_view.to(torch.float32))
+                offset += n
         return out
 
     def recv_g_ci_from_ppgd(
@@ -616,24 +629,22 @@ class ThreePoolLayout:
 
     def send_g_ci_to_ci_pool(self, g_ci_owned: dict[str, Tensor]) -> None:
         """LW → CI: send per-owned-site CI grads (full LW batch slice) to the
-        CI rank that owns my slice. Synchronous — runs after the LW backward
-        when grads are ready.
+        CI rank that owns my slice.
+
+        Coalesces this rank's owned sites into one packed send (vs one isend
+        per site). Smaller win than the PPGD-side coalescing (each LW rank
+        only owns ~4 sites vs PPGD's 96) but consistent + cuts CI's recv
+        count from ~96 to ~24 (one per LW block, not per (site, block)).
         """
         assert self.my_pool == "layerwise" and self.my_within_block_idx is not None
         dst_ci_slice = self.world.ci_slice_of_lw_block_rank(self.my_within_block_idx)
         dst = self.world.ci_ranks[dst_ci_slice]
-        # Per-site isend; wait at end so they pipeline.
-        works: list[dist.Work] = []
-        buffers: list[Tensor] = []
-        for site in self.my_owned_sites:
-            buf = g_ci_owned[site].detach().to(_WIRE_DTYPE).contiguous()
-            w = dist.isend(buf, dst=dst)
-            assert w is not None
-            works.append(w)
-            buffers.append(buf)
-        for w in works:
-            w.wait()
-        del buffers
+        parts = [
+            g_ci_owned[s].detach().to(_WIRE_DTYPE).contiguous().flatten()
+            for s in self.my_owned_sites
+        ]
+        packed = torch.cat(parts)
+        dist.send(packed, dst=dst)
 
     def recv_g_vu_from_ppgd(
         self,
