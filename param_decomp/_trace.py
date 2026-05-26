@@ -15,11 +15,10 @@ noisier so it's opt-in via ``PD_PHASE_TRACE=1``. Combined with
 """
 
 import os
+import sys
 import time
 
 import torch.distributed as dist
-
-from param_decomp.log import logger
 
 _TRACE_START = time.perf_counter()
 
@@ -49,7 +48,12 @@ def _current_rank() -> int:
 
 
 def trace(msg: str) -> None:
-    """Emit a rank-tagged timeline checkpoint to ``logger``.
+    """Emit a rank-tagged timeline checkpoint to stdout (force-flushed).
+
+    Uses ``print(..., flush=True)`` rather than ``logger.info`` so the message
+    bypasses Python's logging stack and forces an immediate fd flush — under
+    slurm, even with PYTHONUNBUFFERED, logger.info output can get stuck in
+    Python's logging-layer or torchrun-to-srun pipe buffers for minutes.
 
     Format: ``[trace rank=R +ELAPSED_MS] MSG`` — easy to grep and tail.
     """
@@ -57,7 +61,8 @@ def trace(msg: str) -> None:
     if not _should_log(rank):
         return
     elapsed_ms = (time.perf_counter() - _TRACE_START) * 1000.0
-    logger.info(f"[trace rank={rank} +{elapsed_ms:9.1f}ms] {msg}")
+    print(f"[trace rank={rank} +{elapsed_ms:9.1f}ms] {msg}", flush=True)
+    sys.stdout.flush()  # belt + braces — slurm log buffering bit us before
 
 
 def phase_trace_enabled() -> bool:
