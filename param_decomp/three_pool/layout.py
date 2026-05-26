@@ -520,31 +520,48 @@ class ThreePoolLayout:
         seq_len: int,
         device: torch.device,
     ) -> dict[str, Tensor]:
-        """CI ← PPGD: recv full-model CI grads. Stitch K_ppgd sub-slices per
-        site into one [B_local_ci, S, C_s] tensor (fp32 after upcast)."""
+        """CI ← PPGD: recv full-model CI grads, coalesced.
+
+        One packed irecv per PPGD source (instead of one per (site, source)),
+        matching the coalesced ``send_g_ci_to_ci_pool_ppgd``. With 96 sites
+        and N_PPGD/N_CI=3 sources per CI rank, that's 3 irecvs instead of
+        288 — order-of-magnitude NCCL-launch latency cut.
+
+        Pack layout (must match the sender exactly): for each site in
+        ``self.world.all_sites`` order, ``b_pp * seq_len * c_s`` contiguous
+        ``_WIRE_DTYPE`` elements.
+        """
         assert self.my_pool == "ci" and self.my_ci_slice_idx is not None
         my_ppgd_slice_idxs = self.world.ppgd_slice_idxs_for_ci_slice(self.my_ci_slice_idx)
         b_pp = self.world.batch_local_ppgd
 
-        pending: list[tuple[str, int, Tensor, dist.Work]] = []
+        # Same total numel for every PPGD source (every source sends all sites).
+        site_numels = {s: b_pp * seq_len * site_to_c[s] for s in self.world.all_sites}
+        packed_numel = sum(site_numels.values())
+
+        pending: list[tuple[int, Tensor, dist.Work]] = []
         for ppgd_slice_idx in my_ppgd_slice_idxs:
             src = self.world.ppgd_ranks[ppgd_slice_idx]
-            for site in self.world.all_sites:
-                c_s = site_to_c[site]
-                buf = torch.empty(b_pp, seq_len, c_s, device=device, dtype=_WIRE_DTYPE)
-                w = dist.irecv(buf, src=src)
-                assert w is not None
-                pending.append((site, ppgd_slice_idx, buf, w))
+            packed = torch.empty(packed_numel, device=device, dtype=_WIRE_DTYPE)
+            w = dist.irecv(packed, src=src)
+            assert w is not None
+            pending.append((ppgd_slice_idx, packed, w))
 
-        out: dict[str, Tensor] = {}
         b_ci = self.world.batch_local_ci
-        for site in self.world.all_sites:
-            c_s = site_to_c[site]
-            out[site] = torch.empty(b_ci, seq_len, c_s, device=device, dtype=torch.float32)
-        for site, ppgd_slice_idx, buf, w in pending:
+        out: dict[str, Tensor] = {
+            s: torch.empty(b_ci, seq_len, site_to_c[s], device=device, dtype=torch.float32)
+            for s in self.world.all_sites
+        }
+        for ppgd_slice_idx, packed, w in pending:
             w.wait()
             sub = self.world.ppgd_sub_slice_within_ci(ppgd_slice_idx)
-            out[site][sub].copy_(buf.to(torch.float32))
+            offset = 0
+            for site in self.world.all_sites:
+                c_s = site_to_c[site]
+                n = site_numels[site]
+                buf = packed[offset : offset + n].view(b_pp, seq_len, c_s)
+                out[site][sub].copy_(buf.to(torch.float32))
+                offset += n
         return out
 
     def all_reduce_ci_fn_grads(self, params: Iterable[nn.Parameter]) -> None:
@@ -778,21 +795,23 @@ class ThreePoolLayout:
 
     def send_g_ci_to_ci_pool_ppgd(self, g_ci_full: dict[str, Tensor]) -> None:
         """PPGD → CI: send full-model CI grads (PPGD batch slice) to the CI
-        rank that owns my slice."""
+        rank that owns my slice.
+
+        Coalesces all 96-ish sites into a single packed buffer per
+        send. Per-site isends launch ~10ms of NCCL overhead each, so at
+        scale (96 sites × N_PPGD ranks) this phase was ~1 s of pure NCCL
+        launch latency on every step. Single packed send replaces that with
+        one NCCL op (NCCL handles big tensors efficiently).
+        """
         assert self.my_pool == "ppgd" and self.my_ppgd_slice_idx is not None
         dst_ci_slice = self.world.ci_slice_of_ppgd_slice(self.my_ppgd_slice_idx)
         dst = self.world.ci_ranks[dst_ci_slice]
-        works: list[dist.Work] = []
-        buffers: list[Tensor] = []
-        for site in self.world.all_sites:
-            buf = g_ci_full[site].detach().to(_WIRE_DTYPE).contiguous()
-            w = dist.isend(buf, dst=dst)
-            assert w is not None
-            works.append(w)
-            buffers.append(buf)
-        for w in works:
-            w.wait()
-        del buffers
+        parts = [
+            g_ci_full[s].detach().to(_WIRE_DTYPE).contiguous().flatten()
+            for s in self.world.all_sites
+        ]
+        packed = torch.cat(parts)
+        dist.send(packed, dst=dst)
 
     def send_g_vu_to_layerwise(
         self,
