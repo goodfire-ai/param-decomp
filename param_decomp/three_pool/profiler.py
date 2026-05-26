@@ -49,10 +49,29 @@ class PhaseProfiler:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         trace_path = self.out_dir / f"trace_{self.pool}_rank{self.rank}.json"
 
+        summary_path = self.out_dir / f"key_avgs_{self.pool}_rank{self.rank}.txt"
+
         def on_trace_ready(prof: "torch.profiler.profile") -> None:
             prof.export_chrome_trace(str(trace_path))
+            table = prof.key_averages().table(
+                sort_by="self_cuda_time_total",
+                row_limit=40,
+                max_name_column_width=80,
+            )
+            summary_path.write_text(table)
             print(f"[profiler rank{self.rank}] wrote {trace_path}", flush=True)
+            print(f"[profiler rank{self.rank}] wrote {summary_path}", flush=True)
+            print(
+                f"[profiler rank{self.rank}] view trace: drop the json into "
+                "https://www.speedscope.app/ (or chrome://tracing/, or Perfetto)",
+                flush=True,
+            )
 
+        # ``profile_memory=True`` instruments every allocator call which can
+        # add enough per-rank overhead to desync NCCL collectives between
+        # profiled and unprofiled ranks (10-min timeout, observed deadlock).
+        # We already get memory traces from ``_record_memory_history`` on the
+        # same ranks — leave profile_memory off here.
         self._prof = torch.profiler.profile(
             activities=[
                 torch.profiler.ProfilerActivity.CPU,
@@ -63,7 +82,7 @@ class PhaseProfiler:
             ),
             on_trace_ready=on_trace_ready,
             record_shapes=False,
-            profile_memory=True,
+            profile_memory=False,
             with_stack=False,
         )
         self._prof.__enter__()
