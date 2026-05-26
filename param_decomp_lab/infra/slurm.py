@@ -331,6 +331,11 @@ source .venv/bin/activate"""
 CUDA_FLAGS: dict[str, str] = {
     "NCCL_DEBUG": "WARN",
     "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
+    # Force line-buffered Python stdout. Without this, slurm logs look frozen
+    # for minutes during silent setup phases — Python block-buffers 4-8 KB at
+    # a time when stdout isn't a tty, making it impossible to tell a hung job
+    # from a slow-but-working one.
+    "PYTHONUNBUFFERED": "1",
 }
 
 # B200 nodes ship with 8 GPUs each. Multi-node DDP requires ``n_gpus`` to be a
