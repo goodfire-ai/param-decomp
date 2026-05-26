@@ -3,8 +3,7 @@
 Thin wrapper for fast --help. Heavy imports deferred to run_slurm.py.
 
 Usage:
-    pd-autointerp <wandb_path>
-    pd-autointerp <wandb_path> --config autointerp_config.yaml
+    pd-autointerp <decomposition_id> --config autointerp_slurm_config.yaml --harvest_subrun_id h-YYYYMMDD_HHMMSS
 """
 
 import fire

@@ -1,3 +1,5 @@
+"""`BaseConfig` (pydantic `BaseModel` with `extra="forbid"`, `frozen=True`, YAML/JSON round-trip), `Probability` (annotated `float` in `[0, 1]`), and `runtime_cast`."""
+
 import json
 from functools import cached_property
 from pathlib import Path

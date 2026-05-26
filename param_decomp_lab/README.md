@@ -29,8 +29,7 @@ pd-resid-mlp  param_decomp_lab/experiments/resid_mlp/resid_mlp1_config.yaml
 pd-lm         param_decomp_lab/experiments/lm/ss_llama_simple_mlp-2L.yaml
 pd-pretrain   --config_path param_decomp_lab/experiments/lm/pretrain/configs/pile_llama_simple_mlp-4L-768.yaml
 pd-harvest    path/to/harvest_slurm_config.yaml
-pd-autointerp <wandb_path> --config path/to/autointerp_config.yaml
-pd-postprocess param_decomp_lab/postprocess/pile.yaml
+pd-autointerp <decomposition_id> --config path/to/autointerp_slurm_config.yaml --harvest_subrun_id h-YYYYMMDD_HHMMSS
 ```
 
 The package also provides clustering, graph interpretation, dataset attribution, intruder,

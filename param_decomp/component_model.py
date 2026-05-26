@@ -1,3 +1,5 @@
+"""`ComponentModel` — wraps the target model with `Components` modules + a CI fn; emits gradient-aware cached forward passes consumed by the loss metrics."""
+
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass

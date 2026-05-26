@@ -3,8 +3,8 @@
 Thin wrapper for fast --help. Heavy imports deferred to run_slurm.py.
 
 Usage:
-    pd-attributions <wandb_path> --n_gpus 8
-    pd-attributions <wandb_path> --config attr_config.yaml
+    pd-attributions <wandb_path> --config attr_slurm_config.yaml --harvest_subrun_id h-YYYYMMDD_HHMMSS
+    pd-attributions <wandb_path> --config attr_slurm_config.yaml --harvest_subrun_id h-... --job_suffix v2
 """
 
 import fire

@@ -97,7 +97,6 @@ CLI arguments:
 - `prompt` — Required. Research question or investigation directive.
 - `--context_length` — Token context length (default: 128)
 - `--max_turns` — Max Claude turns (default: 50, prevents runaway)
-- `--partition` — SLURM partition (default: h200-reserved)
 - `--time` — Job time limit (default: 8:00:00)
 - `--job_suffix` — Optional suffix for job names
 

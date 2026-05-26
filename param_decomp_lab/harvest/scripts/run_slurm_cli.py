@@ -3,8 +3,8 @@
 Thin wrapper for fast --help. Heavy imports deferred to run_slurm.py.
 
 Usage:
-    pd-harvest <wandb_path> --n_gpus 8
-    pd-harvest <wandb_path> --config harvest_config.yaml
+    pd-harvest <harvest_slurm_config.yaml>
+    pd-harvest <harvest_slurm_config.yaml> --job_suffix v2
 """
 
 import fire

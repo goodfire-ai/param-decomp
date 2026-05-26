@@ -24,13 +24,13 @@ class PostprocessConfig(BaseConfig):
     to skip that stage entirely.
 
     Dependency graph:
-        harvest (GPU array -> merge)
-        ├── intruder eval    (CPU, depends on harvest merge, label-free)
-        └── autointerp       (depends on harvest merge)
-            ├── interpret
-            │   ├── detection
-            │   └── fuzzing
-        attributions (GPU array -> merge, depends on harvest merge)
+        harvest                 (GPU array -> merge, PD-only)
+        ├── intruder eval       (CPU, label-free, depends on harvest merge)
+        ├── attributions        (GPU array -> merge, PD-only, depends on harvest merge)
+        │   └── graph interp    (CPU, depends on attribution merge)
+        └── autointerp          (CPU, LLM calls, depends on harvest merge)
+            ├── detection
+            └── fuzzing
     """
 
     harvest: HarvestSlurmConfig

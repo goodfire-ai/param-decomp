@@ -4,17 +4,26 @@ LLM-based automated interpretation of PD components. Consumes pre-harvested data
 
 ## Usage
 
+Autointerp requires harvest data to already exist (see [`../harvest/CLAUDE.md`](../harvest/CLAUDE.md));
+every CLI takes a `--harvest_subrun_id`.
+
 ```bash
-# Run interpretation with a config file
-python -m param_decomp_lab.autointerp.scripts.run_interpret <wandb_path> --config_path path/to/config.yaml
+# Via SLURM
+pd-autointerp <decomposition_id> --config path/to/autointerp_slurm_config.yaml --harvest_subrun_id h-YYYYMMDD_HHMMSS
 
-# Run with inline config JSON
-python -m param_decomp_lab.autointerp.scripts.run_interpret <wandb_path> --config_json '{"model": "google/gemini-3-flash-preview", "reasoning_effort": null}'
-
-# Or via SLURM
-pd-autointerp <wandb_path>
-pd-autointerp <wandb_path> --model google/gemini-3-flash-preview --reasoning_effort medium
+# Direct execution (one process, inline JSON config)
+python -m param_decomp_lab.autointerp.scripts.run_interpret <decomposition_id> \
+    --config_json '{...AutointerpConfig...}' \
+    --harvest_subrun_id h-YYYYMMDD_HHMMSS
 ```
+
+`<decomposition_id>` is the decomposition's identifier — for PD runs, the wandb path
+like `entity/project/runs/<run_id>`.
+
+Interpretation settings (model, reasoning effort, forbidden words, prompt variant, …)
+live inside the YAML / JSON `AutointerpConfig` — they are *not* CLI flags. The config
+is a discriminated union over strategies (`compact_skeptical`, `dual_view`,
+`rich_examples`, `canon`); see the Config section below.
 
 Requires the API key for your chosen provider (e.g. `OPENROUTER_API_KEY`, or `GEMINI_API_KEY` when `llm.type` is `google_ai` — key from [Google AI Studio](https://aistudio.google.com/app/apikey)).
 
@@ -32,7 +41,7 @@ PARAM_DECOMP_OUT_DIR/autointerp/<spd_run_id>/
 `InterpRepo` reads from the latest subrun (by lexicographic sort of `a-*` dir names).
 
 The `interp.db` schema has three tables:
-- `interpretations`: component_key -> label, confidence, reasoning, raw_response, prompt
+- `interpretations`: component_key -> label, reasoning, raw_response, prompt
 - `scores`: (component_key, score_type) -> score, details (JSON blob with trial data)
 - `config`: key-value store
 
@@ -80,6 +89,6 @@ Each strategy config type has a corresponding prompt implementation:
 ## Key Types (`schemas.py`)
 
 ```python
-InterpretationResult  # LLM's label + confidence + reasoning
+InterpretationResult  # component_key + label + reasoning + raw_response + prompt
 ArchitectureInfo      # Model architecture context for prompts
 ```

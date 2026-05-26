@@ -1,3 +1,5 @@
+"""`Components` ABC + `LinearComponents` / `EmbeddingComponents` subclasses, plus `init_param_`, `get_module_input_dim`, and `make_components` factory."""
+
 import math
 from abc import ABC, abstractmethod
 from typing import Literal, override

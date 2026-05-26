@@ -1,8 +1,9 @@
 """CLI for autointerp pipeline.
 
 Usage:
-    python -m param_decomp_lab.autointerp.scripts.run_interpret <wandb_path> --config_json '...'
-    pd-autointerp <wandb_path>  # SLURM submission
+    python -m param_decomp_lab.autointerp.scripts.run_interpret <decomposition_id> \\
+        --config_json '...' --harvest_subrun_id h-YYYYMMDD_HHMMSS
+    pd-autointerp <decomposition_id> --config <yaml> --harvest_subrun_id h-...  # SLURM
 """
 
 from datetime import datetime
