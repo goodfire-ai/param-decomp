@@ -9,6 +9,7 @@ no duplication between them. Run via ``pd-lm path/to/config.yaml``; multi-proces
 import atexit
 import importlib
 import os
+import signal
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -370,6 +371,15 @@ def _maybe_enable_memory_profile(rank: int) -> None:
         prev_excepthook(exctype, value, tb)
 
     sys.excepthook = _excepthook
+
+    def _sigterm_dump(signum: int, _frame: Any) -> None:
+        _dump()
+        # Re-raise as default to ensure the process actually exits.
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    signal.signal(signal.SIGTERM, _sigterm_dump)
+    signal.signal(signal.SIGUSR1, _sigterm_dump)
 
 
 def _fresh_main(config_path: Path) -> None:
