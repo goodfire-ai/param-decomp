@@ -1,20 +1,16 @@
-"""End-to-end multi-node 3-pool resumption smoke.
+"""End-to-end multi-node 3-pool resumption fidelity test.
 
-Validates that a 3-pool training run can:
-  1. Save resumable checkpoints mid-training.
-  2. Be restarted from one of those checkpoints in a fresh slurm job.
-  3. Produce reasonable (near-equivalent) losses on the resumed segment.
+Validates that ``Trainer.from_snapshot`` reconstructs trainer state bit-for-bit
+from a saved shard — the RNG-independent way to be confident in resumption.
 
 How:
-  * **Baseline run**: 100 steps, ``save_every=50``. Saves at steps 50, 100.
-    Records ``train/loss/total`` at the 10-step cadence.
-  * **Resume run**: writes a ``ResumeConfig`` pointing at the baseline's
-    ``resume/step_50/`` snapshot; submits ``lm/run.py --resume <yaml>``;
-    trains from step 50 to step 100.
-  * **Compare**: pull final-step loss from both runs' wandb logs (or
-    stdout). They should be very close (streaming dataset + per-rank RNG
-    re-seeding means not bit-exact at distributed scale, but qualitatively
-    matched).
+  * **Baseline run**: 100 steps, ``save_every=50``. Each shard write also
+    drops a sibling ``state_hash_rank<R>.txt`` (SHA256 over the resume blob).
+  * **Load-only leg**: re-launches the same topology on the cluster but with
+    ``--load_only``. Each rank loads its shard, calls ``Trainer.from_snapshot``,
+    re-snapshots the trainer, hashes the resulting resume blob, and asserts
+    it matches the on-disk hash. No training, no data, no RNG.
+  * On hash mismatch the rank raises and the job fails loudly.
 
 Topology: same as ``equiv_5L_multinode.py`` 3pool cohort — 5L GPT-2, batch=64,
 5 LW blocks × 2 ranks + 2 CI + 4 PPGD = 16 GPUs / 2 nodes. Each leg ~2 min.
@@ -277,41 +273,40 @@ def main() -> None:
         raise RuntimeError(f"baseline didn't write expected snapshot {expected}")
     print(f"found {expected}")
 
-    # === Resume ===
+    # === Load-only fidelity check ===
     resume_yaml_path = OUT_DIR / "resume.yaml"
     resume_yaml_path.write_text(
         yaml.safe_dump(_resume_yaml_dict(parent_dir, RESUME_FROM_STEP), sort_keys=False)
     )
     print(f"resume yaml → {resume_yaml_path}")
 
-    resume_stamp = ExecutionStamp.create(run_type="param_decomp", create_snapshot=True)
-    resume_job_name = "resumeval-resume"
-    resume_cmd = torchrun_command(
-        job_name=resume_job_name,
-        snapshot_ref=resume_stamp.snapshot_ref,
+    loadonly_stamp = ExecutionStamp.create(run_type="param_decomp", create_snapshot=True)
+    loadonly_job_name = "resumeval-loadonly"
+    loadonly_cmd = torchrun_command(
+        job_name=loadonly_job_name,
+        snapshot_ref=loadonly_stamp.snapshot_ref,
         python_module="param_decomp_lab.experiments.lm.run",
-        # The lm/run.py CLI takes `--resume <path>`.
-        script_args=f"--resume {resume_yaml_path.relative_to(REPO_ROOT)}",
+        script_args=f"--resume {resume_yaml_path.relative_to(REPO_ROOT)} --load_only",
         n_gpus=total_ranks,
     )
-    resume_slurm = SlurmConfig(
-        job_name=resume_job_name,
+    loadonly_slurm = SlurmConfig(
+        job_name=loadonly_job_name,
         partition=None,
         n_gpus=GPUS_PER_NODE if n_nodes > 1 else total_ranks,
         n_nodes=n_nodes,
-        time="00:30:00",
-        snapshot_ref=resume_stamp.snapshot_ref,
-        comment="3-pool resumption validation: resume leg",
+        time="00:15:00",
+        snapshot_ref=loadonly_stamp.snapshot_ref,
+        comment="3-pool resumption validation: load-only fidelity check",
     )
     r2 = submit_slurm_job(
-        generate_script(resume_slurm, resume_cmd, env=CUDA_FLAGS), resume_job_name
+        generate_script(loadonly_slurm, loadonly_cmd, env=CUDA_FLAGS), loadonly_job_name
     )
-    print(f"{resume_job_name}: gpus={total_ranks} job_id={r2.job_id}")
-    print("waiting for resume to finish…")
+    print(f"{loadonly_job_name}: gpus={total_ranks} job_id={r2.job_id}")
+    print("waiting for load-only fidelity check to finish…")
     _wait_for_job(r2.job_id)
-    print("done — inspect the two runs' logs to compare loss curves")
+    print("done — load-only leg succeeded iff job exited cleanly")
     print(f"  baseline log: ~/param_decomp_out/slurm_logs/slurm-{r.job_id}.out")
-    print(f"  resume log:   ~/param_decomp_out/slurm_logs/slurm-{r2.job_id}.out")
+    print(f"  loadonly log: ~/param_decomp_out/slurm_logs/slurm-{r2.job_id}.out")
 
 
 if __name__ == "__main__":
