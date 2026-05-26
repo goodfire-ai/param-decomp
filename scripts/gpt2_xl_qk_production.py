@@ -39,11 +39,10 @@ ALL_SITES = [f"h.{layer}.{site}" for layer in range(N_LAYERS) for site in SITES_
 
 SITES_PER_BLOCK = 4
 DDP_PER_BLOCK = 4
-N_CI = 4
-N_PPGD = 4
+DEFAULT_N_CI = 4
+DEFAULT_N_PPGD = 4
 N_LW_BLOCKS = len(ALL_SITES) // SITES_PER_BLOCK  # 24
 N_LW_RANKS = N_LW_BLOCKS * DDP_PER_BLOCK  # 96
-TOTAL_RANKS = N_LW_RANKS + N_CI + N_PPGD  # 104
 
 
 def _block_groups() -> list[dict[str, Any]]:
@@ -56,7 +55,14 @@ def _block_groups() -> list[dict[str, Any]]:
     ]
 
 
-def _make_yaml_dict(*, steps: int, save_every: int | None, warmup_steps: int) -> dict[str, Any]:
+def _make_yaml_dict(
+    *,
+    steps: int,
+    save_every: int | None,
+    warmup_steps: int,
+    n_ci: int,
+    n_ppgd: int,
+) -> dict[str, Any]:
     base_ci = N_LW_RANKS
     return {
         "pd": {
@@ -173,14 +179,20 @@ def _make_yaml_dict(*, steps: int, save_every: int | None, warmup_steps: int) ->
         "three_pool": {
             "use_fused_kl": True,
             "defer_vu_opt": True,
-            "ci_ranks": list(range(base_ci, base_ci + N_CI)),
-            "ppgd_ranks": list(range(base_ci + N_CI, base_ci + N_CI + N_PPGD)),
+            "ci_ranks": list(range(base_ci, base_ci + n_ci)),
+            "ppgd_ranks": list(range(base_ci + n_ci, base_ci + n_ci + n_ppgd)),
             "layerwise_block_groups": _block_groups(),
         },
     }
 
 
-def main(smoke: bool = False, batch_size: int = 16, profile: bool = True) -> None:
+def main(
+    smoke: bool = False,
+    batch_size: int = 16,
+    profile: bool = True,
+    n_ci: int = DEFAULT_N_CI,
+    n_ppgd: int = DEFAULT_N_PPGD,
+) -> None:
     """Submit the production XL Q/K run, or a smoke test.
 
     Args:
@@ -192,18 +204,27 @@ def main(smoke: bool = False, batch_size: int = 16, profile: bool = True) -> Non
         profile: When ``smoke=True``, enable CUDA memory-history recording on
             one rank per pool (LW block 0, CI rank 0, PPGD rank 0). Dumps
             ``mem_rank<R>.pickle`` files loadable at pytorch.org/memory_viz.
+        n_ci: Number of CI pool ranks. Default 4. Bump to halve per-CI-rank batch.
+        n_ppgd: Number of PPGD pool ranks. Default 4. Bump to halve per-PPGD-rank
+            batch (which halves the PPGD-bound batch ceiling because PPGD's
+            ``D3_warmup`` / ``D4_recon`` transient peak is per-rank).
     """
+    total_ranks = N_LW_RANKS + n_ci + n_ppgd
     out_dir = REPO_ROOT / "param_decomp_lab/experiments/lm/_xl_production"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if smoke:
-        cfg_dict = _make_yaml_dict(steps=50, save_every=None, warmup_steps=0)
+        cfg_dict = _make_yaml_dict(
+            steps=50, save_every=None, warmup_steps=0, n_ci=n_ci, n_ppgd=n_ppgd
+        )
         cfg_dict["pd"]["batch_size"] = batch_size
         yaml_path = out_dir / "gpt2_xl_qk_smoke.yaml"
         job_name = "xl-qk-smoke"
         time_limit = "01:00:00"
     else:
-        cfg_dict = _make_yaml_dict(steps=200000, save_every=5000, warmup_steps=400)
+        cfg_dict = _make_yaml_dict(
+            steps=200000, save_every=5000, warmup_steps=400, n_ci=n_ci, n_ppgd=n_ppgd
+        )
         yaml_path = out_dir / "gpt2_xl_qk_production.yaml"
         job_name = "xl-qk-prod"
         # 7-day time limit (cluster max); production runs for as long as it fits.
@@ -213,10 +234,10 @@ def main(smoke: bool = False, batch_size: int = 16, profile: bool = True) -> Non
         yaml.safe_dump(cfg_dict, f, sort_keys=False)
     print(f"wrote {yaml_path}")
 
-    assert TOTAL_RANKS % GPUS_PER_NODE == 0, (
-        f"TOTAL_RANKS={TOTAL_RANKS} not a multiple of {GPUS_PER_NODE}"
+    assert total_ranks % GPUS_PER_NODE == 0, (
+        f"total_ranks={total_ranks} not a multiple of {GPUS_PER_NODE}"
     )
-    n_nodes = TOTAL_RANKS // GPUS_PER_NODE
+    n_nodes = total_ranks // GPUS_PER_NODE
 
     stamp = ExecutionStamp.create(run_type="param_decomp", create_snapshot=True)
     print(f"Snapshot: {stamp.snapshot_ref}")
@@ -224,8 +245,8 @@ def main(smoke: bool = False, batch_size: int = 16, profile: bool = True) -> Non
     env = dict(CUDA_FLAGS)
     if smoke and profile:
         # One rank per pool: LW block-0 rank-0 = 0, CI rank-0 = N_LW_RANKS,
-        # PPGD rank-0 = N_LW_RANKS + N_CI.
-        prof_ranks = [0, N_LW_RANKS, N_LW_RANKS + N_CI]
+        # PPGD rank-0 = N_LW_RANKS + n_ci.
+        prof_ranks = [0, N_LW_RANKS, N_LW_RANKS + n_ci]
         prof_dir = out_dir / "mem_profile" / job_name
         env["PD_MEMORY_PROFILE_RANKS"] = ",".join(str(r) for r in prof_ranks)
         env["PD_MEMORY_PROFILE_OUT"] = str(prof_dir)
@@ -236,13 +257,14 @@ def main(smoke: bool = False, batch_size: int = 16, profile: bool = True) -> Non
         env["PD_PHASE_TRACE"] = "1"
         print(f"mem-profile: ranks={prof_ranks} → {prof_dir}")
         print(f"trace: ranks={prof_ranks}, phase_trace=on")
+    print(f"topology: lw={N_LW_RANKS}, ci={n_ci}, ppgd={n_ppgd}, total={total_ranks}")
 
     cmd = torchrun_command(
         job_name=job_name,
         snapshot_ref=stamp.snapshot_ref,
         python_module="param_decomp_lab.experiments.lm.run",
         script_args=str(yaml_path),
-        n_gpus=TOTAL_RANKS,
+        n_gpus=total_ranks,
     )
     slurm_cfg = SlurmConfig(
         job_name=job_name,
@@ -254,7 +276,7 @@ def main(smoke: bool = False, batch_size: int = 16, profile: bool = True) -> Non
         comment=("GPT-2 XL Q/K 3-pool smoke test" if smoke else "GPT-2 XL Q/K 3-pool production"),
     )
     r = submit_slurm_job(generate_script(slurm_cfg, cmd, env=env), job_name)
-    print(f"{job_name}: nodes={n_nodes} gpus={TOTAL_RANKS} job_id={r.job_id}")
+    print(f"{job_name}: nodes={n_nodes} gpus={total_ranks} job_id={r.job_id}")
 
 
 if __name__ == "__main__":
