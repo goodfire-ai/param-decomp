@@ -19,7 +19,6 @@ from param_decomp_lab.experiments.resid_mlp.models import (
     ResidMLPTrainConfig,
 )
 from param_decomp_lab.infra.run_files import ExecutionStamp, save_file
-from param_decomp_lab.infra.settings import DEFAULT_PROJECT_NAME
 from param_decomp_lab.infra.wandb import init_wandb
 from param_decomp_lab.seed import set_seed
 
@@ -73,7 +72,7 @@ def train(
         init_wandb(
             project=config.wandb_project,
             run_id=execution_stamp.run_id,
-            configs={"": config},
+            config=config,
             name=run_name,
             tags=tags,
         )
@@ -219,7 +218,7 @@ if __name__ == "__main__":
     device = get_device()
     # 1 layer
     config = ResidMLPTrainConfig(
-        wandb_project=DEFAULT_PROJECT_NAME,
+        wandb_project="param-decomp",
         seed=0,
         resid_mlp_model_config=ResidMLPModelConfig(
             n_features=100,  # 1 layer
@@ -248,7 +247,7 @@ if __name__ == "__main__":
     )
     # # 2 layers
     # config = ResidMLPTrainConfig(
-    #     wandb_project=DEFAULT_PROJECT_NAME,
+    #     wandb_project="param-decomp",
     #     seed=0,
     #     resid_mlp_model_config=ResidMLPModelConfig(
     #         n_features=100, # 2 layers
@@ -277,7 +276,7 @@ if __name__ == "__main__":
     # )
     # # 3 layers
     # config = ResidMLPTrainConfig(
-    #     wandb_project=DEFAULT_PROJECT_NAME,
+    #     wandb_project="param-decomp",
     #     seed=0,
     #     resid_mlp_model_config=ResidMLPModelConfig(
     #         n_features=102,  # 3 layers

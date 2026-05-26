@@ -109,9 +109,11 @@ class RunSink:
         *,
         project: str,
         run_id: str,
+        config: BaseConfig,
+        entity: str | None = None,
         name: str | None = None,
         tags: list[str] | None = None,
-        configs: dict[str, BaseConfig] | None = None,
+        group: str | None = None,
         view_meta: dict[str, Any] | None = None,
     ) -> "RunSink":
         """Build a sink that writes to local files and a wandb run.
@@ -123,9 +125,12 @@ class RunSink:
             out_dir: Directory to create and write all run artifacts into.
             project: wandb project name.
             run_id: Stable identifier for the wandb run.
+            config: The full experiment config to log to wandb.
+            entity: Wandb entity; falls back to the env / authenticated user when None.
             name: Display name for the wandb run.
             tags: Tags to attach to the wandb run.
-            configs: Named pydantic configs to log under wandb config.
+            group: Optional wandb group, for collecting related runs (e.g. a
+                layerwise sweep) into a single group in the W&B UI.
             view_meta: Extra metadata passed to `init_wandb` for the in-house viewer.
 
         Returns:
@@ -139,9 +144,11 @@ class RunSink:
         init_wandb(
             project,
             run_id,
-            configs=configs or {},
+            config,
+            entity=entity,
             name=name,
             tags=tags,
+            group=group,
             view_meta=view_meta,
         )
         return cls(out_dir=out_dir, _wandb_active=True)

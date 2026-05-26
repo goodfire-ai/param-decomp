@@ -6,12 +6,12 @@ pd:
     fn_type: global_shared_transformer
     hidden_dims: null
     simple_transformer_ci_cfg:
-      d_model: 2048
-      n_blocks: 8
+      d_model: 512
+      n_blocks: 5
       mlp_hidden_dim:
-      - 8192
+      - 2048
       attn_config:
-        n_heads: 16
+        n_heads: 8
         max_len: 512
         rope_base: 10000.0
   sampling: continuous
@@ -44,42 +44,26 @@ pd:
       warmup_pct: 0.0
       final_val_frac: 0.1
       fn_type: cosine
-  steps: 400000
+  steps: 100000
   batch_size: 64
   faithfulness_warmup_steps: 400
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_weight_decay: 0.0
   loss_metrics:
-    - type: ImportanceMinimalityLoss
-      coeff: 0.0002
-      pnorm: 2.0
-      beta: 0.5
-      p_anneal_start_frac: 0.0
-      p_anneal_final_p: 0.4
-      p_anneal_end_frac: 1.0
-      eps: 1.0e-12
-    - type: StochasticReconSubsetLoss
-      coeff: 0.5
-      routing:
-        type: uniform_k_subset
-    - type: PersistentPGDReconLoss
-      coeff: 0.5
-      optimizer:
-        type: adam
-        beta1: 0.5
-        beta2: 0.99
-        eps: 1.0e-08
-        lr_schedule:
-          start_val: 0.01
-          warmup_pct: 0.025
-          final_val_frac: 1.0
-          fn_type: constant
-      scope:
-        type: per_batch_per_position
-      use_sigmoid_parameterization: false
-      n_warmup_steps: 2
-    - type: FaithfulnessLoss
-      coeff: 10000000.0
+  - type: ImportanceMinimalityLoss
+    coeff: 0.0001
+    pnorm: 2.0
+    beta: 0.5
+    p_anneal_start_frac: 0.0
+    p_anneal_final_p: 0.4
+    p_anneal_end_frac: 1.0
+    eps: 1.0e-12
+  - type: StochasticReconSubsetLoss
+    coeff: 0.5
+    routing:
+      type: uniform_k_subset
+  - type: FaithfulnessLoss
+    coeff: 10000000.0
 cadence:
   train_log_every: 200
 eval:
@@ -89,31 +73,21 @@ eval:
   slow_every: 10000
   slow_on_first_step: true
   metrics:
-    - type: CIHistograms
-      n_batches_accum: 1
-    - type: ComponentActivationDensity
-    - type: CI_L0
-      groups:
-        layer_0:
-        - h.0.*
-        layer_1:
-        - h.1.*
-        layer_2:
-        - h.2.*
-        layer_3:
-        - h.3.*
-        total:
-        - '*'
-    - type: CEandKLLosses
-      rounding_threshold: 0.0
-    - type: CIMeanPerComponent
-    - type: StochasticHiddenActsReconLoss
-    - type: CIHiddenActsReconLoss
-    - type: PGDReconLoss
-      init: random
-      step_size: 0.1
-      n_steps: 20
-      mask_scope: shared_across_batch
+  - type: CIHistograms
+    n_batches_accum: 1
+  - type: ComponentActivationDensity
+  - type: CI_L0
+    groups: null
+  - type: CEandKLLosses
+    rounding_threshold: 0.0
+  - type: CIMeanPerComponent
+  - type: StochasticHiddenActsReconLoss
+  - type: CIHiddenActsReconLoss
+  - type: PGDReconLoss
+    init: random
+    step_size: 0.1
+    n_steps: 20
+    mask_scope: shared_across_batch
 target:
   spec:
     kind: pretrained

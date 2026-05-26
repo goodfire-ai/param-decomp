@@ -16,20 +16,19 @@ from datetime import datetime
 from pathlib import Path
 
 import fire
+import wandb_workspaces.workspaces as ws
 
 from param_decomp.decomposition_targets import DecompositionTargetConfig
 from param_decomp.log import logger
 from param_decomp_lab.experiments.lm.run import LMExperimentConfig
 from param_decomp_lab.infra.git import create_git_snapshot
-from param_decomp_lab.infra.settings import (
-    DEFAULT_PARTITION_NAME,
-    PARAM_DECOMP_OUT_DIR,
-)
+from param_decomp_lab.infra.settings import DEFAULT_PARTITION_NAME, PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.infra.slurm import (
     SlurmArrayConfig,
     generate_array_script,
     submit_slurm_job,
 )
+from param_decomp_lab.infra.wandb import get_wandb_entity
 
 
 def _parse_csv(value: str | None) -> list[str] | None:
@@ -111,6 +110,7 @@ def submit_lm_layerwise(
     n_layers: int,
     include: list[str] | None,
     layers: list[int] | None,
+    tags: list[str] | None,
     partition: str,
     time: str,
     max_concurrent: int | None,
@@ -130,13 +130,17 @@ def submit_lm_layerwise(
     configs_dir = run_dir / "configs"
     configs_dir.mkdir(parents=True, exist_ok=True)
 
+    tags_csv = ",".join(tags) if tags else None
     commands: list[str] = []
-    tags: list[str] = []
+    per_task_comments: list[str] = []
     for tag, cfg in per_matrix:
         cfg_path = configs_dir / f"{tag}.yaml"
         cfg.to_file(cfg_path)
-        commands.append(f"pd-lm {cfg_path}")
-        tags.append(tag)
+        cmd = f"pd-lm {cfg_path} --group={run_id}"
+        if tags_csv:
+            cmd += f" --tags={tags_csv}"
+        commands.append(cmd)
+        per_task_comments.append(tag)
 
     snapshot_ref: str | None = None
     commit_hash = "no-snapshot"
@@ -153,8 +157,18 @@ def submit_lm_layerwise(
         max_concurrent_tasks=max_concurrent,
         comment=run_id,
     )
-    array_script = generate_array_script(array_config, commands, per_task_comments=tags)
+    array_script = generate_array_script(
+        array_config,
+        commands,
+        per_task_comments=per_task_comments,
+    )
     result = submit_slurm_job(array_script, "lm_layerwise", n_array_tasks=len(commands))
+
+    workspace_url = (
+        _create_layerwise_workspace_view(run_id, base_cfg.wandb.project)
+        if base_cfg.wandb is not None
+        else "(none — base config has no wandb block)"
+    )
 
     logger.section("Layerwise PD jobs submitted!")
     logger.values(
@@ -165,8 +179,22 @@ def submit_lm_layerwise(
             "Snapshot": f"{snapshot_ref} ({commit_hash[:8]})" if snapshot_ref else "(none)",
             "Array Job ID": result.job_id,
             "Logs": result.log_pattern,
+            "W&B workspace": workspace_url,
         }
     )
+
+
+def _create_layerwise_workspace_view(run_id: str, project: str) -> str:
+    """Create a W&B workspace view that collects the layerwise array's per-matrix runs.
+
+    Each subjob is invoked with ``--group=<run_id>``; this workspace filters on that
+    field so the whole sweep is browsable in one place.
+    """
+    workspace = ws.Workspace(entity=get_wandb_entity(), project=project)
+    workspace.name = f"Layerwise - {run_id}"
+    workspace.runset_settings.filters = [ws.Metric("Group").isin([run_id])]
+    workspace.save_as_new_view()
+    return workspace.url
 
 
 def main(
@@ -174,6 +202,7 @@ def main(
     n_layers: int,
     include: str | None = None,
     layers: str | None = None,
+    tags: str | None = None,
     partition: str = DEFAULT_PARTITION_NAME,
     time: str = "12:00:00",
     max_concurrent: int | None = None,
@@ -188,6 +217,8 @@ def main(
             (e.g. "q_proj,k_proj"). Default: keep all base patterns.
         layers: Comma-separated layer indices to include (e.g. "0,2,3"). Default: all layers
             in [0, n_layers).
+        tags: Comma-separated wandb tags propagated to every child run (in addition to
+            the auto-generated launch-id `--group`).
         partition: SLURM partition for the array job.
         time: SLURM time limit per task (HH:MM:SS).
         max_concurrent: Cap on concurrent array tasks. Default: no cap.
@@ -198,6 +229,7 @@ def main(
         n_layers=n_layers,
         include=_parse_csv(include),
         layers=_parse_int_csv(layers),
+        tags=_parse_csv(tags),
         partition=partition,
         time=time,
         max_concurrent=max_concurrent,

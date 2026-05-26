@@ -34,7 +34,5 @@ SBATCH_SCRIPTS_DIR = PARAM_DECOMP_OUT_DIR / "sbatch_scripts"
 # The pd-run CLI's `--partition` flag overrides this further for ad-hoc launches.
 DEFAULT_PARTITION_NAME = os.environ["PARTITION_RESERVED"]
 
-DEFAULT_PROJECT_NAME = os.environ.get("PARAM_DECOMP_WANDB_PROJECT", "param-decomp")
-
 # Default run for the app to load on startup if set
 PARAM_DECOMP_APP_DEFAULT_RUN: str | None = os.environ.get("PARAM_DECOMP_APP_DEFAULT_RUN")

@@ -25,11 +25,13 @@ from param_decomp_lab.distributed import get_device
 from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
 from param_decomp_lab.experiments.tms.data import SparseFeatureDataset
 from param_decomp_lab.experiments.tms.models import TMSModel, TMSTargetRunInfo
-from param_decomp_lab.experiments.utils import RUN_META_FILENAME, ExperimentConfig
+from param_decomp_lab.experiments.utils import (
+    RUN_META_FILENAME,
+    ExperimentConfig,
+    init_pd_run,
+)
 from param_decomp_lab.infra.paths import ModelPath
-from param_decomp_lab.infra.run_files import generate_run_id, resolve_run_files
-from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
-from param_decomp_lab.run_sink import RunSink
+from param_decomp_lab.infra.run_files import resolve_run_files
 from param_decomp_lab.seed import set_seed
 
 
@@ -144,7 +146,12 @@ class SavedTMSRun:
         )
 
 
-def main(config_path: str | Path) -> None:
+def main(
+    config_path: str | Path,
+    *,
+    group: str | None = None,
+    tags: str | None = None,
+) -> None:
     """Run a TMS PD experiment end-to-end from a YAML config.
 
     Parses the YAML into `TMSExperimentConfig`, builds the target / loaders / eval loop,
@@ -152,6 +159,8 @@ def main(config_path: str | Path) -> None:
 
     Args:
         config_path: Path to the experiment YAML config.
+        group: Wandb group for "launched together" collapsing.
+        tags: Comma-separated wandb tags (orthogonal to `group`; many per run).
     """
     cfg = TMSExperimentConfig.from_file(config_path)
 
@@ -172,10 +181,7 @@ def main(config_path: str | Path) -> None:
     )
     eval_loop = _build_eval_loop(cfg, device)
 
-    run_id = generate_run_id("param_decomp")
-    out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
-    sink = RunSink.local(out_dir)
-    cfg.to_file(out_dir / RUN_META_FILENAME)
+    sink = init_pd_run(cfg, group=group, tags=tags)
 
     try:
         optimize(

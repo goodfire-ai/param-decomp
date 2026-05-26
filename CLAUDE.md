@@ -390,10 +390,27 @@ Each experiment (`param_decomp_lab/experiments/{tms,resid_mlp,lm}/`) contains:
 **Configuration System:**
 
 - YAML experiment configs are one validated `ExperimentConfig` tree with blocks `pd:`,
-  `runtime:`, `cadence:`, `target:`, `data:`, and an optional `eval:` block (see
-  "Adding a new experiment" above). Omit `eval:` to disable eval.
+  `runtime:`, `cadence:`, `target:`, `data:`, plus optional `eval:` and `wandb:` blocks
+  (see "Adding a new experiment" above). Omit `eval:` to disable eval; omit `wandb:`
+  to run local-only with no wandb logging.
 - Pydantic models provide type safety and validation across the whole tree.
-- WandB integration for experiment tracking and model storage (via `RunSink.with_wandb(...)`).
+- WandB integration is opt-in via the `wandb:` block (`project: ...` required,
+  `entity: ...` optional). When present, `init_pd_run` (in `experiments/utils.py`)
+  builds a `RunSink.with_wandb(...)` on the main rank and dumps the full
+  `ExperimentConfig` into `wandb.config`; nested lists of typed configs (loss /
+  eval metrics) are additionally flattened into queryable flat keys via
+  `flatten_typed_lists` in `infra/wandb.py`.
+
+**Wandb grouping/tagging (CLI flags on every `pd-*` run command, no-ops when `wandb:` is omitted):**
+
+- `--group <id>` sets the run's wandb `group` — the first-class run field used by
+  the UI's native collapsing and matched by workspace filters via
+  `ws.Metric("Group")`. `pd-lm-layerwise` auto-generates a `lw-...` launch id and
+  passes it as `--group` to every child run; manual users can pass it by hand to
+  stamp ad-hoc multi-launches as one experiment.
+- `--tags a,b,c` adds wandb tags — orthogonal to `group`, many per run,
+  user-defined. `pd-lm-layerwise` also accepts `--tags` and propagates the value
+  to every child.
 
 **Output Directory (`PARAM_DECOMP_OUT_DIR`):**
 

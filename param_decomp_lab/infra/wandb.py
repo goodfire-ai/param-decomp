@@ -11,13 +11,13 @@ from wandb.apis.public import File, Run
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.log import logger
-from param_decomp_lab.infra.settings import DEFAULT_PROJECT_NAME, REPO_ROOT
+from param_decomp_lab.infra.settings import REPO_ROOT
 
 # Regex patterns for parsing W&B run references. PD run IDs are formatted as
 # `p-<8 hex chars>` (see `RUN_TYPE_ABBREVIATIONS`). Legacy `s-…` IDs predate the
 # Run refactor; they still resolve when given as a full `entity/project/runs/id` path.
 DEFAULT_WANDB_ENTITY = "goodfire"
-DEFAULT_WANDB_PROJECT = DEFAULT_PROJECT_NAME
+DEFAULT_WANDB_PROJECT = "param-decomp"
 
 _RUN_ID_PATTERN = r"(?:[a-z0-9]-)?[a-z0-9]{8}"
 _BARE_RUN_ID_RE = re.compile(r"^(p-[a-z0-9]{8})$")
@@ -48,6 +48,59 @@ def _metric_short_names() -> dict[str, str]:
     if _metric_short_names_cache is None:
         _metric_short_names_cache = _build_short_names()
     return _metric_short_names_cache
+
+
+def flatten_typed_lists(config_dict: dict[str, Any]) -> dict[str, Any]:
+    """Walk `config_dict` and flatten any list-of-dicts-with-`type` for wandb searchability.
+
+    Any list whose every entry is a dict carrying a `type` discriminator (loss metrics,
+    eval metrics, …) gets flattened in place: each entry's fields become flat keys
+    addressed by short metric name (from the metric class's ``short_name`` attribute, or
+    the raw type string when no short name is registered).
+
+    Example::
+
+        pd: {loss_metrics: [{type: "ImportanceMinimalityLoss", coeff: 0.1, pnorm: 1.0}]}
+
+    flattens to::
+
+        pd.loss_metrics.ImpMin.coeff: 0.1
+        pd.loss_metrics.ImpMin.pnorm: 1.0
+
+    The matching paths are *removed* from `config_dict` in place so wandb doesn't also
+    log them as opaque JSON blobs.
+    """
+    flattened: dict[str, Any] = {}
+
+    def is_typed_list(obj: Any) -> bool:
+        return (
+            isinstance(obj, list)
+            and len(obj) > 0
+            and all(isinstance(x, dict) and "type" in x for x in obj)
+        )
+
+    def walk(obj: Any, path: str) -> None:
+        if isinstance(obj, dict):
+            for key in list(obj.keys()):
+                child = obj[key]
+                child_path = f"{path}.{key}" if path else key
+                if is_typed_list(child):
+                    for entry in child:
+                        metric_type = entry["type"]
+                        short = _metric_short_names().get(metric_type, metric_type)
+                        for k, v in entry.items():
+                            if k == "type":
+                                continue
+                            flattened[f"{child_path}.{short}.{k}"] = v
+                    del obj[key]
+                else:
+                    walk(child, child_path)
+        elif isinstance(obj, list):
+            for i, item in enumerate(obj):
+                walk(item, f"{path}.{i}")
+
+    walk(config_dict, "")
+    return flattened
 
 
 def get_wandb_entity() -> str:
@@ -122,37 +175,6 @@ def parse_wandb_run_path(input_path: str) -> tuple[str, str, str]:
     )
 
 
-def flatten_metric_configs(config_dict: dict[str, Any]) -> dict[str, Any]:
-    """Flatten `loss_metrics` and `eval_metrics` into dot-notation for wandb searchability.
-
-    Both containers are lists of dicts, each carrying a `type` discriminator alongside the
-    metric's config fields. Converts:
-        loss_metrics: [{"type": "ImportanceMinimalityLoss", "coeff": 0.1, "pnorm": 1.0}]
-    To:
-        loss.ImpMin.coeff: 0.1
-        loss.ImpMin.pnorm: 1.0
-    """
-    flattened: dict[str, Any] = {}
-
-    for container_name in ("loss_metrics", "eval_metrics"):
-        if container_name not in config_dict:
-            continue
-        container = config_dict[container_name]
-        assert isinstance(container, list), f"{container_name} should be a list"
-
-        prefix = container_name.split("_")[0]  # "loss" or "eval"
-        for cfg in container:
-            assert isinstance(cfg, dict), f"{container_name} entries should be dicts"
-            metric_type = cfg["type"]
-            short_name = _metric_short_names().get(metric_type, metric_type)
-            for key, value in cfg.items():
-                if key == "type":
-                    continue
-                flattened[f"{prefix}.{short_name}.{key}"] = value
-
-    return flattened
-
-
 def fetch_latest_checkpoint_name(filenames: list[str], prefix: str | None = None) -> str:
     """Fetch the latest checkpoint name from a list of .pth files.
 
@@ -194,24 +216,29 @@ def download_wandb_file(run: Run, wandb_run_dir: Path, file_name: str) -> Path:
 def init_wandb(
     project: str,
     run_id: str,
-    configs: dict[str, BaseConfig],
+    config: BaseConfig,
     *,
+    entity: str | None = None,
     name: str | None = None,
     tags: list[str] | None = None,
+    group: str | None = None,
     view_meta: dict[str, Any] | None = None,
 ) -> None:
-    """Initialize Weights & Biases and log the configs.
+    """Initialize Weights & Biases and log the config.
+
+    Dumps `config` into ``wandb.config`` and additionally flattens every nested
+    list-of-typed-dicts (loss/eval metrics) into queryable flat keys (see
+    `flatten_typed_lists`); the un-flattened lists are removed from the dump.
 
     Args:
         project: The wandb project name.
         run_id: The unique run ID (from ExecutionStamp).
-        configs: Mapping of prefix to config. Each config is dumped under its prefix
-            in ``wandb.config`` (``{prefix}/{field}``). Pass ``""`` as a prefix for a
-            flat dump (no key prefix), useful when there's a single config. The PD
-            path passes ``{"pd": ..., "logging": ..., "runtime": ...}`` — three
-            siblings, none privileged.
-        name: The name of the wandb run.
+        config: The full experiment config to log to wandb.
+        entity: Wandb entity; falls back to `get_wandb_entity()` when None.
+        name: The display name of the wandb run.
         tags: Optional list of tags to add to the run.
+        group: Optional wandb group for collecting related runs (e.g. a layerwise
+            sweep) into a single group in the W&B UI.
         view_meta: Free-form labels (typically populated by a sweep generator)
             merged into ``wandb.config`` under a ``view_meta/`` prefix so the W&B
             UI can group/color runs by researcher-facing axes.
@@ -219,23 +246,20 @@ def init_wandb(
     wandb.init(
         id=run_id,
         project=project,
-        entity=get_wandb_entity(),
+        entity=entity or get_wandb_entity(),
         name=name,
         tags=tags,
+        group=group,
     )
     assert wandb.run is not None
     wandb.run.log_code(
         root=str(REPO_ROOT / "param_decomp"), exclude_fn=lambda path: "out" in Path(path).parts
     )
 
-    for prefix, cfg in configs.items():
-        cfg_dict = cfg.model_dump(mode="json")
-        flattened = flatten_metric_configs(cfg_dict)
-        cfg_dict.pop("loss_metrics", None)
-        cfg_dict.pop("eval_metrics", None)
-        key_prefix = f"{prefix}/" if prefix else ""
-        wandb.config.update({f"{key_prefix}{k}": v for k, v in cfg_dict.items()})
-        wandb.config.update({f"{key_prefix}{k}": v for k, v in flattened.items()})
+    cfg_dict = config.model_dump(mode="json")
+    flattened = flatten_typed_lists(cfg_dict)
+    wandb.config.update(cfg_dict)
+    wandb.config.update(flattened)
 
     if view_meta:
         wandb.config.update({f"view_meta/{k}": v for k, v in view_meta.items()})

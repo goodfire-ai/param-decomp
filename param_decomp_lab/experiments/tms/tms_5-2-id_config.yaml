@@ -82,3 +82,5 @@ runtime:
   autocast_bf16: true
   device: cuda
   dp: null
+wandb:
+  project: param-decomp

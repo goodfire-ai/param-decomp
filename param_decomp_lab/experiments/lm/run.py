@@ -37,10 +37,13 @@ from param_decomp_lab.experiments.lm.data import (
     create_lm_data_loader,
     rank_batch_size,
 )
-from param_decomp_lab.experiments.utils import RUN_META_FILENAME, ExperimentConfig
+from param_decomp_lab.experiments.utils import (
+    RUN_META_FILENAME,
+    ExperimentConfig,
+    init_pd_run,
+)
 from param_decomp_lab.infra.paths import ModelPath
-from param_decomp_lab.infra.run_files import generate_run_id, resolve_run_files
-from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp_lab.infra.run_files import resolve_run_files
 from param_decomp_lab.run_sink import RunSink
 from param_decomp_lab.seed import set_seed
 
@@ -195,7 +198,12 @@ class SavedLMRun:
 
 
 @with_distributed_cleanup
-def main(config_path: str | Path) -> None:
+def main(
+    config_path: str | Path,
+    *,
+    group: str | None = None,
+    tags: str | None = None,
+) -> None:
     """Run an LM PD experiment end-to-end from a YAML config.
 
     Parses the YAML into `LMExperimentConfig`, initialises DDP, builds the target /
@@ -204,6 +212,10 @@ def main(config_path: str | Path) -> None:
 
     Args:
         config_path: Path to the experiment YAML config.
+        group: Wandb group for "launched together" collapsing. `pd-lm-layerwise`
+            sets this automatically per array; pass it by hand to stamp ad-hoc
+            multi-launches as one experiment.
+        tags: Comma-separated wandb tags (orthogonal to `group`; many per run).
     """
     cfg = LMExperimentConfig.from_file(config_path)
 
@@ -227,13 +239,7 @@ def main(config_path: str | Path) -> None:
     )
     eval_loop = _build_eval_loop(cfg, device, dist_state)
 
-    if is_main_process():
-        run_id = generate_run_id("param_decomp")
-        out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
-        sink = RunSink.local(out_dir)
-        cfg.to_file(out_dir / RUN_META_FILENAME)
-    else:
-        sink = RunSink.silent()
+    sink = init_pd_run(cfg, group=group, tags=tags) if is_main_process() else RunSink.silent()
 
     try:
         optimize(
