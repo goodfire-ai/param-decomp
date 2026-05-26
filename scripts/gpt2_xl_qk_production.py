@@ -192,6 +192,7 @@ def main(
     profile: bool = True,
     n_ci: int = DEFAULT_N_CI,
     n_ppgd: int = DEFAULT_N_PPGD,
+    compile_ci_fn: bool = False,
 ) -> None:
     """Submit the production XL Q/K run, or a smoke test.
 
@@ -257,6 +258,9 @@ def main(
         env["PD_PHASE_TRACE"] = "1"
         print(f"mem-profile: ranks={prof_ranks} → {prof_dir}")
         print(f"trace: ranks={prof_ranks}, phase_trace=on")
+    if compile_ci_fn:
+        env["PD_COMPILE_CI_FN"] = "1"
+        print("torch.compile on CI fn: ON")
     print(f"topology: lw={N_LW_RANKS}, ci={n_ci}, ppgd={n_ppgd}, total={total_ranks}")
 
     cmd = torchrun_command(

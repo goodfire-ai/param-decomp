@@ -37,6 +37,7 @@ sliced-from-global pattern.
 """
 
 import itertools
+import os
 import time
 from contextlib import nullcontext
 from typing import Any, Self
@@ -243,6 +244,18 @@ class ThreePoolTrainer:
         self.component_model = self.component_model.to(self._device)
         trace("ThreePoolTrainer.__init__: ComponentModel.to(device): done")
         dump_memory_stats("after ComponentModel.to(device)")
+        # CI pool: optionally torch.compile the CI fn. Eats compile time on
+        # step 0 / step 1 (first fwd + first bwd) but should cut ``ci/8_fused_bwd``
+        # substantially — that backward through the 2.64B-param CI fn dominates
+        # the critical path (70% of CI step at batch=48).
+        if self.layout.my_pool == "ci" and os.environ.get("PD_COMPILE_CI_FN", "").strip() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            assert self.component_model.ci_fn is not None
+            trace("ThreePoolTrainer.__init__: torch.compile(ci_fn)")
+            self.component_model.ci_fn = torch.compile(self.component_model.ci_fn)  # pyright: ignore[reportAttributeAccessIssue]
         # Diverge stochastic RNG per rank for mask sampling.
         seed_per_rank(pd_config.seed)
 

@@ -12,6 +12,7 @@ from jaxtyping import Float, Int
 from torch import Tensor
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from torch.nn import functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers import GPT2LMHeadModel
 
 from param_decomp.base_config import BaseConfig
@@ -111,13 +112,15 @@ class CausalSelfAttention(nn.Module):
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         if self.flash_attention:
-            # use PyTorch SDPA
-            y = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                is_causal=True,
-            )
+            # Strict FA dispatch — raise if input shapes / dtype force a fallback
+            # (head_dim > 128, fp32 acts, unsupported mask shape, etc.).
+            with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+                y = F.scaled_dot_product_attention(
+                    q,
+                    k,
+                    v,
+                    is_causal=True,
+                )
         else:
             # manual implementation of attention
             # this materializes the large (T,T) matrix for all the queries and keys
