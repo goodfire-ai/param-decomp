@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>3-pool topology calculator — GPT-2 XL Q/K</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font: 14px/1.4 ui-monospace, "SF Mono", Menlo, monospace; padding: 24px; max-width: 1100px; margin: 0 auto; background: #fafafa; color: #111; }
+  h1 { font-size: 18px; margin: 0 0 12px; }
+  h2 { font-size: 14px; margin: 24px 0 8px; color: #555; text-transform: uppercase; letter-spacing: 0.04em; }
+  .lede { color: #555; margin-bottom: 24px; max-width: 720px; }
+  .panel { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 16px; margin-bottom: 16px; }
+  .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.04em; }
+  .field input { font: inherit; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; width: 100%; }
+  .field input:focus { outline: 2px solid #0a84ff; outline-offset: -1px; border-color: transparent; }
+  .field .hint { font-size: 11px; color: #888; }
+  .checks { display: grid; gap: 4px; font-size: 13px; }
+  .check { padding: 6px 10px; border-radius: 4px; display: flex; gap: 8px; align-items: baseline; }
+  .check.ok { background: #e8f7ec; color: #166534; }
+  .check.warn { background: #fff8e1; color: #92400e; }
+  .check.bad { background: #fde8e8; color: #991b1b; }
+  .check .icon { font-weight: bold; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 6px 10px; text-align: left; border-bottom: 1px solid #eee; }
+  th { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 500; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .bar { display: inline-block; height: 8px; background: #ddd; border-radius: 4px; vertical-align: middle; width: 120px; overflow: hidden; }
+  .bar .fill { height: 100%; transition: width 0.15s; }
+  .bar.green .fill { background: #16a34a; }
+  .bar.amber .fill { background: #d97706; }
+  .bar.red .fill { background: #dc2626; }
+  .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-top: 16px; }
+  .summary .stat { padding: 10px 12px; background: #f5f5f5; border-radius: 4px; }
+  .summary .stat .label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.04em; }
+  .summary .stat .value { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .note { font-size: 12px; color: #666; margin-top: 8px; }
+  code { background: #f0f0f0; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<h1>3-pool topology calculator</h1>
+<p class="lede">
+Fiddle with the topology + batch size and see which constraints pass and which pool's peak GPU memory
+breaches the cap. Memory and step-time models are calibrated to the GPT-2 XL Q/K config from our smoke
+runs (linear fits on observed peaks at batch=16, 32, 48).
+</p>
+
+<div class="panel">
+  <h2>Inputs</h2>
+  <div class="controls">
+    <div class="field">
+      <label>n_lw_blocks</label>
+      <input id="i_lw_blocks" type="number" value="24" min="1">
+      <div class="hint">number of layerwise blocks (= total sites / sites_per_block)</div>
+    </div>
+    <div class="field">
+      <label>sites_per_block</label>
+      <input id="i_sites_per_block" type="number" value="4" min="1">
+      <div class="hint">sites owned per LW block. 96 sites total → 24×4 or 12×8 etc.</div>
+    </div>
+    <div class="field">
+      <label>ddp_per_block</label>
+      <input id="i_ddp_per_block" type="number" value="4" min="1">
+      <div class="hint">DDP replicas per LW block. n_ci must divide this.</div>
+    </div>
+    <div class="field">
+      <label>n_ci</label>
+      <input id="i_n_ci" type="number" value="4" min="1">
+      <div class="hint">CI-pool ranks. Must divide ddp_per_block AND n_ppgd.</div>
+    </div>
+    <div class="field">
+      <label>n_ppgd</label>
+      <input id="i_n_ppgd" type="number" value="4" min="1">
+      <div class="hint">PPGD-pool ranks. Bigger → smaller per-PPGD-rank batch → lower PPGD peak.</div>
+    </div>
+    <div class="field">
+      <label>batch_global</label>
+      <input id="i_batch" type="number" value="16" min="1">
+      <div class="hint">must be divisible by ddp_per_block, n_ci, n_ppgd</div>
+    </div>
+    <div class="field">
+      <label>gpu_cap_gb (per device)</label>
+      <input id="i_cap" type="number" value="178" min="1">
+      <div class="hint">B200 reports 178 GiB usable</div>
+    </div>
+    <div class="field">
+      <label>safety_margin_gb</label>
+      <input id="i_margin" type="number" value="13" min="0">
+      <div class="hint">leave headroom below cap (allocator overhead)</div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Constraints</h2>
+  <div id="checks" class="checks"></div>
+</div>
+
+<div class="panel">
+  <h2>Topology</h2>
+  <div class="summary" id="summary"></div>
+</div>
+
+<div class="panel">
+  <h2>Per-pool memory (batch-aware)</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>pool</th>
+        <th class="num">per-rank batch</th>
+        <th class="num">persistent</th>
+        <th class="num">per-step transient</th>
+        <th class="num">predicted peak</th>
+        <th>vs cap</th>
+      </tr>
+    </thead>
+    <tbody id="mem_rows"></tbody>
+  </table>
+  <p class="note">
+    Linear model (from observed peaks at batch=16, 32, 48 on the production smoke):
+    <code>LW: 6.6 + 7.5·B/4 GB</code> ·
+    <code>CI: 50 + 4·B/N_CI GB</code> (incl. lazy-allocated AdamW after step 0) ·
+    <code>PPGD: 13.3 + 10.25·B/N_PPGD GB</code>
+  </p>
+</div>
+
+<div class="panel">
+  <h2>Per-step wall-clock (from phase trace on batch=48 run)</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>pool</th>
+        <th class="num">est. step time (ms)</th>
+        <th class="num">tokens/sec</th>
+        <th class="note">notes</th>
+      </tr>
+    </thead>
+    <tbody id="time_rows"></tbody>
+  </table>
+  <p class="note">
+    Step time scales with per-rank batch; coefficients fit on batch={16, 32, 48} measurements.
+    The slowest pool determines the wall-clock step. <code>tokens/sec = batch · 1024 / step_time</code>.
+  </p>
+</div>
+
+<script>
+// Calibration points (from real smoke runs):
+//   LW: persistent ~6.6 GB, per-step transient ~7.5 GB per per-rank-batch unit
+//   CI: persistent ~50 GB (incl. lazy AdamW after step 0), transient ~4 GB per per-CI-rank-batch unit
+//   PPGD: persistent ~13.3 GB, transient ~10.25 GB per per-PPGD-rank-batch unit
+//
+// Step-time linear fit (per pool, vs per-rank batch B_r):
+//   LW: ~250 + 165·B_r ms (4 sites × ~135ms/site at B_r=4 plus ~250ms overhead)
+//   CI: ~250 + 175·B_r ms (CI fn fwd+bwd; backward dominates)
+//   PPGD: ~600 + 200·B_r ms (D3 warmup is 2 inner iters)
+// These are rough — tighten when more data points land.
+
+const MODEL = {
+  lw:   { persistent_gb: 6.6,  transient_gb_per_b: 7.5,    step_const_ms: 250, step_per_b_ms: 165 },
+  ci:   { persistent_gb: 50.0, transient_gb_per_b: 4.0,    step_const_ms: 250, step_per_b_ms: 175 },
+  ppgd: { persistent_gb: 13.3, transient_gb_per_b: 10.25,  step_const_ms: 600, step_per_b_ms: 200 },
+};
+
+function $(id) { return document.getElementById(id); }
+function num(id) { return parseInt($(id).value, 10) || 0; }
+
+function check(ok, msg) {
+  return { ok, msg };
+}
+
+function recompute() {
+  const lw_blocks = num('i_lw_blocks');
+  const sites_per_block = num('i_sites_per_block');
+  const ddp_per_block = num('i_ddp_per_block');
+  const n_ci = num('i_n_ci');
+  const n_ppgd = num('i_n_ppgd');
+  const batch = num('i_batch');
+  const cap = num('i_cap');
+  const margin = num('i_margin');
+
+  const total_sites = lw_blocks * sites_per_block;
+  const n_lw = lw_blocks * ddp_per_block;
+  const total_ranks = n_lw + n_ci + n_ppgd;
+  const n_nodes = Math.ceil(total_ranks / 8);
+  const wasted_slots = n_nodes * 8 - total_ranks;
+
+  // Per-rank batch sizes
+  const b_lw = batch / ddp_per_block;
+  const b_ci = batch / n_ci;
+  const b_ppgd = batch / n_ppgd;
+
+  // Constraints
+  const checks = [];
+  checks.push(check(total_sites === 96, `total sites: ${total_sites} (XL Q/K target is 96 = 48 layers × 2 sites)`));
+  checks.push(check(ddp_per_block % n_ci === 0, `n_ci (${n_ci}) divides ddp_per_block (${ddp_per_block})`));
+  checks.push(check(n_ppgd % n_ci === 0, `n_ci (${n_ci}) divides n_ppgd (${n_ppgd})`));
+  checks.push(check(batch % ddp_per_block === 0, `batch (${batch}) divisible by ddp_per_block (${ddp_per_block})`));
+  checks.push(check(batch % n_ci === 0, `batch (${batch}) divisible by n_ci (${n_ci})`));
+  checks.push(check(batch % n_ppgd === 0, `batch (${batch}) divisible by n_ppgd (${n_ppgd})`));
+  checks.push(check(total_ranks % 8 === 0, `total_ranks (${total_ranks}) is a multiple of 8 (multi-node DDP requirement)`));
+
+  // Render checks
+  $('checks').innerHTML = checks.map(c => {
+    const cls = c.ok ? 'ok' : 'bad';
+    const icon = c.ok ? '✓' : '✗';
+    return `<div class="check ${cls}"><span class="icon">${icon}</span><span>${c.msg}</span></div>`;
+  }).join('');
+
+  // Summary stats
+  const stats = [
+    ['LW ranks', n_lw],
+    ['CI ranks', n_ci],
+    ['PPGD ranks', n_ppgd],
+    ['Total ranks', total_ranks],
+    ['Nodes (8 gpu)', n_nodes + (wasted_slots ? ` (${wasted_slots} wasted)` : '')],
+    ['Sites/LW-rank', sites_per_block],
+  ];
+  $('summary').innerHTML = stats.map(([l, v]) => `
+    <div class="stat"><div class="label">${l}</div><div class="value">${v}</div></div>
+  `).join('');
+
+  // Memory rows
+  function memRow(name, b_r, model) {
+    const peak = model.persistent_gb + model.transient_gb_per_b * b_r;
+    const safe = cap - margin;
+    let cls = 'green';
+    if (peak > cap) cls = 'red';
+    else if (peak > safe) cls = 'amber';
+    const fillPct = Math.min(100, (peak / cap) * 100);
+    return `<tr>
+      <td>${name}</td>
+      <td class="num">${b_r.toFixed(1)}</td>
+      <td class="num">${model.persistent_gb.toFixed(1)} GB</td>
+      <td class="num">${(model.transient_gb_per_b * b_r).toFixed(1)} GB</td>
+      <td class="num"><b>${peak.toFixed(1)} GB</b></td>
+      <td><span class="bar ${cls}"><span class="fill" style="width:${fillPct}%"></span></span> ${(peak/cap*100).toFixed(0)}% of ${cap}</td>
+    </tr>`;
+  }
+  $('mem_rows').innerHTML =
+    memRow('LW', b_lw, MODEL.lw) +
+    memRow('CI', b_ci, MODEL.ci) +
+    memRow('PPGD', b_ppgd, MODEL.ppgd);
+
+  // Step times
+  function timeRow(name, b_r, model, note) {
+    const t_ms = model.step_const_ms + model.step_per_b_ms * b_r;
+    const tok_s = (batch * 1024) / (t_ms / 1000);
+    return `<tr>
+      <td>${name}</td>
+      <td class="num">${t_ms.toFixed(0)}</td>
+      <td class="num">${(tok_s/1000).toFixed(1)}k</td>
+      <td class="note">${note}</td>
+    </tr>`;
+  }
+  $('time_rows').innerHTML =
+    timeRow('LW', b_lw, MODEL.lw, `${sites_per_block} sites × per-site fwd+bwd`) +
+    timeRow('CI', b_ci, MODEL.ci, 'CI fn backward dominates (70%)') +
+    timeRow('PPGD', b_ppgd, MODEL.ppgd, 'D3 warmup + D8 send_g_ci (1s currently — coalesce opportunity)');
+}
+
+document.querySelectorAll('input').forEach(el => el.addEventListener('input', recompute));
+recompute();
+</script>
+
+</body>
+</html>
