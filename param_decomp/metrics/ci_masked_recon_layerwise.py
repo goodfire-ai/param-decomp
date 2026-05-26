@@ -51,7 +51,10 @@ def ci_masked_recon_layerwise_loss(
 
 
 class CIMaskedReconLayerwiseLoss(Metric[CIMaskedReconLayerwiseLossConfig]):
-    """Recon loss: mask one layer at a time with `ci.lower_leaky`, sum the per-layer recon losses."""
+    """Recon loss masking one layer at a time with `ci.lower_leaky`.
+
+    Sums the per-layer recon losses.
+    """
 
     log_namespace = "loss"
     short_name = "CIMaskReconLayer"

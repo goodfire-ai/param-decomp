@@ -35,3 +35,7 @@ class RunSink(Protocol):
             step: Training step used in the checkpoint identifier.
         """
         ...
+
+    def finish(self) -> None:
+        """End-of-run cleanup (close handles, finish wandb run, etc.)."""
+        ...

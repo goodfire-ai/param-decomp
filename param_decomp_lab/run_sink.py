@@ -1,4 +1,7 @@
-"""Concrete `RunSink` for the in-repo experiments: local files + optional wandb. Non-main ranks transparently get a no-op sink regardless of which constructor is used."""
+"""Concrete `RunSink` for the in-repo experiments: local files + optional wandb.
+
+Non-main ranks transparently get a no-op sink regardless of which constructor is used.
+"""
 
 import json
 from dataclasses import dataclass
@@ -50,7 +53,10 @@ def _local_log(data: dict[str, Any], step: int, out_dir: Path) -> None:
 
 @dataclass(frozen=True)
 class RunSink:
-    """Construct via `local`, `with_wandb`, or `silent` (not the dataclass directly). Non-main ranks always get a no-op handle. `out_dir=None` disables disk output."""
+    """Construct via `local`, `with_wandb`, or `silent` (not the dataclass directly).
+
+    Non-main ranks always get a no-op handle. `out_dir=None` disables disk output.
+    """
 
     out_dir: Path | None
     _wandb_active: bool
@@ -61,7 +67,7 @@ class RunSink:
     def local(cls, out_dir: Path) -> "RunSink":
         """Sink that writes to local files only (no wandb)."""
         if not is_main_process():
-            return cls._silent_noop()
+            return cls(out_dir=None, _wandb_active=False)
         out_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Train+eval logs saved to directory: {out_dir}")
         return cls(out_dir=out_dir, _wandb_active=False)
@@ -80,9 +86,13 @@ class RunSink:
         group: str | None = None,
         view_meta: dict[str, Any] | None = None,
     ) -> "RunSink":
-        """Sink that writes to local files and a wandb run. Initializes wandb on the main rank via `init_wandb`; non-main ranks return a silent no-op."""
+        """Sink that writes to local files and a wandb run.
+
+        Initializes wandb on the main rank via `init_wandb`; non-main ranks return a
+        silent no-op.
+        """
         if not is_main_process():
-            return cls._silent_noop()
+            return cls(out_dir=None, _wandb_active=False)
         out_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Train+eval logs saved to directory: {out_dir}")
         init_wandb(
@@ -100,16 +110,15 @@ class RunSink:
     @classmethod
     def silent(cls) -> "RunSink":
         """No-op sink for tests and quick interactive runs."""
-        return cls._silent_noop()
-
-    @classmethod
-    def _silent_noop(cls) -> "RunSink":
         return cls(out_dir=None, _wandb_active=False)
 
     # =========================== Output API ===========================
 
     def log(self, metrics: dict[str, Any], step: int) -> None:
-        """Emit a flat metrics dict to disk and/or wandb. Values may be scalars, PIL images, or `wandb.plot.CustomChart` payloads."""
+        """Emit a flat metrics dict to disk and/or wandb.
+
+        Values may be scalars, PIL images, or `wandb.plot.CustomChart` payloads.
+        """
         if self.out_dir is not None:
             _local_log(metrics, step, self.out_dir)
         if self._wandb_active:
@@ -123,7 +132,10 @@ class RunSink:
             tqdm.write(line)
 
     def checkpoint(self, state_dict: dict[str, Any], step: int) -> None:
-        """Save `state_dict` to `{out_dir}/model_{step}.pth` and push to wandb. No-op when `out_dir is None`; wandb upload only when wandb is active."""
+        """Save `state_dict` to `{out_dir}/model_{step}.pth` and push to wandb.
+
+        No-op when `out_dir is None`; wandb upload only when wandb is active.
+        """
         if self.out_dir is None:
             return
         path = self.out_dir / f"model_{step}.pth"

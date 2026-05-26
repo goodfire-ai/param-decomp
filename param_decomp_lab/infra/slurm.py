@@ -25,7 +25,12 @@ ARRAY_JOB_ID_BASH = "${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
 
 @dataclass
 class SlurmConfig:
-    """SLURM job config. `n_gpus=0` is CPU-only. `snapshot_ref` is a fully-qualified git ref (e.g. `refs/runs/snapshot/<id>`) to fetch and checkout in the SLURM job; `None` means just `cd` to `REPO_ROOT`. `dependency_job_id` adds an `afterok` dependency."""
+    """SLURM job config.
+
+    `n_gpus=0` is CPU-only. `snapshot_ref` is a fully-qualified git ref (e.g.
+    `refs/runs/snapshot/<id>`) to fetch and checkout in the SLURM job; `None` means
+    just `cd` to `REPO_ROOT`. `dependency_job_id` adds an `afterok` dependency.
+    """
 
     job_name: str
     partition: str | None
@@ -83,7 +88,12 @@ def generate_array_script(
     env: dict[str, str] | None = None,
     per_task_comments: list[str] | None = None,
 ) -> str:
-    """Generate a SLURM job-array script. Each command becomes one array task, dispatched via a case statement on `SLURM_ARRAY_TASK_ID`. `per_task_comments` (must match `len(commands)`) sets each task's SLURM comment via `scontrol` at execution start."""
+    """Generate a SLURM job-array script.
+
+    Each command becomes one array task, dispatched via a case statement on
+    `SLURM_ARRAY_TASK_ID`. `per_task_comments` (must match `len(commands)`) sets each
+    task's SLURM comment via `scontrol` at execution start.
+    """
     if not commands:
         raise ValueError("Cannot generate array script with empty commands list")
 
@@ -143,7 +153,12 @@ def submit_slurm_job(
     script_name_prefix: str,
     n_array_tasks: int | None = None,
 ) -> SubmitResult:
-    """Write script to `SBATCH_SCRIPTS_DIR`, submit via `sbatch`, rename script to include the job ID, and `touch` empty log file(s) for tailing. `n_array_tasks=None` is a singleton job."""
+    """Submit `script_content` via `sbatch` and prepare its logs.
+
+    Writes the script to `SBATCH_SCRIPTS_DIR`, submits via `sbatch`, renames the script
+    to include the job ID, and `touch`es empty log file(s) for tailing.
+    `n_array_tasks=None` is a singleton job.
+    """
     SBATCH_SCRIPTS_DIR.mkdir(exist_ok=True)
     SLURM_LOGS_DIR.mkdir(exist_ok=True)
 
@@ -226,7 +241,12 @@ def _sbatch_header_array(config: SlurmArrayConfig, array_range: str) -> str:
 
 
 def generate_git_snapshot_setup(work_dir: str, snapshot_ref: str) -> str:
-    """Bash fragment that clones the repo into `work_dir`, fetches `snapshot_ref` (`git clone` only fetches `refs/heads/*` + tags, so custom namespaces like `refs/runs/snapshot/*` need explicit fetch), checks it out, copies `.env`, and activates the venv. `work_dir` is a bash expression and can include `$SLURM_*` vars."""
+    """Bash fragment to clone the repo, fetch `snapshot_ref`, check it out, and set up env.
+
+    `git clone` only fetches `refs/heads/*` + tags, so custom namespaces like
+    `refs/runs/snapshot/*` need an explicit fetch. Also copies `.env` and activates the
+    venv. `work_dir` is a bash expression and can include `$SLURM_*` vars.
+    """
     return f"""\
 WORK_DIR="{work_dir}"
 mkdir -p "$WORK_DIR"

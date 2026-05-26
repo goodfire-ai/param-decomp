@@ -87,7 +87,7 @@ class ClusteringPipelineConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_crc(self) -> "ClusteringPipelineConfig":
-        """Validate that exactly one of clustering_run_config_path points to a valid `ClusteringRunConfig`."""
+        """Validate `clustering_run_config_path` points to a valid `ClusteringRunConfig`."""
         assert self.clustering_run_config_path.exists(), (
             f"clustering_run_config_path does not exist: {self.clustering_run_config_path}"
         )

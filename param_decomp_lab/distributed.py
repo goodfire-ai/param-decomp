@@ -1,4 +1,9 @@
-"""Lab-side process-group bring-up/teardown + per-process device pick, rank-0 logger, and download-once helper. Core `param_decomp.distributed` exposes read-only state and collectives."""
+"""Lab-side DDP plumbing.
+
+Process-group bring-up/teardown, per-process device pick, rank-0 logger, and a
+download-once helper. Core `param_decomp.distributed` exposes the read-only state and
+collectives.
+"""
 
 import os
 from collections.abc import Callable
@@ -71,7 +76,10 @@ def init_distributed() -> DistributedState | None:
 
 
 def cleanup_distributed() -> None:
-    """Destroy the torch process group and clear the cached `DistributedState`. Safe to call when distributed was never initialised."""
+    """Destroy the torch process group and clear the cached `DistributedState`.
+
+    Safe to call when distributed was never initialised.
+    """
     import param_decomp.distributed as core_dist
 
     if is_distributed():
@@ -93,13 +101,21 @@ def with_distributed_cleanup[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
 
 
 def log0(msg: str) -> None:
-    """Log `msg` at info level on rank 0 only. Reads `RANK` directly from the env, so this works before `init_distributed` has been called."""
+    """Log `msg` at info level on rank 0 only.
+
+    Reads `RANK` directly from the env, so this works before `init_distributed` has
+    been called.
+    """
     if int(os.environ.get("RANK", 0)) == 0:
         logger.info(msg)
 
 
 def get_device() -> str:
-    """Device string for the current process: outside distributed, `"cuda"` or `"cpu"`; under `gloo` returns `"cpu"`; under `nccl` returns `"cuda:{local_rank}"`."""
+    """Device string for the current process.
+
+    Outside distributed, `"cuda"` or `"cpu"`; under `gloo` returns `"cpu"`; under `nccl`
+    returns `"cuda:{local_rank}"`.
+    """
     from param_decomp.distributed import get_distributed_state
 
     state = get_distributed_state()
@@ -111,7 +127,11 @@ def get_device() -> str:
 
 
 def ensure_cached_and_call[**P, T](fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    """Run `fn` once per node (via local-rank 0) to populate node-local caches, barrier, then run on every rank. Avoids rank 0 downloading to a path inaccessible to other nodes when `/tmp` is node-local. Outside distributed, `fn` runs once."""
+    """Run `fn` once per node (via local-rank 0), barrier, then run on every rank.
+
+    Avoids rank 0 downloading to a path inaccessible to other nodes when `/tmp` is
+    node-local. Outside distributed, `fn` runs once.
+    """
     if is_distributed():
         if is_local_main_process():
             _ = fn(*args, **kwargs)

@@ -1,4 +1,7 @@
-"""TMS PD experiment: YAML -> `optimize()` glue, plus the `SavedTMSRun` reload class. Run via `pd-tms path/to/config.yaml`."""
+"""TMS PD experiment: YAML -> `optimize()` glue, plus the `SavedTMSRun` reload class.
+
+Run via `pd-tms path/to/config.yaml`.
+"""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,7 +68,11 @@ def build_tms_loader(
     dist_state: DistributedState | None = None,
     seed: int | None = None,
 ) -> DataLoader[Any]:
-    """Synthetic `SparseFeatureDataset` loader for TMS. The dataset is infinite, so `split` / `dist_state` / `seed` are ignored — train and eval loaders are identical."""
+    """Synthetic `SparseFeatureDataset` loader for TMS.
+
+    The dataset is infinite, so `split` / `dist_state` / `seed` are ignored — train and
+    eval loaders are identical.
+    """
     del split, dist_state, seed
     train_config = TMSTargetRunInfo.from_path(target_cfg.run_path).config
     dataset = SparseFeatureDataset(

@@ -1,4 +1,7 @@
-"""Normalise each `Metric.compute()` result into a flat `{key: scalar|image|chart}` map for `RunSink.log(...)`."""
+"""Normalise each `Metric.compute()` result into a flat key→value map.
+
+Map values are scalars, images, or custom charts that `RunSink.log(...)` accepts.
+"""
 
 from typing import Any
 
@@ -17,7 +20,11 @@ def _clean_metric_output(
     metric_name: str,
     computed_raw: Any,
 ) -> MetricOutType:
-    """Normalize one `compute()` return: accepts a scalar tensor (emitted as `{log_namespace}/{metric_name}`) or a dict (keys prefixed by `log_namespace`)."""
+    """Normalize one `compute()` return.
+
+    Accepts a scalar tensor (emitted as `{log_namespace}/{metric_name}`) or a dict
+    (keys prefixed by `log_namespace`).
+    """
     computed: MetricOutType = {}
     match computed_raw:
         case Tensor():

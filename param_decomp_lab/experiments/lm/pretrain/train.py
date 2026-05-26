@@ -124,7 +124,7 @@ def load_config[T: BaseModel](
     config_path_or_obj: Path | str | T | None,
     config_model: type[T],
 ) -> T:
-    """Load the config of class `config_model`, either from YAML file, existing config object, or None."""
+    """Load `config_model` from a YAML file, an existing config object, or `None`."""
     if isinstance(config_path_or_obj, config_model):
         return config_path_or_obj
 

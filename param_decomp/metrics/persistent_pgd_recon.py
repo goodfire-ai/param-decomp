@@ -1,4 +1,10 @@
-"""PPGD `Metric` subclasses and their configs. The metric returns the live training loss and, at eval time, additionally tracks hidden-activation MSE breakdowns. `before_backward(loss)` and `after_backward()` orchestrate the source-grad / source-step around `total_loss.backward()`. Persistent state + optimizer state machine live in `persistent_pgd_state`."""
+"""PPGD `Metric` subclasses and their configs.
+
+The metric returns the live training loss and, at eval time, additionally tracks
+hidden-activation MSE breakdowns. `before_backward(loss)` and `after_backward()`
+orchestrate the source-grad / source-step around `total_loss.backward()`. Persistent
+state + optimizer state machine live in `persistent_pgd_state`.
+"""
 
 from collections.abc import Iterable
 from typing import Annotated, ClassVar, Literal, override
@@ -34,7 +40,12 @@ from param_decomp.metrics.stochastic_hidden_acts_recon import (
 
 
 class _PersistentPGDBaseConfig(LossMetricConfig):
-    """Shared fields for persistent PGD configs. `update()` returns `None` before `start_frac` of training. Under `use_sigmoid_parameterization=True` sources are unconstrained and read via sigmoid; otherwise sources are clamped to `[0, 1]` after each step."""
+    """Shared fields for persistent PGD configs.
+
+    `update()` returns `None` before `start_frac` of training. Under
+    `use_sigmoid_parameterization=True` sources are unconstrained and read via sigmoid;
+    otherwise sources are clamped to `[0, 1]` after each step.
+    """
 
     optimizer: Annotated[PGDOptimizerConfig, Field(discriminator="type")]
     scope: PersistentPGDSourceScope
@@ -78,7 +89,11 @@ def validate_pgd_scope(
     batch_size: int,
     world_size: int,
 ) -> None:
-    """Assert persistent-PGD `repeat_across_batch` divides the per-rank training batch size. Takes `world_size` as an int (not a `DistributedState`) to avoid pulling distributed plumbing into this module."""
+    """Assert persistent-PGD `repeat_across_batch` divides the per-rank training batch size.
+
+    Takes `world_size` as an int (not a `DistributedState`) to avoid pulling distributed
+    plumbing into this module.
+    """
     assert batch_size % world_size == 0, (
         f"batch_size {batch_size} not divisible by world size {world_size}"
     )
@@ -234,7 +249,11 @@ class _PersistentPGDReconBase[
 
 
 class PersistentPGDReconLoss(_PersistentPGDReconBase[PersistentPGDReconLossConfig]):
-    """PPGD adversarial-mask recon loss (routes to all layers). Drives components to reconstruct the target output under adversarially-optimised masks whose source tensors persist across training steps."""
+    """PPGD adversarial-mask recon loss (routes to all layers).
+
+    Drives components to reconstruct the target output under adversarially-optimised
+    masks whose source tensors persist across training steps.
+    """
 
     short_name = "PersistPGDRecon"
 

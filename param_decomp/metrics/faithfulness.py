@@ -29,7 +29,11 @@ def faithfulness_loss(
 
 
 class FaithfulnessLoss(Metric[FaithfulnessLossConfig]):
-    """MSE between target weights and the sum of components, averaged across all decomposed parameters. Drives components toward reconstructing the target weight matrix when used as a training loss."""
+    """MSE between target weights and the sum of components.
+
+    Averaged across all decomposed parameters. Drives components toward reconstructing
+    the target weight matrix when used as a training loss.
+    """
 
     log_namespace = "loss"
     short_name = "Faith"

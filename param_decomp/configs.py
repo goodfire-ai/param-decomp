@@ -1,4 +1,8 @@
-"""Top-level PD configs: `PDConfig` (algorithm), `RuntimeConfig` (substrate), `Cadence` (when the loop emits)."""
+"""Top-level PD configs: `PDConfig`, `RuntimeConfig`, `Cadence`.
+
+`PDConfig` is the algorithm spec; `RuntimeConfig` is the compute substrate; `Cadence`
+governs when the loop emits train logs and checkpoints.
+"""
 
 from functools import cached_property
 from typing import Annotated, Literal, Self

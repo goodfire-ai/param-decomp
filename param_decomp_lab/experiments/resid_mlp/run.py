@@ -1,4 +1,7 @@
-"""ResidMLP PD experiment: YAML -> `optimize()` glue, plus the `SavedResidMLPRun` reload class. Run via `pd-resid-mlp path/to/config.yaml`."""
+"""ResidMLP PD experiment: YAML -> `optimize()` glue, plus the `SavedResidMLPRun` reload class.
+
+Run via `pd-resid-mlp path/to/config.yaml`.
+"""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,7 +68,11 @@ def build_resid_mlp_loader(
     dist_state: DistributedState | None = None,
     seed: int | None = None,
 ) -> DataLoader[Any]:
-    """Synthetic `ResidMLPDataset` loader. The dataset is infinite, so `split` / `dist_state` / `seed` are ignored — train and eval loaders are identical."""
+    """Synthetic `ResidMLPDataset` loader.
+
+    The dataset is infinite, so `split` / `dist_state` / `seed` are ignored — train and
+    eval loaders are identical.
+    """
     del split, dist_state, seed
     train_config = ResidMLPTargetRunInfo.from_path(target_cfg.run_path).config
     dataset = ResidMLPDataset(
@@ -123,7 +130,10 @@ def main(
     group: str | None = None,
     tags: str | None = None,
 ) -> None:
-    """Run a ResidMLP PD experiment end-to-end from a YAML config. `group` / `tags` are wandb-only."""
+    """Run a ResidMLP PD experiment end-to-end from a YAML config.
+
+    `group` / `tags` are wandb-only.
+    """
     cfg = ResidMLPExperimentConfig.from_file(config_path)
 
     set_seed(cfg.pd.seed)

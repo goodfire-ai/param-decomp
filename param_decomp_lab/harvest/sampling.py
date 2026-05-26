@@ -10,7 +10,11 @@ def sample_at_most_n_per_group(
     max_per_group: int,
     generator: torch.Generator | None = None,
 ) -> Bool[Tensor, " N"]:
-    """Boolean keep-mask: randomly sample at most `max_per_group` elements per group. Vectorised: sort by `(group, random)`, compute within-group rank via the cummax trick, keep entries with rank `<= max_per_group`."""
+    """Boolean keep-mask: randomly sample at most `max_per_group` elements per group.
+
+    Vectorised: sort by `(group, random)`, compute within-group rank via the cummax
+    trick, keep entries with rank `<= max_per_group`.
+    """
     if len(group_ids) == 0:
         return torch.zeros(0, dtype=torch.bool, device=group_ids.device)
 
@@ -52,7 +56,11 @@ def compute_pmi(
     target_count: float,
     total_count: int,
 ) -> Float[Tensor, " V"]:
-    """Pointwise mutual information per item: `PMI(x, y) = log(count(x, y) * total / (count(x) * count(y)))`. Items with zero counts get `-inf`."""
+    """Pointwise mutual information per item.
+
+    `PMI(x, y) = log(count(x, y) * total / (count(x) * count(y)))`. Items with zero
+    counts get `-inf`.
+    """
     valid = (cooccurrence_counts > 0) & (marginal_counts > 0)
 
     # PMI = log(P(co) / (P(target) * P(item)))
@@ -69,7 +77,7 @@ def top_k_pmi(
     total_count: int,
     top_k: int,
 ) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
-    """Top-k and bottom-k items by PMI, returned as `(top, bottom)` lists of `(index, pmi_value)`."""
+    """Top-k and bottom-k items by PMI; returns `(top, bottom)` lists of `(index, pmi_value)`."""
     pmi = compute_pmi(cooccurrence_counts, marginal_counts, target_count, total_count)
 
     n_valid = int((pmi > float("-inf")).sum())

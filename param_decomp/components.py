@@ -1,4 +1,7 @@
-"""`Components` ABC + `LinearComponents` / `EmbeddingComponents` subclasses, plus `init_param_`, `get_module_input_dim`, and `make_components` factory."""
+"""`Components` ABC + `LinearComponents` / `EmbeddingComponents` subclasses.
+
+Also exposes `init_param_`, `get_module_input_dim`, and the `make_components` factory.
+"""
 
 import math
 from abc import ABC, abstractmethod
@@ -39,7 +42,7 @@ def init_param_(
     nonlinearity: _NonlinearityType = "linear",
     generator: torch.Generator | None = None,
 ) -> None:
-    """Fill `param` in place from a Kaiming normal distribution, `N(mean, gain(nonlinearity) / sqrt(fan_val))`.
+    """Fill `param` in place from a Kaiming normal: `N(mean, gain(nonlinearity) / sqrt(fan_val))`.
 
     Args:
         param: Parameter tensor to fill in place.
@@ -56,7 +59,11 @@ def init_param_(
 
 
 class Components(ABC, nn.Module):
-    """Per-layer components decomposing a target weight as a sum of `C` rank-1 outer products: `weight ≈ sum_c V[:, c] ⊗ U[c, :]`. `V` maps input activations to per-component scalars; `U` maps them back to the output space."""
+    """Per-layer components decomposing a target weight as a sum of `C` rank-1 outer products.
+
+    `weight ≈ sum_c V[:, c] ⊗ U[c, :]`. `V` maps input activations to per-component
+    scalars; `U` maps them back to the output space.
+    """
 
     def __init__(self, C: int, v_dim: int, u_dim: int):
         super().__init__()
@@ -88,7 +95,11 @@ class Components(ABC, nn.Module):
 
 
 class LinearComponents(Components):
-    """Components replacing an `nn.Linear`-shaped weight. Effective weight is `(V @ U).T` to match PyTorch's `[d_out, d_in]` storage; a frozen bias from the target module is re-added in the forward (biases are not trained in PD)."""
+    """Components replacing an `nn.Linear`-shaped weight.
+
+    Effective weight is `(V @ U).T` to match PyTorch's `[d_out, d_in]` storage; a frozen
+    bias from the target module is re-added in the forward (biases are not trained in PD).
+    """
 
     bias: Float[Tensor, "... d_out"] | None
 
@@ -155,7 +166,11 @@ class LinearComponents(Components):
 
 
 class EmbeddingComponents(Components):
-    """Components replacing an `nn.Embedding` weight. Avoids materialising one-hot vectors by indexing `V` directly with the input token ids."""
+    """Components replacing an `nn.Embedding` weight.
+
+    Avoids materialising one-hot vectors by indexing `V` directly with the input
+    token ids.
+    """
 
     def __init__(
         self,
@@ -186,7 +201,11 @@ class EmbeddingComponents(Components):
         weight_delta_and_mask: WeightDeltaAndMask | None = None,
         component_acts_cache: dict[str, Float[Tensor, "... C"]] | None = None,
     ) -> Float[Tensor, "... embedding_dim"]:
-        """Embedding forward: index `V[x]`, mask, project by `U` (equivalent to `LinearComponents` forward but uses `V[x]` instead of a one-hot matmul). See `LinearComponents.forward` for `component_acts_cache` semantics."""
+        """Embedding forward: index `V[x]`, mask, project by `U`.
+
+        Equivalent to `LinearComponents.forward` but uses `V[x]` instead of a one-hot
+        matmul. See `LinearComponents.forward` for `component_acts_cache` semantics.
+        """
         assert x.dtype == torch.long, "x must be an integer tensor"
 
         component_acts: Float[Tensor, "... C"] = self.get_component_acts(x)

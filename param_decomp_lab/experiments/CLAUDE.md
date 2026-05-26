@@ -155,7 +155,7 @@ Every `pd-*` run command accepts `--group <id>` and `--tags a,b,c` (no-ops when
 PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/
   run_meta.yaml              # the full ExperimentConfig
   model_<step>.pth           # checkpoints (RunSink.checkpoint)
-  <step>.json                # local logs (RunSink.log)
+  metrics.jsonl              # local logs (RunSink.log)
 ```
 
 ## Canonical references

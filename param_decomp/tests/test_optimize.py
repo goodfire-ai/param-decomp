@@ -68,6 +68,9 @@ class CaptureSink:
             checkpoint[key] = value.detach().cpu().clone()
         self.checkpoints.append(checkpoint)
 
+    def finish(self) -> None:
+        pass
+
 
 def make_cadence(*, train_log_every: int = 10**9) -> Cadence:
     """Default cadence for tests: nothing fires unless we explicitly set the freq."""

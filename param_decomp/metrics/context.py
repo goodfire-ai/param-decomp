@@ -16,7 +16,11 @@ from param_decomp.masks import SamplingType
 
 @dataclass(frozen=True)
 class MetricContext:
-    """Per-step bundle handed to every `Metric.update(ctx)`. Built once per training step (after the DDP forward + CI calc) and once per eval batch."""
+    """Per-step bundle handed to every `Metric.update(ctx)`.
+
+    Built once per training step (after the DDP forward + CI calc) and once per eval
+    batch.
+    """
 
     model: ComponentModel
     batch: Any

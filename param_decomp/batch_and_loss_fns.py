@@ -1,4 +1,7 @@
-"""Protocols for the callbacks `optimize()` invokes once per batch (the lab ships concrete implementations in `param_decomp_lab.batch_and_loss_fns`)."""
+"""Protocols for the callbacks `optimize()` invokes once per batch.
+
+The lab ships concrete implementations in `param_decomp_lab.batch_and_loss_fns`.
+"""
 
 from typing import Any, Protocol
 
@@ -14,13 +17,20 @@ class RunBatch(Protocol):
 
 
 class ReconstructionLoss(Protocol):
-    """Callable that compares `pred` against `target` and returns `(sum, n_elements)`: the unreduced sum of per-element losses and the count it summed over. Callers reduce `sum / n_elements` to a mean as needed."""
+    """Callable that compares `pred` against `target` and returns `(sum, n_elements)`.
+
+    The first entry is the unreduced sum of per-element losses; the second is the count
+    it summed over. Callers reduce `sum / n_elements` to a mean as needed.
+    """
 
     def __call__(self, pred: Tensor, target: Tensor) -> tuple[Float[Tensor, ""], int]: ...
 
 
 def move_batch_to_device(batch: Any, device: str | torch.device) -> Any:
-    """Recursively move every `Tensor` in a (possibly nested) `batch` to `device`. Supports tensors, tuples, and dicts; passes other types through unchanged."""
+    """Recursively move every `Tensor` in a (possibly nested) `batch` to `device`.
+
+    Supports tensors, tuples, and dicts; passes other types through unchanged.
+    """
     if isinstance(batch, Tensor):
         return batch.to(device)
     if isinstance(batch, tuple):

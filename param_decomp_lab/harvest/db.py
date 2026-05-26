@@ -207,7 +207,10 @@ class HarvestDB:
         return [row["component_key"] for row in rows]
 
     def get_component_densities(self, min_examples: int) -> list[tuple[str, float]]:
-        """Return (component_key, firing_density) for eligible components. Fast — no blob deserialization."""
+        """Return `(component_key, firing_density)` for eligible components.
+
+        Fast — no blob deserialization.
+        """
         if self._has_column("components", "n_activation_examples"):
             rows = self._conn.execute(
                 "SELECT component_key, firing_density FROM components WHERE n_activation_examples >= ?",

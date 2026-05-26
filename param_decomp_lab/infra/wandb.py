@@ -51,9 +51,11 @@ def _metric_short_names() -> dict[str, str]:
 
 
 def flatten_typed_lists(config_dict: dict[str, Any]) -> dict[str, Any]:
-    """Flatten every nested list-of-dicts-with-`type` in `config_dict` (loss/eval metrics) into queryable flat keys addressed by metric `short_name` (or raw type when none).
+    """Flatten nested lists-of-typed-dicts in `config_dict` into queryable flat keys.
 
-    Example: `pd: {loss_metrics: [{type: "ImportanceMinimalityLoss", coeff: 0.1, pnorm: 1.0}]}`
+    Targets the loss/eval metric lists, addressed by metric `short_name` (or raw type
+    when none). Example:
+    `pd: {loss_metrics: [{type: "ImportanceMinimalityLoss", coeff: 0.1, pnorm: 1.0}]}`
     flattens to `pd.loss_metrics.ImpMin.coeff: 0.1`, `pd.loss_metrics.ImpMin.pnorm: 1.0`.
 
     The matching paths are *removed* from `config_dict` in place so wandb doesn't also
@@ -199,7 +201,13 @@ def init_wandb(
     group: str | None = None,
     view_meta: dict[str, Any] | None = None,
 ) -> None:
-    """Initialise W&B and log `config`. Nested lists-of-typed-dicts (loss/eval metrics) are flattened into queryable flat keys via `flatten_typed_lists`; the un-flattened lists are removed from the dump. `entity` falls back to `get_wandb_entity()`; `view_meta` is merged under a `view_meta/` prefix so the UI can group runs by researcher-facing axes."""
+    """Initialise W&B and log `config`.
+
+    Nested lists-of-typed-dicts (loss/eval metrics) are flattened into queryable flat
+    keys via `flatten_typed_lists`; the un-flattened lists are removed from the dump.
+    `entity` falls back to `get_wandb_entity()`; `view_meta` is merged under a
+    `view_meta/` prefix so the UI can group runs by researcher-facing axes.
+    """
     wandb.init(
         id=run_id,
         project=project,
@@ -227,10 +235,12 @@ _n_try_wandb_comm_errors = 0
 
 # this exists to stop infra issues from crashing training runs
 def try_wandb[**P, T](wandb_fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T | None:
-    """Attempts to call `wandb_fn` and if it fails with a wandb CommError, logs a warning and returns
-    None. The choice of wandb CommError is to catch issues communicating with the wandb server but
-    not legitimate logging errors, for example not passing a dict to wandb.log, or the wrong
-    arguments to wandb.save."""
+    """Call `wandb_fn`, warning and returning `None` on a wandb `CommError`.
+
+    `CommError` is chosen to catch issues communicating with the wandb server but not
+    legitimate logging errors (e.g. not passing a dict to `wandb.log`, or the wrong
+    arguments to `wandb.save`).
+    """
     global _n_try_wandb_comm_errors
     try:
         return wandb_fn(*args, **kwargs)

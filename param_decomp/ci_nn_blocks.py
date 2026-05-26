@@ -12,7 +12,11 @@ from param_decomp.components import _NonlinearityType, init_param_
 
 
 class ParallelLinear(nn.Module):
-    """`C` independent linear layers applied in parallel along an extra axis. Weights `[C, d_in, d_out]`, biases `[C, d_out]`; each slice is initialised independently via `init_param_`."""
+    """`C` independent linear layers applied in parallel along an extra axis.
+
+    Weights `[C, d_in, d_out]`, biases `[C, d_out]`; each slice is initialised
+    independently via `init_param_`.
+    """
 
     def __init__(self, C: int, input_dim: int, output_dim: int, nonlinearity: _NonlinearityType):
         super().__init__()
@@ -28,7 +32,10 @@ class ParallelLinear(nn.Module):
 
 
 class Linear(nn.Module):
-    """Linear layer with zero-initialised bias and `init_param_` weight init (fan value = `input_dim`)."""
+    """Linear layer with zero-initialised bias and `init_param_` weight init.
+
+    Fan value passed to `init_param_` is `input_dim`.
+    """
 
     def __init__(self, input_dim: int, output_dim: int, nonlinearity: _NonlinearityType):
         super().__init__()
@@ -44,7 +51,10 @@ class Linear(nn.Module):
 
 
 class RoPEEmbedding(nn.Module):
-    """Rotary Position Embedding applied to query/key tensors. Requires even `d_head`; supports sequence lengths up to `max_len`."""
+    """Rotary Position Embedding applied to query/key tensors.
+
+    Requires even `d_head`; supports sequence lengths up to `max_len`.
+    """
 
     def __init__(self, d_head: int, max_len: int = 2048, base: float = 10000.0):
         super().__init__()
@@ -87,7 +97,10 @@ class RoPEEmbedding(nn.Module):
 
 
 class SelfAttention(nn.Module):
-    """Multi-head bidirectional self-attention with RoPE (`is_causal=False`). `d_model` must be divisible by `n_heads`."""
+    """Multi-head bidirectional self-attention with RoPE (`is_causal=False`).
+
+    `d_model` must be divisible by `n_heads`.
+    """
 
     def __init__(self, d_model: int, n_heads: int, max_len: int = 2048, rope_base: float = 10000.0):
         super().__init__()
@@ -127,7 +140,11 @@ class SelfAttention(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    """Pre-norm transformer block: RMSNorm-attn-residual then RMSNorm-MLP-residual. The MLP is `Linear` layers with GELU between hidden layers and a linear projection back to `d_model`."""
+    """Pre-norm transformer block: RMSNorm-attn-residual then RMSNorm-MLP-residual.
+
+    The MLP is `Linear` layers with GELU between hidden layers and a linear projection
+    back to `d_model`.
+    """
 
     def __init__(
         self,

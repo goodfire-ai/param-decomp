@@ -1,4 +1,7 @@
-"""`ComponentModel` — wraps the target model with `Components` modules + a CI fn; emits gradient-aware cached forward passes consumed by the loss metrics."""
+"""`ComponentModel` — wraps the target model with `Components` modules + a CI fn.
+
+Emits gradient-aware cached forward passes consumed by the loss metrics.
+"""
 
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -22,7 +25,11 @@ from param_decomp.masks import ComponentsMaskInfo, SamplingType
 
 
 class OutputWithCache(NamedTuple):
-    """Forward output paired with per-module cached activations. Cache keys are target-module paths (or `f"{path}_{kind}"` for component-acts entries); contents depend on the `cache_type` requested."""
+    """Forward output paired with per-module cached activations.
+
+    Cache keys are target-module paths (or `f"{path}_{kind}"` for component-acts entries);
+    contents depend on the `cache_type` requested.
+    """
 
     output: Tensor
     cache: dict[str, Tensor]
@@ -30,7 +37,12 @@ class OutputWithCache(NamedTuple):
 
 @dataclass
 class CIOutputs:
-    """Triple of CI tensors keyed by target module path: `lower_leaky` (multiplied into component contributions; bounded above by 1), `upper_leaky` (used by importance-minimality losses; bounded below by 0), and `pre_sigmoid` (raw CI-fn outputs)."""
+    """Triple of CI tensors keyed by target module path.
+
+    `lower_leaky` is multiplied into component contributions (bounded above by 1);
+    `upper_leaky` is used by importance-minimality losses (bounded below by 0);
+    `pre_sigmoid` is the raw CI-fn output.
+    """
 
     lower_leaky: dict[str, Float[Tensor, "... C"]]
     upper_leaky: dict[str, Float[Tensor, "... C"]]
@@ -228,7 +240,11 @@ class ComponentModel(nn.Module):
         cache_type: Literal["component_acts", "input", "output", "none"],
         cache: dict[str, Tensor],
     ) -> Any | None:
-        """Forward hook that handles both component replacement and caching. Returns the replaced output when components are applied, else `None` (telling PyTorch to keep the original output)."""
+        """Forward hook handling both component replacement and caching.
+
+        Returns the replaced output when components are applied, else `None` (telling
+        PyTorch to keep the original output).
+        """
         assert len(args) == 1, "Expected 1 argument"
         assert len(kwargs) == 0, "Expected no keyword arguments"
         x = args[0]
@@ -346,7 +362,10 @@ class ComponentModel(nn.Module):
         )
 
     def calc_weight_deltas(self) -> dict[str, Float[Tensor, "d_out d_in"]]:
-        """Per-target `target_weight - sum_components` residuals (used by the delta-component pathway and by faithfulness diagnostics)."""
+        """Per-target `target_weight - sum_components` residuals.
+
+        Used by the delta-component pathway and by faithfulness diagnostics.
+        """
         weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] = {}
         for comp_name, components in self.components.items():
             weight_deltas[comp_name] = self.target_weight(comp_name) - components.weight

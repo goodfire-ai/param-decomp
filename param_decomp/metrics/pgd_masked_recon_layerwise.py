@@ -16,7 +16,11 @@ class PGDReconLayerwiseLossConfig(PGDConfig):
 
 
 class PGDReconLayerwiseLoss(Metric[PGDReconLayerwiseLossConfig]):
-    """For each target layer, runs `cfg.n_steps` of per-step PGD on fresh adversarial sources routed to only that layer; sums the per-layer recon losses."""
+    """Per-layer PGD recon loss summed across layers.
+
+    For each target layer, runs `cfg.n_steps` of per-step PGD on fresh adversarial
+    sources routed to only that layer; sums the per-layer recon losses.
+    """
 
     log_namespace = "loss"
     short_name = "PGDReconLayer"

@@ -20,7 +20,10 @@ def calc_ci_l_zero(ci: Float[Tensor, "... C"], threshold: float) -> float:
 
 
 class CI_L0Config(BaseConfig):
-    """`groups` maps `{group_name: [fnmatch-style layer pattern, ...]}`; matching layers' L0s are summed into the group and logged under the group's name."""
+    """`groups` maps `{group_name: [fnmatch-style layer pattern, ...]}`.
+
+    Matching layers' L0s are summed into the group and logged under the group's name.
+    """
 
     type: Literal["CI_L0"] = "CI_L0"
     groups: dict[str, list[str]] | None

@@ -1,4 +1,8 @@
-"""PD optimization loop. `optimize()` is the sole core entrypoint; `EvalLoop` bundles the eval runtime objects with their timing."""
+"""PD optimization loop.
+
+`optimize()` is the sole core entrypoint; `EvalLoop` bundles the eval runtime objects
+with their timing.
+"""
 
 import gc
 from collections import defaultdict
@@ -74,7 +78,11 @@ class EvalLoop:
         return step % self.every == 0
 
     def should_run_slow_eval(self, step: int) -> bool:
-        """Slow eval is gated on top of `should_eval`; only call this on steps where `should_eval` is already true."""
+        """Whether slow eval should fire at `step`.
+
+        Slow eval is gated on top of `should_eval`; only call this on steps where
+        `should_eval` is already true.
+        """
         if step == 0:
             return self.slow_on_first_step
         return step % self.slow_every == 0

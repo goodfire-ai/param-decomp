@@ -94,7 +94,10 @@ def load_cluster_mapping(file_path: str) -> ClusterMapping:
 def _to_canonical_keys(
     clusters: dict[str, int | None], topology: TransformerTopology
 ) -> dict[str, int | None]:
-    """Convert concrete component keys (e.g. 'h.3.mlp.down_proj:5') to canonical (e.g. '3.mlp.down:5')."""
+    """Convert concrete component keys (e.g. `h.3.mlp.down_proj:5`) to canonical keys.
+
+    Canonical keys look like `3.mlp.down:5`.
+    """
     result: dict[str, int | None] = {}
     for key, cluster_id in clusters.items():
         layer, idx = key.rsplit(":", 1)

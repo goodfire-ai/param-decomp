@@ -1,4 +1,8 @@
-"""DDP utilities for the core trainer. Process-group bring-up/teardown lives in `param_decomp_lab.distributed` — core only reads cached state and runs collectives."""
+"""DDP utilities for the core trainer.
+
+Process-group bring-up/teardown lives in `param_decomp_lab.distributed` — core only
+reads cached state and runs collectives.
+"""
 
 import os
 from collections.abc import Mapping
@@ -99,7 +103,10 @@ def sum_metrics_across_ranks(
 def avg_metrics_across_ranks(
     metrics: Mapping[str, Number], device: str | torch.device
 ) -> Mapping[str, float]:
-    """Average each metric value across all ranks. All ranks must pass the same keys; non-distributed runs return `metrics` unchanged."""
+    """Average each metric value across all ranks.
+
+    All ranks must pass the same keys; non-distributed runs return `metrics` unchanged.
+    """
     state = get_distributed_state()
     if state is None:
         return metrics
@@ -138,7 +145,10 @@ def seed_all_ranks(seed: int) -> None:
 
 
 def seed_per_rank(base_seed: int) -> None:
-    """Seed the global RNG with `base_seed * world_size + rank` so stochastic ops diverge across ranks (non-distributed: just `base_seed`)."""
+    """Seed the global RNG with `base_seed * world_size + rank` to diverge ops across ranks.
+
+    Non-distributed: just `base_seed`.
+    """
     dist_state = get_distributed_state()
     world_size = dist_state.world_size if dist_state is not None else 1
     rank = dist_state.rank if dist_state is not None else 0

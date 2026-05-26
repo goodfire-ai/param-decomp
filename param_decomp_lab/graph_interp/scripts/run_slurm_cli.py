@@ -10,7 +10,10 @@ import fire
 
 
 def main(decomposition_id: str, config: str, harvest_subrun_id: str) -> None:
-    """Submit graph interpretation pipeline to SLURM. `harvest_subrun_id` like `"h-20260306_120000"`."""
+    """Submit graph interpretation pipeline to SLURM.
+
+    `harvest_subrun_id` looks like `"h-20260306_120000"`.
+    """
     from param_decomp_lab.graph_interp.config import GraphInterpSlurmConfig
     from param_decomp_lab.graph_interp.scripts.run_slurm import submit_graph_interp
 

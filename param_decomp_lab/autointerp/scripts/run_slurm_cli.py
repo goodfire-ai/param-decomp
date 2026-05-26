@@ -15,7 +15,11 @@ def main(
     harvest_subrun_id: str,
     snapshot_ref: str | None = None,
 ) -> None:
-    """Submit autointerp pipeline (interpret + evals) to SLURM. `harvest_subrun_id` like `"h-20260306_120000"`. `snapshot_ref` defaults to the current REPO_ROOT checkout."""
+    """Submit autointerp pipeline (interpret + evals) to SLURM.
+
+    `harvest_subrun_id` like `"h-20260306_120000"`. `snapshot_ref` defaults to the
+    current REPO_ROOT checkout.
+    """
     from param_decomp_lab.autointerp.config import AutointerpSlurmConfig
     from param_decomp_lab.autointerp.scripts.run_slurm import submit_autointerp
 

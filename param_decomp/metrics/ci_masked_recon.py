@@ -42,7 +42,10 @@ def ci_masked_recon_loss(
 
 
 class CIMaskedReconLoss(Metric[CIMaskedReconLossConfig]):
-    """Recon loss: forward with `mask = ci.lower_leaky` on every target layer, score against the target output."""
+    """Recon loss: forward with `mask = ci.lower_leaky` on every target layer.
+
+    Scores reconstruction against the target output.
+    """
 
     log_namespace = "loss"
     short_name = "CIMaskRecon"

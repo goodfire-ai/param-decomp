@@ -1,4 +1,9 @@
-"""Persistent PGD state machine: owns per-step adversarial source tensors, the optimizer that updates them, and the recon-forward used to score them. The metric layer (`persistent_pgd_recon.py`) composes these primitives."""
+"""Persistent PGD state machine.
+
+Owns per-step adversarial source tensors, the optimizer that updates them, and the
+recon-forward used to score them. The metric layer (`persistent_pgd_recon.py`) composes
+these primitives.
+"""
 
 from abc import ABC, abstractmethod
 from typing import Annotated, Literal, override
@@ -57,14 +62,20 @@ class BroadcastAcrossBatchScope(BaseConfig):
 
 
 class RepeatAcrossBatchScope(BaseConfig):
-    """PPGD source scope: `n_sources` source vectors tiled along the batch dim. `n_sources` must divide the per-rank batch size."""
+    """PPGD source scope: `n_sources` source vectors tiled along the batch dim.
+
+    `n_sources` must divide the per-rank batch size.
+    """
 
     type: Literal["repeat_across_batch"] = "repeat_across_batch"
     n_sources: PositiveInt
 
 
 class PerBatchPerPositionScope(BaseConfig):
-    """PPGD source scope: an independent source per batch element and position. Skips cross-rank synchronization of source state."""
+    """PPGD source scope: an independent source per batch element and position.
+
+    Skips cross-rank synchronization of source state.
+    """
 
     type: Literal["per_batch_per_position"] = "per_batch_per_position"
 
@@ -159,7 +170,11 @@ def make_ppgd_optimizer(cfg: PGDOptimizerConfig) -> PPGDOptimizer:
 
 
 class PersistentPGDState:
-    """Per-module adversarial sources that persist across training steps. Source shape depends on scope (`SingleSourceScope`, `BroadcastAcrossBatchScope`, `RepeatAcrossBatchScope`, `PerBatchPerPositionScope`)."""
+    """Per-module adversarial sources that persist across training steps.
+
+    Source shape depends on scope (`SingleSourceScope`, `BroadcastAcrossBatchScope`,
+    `RepeatAcrossBatchScope`, `PerBatchPerPositionScope`).
+    """
 
     def __init__(
         self,
@@ -224,7 +239,11 @@ class PersistentPGDState:
         }
 
     def step(self, grads: PPGDSources) -> None:
-        """One PGD update step using `grads`. Sources are clamped to `[0, 1]` after, unless sigmoid parameterization is on (then left unbounded and sigmoid is applied when reading effective sources)."""
+        """One PGD update step using `grads`.
+
+        Sources are clamped to `[0, 1]` after, unless sigmoid parameterization is on
+        (then left unbounded and sigmoid is applied when reading effective sources).
+        """
         with torch.no_grad():
             self.optimizer.step(self.sources, grads)
 
@@ -233,7 +252,11 @@ class PersistentPGDState:
                     source.clamp_(0.0, 1.0)
 
     def get_effective_sources(self) -> PPGDSources:
-        """Sources in `[0, 1]` range. Under sigmoid parameterization, applies sigmoid to unconstrained values; otherwise returns the raw clamped sources."""
+        """Sources in `[0, 1]` range.
+
+        Under sigmoid parameterization, applies sigmoid to unconstrained values;
+        otherwise returns the raw clamped sources.
+        """
         if self._use_sigmoid_parameterization:
             return {k: torch.sigmoid(v) for k, v in self.sources.items()}
         return self.sources
@@ -250,7 +273,10 @@ class PersistentPGDState:
         ci: dict[str, Float[Tensor, "... C"]],
         weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
     ) -> None:
-        """Run extra PGD steps to refine adversarial sources before the final loss computation. No-op when `n_warmup_steps=0`."""
+        """Run extra PGD steps to refine adversarial sources before the final loss computation.
+
+        No-op when `n_warmup_steps=0`.
+        """
         all_layers = AllLayersRouter()
         for _ in range(self._n_warmup_steps):
             sum_loss, n = self.compute_recon_sum_and_n(
@@ -268,7 +294,11 @@ class PersistentPGDState:
         weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
         router: Router | None = None,
     ) -> tuple[Float[Tensor, ""], int]:
-        """Recon forward returning `(sum_loss, n_examples)` over all mask samples. Returning the unreduced pair lets eval accumulators weight by example count across batches."""
+        """Recon forward returning `(sum_loss, n_examples)` over all mask samples.
+
+        Returning the unreduced pair lets eval accumulators weight by example count
+        across batches.
+        """
         batch_dims = next(iter(ci.values())).shape[:-1]
         router = router or self._router
         ppgd_sources = self.get_effective_sources()
@@ -302,7 +332,12 @@ def get_ppgd_mask_infos(
     routing_masks: RoutingMasks,
     batch_dims: tuple[int, ...],
 ) -> dict[str, ComponentsMaskInfo]:
-    """Build per-module mask infos from PPGD sources, CI values, and routing masks. Expands sources to match the per-batch shape (broadcasting or repeating), splits off the weight-delta source channel when present, and interpolates `mask = ci + (1 - ci) * source`."""
+    """Build per-module mask infos from PPGD sources, CI values, and routing masks.
+
+    Expands sources to match the per-batch shape (broadcasting or repeating), splits off
+    the weight-delta source channel when present, and interpolates
+    `mask = ci + (1 - ci) * source`.
+    """
 
     expanded_adv_sources: dict[str, Float[Tensor, "*batch_dims source_c"]] = {}
     for module_name, source in ppgd_sources.items():

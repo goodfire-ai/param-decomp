@@ -43,7 +43,11 @@ def pgd_recon_loss(
 
 
 class PGDReconLoss(Metric[PGDReconLossConfig]):
-    """Recon loss with adversarially-optimised masks routing to all component layers. Runs `cfg.n_steps` of per-step PGD on fresh adversarial sources each batch (no cross-step persistence)."""
+    """Recon loss with adversarially-optimised masks routing to all component layers.
+
+    Runs `cfg.n_steps` of per-step PGD on fresh adversarial sources each batch (no
+    cross-step persistence).
+    """
 
     log_namespace = "loss"
     short_name = "PGDRecon"

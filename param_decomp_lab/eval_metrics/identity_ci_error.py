@@ -9,7 +9,7 @@ from param_decomp_lab.toy_models.target_ci import compute_target_metrics, make_t
 
 
 class IdentityCIErrorConfig(BaseConfig):
-    """`identity_ci` / `dense_ci` list layers expected to produce Identity / Dense CI patterns respectively."""
+    """`identity_ci` / `dense_ci` list layers expected to produce Identity / Dense patterns."""
 
     type: Literal["IdentityCIError"] = "IdentityCIError"
     identity_ci: list[dict[str, str | int]] | None

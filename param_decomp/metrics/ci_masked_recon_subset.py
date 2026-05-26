@@ -71,7 +71,11 @@ def ci_masked_recon_subset_loss(
 
 
 class CIMaskedReconSubsetLoss(Metric[CIMaskedReconSubsetLossConfig]):
-    """Recon loss: apply the CI mask only on a routed subset of layers (per `cfg.routing`); the remaining layers run with the original target weights."""
+    """Recon loss applying the CI mask only on a routed subset of layers.
+
+    Subset chosen per `cfg.routing`; the remaining layers run with the original target
+    weights.
+    """
 
     log_namespace = "loss"
     short_name = "CIMaskReconSub"

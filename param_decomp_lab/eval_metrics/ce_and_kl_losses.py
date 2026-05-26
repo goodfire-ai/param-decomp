@@ -21,7 +21,7 @@ from param_decomp_lab.batch_and_loss_fns import calc_kl_divergence_lm
 
 
 class CEandKLLossesConfig(BaseConfig):
-    """`rounding_threshold` binarises CI into the `*_rounded_masked` variant (`ci > threshold` -> 1)."""
+    """`rounding_threshold` binarises CI for the `*_rounded_masked` variant (`ci > threshold`)."""
 
     type: Literal["CEandKLLosses"] = "CEandKLLosses"
     rounding_threshold: float

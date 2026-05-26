@@ -20,7 +20,11 @@ from param_decomp.component_model import ComponentModel
 
 
 class LossMetricConfig(BaseConfig):
-    """Pydantic config for a metric that can also be used as a training loss. `coeff` is required when this metric is listed under `loss_metrics` (`PDConfig`'s field validator asserts this); ignored when an eval-only instance is constructed directly."""
+    """Pydantic config for a metric that can also be used as a training loss.
+
+    `coeff` is required when this metric is listed under `loss_metrics` (asserted by
+    `PDConfig`'s field validator); ignored for eval-only instances.
+    """
 
     coeff: float | None = None
 
@@ -35,7 +39,8 @@ class Metric[TConfig: BaseConfig](ABC):
 
     Constructed from the validated config alone; runtime resources are attached later
     via `bind`. `log_namespace` is the namespace prefix for emitted keys; `slow` gates
-    this metric behind the slow-eval cadence; `short_name` is an optional console label.
+    this metric behind the slow-eval cadence; `short_name` is the wandb config-key
+    short label (consumed by `flatten_typed_lists` in `param_decomp_lab/infra/wandb.py`).
     """
 
     log_namespace: ClassVar[str]
@@ -96,12 +101,21 @@ class Metric[TConfig: BaseConfig](ABC):
 
     @abstractmethod
     def compute(self) -> MetricResult:
-        """Return the scalar, artifact, or keyed metric outputs accumulated since the last `reset()`."""
+        """Return the scalar, artifact, or keyed outputs accumulated since the last `reset()`."""
         ...
 
     def before_backward(self, live_loss: Tensor | None) -> None:
-        """Hook called for each loss metric right before `total_loss.backward()`. Override when a metric needs to extract gradients before the outer backward consumes them — e.g. `PersistentPGDReconLoss` uses this to grab source gradients with `retain_graph=True`."""
+        """Hook called for each loss metric right before `total_loss.backward()`.
+
+        Override when a metric needs to extract gradients before the outer backward
+        consumes them — e.g. `PersistentPGDReconLoss` uses this to grab source gradients
+        with `retain_graph=True`.
+        """
         del live_loss
 
     def after_backward(self) -> None:  # noqa: B027 — intentional no-op default
-        """Hook called for each loss metric right after `total_loss.backward()`. Override when a metric needs to step internal state coupled to the outer backward — e.g. `PersistentPGDReconLoss` steps its adversarial sources here."""
+        """Hook called for each loss metric right after `total_loss.backward()`.
+
+        Override when a metric needs to step internal state coupled to the outer
+        backward — e.g. `PersistentPGDReconLoss` steps its adversarial sources here.
+        """

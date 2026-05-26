@@ -154,7 +154,11 @@ def pgd_masked_recon_loss_update(
     pgd_config: PGDConfig,
     reconstruction_loss: ReconstructionLoss,
 ) -> tuple[Float[Tensor, ""], int]:
-    """Per-step PGD masked recon: init fresh adversarial sources, run `pgd_config.n_steps` of inner sign-PGD against the recon objective, return `(sum_loss, n_examples)` evaluated at the final sources."""
+    """Per-step PGD masked recon.
+
+    Inits fresh adversarial sources, runs `pgd_config.n_steps` of inner sign-PGD against
+    the recon objective, returns `(sum_loss, n_examples)` evaluated at the final sources.
+    """
     batch_dims = next(iter(ci.values())).shape[:-1]
     routing_masks = router.get_masks(module_names=model.target_module_paths, mask_shape=batch_dims)
     adv_sources = _init_adv_sources(model, batch_dims, target_out.device, weight_deltas, pgd_config)

@@ -1,9 +1,14 @@
-"""Shared config schema for in-repo experiment YAMLs. Each experiment subclasses `ExperimentConfig` to fix the concrete `target` / `data` types."""
+"""Shared config schema for in-repo experiment YAMLs.
+
+Each experiment subclasses `ExperimentConfig` to fix the concrete `target` / `data`
+types.
+"""
 
 from pydantic import Field, PositiveInt
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
+from param_decomp.distributed import is_main_process
 from param_decomp_lab.eval_metrics import AnyEvalMetricConfig
 from param_decomp_lab.infra.run_files import generate_run_id
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
@@ -57,7 +62,14 @@ def init_pd_run[T: BaseConfig, D: BaseConfig](
     group: str | None,
     tags: str | None,
 ) -> RunSink:
-    """Allocate `run_id` + `out_dir`, write `run_meta.yaml`, return a sink (local-only when `cfg.wandb is None`, else wandb-backed). `group` is a "launched together" id; `tags` is a comma-separated string of orthogonal labels."""
+    """Allocate `run_id` + `out_dir`, write `run_meta.yaml`, return a sink.
+
+    Local-only when `cfg.wandb is None`, else wandb-backed. Non-main DDP ranks get a
+    silent no-op sink without touching disk or wandb. `group` is a "launched together"
+    id; `tags` is a comma-separated string of orthogonal labels.
+    """
+    if not is_main_process():
+        return RunSink.silent()
     run_id = generate_run_id("param_decomp")
     out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
     cfg.to_file(out_dir / RUN_META_FILENAME)

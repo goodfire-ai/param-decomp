@@ -70,7 +70,11 @@ def stochastic_recon_loss(
 
 
 class StochasticReconLoss(Metric[StochasticReconLossConfig]):
-    """Stochastic recon loss: for each of `ctx.n_mask_samples` draws, samples a stochastic component mask (parameterised by CI values) on every layer and accumulates recon loss."""
+    """Stochastic recon loss summed across mask samples.
+
+    For each of `ctx.n_mask_samples` draws, samples a stochastic component mask
+    (parameterised by CI values) on every layer and accumulates recon loss.
+    """
 
     log_namespace = "loss"
     short_name = "StochRecon"

@@ -1,4 +1,7 @@
-"""Lab-side `RunBatch` / `ReconstructionLoss` helpers passed to `optimize(run_batch=..., reconstruction_loss=...)`."""
+"""Lab-side `RunBatch` / `ReconstructionLoss` helpers.
+
+Passed to `optimize(run_batch=..., reconstruction_loss=...)`.
+"""
 
 from typing import Any
 
@@ -22,7 +25,11 @@ def run_batch_first_element(model: nn.Module, batch: Any) -> Tensor:
 
 
 def make_run_batch(output_extract: int | str | None) -> RunBatch:
-    """`RunBatch` extracting a tensor from `model(batch)`: `None` passthrough, `int` indexes into a tuple, `str` reads an attribute (e.g. `"logits"`)."""
+    """`RunBatch` extracting a tensor from `model(batch)`.
+
+    `None` passes through; `int` indexes into a tuple; `str` reads an attribute (e.g.
+    `"logits"`).
+    """
     match output_extract:
         case None:
             return run_batch_passthrough

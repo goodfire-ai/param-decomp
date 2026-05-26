@@ -20,7 +20,7 @@ from param_decomp_lab.topology import TransformerTopology
 def _canonical_to_concrete_key(
     canonical_layer: str, component_idx: int, topology: TransformerTopology
 ) -> str:
-    """Translate canonical layer address + component idx to concrete component key for harvest data."""
+    """Translate canonical layer + component idx to a concrete component key for harvest data."""
     concrete = topology.canon_to_target(canonical_layer)
     return f"{concrete}:{component_idx}"
 

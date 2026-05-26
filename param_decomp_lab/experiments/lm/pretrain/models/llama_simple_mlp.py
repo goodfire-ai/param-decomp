@@ -371,7 +371,7 @@ class LlamaSimpleMLP(nn.Module):
 
     @classmethod
     def from_run_info(cls, run_info: PretrainRunInfo) -> "LlamaSimpleMLP":
-        """Create a LlamaSimpleMLP model from a PretrainRunInfo, loading weights from its checkpoint."""
+        """Create a LlamaSimpleMLP from a `PretrainRunInfo`, loading weights from its checkpoint."""
         model = cls(LlamaSimpleMLPConfig(**run_info.model_config_dict))
         state_dict = torch.load(run_info.checkpoint_path, map_location="cpu", weights_only=True)
         model.load_state_dict(state_dict, strict=True)

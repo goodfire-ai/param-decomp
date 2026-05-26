@@ -54,7 +54,11 @@ class AttnConfig(BaseConfig):
 
 
 class GlobalSharedTransformerCiConfig(BaseConfig):
-    """Config for the global transformer CI fn. `d_model` must be divisible by `attn_config.n_heads` and the resulting per-head dim must be even (RoPE). `mlp_hidden_dim` defaults to `[4 * d_model]`."""
+    """Config for the global transformer CI fn.
+
+    `d_model` must be divisible by `attn_config.n_heads` and the resulting per-head dim
+    must be even (RoPE). `mlp_hidden_dim` defaults to `[4 * d_model]`.
+    """
 
     d_model: PositiveInt
     n_blocks: PositiveInt
@@ -116,7 +120,11 @@ CiConfig = LayerwiseCiConfig | GlobalCiConfig
 
 
 class MLPCiFn(nn.Module):
-    """Per-component scalar-input MLP CI fn. Each of `C` components gets its own MLP mapping a scalar component activation to a scalar CI value; built from `ParallelLinear` layers operating on a singleton last dim."""
+    """Per-component scalar-input MLP CI fn.
+
+    Each of `C` components gets its own MLP mapping a scalar component activation to a
+    scalar CI value; built from `ParallelLinear` layers operating on a singleton last dim.
+    """
 
     def __init__(self, C: int, hidden_dims: list[int]):
         super().__init__()
@@ -140,7 +148,11 @@ class MLPCiFn(nn.Module):
 
 
 class VectorMLPCiFn(nn.Module):
-    """Per-component vector-input MLP CI fn. Each of `C` components gets its own MLP consuming the full `[..., d_in]` layer input; built from `ParallelLinear` so all `C` networks run in one batched einsum."""
+    """Per-component vector-input MLP CI fn.
+
+    Each of `C` components gets its own MLP consuming the full `[..., d_in]` layer input;
+    built from `ParallelLinear` so all `C` networks run in one batched einsum.
+    """
 
     def __init__(self, C: int, input_dim: int, hidden_dims: list[int]):
         super().__init__()
@@ -164,7 +176,11 @@ class VectorMLPCiFn(nn.Module):
 
 
 class VectorSharedMLPCiFn(nn.Module):
-    """Shared MLP `[..., d_in] -> [..., C]`. All components share every hidden layer; only the final projection splits per-component."""
+    """Shared MLP `[..., d_in] -> [..., C]`.
+
+    All components share every hidden layer; only the final projection splits
+    per-component.
+    """
 
     def __init__(self, C: int, input_dim: int, hidden_dims: list[int]):
         super().__init__()
@@ -183,7 +199,12 @@ class VectorSharedMLPCiFn(nn.Module):
 
 
 class GlobalSharedMLPCiFn(nn.Module):
-    """Global MLP over all layers: concatenates all decomposition-target inputs along the feature dim, runs one shared MLP, then splits the output back into per-layer `[..., C]` slices. Layer order is fixed by sorted layer name so concatenation is deterministic."""
+    """Global MLP over all layers.
+
+    Concatenates all decomposition-target inputs along the feature dim, runs one shared
+    MLP, then splits the output back into per-layer `[..., C]` slices. Layer order is
+    fixed by sorted layer name so concatenation is deterministic.
+    """
 
     def __init__(
         self,

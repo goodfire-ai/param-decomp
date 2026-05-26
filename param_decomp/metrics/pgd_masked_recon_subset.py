@@ -21,7 +21,11 @@ class PGDReconSubsetLossConfig(PGDConfig):
 
 
 class PGDReconSubsetLoss(Metric[PGDReconSubsetLossConfig]):
-    """Per-step PGD recon loss with masks applied only on a routed subset of layers (per `cfg.routing`). Fresh adversarial sources each batch (no cross-step persistence)."""
+    """Per-step PGD recon loss with masks applied only on a routed subset of layers.
+
+    Subset chosen per `cfg.routing`. Fresh adversarial sources each batch (no
+    cross-step persistence).
+    """
 
     log_namespace = "loss"
     short_name = "PGDReconSub"

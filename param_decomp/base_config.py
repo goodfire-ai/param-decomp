@@ -1,4 +1,6 @@
-"""`BaseConfig` (pydantic `BaseModel` with `extra="forbid"`, `frozen=True`, YAML/JSON round-trip), `Probability` (annotated `float` in `[0, 1]`), and `runtime_cast`."""
+"""`BaseConfig` (pydantic `BaseModel` with `extra="forbid"`, `frozen=True`, YAML/JSON
+round-trip), `Probability` (annotated `float` in `[0, 1]`), and `runtime_cast`.
+"""
 
 import json
 from functools import cached_property
@@ -25,7 +27,11 @@ def runtime_cast[T](type_: type[T], obj: Any) -> T:
 
 
 class BaseConfig(BaseModel):
-    """Pydantic `BaseModel` tailored for configs: `extra="forbid"`, `frozen=True`, plus `from_file` / `to_file` JSON/YAML round-trip helpers."""
+    """Pydantic `BaseModel` tailored for configs.
+
+    `extra="forbid"`, `frozen=True`, plus `from_file` / `to_file` JSON/YAML round-trip
+    helpers.
+    """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="forbid", frozen=True, ignored_types=(cached_property,)
@@ -57,7 +63,11 @@ class BaseConfig(BaseModel):
         return cfg
 
     def to_file(self, path: Path | str) -> None:
-        """Serialize this config to `path`. `.json` writes indent-2 JSON; `.yaml` / `.yml` writes a JSON-mode YAML dump. Creates parent directories as needed."""
+        """Serialize this config to `path`.
+
+        `.json` writes indent-2 JSON; `.yaml` / `.yml` writes a JSON-mode YAML dump.
+        Creates parent directories as needed.
+        """
         if isinstance(path, str):
             path = Path(path)
 

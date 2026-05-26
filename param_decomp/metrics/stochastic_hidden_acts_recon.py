@@ -30,7 +30,10 @@ def calc_hidden_acts_mse(
     mask_infos: dict[str, ComponentsMaskInfo],
     target_acts: dict[str, Float[Tensor, "..."]],
 ) -> tuple[PerModuleMSE, Float[Tensor, "..."]]:
-    """Forward with `mask_infos` and compute per-module MSE against `target_acts`. Returns `({module_path: (summed_mse, n_elements)}, model_output)`."""
+    """Forward with `mask_infos` and compute per-module MSE against `target_acts`.
+
+    Returns `({module_path: (summed_mse, n_elements)}, model_output)`.
+    """
     result = model(batch, mask_infos=mask_infos, cache_type="output")
     per_module: PerModuleMSE = {}
     for layer_name, target in target_acts.items():
@@ -126,7 +129,11 @@ class _HiddenActsAccumulator:
 
 
 class StochasticHiddenActsReconLoss(Metric[StochasticHiddenActsReconLossConfig]):
-    """Per-module MSE between masked-model and target-model output activations, summed across `ctx.n_mask_samples` stochastic mask draws. `compute()` returns one entry per module plus a combined total."""
+    """Per-module MSE between masked-model and target-model output activations.
+
+    Summed across `ctx.n_mask_samples` stochastic mask draws. `compute()` returns one
+    entry per module plus a combined total.
+    """
 
     log_namespace = "loss"
     slow = True

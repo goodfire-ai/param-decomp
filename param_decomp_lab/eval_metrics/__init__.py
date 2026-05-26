@@ -1,4 +1,9 @@
-"""Lab eval metrics shipped for the in-repo experiments. YAML `eval.metrics` entries are validated against `AnyEvalMetricConfig` and dispatched to the matching `Metric` subclass via `EVAL_METRIC_CLASSES`. External users instantiate their own eval metrics directly and pass them in `EvalLoop(metrics=...)`."""
+"""Lab eval metrics shipped for the in-repo experiments.
+
+YAML `eval.metrics` entries are validated against `AnyEvalMetricConfig` and dispatched
+to the matching `Metric` subclass via `EVAL_METRIC_CLASSES`. External users instantiate
+their own eval metrics directly and pass them in `EvalLoop(metrics=...)`.
+"""
 
 from typing import Annotated, Any
 

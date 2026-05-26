@@ -28,7 +28,11 @@ def main(
     time: str = "8:00:00",
     job_suffix: str | None = None,
 ) -> None:
-    """Launch a single investigation agent for a specific question. `prompt` is the research question literal or `@filepath` to read from a file. `max_turns` caps agentic turns to prevent runaway."""
+    """Launch a single investigation agent for a specific question.
+
+    `prompt` is the research question literal or `@filepath` to read from a file.
+    `max_turns` caps agentic turns to prevent runaway.
+    """
     from param_decomp_lab.investigate.scripts.run_slurm import launch_investigation
 
     launch_investigation(

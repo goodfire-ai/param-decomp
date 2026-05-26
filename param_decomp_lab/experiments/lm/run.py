@@ -1,4 +1,9 @@
-"""LM PD experiment: YAML -> `optimize()` glue, plus the `SavedLMRun` reload class. Both the fresh-run path (`main`) and the reload path share the module-level `build_target` / `build_lm_loader` / `make_run_batch`. Run via `pd-lm path/to/config.yaml` (or `torchrun` for DDP)."""
+"""LM PD experiment: YAML -> `optimize()` glue, plus the `SavedLMRun` reload class.
+
+Both the fresh-run path (`main`) and the reload path share the module-level
+`build_target` / `build_lm_loader` / `make_run_batch`. Run via
+`pd-lm path/to/config.yaml` (or `torchrun` for DDP).
+"""
 
 import importlib
 from dataclasses import dataclass
@@ -6,6 +11,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import fire
+import torch.nn as nn
 from pydantic import Discriminator
 from torch.utils.data import DataLoader
 
@@ -38,7 +44,6 @@ from param_decomp_lab.experiments.utils import (
 )
 from param_decomp_lab.infra.paths import ModelPath
 from param_decomp_lab.infra.run_files import resolve_run_files
-from param_decomp_lab.run_sink import RunSink
 from param_decomp_lab.seed import set_seed
 
 
@@ -58,7 +63,12 @@ class HFTarget(BaseConfig):
 
 
 class PretrainedTarget(BaseConfig):
-    """Load an in-repo lab-pretrained model. `run_path` accepts any form `PretrainRunInfo.from_path` does — compact W&B (`entity/project/runId`), full W&B (`entity/project/runs/runId`), or a local checkpoint path."""
+    """Load an in-repo lab-pretrained model.
+
+    `run_path` accepts any form `PretrainRunInfo.from_path` does — compact W&B
+    (`entity/project/runId`), full W&B (`entity/project/runs/runId`), or a local
+    checkpoint path.
+    """
 
     kind: Literal["pretrained"] = "pretrained"
     model_class: str
@@ -72,7 +82,11 @@ LMTargetSpec = Annotated[
 
 
 class LMTargetConfig(BaseConfig):
-    """`output_extract` (passed to `make_run_batch`) pulls the prediction tensor out of the model's forward output (default `"logits"`)."""
+    """Config for the LM target model and how to extract the prediction tensor.
+
+    `output_extract` (passed to `make_run_batch`) pulls the prediction tensor out of the
+    model's forward output (default `"logits"`).
+    """
 
     spec: LMTargetSpec
     output_extract: int | str | None = "logits"
@@ -82,7 +96,7 @@ class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
     pass
 
 
-def build_target(target_cfg: LMTargetConfig) -> Any:
+def build_target(target_cfg: LMTargetConfig) -> nn.Module:
     """Load the LM target model in eval mode, dispatching on `target_cfg.spec.kind`."""
     spec = target_cfg.spec
     cls = _resolve_class(spec.model_class)
@@ -93,6 +107,7 @@ def build_target(target_cfg: LMTargetConfig) -> Any:
             from param_decomp_lab.experiments.lm.pretrain.run_info import PretrainRunInfo
 
             run_info = ensure_cached_and_call(PretrainRunInfo.from_path, spec.run_path)
+            # Older PretrainRunInfo objects predate model_type; default it from the model class.
             if "model_type" not in run_info.model_config_dict:
                 run_info.model_config_dict["model_type"] = spec.model_class.rsplit(".", 1)[-1]
             target_model = cls.from_run_info(run_info)
@@ -110,7 +125,11 @@ def build_lm_loader(
     dist_state: DistributedState | None = None,
     seed: int | None = None,
 ) -> DataLoader[Any]:
-    """LM `DataLoader` for the requested split. The eval seed is offset by 1 so eval shuffles differently from train when both come from the same `pd_config.seed`."""
+    """LM `DataLoader` for the requested split.
+
+    The eval seed is offset by 1 so eval shuffles differently from train when both come
+    from the same `pd_config.seed`.
+    """
     del target_cfg, device
     effective_seed = (seed or 0) + (1 if split == "eval" else 0)
     split_name = data_cfg.eval_split if split == "eval" else data_cfg.train_split
@@ -163,7 +182,12 @@ def main(
     group: str | None = None,
     tags: str | None = None,
 ) -> None:
-    """Run an LM PD experiment end-to-end from a YAML config: parse, init DDP, build target / loaders / eval loop, write `run_meta.yaml`, call `optimize(...)`. Non-main ranks use a silent sink. `group` / `tags` are wandb-only (no-ops without `wandb:`)."""
+    """Run an LM PD experiment end-to-end from a YAML config.
+
+    Parses the YAML, initialises DDP, builds the target / loaders / eval loop, writes
+    `run_meta.yaml`, and calls `optimize(...)`. Non-main ranks use a silent sink.
+    `group` / `tags` are wandb-only (no-ops without `wandb:`).
+    """
     cfg = LMExperimentConfig.from_file(config_path)
 
     dist_state = init_distributed()
@@ -186,7 +210,7 @@ def main(
     )
     eval_loop = _build_eval_loop(cfg, device, dist_state)
 
-    sink = init_pd_run(cfg, group=group, tags=tags) if is_main_process() else RunSink.silent()
+    sink = init_pd_run(cfg, group=group, tags=tags)
 
     try:
         optimize(

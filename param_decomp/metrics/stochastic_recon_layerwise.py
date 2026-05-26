@@ -74,7 +74,11 @@ def stochastic_recon_layerwise_loss(
 
 
 class StochasticReconLayerwiseLoss(Metric[StochasticReconLayerwiseLossConfig]):
-    """Stochastic recon loss applied one layer at a time. Samples per-layer masks per draw but applies only one layer's mask per forward; sums the per-layer per-sample recon losses."""
+    """Stochastic recon loss applied one layer at a time.
+
+    Samples per-layer masks per draw but applies only one layer's mask per forward;
+    sums the per-layer per-sample recon losses.
+    """
 
     log_namespace = "loss"
     short_name = "StochReconLayer"

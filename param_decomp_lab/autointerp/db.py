@@ -1,4 +1,7 @@
-"""SQLite database for autointerp data (interpretations and scores). NFS-hosted, single writer then read-only."""
+"""SQLite database for autointerp data (interpretations and scores).
+
+NFS-hosted, single writer then read-only.
+"""
 
 from pathlib import Path
 

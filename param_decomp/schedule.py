@@ -9,7 +9,11 @@ from param_decomp.base_config import BaseConfig, Probability
 
 
 class ScheduleConfig(BaseConfig):
-    """Schedule: linear warmup from 0 to `start_val`, then constant / linear / cosine decay to `final_val_frac * start_val`."""
+    """Schedule with linear warmup, then constant / linear / cosine decay.
+
+    Warmup ramps from 0 to `start_val`; the chosen decay ends at
+    `final_val_frac * start_val`.
+    """
 
     start_val: PositiveFloat = Field(..., description="Starting/peak value (after warmup)")
     warmup_pct: Probability = Field(

@@ -642,7 +642,7 @@ def compute_prompt_attributions_optimized_batched(
     on_progress: ProgressCallback | None = None,
     on_ci_snapshot: CISnapshotCallback | None = None,
 ) -> list[OptimizedPromptAttributionResult]:
-    """Compute prompt attributions for multiple sparsity coefficients in one batched optimization."""
+    """Compute prompt attributions for multiple sparsity coefficients in one batched optim."""
     with torch.no_grad(), bf16_autocast():
         target_logits = model(tokens)
         target_out_probs = torch.softmax(target_logits, dim=-1)
@@ -718,7 +718,10 @@ def compute_ci_only(
     tokens: Float[Tensor, "1 seq"],
     sampling: SamplingType,
 ) -> CIOnlyResult:
-    """Fast CI-only computation (forward pass + CI calc, no gradient loop). Much faster than `compute_prompt_attributions()` when only CI values are needed."""
+    """Fast CI-only computation (forward pass + CI calc, no gradient loop).
+
+    Much faster than `compute_prompt_attributions()` when only CI values are needed.
+    """
     with torch.no_grad(), bf16_autocast():
         output_with_cache: OutputWithCache = model(tokens, cache_type="input")
         ci = model.calc_causal_importances(

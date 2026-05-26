@@ -63,17 +63,27 @@ def hard_sigmoid(x: Tensor) -> Tensor:
 
 
 def leaky_hard_sigmoid(x: Tensor, alpha: float = 0.01) -> Tensor:
-    """Hard sigmoid leaking linearly below zero: `alpha * x` for `x <= 0`, `clamp(x, max=1)` otherwise. Leaks on the lower side only."""
+    """Hard sigmoid leaking linearly below zero.
+
+    `alpha * x` for `x <= 0`, `clamp(x, max=1)` otherwise. Leaks on the lower side only.
+    """
     return torch.where(x > 0, torch.clamp(x, max=1), alpha * x)
 
 
 def upper_leaky_hard_sigmoid(x: Tensor, alpha: float = 0.01) -> Tensor:
-    """Hard sigmoid leaking linearly above one: `1 + alpha * (x - 1)` for `x > 1`, `clamp(x, 0, 1)` otherwise. Upper tail differentiable; lower tail fully saturated."""
+    """Hard sigmoid leaking linearly above one.
+
+    `1 + alpha * (x - 1)` for `x > 1`, `clamp(x, 0, 1)` otherwise. Upper tail
+    differentiable; lower tail fully saturated.
+    """
     return torch.where(x > 1, 1 + alpha * (x - 1), torch.clamp(x, min=0, max=1))
 
 
 def lower_leaky_hard_sigmoid(x: Tensor, alpha: float = 0.01) -> Tensor:
-    """Hard sigmoid whose *backward* leaks below zero only when `grad_output < 0` (see `LowerLeakyHardSigmoidFunction`). Forward matches `clamp(x, 0, 1)` exactly."""
+    """Hard sigmoid whose *backward* leaks below zero only when `grad_output < 0`.
+
+    See `LowerLeakyHardSigmoidFunction`. Forward matches `clamp(x, 0, 1)` exactly.
+    """
     return LowerLeakyHardSigmoidFunction.apply(x, alpha)  # pyright: ignore[reportReturnType]
 
 
@@ -89,7 +99,11 @@ def upside_down_swish(x: Tensor, beta: float = 1.0) -> Tensor:
 def swish_hard_sigmoid(
     x: Tensor, beta: float = 10.0, scale: float = 0.5, xshift: float = 0.5, yshift: float = 0.5
 ) -> Tensor:
-    """Smooth sigmoid built from Swish bumps at each boundary. As `beta` grows the curve approaches a hard sigmoid; `scale` controls boundary width; `xshift` / `yshift` translate."""
+    """Smooth sigmoid built from Swish bumps at each boundary.
+
+    As `beta` grows the curve approaches a hard sigmoid; `scale` controls boundary
+    width; `xshift` / `yshift` translate.
+    """
     x = x - xshift
     return (
         yshift

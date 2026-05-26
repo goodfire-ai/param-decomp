@@ -73,7 +73,10 @@ def resolve_decomposition_targets(
 
 
 class Identity(nn.Module):
-    """Identity shim inserted before a target module so the identity op itself can be decomposed. Carries `d` so downstream component construction can size its weight matrices."""
+    """Identity shim inserted before a target module so the identity op itself can be decomposed.
+
+    Carries `d` so downstream component construction can size its weight matrices.
+    """
 
     def __init__(self, d: int):
         super().__init__()
@@ -90,8 +93,6 @@ def _pre_id_hook(
     kwargs: dict[Any, Any],
 ) -> tuple[tuple[Any, ...], dict[Any, Any]]:
     assert len(args) == 1, f"Expected 1 positional arg, got {len(args)}"
-    # assert no kwargs. This may be overkill. can consider passing kwargs through later but this is
-    # simple for now.
     assert not kwargs, f"Expected no kwargs, got {kwargs.keys()}"
     assert hasattr(mod, "pre_identity"), f"Module {mod} has no pre_identity attribute"
     assert isinstance(mod.pre_identity, Identity), (
@@ -109,7 +110,6 @@ def insert_identity_operations_(
     pre-hook that routes the input through it before the module's forward. `C` on each
     target is used later by the component factory and is ignored here.
     """
-    # Extract just the patterns (ignore C values for insertion)
     identity_module_paths: list[str] = []
     matched_patterns: set[str] = set()
     for target in identity_decomposition_targets:

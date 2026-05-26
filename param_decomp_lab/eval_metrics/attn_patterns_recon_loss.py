@@ -181,7 +181,11 @@ def _attn_patterns_recon_loss_update(
 
 
 class _AttnPatternsBase(Metric[_AttnPatternsBaseConfig], ABC):
-    """Shared bind/reset/accumulate/compute for both attn-pattern metrics. Accumulates per-distribution KLs and a count of distributions across all matched attention layers; `compute` returns the mean."""
+    """Shared bind/reset/accumulate/compute for both attn-pattern metrics.
+
+    Accumulates per-distribution KLs and a count of distributions across all matched
+    attention layers; `compute` returns the mean.
+    """
 
     @override
     def bind(self, *, model: ComponentModel, device: str) -> None:
@@ -233,7 +237,10 @@ class CIMaskedAttnPatternsReconLoss(_AttnPatternsBase):
 
 
 class StochasticAttnPatternsReconLoss(_AttnPatternsBase):
-    """Attention pattern KL between stochastically-masked components and full ones. Averages over `ctx.n_mask_samples` mask draws per batch."""
+    """Attention pattern KL between stochastically-masked components and full ones.
+
+    Averages over `ctx.n_mask_samples` mask draws per batch.
+    """
 
     log_namespace = "loss"
     short_name = "StochAttnRecon"

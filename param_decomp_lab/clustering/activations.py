@@ -201,12 +201,15 @@ class ProcessedActivations:
         return list(self.module_component_counts.keys())
 
     def get_module_indices(self, module_key: str) -> list[int | None]:
-        """given a module key, return a list len "num components in that module", with int index in alive components, or None if dead"""
+        """For each component in `module_key`, return its index among alive components.
+
+        Returns a list of length `num_components_in_module`; dead components are `None`.
+        """
         num_components: int = self.module_component_counts[module_key]
         return [self.label_index[f"{module_key}:{i}"] for i in range(num_components)]
 
     def get_module_activations(self) -> dict[str, ActivationsTensor]:
-        """Reconstruct per-module activation views (alive components only) from the concatenated tensor."""
+        """Per-module activation views (alive components only), sliced out of the concat tensor."""
         result: dict[str, ActivationsTensor] = {}
         offset = 0
         for key, n_alive in self.module_alive_counts.items():

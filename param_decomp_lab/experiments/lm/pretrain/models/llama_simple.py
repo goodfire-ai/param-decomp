@@ -350,7 +350,7 @@ class LlamaSimple(nn.Module):
 
     @classmethod
     def from_run_info(cls, run_info: PretrainRunInfo) -> "LlamaSimple":
-        """Create a LlamaSimple model from a PretrainRunInfo, loading weights from its checkpoint."""
+        """Create a LlamaSimple from a `PretrainRunInfo`, loading weights from its checkpoint."""
         model = cls(LlamaSimpleConfig(**run_info.model_config_dict))
         state_dict = torch.load(run_info.checkpoint_path, map_location="cpu", weights_only=True)
         model.load_state_dict(state_dict, strict=True)

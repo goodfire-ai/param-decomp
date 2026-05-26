@@ -331,7 +331,10 @@ class PromptAttrDB:
         token_ids: list[int],
         context_length: int,
     ) -> int:
-        """Add a custom prompt to the database, or return the existing prompt ID on duplicate `(run_id, token_ids, context_length)`."""
+        """Add a custom prompt, or return the existing ID on a duplicate.
+
+        Duplicate is keyed on `(run_id, token_ids, context_length)`.
+        """
         with self._write_lock():
             existing_id = self.find_prompt_by_token_ids(run_id, token_ids, context_length)
             if existing_id is not None:
@@ -608,7 +611,7 @@ class PromptAttrDB:
         )
 
     def get_graphs(self, prompt_id: int) -> list[StoredGraph]:
-        """Retrieve all stored graphs for a prompt (standard, optimized, and manual, in that order)."""
+        """All stored graphs for a prompt, ordered standard, optimized, manual."""
         conn = self._get_conn()
         rows = conn.execute(
             """SELECT id, graph_type, edges_data, edges_data_abs, output_logits, node_ci_vals,
@@ -664,7 +667,7 @@ class PromptAttrDB:
         selected_nodes: list[str],
         result_json: str,
     ) -> int:
-        """Save an `InterventionResult` (already JSON-encoded) for a graph; return the new intervention-run ID."""
+        """Save a JSON-encoded `InterventionResult` for a graph; return the new run ID."""
         with self._write_lock():
             conn = self._get_conn()
             cursor = conn.execute(

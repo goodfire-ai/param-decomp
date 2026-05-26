@@ -87,7 +87,10 @@ def stochastic_recon_subset_loss(
 
 
 class StochasticReconSubsetLoss(Metric[StochasticReconSubsetLossConfig]):
-    """Stochastic recon loss with masks applied only on a routed subset of layers (per `cfg.routing`). Sums recon loss across `ctx.n_mask_samples` draws."""
+    """Stochastic recon loss with masks applied only on a routed subset of layers.
+
+    Subset chosen per `cfg.routing`. Sums recon loss across `ctx.n_mask_samples` draws.
+    """
 
     log_namespace = "loss"
     short_name = "StochReconSub"

@@ -58,7 +58,11 @@ def _submit_slurm(
     time: str,
     job_name: str,
 ) -> None:
-    """Generate a SLURM batch script wrapping a `torchrun` invocation of `param_decomp_lab.experiments.lm.pretrain.train` and submit it via `sbatch`. Creates an `ExecutionStamp` with a git snapshot for reproducibility."""
+    """Submit a `torchrun` invocation of `param_decomp_lab.experiments.lm.pretrain.train` to SLURM.
+
+    Wraps it in a batch script and submits via `sbatch`. Creates an `ExecutionStamp`
+    with a git snapshot for reproducibility.
+    """
     SLURM_LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Create git snapshot for reproducibility

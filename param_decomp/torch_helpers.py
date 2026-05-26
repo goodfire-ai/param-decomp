@@ -72,7 +72,10 @@ def _get_obj_devices(d: CanGetDevice) -> set[torch.device]:
 
 
 def get_obj_device(d: CanGetDevice) -> torch.device:
-    """Return the single device holding `d`. Asserts every contained tensor/parameter lives on the same device."""
+    """Return the single device holding `d`.
+
+    Asserts every contained tensor/parameter lives on the same device.
+    """
     devices = _get_obj_devices(d)
     assert len(devices) == 1, f"Object parameters are on multiple devices: {devices}"
     return devices.pop()

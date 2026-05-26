@@ -1,4 +1,8 @@
-"""Lab-side `ComponentModel` helpers used by postprocessing / the app / harvest: rebuild from a saved checkpoint, and read per-component activations from cached pre-weight acts."""
+"""Lab-side `ComponentModel` helpers for postprocessing, the app, and harvest.
+
+Rebuilds a `ComponentModel` from a saved checkpoint, and reads per-component activations
+from cached pre-weight acts.
+"""
 
 from pathlib import Path
 
@@ -47,7 +51,11 @@ def load_component_model(
     target_model: nn.Module,
     run_batch: RunBatch,
 ) -> ComponentModel:
-    """Rebuild a `ComponentModel` from a saved PD checkpoint plus a caller-supplied target. The caller owns target loading (HF, in-repo pretrain, custom); everything else needed to reconstruct the model comes from `pd_config`."""
+    """Rebuild a `ComponentModel` from a saved PD checkpoint plus a caller-supplied target.
+
+    The caller owns target loading (HF, in-repo pretrain, custom); everything else
+    needed to reconstruct the model comes from `pd_config`.
+    """
     target_model.eval()
     target_model.requires_grad_(False)
 
@@ -94,7 +102,11 @@ def get_all_component_acts(
     model: ComponentModel,
     pre_weight_acts: dict[str, Float[Tensor, "... d_in"] | Int[Tensor, "..."]],
 ) -> dict[str, Float[Tensor, "... C"]]:
-    """Per-component activations `V^T @ x` for every decomposed layer. Layers in `pre_weight_acts` with no matching entry in `model.components` are skipped silently."""
+    """Per-component activations `V^T @ x` for every decomposed layer.
+
+    Layers in `pre_weight_acts` with no matching entry in `model.components` are skipped
+    silently.
+    """
     return {
         layer: model.components[layer].get_component_acts(acts)
         for layer, acts in pre_weight_acts.items()

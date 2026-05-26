@@ -50,7 +50,10 @@ def submit_autointerp(
     dependency_job_id: str | None = None,
     snapshot_ref: str | None = None,
 ) -> AutointerpSubmitResult:
-    """Submit the autointerp pipeline (interpret + evals) to SLURM as a functional unit. `dependency_job_id` is typically the harvest merge job."""
+    """Submit the autointerp pipeline (interpret + evals) to SLURM as a functional unit.
+
+    `dependency_job_id` is typically the harvest merge job.
+    """
     autointerp_subrun_id = _make_autointerp_subrun_id(snapshot_ref)
 
     # === 1. Interpret job ===

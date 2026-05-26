@@ -66,8 +66,9 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
   tied weights, faithfulness warmup. Flipping a field here changes what algorithm runs.
 - `RuntimeConfig` — compute substrate: `autocast_bf16`, `device`, `dp`. Perturbs numerics
   without changing the algorithm.
-- `Cadence` — train-log / save period predicates. Pure modular arithmetic on `step`.
-  `optimize()` always checkpoints at the final step regardless of `save_every`.
+- `Cadence` — train-log / save period predicates. Train-log fires every
+  `train_log_every` steps; `save_every` is optional and `should_save` is false at
+  step 0. `optimize()` always checkpoints at the final step regardless of `save_every`.
 - `EvalLoop` — frozen dataclass in `param_decomp/optimize.py` bundling the eval-loop
   triple (`loader`, `metrics`, `n_steps`) with its timing (`every`, `slow_every`,
   `slow_on_first_step`). Atomic optional: pass `None` to disable eval. `slow_every` must
@@ -119,7 +120,7 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 ```
 PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/
   model_<step>.pth           # checkpoints (RunSink.checkpoint)
-  <step>.json                # local logs (RunSink.log)
+  metrics.jsonl              # local logs (RunSink.log)
 ```
 
 `PARAM_DECOMP_OUT_DIR` is `/mnt/polished-lake/artifacts/mechanisms/param-decomp/` on

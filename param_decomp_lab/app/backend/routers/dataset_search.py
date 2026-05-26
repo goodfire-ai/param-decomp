@@ -100,7 +100,11 @@ def search_dataset(
     manager: DepStateManager,
     split: Annotated[str, Query(pattern="^(train|test)$")] = "train",
 ) -> DatasetSearchMetadata:
-    """Case-insensitive substring search of the run's training dataset. Reads `dataset_name` / `column_name` from the loaded run's config; caches results for pagination via `/results`."""
+    """Case-insensitive substring search of the run's training dataset.
+
+    Reads `dataset_name` / `column_name` from the loaded run's config; caches results
+    for pagination via `/results`.
+    """
     dataset_name = loaded.lm_data.dataset_name
     text_column = loaded.lm_data.column_name
     _assert_simplestories(dataset_name)
@@ -204,7 +208,11 @@ def get_tokenized_results(
     page_size: Annotated[int, Query(ge=1, le=20)] = 10,
     max_tokens: Annotated[int, Query(ge=16, le=512)] = 256,
 ) -> TokenizedSearchPage:
-    """Paginated tokenized results with per-token next-token probability. Requires a loaded run for model inference (hence smaller `page_size` limit than `/results`); results longer than `max_tokens` are truncated."""
+    """Paginated tokenized results with per-token next-token probability.
+
+    Requires a loaded run for model inference (hence smaller `page_size` limit than
+    `/results`); results longer than `max_tokens` are truncated.
+    """
     search_state = manager.state.dataset_search_state
     if search_state is None:
         raise HTTPException(
@@ -293,7 +301,10 @@ def get_random_samples(
     seed: Annotated[int, Query(ge=0)] = 42,
     split: Annotated[str, Query(pattern="^(train|test)$")] = "train",
 ) -> RandomSamplesResult:
-    """Random samples from the loaded run's training dataset. Reads `dataset_name` / `column_name` from the loaded run's config."""
+    """Random samples from the loaded run's training dataset.
+
+    Reads `dataset_name` / `column_name` from the loaded run's config.
+    """
     dataset_name = loaded.lm_data.dataset_name
     text_column = loaded.lm_data.column_name
     _assert_simplestories(dataset_name)
@@ -361,7 +372,11 @@ def get_random_samples_with_loss(
     split: Annotated[str, Query(pattern="^(train|test)$")] = "train",
     max_tokens: Annotated[int, Query(ge=16, le=512)] = 256,
 ) -> RandomSamplesWithLossResult:
-    """Random samples tokenized + run through the model for per-token next-token probability. Requires a loaded run; lower `n_samples` cap than `/random-samples` because of model inference; results longer than `max_tokens` are truncated."""
+    """Random samples tokenized + run through the model for per-token next-token probability.
+
+    Requires a loaded run; lower `n_samples` cap than `/random-samples` because of model
+    inference; results longer than `max_tokens` are truncated.
+    """
     dataset_name = loaded.lm_data.dataset_name
     text_column = loaded.lm_data.column_name
     _assert_simplestories(dataset_name)

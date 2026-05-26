@@ -290,7 +290,10 @@ class AttributionHarvester:
             )
 
     def finalize(self, ci_threshold: float) -> DatasetAttributionStorage:
-        """Package raw accumulators into storage. No normalization — that happens at query time."""
+        """Package raw accumulators into storage.
+
+        No normalization — that happens at query time.
+        """
         assert self.n_tokens > 0, "No batches processed"
 
         to_canon = self.topology.target_to_canon

@@ -203,7 +203,7 @@ class BatchedGroupMerge:
 
     @classmethod
     def init_empty(cls, batch_size: int, n_components: int) -> "BatchedGroupMerge":
-        """Initialize an empty BatchedGroupMerge with the given batch size and number of components."""
+        """Initialize an empty `BatchedGroupMerge` with the given batch size and component count."""
         return cls(
             group_idxs=torch.full((batch_size, n_components), -1, dtype=torch.int16),
             k_groups=torch.zeros(batch_size, dtype=torch.int16),

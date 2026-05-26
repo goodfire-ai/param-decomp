@@ -36,7 +36,10 @@ def _unmasked_recon_loss_update(
 
 
 class UnmaskedReconLoss(Metric[UnmaskedReconLossConfig]):
-    """Recon loss with all components active and no weight-delta residual. Drives the components alone to reproduce the target model output."""
+    """Recon loss with all components active and no weight-delta residual.
+
+    Drives the components alone to reproduce the target model output.
+    """
 
     log_namespace = "loss"
     short_name = "UnmaskedRecon"

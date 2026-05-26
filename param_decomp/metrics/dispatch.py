@@ -1,4 +1,7 @@
-"""Dispatch from `PDConfig.loss_metrics` entries to bound `Metric` instances via the `type` literal -> class table `LOSS_METRIC_CLASSES`."""
+"""Dispatch from `PDConfig.loss_metrics` entries to bound `Metric` instances.
+
+The `type` literal -> class table is `LOSS_METRIC_CLASSES`.
+"""
 
 from typing import Any
 
@@ -45,21 +48,6 @@ LOSS_METRIC_CLASSES: dict[str, type[Metric[Any]]] = {
 }
 
 
-def instantiate_loss_metrics(
-    pd_config: PDConfig,
-    component_model: ComponentModel,
-    device: str,
-) -> dict[str, Metric[Any]]:
-    """Instantiate and bind one `Metric` per entry in `pd_config.loss_metrics`, keyed by each config's `type` literal (e.g. `"FaithfulnessLoss"`). Duplicate `type` literals are rejected."""
-    instances: dict[str, Metric[Any]] = {}
-    for cfg in pd_config.loss_metrics:
-        assert cfg.type not in instances, f"duplicate loss metric {cfg.type!r}"
-        m = LOSS_METRIC_CLASSES[cfg.type](cfg)
-        m.bind(model=component_model, device=device)
-        instances[cfg.type] = m
-    return instances
-
-
 def instantiate_metrics(
     pd_config: PDConfig,
     component_model: ComponentModel,
@@ -73,7 +61,13 @@ def instantiate_metrics(
     `(loss_instances, eval_instances)`: `loss_instances` is keyed by `type` literal;
     `eval_instances` is the full eval-pass set (loss + eval-only) keyed by class name.
     """
-    loss_instances = instantiate_loss_metrics(pd_config, component_model, device)
+    loss_instances: dict[str, Metric[Any]] = {}
+    for cfg in pd_config.loss_metrics:
+        assert cfg.type not in loss_instances, f"duplicate loss metric {cfg.type!r}"
+        m = LOSS_METRIC_CLASSES[cfg.type](cfg)
+        m.bind(model=component_model, device=device)
+        loss_instances[cfg.type] = m
+
     eval_only_instances: dict[str, Metric[Any]] = {}
     if eval_metrics is not None:
         for m in eval_metrics:

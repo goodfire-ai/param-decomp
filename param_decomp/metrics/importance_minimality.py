@@ -13,7 +13,13 @@ from param_decomp.metrics.context import MetricContext
 
 
 class ImportanceMinimalityLossConfig(LossMetricConfig):
-    """`pnorm` is the initial `p` of the `L_p`-style penalty on upper-leaky CI values; `beta` weights the entropy-like `mean * log2(1 + sum)` term added to the `L_p` term. `pnorm` is linearly annealed from `pnorm` toward `p_anneal_final_p` between `p_anneal_start_frac` and `p_anneal_end_frac` of training (no-op when `p_anneal_final_p is None` or `p_anneal_start_frac == 1.0`)."""
+    """Config for the `L_p`-style importance-minimality penalty on upper-leaky CI values.
+
+    `pnorm` is the initial `p`; `beta` weights the entropy-like `mean * log2(1 + sum)`
+    term added on top of the `L_p` term. `pnorm` is linearly annealed toward
+    `p_anneal_final_p` between `p_anneal_start_frac` and `p_anneal_end_frac` of training
+    (no-op when `p_anneal_final_p is None` or `p_anneal_start_frac == 1.0`).
+    """
 
     type: Literal["ImportanceMinimalityLoss"] = "ImportanceMinimalityLoss"
     pnorm: NonNegativeFloat
@@ -109,7 +115,11 @@ def importance_minimality_loss(
 
 
 class ImportanceMinimalityLoss(Metric[ImportanceMinimalityLossConfig]):
-    """`L_p`-style penalty driving CI sparsity: `(ci + eps)^p` summed across components plus a `beta`-weighted `mean * log2(1 + sum)` term."""
+    """`L_p`-style penalty driving CI sparsity.
+
+    `(ci + eps)^p` summed across components plus a `beta`-weighted
+    `mean * log2(1 + sum)` term.
+    """
 
     log_namespace = "loss"
     short_name = "ImpMin"

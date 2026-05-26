@@ -14,7 +14,10 @@ def harvest(
     config: str,
     job_suffix: str | None = None,
 ) -> None:
-    """Submit multi-GPU harvest job to SLURM. `job_suffix` is appended to SLURM job names (e.g. `"v2"` → `"pd-harvest-v2"`)."""
+    """Submit multi-GPU harvest job to SLURM.
+
+    `job_suffix` is appended to SLURM job names (e.g. `"v2"` → `"pd-harvest-v2"`).
+    """
     from param_decomp_lab.harvest.config import HarvestSlurmConfig
     from param_decomp_lab.harvest.scripts.run_slurm import submit_harvest
 
