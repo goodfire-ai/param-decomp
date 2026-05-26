@@ -117,6 +117,12 @@ def step_ci(
     g_ci_total = _assemble_g_ci_total(g_ci_lw, g_ci_pgd, layout, cfg, seq_len)
 
     optimizer.zero_grad(set_to_none=True)
+    # Diagnostic: sync before the bwd so phase("ci/8a") measures only the bwd
+    # itself, not waiting for prior default-stream work (ci/1 fwd kernels, ci/4
+    # prefetch, etc.) to drain. If ci/8a drops sharply from ~600 ms, the original
+    # wall was dominated by pending stream work, not by the bwd. Remove after diagnosis.
+    if os.environ.get("PD_SYNC_BEFORE_8A", "").strip() in ("1", "true", "yes"):
+        torch.cuda.synchronize()
     _fused_backward_through_ci_fn(loss_imp, ci, g_ci_total, layout, cfg, p)
     _maybe_emit_ci_fn_bwd_breakdown(component_model)
 

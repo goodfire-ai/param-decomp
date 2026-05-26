@@ -17,6 +17,7 @@ Usage:
   python scripts/gpt2_xl_qk_production.py --smoke    # 50-step smoke test, no save
 """
 
+import os
 from typing import Any
 
 import fire
@@ -305,6 +306,9 @@ def main(
     if ci_bwd_profile:
         env["PD_CI_FN_BWD_PROFILE"] = "1"
         print("CI fn bwd-stage profile: ON (per-block bwd ms via CUDA events)")
+    if os.environ.get("PD_SYNC_BEFORE_8A"):
+        env["PD_SYNC_BEFORE_8A"] = os.environ["PD_SYNC_BEFORE_8A"]
+        print(f"PD_SYNC_BEFORE_8A={env['PD_SYNC_BEFORE_8A']} (diagnostic sync before ci/8a)")
     print(
         f"topology: lw={N_LW_RANKS} ({N_SITES // ddp_per_block} blocks × DDP={ddp_per_block}, "
         f"{ddp_per_block} sites/block), ci={n_ci}, ppgd={n_ppgd}, total={total_ranks}"
