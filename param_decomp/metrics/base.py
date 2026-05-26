@@ -114,3 +114,22 @@ class Metric[TConfig: BaseConfig](ABC):
         Override when a metric needs to step internal state coupled to the outer
         backward — e.g. `PersistentPGDReconLoss` steps its adversarial sources here.
         """
+
+    def state_dict(self) -> dict[str, Any]:
+        """Return persistent metric state for round-tripping across a training restart.
+
+        Default is an empty dict: most metrics are stateless w.r.t. the optimizer
+        trajectory (their accumulators reset between eval passes). Override when a
+        metric carries trajectory-dependent state — e.g. `PersistentPGDReconLoss`
+        round-trips its adversarial sources here. Mirrors the `nn.Module` / `Optimizer`
+        convention; the parent `Trainer` composes these into its own state blob.
+        """
+        return {}
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:  # noqa: B027 — intentional no-op default
+        """Load persistent state produced by a prior :meth:`state_dict` call.
+
+        Default is a no-op (matches the default empty `state_dict`). Override
+        alongside `state_dict` for any metric carrying trajectory-dependent state.
+        """
+        del state

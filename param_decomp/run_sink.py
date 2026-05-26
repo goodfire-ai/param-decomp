@@ -2,6 +2,8 @@
 
 from typing import Any, Protocol, runtime_checkable
 
+from param_decomp.training_state import TrainingState
+
 
 @runtime_checkable
 class RunSink(Protocol):
@@ -27,12 +29,13 @@ class RunSink(Protocol):
         """Emit free-form lines (e.g. tqdm-friendly progress)."""
         ...
 
-    def checkpoint(self, state_dict: dict[str, Any], step: int) -> None:
-        """Persist a model state dict at `step`.
+    def checkpoint(self, snapshot: TrainingState) -> None:
+        """Persist a training state.
 
-        Args:
-            state_dict: Tensor state dict to serialise.
-            step: Training step used in the checkpoint identifier.
+        `snapshot.step` is the training step; sinks use it for naming. The lab
+        sink writes `snapshot.component_model` to `model_<step>.pth` and the
+        whole `snapshot` (cfgs, optimizer state, metric state, etc.) to
+        `training_<step>.pth`.
         """
         ...
 

@@ -1,9 +1,14 @@
-"""LM PD experiment: YAML -> `optimize()` glue, plus the `SavedLMRun` reload class.
+"""LM PD experiment: YAML -> `Trainer` glue + `SavedLMRun` reload + resumption.
 
-Both the fresh-run path (`main`) and the reload path share the module-level
-`build_target` / `build_lm_loader` / `make_run_batch`. Run via
-`pd-lm path/to/config.yaml`; pass `--dp N` to submit a single-node DDP SLURM job.
-For local DDP, invoke directly:
+Both the fresh-run path (`main`) and the reload path (`SavedLMRun`) share the
+module-level `build_target` / `build_lm_loader` / `make_run_batch`. The resume
+path (`main --resume <yaml>`) reads a parent run's `run_meta.yaml` plus
+`training_<step>.pth`, rebuilds a `Trainer` via `Trainer.from_snapshot`, and
+continues training.
+
+Run via `pd-lm path/to/config.yaml` (fresh) or `pd-lm --resume path/to/resume.yaml`
+(resume). Pass `--dp N` to submit a single-node DDP SLURM job; for local DDP,
+invoke directly via
 `torchrun --standalone --nproc_per_node=N -m param_decomp_lab.experiments.lm.run config.yaml`.
 """
 
@@ -24,7 +29,7 @@ from param_decomp.batch_and_loss_fns import RunBatch
 from param_decomp.component_model import ComponentModel
 from param_decomp.distributed import DistributedState, is_main_process
 from param_decomp.log import logger
-from param_decomp.optimize import EvalLoop, optimize
+from param_decomp.optimize import EvalLoop, Trainer
 from param_decomp_lab.batch_and_loss_fns import make_run_batch as _make_run_batch
 from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
 from param_decomp_lab.component_model_io import load_component_model
@@ -52,6 +57,13 @@ from param_decomp_lab.infra.run_files import generate_run_id, resolve_run_files
 from param_decomp_lab.infra.settings import DEFAULT_PARTITION_NAME, REPO_ROOT
 from param_decomp_lab.infra.slurm import SlurmConfig, generate_script, submit_slurm_job
 from param_decomp_lab.infra.wandb import get_wandb_entity
+from param_decomp_lab.resumption import (
+    ResumeConfig,
+    ResumeProvenance,
+    read_training_snapshot,
+    resolve_step,
+    write_provenance,
+)
 from param_decomp_lab.seed import set_seed
 
 
@@ -185,8 +197,9 @@ class SavedLMRun:
 
 @with_distributed_cleanup
 def main(
-    config_path: str | Path,
+    config_path: str | Path | None = None,
     *,
+    resume: str | Path | None = None,
     group: str | None = None,
     tags: str | None = None,
     dp: int | None = None,
@@ -196,17 +209,24 @@ def main(
     no_snapshot: bool = False,
     run_id: str | None = None,
 ) -> None:
-    """Run an LM PD experiment end-to-end from a YAML config.
+    """Run an LM PD experiment end-to-end.
 
-    Parses the YAML, initialises DDP, builds the target / loaders / eval loop, writes
-    `run_meta.yaml`, and calls `optimize(...)`. Non-main ranks use a silent sink.
-    `group` / `tags` are wandb-only (no-ops without `wandb:`). Passing `--dp N`
-    outside torchrun submits a single-node SLURM job; for local DDP, invoke via
-    `torchrun --standalone --nproc_per_node=N -m param_decomp_lab.experiments.lm.run`.
+    Args:
+        config_path: YAML for a fresh run. Required when not resuming.
+        resume: Path to a `ResumeConfig` YAML pointing at a prior run. When set,
+            the parent's `run_meta.yaml` is the source of cfg truth (modulo
+            narrow `overrides`); a new `run_id` + sibling `resume_provenance.yaml`
+            are written.
+        group / tags: wandb-only (no-ops without `wandb:`).
+        dp / partition / time / job_name / no_snapshot / run_id: SLURM submission
+            knobs. Passing `--dp N` outside torchrun submits a single-node SLURM
+            job; for local DDP, invoke via
+            `torchrun --standalone --nproc_per_node=N -m param_decomp_lab.experiments.lm.run`.
     """
     if dp is not None and dp < 2:
         raise ValueError("--dp must be at least 2 for data parallelism")
     if dp is not None and os.environ.get("WORLD_SIZE") is None:
+        assert config_path is not None, "--dp SLURM submission requires a config_path"
         _submit_slurm(
             config_path,
             dp=dp,
@@ -220,6 +240,22 @@ def main(
         )
         return
 
+    if resume is not None:
+        assert config_path is None, "pass either config_path or --resume, not both"
+        _resume_main(Path(resume), group=group, tags=tags, run_id=run_id)
+    else:
+        assert config_path is not None, "must provide either config_path or --resume"
+        _fresh_main(Path(config_path), group=group, tags=tags, run_id=run_id)
+
+
+def _fresh_main(
+    config_path: Path,
+    *,
+    group: str | None,
+    tags: str | None,
+    run_id: str | None,
+) -> None:
+    """Fresh-run path: parse YAML, build everything, train from step 0."""
     cfg = LMExperimentConfig.from_file(config_path)
 
     dist_state = init_distributed()
@@ -254,17 +290,91 @@ def main(
     sink = init_pd_run(cfg, group=group, tags=tags, run_id=run_id)
 
     try:
-        optimize(
+        trainer = Trainer(
             target_model=target_model,
-            train_loader=train_loader,
             run_batch=make_run_batch(cfg.target),
             reconstruction_loss=recon_loss_kl,
             pd_config=cfg.pd,
             runtime_config=cfg.runtime,
-            sink=sink,
-            cadence=cfg.cadence,
-            eval_loop=eval_loop,
         )
+        trainer.run(train_loader, sink, cfg.cadence, eval_loop)
+    finally:
+        sink.finish()
+
+
+def _resume_main(
+    resume_cfg_path: Path,
+    *,
+    group: str | None,
+    tags: str | None,
+    run_id: str | None,
+) -> None:
+    """Resume-run path: read parent `run_meta.yaml` + `training_<step>.pth`,
+    rebuild trainer via `Trainer.from_snapshot`, continue training."""
+    resume_cfg = ResumeConfig.from_file(resume_cfg_path)
+    parent_cfg = LMExperimentConfig.from_file(resume_cfg.from_run / RUN_META_FILENAME)
+
+    dist_state = init_distributed()
+    if is_main_process():
+        logger.info(f"Distributed state: {dist_state}")
+        logger.info(f"Resuming from {resume_cfg.from_run} @ step {resume_cfg.step}")
+    set_seed(parent_cfg.pd.seed)
+    device = get_device()
+
+    cfg_overrides = (
+        resume_cfg.overrides.to_pd_config_patch() if resume_cfg.overrides is not None else None
+    )
+    effective_pd = (
+        parent_cfg.pd.model_copy(update=cfg_overrides)
+        if cfg_overrides is not None
+        else parent_cfg.pd
+    )
+    effective_cfg = parent_cfg.model_copy(
+        update={
+            "pd": effective_pd,
+            "runtime": parent_cfg.runtime.model_copy(
+                update={
+                    "device": device,
+                    "dp": dist_state.world_size if dist_state is not None else None,
+                }
+            ),
+        }
+    )
+
+    resolved_step = resolve_step(resume_cfg.from_run, resume_cfg.step)
+    snapshot = read_training_snapshot(resume_cfg.from_run, resolved_step)
+    # Override the saved device with the current resume environment. Mutating
+    # the dict (model_dump output) in place is fine even on a frozen dataclass;
+    # we're changing a value the dataclass references, not rebinding the field.
+    snapshot.runtime_config["device"] = device
+
+    target_model = build_target(effective_cfg.target)
+    train_loader = build_lm_loader(
+        effective_cfg.target,
+        effective_cfg.data,
+        split="train",
+        device=device,
+        batch_size=effective_cfg.pd.batch_size,
+        dist_state=dist_state,
+        seed=effective_cfg.pd.seed,
+    )
+    eval_loop = _build_eval_loop(effective_cfg, device, dist_state)
+    sink = init_pd_run(effective_cfg, group=group, tags=tags, run_id=run_id)
+    if sink.out_dir is not None:
+        write_provenance(
+            sink.out_dir,
+            ResumeProvenance(parent_run_dir=resume_cfg.from_run, parent_step=resolved_step),
+        )
+
+    try:
+        trainer = Trainer.from_snapshot(
+            snapshot,
+            target_model=target_model,
+            run_batch=make_run_batch(effective_cfg.target),
+            reconstruction_loss=recon_loss_kl,
+            cfg_overrides=cfg_overrides,
+        )
+        trainer.run(train_loader, sink, effective_cfg.cadence, eval_loop)
     finally:
         sink.finish()
 

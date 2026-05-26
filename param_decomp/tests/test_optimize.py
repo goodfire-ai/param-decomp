@@ -19,7 +19,7 @@ from param_decomp.configs import (
 from param_decomp.decomposition_targets import DecompositionTargetConfig
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.faithfulness import FaithfulnessLossConfig
-from param_decomp.optimize import EvalLoop, optimize
+from param_decomp.optimize import EvalLoop, Trainer, optimize
 from param_decomp.schedule import ScheduleConfig
 
 
@@ -60,10 +60,10 @@ class CaptureSink:
     def console(self, *lines: str) -> None:
         del lines
 
-    def checkpoint(self, state_dict: dict[str, Any], step: int) -> None:
-        del step
+    def checkpoint(self, snapshot: Any) -> None:
+        model_state = snapshot.component_model
         checkpoint: dict[str, Tensor] = {}
-        for key, value in state_dict.items():
+        for key, value in model_state.items():
             assert isinstance(value, Tensor)
             checkpoint[key] = value.detach().cpu().clone()
         self.checkpoints.append(checkpoint)
@@ -237,3 +237,93 @@ def run_with_external_seed(seed: int) -> dict[str, Tensor]:
     )
     assert len(sink.checkpoints) == 1
     return sink.checkpoints[0]
+
+
+def test_trainer_snapshot_round_trips() -> None:
+    """A trainer reconstructed via ``Trainer.from_snapshot`` produces matching state."""
+    pd_config = make_pd_config(steps=3)
+    runtime_config = RuntimeConfig(device="cpu", autocast_bf16=False)
+
+    trainer_a = Trainer(
+        target_model=TinyLinear(),
+        run_batch=run_batch_passthrough,
+        reconstruction_loss=recon_loss_mse,
+        pd_config=pd_config,
+        runtime_config=runtime_config,
+    )
+    trainer_a.run(make_loader(), CaptureSink(), make_cadence(), eval_loop=None)
+    snap = trainer_a.snapshot()
+
+    trainer_b = Trainer.from_snapshot(
+        snap,
+        target_model=TinyLinear(),
+        run_batch=run_batch_passthrough,
+        reconstruction_loss=recon_loss_mse,
+    )
+
+    assert trainer_b.step == trainer_a.step
+    sd_a = trainer_a.snapshot().component_model
+    sd_b = trainer_b.snapshot().component_model
+    assert sd_a.keys() == sd_b.keys()
+    for k in sd_a:
+        torch.testing.assert_close(sd_a[k], sd_b[k])
+
+    opt_a = trainer_a.components_optimizer.state_dict()
+    opt_b = trainer_b.components_optimizer.state_dict()
+    assert opt_a["param_groups"] == opt_b["param_groups"]
+    assert set(opt_a["state"].keys()) == set(opt_b["state"].keys())
+    for pid in opt_a["state"]:
+        for k, v in opt_a["state"][pid].items():
+            if isinstance(v, Tensor):
+                torch.testing.assert_close(v, opt_b["state"][pid][k])
+            else:
+                assert v == opt_b["state"][pid][k]
+
+
+def test_trainer_resumes_from_snapshot_and_matches_uninterrupted_run() -> None:
+    """Train K steps in one shot vs train K/2 → save → resume → train K/2;
+    the final model weights should match up to RNG drift (we accept some, but
+    on CPU with deterministic Adam the trajectory is bit-exact)."""
+    pd_config = make_pd_config(steps=4)
+    runtime_config = RuntimeConfig(device="cpu", autocast_bf16=False)
+
+    torch.manual_seed(7)
+    trainer_full = Trainer(
+        target_model=TinyLinear(),
+        run_batch=run_batch_passthrough,
+        reconstruction_loss=recon_loss_mse,
+        pd_config=pd_config,
+        runtime_config=runtime_config,
+    )
+    trainer_full.run(make_loader(), CaptureSink(), make_cadence(), eval_loop=None)
+    full_model = trainer_full.snapshot().component_model
+    final_full = {k: v.clone() for k, v in full_model.items()}
+
+    # Same fresh start, but save after step 2 and resume.
+    torch.manual_seed(7)
+    pd_config_half = make_pd_config(steps=2)
+    trainer_half = Trainer(
+        target_model=TinyLinear(),
+        run_batch=run_batch_passthrough,
+        reconstruction_loss=recon_loss_mse,
+        pd_config=pd_config_half,
+        runtime_config=runtime_config,
+    )
+    trainer_half.run(make_loader(), CaptureSink(), make_cadence(), eval_loop=None)
+    snap = trainer_half.snapshot()
+
+    # Resume — extend ``steps`` to 4 via cfg_overrides.
+    trainer_resumed = Trainer.from_snapshot(
+        snap,
+        target_model=TinyLinear(),
+        run_batch=run_batch_passthrough,
+        reconstruction_loss=recon_loss_mse,
+        cfg_overrides={"steps": 4},
+    )
+    assert trainer_resumed.step == 2
+    trainer_resumed.run(make_loader(), CaptureSink(), make_cadence(), eval_loop=None)
+
+    resumed_model = trainer_resumed.snapshot().component_model
+    assert final_full.keys() == resumed_model.keys()
+    for k in final_full:
+        torch.testing.assert_close(final_full[k], resumed_model[k])
