@@ -29,6 +29,7 @@ from param_decomp.distributed import DistributedState, is_main_process
 from param_decomp.log import logger
 from param_decomp.optimize import EvalLoop, Trainer
 from param_decomp.three_pool import ThreePoolConfig, ThreePoolTrainer
+from param_decomp.trainer_snapshot import TrainerSnapshot
 from param_decomp.two_pool import TwoPoolConfig, TwoPoolTrainer
 from param_decomp_lab.batch_and_loss_fns import make_run_batch as _make_run_batch
 from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
@@ -58,11 +59,11 @@ from param_decomp_lab.resumption import (
     ResumableRunSink,
     ResumeConfig,
     ResumeProvenance,
+    check_snapshot_fidelity,
     read_resume_snapshot,
     resolve_step,
     write_provenance,
 )
-from param_decomp_lab.resumption.shards import compute_state_hash, state_hash_path
 from param_decomp_lab.run_sink import RunSink
 from param_decomp_lab.seed import set_seed
 
@@ -246,23 +247,21 @@ class SavedLMRun:
     def from_path(cls, path: ModelPath) -> "SavedLMRun":
         """Resolve a run directory or W&B path into a fully-validated `SavedLMRun`.
 
-        Assert that the saved ``cfg.run_id`` matches the resolved config
+        Asserts the saved ``cfg.run_id`` matches the resolved config
         directory's name — catches "the wrong run got moved/renamed into this
-        directory" mistakes. Skipped for legacy runs whose ``run_meta.yaml``
-        predates the ``run_id`` field.
+        directory" mistakes.
         """
         files = resolve_run_files(
             path, config_filename=RUN_META_FILENAME, checkpoint_prefix="model"
         )
         cfg = LMExperimentConfig.from_file(files.config_path)
-        if cfg.run_id is not None:
-            run_dir_name = files.config_path.parent.name
-            assert cfg.run_id == run_dir_name, (
-                f"SavedLMRun identity mismatch: "
-                f"run_meta.yaml at {files.config_path} has run_id={cfg.run_id!r} "
-                f"but is sitting in directory named {run_dir_name!r}. "
-                f"Either the run was renamed/copied or the wrong yaml landed here."
-            )
+        run_dir_name = files.config_path.parent.name
+        assert cfg.run_id == run_dir_name, (
+            f"SavedLMRun identity mismatch: "
+            f"run_meta.yaml at {files.config_path} has run_id={cfg.run_id!r} "
+            f"but is sitting in directory named {run_dir_name!r}. "
+            f"Either the run was renamed/copied or the wrong yaml landed here."
+        )
         return cls(cfg=cfg, checkpoint_path=files.checkpoint_path)
 
     @classmethod
@@ -334,12 +333,9 @@ def main(
     """
     if resume is not None:
         assert config_path is None, "pass either config_path or --resume, not both"
-        if load_only:
-            _load_only_main(Path(resume))
-        else:
-            _resume_main(Path(resume))
+        _resume_main(Path(resume), load_only=load_only)
     else:
-        assert config_path is None or not load_only, "--load_only requires --resume"
+        assert not load_only, "--load_only requires --resume"
         assert config_path is not None, "must provide either config_path or --resume"
         _fresh_main(Path(config_path))
 
@@ -464,6 +460,7 @@ def _fresh_main(config_path: Path) -> None:
         _construct_and_run_trainer(
             cfg=cfg,
             target_model=target_model,
+            run_batch=make_run_batch(cfg.target),
             train_loader=train_loader,
             sink=sink,
             device=device,
@@ -473,15 +470,27 @@ def _fresh_main(config_path: Path) -> None:
         sink.finish()
 
 
-def _resume_main(resume_cfg_path: Path) -> None:
-    """Resume-run path: load parent cfg + per-rank shard, continue training."""
+def _resume_main(resume_cfg_path: Path, *, load_only: bool = False) -> None:
+    """Continue a prior PD run from one of its resume snapshots.
+
+    Standard mode: builds the trainer via ``from_snapshot``, attaches a
+    :class:`ResumableRunSink` pointed at a new ``run_id``, writes
+    ``resume_provenance.yaml`` recording the parent lineage, and runs to
+    ``pd.steps``.
+
+    ``load_only=True``: skip the training half. After reconstructing the
+    trainer from the shard, call ``snapshot()`` and assert the resulting
+    state hash matches the sidecar written at save time. RNG-independent
+    fidelity check for the save→load→re-snapshot path.
+    """
     resume_cfg = ResumeConfig.from_file(resume_cfg_path)
     parent_cfg = LMExperimentConfig.from_file(resume_cfg.from_run / RUN_META_FILENAME)
 
     dist_state = init_distributed()
     if is_main_process():
         logger.info(f"Distributed state: {dist_state}")
-        logger.info(f"Resuming from {resume_cfg.from_run} @ step {resume_cfg.step}")
+        action = "[load-only] checking" if load_only else "Resuming from"
+        logger.info(f"{action} {resume_cfg.from_run} @ step {resume_cfg.step}")
     set_seed(parent_cfg.pd.seed)
     device = get_device()
     rank = dist_state.rank if dist_state is not None else 0
@@ -503,10 +512,30 @@ def _resume_main(resume_cfg_path: Path) -> None:
             "runtime": parent_cfg.runtime.model_copy(update={"device": device}),
         }
     )
-
     assert not (effective_cfg.two_pool is not None and effective_cfg.three_pool is not None), (
         "parent's two_pool and three_pool are both set — corrupt run_meta.yaml"
     )
+
+    target_model = build_target(effective_cfg.target)
+    run_batch = make_run_batch(effective_cfg.target)
+    snapshot = read_resume_snapshot(resume_cfg, rank=rank, current_device=device)
+
+    if load_only:
+        trainer = _construct_trainer(
+            cfg=effective_cfg,
+            target_model=target_model,
+            run_batch=run_batch,
+            resume_snapshot=snapshot,
+            cfg_overrides=cfg_overrides,
+        )
+        matched = check_snapshot_fidelity(
+            fresh=trainer.snapshot(),
+            parent_run_dir=resume_cfg.from_run,
+            step=resolve_step(resume_cfg.from_run, resume_cfg.step),
+            rank=rank,
+        )
+        logger.info(f"[load-only][rank {rank}] OK — hash matches ({matched[:16]}…)")
+        return
 
     out_dir = _broadcast_out_dir(dist_state)
     if is_main_process():
@@ -517,15 +546,13 @@ def _resume_main(resume_cfg_path: Path) -> None:
             ResumeProvenance(parent_run_dir=resume_cfg.from_run, parent_step=resolved_step),
         )
     sink = _build_resumable_sink(out_dir, rank=rank)
-
-    target_model = build_target(effective_cfg.target)
     train_loader = _build_train_loader(effective_cfg, device, dist_state)
-    snapshot = read_resume_snapshot(resume_cfg, rank=rank, current_device=device)
 
     try:
         _construct_and_run_trainer(
             cfg=effective_cfg,
             target_model=target_model,
+            run_batch=run_batch,
             train_loader=train_loader,
             sink=sink,
             device=device,
@@ -535,100 +562,6 @@ def _resume_main(resume_cfg_path: Path) -> None:
         )
     finally:
         sink.finish()
-
-
-def _load_only_main(resume_cfg_path: Path) -> None:
-    """RNG-independent fidelity test: load a snapshot, re-snapshot, assert hashes match.
-
-    Reconstructs a trainer from a saved shard via ``Trainer.from_snapshot``,
-    then calls ``trainer.snapshot()`` and compares the resulting resume-blob
-    hash against the on-disk ``state_hash_rank<R>.txt`` written at save time.
-
-    No data is consumed and no training step is taken — the loss-trajectory
-    comparison that depends on streaming-dataset / PPGD-source RNG is bypassed
-    entirely. If save→load→re-snapshot is byte-exact (it should be), the hash
-    matches; any divergence (e.g. an optimizer state slot that doesn't round-trip,
-    a forgotten buffer) fails loudly per-rank.
-    """
-    resume_cfg = ResumeConfig.from_file(resume_cfg_path)
-    parent_cfg = LMExperimentConfig.from_file(resume_cfg.from_run / RUN_META_FILENAME)
-
-    dist_state = init_distributed()
-    if is_main_process():
-        logger.info(f"Distributed state: {dist_state}")
-        logger.info(
-            f"[load-only] checking snapshot at {resume_cfg.from_run} @ step {resume_cfg.step}"
-        )
-    set_seed(parent_cfg.pd.seed)
-    device = get_device()
-    rank = dist_state.rank if dist_state is not None else 0
-
-    cfg_overrides = (
-        resume_cfg.overrides.to_pd_config_patch() if resume_cfg.overrides is not None else None
-    )
-    effective_pd = (
-        parent_cfg.pd.model_copy(update=cfg_overrides)
-        if cfg_overrides is not None
-        else parent_cfg.pd
-    )
-    effective_cfg = parent_cfg.model_copy(
-        update={
-            "pd": effective_pd,
-            "runtime": parent_cfg.runtime.model_copy(update={"device": device}),
-        }
-    )
-
-    target_model = build_target(effective_cfg.target)
-    snapshot = read_resume_snapshot(resume_cfg, rank=rank, current_device=device)
-
-    # Build the trainer from the loaded snapshot. We don't run it — just
-    # re-snapshot and compare.
-    run_batch = make_run_batch(effective_cfg.target)
-    if effective_cfg.three_pool is not None:
-        trainer = ThreePoolTrainer.from_snapshot(
-            snapshot,
-            target_model=target_model,
-            run_batch=run_batch,
-            reconstruction_loss=recon_loss_kl,
-            cfg_overrides=cfg_overrides,
-        )
-    elif effective_cfg.two_pool is not None:
-        trainer = TwoPoolTrainer.from_snapshot(
-            snapshot,
-            target_model=target_model,
-            run_batch=run_batch,
-            reconstruction_loss=recon_loss_kl,
-            cadence=effective_cfg.cadence,
-            cfg_overrides=cfg_overrides,
-        )
-    else:
-        trainer = Trainer.from_snapshot(
-            snapshot,
-            target_model=target_model,
-            run_batch=run_batch,
-            reconstruction_loss=recon_loss_kl,
-            cfg_overrides=cfg_overrides,
-        )
-
-    fresh = trainer.snapshot()
-    # `save_shard` adds run_id = parent_run_dir.name before hashing; mirror that
-    # here so the hashes compare on equal footing.
-    fresh_blob = {**fresh.resume, "run_id": resume_cfg.from_run.name}
-    fresh_hash = compute_state_hash(fresh_blob)
-
-    resolved_step = resolve_step(resume_cfg.from_run, resume_cfg.step)
-    saved_hash_path = state_hash_path(resume_cfg.from_run, resolved_step, rank)
-    assert saved_hash_path.is_file(), f"no saved state hash at {saved_hash_path}"
-    saved_hash = saved_hash_path.read_text().strip()
-
-    assert fresh_hash == saved_hash, (
-        f"[load-only][rank {rank}] state hash mismatch:\n"
-        f"  saved:   {saved_hash}\n"
-        f"  fresh:   {fresh_hash}\n"
-        f"  path:    {saved_hash_path}\n"
-        f"save→load→re-snapshot is not byte-exact — resumption fidelity broken."
-    )
-    logger.info(f"[load-only][rank {rank}] OK — hash matches ({saved_hash[:16]}…)")
 
 
 def _build_train_loader(
@@ -654,84 +587,103 @@ def _build_train_loader(
     )
 
 
+def _construct_trainer(
+    *,
+    cfg: LMExperimentConfig,
+    target_model: Any,
+    run_batch: RunBatch,
+    resume_snapshot: TrainerSnapshot | None = None,
+    cfg_overrides: dict[str, Any] | None = None,
+) -> Trainer | TwoPoolTrainer | ThreePoolTrainer:
+    """Build the right concrete trainer for the cfg's pool kind.
+
+    Fresh-vs-resume is switched by ``resume_snapshot``: when ``None``, the
+    trainer is constructed from cfg fields; when set, the trainer is
+    rebuilt via ``from_snapshot``.
+    """
+    if cfg.three_pool is not None:
+        if resume_snapshot is not None:
+            return ThreePoolTrainer.from_snapshot(
+                resume_snapshot,
+                target_model=target_model,
+                run_batch=run_batch,
+                reconstruction_loss=recon_loss_kl,
+                cfg_overrides=cfg_overrides,
+            )
+        return ThreePoolTrainer(
+            target_model=target_model,
+            run_batch=run_batch,
+            reconstruction_loss=recon_loss_kl,
+            pd_config=cfg.pd,
+            runtime_config=cfg.runtime,
+            three_pool_config=cfg.three_pool,
+        )
+    if cfg.two_pool is not None:
+        if resume_snapshot is not None:
+            return TwoPoolTrainer.from_snapshot(
+                resume_snapshot,
+                target_model=target_model,
+                run_batch=run_batch,
+                reconstruction_loss=recon_loss_kl,
+                cadence=cfg.cadence,
+                cfg_overrides=cfg_overrides,
+            )
+        return TwoPoolTrainer(
+            target_model=target_model,
+            run_batch=run_batch,
+            reconstruction_loss=recon_loss_kl,
+            pd_config=cfg.pd,
+            runtime_config=cfg.runtime,
+            two_pool_config=cfg.two_pool,
+            cadence=cfg.cadence,
+        )
+    if resume_snapshot is not None:
+        return Trainer.from_snapshot(
+            resume_snapshot,
+            target_model=target_model,
+            run_batch=run_batch,
+            reconstruction_loss=recon_loss_kl,
+            cfg_overrides=cfg_overrides,
+        )
+    return Trainer(
+        target_model=target_model,
+        run_batch=run_batch,
+        reconstruction_loss=recon_loss_kl,
+        pd_config=cfg.pd,
+        runtime_config=cfg.runtime,
+    )
+
+
 def _construct_and_run_trainer(
     *,
     cfg: LMExperimentConfig,
     target_model: Any,
+    run_batch: RunBatch,
     train_loader: DataLoader[Any],
     sink: ResumableRunSink,
     device: str,
     dist_state: DistributedState | None,
-    resume_snapshot: Any | None = None,
+    resume_snapshot: TrainerSnapshot | None = None,
     cfg_overrides: dict[str, Any] | None = None,
 ) -> None:
     """Build the right concrete trainer for the cfg's pool kind and run it.
 
-    Fresh and resume share this code path; ``resume_snapshot`` switches
-    between :meth:`Trainer` and :meth:`Trainer.from_snapshot` construction.
+    Only the single-pool ``Trainer`` consumes an eval loop; the multi-pool
+    trainers' :meth:`run` signatures are eval-loop-less for now (``cfg.eval``
+    is ignored on those paths).
     """
-    run_batch = make_run_batch(cfg.target)
-    if cfg.three_pool is not None:
-        # 3-pool path: eval not wired through yet — cfg.eval (if set) is ignored.
-        if resume_snapshot is not None:
-            trainer = ThreePoolTrainer.from_snapshot(
-                resume_snapshot,
-                target_model=target_model,
-                run_batch=run_batch,
-                reconstruction_loss=recon_loss_kl,
-                cfg_overrides=cfg_overrides,
-            )
-        else:
-            trainer = ThreePoolTrainer(
-                target_model=target_model,
-                run_batch=run_batch,
-                reconstruction_loss=recon_loss_kl,
-                pd_config=cfg.pd,
-                runtime_config=cfg.runtime,
-                three_pool_config=cfg.three_pool,
-            )
-        trainer.run(train_loader, sink, cfg.cadence)
-    elif cfg.two_pool is not None:
-        # 2-pool path: eval not wired through yet — cfg.eval (if set) is ignored.
-        if resume_snapshot is not None:
-            two_trainer = TwoPoolTrainer.from_snapshot(
-                resume_snapshot,
-                target_model=target_model,
-                run_batch=run_batch,
-                reconstruction_loss=recon_loss_kl,
-                cadence=cfg.cadence,
-                cfg_overrides=cfg_overrides,
-            )
-        else:
-            two_trainer = TwoPoolTrainer(
-                target_model=target_model,
-                run_batch=run_batch,
-                reconstruction_loss=recon_loss_kl,
-                pd_config=cfg.pd,
-                runtime_config=cfg.runtime,
-                two_pool_config=cfg.two_pool,
-                cadence=cfg.cadence,
-            )
-        two_trainer.run(train_loader, sink, cfg.cadence)
-    else:
+    trainer = _construct_trainer(
+        cfg=cfg,
+        target_model=target_model,
+        run_batch=run_batch,
+        resume_snapshot=resume_snapshot,
+        cfg_overrides=cfg_overrides,
+    )
+    if isinstance(trainer, Trainer):
         eval_loop = _build_eval_loop(cfg, device, dist_state)
-        if resume_snapshot is not None:
-            one_trainer = Trainer.from_snapshot(
-                resume_snapshot,
-                target_model=target_model,
-                run_batch=run_batch,
-                reconstruction_loss=recon_loss_kl,
-                cfg_overrides=cfg_overrides,
-            )
-        else:
-            one_trainer = Trainer(
-                target_model=target_model,
-                run_batch=run_batch,
-                reconstruction_loss=recon_loss_kl,
-                pd_config=cfg.pd,
-                runtime_config=cfg.runtime,
-            )
-        one_trainer.run(train_loader, sink, cfg.cadence, eval_loop)
+        trainer.run(train_loader, sink, cfg.cadence, eval_loop)
+    else:
+        trainer.run(train_loader, sink, cfg.cadence)
 
 
 def _build_eval_loop(
