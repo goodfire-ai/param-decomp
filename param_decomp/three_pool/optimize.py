@@ -47,7 +47,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch.utils.data import DataLoader
 
-from param_decomp._trace import trace
+from param_decomp._trace import dump_memory_stats, trace
 from param_decomp.batch_and_loss_fns import ReconstructionLoss, RunBatch
 from param_decomp.component_model import ComponentModel
 from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
@@ -231,6 +231,7 @@ class ThreePoolTrainer:
         trace("ThreePoolTrainer.__init__: ComponentModel ctor: done, moving to device")
         self.component_model = self.component_model.to(self._device)
         trace("ThreePoolTrainer.__init__: ComponentModel.to(device): done")
+        dump_memory_stats("after ComponentModel.to(device)")
         # Diverge stochastic RNG per rank for mask sampling.
         seed_per_rank(pd_config.seed)
 
@@ -284,6 +285,7 @@ class ThreePoolTrainer:
             case "ppgd":
                 pass  # ppgd_state constructed lazily from first batch in run()
         trace("ThreePoolTrainer.__init__: optimizer build: done")
+        dump_memory_stats("after optimizer build")
         trace("ThreePoolTrainer.__init__: exit")
 
     # ============================ Atomic cfg + state ============================
@@ -586,6 +588,8 @@ class ThreePoolTrainer:
                 torch.cuda.current_stream(device).synchronize()
                 step_ms = (time.perf_counter() - step_start) * 1000.0
                 trace(f"Trainer.run: step {step}: done in {step_ms:.1f}ms")
+                if step % cadence.train_log_every == 0:
+                    dump_memory_stats(f"step {step} done")
 
                 if step % cadence.train_log_every == 0:
                     _log_train_metrics(

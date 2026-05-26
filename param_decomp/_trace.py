@@ -18,6 +18,7 @@ import os
 import sys
 import time
 
+import torch
 import torch.distributed as dist
 
 _TRACE_START = time.perf_counter()
@@ -68,3 +69,37 @@ def trace(msg: str) -> None:
 def phase_trace_enabled() -> bool:
     """``PhaseProfiler.phase`` should emit per-phase entry traces."""
     return os.environ.get("PD_PHASE_TRACE", "").strip() in ("1", "true", "yes")
+
+
+def dump_memory_stats(label: str) -> None:
+    """Emit a single-line summary of ``torch.cuda.memory_stats`` for this rank.
+
+    Includes the headline numbers for capacity planning + fragmentation:
+      * ``cur``: bytes currently held by tensors
+      * ``peak``: peak bytes held since the last reset_peak (typically since
+        start of training, unless ``PhaseProfiler.phase`` is resetting per phase)
+      * ``reserved``: bytes the CUDA caching allocator is holding (some unused)
+      * ``free``: caching allocator's free-but-reserved bytes
+      * ``num_alloc_retries``: count of alloc-then-shrink-cache retries — non-zero
+        means fragmentation is biting
+      * ``num_ooms``: count of OOM events the allocator has observed and recovered from
+
+    Gated by ``PD_TRACE_RANKS`` like ``trace()`` so we don't fan out 104 ranks.
+    """
+    rank = _current_rank()
+    if not _should_log(rank):
+        return
+    device = torch.cuda.current_device()
+    s = torch.cuda.memory_stats(device)
+    cur = s["allocated_bytes.all.current"] / 1e9
+    peak = s["allocated_bytes.all.peak"] / 1e9
+    reserved = s["reserved_bytes.all.current"] / 1e9
+    free = reserved - cur
+    elapsed_ms = (time.perf_counter() - _TRACE_START) * 1000.0
+    print(
+        f"[mem rank={rank} +{elapsed_ms:9.1f}ms] {label} "
+        f"cur={cur:.2f}gb peak={peak:.2f}gb reserved={reserved:.2f}gb free={free:.2f}gb "
+        f"retries={s.get('num_alloc_retries', 0)} ooms={s.get('num_ooms', 0)}",
+        flush=True,
+    )
+    sys.stdout.flush()
