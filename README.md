@@ -5,10 +5,9 @@ the core method, see [`nano_param_decomp/`](nano_param_decomp/).
 
 ## References
 
-- **VPD paper (April 2026):** https://www.goodfire.ai/research/interpreting-lm-parameters.
-  Canonical run: `goodfire/spd/runs/s-55ea3f9b`.
-- **SPD paper (June 2025):** https://arxiv.org/abs/2506.20790. Paper branch:
-  [`spd-paper`](https://github.com/goodfire-ai/param-decomp/tree/spd-paper).
+- **VPD paper (April 2026):** https://www.goodfire.ai/research/interpreting-lm-parameters. [VPD Code Release](https://github.com/goodfire-ai/param-decomp/releases/tag/vpd-paper)
+  Canonical 4L-pile run: `goodfire/spd/runs/s-55ea3f9b`.
+- **SPD paper (June 2025):** https://arxiv.org/abs/2506.20790. [SPD Code Release](https://github.com/goodfire-ai/param-decomp/releases/tag/v1).
 
 ## Install
 
@@ -32,7 +31,7 @@ self-contained script that reads a YAML and calls `optimize()`:
 ```bash
 pd-tms       param_decomp_lab/experiments/tms/tms_5-2_config.yaml
 pd-resid-mlp param_decomp_lab/experiments/resid_mlp/resid_mlp1_config.yaml
-pd-lm        param_decomp_lab/experiments/lm/ss_llama_simple_mlp-2L.yaml
+pd-lm        param_decomp_lab/experiments/lm/pile_llama_simple_mlp-4L.yaml
 ```
 
 For a brand-new experiment, write your own `run.py` that builds the target model, the
