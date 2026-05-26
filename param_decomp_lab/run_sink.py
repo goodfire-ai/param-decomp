@@ -15,6 +15,7 @@ from tqdm import tqdm
 from param_decomp.base_config import BaseConfig
 from param_decomp.distributed import is_main_process
 from param_decomp.log import logger
+from param_decomp.training_state import TrainingState
 from param_decomp_lab.infra.run_files import save_file
 from param_decomp_lab.infra.wandb import init_wandb, try_wandb
 
@@ -131,18 +132,27 @@ class RunSink:
         for line in lines:
             tqdm.write(line)
 
-    def checkpoint(self, state_dict: dict[str, Any], step: int) -> None:
-        """Save `state_dict` to `{out_dir}/model_{step}.pth` and push to wandb.
+    def checkpoint(self, snapshot: TrainingState) -> None:
+        """Save the snapshot as two files: `model_<step>.pth` + `training_<step>.pth`.
 
-        No-op when `out_dir is None`; wandb upload only when wandb is active.
+        `model_<step>.pth` is just the component-model state dict — the artifact
+        downstream tools (`SavedRun.load_model`, postprocessing) consume.
+        `training_<step>.pth` is the full `TrainingState` (configs, optimizer
+        state, metric states, step) needed for resumption.
+
+        No-op when `out_dir is None` (silent sink / non-main rank); wandb upload
+        only when wandb is active.
         """
         if self.out_dir is None:
             return
-        path = self.out_dir / f"model_{step}.pth"
-        save_file(state_dict, path)
-        logger.info(f"Saved checkpoint to {path}")
+        model_path = self.out_dir / f"model_{snapshot.step}.pth"
+        save_file(snapshot.component_model, model_path)
+        training_path = self.out_dir / f"training_{snapshot.step}.pth"
+        save_file(snapshot, training_path)
+        logger.info(f"Saved checkpoint to {model_path} (+ {training_path.name})")
         if self._wandb_active:
-            try_wandb(wandb.save, str(path), base_path=str(self.out_dir), policy="now")
+            try_wandb(wandb.save, str(model_path), base_path=str(self.out_dir), policy="now")
+            try_wandb(wandb.save, str(training_path), base_path=str(self.out_dir), policy="now")
 
     def finish(self) -> None:
         """End-of-run cleanup."""

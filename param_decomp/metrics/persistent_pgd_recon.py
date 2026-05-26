@@ -7,7 +7,7 @@ state + optimizer state machine live in `persistent_pgd_state`.
 """
 
 from collections.abc import Iterable
-from typing import Annotated, ClassVar, Literal, override
+from typing import Annotated, Any, ClassVar, Literal, override
 
 import torch
 from jaxtyping import Float
@@ -128,6 +128,9 @@ class _PersistentPGDReconBase[
         super().__init__(cfg)
         self.state: PersistentPGDState | None = None
         self._pending_source_grads: PPGDSources | None = None
+        # Stash from `load_state_dict` if called before the first `update()` —
+        # `PersistentPGDState` needs batch_dims, which we only learn from a live ctx.
+        self._pending_resume_state: dict[str, Any] | None = None
 
     def _ensure_state(self, ctx: MetricContext) -> None:
         if self.state is not None:
@@ -146,6 +149,9 @@ class _PersistentPGDReconBase[
             router=_router_for_cfg(self.cfg, self.device),
             reconstruction_loss=ctx.reconstruction_loss,
         )
+        if self._pending_resume_state is not None:
+            self.state.load_state_dict(self._pending_resume_state)
+            self._pending_resume_state = None
 
     @override
     def reset(self) -> None:
@@ -246,6 +252,24 @@ class _PersistentPGDReconBase[
         assert self.state is not None
         self.state.step(self._pending_source_grads)
         self._pending_source_grads = None
+
+    @override
+    def state_dict(self) -> dict[str, Any]:
+        if self.state is None:
+            return {}
+        return self.state.state_dict()
+
+    @override
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        if not state:
+            self._pending_resume_state = None
+            return
+        if self.state is None:
+            # `PersistentPGDState` needs batch_dims, which only arrives with the first
+            # `update()` ctx. Defer the load until `_ensure_state` constructs the state.
+            self._pending_resume_state = state
+        else:
+            self.state.load_state_dict(state)
 
 
 class PersistentPGDReconLoss(_PersistentPGDReconBase[PersistentPGDReconLossConfig]):

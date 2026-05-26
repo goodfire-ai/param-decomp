@@ -6,7 +6,7 @@ these primitives.
 """
 
 from abc import ABC, abstractmethod
-from typing import Annotated, Literal, override
+from typing import Annotated, Any, Literal, override
 
 import torch
 from jaxtyping import Float, Int
@@ -105,6 +105,18 @@ class PPGDOptimizer(ABC):
     @abstractmethod
     def set_lr(self, lr: float) -> None: ...
 
+    def state_dict(self) -> dict[str, Any]:
+        """Return trajectory-dependent optimizer state.
+
+        Default empty — stateless optimizers (e.g. SignPGD) need nothing. Override
+        in optimizers that carry momentum or step counts across training steps.
+        """
+        return {}
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:  # noqa: B027 — intentional no-op default
+        """Restore optimizer state produced by a prior :meth:`state_dict` call."""
+        del state
+
 
 class SignPGDOptimizer(PPGDOptimizer):
     def __init__(self, cfg: SignPGDConfig) -> None:
@@ -159,6 +171,23 @@ class AdamPGDOptimizer(PPGDOptimizer):
     @override
     def set_lr(self, lr: float) -> None:
         self._lr = lr
+
+    @override
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "step_count": self._step_count,
+            "m": dict(self._m),
+            "v": dict(self._v),
+        }
+
+    @override
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        self._step_count = state["step_count"]
+        with torch.no_grad():
+            for k, t in state["m"].items():
+                self._m[k].copy_(t.to(self._m[k].device))
+            for k, t in state["v"].items():
+                self._v[k].copy_(t.to(self._v[k].device))
 
 
 def make_ppgd_optimizer(cfg: PGDOptimizerConfig) -> PPGDOptimizer:
@@ -264,6 +293,20 @@ class PersistentPGDState:
     def update_lr(self, step: int, total_steps: int) -> None:
         lr = get_scheduled_value(step, total_steps, self._lr_schedule)
         self.optimizer.set_lr(lr)
+
+    def state_dict(self) -> dict[str, Any]:
+        """Round-trip the persistent adversary trajectory: sources + optimizer state."""
+        return {
+            "sources": {k: v.detach() for k, v in self.sources.items()},
+            "optimizer": self.optimizer.state_dict(),
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        """Restore sources + optimizer state in-place. Shapes must already match."""
+        with torch.no_grad():
+            for k, src in self.sources.items():
+                src.copy_(state["sources"][k].to(src.device))
+        self.optimizer.load_state_dict(state["optimizer"])
 
     def warmup(
         self,
