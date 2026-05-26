@@ -355,6 +355,45 @@ class GlobalSharedTransformerCiFn(nn.Module):
                 for _ in range(n_layers)
             ]
         )
+        # Lazily-enabled per-stage backward timing. ``enable_bwd_profile`` populates this
+        # with one ``torch.cuda.Event(enable_timing=True)`` per boundary tensor; the next
+        # ``forward`` call registers backward hooks that record those events as gradient
+        # flows through. ``compute_bwd_breakdown`` returns ``elapsed_time`` between
+        # consecutive events.
+        self._bwd_events: dict[str, torch.cuda.Event] = {}
+
+    def enable_bwd_profile(self) -> None:
+        """Create CUDA events for per-stage backward timing.
+
+        Boundaries instrumented (in forward-execution order):
+        ``concatenated`` → ``x_0`` (= input projector out) → ``x_1`` ... ``x_n`` (block
+        outputs) → ``output`` (output head out). On backward, hooks record events in
+        reverse order, so ``elapsed_time(output, x_n)`` = output-head bwd, etc.
+        """
+        labels = ["output", *(f"x_{i}" for i in range(self.n_transformer_layers, -1, -1)), "concatenated"]
+        self._bwd_events = {label: torch.cuda.Event(enable_timing=True) for label in labels}
+
+    def compute_bwd_breakdown(self) -> dict[str, float]:
+        """Per-stage bwd times in ms. Empty if ``enable_bwd_profile`` was never called.
+
+        Caller must ``torch.cuda.synchronize()`` first to ensure events are recorded.
+        """
+        if not self._bwd_events:
+            return {}
+        n = self.n_transformer_layers
+        ev = self._bwd_events
+        out: dict[str, float] = {"output_head_bwd": ev["output"].elapsed_time(ev[f"x_{n}"])}
+        for i in range(n, 0, -1):
+            out[f"block_{i - 1}_bwd"] = ev[f"x_{i}"].elapsed_time(ev[f"x_{i - 1}"])
+        out["input_projector_bwd"] = ev["x_0"].elapsed_time(ev["concatenated"])
+        return out
+
+    def _maybe_hook(self, tensor: Tensor, label: str) -> None:
+        """Register a backward hook that records the event for ``label``."""
+        if not self._bwd_events:
+            return
+        event = self._bwd_events[label]
+        tensor.register_hook(lambda _grad, e=event: e.record())
 
     @override
     def forward(
@@ -365,6 +404,7 @@ class GlobalSharedTransformerCiFn(nn.Module):
             F.rms_norm(input_acts[name], (input_acts[name].shape[-1],)) for name in self.layer_order
         ]
         concatenated = torch.cat(inputs_list, dim=-1)
+        self._maybe_hook(concatenated, "concatenated")
         projected: Tensor = self._input_projector(concatenated)
 
         # The transformer blocks expect a sequence dimension, so we add an extra dimension to our
@@ -375,13 +415,16 @@ class GlobalSharedTransformerCiFn(nn.Module):
             added_seq_dim = True
 
         x = projected
-        for block in self._blocks:
+        self._maybe_hook(x, "x_0")
+        for i, block in enumerate(self._blocks):
             x = block(x)
+            self._maybe_hook(x, f"x_{i + 1}")
 
         output = self._output_head(x)
 
         if added_seq_dim:
             output = output.squeeze(-2)
+        self._maybe_hook(output, "output")
 
         split_outputs = torch.split(output, self.split_sizes, dim=-1)
         outputs = {name: split_outputs[i] for i, name in enumerate(self.layer_order)}

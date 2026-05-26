@@ -39,6 +39,7 @@ import torch.distributed.nn.functional as dist_fn
 import torch.nn as nn
 from torch import Tensor
 
+from param_decomp._trace import trace
 from param_decomp.component_model import CIOutputs, ComponentModel
 from param_decomp.grad_clip import cross_pool_clip_grad_norm
 from param_decomp.metrics.importance_minimality import (
@@ -117,6 +118,7 @@ def step_ci(
 
     optimizer.zero_grad(set_to_none=True)
     _fused_backward_through_ci_fn(loss_imp, ci, g_ci_total, layout, cfg, p)
+    _maybe_emit_ci_fn_bwd_breakdown(component_model)
 
     with p.phase("ci/9_in_pool_allreduce"):
         layout.all_reduce_ci_fn_grads(ci_fn_params)
@@ -217,6 +219,27 @@ def _assemble_g_ci_total(
         )
         g_ci_total[s] = lw + pgd
     return g_ci_total
+
+
+def _maybe_emit_ci_fn_bwd_breakdown(component_model: ComponentModel) -> None:
+    """Emit per-stage CI fn bwd times as ``trace()`` lines when the bwd profile is on.
+
+    Synchronizes the current stream to ensure CUDA events have completed, then walks
+    the CI fn modules to find a ``GlobalSharedTransformerCiFn`` instance with events
+    enabled (``ThreePoolTrainer.__init__`` does this under ``PD_CI_FN_BWD_PROFILE=1``).
+    Emits one ``phase: ci/8a_<label>_bwd`` line per stage so the existing analyzer
+    surfaces them alongside the macro phases. No-op when profiling is off.
+    """
+    if component_model.ci_fn is None:
+        return
+    from param_decomp.ci_fns import GlobalSharedTransformerCiFn
+
+    for m in component_model.ci_fn.modules():
+        if isinstance(m, GlobalSharedTransformerCiFn) and m._bwd_events:
+            torch.cuda.synchronize()
+            for label, t_ms in m.compute_bwd_breakdown().items():
+                trace(f"phase: ci/8a_stage_{label}: {t_ms:.1f}ms")
+            return
 
 
 def _fused_backward_through_ci_fn(

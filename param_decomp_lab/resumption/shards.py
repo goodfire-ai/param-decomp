@@ -1,23 +1,39 @@
 """On-disk layout for per-rank resume shards.
 
 Each periodic checkpoint produces one ``shard_rank<R>.pth`` per rank under
-``<run_dir>/resume/step_<step>/``. The shard payload is whatever
-``trainer.state_blob()`` returned — atomic cfg + state for that rank.
-
-Resume reads the shard for the current rank only; layout-fingerprint checks
-inside the trainer's ``from_blob`` catch world-shape drift.
+``<run_dir>/resume/step_<step>/``. The shard's payload is a
+:class:`ShardEnvelope` — the trainer's rank-local resume blob plus the
+``run_id`` of the run that owns it, so a "loaded the wrong parent" mistake
+fails before any tensors get copied into a new model.
 
 Each shard write also lays down a sibling ``state_hash_rank<R>.txt`` with
-the SHA256 of the structural contents of the blob — used by the
-``--load-only`` fidelity test to assert that ``Trainer.from_snapshot``
+a stable SHA256 of the envelope contents — used by
+``check_snapshot_fidelity`` to assert that ``Trainer.from_snapshot``
 reconstructs a trainer whose own ``snapshot()`` produces the same hash.
 """
 
 import hashlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 import torch
+
+
+@dataclass(frozen=True)
+class ShardEnvelope:
+    """What lives on disk as one rank's shard.
+
+    Attributes:
+        run_id: Identity tag of the parent run (= ``run_dir.name``). Verified
+            on load so a shard moved/copied to the wrong run directory errors
+            cleanly.
+        resume: The trainer's :attr:`TrainerSnapshot.resume` dict — atomic
+            cfg + state for this rank, opaque to the shard layer.
+    """
+
+    run_id: str
+    resume: dict[str, Any]
 
 
 def shard_path(run_dir: Path, step: int, rank: int) -> Path:
@@ -30,14 +46,14 @@ def state_hash_path(run_dir: Path, step: int, rank: int) -> Path:
     return run_dir / "resume" / f"step_{step}" / f"state_hash_rank{rank}.txt"
 
 
-def compute_state_hash(blob: dict[str, Any]) -> str:
-    """Stable SHA256 over the structural contents of a state blob.
+def compute_state_hash(envelope: ShardEnvelope) -> str:
+    """Stable SHA256 over the envelope's structural contents.
 
     Walks dict/list/tuple structure in deterministic order, hashes tensor
-    byte contents (device-independent — copied to CPU and viewed as uint8),
-    and ``repr()``s scalar values. Two blobs with bit-equal tensor data and
-    equal scalar values produce the same digest regardless of which device
-    the tensors lived on.
+    byte contents (device-independent — copied to CPU and read via numpy),
+    and ``repr()``s scalar values. Two envelopes with bit-equal tensor data
+    and equal scalar values produce the same digest regardless of which
+    device the tensors lived on.
     """
     h = hashlib.sha256()
 
@@ -63,55 +79,46 @@ def compute_state_hash(blob: dict[str, Any]) -> str:
             h.update(b"V")
             h.update(repr(obj).encode())
 
-    walk(blob)
+    walk({"run_id": envelope.run_id, "resume": envelope.resume})
     return h.hexdigest()
 
 
-def save_shard(blob: dict[str, Any], run_dir: Path, step: int, rank: int) -> None:
-    """Persist a rank's :meth:`state_blob` dict to its canonical shard path.
-
-    Embeds ``run_id = run_dir.name`` in the blob so ``load_shard`` can assert
-    on retrieval that the shard came from the run the caller pointed at.
-    Catches "I loaded the wrong parent" cleanly before any tensors get copied
-    into the new model — much better than relying on a downstream
-    topology-fingerprint mismatch (which only fires if shapes happen to differ).
-
-    Also writes a sibling ``state_hash_rank<R>.txt`` with the SHA256 digest of
-    the blob (run_id included), so ``--load-only`` fidelity checks can verify
-    that a freshly-reconstructed trainer's own ``snapshot().resume`` matches
-    bit-for-bit what was saved.
-    """
-    blob = {**blob, "run_id": run_dir.name}
+def save_shard(envelope: ShardEnvelope, run_dir: Path, step: int, rank: int) -> None:
+    """Persist ``envelope`` to its canonical shard path, plus the sibling hash file."""
+    assert envelope.run_id == run_dir.name, (
+        f"envelope run_id={envelope.run_id!r} doesn't match run_dir.name={run_dir.name!r} — "
+        f"refusing to write a shard whose identity tag disagrees with its on-disk location."
+    )
+    payload = {"run_id": envelope.run_id, "resume": envelope.resume}
     path = shard_path(run_dir, step, rank)
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(blob, path)
-    state_hash_path(run_dir, step, rank).write_text(compute_state_hash(blob))
+    torch.save(payload, path)
+    state_hash_path(run_dir, step, rank).write_text(compute_state_hash(envelope))
 
 
-def load_shard(run_dir: Path, step: int, rank: int) -> dict[str, Any]:
-    """Read a rank's resume shard back from disk.
+def load_shard(run_dir: Path, step: int, rank: int) -> ShardEnvelope:
+    """Read a rank's shard back into a :class:`ShardEnvelope`.
 
-    ``weights_only=False`` because the blob contains arbitrary cfg dicts
-    (model_dump output) alongside the tensors.
+    ``weights_only=False`` because the resume blob contains arbitrary cfg
+    dicts (model_dump output) alongside tensors.
 
-    Asserts the shard's saved ``run_id`` matches ``run_dir.name``. If they
-    don't match, the caller pointed at a directory whose contents came from
-    a different run — fail loud before model state gets corrupted.
+    Asserts the saved ``run_id`` matches ``run_dir.name`` — if they don't,
+    the caller pointed at a directory whose contents came from a different
+    run, and we fail loud before any model state gets corrupted.
     """
     path = shard_path(run_dir, step, rank)
     assert path.is_file(), f"resume shard not found: {path}"
-    blob: dict[str, Any] = torch.load(path, map_location="cpu", weights_only=False)
-    expected_run_id = run_dir.name
-    actual_run_id = blob.get("run_id")
-    assert actual_run_id == expected_run_id, (
+    payload: dict[str, Any] = torch.load(path, map_location="cpu", weights_only=False)
+    saved_run_id = payload["run_id"]
+    assert saved_run_id == run_dir.name, (
         f"resume shard identity mismatch at {path}:\n"
-        f"  expected run_id (= dir name): {expected_run_id!r}\n"
-        f"  shard's saved run_id:         {actual_run_id!r}\n"
+        f"  expected run_id (= dir name): {run_dir.name!r}\n"
+        f"  shard's saved run_id:         {saved_run_id!r}\n"
         f"the shard came from a different run than the dir it lives in — "
         f"someone copied / moved shards across runs, or you pointed at the "
         f"wrong parent."
     )
-    return blob
+    return ShardEnvelope(run_id=saved_run_id, resume=payload["resume"])
 
 
 def list_resume_steps(run_dir: Path) -> list[int]:
