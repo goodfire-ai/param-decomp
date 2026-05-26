@@ -67,7 +67,7 @@ from param_decomp.metrics.persistent_pgd_recon import (
 from param_decomp.metrics.persistent_pgd_state import PersistentPGDState
 from param_decomp.run_sink import RunSink
 from param_decomp.schedule import get_scheduled_value
-from param_decomp.sdpa_strict import enforce_flash_attention_only
+from param_decomp.sdpa_strict import verify_flash_attention_available
 from param_decomp.three_pool.checkpoint import gather_full_state_dict_to_rank0
 from param_decomp.three_pool.config import ThreePoolConfig
 from param_decomp.three_pool.layout import (
@@ -175,8 +175,15 @@ class ThreePoolTrainer:
         self.step = 0
 
         trace("ThreePoolTrainer.__init__: enter")
-        # Catch silent FA→math fallbacks before they hide perf regressions.
-        enforce_flash_attention_only()
+        # Verify FA can dispatch on the CI fn's largest SDPA shape. If it
+        # can't (head_dim > 128, missing kernel, etc.), error here rather
+        # than silently fall back to a 5-10x slower math kernel during
+        # training. Skipping the global-toggle approach to stay compatible
+        # with torch.compile's fake-tensor trace.
+        ci_attn = _ci_attn_shape_or_none(pd_config)
+        if ci_attn is not None:
+            d_model, n_heads = ci_attn
+            verify_flash_attention_available(head_dim=d_model // n_heads)
         _validate_pd_config_for_three_pool(pd_config, three_pool_config)
         # PPGD runs only on PPGD pool; the relevant per-rank batch is batch // n_ppgd.
         validate_pgd_scope(
@@ -862,6 +869,25 @@ def _build_runtime(
         bf16_autocast=runtime_config.autocast_bf16,
         use_fused_kl=three_pool_config.use_fused_kl,
     )
+
+
+def _ci_attn_shape_or_none(pd_config: PDConfig) -> tuple[int, int] | None:
+    """Pull ``(d_model, n_heads)`` from the CI fn's attn config if the CI fn
+    has one (transformer variants), else ``None``. Used to derive the SDPA
+    shape for FA startup verification.
+    """
+    ci_cfg = pd_config.ci_config
+    # Walk the nested config tree without a hard dependency on the CI types
+    # (mode/fn_type discriminators bury the attn config differently per variant).
+    for attr in ("simple_transformer_ci_cfg", "transformer_cfg"):
+        nested = getattr(ci_cfg, attr, None)
+        if nested is None:
+            continue
+        attn = getattr(nested, "attn_config", None)
+        d_model = getattr(nested, "d_model", None)
+        if attn is not None and d_model is not None:
+            return d_model, attn.n_heads
+    return None
 
 
 def _decomposition_targets_for_pool(
