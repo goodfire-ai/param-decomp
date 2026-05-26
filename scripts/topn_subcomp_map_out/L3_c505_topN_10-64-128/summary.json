@@ -1,0 +1,59 @@
+{
+  "args": {
+    "wandb_path": "goodfire/spd/runs/s-55ea3f9b",
+    "output_module": "h.3.mlp.down_proj",
+    "subcomp_id": 505,
+    "n_keep": "10,64,128",
+    "n_attr_batches": 100,
+    "n_eval_batches": 100,
+    "batch_size": 4,
+    "seed": 0,
+    "device": "cuda",
+    "out_dir": "/mnt/polished-lake/home/lucius/spd/scripts/topn_subcomp_map_out",
+    "wandb_project": "spd-low-rank-subcomp-map",
+    "wandb_entity": null,
+    "wandb_name": null,
+    "no_wandb": false
+  },
+  "layer": 3,
+  "in_module": "h.3.mlp.c_fc",
+  "out_module": "h.3.mlp.down_proj",
+  "subcomp_id": 505,
+  "C_in": 3072,
+  "d_intermediate": 3072,
+  "n_pos_attr": 204800,
+  "n_pos_eval": 204800,
+  "mean_label": -0.24580642057582736,
+  "var_label": 0.4748577316383865,
+  "n_keep_list": [
+    10,
+    64,
+    128
+  ],
+  "results": [
+    {
+      "condition": "full",
+      "n_keep": null,
+      "mse": 2.581695890739866e-06,
+      "r2": 0.9999945632223743
+    },
+    {
+      "condition": "top10",
+      "n_keep": 10,
+      "mse": 0.1597870159894228,
+      "r2": 0.663505497871721
+    },
+    {
+      "condition": "top64",
+      "n_keep": 64,
+      "mse": 0.207665441557765,
+      "r2": 0.5626786135686082
+    },
+    {
+      "condition": "top128",
+      "n_keep": 128,
+      "mse": 0.234350955337286,
+      "r2": 0.5064817529058391
+    }
+  ]
+}
