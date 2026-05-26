@@ -13,7 +13,7 @@ from param_decomp_lab.infra.slurm import SlurmConfig, generate_script, submit_sl
 def main(
     config_path: str,
     n_gpus: int = 1,
-    partition: str = DEFAULT_PARTITION_NAME,
+    partition: str | None = DEFAULT_PARTITION_NAME,
     time: str = "72:00:00",
     job_name: str = "pd-pretrain",
     local: bool = False,
@@ -54,7 +54,7 @@ def _run_local(config_path: Path, n_gpus: int) -> None:
 def _submit_slurm(
     config_path: Path,
     n_gpus: int,
-    partition: str,
+    partition: str | None,
     time: str,
     job_name: str,
 ) -> None:

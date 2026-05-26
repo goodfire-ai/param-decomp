@@ -81,7 +81,7 @@ class IntruderSlurmConfig(BaseConfig):
     """Config for intruder eval SLURM submission."""
 
     config: IntruderEvalConfig = IntruderEvalConfig()
-    partition: str = DEFAULT_PARTITION_NAME
+    partition: str | None = DEFAULT_PARTITION_NAME
     time: str = "10:00:00"
 
 
@@ -100,7 +100,7 @@ class HarvestSlurmConfig(BaseConfig):
 
     config: HarvestConfig
     n_gpus: PositiveInt = 8
-    partition: str = DEFAULT_PARTITION_NAME
+    partition: str | None = DEFAULT_PARTITION_NAME
     time: str = "12:00:00"
     merge_time: str = "04:00:00"
     merge_mem: str = "200G"
