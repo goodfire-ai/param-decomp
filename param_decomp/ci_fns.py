@@ -500,7 +500,12 @@ class GlobalCiFnWrapper(nn.Module):
         transformed: dict[str, Float[Tensor, ...]] = {}
 
         for layer_name, acts in layer_acts.items():
-            component = self.components[layer_name]
+            # Use ``.get`` rather than ``[]`` so this works on the CI pool of
+            # 3-pool training, where V/U components have been dropped to save
+            # memory (CI pool only runs the CI fn on pre-weight acts and never
+            # touches V/U). ``None`` falls through to the pass-through branch,
+            # equivalent to "not an EmbeddingComponents".
+            component = self.components.get(layer_name)
             if isinstance(component, EmbeddingComponents):
                 # Embeddings pass token IDs; convert to component activations
                 transformed[layer_name] = component.get_component_acts(acts)
