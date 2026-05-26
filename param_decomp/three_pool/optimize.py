@@ -267,6 +267,19 @@ class ThreePoolTrainer:
             assert self.component_model.ci_fn is not None
             trace("ThreePoolTrainer.__init__: torch.compile(ci_fn)")
             self.component_model.ci_fn = torch.compile(self.component_model.ci_fn)  # pyright: ignore[reportAttributeAccessIssue]
+        if self.layout.my_pool == "ci" and os.environ.get("PD_CI_FN_BWD_PROFILE", "").strip() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            from param_decomp.ci_fns import GlobalSharedTransformerCiFn
+
+            assert self.component_model.ci_fn is not None
+            for m in self.component_model.ci_fn.modules():
+                if isinstance(m, GlobalSharedTransformerCiFn):
+                    m.enable_bwd_profile()
+                    trace("ThreePoolTrainer.__init__: enabled CI fn bwd-stage profile")
+                    break
         # Diverge stochastic RNG per rank for mask sampling.
         seed_per_rank(pd_config.seed)
 
@@ -566,6 +579,12 @@ class ThreePoolTrainer:
         ci_fn_lr_schedule = pd_config.ci_fn_optimizer.lr_schedule
 
         profiler_ctx = profiler if profiler is not None else nullcontext()
+        # All-ranks barrier flag — read identically on every rank from the env
+        # so even unprofiled ranks join the pre-step ``dist.barrier()`` when
+        # profiling is enabled somewhere in the world. Without this, a barrier
+        # gated on the local ``profiler is not None`` deadlocks any rank not
+        # in ``PD_TORCH_PROFILE_RANKS``.
+        pre_step_barrier_enabled = bool(os.environ.get("PD_TORCH_PROFILE_RANKS", "").strip())
         h_cache_ci: dict[str, Tensor] | None = None
         # Async-pipeline state threaded across iterations on LW + PPGD pools.
         pending_all_reduce_lw: list[tuple[list[Tensor], Tensor, dist.Work]] | None = None
@@ -614,7 +633,7 @@ class ThreePoolTrainer:
                             lr_step, n_steps, components_lr_schedule
                         )
 
-                if profiler is not None:
+                if pre_step_barrier_enabled:
                     dist.barrier()
 
                 torch.cuda.synchronize(device)
