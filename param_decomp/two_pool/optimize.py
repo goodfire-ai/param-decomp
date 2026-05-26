@@ -19,6 +19,7 @@ class boundary.
 """
 
 import itertools
+import os
 import time
 from contextlib import nullcontext
 from typing import Any, Self
@@ -167,6 +168,17 @@ class TwoPoolTrainer:
         # TF32 matmuls are ~2-3x faster on H200 with sub-ULP precision loss — fine
         # for SPD training where we already use fp32 throughout.
         torch.set_float32_matmul_precision("high")
+
+        # PD_SYNC_DEBUG: when set, ask PyTorch to flag every implicit CPU↔GPU
+        # sync (.item(), .tolist(), bool(tensor), .cpu(), etc.) — these stall
+        # the GPU and are easy to introduce by accident. ``warn`` logs every
+        # one; ``error`` crashes on the first one (useful when you want a
+        # stack trace pinpointing the culprit). Off by default.
+        _sync_debug = os.environ.get("PD_SYNC_DEBUG", "").strip()
+        if _sync_debug in ("1", "warn", "true"):
+            torch.cuda.set_sync_debug_mode("warn")
+        elif _sync_debug == "error":
+            torch.cuda.set_sync_debug_mode("error")
 
         self._device = torch.device(runtime_config.device)
         world = build_block_ddp_world(

@@ -4,6 +4,10 @@ scratch/
 
 # Script outputs (generated files, often large)
 scripts/outputs/
+scripts/standalone_repros/*.json
+scripts/standalone_repros/*.txt
+scripts/profile_ci_fn_*.json
+scripts/profile_ci_fn_*.txt
 
 **/out/
 neuronpedia_outputs/

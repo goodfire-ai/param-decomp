@@ -75,6 +75,7 @@ from param_decomp.three_pool.layout import (
     LayerwiseBlockGroup,
     ThreePoolLayout,
     build_world,
+    flush_nccl_event_timings,
 )
 from param_decomp.three_pool.profiler import PhaseProfiler
 from param_decomp.three_pool.reductions import (
@@ -204,6 +205,17 @@ class ThreePoolTrainer:
         )
 
         torch.set_float32_matmul_precision("high")
+
+        # PD_SYNC_DEBUG: when set, ask PyTorch to flag every implicit CPU↔GPU
+        # sync (.item(), .tolist(), bool(tensor), .cpu(), etc.) — these stall
+        # the GPU and are easy to introduce by accident. ``warn`` logs every
+        # one; ``error`` crashes on the first one (useful when you want a
+        # stack trace pinpointing the culprit). Off by default.
+        _sync_debug = os.environ.get("PD_SYNC_DEBUG", "").strip()
+        if _sync_debug in ("1", "warn", "true"):
+            torch.cuda.set_sync_debug_mode("warn")
+        elif _sync_debug == "error":
+            torch.cuda.set_sync_debug_mode("error")
 
         self._device = torch.device(runtime_config.device)
         block_groups = [
@@ -638,6 +650,7 @@ class ThreePoolTrainer:
 
                 torch.cuda.synchronize(device)
                 step_start = time.perf_counter()
+                should_log = step % cadence.train_log_every == 0
 
                 # batch_T should already be on this rank's device (placed by _to_device).
                 if isinstance(batch_T, Tensor):
@@ -663,6 +676,7 @@ class ThreePoolTrainer:
                             h_cache_T=h_cache_ci,
                             cfg=runtime,
                             current_frac_of_training=step / n_steps if n_steps > 0 else 0.0,
+                            should_log=should_log,
                             profiler=profiler,
                         )
                     case "layerwise":
@@ -682,6 +696,7 @@ class ThreePoolTrainer:
                             self.strategy,
                             defer_vu_opt=defer_vu_opt,
                             prev_pending_all_reduce=pending_all_reduce_lw,
+                            should_log=should_log,
                             profiler=profiler,
                         )
                     case "ppgd":
@@ -699,14 +714,18 @@ class ThreePoolTrainer:
                             n_steps=n_steps,
                             defer_vu_opt=defer_vu_opt,
                             prev_pending_recv_vu=pending_recv_vu_ppgd,
+                            should_log=should_log,
                             profiler=profiler,
                         )
-                # Catch silent NaN propagation early. Covers both the per-rank
-                # display scalars (``loss/*``) and the raw aggregation
-                # ingredients (``_raw/*``) the logger sums across the pool.
-                for k, v in metrics.items():
-                    if k.startswith("loss/") or k.startswith("_raw/"):
-                        assert v == v, f"NaN in metrics[{k!r}] at step {step}"  # NaN != NaN
+                # NaN check + .item()-bearing metrics only fire on log steps —
+                # the step fns return empty ``metrics={}`` otherwise to avoid
+                # CPU↔GPU syncs on the per-step critical path. NaN won't catch
+                # until the next log step, but train_log_every is small enough
+                # that the propagation distance is bounded.
+                if should_log:
+                    for k, v in metrics.items():
+                        if k.startswith("loss/") or k.startswith("_raw/"):
+                            assert v == v, f"NaN in metrics[{k!r}] at step {step}"  # NaN != NaN
 
                 # current_stream().synchronize() — not torch.cuda.synchronize() — so we
                 # don't wait for *all* CUDA streams. In ``defer_vu_opt=True`` mode, PPGD
@@ -720,6 +739,9 @@ class ThreePoolTrainer:
                 torch.cuda.current_stream(device).synchronize()
                 step_ms = (time.perf_counter() - step_start) * 1000.0
                 trace(f"Trainer.run: step {step}: done in {step_ms:.1f}ms")
+                flush_nccl_event_timings()
+                if profiler is not None:
+                    profiler.flush_pending_gpu_events()
                 if step % cadence.train_log_every == 0:
                     dump_memory_stats(f"step {step} done")
 

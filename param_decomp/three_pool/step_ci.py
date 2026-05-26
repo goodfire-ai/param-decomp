@@ -31,6 +31,7 @@ overlap (NIC sends concurrent with the prefetch target fwd).
 
 # pyright: reportArgumentType=false
 
+import os
 from typing import Any
 
 import torch
@@ -65,6 +66,7 @@ def step_ci(
     h_cache_T: dict[str, Tensor] | None,
     cfg: _ThreePoolRuntime,
     current_frac_of_training: float,
+    should_log: bool,
     profiler: PhaseProfiler | None = None,
 ) -> tuple[dict[str, float], dict[str, Tensor] | None]:
     """One CI-pool training step.
@@ -117,6 +119,12 @@ def step_ci(
     g_ci_total = _assemble_g_ci_total(g_ci_lw, g_ci_pgd, layout, cfg, seq_len)
 
     optimizer.zero_grad(set_to_none=True)
+    # Diagnostic: sync before the bwd so phase("ci/8a") measures only the bwd
+    # itself, not waiting for prior default-stream work (ci/1 fwd kernels, ci/4
+    # prefetch, etc.) to drain. If ci/8a drops sharply from ~600 ms, the original
+    # wall was dominated by pending stream work, not by the bwd. Remove after diagnosis.
+    if os.environ.get("PD_SYNC_BEFORE_8A", "").strip() in ("1", "true", "yes"):
+        torch.cuda.synchronize()
     _fused_backward_through_ci_fn(loss_imp, ci, g_ci_total, layout, cfg, p)
     _maybe_emit_ci_fn_bwd_breakdown(component_model)
 
@@ -142,10 +150,13 @@ def step_ci(
     # (per_component_sums + n_examples SUM-reduced across CI pool), so every CI
     # rank holds the same scalar. Divide by ``n_ci`` so the logger's cross-pool
     # SUM all-reduce gives back the global value exactly once.
-    metrics = {
-        "loss/imp": loss_imp.item(),
-        "_raw/imp_num": loss_imp.item() / layout.world.n_ci,
-    }
+    #
+    # ``.item()`` is a CPU↔GPU sync — only pay it on steps we actually log to.
+    if should_log:
+        imp_value = loss_imp.item()
+        metrics = {"loss/imp": imp_value, "_raw/imp_num": imp_value / layout.world.n_ci}
+    else:
+        metrics = {}
     return metrics, h_cache_T_plus_1
 
 
