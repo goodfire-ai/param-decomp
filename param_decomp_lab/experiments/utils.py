@@ -4,6 +4,7 @@ Each experiment subclasses `ExperimentConfig` to fix the concrete `target` / `da
 types.
 """
 
+import wandb
 from pydantic import Field, PositiveInt
 
 from param_decomp.base_config import BaseConfig
@@ -12,6 +13,7 @@ from param_decomp.distributed import is_main_process
 from param_decomp_lab.eval_metrics import AnyEvalMetricConfig
 from param_decomp_lab.infra.run_files import generate_run_id
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
+from param_decomp_lab.infra.wandb import try_wandb
 from param_decomp_lab.run_sink import RunSink
 
 RUN_META_FILENAME = "run_meta.yaml"
@@ -72,11 +74,12 @@ def init_pd_run[T: BaseConfig, D: BaseConfig](
         return RunSink.silent()
     run_id = generate_run_id("param_decomp")
     out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
-    cfg.to_file(out_dir / RUN_META_FILENAME)
+    meta_path = out_dir / RUN_META_FILENAME
+    cfg.to_file(meta_path)
     if cfg.wandb is None:
         return RunSink.local(out_dir)
     parsed_tags = [s.strip() for s in tags.split(",") if s.strip()] if tags else None
-    return RunSink.with_wandb(
+    sink = RunSink.with_wandb(
         out_dir,
         project=cfg.wandb.project,
         entity=cfg.wandb.entity,
@@ -85,3 +88,5 @@ def init_pd_run[T: BaseConfig, D: BaseConfig](
         group=group,
         tags=parsed_tags,
     )
+    try_wandb(wandb.save, str(meta_path), base_path=str(out_dir), policy="now")
+    return sink
