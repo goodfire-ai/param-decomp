@@ -42,7 +42,7 @@ CROSS_POOL_EDGES: list[tuple[tuple[str, str], tuple[str, str]]] = [
     (("CI", "ci/2_async_send_ci"), ("LW", "lw/D2_wait_ci_recv")),
     (("CI", "ci/2_async_send_ci"), ("PPGD", "pgd/D2_wait_ci_recv")),
     (("LW", "lw/D4_send_g_ci"), ("CI", "ci/5_recv_g_ci_from_lw")),
-    (("PPGD", "pgd/D8_send_g_ci_to_ci_pool"), ("CI", "ci/6_recv_g_ci_from_ppgd")),
+    (("PPGD", "pgd/D5b_send_g_ci_to_ci_pool"), ("CI", "ci/6_recv_g_ci_from_ppgd")),
     (("PPGD", "pgd/D7_send_g_vu_to_lw"), ("LW", "lw/D5_recv_g_vu_from_ppgd")),
 ]
 
