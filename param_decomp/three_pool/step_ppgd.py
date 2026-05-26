@@ -137,11 +137,17 @@ def step_ppgd(
     with p.phase("pgd/D8_send_g_ci_to_ci_pool"):
         layout.send_g_ci_to_ci_pool_ppgd(ci_grads)
 
-    metrics = {
-        "loss/ppgd": (sum_loss / n_examples).item(),
-        "_raw/ppgd_num": sum_loss.item(),
-        "_raw/ppgd_den": float(n_examples),
-    }
+    # Phase-tag the metrics dict construction so the per-phase profiler
+    # surfaces the cost of the ``.item()`` device-host syncs. With async
+    # NCCL ops in D6/D7/D8 still in flight on side streams, these
+    # ``cudaMemcpyAsync + cudaStreamSync`` calls are where PPGD's wait
+    # actually lives.
+    with p.phase("pgd/Dx_metrics_sync"):
+        metrics = {
+            "loss/ppgd": (sum_loss / n_examples).item(),
+            "_raw/ppgd_num": sum_loss.item(),
+            "_raw/ppgd_den": float(n_examples),
+        }
 
     if defer_vu_opt:
         with p.phase("pgd/E_kickoff_async_recv_vu"):
