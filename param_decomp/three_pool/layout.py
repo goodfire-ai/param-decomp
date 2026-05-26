@@ -104,15 +104,19 @@ def _time_nccl_op(op_name: str) -> Any:
 
 
 def flush_nccl_event_timings() -> None:
-    """Synchronize, compute per-op GPU stream-time, emit one ``trace()`` line per op, clear buffer.
+    """Per-op GPU stream-time, emit one ``trace()`` line per op, clear buffer.
 
-    Call once per step (cheap when buffer is empty / timing disabled). The
-    ``torch.cuda.synchronize`` is required to make ``elapsed_time`` valid.
+    Per-event ``post.synchronize()`` rather than ``torch.cuda.synchronize()``:
+    full device sync would drain the NCCL stream holding PPGD's pending
+    cross-step async broadcast (``defer_vu_opt``), which only completes when LW
+    step N+1 phase B4 fires the matching broadcast. See the end-of-step comment
+    in ``three_pool/optimize.py`` for the same reason its own sync is
+    ``current_stream().synchronize()``, not the full device sync.
     """
     if not _NCCL_EVENT_BUFFER:
         return
-    torch.cuda.synchronize()
     for op_name, pre, post, cpu_ms in _NCCL_EVENT_BUFFER:
+        post.synchronize()
         gpu_ms = pre.elapsed_time(post)
         trace(f"nccl-event: {op_name} cpu={cpu_ms:.1f}ms gpu={gpu_ms:.1f}ms")
     _NCCL_EVENT_BUFFER.clear()
