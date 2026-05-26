@@ -39,6 +39,7 @@ import torch.distributed.nn.functional as dist_fn
 import torch.nn as nn
 from torch import Tensor
 
+from param_decomp._trace import trace
 from param_decomp.component_model import CIOutputs, ComponentModel
 from param_decomp.grad_clip import cross_pool_clip_grad_norm
 from param_decomp.metrics.importance_minimality import (
@@ -117,6 +118,7 @@ def step_ci(
 
     optimizer.zero_grad(set_to_none=True)
     _fused_backward_through_ci_fn(loss_imp, ci, g_ci_total, layout, cfg, p)
+    _maybe_emit_ci_fn_bwd_breakdown(component_model)
 
     with p.phase("ci/9_in_pool_allreduce"):
         layout.all_reduce_ci_fn_grads(ci_fn_params)
@@ -217,6 +219,30 @@ def _assemble_g_ci_total(
         )
         g_ci_total[s] = lw + pgd
     return g_ci_total
+
+
+def _maybe_emit_ci_fn_bwd_breakdown(component_model: ComponentModel) -> None:
+    """Emit per-stage CI fn bwd times as ``trace()`` lines when the bwd profile is on.
+
+    Records the ``post_bwd`` event immediately (anchoring the input projector's bwd
+    end time on the stream), synchronizes to flush events, then walks the CI fn
+    modules to find the ``GlobalSharedTransformerCiFn`` instance and emits one
+    ``phase: ci/8a_stage_<label>`` line per stage. No-op when profiling is off.
+
+    Must be called right after ``_fused_backward_through_ci_fn`` so ``post_bwd``
+    lands on the stream before any subsequent kernels (optimizer.step etc).
+    """
+    if component_model.ci_fn is None:
+        return
+    from param_decomp.ci_fns import GlobalSharedTransformerCiFn
+
+    for m in component_model.ci_fn.modules():
+        if isinstance(m, GlobalSharedTransformerCiFn) and m._bwd_events:
+            m.record_post_bwd_event()
+            torch.cuda.synchronize()
+            for label, t_ms in m.compute_bwd_breakdown().items():
+                trace(f"phase: ci/8a_stage_{label}: {t_ms:.1f}ms")
+            return
 
 
 def _fused_backward_through_ci_fn(
