@@ -16,9 +16,11 @@ Phases (numbered to match ``DESIGN.md`` ``ppgd/N``):
   D3. PPGD warmup refines persistent adversarial sources in place.
   D4. Recon loss with refined sources.
   D5. Backward: ``torch.autograd.grad`` for g_VU + g_CI (no source backward).
+  D5b. Send g_CI to CI pool (every rank, on its batch slice). Peer-to-peer
+       point-to-point — no PPGD-internal reduce needed, so fires immediately
+       after backward to unblock CI's recv-wait sooner.
   D6. Sum-reduce g_VU within PPGD pool → each rank holds the full-batch grad.
   D7. Send g_VU to LW block leaders (PPGD-leader-only).
-  D8. Send g_CI to CI pool (every rank, on its batch slice).
   E.  Recv updated V/U from LW:
         * sync mode → blocking recv at end of step (returns
           ``(metrics, None)``);
@@ -131,14 +133,17 @@ def step_ppgd(
     v_grads, u_grads, ci_grads = _autograd_grad_for_vu_and_ci(
         total_ppgd, component_model, ci_scratch, all_sites, p
     )
+    # CI grad send first: it's peer-to-peer (each PPGD rank → its paired CI
+    # rank) so it doesn't need the in-pool reduce, and CI's recv is on the
+    # critical path. Sequencing it behind D6 wasted ~110 ms of CI wait time.
+    with p.phase("pgd/D5b_send_g_ci_to_ci_pool"):
+        layout.send_g_ci_to_ci_pool_ppgd(ci_grads)
     with p.phase("pgd/D6_in_pool_sum_reduce"):
         layout.sum_reduce_ppgd_grads([*v_grads.values(), *u_grads.values()])
     with p.phase("pgd/D7_send_g_vu_to_lw"):
         layout.send_g_vu_to_layerwise(v_grads, u_grads)
-    with p.phase("pgd/D8_send_g_ci_to_ci_pool"):
-        layout.send_g_ci_to_ci_pool_ppgd(ci_grads)
 
-    # ``.item()`` calls force CPU↔GPU sync. With async NCCL ops in D6/D7/D8
+    # ``.item()`` calls force CPU↔GPU sync. With async NCCL ops in D5b/D6/D7
     # still in flight on side streams, syncing here pulls forward the wait
     # for them — making PPGD's critical path appear ~200 ms longer than it
     # actually is. Defer these to log steps only.

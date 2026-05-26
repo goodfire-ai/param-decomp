@@ -42,7 +42,7 @@ CROSS_POOL_EDGES: list[tuple[tuple[str, str], tuple[str, str]]] = [
     (("CI", "ci/2_async_send_ci"), ("LW", "lw/D2_wait_ci_recv")),
     (("CI", "ci/2_async_send_ci"), ("PPGD", "pgd/D2_wait_ci_recv")),
     (("LW", "lw/D4_send_g_ci"), ("CI", "ci/5_recv_g_ci_from_lw")),
-    (("PPGD", "pgd/D8_send_g_ci_to_ci_pool"), ("CI", "ci/6_recv_g_ci_from_ppgd")),
+    (("PPGD", "pgd/D5b_send_g_ci_to_ci_pool"), ("CI", "ci/6_recv_g_ci_from_ppgd")),
     (("PPGD", "pgd/D7_send_g_vu_to_lw"), ("LW", "lw/D5_recv_g_vu_from_ppgd")),
 ]
 
@@ -58,10 +58,21 @@ class Node:
     phase: str
     start_ms: float  # pool-local: first phase starts at 0
     end_ms: float
+    gpu_ms: float | None  # real GPU stream time, None if exit line lacked it
+    wait_ms: float | None  # cpu_ms - gpu_ms; positive = node was waiting on upstream
 
     @property
     def dur_ms(self) -> float:
+        """CPU wall: end-of-phase trace timestamp minus entry. Includes cross-stream
+        wait, so use ``weight_ms`` instead for critical-path analysis."""
         return self.end_ms - self.start_ms
+
+    @property
+    def weight_ms(self) -> float:
+        """Real serial cost of this node: GPU time when available, else CPU wall.
+        This is what the critical-path sum should use — CPU wall double-counts
+        wait time and is misleading for "irreducible serial" questions."""
+        return self.gpu_ms if self.gpu_ms is not None else self.dur_ms
 
     @property
     def key(self) -> tuple[str, str]:
@@ -83,8 +94,15 @@ def build_nodes(
             continue
         origin = ps[0][0]
         out[label] = [
-            Node(pool=label, phase=name, start_ms=s - origin, end_ms=e - origin)
-            for s, e, name in ps
+            Node(
+                pool=label,
+                phase=name,
+                start_ms=s - origin,
+                end_ms=e - origin,
+                gpu_ms=gpu_ms,
+                wait_ms=wait_ms,
+            )
+            for s, e, name, gpu_ms, wait_ms in ps
         ]
     return out
 
@@ -138,13 +156,34 @@ def critical_path(
 
 def fmt_path(path: list[tuple[Node, str]]) -> list[str]:
     lines = [
-        f"{'start_ms':>9s}  {'end_ms':>8s}  {'dur_ms':>7s}  {'pool':<5s}  {'edge':<6s}  phase",
-        "-" * 90,
+        f"{'start_ms':>9s}  {'end_ms':>8s}  {'cpu_ms':>7s}  {'gpu_ms':>7s}  "
+        f"{'wait_ms':>8s}  {'pool':<5s}  {'edge':<6s}  phase",
+        "-" * 110,
     ]
+    total_cpu = 0.0
+    total_gpu = 0.0
+    have_gpu = False
     for n, edge in path:
+        gpu_s = f"{n.gpu_ms:7.1f}" if n.gpu_ms is not None else "    n/a"
+        wait_s = f"{n.wait_ms:+8.1f}" if n.wait_ms is not None else "     n/a"
         lines.append(
-            f"{n.start_ms:9.1f}  {n.end_ms:8.1f}  {n.dur_ms:7.1f}  "
+            f"{n.start_ms:9.1f}  {n.end_ms:8.1f}  {n.dur_ms:7.1f}  {gpu_s}  {wait_s}  "
             f"{n.pool:<5s}  {edge:<6s}  {n.phase}"
+        )
+        total_cpu += n.dur_ms
+        if n.gpu_ms is not None:
+            total_gpu += n.gpu_ms
+            have_gpu = True
+    lines.append("-" * 110)
+    if have_gpu:
+        lines.append(
+            f"path totals — cpu_wall={total_cpu:.1f}ms  irreducible_gpu={total_gpu:.1f}ms  "
+            f"slack={total_cpu - total_gpu:+.1f}ms"
+        )
+    else:
+        lines.append(
+            f"path totals — cpu_wall={total_cpu:.1f}ms  (no gpu data; "
+            "PD_PHASE_TRACE on with cpu/gpu/wait exit format required for irreducible serial)"
         )
     return lines
 
@@ -252,17 +291,37 @@ def render(
     out.append("")
 
     cross_jumps = [i for i, (_, e) in enumerate(path) if e == "cross"]
-    by_pool: dict[str, float] = {}
+    by_pool_cpu: dict[str, float] = {}
+    by_pool_gpu: dict[str, float] = {}
+    have_gpu_on_path = False
     for n, _ in path:
-        by_pool[n.pool] = by_pool.get(n.pool, 0.0) + n.dur_ms
-    top_node = max((n for n, _ in path), key=lambda n: n.dur_ms)
+        by_pool_cpu[n.pool] = by_pool_cpu.get(n.pool, 0.0) + n.dur_ms
+        if n.gpu_ms is not None:
+            by_pool_gpu[n.pool] = by_pool_gpu.get(n.pool, 0.0) + n.gpu_ms
+            have_gpu_on_path = True
+    top_node = max((n for n, _ in path), key=lambda n: n.weight_ms)
+    path_gpu_total = sum(n.gpu_ms for n, _ in path if n.gpu_ms is not None)
 
     out.append(f"step finish (slowest pool): {step_finish:.1f}ms in pool {end_pool}")
+    if have_gpu_on_path:
+        out.append(
+            f"irreducible serial GPU time on critical path: {path_gpu_total:.1f}ms "
+            f"(step has ~{step_finish - path_gpu_total:.0f}ms of recoverable wait/overlap headroom)"
+        )
+        out.append(
+            "irreducible GPU by pool on path: "
+            + ", ".join(
+                f"{p}={ms:.1f}ms" for p, ms in sorted(by_pool_gpu.items(), key=lambda kv: -kv[1])
+            )
+        )
     out.append(
-        "time on critical path by pool: "
-        + ", ".join(f"{p}={ms:.1f}ms" for p, ms in sorted(by_pool.items(), key=lambda kv: -kv[1]))
+        "cpu-wall on critical path by pool: "
+        + ", ".join(
+            f"{p}={ms:.1f}ms" for p, ms in sorted(by_pool_cpu.items(), key=lambda kv: -kv[1])
+        )
     )
-    out.append(f"heaviest path node: {top_node.pool}/{top_node.phase} ({top_node.dur_ms:.1f}ms)")
+    top_w = top_node.weight_ms
+    out.append(f"heaviest path node (by GPU when present): {top_node.pool}/{top_node.phase} ({top_w:.1f}ms)")
     out.append(f"cross-pool jumps on the path: {len(cross_jumps)}")
     out.append("")
     out.append("per-pool step spans:")
@@ -292,11 +351,19 @@ def render(
     # One-line summary.
     other_pools = [p for p in pool_span if p != end_pool]
     next_pool_slack = min(step_finish - pool_span[p] for p in other_pools) if other_pools else 0.0
-    out.append(
-        f"summary: critical path total {step_finish:.0f}ms. "
-        f"top blocker: {top_node.pool}/{top_node.phase} ({top_node.dur_ms:.0f}ms in pool {top_node.pool}). "
-        f"slack on next pool: {next_pool_slack:.0f}ms ({end_pool} is the slowest pool)."
-    )
+    if have_gpu_on_path:
+        out.append(
+            f"summary: step {step_finish:.0f}ms, irreducible GPU on critical path {path_gpu_total:.0f}ms "
+            f"({100 * path_gpu_total / step_finish:.0f}% of step is real serial compute). "
+            f"top blocker: {top_node.pool}/{top_node.phase} (gpu={top_w:.0f}ms). "
+            f"next-pool slack: {next_pool_slack:.0f}ms ({end_pool} is slowest)."
+        )
+    else:
+        out.append(
+            f"summary: critical path total {step_finish:.0f}ms (cpu-wall only — gpu data missing). "
+            f"top blocker: {top_node.pool}/{top_node.phase} ({top_node.dur_ms:.0f}ms in pool {top_node.pool}). "
+            f"slack on next pool: {next_pool_slack:.0f}ms ({end_pool} is the slowest pool)."
+        )
     return "\n".join(out)
 
 

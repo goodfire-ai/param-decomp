@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,6 +52,8 @@ class PhaseEvent:
     t_ms: float
     name: str
     is_end: bool
+    gpu_ms: float | None = None
+    wait_ms: float | None = None
 
 
 @dataclass
@@ -59,6 +62,9 @@ class StepEvent:
     t_ms: float
     step: int
     is_done: bool
+
+
+_KV_RE = re.compile(r"\b(gpu|wait)=([+-]?[\d.]+)ms\b")
 
 
 def parse_log(path: Path) -> tuple[list[PhaseEvent], list[StepEvent]]:
@@ -73,7 +79,15 @@ def parse_log(path: Path) -> tuple[list[PhaseEvent], list[StepEvent]]:
             if m := PHASE_RE.match(line):
                 rank, t, name, tail = m.groups()
                 is_end = bool(tail and tail.lstrip().startswith("end"))
-                phases.append(PhaseEvent(int(rank), float(t), name, is_end))
+                gpu_ms: float | None = None
+                wait_ms: float | None = None
+                if is_end and tail:
+                    kvs = dict(_KV_RE.findall(tail))
+                    if "gpu" in kvs:
+                        gpu_ms = float(kvs["gpu"])
+                    if "wait" in kvs:
+                        wait_ms = float(kvs["wait"])
+                phases.append(PhaseEvent(int(rank), float(t), name, is_end, gpu_ms, wait_ms))
     return phases, steps
 
 
@@ -96,10 +110,12 @@ def step_window_per_rank(
 
 def per_rank_phases_in_window(
     phases: list[PhaseEvent], rank: int, t_start: float, t_end: float
-) -> list[tuple[float, float, str]]:
-    """Return list of (start_ms, end_ms, name) for completed phases in window."""
+) -> list[tuple[float, float, str, float | None, float | None]]:
+    """Return list of (start_ms, end_ms, name, gpu_ms, wait_ms) for completed
+    phases in window. ``gpu_ms`` / ``wait_ms`` are ``None`` if the exit line
+    lacked them (old phase format)."""
     open_starts: dict[str, float] = {}
-    out: list[tuple[float, float, str]] = []
+    out: list[tuple[float, float, str, float | None, float | None]] = []
     for ev in phases:
         if ev.rank != rank:
             continue
@@ -110,7 +126,7 @@ def per_rank_phases_in_window(
         else:
             s = open_starts.pop(ev.name, None)
             if s is not None:
-                out.append((s, ev.t_ms, ev.name))
+                out.append((s, ev.t_ms, ev.name, ev.gpu_ms, ev.wait_ms))
     return sorted(out, key=lambda x: x[0])
 
 
@@ -125,7 +141,7 @@ def short_name(name: str) -> str:
 
 
 def render_bar(
-    phases: list[tuple[float, float, str]],
+    phases: Sequence[tuple[float, float, str, float | None, float | None]],
     origin: float,
     span_ms: float,
     width: int,
@@ -137,7 +153,7 @@ def render_bar(
     """
     cells = [" "] * width
     boundary_marks: list[tuple[int, str]] = []
-    for s_ms, e_ms, name in phases:
+    for s_ms, e_ms, name, *_ in phases:
         c_start = int((s_ms - origin) / span_ms * width)
         c_end = int((e_ms - origin) / span_ms * width)
         c_start = max(0, min(width - 1, c_start))
@@ -150,7 +166,7 @@ def render_bar(
 
 
 def legend(
-    phases: list[tuple[float, float, str]],
+    phases: Sequence[tuple[float, float, str, float | None, float | None]],
     width: int,
     span_ms: float,
     origin: float,
@@ -159,7 +175,7 @@ def legend(
 ) -> list[str]:
     """Return list of legend lines: 'col_start name dur_ms hint'."""
     lines: list[str] = []
-    for s_ms, e_ms, name in phases:
+    for s_ms, e_ms, name, *_ in phases:
         dur = e_ms - s_ms
         if dur < threshold_ms:
             continue
@@ -217,7 +233,7 @@ def render(
                 label_line[8 + c + i] = ch
     out.append("".join(label_line))
     # per-rank bars
-    per_rank_data: list[tuple[str, list[tuple[float, float, str]]]] = []
+    per_rank_data: list[tuple[str, list[tuple[float, float, str, float | None, float | None]]]] = []
     for rank, label in rank_labels:
         ps = per_rank_phases_in_window(phases, rank, *windows[rank])
         bar = render_bar(ps, origin, span, width)
