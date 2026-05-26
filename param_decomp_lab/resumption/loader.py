@@ -5,8 +5,6 @@ The lab's blessed atomic-load path: experiment-specific resume entrypoints
 ``Trainer.from_snapshot(snapshot, ...)`` with the snapshot returned here.
 """
 
-from typing import Any
-
 from param_decomp.trainer_snapshot import TrainerSnapshot
 from param_decomp_lab.distributed import get_device
 from param_decomp_lab.resumption.config import ResumeConfig
@@ -30,12 +28,11 @@ def read_resume_snapshot(
     the resume-only blob suffices for ``Trainer.from_snapshot(...)``.
     """
     device = current_device if current_device is not None else get_device()
-    parent_run_dir = resume_cfg.from_run
-    resolved_step = resolve_step(parent_run_dir, resume_cfg.step)
-    resume_dict: dict[str, Any] = load_shard(parent_run_dir, resolved_step, rank)
-    resume_dict["runtime_config"]["device"] = device
+    resolved_step = resolve_step(resume_cfg.from_run, resume_cfg.step)
+    envelope = load_shard(resume_cfg.from_run, resolved_step, rank)
+    envelope.resume["runtime_config"]["device"] = device
     return TrainerSnapshot(
-        step=resume_dict["state"]["step"],
-        resume=resume_dict,
+        step=envelope.resume["state"]["step"],
+        resume=envelope.resume,
         consumable=None,
     )
