@@ -573,7 +573,16 @@ class ThreePoolTrainer:
                     if k.startswith("loss/") or k.startswith("_raw/"):
                         assert v == v, f"NaN in metrics[{k!r}] at step {step}"  # NaN != NaN
 
-                torch.cuda.synchronize(device)
+                # current_stream().synchronize() — not torch.cuda.synchronize() — so we
+                # don't wait for *all* CUDA streams. In ``defer_vu_opt=True`` mode, PPGD
+                # has a pending async dist.broadcast (irecv side) on a NCCL stream that
+                # only completes when LW step N+1 phase B4 fires its matching broadcast.
+                # Waiting for that here would deadlock against ``_log_train_metrics``
+                # (LW rank 0 blocks on ``dist.recv`` from PPGD leader → PPGD leader
+                # blocks here on the irecv → LW can't reach phase B4). The default
+                # stream carries the step's compute, which is all we need for an
+                # accurate ``step_ms`` measurement.
+                torch.cuda.current_stream(device).synchronize()
                 step_ms = (time.perf_counter() - step_start) * 1000.0
                 trace(f"Trainer.run: step {step}: done in {step_ms:.1f}ms")
 
