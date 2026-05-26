@@ -44,10 +44,8 @@ loss_metric_configs:
   p_anneal_final_p: 0.4
   p_anneal_end_frac: 1.0
   eps: 1.0e-12
-- coeff: 0.5
-  classname: StochasticReconSubsetLoss
-  routing:
-    type: uniform_k_subset
+- coeff: 6.0
+  classname: StochasticReconLayerwiseLoss
 - coeff: 0.5
   optimizer:
     type: adam
@@ -63,23 +61,36 @@ loss_metric_configs:
     type: per_batch_per_position
   use_sigmoid_parameterization: false
   n_warmup_steps: 2
+  start_frac: 0.0
+  n_samples: 1
   classname: PersistentPGDReconLoss
 - coeff: 10000000.0
   classname: FaithfulnessLoss
 components_optimizer:
+  type: AdamW
   lr_schedule:
     start_val: 5.0e-05
     warmup_pct: 0.0
     final_val_frac: 0.1
     fn_type: cosine
+  weight_decay: 0.0
+  betas:
+  - 0.9
+  - 0.999
   grad_clip_norm: 0.01
 ci_fn_optimizer:
+  type: AdamW
   lr_schedule:
     start_val: 5.0e-05
     warmup_pct: 0.0
     final_val_frac: 0.1
     fn_type: cosine
-steps: 400000
+  weight_decay: 0.0
+  betas:
+  - 0.9
+  - 0.999
+  grad_clip_norm: null
+steps: 100000
 batch_size: 64
 faithfulness_warmup_steps: 400
 faithfulness_warmup_lr: 0.001
@@ -120,10 +131,10 @@ eval_metric_configs:
   mask_scope: shared_across_batch
   classname: PGDReconLoss
 ci_alive_threshold: 0.0
-output_extract: 0 
 pretrained_model_class: param_decomp.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
 pretrained_model_path: null
 pretrained_model_name: goodfire/spd/runs/t-9d2b8f02
+output_extract: 0
 tokenizer_name: EleutherAI/gpt-neox-20b
 task_config:
   task_name: lm
@@ -136,3 +147,4 @@ task_config:
   shuffle_each_epoch: true
   is_tokenized: true
   streaming: true
+  dataset_seed: null
