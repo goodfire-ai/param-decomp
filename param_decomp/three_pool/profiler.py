@@ -49,9 +49,23 @@ class PhaseProfiler:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         trace_path = self.out_dir / f"trace_{self.pool}_rank{self.rank}.json"
 
+        summary_path = self.out_dir / f"key_avgs_{self.pool}_rank{self.rank}.txt"
+
         def on_trace_ready(prof: "torch.profiler.profile") -> None:
             prof.export_chrome_trace(str(trace_path))
+            table = prof.key_averages().table(
+                sort_by="self_cuda_time_total",
+                row_limit=40,
+                max_name_column_width=80,
+            )
+            summary_path.write_text(table)
             print(f"[profiler rank{self.rank}] wrote {trace_path}", flush=True)
+            print(f"[profiler rank{self.rank}] wrote {summary_path}", flush=True)
+            print(
+                f"[profiler rank{self.rank}] view trace: drop the json into "
+                "https://www.speedscope.app/ (or chrome://tracing/, or Perfetto)",
+                flush=True,
+            )
 
         self._prof = torch.profiler.profile(
             activities=[
