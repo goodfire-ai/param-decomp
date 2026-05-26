@@ -100,18 +100,7 @@ def search_dataset(
     manager: DepStateManager,
     split: Annotated[str, Query(pattern="^(train|test)$")] = "train",
 ) -> DatasetSearchMetadata:
-    """Search the run's training dataset for entries containing query string.
-
-    Reads dataset_name and column_name from the loaded run's config.
-    Caches results for pagination via /results endpoint.
-
-    Args:
-        query: Text to search for (case-insensitive)
-        split: Dataset split to search ("train" or "test")
-
-    Returns:
-        Search metadata (query, split, dataset_name, total results, search time)
-    """
+    """Case-insensitive substring search of the run's training dataset. Reads `dataset_name` / `column_name` from the loaded run's config; caches results for pagination via `/results`."""
     dataset_name = loaded.lm_data.dataset_name
     text_column = loaded.lm_data.column_name
     _assert_simplestories(dataset_name)
@@ -176,15 +165,7 @@ def get_dataset_results(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> DatasetSearchPage:
-    """Get paginated results from the last dataset search.
-
-    Args:
-        page: Page number (1-indexed)
-        page_size: Results per page (1-100)
-
-    Returns:
-        Paginated results with metadata
-    """
+    """Paginated results from the last dataset search."""
     search_state = manager.state.dataset_search_state
     if search_state is None:
         raise HTTPException(
@@ -223,19 +204,7 @@ def get_tokenized_results(
     page_size: Annotated[int, Query(ge=1, le=20)] = 10,
     max_tokens: Annotated[int, Query(ge=16, le=512)] = 256,
 ) -> TokenizedSearchPage:
-    """Get paginated tokenized results with per-token probability.
-
-    Requires a loaded run for model inference. Results are tokenized and
-    run through the model to compute next-token probabilities.
-
-    Args:
-        page: Page number (1-indexed)
-        page_size: Results per page (1-20, lower limit due to model inference)
-        max_tokens: Maximum tokens per result (truncated if longer)
-
-    Returns:
-        Paginated tokenized results with probabilities
-    """
+    """Paginated tokenized results with per-token next-token probability. Requires a loaded run for model inference (hence smaller `page_size` limit than `/results`); results longer than `max_tokens` are truncated."""
     search_state = manager.state.dataset_search_state
     if search_state is None:
         raise HTTPException(
@@ -324,18 +293,7 @@ def get_random_samples(
     seed: Annotated[int, Query(ge=0)] = 42,
     split: Annotated[str, Query(pattern="^(train|test)$")] = "train",
 ) -> RandomSamplesResult:
-    """Get random samples from the loaded run's training dataset.
-
-    Reads dataset_name and column_name from the loaded run's config.
-
-    Args:
-        n_samples: Number of random samples to return (1-200)
-        seed: Random seed for reproducibility
-        split: Dataset split ("train" or "test")
-
-    Returns:
-        Random samples with metadata
-    """
+    """Random samples from the loaded run's training dataset. Reads `dataset_name` / `column_name` from the loaded run's config."""
     dataset_name = loaded.lm_data.dataset_name
     text_column = loaded.lm_data.column_name
     _assert_simplestories(dataset_name)
@@ -403,20 +361,7 @@ def get_random_samples_with_loss(
     split: Annotated[str, Query(pattern="^(train|test)$")] = "train",
     max_tokens: Annotated[int, Query(ge=16, le=512)] = 256,
 ) -> RandomSamplesWithLossResult:
-    """Get random samples with tokenized data and per-token next-token probability.
-
-    This endpoint requires a loaded run (for model and tokenizer).
-    Each sample is tokenized and run through the model to compute probabilities.
-
-    Args:
-        n_samples: Number of random samples to return (1-50, lower limit due to model inference)
-        seed: Random seed for reproducibility
-        split: Dataset split ("train" or "test")
-        max_tokens: Maximum tokens per sample (truncated if longer)
-
-    Returns:
-        Tokenized samples with next-token probability per token
-    """
+    """Random samples tokenized + run through the model for per-token next-token probability. Requires a loaded run; lower `n_samples` cap than `/random-samples` because of model inference; results longer than `max_tokens` are truncated."""
     dataset_name = loaded.lm_data.dataset_name
     text_column = loaded.lm_data.column_name
     _assert_simplestories(dataset_name)

@@ -40,20 +40,7 @@ def harvest(
     rank_world_size: tuple[int, int] | None,
     device: torch.device | None = None,
 ) -> None:
-    """Single-pass harvest for any decomposition method.
-
-    Args:
-        harvest_fn: Converts a raw dataloader batch into a HarvestBatch.
-            Responsible for moving data to the correct device.
-        layers: List of (layer_name, n_components) pairs.
-        vocab_size: Vocabulary size for token stats.
-        dataloader: Iterable yielding raw batches.
-        config: Harvest configuration.
-        output_dir: Directory to save harvest outputs.
-        rank: Worker rank for parallel execution (0 to world_size-1).
-        world_size: Total number of workers.
-        device: Device for accumulator tensors.
-    """
+    """Single-pass harvest for any decomposition method. `harvest_fn` converts a raw dataloader batch into a `HarvestBatch` and is responsible for moving data to the correct device."""
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

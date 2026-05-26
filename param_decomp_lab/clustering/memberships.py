@@ -394,9 +394,9 @@ def collect_memberships(
 ) -> ProcessedMemberships:
     """Stream LM component activations into a `ProcessedMemberships` snapshot.
 
-    Iterates ``dataloader``, samples ``n_tokens_per_seq`` token positions per batch
-    (or all positions when ``use_all_tokens_per_seq``), and accumulates into a
-    `MembershipBuilder` until ``config.n_tokens`` are collected.
+    Iterates `dataloader`, samples `n_tokens_per_seq` token positions per batch
+    (or all positions when `use_all_tokens_per_seq`), and accumulates into a
+    `MembershipBuilder` until `config.n_tokens` are collected.
     """
     assert config.use_all_tokens_per_seq or config.n_tokens_per_seq is not None, (
         "n_tokens_per_seq required when use_all_tokens_per_seq is False"

@@ -16,14 +16,7 @@ def submit_attributions(
     harvest_subrun_id: str,
     job_suffix: str | None = None,
 ) -> None:
-    """Submit multi-GPU dataset attribution harvesting to SLURM.
-
-    Args:
-        wandb_path: WandB run path for the target decomposition run.
-        config: Path to AttributionsSlurmConfig YAML/JSON. Uses built-in defaults if omitted.
-        harvest_subrun_id: Harvest subrun to use for alive masks (e.g. "h-20260306_120000").
-        job_suffix: Optional suffix for SLURM job names (e.g., "v2" -> "pd-attr-v2").
-    """
+    """Submit multi-GPU dataset-attribution harvesting to SLURM. `harvest_subrun_id` (like `"h-20260306_120000"`) supplies the alive-mask set; `job_suffix` is appended to SLURM job names (e.g. `"v2"` → `"pd-attr-v2"`)."""
     from param_decomp_lab.dataset_attributions.config import AttributionsSlurmConfig
     from param_decomp_lab.dataset_attributions.scripts.run_slurm import (
         submit_attributions as impl,

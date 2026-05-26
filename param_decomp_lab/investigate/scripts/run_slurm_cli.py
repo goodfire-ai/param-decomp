@@ -28,16 +28,7 @@ def main(
     time: str = "8:00:00",
     job_suffix: str | None = None,
 ) -> None:
-    """Launch a single investigation agent for a specific question.
-
-    Args:
-        wandb_path: WandB run path for the PD decomposition to investigate.
-        prompt: The research question, or @filepath to read from a file.
-        context_length: Context length for prompts (default 128).
-        max_turns: Maximum agentic turns (default 50, prevents runaway).
-        time: Job time limit (default 8 hours).
-        job_suffix: Optional suffix for SLURM job names.
-    """
+    """Launch a single investigation agent for a specific question. `prompt` is the research question literal or `@filepath` to read from a file. `max_turns` caps agentic turns to prevent runaway."""
     from param_decomp_lab.investigate.scripts.run_slurm import launch_investigation
 
     launch_investigation(

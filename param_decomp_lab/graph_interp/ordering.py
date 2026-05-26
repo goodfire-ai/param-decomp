@@ -56,13 +56,7 @@ def group_and_sort_by_layer(
     component_keys: list[str],
     layer_descriptions: dict[str, str],
 ) -> list[tuple[str, list[str]]]:
-    """Group component keys by layer, return [(layer, [keys])] in topological order.
-
-    Args:
-        component_keys: Component keys like 'h.0.attn.q_proj:42'.
-        layer_descriptions: Mapping from concrete layer path to canonical address
-            (from ModelMetadata.layer_descriptions).
-    """
+    """Group component keys (`'h.0.attn.q_proj:42'`) by layer; return `[(layer, [keys])]` in topological order. `layer_descriptions` maps concrete layer path → canonical address (from `ModelMetadata.layer_descriptions`)."""
     by_layer: dict[str, list[str]] = {}
     for key in component_keys:
         layer, _ = parse_component_key(key)

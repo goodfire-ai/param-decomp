@@ -10,19 +10,7 @@ def sample_at_most_n_per_group(
     max_per_group: int,
     generator: torch.Generator | None = None,
 ) -> Bool[Tensor, " N"]:
-    """Randomly sample at most N elements per group.
-
-    Uses a vectorized algorithm: sort by (group, random), compute rank within
-    each group via cummax trick, keep elements with rank <= max_per_group.
-
-    Args:
-        group_ids: Integer tensor assigning each element to a group.
-        max_per_group: Maximum elements to keep per group.
-        generator: Optional random generator for reproducibility.
-
-    Returns:
-        Boolean mask indicating which elements to keep.
-    """
+    """Boolean keep-mask: randomly sample at most `max_per_group` elements per group. Vectorised: sort by `(group, random)`, compute within-group rank via the cummax trick, keep entries with rank `<= max_per_group`."""
     if len(group_ids) == 0:
         return torch.zeros(0, dtype=torch.bool, device=group_ids.device)
 
@@ -64,20 +52,7 @@ def compute_pmi(
     target_count: float,
     total_count: int,
 ) -> Float[Tensor, " V"]:
-    """Compute pointwise mutual information (PMI) for each item.
-
-    PMI(x, y) = log(P(x, y) / (P(x) * P(y)))
-              = log(count(x, y) * total / (count(x) * count(y)))
-
-    Args:
-        cooccurrence_counts: Count (or mass) of each item co-occurring with target.
-        marginal_counts: Total count (or mass) of each item across all targets.
-        target_count: Total count of the target (e.g., component firings).
-        total_count: Total number of observations.
-
-    Returns:
-        PMI values for each item. Items with zero counts get -inf.
-    """
+    """Pointwise mutual information per item: `PMI(x, y) = log(count(x, y) * total / (count(x) * count(y)))`. Items with zero counts get `-inf`."""
     valid = (cooccurrence_counts > 0) & (marginal_counts > 0)
 
     # PMI = log(P(co) / (P(target) * P(item)))
@@ -94,18 +69,7 @@ def top_k_pmi(
     total_count: int,
     top_k: int,
 ) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
-    """Compute top-k and bottom-k items by PMI.
-
-    Args:
-        cooccurrence_counts: Count (or mass) of each item co-occurring with target.
-        marginal_counts: Total count (or mass) of each item across all targets.
-        target_count: Total count of the target.
-        total_count: Total number of observations.
-        top_k: Number of top/bottom items to return.
-
-    Returns:
-        Tuple of (top_k_items, bottom_k_items), each a list of (index, pmi_value).
-    """
+    """Top-k and bottom-k items by PMI, returned as `(top, bottom)` lists of `(index, pmi_value)`."""
     pmi = compute_pmi(cooccurrence_counts, marginal_counts, target_count, total_count)
 
     n_valid = int((pmi > float("-inf")).sum())

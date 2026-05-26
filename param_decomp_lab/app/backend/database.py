@@ -331,16 +331,7 @@ class PromptAttrDB:
         token_ids: list[int],
         context_length: int,
     ) -> int:
-        """Add a custom prompt to the database, or return existing if duplicate.
-
-        Args:
-            run_id: The run this prompt belongs to.
-            token_ids: The token IDs for the prompt.
-            context_length: The context length setting.
-
-        Returns:
-            The prompt ID (existing or newly created).
-        """
+        """Add a custom prompt to the database, or return the existing prompt ID on duplicate `(run_id, token_ids, context_length)`."""
         with self._write_lock():
             existing_id = self.find_prompt_by_token_ids(run_id, token_ids, context_length)
             if existing_id is not None:
@@ -400,15 +391,7 @@ class PromptAttrDB:
         prompt_id: int,
         graph: StoredGraph,
     ) -> int:
-        """Save a computed graph for a prompt.
-
-        Args:
-            prompt_id: The prompt ID.
-            graph: The graph to save.
-
-        Returns:
-            The database ID of the saved graph.
-        """
+        """Save a computed graph for a prompt; return its database ID."""
         conn = self._get_conn()
 
         def _node_to_dict(n: Node) -> dict[str, str | int]:
@@ -625,14 +608,7 @@ class PromptAttrDB:
         )
 
     def get_graphs(self, prompt_id: int) -> list[StoredGraph]:
-        """Retrieve all stored graphs for a prompt.
-
-        Args:
-            prompt_id: The prompt ID.
-
-        Returns:
-            List of stored graphs (standard, optimized, and manual).
-        """
+        """Retrieve all stored graphs for a prompt (standard, optimized, and manual, in that order)."""
         conn = self._get_conn()
         rows = conn.execute(
             """SELECT id, graph_type, edges_data, edges_data_abs, output_logits, node_ci_vals,
@@ -688,16 +664,7 @@ class PromptAttrDB:
         selected_nodes: list[str],
         result_json: str,
     ) -> int:
-        """Save an intervention run.
-
-        Args:
-            graph_id: The graph ID this run belongs to.
-            selected_nodes: List of node keys that were selected.
-            result_json: JSON-encoded InterventionResult.
-
-        Returns:
-            The intervention run ID.
-        """
+        """Save an `InterventionResult` (already JSON-encoded) for a graph; return the new intervention-run ID."""
         with self._write_lock():
             conn = self._get_conn()
             cursor = conn.execute(
@@ -711,14 +678,7 @@ class PromptAttrDB:
             return run_id
 
     def get_intervention_runs(self, graph_id: int) -> list[InterventionRunRecord]:
-        """Get all intervention runs for a graph.
-
-        Args:
-            graph_id: The graph ID.
-
-        Returns:
-            List of intervention run records, ordered by creation time.
-        """
+        """All intervention runs for a graph, ordered by creation time."""
         conn = self._get_conn()
         rows = conn.execute(
             """SELECT id, graph_id, selected_nodes, result, created_at

@@ -13,13 +13,7 @@ def main(
     harvest_subrun_id: str,
     config: str | None = None,
 ) -> None:
-    """Submit intruder eval to SLURM.
-
-    Args:
-        decomposition_id: ID of the target decomposition (e.g. "clt-1d4752ea").
-        harvest_subrun_id: Harvest subrun to use (e.g. "h-20260323_163726").
-        config: Path to IntruderSlurmConfig YAML/JSON. Uses defaults if omitted.
-    """
+    """Submit intruder eval to SLURM. `decomposition_id` like `"clt-1d4752ea"`, `harvest_subrun_id` like `"h-20260323_163726"`."""
     from param_decomp_lab.harvest.config import IntruderSlurmConfig
     from param_decomp_lab.harvest.scripts.run_intruder_slurm import submit_intruder
 

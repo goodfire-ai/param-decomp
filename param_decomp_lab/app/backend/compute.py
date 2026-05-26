@@ -456,7 +456,7 @@ def filter_ci_to_included_nodes(
         included_nodes: Set of node keys to include (format: "layer:seq:cIdx", where
             `layer` is a canonical layer address like "0.mlp.up").
         topology: Used to translate canonical layer addresses to concrete module paths
-            that match the keys of ``ci_lower_leaky``.
+            that match the keys of `ci_lower_leaky`.
 
     Returns:
         New dict with CI values zeroed for non-included nodes.
@@ -718,19 +718,7 @@ def compute_ci_only(
     tokens: Float[Tensor, "1 seq"],
     sampling: SamplingType,
 ) -> CIOnlyResult:
-    """Fast CI computation without full attribution graph.
-
-    This is much faster than compute_prompt_attributions() because it only
-    requires a forward pass and CI computation (no gradient loop).
-
-    Args:
-        model: The ComponentModel to analyze.
-        tokens: Tokenized prompt of shape [1, seq_len].
-        sampling: Sampling type to use for causal importances.
-
-    Returns:
-        CIOnlyResult containing CI values per layer, target model output probabilities, pre-weight activations, and component activations.
-    """
+    """Fast CI-only computation (forward pass + CI calc, no gradient loop). Much faster than `compute_prompt_attributions()` when only CI values are needed."""
     with torch.no_grad(), bf16_autocast():
         output_with_cache: OutputWithCache = model(tokens, cache_type="input")
         ci = model.calc_causal_importances(

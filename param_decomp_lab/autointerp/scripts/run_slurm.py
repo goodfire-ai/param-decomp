@@ -50,20 +50,7 @@ def submit_autointerp(
     dependency_job_id: str | None = None,
     snapshot_ref: str | None = None,
 ) -> AutointerpSubmitResult:
-    """Submit the autointerp pipeline to SLURM.
-
-    Submits interpret + eval jobs as a functional unit. All jobs depend on a
-    prior harvest merge (passed as dependency_job_id).
-
-    Args:
-        wandb_path: WandB run path for the target decomposition run.
-        config: Autointerp SLURM configuration.
-        dependency_job_id: Job to wait for before starting (e.g. harvest merge).
-        snapshot_ref: Fully-qualified git snapshot ref to use.
-
-    Returns:
-        AutointerpSubmitResult with interpret, detection, and fuzzing results.
-    """
+    """Submit the autointerp pipeline (interpret + evals) to SLURM as a functional unit. `dependency_job_id` is typically the harvest merge job."""
     autointerp_subrun_id = _make_autointerp_subrun_id(snapshot_ref)
 
     # === 1. Interpret job ===

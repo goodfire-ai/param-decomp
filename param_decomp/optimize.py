@@ -148,14 +148,30 @@ def optimize(
     `pd_config.loss_metrics`, optionally runs a faithfulness warmup, then loops for
     `pd_config.steps + 1` training steps. Every step computes losses from
     `loss_metrics`, accumulates them weighted by their `coeff`, and backprops. Train
-    logging, checkpointing, and eval each fire on their own schedule. Metric keys
-    handed to `sink.log` are pre-namespaced (`train/...`, `eval/...`).
+    logging, checkpointing, and eval each fire on their own schedule.
 
-    All ranks call this function; `sink` is automatically a no-op on non-main ranks.
-    Under DDP, `ComponentModel` is wrapped in `DistributedDataParallel` for gradient
-    sync. `target_model` is forced to `requires_grad=False` and put in `eval()` mode.
-    Pass `eval_loop=None` to skip eval entirely. The final step always checkpoints
-    regardless of `cadence.save_every`.
+    Under DDP, the trainer wraps `ComponentModel` in `DistributedDataParallel` for
+    gradient sync. Every rank executes this function and every rank calls every `sink`
+    method — the `RunSink` implementation owns any rank-aware filtering it wants (e.g.
+    only writing files / wandb on `is_main_process()`).
+
+    Args:
+        target_model: The frozen model whose parameters are being decomposed. Mutated
+            in place: forced to `requires_grad=False` and put in `eval()` mode.
+        train_loader: Train data loader. Looped indefinitely until `pd_config.steps`
+            is reached.
+        run_batch: Callable that runs one batch through the wrapped target model and
+            returns its output tensor.
+        reconstruction_loss: Callable returning `(loss_sum, n_elements)` used by
+            recon-style loss metrics.
+        pd_config: Algorithm specification — CI fn, loss metrics, optimizers,
+            decomposition targets, seed, tied weights, warmup, etc.
+        runtime_config: Compute substrate — device, autocast, data-parallelism.
+        sink: Output destination. Metric keys handed to `sink.log` are pre-namespaced
+            (`train/...`, `eval/...`). See note above on rank semantics.
+        cadence: Train-log + checkpoint period. The final step always checkpoints
+            regardless of `cadence.save_every`.
+        eval_loop: Optional eval bundle. Pass `None` to skip eval entirely.
     """
     dist_state = get_distributed_state()
     device = runtime_config.device
