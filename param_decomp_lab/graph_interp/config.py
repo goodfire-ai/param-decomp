@@ -18,5 +18,5 @@ class GraphInterpConfig(BaseConfig):
 
 class GraphInterpSlurmConfig(BaseConfig):
     config: GraphInterpConfig
-    partition: str = DEFAULT_PARTITION_NAME
+    partition: str | None = DEFAULT_PARTITION_NAME
     time: str = "24:00:00"

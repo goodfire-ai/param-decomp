@@ -160,7 +160,7 @@ class AutointerpSlurmConfig(BaseConfig):
     """
 
     config: AutointerpConfig
-    partition: str = DEFAULT_PARTITION_NAME
+    partition: str | None = DEFAULT_PARTITION_NAME
     time: str = "12:00:00"
     evals: AutointerpEvalConfig | None
     evals_time: str = "12:00:00"

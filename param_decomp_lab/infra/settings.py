@@ -29,8 +29,11 @@ PARAM_DECOMP_OUT_DIR.mkdir(parents=True, exist_ok=True)
 SLURM_LOGS_DIR = PARAM_DECOMP_OUT_DIR / "slurm_logs"
 SBATCH_SCRIPTS_DIR = PARAM_DECOMP_OUT_DIR / "sbatch_scripts"
 
-# The pd-run CLI's `--partition` flag overrides this further for ad-hoc launches.
-DEFAULT_PARTITION_NAME = os.environ["PARTITION_RESERVED"]
+# SLURM partition. Sourced from `PARTITION_RESERVED` (set on GF clusters); unset
+# elsewhere (CI, dev laptops, clusters without that env var), in which case we
+# omit `--partition` from sbatch and let SLURM use its configured default. The
+# pd-run CLI's `--partition` flag overrides this for ad-hoc launches.
+DEFAULT_PARTITION_NAME: str | None = os.environ.get("PARTITION_RESERVED")
 
 # Default run for the app to load on startup if set
 PARAM_DECOMP_APP_DEFAULT_RUN: str | None = os.environ.get("PARAM_DECOMP_APP_DEFAULT_RUN")
