@@ -1,5 +1,5 @@
 pd:
-  seed: 0
+  seed: 1
   n_mask_samples: 1
   ci_config:
     mode: global
