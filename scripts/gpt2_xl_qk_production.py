@@ -201,6 +201,9 @@ def main(
     smoke: bool = False,
     batch_size: int = 16,
     profile: bool = True,
+    torch_profile: bool = False,
+    torch_profile_ranks: str | None = None,
+    ci_bwd_profile: bool = False,
     n_ci: int = DEFAULT_N_CI,
     n_ppgd: int = DEFAULT_N_PPGD,
     ddp_per_block: int = DEFAULT_DDP_PER_BLOCK,
@@ -217,6 +220,13 @@ def main(
         profile: When ``smoke=True``, enable CUDA memory-history recording on
             one rank per pool (LW block 0, CI rank 0, PPGD rank 0). Dumps
             ``mem_rank<R>.pickle`` files loadable at pytorch.org/memory_viz.
+        torch_profile: When ``smoke=True``, enable torch.profiler. Dumps
+            Chrome trace JSON + key-averages text summary per rank to
+            ``_xl_production/torch_profile/<job>/``. Heavy: ~10-50% slowdown
+            on profiled ranks. Drop the json into speedscope.app.
+        torch_profile_ranks: Comma-separated rank list overriding the default
+            "one per pool" (e.g. "96" for CI-only). Reducing scope mitigates
+            multi-rank NCCL desync risk.
         n_ci: Number of CI pool ranks. Default 4. Bump to halve per-CI-rank batch.
         n_ppgd: Number of PPGD pool ranks. Default 4. Bump to halve per-PPGD-rank
             batch (which halves the PPGD-bound batch ceiling because PPGD's
@@ -266,10 +276,10 @@ def main(
     print(f"Snapshot: {stamp.snapshot_ref}")
 
     env = dict(CUDA_FLAGS)
+    # One rank per pool: LW block-0 rank-0 = 0, CI rank-0 = N_LW_RANKS,
+    # PPGD rank-0 = N_LW_RANKS + n_ci.
+    prof_ranks = [0, N_LW_RANKS, N_LW_RANKS + n_ci]
     if smoke and profile:
-        # One rank per pool: LW block-0 rank-0 = 0, CI rank-0 = N_LW_RANKS,
-        # PPGD rank-0 = N_LW_RANKS + n_ci.
-        prof_ranks = [0, N_LW_RANKS, N_LW_RANKS + n_ci]
         prof_dir = out_dir / "mem_profile" / job_name
         env["PD_MEMORY_PROFILE_RANKS"] = ",".join(str(r) for r in prof_ranks)
         env["PD_MEMORY_PROFILE_OUT"] = str(prof_dir)
@@ -280,9 +290,21 @@ def main(
         env["PD_PHASE_TRACE"] = "1"
         print(f"mem-profile: ranks={prof_ranks} → {prof_dir}")
         print(f"trace: ranks={prof_ranks}, phase_trace=on")
+    if smoke and torch_profile:
+        tp_dir = out_dir / "torch_profile" / job_name
+        tp_ranks = (
+            torch_profile_ranks if torch_profile_ranks else ",".join(str(r) for r in prof_ranks)
+        )
+        env["PD_TORCH_PROFILE_RANKS"] = tp_ranks
+        env["PD_TORCH_PROFILE_OUT"] = str(tp_dir)
+        print(f"torch-profile: ranks={tp_ranks} → {tp_dir} (chrome trace + key_avgs)")
+        print("  view: drop the json into https://www.speedscope.app/")
     if compile_ci_fn:
         env["PD_COMPILE_CI_FN"] = "1"
         print("torch.compile on CI fn: ON")
+    if ci_bwd_profile:
+        env["PD_CI_FN_BWD_PROFILE"] = "1"
+        print("CI fn bwd-stage profile: ON (per-block bwd ms via CUDA events)")
     print(
         f"topology: lw={N_LW_RANKS} ({N_SITES // ddp_per_block} blocks × DDP={ddp_per_block}, "
         f"{ddp_per_block} sites/block), ci={n_ci}, ppgd={n_ppgd}, total={total_ranks}"
