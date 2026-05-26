@@ -62,6 +62,7 @@ from param_decomp_lab.resumption import (
     resolve_step,
     write_provenance,
 )
+from param_decomp_lab.resumption.shards import compute_state_hash, state_hash_path
 from param_decomp_lab.run_sink import RunSink
 from param_decomp_lab.seed import set_seed
 
@@ -307,7 +308,12 @@ class SavedLMRun:
 
 
 @with_distributed_cleanup
-def main(config_path: str | Path | None = None, *, resume: str | Path | None = None) -> None:
+def main(
+    config_path: str | Path | None = None,
+    *,
+    resume: str | Path | None = None,
+    load_only: bool = False,
+) -> None:
     """Run an LM PD experiment end-to-end.
 
     Exactly one of ``config_path`` (fresh run) or ``--resume`` (continue a
@@ -319,11 +325,21 @@ def main(config_path: str | Path | None = None, *, resume: str | Path | None = N
         resume: Path to a :class:`ResumeConfig` YAML pointing at a prior run
             to continue. When set, the parent run's ``run_meta.yaml`` is the
             source of cfg truth (modulo narrow ``overrides``).
+        load_only: When set together with ``--resume``, run a snapshot fidelity
+            check instead of training: load the shard, construct the trainer
+            via ``Trainer.from_snapshot``, re-snapshot the trainer, and assert
+            the resulting state hash matches the hash written to disk at save
+            time. Catches any drift between save→load→re-snapshot without any
+            RNG / dataloader dependency. Errors loudly on mismatch.
     """
     if resume is not None:
         assert config_path is None, "pass either config_path or --resume, not both"
-        _resume_main(Path(resume))
+        if load_only:
+            _load_only_main(Path(resume))
+        else:
+            _resume_main(Path(resume))
     else:
+        assert config_path is None or not load_only, "--load_only requires --resume"
         assert config_path is not None, "must provide either config_path or --resume"
         _fresh_main(Path(config_path))
 
@@ -519,6 +535,100 @@ def _resume_main(resume_cfg_path: Path) -> None:
         )
     finally:
         sink.finish()
+
+
+def _load_only_main(resume_cfg_path: Path) -> None:
+    """RNG-independent fidelity test: load a snapshot, re-snapshot, assert hashes match.
+
+    Reconstructs a trainer from a saved shard via ``Trainer.from_snapshot``,
+    then calls ``trainer.snapshot()`` and compares the resulting resume-blob
+    hash against the on-disk ``state_hash_rank<R>.txt`` written at save time.
+
+    No data is consumed and no training step is taken — the loss-trajectory
+    comparison that depends on streaming-dataset / PPGD-source RNG is bypassed
+    entirely. If save→load→re-snapshot is byte-exact (it should be), the hash
+    matches; any divergence (e.g. an optimizer state slot that doesn't round-trip,
+    a forgotten buffer) fails loudly per-rank.
+    """
+    resume_cfg = ResumeConfig.from_file(resume_cfg_path)
+    parent_cfg = LMExperimentConfig.from_file(resume_cfg.from_run / RUN_META_FILENAME)
+
+    dist_state = init_distributed()
+    if is_main_process():
+        logger.info(f"Distributed state: {dist_state}")
+        logger.info(
+            f"[load-only] checking snapshot at {resume_cfg.from_run} @ step {resume_cfg.step}"
+        )
+    set_seed(parent_cfg.pd.seed)
+    device = get_device()
+    rank = dist_state.rank if dist_state is not None else 0
+
+    cfg_overrides = (
+        resume_cfg.overrides.to_pd_config_patch() if resume_cfg.overrides is not None else None
+    )
+    effective_pd = (
+        parent_cfg.pd.model_copy(update=cfg_overrides)
+        if cfg_overrides is not None
+        else parent_cfg.pd
+    )
+    effective_cfg = parent_cfg.model_copy(
+        update={
+            "pd": effective_pd,
+            "runtime": parent_cfg.runtime.model_copy(update={"device": device}),
+        }
+    )
+
+    target_model = build_target(effective_cfg.target)
+    snapshot = read_resume_snapshot(resume_cfg, rank=rank, current_device=device)
+
+    # Build the trainer from the loaded snapshot. We don't run it — just
+    # re-snapshot and compare.
+    run_batch = make_run_batch(effective_cfg.target)
+    if effective_cfg.three_pool is not None:
+        trainer = ThreePoolTrainer.from_snapshot(
+            snapshot,
+            target_model=target_model,
+            run_batch=run_batch,
+            reconstruction_loss=recon_loss_kl,
+            cfg_overrides=cfg_overrides,
+        )
+    elif effective_cfg.two_pool is not None:
+        trainer = TwoPoolTrainer.from_snapshot(
+            snapshot,
+            target_model=target_model,
+            run_batch=run_batch,
+            reconstruction_loss=recon_loss_kl,
+            cadence=effective_cfg.cadence,
+            cfg_overrides=cfg_overrides,
+        )
+    else:
+        trainer = Trainer.from_snapshot(
+            snapshot,
+            target_model=target_model,
+            run_batch=run_batch,
+            reconstruction_loss=recon_loss_kl,
+            cfg_overrides=cfg_overrides,
+        )
+
+    fresh = trainer.snapshot()
+    # `save_shard` adds run_id = parent_run_dir.name before hashing; mirror that
+    # here so the hashes compare on equal footing.
+    fresh_blob = {**fresh.resume, "run_id": resume_cfg.from_run.name}
+    fresh_hash = compute_state_hash(fresh_blob)
+
+    resolved_step = resolve_step(resume_cfg.from_run, resume_cfg.step)
+    saved_hash_path = state_hash_path(resume_cfg.from_run, resolved_step, rank)
+    assert saved_hash_path.is_file(), f"no saved state hash at {saved_hash_path}"
+    saved_hash = saved_hash_path.read_text().strip()
+
+    assert fresh_hash == saved_hash, (
+        f"[load-only][rank {rank}] state hash mismatch:\n"
+        f"  saved:   {saved_hash}\n"
+        f"  fresh:   {fresh_hash}\n"
+        f"  path:    {saved_hash_path}\n"
+        f"save→load→re-snapshot is not byte-exact — resumption fidelity broken."
+    )
+    logger.info(f"[load-only][rank {rank}] OK — hash matches ({saved_hash[:16]}…)")
 
 
 def _build_train_loader(
