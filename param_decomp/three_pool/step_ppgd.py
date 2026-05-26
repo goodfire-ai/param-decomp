@@ -86,7 +86,7 @@ def step_ppgd(
 
     with strategy.context(component_model.target_model):
         with p.phase("pgd/A1_post_async_recv_ci"):
-            ci_recv, ci_recv_works = layout.async_recv_ci_from_ci_pool_ppgd(
+            ci_recv_pending = layout.async_recv_ci_from_ci_pool_ppgd(
                 cfg.c_per_site, seq_len=seq_len, device=device
             )
         with p.phase("pgd/A2_target_fwd"), torch.no_grad(), autocast_bf16(cfg.bf16_autocast):
@@ -103,8 +103,7 @@ def step_ppgd(
         with p.phase("pgd/D1_calc_weight_deltas"):
             weight_deltas = component_model.calc_weight_deltas()
         with p.phase("pgd/D2_wait_ci_recv"):
-            for w in ci_recv_works:
-                w.wait()
+            ci_recv = ci_recv_pending.wait_and_unpack()
         ci_scratch = _releaf_ci_fp32_for_grads(ci_recv)
         _assert_ci_scratch_shapes(ci_scratch, layout, seq_len, cfg)
 
