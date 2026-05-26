@@ -39,7 +39,6 @@ sliced-from-global pattern.
 import itertools
 import os
 import time
-from contextlib import nullcontext
 from typing import Any, Self
 
 import torch
@@ -590,7 +589,14 @@ class ThreePoolTrainer:
         components_lr_schedule = pd_config.components_optimizer.lr_schedule
         ci_fn_lr_schedule = pd_config.ci_fn_optimizer.lr_schedule
 
-        profiler_ctx = profiler if profiler is not None else nullcontext()
+        # Default to a disabled (no torch.profiler) instance — its phase()
+        # method still records entry/exit CUDA events whenever PD_PHASE_TRACE
+        # is set, so the cpu/gpu/wait exit-line format emits at end of step.
+        # Without this default, step_* functions create local dummy profilers
+        # whose buffered events never get flushed.
+        if profiler is None:
+            profiler = PhaseProfiler(enabled=False)
+        profiler_ctx = profiler
         # All-ranks barrier flag — read identically on every rank from the env
         # so even unprofiled ranks join the pre-step ``dist.barrier()`` when
         # profiling is enabled somewhere in the world. Without this, a barrier
@@ -740,8 +746,7 @@ class ThreePoolTrainer:
                 step_ms = (time.perf_counter() - step_start) * 1000.0
                 trace(f"Trainer.run: step {step}: done in {step_ms:.1f}ms")
                 flush_nccl_event_timings()
-                if profiler is not None:
-                    profiler.flush_pending_gpu_events()
+                profiler.flush_pending_gpu_events()
                 if step % cadence.train_log_every == 0:
                     dump_memory_stats(f"step {step} done")
 
@@ -769,8 +774,7 @@ class ThreePoolTrainer:
                 )
                 batch_T_plus_1 = _to_device(next(train_iterator, None))
 
-                if profiler is not None:
-                    profiler.step()
+                profiler.step()  # no-op when enabled=False
 
             # Drain the final iter's deferred opt (async mode only). Without this,
             # the saved checkpoint would be missing the last iter's update.
