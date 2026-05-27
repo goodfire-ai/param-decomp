@@ -415,13 +415,18 @@ class ThreePoolTrainer:
         elif self._pending_ppgd_resume_state is not None:
             my_contribution["ppgd"] = self._pending_ppgd_resume_state
 
+        # Route the python-object gather onto cross_pool_p2p_group like the
+        # tensor gather in gather_full_state_dict_to_rank0 — keeps the default
+        # PG free of payload-carrying collectives so a subsequent barrier
+        # doesn't trip over un-progressed work.
+        p2p_group = self.layout.world.cross_pool_p2p_group
         world_size = self.layout.world.world_size
         if self.layout.my_rank != 0:
-            dist.gather_object(my_contribution, None, dst=0)
+            dist.gather_object(my_contribution, None, dst=0, group=p2p_group)
             return None
 
         gathered: list[dict[str, Any] | None] = [None] * world_size
-        dist.gather_object(my_contribution, gathered, dst=0)
+        dist.gather_object(my_contribution, gathered, dst=0, group=p2p_group)
         components_by_name: dict[str, dict[str, Any]] = {}
         ci_fn_by_name: dict[str, dict[str, Any]] = {}
         ppgd_by_rank: dict[int, dict[str, Any]] = {}
