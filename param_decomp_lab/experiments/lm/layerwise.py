@@ -9,9 +9,11 @@ Usage:
     pd-lm-layerwise <base_config.yaml> --n_layers 4
     pd-lm-layerwise <base_config.yaml> --n_layers 4 --include q_proj,k_proj
     pd-lm-layerwise <base_config.yaml> --n_layers 4 --layers 0,2 --no_snapshot
+    pd-lm-layerwise <base_config.yaml> --n_layers 4 --dp 4
 """
 
 import secrets
+import shlex
 from datetime import datetime
 from pathlib import Path
 
@@ -21,7 +23,9 @@ import wandb_workspaces.workspaces as ws
 from param_decomp.decomposition_targets import DecompositionTargetConfig
 from param_decomp.log import logger
 from param_decomp_lab.experiments.lm.run import LMExperimentConfig
+from param_decomp_lab.infra.ddp_launch import build_ddp_launch
 from param_decomp_lab.infra.git import create_git_snapshot
+from param_decomp_lab.infra.run_files import generate_run_id
 from param_decomp_lab.infra.settings import DEFAULT_PARTITION_NAME, PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.infra.slurm import (
     SlurmArrayConfig,
@@ -111,12 +115,19 @@ def submit_lm_layerwise(
     include: list[str] | None,
     layers: list[int] | None,
     tags: list[str] | None,
+    dp: int | None,
     partition: str | None,
     time: str,
     max_concurrent: int | None,
     no_snapshot: bool,
 ) -> None:
-    """Generate per-matrix configs and submit them as a SLURM array of pd-lm jobs."""
+    """Generate per-matrix configs and submit them as a SLURM array of pd-lm jobs.
+
+    `dp=None` runs each array task single-GPU via `pd-lm`. `dp>=2` wraps each task in
+    `torchrun` (single-node when `dp <= 8`, multi-node srun+torchrun otherwise) and
+    sizes the SLURM allocation accordingly — same launcher as `pd-lm --dp N`.
+    Multi-node DDP requires a snapshot.
+    """
     base_cfg = LMExperimentConfig.from_file(base_config)
     per_matrix = _build_configs(
         base_cfg,
@@ -130,28 +141,63 @@ def submit_lm_layerwise(
     configs_dir = run_dir / "configs"
     configs_dir.mkdir(parents=True, exist_ok=True)
 
-    tags_csv = ",".join(tags) if tags else None
-    commands: list[str] = []
-    per_task_comments: list[str] = []
-    for tag, cfg in per_matrix:
-        cfg_path = configs_dir / f"{tag}.yaml"
-        cfg.to_file(cfg_path)
-        cmd = f"pd-lm {cfg_path} --group={run_id}"
-        if tags_csv:
-            cmd += f" --tags={tags_csv}"
-        commands.append(cmd)
-        per_task_comments.append(tag)
-
     snapshot_ref: str | None = None
     commit_hash = "no-snapshot"
     if not no_snapshot:
         snapshot_ref, commit_hash = create_git_snapshot(snapshot_id=run_id)
         logger.info(f"Created git snapshot: {snapshot_ref} ({commit_hash[:8]})")
 
+    tags_csv = ",".join(tags) if tags else None
+    commands: list[str] = []
+    per_task_comments: list[str] = []
+    n_gpus_per_task = 1
+    n_nodes_per_task = 1
+    env: dict[str, str] | None = None
+    for tag, cfg in per_matrix:
+        cfg_path = configs_dir / f"{tag}.yaml"
+        cfg.to_file(cfg_path)
+        # Pre-generate per-task run_id so we can suffix the wandb display name with
+        # `<run_id>-<tag>` via WANDB_NAME. Keeps the suffix logic isolated to layerwise —
+        # `pd-lm` / `init_pd_run` stay untouched.
+        task_run_id = generate_run_id("param_decomp")
+        wandb_name = shlex.quote(f"{task_run_id}-{tag}")
+        if dp is None:
+            cmd = (
+                f"WANDB_NAME={wandb_name} pd-lm {cfg_path} --group={run_id} --run_id={task_run_id}"
+            )
+            if tags_csv:
+                cmd += f" --tags={tags_csv}"
+        else:
+            base_parts = [
+                "-m",
+                "param_decomp_lab.experiments.lm.run",
+                str(cfg_path),
+                "--group",
+                run_id,
+                "--run_id",
+                task_run_id,
+            ]
+            if tags_csv:
+                base_parts += ["--tags", tags_csv]
+            launch = build_ddp_launch(
+                shlex.join(base_parts),
+                dp=dp,
+                job_name="pd-lm-layerwise",
+                snapshot_ref=snapshot_ref,
+                port_seed=f"{run_id}-{tag}",
+            )
+            cmd = f"WANDB_NAME={wandb_name} {launch.command}"
+            n_gpus_per_task = launch.gpus_per_node
+            n_nodes_per_task = launch.n_nodes
+            env = launch.env
+        commands.append(cmd)
+        per_task_comments.append(tag)
+
     array_config = SlurmArrayConfig(
         job_name="pd-lm-layerwise",
         partition=partition,
-        n_gpus=1,
+        n_gpus=n_gpus_per_task,
+        n_nodes=n_nodes_per_task,
         time=time,
         snapshot_ref=snapshot_ref,
         max_concurrent_tasks=max_concurrent,
@@ -160,6 +206,7 @@ def submit_lm_layerwise(
     array_script = generate_array_script(
         array_config,
         commands,
+        env=env,
         per_task_comments=per_task_comments,
     )
     result = submit_slurm_job(array_script, "lm_layerwise", n_array_tasks=len(commands))
@@ -203,6 +250,7 @@ def main(
     include: str | None = None,
     layers: str | None = None,
     tags: str | None = None,
+    dp: int | None = None,
     partition: str | None = DEFAULT_PARTITION_NAME,
     time: str = "12:00:00",
     max_concurrent: int | None = None,
@@ -219,6 +267,8 @@ def main(
             in [0, n_layers).
         tags: Comma-separated wandb tags propagated to every child run (in addition to
             the auto-generated launch-id `--group`).
+        dp: DDP world size per array task. Default: single-GPU per task. N <= 8 → single
+            node, N > 8 → multi-node (N must be a multiple of 8 and requires a snapshot).
         partition: SLURM partition for the array job.
         time: SLURM time limit per task (HH:MM:SS).
         max_concurrent: Cap on concurrent array tasks. Default: no cap.
@@ -230,6 +280,7 @@ def main(
         include=_parse_csv(include),
         layers=_parse_int_csv(layers),
         tags=_parse_csv(tags),
+        dp=dp,
         partition=partition,
         time=time,
         max_concurrent=max_concurrent,
