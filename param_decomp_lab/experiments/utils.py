@@ -16,7 +16,7 @@ from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.infra.wandb import try_wandb
 from param_decomp_lab.run_sink import RunSink
 
-RUN_META_FILENAME = "run_meta.yaml"
+EXPERIMENT_CONFIG_FILENAME = "experiment_config.yaml"
 
 
 class WandbConfig(BaseConfig):
@@ -46,7 +46,7 @@ class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
             pass
 
     Omit the `eval:` block to skip eval entirely; omit `wandb:` to skip wandb (the run
-    still writes `run_meta.yaml` + checkpoints locally).
+    still writes `experiment_config.yaml` + checkpoints locally).
     """
 
     pd: PDConfig
@@ -65,7 +65,7 @@ def init_pd_run[T: BaseConfig, D: BaseConfig](
     tags: str | None,
     run_id: str | None = None,
 ) -> RunSink:
-    """Allocate `run_id` + `out_dir`, write `run_meta.yaml`, return a sink.
+    """Allocate `run_id` + `out_dir`, write `experiment_config.yaml`, return a sink.
 
     Local-only when `cfg.wandb is None`, else wandb-backed. Non-main DDP ranks get a
     silent no-op sink without touching disk or wandb. `group` is a "launched together"
@@ -75,8 +75,8 @@ def init_pd_run[T: BaseConfig, D: BaseConfig](
         return RunSink.silent()
     run_id = run_id or generate_run_id("param_decomp")
     out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
-    meta_path = out_dir / RUN_META_FILENAME
-    cfg.to_file(meta_path)
+    cfg_path = out_dir / EXPERIMENT_CONFIG_FILENAME
+    cfg.to_file(cfg_path)
     keep_last_n = cfg.cadence.keep_last_n_checkpoints
     if cfg.wandb is None:
         return RunSink.local(out_dir, keep_last_n_checkpoints=keep_last_n)
@@ -91,5 +91,5 @@ def init_pd_run[T: BaseConfig, D: BaseConfig](
         tags=parsed_tags,
         keep_last_n_checkpoints=keep_last_n,
     )
-    try_wandb(wandb.save, str(meta_path), base_path=str(out_dir), policy="now")
+    try_wandb(wandb.save, str(cfg_path), base_path=str(out_dir), policy="now")
     return sink

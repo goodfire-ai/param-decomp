@@ -3,7 +3,7 @@
 A resumption is a separate top-level concept from a fresh run, expressed via its own
 `ResumeConfig` YAML schema and dispatched from the `pd-lm --resume <path>` CLI flag.
 Resumption is *continuous*: the resumed run extends the parent's step axis, inheriting
-its config from `run_meta.yaml` and its training state from `training_<step>.pth`.
+its config from `experiment_config.yaml` and its training state from `training_<step>.pth`.
 
 The training state is canonical and topology-independent — a single file written by
 rank 0 carries everything needed to reconstruct the trainer for any compatible

@@ -665,5 +665,3 @@ class Trainer:
 
         if is_main_process():
             logger.info("Finished training loop.")
-
-

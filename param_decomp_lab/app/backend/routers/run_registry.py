@@ -14,7 +14,7 @@ from param_decomp.log import logger
 from param_decomp_lab.app.backend.routers.pretrain_info import _get_pretrain_info
 from param_decomp_lab.app.backend.utils import log_errors
 from param_decomp_lab.experiments.lm.run import LMExperimentConfig
-from param_decomp_lab.experiments.utils import RUN_META_FILENAME
+from param_decomp_lab.experiments.utils import EXPERIMENT_CONFIG_FILENAME
 from param_decomp_lab.infra.run_files import resolve_config_path
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
@@ -61,7 +61,7 @@ def _get_architecture_summary(wandb_path: str) -> str | None:
     """Get a short architecture label for a run. Returns None on failure."""
     try:
         cfg = LMExperimentConfig.from_file(
-            resolve_config_path(wandb_path, config_filename=RUN_META_FILENAME)
+            resolve_config_path(wandb_path, config_filename=EXPERIMENT_CONFIG_FILENAME)
         )
         info = _get_pretrain_info(cfg.target)
         parts: list[str] = []

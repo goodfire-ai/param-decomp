@@ -20,7 +20,7 @@ class ResumeConfig(BaseConfig):
     """A resumption YAML: which run to resume, which checkpoint."""
 
     from_run: Path
-    """Path to the parent run directory (the one with `run_meta.yaml` and
+    """Path to the parent run directory (the one with `experiment_config.yaml` and
     `training_<step>.pth` files)."""
 
     step: int | Literal["latest"] = "latest"

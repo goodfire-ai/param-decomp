@@ -1,7 +1,7 @@
-"""Resume provenance: a small YAML sibling of ``run_meta.yaml`` recording
+"""Resume provenance: a small YAML sibling of ``experiment_config.yaml`` recording
 which run a resumed run was forked from.
 
-Resumed runs get their own ``run_id`` and own ``run_meta.yaml`` — provenance
+Resumed runs get their own ``run_id`` and own ``experiment_config.yaml`` — provenance
 is what makes them traceable back to the parent. A future reader can inspect
 ``resume_provenance.yaml`` to find the parent run dir + the step it was
 resumed from.
@@ -17,7 +17,7 @@ RESUME_PROVENANCE_FILENAME = "resume_provenance.yaml"
 
 
 class ResumeProvenance(BaseConfig):
-    """Sibling of ``run_meta.yaml`` recording where this resumed run came from."""
+    """Sibling of ``experiment_config.yaml`` recording where this resumed run came from."""
 
     parent_run_dir: Path
     """Path to the parent run's directory."""

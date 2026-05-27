@@ -24,7 +24,7 @@ from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
 from param_decomp_lab.experiments.resid_mlp.data import ResidMLPDataset
 from param_decomp_lab.experiments.resid_mlp.models import ResidMLP, ResidMLPTargetRunInfo
 from param_decomp_lab.experiments.utils import (
-    RUN_META_FILENAME,
+    EXPERIMENT_CONFIG_FILENAME,
     ExperimentConfig,
     init_pd_run,
 )
@@ -108,7 +108,7 @@ class SavedResidMLPRun:
     def from_path(cls, path: ModelPath) -> "SavedResidMLPRun":
         """Resolve a run directory or W&B path into a fully-validated `SavedResidMLPRun`."""
         files = resolve_run_files(
-            path, config_filename=RUN_META_FILENAME, checkpoint_prefix="model"
+            path, config_filename=EXPERIMENT_CONFIG_FILENAME, checkpoint_prefix="model"
         )
         return cls(
             cfg=ResidMLPExperimentConfig.from_file(files.config_path),
