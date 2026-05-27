@@ -1,4 +1,4 @@
-"""Protocols for the callbacks `optimize()` invokes once per batch.
+"""Protocols for the callbacks `Trainer.run` invokes once per batch.
 
 The lab ships concrete implementations in `param_decomp_lab.batch_and_loss_fns`.
 """

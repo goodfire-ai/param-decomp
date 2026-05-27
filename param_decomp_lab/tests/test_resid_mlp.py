@@ -11,7 +11,7 @@ from param_decomp.decomposition_targets import (
 from param_decomp.metrics.faithfulness import FaithfulnessLossConfig
 from param_decomp.metrics.importance_minimality import ImportanceMinimalityLossConfig
 from param_decomp.metrics.stochastic_recon import StochasticReconLossConfig
-from param_decomp.optimize import EvalLoop, optimize
+from param_decomp.optimize import EvalLoop, Trainer
 from param_decomp.schedule import ScheduleConfig
 from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
 from param_decomp_lab.experiments.resid_mlp.data import ResidMLPDataset
@@ -114,14 +114,11 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         slow_on_first_step=False,
     )
 
-    optimize(
+    trainer = Trainer(
         target_model=target_model,
-        train_loader=train_loader,
         run_batch=run_batch_first_element,
         reconstruction_loss=recon_loss_mse,
         pd_config=pd_config,
         runtime_config=RuntimeConfig(device=device),
-        sink=sink,
-        cadence=cadence,
-        eval_loop=eval_loop,
     )
+    trainer.run(train_loader, sink, cadence, eval_loop)

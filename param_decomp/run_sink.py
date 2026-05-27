@@ -1,4 +1,4 @@
-"""`RunSink` Protocol: where `optimize()` sends its output (metrics, console lines, checkpoints)."""
+"""`RunSink` Protocol: where `Trainer.run` sends its output (metrics, console lines, checkpoints)."""
 
 from typing import Any, Protocol, runtime_checkable
 

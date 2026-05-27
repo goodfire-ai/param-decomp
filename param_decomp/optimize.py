@@ -1,19 +1,11 @@
 """The PD trainer.
 
-Two entry points:
-
-- :class:`Trainer` — stateful training class. Construction sets up the
-  `ComponentModel`, the two optimizers, and the loss-metric instances from
-  ``pd_config``. :meth:`Trainer.run` advances the training loop from
-  ``self.step`` to ``pd_config.steps``. :meth:`Trainer.snapshot` and
-  :meth:`Trainer.from_snapshot` round-trip an atomic
-  :class:`~param_decomp.trainer_snapshot.TrainerSnapshot` that lets a caller
-  persist and restore the full training state (used by resumption).
-- :func:`optimize` — thin convenience wrapper that constructs a `Trainer` and
-  calls :meth:`Trainer.run`. Preserves the original function-style entry point
-  for callers that don't need resumption.
-
-Both go through the same code path.
+:class:`Trainer` is the one entry point: construction sets up the
+`ComponentModel`, the two optimizers, and the loss-metric instances from
+``pd_config``; :meth:`Trainer.run` advances the training loop from
+``self.step`` to ``pd_config.steps``; :meth:`Trainer.snapshot` and
+:meth:`Trainer.from_snapshot` round-trip an atomic :class:`TrainingState`
+that lets a caller persist and restore the full training state (resumption).
 """
 
 import gc
@@ -675,27 +667,3 @@ class Trainer:
             logger.info("Finished training loop.")
 
 
-def optimize(
-    target_model: nn.Module,
-    train_loader: DataLoader[Any],
-    run_batch: RunBatch,
-    reconstruction_loss: ReconstructionLoss,
-    pd_config: PDConfig,
-    runtime_config: RuntimeConfig,
-    sink: RunSink,
-    cadence: Cadence,
-    eval_loop: EvalLoop | None = None,
-) -> None:
-    """Run the PD optimization loop.
-
-    Thin wrapper over :class:`Trainer` for callers that don't need resumption
-    or interactive control.
-    """
-    trainer = Trainer(
-        target_model=target_model,
-        run_batch=run_batch,
-        reconstruction_loss=reconstruction_loss,
-        pd_config=pd_config,
-        runtime_config=runtime_config,
-    )
-    trainer.run(train_loader, sink, cadence, eval_loop)

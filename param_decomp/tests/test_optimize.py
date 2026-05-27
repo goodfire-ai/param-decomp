@@ -19,7 +19,7 @@ from param_decomp.configs import (
 from param_decomp.decomposition_targets import DecompositionTargetConfig
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.faithfulness import FaithfulnessLossConfig
-from param_decomp.optimize import EvalLoop, Trainer, optimize
+from param_decomp.optimize import EvalLoop, Trainer
 from param_decomp.schedule import ScheduleConfig
 
 
@@ -130,17 +130,14 @@ def test_pd_config_requires_positive_steps() -> None:
 def test_optimize_logs_missing_grad_norms_as_nan() -> None:
     sink = CaptureSink()
     loader = make_loader()
-    optimize(
+    trainer = Trainer(
         target_model=TinyLinear(),
-        train_loader=loader,
         run_batch=run_batch_passthrough,
         reconstruction_loss=recon_loss_mse,
         pd_config=make_pd_config(),
         runtime_config=RuntimeConfig(device="cpu", autocast_bf16=False),
-        sink=sink,
-        cadence=make_cadence(train_log_every=1),
-        eval_loop=None,
     )
+    trainer.run(loader, sink, make_cadence(train_log_every=1), eval_loop=None)
 
     train_logs = [
         metrics for _, metrics in sink.logged if any(k.startswith("train/") for k in metrics)
@@ -179,15 +176,17 @@ class DummyEvalMetric(Metric[DummyEvalConfig]):
 def test_optimize_rejects_duplicate_eval_metric_names() -> None:
     loader = make_loader()
     with pytest.raises(AssertionError, match="duplicate eval metric 'DummyEvalMetric'"):
-        optimize(
+        trainer = Trainer(
             target_model=TinyLinear(),
-            train_loader=loader,
             run_batch=run_batch_passthrough,
             reconstruction_loss=recon_loss_mse,
             pd_config=make_pd_config(),
             runtime_config=RuntimeConfig(device="cpu", autocast_bf16=False),
-            sink=CaptureSink(),
-            cadence=make_cadence(),
+        )
+        trainer.run(
+            loader,
+            CaptureSink(),
+            make_cadence(),
             eval_loop=make_eval_loop(
                 loader,
                 metrics=[DummyEvalMetric(DummyEvalConfig()), DummyEvalMetric(DummyEvalConfig())],
@@ -198,17 +197,14 @@ def test_optimize_rejects_duplicate_eval_metric_names() -> None:
 def test_optimize_runs_without_eval_loop() -> None:
     sink = CaptureSink()
     loader = make_loader()
-    optimize(
+    trainer = Trainer(
         target_model=TinyLinear(),
-        train_loader=loader,
         run_batch=run_batch_passthrough,
         reconstruction_loss=recon_loss_mse,
         pd_config=make_pd_config(steps=2),
         runtime_config=RuntimeConfig(device="cpu", autocast_bf16=False),
-        sink=sink,
-        cadence=make_cadence(train_log_every=1),
-        eval_loop=None,
     )
+    trainer.run(loader, sink, make_cadence(train_log_every=1), eval_loop=None)
     assert not any(any(k.startswith("eval/") for k in metrics) for _, metrics in sink.logged)
 
 
@@ -224,17 +220,14 @@ def run_with_external_seed(seed: int) -> dict[str, Tensor]:
     torch.manual_seed(seed)
     sink = CaptureSink()
     loader = make_loader()
-    optimize(
+    trainer = Trainer(
         target_model=TinyLinear(),
-        train_loader=loader,
         run_batch=run_batch_passthrough,
         reconstruction_loss=recon_loss_mse,
         pd_config=make_pd_config(),
         runtime_config=RuntimeConfig(device="cpu", autocast_bf16=False),
-        sink=sink,
-        cadence=make_cadence(),
-        eval_loop=None,
     )
+    trainer.run(loader, sink, make_cadence(), eval_loop=None)
     assert len(sink.checkpoints) == 1
     return sink.checkpoints[0]
 

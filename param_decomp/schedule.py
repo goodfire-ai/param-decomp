@@ -1,4 +1,4 @@
-"""Schedule config and value lookup used by `optimize()` and PGD metrics."""
+"""Schedule config and value lookup used by `Trainer.run` and PGD metrics."""
 
 from typing import Literal, Self
 

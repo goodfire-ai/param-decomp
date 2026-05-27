@@ -52,23 +52,26 @@ Import names from where they're defined. No package-level re-exports — `__init
 files are bare. The canonical entrypoint and the protocols / configs it consumes:
 
 ```python
-from param_decomp.optimize import EvalLoop, optimize
+from param_decomp.optimize import EvalLoop, Trainer
 from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
 from param_decomp.run_sink import RunSink
 from param_decomp.metrics.base import LossMetricConfig, Metric
 from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 ```
 
-- `optimize(target_model, train_loader, run_batch, reconstruction_loss, pd_config,
-  runtime_config, sink, cadence, eval_loop=None)` — the only entrypoint. Builds the
-  `ComponentModel`, binds eval metrics, runs the loop. Side effects all flow through `sink`.
+- `Trainer(target_model, run_batch, reconstruction_loss, pd_config, runtime_config)` +
+  `.run(train_loader, sink, cadence, eval_loop=None)` — the entrypoint. Construction
+  sets up the `ComponentModel`, the two optimizers, and the loss-metric instances;
+  `.run` advances the loop from `self.step` to `pd_config.steps`. Side effects flow
+  through `sink`. `Trainer.snapshot` / `Trainer.from_snapshot` round-trip a
+  `TrainingState` for resumption.
 - `PDConfig` — algorithm: seed, CI fn, loss metrics, optimizers, decomposition targets,
   tied weights, faithfulness warmup. Flipping a field here changes what algorithm runs.
 - `RuntimeConfig` — compute substrate: `autocast_bf16`, `device`, `dp`. Perturbs numerics
   without changing the algorithm.
 - `Cadence` — train-log / save period predicates. Train-log fires every
   `train_log_every` steps; `save_every` is optional and `should_save` is false at
-  step 0. `optimize()` always checkpoints at the final step regardless of `save_every`.
+  step 0. `Trainer.run` always checkpoints at the final step regardless of `save_every`.
 - `EvalLoop` — frozen dataclass in `param_decomp/optimize.py` bundling the eval-loop
   triple (`loader`, `metrics`, `n_steps`) with its timing (`every`, `slow_every`,
   `slow_on_first_step`). Atomic optional: pass `None` to disable eval. `slow_every` must
@@ -88,7 +91,7 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
   describe each file.
 - `param_decomp/metrics/` — loss `Metric` classes and dispatch.
 - `param_decomp_lab/experiments/{tms,resid_mlp,lm}/run.py` — composition roots; each
-  parses a YAML, builds objects, calls `optimize()`.
+  parses a YAML, builds objects, runs a `Trainer`.
 - `param_decomp_lab/{harvest,autointerp,clustering,dataset_attributions,graph_interp,investigate,app}/`
   — post-pipeline + app, each with its own CLAUDE.md.
 - `param_decomp_lab/postprocess/` — orchestrates the post-pipeline stages.
@@ -285,8 +288,9 @@ Docstrings carry information the signature doesn't.
 
 **Load-bearing public entrypoints in `param_decomp/` are an exception** — there, a full
 Google-style `Args:` block is worth the bookkeeping, because IDE hover surfaces it and
-the callers are external. Concretely: `optimize`, `ComponentModel.__init__` / `forward`
-/ `calc_causal_importances`, `RunSink` protocol methods, `Metric.bind` / `update` /
+the callers are external. Concretely: `Trainer.__init__` / `run` /
+`snapshot` / `from_snapshot`, `ComponentModel.__init__` / `forward` /
+`calc_causal_importances`, `RunSink` protocol methods, `Metric.bind` / `update` /
 `reset` / `compute`, `make_components`, `make_ci_fn_wrapper`. For everything else,
 *including internal helpers in `param_decomp/`*, prefer better parameter names and
 clearer parameterisation over docstrings — name parameters by their role inside the
