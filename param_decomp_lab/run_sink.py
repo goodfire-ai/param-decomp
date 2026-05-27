@@ -61,17 +61,22 @@ class RunSink:
 
     out_dir: Path | None
     _wandb_active: bool
+    keep_last_n_checkpoints: int | None = None
 
     # =========================== Constructors ===========================
 
     @classmethod
-    def local(cls, out_dir: Path) -> "RunSink":
+    def local(cls, out_dir: Path, *, keep_last_n_checkpoints: int | None = None) -> "RunSink":
         """Sink that writes to local files only (no wandb)."""
         if not is_main_process():
             return cls(out_dir=None, _wandb_active=False)
         out_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Train+eval logs saved to directory: {out_dir}")
-        return cls(out_dir=out_dir, _wandb_active=False)
+        return cls(
+            out_dir=out_dir,
+            _wandb_active=False,
+            keep_last_n_checkpoints=keep_last_n_checkpoints,
+        )
 
     @classmethod
     def with_wandb(
@@ -86,6 +91,7 @@ class RunSink:
         tags: list[str] | None = None,
         group: str | None = None,
         view_meta: dict[str, Any] | None = None,
+        keep_last_n_checkpoints: int | None = None,
     ) -> "RunSink":
         """Sink that writes to local files and a wandb run.
 
@@ -106,7 +112,11 @@ class RunSink:
             group=group,
             view_meta=view_meta,
         )
-        return cls(out_dir=out_dir, _wandb_active=True)
+        return cls(
+            out_dir=out_dir,
+            _wandb_active=True,
+            keep_last_n_checkpoints=keep_last_n_checkpoints,
+        )
 
     @classmethod
     def silent(cls) -> "RunSink":
@@ -141,7 +151,8 @@ class RunSink:
         state, metric states, step) needed for resumption.
 
         No-op when `out_dir is None` (silent sink / non-main rank); wandb upload
-        only when wandb is active.
+        only when wandb is active. Prunes older (model, training) pairs after the
+        write when ``keep_last_n_checkpoints`` is set.
         """
         if self.out_dir is None:
             return
@@ -153,6 +164,8 @@ class RunSink:
         if self._wandb_active:
             try_wandb(wandb.save, str(model_path), base_path=str(self.out_dir), policy="now")
             try_wandb(wandb.save, str(training_path), base_path=str(self.out_dir), policy="now")
+        if self.keep_last_n_checkpoints is not None:
+            _prune_old_checkpoints(self.out_dir, keep_last_n=self.keep_last_n_checkpoints)
 
     def finish(self) -> None:
         """End-of-run cleanup."""
@@ -165,3 +178,32 @@ def _wandb_value(v: Any) -> Any:
     if isinstance(v, Image.Image):
         return wandb.Image(v)
     return v
+
+
+def _prune_old_checkpoints(out_dir: Path, *, keep_last_n: int) -> None:
+    """Delete (``model_<step>.pth``, ``training_<step>.pth``) pairs except for the
+    top ``keep_last_n`` by step number.
+
+    A "pair" is the two files written together by :meth:`RunSink.checkpoint`; we
+    glob each independently and prune by step rather than assuming both must
+    exist, since a future caller might write only one of them.
+    """
+
+    def steps(prefix: str) -> list[int]:
+        out: list[int] = []
+        for p in out_dir.glob(f"{prefix}_*.pth"):
+            try:
+                out.append(int(p.stem.removeprefix(f"{prefix}_")))
+            except ValueError:
+                continue
+        return out
+
+    all_steps = sorted(set(steps("model")) | set(steps("training")))
+    if len(all_steps) <= keep_last_n:
+        return
+    to_delete = all_steps[: len(all_steps) - keep_last_n]
+    for step in to_delete:
+        for prefix in ("model", "training"):
+            path = out_dir / f"{prefix}_{step}.pth"
+            if path.is_file():
+                path.unlink()

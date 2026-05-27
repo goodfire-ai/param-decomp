@@ -77,8 +77,9 @@ def init_pd_run[T: BaseConfig, D: BaseConfig](
     out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
     meta_path = out_dir / RUN_META_FILENAME
     cfg.to_file(meta_path)
+    keep_last_n = cfg.cadence.keep_last_n_checkpoints
     if cfg.wandb is None:
-        return RunSink.local(out_dir)
+        return RunSink.local(out_dir, keep_last_n_checkpoints=keep_last_n)
     parsed_tags = [s.strip() for s in tags.split(",") if s.strip()] if tags else None
     sink = RunSink.with_wandb(
         out_dir,
@@ -88,6 +89,7 @@ def init_pd_run[T: BaseConfig, D: BaseConfig](
         config=cfg,
         group=group,
         tags=parsed_tags,
+        keep_last_n_checkpoints=keep_last_n,
     )
     try_wandb(wandb.save, str(meta_path), base_path=str(out_dir), policy="now")
     return sink
