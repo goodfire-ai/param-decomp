@@ -1,4 +1,4 @@
-"""GPN-MSA PD experiment: YAML -> `optimize()` glue, plus the `SavedGPNMSARun` reload class.
+"""GPN-MSA PD experiment: YAML -> bundle/runner glue, plus the `SavedGPNMSARun` reload class.
 
 GPN-MSA's `forward` takes structured input — `input_ids` *and* `aux_features` (encoding
 the multi-species alignment column at each position) — so we cannot use
@@ -31,20 +31,14 @@ from param_decomp.base_config import BaseConfig, runtime_cast
 from param_decomp.batch_and_loss_fns import RunBatch
 from param_decomp.component_model import ComponentModel
 from param_decomp.distributed import DistributedState
-from param_decomp.log import logger
-from param_decomp.optimize import EvalLoop, optimize
+from param_decomp.optimize import EvalLoop
 from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
 from param_decomp_lab.component_model_io import load_component_model
-from param_decomp_lab.distributed import get_device
 from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
-from param_decomp_lab.experiments.utils import (
-    RUN_META_FILENAME,
-    ExperimentConfig,
-    init_pd_run,
-)
+from param_decomp_lab.experiments.runner import ExperimentBundle, run_fresh
+from param_decomp_lab.experiments.utils import RUN_META_FILENAME, ExperimentConfig
 from param_decomp_lab.infra.paths import ModelPath
 from param_decomp_lab.infra.run_files import resolve_run_files
-from param_decomp_lab.seed import set_seed
 
 
 class GPNMSATargetConfig(BaseConfig):
@@ -205,51 +199,9 @@ class SavedGPNMSARun:
         )
 
 
-def main(
-    config_path: str | Path,
-    *,
-    group: str | None = None,
-    tags: str | None = None,
-) -> None:
-    """Run a GPN-MSA PD experiment end-to-end from a YAML config."""
-    cfg = GPNMSAExperimentConfig.from_file(config_path)
-
-    set_seed(cfg.pd.seed)
-    device = get_device()
-    logger.info(f"Using device: {device}")
-
-    target_model = build_target(cfg.target).to(device)
-    cfg = cfg.model_copy(update={"runtime": cfg.runtime.model_copy(update={"device": device})})
-
-    train_loader = build_gpn_msa_loader(
-        cfg.target,
-        cfg.data,
-        split="train",
-        device=device,
-        batch_size=cfg.pd.batch_size,
-        seed=cfg.pd.seed,
-    )
-    eval_loop = _build_eval_loop(cfg, device)
-
-    sink = init_pd_run(cfg, group=group, tags=tags)
-
-    try:
-        optimize(
-            target_model=target_model,
-            train_loader=train_loader,
-            run_batch=make_run_batch(cfg.target),
-            reconstruction_loss=recon_loss_kl,
-            pd_config=cfg.pd,
-            runtime_config=cfg.runtime,
-            sink=sink,
-            cadence=cfg.cadence,
-            eval_loop=eval_loop,
-        )
-    finally:
-        sink.finish()
-
-
-def _build_eval_loop(cfg: GPNMSAExperimentConfig, device: str) -> EvalLoop | None:
+def _build_eval_loop(
+    cfg: GPNMSAExperimentConfig, device: str, dist_state: DistributedState | None
+) -> EvalLoop | None:
     if cfg.eval is None:
         return None
     eval_loader = build_gpn_msa_loader(
@@ -258,6 +210,7 @@ def _build_eval_loop(cfg: GPNMSAExperimentConfig, device: str) -> EvalLoop | Non
         split="eval",
         device=device,
         batch_size=cfg.eval.batch_size,
+        dist_state=dist_state,
         seed=cfg.pd.seed,
     )
     return EvalLoop(
@@ -268,6 +221,35 @@ def _build_eval_loop(cfg: GPNMSAExperimentConfig, device: str) -> EvalLoop | Non
         slow_every=cfg.eval.slow_every,
         slow_on_first_step=cfg.eval.slow_on_first_step,
     )
+
+
+_GPN_MSA_BUNDLE = ExperimentBundle[GPNMSAExperimentConfig](
+    config_cls=GPNMSAExperimentConfig,
+    build_target=lambda cfg: build_target(cfg.target),
+    build_train_loader=lambda cfg, device, dist_state: build_gpn_msa_loader(
+        cfg.target,
+        cfg.data,
+        split="train",
+        device=device,
+        batch_size=cfg.pd.batch_size,
+        dist_state=dist_state,
+        seed=cfg.pd.seed,
+    ),
+    build_eval_loop=_build_eval_loop,
+    make_run_batch=lambda cfg: make_run_batch(cfg.target),
+    reconstruction_loss=recon_loss_kl,
+    uses_distributed=False,
+)
+
+
+def main(
+    config_path: str | Path,
+    *,
+    group: str | None = None,
+    tags: str | None = None,
+) -> None:
+    """Run a GPN-MSA PD experiment end-to-end from a YAML config."""
+    run_fresh(_GPN_MSA_BUNDLE, Path(config_path), group=group, tags=tags)
 
 
 def cli() -> None:

@@ -26,28 +26,18 @@ from torch.utils.data import DataLoader, IterableDataset
 from param_decomp.base_config import BaseConfig
 from param_decomp.batch_and_loss_fns import RunBatch
 from param_decomp.component_model import ComponentModel
-from param_decomp.distributed import DistributedState, is_main_process
-from param_decomp.log import logger
-from param_decomp.optimize import EvalLoop, optimize
+from param_decomp.distributed import DistributedState
+from param_decomp.optimize import EvalLoop
 from param_decomp_lab.batch_and_loss_fns import make_run_batch as _make_run_batch
 from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
 from param_decomp_lab.component_model_io import load_component_model
-from param_decomp_lab.distributed import (
-    ensure_cached_and_call,
-    get_device,
-    init_distributed,
-    with_distributed_cleanup,
-)
+from param_decomp_lab.distributed import ensure_cached_and_call, with_distributed_cleanup
 from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
 from param_decomp_lab.experiments.lm.data import rank_batch_size
-from param_decomp_lab.experiments.utils import (
-    RUN_META_FILENAME,
-    ExperimentConfig,
-    init_pd_run,
-)
+from param_decomp_lab.experiments.runner import ExperimentBundle, run_fresh
+from param_decomp_lab.experiments.utils import RUN_META_FILENAME, ExperimentConfig
 from param_decomp_lab.infra.paths import ModelPath
 from param_decomp_lab.infra.run_files import resolve_run_files
-from param_decomp_lab.seed import set_seed
 
 
 def _resolve_class(fqn: str) -> type:
@@ -202,70 +192,6 @@ class SavedCarbonRun:
         )
 
 
-@with_distributed_cleanup
-def main(
-    config_path: str | Path,
-    *,
-    group: str | None = None,
-    tags: str | None = None,
-    run_id: str | None = None,
-) -> None:
-    """Run a Carbon PD experiment end-to-end from a YAML config.
-
-    No SLURM/DDP submission path yet — invoke directly. `group` / `tags` are wandb-only
-    (no-ops without `wandb:`).
-    """
-    cfg = CarbonExperimentConfig.from_file(config_path)
-
-    dist_state = init_distributed()
-    if is_main_process():
-        logger.info(f"Distributed state: {dist_state}")
-    set_seed(cfg.pd.seed)
-    device = get_device()
-    cfg = cfg.model_copy(
-        update={
-            "runtime": cfg.runtime.model_copy(
-                update={
-                    "device": device,
-                    "dp": dist_state.world_size if dist_state is not None else None,
-                }
-            )
-        }
-    )
-
-    target_model = build_target(cfg.target)
-
-    train_loader = build_carbon_loader(
-        cfg.target,
-        cfg.data,
-        split="train",
-        device=device,
-        batch_size=cfg.pd.batch_size,
-        dist_state=dist_state,
-        seed=cfg.pd.seed,
-    )
-    eval_loop = _build_eval_loop(cfg, device, dist_state)
-
-    sink = init_pd_run(cfg, group=group, tags=tags, run_id=run_id)
-
-    try:
-        optimize(
-            target_model=target_model,
-            train_loader=train_loader,
-            run_batch=make_run_batch(cfg.target),
-            # TODO: surfaced as abstraction issue — see report. Carbon's FNS recon loss
-            # would need a richer Protocol than `(pred, target) -> (sum, n)`.
-            reconstruction_loss=recon_loss_kl,
-            pd_config=cfg.pd,
-            runtime_config=cfg.runtime,
-            sink=sink,
-            cadence=cfg.cadence,
-            eval_loop=eval_loop,
-        )
-    finally:
-        sink.finish()
-
-
 def _build_eval_loop(
     cfg: CarbonExperimentConfig,
     device: str,
@@ -290,6 +216,43 @@ def _build_eval_loop(
         slow_every=cfg.eval.slow_every,
         slow_on_first_step=cfg.eval.slow_on_first_step,
     )
+
+
+_CARBON_BUNDLE = ExperimentBundle[CarbonExperimentConfig](
+    config_cls=CarbonExperimentConfig,
+    build_target=lambda cfg: build_target(cfg.target),
+    build_train_loader=lambda cfg, device, dist_state: build_carbon_loader(
+        cfg.target,
+        cfg.data,
+        split="train",
+        device=device,
+        batch_size=cfg.pd.batch_size,
+        dist_state=dist_state,
+        seed=cfg.pd.seed,
+    ),
+    build_eval_loop=_build_eval_loop,
+    make_run_batch=lambda cfg: make_run_batch(cfg.target),
+    # TODO: surfaced as abstraction issue — see report. Carbon's FNS recon loss
+    # would need a richer Protocol than `(pred, target) -> (sum, n)`.
+    reconstruction_loss=recon_loss_kl,
+    uses_distributed=True,
+)
+
+
+@with_distributed_cleanup
+def main(
+    config_path: str | Path,
+    *,
+    group: str | None = None,
+    tags: str | None = None,
+    run_id: str | None = None,
+) -> None:
+    """Run a Carbon PD experiment end-to-end from a YAML config.
+
+    No SLURM submission path yet — invoke directly (use torchrun for DDP).
+    `group` / `tags` are wandb-only (no-ops without `wandb:`).
+    """
+    run_fresh(_CARBON_BUNDLE, Path(config_path), group=group, tags=tags, run_id=run_id)
 
 
 def cli() -> None:

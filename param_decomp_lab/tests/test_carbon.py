@@ -21,7 +21,7 @@ from param_decomp.metrics.importance_minimality import ImportanceMinimalityLossC
 from param_decomp.metrics.stochastic_recon_layerwise import (
     StochasticReconLayerwiseLossConfig,
 )
-from param_decomp.optimize import EvalLoop, optimize
+from param_decomp.optimize import EvalLoop, Trainer
 from param_decomp.schedule import ScheduleConfig
 from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
 from param_decomp_lab.eval_metrics.ci_l0 import CI_L0, CI_L0Config
@@ -138,17 +138,14 @@ def test_carbon_decomposition_happy_path(tmp_path: Path) -> None:
         slow_on_first_step=False,
     )
 
-    optimize(
+    trainer = Trainer(
         target_model=target_model,
-        train_loader=train_loader,
         run_batch=make_run_batch(target_cfg),
         reconstruction_loss=recon_loss_kl,
         pd_config=pd_config,
         runtime_config=RuntimeConfig(device=device),
-        sink=sink,
-        cadence=cadence,
-        eval_loop=eval_loop,
     )
+    trainer.run(train_loader, sink, cadence, eval_loop)
 
     # A checkpoint should have been written for the final step.
     assert any(tmp_path.glob("model_*.pth")), "expected a final checkpoint"

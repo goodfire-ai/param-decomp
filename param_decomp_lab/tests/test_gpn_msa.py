@@ -11,7 +11,7 @@ from param_decomp.metrics.stochastic_recon import StochasticReconLossConfig
 from param_decomp.metrics.stochastic_recon_layerwise import (
     StochasticReconLayerwiseLossConfig,
 )
-from param_decomp.optimize import optimize
+from param_decomp.optimize import Trainer
 from param_decomp.schedule import ScheduleConfig
 from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
 from param_decomp_lab.experiments.gpn_msa.run import (
@@ -85,14 +85,16 @@ def test_gpn_msa_decomposition_happy_path(tmp_path: Path) -> None:
         seed=pd_config.seed,
     )
 
-    optimize(
+    trainer = Trainer(
         target_model=target_model,
-        train_loader=train_loader,
         run_batch=make_run_batch(target_cfg),
         reconstruction_loss=recon_loss_kl,
         pd_config=pd_config,
         runtime_config=RuntimeConfig(device=device),
-        sink=RunSink.local(tmp_path),
-        cadence=Cadence(train_log_every=1, save_every=None),
+    )
+    trainer.run(
+        train_loader,
+        RunSink.local(tmp_path),
+        Cadence(train_log_every=1, save_every=None),
         eval_loop=None,
     )
