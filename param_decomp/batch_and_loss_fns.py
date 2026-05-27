@@ -11,19 +11,38 @@ from torch import Tensor, nn
 
 
 class RunBatch(Protocol):
-    """Callable that runs one batch through `model` and returns the output tensor."""
+    """Callable that runs one batch through `model` and returns its output.
 
-    def __call__(self, model: nn.Module, batch: Any) -> Tensor: ...
+    The output type is experiment-defined (`Any`) — typically a tensor of logits, but
+    may be a dataclass / dict carrying additional fields (attention masks, hidden
+    states, labels) that the experiment's `ReconstructionLoss` consumes. The same
+    `RunBatch` is invoked on both the frozen target and the decomposed model, so the
+    two `output` values it produces share a structure.
+    """
+
+    def __call__(self, model: nn.Module, batch: Any) -> Any: ...
 
 
 class ReconstructionLoss(Protocol):
-    """Callable that compares `pred` against `target` and returns `(sum, n_elements)`.
+    """Compare a decomposed-model `output` against the frozen-target `target_output`.
 
-    The first entry is the unreduced sum of per-element losses; the second is the count
-    it summed over. Callers reduce `sum / n_elements` to a mean as needed.
+    Both are whatever the experiment's `RunBatch` returns. The return pair
+    `(sum, n_elements)` is the unreduced sum of per-element losses and the count it
+    summed over (or sum-of-weights for weighted/masked losses); callers reduce
+    `sum / n_elements` to a mean as needed.
+
+    Per-batch context the loss needs (padding masks, MLM-masked positions,
+    per-channel weights, labels) rides on the `output` / `target_output` structure
+    — experiments are responsible for packaging it inside `RunBatch`. Static aux
+    state (e.g. a k-mer→nucleotide lookup table) lives in a closure / partial /
+    `__call__`-bearing class — the Protocol stays minimal.
     """
 
-    def __call__(self, pred: Tensor, target: Tensor) -> tuple[Float[Tensor, ""], int]: ...
+    def __call__(
+        self,
+        output: Any,
+        target_output: Any,
+    ) -> tuple[Float[Tensor, ""], int]: ...
 
 
 def move_batch_to_device(batch: Any, device: str | torch.device) -> Any:

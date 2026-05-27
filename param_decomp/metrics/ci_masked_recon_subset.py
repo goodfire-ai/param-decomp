@@ -30,7 +30,7 @@ class CIMaskedReconSubsetLossConfig(LossMetricConfig):
 def _ci_masked_recon_subset_loss_update(
     model: ComponentModel,
     batch: Any,
-    target_out: Tensor,
+    target_out: Any,
     ci: dict[str, Float[Tensor, "... C"]],
     router: Router,
     reconstruction_loss: ReconstructionLoss,
@@ -51,7 +51,7 @@ def _ci_masked_recon_subset_loss_update(
 def ci_masked_recon_subset_loss(
     model: ComponentModel,
     batch: Any,
-    target_out: Tensor,
+    target_out: Any,
     ci: dict[str, Float[Tensor, "... C"]],
     routing: SubsetRoutingType,
     reconstruction_loss: ReconstructionLoss,

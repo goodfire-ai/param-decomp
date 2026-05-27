@@ -66,12 +66,12 @@ def test_recon_loss_mse_shape_mismatch_asserts() -> None:
     pred = torch.zeros(2, 3)
     target = torch.zeros(2, 4)
     with pytest.raises(AssertionError):
-        recon_loss_mse(pred=pred, target=target)
+        recon_loss_mse(output=pred, target_output=target)
 
 
 def test_recon_loss_kl_identical_logits_is_zero() -> None:
     logits = torch.randn(2, 4, 7)
-    sum_kl, n_positions = recon_loss_kl(pred=logits, target=logits)
+    sum_kl, n_positions = recon_loss_kl(output=logits, target_output=logits)
     assert n_positions == 2 * 4
     assert torch.isclose(sum_kl, torch.tensor(0.0), atol=1e-6)
 
@@ -87,7 +87,7 @@ def test_recon_loss_kl_matches_manual_computation() -> None:
     expected_per_position = (p * (log_p - log_q)).sum(dim=-1)
     expected_sum = expected_per_position.sum()
 
-    sum_kl, n_positions = recon_loss_kl(pred=pred, target=target)
+    sum_kl, n_positions = recon_loss_kl(output=pred, target_output=target)
 
     assert n_positions == 3 * 5
     assert torch.isclose(sum_kl, expected_sum, atol=1e-5)
@@ -100,7 +100,7 @@ def test_recon_loss_kl_n_positions_counts_all_leading_dims() -> None:
     for shape in [(10, 7), (3, 4, 7), (2, 3, 5, 7)]:
         pred = torch.randn(*shape)
         target = torch.randn(*shape)
-        _, n_positions = recon_loss_kl(pred=pred, target=target)
+        _, n_positions = recon_loss_kl(output=pred, target_output=target)
         expected = 1
         for d in shape[:-1]:
             expected *= d

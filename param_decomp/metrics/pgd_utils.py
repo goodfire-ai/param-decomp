@@ -129,7 +129,7 @@ def _forward_with_adv_sources(
     ci: dict[str, Float[Tensor, "... C"]],
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
     routing_masks: RoutingMasks,
-    target_out: Tensor,
+    target_out: Any,
     batch_dims: tuple[int, ...],
     reconstruction_loss: ReconstructionLoss,
 ) -> tuple[Float[Tensor, ""], int]:
@@ -149,7 +149,7 @@ def pgd_masked_recon_loss_update(
     batch: Any,
     ci: dict[str, Float[Tensor, "... C"]],
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
-    target_out: Tensor,
+    target_out: Any,
     router: Router,
     pgd_config: PGDConfig,
     reconstruction_loss: ReconstructionLoss,

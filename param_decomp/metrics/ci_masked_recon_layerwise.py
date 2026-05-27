@@ -21,7 +21,7 @@ class CIMaskedReconLayerwiseLossConfig(LossMetricConfig):
 def _ci_masked_recon_layerwise_loss_update(
     model: ComponentModel,
     batch: Any,
-    target_out: Tensor,
+    target_out: Any,
     ci: dict[str, Float[Tensor, "... C"]],
     reconstruction_loss: ReconstructionLoss,
 ) -> tuple[Float[Tensor, ""], int]:
@@ -39,7 +39,7 @@ def _ci_masked_recon_layerwise_loss_update(
 def ci_masked_recon_layerwise_loss(
     model: ComponentModel,
     batch: Any,
-    target_out: Tensor,
+    target_out: Any,
     ci: dict[str, Float[Tensor, "... C"]],
     reconstruction_loss: ReconstructionLoss,
 ) -> Float[Tensor, ""]:

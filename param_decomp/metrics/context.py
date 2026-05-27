@@ -24,7 +24,9 @@ class MetricContext:
 
     model: ComponentModel
     batch: Any
-    target_out: Tensor
+    target_out: (
+        Any  # Whatever `RunBatch` returns — Tensor in simple cases, dataclass / dict otherwise.
+    )
     pre_weight_acts: dict[str, Float[Tensor, "..."]]
     ci: CIOutputs
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]]

@@ -274,6 +274,12 @@ def make_components(
         Dict keyed by the same submodule paths, mapping to a `Components` instance whose
         weights have been initialised but not yet trained.
     """
+    # NOTE: storage-tied weights (e.g. `tie_word_embeddings=True` on Llama/ESM/GPT-2,
+    # where `embed_tokens.weight is lm_head.weight`) are not detected here — decomposing
+    # both sides of a tie produces two independent `Components` instances that silently
+    # learn the same target. Deferred: we don't currently decompose embeddings, so this
+    # is dormant. Fix would be to detect shared `weight.data_ptr()` and either share one
+    # `Components` instance or auto-add to `tied_weights`.
     out: dict[str, Components] = {}
     for path, C in module_to_c.items():
         target_module = target_model.get_submodule(path)
