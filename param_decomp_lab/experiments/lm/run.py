@@ -2,9 +2,9 @@
 
 Both the fresh-run path (`main`) and the reload path share the module-level
 `build_target` / `build_lm_loader` / `make_run_batch`. Run via
-`pd-lm path/to/config.yaml`; pass `--dp N` to submit a single-node DDP SLURM job.
-For local DDP, invoke directly:
-`torchrun --standalone --nproc_per_node=N -m param_decomp_lab.experiments.lm.run config.yaml`.
+`pd-lm path/to/config.yaml`; pass `--dp N` to submit a DDP SLURM job (single-node for
+N <= 8, multi-node for N > 8 — N must then be a multiple of 8). For local DDP, invoke
+`torchrun --standalone --nproc_per_node=N -m param_decomp_lab.experiments.lm.run` directly.
 """
 
 import importlib
@@ -46,6 +46,7 @@ from param_decomp_lab.experiments.utils import (
     ExperimentConfig,
     init_pd_run,
 )
+from param_decomp_lab.infra.ddp_launch import build_ddp_launch
 from param_decomp_lab.infra.git import create_git_snapshot
 from param_decomp_lab.infra.paths import ModelPath
 from param_decomp_lab.infra.run_files import generate_run_id, resolve_run_files
@@ -200,12 +201,11 @@ def main(
 
     Parses the YAML, initialises DDP, builds the target / loaders / eval loop, writes
     `run_meta.yaml`, and calls `optimize(...)`. Non-main ranks use a silent sink.
-    `group` / `tags` are wandb-only (no-ops without `wandb:`). Passing `--dp N`
-    outside torchrun submits a single-node SLURM job; for local DDP, invoke via
+    `group` / `tags` are wandb-only (no-ops without `wandb:`). Passing `--dp N` outside
+    torchrun submits a SLURM job: single-node for N <= 8, multi-node for N > 8 (N must
+    be a multiple of 8). For local DDP, invoke
     `torchrun --standalone --nproc_per_node=N -m param_decomp_lab.experiments.lm.run`.
     """
-    if dp is not None and dp < 2:
-        raise ValueError("--dp must be at least 2 for data parallelism")
     if dp is not None and os.environ.get("WORLD_SIZE") is None:
         _submit_slurm(
             config_path,
@@ -323,30 +323,30 @@ def _submit_slurm(
     else:
         config_arg = str(config_path)
 
-    command_parts = [
-        "torchrun",
-        "--standalone",
-        f"--nproc_per_node={dp}",
-        "-m",
-        "param_decomp_lab.experiments.lm.run",
-        config_arg,
-    ]
+    base_parts = ["-m", "param_decomp_lab.experiments.lm.run", config_arg, "--run_id", run_id]
     if group is not None:
-        command_parts.extend(["--group", group])
+        base_parts += ["--group", group]
     if tags is not None:
-        command_parts.extend(["--tags", tags])
-    command_parts.extend(["--run_id", run_id])
-    command = " ".join(shlex.quote(part) for part in command_parts)
+        base_parts += ["--tags", tags]
+    base_command = shlex.join(base_parts)
 
+    launch = build_ddp_launch(
+        base_command,
+        dp=dp,
+        job_name=job_name,
+        snapshot_ref=snapshot_ref,
+        port_seed=run_id,
+    )
     slurm_config = SlurmConfig(
         job_name=job_name,
         partition=partition,
-        n_gpus=dp,
+        n_gpus=launch.gpus_per_node,
+        n_nodes=launch.n_nodes,
         time=time,
         snapshot_ref=snapshot_ref,
         comment=run_id,
     )
-    script = generate_script(slurm_config, command)
+    script = generate_script(slurm_config, launch.command, env=launch.env)
     result = submit_slurm_job(script, "lm")
 
     wandb_url = _wandb_url_for_config(config_path, run_id)
