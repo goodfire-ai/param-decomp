@@ -1,0 +1,64 @@
+pd:
+  seed: 0
+  n_mask_samples: 1
+  ci_config:
+    mode: layerwise
+    fn_type: vector_mlp
+    hidden_dims:
+    - 32
+  sigmoid_type: leaky_hard
+  # Only decompose the down_proj in one mid-stack layer for the smoke run. The full
+  # set would mirror the LM YAMLs (gate_proj / up_proj / down_proj / q_proj / k_proj /
+  # v_proj / o_proj on `model.layers.*`), but Carbon-500M's 28 layers × 7 matrices ×
+  # large C blows up memory; one matrix is enough to exercise every code path.
+  decomposition_targets:
+  - module_pattern: model.layers.14.mlp.down_proj
+    C: 64
+  identity_decomposition_targets: null
+  sampling: continuous
+  use_delta_component: true
+  batch_size: 2
+  steps: 2
+  components_optimizer:
+    lr_schedule:
+      start_val: 1.0e-4
+      fn_type: cosine
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 1.0e-4
+      fn_type: cosine
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+    - type: ImportanceMinimalityLoss
+      coeff: 1.0e-4
+      pnorm: 2.0
+      beta: 0.5
+      eps: 1.0e-12
+    - type: StochasticReconLayerwiseLoss
+      coeff: 1.0
+    - type: FaithfulnessLoss
+      coeff: 1.0
+cadence:
+  train_log_every: 1
+target:
+  model_class: transformers.LlamaForCausalLM
+  model_name: HuggingFaceBio/Carbon-500M
+  trust_remote_code: true
+  dtype: bfloat16
+  output_extract: logits
+data:
+  kind: synthetic
+  vocab_size: 155776
+  seq_len: 32
+  n_train: 16
+  n_eval: 4
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null
