@@ -140,7 +140,7 @@ def _build_metric_context(
     component_model: ComponentModel,
     config: PDConfig,
     reconstruction_loss: ReconstructionLoss,
-    weight_deltas: dict[str, Tensor] | None = None,
+    weight_deltas: dict[str, Tensor],
 ) -> MetricContext:
     # The wrapped_model(...) call here is what registers DDP gradient hooks for this step.
     # Required even if no metric uses the DDP wrapper directly.
@@ -151,8 +151,6 @@ def _build_metric_context(
         detach_inputs=False,
         sampling=config.sampling,
     )
-    if weight_deltas is None:
-        weight_deltas = component_model.calc_weight_deltas()
     return MetricContext(
         model=component_model,
         batch=batch,
