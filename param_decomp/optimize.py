@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 import torch.nn.parallel
 from pydantic import PositiveInt
-from torch import optim
+from torch import Tensor, optim
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -140,6 +140,7 @@ def _build_metric_context(
     component_model: ComponentModel,
     config: PDConfig,
     reconstruction_loss: ReconstructionLoss,
+    weight_deltas: dict[str, Tensor] | None = None,
 ) -> MetricContext:
     # The wrapped_model(...) call here is what registers DDP gradient hooks for this step.
     # Required even if no metric uses the DDP wrapper directly.
@@ -150,7 +151,13 @@ def _build_metric_context(
         detach_inputs=False,
         sampling=config.sampling,
     )
-    weight_deltas = component_model.calc_weight_deltas()
+    # NOTE: callers should compute `weight_deltas` outside `bf16_autocast` and pass it in
+    # (matches pre-refactor 74146b55 behaviour). Inside autocast, `components.weight` =
+    # einsum(V, U) returns bf16, so `delta = target - V@U` carries ~bf16 precision (~5e-9
+    # residual floor vs fp32's ~1e-9). FaithfulnessLoss has `coeff=1e7`, so a ~5x larger
+    # residual amplifies into ~2x larger component gradients across all training steps.
+    if weight_deltas is None:
+        weight_deltas = component_model.calc_weight_deltas()
     return MetricContext(
         model=component_model,
         batch=batch,
@@ -545,6 +552,12 @@ class Trainer:
 
             batch_log_data: defaultdict[str, float] = defaultdict(float)
 
+            # Compute weight_deltas OUTSIDE bf16_autocast so FaithfulnessLoss residuals
+            # carry fp32 precision (matches pre-refactor 74146b55). With coeff=1e7, even a
+            # tiny bf16 precision floor in `target - V@U` amplifies into ~2x larger
+            # component gradients vs the pre-refactor behaviour.
+            weight_deltas = self.component_model.calc_weight_deltas()
+
             with bf16_autocast(enabled=runtime_config.autocast_bf16):
                 ctx = _build_metric_context(
                     next(train_iterator),
@@ -555,6 +568,7 @@ class Trainer:
                     component_model=self.component_model,
                     config=pd_config,
                     reconstruction_loss=self.reconstruction_loss,
+                    weight_deltas=weight_deltas,
                 )
                 _assert_ctx_invariants(ctx, device, step)
                 losses = {name: m.update(ctx) for name, m in self.loss_metrics.items()}
@@ -614,6 +628,8 @@ class Trainer:
             # --- Evaluation --- #
             if eval_loop is not None and eval_loop.should_eval(step):
                 assert eval_iterator is not None
+                # Compute weight_deltas OUTSIDE bf16_autocast (same fix as train path).
+                eval_weight_deltas = self.component_model.calc_weight_deltas()
                 with torch.no_grad(), bf16_autocast(enabled=runtime_config.autocast_bf16):
                     slow_step = eval_loop.should_run_slow_eval(step)
                     active = [m for m in all_instances.values() if not (m.slow and not slow_step)]
@@ -629,6 +645,7 @@ class Trainer:
                             component_model=self.component_model,
                             config=pd_config,
                             reconstruction_loss=self.reconstruction_loss,
+                            weight_deltas=eval_weight_deltas,
                         )
                         for m in active:
                             m.update(ctx)
