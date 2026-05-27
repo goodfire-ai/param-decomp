@@ -14,6 +14,7 @@ from torch import Tensor
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.component_model import ComponentModel
+from param_decomp.metrics.context import MetricContext
 
 
 class LossMetricConfig(BaseConfig):
@@ -79,7 +80,7 @@ class Metric[TConfig: BaseConfig](ABC):
         ...
 
     @abstractmethod
-    def update(self, ctx: Any) -> Tensor | None:
+    def update(self, ctx: MetricContext) -> Tensor | None:
         """Process one batch and update accumulated state.
 
         Loss-capable metrics must `.detach()` before adding tensors to accumulators;
