@@ -22,7 +22,7 @@ def pgd_recon_loss(
     *,
     model: ComponentModel,
     batch: Any,
-    target_out: Tensor,
+    target_out: Any,
     ci: dict[str, Float[Tensor, "... C"]],
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
     pgd_config: PGDConfig,

@@ -28,10 +28,12 @@ class OutputWithCache(NamedTuple):
     """Forward output paired with per-module cached activations.
 
     Cache keys are target-module paths (or `f"{path}_{kind}"` for component-acts entries);
-    contents depend on the `cache_type` requested.
+    contents depend on the `cache_type` requested. `output` is whatever `RunBatch`
+    returns — typically a tensor but may be a dataclass / dict for experiments that
+    package per-batch context (masks, labels) for `ReconstructionLoss`.
     """
 
-    output: Tensor
+    output: Any
     cache: dict[str, Tensor]
 
 
@@ -168,10 +170,10 @@ class ComponentModel(nn.Module):
         batch: Any,
         mask_infos: dict[str, ComponentsMaskInfo] | None = None,
         cache_type: Literal["none"] = "none",
-    ) -> Tensor: ...
+    ) -> Any: ...
 
     @override
-    def __call__(self, *args: Any, **kwargs: Any) -> Tensor | OutputWithCache:
+    def __call__(self, *args: Any, **kwargs: Any) -> Any | OutputWithCache:
         return super().__call__(*args, **kwargs)
 
     @override
@@ -180,7 +182,7 @@ class ComponentModel(nn.Module):
         batch: Any,
         mask_infos: dict[str, ComponentsMaskInfo] | None = None,
         cache_type: Literal["component_acts", "input", "output", "none"] = "none",
-    ) -> Tensor | OutputWithCache:
+    ) -> Any | OutputWithCache:
         """Run the target model with optional component replacement and/or caching.
 
         With no extra args, this is just a forward pass through the frozen target model.
@@ -220,7 +222,7 @@ class ComponentModel(nn.Module):
             )
 
         with self._attach_forward_hooks(hooks):
-            out: Tensor = self._run_batch(self.target_model, batch)
+            out: Any = self._run_batch(self.target_model, batch)
 
         match cache_type:
             case "input" | "output" | "component_acts":

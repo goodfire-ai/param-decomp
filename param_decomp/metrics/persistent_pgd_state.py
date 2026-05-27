@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from typing import Annotated, Any, Literal, override
 
 import torch
-from jaxtyping import Float, Int
+from jaxtyping import Float
 from pydantic import Field, NonNegativeFloat, PositiveInt
 from torch import Tensor
 from torch.distributed import ReduceOp
@@ -311,8 +311,8 @@ class PersistentPGDState:
     def warmup(
         self,
         model: ComponentModel,
-        batch: Int[Tensor, "..."] | Float[Tensor, "..."],
-        target_out: Float[Tensor, "... vocab"],
+        batch: Any,
+        target_out: Any,
         ci: dict[str, Float[Tensor, "... C"]],
         weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
     ) -> None:
@@ -331,8 +331,8 @@ class PersistentPGDState:
     def compute_recon_sum_and_n(
         self,
         model: ComponentModel,
-        batch: Int[Tensor, "..."] | Float[Tensor, "..."],
-        target_out: Float[Tensor, "... vocab"],
+        batch: Any,
+        target_out: Any,
         ci: dict[str, Float[Tensor, "... C"]],
         weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
         router: Router | None = None,
@@ -420,8 +420,8 @@ def _compute_ppgd_recon_loss(
     model: ComponentModel,
     ppgd_sources: PPGDSources,
     reconstruction_loss: ReconstructionLoss,
-    batch: Int[Tensor, "..."] | Float[Tensor, "..."],
-    target_out: Float[Tensor, "... vocab"],
+    batch: Any,
+    target_out: Any,
     ci: dict[str, Float[Tensor, "... C"]],
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
     routing_masks: RoutingMasks,
@@ -431,5 +431,5 @@ def _compute_ppgd_recon_loss(
 
     mask_infos = get_ppgd_mask_infos(ci, weight_deltas, ppgd_sources, routing_masks, batch_dims)
     out = model(batch, mask_infos=mask_infos)
-    loss, n_examples = reconstruction_loss(pred=out, target=target_out)
+    loss, n_examples = reconstruction_loss(output=out, target_output=target_out)
     return loss, n_examples

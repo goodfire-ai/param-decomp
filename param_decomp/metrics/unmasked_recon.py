@@ -21,7 +21,7 @@ class UnmaskedReconLossConfig(LossMetricConfig):
 def _unmasked_recon_loss_update(
     model: ComponentModel,
     batch: Any,
-    target_out: Tensor,
+    target_out: Any,
     reconstruction_loss: ReconstructionLoss,
 ) -> tuple[Float[Tensor, ""], int]:
     device = get_obj_device(model)

@@ -40,13 +40,18 @@ def make_run_batch(output_extract: int | str | None) -> RunBatch:
 
 
 def recon_loss_mse(
-    pred: Float[Tensor, "... d"],
-    target: Float[Tensor, "... d"],
+    output: Float[Tensor, "... d"],
+    target_output: Float[Tensor, "... d"],
 ) -> tuple[Float[Tensor, ""], int]:
-    """Elementwise MSE recon loss returning `(sum_squared_errors, n_elements)`."""
-    assert pred.shape == target.shape
-    squared_errors = (pred - target) ** 2
-    return squared_errors.sum(), pred.numel()
+    """Elementwise MSE recon loss returning `(sum_squared_errors, n_elements)`.
+
+    Treats both args as bare tensors. Experiments that need padding-masked / weighted
+    MSE should write a custom `ReconstructionLoss` whose `output` is a dataclass
+    carrying the mask.
+    """
+    assert output.shape == target_output.shape
+    squared_errors = (output - target_output) ** 2
+    return squared_errors.sum(), output.numel()
 
 
 def calc_kl_divergence_lm(
@@ -54,17 +59,21 @@ def calc_kl_divergence_lm(
     target: Float[Tensor, "... vocab"],
 ) -> Float[Tensor, ""]:
     """Mean per-position KL between logits tensors. `pred = Q`, `target = P`."""
-    sum_kl, n_positions = recon_loss_kl(pred=pred, target=target)
+    sum_kl, n_positions = recon_loss_kl(output=pred, target_output=target)
     return sum_kl / n_positions
 
 
 def recon_loss_kl(
-    pred: Float[Tensor, "... vocab"],
-    target: Float[Tensor, "... vocab"],
+    output: Float[Tensor, "... vocab"],
+    target_output: Float[Tensor, "... vocab"],
 ) -> tuple[Float[Tensor, ""], int]:
-    """KL recon loss returning `(sum_per_position_kl, n_positions)`. `pred = Q`, `target = P`."""
-    assert pred.shape == target.shape
-    log_q = torch.log_softmax(pred, dim=-1)  # log Q
-    p = torch.softmax(target, dim=-1)  # P
-    n_positions = pred.numel() // pred.shape[-1]
+    """KL recon loss returning `(sum_per_position_kl, n_positions)`.
+
+    `output` is treated as Q (decomposed-model logits), `target_output` as P-source
+    (target-model logits, softmaxed inside).
+    """
+    assert output.shape == target_output.shape
+    log_q = torch.log_softmax(output, dim=-1)  # log Q
+    p = torch.softmax(target_output, dim=-1)  # P
+    n_positions = output.numel() // output.shape[-1]
     return F.kl_div(log_q, p, reduction="sum"), n_positions

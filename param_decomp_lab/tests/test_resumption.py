@@ -53,9 +53,9 @@ def _run_batch(model: nn.Module, batch: Any) -> Tensor:
     return out
 
 
-def _recon_loss(pred: Tensor, target: Tensor) -> tuple[Tensor, int]:
-    assert pred.shape == target.shape
-    return ((pred - target) ** 2).sum(), pred.numel()
+def _recon_loss(output: Tensor, target_output: Tensor) -> tuple[Tensor, int]:
+    assert output.shape == target_output.shape
+    return ((output - target_output) ** 2).sum(), output.numel()
 
 
 def _pd_config(steps: int) -> PDConfig:

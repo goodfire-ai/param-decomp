@@ -44,9 +44,9 @@ def run_batch_passthrough(model: nn.Module, batch: Any) -> Tensor:
     return out
 
 
-def recon_loss_mse(pred: Tensor, target: Tensor) -> tuple[Tensor, int]:
-    assert pred.shape == target.shape
-    return ((pred - target) ** 2).sum(), pred.numel()
+def recon_loss_mse(output: Tensor, target_output: Tensor) -> tuple[Tensor, int]:
+    assert output.shape == target_output.shape
+    return ((output - target_output) ** 2).sum(), output.numel()
 
 
 class CaptureSink:
