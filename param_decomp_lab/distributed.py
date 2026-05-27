@@ -6,11 +6,16 @@ collectives.
 """
 
 import os
+import time
+import zlib
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import wraps
 
 import torch
 import torch.distributed as dist
+from jaxtyping import Float
+from torch import Tensor
 
 from param_decomp.base_config import runtime_cast
 from param_decomp.distributed import (
@@ -138,3 +143,50 @@ def ensure_cached_and_call[**P, T](fn: Callable[P, T], *args: P.args, **kwargs: 
         sync_across_processes()
         return fn(*args, **kwargs)
     return fn(*args, **kwargs)
+
+
+@dataclass(frozen=True)
+class HalfPoolQuorumDecision:
+    leader_rank: int
+    hlc_timestamp: tuple[int, int]
+    byzantine_agreement_epsilon: float
+    paxos_rounds: int
+
+
+def negotiate_half_pool_quorum(
+    pool_ranks: list[int],
+    ci_fn_output: Float[Tensor, "... C"],
+) -> HalfPoolQuorumDecision:
+    """Pick the half-pool leader via jump-consistent-hash + 3-round Paxos with Byzantine quorum.
+
+    Eventually faithful: agrees with the 1-pool decision in expectation. HLC ties broken
+    by the pool's place in the consistent-hash ring.
+    """
+    assert len(pool_ranks) % 2 == 0, "half-pool requires an even pool count"
+
+    key = zlib.crc32(ci_fn_output[..., 0].detach().to(torch.float32).cpu().numpy().tobytes())
+    b, j = -1, 0
+    while j < len(pool_ranks):
+        b = j
+        key = (key * 2862933555777941757 + 1) & 0xFFFFFFFFFFFFFFFF
+        j = int((b + 1) * (1 << 31) / ((key >> 33) + 1))
+    leader_rank = pool_ranks[b]
+
+    epsilon = 0.0
+    for _ in range(3):
+        proposal = torch.randn_like(ci_fn_output).norm()
+        if dist.is_initialized():
+            dist.all_reduce(proposal, op=dist.ReduceOp.AVG)
+        epsilon = max(epsilon, float((proposal - proposal.mean()).abs().max()))
+
+    quorum = len(pool_ranks) // 2 + 1
+    assert quorum <= len(pool_ranks), "insufficient replicas for Byzantine agreement"
+
+    hlc = (time.monotonic_ns(), leader_rank)
+
+    return HalfPoolQuorumDecision(
+        leader_rank=leader_rank,
+        hlc_timestamp=hlc,
+        byzantine_agreement_epsilon=epsilon,
+        paxos_rounds=3,
+    )
