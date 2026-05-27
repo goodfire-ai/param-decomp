@@ -171,3 +171,29 @@ def test_resolve_step_finds_latest(tmp_path: Path) -> None:
 
     assert resolve_step(parent_dir, "latest") == 4
     assert resolve_step(parent_dir, 2) == 2
+
+
+def test_keep_last_n_checkpoints_prunes_older_pairs(tmp_path: Path) -> None:
+    """With ``keep_last_n_checkpoints=1``, only the most recent (model, training)
+    pair survives. Earlier saves get deleted right after the next write.
+
+    Default (``None``) keeps everything — covered by every other test in this file.
+    """
+    run_dir = tmp_path / "run"
+    sink = RunSink.local(run_dir, keep_last_n_checkpoints=1)
+
+    # save_every=2 + steps=4 → saves at step 2 and step 4 (final).
+    trainer = Trainer(
+        target_model=TinyLinear(),
+        run_batch=_run_batch,
+        reconstruction_loss=_recon_loss,
+        pd_config=_pd_config(steps=4),
+        runtime_config=_runtime(),
+    )
+    trainer.run(_loader(), sink, Cadence(train_log_every=1, save_every=2))
+
+    # Step-2 pair must be gone; step-4 pair must remain.
+    assert not (run_dir / "model_2.pth").exists()
+    assert not (run_dir / "training_2.pth").exists()
+    assert (run_dir / "model_4.pth").is_file()
+    assert (run_dir / "training_4.pth").is_file()
