@@ -35,16 +35,24 @@ from param_decomp_lab.infra.slurm import (
 from param_decomp_lab.infra.wandb import get_wandb_entity
 
 
-def _parse_csv(value: str | None) -> list[str] | None:
+def _parse_csv(value: "str | tuple[object, ...] | list[object] | None") -> list[str] | None:
+    # Fire parses `--flag a,b,c` as a tuple, `--flag a` as a str. Accept both.
     if value is None:
         return None
+    if isinstance(value, (tuple, list)):
+        return [str(s).strip() for s in value if str(s).strip()]
     return [s.strip() for s in value.split(",") if s.strip()]
 
 
-def _parse_int_csv(value: str | None) -> list[int] | None:
-    parts = _parse_csv(value)
-    if parts is None:
+def _parse_int_csv(
+    value: "str | tuple[object, ...] | list[object] | int | None",
+) -> list[int] | None:
+    if value is None:
         return None
+    if isinstance(value, int):
+        return [value]
+    parts = _parse_csv(value)
+    assert parts is not None
     return [int(s) for s in parts]
 
 
@@ -247,9 +255,9 @@ def _create_layerwise_workspace_view(run_id: str, project: str) -> str:
 def main(
     base_config: str,
     n_blocks: int,
-    include: str | None = None,
-    blocks: str | None = None,
-    tags: str | None = None,
+    include: "str | tuple[object, ...] | None" = None,
+    blocks: "str | tuple[object, ...] | int | None" = None,
+    tags: "str | tuple[object, ...] | None" = None,
     dp: int | None = None,
     partition: str | None = DEFAULT_PARTITION_NAME,
     time: str = "12:00:00",

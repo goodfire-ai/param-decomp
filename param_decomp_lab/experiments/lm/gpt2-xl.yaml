@@ -17,18 +17,14 @@ pd:
   sampling: continuous
   sigmoid_type: leaky_hard
   decomposition_targets:
-  - module_pattern: h.*.mlp.c_fc
-    C: 3072
-  - module_pattern: h.*.mlp.down_proj
-    C: 3584
-  - module_pattern: h.*.attn.q_proj
-    C: 512
-  - module_pattern: h.*.attn.k_proj
-    C: 512
-  - module_pattern: h.*.attn.v_proj
-    C: 1024
-  - module_pattern: h.*.attn.o_proj
-    C: 1024
+  - module_pattern: transformer.h.*.mlp.c_fc
+    C: 8192
+  - module_pattern: transformer.h.*.mlp.c_proj
+    C: 8192
+  - module_pattern: transformer.h.*.attn.c_attn
+    C: 4096
+  - module_pattern: transformer.h.*.attn.c_proj
+    C: 2048
   identity_decomposition_targets: null
   use_delta_component: true
   components_optimizer:
@@ -88,18 +84,18 @@ eval:
     mask_scope: shared_across_batch
 target:
   spec:
-    kind: pretrained
-    model_class: param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
-    run_path: goodfire/spd/runs/t-9d2b8f02
-  output_extract: 0
+    kind: hf
+    model_class: transformers.GPT2LMHeadModel
+    model_name: openai-community/gpt2-xl
+  output_extract: logits
 data:
-  tokenizer_name: EleutherAI/gpt-neox-20b
+  tokenizer_name: openai-community/gpt2
   max_seq_len: 512
   buffer_size: 1000
-  dataset_name: danbraunai/pile-uncopyrighted-tok-shuffled
+  dataset_name: apollo-research/Skylion007-openwebtext-tokenizer-gpt2
   column_name: input_ids
   train_split: train
-  eval_split: val
+  eval_split: train
   shuffle_each_epoch: true
   is_tokenized: true
   streaming: true
