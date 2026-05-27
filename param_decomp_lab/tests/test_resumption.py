@@ -136,16 +136,16 @@ def test_resume_round_trip_matches_uninterrupted_run(tmp_path: Path) -> None:
     assert (parent_dir / "training_2.pth").is_file()
 
     # Phase 2: resume from parent's training_2.pth, train to step 4.
-    resume_cfg = ResumeConfig(from_run=parent_dir, step=2, overrides=None)
+    resume_cfg = ResumeConfig(from_run=parent_dir, step=2)
     snapshot = read_training_snapshot(
         resume_cfg.from_run, resolve_step(parent_dir, resume_cfg.step)
     )
+    snapshot.pd_config["steps"] = 4
     trainer_resumed = Trainer.from_snapshot(
         snapshot,
         target_model=TinyLinear(),
         run_batch=_run_batch,
         reconstruction_loss=_recon_loss,
-        cfg_overrides={"steps": 4},
     )
     assert trainer_resumed.step == 2
     resumed_dir = tmp_path / "resumed"
