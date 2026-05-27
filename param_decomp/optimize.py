@@ -17,6 +17,7 @@ Both go through the same code path.
 """
 
 import gc
+import signal
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Self, cast
@@ -60,6 +61,33 @@ from param_decomp.run_sink import RunSink
 from param_decomp.schedule import get_scheduled_value
 from param_decomp.torch_helpers import bf16_autocast, loop_dataloader
 from param_decomp.training_state import TrainingState
+
+
+@dataclass
+class _SigtermFlag:
+    """Mutable flag flipped by a SIGTERM handler so the train loop can react."""
+
+    received: bool = False
+
+
+def _install_sigterm_flag() -> _SigtermFlag:
+    """Install a SIGTERM handler that flips a flag, and return the flag.
+
+    SLURM sends SIGTERM to all ranks at job-kill / preemption time. The handler
+    is intentionally minimal (set a flag, return) — Python's signal handlers
+    aren't strictly async-signal-safe, and we want the actual checkpoint save
+    to happen at a known-safe point in the train loop. No teardown: ``Trainer.run``
+    owns the process for its lifetime and the next SIGTERM after ``run`` returns
+    can take the default action.
+    """
+    flag = _SigtermFlag()
+
+    def _handler(signum: int, frame: Any) -> None:
+        del signum, frame
+        flag.received = True
+
+    signal.signal(signal.SIGTERM, _handler)
+    return flag
 
 
 @dataclass(frozen=True)
@@ -365,6 +393,35 @@ class Trainer:
         assert self.component_model.ci_fn is not None
         return [(f"ci_fn.{n}", p) for n, p in self.component_model.ci_fn.named_parameters()]
 
+    def _build_all_metric_instances(
+        self,
+        eval_loop: "EvalLoop | None",
+        device: str,
+    ) -> dict[str, "Metric[Any]"]:
+        """Merge loss + eval-only metric instances keyed by class name.
+
+        Binds each eval-only metric, rejects duplicate names within eval_loop, and
+        rejects overlap between eval-only and loss metrics (loss metrics are
+        auto-evaluated; duplicating them as eval metrics is a config error since
+        ``evaluate()`` keys by class name).
+        """
+        eval_only_instances: dict[str, Metric[Any]] = {}
+        if eval_loop is not None:
+            for m in eval_loop.metrics:
+                m.bind(model=self.component_model, device=device)
+                metric_name = type(m).__name__
+                assert metric_name not in eval_only_instances, (
+                    f"duplicate eval metric {metric_name!r}"
+                )
+                eval_only_instances[metric_name] = m
+            overlap = sorted(set(self.loss_metrics) & set(eval_only_instances))
+            assert not overlap, (
+                f"eval_loop.metrics overlap with pd_config.loss_metrics: {overlap}. Loss "
+                "metrics are automatically evaluated; remove the duplicates from "
+                "eval_loop.metrics."
+            )
+        return {**self.loss_metrics, **eval_only_instances}
+
     # ============================ Atomic cfg + state ============================
 
     def snapshot(self) -> TrainingState:
@@ -398,18 +455,14 @@ class Trainer:
         target_model: nn.Module,
         run_batch: RunBatch,
         reconstruction_loss: ReconstructionLoss,
-        cfg_overrides: dict[str, Any] | None = None,
     ) -> Self:
         """Reconstruct a Trainer from a :class:`TrainingState`.
 
-        ``cfg_overrides`` is a flat patch applied to the saved ``pd_config``
-        dict before pydantic validation — used for narrow resume-time
-        overrides such as extending ``steps``.
+        For mid-trajectory edits to the saved config (e.g. extending ``steps``
+        on a finished run), mutate ``snapshot.pd_config`` in place before this
+        call.
         """
-        pd_dict = snapshot.pd_config
-        if cfg_overrides is not None:
-            pd_dict = {**pd_dict, **cfg_overrides}
-        pd_config = PDConfig.model_validate(pd_dict)
+        pd_config = PDConfig.model_validate(snapshot.pd_config)
         runtime_config = RuntimeConfig.model_validate(snapshot.runtime_config)
         trainer = cls(
             target_model=target_model,
@@ -473,27 +526,8 @@ class Trainer:
         if self.step == 0 and pd_config.faithfulness_warmup_steps > 0:
             run_faithfulness_warmup(self.component_model, self._component_params, pd_config)
 
-        eval_only_instances: dict[str, Metric[Any]] = {}
-        if eval_loop is not None:
-            for m in eval_loop.metrics:
-                m.bind(model=self.component_model, device=device)
-
-            # Loss metrics are auto-evaluated alongside dedicated eval metrics. We disallow
-            # duplicate registry names across the two pools because `evaluate()` keys metrics
-            # by class name.
-            for m in eval_loop.metrics:
-                metric_name = type(m).__name__
-                assert metric_name not in eval_only_instances, (
-                    f"duplicate eval metric {metric_name!r}"
-                )
-                eval_only_instances[metric_name] = m
-            overlap = sorted(set(self.loss_metrics) & set(eval_only_instances))
-            assert not overlap, (
-                f"eval_loop.metrics overlap with pd_config.loss_metrics: {overlap}. Loss "
-                "metrics are automatically evaluated; remove the duplicates from "
-                "eval_loop.metrics."
-            )
-        all_instances = {**self.loss_metrics, **eval_only_instances}
+        all_instances = self._build_all_metric_instances(eval_loop, device)
+        sigterm = _install_sigterm_flag()
 
         for step in tqdm(
             range(self.step, pd_config.steps + 1), ncols=0, disable=not is_main_process()
@@ -616,8 +650,14 @@ class Trainer:
                     gc.collect()
 
             # --- Saving Checkpoint --- #
-            if step == pd_config.steps or cadence.should_save(step):
+            if step == pd_config.steps or cadence.should_save(step) or sigterm.received:
                 sink.checkpoint(self.snapshot())
+            if sigterm.received:
+                if is_main_process():
+                    logger.info(
+                        f"SIGTERM received; saved checkpoint at step {step}, exiting train loop"
+                    )
+                break
 
             # Skip gradient step at the very last step (last step is just for plotting/logging).
             if step != pd_config.steps:
@@ -649,7 +689,7 @@ def optimize(
     """Run the PD optimization loop.
 
     Thin wrapper over :class:`Trainer` for callers that don't need resumption
-    or interactive control. Identical signature to the pre-Trainer ``optimize``.
+    or interactive control.
     """
     trainer = Trainer(
         target_model=target_model,
