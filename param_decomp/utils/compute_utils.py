@@ -121,7 +121,7 @@ def get_command(
                 job_id_suffix = "${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
             else:
                 job_id_suffix = "$SLURM_JOB_ID"
-            work_dir = f"/tmp/param-decomp/workspace-{job_id_suffix}-node$SLURM_PROCID"
+            work_dir = f"/tmp/$USER/param-decomp/workspace-{job_id_suffix}-node$SLURM_PROCID"
             setup = generate_git_snapshot_setup(work_dir, snapshot_ref)
             # Explicit srun flags ensure one task per node across all allocated nodes
             srun_flags = f"--nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1"
