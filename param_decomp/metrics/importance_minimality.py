@@ -1,6 +1,8 @@
-from typing import Literal, override
+from typing import Literal, cast, override
 
 import torch
+import torch.distributed as dist
+import torch.distributed.nn.functional as dist_fn
 from jaxtyping import Float
 from pydantic import NonNegativeFloat
 from torch import Tensor
@@ -149,13 +151,23 @@ class ImportanceMinimalityLoss(Metric[ImportanceMinimalityLossConfig]):
             self.per_component_sums[layer_name] += layer_sums.detach()
         self.n_examples += n
 
+        # Use exact global sums for the live loss: SUM-reduce per_component_sums across
+        # ranks with the autograd-aware all_reduce so gradient flows back through each
+        # rank's local CI values. Avoids the Jensen upward-bias from passing local sums
+        # times world_size into the convex log term of _finalize. n_examples is uniform
+        # across ranks under DP, so we multiply rather than reduce.
         dist_state = get_distributed_state()
-        world_size = dist_state.world_size if dist_state is not None else 1
+        if dist_state is not None:
+            per_component_sums = {
+                k: cast(Tensor, dist_fn.all_reduce(v, op=dist.ReduceOp.SUM))
+                for k, v in per_component_sums.items()
+            }
+            n = n * dist_state.world_size
         return _finalize(
             per_component_sums=per_component_sums,
             n_examples=n,
             beta=self.cfg.beta,
-            world_size=world_size,
+            world_size=1,
         )
 
     @override
