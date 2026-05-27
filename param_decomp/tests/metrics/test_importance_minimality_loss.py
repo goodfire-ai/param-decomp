@@ -1,6 +1,14 @@
+import math
+from dataclasses import dataclass
+from typing import Any
+
 import torch
 
-from param_decomp.metrics.importance_minimality import importance_minimality_loss
+from param_decomp.metrics.importance_minimality import (
+    ImportanceMinimalityLoss,
+    ImportanceMinimalityLossConfig,
+    importance_minimality_loss,
+)
 
 
 class TestImportanceMinimalityLoss:
@@ -257,3 +265,88 @@ class TestImportanceMinimalityLoss:
             p_anneal_end_frac=1.0,
         )
         assert torch.isfinite(result_large)
+
+
+@dataclass
+class _FakeCI:
+    upper_leaky: dict[str, torch.Tensor]
+    lower_leaky: dict[str, torch.Tensor]
+    pre_sigmoid: dict[str, torch.Tensor]
+
+
+@dataclass
+class _FakeCtx:
+    ci: _FakeCI
+    current_frac_of_training: float
+
+
+def _make_bound_metric(
+    *, pnorm: float, beta: float, eps: float, device: str = "cpu"
+) -> ImportanceMinimalityLoss:
+    cfg = ImportanceMinimalityLossConfig(coeff=1.0, pnorm=pnorm, beta=beta, eps=eps)
+    m = ImportanceMinimalityLoss(cfg)
+    # Bypass Metric.bind (which wants a real ComponentModel). update/compute only
+    # touch self.device and self.per_component_sums / self.n_examples (set by reset()).
+    m.model = None  # pyright: ignore[reportAttributeAccessIssue]
+    m.device = device
+    m._bound = True
+    m.reset()
+    return m
+
+
+class TestImportanceMinimalityLossUpdate:
+    """Verify the single-rank Metric.update() path matches the closed-form formula.
+
+    The distributed-mode equivalence is covered by
+    `param_decomp_lab/tests/test_importance_minimality_distributed.py`.
+    """
+
+    def test_update_matches_closed_form(self: object) -> None:
+        ci_upper_leaky = {
+            "layer1": torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32),
+        }
+        # pnorm=1, eps=0, beta=1.0, n=2:
+        # per_component_sums = [4, 6]; per_component_mean = [2, 3]
+        # layer_loss = 2*(1 + log2(5)) + 3*(1 + log2(7))
+        expected = 2.0 * (1 + math.log2(5)) + 3.0 * (1 + math.log2(7))
+
+        m = _make_bound_metric(pnorm=1.0, beta=1.0, eps=0.0)
+        ctx: Any = _FakeCtx(
+            ci=_FakeCI(upper_leaky=ci_upper_leaky, lower_leaky={}, pre_sigmoid={}),
+            current_frac_of_training=0.0,
+        )
+        live = m.update(ctx)
+        assert torch.allclose(live, torch.tensor(expected, dtype=torch.float32))
+
+    def test_update_matches_compute_single_rank(self: object) -> None:
+        """In non-distributed runs, update() returns the same value as compute()."""
+        ci_upper_leaky = {
+            "layer1": torch.tensor([[0.5, 1.5], [2.5, 3.5]], dtype=torch.float32),
+            "layer2": torch.tensor([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], dtype=torch.float32),
+        }
+        m = _make_bound_metric(pnorm=1.5, beta=0.3, eps=1e-6)
+        ctx: Any = _FakeCtx(
+            ci=_FakeCI(upper_leaky=ci_upper_leaky, lower_leaky={}, pre_sigmoid={}),
+            current_frac_of_training=0.0,
+        )
+        live = m.update(ctx)
+        evaluated = m.compute()
+        assert isinstance(evaluated, torch.Tensor)
+        assert torch.allclose(live, evaluated)
+
+    def test_update_returns_grad_tracking_scalar(self: object) -> None:
+        """The live scalar must keep autograd connected to its CI inputs."""
+        ci = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32, requires_grad=True)
+        m = _make_bound_metric(pnorm=2.0, beta=0.0, eps=0.0)
+        ctx: Any = _FakeCtx(
+            ci=_FakeCI(upper_leaky={"layer1": ci}, lower_leaky={}, pre_sigmoid={}),
+            current_frac_of_training=0.0,
+        )
+        live = m.update(ctx)
+        live.backward()
+        # beta=0, p=2: per_component_mean = sum_b ci[b]^2 / n; layer_loss summed over c
+        # gradient wrt ci[b,c] = 2 * ci[b,c] / n
+        n = 2
+        expected_grad = 2.0 * ci.detach() / n
+        assert ci.grad is not None
+        assert torch.allclose(ci.grad, expected_grad)
