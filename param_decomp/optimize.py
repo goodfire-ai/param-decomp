@@ -151,7 +151,6 @@ def _build_metric_context(
         detach_inputs=False,
         sampling=config.sampling,
     )
-    # NOTE: FaithfulnessLoss is sensitive to the precision of the weight deltas.
     if weight_deltas is None:
         weight_deltas = component_model.calc_weight_deltas()
     return MetricContext(
