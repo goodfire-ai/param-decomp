@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 import torch.nn.parallel
 from pydantic import PositiveInt
-from torch import optim
+from torch import Tensor, optim
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -140,6 +140,7 @@ def _build_metric_context(
     component_model: ComponentModel,
     config: PDConfig,
     reconstruction_loss: ReconstructionLoss,
+    weight_deltas: dict[str, Tensor] | None = None,
 ) -> MetricContext:
     # The wrapped_model(...) call here is what registers DDP gradient hooks for this step.
     # Required even if no metric uses the DDP wrapper directly.
@@ -150,7 +151,9 @@ def _build_metric_context(
         detach_inputs=False,
         sampling=config.sampling,
     )
-    weight_deltas = component_model.calc_weight_deltas()
+    # NOTE: FaithfulnessLoss is sensitive to the precision of the weight deltas.
+    if weight_deltas is None:
+        weight_deltas = component_model.calc_weight_deltas()
     return MetricContext(
         model=component_model,
         batch=batch,
@@ -545,6 +548,9 @@ class Trainer:
 
             batch_log_data: defaultdict[str, float] = defaultdict(float)
 
+            # Compute weight_deltas OUTSIDE bf16_autocast so FaithfulnessLoss residuals are fp32
+            weight_deltas = self.component_model.calc_weight_deltas()
+
             with bf16_autocast(enabled=runtime_config.autocast_bf16):
                 ctx = _build_metric_context(
                     next(train_iterator),
@@ -555,6 +561,7 @@ class Trainer:
                     component_model=self.component_model,
                     config=pd_config,
                     reconstruction_loss=self.reconstruction_loss,
+                    weight_deltas=weight_deltas,
                 )
                 _assert_ctx_invariants(ctx, device, step)
                 losses = {name: m.update(ctx) for name, m in self.loss_metrics.items()}
@@ -614,6 +621,7 @@ class Trainer:
             # --- Evaluation --- #
             if eval_loop is not None and eval_loop.should_eval(step):
                 assert eval_iterator is not None
+                eval_weight_deltas = self.component_model.calc_weight_deltas()
                 with torch.no_grad(), bf16_autocast(enabled=runtime_config.autocast_bf16):
                     slow_step = eval_loop.should_run_slow_eval(step)
                     active = [m for m in all_instances.values() if not (m.slow and not slow_step)]
@@ -629,6 +637,7 @@ class Trainer:
                             component_model=self.component_model,
                             config=pd_config,
                             reconstruction_loss=self.reconstruction_loss,
+                            weight_deltas=eval_weight_deltas,
                         )
                         for m in active:
                             m.update(ctx)
