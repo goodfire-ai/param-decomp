@@ -35,6 +35,7 @@ pd-resid-mlp = "param_decomp_lab.experiments.resid_mlp.run:cli"
 pd-lm = "param_decomp_lab.experiments.lm.run:cli"
 pd-lm-layerwise = "param_decomp_lab.experiments.lm.layerwise:cli"
 pd-esm2 = "param_decomp_lab.experiments.esm2.run:cli"
+pd-carbon = "param_decomp_lab.experiments.carbon.run:cli"
 pd-pretrain = "param_decomp_lab.experiments.lm.pretrain.cli:cli"
 # Post-processing pipeline CLIs (SLURM-driven; lab subtrees).
 pd-clustering = "param_decomp_lab.clustering.scripts.run_pipeline:cli"
@@ -74,6 +75,7 @@ packages = [
     "param_decomp_lab.editing",
     "param_decomp_lab.eval_metrics",
     "param_decomp_lab.experiments",
+    "param_decomp_lab.experiments.carbon",
     "param_decomp_lab.experiments.esm2",
     "param_decomp_lab.experiments.lm",
     "param_decomp_lab.experiments.lm.pretrain",
