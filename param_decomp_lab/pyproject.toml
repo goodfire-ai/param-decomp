@@ -28,14 +28,22 @@ dependencies = [
     "requests",
 ]
 
+[project.optional-dependencies]
+# GPN-MSA target model — install with `uv pip install -e .[gpn]`.
+# Not on PyPI; pulled straight from the songlab-cal/gpn repo.
+gpn = [
+    "gpn @ git+https://github.com/songlab-cal/gpn.git",
+]
+
 [project.scripts]
 # Per-experiment runners — directly invoke the experiment's `main`.
 pd-tms = "param_decomp_lab.experiments.tms.run:cli"
 pd-resid-mlp = "param_decomp_lab.experiments.resid_mlp.run:cli"
 pd-lm = "param_decomp_lab.experiments.lm.run:cli"
 pd-lm-layerwise = "param_decomp_lab.experiments.lm.layerwise:cli"
-pd-esm2 = "param_decomp_lab.experiments.esm2.run:cli"
 pd-carbon = "param_decomp_lab.experiments.carbon.run:cli"
+pd-esm2 = "param_decomp_lab.experiments.esm2.run:cli"
+pd-gpn-msa = "param_decomp_lab.experiments.gpn_msa.run:cli"
 pd-pretrain = "param_decomp_lab.experiments.lm.pretrain.cli:cli"
 # Post-processing pipeline CLIs (SLURM-driven; lab subtrees).
 pd-clustering = "param_decomp_lab.clustering.scripts.run_pipeline:cli"
@@ -77,6 +85,7 @@ packages = [
     "param_decomp_lab.experiments",
     "param_decomp_lab.experiments.carbon",
     "param_decomp_lab.experiments.esm2",
+    "param_decomp_lab.experiments.gpn_msa",
     "param_decomp_lab.experiments.lm",
     "param_decomp_lab.experiments.lm.pretrain",
     "param_decomp_lab.experiments.lm.pretrain.models",

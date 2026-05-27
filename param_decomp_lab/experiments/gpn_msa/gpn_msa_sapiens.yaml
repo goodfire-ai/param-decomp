@@ -1,0 +1,54 @@
+pd:
+  seed: 0
+  n_mask_samples: 1
+  ci_config:
+    mode: layerwise
+    fn_type: mlp
+    hidden_dims:
+    - 16
+  sigmoid_type: leaky_hard
+  decomposition_targets:
+  - module_pattern: model.encoder.layer.0.attention.self.query
+    C: 8
+  - module_pattern: model.encoder.layer.0.intermediate.dense
+    C: 8
+  use_delta_component: true
+  loss_metrics:
+    - type: ImportanceMinimalityLoss
+      coeff: 1e-3
+      pnorm: 1.0
+      beta: 0
+    - type: StochasticReconLoss
+      coeff: 1.0
+    - type: StochasticReconLayerwiseLoss
+      coeff: 1.0
+    - type: FaithfulnessLoss
+      coeff: 1.0
+  batch_size: 2
+  steps: 2
+  components_optimizer:
+    lr_schedule:
+      start_val: 1e-3
+      fn_type: cosine
+      warmup_pct: 0.0
+      final_val_frac: 0.0
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 1e-3
+      fn_type: cosine
+      warmup_pct: 0.0
+      final_val_frac: 0.0
+cadence:
+  train_log_every: 1
+target:
+  model_name: songlab/gpn-msa-sapiens
+data:
+  seq_len: 32
+  n_species: 89
+  vocab_size: 6
+  aux_features_vocab_size: 5
+  n_synthetic_samples: 64
+runtime:
+  autocast_bf16: false
+  device: cpu
+  dp: null
