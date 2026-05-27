@@ -43,11 +43,16 @@ jobs:
       - name: Install dependencies
         run: make install-ci
 
-      - name: clear uv cache
-        run: uv cache clean || true
-
       - name: Print dependencies
         run: uv pip list
+
+      - name: Cache HuggingFace downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.hf-cache
+          key: hf-${{ github.run_id }}
+          restore-keys: |
+            hf-
 
       - name: Run basedpyright
         run: uv run basedpyright
@@ -67,6 +72,7 @@ jobs:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           OMPI_ALLOW_RUN_AS_ROOT: 1
           OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
+          HF_HOME: ${{ github.workspace }}/.hf-cache
   build-frontend:
     runs-on: ubuntu-latest
     defaults:
