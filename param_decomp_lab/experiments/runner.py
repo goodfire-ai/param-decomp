@@ -56,12 +56,6 @@ class ExperimentBundle[CfgT: ExperimentConfig[Any, Any]]:
         build_eval_loop: Construct the eval loop, or return ``None`` to skip.
         make_run_batch: Construct the per-experiment ``RunBatch`` adapter.
         reconstruction_loss: The recon loss closure for this experiment.
-        uses_distributed: Whether to run ``init_distributed`` at the top of the
-            runner. ``False`` for single-process experiments (TMS, ResidMLP);
-            ``True`` for LM.
-        refine_cfg: Optional hook called after ``build_target`` to return a
-            refined cfg (e.g. TMS's ``tied_weights`` depend on the constructed
-            target model). Default ``None`` means no refinement.
     """
 
     config_cls: type[CfgT]
@@ -70,21 +64,21 @@ class ExperimentBundle[CfgT: ExperimentConfig[Any, Any]]:
     build_eval_loop: Callable[[CfgT, str, DistributedState | None], EvalLoop | None]
     make_run_batch: Callable[[CfgT], RunBatch]
     reconstruction_loss: ReconstructionLoss
-    uses_distributed: bool = False
-    refine_cfg: Callable[[CfgT, nn.Module], CfgT] | None = None
 
 
 def _setup_runtime[CfgT: ExperimentConfig[Any, Any]](
-    cfg: CfgT, bundle: ExperimentBundle[CfgT]
+    cfg: CfgT,
 ) -> tuple[CfgT, str, DistributedState | None]:
-    """Init distributed (if requested), seed RNG, derive device, refresh cfg.runtime.
+    """Init distributed (no-op outside torchrun), seed RNG, derive device, refresh
+    ``cfg.runtime``.
 
-    Returns the refreshed cfg, the device string, and the dist state (or ``None``).
-    The returned cfg has ``runtime.device`` and ``runtime.dp`` updated for the
-    current resume / submission environment so downstream consumers see truth.
+    ``init_distributed()`` returns ``None`` when ``WORLD_SIZE`` isn't set, so this
+    works for both single-process invocations and torchrun-managed multi-rank ones
+    without a per-experiment flag. The returned cfg has ``runtime.device`` and
+    ``runtime.dp`` updated for the current resume / submission environment.
     """
-    dist_state = init_distributed() if bundle.uses_distributed else None
-    if bundle.uses_distributed and is_main_process():
+    dist_state = init_distributed()
+    if is_main_process() and dist_state is not None:
         logger.info(f"Distributed state: {dist_state}")
     set_seed(cfg.pd.seed)
     device = get_device()
@@ -111,11 +105,9 @@ def run_fresh[CfgT: ExperimentConfig[Any, Any]](
 ) -> None:
     """Fresh-run driver: parse YAML, build everything via the bundle, train from step 0."""
     cfg = bundle.config_cls.from_file(config_path)
-    cfg, device, dist_state = _setup_runtime(cfg, bundle)
+    cfg, device, dist_state = _setup_runtime(cfg)
 
     target_model = bundle.build_target(cfg)
-    if bundle.refine_cfg is not None:
-        cfg = bundle.refine_cfg(cfg, target_model)
     train_loader = bundle.build_train_loader(cfg, device, dist_state)
     eval_loop = bundle.build_eval_loop(cfg, device, dist_state)
     sink = init_pd_run(cfg, group=group, tags=tags, run_id=run_id)
@@ -156,7 +148,7 @@ def run_resumed[CfgT: ExperimentConfig[Any, Any]](
     if is_main_process():
         logger.info(f"Resuming from {resume_cfg.from_run} @ step {resume_cfg.step}")
 
-    cfg, device, dist_state = _setup_runtime(parent_cfg, bundle)
+    cfg, device, dist_state = _setup_runtime(parent_cfg)
 
     resolved_step = resolve_step(resume_cfg.from_run, resume_cfg.step)
     snapshot = read_training_snapshot(resume_cfg.from_run, resolved_step)
@@ -165,8 +157,6 @@ def run_resumed[CfgT: ExperimentConfig[Any, Any]](
     snapshot.runtime_config["device"] = device
 
     target_model = bundle.build_target(cfg)
-    if bundle.refine_cfg is not None:
-        cfg = bundle.refine_cfg(cfg, target_model)
     train_loader = bundle.build_train_loader(cfg, device, dist_state)
     eval_loop = bundle.build_eval_loop(cfg, device, dist_state)
     sink = init_pd_run(cfg, group=group, tags=tags, run_id=run_id)

@@ -238,7 +238,6 @@ _GPN_MSA_BUNDLE = ExperimentBundle[GPNMSAExperimentConfig](
     build_eval_loop=_build_eval_loop,
     make_run_batch=lambda cfg: make_run_batch(cfg.target),
     reconstruction_loss=recon_loss_kl,
-    uses_distributed=False,
 )
 
 

@@ -235,7 +235,6 @@ _CARBON_BUNDLE = ExperimentBundle[CarbonExperimentConfig](
     # TODO: surfaced as abstraction issue — see report. Carbon's FNS recon loss
     # would need a richer Protocol than `(pred, target) -> (sum, n)`.
     reconstruction_loss=recon_loss_kl,
-    uses_distributed=True,
 )
 
 
