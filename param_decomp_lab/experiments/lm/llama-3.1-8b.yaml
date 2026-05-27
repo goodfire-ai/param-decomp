@@ -17,18 +17,20 @@ pd:
   sampling: continuous
   sigmoid_type: leaky_hard
   decomposition_targets:
-  - module_pattern: h.*.mlp.c_fc
-    C: 3072
-  - module_pattern: h.*.mlp.down_proj
-    C: 3584
-  - module_pattern: h.*.attn.q_proj
-    C: 512
-  - module_pattern: h.*.attn.k_proj
-    C: 512
-  - module_pattern: h.*.attn.v_proj
-    C: 1024
-  - module_pattern: h.*.attn.o_proj
-    C: 1024
+  # - module_pattern: model.layers.*.mlp.gate_proj
+  #   C: 8192
+  # - module_pattern: model.layers.*.mlp.up_proj
+  #   C: 8192
+  - module_pattern: model.layers.18.mlp.down_proj
+    C: 8192
+  # - module_pattern: model.layers.*.self_attn.q_proj
+  #   C: 4096
+  # - module_pattern: model.layers.*.self_attn.k_proj
+  #   C: 4096
+  # - module_pattern: model.layers.*.self_attn.v_proj
+  #   C: 4096
+  # - module_pattern: model.layers.*.self_attn.o_proj
+  #   C: 2048
   identity_decomposition_targets: null
   use_delta_component: true
   components_optimizer:
@@ -88,20 +90,20 @@ eval:
     mask_scope: shared_across_batch
 target:
   spec:
-    kind: pretrained
-    model_class: param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
-    run_path: goodfire/spd/runs/t-9d2b8f02
-  output_extract: 0
+    kind: hf
+    model_class: transformers.LlamaForCausalLM
+    model_name: meta-llama/Llama-3.1-8B
+  output_extract: logits
 data:
-  tokenizer_name: EleutherAI/gpt-neox-20b
+  tokenizer_name: meta-llama/Llama-3.1-8B
   max_seq_len: 512
   buffer_size: 1000
-  dataset_name: danbraunai/pile-uncopyrighted-tok-shuffled
-  column_name: input_ids
+  dataset_name: HuggingFaceFW/fineweb
+  column_name: text
   train_split: train
-  eval_split: val
+  eval_split: train
   shuffle_each_epoch: true
-  is_tokenized: true
+  is_tokenized: false
   streaming: true
 runtime:
   autocast_bf16: true
