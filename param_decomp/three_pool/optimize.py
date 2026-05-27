@@ -389,6 +389,7 @@ class ThreePoolTrainer:
         Returns ``None`` on non-rank-0 — the lab sink is silent on those
         ranks anyway, and the trainer never needs their canonical state.
         """
+        trace("snapshot: enter gather_full_state_dict_to_rank0")
         gathered_model = gather_full_state_dict_to_rank0(
             layout=self.layout,
             component_model=self.component_model,
@@ -399,6 +400,7 @@ class ThreePoolTrainer:
             c_per_site=self.runtime.c_per_site,
             device=self._device,
         )
+        trace("snapshot: gather_full_state_dict_to_rank0 done")
 
         my_named_params = self._named_params_for_my_optimizer()
         my_optimizer_by_name: dict[str, dict[str, Any]] = (
@@ -415,13 +417,22 @@ class ThreePoolTrainer:
         elif self._pending_ppgd_resume_state is not None:
             my_contribution["ppgd"] = self._pending_ppgd_resume_state
 
+        # Route the python-object gather onto cross_pool_p2p_group like the
+        # tensor gather in gather_full_state_dict_to_rank0 — keeps the default
+        # PG free of payload-carrying collectives so a subsequent barrier
+        # doesn't trip over un-progressed work.
+        p2p_group = self.layout.world.cross_pool_p2p_group
         world_size = self.layout.world.world_size
         if self.layout.my_rank != 0:
-            dist.gather_object(my_contribution, None, dst=0)
+            trace("snapshot: enter gather_object (non-rank-0)")
+            dist.gather_object(my_contribution, None, dst=0, group=p2p_group)
+            trace("snapshot: gather_object done (non-rank-0)")
             return None
 
         gathered: list[dict[str, Any] | None] = [None] * world_size
-        dist.gather_object(my_contribution, gathered, dst=0)
+        trace("snapshot: enter gather_object (rank 0)")
+        dist.gather_object(my_contribution, gathered, dst=0, group=p2p_group)
+        trace("snapshot: gather_object done (rank 0)")
         components_by_name: dict[str, dict[str, Any]] = {}
         ci_fn_by_name: dict[str, dict[str, Any]] = {}
         ppgd_by_rank: dict[int, dict[str, Any]] = {}

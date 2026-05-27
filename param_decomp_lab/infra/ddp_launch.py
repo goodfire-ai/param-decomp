@@ -19,6 +19,10 @@ GPUS_PER_NODE = 8
 DDP_ENV = {
     "NCCL_DEBUG": "WARN",
     "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
+    # TEMP DIAGNOSTIC: enable trace() + phase() output to identify the hang in
+    # snapshot()/save under XL load. Revert once root cause is fixed.
+    "PD_TRACE": "1",
+    "PD_PHASE_TRACE": "1",
 }
 
 
