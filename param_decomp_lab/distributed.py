@@ -57,12 +57,19 @@ def init_distributed() -> DistributedState | None:
     assert (master_port := os.environ.get("MASTER_PORT")) is not None
     logger.info(f"init_distributed: MASTER_ADDR: {master_addr}, MASTER_PORT: {master_port}")
 
+    # 30-min NCCL collective timeout (vs default 10 min). XL-scale 3-pool eval
+    # passes can legitimately take 10+ min when slow eval metrics (CIHistograms
+    # generating 96 * C plots, PGDReconLoss with 20 inner steps, etc.) run on
+    # the PPGD pool while LW + CI ranks wait at the post-eval barrier.
+    from datetime import timedelta
+
     dist.init_process_group(
         backend=backend,
         init_method="env://",
         world_size=world_size,
         rank=rank,
         device_id=None if backend == "gloo" else device,
+        timeout=timedelta(minutes=30),
     )
 
     core_dist._state = DistributedState(
