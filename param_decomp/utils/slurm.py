@@ -319,7 +319,7 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 git clone "{REPO_ROOT}" "$WORK_DIR"
 cd "$WORK_DIR"
 [ -f "{REPO_ROOT}/.env" ] && cp "{REPO_ROOT}/.env" .env
-git fetch "{REPO_ROOT}" "{snapshot_ref}:{snapshot_ref}"
+git fetch origin "{snapshot_ref}:{snapshot_ref}"
 git checkout "{snapshot_ref}"
 deactivate 2>/dev/null || true
 unset VIRTUAL_ENV
@@ -335,7 +335,7 @@ def _setup_section(config: SlurmConfig, is_array: bool) -> str:
         workspace_suffix = "$SLURM_JOB_ID"
 
     if config.snapshot_ref is not None:
-        work_dir = f"/tmp/param-decomp/workspace-{config.job_name}-{workspace_suffix}"
+        work_dir = f"/tmp/$USER/param-decomp/workspace-{config.job_name}-{workspace_suffix}"
         return generate_git_snapshot_setup(work_dir, config.snapshot_ref)
     else:
         return f"""\

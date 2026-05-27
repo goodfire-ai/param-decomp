@@ -99,6 +99,12 @@ EXPERIMENT_REGISTRY: dict[str, ExperimentConfig] = {
         config_path=Path("param_decomp/experiments/lm/pile_llama_simple_mlp-12L.yaml"),
         expected_runtime=2880,
     ),
+    "bisect_harness": ExperimentConfig(
+        task_name="lm",
+        decomp_script=Path("param_decomp/experiments/lm/lm_decomposition.py"),
+        config_path=Path("param_decomp/experiments/lm/bisect_harness.yaml"),
+        expected_runtime=30,
+    ),
 }
 
 
