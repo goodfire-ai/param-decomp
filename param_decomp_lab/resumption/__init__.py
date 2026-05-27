@@ -12,7 +12,6 @@ topology.
 
 from param_decomp_lab.resumption.config import (
     ResumeConfig,
-    ResumeOverrides,
     read_training_snapshot,
     resolve_step,
 )
@@ -26,7 +25,6 @@ from param_decomp_lab.resumption.provenance import (
 __all__ = [
     "RESUME_PROVENANCE_FILENAME",
     "ResumeConfig",
-    "ResumeOverrides",
     "ResumeProvenance",
     "read_provenance",
     "read_training_snapshot",

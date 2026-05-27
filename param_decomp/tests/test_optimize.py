@@ -312,13 +312,13 @@ def test_trainer_resumes_from_snapshot_and_matches_uninterrupted_run() -> None:
     trainer_half.run(make_loader(), CaptureSink(), make_cadence(), eval_loop=None)
     snap = trainer_half.snapshot()
 
-    # Resume — extend ``steps`` to 4 via cfg_overrides.
+    # Resume — extend ``steps`` to 4 by mutating the saved pd_config dict.
+    snap.pd_config["steps"] = 4
     trainer_resumed = Trainer.from_snapshot(
         snap,
         target_model=TinyLinear(),
         run_batch=run_batch_passthrough,
         reconstruction_loss=recon_loss_mse,
-        cfg_overrides={"steps": 4},
     )
     assert trainer_resumed.step == 2
     trainer_resumed.run(make_loader(), CaptureSink(), make_cadence(), eval_loop=None)

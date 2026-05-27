@@ -1,10 +1,10 @@
 """Resume provenance: a small YAML sibling of ``run_meta.yaml`` recording
 which run a resumed run was forked from.
 
-Resumed runs get their own ``run_id`` and own ``run_meta.yaml`` (the effective
-config after overrides) — provenance is what makes them traceable back to
-the parent. A future reader can inspect ``resume_provenance.yaml`` to find
-the parent run dir + the step it was resumed from.
+Resumed runs get their own ``run_id`` and own ``run_meta.yaml`` — provenance
+is what makes them traceable back to the parent. A future reader can inspect
+``resume_provenance.yaml`` to find the parent run dir + the step it was
+resumed from.
 
 A run without this file is a fresh run.
 """

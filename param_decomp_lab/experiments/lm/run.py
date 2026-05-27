@@ -215,9 +215,8 @@ def main(
     Args:
         config_path: YAML for a fresh run. Required when not resuming.
         resume: Path to a `ResumeConfig` YAML pointing at a prior run. When set,
-            the parent's `run_meta.yaml` is the source of cfg truth (modulo
-            narrow `overrides`); a new `run_id` + sibling `resume_provenance.yaml`
-            are written.
+            the parent's `run_meta.yaml` is the source of cfg truth; a new
+            `run_id` + sibling `resume_provenance.yaml` are written.
         group / tags: wandb-only (no-ops without `wandb:`).
         dp / partition / time / job_name / no_snapshot / run_id: SLURM submission
             knobs. Passing `--dp N` outside torchrun submits a SLURM job: single-node
@@ -321,17 +320,8 @@ def _resume_main(
     set_seed(parent_cfg.pd.seed)
     device = get_device()
 
-    cfg_overrides = (
-        resume_cfg.overrides.to_pd_config_patch() if resume_cfg.overrides is not None else None
-    )
-    effective_pd = (
-        parent_cfg.pd.model_copy(update=cfg_overrides)
-        if cfg_overrides is not None
-        else parent_cfg.pd
-    )
     effective_cfg = parent_cfg.model_copy(
         update={
-            "pd": effective_pd,
             "runtime": parent_cfg.runtime.model_copy(
                 update={
                     "device": device,
@@ -372,7 +362,6 @@ def _resume_main(
             target_model=target_model,
             run_batch=make_run_batch(effective_cfg.target),
             reconstruction_loss=recon_loss_kl,
-            cfg_overrides=cfg_overrides,
         )
         trainer.run(train_loader, sink, effective_cfg.cadence, eval_loop)
     finally:
