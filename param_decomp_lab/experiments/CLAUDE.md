@@ -1,7 +1,7 @@
 # `param_decomp_lab/experiments/`
 
 Composition roots for the in-repo experiments. Each experiment is a plain Python script
-that parses a YAML, builds the target / loaders / metrics, and calls `optimize(...)`.
+that parses a YAML, builds the target / loaders / metrics, and runs a `Trainer`.
 
 There is no central registry — each `run.py` declares its own `<Name>ExperimentConfig`
 + build functions + `Saved<Name>Run` reload class, and post-processing callers import

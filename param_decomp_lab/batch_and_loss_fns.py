@@ -1,6 +1,6 @@
 """Lab-side `RunBatch` / `ReconstructionLoss` helpers.
 
-Passed to `optimize(run_batch=..., reconstruction_loss=...)`.
+Passed to `Trainer(run_batch=..., reconstruction_loss=...)`.
 """
 
 from typing import Any

@@ -1,4 +1,4 @@
-"""ResidMLP PD experiment: YAML -> `optimize()` glue, plus the `SavedResidMLPRun` reload class.
+"""ResidMLP PD experiment: YAML -> `Trainer` glue, plus the `SavedResidMLPRun` reload class.
 
 Run via `pd-resid-mlp path/to/config.yaml`.
 """
@@ -16,7 +16,7 @@ from param_decomp.batch_and_loss_fns import RunBatch
 from param_decomp.component_model import ComponentModel
 from param_decomp.distributed import DistributedState
 from param_decomp.log import logger
-from param_decomp.optimize import EvalLoop, optimize
+from param_decomp.optimize import EvalLoop, Trainer
 from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
 from param_decomp_lab.component_model_io import load_component_model
 from param_decomp_lab.distributed import get_device
@@ -151,17 +151,14 @@ def main(
     sink = init_pd_run(cfg, group=group, tags=tags)
 
     try:
-        optimize(
+        trainer = Trainer(
             target_model=target_model,
-            train_loader=train_loader,
             run_batch=make_run_batch(cfg.target),
             reconstruction_loss=recon_loss_mse,
             pd_config=cfg.pd,
             runtime_config=cfg.runtime,
-            sink=sink,
-            cadence=cfg.cadence,
-            eval_loop=eval_loop,
         )
+        trainer.run(train_loader, sink, cfg.cadence, eval_loop)
     finally:
         sink.finish()
 

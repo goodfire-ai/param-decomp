@@ -216,7 +216,7 @@ class Cadence(BaseConfig):
 
     Held separately from `RunSink` so the sink only owns *where* output goes; `Cadence`
     owns *when* train logs and checkpoints fire. Eval timing lives on `EvalLoop`,
-    alongside the runtime objects it depends on. `optimize()` always checkpoints at the
+    alongside the runtime objects it depends on. `Trainer.run` always checkpoints at the
     final step regardless of `save_every`.
     """
 
