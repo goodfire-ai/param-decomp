@@ -130,7 +130,14 @@ def run_eval_step(
 
     ``slow_step`` is a pass-through filter: any metric whose ``slow`` class-attr
     is True only runs when ``slow_step`` is True.
+
+    Stream fences before/after the global ``sync_across_processes()`` calls so any
+    in-flight cross-pool p2p (D5b/D7 sends from training, eval CI ship from this
+    pass) drains before the default-PG ``dist.barrier()`` collective. Without
+    these, NCCL's default communicator can be left "dirty" with un-progressed
+    p2p work, and the subsequent barrier hangs (see the May 27 deadlock).
     """
+    torch.cuda.synchronize()
     sync_across_processes()  # align all pools before eval
     active = (
         [m for m in metrics if not (m.slow and not slow_step)] if layout.my_pool == "ppgd" else []
@@ -164,6 +171,7 @@ def run_eval_step(
             if layout.my_is_pool_leader:
                 sink.console(*(f"eval/{k}: {v}" for k, v in results.items()))
                 sink.log({f"eval/{k}": v for k, v in results.items()}, step=step)
+    torch.cuda.synchronize()
     sync_across_processes()  # align all pools after eval
     torch.cuda.empty_cache()
     gc.collect()

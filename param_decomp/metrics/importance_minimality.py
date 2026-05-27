@@ -1,13 +1,15 @@
 from typing import Literal, override
 
 import torch
+import torch.distributed as dist
+import torch.distributed.nn.functional as dist_fn
 from jaxtyping import Float
 from pydantic import NonNegativeFloat
 from torch import Tensor
 from torch.distributed import ReduceOp
 
 from param_decomp.base_config import Probability
-from param_decomp.distributed import all_reduce, get_distributed_state
+from param_decomp.distributed import all_reduce, get_distributed_state, is_distributed
 from param_decomp.metrics.base import LossMetricConfig, Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
 
@@ -149,13 +151,27 @@ class ImportanceMinimalityLoss(Metric[ImportanceMinimalityLossConfig]):
             self.per_component_sums[layer_name] += layer_sums.detach()
         self.n_examples += n
 
-        dist_state = get_distributed_state()
-        world_size = dist_state.world_size if dist_state is not None else 1
+        # Use exact global sums for the live loss: SUM-reduce per_component_sums across
+        # ranks with the autograd-aware all_reduce so gradient flows back through each
+        # rank's local CI values. Avoids the Jensen upward-bias from passing local sums
+        # times world_size into the convex log term of _finalize. n_examples is uniform
+        # across ranks under DP, so we multiply rather than reduce.
+        if is_distributed():
+            global_per_component_sums = {
+                k: dist_fn.all_reduce(v, op=dist.ReduceOp.SUM)
+                for k, v in per_component_sums.items()
+            }
+            dist_state = get_distributed_state()
+            assert dist_state is not None
+            global_n = n * dist_state.world_size
+        else:
+            global_per_component_sums = per_component_sums
+            global_n = n
         return _finalize(
-            per_component_sums=per_component_sums,
-            n_examples=n,
+            per_component_sums=global_per_component_sums,
+            n_examples=global_n,
             beta=self.cfg.beta,
-            world_size=world_size,
+            world_size=1,
         )
 
     @override
