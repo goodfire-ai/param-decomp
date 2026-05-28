@@ -67,6 +67,11 @@ def create_git_snapshot(snapshot_id: str) -> tuple[str, str]:
     """
     snapshot_ref: str = f"refs/runs/snapshot/{snapshot_id}"
 
+    # Clear any orphan worktree admin entries left by previous failed cleanups.
+    subprocess.run(
+        ["git", "worktree", "prune"], cwd=REPO_ROOT, check=True, capture_output=True
+    )
+
     with tempfile.TemporaryDirectory() as temp_dir:
         worktree_path = Path(temp_dir) / f"pd-snapshot-{snapshot_id}"
 
@@ -147,12 +152,20 @@ def create_git_snapshot(snapshot_id: str) -> tuple[str, str]:
                 )
 
         finally:
-            # Clean up worktree (the snapshot ref in the main repo remains)
-            subprocess.run(
+            # Clean up worktree (the snapshot ref in the main repo remains). Non-fatal:
+            # the snapshot has already been created and pushed, so a stale worktree
+            # admin entry is just leftover bookkeeping — pruned on the next call.
+            cleanup = subprocess.run(
                 ["git", "worktree", "remove", "--force", str(worktree_path)],
                 cwd=REPO_ROOT,
-                check=True,
                 capture_output=True,
             )
+            if cleanup.returncode != 0:
+                stderr = cleanup.stderr.decode().strip() if cleanup.stderr else "unknown error"
+                logger.warning(
+                    f"Failed to remove snapshot worktree at {worktree_path} "
+                    f"(exit {cleanup.returncode}): {stderr}. "
+                    f"Run `git worktree prune` to clear the admin entry."
+                )
 
     return snapshot_ref, commit_hash

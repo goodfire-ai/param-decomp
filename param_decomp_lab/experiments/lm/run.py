@@ -46,6 +46,10 @@ from param_decomp_lab.experiments.lm.data import (
     create_lm_data_loader,
     rank_batch_size,
 )
+from param_decomp_lab.experiments.lm.legacy_config import (
+    LEGACY_RUN_META_FILENAME,
+    translate_legacy_lm_config,
+)
 from param_decomp_lab.experiments.utils import (
     EXPERIMENT_CONFIG_FILENAME,
     ExperimentConfig,
@@ -178,14 +182,23 @@ class SavedLMRun:
 
     @classmethod
     def from_path(cls, path: ModelPath) -> "SavedLMRun":
-        """Resolve a run directory or W&B path into a fully-validated `SavedLMRun`."""
+        """Resolve a run directory or W&B path into a fully-validated `SavedLMRun`.
+
+        Runs saved before the config refactor wrote `final_config.yaml` with a flat
+        schema; we fall back to that filename and translate it on the fly so old runs
+        remain loadable.
+        """
         files = resolve_run_files(
-            path, config_filename=EXPERIMENT_CONFIG_FILENAME, checkpoint_prefix="model"
+            path,
+            config_filename=EXPERIMENT_CONFIG_FILENAME,
+            legacy_config_filenames=(LEGACY_RUN_META_FILENAME,),
+            checkpoint_prefix="model",
         )
-        return cls(
-            cfg=LMExperimentConfig.from_file(files.config_path),
-            checkpoint_path=files.checkpoint_path,
-        )
+        if files.config_path.name == LEGACY_RUN_META_FILENAME:
+            cfg = LMExperimentConfig.model_validate(translate_legacy_lm_config(files.config_path))
+        else:
+            cfg = LMExperimentConfig.from_file(files.config_path)
+        return cls(cfg=cfg, checkpoint_path=files.checkpoint_path)
 
     def load_model(self) -> ComponentModel:
         return load_component_model(
