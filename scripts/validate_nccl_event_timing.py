@@ -16,7 +16,6 @@ os.environ["PD_NCCL_EVENT_TIMING"] = "1"  # must be set before import
 
 import torch
 import torch.distributed as dist
-
 from param_decomp.three_pool import layout as L
 
 PAYLOAD_NUMEL = 64 * 1024 * 1024  # 256 MB fp32 — big enough to time transfer

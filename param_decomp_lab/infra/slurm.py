@@ -50,6 +50,7 @@ class SlurmConfig:
 
     job_name: str
     partition: str | None
+    qos: str | None = None
     n_gpus: int = 1
     n_nodes: int = 1
     time: str = "72:00:00"
@@ -233,6 +234,8 @@ def _common_sbatch_lines(config: SlurmConfig, log_pattern: str) -> list[str]:
     ]
     if config.partition is not None:
         lines.append(f"#SBATCH --partition={config.partition}")
+    if config.qos is not None:
+        lines.append(f"#SBATCH --qos={config.qos}")
     if config.cpus_per_task is not None:
         lines.append(f"#SBATCH --cpus-per-task={config.cpus_per_task}")
     if config.mem is not None:
