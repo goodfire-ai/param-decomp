@@ -16,7 +16,7 @@ splitting the CI fn into its own pool (a dedicated unsharded CI pool enables
 global shared transformer CI fns that span all sites).
 
 Topology integrity checks (rank disjointness, uniform N_per_block, CI-pool
-divisibility into Layerwise/PPGD batch shards) run at validation time; checks
+cross-divisibility with Layerwise/PPGD arities) run at validation time; checks
 that depend on ``pd.batch_size`` (divisibility) run in
 ``_validate_pd_config_for_three_pool`` since they need the paired ``PDConfig``
 to evaluate.
@@ -54,21 +54,24 @@ class ThreePoolConfig(BaseConfig):
 
     Batch-split divisibility (see ``DESIGN.md`` open Q1):
 
-      * ``N_ci`` must divide ``N_per_block_layerwise`` so each Layerwise rank's
-        batch slice fits inside exactly one CI rank's slice (one-to-many
-        fan-out for CI values; many-to-one reduction for CI grads).
-      * ``N_ci`` must divide ``N_ppgd`` for the same reason on the CI↔PPGD
-        side.
+      * ``N_ci`` and ``N_per_block_layerwise`` must be cross-divisible — one
+        divides the other. Whichever is smaller owns the coarser batch slice;
+        the finer pool's shards each nest in exactly one coarse shard, so the
+        CI↔LW exchange is a clean one-to-K fan-out (and K-to-one reduction)
+        in either direction.
+      * ``N_ci`` and ``N_ppgd`` must be cross-divisible for the same reason on
+        the CI↔PPGD side.
 
-    These two constraints reduce the otherwise many-to-many batch routing to
-    the simpler one-to-many / many-to-one shape that the comms layer
-    implements. The validator rejects any other arrangement loudly.
+    These two constraints keep every batch-slice overlap a whole, aligned
+    sub-slice (uniform integer fan-in/out), avoiding ragged many-to-many
+    routing. The validator rejects any other arrangement loudly.
     """
 
     ci_ranks: list[int] = Field(
         ...,
         description="Ranks assigned to the CI pool (replicated CI fn, DP across batch). "
-        "Must divide both N_per_block_layerwise and N_ppgd (see class docstring).",
+        "Must be cross-divisible with both N_per_block_layerwise and N_ppgd "
+        "(see class docstring).",
     )
     layerwise_block_groups: list[LayerwiseBlockGroupSpec] = Field(
         ...,
@@ -132,17 +135,21 @@ class ThreePoolConfig(BaseConfig):
             f"Layerwise pool and PPGD pool must be rank-disjoint; overlap: {lw_pgd_overlap}"
         )
 
-        # Batch-split divisibility (MVP constraint — see DESIGN.md open Q1).
+        # Batch-split divisibility (see DESIGN.md open Q1). Each cross-pool edge
+        # (CI↔LW, CI↔PPGD) must be a clean one-to-K fan-out in EITHER direction:
+        # one arity divides the other, so every batch-slice overlap is a whole,
+        # aligned sub-slice. (The batch-divisibility of each arity itself is
+        # enforced against pd.batch_size in _validate_pd_config_for_three_pool.)
         n_ci = len(self.ci_ranks)
         n_ppgd = len(self.ppgd_ranks)
-        assert n_per_block % n_ci == 0, (
-            f"N_ci ({n_ci}) must divide N_per_block_layerwise ({n_per_block}) so each "
-            f"Layerwise rank's batch slice fits inside exactly one CI rank's slice. "
-            f"Tip: choose a smaller CI pool, or grow the layerwise block-DDP factor."
+        assert n_per_block % n_ci == 0 or n_ci % n_per_block == 0, (
+            f"N_ci ({n_ci}) and N_per_block_layerwise ({n_per_block}) must be "
+            f"cross-divisible (one divides the other) so each batch-slice overlap "
+            f"is a whole sub-slice. Tip: make one a multiple of the other."
         )
-        assert n_ppgd % n_ci == 0, (
-            f"N_ci ({n_ci}) must divide N_ppgd ({n_ppgd}) so each PPGD rank's batch "
-            f"slice fits inside exactly one CI rank's slice. "
-            f"Tip: choose a smaller CI pool, or grow the PPGD pool."
+        assert n_ppgd % n_ci == 0 or n_ci % n_ppgd == 0, (
+            f"N_ci ({n_ci}) and N_ppgd ({n_ppgd}) must be cross-divisible (one "
+            f"divides the other) so each batch-slice overlap is a whole sub-slice. "
+            f"Tip: make one a multiple of the other."
         )
         return self

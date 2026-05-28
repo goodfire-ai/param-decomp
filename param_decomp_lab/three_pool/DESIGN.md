@@ -191,17 +191,33 @@ The defining wrinkle is **3-way batch slicing**:
 - PPGD rank `k` needs CI values for all sites and batch slice `S_pgd[k]`.
 
 In general `S_ci[i]`, `S_lw[j]`, `S_pgd[k]` don't align — so the CI→LW and
-CI→PPGD sends become **many-to-many along the batch dim**. Symmetric for grads
-coming back. A reasonable simplification for the MVP is to constrain the
-batch splits so each LW slice and each PPGD slice fits inside exactly one CI
-slice (i.e. choose `N_ci` to divide both `N_lw` and `N_pgd`, or vice versa),
-which reduces it to one-to-many fan-out + many-to-one reduction.
+CI→PPGD sends could become **many-to-many along the batch dim**. To keep
+routing tractable, each cross-pool edge is constrained to be **cross-divisible**:
+one arity divides the other (`N_ci | N_lw_per_block OR N_lw_per_block | N_ci`,
+and likewise for `N_ci / N_pgd`). The batch-divisibility of each arity itself
+(`B % N_ci`, `B % N_lw_per_block`, `B % N_pgd`) is also required. Cross-
+divisibility makes every CI↔downstream overlap a **whole, aligned sub-slice**
+(uniform integer fan-in/out) — never ragged. The two regimes per edge:
+
+- **CI coarse** (`N_ci ≤ N_down`): one CI rank fans a sub-slice out to
+  `K = N_down/N_ci` downstream ranks; grads stitch back K-to-one. (Original
+  MVP direction.)
+- **CI fine / inverted** (`N_ci > N_down`): one downstream rank gathers from
+  `K = N_ci/N_down` CI ranks (concat) and scatters grads back to those same K.
+
+`layout.BatchEdge` captures one edge symmetrically and answers every routing
+question (which ranks pair, and the overlap sub-slice on each side) for both
+regimes, so the exchange methods never branch on direction. Pairs where
+*neither* arity divides the other (e.g. `N_ci=6, N_per_block=4`) remain out of
+scope — they'd produce ragged overlaps straddling slice boundaries — and the
+validator rejects them.
 
 ## Open design questions to resolve before coding
 
-1. **Batch-split divisibility.** Pick an N_ci / N_lw / N_pgd compatibility
-   rule. Easiest: `N_ci` divides `N_pgd` and `N_lw_per_block`. Validator should
-   reject anything else loudly.
+1. **Batch-split divisibility.** RESOLVED: each cross-pool edge's two arities
+   must be cross-divisible (one divides the other), in EITHER direction; each
+   arity must also divide the global batch. The validator rejects anything else
+   loudly. `BatchEdge` handles both fan directions; see "Routing complexity".
 2. **CI value wire dtype.** Today CI is shipped bf16 and upcast to fp32 on the
    Layerwise side. Same pattern likely works for both downstream pools.
 3. **Where do imp_min grads enter the CI-fn backward?** Cleanest is: imp_min

@@ -117,6 +117,7 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 | `param_decomp_lab/investigate/` | `param_decomp_lab/investigate/CLAUDE.md` | Agent investigation of a research question |
 | `param_decomp_lab/app/` | `param_decomp_lab/app/CLAUDE.md` | Web visualization (FastAPI + Svelte) |
 | `param_decomp_lab/experiments/lm/pretrain/` | `param_decomp_lab/experiments/lm/pretrain/CLAUDE.md` | LM target-model pretraining |
+| `param_decomp_lab/three_pool/` | `param_decomp_lab/three_pool/CLAUDE.md` | 3-pool (CI / Layerwise / PPGD) parallel training; cross-pool batch routing |
 
 ## Saved-run layout
 

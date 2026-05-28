@@ -1,0 +1,134 @@
+# Heterogeneous-topology 3-pool config for the CI-fn-grad equivalence diagnostic.
+#
+# Topology (8 ranks, single node):
+#   LW:   1 block × 4 ranks = ranks [0,1,2,3]  (owns all 4 sites)
+#   CI:   ranks [4,5]  (2 ranks)
+#   PPGD: ranks [6,7]  (2 ranks)
+# Rank 0 must be the LW block-0 leader (3-pool convention; reductions ship
+# CI/PPGD losses to rank 0), so LW comes first.
+# n_ci=2 | n_per_block=4 (4%2=0 OK); n_ci=2 | n_ppgd=2 (2%2=0 OK).
+# DELIBERATELY NON-SQUARE: n_per_block=4 != n_ci=2 — this is what exposes the
+# suspected CI-fn-grad scaling bug (cancels only when n_ci==n_per_block==n_ppgd).
+# batch_size=8 divisible by lcm(2,4,2)=4.
+#
+# Decomposes 4 small attn projection sites of gpt2. Short run, dense logging.
+pd:
+  seed: 0
+  n_mask_samples: 1
+  ci_config:
+    mode: global
+    fn_type: global_shared_transformer
+    simple_transformer_ci_cfg:
+      d_model: 256
+      n_blocks: 2
+      mlp_hidden_dim:
+      - 1024
+      attn_config:
+        n_heads: 4
+        max_len: 128
+        rope_base: 10000.0
+  sampling: continuous
+  sigmoid_type: leaky_hard
+  decomposition_targets:
+  - module_pattern: h.0.attn.q_proj
+    C: 64
+  - module_pattern: h.0.attn.k_proj
+    C: 64
+  - module_pattern: h.1.attn.q_proj
+    C: 64
+  - module_pattern: h.1.attn.k_proj
+    C: 64
+  identity_decomposition_targets: null
+  use_delta_component: true
+  batch_size: 8
+  steps: 100
+  components_optimizer:
+    lr_schedule:
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+    grad_clip_norm: 0.01
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 1.0e-04
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - type: FaithfulnessLoss
+    coeff: 1.0e+08
+  - type: StochasticReconLayerwiseLoss
+    coeff: 50.0
+  - type: ImportanceMinimalityLoss
+    coeff: 4.0e-05
+    pnorm: 2.0
+    beta: 0.5
+    p_anneal_start_frac: 0.0
+    p_anneal_final_p: 0.3
+    p_anneal_end_frac: 1.0
+    eps: 1.0e-12
+  - type: PersistentPGDReconLoss
+    coeff: 1.0
+    optimizer:
+      type: adam
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        start_val: 0.01
+        warmup_pct: 0.025
+        final_val_frac: 1.0
+        fn_type: constant
+    scope:
+      type: per_batch_per_position
+    use_sigmoid_parameterization: false
+    n_warmup_steps: 2
+    n_samples: 1
+cadence:
+  train_log_every: 5
+  save_every: null
+eval: null
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null
+target:
+  spec:
+    kind: hf_weights_in_vendored
+    model_class: param_decomp_lab.experiments.lm.pretrain.models.gpt2_simple.GPT2Simple
+    model_name: openai-community/gpt2
+  output_extract: 0
+  activation_checkpointing: false
+data:
+  tokenizer_name: openai-community/gpt2
+  max_seq_len: 128
+  dataset_name: apollo-research/Skylion007-openwebtext-tokenizer-gpt2
+  column_name: input_ids
+  train_split: train
+  eval_split: train
+  is_tokenized: true
+  streaming: true
+  buffer_size: 1000
+  shuffle_each_epoch: true
+three_pool:
+  use_fused_kl: true
+  # RELAXATION-REQUIRING topology (CI finer than both downstream pools):
+  #   LW:   1 block x 2 ranks = ranks [0,1]  (owns all 4 sites)
+  #   CI:   ranks [2,3,4,5]  (4 ranks)
+  #   PPGD: ranks [6,7]  (2 ranks)
+  # n_ci=4 > n_per_block=2: old `n_per_block % n_ci` (2%4) FAILED -> needs relaxation.
+  # n_ci=4 > n_ppgd=2:     old `n_ppgd % n_ci`     (2%4) FAILED -> needs relaxation.
+  # Both edges run the inverted (CI-fine) routing path. batch_size=8 % lcm(4,2,2)=4.
+  ci_ranks: [2, 3, 4, 5]
+  ppgd_ranks: [6, 7]
+  layerwise_block_groups:
+  - ranks: [0, 1]
+    owned_sites:
+    - h.0.attn.q_proj
+    - h.0.attn.k_proj
+    - h.1.attn.q_proj
+    - h.1.attn.k_proj

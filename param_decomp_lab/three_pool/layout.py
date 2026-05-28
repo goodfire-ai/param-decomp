@@ -25,14 +25,19 @@ Plus three collective reductions:
 
 The defining wrinkle is **3-way batch slicing**: CI/LW/PPGD each shard
 the global batch on their own axis. The constraint (enforced in
-``ThreePoolConfig.validate_topology``) is:
+``ThreePoolConfig.validate_topology``) is that each cross-pool edge's two
+arities are cross-divisible — one divides the other:
 
-    N_ci | N_per_block_layerwise
-    N_ci | N_ppgd
+    N_ci | N_per_block_layerwise   OR   N_per_block_layerwise | N_ci
+    N_ci | N_ppgd                  OR   N_ppgd | N_ci
 
-which reduces the otherwise many-to-many CI↔LW and CI↔PPGD routing to a
-one-to-many fan-out (CI rank → K downstream ranks) plus a many-to-one
-reduction (downstream ranks → one CI rank). See "Batch-split routing" below.
+so each CI↔LW / CI↔PPGD edge is a clean one-to-K fan-out in WHICHEVER
+direction the smaller arity owns the coarser slice. When CI is coarser
+(``N_ci`` smaller) one CI rank fans a sub-slice out to K downstream ranks and
+stitches K grads back. When CI is finer (``N_ci`` larger) one downstream rank
+gathers from K CI ranks (concat) and scatters grads back to those K. The
+``BatchEdge`` geometry (see "Batch-split routing" below) answers both
+directions uniformly so the exchange methods don't branch on regime.
 """
 
 # pyright: reportIndexIssue=false, reportArgumentType=false, reportOperatorIssue=false
@@ -122,34 +127,58 @@ def flush_nccl_event_timings() -> None:
 
 
 @dataclass(frozen=True)
-class PendingCiRecv:
-    """One coalesced CI-values irecv, held until ``wait_and_unpack()``.
+class _CiRecvPacket:
+    """One incoming CI-values irecv covering ``row_slice`` of the destination.
 
-    The packed buffer carries ``sites`` worth of CI values (in order) as
-    ``b * seq_len * c_s`` ``_WIRE_DTYPE`` elements each. ``wait_and_unpack``
-    blocks on the underlying ``dist.Work`` then materializes per-site
-    ``[b, seq_len, c_s]`` views into the packed buffer (no copy).
+    The packed buffer holds, for each site in ``sites`` order, ``overlap_len *
+    seq_len * c_s`` ``_WIRE_DTYPE`` elements, where ``overlap_len`` is the length
+    of ``row_slice`` along the batch dim.
     """
 
     packed: torch.Tensor
     work: "dist.Work"
+    row_slice: slice
+
+
+@dataclass(frozen=True)
+class PendingCiRecv:
+    """One or more coalesced CI-values irecvs, held until ``wait_and_unpack()``.
+
+    Covers the full ``[b_down]`` CI tensor for this downstream rank's owned
+    sites. In the CI-coarse regime that's a single packet spanning the whole
+    tensor; in the CI-fine regime it's ``fanout`` packets, each filling a
+    disjoint ``row_slice`` from a different CI rank. ``wait_and_unpack`` blocks
+    on all works, stitches each packet's overlap rows into per-site
+    ``[b_down, seq_len, c_s]`` destinations, and returns them.
+    """
+
+    packets: tuple[_CiRecvPacket, ...]
     sites: tuple[str, ...]
     site_to_c: dict[str, int]
-    b: int
+    b_down: int
     seq_len: int
+    device: torch.device
 
     def wait_and_unpack(self) -> dict[str, torch.Tensor]:
-        self.work.wait()
-        out: dict[str, torch.Tensor] = {}
-        offset = 0
-        for s in self.sites:
-            c_s = self.site_to_c[s]
-            numel = self.b * self.seq_len * c_s
-            out[s] = self.packed[offset : offset + numel].view(self.b, self.seq_len, c_s)
-            offset += numel
-        assert offset == self.packed.numel(), (
-            f"unpack size mismatch: consumed {offset} of {self.packed.numel()}"
-        )
+        out = {
+            s: torch.empty(
+                self.b_down, self.seq_len, self.site_to_c[s], device=self.device, dtype=_WIRE_DTYPE
+            )
+            for s in self.sites
+        }
+        for packet in self.packets:
+            packet.work.wait()
+            overlap_len = packet.row_slice.stop - packet.row_slice.start
+            offset = 0
+            for s in self.sites:
+                c_s = self.site_to_c[s]
+                numel = overlap_len * self.seq_len * c_s
+                view = packet.packed[offset : offset + numel].view(overlap_len, self.seq_len, c_s)
+                out[s][packet.row_slice].copy_(view)
+                offset += numel
+            assert offset == packet.packed.numel(), (
+                f"unpack size mismatch: consumed {offset} of {packet.packed.numel()}"
+            )
         return out
 
 
@@ -265,67 +294,119 @@ class World:
     def block_leader_of_site(self, site: str) -> int:
         return self.layerwise_block_groups[self.block_idx_of_site(site)].leader
 
-    # ── Batch-split routing (the new wrinkle) ──
+    # ── Batch-split routing (the cross-pool wrinkle) ──
+    #
+    # CI/LW/PPGD each shard the global batch on their own axis. The validator
+    # constrains each cross-pool edge (CI↔LW, CI↔PPGD) so the two arities are
+    # cross-divisible: one slice nests an integer number of the other's slices.
+    # ``BatchEdge`` captures one such edge symmetrically — it answers every
+    # routing question for both the "CI coarser" and "CI finer" regimes — so the
+    # exchange methods don't branch on direction.
 
     @property
-    def k_lw_per_ci(self) -> int:
-        """How many LW batch shards (per block) fit inside one CI batch shard.
-
-        Validator guarantees N_ci | N_per_block_layerwise, so this is an integer.
-        """
-        assert self.n_per_block % self.n_ci == 0
-        return self.n_per_block // self.n_ci
+    def ci_lw_edge(self) -> "BatchEdge":
+        return BatchEdge(n_ci=self.n_ci, n_down=self.n_per_block, batch_global=self.batch_global)
 
     @property
-    def k_ppgd_per_ci(self) -> int:
-        """How many PPGD batch shards fit inside one CI batch shard.
+    def ci_ppgd_edge(self) -> "BatchEdge":
+        return BatchEdge(n_ci=self.n_ci, n_down=self.n_ppgd, batch_global=self.batch_global)
 
-        Validator guarantees N_ci | N_ppgd, so this is an integer.
+
+@dataclass(frozen=True)
+class BatchEdge:
+    """Symmetric batch-slice geometry for one cross-pool edge (CI ↔ downstream).
+
+    ``n_down`` is the downstream pool's batch arity (``n_per_block`` for LW,
+    ``n_ppgd`` for PPGD). The validator guarantees ``n_ci`` and ``n_down`` are
+    cross-divisible, so exactly one of two regimes holds:
+
+      * ``ci_is_coarse`` (``n_ci <= n_down``, ``n_ci | n_down``): each CI slice
+        contains ``fanout = n_down // n_ci`` whole downstream slices. CI fans a
+        sub-slice out to each; grads come back to be stitched. One downstream
+        rank pairs with exactly one CI rank.
+      * not ``ci_is_coarse`` (``n_ci > n_down``, ``n_down | n_ci``): each
+        downstream slice contains ``fanout = n_ci // n_down`` whole CI slices.
+        One downstream rank gathers from ``fanout`` CI ranks (concat) and
+        scatters grads back to those same ``fanout`` CI ranks. One CI rank pairs
+        with exactly one downstream rank.
+
+    All slice arithmetic is in units of the FINER pool's shard, so every overlap
+    is a whole, aligned sub-slice.
+    """
+
+    n_ci: int
+    n_down: int
+    batch_global: int
+
+    def __post_init__(self) -> None:
+        assert self.n_down % self.n_ci == 0 or self.n_ci % self.n_down == 0, (
+            f"n_ci ({self.n_ci}) and n_down ({self.n_down}) must be cross-divisible"
+        )
+        assert self.batch_global % self.n_ci == 0 and self.batch_global % self.n_down == 0
+
+    @property
+    def ci_is_coarse(self) -> bool:
+        return self.n_ci <= self.n_down
+
+    @property
+    def fanout(self) -> int:
+        """Number of finer-pool slices nested in one coarser-pool slice."""
+        return self.n_down // self.n_ci if self.ci_is_coarse else self.n_ci // self.n_down
+
+    @property
+    def b_ci(self) -> int:
+        return self.batch_global // self.n_ci
+
+    @property
+    def b_down(self) -> int:
+        return self.batch_global // self.n_down
+
+    # ── Pairing: which ranks talk to which ──
+
+    def ci_slices_for_down_slice(self, down_slice_idx: int) -> tuple[int, ...]:
+        """CI slice idxs whose batches overlap downstream slice `down_slice_idx`.
+
+        Coarse-CI regime: exactly one CI slice (the one containing it).
+        Fine-CI regime: the `fanout` CI slices nested in it.
         """
-        assert self.n_ppgd % self.n_ci == 0
-        return self.n_ppgd // self.n_ci
+        if self.ci_is_coarse:
+            return (down_slice_idx // self.fanout,)
+        return tuple(range(down_slice_idx * self.fanout, (down_slice_idx + 1) * self.fanout))
 
-    def ci_slice_of_lw_block_rank(self, block_rank_idx: int) -> int:
-        """Which CI rank's slice contains LW rank `block_rank_idx`'s batch shard."""
-        return block_rank_idx // self.k_lw_per_ci
+    def down_slices_for_ci_slice(self, ci_slice_idx: int) -> tuple[int, ...]:
+        """Downstream slice idxs whose batches overlap CI slice `ci_slice_idx`.
 
-    def ci_slice_of_ppgd_slice(self, ppgd_slice_idx: int) -> int:
-        """Which CI rank's slice contains PPGD rank `ppgd_slice_idx`'s batch shard."""
-        return ppgd_slice_idx // self.k_ppgd_per_ci
-
-    def lw_sub_slice_within_ci(self, block_rank_idx: int) -> slice:
-        """Within a CI rank's local batch tensor [B_ci, ...], the sub-slice
-        that corresponds to LW rank `block_rank_idx`.
-
-        Assumes the caller is the CI rank with
-        `ci_slice_idx == ci_slice_of_lw_block_rank(block_rank_idx)`.
+        Coarse-CI regime: the `fanout` downstream slices nested in it.
+        Fine-CI regime: exactly one downstream slice (the one containing it).
         """
-        b_lw = self.batch_local_lw
-        ci_slice_idx = self.ci_slice_of_lw_block_rank(block_rank_idx)
-        global_start = block_rank_idx * b_lw
-        ci_global_start = ci_slice_idx * self.batch_local_ci
-        local_start = global_start - ci_global_start
-        return slice(local_start, local_start + b_lw)
+        if self.ci_is_coarse:
+            return tuple(range(ci_slice_idx * self.fanout, (ci_slice_idx + 1) * self.fanout))
+        return (ci_slice_idx // self.fanout,)
 
-    def ppgd_sub_slice_within_ci(self, ppgd_slice_idx: int) -> slice:
-        """Within a CI rank's local batch tensor [B_ci, ...], the sub-slice
-        that corresponds to PPGD rank `ppgd_slice_idx`."""
-        b_pp = self.batch_local_ppgd
-        ci_slice_idx = self.ci_slice_of_ppgd_slice(ppgd_slice_idx)
-        global_start = ppgd_slice_idx * b_pp
-        ci_global_start = ci_slice_idx * self.batch_local_ci
-        local_start = global_start - ci_global_start
-        return slice(local_start, local_start + b_pp)
+    # ── Sub-slices: the overlap, expressed in each rank's local batch tensor ──
 
-    def lw_block_ranks_for_ci_slice(self, ci_slice_idx: int) -> tuple[int, ...]:
-        """LW block_rank_idxs whose batch shards sit inside CI rank `ci_slice_idx`'s slice."""
-        k = self.k_lw_per_ci
-        return tuple(range(ci_slice_idx * k, (ci_slice_idx + 1) * k))
+    def overlap_within_ci(self, ci_slice_idx: int, down_slice_idx: int) -> slice:
+        """The CI↔downstream overlap as a sub-slice of CI rank `ci_slice_idx`'s
+        local ``[B_ci, ...]`` tensor.
 
-    def ppgd_slice_idxs_for_ci_slice(self, ci_slice_idx: int) -> tuple[int, ...]:
-        """PPGD slice idxs whose batch shards sit inside CI rank `ci_slice_idx`'s slice."""
-        k = self.k_ppgd_per_ci
-        return tuple(range(ci_slice_idx * k, (ci_slice_idx + 1) * k))
+        The overlap spans the FINER pool's shard (``min(b_ci, b_down)`` rows).
+        """
+        return self._overlap(ci_slice_idx, down_slice_idx, base_is_ci=True)
+
+    def overlap_within_down(self, ci_slice_idx: int, down_slice_idx: int) -> slice:
+        """The CI↔downstream overlap as a sub-slice of downstream rank
+        `down_slice_idx`'s local ``[B_down, ...]`` tensor."""
+        return self._overlap(ci_slice_idx, down_slice_idx, base_is_ci=False)
+
+    def _overlap(self, ci_slice_idx: int, down_slice_idx: int, *, base_is_ci: bool) -> slice:
+        ci_global_start = ci_slice_idx * self.b_ci
+        down_global_start = down_slice_idx * self.b_down
+        overlap_global_start = max(ci_global_start, down_global_start)
+        overlap_len = min(self.b_ci, self.b_down)
+        base_start = ci_global_start if base_is_ci else down_global_start
+        local_start = overlap_global_start - base_start
+        assert local_start >= 0, f"non-overlapping slices: ci={ci_slice_idx} down={down_slice_idx}"
+        return slice(local_start, local_start + overlap_len)
 
 
 def build_world(
@@ -535,27 +616,30 @@ class ThreePoolLayout:
     def async_send_ci_to_layerwise(
         self, ci_full: dict[str, Tensor]
     ) -> tuple[list["dist.Work"], list[Tensor]]:
-        """CI → LW: for each site and each LW rank whose batch shard sits in
-        my CI slice, isend the corresponding sub-slice.
+        """CI → LW: for each LW rank whose batch shard overlaps my CI slice,
+        isend the overlapping sub-slice of each of that LW rank's owned sites.
 
         ``ci_full`` is keyed by site (CI fn produced CI for ALL sites since the
-        CI fn is global). Values have shape ``[B_local_ci, S, C_s]``.
+        CI fn is global). Values have shape ``[B_local_ci, S, C_s]``. Each send
+        carries ``overlap_len = min(b_ci, b_lw)`` rows — the whole overlap of
+        this CI rank with the target LW rank, in either fan direction.
         Returned buffers must be kept alive until ``work.wait()`` completes.
         """
         assert self.my_pool == "ci" and self.my_ci_slice_idx is not None
+        edge = self.world.ci_lw_edge
+        my_down_slices = edge.down_slices_for_ci_slice(self.my_ci_slice_idx)
         works: list[dist.Work] = []
         buffers: list[Tensor] = []
-        my_lw_block_ranks = self.world.lw_block_ranks_for_ci_slice(self.my_ci_slice_idx)
 
         with _time_nccl_op("async_send_ci_to_layerwise"):
             for bg in self.world.layerwise_block_groups:
-                for block_rank_idx in my_lw_block_ranks:
+                for block_rank_idx in my_down_slices:
                     target_lw_rank = bg.ranks[block_rank_idx]
-                    sub = self.world.lw_sub_slice_within_ci(block_rank_idx)
+                    sub = edge.overlap_within_ci(self.my_ci_slice_idx, block_rank_idx)
                     # Coalesce all of this block's owned-sites into one packed
                     # send per (block, block_rank). Layout (must match recv):
-                    # for each site in bg.owned_sites order, b_lw * seq_len * C_s
-                    # contiguous _WIRE_DTYPE elements.
+                    # for each site in bg.owned_sites order, overlap_len * seq_len
+                    # * C_s contiguous _WIRE_DTYPE elements.
                     parts = [
                         ci_full[site][sub].detach().to(_WIRE_DTYPE).contiguous().flatten()
                         for site in bg.owned_sites
@@ -572,20 +656,21 @@ class ThreePoolLayout:
     def async_send_ci_to_ppgd(
         self, ci_full: dict[str, Tensor]
     ) -> tuple[list["dist.Work"], list[Tensor]]:
-        """CI → PPGD: for each PPGD rank whose batch shard sits in my CI slice,
-        isend the full-model CI sub-slice (all sites)."""
+        """CI → PPGD: for each PPGD rank whose batch shard overlaps my CI slice,
+        isend the full-model CI overlap sub-slice (all sites)."""
         assert self.my_pool == "ci" and self.my_ci_slice_idx is not None
+        edge = self.world.ci_ppgd_edge
+        my_down_slices = edge.down_slices_for_ci_slice(self.my_ci_slice_idx)
         works: list[dist.Work] = []
         buffers: list[Tensor] = []
-        my_ppgd_slice_idxs = self.world.ppgd_slice_idxs_for_ci_slice(self.my_ci_slice_idx)
 
         with _time_nccl_op("async_send_ci_to_ppgd"):
-            for ppgd_slice_idx in my_ppgd_slice_idxs:
+            for ppgd_slice_idx in my_down_slices:
                 target_ppgd_rank = self.world.ppgd_ranks[ppgd_slice_idx]
-                sub = self.world.ppgd_sub_slice_within_ci(ppgd_slice_idx)
-                # Coalesce all 96 sites into one packed send per PPGD target.
+                sub = edge.overlap_within_ci(self.my_ci_slice_idx, ppgd_slice_idx)
+                # Coalesce all sites into one packed send per PPGD target.
                 # Layout (must match recv): for each site in self.world.all_sites
-                # order, b_pp * seq_len * C_s contiguous _WIRE_DTYPE elements.
+                # order, overlap_len * seq_len * C_s contiguous _WIRE_DTYPE elements.
                 parts = [
                     ci_full[site][sub].detach().to(_WIRE_DTYPE).contiguous().flatten()
                     for site in self.world.all_sites
@@ -608,16 +693,17 @@ class ThreePoolLayout:
 
         Pack layout per send (must match ``recv_ci_eval_from_ci_pool``): three
         contiguous blocks in order (lower_leaky, upper_leaky, pre_sigmoid). Each
-        block has, for each site in ``self.world.all_sites`` order, ``b_pp *
-        seq_len * C_s`` contiguous ``_WIRE_DTYPE`` elements.
+        block has, for each site in ``self.world.all_sites`` order,
+        ``overlap_len * seq_len * C_s`` contiguous ``_WIRE_DTYPE`` elements.
         """
         assert self.my_pool == "ci" and self.my_ci_slice_idx is not None
-        my_ppgd_slice_idxs = self.world.ppgd_slice_idxs_for_ci_slice(self.my_ci_slice_idx)
+        edge = self.world.ci_ppgd_edge
+        my_down_slices = edge.down_slices_for_ci_slice(self.my_ci_slice_idx)
 
         with _time_nccl_op("send_ci_eval_to_ppgd"):
-            for ppgd_slice_idx in my_ppgd_slice_idxs:
+            for ppgd_slice_idx in my_down_slices:
                 target = self.world.ppgd_ranks[ppgd_slice_idx]
-                sub = self.world.ppgd_sub_slice_within_ci(ppgd_slice_idx)
+                sub = edge.overlap_within_ci(self.my_ci_slice_idx, ppgd_slice_idx)
                 parts: list[Tensor] = []
                 for d in (ci.lower_leaky, ci.upper_leaky, ci.pre_sigmoid):
                     parts.extend(
@@ -633,31 +719,38 @@ class ThreePoolLayout:
         seq_len: int,
         device: torch.device,
     ) -> dict[str, Tensor]:
-        """CI ← LW: recv per-site CI grads, coalesced per (LW block leader, LW
-        block rank index) channel.
+        """CI ← LW: recv per-site CI grads, coalesced per overlapping LW rank.
 
         Each LW rank coalesces its owned sites into one packed buffer (see
-        ``send_g_ci_to_ci_pool``); we receive one packed buf per source. Pack
-        layout (must match sender): for each site in the LW block's owned
-        sites, ``b_lw * seq_len * c_s`` contiguous ``_WIRE_DTYPE`` elements.
+        ``send_g_ci_to_ci_pool``); we receive one packed buf per overlapping LW
+        rank. Each carries ``overlap_len = min(b_ci, b_lw)`` rows — the overlap
+        of this CI slice with that LW rank. Pack layout (must match sender): for
+        each site in the LW block's owned sites, ``overlap_len * seq_len * c_s``
+        contiguous ``_WIRE_DTYPE`` elements.
+
+        When CI is finer than LW (one LW rank spans several CI slices), each LW
+        rank still sends this CI rank exactly its own overlap; the recv fills
+        the whole ``[b_ci]`` dest. When CI is coarser, several LW ranks each fill
+        a disjoint sub-slice of the dest.
         """
         assert self.my_pool == "ci" and self.my_ci_slice_idx is not None
-        my_lw_block_ranks = self.world.lw_block_ranks_for_ci_slice(self.my_ci_slice_idx)
-        b_lw = self.world.batch_local_lw
+        edge = self.world.ci_lw_edge
+        my_down_slices = edge.down_slices_for_ci_slice(self.my_ci_slice_idx)
+        overlap_len = min(edge.b_ci, edge.b_down)
 
         # Post all irecvs upfront so they pipeline on the NIC.
         # Per source: one packed buf containing all of that source's owned sites.
-        pending: list[tuple[int, int, Tensor, dist.Work, tuple[str, ...]]] = []
+        pending: list[tuple[int, Tensor, dist.Work, tuple[str, ...]]] = []
         with _time_nccl_op("recv_g_ci_from_layerwise:post_irecvs"):
-            for bg_idx, bg in enumerate(self.world.layerwise_block_groups):
+            for bg in self.world.layerwise_block_groups:
                 owned = bg.owned_sites
-                packed_numel = sum(b_lw * seq_len * site_to_c[s] for s in owned)
-                for block_rank_idx in my_lw_block_ranks:
+                packed_numel = sum(overlap_len * seq_len * site_to_c[s] for s in owned)
+                for block_rank_idx in my_down_slices:
                     src = bg.ranks[block_rank_idx]
                     buf = torch.empty(packed_numel, device=device, dtype=_WIRE_DTYPE)
                     w = dist.irecv(buf, src=src, group=self.world.cross_pool_p2p_group)
                     assert w is not None
-                    pending.append((bg_idx, block_rank_idx, buf, w, owned))
+                    pending.append((block_rank_idx, buf, w, owned))
 
         # Wait + stitch. Allocate one fp32 dest per site, copy each piece in place.
         out: dict[str, Tensor] = {}
@@ -666,14 +759,14 @@ class ThreePoolLayout:
             c_s = site_to_c[site]
             out[site] = torch.empty(b_ci, seq_len, c_s, device=device, dtype=torch.float32)
         with _time_nccl_op("recv_g_ci_from_layerwise:wait"):
-            for _bg_idx, block_rank_idx, buf, w, owned in pending:
+            for block_rank_idx, buf, w, owned in pending:
                 w.wait()
-                sub = self.world.lw_sub_slice_within_ci(block_rank_idx)
+                sub = edge.overlap_within_ci(self.my_ci_slice_idx, block_rank_idx)
                 offset = 0
                 for site in owned:
                     c_s = site_to_c[site]
-                    n = b_lw * seq_len * c_s
-                    site_view = buf[offset : offset + n].view(b_lw, seq_len, c_s)
+                    n = overlap_len * seq_len * c_s
+                    site_view = buf[offset : offset + n].view(overlap_len, seq_len, c_s)
                     out[site][sub].copy_(site_view.to(torch.float32))
                     offset += n
         return out
@@ -686,26 +779,27 @@ class ThreePoolLayout:
     ) -> dict[str, Tensor]:
         """CI ← PPGD: recv full-model CI grads, coalesced.
 
-        One packed irecv per PPGD source (instead of one per (site, source)),
-        matching the coalesced ``send_g_ci_to_ci_pool_ppgd``. With 96 sites
-        and N_PPGD/N_CI=3 sources per CI rank, that's 3 irecvs instead of
-        288 — order-of-magnitude NCCL-launch latency cut.
+        One packed irecv per overlapping PPGD source (instead of one per (site,
+        source)), matching the coalesced ``send_g_ci_to_ci_pool_ppgd``. Each
+        carries ``overlap_len = min(b_ci, b_pp)`` rows — the overlap of this CI
+        slice with that PPGD rank.
 
         Pack layout (must match the sender exactly): for each site in
-        ``self.world.all_sites`` order, ``b_pp * seq_len * c_s`` contiguous
-        ``_WIRE_DTYPE`` elements.
+        ``self.world.all_sites`` order, ``overlap_len * seq_len * c_s``
+        contiguous ``_WIRE_DTYPE`` elements.
         """
         assert self.my_pool == "ci" and self.my_ci_slice_idx is not None
-        my_ppgd_slice_idxs = self.world.ppgd_slice_idxs_for_ci_slice(self.my_ci_slice_idx)
-        b_pp = self.world.batch_local_ppgd
+        edge = self.world.ci_ppgd_edge
+        my_down_slices = edge.down_slices_for_ci_slice(self.my_ci_slice_idx)
+        overlap_len = min(edge.b_ci, edge.b_down)
 
         # Same total numel for every PPGD source (every source sends all sites).
-        site_numels = {s: b_pp * seq_len * site_to_c[s] for s in self.world.all_sites}
+        site_numels = {s: overlap_len * seq_len * site_to_c[s] for s in self.world.all_sites}
         packed_numel = sum(site_numels.values())
 
         pending: list[tuple[int, Tensor, dist.Work]] = []
         with _time_nccl_op("recv_g_ci_from_ppgd:post_irecvs"):
-            for ppgd_slice_idx in my_ppgd_slice_idxs:
+            for ppgd_slice_idx in my_down_slices:
                 src = self.world.ppgd_ranks[ppgd_slice_idx]
                 packed = torch.empty(packed_numel, device=device, dtype=_WIRE_DTYPE)
                 w = dist.irecv(packed, src=src, group=self.world.cross_pool_p2p_group)
@@ -720,12 +814,12 @@ class ThreePoolLayout:
         with _time_nccl_op("recv_g_ci_from_ppgd:wait"):
             for ppgd_slice_idx, packed, w in pending:
                 w.wait()
-                sub = self.world.ppgd_sub_slice_within_ci(ppgd_slice_idx)
+                sub = edge.overlap_within_ci(self.my_ci_slice_idx, ppgd_slice_idx)
                 offset = 0
                 for site in self.world.all_sites:
                     c_s = site_to_c[site]
                     n = site_numels[site]
-                    buf = packed[offset : offset + n].view(b_pp, seq_len, c_s)
+                    buf = packed[offset : offset + n].view(overlap_len, seq_len, c_s)
                     out[site][sub].copy_(buf.to(torch.float32))
                     offset += n
         return out
@@ -764,53 +858,66 @@ class ThreePoolLayout:
         seq_len: int,
         device: torch.device,
     ) -> PendingCiRecv:
-        """LW ← CI: irecv one coalesced packet of CI values for all of this
-        LW rank's owned sites, from the CI rank whose slice contains my LW
-        batch shard.
+        """LW ← CI: irecv CI values for all of this LW rank's owned sites, from
+        every CI rank whose slice overlaps my LW batch shard.
 
-        Layout (must match ``async_send_ci_to_layerwise``): for each site in
-        ``self.my_owned_sites`` order, ``b_lw * seq_len * C_s`` contiguous
-        ``_WIRE_DTYPE`` elements. Caller calls ``wait_and_unpack()`` to get
-        per-site ``[b_lw, seq_len, C_s]`` views (no copy).
+        Coarse-CI: one packet from one CI rank, spanning my whole ``[b_lw]``
+        slice. Fine-CI: ``fanout`` packets, each from a different CI rank filling
+        a disjoint sub-slice. Layout per packet (must match
+        ``async_send_ci_to_layerwise``): for each site in ``self.my_owned_sites``
+        order, ``overlap_len * seq_len * C_s`` contiguous ``_WIRE_DTYPE``
+        elements. Caller calls ``wait_and_unpack()`` to get per-site
+        ``[b_lw, seq_len, C_s]`` tensors.
         """
         assert self.my_pool == "layerwise" and self.my_within_block_idx is not None
-        src_ci_slice = self.world.ci_slice_of_lw_block_rank(self.my_within_block_idx)
-        src = self.world.ci_ranks[src_ci_slice]
+        edge = self.world.ci_lw_edge
+        my_idx = self.my_within_block_idx
         b_lw = self.world.batch_local_lw
 
-        packed_numel = sum(b_lw * seq_len * site_to_c[s] for s in self.my_owned_sites)
-        packed = torch.empty(packed_numel, device=device, dtype=_WIRE_DTYPE)
+        packets: list[_CiRecvPacket] = []
         with _time_nccl_op("async_recv_ci_from_ci_pool"):
-            work = dist.irecv(packed, src=src, group=self.world.cross_pool_p2p_group)
-            assert work is not None
+            for ci_slice_idx in edge.ci_slices_for_down_slice(my_idx):
+                src = self.world.ci_ranks[ci_slice_idx]
+                row_slice = edge.overlap_within_down(ci_slice_idx, my_idx)
+                overlap_len = row_slice.stop - row_slice.start
+                packed_numel = sum(
+                    overlap_len * seq_len * site_to_c[s] for s in self.my_owned_sites
+                )
+                packed = torch.empty(packed_numel, device=device, dtype=_WIRE_DTYPE)
+                work = dist.irecv(packed, src=src, group=self.world.cross_pool_p2p_group)
+                assert work is not None
+                packets.append(_CiRecvPacket(packed=packed, work=work, row_slice=row_slice))
         return PendingCiRecv(
-            packed=packed,
-            work=work,
+            packets=tuple(packets),
             sites=self.my_owned_sites,
             site_to_c=site_to_c,
-            b=b_lw,
+            b_down=b_lw,
             seq_len=seq_len,
+            device=device,
         )
 
     def send_g_ci_to_ci_pool(self, g_ci_owned: dict[str, Tensor]) -> None:
-        """LW → CI: send per-owned-site CI grads (full LW batch slice) to the
-        CI rank that owns my slice.
+        """LW → CI: send per-owned-site CI grads to every CI rank whose slice
+        overlaps my LW batch shard.
 
-        Coalesces this rank's owned sites into one packed send (vs one isend
-        per site). Smaller win than the PPGD-side coalescing (each LW rank
-        only owns ~4 sites vs PPGD's 96) but consistent + cuts CI's recv
-        count from ~96 to ~24 (one per LW block, not per (site, block)).
+        Coarse-CI: one packed send (my whole ``[b_lw]`` grad) to one CI rank.
+        Fine-CI: one packed send per overlapping CI rank, each carrying that CI
+        rank's overlap sub-slice. Coalesces this rank's owned sites into one
+        packed send per destination (vs one isend per site).
         """
         assert self.my_pool == "layerwise" and self.my_within_block_idx is not None
-        dst_ci_slice = self.world.ci_slice_of_lw_block_rank(self.my_within_block_idx)
-        dst = self.world.ci_ranks[dst_ci_slice]
-        parts = [
-            g_ci_owned[s].detach().to(_WIRE_DTYPE).contiguous().flatten()
-            for s in self.my_owned_sites
-        ]
-        packed = torch.cat(parts)
+        edge = self.world.ci_lw_edge
+        my_idx = self.my_within_block_idx
         with _time_nccl_op("send_g_ci_to_ci_pool"):
-            dist.send(packed, dst=dst, group=self.world.cross_pool_p2p_group)
+            for ci_slice_idx in edge.ci_slices_for_down_slice(my_idx):
+                dst = self.world.ci_ranks[ci_slice_idx]
+                sub = edge.overlap_within_down(ci_slice_idx, my_idx)
+                parts = [
+                    g_ci_owned[s][sub].detach().to(_WIRE_DTYPE).contiguous().flatten()
+                    for s in self.my_owned_sites
+                ]
+                packed = torch.cat(parts)
+                dist.send(packed, dst=dst, group=self.world.cross_pool_p2p_group)
 
     def recv_g_vu_from_ppgd(
         self,
@@ -929,31 +1036,42 @@ class ThreePoolLayout:
         seq_len: int,
         device: torch.device,
     ) -> PendingCiRecv:
-        """PPGD ← CI: irecv one coalesced packet of full-model CI values from
-        the CI rank that owns my slice.
+        """PPGD ← CI: irecv full-model CI values from every CI rank whose slice
+        overlaps my PPGD batch shard.
 
-        Layout (must match ``async_send_ci_to_ppgd``): for each site in
-        ``self.world.all_sites`` order, ``b_pp * seq_len * C_s`` contiguous
-        ``_WIRE_DTYPE`` elements. Caller calls ``wait_and_unpack()`` to get
-        per-site ``[b_pp, seq_len, C_s]`` views (no copy).
+        Coarse-CI: one packet from one CI rank, spanning my whole ``[b_pp]``
+        slice. Fine-CI: ``fanout`` packets, each from a different CI rank filling
+        a disjoint sub-slice. Layout per packet (must match
+        ``async_send_ci_to_ppgd``): for each site in ``self.world.all_sites``
+        order, ``overlap_len * seq_len * C_s`` contiguous ``_WIRE_DTYPE``
+        elements. Caller calls ``wait_and_unpack()`` to get per-site
+        ``[b_pp, seq_len, C_s]`` tensors.
         """
         assert self.my_pool == "ppgd" and self.my_ppgd_slice_idx is not None
-        src_ci_slice = self.world.ci_slice_of_ppgd_slice(self.my_ppgd_slice_idx)
-        src = self.world.ci_ranks[src_ci_slice]
+        edge = self.world.ci_ppgd_edge
+        my_idx = self.my_ppgd_slice_idx
         b_pp = self.world.batch_local_ppgd
 
-        packed_numel = sum(b_pp * seq_len * site_to_c[s] for s in self.world.all_sites)
-        packed = torch.empty(packed_numel, device=device, dtype=_WIRE_DTYPE)
+        packets: list[_CiRecvPacket] = []
         with _time_nccl_op("async_recv_ci_from_ci_pool_ppgd"):
-            work = dist.irecv(packed, src=src, group=self.world.cross_pool_p2p_group)
-            assert work is not None
+            for ci_slice_idx in edge.ci_slices_for_down_slice(my_idx):
+                src = self.world.ci_ranks[ci_slice_idx]
+                row_slice = edge.overlap_within_down(ci_slice_idx, my_idx)
+                overlap_len = row_slice.stop - row_slice.start
+                packed_numel = sum(
+                    overlap_len * seq_len * site_to_c[s] for s in self.world.all_sites
+                )
+                packed = torch.empty(packed_numel, device=device, dtype=_WIRE_DTYPE)
+                work = dist.irecv(packed, src=src, group=self.world.cross_pool_p2p_group)
+                assert work is not None
+                packets.append(_CiRecvPacket(packed=packed, work=work, row_slice=row_slice))
         return PendingCiRecv(
-            packed=packed,
-            work=work,
+            packets=tuple(packets),
             sites=self.world.all_sites,
             site_to_c=site_to_c,
-            b=b_pp,
+            b_down=b_pp,
             seq_len=seq_len,
+            device=device,
         )
 
     def recv_ci_eval_from_ci_pool(
@@ -962,56 +1080,72 @@ class ThreePoolLayout:
         seq_len: int,
         device: torch.device,
     ) -> CIOutputs:
-        """PPGD ← CI eval: synchronous recv of full ``CIOutputs`` from the CI
-        rank that owns my slice.
+        """PPGD ← CI eval: synchronous recv of full ``CIOutputs`` from every CI
+        rank whose slice overlaps my PPGD batch shard.
 
-        Pack layout (must match ``send_ci_eval_to_ppgd``): three contiguous
-        blocks in order (lower_leaky, upper_leaky, pre_sigmoid). Each block has,
-        for each site in ``self.world.all_sites`` order, ``b_pp * seq_len *
-        C_s`` contiguous ``_WIRE_DTYPE`` elements. Returned dicts are no-copy
-        views into the packed buffer.
+        Coarse-CI: one recv from one CI rank, spanning my whole ``[b_pp]`` slice.
+        Fine-CI: one recv per overlapping CI rank, each filling a disjoint
+        sub-slice. Pack layout per recv (must match ``send_ci_eval_to_ppgd``):
+        three contiguous blocks in order (lower_leaky, upper_leaky, pre_sigmoid).
+        Each block has, for each site in ``self.world.all_sites`` order,
+        ``overlap_len * seq_len * C_s`` contiguous ``_WIRE_DTYPE`` elements.
         """
         assert self.my_pool == "ppgd" and self.my_ppgd_slice_idx is not None
-        src_ci_slice = self.world.ci_slice_of_ppgd_slice(self.my_ppgd_slice_idx)
-        src = self.world.ci_ranks[src_ci_slice]
+        edge = self.world.ci_ppgd_edge
+        my_idx = self.my_ppgd_slice_idx
         b_pp = self.world.batch_local_ppgd
 
-        per_block_numel = sum(b_pp * seq_len * site_to_c[s] for s in self.world.all_sites)
-        packed = torch.empty(3 * per_block_numel, device=device, dtype=_WIRE_DTYPE)
+        out: list[dict[str, Tensor]] = [
+            {
+                s: torch.empty(b_pp, seq_len, site_to_c[s], device=device, dtype=_WIRE_DTYPE)
+                for s in self.world.all_sites
+            }
+            for _ in range(3)
+        ]
         with _time_nccl_op("recv_ci_eval_from_ci_pool"):
-            dist.recv(packed, src=src, group=self.world.cross_pool_p2p_group)
-
-        out: list[dict[str, Tensor]] = [{}, {}, {}]
-        offset = 0
-        for block_idx in range(3):
-            for site in self.world.all_sites:
-                c_s = site_to_c[site]
-                numel = b_pp * seq_len * c_s
-                out[block_idx][site] = packed[offset : offset + numel].view(b_pp, seq_len, c_s)
-                offset += numel
-        assert offset == packed.numel(), f"unpack mismatch: {offset} of {packed.numel()}"
+            for ci_slice_idx in edge.ci_slices_for_down_slice(my_idx):
+                src = self.world.ci_ranks[ci_slice_idx]
+                row_slice = edge.overlap_within_down(ci_slice_idx, my_idx)
+                overlap_len = row_slice.stop - row_slice.start
+                per_block_numel = sum(
+                    overlap_len * seq_len * site_to_c[s] for s in self.world.all_sites
+                )
+                packed = torch.empty(3 * per_block_numel, device=device, dtype=_WIRE_DTYPE)
+                dist.recv(packed, src=src, group=self.world.cross_pool_p2p_group)
+                offset = 0
+                for block_idx in range(3):
+                    for site in self.world.all_sites:
+                        c_s = site_to_c[site]
+                        numel = overlap_len * seq_len * c_s
+                        view = packed[offset : offset + numel].view(overlap_len, seq_len, c_s)
+                        out[block_idx][site][row_slice].copy_(view)
+                        offset += numel
+                assert offset == packed.numel(), f"unpack mismatch: {offset} of {packed.numel()}"
         return CIOutputs(lower_leaky=out[0], upper_leaky=out[1], pre_sigmoid=out[2])
 
     def send_g_ci_to_ci_pool_ppgd(self, g_ci_full: dict[str, Tensor]) -> None:
-        """PPGD → CI: send full-model CI grads (PPGD batch slice) to the CI
-        rank that owns my slice.
+        """PPGD → CI: send full-model CI grads to every CI rank whose slice
+        overlaps my PPGD batch shard.
 
-        Coalesces all 96-ish sites into a single packed buffer per
-        send. Per-site isends launch ~10ms of NCCL overhead each, so at
-        scale (96 sites × N_PPGD ranks) this phase was ~1 s of pure NCCL
-        launch latency on every step. Single packed send replaces that with
-        one NCCL op (NCCL handles big tensors efficiently).
+        Coarse-CI: one packed send (my whole ``[b_pp]`` grad) to one CI rank.
+        Fine-CI: one packed send per overlapping CI rank, each carrying that CI
+        rank's overlap sub-slice. Coalesces all sites into a single packed buffer
+        per destination — per-site isends launch ~10ms of NCCL overhead each, so
+        at scale this would be ~1 s of pure launch latency every step.
         """
         assert self.my_pool == "ppgd" and self.my_ppgd_slice_idx is not None
-        dst_ci_slice = self.world.ci_slice_of_ppgd_slice(self.my_ppgd_slice_idx)
-        dst = self.world.ci_ranks[dst_ci_slice]
-        parts = [
-            g_ci_full[s].detach().to(_WIRE_DTYPE).contiguous().flatten()
-            for s in self.world.all_sites
-        ]
-        packed = torch.cat(parts)
+        edge = self.world.ci_ppgd_edge
+        my_idx = self.my_ppgd_slice_idx
         with _time_nccl_op("send_g_ci_to_ci_pool_ppgd"):
-            dist.send(packed, dst=dst, group=self.world.cross_pool_p2p_group)
+            for ci_slice_idx in edge.ci_slices_for_down_slice(my_idx):
+                dst = self.world.ci_ranks[ci_slice_idx]
+                sub = edge.overlap_within_down(ci_slice_idx, my_idx)
+                parts = [
+                    g_ci_full[s][sub].detach().to(_WIRE_DTYPE).contiguous().flatten()
+                    for s in self.world.all_sites
+                ]
+                packed = torch.cat(parts)
+                dist.send(packed, dst=dst, group=self.world.cross_pool_p2p_group)
 
     def send_g_vu_to_layerwise(
         self,
