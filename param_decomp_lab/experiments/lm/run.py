@@ -16,12 +16,13 @@ import importlib
 import os
 import shlex
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import fire
 import torch.nn as nn
-from pydantic import Discriminator
+from pydantic import BaseModel, Discriminator
 from torch.utils.data import DataLoader
 
 from param_decomp.base_config import BaseConfig
@@ -30,9 +31,12 @@ from param_decomp.component_model import ComponentModel
 from param_decomp.distributed import DistributedState, is_main_process
 from param_decomp.log import logger
 from param_decomp.optimize import EvalLoop, Trainer
+from param_decomp_lab.autointerp.repo import InterpRepo
+from param_decomp_lab.autointerp.schemas import get_autointerp_dir
 from param_decomp_lab.batch_and_loss_fns import make_run_batch as _make_run_batch
 from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
 from param_decomp_lab.component_model_io import load_component_model
+from param_decomp_lab.dataset_attributions.repo import AttributionRepo, get_attributions_dir
 from param_decomp_lab.distributed import (
     ensure_cached_and_call,
     get_device,
@@ -51,6 +55,10 @@ from param_decomp_lab.experiments.utils import (
     ExperimentConfig,
     init_pd_run,
 )
+from param_decomp_lab.graph_interp.repo import GraphInterpRepo
+from param_decomp_lab.graph_interp.schemas import get_graph_interp_dir
+from param_decomp_lab.harvest.repo import HarvestRepo
+from param_decomp_lab.harvest.schemas import get_harvest_dir
 from param_decomp_lab.infra.ddp_launch import build_ddp_launch
 from param_decomp_lab.infra.git import create_git_snapshot
 from param_decomp_lab.infra.paths import ModelPath
@@ -169,22 +177,60 @@ def make_run_batch(target_cfg: LMTargetConfig) -> RunBatch:
     return _make_run_batch(target_cfg.output_extract)
 
 
-@dataclass(frozen=True)
+class DataAvailability(BaseModel):
+    """Which post-pipeline stages have data on disk for a given run."""
+
+    harvest: bool
+    autointerp: bool
+    attributions: bool
+    graph_interp: bool
+
+    @classmethod
+    def for_run_id(cls, run_id: str) -> "DataAvailability":
+        """Lightweight glob-based check — does the stage's output dir hold any data?"""
+        return cls(
+            harvest=_has_glob_match(get_harvest_dir(run_id), "h-*/harvest.db"),
+            autointerp=_has_glob_match(get_autointerp_dir(run_id), "a-*/.done"),
+            attributions=_has_glob_match(
+                get_attributions_dir(run_id), "da-*/dataset_attributions.pt"
+            ),
+            graph_interp=_has_glob_match(get_graph_interp_dir(run_id), "*/interp.db"),
+        )
+
+
+def _has_glob_match(pattern_dir: Path, glob_pattern: str) -> bool:
+    if not pattern_dir.exists():
+        return False
+    return next(pattern_dir.glob(glob_pattern), None) is not None
+
+
+@dataclass
 class SavedLMRun:
-    """Handle to a completed LM PD run on disk or in W&B."""
+    """Handle to a completed LM PD run: config + checkpoint + post-pipeline sub-repos.
+
+    Sub-repos (`harvest`, `interp`, `attributions`, `graph_interp`) are read-only and
+    lazily opened on first access. Writers (e.g. intruder scoring) construct their
+    own repo instance with a specific subrun_id.
+    """
 
     cfg: LMExperimentConfig
     checkpoint_path: Path
+    run_id: str
 
     @classmethod
     def from_path(cls, path: ModelPath) -> "SavedLMRun":
-        """Resolve a run directory or W&B path into a fully-validated `SavedLMRun`."""
+        """Resolve a run directory or W&B path into a fully-validated `SavedLMRun`.
+
+        `run_id` is the parent directory name of the resolved checkpoint, matching the
+        canonical `runs/<run_id>/model_<step>.pth` layout.
+        """
         files = resolve_run_files(
             path, config_filename=EXPERIMENT_CONFIG_FILENAME, checkpoint_prefix="model"
         )
         return cls(
             cfg=LMExperimentConfig.from_file(files.config_path),
             checkpoint_path=files.checkpoint_path,
+            run_id=files.checkpoint_path.parent.name,
         )
 
     def load_model(self) -> ComponentModel:
@@ -194,6 +240,26 @@ class SavedLMRun:
             target_model=build_target(self.cfg.target),
             run_batch=make_run_batch(self.cfg.target),
         )
+
+    @cached_property
+    def harvest(self) -> HarvestRepo | None:
+        return HarvestRepo.open_most_recent(self.run_id)
+
+    @cached_property
+    def interp(self) -> InterpRepo | None:
+        return InterpRepo.open(self.run_id)
+
+    @cached_property
+    def attributions(self) -> AttributionRepo | None:
+        return AttributionRepo.open(self.run_id)
+
+    @cached_property
+    def graph_interp(self) -> GraphInterpRepo | None:
+        return GraphInterpRepo.open(self.run_id)
+
+    @property
+    def availability(self) -> DataAvailability:
+        return DataAvailability.for_run_id(self.run_id)
 
 
 @with_distributed_cleanup

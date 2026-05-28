@@ -5,7 +5,6 @@ The canonical run list lives in the frontend; the backend just hydrates it.
 """
 
 import asyncio
-from pathlib import Path
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -13,46 +12,21 @@ from pydantic import BaseModel
 from param_decomp.log import logger
 from param_decomp_lab.app.backend.routers.pretrain_info import _get_pretrain_info
 from param_decomp_lab.app.backend.utils import log_errors
-from param_decomp_lab.autointerp.schemas import get_autointerp_dir
-from param_decomp_lab.dataset_attributions.repo import get_attributions_dir
-from param_decomp_lab.experiments.lm.run import LMExperimentConfig
+from param_decomp_lab.experiments.lm.run import (
+    DataAvailability,
+    LMExperimentConfig,
+)
 from param_decomp_lab.experiments.utils import EXPERIMENT_CONFIG_FILENAME
-from param_decomp_lab.graph_interp.schemas import get_graph_interp_dir
-from param_decomp_lab.harvest.schemas import get_harvest_dir
 from param_decomp_lab.infra.run_files import resolve_config_path
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
 
 router = APIRouter(prefix="/api/run_registry", tags=["run_registry"])
 
 
-class DataAvailability(BaseModel):
-    harvest: bool
-    autointerp: bool
-    attributions: bool
-    graph_interp: bool
-
-
 class RunInfoResponse(BaseModel):
     wandb_run_id: str
     architecture: str | None
     availability: DataAvailability
-
-
-def _has_glob_match(pattern_dir: Path, glob_pattern: str) -> bool:
-    """Check if any file matches a glob pattern under a directory."""
-    if not pattern_dir.exists():
-        return False
-    return next(pattern_dir.glob(glob_pattern), None) is not None
-
-
-def _check_availability(run_id: str) -> DataAvailability:
-    """Lightweight filesystem checks for post-processing data availability."""
-    return DataAvailability(
-        harvest=_has_glob_match(get_harvest_dir(run_id), "h-*/harvest.db"),
-        autointerp=_has_glob_match(get_autointerp_dir(run_id), "a-*/.done"),
-        attributions=_has_glob_match(get_attributions_dir(run_id), "da-*/dataset_attributions.pt"),
-        graph_interp=_has_glob_match(get_graph_interp_dir(run_id), "*/interp.db"),
-    )
 
 
 def _get_architecture_summary(wandb_path: str) -> str | None:
@@ -85,7 +59,7 @@ def _build_run_info(wandb_run_id: str) -> RunInfoResponse:
     return RunInfoResponse(
         wandb_run_id=wandb_run_id,
         architecture=_get_architecture_summary(wandb_run_id),
-        availability=_check_availability(run_id),
+        availability=DataAvailability.for_run_id(run_id),
     )
 
 

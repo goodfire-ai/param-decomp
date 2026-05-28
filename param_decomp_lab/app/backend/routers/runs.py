@@ -13,12 +13,8 @@ from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.app.backend.dependencies import DepStateManager
 from param_decomp_lab.app.backend.state import RunState
 from param_decomp_lab.app.backend.utils import log_errors
-from param_decomp_lab.autointerp.repo import InterpRepo
-from param_decomp_lab.dataset_attributions.repo import AttributionRepo
 from param_decomp_lab.distributed import get_device
 from param_decomp_lab.experiments.lm.run import SavedLMRun
-from param_decomp_lab.graph_interp.repo import GraphInterpRepo
-from param_decomp_lab.harvest.repo import HarvestRepo
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
 from param_decomp_lab.topology import TransformerTopology, get_sources_by_target
 
@@ -135,10 +131,10 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
         lm_target=lm_target,
         lm_data=lm_data,
         context_length=context_length,
-        harvest=HarvestRepo.open_most_recent(run_id),
-        interp=InterpRepo.open(run_id),
-        attributions=AttributionRepo.open(run_id),
-        graph_interp=GraphInterpRepo.open(run_id),
+        harvest=pd_run.harvest,
+        interp=pd_run.interp,
+        attributions=pd_run.attributions,
+        graph_interp=pd_run.graph_interp,
     )
 
     logger.info(f"[API] Run {run.id} loaded on {DEVICE}")
