@@ -1,5 +1,6 @@
 import re
 from collections import defaultdict
+from fnmatch import fnmatch
 from typing import Literal, override
 
 import torch
@@ -17,6 +18,10 @@ from param_decomp.metrics.context import MetricContext
 def calc_ci_l_zero(ci: Float[Tensor, "... C"], threshold: float) -> float:
     """Mean number of CI entries above `threshold` per example."""
     return (ci > threshold).float().sum(-1).mean().item()
+
+
+def _natural_sort_key(s: str) -> list[int | str]:
+    return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", s)]
 
 
 class CI_L0Config(BaseConfig):
@@ -49,7 +54,7 @@ class CI_L0(Metric[CI_L0Config]):
             if self.cfg.groups:
                 for group_name, patterns in self.cfg.groups.items():
                     for pattern in patterns:
-                        if re.match(pattern.replace("*", ".*"), layer_name):
+                        if fnmatch(layer_name, pattern):
                             group_sums[group_name] += l0_val
                             break
         for group_name, group_sum in group_sums.items():
@@ -61,7 +66,8 @@ class CI_L0(Metric[CI_L0Config]):
         threshold = self.cfg.ci_alive_threshold
         out: dict[str, float | wandb.plot.CustomChart] = {}
         table_data = []
-        for key, l0s in self.l0_values.items():
+        for key in sorted(self.l0_values, key=_natural_sort_key):
+            l0s = self.l0_values[key]
             global_sum = all_reduce(torch.tensor(l0s, device=self.device).sum(), op=ReduceOp.SUM)
             global_count = all_reduce(torch.tensor(len(l0s), device=self.device), op=ReduceOp.SUM)
             avg_l0 = (global_sum / global_count).item()
