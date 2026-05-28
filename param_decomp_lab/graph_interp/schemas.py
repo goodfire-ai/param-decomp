@@ -6,11 +6,9 @@ from typing import Literal
 
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 
-GRAPH_INTERP_DIR = PARAM_DECOMP_OUT_DIR / "graph_interp"
-
 
 def get_graph_interp_dir(decomposition_id: str) -> Path:
-    return GRAPH_INTERP_DIR / decomposition_id
+    return PARAM_DECOMP_OUT_DIR / "runs" / decomposition_id / "graph_interp"
 
 
 def get_graph_interp_subrun_dir(decomposition_id: str, subrun_id: str) -> Path:

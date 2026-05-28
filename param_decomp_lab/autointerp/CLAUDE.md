@@ -32,7 +32,7 @@ Requires the API key for your chosen provider (e.g. `OPENROUTER_API_KEY`, or `GE
 Each autointerp subrun has its own SQLite database:
 
 ```
-PARAM_DECOMP_OUT_DIR/autointerp/<spd_run_id>/
+PARAM_DECOMP_OUT_DIR/runs/<spd_run_id>/autointerp/
 └── <autointerp_run_id>/           # e.g. a-20260206_153040
     ├── interp.db                  # SQLite DB: interpretations + scores (WAL mode)
     └── config.yaml                # AutointerpConfig (for reproducibility)

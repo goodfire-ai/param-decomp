@@ -120,11 +120,21 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 
 ## Saved-run layout
 
+Every artifact for a decomposition lives under one dir per run:
+
 ```
-PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/
+PARAM_DECOMP_OUT_DIR/runs/<run_id>/
+  experiment_config.yaml     # the full ExperimentConfig
   model_<step>.pth           # checkpoints (RunSink.checkpoint)
   metrics.jsonl              # local logs (RunSink.log)
+  harvest/h-*/...            # pd-harvest output
+  autointerp/a-*/...         # pd-autointerp output
+  dataset_attributions/da-*/...  # pd-attributions output
+  graph_interp/*/...         # pd-graph-interp output
 ```
+
+Both training output and the W&B download cache write here. Per-stage subdirs are
+populated by their respective pipelines.
 
 `PARAM_DECOMP_OUT_DIR` is `/mnt/polished-lake/artifacts/mechanisms/param-decomp/` on
 cluster, `~/param_decomp_out/` off cluster. Defined in

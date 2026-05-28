@@ -13,10 +13,13 @@ from pydantic import BaseModel
 from param_decomp.log import logger
 from param_decomp_lab.app.backend.routers.pretrain_info import _get_pretrain_info
 from param_decomp_lab.app.backend.utils import log_errors
+from param_decomp_lab.autointerp.schemas import get_autointerp_dir
+from param_decomp_lab.dataset_attributions.repo import get_attributions_dir
 from param_decomp_lab.experiments.lm.run import LMExperimentConfig
 from param_decomp_lab.experiments.utils import EXPERIMENT_CONFIG_FILENAME
+from param_decomp_lab.graph_interp.schemas import get_graph_interp_dir
+from param_decomp_lab.harvest.schemas import get_harvest_dir
 from param_decomp_lab.infra.run_files import resolve_config_path
-from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
 
 router = APIRouter(prefix="/api/run_registry", tags=["run_registry"])
@@ -44,16 +47,11 @@ def _has_glob_match(pattern_dir: Path, glob_pattern: str) -> bool:
 
 def _check_availability(run_id: str) -> DataAvailability:
     """Lightweight filesystem checks for post-processing data availability."""
-    harvest_dir = PARAM_DECOMP_OUT_DIR / "harvest" / run_id
-    autointerp_dir = PARAM_DECOMP_OUT_DIR / "autointerp" / run_id
-    attributions_dir = PARAM_DECOMP_OUT_DIR / "dataset_attributions" / run_id
-    graph_interp_dir = PARAM_DECOMP_OUT_DIR / "graph_interp" / run_id
-
     return DataAvailability(
-        harvest=_has_glob_match(harvest_dir, "h-*/harvest.db"),
-        autointerp=_has_glob_match(autointerp_dir, "a-*/.done"),
-        attributions=_has_glob_match(attributions_dir, "da-*/dataset_attributions.pt"),
-        graph_interp=_has_glob_match(graph_interp_dir, "*/interp.db"),
+        harvest=_has_glob_match(get_harvest_dir(run_id), "h-*/harvest.db"),
+        autointerp=_has_glob_match(get_autointerp_dir(run_id), "a-*/.done"),
+        attributions=_has_glob_match(get_attributions_dir(run_id), "da-*/dataset_attributions.pt"),
+        graph_interp=_has_glob_match(get_graph_interp_dir(run_id), "*/interp.db"),
     )
 
 

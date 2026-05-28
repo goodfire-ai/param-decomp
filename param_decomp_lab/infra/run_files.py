@@ -283,8 +283,8 @@ class RunFiles:
     extras: dict[str, Path] = field(default_factory=dict)
 
 
-def _wandb_cache_dir(project: str, run_id: str) -> Path:
-    return PARAM_DECOMP_OUT_DIR / "runs" / f"{project}-{run_id}"
+def _wandb_cache_dir(run_id: str) -> Path:
+    return PARAM_DECOMP_OUT_DIR / "runs" / run_id
 
 
 def resolve_run_files(
@@ -317,7 +317,7 @@ def resolve_run_files(
         )
 
     wandb_path = f"{entity}/{project}/{run_id}"
-    run_dir = _wandb_cache_dir(project, run_id)
+    run_dir = _wandb_cache_dir(run_id)
 
     if run_dir.exists():
         logger.info(f"Loading run from {run_dir}")
@@ -356,7 +356,7 @@ def resolve_config_path(path: ModelPath, *, config_filename: str) -> Path:
         path_obj = Path(path)
         return (path_obj if path_obj.is_dir() else path_obj.parent) / config_filename
 
-    run_dir = _wandb_cache_dir(project, run_id)
+    run_dir = _wandb_cache_dir(run_id)
     config_path = run_dir / config_filename
     if config_path.exists():
         return config_path
@@ -400,8 +400,8 @@ def _download_run_files_from_wandb(
 ) -> RunFiles:
     api = wandb.Api()
     run: WandbRun = api.run(wandb_path)
-    _entity, project, run_id = parse_wandb_run_path(wandb_path)
-    run_dir = _wandb_cache_dir(project, run_id)
+    _entity, _project, run_id = parse_wandb_run_path(wandb_path)
+    run_dir = _wandb_cache_dir(run_id)
 
     config_path = download_wandb_file(run, run_dir, config_filename)
     if checkpoint_filename is not None:

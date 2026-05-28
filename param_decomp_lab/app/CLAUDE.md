@@ -355,7 +355,7 @@ StateManager.get() → AppState:
       - harvest: HarvestRepo       # Lazy-loaded pre-harvested data
   - dataset_search_state: DatasetSearchState | None  # Cached search results
 
-HarvestRepo:  # Lazy-loads from PARAM_DECOMP_OUT_DIR/harvest/<run_id>/
+HarvestRepo:  # Lazy-loads from PARAM_DECOMP_OUT_DIR/runs/<run_id>/harvest/
   - correlations: CorrelationStorage | None
   - token_stats: TokenStatsStorage | None
   - activation_contexts: dict[str, ComponentData] | None

@@ -43,7 +43,7 @@ python -m param_decomp_lab.harvest.scripts.run_merge --subrun_id $SUBRUN --confi
 Each harvest invocation creates a timestamped sub-run directory. `HarvestRepo` automatically loads from the latest sub-run.
 
 ```
-PARAM_DECOMP_OUT_DIR/harvest/<run_id>/
+PARAM_DECOMP_OUT_DIR/runs/<run_id>/harvest/
 ├── h-20260211_120000/          # sub-run 1
 │   ├── harvest.db              # SQLite DB: components table + config table (WAL mode)
 │   ├── component_correlations.pt

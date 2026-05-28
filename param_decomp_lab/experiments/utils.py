@@ -74,7 +74,7 @@ def init_pd_run[T: BaseConfig, D: BaseConfig](
     if not is_main_process():
         return RunSink.silent()
     run_id = run_id or generate_run_id("param_decomp")
-    out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
+    out_dir = PARAM_DECOMP_OUT_DIR / "runs" / run_id
     cfg_path = out_dir / EXPERIMENT_CONFIG_FILENAME
     cfg.to_file(cfg_path)
     keep_last_n = cfg.cadence.keep_last_n_checkpoints

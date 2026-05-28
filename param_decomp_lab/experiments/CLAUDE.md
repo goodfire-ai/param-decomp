@@ -152,11 +152,15 @@ Every `pd-*` run command accepts `--group <id>` and `--tags a,b,c` (no-ops when
 ## Saved-run layout
 
 ```
-PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/
+PARAM_DECOMP_OUT_DIR/runs/<run_id>/
   experiment_config.yaml     # the full ExperimentConfig
   model_<step>.pth           # checkpoints (RunSink.checkpoint)
   metrics.jsonl              # local logs (RunSink.log)
 ```
+
+Post-decomposition pipelines (harvest, autointerp, attributions, graph_interp) nest
+their own sub-directories under this same `runs/<run_id>/` dir — see each module's
+CLAUDE.md.
 
 ## Canonical references
 

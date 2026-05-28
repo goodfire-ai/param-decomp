@@ -6,17 +6,14 @@ from typing import Literal
 
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 
-# Base directory for autointerp data
-AUTOINTERP_DATA_DIR = PARAM_DECOMP_OUT_DIR / "autointerp"
-
 
 def get_autointerp_dir(decomposition_id: str) -> Path:
-    """Get the top-level autointerp directory for a PD run."""
-    return AUTOINTERP_DATA_DIR / decomposition_id
+    """Top-level autointerp directory for a decomposition."""
+    return PARAM_DECOMP_OUT_DIR / "runs" / decomposition_id / "autointerp"
 
 
 def get_autointerp_subrun_dir(decomposition_id: str, autointerp_run_id: str) -> Path:
-    """Get the directory for a specific autointerp run (timestamped subdirectory)."""
+    """Directory for a specific autointerp run (timestamped subdirectory)."""
     return get_autointerp_dir(decomposition_id) / autointerp_run_id
 
 

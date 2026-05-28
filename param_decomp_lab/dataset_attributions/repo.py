@@ -1,10 +1,9 @@
 """Dataset attributions data repository.
 
-Owns PARAM_DECOMP_OUT_DIR/dataset_attributions/<run_id>/ and provides read access
-to the attribution matrix.
+Owns the per-decomposition attributions dir and provides read access to the attribution matrix.
 
 Use AttributionRepo.open() to construct — returns None if no attribution data exists.
-Layout: dataset_attributions/<run_id>/da-YYYYMMDD_HHMMSS/dataset_attributions.pt
+Layout: runs/<run_id>/dataset_attributions/da-YYYYMMDD_HHMMSS/dataset_attributions.pt
 """
 
 from pathlib import Path
@@ -12,11 +11,9 @@ from pathlib import Path
 from param_decomp_lab.dataset_attributions.storage import DatasetAttributionStorage
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 
-DATASET_ATTRIBUTIONS_DIR = PARAM_DECOMP_OUT_DIR / "dataset_attributions"
-
 
 def get_attributions_dir(run_id: str) -> Path:
-    return DATASET_ATTRIBUTIONS_DIR / run_id
+    return PARAM_DECOMP_OUT_DIR / "runs" / run_id / "dataset_attributions"
 
 
 def get_attributions_subrun_dir(run_id: str, subrun_id: str) -> Path:

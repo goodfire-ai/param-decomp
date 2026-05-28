@@ -28,7 +28,7 @@ All three phases run in a single invocation. Resume is per-phase via completed k
 ## Data Storage
 
 ```
-PARAM_DECOMP_OUT_DIR/graph_interp/<decomposition_id>/
+PARAM_DECOMP_OUT_DIR/runs/<decomposition_id>/graph_interp/
 └── ti-YYYYMMDD_HHMMSS/
     ├── interp.db       # SQLite: output_labels, input_labels, unified_labels, prompt_edges
     └── config.yaml

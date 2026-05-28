@@ -42,7 +42,7 @@ python -m param_decomp_lab.dataset_attributions.scripts.run_merge --wandb_path <
 ## Data Storage
 
 ```
-PARAM_DECOMP_OUT_DIR/dataset_attributions/<run_id>/
+PARAM_DECOMP_OUT_DIR/runs/<run_id>/dataset_attributions/
 ├── da-20260223_183250/                    # sub-run (latest picked by repo)
 │   ├── dataset_attributions.pt            # merged result
 │   └── worker_states/

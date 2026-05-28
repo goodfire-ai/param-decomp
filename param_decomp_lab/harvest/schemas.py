@@ -9,17 +9,14 @@ from torch import Tensor
 
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 
-# Base directory for harvest data
-HARVEST_DATA_DIR = PARAM_DECOMP_OUT_DIR / "harvest"
 
-
-def get_harvest_dir(wandb_run_id: str) -> Path:
-    """Get the base harvest directory for a run."""
-    return HARVEST_DATA_DIR / wandb_run_id
+def get_harvest_dir(decomposition_id: str) -> Path:
+    """Base harvest dir for a decomposition."""
+    return PARAM_DECOMP_OUT_DIR / "runs" / decomposition_id / "harvest"
 
 
 def get_harvest_subrun_dir(decomposition_id: str, subrun_id: str) -> Path:
-    """Get the sub-run directory for a specific harvest invocation."""
+    """Subrun dir for a specific harvest invocation."""
     return get_harvest_dir(decomposition_id) / subrun_id
 
 

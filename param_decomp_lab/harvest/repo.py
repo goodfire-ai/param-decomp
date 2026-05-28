@@ -1,10 +1,10 @@
 """Harvest data repository.
 
-Owns PARAM_DECOMP_OUT_DIR/harvest/<decomposition_id>/ and provides read/write access to all
+Owns the per-decomposition harvest dir and provides read/write access to all
 harvest artifacts. No in-memory caching -- reads go through on every call.
 Component data backed by SQLite; correlations and token stats remain as .pt files.
 
-Layout: harvest/<decomposition_id>/h-YYYYMMDD_HHMMSS/{harvest.db, *.pt}
+Layout: runs/<decomposition_id>/harvest/h-YYYYMMDD_HHMMSS/{harvest.db, *.pt}
 """
 
 from pathlib import Path
@@ -17,6 +17,7 @@ from param_decomp_lab.harvest.schemas import (
     ComponentData,
     ComponentSummary,
     get_harvest_dir,
+    get_harvest_subrun_dir,
 )
 from param_decomp_lab.harvest.storage import CorrelationStorage, TokenStatsStorage
 
@@ -26,7 +27,7 @@ class HarvestRepo:
 
     def __init__(self, decomposition_id: str, subrun_id: str, readonly: bool) -> None:
         self.subrun_id = subrun_id
-        self._dir = get_harvest_dir(decomposition_id) / subrun_id
+        self._dir = get_harvest_subrun_dir(decomposition_id, subrun_id)
         self._db = HarvestDB(self._dir / "harvest.db", readonly=readonly)
 
     @classmethod
@@ -59,9 +60,7 @@ class HarvestRepo:
             return None
 
         logger.info(f"Opening harvest data for {decomposition_id} from {subrun_dir}")
-        subrun_id = subrun_dir.name
-
-        return cls(decomposition_id=decomposition_id, subrun_id=subrun_id, readonly=readonly)
+        return cls(decomposition_id=decomposition_id, subrun_id=subrun_dir.name, readonly=readonly)
 
     @staticmethod
     def save_results(harvester: Harvester, config: HarvestConfig, output_dir: Path) -> None:
