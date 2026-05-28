@@ -14,6 +14,7 @@ import torch
 import wandb
 import yaml
 from wandb.apis.public import Run as WandbRun
+from wandb.errors import CommError
 
 from param_decomp.log import logger
 from param_decomp_lab.infra.git import (
@@ -287,10 +288,26 @@ def _wandb_cache_dir(project: str, run_id: str) -> Path:
     return PARAM_DECOMP_OUT_DIR / "runs" / f"{project}-{run_id}"
 
 
+def _heal_broken_symlink_cache_dir(run_dir: Path) -> None:
+    """Unlink `run_dir` if it's a symlink pointing nowhere.
+
+    The shared NFS cache has a few stale symlinks from a prior path migration whose
+    targets no longer exist. `Path.exists()` follows the link and returns False, so we
+    fall through to the wandb-download branch — but `os.makedirs(run_dir, exist_ok=True)`
+    then raises `FileExistsError` because the symlink itself is present. Removing the
+    broken link lets the download create a fresh directory in its place.
+    """
+    if run_dir.is_symlink() and not run_dir.exists():
+        target = os.readlink(run_dir)
+        logger.warning(f"Removing broken cache symlink {run_dir} -> {target}")
+        run_dir.unlink()
+
+
 def resolve_run_files(
     path: ModelPath,
     *,
     config_filename: str,
+    legacy_config_filenames: tuple[str, ...] = (),
     checkpoint_filename: str | None = None,
     checkpoint_prefix: str | None = None,
     extras_from_config_path: Callable[[Path], list[str]] = lambda _: [],
@@ -300,17 +317,22 @@ def resolve_run_files(
     Exactly one of `checkpoint_filename` or `checkpoint_prefix` must be given.
     `extras_from_config_path` is called with the resolved config path to determine which
     additional files belong to the run (e.g. artifacts whose names live inside the config).
+    `legacy_config_filenames` are tried in order if `config_filename` is missing — used
+    to load runs saved before a config rename. The returned `RunFiles.config_path` is
+    the filename that was actually found.
     """
     assert (checkpoint_filename is None) != (checkpoint_prefix is None), (
         "Exactly one of checkpoint_filename or checkpoint_prefix is required"
     )
+
+    candidate_config_filenames = (config_filename, *legacy_config_filenames)
 
     try:
         entity, project, run_id = parse_wandb_run_path(str(path))
     except ValueError:
         return _resolve_local_run_files(
             Path(path),
-            config_filename=config_filename,
+            config_filenames=candidate_config_filenames,
             checkpoint_filename=checkpoint_filename,
             checkpoint_prefix=checkpoint_prefix,
             extras_from_config_path=extras_from_config_path,
@@ -324,7 +346,7 @@ def resolve_run_files(
         try:
             files = _resolve_local_run_files(
                 run_dir,
-                config_filename=config_filename,
+                config_filenames=candidate_config_filenames,
                 checkpoint_filename=checkpoint_filename,
                 checkpoint_prefix=checkpoint_prefix,
                 extras_from_config_path=extras_from_config_path,
@@ -341,36 +363,54 @@ def resolve_run_files(
 
     return _download_run_files_from_wandb(
         wandb_path,
-        config_filename=config_filename,
+        config_filenames=candidate_config_filenames,
         checkpoint_filename=checkpoint_filename,
         checkpoint_prefix=checkpoint_prefix,
         extras_from_config_path=extras_from_config_path,
     )
 
 
-def resolve_config_path(path: ModelPath, *, config_filename: str) -> Path:
-    """Locate just a run's config file, without resolving or downloading checkpoints."""
+def resolve_config_path(
+    path: ModelPath,
+    *,
+    config_filename: str,
+    legacy_config_filenames: tuple[str, ...] = (),
+) -> Path:
+    """Locate just a run's config file, without resolving or downloading checkpoints.
+
+    `legacy_config_filenames` are tried in order if `config_filename` is missing — used
+    to load runs saved before a config rename.
+    """
+    candidate_config_filenames = (config_filename, *legacy_config_filenames)
+
     try:
         entity, project, run_id = parse_wandb_run_path(str(path))
     except ValueError:
         path_obj = Path(path)
-        return (path_obj if path_obj.is_dir() else path_obj.parent) / config_filename
+        base = path_obj if path_obj.is_dir() else path_obj.parent
+        for name in candidate_config_filenames:
+            candidate = base / name
+            if candidate.exists():
+                return candidate
+        return base / config_filename
 
     run_dir = _wandb_cache_dir(project, run_id)
-    config_path = run_dir / config_filename
-    if config_path.exists():
-        return config_path
+    for name in candidate_config_filenames:
+        candidate = run_dir / name
+        if candidate.exists():
+            return candidate
 
     logger.info(f"Downloading config from wandb: {entity}/{project}/{run_id}")
+    _heal_broken_symlink_cache_dir(run_dir)
     api = wandb.Api()
     run: WandbRun = api.run(f"{entity}/{project}/{run_id}")
-    return download_wandb_file(run, run_dir, config_filename)
+    return _download_first_existing_wandb_file(run, run_dir, candidate_config_filenames)
 
 
 def _resolve_local_run_files(
     path: Path,
     *,
-    config_filename: str,
+    config_filenames: tuple[str, ...],
     checkpoint_filename: str | None,
     checkpoint_prefix: str | None,
     extras_from_config_path: Callable[[Path], list[str]],
@@ -385,15 +425,44 @@ def _resolve_local_run_files(
     else:
         run_dir = path.parent
         checkpoint_path = path
-    config_path = run_dir / config_filename
+    config_path = _first_existing(run_dir, config_filenames)
     extras = {name: run_dir / name for name in extras_from_config_path(config_path)}
     return RunFiles(config_path=config_path, checkpoint_path=checkpoint_path, extras=extras)
+
+
+def _first_existing(run_dir: Path, candidates: tuple[str, ...]) -> Path:
+    for name in candidates:
+        candidate = run_dir / name
+        if candidate.exists():
+            return candidate
+    # None present — return the primary so callers see the expected name in the error.
+    return run_dir / candidates[0]
+
+
+def _download_first_existing_wandb_file(
+    run: WandbRun, run_dir: Path, candidates: tuple[str, ...]
+) -> Path:
+    """Download the first of `candidates` that exists on the W&B run.
+
+    Tries each in order; falls back to the next on `CommError` (e.g. HTTP 404). Raises
+    `FileNotFoundError` if none of the candidates are present.
+    """
+    last_error: Exception | None = None
+    for name in candidates:
+        try:
+            return download_wandb_file(run, run_dir, name)
+        except CommError as e:
+            last_error = e
+            continue
+    raise FileNotFoundError(
+        f"None of {list(candidates)} were found on W&B run {run.entity}/{run.project}/{run.id}"
+    ) from last_error
 
 
 def _download_run_files_from_wandb(
     wandb_path: str,
     *,
-    config_filename: str,
+    config_filenames: tuple[str, ...],
     checkpoint_filename: str | None,
     checkpoint_prefix: str | None,
     extras_from_config_path: Callable[[Path], list[str]],
@@ -402,8 +471,9 @@ def _download_run_files_from_wandb(
     run: WandbRun = api.run(wandb_path)
     _entity, project, run_id = parse_wandb_run_path(wandb_path)
     run_dir = _wandb_cache_dir(project, run_id)
+    _heal_broken_symlink_cache_dir(run_dir)
 
-    config_path = download_wandb_file(run, run_dir, config_filename)
+    config_path = _download_first_existing_wandb_file(run, run_dir, config_filenames)
     if checkpoint_filename is not None:
         checkpoint_path = download_wandb_file(run, run_dir, checkpoint_filename)
     else:
