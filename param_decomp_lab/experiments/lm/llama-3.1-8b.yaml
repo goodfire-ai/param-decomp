@@ -60,8 +60,26 @@ pd:
     p_anneal_final_p: 0.4
     p_anneal_end_frac: 1.0
     eps: 1.0e-12
-  - type: StochasticReconLayerwiseLoss
+  - type: StochasticReconSubsetLoss
     coeff: 0.5
+    routing:
+      type: uniform_k_subset
+  - type: PersistentPGDReconLoss
+    coeff: 0.5
+    optimizer:
+      type: adam
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        start_val: 0.01
+        warmup_pct: 0.025
+        final_val_frac: 1.0
+        fn_type: constant
+    scope:
+      type: per_batch_per_position
+    use_sigmoid_parameterization: false
+    n_warmup_steps: 2
   - type: FaithfulnessLoss
     coeff: 10000000.0
 cadence:
