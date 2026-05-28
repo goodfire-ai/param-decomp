@@ -6,10 +6,10 @@ pd:
     fn_type: global_shared_transformer
     hidden_dims: null
     simple_transformer_ci_cfg:
-      d_model: 2048
+      d_model: 4096
       n_blocks: 8
       mlp_hidden_dim:
-      - 8192
+      - 16384
       attn_config:
         n_heads: 8
         max_len: 512
@@ -18,11 +18,11 @@ pd:
   sigmoid_type: leaky_hard
   decomposition_targets:
   - module_pattern: model.layers.18.mlp.gate_proj
-    C: 14336
+    C: 20000
   - module_pattern: model.layers.18.mlp.up_proj
-    C: 14336
+    C: 20000
   - module_pattern: model.layers.18.mlp.down_proj
-    C: 14336 # That's how many neurons there are
+    C: 20000 # There are 14336 neurons
   # - module_pattern: model.layers.*.self_attn.q_proj
   #   C: 4096
   # - module_pattern: model.layers.*.self_attn.k_proj
@@ -53,15 +53,33 @@ pd:
   faithfulness_warmup_weight_decay: 0.0
   loss_metrics:
   - type: ImportanceMinimalityLoss
-    coeff: 0.00001
+    coeff: 0.000001
     pnorm: 2.0
     beta: 0.5
     p_anneal_start_frac: 0.0
     p_anneal_final_p: 0.4
     p_anneal_end_frac: 1.0
     eps: 1.0e-12
-  - type: StochasticReconLayerwiseLoss
+  - type: StochasticReconSubsetLoss
     coeff: 0.5
+    routing:
+      type: uniform_k_subset
+  - type: PersistentPGDReconLoss
+    coeff: 0.5
+    optimizer:
+      type: adam
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        start_val: 0.01
+        warmup_pct: 0.025
+        final_val_frac: 1.0
+        fn_type: constant
+    scope:
+      type: per_batch_per_position
+    use_sigmoid_parameterization: false
+    n_warmup_steps: 2
   - type: FaithfulnessLoss
     coeff: 10000000.0
 cadence:
