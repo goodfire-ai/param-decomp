@@ -25,7 +25,7 @@ asserts:
 | `role.py` | `PoolRole = CIRole \| LWRole \| PPGDRole` — this rank's view. Each variant carries ONLY the fields valid for its pool (no `\| None` bag). Replaces the old `ThreePoolLayout` optional-attr bag + `assert self.my_pool == ...` guards. |
 | `portals.py` | One typed object per cross-pool DAG edge. Each defines its payload, routing, pack/unpack, process group, and reduction/placement ONCE; sender + receiver are two methods on the SAME class, so they can't drift. Also the three in-pool collectives. Per-pool bundles (`CIPortals` / `LWPortals` / `PPGDPortals`) expose only the edges that pool participates in. |
 | `context.py` | `PoolContext = CIContext \| LWContext \| PPGDContext` — bundles `world` + `role` + that pool's portal bundle. The trainer builds one and `match`es it; each step fn receives its specific context type. |
-| `step_{ci,layerwise,ppgd}.py` | The per-pool step bodies. Take their specific `*Context`, drive their portals. |
+| `step_{ci,layerwise,ppgd}.py` | The per-pool step bodies. Take their specific `*Context`, drive their portals. Each body is a sequence of typed phase calls: every phase fn consumes the prior phase's frozen output bundle (CI: `CiForward`→`CiSends`/`ImpMinLoss`→`GciReceived`→`GciTotal`; LW: `Faith`/`CiLeaves`→`Stoch`; PPGD: `ReconSum`→`RawGrads`), so an invalid phase order (e.g. send CI grads before the backward populated them, or differentiate before warmup refined the sources) is a type error, not just a runtime assert. |
 | `optimize.py` | `ThreePoolTrainer` — wiring + per-step `match ctx:` dispatch. |
 | `reductions.py`, `checkpoint.py`, `eval_step.py` | Cross-pool logging / checkpoint-gather / eval, dispatched by `match ctx:`. |
 
@@ -54,6 +54,11 @@ Eval adds `CiOutputsEvalToPPGD` (CI → PPGD, full `CIOutputs`).
   could only fail at runtime) is now a type error.
 * **Send/recv pack-layout drift.** Each edge's pack/unpack lives in one class,
   so a change to the wire layout updates both halves at once.
+* **Out-of-order phases within a step.** Each step body threads frozen phase
+  bundles (e.g. `CiForward` → `GciTotal`, `ReconSum` → `RawGrads`): a phase fn
+  takes the prior phase's bundle as an argument, so calling the fused backward
+  before assembling the grads, or sending g_VU before the in-pool reduce, fails
+  to typecheck rather than silently corrupting state.
 
 ## Per-step dependency graph (steady state, step T)
 
