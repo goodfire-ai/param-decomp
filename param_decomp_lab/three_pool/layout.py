@@ -1,27 +1,23 @@
-"""World / ThreePoolLayout — the 3-pool topology data model and cross-pool comms.
+"""World / ThreePoolLayout — the 3-pool topology data model + in-pool reductions.
 
 `World` is purely declarative — identical content on every rank, no per-rank
-fields. Built once at startup after `dist.init_process_group`.
+fields. Built once at startup after `dist.init_process_group`. It owns the
+process groups and the **batch-position routing** (the
+``lw_sub_slice_within_ci`` / ``ci_slice_of_*`` bijection) that the cross-pool
+portals consume.
 
 `ThreePoolLayout` wraps a World, adds this rank's perspective (`my_pool`,
 `my_owned_sites`, `my_within_block_idx` or `my_ci_slice_idx` or
-`my_ppgd_slice_idx`), and hangs the cross-pool comm orchestration methods off
-itself.
-
-Cross-pool exchanges (six total — see ``DESIGN.md`` for the per-step graph):
-
-  CI  → LW   : CI_T per-site (owned + LW-rank batch slice)
-  CI  → PPGD : CI_T full-model (per-PPGD-rank batch slice)
-  LW  → CI   : g_CI_LW per owned site (per-LW-rank batch slice)
-  PPGD→ CI   : g_CI_PPGD full-model (per-PPGD-rank batch slice)
-  PPGD→ LW   : g_VU_PPGD per-owned-site (after in-pool sum-reduce; PPGD-leader-driven)
-  LW  → PPGD : updated V/U per-owned-site (LW-block-leader-driven, broadcast to PPGD pool)
-
-Plus three collective reductions:
+`my_ppgd_slice_idx`), the per-rank batch-slice helpers, and the three in-pool
+collective reductions:
 
   LW  : in-block all-reduce on V/U + faithfulness grads (one per LW block group)
   CI  : in-pool all-reduce on CI fn grads (one collective over the CI pool)
   PPGD: in-pool sum-reduce on V/U grads (one per site, over the PPGD pool)
+
+The six **cross-pool point-to-point exchanges** live in
+``param_decomp_lab.three_pool.portals`` — one typed portal object per DAG edge,
+invoked from both the sending and receiving rank so pack/unpack cannot drift.
 
 The defining wrinkle is **3-way batch slicing**: CI/LW/PPGD each shard
 the global batch on their own axis. The constraint (enforced in
@@ -50,14 +46,6 @@ import torch.nn as nn
 from torch import Tensor
 
 from param_decomp._trace import trace
-from param_decomp.component_model import CIOutputs
-
-# All cross-pool tensors are cast to this dtype on the wire (halves bytes vs fp32).
-# Downstream pools run inside bf16 autocast already; CI grads and V/U grads
-# accumulating into fp32 .grad upcast back to fp32 on receive — standard bf16
-# mixed-precision pattern.
-_WIRE_DTYPE: torch.dtype = torch.bfloat16
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # NCCL-op event timing (PD_NCCL_EVENT_TIMING=1).
@@ -119,38 +107,6 @@ def flush_nccl_event_timings() -> None:
         gpu_ms = pre.elapsed_time(post)
         trace(f"nccl-event: {op_name} cpu={cpu_ms:.1f}ms gpu={gpu_ms:.1f}ms")
     _NCCL_EVENT_BUFFER.clear()
-
-
-@dataclass(frozen=True)
-class PendingCiRecv:
-    """One coalesced CI-values irecv, held until ``wait_and_unpack()``.
-
-    The packed buffer carries ``sites`` worth of CI values (in order) as
-    ``b * seq_len * c_s`` ``_WIRE_DTYPE`` elements each. ``wait_and_unpack``
-    blocks on the underlying ``dist.Work`` then materializes per-site
-    ``[b, seq_len, c_s]`` views into the packed buffer (no copy).
-    """
-
-    packed: torch.Tensor
-    work: "dist.Work"
-    sites: tuple[str, ...]
-    site_to_c: dict[str, int]
-    b: int
-    seq_len: int
-
-    def wait_and_unpack(self) -> dict[str, torch.Tensor]:
-        self.work.wait()
-        out: dict[str, torch.Tensor] = {}
-        offset = 0
-        for s in self.sites:
-            c_s = self.site_to_c[s]
-            numel = self.b * self.seq_len * c_s
-            out[s] = self.packed[offset : offset + numel].view(self.b, self.seq_len, c_s)
-            offset += numel
-        assert offset == self.packed.numel(), (
-            f"unpack size mismatch: consumed {offset} of {self.packed.numel()}"
-        )
-        return out
 
 
 @dataclass(frozen=True)
@@ -529,206 +485,9 @@ class ThreePoolLayout:
         return self.is_my_site(site) and self.my_is_block_leader
 
     # ──────────────────────────────────────────────────────────────────────
-    # CI-pool comm methods
+    # In-pool collective reductions (one per pool; not cross-pool edges).
+    # Cross-pool point-to-point exchanges live in ``portals.py``.
     # ──────────────────────────────────────────────────────────────────────
-
-    def async_send_ci_to_layerwise(
-        self, ci_full: dict[str, Tensor]
-    ) -> tuple[list["dist.Work"], list[Tensor]]:
-        """CI → LW: for each site and each LW rank whose batch shard sits in
-        my CI slice, isend the corresponding sub-slice.
-
-        ``ci_full`` is keyed by site (CI fn produced CI for ALL sites since the
-        CI fn is global). Values have shape ``[B_local_ci, S, C_s]``.
-        Returned buffers must be kept alive until ``work.wait()`` completes.
-        """
-        assert self.my_pool == "ci" and self.my_ci_slice_idx is not None
-        works: list[dist.Work] = []
-        buffers: list[Tensor] = []
-        my_lw_block_ranks = self.world.lw_block_ranks_for_ci_slice(self.my_ci_slice_idx)
-
-        with _time_nccl_op("async_send_ci_to_layerwise"):
-            for bg in self.world.layerwise_block_groups:
-                for block_rank_idx in my_lw_block_ranks:
-                    target_lw_rank = bg.ranks[block_rank_idx]
-                    sub = self.world.lw_sub_slice_within_ci(block_rank_idx)
-                    # Coalesce all of this block's owned-sites into one packed
-                    # send per (block, block_rank). Layout (must match recv):
-                    # for each site in bg.owned_sites order, b_lw * seq_len * C_s
-                    # contiguous _WIRE_DTYPE elements.
-                    parts = [
-                        ci_full[site][sub].detach().to(_WIRE_DTYPE).contiguous().flatten()
-                        for site in bg.owned_sites
-                    ]
-                    packed = torch.cat(parts)
-                    works.append(
-                        dist.isend(
-                            packed, dst=target_lw_rank, group=self.world.cross_pool_p2p_group
-                        )
-                    )
-                    buffers.append(packed)
-        return works, buffers
-
-    def async_send_ci_to_ppgd(
-        self, ci_full: dict[str, Tensor]
-    ) -> tuple[list["dist.Work"], list[Tensor]]:
-        """CI → PPGD: for each PPGD rank whose batch shard sits in my CI slice,
-        isend the full-model CI sub-slice (all sites)."""
-        assert self.my_pool == "ci" and self.my_ci_slice_idx is not None
-        works: list[dist.Work] = []
-        buffers: list[Tensor] = []
-        my_ppgd_slice_idxs = self.world.ppgd_slice_idxs_for_ci_slice(self.my_ci_slice_idx)
-
-        with _time_nccl_op("async_send_ci_to_ppgd"):
-            for ppgd_slice_idx in my_ppgd_slice_idxs:
-                target_ppgd_rank = self.world.ppgd_ranks[ppgd_slice_idx]
-                sub = self.world.ppgd_sub_slice_within_ci(ppgd_slice_idx)
-                # Coalesce all 96 sites into one packed send per PPGD target.
-                # Layout (must match recv): for each site in self.world.all_sites
-                # order, b_pp * seq_len * C_s contiguous _WIRE_DTYPE elements.
-                parts = [
-                    ci_full[site][sub].detach().to(_WIRE_DTYPE).contiguous().flatten()
-                    for site in self.world.all_sites
-                ]
-                packed = torch.cat(parts)
-                works.append(
-                    dist.isend(packed, dst=target_ppgd_rank, group=self.world.cross_pool_p2p_group)
-                )
-                buffers.append(packed)
-        return works, buffers
-
-    def send_ci_eval_to_ppgd(self, ci: CIOutputs) -> None:
-        """CI → PPGD eval: synchronous send of full CIOutputs (all three dicts —
-        lower_leaky, upper_leaky, pre_sigmoid) sliced to each PPGD rank within
-        my CI slice.
-
-        Training-time only ships ``lower_leaky``; eval ships all three so any
-        metric reading ``ctx.ci`` works without a per-metric audit. Synchronous
-        because eval is rare and overlap has no value here.
-
-        Pack layout per send (must match ``recv_ci_eval_from_ci_pool``): three
-        contiguous blocks in order (lower_leaky, upper_leaky, pre_sigmoid). Each
-        block has, for each site in ``self.world.all_sites`` order, ``b_pp *
-        seq_len * C_s`` contiguous ``_WIRE_DTYPE`` elements.
-        """
-        assert self.my_pool == "ci" and self.my_ci_slice_idx is not None
-        my_ppgd_slice_idxs = self.world.ppgd_slice_idxs_for_ci_slice(self.my_ci_slice_idx)
-
-        with _time_nccl_op("send_ci_eval_to_ppgd"):
-            for ppgd_slice_idx in my_ppgd_slice_idxs:
-                target = self.world.ppgd_ranks[ppgd_slice_idx]
-                sub = self.world.ppgd_sub_slice_within_ci(ppgd_slice_idx)
-                parts: list[Tensor] = []
-                for d in (ci.lower_leaky, ci.upper_leaky, ci.pre_sigmoid):
-                    parts.extend(
-                        d[site][sub].detach().to(_WIRE_DTYPE).contiguous().flatten()
-                        for site in self.world.all_sites
-                    )
-                packed = torch.cat(parts)
-                dist.send(packed, dst=target, group=self.world.cross_pool_p2p_group)
-
-    def recv_g_ci_from_layerwise(
-        self,
-        site_to_c: dict[str, int],
-        seq_len: int,
-        device: torch.device,
-    ) -> dict[str, Tensor]:
-        """CI ← LW: recv per-site CI grads, coalesced per (LW block leader, LW
-        block rank index) channel.
-
-        Each LW rank coalesces its owned sites into one packed buffer (see
-        ``send_g_ci_to_ci_pool``); we receive one packed buf per source. Pack
-        layout (must match sender): for each site in the LW block's owned
-        sites, ``b_lw * seq_len * c_s`` contiguous ``_WIRE_DTYPE`` elements.
-        """
-        assert self.my_pool == "ci" and self.my_ci_slice_idx is not None
-        my_lw_block_ranks = self.world.lw_block_ranks_for_ci_slice(self.my_ci_slice_idx)
-        b_lw = self.world.batch_local_lw
-
-        # Post all irecvs upfront so they pipeline on the NIC.
-        # Per source: one packed buf containing all of that source's owned sites.
-        pending: list[tuple[int, int, Tensor, dist.Work, tuple[str, ...]]] = []
-        with _time_nccl_op("recv_g_ci_from_layerwise:post_irecvs"):
-            for bg_idx, bg in enumerate(self.world.layerwise_block_groups):
-                owned = bg.owned_sites
-                packed_numel = sum(b_lw * seq_len * site_to_c[s] for s in owned)
-                for block_rank_idx in my_lw_block_ranks:
-                    src = bg.ranks[block_rank_idx]
-                    buf = torch.empty(packed_numel, device=device, dtype=_WIRE_DTYPE)
-                    w = dist.irecv(buf, src=src, group=self.world.cross_pool_p2p_group)
-                    assert w is not None
-                    pending.append((bg_idx, block_rank_idx, buf, w, owned))
-
-        # Wait + stitch. Allocate one fp32 dest per site, copy each piece in place.
-        out: dict[str, Tensor] = {}
-        b_ci = self.world.batch_local_ci
-        for site in self.world.all_sites:
-            c_s = site_to_c[site]
-            out[site] = torch.empty(b_ci, seq_len, c_s, device=device, dtype=torch.float32)
-        with _time_nccl_op("recv_g_ci_from_layerwise:wait"):
-            for _bg_idx, block_rank_idx, buf, w, owned in pending:
-                w.wait()
-                sub = self.world.lw_sub_slice_within_ci(block_rank_idx)
-                offset = 0
-                for site in owned:
-                    c_s = site_to_c[site]
-                    n = b_lw * seq_len * c_s
-                    site_view = buf[offset : offset + n].view(b_lw, seq_len, c_s)
-                    out[site][sub].copy_(site_view.to(torch.float32))
-                    offset += n
-        return out
-
-    def recv_g_ci_from_ppgd(
-        self,
-        site_to_c: dict[str, int],
-        seq_len: int,
-        device: torch.device,
-    ) -> dict[str, Tensor]:
-        """CI ← PPGD: recv full-model CI grads, coalesced.
-
-        One packed irecv per PPGD source (instead of one per (site, source)),
-        matching the coalesced ``send_g_ci_to_ci_pool_ppgd``. With 96 sites
-        and N_PPGD/N_CI=3 sources per CI rank, that's 3 irecvs instead of
-        288 — order-of-magnitude NCCL-launch latency cut.
-
-        Pack layout (must match the sender exactly): for each site in
-        ``self.world.all_sites`` order, ``b_pp * seq_len * c_s`` contiguous
-        ``_WIRE_DTYPE`` elements.
-        """
-        assert self.my_pool == "ci" and self.my_ci_slice_idx is not None
-        my_ppgd_slice_idxs = self.world.ppgd_slice_idxs_for_ci_slice(self.my_ci_slice_idx)
-        b_pp = self.world.batch_local_ppgd
-
-        # Same total numel for every PPGD source (every source sends all sites).
-        site_numels = {s: b_pp * seq_len * site_to_c[s] for s in self.world.all_sites}
-        packed_numel = sum(site_numels.values())
-
-        pending: list[tuple[int, Tensor, dist.Work]] = []
-        with _time_nccl_op("recv_g_ci_from_ppgd:post_irecvs"):
-            for ppgd_slice_idx in my_ppgd_slice_idxs:
-                src = self.world.ppgd_ranks[ppgd_slice_idx]
-                packed = torch.empty(packed_numel, device=device, dtype=_WIRE_DTYPE)
-                w = dist.irecv(packed, src=src, group=self.world.cross_pool_p2p_group)
-                assert w is not None
-                pending.append((ppgd_slice_idx, packed, w))
-
-        b_ci = self.world.batch_local_ci
-        out: dict[str, Tensor] = {
-            s: torch.empty(b_ci, seq_len, site_to_c[s], device=device, dtype=torch.float32)
-            for s in self.world.all_sites
-        }
-        with _time_nccl_op("recv_g_ci_from_ppgd:wait"):
-            for ppgd_slice_idx, packed, w in pending:
-                w.wait()
-                sub = self.world.ppgd_sub_slice_within_ci(ppgd_slice_idx)
-                offset = 0
-                for site in self.world.all_sites:
-                    c_s = site_to_c[site]
-                    n = site_numels[site]
-                    buf = packed[offset : offset + n].view(b_pp, seq_len, c_s)
-                    out[site][sub].copy_(buf.to(torch.float32))
-                    offset += n
-        return out
 
     def all_reduce_ci_fn_grads(self, params: Iterable[nn.Parameter]) -> None:
         """In-pool all-reduce on CI fn grads. Coalesced bucketed reduce —
@@ -753,139 +512,6 @@ class ThreePoolLayout:
                     bucket, _unflatten_dense_tensors(flat, bucket), strict=True
                 ):
                     orig.copy_(reduced)
-
-    # ──────────────────────────────────────────────────────────────────────
-    # Layerwise-pool comm methods
-    # ──────────────────────────────────────────────────────────────────────
-
-    def async_recv_ci_from_ci_pool(
-        self,
-        site_to_c: dict[str, int],
-        seq_len: int,
-        device: torch.device,
-    ) -> PendingCiRecv:
-        """LW ← CI: irecv one coalesced packet of CI values for all of this
-        LW rank's owned sites, from the CI rank whose slice contains my LW
-        batch shard.
-
-        Layout (must match ``async_send_ci_to_layerwise``): for each site in
-        ``self.my_owned_sites`` order, ``b_lw * seq_len * C_s`` contiguous
-        ``_WIRE_DTYPE`` elements. Caller calls ``wait_and_unpack()`` to get
-        per-site ``[b_lw, seq_len, C_s]`` views (no copy).
-        """
-        assert self.my_pool == "layerwise" and self.my_within_block_idx is not None
-        src_ci_slice = self.world.ci_slice_of_lw_block_rank(self.my_within_block_idx)
-        src = self.world.ci_ranks[src_ci_slice]
-        b_lw = self.world.batch_local_lw
-
-        packed_numel = sum(b_lw * seq_len * site_to_c[s] for s in self.my_owned_sites)
-        packed = torch.empty(packed_numel, device=device, dtype=_WIRE_DTYPE)
-        with _time_nccl_op("async_recv_ci_from_ci_pool"):
-            work = dist.irecv(packed, src=src, group=self.world.cross_pool_p2p_group)
-            assert work is not None
-        return PendingCiRecv(
-            packed=packed,
-            work=work,
-            sites=self.my_owned_sites,
-            site_to_c=site_to_c,
-            b=b_lw,
-            seq_len=seq_len,
-        )
-
-    def send_g_ci_to_ci_pool(self, g_ci_owned: dict[str, Tensor]) -> None:
-        """LW → CI: send per-owned-site CI grads (full LW batch slice) to the
-        CI rank that owns my slice.
-
-        Coalesces this rank's owned sites into one packed send (vs one isend
-        per site). Smaller win than the PPGD-side coalescing (each LW rank
-        only owns ~4 sites vs PPGD's 96) but consistent + cuts CI's recv
-        count from ~96 to ~24 (one per LW block, not per (site, block)).
-        """
-        assert self.my_pool == "layerwise" and self.my_within_block_idx is not None
-        dst_ci_slice = self.world.ci_slice_of_lw_block_rank(self.my_within_block_idx)
-        dst = self.world.ci_ranks[dst_ci_slice]
-        parts = [
-            g_ci_owned[s].detach().to(_WIRE_DTYPE).contiguous().flatten()
-            for s in self.my_owned_sites
-        ]
-        packed = torch.cat(parts)
-        with _time_nccl_op("send_g_ci_to_ci_pool"):
-            dist.send(packed, dst=dst, group=self.world.cross_pool_p2p_group)
-
-    def recv_g_vu_from_ppgd(
-        self,
-        v_templates: dict[str, Tensor],
-        u_templates: dict[str, Tensor],
-    ) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
-        """LW ← PPGD: leader recvs g_VU for owned sites from PPGD leader, then
-        in-block broadcast. PPGD has already sum-reduced within its pool so a
-        single recv carries the full-batch grad for our owned sites.
-        """
-        assert self.my_pool == "layerwise" and self.my_block_idx is not None
-        v_grads: dict[str, Tensor] = {}
-        u_grads: dict[str, Tensor] = {}
-
-        if self.my_is_block_leader:
-            my_sites = self.my_owned_sites
-            packed_numel = sum(v_templates[s].numel() + u_templates[s].numel() for s in my_sites)
-            sample = v_templates[my_sites[0]]
-            packed = torch.empty(packed_numel, dtype=_WIRE_DTYPE, device=sample.device)
-            ppgd_leader = self.world.ppgd_ranks[0]
-            with _time_nccl_op("recv_g_vu_from_ppgd:recv"):
-                dist.recv(packed, src=ppgd_leader, group=self.world.cross_pool_p2p_group)
-            offset = 0
-            for s in my_sites:
-                v_n = v_templates[s].numel()
-                u_n = u_templates[s].numel()
-                v_grads[s] = (
-                    packed[offset : offset + v_n].view_as(v_templates[s]).to(v_templates[s].dtype)
-                )
-                offset += v_n
-                u_grads[s] = (
-                    packed[offset : offset + u_n].view_as(u_templates[s]).to(u_templates[s].dtype)
-                )
-                offset += u_n
-        else:
-            for s in self.my_owned_sites:
-                v_grads[s] = torch.empty_like(v_templates[s])
-                u_grads[s] = torch.empty_like(u_templates[s])
-
-        # In-block broadcast leader → other ranks so all replicas see the same g_VU.
-        block_group = self.world.block_group_groups[self.my_block_idx]
-        block_leader_rank = self.world.layerwise_block_groups[self.my_block_idx].leader
-        with _time_nccl_op("recv_g_vu_from_ppgd:in_block_bcast"):
-            for s in self.my_owned_sites:
-                v_grads[s] = v_grads[s].contiguous()
-                u_grads[s] = u_grads[s].contiguous()
-                dist.broadcast(v_grads[s], src=block_leader_rank, group=block_group)
-                dist.broadcast(u_grads[s], src=block_leader_rank, group=block_group)
-
-        return v_grads, u_grads
-
-    def async_send_updated_vu_to_ppgd(
-        self,
-        v_owned: dict[str, Tensor],
-        u_owned: dict[str, Tensor],
-    ) -> tuple[list["dist.Work"], list[Tensor]]:
-        """LW → PPGD: coalesced leader-rooted broadcast of updated V/U to all
-        PPGD ranks. Caller must keep the buffer alive until the work handle
-        completes.
-        """
-        assert self.my_pool == "layerwise"
-        if not self.my_is_block_leader:
-            return [], []
-        assert self.my_block_idx is not None
-        my_sites = self.my_owned_sites
-        parts: list[Tensor] = []
-        for s in my_sites:
-            parts.append(v_owned[s].detach().to(_WIRE_DTYPE).contiguous().flatten())
-            parts.append(u_owned[s].detach().to(_WIRE_DTYPE).contiguous().flatten())
-        packed = torch.cat(parts)
-        bcast_group = self.world.cross_pool_bcast_groups[self.my_block_idx]
-        with _time_nccl_op("async_send_updated_vu_to_ppgd"):
-            w = dist.broadcast(packed, src=self.my_rank, group=bcast_group, async_op=True)
-        assert w is not None
-        return [w], [packed]
 
     def all_reduce_grads_in_block(self, params: Iterable[nn.Parameter]) -> None:
         """Coalesced in-block DDP all-reduce over V/U + faithfulness grads.
@@ -919,131 +545,6 @@ class ThreePoolLayout:
             for orig, reduced in zip(bucket, _unflatten_dense_tensors(flat, bucket), strict=True):
                 orig.copy_(reduced)
 
-    # ──────────────────────────────────────────────────────────────────────
-    # PPGD-pool comm methods
-    # ──────────────────────────────────────────────────────────────────────
-
-    def async_recv_ci_from_ci_pool_ppgd(
-        self,
-        site_to_c: dict[str, int],
-        seq_len: int,
-        device: torch.device,
-    ) -> PendingCiRecv:
-        """PPGD ← CI: irecv one coalesced packet of full-model CI values from
-        the CI rank that owns my slice.
-
-        Layout (must match ``async_send_ci_to_ppgd``): for each site in
-        ``self.world.all_sites`` order, ``b_pp * seq_len * C_s`` contiguous
-        ``_WIRE_DTYPE`` elements. Caller calls ``wait_and_unpack()`` to get
-        per-site ``[b_pp, seq_len, C_s]`` views (no copy).
-        """
-        assert self.my_pool == "ppgd" and self.my_ppgd_slice_idx is not None
-        src_ci_slice = self.world.ci_slice_of_ppgd_slice(self.my_ppgd_slice_idx)
-        src = self.world.ci_ranks[src_ci_slice]
-        b_pp = self.world.batch_local_ppgd
-
-        packed_numel = sum(b_pp * seq_len * site_to_c[s] for s in self.world.all_sites)
-        packed = torch.empty(packed_numel, device=device, dtype=_WIRE_DTYPE)
-        with _time_nccl_op("async_recv_ci_from_ci_pool_ppgd"):
-            work = dist.irecv(packed, src=src, group=self.world.cross_pool_p2p_group)
-            assert work is not None
-        return PendingCiRecv(
-            packed=packed,
-            work=work,
-            sites=self.world.all_sites,
-            site_to_c=site_to_c,
-            b=b_pp,
-            seq_len=seq_len,
-        )
-
-    def recv_ci_eval_from_ci_pool(
-        self,
-        site_to_c: dict[str, int],
-        seq_len: int,
-        device: torch.device,
-    ) -> CIOutputs:
-        """PPGD ← CI eval: synchronous recv of full ``CIOutputs`` from the CI
-        rank that owns my slice.
-
-        Pack layout (must match ``send_ci_eval_to_ppgd``): three contiguous
-        blocks in order (lower_leaky, upper_leaky, pre_sigmoid). Each block has,
-        for each site in ``self.world.all_sites`` order, ``b_pp * seq_len *
-        C_s`` contiguous ``_WIRE_DTYPE`` elements. Returned dicts are no-copy
-        views into the packed buffer.
-        """
-        assert self.my_pool == "ppgd" and self.my_ppgd_slice_idx is not None
-        src_ci_slice = self.world.ci_slice_of_ppgd_slice(self.my_ppgd_slice_idx)
-        src = self.world.ci_ranks[src_ci_slice]
-        b_pp = self.world.batch_local_ppgd
-
-        per_block_numel = sum(b_pp * seq_len * site_to_c[s] for s in self.world.all_sites)
-        packed = torch.empty(3 * per_block_numel, device=device, dtype=_WIRE_DTYPE)
-        with _time_nccl_op("recv_ci_eval_from_ci_pool"):
-            dist.recv(packed, src=src, group=self.world.cross_pool_p2p_group)
-
-        out: list[dict[str, Tensor]] = [{}, {}, {}]
-        offset = 0
-        for block_idx in range(3):
-            for site in self.world.all_sites:
-                c_s = site_to_c[site]
-                numel = b_pp * seq_len * c_s
-                out[block_idx][site] = packed[offset : offset + numel].view(b_pp, seq_len, c_s)
-                offset += numel
-        assert offset == packed.numel(), f"unpack mismatch: {offset} of {packed.numel()}"
-        return CIOutputs(lower_leaky=out[0], upper_leaky=out[1], pre_sigmoid=out[2])
-
-    def send_g_ci_to_ci_pool_ppgd(self, g_ci_full: dict[str, Tensor]) -> None:
-        """PPGD → CI: send full-model CI grads (PPGD batch slice) to the CI
-        rank that owns my slice.
-
-        Coalesces all 96-ish sites into a single packed buffer per
-        send. Per-site isends launch ~10ms of NCCL overhead each, so at
-        scale (96 sites × N_PPGD ranks) this phase was ~1 s of pure NCCL
-        launch latency on every step. Single packed send replaces that with
-        one NCCL op (NCCL handles big tensors efficiently).
-        """
-        assert self.my_pool == "ppgd" and self.my_ppgd_slice_idx is not None
-        dst_ci_slice = self.world.ci_slice_of_ppgd_slice(self.my_ppgd_slice_idx)
-        dst = self.world.ci_ranks[dst_ci_slice]
-        parts = [
-            g_ci_full[s].detach().to(_WIRE_DTYPE).contiguous().flatten()
-            for s in self.world.all_sites
-        ]
-        packed = torch.cat(parts)
-        with _time_nccl_op("send_g_ci_to_ci_pool_ppgd"):
-            dist.send(packed, dst=dst, group=self.world.cross_pool_p2p_group)
-
-    def send_g_vu_to_layerwise(
-        self,
-        v_grads: dict[str, Tensor],
-        u_grads: dict[str, Tensor],
-    ) -> None:
-        """PPGD-leader-only: send g_VU per-block (coalesced) to each LW block leader.
-
-        Assumes V/U grads have already been sum-reduced within the PPGD pool —
-        every PPGD rank holds the same values, so only the leader sends.
-        """
-        assert self.my_pool == "ppgd"
-        if not self.my_is_pool_leader:
-            return
-        works: list[dist.Work] = []
-        buffers: list[Tensor] = []
-        with _time_nccl_op("send_g_vu_to_layerwise:isends"):
-            for bg in self.world.layerwise_block_groups:
-                parts: list[Tensor] = []
-                for site in bg.owned_sites:
-                    parts.append(v_grads[site].to(_WIRE_DTYPE).contiguous().flatten())
-                    parts.append(u_grads[site].to(_WIRE_DTYPE).contiguous().flatten())
-                packed = torch.cat(parts)
-                w = dist.isend(packed, dst=bg.leader, group=self.world.cross_pool_p2p_group)
-                assert w is not None
-                works.append(w)
-                buffers.append(packed)
-        with _time_nccl_op("send_g_vu_to_layerwise:wait"):
-            for w in works:
-                w.wait()
-        del buffers
-
     def sum_reduce_ppgd_grads(self, grads: Iterable[Tensor]) -> None:
         """In-pool sum-reduce on PPGD V/U grads. Caller passes a flat iterable
         of tensors; each is all-reduced in place over the PPGD pool group.
@@ -1069,46 +570,3 @@ class ThreePoolLayout:
                     bucket, _unflatten_dense_tensors(flat, bucket), strict=True
                 ):
                     orig.copy_(reduced)
-
-    def recv_updated_vu_from_layerwise(
-        self,
-        v_templates: dict[str, Tensor],
-        u_templates: dict[str, Tensor],
-    ) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
-        """PPGD ← LW: coalesced + pipelined recv of updated V/U from each LW block leader.
-
-        Kicks off one async broadcast per block group (they pipeline across the
-        per-group NCCL streams), then waits + unpacks each contiguous packet
-        back into per-site V/U dicts (upcasting to the templates' dtype).
-        Returns ``(v_new, u_new)`` ready for ``components[s].V.copy_(...)``.
-        """
-        assert self.my_pool == "ppgd"
-        bufs: list[tuple[LayerwiseBlockGroup, Tensor, dist.Work]] = []
-        with _time_nccl_op("recv_updated_vu_from_layerwise"):
-            for bg_idx, bg in enumerate(self.world.layerwise_block_groups):
-                owned = bg.owned_sites
-                packed_numel = sum(v_templates[s].numel() + u_templates[s].numel() for s in owned)
-                sample = v_templates[owned[0]]
-                packed = torch.empty(packed_numel, dtype=_WIRE_DTYPE, device=sample.device)
-                bcast_group = self.world.cross_pool_bcast_groups[bg_idx]
-                w = dist.broadcast(packed, src=bg.leader, group=bcast_group, async_op=True)
-                assert w is not None
-                bufs.append((bg, packed, w))
-
-        v_new: dict[str, Tensor] = {}
-        u_new: dict[str, Tensor] = {}
-        for bg, packed, w in bufs:
-            w.wait()
-            offset = 0
-            for s in bg.owned_sites:
-                v_n = v_templates[s].numel()
-                u_n = u_templates[s].numel()
-                v_new[s] = (
-                    packed[offset : offset + v_n].view_as(v_templates[s]).to(v_templates[s].dtype)
-                )
-                offset += v_n
-                u_new[s] = (
-                    packed[offset : offset + u_n].view_as(u_templates[s]).to(u_templates[s].dtype)
-                )
-                offset += u_n
-        return v_new, u_new

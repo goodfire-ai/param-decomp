@@ -5,6 +5,67 @@ and PPGD — so a **global shared transformer** CI fn is physically realizable: 
 dedicated, replicated CI pool can host a CI fn that spans all sites, while V/U
 sites are sharded across the LW pool.
 
+## Code structure (how the DAG maps to modules)
+
+The subsystem is built so the per-step loop reads as close to the dependency
+DAG below as the SPMD form allows. Three layered abstractions carry that:
+
+1. **Cross-pool edges are first-class typed portals** (`portals.py`). Each of
+   the six DAG edges (plus the eval-only `CiOutputsToPpgd`) is ONE class that
+   owns its payload type, source/dest pool, batch-position routing, process
+   group, pack/unpack, and wire dtype. Both the sending and the receiving rank
+   construct the same portal (from the shared `World`) and call its `send` /
+   `post_recv` / `recv` side. Because send and recv live on one object, the two
+   sides' pack/unpack cannot drift — previously each edge was split across
+   `layout.py` (sender) and a step file (receiver) with the pack layout
+   duplicated in a docstring on each side. Async sends return a `SendHandle`
+   (kept alive until `.wait()`); posted recvs return a `PendingPerSiteCi` whose
+   `.wait()` is the only way to reach the payload.
+
+2. **Typed phase handoffs within each pool step** (`step_ci.py` /
+   `step_layerwise.py` / `step_ppgd.py`). Each step is a sequence of phase
+   functions returning small frozen bundles (`CiForward`, `CiSends`,
+   `ImpMinLoss`, `GciReceived`, `GciTotal`; `Faith`, `CiLeaves`, `Stoch`;
+   `ReconSum`, `RawGrads`). A phase can only run once its inputs exist as a
+   value, so the dependency order is a type constraint — see "Invalid orders
+   now unrepresentable" below.
+
+3. **Typed per-pool state union** (`pool_state.py`). `CIState | LWState |
+   PPGDState`, matched exhaustively in `optimize.py`, replaces the previous
+   optional-attr bag (`optimizer: ... | None`, `ppgd_state: ... | None`,
+   `_ci_fn_params`, `_component_params`, `_all_params`) + `match my_pool` string
+   dispatch. Each pool's state holds exactly the objects its role uses.
+
+`layout.py` keeps `World` (topology + process groups + batch-position routing
+helpers), `ThreePoolLayout` (this rank's identity + per-rank batch-slice
+helpers), and the three **in-pool collective reductions** (CI-fn-grad
+all-reduce, LW in-block all-reduce, PPGD V/U sum-reduce) — those are within a
+single pool, not cross-pool edges, so they aren't portals.
+
+### Invalid orders now unrepresentable
+
+* CI: cannot send CI before computing it (`send` takes `CiForward`); cannot
+  assemble `g_CI_total` before receiving both halves (`GciTotal` takes
+  `GciReceived`); cannot run the fused backward before both the imp-min loss
+  and the assembled grads exist (it takes `CiForward` + `ImpMinLoss` +
+  `GciTotal`); cannot wait the sends before posting them (`wait` is on the
+  `CiSends` the send phase returned).
+* LW: cannot send `g_CI` before the streaming backward populated the re-leafed
+  CI tensors' `.grad` (the send consumes the `CiLeaves` those grads live on);
+  cannot read CI values before the posted recv is waited (`CiLeaves` is built
+  from `PendingPerSiteCi.wait()`).
+* PPGD: cannot differentiate before the warmup-refined recon sum exists (grads
+  take `ReconSum`); cannot scale/send grads before they are produced (sends
+  take `RawGrads`); cannot step sources before differentiating.
+* Pool role: a CI rank with no CI fn, a PPGD rank with an optimizer, etc. are
+  unrepresentable — each is a distinct dataclass in the `PoolState` union.
+
+What is NOT captured at the type level: the *relative ordering of independent
+overlapped ops* (e.g. posting the async send before the dead-time prefetch, vs
+after) is still expressed by statement order, since both are valid orderings
+that only trade off overlap, not correctness. The portal `wait()` enforces the
+send completes before its buffer is reused, but does not force *when* you wait.
+
 ## Pool roles
 
 | Pool       | Owns                            | Sharded? | Notes |

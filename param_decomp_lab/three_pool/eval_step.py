@@ -35,6 +35,7 @@ from param_decomp.metrics.output import collect_metric_outputs
 from param_decomp.run_sink import RunSink
 from param_decomp.torch_helpers import bf16_autocast
 from param_decomp_lab.three_pool.layout import ThreePoolLayout
+from param_decomp_lab.three_pool.portals import Portals
 
 
 def _slice_batch_dim0(batch: Any, sl: slice) -> tuple[Any, int]:
@@ -58,6 +59,7 @@ def _build_metric_context_three_pool(
     batch: Any,
     *,
     layout: ThreePoolLayout,
+    portals: Portals,
     step: int,
     device: str,
     component_model: ComponentModel,
@@ -71,6 +73,7 @@ def _build_metric_context_three_pool(
     batch = move_batch_to_device(batch, device)
     match layout.my_pool:
         case "ci":
+            assert layout.my_ci_slice_idx is not None
             batch_local, _ = _slice_batch_dim0(batch, layout.my_batch_slice_ci())
             target_output = component_model(batch_local, cache_type="input")
             ci = component_model.calc_causal_importances(
@@ -78,14 +81,18 @@ def _build_metric_context_three_pool(
                 detach_inputs=False,
                 sampling=config.sampling,
             )
-            layout.send_ci_eval_to_ppgd(ci)
+            portals.ci_outputs_to_ppgd.send(ci, my_ci_slice_idx=layout.my_ci_slice_idx)
             return None
         case "ppgd":
+            assert layout.my_ppgd_slice_idx is not None
             batch_local, seq_len = _slice_batch_dim0(batch, layout.my_batch_slice_ppgd())
             target_output = component_model(batch_local, cache_type="input")
             weight_deltas = component_model.calc_weight_deltas()
-            ci = layout.recv_ci_eval_from_ci_pool(
-                c_per_site, seq_len=seq_len, device=torch.device(device)
+            ci = portals.ci_outputs_to_ppgd.recv(
+                my_ppgd_slice_idx=layout.my_ppgd_slice_idx,
+                site_to_c=c_per_site,
+                seq_len=seq_len,
+                device=torch.device(device),
             )
             return MetricContext(
                 model=component_model,
@@ -113,6 +120,7 @@ def run_eval_step(
     slow_step: bool,
     metrics: list[Metric[Any]],
     layout: ThreePoolLayout,
+    portals: Portals,
     step: int,
     device: str,
     component_model: ComponentModel,
@@ -155,6 +163,7 @@ def run_eval_step(
             ctx = _build_metric_context_three_pool(
                 batch,
                 layout=layout,
+                portals=portals,
                 step=step,
                 device=device,
                 component_model=component_model,
