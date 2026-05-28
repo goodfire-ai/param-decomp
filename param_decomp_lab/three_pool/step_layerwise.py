@@ -35,13 +35,14 @@ from param_decomp.component_model import ComponentModel
 from param_decomp.grad_clip import cross_pool_clip_grad_norm
 from param_decomp.masks import make_mask_infos
 from param_decomp.torch_helpers import bf16_autocast
-from param_decomp_lab.three_pool.layout import ThreePoolLayout
+from param_decomp_lab.three_pool.context import LWContext
 from param_decomp_lab.three_pool.loss_strategy import LayerwiseLossStrategy
+from param_decomp_lab.three_pool.portals import all_reduce_grads_in_block
 from param_decomp_lab.three_pool.runtime import _ThreePoolRuntime
 
 
 def step_layerwise(
-    layout: ThreePoolLayout,
+    ctx: LWContext,
     component_model: ComponentModel,
     optimizer: torch.optim.Optimizer,
     all_params: list[nn.Parameter],
@@ -52,15 +53,17 @@ def step_layerwise(
     should_log: bool,
 ) -> dict[str, float]:
     """One LW step: A → D → tail (all_reduce, clip, opt, async send V/U)."""
-    assert layout.my_pool == "layerwise"
+    role, portals = ctx.role, ctx.portals
+    owned_sites = role.owned_sites
     device = next(component_model.parameters()).device
     n_sites_total = len(cfg.c_per_site)
 
-    batch_local, seq_len = _slice_batch_for_layerwise(batch, layout)
+    batch_local, seq_len = _slice_batch_for_layerwise(batch, ctx)
 
     with strategy.context(component_model.target_model):
-        ci_recv_pending = layout.async_recv_ci_from_ci_pool(
-            {s: cfg.c_per_site[s] for s in layout.my_owned_sites},
+        ci_recv_pending = portals.ci_from_ci_pool.post_recv(
+            role,
+            {s: cfg.c_per_site[s] for s in owned_sites},
             seq_len=seq_len,
             device=device,
         )
@@ -76,9 +79,9 @@ def step_layerwise(
         )
         (cfg.coeff_faith * loss_faith).backward()
 
-        ci_recv = ci_recv_pending.wait_and_unpack()
-        ci_recv_leaves = _releaf_ci_fp32_for_grads(ci_recv, layout.my_owned_sites)
-        _assert_ci_recv_shapes(ci_recv_leaves, layout, seq_len, cfg)
+        ci_recv = ci_recv_pending.wait()
+        ci_recv_leaves = _releaf_ci_fp32_for_grads(ci_recv, owned_sites)
+        _assert_ci_recv_shapes(ci_recv_leaves, ctx, seq_len, cfg)
 
         with bf16_autocast(cfg.bf16_autocast):
             # Accumulate the display value as a GPU tensor (not a Python float) so
@@ -86,25 +89,25 @@ def step_layerwise(
             # each site's bwd against the next. ``loss_s.detach()`` so accumulator
             # doesn't retain autograd graph.
             stoch_total_t = torch.zeros((), device=device)
-            for i, s in enumerate(layout.my_owned_sites):
+            for i, s in enumerate(owned_sites):
                 if phase_trace_enabled():
-                    trace(f"lw/D3 site {i + 1}/{len(layout.my_owned_sites)}: {s} fwd+bwd")
+                    trace(f"lw/D3 site {i + 1}/{len(owned_sites)}: {s} fwd+bwd")
                 loss_s, n_positions = _layerwise_one_site(
                     component_model, batch_local, target_local, ci_recv_leaves, s, strategy
                 )
                 assert loss_s.dim() == 0, f"layerwise loss for site {s!r} must be scalar"
                 (cfg.coeff_stoch * loss_s / (n_positions * n_sites_total)).backward()
                 stoch_total_t = stoch_total_t + (loss_s.detach() / n_positions)
-            stoch_n_owned = len(layout.my_owned_sites)
+            stoch_n_owned = len(owned_sites)
 
-        g_ci_owned = {s: ci_recv_leaves[s].grad for s in layout.my_owned_sites}
+        g_ci_owned = {s: ci_recv_leaves[s].grad for s in owned_sites}
         assert all(g is not None for g in g_ci_owned.values()), (
             "layerwise backward should have populated ci_recv_leaves[s].grad"
         )
-        layout.send_g_ci_to_ci_pool(g_ci_owned)
+        portals.g_ci_to_ci_pool.send(role, g_ci_owned)
 
-        v_grads_pgd, u_grads_pgd = _recv_g_vu_from_ppgd(layout, component_model)
-        _combine_vu_grads_in_place(component_model, layout, v_grads_pgd, u_grads_pgd)
+        v_grads_pgd, u_grads_pgd = _recv_g_vu_from_ppgd(ctx, component_model)
+        _combine_vu_grads_in_place(component_model, owned_sites, v_grads_pgd, u_grads_pgd)
 
     if should_log:
         stoch_total_value = stoch_total_t.item()
@@ -119,7 +122,7 @@ def step_layerwise(
     else:
         metrics = {}
 
-    _sync_tail(layout, component_model, optimizer, all_params, cfg)
+    _sync_tail(ctx, component_model, optimizer, all_params, cfg)
     return metrics
 
 
@@ -148,9 +151,9 @@ def run_faithfulness_warmup_layerwise(
     torch.cuda.empty_cache()
 
 
-def _slice_batch_for_layerwise(batch: Any, layout: ThreePoolLayout) -> tuple[Any, int]:
+def _slice_batch_for_layerwise(batch: Any, ctx: LWContext) -> tuple[Any, int]:
     """Pull this LW rank's batch slice + extract its seq_len."""
-    sl = layout.my_batch_slice_lw()
+    sl = ctx.role.batch_slice(ctx.world.batch_local_lw)
     batch_local = batch[sl] if isinstance(batch, Tensor) else batch
     if isinstance(batch_local, Tensor):
         seq_len = batch_local.shape[1] if batch_local.ndim >= 2 else 1
@@ -174,7 +177,7 @@ def _releaf_ci_fp32_for_grads(
 
 def _assert_ci_recv_shapes(
     ci_recv_leaves: dict[str, Tensor],
-    layout: ThreePoolLayout,
+    ctx: LWContext,
     seq_len: int,
     cfg: _ThreePoolRuntime,
 ) -> None:
@@ -182,8 +185,8 @@ def _assert_ci_recv_shapes(
 
     Catches a wrong ``c_per_site`` config or a per-rank batch mismatch fast.
     """
-    batch_local_lw = layout.world.batch_local_lw
-    for s in layout.my_owned_sites:
+    batch_local_lw = ctx.world.batch_local_lw
+    for s in ctx.role.owned_sites:
         c = cfg.c_per_site[s]
         t = ci_recv_leaves[s]
         assert t.shape == (batch_local_lw, seq_len, c), (
@@ -222,14 +225,15 @@ def _layerwise_one_site(
 
 
 def _recv_g_vu_from_ppgd(
-    layout: ThreePoolLayout,
+    ctx: LWContext,
     component_model: ComponentModel,
 ) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
     """Phase lw/D5. Recv V/U grads from PPGD pool (leader recvs, in-block bcast)."""
-    v_templates = {s: component_model.components[s].V for s in layout.my_owned_sites}
-    u_templates = {s: component_model.components[s].U for s in layout.my_owned_sites}
-    v_grads_pgd, u_grads_pgd = layout.recv_g_vu_from_ppgd(v_templates, u_templates)
-    for s in layout.my_owned_sites:
+    owned_sites = ctx.role.owned_sites
+    v_templates = {s: component_model.components[s].V for s in owned_sites}
+    u_templates = {s: component_model.components[s].U for s in owned_sites}
+    v_grads_pgd, u_grads_pgd = ctx.portals.g_vu_from_ppgd.recv(ctx.role, v_templates, u_templates)
+    for s in owned_sites:
         assert v_grads_pgd[s].shape == component_model.components[s].V.shape, (
             f"v_grads_pgd[{s!r}] shape mismatch from PPGD send"
         )
@@ -241,12 +245,12 @@ def _recv_g_vu_from_ppgd(
 
 def _combine_vu_grads_in_place(
     component_model: ComponentModel,
-    layout: ThreePoolLayout,
+    owned_sites: tuple[str, ...],
     v_grads_pgd: dict[str, Tensor],
     u_grads_pgd: dict[str, Tensor],
 ) -> None:
     """Phase lw/D6. Add PPGD's V/U grads to .grad (which already has faith+lw)."""
-    for s in layout.my_owned_sites:
+    for s in owned_sites:
         comp = component_model.components[s]
         assert comp.V.grad is not None and comp.U.grad is not None, (
             "faith + layerwise should have populated V/U .grad"
@@ -256,7 +260,7 @@ def _combine_vu_grads_in_place(
 
 
 def _sync_tail(
-    layout: ThreePoolLayout,
+    ctx: LWContext,
     component_model: ComponentModel,
     optimizer: torch.optim.Optimizer,
     all_params: list[nn.Parameter],
@@ -267,27 +271,25 @@ def _sync_tail(
     Safe to coexist with PPGD's sync recv at end of step T.
     """
     _wait_pending_weight_send(component_model)
-    layout.all_reduce_grads_in_block(all_params)
+    all_reduce_grads_in_block(ctx.world, ctx.role, all_params)
     if cfg.grad_clip_norm_components is not None:
         cross_pool_clip_grad_norm(
             all_params,
             cfg.grad_clip_norm_components,
-            group=layout.world.layerwise_pool_group,
-            n_replicas=layout.world.n_per_block,
+            group=ctx.world.layerwise_pool_group,
+            n_replicas=ctx.world.n_per_block,
         )
     optimizer.step()
-    _async_send_owned_vu_to_ppgd(component_model, layout)
+    _async_send_owned_vu_to_ppgd(component_model, ctx)
 
 
-def _async_send_owned_vu_to_ppgd(component_model: ComponentModel, layout: ThreePoolLayout) -> None:
-    """Kickoff async ship of updated V/U → PPGD. Stash handles on the model."""
-    v_owned = {s: component_model.components[s].V for s in layout.my_owned_sites}
-    u_owned = {s: component_model.components[s].U for s in layout.my_owned_sites}
-    weight_send_works, weight_send_buffers = layout.async_send_updated_vu_to_ppgd(v_owned, u_owned)
-    component_model._pending_weight_sends = (  # type: ignore[attr-defined]
-        weight_send_works,
-        weight_send_buffers,
-    )
+def _async_send_owned_vu_to_ppgd(component_model: ComponentModel, ctx: LWContext) -> None:
+    """Kickoff async ship of updated V/U → PPGD. Stash the in-flight send on the model."""
+    owned_sites = ctx.role.owned_sites
+    v_owned = {s: component_model.components[s].V for s in owned_sites}
+    u_owned = {s: component_model.components[s].U for s in owned_sites}
+    in_flight = ctx.portals.updated_vu_to_ppgd.send(ctx.role, v_owned, u_owned)
+    component_model._pending_weight_send = in_flight  # type: ignore[attr-defined]
 
 
 def _wait_pending_weight_send(component_model: ComponentModel) -> None:
@@ -296,11 +298,10 @@ def _wait_pending_weight_send(component_model: ComponentModel) -> None:
     Defense against the opt step mutating V/U while the previous async send
     still reads it.
     """
-    pending = getattr(component_model, "_pending_weight_sends", None)
+    pending = getattr(component_model, "_pending_weight_send", None)
     if pending is not None:
-        for w in pending[0]:
-            w.wait()
-        component_model._pending_weight_sends = None  # type: ignore[attr-defined]
+        pending.wait()
+        component_model._pending_weight_send = None  # type: ignore[attr-defined]
 
 
 def _faithfulness_loss(

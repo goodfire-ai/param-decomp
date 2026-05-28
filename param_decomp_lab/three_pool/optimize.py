@@ -30,8 +30,8 @@ tensor from ``train_loader`` has shape ``[batch_global, ...]``). The runner
 asserts this. Callers wiring up the loader should pass ``dist_state=None`` so
 the data path replicates the batch across ranks instead of sharding it.
 
-Each step function then slices to its own per-pool batch shard via the
-layout's ``my_batch_slice_*`` helpers. The 3-way batch routing in
+Each step function then slices to its own per-pool batch shard via its
+``role.batch_slice(...)`` (see ``role.py``). The 3-way batch routing in
 ``layout.py`` (see "Batch-split routing" in its docstring) assumes this
 sliced-from-global pattern.
 """
@@ -79,9 +79,15 @@ from param_decomp.torch_helpers import loop_dataloader
 from param_decomp.training_state import ThreePoolTrainingState
 from param_decomp_lab.three_pool.checkpoint import gather_full_state_dict_to_rank0
 from param_decomp_lab.three_pool.config import ThreePoolConfig
+from param_decomp_lab.three_pool.context import (
+    CIContext,
+    LWContext,
+    PoolContext,
+    PPGDContext,
+    build_pool_context,
+)
 from param_decomp_lab.three_pool.layout import (
     LayerwiseBlockGroup,
-    ThreePoolLayout,
     build_world,
     flush_nccl_event_timings,
 )
@@ -152,7 +158,7 @@ class ThreePoolTrainer:
     three_pool_config: ThreePoolConfig
     reconstruction_loss: ReconstructionLoss
     component_model: ComponentModel
-    layout: ThreePoolLayout
+    ctx: PoolContext
     strategy: LayerwiseLossStrategy
     optimizer: torch.optim.Optimizer | None
     ppgd_state: PersistentPGDState | None
@@ -234,12 +240,10 @@ class ThreePoolTrainer:
             device=self._device,
         )
         trace("ThreePoolTrainer.__init__: build_world: done")
-        self.layout = ThreePoolLayout.from_world(world, dist.get_rank())
-        decomposition_targets = _decomposition_targets_for_pool(
-            self.layout, self.runtime.c_per_site
-        )
+        self.ctx = build_pool_context(world, dist.get_rank())
+        decomposition_targets = _decomposition_targets_for_pool(self.ctx, self.runtime.c_per_site)
         trace(
-            f"ThreePoolTrainer.__init__: my_pool={self.layout.my_pool} "
+            f"ThreePoolTrainer.__init__: my_pool={self.ctx.kind} "
             f"n_decomp_targets={len(decomposition_targets)}"
         )
 
@@ -263,11 +267,11 @@ class ThreePoolTrainer:
         # Drop pool-irrelevant params before moving to GPU. RNG draws used to
         # init them already happened (in the ctor above), so equivalence with
         # single-pool is preserved.
-        match self.layout.my_pool:
-            case "layerwise" | "ppgd":
+        match self.ctx:
+            case LWContext() | PPGDContext():
                 self.component_model.drop_ci_fn()
-                trace(f"ThreePoolTrainer.__init__: dropped ci_fn ({self.layout.my_pool} pool)")
-            case "ci":
+                trace(f"ThreePoolTrainer.__init__: dropped ci_fn ({self.ctx.kind} pool)")
+            case CIContext():
                 self.component_model.drop_components()
                 trace("ThreePoolTrainer.__init__: dropped V/U components (ci pool)")
         trace("ThreePoolTrainer.__init__: ComponentModel.to(device): enter")
@@ -278,7 +282,8 @@ class ThreePoolTrainer:
         # step 0 / step 1 (first fwd + first bwd) but should cut ``ci/8_fused_bwd``
         # substantially — that backward through the 2.64B-param CI fn dominates
         # the critical path (70% of CI step at batch=48).
-        if self.layout.my_pool == "ci" and os.environ.get("PD_COMPILE_CI_FN", "").strip() in (
+        is_ci = isinstance(self.ctx, CIContext)
+        if is_ci and os.environ.get("PD_COMPILE_CI_FN", "").strip() in (
             "1",
             "true",
             "yes",
@@ -286,7 +291,7 @@ class ThreePoolTrainer:
             assert self.component_model.ci_fn is not None
             trace("ThreePoolTrainer.__init__: torch.compile(ci_fn)")
             self.component_model.ci_fn = torch.compile(self.component_model.ci_fn)  # pyright: ignore[reportAttributeAccessIssue]
-        if self.layout.my_pool == "ci" and os.environ.get("PD_CI_FN_BWD_PROFILE", "").strip() in (
+        if is_ci and os.environ.get("PD_CI_FN_BWD_PROFILE", "").strip() in (
             "1",
             "true",
             "yes",
@@ -317,9 +322,9 @@ class ThreePoolTrainer:
         self.ppgd_state = None
         self._pending_ppgd_resume_state: dict[str, Any] | None = None
 
-        trace(f"ThreePoolTrainer.__init__: optimizer build: enter (pool={self.layout.my_pool})")
-        match self.layout.my_pool:
-            case "ci":
+        trace(f"ThreePoolTrainer.__init__: optimizer build: enter (pool={self.ctx.kind})")
+        match self.ctx:
+            case CIContext():
                 assert self.component_model.ci_fn is not None, "CI pool must keep its CI fn"
                 self._ci_fn_params = list(self.component_model.ci_fn.parameters())
                 n_params = sum(p.numel() for p in self._ci_fn_params)
@@ -334,8 +339,8 @@ class ThreePoolTrainer:
                     weight_decay=0.0,
                     fused=True,
                 )
-            case "layerwise":
-                for name in self.layout.my_owned_sites:
+            case LWContext():
+                for name in self.ctx.role.owned_sites:
                     self._component_params.extend(
                         self.component_model.components[name].parameters()
                     )
@@ -350,7 +355,7 @@ class ThreePoolTrainer:
                     weight_decay=0.0,
                     fused=True,
                 )
-            case "ppgd":
+            case PPGDContext():
                 pass  # ppgd_state constructed lazily from first batch in run()
         trace("ThreePoolTrainer.__init__: optimizer build: done")
         dump_memory_stats("after optimizer build")
@@ -363,17 +368,17 @@ class ThreePoolTrainer:
         optimizer. ``CI`` pool returns ``ci_fn.*`` pairs; ``LW`` pool returns
         ``components.<site>.*`` pairs for this rank's owned sites; ``PPGD`` has
         no optimizer and returns ``[]``."""
-        match self.layout.my_pool:
-            case "ci":
+        match self.ctx:
+            case CIContext():
                 assert self.component_model.ci_fn is not None
                 return [(f"ci_fn.{n}", p) for n, p in self.component_model.ci_fn.named_parameters()]
-            case "layerwise":
+            case LWContext():
                 out: list[tuple[str, nn.Parameter]] = []
-                for site in self.layout.my_owned_sites:
+                for site in self.ctx.role.owned_sites:
                     for n, p in self.component_model.components[site].named_parameters():
                         out.append((f"components.{site}.{n}", p))
                 return out
-            case "ppgd":
+            case PPGDContext():
                 return []
 
     def snapshot(self, scratch_dir: Path) -> ThreePoolTrainingState | None:
@@ -406,7 +411,7 @@ class ThreePoolTrainer:
         """
         trace("snapshot: enter gather_full_state_dict_to_rank0")
         gathered_model = gather_full_state_dict_to_rank0(
-            layout=self.layout,
+            ctx=self.ctx,
             component_model=self.component_model,
             target_model=self._target_model,
             run_batch=self._run_batch,
@@ -424,7 +429,7 @@ class ThreePoolTrainer:
             else {}
         )
         my_contribution: dict[str, Any] = {
-            "pool": self.layout.my_pool,
+            "pool": self.ctx.kind,
             "optimizer_by_name": my_optimizer_by_name,
         }
         if self.ppgd_state is not None:
@@ -437,17 +442,17 @@ class ThreePoolTrainer:
         # gather_object scales poorly. Each rank writes its contribution to a
         # shared-FS path, a barrier ensures all writes are visible, then rank 0
         # reads them all.
-        p2p_group = self.layout.world.cross_pool_p2p_group
-        world_size = self.layout.world.world_size
+        p2p_group = self.ctx.world.cross_pool_p2p_group
+        world_size = self.ctx.world.world_size
         step_dir = scratch_dir / f"step_{self.step}"
-        if self.layout.my_rank == 0:
+        if self.ctx.role.rank == 0:
             step_dir.mkdir(parents=True, exist_ok=True)
 
         trace("snapshot: enter barrier (pre-write)")
         dist.barrier(group=p2p_group)
         trace("snapshot: barrier (pre-write) done")
 
-        partial_path = step_dir / f"rank_{self.layout.my_rank}.pth"
+        partial_path = step_dir / f"rank_{self.ctx.role.rank}.pth"
         trace(f"snapshot: writing partial {partial_path.name}")
         torch.save(my_contribution, partial_path)
         trace("snapshot: partial write done")
@@ -456,7 +461,7 @@ class ThreePoolTrainer:
         dist.barrier(group=p2p_group)
         trace("snapshot: barrier (post-write) done")
 
-        if self.layout.my_rank != 0:
+        if self.ctx.role.rank != 0:
             return None
 
         gathered: list[dict[str, Any]] = []
@@ -485,7 +490,7 @@ class ThreePoolTrainer:
             pd_config=self.pd_config.model_dump(),
             runtime_config=self.runtime_config.model_dump(),
             three_pool_config=self.three_pool_config.model_dump(),
-            layout_fingerprint=_layout_fingerprint(self.layout),
+            layout_fingerprint=_layout_fingerprint(self.ctx),
             component_model=gathered_model,
             components_optimizer=components_by_name,
             ci_fn_optimizer=ci_fn_by_name,
@@ -525,7 +530,7 @@ class ThreePoolTrainer:
             three_pool_config=three_pool_config,
         )
         saved_fp = snapshot.layout_fingerprint
-        current_fp = _layout_fingerprint(trainer.layout)
+        current_fp = _layout_fingerprint(trainer.ctx)
         assert saved_fp == current_fp, (
             f"3-pool layout fingerprint mismatch on resume:\n"
             f"  saved:   {saved_fp}\n"
@@ -547,16 +552,16 @@ class ThreePoolTrainer:
 
         if self.optimizer is not None:
             named_params = self._named_params_for_my_optimizer()
-            match self.layout.my_pool:
-                case "layerwise":
+            match self.ctx:
+                case LWContext():
                     by_name = state.components_optimizer
-                case "ci":
+                case CIContext():
                     by_name = state.ci_fn_optimizer
-                case _:
+                case PPGDContext():
                     by_name = {}
             load_optimizer_state_by_name(self.optimizer, named_params, by_name)
-        if self.layout.my_pool == "ppgd":
-            self._pending_ppgd_resume_state = state.ppgd_state_by_rank.get(self.layout.my_rank)
+        if isinstance(self.ctx, PPGDContext):
+            self._pending_ppgd_resume_state = state.ppgd_state_by_rank.get(self.ctx.role.rank)
 
     # ============================ Training loop ============================
 
@@ -584,7 +589,8 @@ class ThreePoolTrainer:
         """
         trace("Trainer.run: enter")
         pd_config = self.pd_config
-        layout = self.layout
+        ctx = self.ctx
+        world = ctx.world
         runtime = self.runtime
         n_steps = pd_config.steps
         device = self._device
@@ -600,7 +606,7 @@ class ThreePoolTrainer:
         # each consume the full eval batch and slice internally, mirroring
         # the train data-handling contract; LW reads but discards).
         eval_iterator = loop_dataloader(eval_loop.loader) if eval_loop is not None else None
-        if eval_loop is not None and layout.my_pool == "ppgd":
+        if eval_loop is not None and isinstance(ctx, PPGDContext):
             for m in eval_loop.metrics:
                 m.bind(model=self.component_model, device=str(device))
 
@@ -611,7 +617,7 @@ class ThreePoolTrainer:
         train_iterator = itertools.chain([first_batch], train_iterator)
         _assert_full_global_batch(first_batch, runtime.batch_global)
 
-        if layout.my_pool == "ppgd" and self.ppgd_state is None:
+        if isinstance(ctx, PPGDContext) and self.ppgd_state is None:
             trace("Trainer.run: PPGDState ctor: enter")
             ppgd_cfg = runtime.ppgd_cfg
             # The 3-pool currently only supports per-batch-per-position sources:
@@ -626,7 +632,7 @@ class ThreePoolTrainer:
             )
             self.ppgd_state = PersistentPGDState(
                 module_to_c=runtime.c_per_site,
-                batch_dims=(layout.world.batch_local_ppgd, *_seq_dims_from_batch(first_batch)),
+                batch_dims=(world.batch_local_ppgd, *_seq_dims_from_batch(first_batch)),
                 device=device,
                 use_delta_component=True,
                 optimizer_cfg=ppgd_cfg.optimizer,
@@ -644,7 +650,7 @@ class ThreePoolTrainer:
 
         if (
             self.step == 0
-            and layout.my_pool == "layerwise"
+            and isinstance(ctx, LWContext)
             and pd_config.faithfulness_warmup_steps > 0
         ):
             trace(
@@ -693,19 +699,7 @@ class ThreePoolTrainer:
             for step in range(self.step, n_steps):
                 self.step = step
                 _assert_full_global_batch(batch_T, runtime.batch_global)
-                trace(f"Trainer.run: step {step}: start (pool={layout.my_pool})")
-
-                if self.optimizer is not None:
-                    # CI pool: one param group (CI fn); LW pool: one (components).
-                    # PPGD pool has no optimizer.
-                    if layout.my_pool == "ci":
-                        self.optimizer.param_groups[0]["lr"] = get_scheduled_value(
-                            step, n_steps, ci_fn_lr_schedule
-                        )
-                    elif layout.my_pool == "layerwise":
-                        self.optimizer.param_groups[0]["lr"] = get_scheduled_value(
-                            step, n_steps, components_lr_schedule
-                        )
+                trace(f"Trainer.run: step {step}: start (pool={ctx.kind})")
 
                 step_start = time.perf_counter()
                 should_log = step % cadence.train_log_every == 0
@@ -715,17 +709,20 @@ class ThreePoolTrainer:
                     assert batch_T.device == device, (
                         f"3-pool batch device drift at step {step}: {batch_T.device} vs {device}"
                     )
-                match layout.my_pool:
-                    case "ci":
+                match ctx:
+                    case CIContext():
                         assert self.optimizer is not None, (
-                            f"CI rank {layout.my_rank} missing optimizer"
+                            f"CI rank {ctx.role.rank} missing optimizer"
                         )
                         assert len(self._ci_fn_params) > 0, (
-                            f"CI rank {layout.my_rank} has no ci_fn params to optimize"
+                            f"CI rank {ctx.role.rank} has no ci_fn params to optimize"
+                        )
+                        self.optimizer.param_groups[0]["lr"] = get_scheduled_value(
+                            step, n_steps, ci_fn_lr_schedule
                         )
                         next_batch_for_prefetch = batch_T_plus_1 if step < n_steps - 1 else None
                         metrics, h_cache_ci = step_ci(
-                            layout,
+                            ctx,
                             self.component_model,
                             self.optimizer,
                             self._ci_fn_params,
@@ -736,15 +733,18 @@ class ThreePoolTrainer:
                             current_frac_of_training=step / n_steps if n_steps > 0 else 0.0,
                             should_log=should_log,
                         )
-                    case "layerwise":
+                    case LWContext():
                         assert self.optimizer is not None, (
-                            f"LW rank {layout.my_rank} missing optimizer"
+                            f"LW rank {ctx.role.rank} missing optimizer"
                         )
-                        assert layout.my_owned_sites, (
-                            f"LW rank {layout.my_rank} has no owned_sites — empty block"
+                        assert ctx.role.owned_sites, (
+                            f"LW rank {ctx.role.rank} has no owned_sites — empty block"
+                        )
+                        self.optimizer.param_groups[0]["lr"] = get_scheduled_value(
+                            step, n_steps, components_lr_schedule
                         )
                         metrics = step_layerwise(
-                            layout,
+                            ctx,
                             self.component_model,
                             self.optimizer,
                             self._all_params,
@@ -753,12 +753,12 @@ class ThreePoolTrainer:
                             self.strategy,
                             should_log=should_log,
                         )
-                    case "ppgd":
+                    case PPGDContext():
                         assert self.ppgd_state is not None, (
-                            f"PPGD rank {layout.my_rank} has no ppgd_state — lazy init failed"
+                            f"PPGD rank {ctx.role.rank} has no ppgd_state — lazy init failed"
                         )
                         metrics = step_ppgd(
-                            layout,
+                            ctx,
                             self.component_model,
                             self.ppgd_state,
                             batch_T,
@@ -792,7 +792,7 @@ class ThreePoolTrainer:
                 if step % cadence.train_log_every == 0:
                     _log_train_metrics(
                         metrics=metrics,
-                        layout=layout,
+                        ctx=ctx,
                         device=device,
                         step=step,
                         step_ms=step_ms,
@@ -810,7 +810,7 @@ class ThreePoolTrainer:
                         n_steps=eval_loop.n_steps,
                         slow_step=eval_loop.should_run_slow_eval(step),
                         metrics=list(eval_loop.metrics),
-                        layout=layout,
+                        ctx=ctx,
                         step=step,
                         device=str(device),
                         component_model=self.component_model,
@@ -880,16 +880,17 @@ def optimize_three_pool(
     )
 
 
-def _layout_fingerprint(layout: ThreePoolLayout) -> dict[str, Any]:
+def _layout_fingerprint(ctx: PoolContext) -> dict[str, Any]:
     """Compact summary of the 3-pool world layout. Compared at resume time."""
+    world = ctx.world
     return {
-        "world_size": layout.world.world_size,
-        "ci_ranks": list(layout.world.ci_ranks),
-        "ppgd_ranks": list(layout.world.ppgd_ranks),
-        "n_layerwise_blocks": len(layout.world.layerwise_block_groups),
-        "my_rank": layout.my_rank,
-        "my_pool": layout.my_pool,
-        "owned_sites": list(layout.my_owned_sites) if layout.my_pool == "layerwise" else [],
+        "world_size": world.world_size,
+        "ci_ranks": list(world.ci_ranks),
+        "ppgd_ranks": list(world.ppgd_ranks),
+        "n_layerwise_blocks": len(world.layerwise_block_groups),
+        "my_rank": ctx.role.rank,
+        "my_pool": ctx.kind,
+        "owned_sites": list(ctx.role.owned_sites) if isinstance(ctx, LWContext) else [],
     }
 
 
@@ -1057,15 +1058,15 @@ def _ci_attn_shape_or_none(pd_config: PDConfig) -> tuple[int, int] | None:
 
 
 def _decomposition_targets_for_pool(
-    layout: ThreePoolLayout, c_per_site: dict[str, int]
+    ctx: PoolContext, c_per_site: dict[str, int]
 ) -> list[DecompositionTarget]:
     """CI/PPGD pools: every site (full CI fn / full V/U replica).
     Layerwise pool: only this rank's owned sites."""
-    match layout.my_pool:
-        case "ci" | "ppgd":
-            sites = layout.world.all_sites
-        case "layerwise":
-            sites = layout.my_owned_sites
+    match ctx:
+        case CIContext() | PPGDContext():
+            sites = ctx.world.all_sites
+        case LWContext():
+            sites = ctx.role.owned_sites
     return [DecompositionTarget(module_path=s, C=c_per_site[s]) for s in sites]
 
 
@@ -1103,7 +1104,7 @@ def _seq_dims_from_batch(batch: Any) -> tuple[int, ...]:
 def _log_train_metrics(
     *,
     metrics: dict[str, float],
-    layout: ThreePoolLayout,
+    ctx: PoolContext,
     device: torch.device,
     step: int,
     step_ms: float,
@@ -1112,15 +1113,15 @@ def _log_train_metrics(
     sink: ThreePoolRunSink,
 ) -> None:
     """Aggregate per-pool metrics to rank 0 and dispatch to ``sink``."""
-    combined = aggregate_losses_to_rank0(metrics, layout, device)
-    mem_combined = aggregate_max_memory_to_rank0(layout, device)
+    combined = aggregate_losses_to_rank0(metrics, ctx, device)
+    mem_combined = aggregate_max_memory_to_rank0(ctx, device)
 
     # Reduce step_ms with MAX across LW pool (slowest LW rank is the wall-clock floor).
     step_ms_t = torch.tensor([step_ms], device=device)
-    if layout.my_pool == "layerwise":
-        dist.all_reduce(step_ms_t, op=dist.ReduceOp.MAX, group=layout.world.layerwise_pool_group)
+    if isinstance(ctx, LWContext):
+        dist.all_reduce(step_ms_t, op=dist.ReduceOp.MAX, group=ctx.world.layerwise_pool_group)
 
-    if layout.my_rank != 0 or combined is None:
+    if ctx.role.rank != 0 or combined is None:
         return
 
     if mem_combined is not None:
@@ -1132,7 +1133,7 @@ def _log_train_metrics(
         + runtime.coeff_stoch * combined["loss/stoch"]
         + runtime.coeff_ppgd * combined["loss/ppgd"]
     )
-    assert layout.my_pool == "layerwise", "rank 0 must be in LW pool (per validator)"
+    assert isinstance(ctx, LWContext), "rank 0 must be in LW pool (per validator)"
     assert optimizer is not None
     combined["schedules/lr/components"] = optimizer.param_groups[0]["lr"]
     sink.console(

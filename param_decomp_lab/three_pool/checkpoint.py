@@ -30,11 +30,11 @@ from param_decomp.ci_fns import CiConfig
 from param_decomp.ci_sigmoids import SigmoidType
 from param_decomp.component_model import ComponentModel
 from param_decomp.decomposition_targets import DecompositionTarget
-from param_decomp_lab.three_pool.layout import ThreePoolLayout
+from param_decomp_lab.three_pool.context import CIContext, LWContext, PoolContext
 
 
 def gather_full_state_dict_to_rank0(
-    layout: ThreePoolLayout,
+    ctx: PoolContext,
     component_model: ComponentModel,
     target_model: nn.Module,
     run_batch: RunBatch,
@@ -48,10 +48,11 @@ def gather_full_state_dict_to_rank0(
     Returns the state_dict on rank 0; ``None`` everywhere else. All ranks must
     call this function in sync (the gather uses ordered P2P sends/recvs).
     """
-    match layout.my_pool:
-        case "layerwise" if layout.my_rank == 0:
+    world = ctx.world
+    match ctx:
+        case LWContext() if ctx.role.rank == 0:
             return _rank0_assemble(
-                layout=layout,
+                ctx=ctx,
                 local_component_model=component_model,
                 target_model=target_model,
                 run_batch=run_batch,
@@ -60,16 +61,16 @@ def gather_full_state_dict_to_rank0(
                 c_per_site=c_per_site,
                 device=device,
             )
-        case "layerwise" if layout.my_is_block_leader:
-            for s in layout.my_owned_sites:
+        case LWContext() if ctx.role.is_block_leader:
+            for s in ctx.role.owned_sites:
                 comp = component_model.components[s]
-                dist.send(comp.V.data.contiguous(), dst=0, group=layout.world.cross_pool_p2p_group)
-                dist.send(comp.U.data.contiguous(), dst=0, group=layout.world.cross_pool_p2p_group)
+                dist.send(comp.V.data.contiguous(), dst=0, group=world.cross_pool_p2p_group)
+                dist.send(comp.U.data.contiguous(), dst=0, group=world.cross_pool_p2p_group)
             return None
-        case "ci" if layout.my_is_pool_leader:
+        case CIContext() if ctx.role.is_pool_leader:
             assert component_model.ci_fn is not None, "CI pool must keep its CI fn"
             for _, p in component_model.ci_fn.named_parameters():
-                dist.send(p.data.contiguous(), dst=0, group=layout.world.cross_pool_p2p_group)
+                dist.send(p.data.contiguous(), dst=0, group=world.cross_pool_p2p_group)
             return None
         case _:
             # Non-leader LW ranks, non-leader CI ranks, all PPGD ranks: no-op.
@@ -77,7 +78,7 @@ def gather_full_state_dict_to_rank0(
 
 
 def _rank0_assemble(
-    layout: ThreePoolLayout,
+    ctx: LWContext,
     local_component_model: ComponentModel,
     target_model: nn.Module,
     run_batch: RunBatch,
@@ -88,9 +89,8 @@ def _rank0_assemble(
 ) -> dict[str, Tensor]:
     """Build a full ComponentModel as an assembly buffer; populate from local
     rank's V/U + recvs; return its state_dict."""
-    full_targets = [
-        DecompositionTarget(module_path=s, C=c_per_site[s]) for s in layout.world.all_sites
-    ]
+    world = ctx.world
+    full_targets = [DecompositionTarget(module_path=s, C=c_per_site[s]) for s in world.all_sites]
     # Share target_model with the existing local component_model — ComponentModel
     # __init__ doesn't mutate target_model, so two ComponentModels can coexist
     # over the same target.
@@ -104,13 +104,13 @@ def _rank0_assemble(
 
     # Copy rank 0's own trained V/U into the assembly buffer.
     with torch.no_grad():
-        for s in layout.my_owned_sites:
+        for s in ctx.role.owned_sites:
             full_cm.components[s].V.data.copy_(local_component_model.components[s].V.data)
             full_cm.components[s].U.data.copy_(local_component_model.components[s].U.data)
 
     # Recv V/U from every other LW block leader. Order on both sides must match
     # the iteration order of `bg.owned_sites` for each non-rank-0 block leader.
-    for bg in layout.world.layerwise_block_groups:
+    for bg in world.layerwise_block_groups:
         if bg.leader == 0:
             continue
         for s in bg.owned_sites:
@@ -118,19 +118,19 @@ def _rank0_assemble(
             U_template = full_cm.components[s].U.data
             V_buf = torch.empty_like(V_template)
             U_buf = torch.empty_like(U_template)
-            dist.recv(V_buf, src=bg.leader, group=layout.world.cross_pool_p2p_group)
-            dist.recv(U_buf, src=bg.leader, group=layout.world.cross_pool_p2p_group)
+            dist.recv(V_buf, src=bg.leader, group=world.cross_pool_p2p_group)
+            dist.recv(U_buf, src=bg.leader, group=world.cross_pool_p2p_group)
             with torch.no_grad():
                 V_template.copy_(V_buf)
                 U_template.copy_(U_buf)
 
     # Recv CI fn params from CI pool leader. Same `named_parameters()` iteration
     # order on both sides since the CI fn is constructed from the same config.
-    ci_leader = layout.world.ci_ranks[0]
+    ci_leader = world.ci_ranks[0]
     assert full_cm.ci_fn is not None, "checkpoint reconstruction needs a CI fn"
     for _, p in full_cm.ci_fn.named_parameters():
         buf = torch.empty_like(p.data)
-        dist.recv(buf, src=ci_leader, group=layout.world.cross_pool_p2p_group)
+        dist.recv(buf, src=ci_leader, group=world.cross_pool_p2p_group)
         with torch.no_grad():
             p.data.copy_(buf)
 

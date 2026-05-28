@@ -34,7 +34,7 @@ from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.output import collect_metric_outputs
 from param_decomp.run_sink import RunSink
 from param_decomp.torch_helpers import bf16_autocast
-from param_decomp_lab.three_pool.layout import ThreePoolLayout
+from param_decomp_lab.three_pool.context import CIContext, LWContext, PoolContext, PPGDContext
 
 
 def _slice_batch_dim0(batch: Any, sl: slice) -> tuple[Any, int]:
@@ -57,7 +57,7 @@ def _slice_batch_dim0(batch: Any, sl: slice) -> tuple[Any, int]:
 def _build_metric_context_three_pool(
     batch: Any,
     *,
-    layout: ThreePoolLayout,
+    ctx: PoolContext,
     step: int,
     device: str,
     component_model: ComponentModel,
@@ -69,23 +69,27 @@ def _build_metric_context_three_pool(
     returns ``None`` on CI (after shipping CI to PPGD) and LW (no-op).
     """
     batch = move_batch_to_device(batch, device)
-    match layout.my_pool:
-        case "ci":
-            batch_local, _ = _slice_batch_dim0(batch, layout.my_batch_slice_ci())
+    match ctx:
+        case CIContext():
+            batch_local, _ = _slice_batch_dim0(
+                batch, ctx.role.batch_slice(ctx.world.batch_local_ci)
+            )
             target_output = component_model(batch_local, cache_type="input")
             ci = component_model.calc_causal_importances(
                 pre_weight_acts=target_output.cache,
                 detach_inputs=False,
                 sampling=config.sampling,
             )
-            layout.send_ci_eval_to_ppgd(ci)
+            ctx.portals.ci_eval_to_ppgd.send(ctx.role, ci)
             return None
-        case "ppgd":
-            batch_local, seq_len = _slice_batch_dim0(batch, layout.my_batch_slice_ppgd())
+        case PPGDContext():
+            batch_local, seq_len = _slice_batch_dim0(
+                batch, ctx.role.batch_slice(ctx.world.batch_local_ppgd)
+            )
             target_output = component_model(batch_local, cache_type="input")
             weight_deltas = component_model.calc_weight_deltas()
-            ci = layout.recv_ci_eval_from_ci_pool(
-                c_per_site, seq_len=seq_len, device=torch.device(device)
+            ci = ctx.portals.ci_eval_from_ci_pool.recv(
+                ctx.role, c_per_site, seq_len=seq_len, device=torch.device(device)
             )
             return MetricContext(
                 model=component_model,
@@ -102,7 +106,7 @@ def _build_metric_context_three_pool(
                 reconstruction_loss=reconstruction_loss,
                 is_eval=True,
             )
-        case "layerwise":
+        case LWContext():
             return None
 
 
@@ -112,7 +116,7 @@ def run_eval_step(
     n_steps: int,
     slow_step: bool,
     metrics: list[Metric[Any]],
-    layout: ThreePoolLayout,
+    ctx: PoolContext,
     step: int,
     device: str,
     component_model: ComponentModel,
@@ -139,10 +143,9 @@ def run_eval_step(
     # streams. The structural fix (cross_pool_p2p_group) made this barrier
     # safe without needing a drain.
     sync_across_processes()
-    active = (
-        [m for m in metrics if not (m.slow and not slow_step)] if layout.my_pool == "ppgd" else []
-    )
-    ppgd_group = layout.world.ppgd_pool_group if layout.my_pool == "ppgd" else None
+    is_ppgd = isinstance(ctx, PPGDContext)
+    active = [m for m in metrics if not (m.slow and not slow_step)] if is_ppgd else []
+    ppgd_group = ctx.world.ppgd_pool_group if is_ppgd else None
     with (
         torch.no_grad(),
         bf16_autocast(runtime_config.autocast_bf16),
@@ -152,9 +155,9 @@ def run_eval_step(
             m.reset()
         for i in range(n_steps):
             batch = next(eval_iterator)
-            ctx = _build_metric_context_three_pool(
+            metric_ctx = _build_metric_context_three_pool(
                 batch,
-                layout=layout,
+                ctx=ctx,
                 step=step,
                 device=device,
                 component_model=component_model,
@@ -162,10 +165,10 @@ def run_eval_step(
                 reconstruction_loss=reconstruction_loss,
                 c_per_site=c_per_site,
             )
-            if ctx is not None:
+            if metric_ctx is not None:
                 for m in active:
                     t0 = time.time()
-                    m.update(ctx)
+                    m.update(metric_ctx)
                     logger.info(
                         f"eval/update({type(m).__name__}) step={i} took {time.time() - t0:.2f}s"
                     )
@@ -189,12 +192,10 @@ def run_eval_step(
     sync_across_processes()
     # Only PPGD computes metrics. Ship `results` to rank 0 via the
     # all-rank cross_pool_p2p_group so rank 0 (the only real sink) can log.
-    ppgd_leader_rank = layout.world.ppgd_ranks[0]
-    payload: list[dict[str, Any] | None] = [results if layout.my_rank == ppgd_leader_rank else None]
-    dist.broadcast_object_list(
-        payload, src=ppgd_leader_rank, group=layout.world.cross_pool_p2p_group
-    )
-    if layout.my_rank == 0:
+    ppgd_leader_rank = ctx.world.ppgd_ranks[0]
+    payload: list[dict[str, Any] | None] = [results if ctx.role.rank == ppgd_leader_rank else None]
+    dist.broadcast_object_list(payload, src=ppgd_leader_rank, group=ctx.world.cross_pool_p2p_group)
+    if ctx.role.rank == 0:
         rank0_results = payload[0]
         assert rank0_results is not None
         sink.console(*(f"eval/{k}: {v}" for k, v in rank0_results.items()))

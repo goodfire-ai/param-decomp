@@ -49,12 +49,14 @@ from param_decomp.metrics.importance_minimality import (
     per_component_lp_sums,
 )
 from param_decomp.torch_helpers import bf16_autocast
-from param_decomp_lab.three_pool.layout import ThreePoolLayout
+from param_decomp_lab.three_pool.context import CIContext
+from param_decomp_lab.three_pool.layout import World
+from param_decomp_lab.three_pool.portals import all_reduce_ci_fn_grads
 from param_decomp_lab.three_pool.runtime import _ThreePoolRuntime
 
 
 def step_ci(
-    layout: ThreePoolLayout,
+    ctx: CIContext,
     component_model: ComponentModel,
     optimizer: torch.optim.Optimizer,
     ci_fn_params: list[nn.Parameter],
@@ -71,10 +73,10 @@ def step_ci(
     ``None`` and we compute it inline (phase 0). On the last step,
     ``batch_T_plus_1`` is ``None`` and the prefetch is skipped.
     """
-    assert layout.my_pool == "ci"
+    world, role, portals = ctx.world, ctx.role, ctx.portals
     device = next(component_model.parameters()).device
 
-    batch_T_local, batch_T_plus_1_local = _slice_batches_for_ci(batch_T, batch_T_plus_1, layout)
+    batch_T_local, batch_T_plus_1_local = _slice_batches_for_ci(batch_T, batch_T_plus_1, ctx)
 
     if h_cache_T is None:
         h_cache_T = _target_fwd_and_cache(component_model, batch_T_local, cfg.bf16_autocast)
@@ -84,17 +86,17 @@ def step_ci(
             pre_weight_acts=h_cache_T, sampling="continuous", detach_inputs=False
         )
     seq_len = _seq_len_from_ci(ci.lower_leaky)
-    _assert_ci_shapes(ci.lower_leaky, layout, seq_len, cfg)
+    _assert_ci_shapes(ci.lower_leaky, ctx, seq_len, cfg)
 
-    send_works_lw, send_bufs_lw = layout.async_send_ci_to_layerwise(ci.lower_leaky)
-    send_works_pgd, send_bufs_pgd = layout.async_send_ci_to_ppgd(ci.lower_leaky)
+    ci_sends_lw = portals.ci_to_lw.send(role, ci.lower_leaky)
+    ci_sends_pgd = portals.ci_to_ppgd.send(role, ci.lower_leaky)
 
     loss_imp = _importance_minimality_loss(
         ci.upper_leaky,
         current_frac_of_training,
         cfg,
-        ci_pool_group=layout.world.ci_pool_group,
-        n_ci_pool=layout.world.n_ci,
+        ci_pool_group=world.ci_pool_group,
+        n_ci_pool=world.n_ci,
     )
 
     h_cache_T_plus_1: dict[str, Tensor] | None = None
@@ -103,9 +105,9 @@ def step_ci(
             component_model, batch_T_plus_1_local, cfg.bf16_autocast
         )
 
-    g_ci_lw = layout.recv_g_ci_from_layerwise(cfg.c_per_site, seq_len, device)
-    g_ci_pgd = layout.recv_g_ci_from_ppgd(cfg.c_per_site, seq_len, device)
-    g_ci_total = _assemble_g_ci_total(g_ci_lw, g_ci_pgd, layout, cfg, seq_len)
+    g_ci_lw = portals.g_ci_from_lw.recv(role, cfg.c_per_site, seq_len, device)
+    g_ci_pgd = portals.g_ci_from_ppgd.recv(role, cfg.c_per_site, seq_len, device)
+    g_ci_total = _assemble_g_ci_total(g_ci_lw, g_ci_pgd, ctx, cfg, seq_len)
 
     optimizer.zero_grad(set_to_none=True)
     # Diagnostic: sync before the bwd so phase("ci/8a") measures only the bwd
@@ -114,22 +116,21 @@ def step_ci(
     # wall was dominated by pending stream work, not by the bwd. Remove after diagnosis.
     if os.environ.get("PD_SYNC_BEFORE_8A", "").strip() in ("1", "true", "yes"):
         torch.cuda.synchronize()
-    _fused_backward_through_ci_fn(loss_imp, ci, g_ci_total, layout, cfg)
+    _fused_backward_through_ci_fn(loss_imp, ci, g_ci_total, world, cfg)
     _maybe_emit_ci_fn_bwd_breakdown(component_model)
 
-    layout.all_reduce_ci_fn_grads(ci_fn_params)
+    all_reduce_ci_fn_grads(world, ci_fn_params)
     if cfg.grad_clip_norm_ci_fn is not None:
         cross_pool_clip_grad_norm(
             ci_fn_params,
             cfg.grad_clip_norm_ci_fn,
-            group=layout.world.ci_pool_group,
-            n_replicas=layout.world.n_ci,
+            group=world.ci_pool_group,
+            n_replicas=world.n_ci,
         )
     optimizer.step()
 
-    for w in [*send_works_lw, *send_works_pgd]:
-        w.wait()
-    del send_bufs_lw, send_bufs_pgd
+    ci_sends_lw.wait()
+    ci_sends_pgd.wait()
 
     # imp is already globally aggregated inside ``_importance_minimality_loss``
     # (per_component_sums + n_examples SUM-reduced across CI pool), so every CI
@@ -139,21 +140,21 @@ def step_ci(
     # ``.item()`` is a CPU↔GPU sync — only pay it on steps we actually log to.
     if should_log:
         imp_value = loss_imp.item()
-        metrics = {"loss/imp": imp_value, "_raw/imp_num": imp_value / layout.world.n_ci}
+        metrics = {"loss/imp": imp_value, "_raw/imp_num": imp_value / world.n_ci}
     else:
         metrics = {}
     return metrics, h_cache_T_plus_1
 
 
 def _slice_batches_for_ci(
-    batch_T: Any, batch_T_plus_1: Any | None, layout: ThreePoolLayout
+    batch_T: Any, batch_T_plus_1: Any | None, ctx: CIContext
 ) -> tuple[Any, Any | None]:
     """Pull this CI rank's DP shard of batch T and T+1.
 
     CI pool is multi-rank DP across the global batch; every CI rank gets a
     disjoint slice.
     """
-    sl = layout.my_batch_slice_ci()
+    sl = ctx.role.batch_slice(ctx.world.batch_local_ci)
     batch_T_local = batch_T[sl] if isinstance(batch_T, Tensor) else batch_T
     batch_T_plus_1_local = (
         batch_T_plus_1[sl]
@@ -172,7 +173,7 @@ def _seq_len_from_ci(ci_lower: dict[str, Tensor]) -> int:
 
 def _assert_ci_shapes(
     ci_lower: dict[str, Tensor],
-    layout: ThreePoolLayout,
+    ctx: CIContext,
     seq_len: int,
     cfg: _ThreePoolRuntime,
 ) -> None:
@@ -180,7 +181,7 @@ def _assert_ci_shapes(
 
     Catches misconfigured ``c_per_site`` or a wrong per-rank batch slice fast.
     """
-    batch_local_ci = layout.world.batch_local_ci
+    batch_local_ci = ctx.world.batch_local_ci
     for s, c in cfg.c_per_site.items():
         t = ci_lower[s]
         assert t.shape == (batch_local_ci, seq_len, c), (
@@ -192,7 +193,7 @@ def _assert_ci_shapes(
 def _assemble_g_ci_total(
     g_ci_lw: dict[str, Tensor],
     g_ci_pgd: dict[str, Tensor],
-    layout: ThreePoolLayout,
+    ctx: CIContext,
     cfg: _ThreePoolRuntime,
     seq_len: int,
 ) -> dict[str, Tensor]:
@@ -201,9 +202,9 @@ def _assemble_g_ci_total(
     Both summands live on this CI rank's batch slice [B_local_ci, S, C_s].
     Loss coefficients were already baked in by LW/PPGD before they bwd'd.
     """
-    batch_local_ci = layout.world.batch_local_ci
+    batch_local_ci = ctx.world.batch_local_ci
     g_ci_total: dict[str, Tensor] = {}
-    for s in layout.world.all_sites:
+    for s in ctx.world.all_sites:
         c = cfg.c_per_site[s]
         lw, pgd = g_ci_lw[s], g_ci_pgd[s]
         assert lw.shape == (batch_local_ci, seq_len, c), (
@@ -245,7 +246,7 @@ def _fused_backward_through_ci_fn(
     loss_imp: Tensor,
     ci: CIOutputs,
     g_ci_total: dict[str, Tensor],
-    layout: ThreePoolLayout,
+    world: World,
     cfg: _ThreePoolRuntime,
 ) -> None:
     """Phase ci/8. Backward through the CI fn graph.
@@ -266,8 +267,8 @@ def _fused_backward_through_ci_fn(
     """
     assert loss_imp.dim() == 0, f"loss_imp must be scalar; got {loss_imp.shape}"
     scaled_imp = cfg.coeff_imp * loss_imp
-    lower_leaky_tensors = [ci.lower_leaky[s] for s in layout.world.all_sites]
-    g_ci_total_seeds = [g_ci_total[s] for s in layout.world.all_sites]
+    lower_leaky_tensors = [ci.lower_leaky[s] for s in world.all_sites]
+    g_ci_total_seeds = [g_ci_total[s] for s in world.all_sites]
     torch.autograd.backward(
         tensors=lower_leaky_tensors,
         grad_tensors=g_ci_total_seeds,

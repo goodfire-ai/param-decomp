@@ -35,7 +35,7 @@ Memory uses MAX (the bottleneck rank is what matters).
 import torch
 import torch.distributed as dist
 
-from param_decomp_lab.three_pool.layout import ThreePoolLayout
+from param_decomp_lab.three_pool.context import CIContext, LWContext, PoolContext, PPGDContext
 
 LW_RAW_KEYS: tuple[str, ...] = (
     "_raw/faith_num",
@@ -48,7 +48,7 @@ PPGD_RAW_KEYS: tuple[str, ...] = ("_raw/ppgd_num", "_raw/ppgd_den")
 
 
 def aggregate_max_memory_to_rank0(
-    layout: ThreePoolLayout,
+    ctx: PoolContext,
     device: torch.device,
 ) -> dict[str, float] | None:
     """MAX-reduce CUDA peak memory within each pool; non-rank-0 pool leaders
@@ -57,74 +57,62 @@ def aggregate_max_memory_to_rank0(
     Returns ``{mem/<pool>_peak_gb for pool in (lw, ci, ppgd)}`` on rank 0,
     ``None`` everywhere else.
     """
+    world = ctx.world
     peak_gb = torch.cuda.max_memory_allocated() / 1e9
     val = torch.tensor([peak_gb], device=device)
-    match layout.my_pool:
-        case "layerwise":
-            dist.all_reduce(val, op=dist.ReduceOp.MAX, group=layout.world.layerwise_pool_group)
-            if layout.my_rank == 0:
+    match ctx:
+        case LWContext():
+            dist.all_reduce(val, op=dist.ReduceOp.MAX, group=world.layerwise_pool_group)
+            if ctx.role.rank == 0:
                 lw_peak = val.item()
                 ci_val = torch.empty(1, device=device)
                 pgd_val = torch.empty(1, device=device)
-                dist.recv(
-                    ci_val, src=layout.world.ci_ranks[0], group=layout.world.cross_pool_p2p_group
-                )
-                dist.recv(
-                    pgd_val,
-                    src=layout.world.ppgd_ranks[0],
-                    group=layout.world.cross_pool_p2p_group,
-                )
+                dist.recv(ci_val, src=world.ci_ranks[0], group=world.cross_pool_p2p_group)
+                dist.recv(pgd_val, src=world.ppgd_ranks[0], group=world.cross_pool_p2p_group)
                 return {
                     "mem/lw_peak_gb": lw_peak,
                     "mem/ci_peak_gb": ci_val.item(),
                     "mem/ppgd_peak_gb": pgd_val.item(),
                 }
             return None
-        case "ci":
-            dist.all_reduce(val, op=dist.ReduceOp.MAX, group=layout.world.ci_pool_group)
-            if layout.my_is_pool_leader:
-                dist.send(val, dst=0, group=layout.world.cross_pool_p2p_group)
+        case CIContext():
+            dist.all_reduce(val, op=dist.ReduceOp.MAX, group=world.ci_pool_group)
+            if ctx.role.is_pool_leader:
+                dist.send(val, dst=0, group=world.cross_pool_p2p_group)
             return None
-        case "ppgd":
-            dist.all_reduce(val, op=dist.ReduceOp.MAX, group=layout.world.ppgd_pool_group)
-            if layout.my_is_pool_leader:
-                dist.send(val, dst=0, group=layout.world.cross_pool_p2p_group)
+        case PPGDContext():
+            dist.all_reduce(val, op=dist.ReduceOp.MAX, group=world.ppgd_pool_group)
+            if ctx.role.is_pool_leader:
+                dist.send(val, dst=0, group=world.cross_pool_p2p_group)
             return None
 
 
 def aggregate_losses_to_rank0(
     loss_dict: dict[str, float],
-    layout: ThreePoolLayout,
+    ctx: PoolContext,
     device: torch.device,
 ) -> dict[str, float] | None:
     """SUM raw (num, den) ingredients within each pool, ship CI's and PPGD's
     sums to rank 0, and finalize the global ``loss/*`` scalars there.
     """
-    match layout.my_pool:
-        case "layerwise":
+    world = ctx.world
+    match ctx:
+        case LWContext():
             keys = list(LW_RAW_KEYS)
-            n_per_block = layout.world.n_per_block
+            n_per_block = world.n_per_block
             vals = torch.tensor(
                 [loss_dict[k] / n_per_block for k in keys], device=device, dtype=torch.float64
             )
-            dist.all_reduce(vals, op=dist.ReduceOp.SUM, group=layout.world.layerwise_pool_group)
-            if layout.my_rank == 0:
+            dist.all_reduce(vals, op=dist.ReduceOp.SUM, group=world.layerwise_pool_group)
+            if ctx.role.rank == 0:
                 lw = {k: vals[i].item() for i, k in enumerate(keys)}
                 ci_keys = list(CI_RAW_KEYS)
                 ci_vals = torch.empty(len(ci_keys), device=device, dtype=torch.float64)
-                dist.recv(
-                    ci_vals,
-                    src=layout.world.ci_ranks[0],
-                    group=layout.world.cross_pool_p2p_group,
-                )
+                dist.recv(ci_vals, src=world.ci_ranks[0], group=world.cross_pool_p2p_group)
                 ci = {k: ci_vals[i].item() for i, k in enumerate(ci_keys)}
                 pgd_keys = list(PPGD_RAW_KEYS)
                 pgd_vals = torch.empty(len(pgd_keys), device=device, dtype=torch.float64)
-                dist.recv(
-                    pgd_vals,
-                    src=layout.world.ppgd_ranks[0],
-                    group=layout.world.cross_pool_p2p_group,
-                )
+                dist.recv(pgd_vals, src=world.ppgd_ranks[0], group=world.cross_pool_p2p_group)
                 pgd = {k: pgd_vals[i].item() for i, k in enumerate(pgd_keys)}
                 return {
                     "loss/faith": lw["_raw/faith_num"] / lw["_raw/faith_den"],
@@ -133,17 +121,17 @@ def aggregate_losses_to_rank0(
                     "loss/ppgd": pgd["_raw/ppgd_num"] / pgd["_raw/ppgd_den"],
                 }
             return None
-        case "ci":
+        case CIContext():
             keys = list(CI_RAW_KEYS)
             vals = torch.tensor([loss_dict[k] for k in keys], device=device, dtype=torch.float64)
-            dist.all_reduce(vals, op=dist.ReduceOp.SUM, group=layout.world.ci_pool_group)
-            if layout.my_is_pool_leader:
-                dist.send(vals, dst=0, group=layout.world.cross_pool_p2p_group)
+            dist.all_reduce(vals, op=dist.ReduceOp.SUM, group=world.ci_pool_group)
+            if ctx.role.is_pool_leader:
+                dist.send(vals, dst=0, group=world.cross_pool_p2p_group)
             return None
-        case "ppgd":
+        case PPGDContext():
             keys = list(PPGD_RAW_KEYS)
             vals = torch.tensor([loss_dict[k] for k in keys], device=device, dtype=torch.float64)
-            dist.all_reduce(vals, op=dist.ReduceOp.SUM, group=layout.world.ppgd_pool_group)
-            if layout.my_is_pool_leader:
-                dist.send(vals, dst=0, group=layout.world.cross_pool_p2p_group)
+            dist.all_reduce(vals, op=dist.ReduceOp.SUM, group=world.ppgd_pool_group)
+            if ctx.role.is_pool_leader:
+                dist.send(vals, dst=0, group=world.cross_pool_p2p_group)
             return None

@@ -425,7 +425,7 @@ def _maybe_build_torch_profiler(trainer: ThreePoolTrainer) -> torch.profiler.pro
     if not prof_ranks_env:
         return None
     prof_ranks = {int(r) for r in prof_ranks_env.split(",") if r.strip()}
-    my_rank = trainer.layout.my_rank
+    my_rank = trainer.ctx.role.rank
     if my_rank not in prof_ranks:
         return None
     out_dir = Path(os.environ["PD_TORCH_PROFILE_OUT"])
@@ -437,7 +437,7 @@ def _maybe_build_torch_profiler(trainer: ThreePoolTrainer) -> torch.profiler.pro
     with_modules = os.environ.get("PD_TORCH_PROFILE_MODULES", "0") == "1"
     record_shapes = os.environ.get("PD_TORCH_PROFILE_SHAPES", "0") == "1"
 
-    pool = trainer.layout.my_pool
+    pool = trainer.ctx.kind
     trace_path = out_dir / f"trace_{pool}_rank{my_rank}.json"
     logger.info(
         f"[torch-profile] rank={my_rank} pool={pool} → {trace_path} "

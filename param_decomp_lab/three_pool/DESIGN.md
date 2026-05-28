@@ -13,6 +13,48 @@ sites are sharded across the LW pool.
 | **Layerwise** | V/U + V/U optimizer state    | by site (block groups) + DP across batch within a group | Layerwise stoch recon + faithfulness. Same shape as today's Pool A minus the CI fn. |
 | **PPGD**   | full V/U replica + PPGD sources | DP across batch (replicated V/U)   | Full-model PPGD. Same as today's Pool B. Inner-loop warmup owns source updates; final recon backward only seeds V/U + CI grads. |
 
+## Code structure (typed-DAG layering)
+
+The subsystem is layered so the SPMD program reads like its dependency DAG and
+invalid states / operations / orderings are type-errors rather than runtime
+asserts:
+
+| File | What it owns |
+|---|---|
+| `layout.py` | `World` — declarative topology + every process group + all batch-split routing math. Identical on every rank. No per-rank fields. |
+| `role.py` | `PoolRole = CIRole \| LWRole \| PPGDRole` — this rank's view. Each variant carries ONLY the fields valid for its pool (no `\| None` bag). Replaces the old `ThreePoolLayout` optional-attr bag + `assert self.my_pool == ...` guards. |
+| `portals.py` | One typed object per cross-pool DAG edge. Each defines its payload, routing, pack/unpack, process group, and reduction/placement ONCE; sender + receiver are two methods on the SAME class, so they can't drift. Also the three in-pool collectives. Per-pool bundles (`CIPortals` / `LWPortals` / `PPGDPortals`) expose only the edges that pool participates in. |
+| `context.py` | `PoolContext = CIContext \| LWContext \| PPGDContext` — bundles `world` + `role` + that pool's portal bundle. The trainer builds one and `match`es it; each step fn receives its specific context type. |
+| `step_{ci,layerwise,ppgd}.py` | The per-pool step bodies. Take their specific `*Context`, drive their portals. |
+| `optimize.py` | `ThreePoolTrainer` — wiring + per-step `match ctx:` dispatch. |
+| `reductions.py`, `checkpoint.py`, `eval_step.py` | Cross-pool logging / checkpoint-gather / eval, dispatched by `match ctx:`. |
+
+### The six cross-pool edges (one portal class each)
+
+| Edge | Portal | Payload |
+|---|---|---|
+| CI → LW   | `CiValuesToLayerwise` | per-site CI values (owned sites, LW-rank batch sub-slice) |
+| CI → PPGD | `CiValuesToPPGD`      | full-model CI values (PPGD-rank batch sub-slice) |
+| LW → CI   | `GradCiFromLayerwise` | per-owned-site CI grads (per-LW-rank slice, stitched on CI side) |
+| PPGD → CI | `GradCiFromPPGD`      | full-model CI grads (per-PPGD-rank slice, stitched on CI side) |
+| PPGD → LW | `GradVuFromPPGD`      | per-owned-site V/U grads (after PPGD in-pool sum-reduce) |
+| LW → PPGD | `UpdatedVuToPPGD`     | updated V/U (leader-rooted broadcast over {leader} ∪ PPGD) |
+
+Eval adds `CiOutputsEvalToPPGD` (CI → PPGD, full `CIOutputs`).
+
+### What became unrepresentable
+
+* **Wrong-pool comm.** An LW step holds only `LWPortals`; it has no handle to
+  the CI pool's `GradCiFromPPGD.recv` or to `UpdatedVuToPPGD.post_recv`. The
+  old `assert self.my_pool == "..."` at the top of each comm method is gone —
+  the call simply doesn't typecheck.
+* **Reading a field that doesn't exist for this pool.** `CIRole` has no
+  `owned_sites`; `LWRole` has no `slice_idx`. The old
+  `my_ci_slice_idx: int \| None` + `assert ... is not None` pattern (which
+  could only fail at runtime) is now a type error.
+* **Send/recv pack-layout drift.** Each edge's pack/unpack lives in one class,
+  so a change to the wire layout updates both halves at once.
+
 ## Per-step dependency graph (steady state, step T)
 
 Each pool's column reads top-to-bottom in time. Solid arrows are within-step

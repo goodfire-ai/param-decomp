@@ -47,13 +47,14 @@ from torch import Tensor
 from param_decomp.component_model import ComponentModel
 from param_decomp.metrics.persistent_pgd_state import PersistentPGDState
 from param_decomp.torch_helpers import bf16_autocast
-from param_decomp_lab.three_pool.layout import ThreePoolLayout
+from param_decomp_lab.three_pool.context import PPGDContext
 from param_decomp_lab.three_pool.loss_strategy import LayerwiseLossStrategy
+from param_decomp_lab.three_pool.portals import sum_reduce_ppgd_grads
 from param_decomp_lab.three_pool.runtime import _ThreePoolRuntime
 
 
 def step_ppgd(
-    layout: ThreePoolLayout,
+    ctx: PPGDContext,
     component_model: ComponentModel,
     ppgd_state: PersistentPGDState,
     batch: Any,
@@ -65,25 +66,25 @@ def step_ppgd(
     should_log: bool,
 ) -> dict[str, float]:
     """One PPGD step: A → D → blocking recv of updated V/U from LW → copy in."""
-    assert layout.my_pool == "ppgd"
+    world, role, portals = ctx.world, ctx.role, ctx.portals
     device = next(component_model.parameters()).device
-    all_sites = list(layout.world.all_sites)
+    all_sites = list(world.all_sites)
 
     ppgd_state.update_lr(step=step, total_steps=n_steps)
-    batch_local, seq_len = _slice_batch_for_ppgd(batch, layout)
+    batch_local, seq_len = _slice_batch_for_ppgd(batch, ctx)
     v_templates, u_templates = _vu_templates(component_model, all_sites)
 
     with strategy.context(component_model.target_model):
-        ci_recv_pending = layout.async_recv_ci_from_ci_pool_ppgd(
-            cfg.c_per_site, seq_len=seq_len, device=device
+        ci_recv_pending = portals.ci_from_ci_pool.post_recv(
+            role, cfg.c_per_site, seq_len=seq_len, device=device
         )
         with torch.no_grad(), bf16_autocast(cfg.bf16_autocast):
             target_out = component_model(batch_local).detach()
 
         weight_deltas = component_model.calc_weight_deltas()
-        ci_recv = ci_recv_pending.wait_and_unpack()
+        ci_recv = ci_recv_pending.wait()
         ci_scratch = _releaf_ci_fp32_for_grads(ci_recv)
-        _assert_ci_scratch_shapes(ci_scratch, layout, seq_len, cfg)
+        _assert_ci_scratch_shapes(ci_scratch, ctx, seq_len, cfg)
 
         # No reduce hook: per-batch-per-position sources are independent per batch
         # element, so each PPGD rank's slice is self-contained (asserted at state
@@ -124,7 +125,7 @@ def step_ppgd(
     )
 
     n_examples_local = n_examples
-    n_ppgd_ranks = layout.world.n_ppgd
+    n_ppgd_ranks = world.n_ppgd
 
     # V/U and CI reproduce the serial gradient of the canonical PPGD loss
     #   coeff_ppgd * recon_sum_loss / n_examples_global,
@@ -145,14 +146,14 @@ def step_ppgd(
     # CI grad send first: peer-to-peer (each PPGD rank → its paired CI rank), no
     # in-pool reduce needed, and CI's recv is on the critical path. Sequencing it
     # behind the V/U reduce wasted ~110 ms of CI wait time.
-    layout.send_g_ci_to_ci_pool_ppgd(ci_grads)
+    portals.g_ci_to_ci_pool.send(role, ci_grads)
     # V/U grads: SUM-reduce across the pool to reassemble the full-batch gradient
     # (the per-rank scale already carries 1/n_ppgd_ranks). Sources are NOT bundled
     # here: their cross-rank reduction is scope-dependent (per_batch_per_position
     # is per-rank-independent and must not be reduced; a blind SUM would mix
     # unrelated per-position sources).
-    layout.sum_reduce_ppgd_grads([*v_grads.values(), *u_grads.values()])
-    layout.send_g_vu_to_layerwise(v_grads, u_grads)
+    sum_reduce_ppgd_grads(world, [*v_grads.values(), *u_grads.values()])
+    portals.g_vu_to_lw.send(role, v_grads, u_grads)
     # Final (N+1)'th source step. per_batch_per_position sources are per-rank
     # independent, so no cross-rank reduce — step on this rank's own grads,
     # exactly as warmup does.
@@ -171,14 +172,14 @@ def step_ppgd(
     else:
         metrics = {}
 
-    v_new, u_new = layout.recv_updated_vu_from_layerwise(v_templates, u_templates)
+    v_new, u_new = portals.updated_vu_from_lw.post_recv(v_templates, u_templates).wait()
     _copy_vu_into_model_in_place(component_model, v_new, u_new, all_sites)
     return metrics
 
 
-def _slice_batch_for_ppgd(batch: Any, layout: ThreePoolLayout) -> tuple[Any, int]:
+def _slice_batch_for_ppgd(batch: Any, ctx: PPGDContext) -> tuple[Any, int]:
     """Pull this PPGD rank's batch slice + extract its seq_len."""
-    sl = layout.my_batch_slice_ppgd()
+    sl = ctx.role.batch_slice(ctx.world.batch_local_ppgd)
     batch_local = batch[sl] if isinstance(batch, Tensor) else batch
     if isinstance(batch_local, Tensor):
         seq_len = batch_local.shape[1] if batch_local.ndim >= 2 else 1
@@ -209,7 +210,7 @@ def _releaf_ci_fp32_for_grads(ci_recv: dict[str, Tensor]) -> dict[str, Tensor]:
 
 def _assert_ci_scratch_shapes(
     ci_scratch: dict[str, Tensor],
-    layout: ThreePoolLayout,
+    ctx: PPGDContext,
     seq_len: int,
     cfg: _ThreePoolRuntime,
 ) -> None:
@@ -217,7 +218,7 @@ def _assert_ci_scratch_shapes(
 
     Catches a wrong ``c_per_site`` config or a per-rank batch mismatch fast.
     """
-    batch_local_ppgd = layout.world.batch_local_ppgd
+    batch_local_ppgd = ctx.world.batch_local_ppgd
     for s, c in cfg.c_per_site.items():
         t = ci_scratch[s]
         assert t.shape == (batch_local_ppgd, seq_len, c), (
