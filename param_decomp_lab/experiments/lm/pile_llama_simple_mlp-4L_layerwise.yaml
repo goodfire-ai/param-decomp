@@ -6,10 +6,10 @@ pd:
     fn_type: global_shared_transformer
     hidden_dims: null
     simple_transformer_ci_cfg:
-      d_model: 512
+      d_model: 1024
       n_blocks: 5
       mlp_hidden_dim:
-      - 2048
+      - 4096
       attn_config:
         n_heads: 8
         max_len: 512
@@ -51,17 +51,15 @@ pd:
   faithfulness_warmup_weight_decay: 0.0
   loss_metrics:
   - type: ImportanceMinimalityLoss
-    coeff: 0.0001
+    coeff: 0.00001
     pnorm: 2.0
     beta: 0.5
     p_anneal_start_frac: 0.0
     p_anneal_final_p: 0.4
     p_anneal_end_frac: 1.0
     eps: 1.0e-12
-  - type: StochasticReconSubsetLoss
+  - type: StochasticReconLayerwiseLoss
     coeff: 0.5
-    routing:
-      type: uniform_k_subset
   - type: FaithfulnessLoss
     coeff: 10000000.0
 cadence:
