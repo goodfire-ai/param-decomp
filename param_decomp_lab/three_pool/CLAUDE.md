@@ -8,9 +8,12 @@ docstring in `optimize.py` for the data-handling contract.
 | File | What it covers |
 |---|---|
 | `optimize.py` | `ThreePoolTrainer` + `optimize_three_pool`; the training loop, `snapshot`/`from_snapshot`, config validation |
-| `layout.py` | `World` / `ThreePoolLayout` topology + cross-pool comms; `build_world` constructs every process group |
+| `layout.py` | `World` topology; `build_world` constructs every process group (threading `pg_timeout` into each) |
 | `checkpoint.py` | `gather_full_state_dict_to_rank0` — rebuilds the full model state on rank 0 |
 | `config.py` | `ThreePoolConfig` + topology validation |
+| `role.py` | `PoolRole = CIRole \| LWRole \| PPGDRole` — this rank's pool role; per-pool fields are union variants, not optional attrs |
+| `context.py` | `PoolContext = CIContext \| LWContext \| PPGDContext` — `world` + `role` + this pool's portals; the trainer matches on it to dispatch step fns |
+| `portals.py` | Cross-pool exchanges as typed objects — one class per DAG edge (pack layout + routing + dtype + PG in one place) |
 | `step_{ci,layerwise,ppgd}.py` | per-pool step functions |
 | `eval_step.py` | 3-pool eval pass (PPGD pool runs metrics; others barrier through) |
 
