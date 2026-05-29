@@ -968,6 +968,11 @@ def _rank_invariant_fingerprint_core(fp: dict[str, Any]) -> dict[str, Any]:
     stored in the snapshot and used to rebuild the trainer), so comparing the
     core here is sufficient.
     """
+    # TODO(remove once p-df5b9fbd is past step 10000): the `n_layerwise_blocks`
+    # fallback exists only to read the pre-#536 rank-local fingerprint baked into
+    # p-a5b667e9's training_5000.pth. Once the resumed run has written a
+    # new-format checkpoint, no old-format snapshot is in use — drop this branch
+    # and the old-format clause in the docstring, keeping only the new-format read.
     n_blocks = fp.get("n_layerwise_blocks")
     if n_blocks is None:
         n_blocks = len(fp["layerwise_blocks"])
