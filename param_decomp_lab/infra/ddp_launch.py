@@ -87,7 +87,9 @@ def build_ddp_launch(
             base_command,
         ]
     )
-    srun_prefix = f"srun --nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1"
+    srun_prefix = (
+        f"srun --nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1 --kill-on-bad-exit=1"
+    )
     command = f"{srun_prefix} bash -c {shlex.quote(f'{setup}\n{torchrun_cmd}')}"
     return DDPLaunch(command=command, n_nodes=n_nodes, gpus_per_node=GPUS_PER_NODE, env=DDP_ENV)
 
