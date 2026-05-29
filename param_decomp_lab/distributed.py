@@ -18,6 +18,7 @@ from param_decomp.distributed import (
     DistributedState,
     is_distributed,
     is_local_main_process,
+    is_main_process,
     sync_across_processes,
 )
 from param_decomp.log import logger
@@ -138,3 +139,19 @@ def ensure_cached_and_call[**P, T](fn: Callable[P, T], *args: P.args, **kwargs: 
         sync_across_processes()
         return fn(*args, **kwargs)
     return fn(*args, **kwargs)
+
+
+def broadcast_object_from_main[T](make_obj: Callable[[], T]) -> T:
+    """Compute `make_obj()` on rank 0 only and broadcast the result to every rank.
+
+    For work that must happen exactly once across the whole job and whose result every
+    rank then needs — e.g. resolving a remote dataset file list, where having all ranks
+    do it concurrently hammers the source. Outside distributed, `make_obj` runs locally.
+    """
+    if not is_distributed():
+        return make_obj()
+    holder: list[T | None] = [make_obj() if is_main_process() else None]
+    dist.broadcast_object_list(holder, src=0, device=torch.device(get_device()))
+    obj = holder[0]
+    assert obj is not None, "rank 0 produced None; broadcast object must be non-None"
+    return obj

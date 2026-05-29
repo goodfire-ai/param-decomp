@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from datasets import Dataset, IterableDataset, load_dataset
+from datasets import Dataset, IterableDataset, load_dataset, load_dataset_builder
 from numpy.typing import NDArray
 from pydantic import Field, PositiveInt
 from torch import Tensor
@@ -15,6 +15,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizer
 from param_decomp.base_config import BaseConfig
 from param_decomp.distributed import DistributedState
 from param_decomp.log import logger
+from param_decomp_lab.distributed import broadcast_object_from_main
 
 
 class LMDataConfig(BaseConfig):
@@ -142,6 +143,19 @@ def _prepare_lm_dataset(
     )
 
 
+def _resolve_split_data_files(dataset_name: str, split: str) -> list[str]:
+    """Resolve a hub dataset's data files for `split` into explicit `hf://…@<rev>/…` paths.
+
+    Runs the recursive repo-tree glob exactly once (the builder pins the commit revision
+    into each returned path). Callers pass the result back as `load_dataset(data_files=…)`
+    so other ranks skip the glob.
+    """
+    data_files = load_dataset_builder(dataset_name).config.data_files
+    assert data_files is not None, f"{dataset_name} exposes no resolvable data_files"
+    assert split in data_files, f"split {split!r} not in resolved data_files {list(data_files)}"
+    return list(data_files[split])
+
+
 def create_lm_data_loader(
     cfg: LMDataConfig,
     *,
@@ -152,8 +166,16 @@ def create_lm_data_loader(
     collate_fn: Callable[..., Any] | None = None,
 ) -> tuple[DataLoader[Any], PreTrainedTokenizer]:
     """Create an LM token dataloader from a HuggingFace dataset split."""
+    # Resolve the data-file list once on rank 0 and broadcast it, then load with explicit
+    # `data_files`. Letting every rank resolve the glob itself makes each one recursively
+    # paginate the repo tree against the HF Hub API; at multi-node scale the concurrent
+    # `list_repo_tree` requests trip a 429 rate-limit. Explicit `data_files` skips the glob.
+    resolved_data_files = broadcast_object_from_main(
+        lambda: _resolve_split_data_files(cfg.dataset_name, split)
+    )
     dataset = load_dataset(
         cfg.dataset_name,
+        data_files=resolved_data_files,
         streaming=cfg.streaming,
         split=split,
         trust_remote_code=False,
