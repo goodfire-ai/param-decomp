@@ -1,0 +1,983 @@
+[2026-05-29T16:22:08.666] error: Unable to create TMPDIR [/tmp/claude-oli/claude-100011]: No such file or directory
+[2026-05-29T16:22:08.666] error: Setting TMPDIR to /tmp
+W0529 16:22:11.283000 832710 torch/distributed/run.py:774] 
+W0529 16:22:11.283000 832710 torch/distributed/run.py:774] *****************************************
+W0529 16:22:11.283000 832710 torch/distributed/run.py:774] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0529 16:22:11.283000 832710 torch/distributed/run.py:774] *****************************************
+init_distributed: using backend='nccl'
+init_distributed: world_size=6, rank=3, local_rank=3, device=device(type='cuda', index=3)
+init_distributed: using backend='nccl'
+init_distributed: world_size=6, rank=0, local_rank=0, device=device(type='cuda', index=0)
+init_distributed: using backend='nccl'
+init_distributed: world_size=6, rank=5, local_rank=5, device=device(type='cuda', index=5)
+init_distributed: using backend='nccl'
+init_distributed: world_size=6, rank=4, local_rank=4, device=device(type='cuda', index=4)
+init_distributed: using backend='nccl'
+init_distributed: world_size=6, rank=1, local_rank=1, device=device(type='cuda', index=1)
+init_distributed: using backend='nccl'
+init_distributed: world_size=6, rank=2, local_rank=2, device=device(type='cuda', index=2)
+init_distributed: MASTER_ADDR: slurm-b200-128-045.slurm-compute.tenant-slurm.svc.cluster.local, MASTER_PORT: 34861
+init_distributed: MASTER_ADDR: slurm-b200-128-045.slurm-compute.tenant-slurm.svc.cluster.local, MASTER_PORT: 34861
+NCCL version 2.27.3+cuda12.9
+init_distributed: MASTER_ADDR: slurm-b200-128-045.slurm-compute.tenant-slurm.svc.cluster.local, MASTER_PORT: 34861
+init_distributed: MASTER_ADDR: slurm-b200-128-045.slurm-compute.tenant-slurm.svc.cluster.local, MASTER_PORT: 34861
+init_distributed: MASTER_ADDR: slurm-b200-128-045.slurm-compute.tenant-slurm.svc.cluster.local, MASTER_PORT: 34861
+init_distributed: MASTER_ADDR: slurm-b200-128-045.slurm-compute.tenant-slurm.svc.cluster.local, MASTER_PORT: 34861
+Distributed state: DistributedState(rank=0, world_size=6, local_rank=0, backend='nccl')
+loading HF weights into vendored unfused GPT2Simple: openai-community/gpt2
+loading HF weights into vendored unfused GPT2Simple: openai-community/gpt2
+Train+eval logs saved to directory: /mnt/data/artifacts/mechanisms/param-decomp/decompositions/p-livee2e02
+[trace rank=1 +  15241.7ms] ThreePoolTrainer.__init__: enter
+[trace rank=1 +  15304.9ms] ThreePoolTrainer.__init__: building runtime
+[trace rank=1 +  15305.7ms] ThreePoolTrainer.__init__: build_world: enter
+[build_world rank=1] before ci_pool_group ranks=[4]
+[trace rank=0 +  15322.8ms] ThreePoolTrainer.__init__: enter
+[trace rank=0 +  15325.5ms] ThreePoolTrainer.__init__: building runtime
+[trace rank=0 +  15326.3ms] ThreePoolTrainer.__init__: build_world: enter
+[build_world rank=0] before ci_pool_group ranks=[4]
+[trace rank=5 +  15465.9ms] ThreePoolTrainer.__init__: enter
+[trace rank=5 +  15468.5ms] ThreePoolTrainer.__init__: building runtime
+[trace rank=5 +  15469.2ms] ThreePoolTrainer.__init__: build_world: enter
+[build_world rank=5] before ci_pool_group ranks=[4]
+[trace rank=3 +  15469.9ms] ThreePoolTrainer.__init__: enter
+[trace rank=3 +  15472.5ms] ThreePoolTrainer.__init__: building runtime
+[trace rank=3 +  15473.2ms] ThreePoolTrainer.__init__: build_world: enter
+[build_world rank=3] before ci_pool_group ranks=[4]
+[trace rank=2 +  15484.4ms] ThreePoolTrainer.__init__: enter
+[trace rank=2 +  15487.0ms] ThreePoolTrainer.__init__: building runtime
+[trace rank=2 +  15487.8ms] ThreePoolTrainer.__init__: build_world: enter
+[build_world rank=2] before ci_pool_group ranks=[4]
+[trace rank=4 +  15500.3ms] ThreePoolTrainer.__init__: enter
+[trace rank=4 +  15502.9ms] ThreePoolTrainer.__init__: building runtime
+[trace rank=4 +  15503.6ms] ThreePoolTrainer.__init__: build_world: enter
+[build_world rank=4] before ci_pool_group ranks=[4]
+[build_world rank=2] after  ci_pool_group ranks=[4][build_world rank=3] after  ci_pool_group ranks=[4][build_world rank=0] after  ci_pool_group ranks=[4][build_world rank=1] after  ci_pool_group ranks=[4]
+
+[build_world rank=3] before layerwise_pool_group ranks=[0, 1, 2, 3][build_world rank=0] before layerwise_pool_group ranks=[0, 1, 2, 3]
+
+
+[build_world rank=1] before layerwise_pool_group ranks=[0, 1, 2, 3]
+[build_world rank=5] after  ci_pool_group ranks=[4]
+[build_world rank=2] before layerwise_pool_group ranks=[0, 1, 2, 3]
+
+[build_world rank=5] before layerwise_pool_group ranks=[0, 1, 2, 3]
+[build_world rank=4] after  ci_pool_group ranks=[4]
+[build_world rank=4] before layerwise_pool_group ranks=[0, 1, 2, 3]
+[build_world rank=4] after  layerwise_pool_group ranks=[0, 1, 2, 3]
+[build_world rank=4] before ppgd_pool_group ranks=[5]
+[build_world rank=5] after  layerwise_pool_group ranks=[0, 1, 2, 3]
+[build_world rank=5] before ppgd_pool_group ranks=[5]
+[build_world rank=0] after  layerwise_pool_group ranks=[0, 1, 2, 3]
+[build_world rank=0] before ppgd_pool_group ranks=[5]
+[build_world rank=2] after  layerwise_pool_group ranks=[0, 1, 2, 3][build_world rank=1] after  layerwise_pool_group ranks=[0, 1, 2, 3][build_world rank=3] after  layerwise_pool_group ranks=[0, 1, 2, 3]
+
+[build_world rank=2] before ppgd_pool_group ranks=[5]
+
+[build_world rank=1] before ppgd_pool_group ranks=[5][build_world rank=3] before ppgd_pool_group ranks=[5]
+
+[build_world rank=3] after  ppgd_pool_group ranks=[5][build_world rank=1] after  ppgd_pool_group ranks=[5][build_world rank=0] after  ppgd_pool_group ranks=[5][build_world rank=2] after  ppgd_pool_group ranks=[5]
+
+
+
+[build_world rank=3] before block_group_groups[0] ranks=[0, 1][build_world rank=1] before block_group_groups[0] ranks=[0, 1][build_world rank=0] before block_group_groups[0] ranks=[0, 1][build_world rank=2] before block_group_groups[0] ranks=[0, 1]
+
+
+
+[build_world rank=4] after  ppgd_pool_group ranks=[5]
+[build_world rank=4] before block_group_groups[0] ranks=[0, 1]
+[build_world rank=5] after  ppgd_pool_group ranks=[5]
+[build_world rank=5] before block_group_groups[0] ranks=[0, 1]
+[build_world rank=3] after  block_group_groups[0] ranks=[0, 1][build_world rank=2] after  block_group_groups[0] ranks=[0, 1][build_world rank=5] after  block_group_groups[0] ranks=[0, 1]
+
+[build_world rank=3] before block_group_groups[1] ranks=[2, 3]
+[build_world rank=5] before block_group_groups[1] ranks=[2, 3]
+[build_world rank=2] before block_group_groups[1] ranks=[2, 3]
+
+[build_world rank=4] after  block_group_groups[0] ranks=[0, 1]
+[build_world rank=4] before block_group_groups[1] ranks=[2, 3]
+[build_world rank=1] after  block_group_groups[0] ranks=[0, 1][build_world rank=0] after  block_group_groups[0] ranks=[0, 1]
+
+[build_world rank=1] before block_group_groups[1] ranks=[2, 3]
+[build_world rank=0] before block_group_groups[1] ranks=[2, 3]
+[build_world rank=0] after  block_group_groups[1] ranks=[2, 3]
+[build_world rank=4] after  block_group_groups[1] ranks=[2, 3][build_world rank=1] after  block_group_groups[1] ranks=[2, 3][build_world rank=0] before cross_pool_bcast_groups[0] ranks=[0, 5]
+
+[build_world rank=5] after  block_group_groups[1] ranks=[2, 3]
+[build_world rank=1] before cross_pool_bcast_groups[0] ranks=[0, 5]
+[build_world rank=4] before cross_pool_bcast_groups[0] ranks=[0, 5]
+
+[build_world rank=5] before cross_pool_bcast_groups[0] ranks=[0, 5]
+[build_world rank=2] after  block_group_groups[1] ranks=[2, 3][build_world rank=3] after  block_group_groups[1] ranks=[2, 3]
+[build_world rank=2] before cross_pool_bcast_groups[0] ranks=[0, 5]
+
+[build_world rank=3] before cross_pool_bcast_groups[0] ranks=[0, 5]
+[build_world rank=2] after  cross_pool_bcast_groups[0] ranks=[0, 5][build_world rank=4] after  cross_pool_bcast_groups[0] ranks=[0, 5]
+[build_world rank=3] after  cross_pool_bcast_groups[0] ranks=[0, 5][build_world rank=1] after  cross_pool_bcast_groups[0] ranks=[0, 5][build_world rank=2] before cross_pool_bcast_groups[1] ranks=[2, 5]
+
+
+[build_world rank=3] before cross_pool_bcast_groups[1] ranks=[2, 5]
+[build_world rank=1] before cross_pool_bcast_groups[1] ranks=[2, 5]
+
+[build_world rank=4] before cross_pool_bcast_groups[1] ranks=[2, 5]
+[build_world rank=5] after  cross_pool_bcast_groups[0] ranks=[0, 5][build_world rank=0] after  cross_pool_bcast_groups[0] ranks=[0, 5]
+
+[build_world rank=5] before cross_pool_bcast_groups[1] ranks=[2, 5][build_world rank=0] before cross_pool_bcast_groups[1] ranks=[2, 5]
+
+[build_world rank=0] after  cross_pool_bcast_groups[1] ranks=[2, 5]
+[build_world rank=0] before cross_pool_p2p_group ranks=[0, 1, 2, 3, 4, 5]
+[build_world rank=1] after  cross_pool_bcast_groups[1] ranks=[2, 5][build_world rank=4] after  cross_pool_bcast_groups[1] ranks=[2, 5][build_world rank=3] after  cross_pool_bcast_groups[1] ranks=[2, 5]
+
+[build_world rank=1] before cross_pool_p2p_group ranks=[0, 1, 2, 3, 4, 5]
+[build_world rank=4] before cross_pool_p2p_group ranks=[0, 1, 2, 3, 4, 5]
+
+[build_world rank=3] before cross_pool_p2p_group ranks=[0, 1, 2, 3, 4, 5]
+[build_world rank=2] after  cross_pool_bcast_groups[1] ranks=[2, 5][build_world rank=5] after  cross_pool_bcast_groups[1] ranks=[2, 5]
+
+[build_world rank=2] before cross_pool_p2p_group ranks=[0, 1, 2, 3, 4, 5]
+[build_world rank=5] before cross_pool_p2p_group ranks=[0, 1, 2, 3, 4, 5]
+[build_world rank=2] after  cross_pool_p2p_group ranks=[0, 1, 2, 3, 4, 5][build_world rank=0] after  cross_pool_p2p_group ranks=[0, 1, 2, 3, 4, 5][build_world rank=4] after  cross_pool_p2p_group ranks=[0, 1, 2, 3, 4, 5][build_world rank=5] after  cross_pool_p2p_group ranks=[0, 1, 2, 3, 4, 5][build_world rank=3] after  cross_pool_p2p_group ranks=[0, 1, 2, 3, 4, 5][build_world rank=1] after  cross_pool_p2p_group ranks=[0, 1, 2, 3, 4, 5]
+
+
+
+
+
+[trace rank=3 +  16666.0ms] ThreePoolTrainer.__init__: build_world: done
+[trace rank=4 +  16666.1ms] ThreePoolTrainer.__init__: build_world: done[trace rank=1 +  16666.1ms] ThreePoolTrainer.__init__: build_world: done
+
+[trace rank=3 +  16666.1ms] ThreePoolTrainer.__init__: my_pool=layerwise n_decomp_targets=12
+[trace rank=4 +  16666.2ms] ThreePoolTrainer.__init__: my_pool=ci n_decomp_targets=24[trace rank=1 +  16666.2ms] ThreePoolTrainer.__init__: my_pool=layerwise n_decomp_targets=12
+
+[trace rank=1 +  16669.0ms] ThreePoolTrainer.__init__: ComponentModel ctor: enter
+[trace rank=3 +  16669.2ms] ThreePoolTrainer.__init__: ComponentModel ctor: enter
+[trace rank=4 +  16669.4ms] ThreePoolTrainer.__init__: ComponentModel ctor: enter
+[trace rank=1 +  16728.7ms] ThreePoolTrainer.__init__: ComponentModel ctor: done
+[trace rank=1 +  16728.8ms] ThreePoolTrainer.__init__: dropped ci_fn (layerwise pool)
+[trace rank=1 +  16728.8ms] ThreePoolTrainer.__init__: ComponentModel.to(device): enter
+[trace rank=3 +  16767.0ms] ThreePoolTrainer.__init__: ComponentModel ctor: done
+[trace rank=3 +  16767.2ms] ThreePoolTrainer.__init__: dropped ci_fn (layerwise pool)
+[trace rank=3 +  16767.2ms] ThreePoolTrainer.__init__: ComponentModel.to(device): enter
+[trace rank=1 +  16806.8ms] ThreePoolTrainer.__init__: ComponentModel.to(device): done
+[mem rank=1 +  16807.0ms] after ComponentModel.to(device) cur=0.56gb peak=0.56gb reserved=0.58gb free=0.02gb retries=0 ooms=0
+[trace rank=1 +  16807.3ms] ThreePoolTrainer.__init__: building LayerwiseLossStrategy
+[trace rank=1 +  16807.4ms] ThreePoolTrainer.__init__: LayerwiseLossStrategy: done
+[trace rank=1 +  16807.4ms] ThreePoolTrainer.__init__: optimizer build: enter (pool=layerwise)
+[trace rank=1 +  16807.6ms] ThreePoolTrainer.__init__: optimizer build: done
+[mem rank=1 +  16807.7ms] after optimizer build cur=0.56gb peak=0.56gb reserved=0.58gb free=0.02gb retries=0 ooms=0
+[trace rank=1 +  16807.7ms] ThreePoolTrainer.__init__: exit
+[trace rank=1 +  16807.8ms] Trainer.run: enter
+[trace rank=1 +  16807.8ms] Trainer.run: first_batch peek: enter
+[trace rank=4 +  16820.1ms] ThreePoolTrainer.__init__: ComponentModel ctor: done
+[trace rank=4 +  16820.3ms] ThreePoolTrainer.__init__: dropped V/U components (ci pool)
+[trace rank=4 +  16820.4ms] ThreePoolTrainer.__init__: ComponentModel.to(device): enter
+[trace rank=3 +  16870.2ms] ThreePoolTrainer.__init__: ComponentModel.to(device): done
+[mem rank=3 +  16870.4ms] after ComponentModel.to(device) cur=0.56gb peak=0.56gb reserved=0.58gb free=0.02gb retries=0 ooms=0
+[trace rank=3 +  16870.9ms] ThreePoolTrainer.__init__: building LayerwiseLossStrategy
+[trace rank=3 +  16870.9ms] ThreePoolTrainer.__init__: LayerwiseLossStrategy: done
+[trace rank=3 +  16871.0ms] ThreePoolTrainer.__init__: optimizer build: enter (pool=layerwise)
+[trace rank=3 +  16871.2ms] ThreePoolTrainer.__init__: optimizer build: done
+[mem rank=3 +  16871.3ms] after optimizer build cur=0.56gb peak=0.56gb reserved=0.58gb free=0.02gb retries=0 ooms=0
+[trace rank=3 +  16871.3ms] ThreePoolTrainer.__init__: exit
+[trace rank=3 +  16871.3ms] Trainer.run: enter
+[trace rank=3 +  16871.4ms] Trainer.run: first_batch peek: enter
+[trace rank=0 +  16897.9ms] ThreePoolTrainer.__init__: build_world: done
+[trace rank=0 +  16898.0ms] ThreePoolTrainer.__init__: my_pool=layerwise n_decomp_targets=12
+[trace rank=0 +  16899.9ms] ThreePoolTrainer.__init__: ComponentModel ctor: enter
+[trace rank=4 +  16918.0ms] ThreePoolTrainer.__init__: ComponentModel.to(device): done
+[mem rank=4 +  16918.2ms] after ComponentModel.to(device) cur=0.64gb peak=0.64gb reserved=0.65gb free=0.01gb retries=0 ooms=0
+[trace rank=4 +  16918.7ms] ThreePoolTrainer.__init__: building LayerwiseLossStrategy
+[trace rank=4 +  16918.8ms] ThreePoolTrainer.__init__: LayerwiseLossStrategy: done
+[trace rank=4 +  16918.8ms] ThreePoolTrainer.__init__: optimizer build: enter (pool=ci)
+[trace rank=4 +  16918.9ms] ThreePoolTrainer.__init__: CI fn params=0.022B
+[trace rank=4 +  16919.1ms] ThreePoolTrainer.__init__: optimizer build: done
+[mem rank=4 +  16919.2ms] after optimizer build cur=0.64gb peak=0.64gb reserved=0.65gb free=0.01gb retries=0 ooms=0
+[trace rank=4 +  16919.2ms] ThreePoolTrainer.__init__: exit
+[trace rank=4 +  16919.3ms] Trainer.run: enter
+[trace rank=4 +  16919.3ms] Trainer.run: first_batch peek: enter
+[trace rank=0 +  16960.3ms] ThreePoolTrainer.__init__: ComponentModel ctor: done
+[trace rank=0 +  16960.5ms] ThreePoolTrainer.__init__: dropped ci_fn (layerwise pool)
+[trace rank=0 +  16960.5ms] ThreePoolTrainer.__init__: ComponentModel.to(device): enter
+[trace rank=1 +  17039.1ms] Trainer.run: first_batch peek: done
+[trace rank=1 +  17039.2ms] Trainer.run: faithfulness warmup: enter (2 steps)
+[trace rank=0 +  17084.8ms] ThreePoolTrainer.__init__: ComponentModel.to(device): done
+[mem rank=0 +  17085.0ms] after ComponentModel.to(device) cur=0.56gb peak=0.56gb reserved=0.58gb free=0.02gb retries=0 ooms=0
+[trace rank=0 +  17085.4ms] ThreePoolTrainer.__init__: building LayerwiseLossStrategy
+[trace rank=0 +  17085.4ms] ThreePoolTrainer.__init__: LayerwiseLossStrategy: done
+[trace rank=0 +  17085.4ms] ThreePoolTrainer.__init__: optimizer build: enter (pool=layerwise)
+[trace rank=0 +  17085.6ms] ThreePoolTrainer.__init__: optimizer build: done
+[mem rank=0 +  17085.7ms] after optimizer build cur=0.56gb peak=0.56gb reserved=0.58gb free=0.02gb retries=0 ooms=0
+[trace rank=0 +  17085.8ms] ThreePoolTrainer.__init__: exit
+[trace rank=0 +  17085.8ms] Trainer.run: enter
+[trace rank=0 +  17085.8ms] Trainer.run: first_batch peek: enter
+[trace rank=3 +  17128.8ms] Trainer.run: first_batch peek: done
+[trace rank=3 +  17128.9ms] Trainer.run: faithfulness warmup: enter (2 steps)
+[trace rank=4 +  17165.5ms] Trainer.run: first_batch peek: done
+[trace rank=4 +  17165.6ms] Trainer.run: pre-loop batch peek: enter
+[trace rank=4 +  17167.6ms] Trainer.run: pre-loop batch peek: done, entering training loop
+[trace rank=4 +  17167.7ms] Trainer.run: step 0: start (pool=ci)
+[trace rank=5 +  17173.8ms] ThreePoolTrainer.__init__: build_world: done
+[trace rank=2 +  17173.9ms] ThreePoolTrainer.__init__: build_world: done
+[trace rank=5 +  17174.0ms] ThreePoolTrainer.__init__: my_pool=ppgd n_decomp_targets=24
+[trace rank=2 +  17174.0ms] ThreePoolTrainer.__init__: my_pool=layerwise n_decomp_targets=12
+[trace rank=5 +  17175.9ms] ThreePoolTrainer.__init__: ComponentModel ctor: enter
+[trace rank=2 +  17176.4ms] ThreePoolTrainer.__init__: ComponentModel ctor: enter
+[trace rank=2 +  17266.7ms] ThreePoolTrainer.__init__: ComponentModel ctor: done
+[trace rank=2 +  17266.8ms] ThreePoolTrainer.__init__: dropped ci_fn (layerwise pool)
+[trace rank=2 +  17266.8ms] ThreePoolTrainer.__init__: ComponentModel.to(device): enter
+[trace rank=5 +  17276.5ms] ThreePoolTrainer.__init__: ComponentModel ctor: done
+[trace rank=5 +  17278.2ms] ThreePoolTrainer.__init__: dropped ci_fn (ppgd pool)
+[trace rank=5 +  17278.2ms] ThreePoolTrainer.__init__: ComponentModel.to(device): enter
+[trace rank=0 +  17316.2ms] Trainer.run: first_batch peek: done
+[trace rank=0 +  17316.2ms] Trainer.run: faithfulness warmup: enter (2 steps)
+[trace rank=5 +  17357.9ms] ThreePoolTrainer.__init__: ComponentModel.to(device): done
+[mem rank=5 +  17358.1ms] after ComponentModel.to(device) cur=0.56gb peak=0.56gb reserved=0.59gb free=0.02gb retries=0 ooms=0
+[trace rank=5 +  17358.5ms] ThreePoolTrainer.__init__: building LayerwiseLossStrategy
+[trace rank=5 +  17358.5ms] ThreePoolTrainer.__init__: LayerwiseLossStrategy: done
+[trace rank=5 +  17358.6ms] ThreePoolTrainer.__init__: optimizer build: enter (pool=ppgd)
+[trace rank=5 +  17358.6ms] ThreePoolTrainer.__init__: optimizer build: done
+[mem rank=5 +  17358.7ms] after optimizer build cur=0.56gb peak=0.56gb reserved=0.59gb free=0.02gb retries=0 ooms=0
+[trace rank=5 +  17358.7ms] ThreePoolTrainer.__init__: exit
+[trace rank=5 +  17358.7ms] Trainer.run: enter
+[trace rank=5 +  17359.0ms] Trainer.run: first_batch peek: enter
+[trace rank=2 +  17416.6ms] ThreePoolTrainer.__init__: ComponentModel.to(device): done
+[mem rank=2 +  17416.8ms] after ComponentModel.to(device) cur=0.56gb peak=0.56gb reserved=0.58gb free=0.02gb retries=0 ooms=0
+[trace rank=2 +  17417.2ms] ThreePoolTrainer.__init__: building LayerwiseLossStrategy
+[trace rank=2 +  17417.2ms] ThreePoolTrainer.__init__: LayerwiseLossStrategy: done
+[trace rank=2 +  17417.3ms] ThreePoolTrainer.__init__: optimizer build: enter (pool=layerwise)
+[trace rank=2 +  17417.5ms] ThreePoolTrainer.__init__: optimizer build: done
+[mem rank=2 +  17417.6ms] after optimizer build cur=0.56gb peak=0.56gb reserved=0.58gb free=0.02gb retries=0 ooms=0
+[trace rank=2 +  17417.6ms] ThreePoolTrainer.__init__: exit
+[trace rank=2 +  17417.6ms] Trainer.run: enter
+[trace rank=2 +  17417.6ms] Trainer.run: first_batch peek: enter
+[trace rank=3 +  17520.9ms] Trainer.run: faithfulness warmup: done
+[trace rank=3 +  17521.0ms] Trainer.run: pre-loop batch peek: enter
+[trace rank=1 +  17522.7ms] Trainer.run: faithfulness warmup: done
+[trace rank=1 +  17522.8ms] Trainer.run: pre-loop batch peek: enter
+[trace rank=3 +  17523.3ms] Trainer.run: pre-loop batch peek: done, entering training loop
+[trace rank=3 +  17523.3ms] Trainer.run: step 0: start (pool=layerwise)
+NCCL version 2.27.3+cuda12.9
+[trace rank=1 +  17525.9ms] Trainer.run: pre-loop batch peek: done, entering training loop
+[trace rank=1 +  17526.0ms] Trainer.run: step 0: start (pool=layerwise)
+NCCL version 2.27.3+cuda12.9
+[trace rank=0 +  17530.3ms] Trainer.run: faithfulness warmup: done
+[trace rank=0 +  17530.4ms] Trainer.run: pre-loop batch peek: enter
+[trace rank=0 +  17532.6ms] Trainer.run: pre-loop batch peek: done, entering training loop
+[trace rank=0 +  17532.6ms] Trainer.run: step 0: start (pool=layerwise)
+[trace rank=5 +  17593.3ms] Trainer.run: first_batch peek: done
+[trace rank=5 +  17593.3ms] Trainer.run: PPGDState ctor: enter
+[trace rank=5 +  17597.3ms] Trainer.run: PPGDState ctor: done
+[trace rank=5 +  17597.3ms] Trainer.run: pre-loop batch peek: enter
+[trace rank=5 +  17599.5ms] Trainer.run: pre-loop batch peek: done, entering training loop
+[trace rank=5 +  17599.6ms] Trainer.run: step 0: start (pool=ppgd)
+[trace rank=2 +  17658.0ms] Trainer.run: first_batch peek: done
+[trace rank=2 +  17658.2ms] Trainer.run: faithfulness warmup: enter (2 steps)
+[trace rank=2 +  17883.7ms] Trainer.run: faithfulness warmup: done
+[trace rank=2 +  17883.8ms] Trainer.run: pre-loop batch peek: enter
+[trace rank=2 +  17886.2ms] Trainer.run: pre-loop batch peek: done, entering training loop
+[trace rank=2 +  17886.3ms] Trainer.run: step 0: start (pool=layerwise)
+NCCL version 2.27.3+cuda12.9
+NCCL version 2.27.3+cuda12.9
+[trace rank=4 +  19262.9ms] Trainer.run: step 0: dispatched in 2095.2ms
+[mem rank=4 +  19263.2ms] step 0 done cur=0.93gb peak=0.95gb reserved=0.99gb free=0.06gb retries=0 ooms=0
+[trace rank=5 +  19750.8ms] Trainer.run: step 0: dispatched in 2151.1ms
+[mem rank=5 +  19751.4ms] step 0 done cur=0.58gb peak=1.43gb reserved=1.47gb free=0.89gb retries=0 ooms=0
+[trace rank=0 +  20482.7ms] Trainer.run: step 0: dispatched in 2950.0ms
+[mem rank=0 +  20482.9ms] step 0 done cur=0.59gb peak=1.08gb reserved=1.11gb free=0.52gb retries=0 ooms=0
+[trace rank=1 +  20487.7ms] Trainer.run: step 0: dispatched in 2961.6ms
+[trace rank=3 +  20487.7ms] Trainer.run: step 0: dispatched in 2964.3ms
+[mem rank=1 +  20487.9ms] step 0 done cur=0.59gb peak=1.08gb reserved=1.11gb free=0.52gb retries=0 ooms=0
+[mem rank=3 +  20487.9ms] step 0 done cur=0.59gb peak=0.94gb reserved=0.98gb free=0.39gb retries=0 ooms=0
+[trace rank=2 +  20488.0ms] Trainer.run: step 0: dispatched in 2601.7ms
+[mem rank=2 +  20488.3ms] step 0 done cur=0.59gb peak=0.94gb reserved=0.98gb free=0.39gb retries=0 ooms=0
+--- Step 0 ---
+train/loss/faith: 0.0239502
+train/loss/stoch: 0.0677003
+train/loss/imp: 2628.82
+train/loss/ppgd: 5.03776
+train/mem/lw_peak_gb: 1.07867
+train/mem/ci_peak_gb: 0.952424
+train/mem/ppgd_peak_gb: 1.43322
+train/perf/step_ms: 2964.34
+train/loss/total: 2.39503e+06
+train/schedules/lr/components: 0.0003
+eval/update(CI_L0) step=0 took 0.05s
+eval/update(CEandKLLosses) step=0 took 0.07s
+eval/compute(CI_L0) took 0.00s (26 outputs)
+eval/compute(CEandKLLosses) took 0.00s (16 outputs)
+eval/l0/0.0_h.0.attn.q_proj: 36.2734375
+eval/l0/0.0_h.0.attn.k_proj: 32.42578125
+eval/l0/0.0_h.1.attn.q_proj: 33.46484375
+eval/l0/0.0_h.1.attn.k_proj: 35.21875
+eval/l0/0.0_h.2.attn.q_proj: 30.50390625
+eval/l0/0.0_h.2.attn.k_proj: 34.51953125
+eval/l0/0.0_h.3.attn.q_proj: 29.3203125
+eval/l0/0.0_h.3.attn.k_proj: 32.03515625
+eval/l0/0.0_h.4.attn.q_proj: 36.1796875
+eval/l0/0.0_h.4.attn.k_proj: 34.20703125
+eval/l0/0.0_h.5.attn.q_proj: 29.08984375
+eval/l0/0.0_h.5.attn.k_proj: 33.27734375
+eval/l0/0.0_h.6.attn.q_proj: 36.01171875
+eval/l0/0.0_h.6.attn.k_proj: 29.03125
+eval/l0/0.0_h.7.attn.q_proj: 29.51171875
+eval/l0/0.0_h.7.attn.k_proj: 29.9609375
+eval/l0/0.0_h.8.attn.q_proj: 31.515625
+eval/l0/0.0_h.8.attn.k_proj: 31.50390625
+eval/l0/0.0_h.9.attn.q_proj: 30.98046875
+eval/l0/0.0_h.9.attn.k_proj: 31.87890625
+eval/l0/0.0_h.10.attn.q_proj: 32.4921875
+eval/l0/0.0_h.10.attn.k_proj: 28.15234375
+eval/l0/0.0_h.11.attn.q_proj: 29.0625
+eval/l0/0.0_h.11.attn.k_proj: 33.13671875
+eval/l0/0.0_total: 769.75390625
+eval/l0/bar_chart: CustomChart(table=<wandb.sdk.data_types.table.Table object at 0x793464f7a120>, spec=CustomChartSpec(spec_name='wandb/bar/v0', fields={'label': 'layer', 'value': 'l0'}, string_fields={'title': 'L0_0.0'}, key='', panel_type='Vega2', split_table=False))
+eval/ce_kl/kl_ci_masked: 4.744164943695068
+eval/ce_kl/kl_unmasked: 4.865410804748535
+eval/ce_kl/kl_stoch_masked: 3.8365671634674072
+eval/ce_kl/kl_random_masked: 4.7434492111206055
+eval/ce_kl/kl_rounded_masked: 4.722163200378418
+eval/ce_kl/kl_zero_masked: 4.722201347351074
+eval/ce_kl/ce_difference_ci_masked: 4.951409339904785
+eval/ce_kl/ce_difference_unmasked: 5.066506385803223
+eval/ce_kl/ce_difference_stoch_masked: 3.9807229042053223
+eval/ce_kl/ce_difference_random_masked: 4.950573921203613
+eval/ce_kl/ce_difference_rounded_masked: 4.920659065246582
+eval/ce_kl/ce_unrecovered_ci_masked: 1.0071715116500854
+eval/ce_kl/ce_unrecovered_unmasked: 1.0305835008621216
+eval/ce_kl/ce_unrecovered_stoch_masked: 0.8097231388092041
+eval/ce_kl/ce_unrecovered_random_masked: 1.0070016384124756
+eval/ce_kl/ce_unrecovered_rounded_masked: 1.000916600227356
+Saved custom chart data eval/l0/bar_chart to /mnt/data/artifacts/mechanisms/param-decomp/decompositions/p-livee2e02/figures/eval_l0_bar_chart_0.json
+[trace rank=0 +  22027.0ms] Trainer.run: step 1: start (pool=layerwise)
+[trace rank=3 +  22042.2ms] Trainer.run: step 1: start (pool=layerwise)
+[trace rank=2 +  22043.4ms] Trainer.run: step 1: start (pool=layerwise)
+[trace rank=1 +  22053.1ms] Trainer.run: step 1: start (pool=layerwise)
+[trace rank=5 +  22054.7ms] Trainer.run: step 1: start (pool=ppgd)
+[trace rank=4 +  22056.0ms] Trainer.run: step 1: start (pool=ci)
+[trace rank=4 +  22080.4ms] Trainer.run: step 1: dispatched in 24.4ms
+[trace rank=5 +  22200.0ms] Trainer.run: step 1: dispatched in 145.2ms
+[trace rank=1 +  22249.6ms] Trainer.run: step 1: dispatched in 196.4ms[trace rank=3 +  22249.6ms] Trainer.run: step 1: dispatched in 207.3ms
+
+[trace rank=0 +  22249.9ms] Trainer.run: step 1: dispatched in 222.8ms
+[trace rank=2 +  22250.0ms] Trainer.run: step 1: dispatched in 206.5ms
+[trace rank=5 +  22250.2ms] Trainer.run: step 2: start (pool=ppgd)
+[trace rank=4 +  22250.3ms] Trainer.run: step 2: start (pool=ci)
+[trace rank=1 +  22251.8ms] Trainer.run: step 2: start (pool=layerwise)
+[trace rank=3 +  22252.0ms] Trainer.run: step 2: start (pool=layerwise)
+[trace rank=2 +  22252.1ms] Trainer.run: step 2: start (pool=layerwise)
+[trace rank=0 +  22252.8ms] Trainer.run: step 2: start (pool=layerwise)
+[trace rank=4 +  22277.2ms] Trainer.run: step 2: dispatched in 26.8ms
+[trace rank=5 +  22362.8ms] Trainer.run: step 2: dispatched in 112.5ms
+[trace rank=1 +  22434.4ms] Trainer.run: step 2: dispatched in 182.6ms
+[trace rank=0 +  22434.6ms] Trainer.run: step 2: dispatched in 181.7ms
+[trace rank=3 +  22434.8ms] Trainer.run: step 2: dispatched in 182.7ms
+[trace rank=4 +  22435.0ms] Trainer.run: step 3: start (pool=ci)
+[trace rank=2 +  22435.1ms] Trainer.run: step 2: dispatched in 182.9ms
+[trace rank=5 +  22435.4ms] Trainer.run: step 3: start (pool=ppgd)
+[trace rank=1 +  22436.6ms] Trainer.run: step 3: start (pool=layerwise)
+[trace rank=0 +  22436.7ms] Trainer.run: step 3: start (pool=layerwise)
+[trace rank=2 +  22437.4ms] Trainer.run: step 3: start (pool=layerwise)
+[trace rank=3 +  22441.2ms] Trainer.run: step 3: start (pool=layerwise)
+[trace rank=4 +  22456.4ms] Trainer.run: step 3: dispatched in 21.3ms
+[trace rank=5 +  22557.6ms] Trainer.run: step 3: dispatched in 122.1ms
+[trace rank=1 +  22644.1ms] Trainer.run: step 3: dispatched in 207.4ms
+[trace rank=0 +  22644.2ms] Trainer.run: step 3: dispatched in 207.5ms
+[trace rank=3 +  22644.6ms] Trainer.run: step 3: dispatched in 203.3ms
+[trace rank=4 +  22644.7ms] Trainer.run: step 4: start (pool=ci)
+[trace rank=2 +  22645.5ms] Trainer.run: step 3: dispatched in 208.1ms[trace rank=5 +  22645.7ms] Trainer.run: step 4: start (pool=ppgd)
+
+[trace rank=0 +  22646.3ms] Trainer.run: step 4: start (pool=layerwise)
+[trace rank=1 +  22646.5ms] Trainer.run: step 4: start (pool=layerwise)
+[trace rank=3 +  22647.5ms] Trainer.run: step 4: start (pool=layerwise)
+[trace rank=2 +  22648.5ms] Trainer.run: step 4: start (pool=layerwise)
+[trace rank=4 +  22666.7ms] Trainer.run: step 4: dispatched in 21.9ms
+[trace rank=5 +  22765.3ms] Trainer.run: step 4: dispatched in 119.6ms
+[trace rank=1 +  22815.4ms] Trainer.run: step 4: dispatched in 168.9ms
+[trace rank=3 +  22815.4ms] Trainer.run: step 4: dispatched in 167.9ms
+[trace rank=2 +  22815.8ms] Trainer.run: step 4: dispatched in 167.2ms
+[trace rank=0 +  22816.2ms] Trainer.run: step 4: dispatched in 169.9ms
+[trace rank=5 +  22816.4ms] Trainer.run: step 5: start (pool=ppgd)
+[trace rank=3 +  22817.6ms] Trainer.run: step 5: start (pool=layerwise)[trace rank=1 +  22817.6ms] Trainer.run: step 5: start (pool=layerwise)
+
+[trace rank=2 +  22817.9ms] Trainer.run: step 5: start (pool=layerwise)
+[trace rank=0 +  22818.9ms] Trainer.run: step 5: start (pool=layerwise)
+[trace rank=4 +  22819.3ms] Trainer.run: step 5: start (pool=ci)
+[trace rank=5 +  22920.0ms] Trainer.run: step 5: dispatched in 103.5ms
+[mem rank=5 +  22920.4ms] step 5 done cur=0.58gb peak=1.43gb reserved=1.46gb free=0.87gb retries=0 ooms=0
+[trace rank=1 +  23001.6ms] Trainer.run: step 5: dispatched in 184.0ms
+[trace rank=3 +  23001.9ms] Trainer.run: step 5: dispatched in 184.2ms
+[mem rank=1 +  23001.9ms] step 5 done cur=0.59gb peak=1.09gb reserved=1.12gb free=0.53gb retries=0 ooms=0
+[trace rank=0 +  23002.0ms] Trainer.run: step 5: dispatched in 183.0ms
+[mem rank=3 +  23002.1ms] step 5 done cur=0.59gb peak=0.95gb reserved=0.99gb free=0.40gb retries=0 ooms=0
+[mem rank=0 +  23002.3ms] step 5 done cur=0.59gb peak=1.09gb reserved=1.12gb free=0.53gb retries=0 ooms=0
+[trace rank=2 +  23002.3ms] Trainer.run: step 5: dispatched in 184.3ms[trace rank=4 +  23002.3ms] Trainer.run: step 5: dispatched in 182.9ms
+
+[mem rank=2 +  23002.5ms] step 5 done cur=0.59gb peak=0.95gb reserved=0.99gb free=0.40gb retries=0 ooms=0[mem rank=4 +  23002.6ms] step 5 done cur=0.93gb peak=1.10gb reserved=1.13gb free=0.20gb retries=0 ooms=0
+
+[trace rank=5 +  23003.6ms] snapshot: enter barrier (pre-write)--- Step 5 ---
+
+train/loss/faith: 0.023792
+train/loss/stoch: 0.0649987
+train/loss/imp: 2818.41
+train/loss/ppgd: 5.57843
+train/mem/lw_peak_gb: 1.09127
+train/mem/ci_peak_gb: 1.09743
+train/mem/ppgd_peak_gb: 1.43322
+train/perf/step_ms: 184.341
+train/loss/total: 2.37921e+06
+train/schedules/lr/components: 0.000272103
+[trace rank=3 +  23004.0ms] snapshot: enter barrier (pre-write)[trace rank=1 +  23004.1ms] snapshot: enter barrier (pre-write)
+
+[trace rank=2 +  23005.1ms] snapshot: enter barrier (pre-write)
+[trace rank=0 +  23023.3ms] snapshot: enter barrier (pre-write)
+[trace rank=4 +  23036.3ms] snapshot: enter barrier (pre-write)
+[trace rank=2 +  23036.5ms] snapshot: barrier (pre-write) done[trace rank=1 +  23036.5ms] snapshot: barrier (pre-write) done[trace rank=0 +  23036.5ms] snapshot: barrier (pre-write) done
+
+
+[trace rank=1 +  23036.5ms] snapshot: writing partial rank_1.pth[trace rank=0 +  23036.6ms] snapshot: writing partial rank_0.pth[trace rank=2 +  23036.5ms] snapshot: writing partial rank_2.pth
+
+
+[trace rank=4 +  23036.6ms] snapshot: barrier (pre-write) done[trace rank=3 +  23036.6ms] snapshot: barrier (pre-write) done[trace rank=5 +  23036.7ms] snapshot: barrier (pre-write) done
+
+
+[trace rank=3 +  23036.7ms] snapshot: writing partial rank_3.pth[trace rank=4 +  23036.7ms] snapshot: writing partial rank_4.pth[trace rank=5 +  23036.7ms] snapshot: writing partial rank_5.pth
+
+
+[trace rank=5 +  23060.6ms] snapshot: partial write done
+[trace rank=5 +  23060.7ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=1 +  23062.6ms] snapshot: partial write done
+[trace rank=1 +  23062.6ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=0 +  23068.8ms] snapshot: partial write done
+[trace rank=0 +  23068.9ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=3 +  23074.2ms] snapshot: partial write done
+[trace rank=3 +  23074.3ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=2 +  23082.6ms] snapshot: partial write done
+[trace rank=2 +  23082.6ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=4 +  23460.6ms] snapshot: partial write done
+[trace rank=4 +  23460.7ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=0 +  23461.5ms] snapshot: barrier (post-write rejoin) done
+[trace rank=1 +  23461.5ms] snapshot: barrier (post-write rejoin) done
+[trace rank=2 +  23461.7ms] snapshot: barrier (post-write rejoin) done
+[trace rank=3 +  23461.9ms] snapshot: barrier (post-write rejoin) done[trace rank=4 +  23461.9ms] snapshot: barrier (post-write rejoin) done
+
+[trace rank=5 +  23462.0ms] snapshot: barrier (post-write rejoin) done
+[trace rank=1 +  23463.9ms] Trainer.run: step 6: start (pool=layerwise)
+[trace rank=3 +  23464.1ms] Trainer.run: step 6: start (pool=layerwise)
+[trace rank=4 +  23464.2ms] Trainer.run: step 6: start (pool=ci)
+[trace rank=5 +  23464.3ms] Trainer.run: step 6: start (pool=ppgd)
+[trace rank=2 +  23464.3ms] Trainer.run: step 6: start (pool=layerwise)
+[trace rank=4 +  23485.3ms] Trainer.run: step 6: dispatched in 21.0ms
+Async slow-eval submitted: parent=p-livee2e02 step=5 job_id=34755 log=/mnt/data/artifacts/mechanisms/param-decomp/slurm_logs/slurm-34755.out
+[trace rank=0 +  23506.1ms] Trainer.run: step 6: start (pool=layerwise)
+[trace rank=5 +  23568.3ms] Trainer.run: step 6: dispatched in 103.9ms
+[trace rank=1 +  23670.0ms] Trainer.run: step 6: dispatched in 206.0ms
+[trace rank=3 +  23670.1ms] Trainer.run: step 6: dispatched in 205.9ms
+[trace rank=0 +  23670.3ms] Trainer.run: step 6: dispatched in 164.1ms
+[trace rank=2 +  23670.5ms] Trainer.run: step 6: dispatched in 206.1ms
+[trace rank=4 +  23670.6ms] Trainer.run: step 7: start (pool=ci)
+[trace rank=5 +  23670.7ms] Trainer.run: step 7: start (pool=ppgd)
+[trace rank=1 +  23672.1ms] Trainer.run: step 7: start (pool=layerwise)
+[trace rank=3 +  23672.2ms] Trainer.run: step 7: start (pool=layerwise)
+[trace rank=0 +  23672.3ms] Trainer.run: step 7: start (pool=layerwise)
+[trace rank=2 +  23672.5ms] Trainer.run: step 7: start (pool=layerwise)
+[trace rank=4 +  23690.7ms] Trainer.run: step 7: dispatched in 20.0ms
+[trace rank=5 +  23780.2ms] Trainer.run: step 7: dispatched in 109.4ms
+[trace rank=1 +  23834.6ms] Trainer.run: step 7: dispatched in 162.5ms[trace rank=3 +  23834.6ms] Trainer.run: step 7: dispatched in 162.4ms
+
+[trace rank=2 +  23834.9ms] Trainer.run: step 7: dispatched in 162.3ms
+[trace rank=0 +  23835.0ms] Trainer.run: step 7: dispatched in 162.6ms
+[trace rank=5 +  23835.3ms] Trainer.run: step 8: start (pool=ppgd)
+[trace rank=4 +  23835.4ms] Trainer.run: step 8: start (pool=ci)
+[trace rank=3 +  23836.6ms] Trainer.run: step 8: start (pool=layerwise)
+[trace rank=1 +  23836.7ms] Trainer.run: step 8: start (pool=layerwise)
+[trace rank=2 +  23836.9ms] Trainer.run: step 8: start (pool=layerwise)
+[trace rank=0 +  23837.0ms] Trainer.run: step 8: start (pool=layerwise)
+[trace rank=4 +  23855.4ms] Trainer.run: step 8: dispatched in 19.9ms
+[trace rank=5 +  23946.5ms] Trainer.run: step 8: dispatched in 111.1ms
+[trace rank=1 +  23999.0ms] Trainer.run: step 8: dispatched in 162.3ms
+[trace rank=3 +  23999.1ms] Trainer.run: step 8: dispatched in 162.4ms
+[trace rank=0 +  23999.4ms] Trainer.run: step 8: dispatched in 162.3ms
+[trace rank=2 +  23999.4ms] Trainer.run: step 8: dispatched in 162.4ms
+[trace rank=5 +  23999.7ms] Trainer.run: step 9: start (pool=ppgd)
+[trace rank=4 +  23999.8ms] Trainer.run: step 9: start (pool=ci)
+[trace rank=3 +  24001.1ms] Trainer.run: step 9: start (pool=layerwise)[trace rank=1 +  24001.1ms] Trainer.run: step 9: start (pool=layerwise)
+
+[trace rank=0 +  24001.3ms] Trainer.run: step 9: start (pool=layerwise)
+[trace rank=2 +  24001.4ms] Trainer.run: step 9: start (pool=layerwise)
+[trace rank=4 +  24019.8ms] Trainer.run: step 9: dispatched in 20.0ms
+[trace rank=5 +  24109.4ms] Trainer.run: step 9: dispatched in 109.6ms
+[trace rank=1 +  24164.2ms] Trainer.run: step 9: dispatched in 163.1ms
+[trace rank=3 +  24164.4ms] Trainer.run: step 9: dispatched in 163.3ms
+[trace rank=0 +  24164.5ms] Trainer.run: step 9: dispatched in 163.1ms
+[trace rank=2 +  24164.6ms] Trainer.run: step 9: dispatched in 163.2ms
+[trace rank=4 +  24164.9ms] Trainer.run: step 10: start (pool=ci)[trace rank=5 +  24164.9ms] Trainer.run: step 10: start (pool=ppgd)
+
+[trace rank=1 +  24166.3ms] Trainer.run: step 10: start (pool=layerwise)
+[trace rank=3 +  24166.3ms] Trainer.run: step 10: start (pool=layerwise)
+[trace rank=0 +  24166.5ms] Trainer.run: step 10: start (pool=layerwise)
+[trace rank=2 +  24166.6ms] Trainer.run: step 10: start (pool=layerwise)
+[trace rank=5 +  24278.5ms] Trainer.run: step 10: dispatched in 113.5ms
+[mem rank=5 +  24278.9ms] step 10 done cur=0.58gb peak=1.43gb reserved=1.46gb free=0.87gb retries=0 ooms=0
+[trace rank=1 +  24329.6ms] Trainer.run: step 10: dispatched in 163.3ms
+[trace rank=3 +  24329.7ms] Trainer.run: step 10: dispatched in 163.3ms
+[mem rank=1 +  24329.8ms] step 10 done cur=0.59gb peak=1.09gb reserved=1.12gb free=0.53gb retries=0 ooms=0
+[mem rank=3 +  24329.9ms] step 10 done cur=0.59gb peak=0.95gb reserved=0.99gb free=0.40gb retries=0 ooms=0[trace rank=0 +  24329.9ms] Trainer.run: step 10: dispatched in 163.3ms
+
+[trace rank=2 +  24330.0ms] Trainer.run: step 10: dispatched in 163.3ms
+[mem rank=0 +  24330.1ms] step 10 done cur=0.59gb peak=1.09gb reserved=1.12gb free=0.53gb retries=0 ooms=0
+[mem rank=2 +  24330.1ms] step 10 done cur=0.59gb peak=0.95gb reserved=0.99gb free=0.40gb retries=0 ooms=0
+[trace rank=4 +  24330.4ms] Trainer.run: step 10: dispatched in 165.5ms
+[mem rank=4 +  24330.6ms] step 10 done cur=0.93gb peak=1.10gb reserved=1.13gb free=0.20gb retries=0 ooms=0
+--- Step 10 ---
+train/loss/faith: 0.0236652
+train/loss/stoch: 0.067854
+train/loss/imp: 3064.95
+train/loss/ppgd: 7.31802
+train/mem/lw_peak_gb: 1.09127
+train/mem/ci_peak_gb: 1.09743
+train/mem/ppgd_peak_gb: 1.43322
+train/perf/step_ms: 163.328
+train/loss/total: 2.36653e+06
+train/schedules/lr/components: 0.000199941
+eval/update(CI_L0) step=0 took 0.00s
+eval/update(CEandKLLosses) step=0 took 0.05s
+eval/compute(CI_L0) took 0.00s (26 outputs)
+eval/compute(CEandKLLosses) took 0.00s (16 outputs)
+eval/l0/0.0_h.0.attn.q_proj: 35.2734375
+eval/l0/0.0_h.0.attn.k_proj: 30.9921875
+eval/l0/0.0_h.1.attn.q_proj: 31.97265625
+eval/l0/0.0_h.1.attn.k_proj: 35.01953125
+eval/l0/0.0_h.2.attn.q_proj: 30.296875
+eval/l0/0.0_h.2.attn.k_proj: 33.6484375
+eval/l0/0.0_h.3.attn.q_proj: 34.18359375
+eval/l0/0.0_h.3.attn.k_proj: 33.4609375
+eval/l0/0.0_h.4.attn.q_proj: 32.6015625
+eval/l0/0.0_h.4.attn.k_proj: 33.6015625
+eval/l0/0.0_h.5.attn.q_proj: 29.2734375
+eval/l0/0.0_h.5.attn.k_proj: 32.28515625
+eval/l0/0.0_h.6.attn.q_proj: 37.375
+eval/l0/0.0_h.6.attn.k_proj: 29.6015625
+eval/l0/0.0_h.7.attn.q_proj: 28.65234375
+eval/l0/0.0_h.7.attn.k_proj: 29.51953125
+eval/l0/0.0_h.8.attn.q_proj: 28.6640625
+eval/l0/0.0_h.8.attn.k_proj: 33.2265625
+eval/l0/0.0_h.9.attn.q_proj: 24.53515625
+eval/l0/0.0_h.9.attn.k_proj: 33.8984375
+eval/l0/0.0_h.10.attn.q_proj: 32.65234375
+eval/l0/0.0_h.10.attn.k_proj: 33.64453125
+eval/l0/0.0_h.11.attn.q_proj: 33.9140625
+eval/l0/0.0_h.11.attn.k_proj: 34.59765625
+eval/l0/0.0_total: 772.890625
+eval/l0/bar_chart: CustomChart(table=<wandb.sdk.data_types.table.Table object at 0x793464f12e90>, spec=CustomChartSpec(spec_name='wandb/bar/v0', fields={'label': 'layer', 'value': 'l0'}, string_fields={'title': 'L0_0.0'}, key='', panel_type='Vega2', split_table=False))
+eval/ce_kl/kl_ci_masked: 5.49513053894043
+eval/ce_kl/kl_unmasked: 5.5442047119140625
+eval/ce_kl/kl_stoch_masked: 4.19223165512085
+eval/ce_kl/kl_random_masked: 5.551197528839111
+eval/ce_kl/kl_rounded_masked: 5.508248329162598
+eval/ce_kl/kl_zero_masked: 5.515565872192383
+eval/ce_kl/ce_difference_ci_masked: 5.227373123168945
+eval/ce_kl/ce_difference_unmasked: 5.266636848449707
+eval/ce_kl/ce_difference_stoch_masked: 4.008335113525391
+eval/ce_kl/ce_difference_random_masked: 5.279482841491699
+eval/ce_kl/ce_difference_rounded_masked: 5.240063667297363
+eval/ce_kl/ce_unrecovered_ci_masked: 0.9942595362663269
+eval/ce_kl/ce_unrecovered_unmasked: 1.00172758102417
+eval/ce_kl/ce_unrecovered_stoch_masked: 0.7623955011367798
+eval/ce_kl/ce_unrecovered_random_masked: 1.0041708946228027
+eval/ce_kl/ce_unrecovered_rounded_masked: 0.9966732859611511
+Saved custom chart data eval/l0/bar_chart to /mnt/data/artifacts/mechanisms/param-decomp/decompositions/p-livee2e02/figures/eval_l0_bar_chart_10.json
+[trace rank=3 +  24568.8ms] snapshot: enter barrier (pre-write)
+[trace rank=1 +  24573.2ms] snapshot: enter barrier (pre-write)
+[trace rank=0 +  24592.4ms] snapshot: enter barrier (pre-write)
+[trace rank=4 +  24600.8ms] snapshot: enter barrier (pre-write)
+[trace rank=2 +  24604.2ms] snapshot: enter barrier (pre-write)
+[trace rank=5 +  24629.0ms] snapshot: enter barrier (pre-write)
+[trace rank=0 +  24629.6ms] snapshot: barrier (pre-write) done
+[trace rank=0 +  24629.7ms] snapshot: writing partial rank_0.pth
+[trace rank=1 +  24629.8ms] snapshot: barrier (pre-write) done
+[trace rank=2 +  24629.9ms] snapshot: barrier (pre-write) done[trace rank=1 +  24629.9ms] snapshot: writing partial rank_1.pth[trace rank=3 +  24629.9ms] snapshot: barrier (pre-write) done
+
+
+[trace rank=2 +  24629.9ms] snapshot: writing partial rank_2.pth[trace rank=3 +  24629.9ms] snapshot: writing partial rank_3.pth
+
+[trace rank=4 +  24630.1ms] snapshot: barrier (pre-write) done[trace rank=5 +  24630.1ms] snapshot: barrier (pre-write) done
+
+[trace rank=4 +  24630.1ms] snapshot: writing partial rank_4.pth
+[trace rank=5 +  24630.2ms] snapshot: writing partial rank_5.pth
+[trace rank=5 +  24652.1ms] snapshot: partial write done
+[trace rank=5 +  24652.2ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=1 +  24653.3ms] snapshot: partial write done
+[trace rank=1 +  24653.4ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=0 +  24660.9ms] snapshot: partial write done
+[trace rank=0 +  24661.0ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=3 +  24670.8ms] snapshot: partial write done
+[trace rank=3 +  24670.9ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=2 +  24676.9ms] snapshot: partial write done
+[trace rank=2 +  24677.0ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=4 +  25048.4ms] snapshot: partial write done
+[trace rank=4 +  25048.4ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=0 +  25049.1ms] snapshot: barrier (post-write rejoin) done
+[trace rank=1 +  25049.3ms] snapshot: barrier (post-write rejoin) done
+[trace rank=2 +  25049.4ms] snapshot: barrier (post-write rejoin) done
+[trace rank=3 +  25049.5ms] snapshot: barrier (post-write rejoin) done
+[trace rank=4 +  25049.7ms] snapshot: barrier (post-write rejoin) done
+[trace rank=5 +  25049.8ms] snapshot: barrier (post-write rejoin) done
+[trace rank=2 +  25051.8ms] Trainer.run: step 11: start (pool=layerwise)[trace rank=3 +  25051.8ms] Trainer.run: step 11: start (pool=layerwise)
+
+[trace rank=4 +  25051.9ms] Trainer.run: step 11: start (pool=ci)
+[trace rank=1 +  25052.0ms] Trainer.run: step 11: start (pool=layerwise)
+[trace rank=5 +  25053.6ms] Trainer.run: step 11: start (pool=ppgd)
+[trace rank=4 +  25076.2ms] Trainer.run: step 11: dispatched in 24.1ms
+Async slow-eval submitted: parent=p-livee2e02 step=10 job_id=34756 log=/mnt/data/artifacts/mechanisms/param-decomp/slurm_logs/slurm-34756.out
+[trace rank=0 +  25084.4ms] Trainer.run: step 11: start (pool=layerwise)
+[trace rank=5 +  25183.4ms] Trainer.run: step 11: dispatched in 129.7ms
+[trace rank=1 +  25255.9ms] Trainer.run: step 11: dispatched in 203.8ms
+[trace rank=0 +  25256.1ms] Trainer.run: step 11: dispatched in 171.6ms[trace rank=3 +  25256.0ms] Trainer.run: step 11: dispatched in 204.2ms
+
+[trace rank=2 +  25256.3ms] Trainer.run: step 11: dispatched in 204.4ms
+[trace rank=4 +  25256.4ms] Trainer.run: step 12: start (pool=ci)
+[trace rank=5 +  25256.5ms] Trainer.run: step 12: start (pool=ppgd)
+[trace rank=3 +  25258.1ms] Trainer.run: step 12: start (pool=layerwise)
+[trace rank=1 +  25258.2ms] Trainer.run: step 12: start (pool=layerwise)[trace rank=0 +  25258.2ms] Trainer.run: step 12: start (pool=layerwise)
+
+[trace rank=2 +  25258.4ms] Trainer.run: step 12: start (pool=layerwise)
+[trace rank=4 +  25277.4ms] Trainer.run: step 12: dispatched in 20.9ms
+[trace rank=5 +  25367.9ms] Trainer.run: step 12: dispatched in 111.3ms
+[trace rank=1 +  25420.8ms] Trainer.run: step 12: dispatched in 162.6ms[trace rank=3 +  25420.8ms] Trainer.run: step 12: dispatched in 162.6ms
+
+[trace rank=0 +  25421.2ms] Trainer.run: step 12: dispatched in 162.9ms[trace rank=2 +  25421.2ms] Trainer.run: step 12: dispatched in 162.8ms
+
+[trace rank=5 +  25421.5ms] Trainer.run: step 13: start (pool=ppgd)
+[trace rank=4 +  25421.6ms] Trainer.run: step 13: start (pool=ci)
+[trace rank=3 +  25422.8ms] Trainer.run: step 13: start (pool=layerwise)
+[trace rank=1 +  25423.0ms] Trainer.run: step 13: start (pool=layerwise)
+[trace rank=2 +  25423.2ms] Trainer.run: step 13: start (pool=layerwise)
+[trace rank=0 +  25423.3ms] Trainer.run: step 13: start (pool=layerwise)
+[trace rank=4 +  25441.7ms] Trainer.run: step 13: dispatched in 20.1ms
+[trace rank=5 +  25532.7ms] Trainer.run: step 13: dispatched in 111.1ms
+[trace rank=1 +  25585.7ms] Trainer.run: step 13: dispatched in 162.7ms[trace rank=3 +  25585.7ms] Trainer.run: step 13: dispatched in 162.9ms
+
+[trace rank=0 +  25586.0ms] Trainer.run: step 13: dispatched in 162.7ms
+[trace rank=2 +  25586.2ms] Trainer.run: step 13: dispatched in 162.9ms
+[trace rank=5 +  25586.4ms] Trainer.run: step 14: start (pool=ppgd)
+[trace rank=4 +  25586.5ms] Trainer.run: step 14: start (pool=ci)
+[trace rank=3 +  25587.7ms] Trainer.run: step 14: start (pool=layerwise)
+[trace rank=1 +  25587.8ms] Trainer.run: step 14: start (pool=layerwise)
+[trace rank=0 +  25588.1ms] Trainer.run: step 14: start (pool=layerwise)
+[trace rank=2 +  25588.2ms] Trainer.run: step 14: start (pool=layerwise)
+[trace rank=4 +  25606.7ms] Trainer.run: step 14: dispatched in 20.2ms
+[trace rank=5 +  25697.3ms] Trainer.run: step 14: dispatched in 110.8ms
+[trace rank=1 +  25750.4ms] Trainer.run: step 14: dispatched in 162.5ms
+[trace rank=3 +  25750.4ms] Trainer.run: step 14: dispatched in 162.6ms
+[trace rank=0 +  25750.7ms] Trainer.run: step 14: dispatched in 162.6ms
+[trace rank=2 +  25750.7ms] Trainer.run: step 14: dispatched in 162.5ms
+[trace rank=5 +  25751.0ms] Trainer.run: step 15: start (pool=ppgd)
+[trace rank=4 +  25751.2ms] Trainer.run: step 15: start (pool=ci)
+[trace rank=1 +  25752.4ms] Trainer.run: step 15: start (pool=layerwise)[trace rank=3 +  25752.4ms] Trainer.run: step 15: start (pool=layerwise)
+
+[trace rank=0 +  25752.7ms] Trainer.run: step 15: start (pool=layerwise)
+[trace rank=2 +  25752.7ms] Trainer.run: step 15: start (pool=layerwise)
+[trace rank=5 +  25861.8ms] Trainer.run: step 15: dispatched in 110.7ms
+[mem rank=5 +  25862.2ms] step 15 done cur=0.58gb peak=1.43gb reserved=1.46gb free=0.87gb retries=0 ooms=0
+[trace rank=1 +  25915.1ms] Trainer.run: step 15: dispatched in 162.6ms
+[trace rank=3 +  25915.2ms] Trainer.run: step 15: dispatched in 162.7ms
+[trace rank=0 +  25915.3ms] Trainer.run: step 15: dispatched in 162.5ms
+[mem rank=1 +  25915.3ms] step 15 done cur=0.59gb peak=1.09gb reserved=1.12gb free=0.53gb retries=0 ooms=0
+[mem rank=3 +  25915.4ms] step 15 done cur=0.59gb peak=0.95gb reserved=0.99gb free=0.40gb retries=0 ooms=0
+[mem rank=0 +  25915.5ms] step 15 done cur=0.59gb peak=1.09gb reserved=1.12gb free=0.53gb retries=0 ooms=0
+[trace rank=2 +  25915.5ms] Trainer.run: step 15: dispatched in 162.7ms
+[mem rank=2 +  25915.7ms] step 15 done cur=0.59gb peak=0.95gb reserved=0.99gb free=0.40gb retries=0 ooms=0
+[trace rank=4 +  25915.8ms] Trainer.run: step 15: dispatched in 164.6ms
+[mem rank=4 +  25916.0ms] step 15 done cur=0.93gb peak=1.10gb reserved=1.14gb free=0.20gb retries=0 ooms=0
+--- Step 15 ---
+train/loss/faith: 0.0235828
+train/loss/stoch: 0.0702502
+train/loss/imp: 3211.91
+train/loss/ppgd: 6.94094
+train/mem/lw_peak_gb: 1.09127
+train/mem/ci_peak_gb: 1.09743
+train/mem/ppgd_peak_gb: 1.43322[trace rank=5 +  25916.9ms] snapshot: enter barrier (pre-write)
+train/perf/step_ms: 162.741
+
+train/loss/total: 2.35829e+06
+train/schedules/lr/components: 0.000113338
+[trace rank=3 +  25917.1ms] snapshot: enter barrier (pre-write)
+[trace rank=1 +  25917.2ms] snapshot: enter barrier (pre-write)
+[trace rank=2 +  25918.1ms] snapshot: enter barrier (pre-write)
+[trace rank=0 +  25927.0ms] snapshot: enter barrier (pre-write)
+[trace rank=4 +  25951.2ms] snapshot: enter barrier (pre-write)
+[trace rank=0 +  25951.4ms] snapshot: barrier (pre-write) done[trace rank=2 +  25951.3ms] snapshot: barrier (pre-write) done[trace rank=1 +  25951.3ms] snapshot: barrier (pre-write) done
+
+
+[trace rank=0 +  25951.4ms] snapshot: writing partial rank_0.pth
+[trace rank=2 +  25951.4ms] snapshot: writing partial rank_2.pth
+[trace rank=1 +  25951.4ms] snapshot: writing partial rank_1.pth
+[trace rank=3 +  25951.5ms] snapshot: barrier (pre-write) done[trace rank=4 +  25951.5ms] snapshot: barrier (pre-write) done[trace rank=5 +  25951.5ms] snapshot: barrier (pre-write) done
+
+
+[trace rank=3 +  25951.5ms] snapshot: writing partial rank_3.pth
+[trace rank=4 +  25951.6ms] snapshot: writing partial rank_4.pth
+[trace rank=5 +  25951.6ms] snapshot: writing partial rank_5.pth
+[trace rank=5 +  25975.4ms] snapshot: partial write done
+[trace rank=5 +  25975.4ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=1 +  25978.4ms] snapshot: partial write done
+[trace rank=1 +  25978.4ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=3 +  25980.7ms] snapshot: partial write done
+[trace rank=3 +  25980.8ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=2 +  25983.1ms] snapshot: partial write done
+[trace rank=2 +  25983.2ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=0 +  25983.3ms] snapshot: partial write done
+[trace rank=0 +  25983.4ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=4 +  26397.3ms] snapshot: partial write done
+[trace rank=4 +  26397.4ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=0 +  26398.1ms] snapshot: barrier (post-write rejoin) done
+[trace rank=1 +  26398.3ms] snapshot: barrier (post-write rejoin) done
+[trace rank=2 +  26398.4ms] snapshot: barrier (post-write rejoin) done
+[trace rank=3 +  26398.5ms] snapshot: barrier (post-write rejoin) done
+[trace rank=4 +  26398.7ms] snapshot: barrier (post-write rejoin) done
+[trace rank=5 +  26398.7ms] snapshot: barrier (post-write rejoin) done
+[trace rank=5 +  26400.8ms] Trainer.run: step 16: start (pool=ppgd)
+[trace rank=3 +  26400.8ms] Trainer.run: step 16: start (pool=layerwise)
+[trace rank=4 +  26400.9ms] Trainer.run: step 16: start (pool=ci)
+[trace rank=1 +  26401.0ms] Trainer.run: step 16: start (pool=layerwise)[trace rank=2 +  26401.0ms] Trainer.run: step 16: start (pool=layerwise)
+
+[trace rank=4 +  26421.9ms] Trainer.run: step 16: dispatched in 20.9ms
+Async slow-eval submitted: parent=p-livee2e02 step=15 job_id=34757 log=/mnt/data/artifacts/mechanisms/param-decomp/slurm_logs/slurm-34757.out
+[trace rank=0 +  26435.5ms] Trainer.run: step 16: start (pool=layerwise)
+[trace rank=5 +  26513.5ms] Trainer.run: step 16: dispatched in 112.6ms
+[trace rank=1 +  26599.1ms] Trainer.run: step 16: dispatched in 198.0ms
+[trace rank=3 +  26599.3ms] Trainer.run: step 16: dispatched in 198.4ms
+[trace rank=0 +  26599.3ms] Trainer.run: step 16: dispatched in 163.8ms
+[trace rank=4 +  26599.7ms] Trainer.run: step 17: start (pool=ci)[trace rank=2 +  26599.7ms] Trainer.run: step 16: dispatched in 198.6ms
+
+[trace rank=5 +  26599.9ms] Trainer.run: step 17: start (pool=ppgd)
+[trace rank=1 +  26601.2ms] Trainer.run: step 17: start (pool=layerwise)
+[trace rank=3 +  26601.3ms] Trainer.run: step 17: start (pool=layerwise)
+[trace rank=0 +  26601.4ms] Trainer.run: step 17: start (pool=layerwise)
+[trace rank=2 +  26601.8ms] Trainer.run: step 17: start (pool=layerwise)
+[trace rank=4 +  26620.1ms] Trainer.run: step 17: dispatched in 20.3ms
+[trace rank=5 +  26711.0ms] Trainer.run: step 17: dispatched in 111.0ms
+[trace rank=1 +  26763.5ms] Trainer.run: step 17: dispatched in 162.3ms
+[trace rank=3 +  26763.6ms] Trainer.run: step 17: dispatched in 162.2ms
+[trace rank=2 +  26763.9ms] Trainer.run: step 17: dispatched in 162.0ms[trace rank=0 +  26763.9ms] Trainer.run: step 17: dispatched in 162.5ms
+
+[trace rank=5 +  26764.3ms] Trainer.run: step 18: start (pool=ppgd)
+[trace rank=4 +  26764.3ms] Trainer.run: step 18: start (pool=ci)
+[trace rank=3 +  26765.6ms] Trainer.run: step 18: start (pool=layerwise)
+[trace rank=1 +  26765.6ms] Trainer.run: step 18: start (pool=layerwise)
+[trace rank=2 +  26765.8ms] Trainer.run: step 18: start (pool=layerwise)
+[trace rank=0 +  26766.0ms] Trainer.run: step 18: start (pool=layerwise)
+[trace rank=4 +  26784.4ms] Trainer.run: step 18: dispatched in 20.0ms
+[trace rank=5 +  26876.5ms] Trainer.run: step 18: dispatched in 112.2ms
+[trace rank=1 +  26929.1ms] Trainer.run: step 18: dispatched in 163.5ms
+[trace rank=3 +  26929.2ms] Trainer.run: step 18: dispatched in 163.6ms
+[trace rank=2 +  26929.5ms] Trainer.run: step 18: dispatched in 163.6ms[trace rank=0 +  26929.5ms] Trainer.run: step 18: dispatched in 163.5ms
+
+[trace rank=5 +  26929.8ms] Trainer.run: step 19: start (pool=ppgd)
+[trace rank=4 +  26929.9ms] Trainer.run: step 19: start (pool=ci)
+[trace rank=1 +  26931.2ms] Trainer.run: step 19: start (pool=layerwise)[trace rank=3 +  26931.2ms] Trainer.run: step 19: start (pool=layerwise)
+
+[trace rank=2 +  26931.5ms] Trainer.run: step 19: start (pool=layerwise)
+[trace rank=0 +  26931.6ms] Trainer.run: step 19: start (pool=layerwise)
+[trace rank=4 +  26950.1ms] Trainer.run: step 19: dispatched in 20.2ms
+[trace rank=5 +  27042.0ms] Trainer.run: step 19: dispatched in 112.1ms
+[trace rank=1 +  27095.4ms] Trainer.run: step 19: dispatched in 164.2ms[trace rank=3 +  27095.4ms] Trainer.run: step 19: dispatched in 164.2ms
+
+[trace rank=0 +  27095.8ms] Trainer.run: step 19: dispatched in 164.2ms[trace rank=2 +  27095.8ms] Trainer.run: step 19: dispatched in 164.3ms
+
+[trace rank=5 +  27096.1ms] Trainer.run: step 20: start (pool=ppgd)
+[trace rank=4 +  27096.2ms] Trainer.run: step 20: start (pool=ci)
+[trace rank=3 +  27097.4ms] Trainer.run: step 20: start (pool=layerwise)[trace rank=1 +  27097.4ms] Trainer.run: step 20: start (pool=layerwise)
+
+[trace rank=2 +  27097.8ms] Trainer.run: step 20: start (pool=layerwise)
+[trace rank=0 +  27097.8ms] Trainer.run: step 20: start (pool=layerwise)
+[trace rank=5 +  27210.6ms] Trainer.run: step 20: dispatched in 114.4ms
+[mem rank=5 +  27210.9ms] step 20 done cur=0.58gb peak=1.43gb reserved=1.46gb free=0.87gb retries=0 ooms=0
+[trace rank=3 +  27262.1ms] Trainer.run: step 20: dispatched in 164.7ms
+[trace rank=1 +  27262.2ms] Trainer.run: step 20: dispatched in 164.7ms
+[mem rank=3 +  27262.3ms] step 20 done cur=0.59gb peak=0.95gb reserved=0.99gb free=0.40gb retries=0 ooms=0
+[mem rank=1 +  27262.4ms] step 20 done cur=0.59gb peak=1.09gb reserved=1.12gb free=0.53gb retries=0 ooms=0
+[trace rank=2 +  27262.4ms] Trainer.run: step 20: dispatched in 164.6ms
+[trace rank=0 +  27262.5ms] Trainer.run: step 20: dispatched in 164.6ms
+[mem rank=2 +  27262.6ms] step 20 done cur=0.59gb peak=0.95gb reserved=0.99gb free=0.40gb retries=0 ooms=0
+[mem rank=0 +  27262.8ms] step 20 done cur=0.59gb peak=1.09gb reserved=1.12gb free=0.53gb retries=0 ooms=0
+[trace rank=4 +  27263.1ms] Trainer.run: step 20: dispatched in 166.8ms
+[mem rank=4 +  27263.3ms] step 20 done cur=0.93gb peak=1.10gb reserved=1.14gb free=0.20gb retries=0 ooms=0
+--- Step 20 ---
+train/loss/faith: 0.0235416
+train/loss/stoch: 0.0611363
+train/loss/imp: 3339.76
+train/loss/ppgd: 8.29644
+train/mem/lw_peak_gb: 1.09127
+train/mem/ci_peak_gb: 1.09743
+train/mem/ppgd_peak_gb: 1.43322
+train/perf/step_ms: 164.749
+train/loss/total: 2.35417e+06
+train/schedules/lr/components: 4.80866e-05
+eval/update(CI_L0) step=0 took 0.00s
+eval/update(CEandKLLosses) step=0 took 0.05s
+eval/compute(CI_L0) took 0.00s (26 outputs)
+eval/compute(CEandKLLosses) took 0.00s (16 outputs)
+eval/l0/0.0_h.0.attn.q_proj: 34.6171875
+eval/l0/0.0_h.0.attn.k_proj: 29.90234375
+eval/l0/0.0_h.1.attn.q_proj: 32.8125
+eval/l0/0.0_h.1.attn.k_proj: 35.81640625
+eval/l0/0.0_h.2.attn.q_proj: 30.29296875
+eval/l0/0.0_h.2.attn.k_proj: 33.359375
+eval/l0/0.0_h.3.attn.q_proj: 34.76171875
+eval/l0/0.0_h.3.attn.k_proj: 33.48046875
+eval/l0/0.0_h.4.attn.q_proj: 31.359375
+eval/l0/0.0_h.4.attn.k_proj: 33.3828125
+eval/l0/0.0_h.5.attn.q_proj: 30.5546875
+eval/l0/0.0_h.5.attn.k_proj: 32.66015625
+eval/l0/0.0_h.6.attn.q_proj: 36.46484375
+eval/l0/0.0_h.6.attn.k_proj: 30.74609375
+eval/l0/0.0_h.7.attn.q_proj: 29.8359375
+eval/l0/0.0_h.7.attn.k_proj: 30.06640625
+eval/l0/0.0_h.8.attn.q_proj: 28.28125
+eval/l0/0.0_h.8.attn.k_proj: 33.3203125
+eval/l0/0.0_h.9.attn.q_proj: 24.47265625
+eval/l0/0.0_h.9.attn.k_proj: 33.20703125
+eval/l0/0.0_h.10.attn.q_proj: 33.4453125
+eval/l0/0.0_h.10.attn.k_proj: 34.828125
+eval/l0/0.0_h.11.attn.q_proj: 35.22265625
+eval/l0/0.0_h.11.attn.k_proj: 34.23046875
+eval/l0/0.0_total: 777.12109375
+eval/l0/bar_chart: CustomChart(table=<wandb.sdk.data_types.table.Table object at 0x793464f13110>, spec=CustomChartSpec(spec_name='wandb/bar/v0', fields={'label': 'layer', 'value': 'l0'}, string_fields={'title': 'L0_0.0'}, key='', panel_type='Vega2', split_table=False))
+eval/ce_kl/kl_ci_masked: 5.705946922302246
+eval/ce_kl/kl_unmasked: 5.784429550170898
+eval/ce_kl/kl_stoch_masked: 4.182187080383301
+eval/ce_kl/kl_random_masked: 5.780661106109619
+eval/ce_kl/kl_rounded_masked: 5.697729110717773
+eval/ce_kl/kl_zero_masked: 5.753959655761719
+eval/ce_kl/ce_difference_ci_masked: 5.576537132263184
+eval/ce_kl/ce_difference_unmasked: 5.661532402038574
+eval/ce_kl/ce_difference_stoch_masked: 3.9266467094421387
+eval/ce_kl/ce_difference_random_masked: 5.637700080871582
+eval/ce_kl/ce_difference_rounded_masked: 5.548261642456055
+eval/ce_kl/ce_unrecovered_ci_masked: 0.9962880611419678
+eval/ce_kl/ce_unrecovered_unmasked: 1.0114730596542358
+eval/ce_kl/ce_unrecovered_stoch_masked: 0.7015234231948853
+eval/ce_kl/ce_unrecovered_random_masked: 1.0072152614593506
+eval/ce_kl/ce_unrecovered_rounded_masked: 0.9912364482879639
+Saved custom chart data eval/l0/bar_chart to /mnt/data/artifacts/mechanisms/param-decomp/decompositions/p-livee2e02/figures/eval_l0_bar_chart_20.json
+[trace rank=0 +  27488.2ms] snapshot: enter barrier (pre-write)
+[trace rank=2 +  27494.9ms] snapshot: enter barrier (pre-write)
+[trace rank=3 +  27501.6ms] snapshot: enter barrier (pre-write)
+[trace rank=1 +  27544.8ms] snapshot: enter barrier (pre-write)
+[trace rank=4 +  27546.3ms] snapshot: enter barrier (pre-write)
+[trace rank=5 +  27589.6ms] snapshot: enter barrier (pre-write)
+[trace rank=0 +  27590.1ms] snapshot: barrier (pre-write) done[trace rank=1 +  27590.0ms] snapshot: barrier (pre-write) done
+
+[trace rank=0 +  27590.2ms] snapshot: writing partial rank_0.pth[trace rank=1 +  27590.1ms] snapshot: writing partial rank_1.pth
+
+[trace rank=2 +  27590.2ms] snapshot: barrier (pre-write) done
+[trace rank=2 +  27590.3ms] snapshot: writing partial rank_2.pth
+[trace rank=3 +  27590.3ms] snapshot: barrier (pre-write) done
+[trace rank=3 +  27590.4ms] snapshot: writing partial rank_3.pth
+[trace rank=5 +  27590.6ms] snapshot: barrier (pre-write) done[trace rank=4 +  27590.5ms] snapshot: barrier (pre-write) done
+
+[trace rank=4 +  27590.6ms] snapshot: writing partial rank_4.pth
+[trace rank=5 +  27590.7ms] snapshot: writing partial rank_5.pth
+[trace rank=1 +  27618.1ms] snapshot: partial write done
+[trace rank=1 +  27618.2ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=3 +  27619.4ms] snapshot: partial write done
+[trace rank=3 +  27619.5ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=5 +  27624.5ms] snapshot: partial write done
+[trace rank=5 +  27624.6ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=2 +  27625.9ms] snapshot: partial write done
+[trace rank=2 +  27625.9ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=0 +  27626.0ms] snapshot: partial write done
+[trace rank=0 +  27626.1ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=4 +  27999.3ms] snapshot: partial write done
+[trace rank=4 +  27999.4ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=0 +  28000.1ms] snapshot: barrier (post-write rejoin) done
+[trace rank=1 +  28000.2ms] snapshot: barrier (post-write rejoin) done
+[trace rank=2 +  28000.3ms] snapshot: barrier (post-write rejoin) done
+[trace rank=4 +  28000.5ms] snapshot: barrier (post-write rejoin) done
+[trace rank=5 +  28000.6ms] snapshot: barrier (post-write rejoin) done[trace rank=3 +  28000.5ms] snapshot: barrier (post-write rejoin) done
+
+[trace rank=1 +  28002.6ms] Trainer.run: step 21: start (pool=layerwise)
+[trace rank=2 +  28002.7ms] Trainer.run: step 21: start (pool=layerwise)[trace rank=4 +  28002.7ms] Trainer.run: step 21: start (pool=ci)
+
+[trace rank=5 +  28003.0ms] Trainer.run: step 21: start (pool=ppgd)
+[trace rank=3 +  28003.1ms] Trainer.run: step 21: start (pool=layerwise)
+[trace rank=4 +  28026.4ms] Trainer.run: step 21: dispatched in 23.5ms
+Async slow-eval submitted: parent=p-livee2e02 step=20 job_id=34758 log=/mnt/data/artifacts/mechanisms/param-decomp/slurm_logs/slurm-34758.out
+[trace rank=0 +  28041.2ms] Trainer.run: step 21: start (pool=layerwise)
+[trace rank=5 +  28128.5ms] Trainer.run: step 21: dispatched in 125.5ms
+[trace rank=1 +  28212.3ms] Trainer.run: step 21: dispatched in 209.7ms
+[trace rank=3 +  28212.6ms] Trainer.run: step 21: dispatched in 209.4ms[trace rank=0 +  28212.6ms] Trainer.run: step 21: dispatched in 171.4ms
+
+[trace rank=2 +  28212.8ms] Trainer.run: step 21: dispatched in 210.0ms
+[trace rank=4 +  28212.9ms] Trainer.run: step 22: start (pool=ci)
+[trace rank=5 +  28213.1ms] Trainer.run: step 22: start (pool=ppgd)
+[trace rank=1 +  28214.5ms] Trainer.run: step 22: start (pool=layerwise)
+[trace rank=3 +  28214.6ms] Trainer.run: step 22: start (pool=layerwise)
+[trace rank=0 +  28214.8ms] Trainer.run: step 22: start (pool=layerwise)
+[trace rank=2 +  28214.9ms] Trainer.run: step 22: start (pool=layerwise)
+[trace rank=4 +  28233.3ms] Trainer.run: step 22: dispatched in 20.3ms
+[trace rank=5 +  28322.6ms] Trainer.run: step 22: dispatched in 109.5ms
+[trace rank=1 +  28378.8ms] Trainer.run: step 22: dispatched in 164.3ms[trace rank=3 +  28378.8ms] Trainer.run: step 22: dispatched in 164.2ms
+
+[trace rank=2 +  28379.1ms] Trainer.run: step 22: dispatched in 164.2ms[trace rank=0 +  28379.2ms] Trainer.run: step 22: dispatched in 164.4ms
+
+[trace rank=5 +  28379.6ms] Trainer.run: step 23: start (pool=ppgd)
+[trace rank=4 +  28379.6ms] Trainer.run: step 23: start (pool=ci)
+[trace rank=3 +  28380.8ms] Trainer.run: step 23: start (pool=layerwise)
+[trace rank=1 +  28380.9ms] Trainer.run: step 23: start (pool=layerwise)
+[trace rank=2 +  28381.1ms] Trainer.run: step 23: start (pool=layerwise)
+[trace rank=0 +  28381.3ms] Trainer.run: step 23: start (pool=layerwise)
+[trace rank=4 +  28399.7ms] Trainer.run: step 23: dispatched in 20.1ms
+[trace rank=5 +  28489.7ms] Trainer.run: step 23: dispatched in 110.1ms
+[trace rank=4 +  28547.8ms] Trainer.run: step 24: start (pool=ci)
+[trace rank=1 +  28548.2ms] Trainer.run: step 23: dispatched in 167.2ms[trace rank=3 +  28548.2ms] Trainer.run: step 23: dispatched in 167.3ms
+
+[trace rank=0 +  28548.5ms] Trainer.run: step 23: dispatched in 167.1ms
+[trace rank=2 +  28548.5ms] Trainer.run: step 23: dispatched in 167.3ms
+[trace rank=5 +  28548.8ms] Trainer.run: step 24: start (pool=ppgd)
+[trace rank=3 +  28550.3ms] Trainer.run: step 24: start (pool=layerwise)
+[trace rank=1 +  28550.4ms] Trainer.run: step 24: start (pool=layerwise)
+[trace rank=2 +  28550.7ms] Trainer.run: step 24: start (pool=layerwise)
+[trace rank=0 +  28551.0ms] Trainer.run: step 24: start (pool=layerwise)
+[trace rank=4 +  28563.8ms] Trainer.run: step 24: dispatched in 16.0ms
+[trace rank=5 +  28705.8ms] Trainer.run: step 24: dispatched in 156.9ms
+[trace rank=1 +  28753.6ms] Trainer.run: step 24: dispatched in 203.1ms[trace rank=3 +  28753.6ms] Trainer.run: step 24: dispatched in 203.2ms
+
+[trace rank=0 +  28753.9ms] Trainer.run: step 24: dispatched in 202.8ms
+[trace rank=2 +  28754.0ms] Trainer.run: step 24: dispatched in 203.2ms
+[trace rank=5 +  28754.9ms] snapshot: enter barrier (pre-write)
+[trace rank=1 +  28756.5ms] snapshot: enter barrier (pre-write)
+[trace rank=3 +  28756.6ms] snapshot: enter barrier (pre-write)
+[trace rank=2 +  28758.2ms] snapshot: enter barrier (pre-write)
+[trace rank=0 +  28764.0ms] snapshot: enter barrier (pre-write)
+[trace rank=4 +  28785.2ms] snapshot: enter barrier (pre-write)
+[trace rank=0 +  28785.5ms] snapshot: barrier (pre-write) done[trace rank=1 +  28785.5ms] snapshot: barrier (pre-write) done
+
+[trace rank=0 +  28785.6ms] snapshot: writing partial rank_0.pth
+[trace rank=1 +  28785.5ms] snapshot: writing partial rank_1.pth[trace rank=4 +  28785.6ms] snapshot: barrier (pre-write) done[trace rank=5 +  28785.6ms] snapshot: barrier (pre-write) done[trace rank=2 +  28785.5ms] snapshot: barrier (pre-write) done
+[trace rank=3 +  28785.5ms] snapshot: barrier (pre-write) done
+
+
+
+[trace rank=5 +  28785.7ms] snapshot: writing partial rank_5.pth[trace rank=3 +  28785.6ms] snapshot: writing partial rank_3.pth[trace rank=4 +  28785.7ms] snapshot: writing partial rank_4.pth
+
+[trace rank=2 +  28785.6ms] snapshot: writing partial rank_2.pth
+
+[trace rank=5 +  28805.1ms] snapshot: partial write done
+[trace rank=5 +  28805.2ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=1 +  28811.7ms] snapshot: partial write done
+[trace rank=1 +  28811.7ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=0 +  28818.4ms] snapshot: partial write done
+[trace rank=0 +  28818.4ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=3 +  28822.3ms] snapshot: partial write done
+[trace rank=3 +  28822.4ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=2 +  28823.2ms] snapshot: partial write done
+[trace rank=2 +  28823.2ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=4 +  29214.0ms] snapshot: partial write done
+[trace rank=4 +  29214.3ms] snapshot: enter barrier (post-write rejoin)
+[trace rank=0 +  29215.6ms] snapshot: barrier (post-write rejoin) done
+[trace rank=1 +  29215.7ms] snapshot: barrier (post-write rejoin) done
+[trace rank=2 +  29215.8ms] snapshot: barrier (post-write rejoin) done
+[trace rank=3 +  29215.9ms] snapshot: barrier (post-write rejoin) done
+[trace rank=4 +  29216.0ms] snapshot: barrier (post-write rejoin) done[trace rank=5 +  29216.1ms] snapshot: barrier (post-write rejoin) done
+
+Async slow-eval submitted: parent=p-livee2e02 step=25 job_id=34759 log=/mnt/data/artifacts/mechanisms/param-decomp/slurm_logs/slurm-34759.out
