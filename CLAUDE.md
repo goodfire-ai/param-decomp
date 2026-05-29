@@ -155,7 +155,8 @@ All declared in `param_decomp_lab/pyproject.toml`.
 |---|---|---|
 | `pd-tms` | `experiments/tms/run.py` | Run TMS experiment from a YAML |
 | `pd-resid-mlp` | `experiments/resid_mlp/run.py` | Run ResidMLP from a YAML |
-| `pd-lm` | `experiments/lm/run.py` | Run LM from a YAML |
+| `pd-lm` | `experiments/lm/run.py` | Run single-pool LM from a YAML |
+| `pd-lm-3pool` | `experiments/lm/three_pool_run.py` | Run 3-pool LM from a `ThreePoolLMExperimentConfig` YAML |
 | `pd-lm-layerwise` | `experiments/lm/layerwise.py` | Split an LM YAML into per-matrix configs, submit as a SLURM array |
 | `pd-pretrain` | `experiments/lm/pretrain/cli.py` | Pretrain target models |
 | `pd-harvest` | `harvest/scripts/run_slurm_cli.py` | Submit harvest SLURM job |

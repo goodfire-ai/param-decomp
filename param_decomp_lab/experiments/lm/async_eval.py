@@ -49,12 +49,12 @@ from param_decomp_lab.distributed import (
 )
 from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
 from param_decomp_lab.experiments.lm.run import (
-    LMExperimentConfig,
     _resolve_train_run_id,
     build_lm_loader,
     build_target,
     make_run_batch,
 )
+from param_decomp_lab.experiments.lm.three_pool_run import ThreePoolLMExperimentConfig
 from param_decomp_lab.experiments.utils import RUN_META_FILENAME, EvalConfig
 from param_decomp_lab.infra.run_files import resolve_run_files
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
@@ -70,7 +70,7 @@ from param_decomp_lab.three_pool.consolidate import (
 
 def _consolidate_or_wait(
     *,
-    cfg: "LMExperimentConfig",
+    cfg: "ThreePoolLMExperimentConfig",
     out_dir: Path,
     target_model: "nn.Module",
     run_batch: Any,
@@ -239,12 +239,14 @@ def main(
             to run. If omitted, falls back to the parent run's ``cfg.eval``.
         group / tags: optional wandb metadata for the resumed run.
     """
-    # Read the config from run_meta.yaml directly rather than `SavedLMRun.from_path`:
+    # Read the config from run_meta.yaml directly rather than `SavedThreePoolLMRun.from_path`:
     # for a 3-pool run no `model_<step>.pth` exists yet (this job assembles it
-    # below), and `from_path` eagerly resolves one, which would crash here.
+    # below), and `from_path` eagerly resolves one, which would crash here. This job is
+    # only ever submitted by the 3-pool composition root, so the config is always a
+    # `ThreePoolLMExperimentConfig`.
     train_run_id = _resolve_train_run_id(run)
     out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / train_run_id
-    cfg = LMExperimentConfig.from_file(out_dir / RUN_META_FILENAME)
+    cfg = ThreePoolLMExperimentConfig.from_file(out_dir / RUN_META_FILENAME)
 
     if eval_config is not None:
         eval_cfg = EvalConfig.from_file(Path(eval_config))
@@ -271,11 +273,10 @@ def main(
     # CPU read+assemble. Assembly is forced onto CPU — building the full
     # ComponentModel buffer (incl. the transformer CI fn) on the selected, shared
     # GPU hangs.
-    if cfg.three_pool is not None:
-        assert step is not None, "3-pool async consolidation requires an explicit --step"
-        _consolidate_or_wait(
-            cfg=cfg, out_dir=out_dir, target_model=target_model, run_batch=run_batch, step=step
-        )
+    assert step is not None, "3-pool async consolidation requires an explicit --step"
+    _consolidate_or_wait(
+        cfg=cfg, out_dir=out_dir, target_model=target_model, run_batch=run_batch, step=step
+    )
 
     # Consolidation may be the only job to do — when there are no slow metrics
     # the 3-pool save still needs assembling, but there is no eval pass to run.

@@ -12,15 +12,41 @@ the concrete reload class directly.
 ```
 experiments/
 ├── utils.py                 # ExperimentConfig[T,D] generic + EvalConfig + WandbConfig
-│                            # + init_pd_run + RUN_META_FILENAME
+│                            # + init_pd_run + RUN_META_FILENAME + resume_provenance field
 ├── tms/run.py
 ├── resid_mlp/run.py
 └── lm/
-    ├── run.py
+    ├── run.py               # single-pool LM (pd-lm)
+    ├── three_pool_run.py    # 3-pool LM (pd-lm-3pool): ThreePoolLMExperimentConfig
+    ├── three_pool_pd.py     # ThreePoolConstrainedPDConfig + ThreePoolLosses
     ├── layerwise.py         # split LM YAML into per-matrix configs + SLURM-array submit
     ├── data.py
     └── pretrain/            # see lm/pretrain/CLAUDE.md
 ```
+
+## 3-pool config fork (`pd-lm-3pool`)
+
+The 3-pool training path is a standalone sibling of `pd-lm`, not a flag on it. Dispatch
+is by entry point (the repo idiom — no discriminator). `ThreePoolLMExperimentConfig`
+(in `lm/three_pool_run.py`) is a standalone `BaseConfig` with `pd:
+ThreePoolConstrainedPDConfig`, `runtime: ThreePoolRuntimeConfig` (core `RuntimeConfig`
+scalars + `topology: ThreePoolConfig`), and the usual `cadence`/`target`/`data`/`eval`/
+`wandb`. `LMExperimentConfig` is purely single-pool (no `three_pool` field).
+
+`ThreePoolConstrainedPDConfig` (in `lm/three_pool_pd.py`) subclasses core `PDConfig` and
+bakes the 3-pool's invariants into the types — `sampling`/`n_mask_samples`/
+`use_delta_component`/`identity_decomposition_targets` are frozen `Literal` defaults, and
+the generic `loss_metrics` list is replaced by a typed `ThreePoolLosses(faith, imp,
+stoch, ppgd)` struct (it derives the inherited `loss_metrics` list from the struct via a
+before-validator and excludes it from serialization). `ThreePoolTrainer` reads
+`pd.losses.faith` / `.imp` / `.stoch` / `.ppgd` directly — no `by_type` dict, no
+`isinstance` asserts. Cross-field checks coupling `pd` to `runtime.topology` (batch
+divisibility, rank-0 convention) run as a `@model_validator` on
+`ThreePoolLMExperimentConfig`, so 3-pool misconfigs fail at YAML parse, not minutes into
+a multi-node launch. (Site coverage — owned sites ∈ decomposition_targets after pattern
+expansion — stays in `ThreePoolTrainer._build_runtime` since it needs the loaded model.)
+
+Reload: `SavedThreePoolLMRun` (in `three_pool_run.py`) mirrors `SavedLMRun`.
 
 ## YAML schema
 

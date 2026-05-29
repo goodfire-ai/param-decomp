@@ -7,7 +7,7 @@ docstring in `optimize.py` for the data-handling contract.
 
 | File | What it covers |
 |---|---|
-| `optimize.py` | `ThreePoolTrainer` + `optimize_three_pool`; the training loop, `snapshot`/`from_snapshot`, config validation |
+| `optimize.py` | `ThreePoolTrainer` + `optimize_three_pool`; the training loop, `snapshot`/`from_snapshot`. Consumes `ThreePoolConstrainedPDConfig` (reads `pd.losses.*` directly). Config constraints are now type-level (see `experiments/lm/three_pool_pd.py`) + a load-time validator on `ThreePoolLMExperimentConfig`; only site-coverage validation remains here (`_build_runtime`, needs the loaded model) |
 | `layout.py` | `World` topology; `build_world` constructs every process group (threading `pg_timeout` into each); `BatchEdge` — symmetric per-edge batch-slice geometry (CI↔LW, CI↔PPGD) answering routing for both fan directions |
 | `checkpoint.py` | offline state_dict assembly from on-disk partials (`assemble_model_state_dict_from_partials`) + the leader key-partition helpers (`owned_model_state_keys` / `ci_fn_state_keys`) |
 | `consolidate.py` | `consolidate_step` — async, off-train-loop assembly of `model_<step>.pth` + `training_<step>.pth` from a step's scratch partials; prunes old `training_*.pth`; deletes the scratch dir. `unconsolidated_steps` lists recoverable steps |

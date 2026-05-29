@@ -17,9 +17,9 @@ global shared transformer CI fns that span all sites).
 
 Topology integrity checks (rank disjointness, uniform N_per_block, CI-pool
 cross-divisibility with Layerwise/PPGD arities) run at validation time; checks
-that depend on ``pd.batch_size`` (divisibility) run in
-``_validate_pd_config_for_three_pool`` since they need the paired ``PDConfig``
-to evaluate.
+that depend on ``pd.batch_size`` (divisibility) + the rank-0 convention run on
+``ThreePoolLMExperimentConfig`` (in ``experiments.lm.three_pool_run``) since they
+need the paired ``ThreePoolConstrainedPDConfig`` to evaluate.
 """
 
 from typing import Self
@@ -139,7 +139,7 @@ class ThreePoolConfig(BaseConfig):
         # (CI↔LW, CI↔PPGD) must be a clean one-to-K fan-out in EITHER direction:
         # one arity divides the other, so every batch-slice overlap is a whole,
         # aligned sub-slice. (The batch-divisibility of each arity itself is
-        # enforced against pd.batch_size in _validate_pd_config_for_three_pool.)
+        # enforced against pd.batch_size on ThreePoolLMExperimentConfig.)
         n_ci = len(self.ci_ranks)
         n_ppgd = len(self.ppgd_ranks)
         assert n_per_block % n_ci == 0 or n_ci % n_per_block == 0, (

@@ -15,19 +15,11 @@ from param_decomp_lab.resumption.config import (
     read_training_snapshot,
     resolve_step,
 )
-from param_decomp_lab.resumption.provenance import (
-    RESUME_PROVENANCE_FILENAME,
-    ResumeProvenance,
-    read_provenance,
-    write_provenance,
-)
+from param_decomp_lab.resumption.provenance import ResumeProvenance
 
 __all__ = [
-    "RESUME_PROVENANCE_FILENAME",
     "ResumeConfig",
     "ResumeProvenance",
-    "read_provenance",
     "read_training_snapshot",
     "resolve_step",
-    "write_provenance",
 ]
