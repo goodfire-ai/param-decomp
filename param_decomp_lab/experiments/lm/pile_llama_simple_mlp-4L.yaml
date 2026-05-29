@@ -44,7 +44,7 @@ pd:
       warmup_pct: 0.0
       final_val_frac: 0.1
       fn_type: cosine
-  steps: 400000
+  steps: 100000
   batch_size: 64
   faithfulness_warmup_steps: 400
   faithfulness_warmup_lr: 0.001
@@ -54,14 +54,12 @@ pd:
       coeff: 0.0002
       pnorm: 2.0
       beta: 0.5
-      p_anneal_start_frac: 0.0
+      p_anneal_start_frac: 0.8
       p_anneal_final_p: 0.4
       p_anneal_end_frac: 1.0
       eps: 1.0e-12
-    - type: StochasticReconSubsetLoss
-      coeff: 0.5
-      routing:
-        type: uniform_k_subset
+    - type: StochasticReconLayerwiseLoss
+      coeff: 6.0
     - type: PersistentPGDReconLoss
       coeff: 0.5
       optimizer:
@@ -71,7 +69,7 @@ pd:
         eps: 1.0e-08
         lr_schedule:
           start_val: 0.01
-          warmup_pct: 0.025
+          warmup_pct: 0.01
           final_val_frac: 1.0
           fn_type: constant
       scope:
