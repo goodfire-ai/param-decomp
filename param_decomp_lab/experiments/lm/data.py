@@ -21,6 +21,18 @@ class LMDataConfig(BaseConfig):
     """LM experiment dataset / dataloader settings."""
 
     dataset_name: str = Field(..., description="HuggingFace dataset id")
+    data_files: str | None = Field(
+        default=None,
+        description=(
+            "Explicit file glob passed to load_dataset (e.g. 'sample/350BT/*.parquet'). "
+            "Resolves directly against that path instead of enumerating the whole repo "
+            "tree, which slashes Hub API calls vs. selecting a config by name."
+        ),
+    )
+    revision: str | None = Field(
+        default=None,
+        description="Dataset git revision (commit SHA/tag) to pin layout and data for reproducibility",
+    )
     tokenizer_name: str = Field(..., description="HF tokenizer id or path")
     column_name: str = Field(default="text", description="Dataset column with the text/tokens")
     max_seq_len: PositiveInt = Field(default=512, description="Max sequence length")
@@ -154,6 +166,8 @@ def create_lm_data_loader(
     """Create an LM token dataloader from a HuggingFace dataset split."""
     dataset = load_dataset(
         cfg.dataset_name,
+        data_files=cfg.data_files,
+        revision=cfg.revision,
         streaming=cfg.streaming,
         split=split,
         trust_remote_code=False,
