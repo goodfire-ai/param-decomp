@@ -28,6 +28,7 @@ import os
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 import torch
@@ -277,10 +278,20 @@ def build_world(
     layerwise_block_groups: list[LayerwiseBlockGroup],
     ppgd_ranks: list[int],
     batch_global: int,
+    pg_timeout: timedelta,
     device: torch.device | None = None,
 ) -> World:
     """Construct the World + all process groups. Must be called on every rank
     after ``dist.init_process_group``.
+
+    ``pg_timeout`` is the collective timeout for every subgroup created here.
+    ``dist.new_group`` does NOT inherit the timeout passed to
+    ``init_process_group`` — with ``timeout=None`` it falls back to the NCCL
+    library default of 10 minutes regardless of how the default group was
+    configured. The 3-pool runs all of its real collectives (the cross-pool
+    p2p group, the per-pool all-reduces, the bcast groups) on these subgroups,
+    not the default group, so the timeout MUST be threaded explicitly or a slow
+    checkpoint save trips the 10-min watchdog and aborts the job.
 
     Pass ``device`` (this rank's GPU) so we can pre-warm the cross-pool NCCL
     broadcast groups before they're first used inside the training loop. See
@@ -306,7 +317,7 @@ def build_world(
         # Per-rank trace before/after each collective new_group. Lets us
         # localize precisely where the world wedges if NCCL deadlocks.
         print(f"[build_world rank={my_rank}] before {name} ranks={ranks}", flush=True)
-        g = dist.new_group(ranks=ranks)
+        g = dist.new_group(ranks=ranks, timeout=pg_timeout)
         print(f"[build_world rank={my_rank}] after  {name} ranks={ranks}", flush=True)
         return g
 
