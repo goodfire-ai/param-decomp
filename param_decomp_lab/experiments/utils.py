@@ -5,17 +5,20 @@ types.
 """
 
 from collections.abc import Callable
+from pathlib import Path
+from typing import Protocol
 
 import wandb
 from pydantic import Field, PositiveInt
 
-from param_decomp.base_config import BaseConfig
+from param_decomp.base_config import BaseConfig, runtime_cast
 from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
 from param_decomp.distributed import is_main_process
 from param_decomp_lab.eval_metrics import AnyEvalMetricConfig
 from param_decomp_lab.infra.run_files import generate_run_id
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.infra.wandb import try_wandb
+from param_decomp_lab.resumption.provenance import ResumeProvenance
 from param_decomp_lab.run_sink import OnePoolSink, ThreePoolSink
 
 RUN_META_FILENAME = "run_meta.yaml"
@@ -58,10 +61,29 @@ class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
     data: D
     eval: EvalConfig | None = None
     wandb: WandbConfig | None = None
+    resume_provenance: ResumeProvenance | None = None
+    """Set on resumed runs (parent run dir + step); `None` for fresh runs. Lives on the
+    config so it flows into `run_meta.yaml` and `wandb.config` via `init_pd_run`, making a
+    resumed run's lineage visible in the wandb UI."""
 
 
-def init_pd_run[T: BaseConfig, D: BaseConfig, S: OnePoolSink | ThreePoolSink](
-    cfg: ExperimentConfig[T, D],
+class _PdRunInputs(Protocol):
+    """The slice of an experiment config `init_pd_run` reads.
+
+    Lets the single-pool `ExperimentConfig` and the standalone 3-pool
+    `ThreePoolLMExperimentConfig` share one sink builder without a common base — it
+    only touches `cadence`, `wandb`, and `to_file`, never `pd` / `runtime`.
+    """
+
+    @property
+    def cadence(self) -> Cadence: ...
+    @property
+    def wandb(self) -> "WandbConfig | None": ...
+    def to_file(self, path: Path | str) -> None: ...
+
+
+def init_pd_run[S: OnePoolSink | ThreePoolSink](
+    cfg: _PdRunInputs,
     *,
     sink_class: type[S],
     group: str | None,
@@ -95,7 +117,7 @@ def init_pd_run[T: BaseConfig, D: BaseConfig, S: OnePoolSink | ThreePoolSink](
         project=cfg.wandb.project,
         entity=cfg.wandb.entity,
         run_id=run_id,
-        config=cfg,
+        config=runtime_cast(BaseConfig, cfg),
         group=group,
         tags=parsed_tags,
         keep_last_n_checkpoints=keep_last_n,

@@ -1,5 +1,11 @@
 """LM PD experiment: YAML -> `Trainer` glue + `SavedLMRun` reload + resumption.
 
+Single-pool only — the 3-pool path is its own composition root
+(`experiments.lm.three_pool_run`, entry point `pd-lm-3pool`). This module keeps the
+pure, pool-agnostic builders (`build_target`, `build_lm_loader`, `make_run_batch`,
+`_build_eval_loop`, `_split_metrics_by_slow`, `_resolve_train_run_id`) that both paths
+import.
+
 Both the fresh-run path (`main`) and the reload path (`SavedLMRun`) share the
 module-level `build_target` / `build_lm_loader` / `make_run_batch`. The resume
 path (`main --resume <yaml>`) reads a parent run's `run_meta.yaml` plus
@@ -11,28 +17,16 @@ Run via `pd-lm path/to/config.yaml` (fresh) or `pd-lm --resume path/to/resume.ya
 multi-node for N > 8 — N must then be a multiple of 8). For local DDP, invoke
 directly via
 `torchrun --standalone --nproc_per_node=N -m param_decomp_lab.experiments.lm.run config.yaml`.
-
-Async slow-eval of saved checkpoints lives in
-``param_decomp_lab.experiments.lm.async_eval``; the helper
-:func:`submit_slurm_async_slow_eval` below filters the parent's slow metrics into
-a temp YAML and submits an sbatch job that invokes that module.
 """
 
-import atexit
-import datetime
 import importlib
-import json
 import os
 import shlex
-import sys
-import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Protocol
 
 import fire
-import torch
-import torch.distributed as dist
 import torch.nn as nn
 from pydantic import Discriminator
 from torch.utils.data import DataLoader
@@ -40,10 +34,11 @@ from torch.utils.data import DataLoader
 from param_decomp.base_config import BaseConfig
 from param_decomp.batch_and_loss_fns import RunBatch
 from param_decomp.component_model import ComponentModel
+from param_decomp.configs import PDConfig
 from param_decomp.distributed import DistributedState, is_main_process
 from param_decomp.log import logger
 from param_decomp.optimize import EvalLoop, Trainer
-from param_decomp.training_state import ThreePoolTrainingState, TrainingState
+from param_decomp.training_state import TrainingState
 from param_decomp_lab.batch_and_loss_fns import make_run_batch as _make_run_batch
 from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
 from param_decomp_lab.component_model_io import load_component_model
@@ -62,6 +57,7 @@ from param_decomp_lab.experiments.lm.data import (
 )
 from param_decomp_lab.experiments.utils import (
     RUN_META_FILENAME,
+    EvalConfig,
     ExperimentConfig,
     init_pd_run,
 )
@@ -69,11 +65,7 @@ from param_decomp_lab.infra.ddp_launch import build_ddp_launch
 from param_decomp_lab.infra.git import create_git_snapshot
 from param_decomp_lab.infra.paths import ModelPath
 from param_decomp_lab.infra.run_files import generate_run_id, resolve_run_files
-from param_decomp_lab.infra.settings import (
-    DEFAULT_PARTITION_NAME,
-    PARAM_DECOMP_OUT_DIR,
-    REPO_ROOT,
-)
+from param_decomp_lab.infra.settings import DEFAULT_PARTITION_NAME, REPO_ROOT
 from param_decomp_lab.infra.slurm import SlurmConfig, generate_script, submit_slurm_job
 from param_decomp_lab.infra.wandb import get_wandb_entity, parse_wandb_run_path
 from param_decomp_lab.resumption import (
@@ -81,11 +73,9 @@ from param_decomp_lab.resumption import (
     ResumeProvenance,
     read_training_snapshot,
     resolve_step,
-    write_provenance,
 )
-from param_decomp_lab.run_sink import OnePoolSink, ThreePoolSink
+from param_decomp_lab.run_sink import OnePoolSink
 from param_decomp_lab.seed import set_seed
-from param_decomp_lab.three_pool import ThreePoolConfig, ThreePoolTrainer
 
 
 def _resolve_class(fqn: str) -> type:
@@ -152,10 +142,7 @@ class LMTargetConfig(BaseConfig):
 
 
 class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
-    three_pool: ThreePoolConfig | None = None
-    """When set, training runs under the 3-pool strategy
-    (:class:`param_decomp_lab.three_pool.ThreePoolTrainer`) instead of single-process
-    :class:`param_decomp.optimize.Trainer`."""
+    pass
 
 
 def build_target(target_cfg: LMTargetConfig) -> nn.Module:
@@ -268,8 +255,9 @@ def main(
     Args:
         config_path: YAML for a fresh run. Required when not resuming.
         resume: Path to a `ResumeConfig` YAML pointing at a prior run. When set,
-            the parent's `run_meta.yaml` is the source of cfg truth; a new
-            `run_id` + sibling `resume_provenance.yaml` are written.
+            the parent's `run_meta.yaml` is the source of cfg truth; a new `run_id` is
+            allocated and `resume_provenance` (parent dir + step) is stamped onto the
+            effective config so it lands in `run_meta.yaml` + `wandb.config`.
         group / tags: wandb-only (no-ops without `wandb:`).
         dp / partition / time / job_name / no_snapshot / run_id: SLURM submission
             knobs. Passing `--dp N` outside torchrun submits a SLURM job: single-node
@@ -303,168 +291,6 @@ def main(
         _fresh_main(Path(config_path), group=group, tags=tags, run_id=run_id)
 
 
-def _agree_on_run_id_three_pool(run_id: str | None, dist_state: DistributedState | None) -> str:
-    """Broadcast (or generate-then-broadcast) a single run id across all ranks.
-
-    3-pool snapshot uses a file-based gather under
-    ``PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/.snapshot_scratch/``; every
-    rank must compute the same path.
-    """
-    if is_main_process() and run_id is None:
-        run_id = generate_run_id("param_decomp")
-    if dist_state is not None:
-        objs: list[str | None] = [run_id]
-        dist.broadcast_object_list(objs, src=0)
-        run_id = objs[0]
-    assert run_id is not None
-    return run_id
-
-
-def _install_first_fail_marker(rank: int) -> None:
-    """On uncaught exception, write a structured marker to shared FS so a
-    debugger can identify which rank died and what hit it without grepping
-    through GB of NCCL log noise across N ranks. Always-on; cost is one
-    excepthook registration.
-
-    Writes ``$HOME/pd_first_fail/$SLURM_JOB_ID/rank<R>.json`` containing
-    ``{rank, exception_type, exception_message, traceback, timestamp_utc,
-    pid}``. Chains to the previous excepthook so behavior is otherwise
-    unchanged.
-
-    Open follow-up (#11 in the task list): once any rank writes its marker,
-    the rest of the world will block in their next collective for up to
-    30 min before monitoredBarrier times out. A future change should
-    ``dist.destroy_process_group()`` + ``os._exit(1)`` here so siblings
-    fast-fail in seconds via ``TORCH_NCCL_ASYNC_ERROR_HANDLING``. Skipped
-    for now because doing that wrong can hang siblings *worse*.
-    """
-    job_id = os.environ.get("SLURM_JOB_ID", "local")
-    out_dir = Path.home() / "pd_first_fail" / job_id
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"rank{rank}.json"
-
-    prev_excepthook = sys.excepthook
-
-    def _excepthook(exctype: type[BaseException], value: BaseException, tb: Any) -> None:
-        try:
-            payload = {
-                "rank": rank,
-                "exception_type": exctype.__name__,
-                "exception_message": str(value),
-                "traceback": "".join(traceback.format_exception(exctype, value, tb)),
-                "timestamp_utc": datetime.datetime.now(datetime.UTC).isoformat(),
-                "pid": os.getpid(),
-            }
-            out_path.write_text(json.dumps(payload, indent=2))
-            print(f"[first-fail] rank={rank} wrote {out_path}", file=sys.stderr, flush=True)
-        except Exception as e:
-            print(f"[first-fail] failed to write marker: {e}", file=sys.stderr, flush=True)
-        prev_excepthook(exctype, value, tb)
-
-    sys.excepthook = _excepthook
-
-
-def _maybe_enable_memory_profile(rank: int) -> None:
-    """Opt-in CUDA memory-history recorder for offline ``memory_viz`` analysis.
-
-    Activated by env vars:
-      * ``PD_MEMORY_PROFILE_RANKS=0,32,96`` — comma-separated ranks to profile.
-      * ``PD_MEMORY_PROFILE_OUT=/abs/path/to/dir`` — dump directory.
-
-    Dumps to ``<dir>/mem_rank<R>.pickle`` on normal exit and on uncaught
-    exception. Load the pickle at https://pytorch.org/memory_viz.
-    """
-    prof_ranks_env = os.environ.get("PD_MEMORY_PROFILE_RANKS")
-    if not prof_ranks_env:
-        return
-    if rank not in {int(r) for r in prof_ranks_env.split(",") if r.strip()}:
-        return
-    out_dir = Path(os.environ["PD_MEMORY_PROFILE_OUT"])
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"mem_rank{rank}.pickle"
-    logger.info(f"[mem-profile] recording rank={rank} → {out_path}")
-    torch.cuda.memory._record_memory_history(max_entries=200_000)
-
-    def _dump() -> None:
-        torch.cuda.memory._dump_snapshot(str(out_path))
-        logger.info(f"[mem-profile] dumped rank={rank} → {out_path}")
-
-    atexit.register(_dump)
-    prev_excepthook = sys.excepthook
-
-    def _excepthook(exctype: type[BaseException], value: BaseException, tb: Any) -> None:
-        _dump()
-        prev_excepthook(exctype, value, tb)
-
-    sys.excepthook = _excepthook
-
-
-def _maybe_build_torch_profiler(trainer: ThreePoolTrainer) -> torch.profiler.profile | None:
-    """Opt-in ``torch.profiler.profile`` for the listed ranks.
-
-    Activated by env vars:
-      * ``PD_TORCH_PROFILE_RANKS=0,96,100`` — ranks to profile. Typically one
-        per pool (LW block-0 leader, CI leader, PPGD leader).
-      * ``PD_TORCH_PROFILE_OUT=/abs/path/to/dir`` — trace dump directory.
-      * ``PD_TORCH_PROFILE_SKIP_FIRST`` (default 20) and
-        ``PD_TORCH_PROFILE_ACTIVE`` (default 3) — schedule knobs.
-      * ``PD_TORCH_PROFILE_MEMORY=0`` — disable profile_memory (CUPTI memory
-        instrumentation is the heaviest subsystem; toggle if you suspect
-        it's confounding measurements).
-      * ``PD_TORCH_PROFILE_STACK=1`` — Python source location per op
-        (~25% step-time hit, much larger traces, but huge readability win).
-      * ``PD_TORCH_PROFILE_MODULES=1`` — nn.Module hierarchy labels (cheap;
-        useful for per-site decomposition labels).
-      * ``PD_TORCH_PROFILE_SHAPES=1`` — per-op input tensor shapes.
-
-    Returns the profile context (caller passes it to ``trainer.run(profiler=
-    ...)`` which enters it) or ``None`` if this rank isn't profiled.
-
-    Verified at production scale (104 ranks, gpt2-xl, 3 profiled ranks one
-    per pool) on 2026-05-28 after commit 497e1542 removed a cosmetic pre-step
-    barrier that was the previously-suspected CUPTI deadlock.
-    """
-    prof_ranks_env = os.environ.get("PD_TORCH_PROFILE_RANKS", "").strip()
-    if not prof_ranks_env:
-        return None
-    prof_ranks = {int(r) for r in prof_ranks_env.split(",") if r.strip()}
-    my_rank = trainer.ctx.role.rank
-    if my_rank not in prof_ranks:
-        return None
-    out_dir = Path(os.environ["PD_TORCH_PROFILE_OUT"])
-    out_dir.mkdir(parents=True, exist_ok=True)
-    skip_first = int(os.environ.get("PD_TORCH_PROFILE_SKIP_FIRST", "20"))
-    active = int(os.environ.get("PD_TORCH_PROFILE_ACTIVE", "3"))
-    profile_memory = os.environ.get("PD_TORCH_PROFILE_MEMORY", "1") != "0"
-    with_stack = os.environ.get("PD_TORCH_PROFILE_STACK", "0") == "1"
-    with_modules = os.environ.get("PD_TORCH_PROFILE_MODULES", "0") == "1"
-    record_shapes = os.environ.get("PD_TORCH_PROFILE_SHAPES", "0") == "1"
-
-    pool = trainer.ctx.kind
-    trace_path = out_dir / f"trace_{pool}_rank{my_rank}.json"
-    logger.info(
-        f"[torch-profile] rank={my_rank} pool={pool} → {trace_path} "
-        f"(skip_first={skip_first}, active={active}, profile_memory={profile_memory}, "
-        f"with_stack={with_stack}, with_modules={with_modules}, record_shapes={record_shapes})"
-    )
-
-    def on_trace_ready(prof: torch.profiler.profile) -> None:
-        prof.export_chrome_trace(str(trace_path))
-        logger.info(f"[torch-profile] rank={my_rank} wrote {trace_path}")
-
-    return torch.profiler.profile(
-        activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-        schedule=torch.profiler.schedule(
-            skip_first=skip_first, wait=0, warmup=1, active=active, repeat=1
-        ),
-        on_trace_ready=on_trace_ready,
-        record_shapes=record_shapes,
-        profile_memory=profile_memory,
-        with_stack=with_stack,
-        with_modules=with_modules,
-    )
-
-
 def _fresh_main(
     config_path: Path,
     *,
@@ -472,14 +298,12 @@ def _fresh_main(
     tags: str | None,
     run_id: str | None,
 ) -> None:
-    """Fresh-run path: parse YAML, dispatch on pool config, train from step 0."""
+    """Fresh-run path: parse YAML, build everything, train from step 0."""
     cfg = LMExperimentConfig.from_file(config_path)
 
     dist_state = init_distributed()
     if is_main_process():
         logger.info(f"Distributed state: {dist_state}")
-    _install_first_fail_marker(dist_state.rank if dist_state is not None else 0)
-    _maybe_enable_memory_profile(dist_state.rank if dist_state is not None else 0)
     set_seed(cfg.pd.seed)
     device = get_device()
     cfg = cfg.model_copy(
@@ -494,57 +318,17 @@ def _fresh_main(
     )
 
     target_model = build_target(cfg.target)
-    is_three_pool = cfg.three_pool is not None
     train_loader = build_lm_loader(
         cfg.target,
         cfg.data,
         split="train",
         device=device,
         batch_size=cfg.pd.batch_size,
-        # 3-pool requires the full global batch on every rank — each pool
-        # slices it locally. Single-pool uses standard DistributedSampler.
-        dist_state=None if is_three_pool else dist_state,
+        dist_state=dist_state,
         seed=cfg.pd.seed,
     )
 
-    if cfg.three_pool is not None:
-        run_id = _agree_on_run_id_three_pool(run_id, dist_state)
-        out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
-        scratch_dir = out_dir / ".snapshot_scratch"
-        three_sink = init_pd_run(
-            cfg,
-            sink_class=ThreePoolSink,
-            group=group,
-            tags=tags,
-            run_id=run_id,
-            on_save=lambda step: submit_slurm_async_slow_eval(out_dir, step=step, parent_cfg=cfg),
-        )
-        # Multi-pool eval mirrors the train data-handling contract: full eval
-        # batch on every rank, sliced internally by each pool. So we pass
-        # dist_state=None.
-        three_eval_loop = _build_eval_loop(cfg, device, dist_state=None)
-        try:
-            three_trainer = ThreePoolTrainer(
-                target_model=target_model,
-                run_batch=make_run_batch(cfg.target),
-                reconstruction_loss=recon_loss_kl,
-                pd_config=cfg.pd,
-                runtime_config=cfg.runtime,
-                three_pool_config=cfg.three_pool,
-            )
-            three_trainer.run(
-                train_loader,
-                three_sink,
-                cfg.cadence,
-                scratch_dir=scratch_dir,
-                eval_loop=three_eval_loop,
-                profiler=_maybe_build_torch_profiler(three_trainer),
-            )
-        finally:
-            three_sink.finish()
-        return
-
-    one_sink = init_pd_run(cfg, sink_class=OnePoolSink, group=group, tags=tags, run_id=run_id)
+    sink = init_pd_run(cfg, sink_class=OnePoolSink, group=group, tags=tags, run_id=run_id)
     eval_loop = _build_eval_loop(cfg, device, dist_state)
     try:
         trainer = Trainer(
@@ -554,9 +338,9 @@ def _fresh_main(
             pd_config=cfg.pd,
             runtime_config=cfg.runtime,
         )
-        trainer.run(train_loader, one_sink, cfg.cadence, eval_loop)
+        trainer.run(train_loader, sink, cfg.cadence, eval_loop)
     finally:
-        one_sink.finish()
+        sink.finish()
 
 
 def _resume_main(
@@ -575,11 +359,10 @@ def _resume_main(
     if is_main_process():
         logger.info(f"Distributed state: {dist_state}")
         logger.info(f"Resuming from {resume_cfg.from_run} @ step {resume_cfg.step}")
-    _install_first_fail_marker(dist_state.rank if dist_state is not None else 0)
-    _maybe_enable_memory_profile(dist_state.rank if dist_state is not None else 0)
     set_seed(parent_cfg.pd.seed)
     device = get_device()
 
+    resolved_step = resolve_step(resume_cfg.from_run, resume_cfg.step)
     effective_cfg = parent_cfg.model_copy(
         update={
             "runtime": parent_cfg.runtime.model_copy(
@@ -588,90 +371,42 @@ def _resume_main(
                     "dp": dist_state.world_size if dist_state is not None else None,
                 }
             ),
+            "resume_provenance": ResumeProvenance(
+                parent_run_dir=resume_cfg.from_run, parent_step=resolved_step
+            ),
         }
     )
 
-    resolved_step = resolve_step(resume_cfg.from_run, resume_cfg.step)
     snapshot = read_training_snapshot(resume_cfg.from_run, resolved_step)
+    assert isinstance(snapshot, TrainingState), (
+        f"1-pool resume needs TrainingState; got {type(snapshot).__name__}"
+    )
     snapshot.runtime_config["device"] = device
 
     target_model = build_target(effective_cfg.target)
-    is_three_pool = effective_cfg.three_pool is not None
     train_loader = build_lm_loader(
         effective_cfg.target,
         effective_cfg.data,
         split="train",
         device=device,
         batch_size=effective_cfg.pd.batch_size,
-        dist_state=None if is_three_pool else dist_state,
+        dist_state=dist_state,
         seed=effective_cfg.pd.seed,
     )
     run_batch = make_run_batch(effective_cfg.target)
 
-    if effective_cfg.three_pool is not None:
-        run_id = _agree_on_run_id_three_pool(run_id, dist_state)
-        out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
-        scratch_dir = out_dir / ".snapshot_scratch"
-        three_sink = init_pd_run(
-            effective_cfg,
-            sink_class=ThreePoolSink,
-            group=group,
-            tags=tags,
-            run_id=run_id,
-            on_save=lambda step: submit_slurm_async_slow_eval(
-                out_dir, step=step, parent_cfg=effective_cfg
-            ),
-        )
-        if three_sink.out_dir is not None:
-            write_provenance(
-                three_sink.out_dir,
-                ResumeProvenance(parent_run_dir=resume_cfg.from_run, parent_step=resolved_step),
-            )
-        three_eval_loop = _build_eval_loop(effective_cfg, device, dist_state=None)
-        try:
-            assert isinstance(snapshot, ThreePoolTrainingState), (
-                f"3-pool resume needs ThreePoolTrainingState; got {type(snapshot).__name__}"
-            )
-            three_trainer = ThreePoolTrainer.from_snapshot(
-                snapshot,
-                target_model=target_model,
-                run_batch=run_batch,
-                reconstruction_loss=recon_loss_kl,
-            )
-            three_trainer.run(
-                train_loader,
-                three_sink,
-                effective_cfg.cadence,
-                scratch_dir=scratch_dir,
-                eval_loop=three_eval_loop,
-                profiler=_maybe_build_torch_profiler(three_trainer),
-            )
-        finally:
-            three_sink.finish()
-        return
-
-    one_sink = init_pd_run(
-        effective_cfg, sink_class=OnePoolSink, group=group, tags=tags, run_id=run_id
-    )
-    if one_sink.out_dir is not None:
-        write_provenance(
-            one_sink.out_dir,
-            ResumeProvenance(parent_run_dir=resume_cfg.from_run, parent_step=resolved_step),
-        )
+    sink = init_pd_run(effective_cfg, sink_class=OnePoolSink, group=group, tags=tags, run_id=run_id)
     eval_loop = _build_eval_loop(effective_cfg, device, dist_state)
     try:
-        assert isinstance(snapshot, TrainingState), (
-            f"1-pool resume needs TrainingState; got {type(snapshot).__name__}"
-        )
         trainer = Trainer.from_snapshot(
             snapshot,
             target_model=target_model,
             run_batch=run_batch,
             reconstruction_loss=recon_loss_kl,
         )
-        trainer.run(train_loader, one_sink, effective_cfg.cadence, eval_loop)
+        trainer.run(train_loader, sink, effective_cfg.cadence, eval_loop)
     finally:
-        one_sink.finish()
+        sink.finish()
 
 
 def _split_metrics_by_slow(
@@ -695,8 +430,11 @@ def _split_metrics_by_slow(
     return slow_metrics, fast_metrics
 
 
-def _resolve_train_run_id(run_path: str | Path) -> str:
+def _resolve_train_run_id(run_path: str | Path) -> str:  # pyright: ignore[reportUnusedFunction]
     """Extract the parent run id from a `SavedLMRun.from_path`-compatible reference.
+
+    Shared helper imported by `experiments.lm.async_eval` and
+    `experiments.lm.three_pool_run` (basedpyright can't see the cross-module uses).
 
     Accepts wandb URL / `entity/project/runId` / bare `p-xxxxxxxx` / local directory
     whose final name is the run id (i.e. `PARAM_DECOMP_OUT_DIR/decompositions/<run_id>/`).
@@ -711,8 +449,25 @@ def _resolve_train_run_id(run_path: str | Path) -> str:
     return (p if p.is_dir() else p.parent).name
 
 
+class _EvalLoopInputs(Protocol):
+    """The slice of an experiment config `_build_eval_loop` reads.
+
+    Lets the single-pool `LMExperimentConfig` and the 3-pool
+    `ThreePoolLMExperimentConfig` share one eval-loop builder without a common base.
+    """
+
+    @property
+    def eval(self) -> EvalConfig | None: ...
+    @property
+    def target(self) -> LMTargetConfig: ...
+    @property
+    def data(self) -> LMDataConfig: ...
+    @property
+    def pd(self) -> PDConfig: ...
+
+
 def _build_eval_loop(
-    cfg: LMExperimentConfig,
+    cfg: _EvalLoopInputs,
     device: str,
     dist_state: DistributedState | None,
 ) -> EvalLoop | None:
@@ -721,7 +476,7 @@ def _build_eval_loop(
     Slow metrics (class-attr ``slow=True``) are filtered out — in-train eval is
     fast-only. Slow metrics are picked up later by the async eval-only job (which
     receives the slow subset via a temp ``EvalConfig`` YAML, see
-    :func:`_submit_slurm_async_slow_eval`).
+    ``submit_slurm_async_slow_eval`` in ``experiments.lm.three_pool_run``).
     """
     if cfg.eval is None:
         return None
@@ -832,96 +587,6 @@ def _wandb_url_for_config(config_path: str | Path, run_id: str) -> str | None:
         return None
     entity = cfg.wandb.entity or get_wandb_entity()
     return f"https://wandb.ai/{entity}/{cfg.wandb.project}/runs/{run_id}"
-
-
-def submit_slurm_async_slow_eval(
-    run_path: str | Path,
-    *,
-    step: int,
-    parent_cfg: "LMExperimentConfig",
-    dp: int = 8,
-    time: str = "2:00:00",
-    partition: str | None = DEFAULT_PARTITION_NAME,
-    job_name: str = "pd-lm-eval-slow",
-    group: str | None = None,
-    tags: str | None = None,
-    no_snapshot: bool = False,
-) -> None:
-    """Filter the parent's slow eval metrics into a temp YAML, submit a SLURM job.
-
-    Called from training right after a save: emits an async SLURM job that runs
-    *only* the slow metrics against ``model_<step>.pth`` via
-    ``python -m param_decomp_lab.experiments.lm.async_eval``, logging into the
-    parent's wandb run at the same step. No-op when the parent has no eval block
-    or no slow metrics.
-    """
-    from param_decomp_lab.experiments.utils import EvalConfig
-
-    if parent_cfg.eval is None:
-        return
-    slow_metrics, _fast = _split_metrics_by_slow(parent_cfg.eval.metrics)
-    if not slow_metrics:
-        return
-
-    slow_eval_cfg = EvalConfig(
-        batch_size=parent_cfg.eval.batch_size,
-        n_steps=parent_cfg.eval.n_steps,
-        every=parent_cfg.eval.every,
-        slow_every=parent_cfg.eval.every,  # any value; not consumed by async_eval
-        slow_on_first_step=True,
-        metrics=slow_metrics,
-    )
-    train_run_id = _resolve_train_run_id(run_path)
-    scratch = PARAM_DECOMP_OUT_DIR / "decompositions" / train_run_id / ".async_eval_configs"
-    scratch.mkdir(parents=True, exist_ok=True)
-    cfg_path = scratch / f"slow_eval_step_{step}.yaml"
-    slow_eval_cfg.to_file(cfg_path)
-
-    # Reuse the training run's snapshot ref. The training was launched from
-    # $HOME/param-decomp and the snapshot already exists there. Creating a new
-    # snapshot here would operate on whatever git repo this process happens to
-    # be in — when called from inside a training job, that's the node-local
-    # /tmp/.../workspace-* clone, which other nodes can't see. Plus, async eval
-    # should run the same code as the training that produced the checkpoint.
-    eval_run_id = generate_run_id("param_decomp")
-    snapshot_ref: str | None = f"refs/runs/snapshot/{train_run_id}" if not no_snapshot else None
-
-    base_command = shlex.join(
-        [
-            "-m",
-            "param_decomp_lab.experiments.lm.async_eval",
-            "--run",
-            str(run_path),
-            "--step",
-            str(step),
-            "--eval-config",
-            str(cfg_path),
-            *(["--group", group] if group is not None else []),
-            *(["--tags", tags] if tags is not None else []),
-        ]
-    )
-    launch = build_ddp_launch(
-        base_command,
-        dp=dp,
-        job_name=job_name,
-        snapshot_ref=snapshot_ref,
-        port_seed=eval_run_id,
-    )
-    slurm_config = SlurmConfig(
-        job_name=job_name,
-        partition=partition,
-        n_gpus=launch.gpus_per_node,
-        n_nodes=launch.n_nodes,
-        time=time,
-        snapshot_ref=snapshot_ref,
-        comment=f"async-slow-eval:{train_run_id}@{step}",
-    )
-    script = generate_script(slurm_config, launch.command, env=launch.env)
-    result = submit_slurm_job(script, "lm")
-    logger.info(
-        f"Async slow-eval submitted: parent={train_run_id} step={step} "
-        f"job_id={result.job_id} log={result.log_pattern}"
-    )
 
 
 def cli() -> None:

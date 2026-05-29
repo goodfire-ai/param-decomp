@@ -62,12 +62,7 @@ from param_decomp.decomposition_targets import (
 )
 from param_decomp.distributed import seed_all_ranks, seed_per_rank
 from param_decomp.masks import AllLayersRouter
-from param_decomp.metrics.base import LossMetricConfig
-from param_decomp.metrics.importance_minimality import ImportanceMinimalityLossConfig
-from param_decomp.metrics.persistent_pgd_recon import (
-    PersistentPGDReconLossConfig,
-    validate_pgd_scope,
-)
+from param_decomp.metrics.persistent_pgd_recon import validate_pgd_scope
 from param_decomp.metrics.persistent_pgd_state import (
     PerBatchPerPositionScope,
     PersistentPGDState,
@@ -78,6 +73,7 @@ from param_decomp.schedule import get_scheduled_value
 from param_decomp.sdpa_strict import verify_flash_attention_available
 from param_decomp.torch_helpers import loop_dataloader
 from param_decomp.training_state import ThreePoolTrainingState
+from param_decomp_lab.experiments.lm.three_pool_pd import ThreePoolConstrainedPDConfig
 from param_decomp_lab.three_pool.checkpoint import gather_full_state_dict_to_rank0
 from param_decomp_lab.three_pool.config import ThreePoolConfig
 from param_decomp_lab.three_pool.context import (
@@ -121,37 +117,6 @@ def _resolve_pg_timeout() -> datetime.timedelta:
     return _DEFAULT_PG_TIMEOUT
 
 
-# Loss-metric type discriminators required for the 3-pool training path.
-REQUIRED_LOSS_METRIC_TYPES: frozenset[str] = frozenset(
-    {
-        "FaithfulnessLoss",
-        "ImportanceMinimalityLoss",
-        "StochasticReconLayerwiseLoss",
-        "PersistentPGDReconLoss",
-    }
-)
-
-FORBIDDEN_LOSS_METRIC_TYPES: frozenset[str] = frozenset(
-    {
-        "StochasticReconLoss",
-        "StochasticReconSubsetLoss",
-        "StochasticReconSubsetCEAndKL",
-        "PersistentPGDReconSubsetLoss",
-        "CIMaskedReconLoss",
-        "CIMaskedReconLayerwiseLoss",
-        "CIMaskedReconSubsetLoss",
-        "UnmaskedReconLoss",
-        "PGDReconLoss",
-        "PGDReconLayerwiseLoss",
-        "PGDReconSubsetLoss",
-        "CIMaskedAttnPatternsReconLoss",
-        "StochasticAttnPatternsReconLoss",
-        "StochasticHiddenActsReconLoss",
-        "CIHiddenActsReconLoss",
-    }
-)
-
-
 class ThreePoolTrainer:
     """Stateful 3-pool trainer.
 
@@ -170,7 +135,7 @@ class ThreePoolTrainer:
     :meth:`snapshot`, so all ranks must call it in sync.
     """
 
-    pd_config: PDConfig
+    pd_config: ThreePoolConstrainedPDConfig
     runtime_config: RuntimeConfig
     three_pool_config: ThreePoolConfig
     reconstruction_loss: ReconstructionLoss
@@ -187,7 +152,7 @@ class ThreePoolTrainer:
         target_model: nn.Module,
         run_batch: RunBatch,
         reconstruction_loss: ReconstructionLoss,
-        pd_config: PDConfig,
+        pd_config: ThreePoolConstrainedPDConfig,
         runtime_config: RuntimeConfig,
         three_pool_config: ThreePoolConfig,
     ) -> None:
@@ -212,10 +177,9 @@ class ThreePoolTrainer:
         if ci_attn is not None:
             d_model, n_heads = ci_attn
             verify_flash_attention_available(head_dim=d_model // n_heads)
-        _validate_pd_config_for_three_pool(pd_config, three_pool_config)
         # PPGD runs only on PPGD pool; the relevant per-rank batch is batch // n_ppgd.
         validate_pgd_scope(
-            pd_config.loss_metrics,
+            [pd_config.losses.ppgd],
             batch_size=pd_config.batch_size,
             world_size=len(three_pool_config.ppgd_ranks),
         )
@@ -570,7 +534,7 @@ class ThreePoolTrainer:
         pd_dict = snapshot.pd_config
         if cfg_overrides is not None:
             pd_dict = {**pd_dict, **cfg_overrides}
-        pd_config = PDConfig.model_validate(pd_dict)
+        pd_config = ThreePoolConstrainedPDConfig.model_validate(pd_dict)
         runtime_config = RuntimeConfig.model_validate(snapshot.runtime_config)
         three_pool_config = ThreePoolConfig.model_validate(snapshot.three_pool_config)
 
@@ -901,7 +865,7 @@ def optimize_three_pool(
     *,
     run_batch: RunBatch,
     reconstruction_loss: ReconstructionLoss,
-    pd_config: PDConfig,
+    pd_config: ThreePoolConstrainedPDConfig,
     runtime_config: RuntimeConfig,
     three_pool_config: ThreePoolConfig,
     cadence: Cadence,
@@ -985,81 +949,15 @@ def _rank_invariant_fingerprint_core(fp: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _validate_pd_config_for_three_pool(
-    pd_config: PDConfig,
-    three_pool_config: ThreePoolConfig,
-) -> None:
-    """Fail loudly on any PDConfig the 3-pool path can't honour."""
-    by_type: dict[str, LossMetricConfig] = {m.type: m for m in pd_config.loss_metrics}
-
-    missing = sorted(REQUIRED_LOSS_METRIC_TYPES - set(by_type))
-    assert not missing, (
-        f"3-pool requires these loss metrics: {sorted(REQUIRED_LOSS_METRIC_TYPES)}.\n"
-        f"Missing: {missing}. Got: {sorted(by_type)}."
-    )
-    illegal = sorted(FORBIDDEN_LOSS_METRIC_TYPES & set(by_type))
-    assert not illegal, (
-        f"3-pool does not implement these loss metrics (they would be silently ignored): "
-        f"{illegal}. Remove them or extend the 3-pool path."
-    )
-
-    for name in REQUIRED_LOSS_METRIC_TYPES:
-        assert by_type[name].coeff is not None, (
-            f"pd_config.loss_metrics[{name!r}].coeff is required for 3-pool training"
-        )
-
-    n_per_block = len(three_pool_config.layerwise_block_groups[0].ranks)
-    n_ci = len(three_pool_config.ci_ranks)
-    n_ppgd = len(three_pool_config.ppgd_ranks)
-    bs = pd_config.batch_size
-    assert bs % n_per_block == 0, (
-        f"pd_config.batch_size ({bs}) must be divisible by N_per_block ({n_per_block}) "
-        f"= len(layerwise_block_groups[0].ranks)"
-    )
-    assert bs % n_ci == 0, (
-        f"pd_config.batch_size ({bs}) must be divisible by N_ci ({n_ci}) = len(ci_ranks)"
-    )
-    assert bs % n_ppgd == 0, (
-        f"pd_config.batch_size ({bs}) must be divisible by N_ppgd ({n_ppgd}) = len(ppgd_ranks)"
-    )
-
-    assert pd_config.use_delta_component, (
-        "3-pool requires pd_config.use_delta_component=True (hardcoded in LW's "
-        "layerwise stoch recon + PPGD's PPGD warmup)."
-    )
-
-    assert pd_config.sampling == "continuous", (
-        "3-pool hardcodes `sampling='continuous'` in CI pool's CI computation; "
-        f"got pd_config.sampling={pd_config.sampling!r}."
-    )
-    assert pd_config.n_mask_samples == 1, (
-        "3-pool draws exactly one stochastic mask per site per step in LW; "
-        f"got pd_config.n_mask_samples={pd_config.n_mask_samples}."
-    )
-
-    assert pd_config.identity_decomposition_targets is None, (
-        "3-pool path does not call `insert_identity_operations_`; "
-        "`identity_decomposition_targets` would be silently ignored."
-    )
-
-    # Convention: rank 0 must be the Layerwise pool's block 0 leader.
-    assert three_pool_config.layerwise_block_groups[0].ranks[0] == 0, (
-        "Convention: rank 0 must be the LW pool's block 0 leader (so reductions "
-        "can ship CI/PPGD pool losses to rank 0). Reorder layerwise_block_groups "
-        "so the first group starts with rank 0."
-    )
-
-    ppgd_cfg = by_type["PersistentPGDReconLoss"]
-    assert isinstance(ppgd_cfg, PersistentPGDReconLossConfig)
-    assert ppgd_cfg.start_frac == 0.0, (
-        "3-pool path does not implement PersistentPGDReconLoss.start_frac > 0; "
-        "PPGD always runs from step 0."
-    )
+def _required[T](value: T | None) -> T:
+    """Narrow a value the `ThreePoolLosses` validator already guarantees non-None."""
+    assert value is not None
+    return value
 
 
 def _build_runtime(
     target_model: nn.Module,
-    pd_config: PDConfig,
+    pd_config: ThreePoolConstrainedPDConfig,
     runtime_config: RuntimeConfig,
     three_pool_config: ThreePoolConfig,
     run_batch: RunBatch,
@@ -1082,16 +980,9 @@ def _build_runtime(
                 f"Available: {sorted(c_per_site)[:5]}..."
             )
 
-    by_type: dict[str, LossMetricConfig] = {m.type: m for m in pd_config.loss_metrics}
-    ppgd_cfg = by_type["PersistentPGDReconLoss"]
-    imp_min_cfg = by_type["ImportanceMinimalityLoss"]
-    assert isinstance(ppgd_cfg, PersistentPGDReconLossConfig)
-    assert isinstance(imp_min_cfg, ImportanceMinimalityLossConfig)
-
-    def _coeff(name: str) -> float:
-        c = by_type[name].coeff
-        assert c is not None
-        return float(c)
+    losses = pd_config.losses
+    ppgd_cfg = losses.ppgd
+    imp_min_cfg = losses.imp
 
     block_groups = tuple(
         LayerwiseBlockGroup(ranks=tuple(bg.ranks), owned_sites=tuple(bg.owned_sites))
@@ -1109,10 +1000,10 @@ def _build_runtime(
         run_batch=run_batch,
         reconstruction_loss=reconstruction_loss,
         ppgd_cfg=ppgd_cfg,
-        coeff_faith=_coeff("FaithfulnessLoss"),
-        coeff_imp=_coeff("ImportanceMinimalityLoss"),
-        coeff_stoch=_coeff("StochasticReconLayerwiseLoss"),
-        coeff_ppgd=_coeff("PersistentPGDReconLoss"),
+        coeff_faith=float(_required(losses.faith.coeff)),
+        coeff_imp=float(_required(losses.imp.coeff)),
+        coeff_stoch=float(_required(losses.stoch.coeff)),
+        coeff_ppgd=float(_required(losses.ppgd.coeff)),
         imp_min_pnorm=imp_min_cfg.pnorm,
         imp_min_beta=imp_min_cfg.beta,
         imp_min_eps=imp_min_cfg.eps,
