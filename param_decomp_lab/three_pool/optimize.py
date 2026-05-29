@@ -36,6 +36,7 @@ layout's ``my_batch_slice_*`` helpers. The 3-way batch routing in
 sliced-from-global pattern.
 """
 
+import datetime
 import itertools
 import os
 import shutil
@@ -97,6 +98,22 @@ from param_decomp_lab.three_pool.step_layerwise import (
     step_layerwise,
 )
 from param_decomp_lab.three_pool.step_ppgd import step_ppgd
+
+# Collective timeout for every 3-pool subgroup. Generous (vs the 10-min NCCL
+# default) because a checkpoint save at XL serially reads ~100 GB of partials
+# on rank 0 while the other 143 ranks wait at the post-save barrier — that read
+# can take many minutes, and any rank reaching the next step's collective before
+# rank 0 rejoins must not trip the watchdog. Env-overridable (seconds) so the
+# save-watchdog repro can force the timeout at small scale.
+_DEFAULT_PG_TIMEOUT = datetime.timedelta(minutes=30)
+
+
+def _resolve_pg_timeout() -> datetime.timedelta:
+    override_s = os.environ.get("PD_3POOL_PG_TIMEOUT_S", "").strip()
+    if override_s:
+        return datetime.timedelta(seconds=float(override_s))
+    return _DEFAULT_PG_TIMEOUT
+
 
 # Loss-metric type discriminators required for the 3-pool training path.
 REQUIRED_LOSS_METRIC_TYPES: frozenset[str] = frozenset(
@@ -231,6 +248,7 @@ class ThreePoolTrainer:
             layerwise_block_groups=block_groups,
             ppgd_ranks=list(three_pool_config.ppgd_ranks),
             batch_global=self.runtime.batch_global,
+            pg_timeout=_resolve_pg_timeout(),
             device=self._device,
         )
         trace("ThreePoolTrainer.__init__: build_world: done")
@@ -456,8 +474,43 @@ class ThreePoolTrainer:
         dist.barrier(group=p2p_group)
         trace("snapshot: barrier (post-write) done")
 
-        if self.layout.my_rank != 0:
-            return None
+        # Only rank 0 assembles the canonical state — it serially reads every
+        # rank's partial (~100 GB at XL). Non-rank-0 ranks have nothing left to
+        # do here, but they MUST NOT advance to the next training step until
+        # rank 0 finishes: the next step's collectives (PPGD V/U all-reduce,
+        # cross-pool sends) would block on rank 0 still reading, and at XL that
+        # read overruns the collective watchdog and aborts the job. The
+        # rejoining barrier below makes all ranks resume training in lock-step.
+        gathered_state: ThreePoolTrainingState | None = None
+        if self.layout.my_rank == 0:
+            gathered_state = self._assemble_rank0_state(
+                step_dir=step_dir,
+                world_size=world_size,
+                gathered_model=gathered_model,
+            )
+
+        # PD_3POOL_DISABLE_REJOIN_BARRIER reproduces the pre-fix bug (non-rank-0
+        # ranks racing ahead while rank 0 reads). For the save-watchdog repro
+        # only — never set in production.
+        if os.environ.get("PD_3POOL_DISABLE_REJOIN_BARRIER", "").strip() in ("1", "true"):
+            trace("snapshot: REJOIN BARRIER DISABLED (repro mode)")
+            return gathered_state
+        trace("snapshot: enter barrier (rejoin after rank-0 read)")
+        dist.barrier(group=p2p_group)
+        trace("snapshot: barrier (rejoin after rank-0 read) done")
+        return gathered_state
+
+    def _assemble_rank0_state(
+        self,
+        *,
+        step_dir: Path,
+        world_size: int,
+        gathered_model: dict[str, Any] | None,
+    ) -> ThreePoolTrainingState:
+        rank0_read_sleep_s = os.environ.get("PD_3POOL_SNAPSHOT_RANK0_SLEEP_S", "").strip()
+        if rank0_read_sleep_s:
+            trace(f"snapshot: rank-0 read sleep {rank0_read_sleep_s}s (fault injection)")
+            time.sleep(float(rank0_read_sleep_s))
 
         gathered: list[dict[str, Any]] = []
         for r in range(world_size):
@@ -524,10 +577,10 @@ class ThreePoolTrainer:
             runtime_config=runtime_config,
             three_pool_config=three_pool_config,
         )
-        saved_fp = snapshot.layout_fingerprint
-        current_fp = _layout_fingerprint(trainer.layout)
+        saved_fp = _rank_invariant_fingerprint_core(snapshot.layout_fingerprint)
+        current_fp = _rank_invariant_fingerprint_core(_layout_fingerprint(trainer.layout))
         assert saved_fp == current_fp, (
-            f"3-pool layout fingerprint mismatch on resume:\n"
+            f"3-pool layout topology mismatch on resume:\n"
             f"  saved:   {saved_fp}\n"
             f"  current: {current_fp}\n"
         )
@@ -881,15 +934,48 @@ def optimize_three_pool(
 
 
 def _layout_fingerprint(layout: ThreePoolLayout) -> dict[str, Any]:
-    """Compact summary of the 3-pool world layout. Compared at resume time."""
+    """Rank-invariant summary of the 3-pool world topology, compared at resume.
+
+    Must NOT include this rank's local view (``my_rank`` / ``my_pool`` /
+    ``my_owned_sites``): the snapshot stores the fingerprint computed on rank 0,
+    but ``from_snapshot`` compares it on EVERY rank, so a rank-local fingerprint
+    would mismatch on every non-rank-0 rank. The full block→ranks→sites mapping
+    below is identical on all ranks and fully captures the topology that
+    ``_load_canonical_state`` relies on.
+    """
     return {
         "world_size": layout.world.world_size,
         "ci_ranks": list(layout.world.ci_ranks),
         "ppgd_ranks": list(layout.world.ppgd_ranks),
-        "n_layerwise_blocks": len(layout.world.layerwise_block_groups),
-        "my_rank": layout.my_rank,
-        "my_pool": layout.my_pool,
-        "owned_sites": list(layout.my_owned_sites) if layout.my_pool == "layerwise" else [],
+        "layerwise_blocks": [
+            {"ranks": list(bg.ranks), "owned_sites": list(bg.owned_sites)}
+            for bg in layout.world.layerwise_block_groups
+        ],
+    }
+
+
+def _rank_invariant_fingerprint_core(fp: dict[str, Any]) -> dict[str, Any]:
+    """Reduce a saved-or-current layout fingerprint to its rank-invariant core.
+
+    Validating the topology on resume must not depend on which rank wrote the
+    snapshot. Earlier checkpoints (e.g. the 144-GPU p-a5b667e9 run) stored
+    rank-0's local view (``my_rank`` / ``my_pool`` / ``owned_sites``) alongside
+    the topology fields; current snapshots store the full block mapping. Both
+    carry ``world_size`` / ``ci_ranks`` / ``ppgd_ranks`` plus the block count
+    (as ``n_layerwise_blocks`` in the old format or ``len(layerwise_blocks)`` in
+    the new), which together pin down the pool partition. The per-block
+    ranks→sites mapping is fully re-derived from ``three_pool_config`` (also
+    stored in the snapshot and used to rebuild the trainer), so comparing the
+    core here is sufficient.
+    """
+    n_blocks = fp.get("n_layerwise_blocks")
+    if n_blocks is None:
+        n_blocks = len(fp["layerwise_blocks"])
+    return {
+        "world_size": fp["world_size"],
+        "ci_ranks": list(fp["ci_ranks"]),
+        "ppgd_ranks": list(fp["ppgd_ranks"]),
+        "n_layerwise_blocks": n_blocks,
     }
 
 

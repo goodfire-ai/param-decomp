@@ -24,6 +24,7 @@ from param_decomp.decomposition_targets import DecompositionTargetConfig
 from param_decomp.metrics.faithfulness import FaithfulnessLossConfig
 from param_decomp.optimize import Trainer
 from param_decomp.schedule import ScheduleConfig
+from param_decomp.training_state import TrainingState
 from param_decomp_lab.resumption import (
     ResumeConfig,
     read_training_snapshot,
@@ -140,6 +141,7 @@ def test_resume_round_trip_matches_uninterrupted_run(tmp_path: Path) -> None:
     snapshot = read_training_snapshot(
         resume_cfg.from_run, resolve_step(parent_dir, resume_cfg.step)
     )
+    assert isinstance(snapshot, TrainingState)
     snapshot.pd_config["steps"] = 4
     trainer_resumed = Trainer.from_snapshot(
         snapshot,

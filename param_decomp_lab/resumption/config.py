@@ -13,7 +13,7 @@ from typing import Literal
 import torch
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.training_state import TrainingState
+from param_decomp.training_state import ThreePoolTrainingState, TrainingState
 
 
 class ResumeConfig(BaseConfig):
@@ -48,16 +48,18 @@ def resolve_step(run_dir: Path, step: int | Literal["latest"]) -> int:
     return step
 
 
-def read_training_snapshot(run_dir: Path, step: int) -> TrainingState:
-    """Read `<run_dir>/training_<step>.pth` into a `TrainingState` dataclass.
+def read_training_snapshot(run_dir: Path, step: int) -> TrainingState | ThreePoolTrainingState:
+    """Read `<run_dir>/training_<step>.pth` into its training-state dataclass.
 
-    `weights_only=False` because the payload contains arbitrary cfg dicts
-    (model_dump output) alongside tensors.
+    Single-pool runs persist a `TrainingState`; 3-pool runs persist a
+    `ThreePoolTrainingState`. The caller narrows to the type its resume path
+    expects. `weights_only=False` because the payload contains arbitrary cfg
+    dicts (model_dump output) alongside tensors.
     """
     path = run_dir / f"training_{step}.pth"
     assert path.is_file(), f"training checkpoint not found: {path}"
     snapshot = torch.load(path, map_location="cpu", weights_only=False)
-    assert isinstance(snapshot, TrainingState), (
-        f"expected TrainingState in {path}, got {type(snapshot).__name__}"
+    assert isinstance(snapshot, TrainingState | ThreePoolTrainingState), (
+        f"expected TrainingState or ThreePoolTrainingState in {path}, got {type(snapshot).__name__}"
     )
     return snapshot
