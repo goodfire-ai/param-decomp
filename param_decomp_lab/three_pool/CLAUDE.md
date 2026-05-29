@@ -10,7 +10,8 @@ docstring in `optimize.py` for the data-handling contract.
 | `optimize.py` | `ThreePoolTrainer` + `optimize_three_pool`; the training loop, `snapshot`/`from_snapshot`, config validation |
 | `layout.py` | `World` topology; `build_world` constructs every process group (threading `pg_timeout` into each); `BatchEdge` — symmetric per-edge batch-slice geometry (CI↔LW, CI↔PPGD) answering routing for both fan directions |
 | `checkpoint.py` | offline state_dict assembly from on-disk partials (`assemble_model_state_dict_from_partials`) + the leader key-partition helpers (`owned_model_state_keys` / `ci_fn_state_keys`) |
-| `consolidate.py` | `consolidate_step` — async, off-train-loop assembly of `model_<step>.pth` + `training_<step>.pth` from a step's scratch partials; prunes old `training_*.pth`; deletes the scratch dir |
+| `consolidate.py` | `consolidate_step` — async, off-train-loop assembly of `model_<step>.pth` + `training_<step>.pth` from a step's scratch partials; prunes old `training_*.pth`; deletes the scratch dir. `unconsolidated_steps` lists recoverable steps |
+| `consolidate_cli.py` | `python -m …consolidate_cli <run> [--step N]` — manual CPU-only recovery for a failed/preempted async consolidation (separate module to avoid an import cycle with `experiments.lm.run`) |
 | `config.py` | `ThreePoolConfig` + topology validation |
 | `role.py` | `PoolRole = CIRole \| LWRole \| PPGDRole` — this rank's pool role; per-pool fields are union variants, not optional attrs |
 | `context.py` | `PoolContext = CIContext \| LWContext \| PPGDContext` — `world` + `role` + this pool's portals; the trainer matches on it to dispatch step fns |
@@ -37,15 +38,47 @@ rank-0 assembly here.
 of a step's partials → assembles the full `ComponentModel` state_dict +
 `ThreePoolTrainingState` → writes `model_<S>.pth` + `training_<S>.pth` → prunes
 old `training_*.pth` to the last `DEFAULT_KEEP_LAST_N_TRAINING` (=3; **all
-`model_*.pth` are kept**) → deletes `step_<S>/`. It runs as the first phase of
-the existing async slow-eval job (`experiments/lm/async_eval.py`, rank 0 only,
-then a barrier) so the assembled `model_<S>.pth` exists before the eval loads it.
-Idempotent: a no-op if `training_<S>.pth` already exists or the scratch dir is
-gone.
+`model_*.pth` are kept**) → deletes `step_<S>/`. It runs inside the async
+slow-eval job (`experiments/lm/async_eval.py`), as a CPU-only phase BEFORE the
+eval pass, so the assembled `model_<S>.pth` exists before the eval loads it.
+Idempotent: a no-op if `training_<S>.pth` already exists (and it cleans any
+leftover scratch in that case); the scratch dir is deleted only on success.
 
 This is the fix for how run 34446 (p-a5b667e9) died: the old synchronous rank-0
 read held the other ranks at a barrier past the NCCL watchdog. There is no
 on-loop read to outrun the watchdog now.
+
+### Consolidation reliability (the async job's contract)
+
+`async_eval.main` runs consolidation via `_consolidate_or_wait`, which is
+engineered to **never hang** (a hung job holds GPUs forever — the one
+unacceptable failure mode for an off-loop job):
+
+  * **CPU-only, post-init.** Assembly builds a full `ComponentModel` buffer; it
+    must run on CPU (under `torch.device("cpu")`) — building it on the job's
+    selected, shared GPU hangs. It runs AFTER `init_distributed` (so
+    `build_target`'s `ensure_cached_and_call` has its distributed state) but the
+    buffer never touches the GPU. `assemble_model_state_dict_from_partials`
+    freezes the target (`eval()` + `requires_grad_(False)`) before constructing
+    the buffer — `build_target` only `.eval()`s it, and `ComponentModel` asserts
+    a frozen target (an unfrozen target was the original "hang": rank 0 hit the
+    assertion and died while the other rank waited).
+  * **Rank 0 assembles; others file-wait, fail-fast.** Non-rank-0 ranks poll the
+    shared FS for `training_<S>.pth` (written last) rather than an NCCL barrier
+    (so the multi-second CPU read never interleaves with a GPU collective). On
+    any consolidation error rank 0 writes a `.consolidate_failed_<S>` sentinel
+    and re-raises; the waiters bail out (raising) on the sentinel OR a bounded
+    timeout. A failed child **errors and releases its GPUs**, it does not wedge.
+  * **Partials persist on failure → re-runnable.** `consolidate_step` deletes
+    `step_<S>/` only after a successful write, so a failed/preempted
+    consolidation leaves the partials intact. Recover with the CLI:
+
+        python -m param_decomp_lab.three_pool.consolidate_cli <run_id|out_dir> [--step N]
+
+    With no `--step` it consolidates every `unconsolidated_steps(out_dir)` (a step
+    with partials but no `training_<step>.pth`). The prune is concurrency-safe
+    (`unlink(missing_ok=True)`) since multiple per-step children may prune the
+    same old file at once.
 
 ## Process-group timeout
 
