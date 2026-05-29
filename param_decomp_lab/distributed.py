@@ -16,6 +16,7 @@ from param_decomp.base_config import runtime_cast
 from param_decomp.distributed import (
     _SHOULD_GET_INITIALIZED,
     DistributedState,
+    get_distributed_state,
     is_distributed,
     is_local_main_process,
     sync_across_processes,
@@ -138,3 +139,26 @@ def ensure_cached_and_call[**P, T](fn: Callable[P, T], *args: P.args, **kwargs: 
         sync_across_processes()
         return fn(*args, **kwargs)
     return fn(*args, **kwargs)
+
+
+def call_throttled_by_rank_waves[T](fn: Callable[[], T], *, max_concurrent: int) -> T:
+    """Call `fn` on every rank, but with at most `max_concurrent` ranks running it at once.
+
+    Ranks run `fn` in contiguous waves separated by barriers, so the work never has more
+    than `max_concurrent` processes in flight. Use to throttle a per-rank operation that
+    overwhelms a shared external service when all ranks do it at once — e.g. resolving a
+    HuggingFace dataset, where every rank listing the repo tree against the Hub API
+    simultaneously trips a 429 rate-limit. Every rank still calls `fn` exactly once, so the
+    result is identical to calling it unthrottled. Outside distributed, `fn` runs directly.
+    """
+    state = get_distributed_state()
+    if state is None:
+        return fn()
+    assert max_concurrent >= 1
+    result: list[T] = []
+    for wave_start in range(0, state.world_size, max_concurrent):
+        if wave_start <= state.rank < wave_start + max_concurrent:
+            result.append(fn())
+        sync_across_processes()
+    assert len(result) == 1, f"rank {state.rank} ran fn {len(result)} times, expected 1"
+    return result[0]

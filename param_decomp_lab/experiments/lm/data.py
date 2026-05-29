@@ -15,6 +15,13 @@ from transformers import AutoTokenizer, PreTrainedTokenizer
 from param_decomp.base_config import BaseConfig
 from param_decomp.distributed import DistributedState
 from param_decomp.log import logger
+from param_decomp_lab.distributed import call_throttled_by_rank_waves
+
+# Cap how many ranks resolve the dataset against the HF Hub at once. Every rank still
+# resolves (so sharding is unchanged), but unthrottled multi-node resolution has all ranks
+# list the repo tree simultaneously and trips the Hub's 429 rate-limit. Lower this if 429s
+# persist; raise it for faster startup.
+_HF_RESOLVE_MAX_CONCURRENT = 4
 
 
 class LMDataConfig(BaseConfig):
@@ -152,11 +159,14 @@ def create_lm_data_loader(
     collate_fn: Callable[..., Any] | None = None,
 ) -> tuple[DataLoader[Any], PreTrainedTokenizer]:
     """Create an LM token dataloader from a HuggingFace dataset split."""
-    dataset = load_dataset(
-        cfg.dataset_name,
-        streaming=cfg.streaming,
-        split=split,
-        trust_remote_code=False,
+    dataset = call_throttled_by_rank_waves(
+        lambda: load_dataset(
+            cfg.dataset_name,
+            streaming=cfg.streaming,
+            split=split,
+            trust_remote_code=False,
+        ),
+        max_concurrent=_HF_RESOLVE_MAX_CONCURRENT,
     )
     assert isinstance(dataset, Dataset | IterableDataset)
 
