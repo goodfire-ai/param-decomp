@@ -48,7 +48,7 @@ from param_decomp_lab.distributed import (
 )
 from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
 from param_decomp_lab.experiments.lm.run import (
-    SavedLMRun,
+    LMExperimentConfig,
     _resolve_train_run_id,
     build_lm_loader,
     build_target,
@@ -182,43 +182,46 @@ def main(
             to run. If omitted, falls back to the parent run's ``cfg.eval``.
         group / tags: optional wandb metadata for the resumed run.
     """
-    pd_run = SavedLMRun.from_path(run)
+    # Read the config from run_meta.yaml directly rather than `SavedLMRun.from_path`:
+    # for a 3-pool run no `model_<step>.pth` exists yet (this job assembles it
+    # below), and `from_path` eagerly resolves one, which would crash here.
+    train_run_id = _resolve_train_run_id(run)
+    out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / train_run_id
+    cfg = LMExperimentConfig.from_file(out_dir / RUN_META_FILENAME)
+
     if eval_config is not None:
         eval_cfg = EvalConfig.from_file(Path(eval_config))
     else:
-        assert pd_run.cfg.eval is not None, (
+        assert cfg.eval is not None, (
             f"async_eval requires either --eval-config or the parent config to "
             f"declare an `eval:` block ({run})"
         )
-        eval_cfg = pd_run.cfg.eval
-
-    train_run_id = _resolve_train_run_id(run)
+        eval_cfg = cfg.eval
 
     dist_state = init_distributed()
     if is_main_process():
         logger.info(f"Distributed state: {dist_state}")
-    set_seed(pd_run.cfg.pd.seed)
+    set_seed(cfg.pd.seed)
     device = get_device()
 
-    target_model = build_target(pd_run.cfg.target)
-    run_batch = make_run_batch(pd_run.cfg.target)
+    target_model = build_target(cfg.target)
+    run_batch = make_run_batch(cfg.target)
 
     # 3-pool runs write only per-rank partials on the train loop; this async job
     # consolidates them into model_<step>.pth + training_<step>.pth (off the
     # train-loop critical path) before evaluating. Rank 0 does the assembly; all
     # ranks barrier so the model file exists before any rank resolves it.
-    if pd_run.cfg.three_pool is not None:
+    if cfg.three_pool is not None:
         assert step is not None, "3-pool async consolidation requires an explicit --step"
         if is_main_process():
-            out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / train_run_id
             consolidate_step(
                 scratch_dir=out_dir / SNAPSHOT_SCRATCH_DIRNAME,
                 out_dir=out_dir,
                 step=step,
                 target_model=target_model,
                 run_batch=run_batch,
-                ci_config=pd_run.cfg.pd.ci_config,
-                sigmoid_type=pd_run.cfg.pd.sigmoid_type,
+                ci_config=cfg.pd.ci_config,
+                sigmoid_type=cfg.pd.sigmoid_type,
                 keep_last_n_training=DEFAULT_KEEP_LAST_N_TRAINING,
             )
         if dist.is_initialized():
@@ -237,7 +240,7 @@ def main(
         logger.info(f"async_eval: {run} @ step {resolved_step} (train run_id={train_run_id})")
 
     component_model = load_component_model(
-        pd_config=pd_run.cfg.pd,
+        pd_config=cfg.pd,
         checkpoint_path=checkpoint_path,
         target_model=target_model,
         run_batch=run_batch,
@@ -245,13 +248,13 @@ def main(
     component_model.to(device)
 
     eval_loader = build_lm_loader(
-        pd_run.cfg.target,
-        pd_run.cfg.data,
+        cfg.target,
+        cfg.data,
         split="eval",
         device=device,
         batch_size=eval_cfg.batch_size,
         dist_state=dist_state,
-        seed=pd_run.cfg.pd.seed,
+        seed=cfg.pd.seed,
     )
     eval_metrics = [EVAL_METRIC_CLASSES[m.type](m) for m in eval_cfg.metrics]
     for m in eval_metrics:
@@ -264,13 +267,13 @@ def main(
         n_steps=eval_cfg.n_steps,
         device=device,
         step=resolved_step,
-        pd_config=pd_run.cfg,
+        pd_config=cfg,
     )
 
     if is_main_process():
         _log_eval_to_wandb(
             results,
-            cfg=pd_run.cfg,
+            cfg=cfg,
             train_run_id=train_run_id,
             step=resolved_step,
             group=group,

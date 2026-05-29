@@ -875,6 +875,13 @@ def submit_slurm_async_consolidate_and_eval(
         logger.info(f"PD_3POOL_SKIP_ASYNC_ONSAVE set; skipping async job for step {step}")
         return
 
+    # The consolidate+eval job's GPU count. Defaults to `dp`; overridable so a
+    # small-topology smoke can keep train + child within one node's 8 GPUs (and,
+    # in production, so a cheap eval doesn't have to match the train width).
+    dp_override = os.environ.get("PD_ASYNC_EVAL_DP", "").strip()
+    if dp_override:
+        dp = int(dp_override)
+
     slow_metrics = (
         _split_metrics_by_slow(parent_cfg.eval.metrics)[0] if parent_cfg.eval is not None else []
     )
