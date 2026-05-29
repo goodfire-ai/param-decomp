@@ -23,12 +23,13 @@ Usage:
 """
 
 import gc
+import os
+import time
 from pathlib import Path
 from typing import Any
 
 import fire
 import torch
-import torch.distributed as dist
 import wandb
 from torch.utils.data import DataLoader
 
@@ -65,6 +66,42 @@ from param_decomp_lab.three_pool.consolidate import (
     SNAPSHOT_SCRATCH_DIRNAME,
     consolidate_step,
 )
+
+
+def _consolidate_or_wait(
+    *, cfg: "LMExperimentConfig", out_dir: Path, step: int, poll_timeout_s: float = 1800.0
+) -> None:
+    """Assemble the step's checkpoint (rank 0) or wait for it (other ranks).
+
+    Runs BEFORE distributed/CUDA init so the assembly's ComponentModel buffer is
+    built on CPU. Rank is read from torchrun's `RANK` env (the process group is
+    not up yet). Rank 0 calls `consolidate_step` then the file exists; non-zero
+    ranks poll the shared FS for `training_<step>.pth`.
+    """
+    training_path = out_dir / f"training_{step}.pth"
+    rank = int(os.environ.get("RANK", "0"))
+    if rank == 0:
+        target_model = build_target(cfg.target)
+        consolidate_step(
+            scratch_dir=out_dir / SNAPSHOT_SCRATCH_DIRNAME,
+            out_dir=out_dir,
+            step=step,
+            target_model=target_model,
+            run_batch=make_run_batch(cfg.target),
+            ci_config=cfg.pd.ci_config,
+            sigmoid_type=cfg.pd.sigmoid_type,
+            keep_last_n_training=DEFAULT_KEEP_LAST_N_TRAINING,
+        )
+        del target_model
+        gc.collect()
+        return
+    deadline = time.perf_counter() + poll_timeout_s
+    while not training_path.is_file():
+        assert time.perf_counter() < deadline, (
+            f"rank {rank} timed out after {poll_timeout_s}s waiting for {training_path} "
+            f"(rank-0 consolidation did not finish)"
+        )
+        time.sleep(2.0)
 
 
 def _resolve_eval_checkpoint_path(run_path: str | Path, step: int | None) -> Path:
@@ -198,6 +235,16 @@ def main(
         )
         eval_cfg = cfg.eval
 
+    # Consolidate the 3-pool save BEFORE any CUDA / NCCL init. Assembly builds a
+    # full ComponentModel (incl. the transformer CI fn) as a CPU buffer; doing it
+    # after the GPU/process-group is up makes that construction land on a
+    # contended device and hang. So: rank 0 assembles on CPU here, the other
+    # ranks wait on the file's appearance (no collective — the PG isn't up yet),
+    # and only then does everyone init distributed for the eval pass.
+    if cfg.three_pool is not None:
+        assert step is not None, "3-pool async consolidation requires an explicit --step"
+        _consolidate_or_wait(cfg=cfg, out_dir=out_dir, step=step)
+
     dist_state = init_distributed()
     if is_main_process():
         logger.info(f"Distributed state: {dist_state}")
@@ -206,26 +253,6 @@ def main(
 
     target_model = build_target(cfg.target)
     run_batch = make_run_batch(cfg.target)
-
-    # 3-pool runs write only per-rank partials on the train loop; this async job
-    # consolidates them into model_<step>.pth + training_<step>.pth (off the
-    # train-loop critical path) before evaluating. Rank 0 does the assembly; all
-    # ranks barrier so the model file exists before any rank resolves it.
-    if cfg.three_pool is not None:
-        assert step is not None, "3-pool async consolidation requires an explicit --step"
-        if is_main_process():
-            consolidate_step(
-                scratch_dir=out_dir / SNAPSHOT_SCRATCH_DIRNAME,
-                out_dir=out_dir,
-                step=step,
-                target_model=target_model,
-                run_batch=run_batch,
-                ci_config=cfg.pd.ci_config,
-                sigmoid_type=cfg.pd.sigmoid_type,
-                keep_last_n_training=DEFAULT_KEEP_LAST_N_TRAINING,
-            )
-        if dist.is_initialized():
-            dist.barrier()
 
     # Consolidation may be the only job to do — when there are no slow metrics
     # the 3-pool save still needs assembling, but there is no eval pass to run.
