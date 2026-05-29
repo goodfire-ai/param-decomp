@@ -1,0 +1,111 @@
+cadence:
+  keep_last_n_checkpoints: null
+  save_every: null
+  train_log_every: 1000
+data:
+  buffer_size: 1000
+  column_name: text
+  dataset_name: HuggingFaceFW/fineweb
+  eval_split: train
+  is_tokenized: false
+  max_seq_len: 512
+  shuffle_each_epoch: true
+  streaming: true
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  train_split: train
+eval: null
+pd:
+  batch_size: 64
+  ci_config:
+    fn_type: global_shared_transformer
+    hidden_dims: null
+    mode: global
+    simple_transformer_ci_cfg:
+      attn_config:
+        max_len: 512
+        n_heads: 8
+        rope_base: 10000.0
+      d_model: 4096
+      mlp_hidden_dim:
+      - 16384
+      n_blocks: 8
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  decomposition_targets:
+  - C: 20000
+    module_pattern: model.layers.18.mlp.gate_proj
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 0
+  faithfulness_warmup_weight_decay: 0.0
+  identity_decomposition_targets: null
+  loss_metrics:
+  - beta: 0.5
+    coeff: 1.0e-06
+    eps: 1.0e-12
+    p_anneal_end_frac: 1.0
+    p_anneal_final_p: 0.4
+    p_anneal_start_frac: 0.0
+    pnorm: 2.0
+    type: ImportanceMinimalityLoss
+  - coeff: 0.5
+    routing:
+      type: uniform_k_subset
+    type: StochasticReconSubsetLoss
+  - coeff: 0.5
+    n_samples: 1
+    n_warmup_steps: 2
+    optimizer:
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        final_val_frac: 1.0
+        fn_type: constant
+        start_val: 0.01
+        warmup_pct: 0.025
+      type: adam
+    scope:
+      type: per_batch_per_position
+    start_frac: 0.0
+    type: PersistentPGDReconLoss
+    use_sigmoid_parameterization: false
+  - coeff: 10000000.0
+    type: FaithfulnessLoss
+  n_mask_samples: 1
+  sampling: continuous
+  seed: 0
+  sigmoid_type: leaky_hard
+  steps: 12
+  tied_weights: null
+  use_delta_component: true
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null
+target:
+  output_extract: logits
+  spec:
+    kind: hf
+    model_class: transformers.LlamaForCausalLM
+    model_name: meta-llama/Llama-3.1-8B
+wandb: null

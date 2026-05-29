@@ -1,0 +1,442 @@
+[2026-05-29T13:42:03.618] error: Unable to create TMPDIR [/tmp/claude-dan.braun/claude-100010]: No such file or directory
+[2026-05-29T13:42:03.619] error: Setting TMPDIR to /tmp
+W0529 13:42:07.534000 2776875 torch/distributed/run.py:774] 
+W0529 13:42:07.534000 2776875 torch/distributed/run.py:774] *****************************************
+W0529 13:42:07.534000 2776875 torch/distributed/run.py:774] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0529 13:42:07.534000 2776875 torch/distributed/run.py:774] *****************************************
+init_distributed: using backend='nccl'
+init_distributed: world_size=8, rank=5, local_rank=5, device=device(type='cuda', index=5)
+init_distributed: using backend='nccl'
+init_distributed: world_size=8, rank=2, local_rank=2, device=device(type='cuda', index=2)
+init_distributed: using backend='nccl'
+init_distributed: world_size=8, rank=7, local_rank=7, device=device(type='cuda', index=7)
+init_distributed: using backend='nccl'
+init_distributed: world_size=8, rank=1, local_rank=1, device=device(type='cuda', index=1)
+init_distributed: using backend='nccl'
+init_distributed: world_size=8, rank=3, local_rank=3, device=device(type='cuda', index=3)
+init_distributed: using backend='nccl'
+init_distributed: world_size=8, rank=6, local_rank=6, device=device(type='cuda', index=6)
+init_distributed: using backend='nccl'
+init_distributed: world_size=8, rank=4, local_rank=4, device=device(type='cuda', index=4)
+init_distributed: using backend='nccl'
+init_distributed: world_size=8, rank=0, local_rank=0, device=device(type='cuda', index=0)
+init_distributed: MASTER_ADDR: slurm-h100-192-071.slurm-compute.tenant-slurm.svc.cluster.local, MASTER_PORT: 40563
+init_distributed: MASTER_ADDR: slurm-h100-192-071.slurm-compute.tenant-slurm.svc.cluster.local, MASTER_PORT: 40563
+init_distributed: MASTER_ADDR: slurm-h100-192-071.slurm-compute.tenant-slurm.svc.cluster.local, MASTER_PORT: 40563
+init_distributed: MASTER_ADDR: slurm-h100-192-071.slurm-compute.tenant-slurm.svc.cluster.local, MASTER_PORT: 40563
+init_distributed: MASTER_ADDR: slurm-h100-192-071.slurm-compute.tenant-slurm.svc.cluster.local, MASTER_PORT: 40563
+init_distributed: MASTER_ADDR: slurm-h100-192-071.slurm-compute.tenant-slurm.svc.cluster.local, MASTER_PORT: 40563
+init_distributed: MASTER_ADDR: slurm-h100-192-071.slurm-compute.tenant-slurm.svc.cluster.local, MASTER_PORT: 40563
+init_distributed: MASTER_ADDR: slurm-h100-192-071.slurm-compute.tenant-slurm.svc.cluster.local, MASTER_PORT: 40563
+Distributed state: DistributedState(rank=0, world_size=8, local_rank=0, backend='nccl')
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:05<00:15,  5.15s/it]Loading checkpoint shards:  50%|█████     | 2/4 [00:10<00:09,  4.99s/it]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:14<00:04,  4.95s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:16<00:00,  3.46s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:16<00:00,  4.03s/it]
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:03<00:11,  3.85s/it]Loading checkpoint shards:  25%|██▌       | 1/4 [00:03<00:11,  3.95s/it]Loading checkpoint shards:  25%|██▌       | 1/4 [00:03<00:11,  3.92s/it]Loading checkpoint shards:  25%|██▌       | 1/4 [00:03<00:11,  3.92s/it]Loading checkpoint shards:  25%|██▌       | 1/4 [00:03<00:11,  3.92s/it]Loading checkpoint shards:  25%|██▌       | 1/4 [00:03<00:11,  3.93s/it]Loading checkpoint shards:  25%|██▌       | 1/4 [00:03<00:11,  3.90s/it]Loading checkpoint shards:  25%|██▌       | 1/4 [00:03<00:11,  3.91s/it]Loading checkpoint shards:  50%|█████     | 2/4 [00:07<00:07,  3.83s/it]Loading checkpoint shards:  50%|█████     | 2/4 [00:07<00:07,  3.83s/it]Loading checkpoint shards:  50%|█████     | 2/4 [00:07<00:07,  3.82s/it]Loading checkpoint shards:  50%|█████     | 2/4 [00:07<00:07,  3.83s/it]Loading checkpoint shards:  50%|█████     | 2/4 [00:07<00:07,  3.83s/it]Loading checkpoint shards:  50%|█████     | 2/4 [00:07<00:07,  3.83s/it]Loading checkpoint shards:  50%|█████     | 2/4 [00:07<00:07,  3.84s/it]Loading checkpoint shards:  50%|█████     | 2/4 [00:07<00:07,  3.84s/it]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:11<00:03,  3.82s/it]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:11<00:03,  3.84s/it]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:11<00:03,  3.84s/it]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:11<00:03,  3.83s/it]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:11<00:03,  3.84s/it]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:11<00:03,  3.84s/it]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:11<00:03,  3.85s/it]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:11<00:03,  3.85s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:12<00:00,  2.67s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:12<00:00,  3.10s/it]
+Loading checkpoint shards: 100%|██████████| 4/4 [00:12<00:00,  2.69s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:12<00:00,  3.12s/it]
+Loading checkpoint shards: 100%|██████████| 4/4 [00:12<00:00,  2.70s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:12<00:00,  3.12s/it]
+Loading checkpoint shards: 100%|██████████| 4/4 [00:12<00:00,  2.69s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:12<00:00,  2.69s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:12<00:00,  3.12s/it]
+Loading checkpoint shards: 100%|██████████| 4/4 [00:12<00:00,  3.12s/it]
+Loading checkpoint shards: 100%|██████████| 4/4 [00:12<00:00,  2.69s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:12<00:00,  3.12s/it]
+Loading checkpoint shards: 100%|██████████| 4/4 [00:12<00:00,  2.70s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:12<00:00,  3.13s/it]
+Loading checkpoint shards: 100%|██████████| 4/4 [00:12<00:00,  2.69s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:12<00:00,  3.12s/it]
+Train+eval logs saved to directory: /mnt/data/artifacts/mechanisms/param-decomp/runs/p-390bfd98
+  0% 0/13 [00:00<?, ?it/s]  0% 0/13 [00:06<?, ?it/s]
+[rank1]: Traceback (most recent call last):
+[rank1]:   File "<frozen runpy>", line 198, in _run_module_as_main
+[rank1]:   File "<frozen runpy>", line 88, in _run_code
+[rank1]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 479, in <module>
+[rank1]:     cli()
+[rank1]:     ~~~^^
+[rank1]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 475, in cli
+[rank1]:     fire.Fire(main)
+[rank1]:     ~~~~~~~~~^^^^^^
+[rank1]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 135, in Fire
+[rank1]:     component_trace = _Fire(component, args, parsed_flag_args, context, name)
+[rank1]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 468, in _Fire
+[rank1]:     component, remaining_args = _CallAndUpdateTrace(
+[rank1]:                                 ~~~~~~~~~~~~~~~~~~~^
+[rank1]:         component,
+[rank1]:         ^^^^^^^^^^
+[rank1]:     ...<2 lines>...
+[rank1]:         treatment='class' if is_class else 'routine',
+[rank1]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:         target=component.__name__)
+[rank1]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 684, in _CallAndUpdateTrace
+[rank1]:     component = fn(*varargs, **kwargs)
+[rank1]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/distributed.py", line 96, in wrapper
+[rank1]:     return fn(*args, **kwargs)
+[rank1]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 247, in main
+[rank1]:     _fresh_main(Path(config_path), group=group, tags=tags, run_id=run_id)
+[rank1]:     ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 299, in _fresh_main
+[rank1]:     trainer.run(train_loader, sink, cfg.cadence, eval_loop)
+[rank1]:     ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/optimize.py", line 591, in run
+[rank1]:     losses = {name: m.update(ctx) for name, m in self.loss_metrics.items()}
+[rank1]:                     ~~~~~~~~^^^^^
+[rank1]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/stochastic_recon_subset.py", line 111, in update
+[rank1]:     sum_loss, n = _stochastic_recon_subset_loss_update(
+[rank1]:                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+[rank1]:         model=self.model,
+[rank1]:         ^^^^^^^^^^^^^^^^^
+[rank1]:     ...<7 lines>...
+[rank1]:         reconstruction_loss=ctx.reconstruction_loss,
+[rank1]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank1]:     )
+[rank1]:     ^
+[rank1]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/stochastic_recon_subset.py", line 57, in _stochastic_recon_subset_loss_update
+[rank1]:     loss, batch_n = reconstruction_loss(out, target_out)
+[rank1]:                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+[rank1]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/batch_and_loss_fns.py", line 67, in recon_loss_kl
+[rank1]:     log_q = torch.log_softmax(pred, dim=-1)  # log Q
+[rank1]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.96 GiB. GPU 1 has a total capacity of 79.18 GiB of which 1.48 GiB is free. Including non-PyTorch memory, this process has 77.70 GiB memory in use. Of the allocated memory 75.41 GiB is allocated by PyTorch, and 763.99 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+[rank7]: Traceback (most recent call last):
+[rank7]:   File "<frozen runpy>", line 198, in _run_module_as_main
+[rank7]:   File "<frozen runpy>", line 88, in _run_code
+[rank7]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 479, in <module>
+[rank7]:     cli()
+[rank7]:     ~~~^^
+[rank7]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 475, in cli
+[rank7]:     fire.Fire(main)
+[rank7]:     ~~~~~~~~~^^^^^^
+[rank7]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 135, in Fire
+[rank7]:     component_trace = _Fire(component, args, parsed_flag_args, context, name)
+[rank7]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 468, in _Fire
+[rank7]:     component, remaining_args = _CallAndUpdateTrace(
+[rank7]:                                 ~~~~~~~~~~~~~~~~~~~^
+[rank7]:         component,
+[rank7]:         ^^^^^^^^^^
+[rank7]:     ...<2 lines>...
+[rank7]:         treatment='class' if is_class else 'routine',
+[rank7]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank7]:         target=component.__name__)
+[rank7]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank7]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 684, in _CallAndUpdateTrace
+[rank7]:     component = fn(*varargs, **kwargs)
+[rank7]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/distributed.py", line 96, in wrapper
+[rank7]:     return fn(*args, **kwargs)
+[rank7]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 247, in main
+[rank7]:     _fresh_main(Path(config_path), group=group, tags=tags, run_id=run_id)
+[rank7]:     ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank7]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 299, in _fresh_main
+[rank7]:     trainer.run(train_loader, sink, cfg.cadence, eval_loop)
+[rank7]:     ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank7]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/optimize.py", line 591, in run
+[rank7]:     losses = {name: m.update(ctx) for name, m in self.loss_metrics.items()}
+[rank7]:                     ~~~~~~~~^^^^^
+[rank7]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/stochastic_recon_subset.py", line 111, in update
+[rank7]:     sum_loss, n = _stochastic_recon_subset_loss_update(
+[rank7]:                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+[rank7]:         model=self.model,
+[rank7]:         ^^^^^^^^^^^^^^^^^
+[rank7]:     ...<7 lines>...
+[rank7]:         reconstruction_loss=ctx.reconstruction_loss,
+[rank7]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank7]:     )
+[rank7]:     ^
+[rank7]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/stochastic_recon_subset.py", line 57, in _stochastic_recon_subset_loss_update
+[rank7]:     loss, batch_n = reconstruction_loss(out, target_out)
+[rank7]:                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+[rank7]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/batch_and_loss_fns.py", line 67, in recon_loss_kl
+[rank7]:     log_q = torch.log_softmax(pred, dim=-1)  # log Q
+[rank7]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.96 GiB. GPU 7 has a total capacity of 79.18 GiB of which 1.48 GiB is free. Including non-PyTorch memory, this process has 77.70 GiB memory in use. Of the allocated memory 75.41 GiB is allocated by PyTorch, and 763.99 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+[rank2]: Traceback (most recent call last):
+[rank2]:   File "<frozen runpy>", line 198, in _run_module_as_main
+[rank2]:   File "<frozen runpy>", line 88, in _run_code
+[rank2]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 479, in <module>
+[rank2]:     cli()
+[rank2]:     ~~~^^
+[rank2]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 475, in cli
+[rank2]:     fire.Fire(main)
+[rank2]:     ~~~~~~~~~^^^^^^
+[rank2]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 135, in Fire
+[rank2]:     component_trace = _Fire(component, args, parsed_flag_args, context, name)
+[rank2]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 468, in _Fire
+[rank2]:     component, remaining_args = _CallAndUpdateTrace(
+[rank2]:                                 ~~~~~~~~~~~~~~~~~~~^
+[rank2]:         component,
+[rank2]:         ^^^^^^^^^^
+[rank2]:     ...<2 lines>...
+[rank2]:         treatment='class' if is_class else 'routine',
+[rank2]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:         target=component.__name__)
+[rank2]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 684, in _CallAndUpdateTrace
+[rank2]:     component = fn(*varargs, **kwargs)
+[rank2]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/distributed.py", line 96, in wrapper
+[rank2]:     return fn(*args, **kwargs)
+[rank2]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 247, in main
+[rank2]:     _fresh_main(Path(config_path), group=group, tags=tags, run_id=run_id)
+[rank2]:     ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 299, in _fresh_main
+[rank2]:     trainer.run(train_loader, sink, cfg.cadence, eval_loop)
+[rank2]:     ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/optimize.py", line 591, in run
+[rank2]:     losses = {name: m.update(ctx) for name, m in self.loss_metrics.items()}
+[rank2]:                     ~~~~~~~~^^^^^
+[rank2]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/stochastic_recon_subset.py", line 111, in update
+[rank2]:     sum_loss, n = _stochastic_recon_subset_loss_update(
+[rank2]:                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+[rank2]:         model=self.model,
+[rank2]:         ^^^^^^^^^^^^^^^^^
+[rank2]:     ...<7 lines>...
+[rank2]:         reconstruction_loss=ctx.reconstruction_loss,
+[rank2]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank2]:     )
+[rank2]:     ^
+[rank2]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/stochastic_recon_subset.py", line 57, in _stochastic_recon_subset_loss_update
+[rank2]:     loss, batch_n = reconstruction_loss(out, target_out)
+[rank2]:                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+[rank2]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/batch_and_loss_fns.py", line 67, in recon_loss_kl
+[rank2]:     log_q = torch.log_softmax(pred, dim=-1)  # log Q
+[rank2]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.96 GiB. GPU 2 has a total capacity of 79.18 GiB of which 1.48 GiB is free. Including non-PyTorch memory, this process has 77.70 GiB memory in use. Of the allocated memory 75.41 GiB is allocated by PyTorch, and 763.99 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "<frozen runpy>", line 198, in _run_module_as_main
+[rank0]:   File "<frozen runpy>", line 88, in _run_code
+[rank0]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 479, in <module>
+[rank0]:     cli()
+[rank0]:     ~~~^^
+[rank0]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 475, in cli
+[rank0]:     fire.Fire(main)
+[rank0]:     ~~~~~~~~~^^^^^^
+[rank0]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 135, in Fire
+[rank0]:     component_trace = _Fire(component, args, parsed_flag_args, context, name)
+[rank0]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 468, in _Fire
+[rank0]:     component, remaining_args = _CallAndUpdateTrace(
+[rank0]:                                 ~~~~~~~~~~~~~~~~~~~^
+[rank0]:         component,
+[rank0]:         ^^^^^^^^^^
+[rank0]:     ...<2 lines>...
+[rank0]:         treatment='class' if is_class else 'routine',
+[rank0]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:         target=component.__name__)
+[rank0]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 684, in _CallAndUpdateTrace
+[rank0]:     component = fn(*varargs, **kwargs)
+[rank0]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/distributed.py", line 96, in wrapper
+[rank0]:     return fn(*args, **kwargs)
+[rank0]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 247, in main
+[rank0]:     _fresh_main(Path(config_path), group=group, tags=tags, run_id=run_id)
+[rank0]:     ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 299, in _fresh_main
+[rank0]:     trainer.run(train_loader, sink, cfg.cadence, eval_loop)
+[rank0]:     ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/optimize.py", line 591, in run
+[rank0]:     losses = {name: m.update(ctx) for name, m in self.loss_metrics.items()}
+[rank0]:                     ~~~~~~~~^^^^^
+[rank0]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/stochastic_recon_subset.py", line 111, in update
+[rank0]:     sum_loss, n = _stochastic_recon_subset_loss_update(
+[rank0]:                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+[rank0]:         model=self.model,
+[rank0]:         ^^^^^^^^^^^^^^^^^
+[rank0]:     ...<7 lines>...
+[rank0]:         reconstruction_loss=ctx.reconstruction_loss,
+[rank0]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:     )
+[rank0]:     ^
+[rank0]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/stochastic_recon_subset.py", line 57, in _stochastic_recon_subset_loss_update
+[rank0]:     loss, batch_n = reconstruction_loss(out, target_out)
+[rank0]:                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+[rank0]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/batch_and_loss_fns.py", line 67, in recon_loss_kl
+[rank0]:     log_q = torch.log_softmax(pred, dim=-1)  # log Q
+[rank0]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.96 GiB. GPU 0 has a total capacity of 79.18 GiB of which 1.48 GiB is free. Including non-PyTorch memory, this process has 77.70 GiB memory in use. Of the allocated memory 75.41 GiB is allocated by PyTorch, and 763.99 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+[rank6]: Traceback (most recent call last):
+[rank6]:   File "<frozen runpy>", line 198, in _run_module_as_main
+[rank6]:   File "<frozen runpy>", line 88, in _run_code
+[rank6]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 479, in <module>
+[rank6]:     cli()
+[rank6]:     ~~~^^
+[rank6]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 475, in cli
+[rank6]:     fire.Fire(main)
+[rank6]:     ~~~~~~~~~^^^^^^
+[rank6]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 135, in Fire
+[rank6]:     component_trace = _Fire(component, args, parsed_flag_args, context, name)
+[rank6]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 468, in _Fire
+[rank6]:     component, remaining_args = _CallAndUpdateTrace(
+[rank6]:                                 ~~~~~~~~~~~~~~~~~~~^
+[rank6]:         component,
+[rank6]:         ^^^^^^^^^^
+[rank6]:     ...<2 lines>...
+[rank6]:         treatment='class' if is_class else 'routine',
+[rank6]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank6]:         target=component.__name__)
+[rank6]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank6]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 684, in _CallAndUpdateTrace
+[rank6]:     component = fn(*varargs, **kwargs)
+[rank6]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/distributed.py", line 96, in wrapper
+[rank6]:     return fn(*args, **kwargs)
+[rank6]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 247, in main
+[rank6]:     _fresh_main(Path(config_path), group=group, tags=tags, run_id=run_id)
+[rank6]:     ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank6]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 299, in _fresh_main
+[rank6]:     trainer.run(train_loader, sink, cfg.cadence, eval_loop)
+[rank6]:     ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank6]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/optimize.py", line 591, in run
+[rank6]:     losses = {name: m.update(ctx) for name, m in self.loss_metrics.items()}
+[rank6]:                     ~~~~~~~~^^^^^
+[rank6]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/stochastic_recon_subset.py", line 111, in update
+[rank6]:     sum_loss, n = _stochastic_recon_subset_loss_update(
+[rank6]:                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+[rank6]:         model=self.model,
+[rank6]:         ^^^^^^^^^^^^^^^^^
+[rank6]:     ...<7 lines>...
+[rank6]:         reconstruction_loss=ctx.reconstruction_loss,
+[rank6]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank6]:     )
+[rank6]:     ^
+[rank6]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/stochastic_recon_subset.py", line 57, in _stochastic_recon_subset_loss_update
+[rank6]:     loss, batch_n = reconstruction_loss(out, target_out)
+[rank6]:                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+[rank6]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/batch_and_loss_fns.py", line 67, in recon_loss_kl
+[rank6]:     log_q = torch.log_softmax(pred, dim=-1)  # log Q
+[rank6]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.96 GiB. GPU 6 has a total capacity of 79.18 GiB of which 1.48 GiB is free. Including non-PyTorch memory, this process has 77.70 GiB memory in use. Of the allocated memory 75.41 GiB is allocated by PyTorch, and 763.99 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+[rank4]: Traceback (most recent call last):
+[rank4]:   File "<frozen runpy>", line 198, in _run_module_as_main
+[rank4]:   File "<frozen runpy>", line 88, in _run_code
+[rank4]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 479, in <module>
+[rank4]:     cli()
+[rank4]:     ~~~^^
+[rank4]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 475, in cli
+[rank4]:     fire.Fire(main)
+[rank4]:     ~~~~~~~~~^^^^^^
+[rank4]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 135, in Fire
+[rank4]:     component_trace = _Fire(component, args, parsed_flag_args, context, name)
+[rank4]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 468, in _Fire
+[rank4]:     component, remaining_args = _CallAndUpdateTrace(
+[rank4]:                                 ~~~~~~~~~~~~~~~~~~~^
+[rank4]:         component,
+[rank4]:         ^^^^^^^^^^
+[rank4]:     ...<2 lines>...
+[rank4]:         treatment='class' if is_class else 'routine',
+[rank4]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank4]:         target=component.__name__)
+[rank4]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank4]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 684, in _CallAndUpdateTrace
+[rank4]:     component = fn(*varargs, **kwargs)
+[rank4]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/distributed.py", line 96, in wrapper
+[rank4]:     return fn(*args, **kwargs)
+[rank4]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 247, in main
+[rank4]:     _fresh_main(Path(config_path), group=group, tags=tags, run_id=run_id)
+[rank4]:     ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank4]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 299, in _fresh_main
+[rank4]:     trainer.run(train_loader, sink, cfg.cadence, eval_loop)
+[rank4]:     ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank4]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/optimize.py", line 591, in run
+[rank4]:     losses = {name: m.update(ctx) for name, m in self.loss_metrics.items()}
+[rank4]:                     ~~~~~~~~^^^^^
+[rank4]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/stochastic_recon_subset.py", line 111, in update
+[rank4]:     sum_loss, n = _stochastic_recon_subset_loss_update(
+[rank4]:                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+[rank4]:         model=self.model,
+[rank4]:         ^^^^^^^^^^^^^^^^^
+[rank4]:     ...<7 lines>...
+[rank4]:         reconstruction_loss=ctx.reconstruction_loss,
+[rank4]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank4]:     )
+[rank4]:     ^
+[rank4]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/stochastic_recon_subset.py", line 57, in _stochastic_recon_subset_loss_update
+[rank4]:     loss, batch_n = reconstruction_loss(out, target_out)
+[rank4]:                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+[rank4]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/batch_and_loss_fns.py", line 67, in recon_loss_kl
+[rank4]:     log_q = torch.log_softmax(pred, dim=-1)  # log Q
+[rank4]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.96 GiB. GPU 4 has a total capacity of 79.18 GiB of which 1.48 GiB is free. Including non-PyTorch memory, this process has 77.70 GiB memory in use. Of the allocated memory 75.41 GiB is allocated by PyTorch, and 763.99 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+[rank3]: Traceback (most recent call last):
+[rank3]:   File "<frozen runpy>", line 198, in _run_module_as_main
+[rank3]:   File "<frozen runpy>", line 88, in _run_code
+[rank3]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 479, in <module>
+[rank3]:     cli()
+[rank3]:     ~~~^^
+[rank3]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 475, in cli
+[rank3]:     fire.Fire(main)
+[rank3]:     ~~~~~~~~~^^^^^^
+[rank3]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 135, in Fire
+[rank3]:     component_trace = _Fire(component, args, parsed_flag_args, context, name)
+[rank3]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 468, in _Fire
+[rank3]:     component, remaining_args = _CallAndUpdateTrace(
+[rank3]:                                 ~~~~~~~~~~~~~~~~~~~^
+[rank3]:         component,
+[rank3]:         ^^^^^^^^^^
+[rank3]:     ...<2 lines>...
+[rank3]:         treatment='class' if is_class else 'routine',
+[rank3]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:         target=component.__name__)
+[rank3]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 684, in _CallAndUpdateTrace
+[rank3]:     component = fn(*varargs, **kwargs)
+[rank3]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/distributed.py", line 96, in wrapper
+[rank3]:     return fn(*args, **kwargs)
+[rank3]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 247, in main
+[rank3]:     _fresh_main(Path(config_path), group=group, tags=tags, run_id=run_id)
+[rank3]:     ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 299, in _fresh_main
+[rank3]:     trainer.run(train_loader, sink, cfg.cadence, eval_loop)
+[rank3]:     ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/optimize.py", line 591, in run
+[rank3]:     losses = {name: m.update(ctx) for name, m in self.loss_metrics.items()}
+[rank3]:                     ~~~~~~~~^^^^^
+[rank3]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/stochastic_recon_subset.py", line 111, in update
+[rank3]:     sum_loss, n = _stochastic_recon_subset_loss_update(
+[rank3]:                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+[rank3]:         model=self.model,
+[rank3]:         ^^^^^^^^^^^^^^^^^
+[rank3]:     ...<7 lines>...
+[rank3]:         reconstruction_loss=ctx.reconstruction_loss,
+[rank3]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank3]:     )
+[rank3]:     ^
+[rank3]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/stochastic_recon_subset.py", line 57, in _stochastic_recon_subset_loss_update
+[rank3]:     loss, batch_n = reconstruction_loss(out, target_out)
+[rank3]:                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+[rank3]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/batch_and_loss_fns.py", line 67, in recon_loss_kl
+[rank3]:     log_q = torch.log_softmax(pred, dim=-1)  # log Q
+[rank3]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.96 GiB. GPU 3 has a total capacity of 79.18 GiB of which 1.48 GiB is free. Including non-PyTorch memory, this process has 77.70 GiB memory in use. Of the allocated memory 75.41 GiB is allocated by PyTorch, and 763.99 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+[rank5]: Traceback (most recent call last):
+[rank5]:   File "<frozen runpy>", line 198, in _run_module_as_main
+[rank5]:   File "<frozen runpy>", line 88, in _run_code
+[rank5]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 479, in <module>
+[rank5]:     cli()
+[rank5]:     ~~~^^
+[rank5]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 475, in cli
+[rank5]:     fire.Fire(main)
+[rank5]:     ~~~~~~~~~^^^^^^
+[rank5]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 135, in Fire
+[rank5]:     component_trace = _Fire(component, args, parsed_flag_args, context, name)
+[rank5]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 468, in _Fire
+[rank5]:     component, remaining_args = _CallAndUpdateTrace(
+[rank5]:                                 ~~~~~~~~~~~~~~~~~~~^
+[rank5]:         component,
+[rank5]:         ^^^^^^^^^^
+[rank5]:     ...<2 lines>...
+[rank5]:         treatment='class' if is_class else 'routine',
+[rank5]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank5]:         target=component.__name__)
+[rank5]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank5]:   File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 684, in _CallAndUpdateTrace
+[rank5]:     component = fn(*varargs, **kwargs)
+[rank5]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/distributed.py", line 96, in wrapper
+[rank5]:     return fn(*args, **kwargs)
+[rank5]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 247, in main
+[rank5]:     _fresh_main(Path(config_path), group=group, tags=tags, run_id=run_id)
+[rank5]:     ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank5]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 299, in _fresh_main
+[rank5]:     trainer.run(train_loader, sink, cfg.cadence, eval_loop)
+[rank5]:     ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank5]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/optimize.py", line 591, in run
+[rank5]:     losses = {name: m.update(ctx) for name, m in self.loss_metrics.items()}
+[rank5]:                     ~~~~~~~~^^^^^
+[rank5]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/stochastic_recon_subset.py", line 111, in update
+[rank5]:     sum_loss, n = _stochastic_recon_subset_loss_update(
+[rank5]:                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+[rank5]:         model=self.model,
+[rank5]:         ^^^^^^^^^^^^^^^^^
+[rank5]:     ...<7 lines>...
+[rank5]:         reconstruction_loss=ctx.reconstruction_loss,
+[rank5]:         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank5]:     )
+[rank5]:     ^
+[rank5]:   File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/stochastic_recon_subset.py", line 57, in _stochastic_recon_subset_loss_update
+[rank5]:     loss, batch_n = reconstruction_loss(out, target_out)
+[rank5]:                     ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+[rank5]:   File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/batch_and_loss_fns.py", line 67, in recon_loss_kl
+[rank5]:     log_q = torch.log_softmax(pred, dim=-1)  # log Q
+[rank5]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.96 GiB. GPU 5 has a total capacity of 79.18 GiB of which 1.48 GiB is free. Including non-PyTorch memory, this process has 77.70 GiB memory in use. Of the allocated memory 75.41 GiB is allocated by PyTorch, and 763.99 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)

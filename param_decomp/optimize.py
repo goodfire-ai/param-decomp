@@ -9,6 +9,7 @@ that lets a caller persist and restore the full training state (resumption).
 """
 
 import gc
+import os
 import signal
 from collections import defaultdict
 from dataclasses import dataclass
@@ -521,6 +522,32 @@ class Trainer:
         all_instances = self._build_all_metric_instances(eval_loop, device)
         sigterm = _install_sigterm_flag()
 
+        # --- Opt-in runtime profiling (PROFILING HACK: remove later) --- #
+        # PD_PROFILE_TRACE_PATH set -> rank 0 wraps the loop in a torch.profiler
+        # that records a small steady-state window and writes a Chrome/Perfetto
+        # trace. with_stack is OFF on purpose: it is far too slow on a full Llama
+        # forward and, when only rank 0 profiles, starves the DDP collectives.
+        profile_trace_path = os.environ.get("PD_PROFILE_TRACE_PATH")
+        profiler = None
+        if profile_trace_path is not None and is_main_process():
+
+            def _export_trace(p: torch.profiler.profile) -> None:
+                p.export_chrome_trace(profile_trace_path)
+                logger.info(f"Wrote profiler trace to {profile_trace_path}")
+
+            profiler = torch.profiler.profile(
+                activities=[
+                    torch.profiler.ProfilerActivity.CPU,
+                    torch.profiler.ProfilerActivity.CUDA,
+                ],
+                schedule=torch.profiler.schedule(wait=3, warmup=1, active=3, repeat=1),
+                on_trace_ready=_export_trace,
+                record_shapes=True,
+                with_stack=False,
+                with_modules=True,
+            )
+            profiler.start()
+
         for step in tqdm(
             range(self.step, pd_config.steps + 1), ncols=0, disable=not is_main_process()
         ):
@@ -668,6 +695,12 @@ class Trainer:
                     clip_grad_norm_(self._ci_fn_params, pd_config.ci_fn_optimizer.grad_clip_norm)
                 self.components_optimizer.step()
                 self.ci_fn_optimizer.step()
+
+            if profiler is not None:
+                profiler.step()
+
+        if profiler is not None:
+            profiler.stop()
 
         if is_main_process():
             logger.info("Finished training loop.")

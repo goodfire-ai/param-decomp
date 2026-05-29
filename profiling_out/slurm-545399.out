@@ -1,0 +1,91 @@
+[2026-05-29T12:17:15.434] error: Unable to create TMPDIR [/tmp/claude-dan.braun/claude-100010]: No such file or directory
+[2026-05-29T12:17:15.434] error: Setting TMPDIR to /tmp
+Distributed state: None
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:01,  2.00it/s]Loading checkpoint shards:  50%|█████     | 2/4 [00:01<00:01,  2.00it/s]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:01<00:00,  2.10it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  3.03it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  2.57it/s]
+Train+eval logs saved to directory: /mnt/home/dan.braun/param-decomp/profiling_out/run_artifacts/runs/p-627b5cf1
+  0% 0/13 [00:00<?, ?it/s]  0% 0/13 [00:04<?, ?it/s]
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 479, in <module>
+    cli()
+    ~~~^^
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 475, in cli
+    fire.Fire(main)
+    ~~~~~~~~~^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 135, in Fire
+    component_trace = _Fire(component, args, parsed_flag_args, context, name)
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 468, in _Fire
+    component, remaining_args = _CallAndUpdateTrace(
+                                ~~~~~~~~~~~~~~~~~~~^
+        component,
+        ^^^^^^^^^^
+    ...<2 lines>...
+        treatment='class' if is_class else 'routine',
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        target=component.__name__)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 684, in _CallAndUpdateTrace
+    component = fn(*varargs, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/distributed.py", line 96, in wrapper
+    return fn(*args, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 247, in main
+    _fresh_main(Path(config_path), group=group, tags=tags, run_id=run_id)
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 299, in _fresh_main
+    trainer.run(train_loader, sink, cfg.cadence, eval_loop)
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/param_decomp/optimize.py", line 579, in run
+    ctx = _build_metric_context(
+        next(train_iterator),
+    ...<7 lines>...
+        weight_deltas=weight_deltas,
+    )
+  File "/mnt/home/dan.braun/param-decomp/param_decomp/optimize.py", line 150, in _build_metric_context
+    ci = component_model.calc_causal_importances(
+        pre_weight_acts=target_model_output.cache,
+        detach_inputs=False,
+        sampling=config.sampling,
+    )
+  File "/mnt/home/dan.braun/param-decomp/param_decomp/component_model.py", line 327, in calc_causal_importances
+    ci_fn_outputs = self.ci_fn(pre_weight_acts)
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/param_decomp/ci_fns.py", line 416, in forward
+    return self._global_ci_fn(transformed)
+           ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/param_decomp/ci_fns.py", line 324, in forward
+    x = block(x)
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/param_decomp/ci_nn_blocks.py", line 175, in forward
+    x = x + self.mlp(F.rms_norm(x, (self.d_model,)))
+            ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/container.py", line 244, in forward
+    input = module(input)
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/param_decomp/ci_nn_blocks.py", line 50, in forward
+    return einops.einsum(x, self.W, "... d_in, d_in d_out -> ... d_out") + self.b
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB. GPU 0 has a total capacity of 79.18 GiB of which 192.19 MiB is free. Including non-PyTorch memory, this process has 78.98 GiB memory in use. Of the allocated memory 77.78 GiB is allocated by PyTorch, and 557.76 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+[2026-05-29T12:39:53.305] error: *** JOB 545399 ON slurm-h100-192-001 CANCELLED AT 2026-05-29T12:39:53 DUE to SIGNAL Terminated ***
