@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from datasets import Dataset, IterableDataset, load_dataset
+from datasets import Dataset, IterableDataset, load_dataset, load_dataset_builder
 from numpy.typing import NDArray
 from pydantic import Field, PositiveInt
 from torch import Tensor
@@ -15,6 +15,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizer
 from param_decomp.base_config import BaseConfig
 from param_decomp.distributed import DistributedState
 from param_decomp.log import logger
+from param_decomp_lab.distributed import broadcast_object_from_main
 
 
 class LMDataConfig(BaseConfig):
@@ -142,6 +143,23 @@ def _prepare_lm_dataset(
     )
 
 
+def _resolve_split_data_files(dataset_name: str, split: str) -> tuple[str, list[str]]:
+    """Resolve a hub dataset for `split` into its packaged builder + explicit data files.
+
+    Runs the recursive repo-tree glob exactly once and returns `(builder_name, files)`
+    where `builder_name` is the packaged builder (e.g. `"parquet"`) and each file is an
+    `hf://…@<rev>/…` path with the commit revision pinned. Callers load via
+    `load_dataset(builder_name, data_files=files, …)` so other ranks skip the glob.
+    Passing the dataset id (rather than the builder) alongside `data_files` makes the hub
+    reinterpret the absolute paths as repo-relative patterns and fail to resolve them.
+    """
+    builder = load_dataset_builder(dataset_name)
+    data_files = builder.config.data_files
+    assert data_files is not None, f"{dataset_name} exposes no resolvable data_files"
+    assert split in data_files, f"split {split!r} not in resolved data_files {list(data_files)}"
+    return builder.name, list(data_files[split])
+
+
 def create_lm_data_loader(
     cfg: LMDataConfig,
     *,
@@ -152,8 +170,16 @@ def create_lm_data_loader(
     collate_fn: Callable[..., Any] | None = None,
 ) -> tuple[DataLoader[Any], PreTrainedTokenizer]:
     """Create an LM token dataloader from a HuggingFace dataset split."""
+    # Resolve the data-file list once on rank 0 and broadcast it, then load with explicit
+    # `data_files`. Letting every rank resolve the glob itself makes each one recursively
+    # paginate the repo tree against the HF Hub API; at multi-node scale the concurrent
+    # `list_repo_tree` requests trip a 429 rate-limit. Explicit `data_files` skips the glob.
+    builder_name, resolved_data_files = broadcast_object_from_main(
+        lambda: _resolve_split_data_files(cfg.dataset_name, split)
+    )
     dataset = load_dataset(
-        cfg.dataset_name,
+        builder_name,
+        data_files=resolved_data_files,
         streaming=cfg.streaming,
         split=split,
         trust_remote_code=False,
