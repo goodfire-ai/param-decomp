@@ -65,11 +65,15 @@ def consolidate_step(
     by a prior, possibly-retried, invocation).
     """
     training_path = out_dir / f"training_{step}.pth"
+    step_dir = step_scratch_dir(scratch_dir, step)
     if training_path.is_file():
+        # Already consolidated. Clean up any scratch left behind by a prior run
+        # that wrote the checkpoint but died before removing it (e.g. crashed in
+        # prune), so this step stops looking unconsolidated.
         logger.info(f"consolidate: {training_path.name} already exists; skipping")
+        shutil.rmtree(step_dir, ignore_errors=True)
         return
 
-    step_dir = step_scratch_dir(scratch_dir, step)
     if not step_dir.is_dir():
         logger.warning(
             f"consolidate: scratch dir {step_dir} missing and no {training_path.name}; "
@@ -163,9 +167,11 @@ def _prune_old_training(out_dir: Path, *, keep_last_n: int) -> None:
         return
     for step in steps[: len(steps) - keep_last_n]:
         path = out_dir / f"training_{step}.pth"
-        if path.is_file():
-            path.unlink()
-            logger.info(f"consolidate: pruned old {path.name}")
+        # missing_ok: a concurrently-running consolidation job for another step
+        # may have already pruned this same old file. That's benign — the target
+        # state (this file gone) is reached either way.
+        path.unlink(missing_ok=True)
+        logger.info(f"consolidate: pruned old {path.name}")
 
 
 def unconsolidated_steps(out_dir: Path) -> list[int]:
