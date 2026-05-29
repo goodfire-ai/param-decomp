@@ -1,0 +1,66 @@
+[2026-05-29T12:15:49.335] error: Unable to create TMPDIR [/tmp/claude-dan.braun/claude-100010]: No such file or directory
+[2026-05-29T12:15:49.335] error: Setting TMPDIR to /tmp
+Distributed state: None
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:06<00:18,  6.05s/it]Loading checkpoint shards:  50%|█████     | 2/4 [00:13<00:13,  6.98s/it]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:21<00:07,  7.40s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:22<00:00,  4.72s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:22<00:00,  5.55s/it]
+Traceback (most recent call last):
+  File "/mnt/home/dan.braun/.local/share/uv/python/cpython-3.13.12-linux-x86_64-gnu/lib/python3.13/pathlib/_local.py", line 722, in mkdir
+    os.mkdir(self, mode)
+    ~~~~~~~~^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/mnt/data/artifacts/mechanisms/param-decomp/runs/p-9f4a94aa'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/mnt/home/dan.braun/.local/share/uv/python/cpython-3.13.12-linux-x86_64-gnu/lib/python3.13/pathlib/_local.py", line 722, in mkdir
+    os.mkdir(self, mode)
+    ~~~~~~~~^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/mnt/data/artifacts/mechanisms/param-decomp/runs'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 479, in <module>
+    cli()
+    ~~~^^
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 475, in cli
+    fire.Fire(main)
+    ~~~~~~~~~^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 135, in Fire
+    component_trace = _Fire(component, args, parsed_flag_args, context, name)
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 468, in _Fire
+    component, remaining_args = _CallAndUpdateTrace(
+                                ~~~~~~~~~~~~~~~~~~~^
+        component,
+        ^^^^^^^^^^
+    ...<2 lines>...
+        treatment='class' if is_class else 'routine',
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        target=component.__name__)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 684, in _CallAndUpdateTrace
+    component = fn(*varargs, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/distributed.py", line 96, in wrapper
+    return fn(*args, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 247, in main
+    _fresh_main(Path(config_path), group=group, tags=tags, run_id=run_id)
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 289, in _fresh_main
+    sink = init_pd_run(cfg, group=group, tags=tags, run_id=run_id)
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/utils.py", line 79, in init_pd_run
+    cfg.to_file(cfg_path)
+    ~~~~~~~~~~~^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/param_decomp/base_config.py", line 74, in to_file
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/.local/share/uv/python/cpython-3.13.12-linux-x86_64-gnu/lib/python3.13/pathlib/_local.py", line 726, in mkdir
+    self.parent.mkdir(parents=True, exist_ok=True)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/.local/share/uv/python/cpython-3.13.12-linux-x86_64-gnu/lib/python3.13/pathlib/_local.py", line 726, in mkdir
+    self.parent.mkdir(parents=True, exist_ok=True)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/.local/share/uv/python/cpython-3.13.12-linux-x86_64-gnu/lib/python3.13/pathlib/_local.py", line 722, in mkdir
+    os.mkdir(self, mode)
+    ~~~~~~~~^^^^^^^^^^^^
+PermissionError: [Errno 13] Permission denied: '/mnt/data/artifacts/mechanisms/param-decomp'

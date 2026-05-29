@@ -1,0 +1,49 @@
+[2026-05-29T12:14:14.445] error: Unable to create TMPDIR [/tmp/claude-dan.braun/claude-100010]: No such file or directory
+[2026-05-29T12:14:14.445] error: Setting TMPDIR to /tmp
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 479, in <module>
+    cli()
+    ~~~^^
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 475, in cli
+    fire.Fire(main)
+    ~~~~~~~~~^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 135, in Fire
+    component_trace = _Fire(component, args, parsed_flag_args, context, name)
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 468, in _Fire
+    component, remaining_args = _CallAndUpdateTrace(
+                                ~~~~~~~~~~~~~~~~~~~^
+        component,
+        ^^^^^^^^^^
+    ...<2 lines>...
+        treatment='class' if is_class else 'routine',
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        target=component.__name__)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 684, in _CallAndUpdateTrace
+    component = fn(*varargs, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/distributed.py", line 96, in wrapper
+    return fn(*args, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 247, in main
+    _fresh_main(Path(config_path), group=group, tags=tags, run_id=run_id)
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 258, in _fresh_main
+    cfg = LMExperimentConfig.from_file(config_path)
+  File "/mnt/home/dan.braun/param-decomp/param_decomp/base_config.py", line 62, in from_file
+    raise e
+  File "/mnt/home/dan.braun/param-decomp/param_decomp/base_config.py", line 59, in from_file
+    cfg = cls.model_validate(data)
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/pydantic/main.py", line 705, in model_validate
+    return cls.__pydantic_validator__.validate_python(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        obj, strict=strict, from_attributes=from_attributes, context=context, by_alias=by_alias, by_name=by_name
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+pydantic_core._pydantic_core.ValidationError: 1 validation error for LMExperimentConfig
+pd.loss_metrics.1.StochasticReconLayerwiseLoss.routing
+  Extra inputs are not permitted [type=extra_forbidden, input_value={'type': 'uniform_k_subset'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
+Error validating config cls=<class '__main__.LMExperimentConfig'> from path `param_decomp_lab/experiments/lm/llama-3.1-8b-profile.yaml`
+data = {'pd': {'seed': 0, 'n_mask_samples': 1, 'ci_config': {'mode': 'global', 'fn_type': 'global_shared_transformer', 'hidden_dims': None, 'simple_transformer_ci_cfg': {'d_model': 4096, 'n_blocks': 8, 'mlp_hidden_dim': [16384], 'attn_config': {'n_heads': 8, 'max_len': 512, 'rope_base': 10000.0}}}, 'sampling': 'continuous', 'sigmoid_type': 'leaky_hard', 'decomposition_targets': [{'module_pattern': 'model.layers.18.mlp.gate_proj', 'C': 20000}], 'identity_decomposition_targets': None, 'use_delta_component': True, 'components_optimizer': {'lr_schedule': {'start_val': 5e-05, 'warmup_pct': 0.0, 'final_val_frac': 0.1, 'fn_type': 'cosine'}, 'grad_clip_norm': 0.01}, 'ci_fn_optimizer': {'lr_schedule': {'start_val': 5e-05, 'warmup_pct': 0.0, 'final_val_frac': 0.1, 'fn_type': 'cosine'}}, 'steps': 12, 'batch_size': 64, 'faithfulness_warmup_steps': 0, 'faithfulness_warmup_lr': 0.001, 'faithfulness_warmup_weight_decay': 0.0, 'loss_metrics': [{'type': 'ImportanceMinimalityLoss', 'coeff': 1e-06, 'pnorm': 2.0, 'beta': 0.5, 'p_anneal_start_frac': 0.0, 'p_anneal_final_p': 0.4, 'p_anneal_end_frac': 1.0, 'eps': 1e-12}, {'type': 'StochasticReconLayerwiseLoss', 'coeff': 0.5, 'routing': {'type': 'uniform_k_subset'}}, {'type': 'PersistentPGDReconLoss', 'coeff': 0.5, 'optimizer': {'type': 'adam', 'beta1': 0.5, 'beta2': 0.99, 'eps': 1e-08, 'lr_schedule': {'start_val': 0.01, 'warmup_pct': 0.025, 'final_val_frac': 1.0, 'fn_type': 'constant'}}, 'scope': {'type': 'per_batch_per_position'}, 'use_sigmoid_parameterization': False, 'n_warmup_steps': 2}, {'type': 'FaithfulnessLoss', 'coeff': 10000000.0}]}, 'cadence': {'train_log_every': 1000}, 'target': {'spec': {'kind': 'hf', 'model_class': 'transformers.LlamaForCausalLM', 'model_name': 'meta-llama/Llama-3.1-8B'}, 'output_extract': 'logits'}, 'data': {'tokenizer_name': 'meta-llama/Llama-3.1-8B', 'max_seq_len': 512, 'buffer_size': 1000, 'dataset_name': 'HuggingFaceFW/fineweb', 'column_name': 'text', 'train_split': 'train', 'eval_split': 'train', 'shuffle_each_epoch': True, 'is_tokenized': False, 'streaming': True}, 'runtime': {'autocast_bf16': True, 'device': 'cuda', 'dp': None}}

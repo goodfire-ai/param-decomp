@@ -1,0 +1,134 @@
+[2026-05-29T12:54:49.331] error: Unable to create TMPDIR [/tmp/claude-dan.braun/claude-100010]: No such file or directory
+[2026-05-29T12:54:49.331] error: Setting TMPDIR to /tmp
+Distributed state: None
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:01,  2.06it/s]Loading checkpoint shards:  50%|█████     | 2/4 [00:00<00:00,  2.03it/s]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:01<00:00,  2.11it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  3.02it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:01<00:00,  2.59it/s]
+Train+eval logs saved to directory: /mnt/data/artifacts/mechanisms/param-decomp/runs/p-8571befd
+  0% 0/13 [00:00<?, ?it/s]  0% 0/13 [00:02<?, ?it/s]
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 479, in <module>
+    cli()
+    ~~~^^
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 475, in cli
+    fire.Fire(main)
+    ~~~~~~~~~^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 135, in Fire
+    component_trace = _Fire(component, args, parsed_flag_args, context, name)
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 468, in _Fire
+    component, remaining_args = _CallAndUpdateTrace(
+                                ~~~~~~~~~~~~~~~~~~~^
+        component,
+        ^^^^^^^^^^
+    ...<2 lines>...
+        treatment='class' if is_class else 'routine',
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        target=component.__name__)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/fire/core.py", line 684, in _CallAndUpdateTrace
+    component = fn(*varargs, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/distributed.py", line 96, in wrapper
+    return fn(*args, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 247, in main
+    _fresh_main(Path(config_path), group=group, tags=tags, run_id=run_id)
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/experiments/lm/run.py", line 299, in _fresh_main
+    trainer.run(train_loader, sink, cfg.cadence, eval_loop)
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/param_decomp/optimize.py", line 591, in run
+    losses = {name: m.update(ctx) for name, m in self.loss_metrics.items()}
+                    ~~~~~~~~^^^^^
+  File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/persistent_pgd_recon.py", line 176, in update
+    self.state.warmup(
+    ~~~~~~~~~~~~~~~~~^
+        model=self.model,
+        ^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+        weight_deltas=wd,
+        ^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/persistent_pgd_state.py", line 325, in warmup
+    sum_loss, n = self.compute_recon_sum_and_n(
+                  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        model, batch, target_out, ci, weight_deltas, router=all_layers
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/persistent_pgd_state.py", line 356, in compute_recon_sum_and_n
+    loss, n = _compute_ppgd_recon_loss(
+              ~~~~~~~~~~~~~~~~~~~~~~~~^
+        model=model,
+        ^^^^^^^^^^^^
+    ...<6 lines>...
+        routing_masks=routing_masks,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/mnt/home/dan.braun/param-decomp/param_decomp/metrics/persistent_pgd_state.py", line 433, in _compute_ppgd_recon_loss
+    out = model(batch, mask_infos=mask_infos)
+  File "/mnt/home/dan.braun/param-decomp/param_decomp/component_model.py", line 175, in __call__
+    return super().__call__(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/param_decomp/component_model.py", line 223, in forward
+    out: Tensor = self._run_batch(self.target_model, batch)
+                  ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/param_decomp_lab/batch_and_loss_fns.py", line 39, in <lambda>
+    return lambda model, batch: getattr(model(batch), attr)
+                                        ~~~~~^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/transformers/utils/generic.py", line 918, in wrapper
+    output = func(self, *args, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/transformers/models/llama/modeling_llama.py", line 459, in forward
+    outputs: BaseModelOutputWithPast = self.model(
+                                       ~~~~~~~~~~^
+        input_ids=input_ids,
+        ^^^^^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+        **kwargs,
+        ^^^^^^^^^
+    )
+    ^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/transformers/utils/generic.py", line 1072, in wrapper
+    outputs = func(self, *args, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/transformers/models/llama/modeling_llama.py", line 395, in forward
+    hidden_states = decoder_layer(
+        hidden_states,
+    ...<5 lines>...
+        **kwargs,
+    )
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/transformers/modeling_layers.py", line 94, in __call__
+    return super().__call__(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/transformers/utils/deprecation.py", line 172, in wrapped_func
+    return func(*args, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/transformers/models/llama/modeling_llama.py", line 309, in forward
+    hidden_states = self.mlp(hidden_states)
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/mnt/home/dan.braun/param-decomp/.venv/lib/python3.13/site-packages/transformers/models/llama/modeling_llama.py", line 155, in forward
+    down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 112.00 MiB. GPU 0 has a total capacity of 79.18 GiB of which 50.19 MiB is free. Including non-PyTorch memory, this process has 79.12 GiB memory in use. Of the allocated memory 78.37 GiB is allocated by PyTorch, and 94.19 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
