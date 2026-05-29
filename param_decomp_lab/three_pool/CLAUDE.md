@@ -9,7 +9,9 @@ docstring in `optimize.py` for the data-handling contract.
 |---|---|
 | `optimize.py` | `ThreePoolTrainer` + `optimize_three_pool`; the training loop, `snapshot`/`from_snapshot`, config validation |
 | `layout.py` | `World` topology; `build_world` constructs every process group (threading `pg_timeout` into each); `BatchEdge` — symmetric per-edge batch-slice geometry (CI↔LW, CI↔PPGD) answering routing for both fan directions |
-| `checkpoint.py` | `gather_full_state_dict_to_rank0` — rebuilds the full model state on rank 0 |
+| `checkpoint.py` | offline state_dict assembly from on-disk partials (`assemble_model_state_dict_from_partials`) + the leader key-partition helpers (`owned_model_state_keys` / `ci_fn_state_keys`) |
+| `consolidate.py` | `consolidate_step` — async, off-train-loop assembly of `model_<step>.pth` + `training_<step>.pth` from a step's scratch partials; prunes old `training_*.pth`; deletes the scratch dir. `unconsolidated_steps` lists recoverable steps |
+| `consolidate_cli.py` | `python -m …consolidate_cli <run> [--step N]` — manual CPU-only recovery for a failed/preempted async consolidation (separate module to avoid an import cycle with `experiments.lm.run`) |
 | `config.py` | `ThreePoolConfig` + topology validation |
 | `role.py` | `PoolRole = CIRole \| LWRole \| PPGDRole` — this rank's pool role; per-pool fields are union variants, not optional attrs |
 | `context.py` | `PoolContext = CIContext \| LWContext \| PPGDContext` — `world` + `role` + this pool's portals; the trainer matches on it to dispatch step fns |
@@ -17,53 +19,108 @@ docstring in `optimize.py` for the data-handling contract.
 | `step_{ci,layerwise,ppgd}.py` | per-pool step functions |
 | `eval_step.py` | 3-pool eval pass (PPGD pool runs metrics; others barrier through) |
 
-## Checkpoint-save invariant (do not break)
+## Checkpoint save: partials on the loop, consolidation off it
 
-`snapshot()` is collective. The ordering is: all ranks gather the model to
-rank 0, all ranks write their per-rank partial to the shared-FS scratch dir,
-barrier, then **rank 0 alone** serially reads every partial (~100 GB at XL) to
-assemble the canonical `ThreePoolTrainingState`. The other ranks have nothing
-to do during that read.
+The save path is split so the train loop never blocks on a multi-GB read.
 
-There is a **mandatory rejoining `dist.barrier(group=cross_pool_p2p_group)`
-after rank 0 finishes reading.** Without it, the non-rank-0 ranks race ahead
-into the next training step while rank 0 is still reading; the next step's
-collectives (PPGD V/U all-reduce, cross-pool sends) block on rank 0 and trip
-the NCCL collective-timeout watchdog, aborting the whole job. This is exactly
-how run 34446 (p-a5b667e9) died at its first checkpoint. The barrier makes all
-ranks resume in lock-step.
+`snapshot()` (on the train loop, all ranks collective): each rank writes a
+**self-contained partial** to `scratch_dir/step_<S>/rank_<r>.pth` — its owned
+model params (LW block leaders → owned-sites V/U; CI pool leader → CI fn),
+its optimizer state (name-keyed), and (PPGD) its sources. Rank 0 also writes
+`meta.pth` (configs + fingerprint + `c_per_site` / `all_sites`). There is **one
+pre-write barrier** (so rank 0's `mkdir` + `meta` write land before others write
+into the dir) and **one post-write rejoin barrier** (so all ranks leave
+`snapshot()` together). Both barriers are cheap — no rank does a 100 GB read on
+the loop anymore — so neither can overrun the watchdog. NO model NCCL gather, NO
+rank-0 assembly here.
 
-## Process-group timeout (do not lower)
+`consolidate_step()` (`consolidate.py`, async SLURM job, off the loop): reads all
+of a step's partials → assembles the full `ComponentModel` state_dict +
+`ThreePoolTrainingState` → writes `model_<S>.pth` + `training_<S>.pth` → prunes
+old `training_*.pth` to the last `DEFAULT_KEEP_LAST_N_TRAINING` (=3; **all
+`model_*.pth` are kept**) → deletes `step_<S>/`. It runs inside the async
+slow-eval job (`experiments/lm/async_eval.py`), as a CPU-only phase BEFORE the
+eval pass, so the assembled `model_<S>.pth` exists before the eval loads it.
+Idempotent: a no-op if `training_<S>.pth` already exists (and it cleans any
+leftover scratch in that case); the scratch dir is deleted only on success.
+
+This is the fix for how run 34446 (p-a5b667e9) died: the old synchronous rank-0
+read held the other ranks at a barrier past the NCCL watchdog. There is no
+on-loop read to outrun the watchdog now.
+
+### Consolidation reliability (the async job's contract)
+
+`async_eval.main` runs consolidation via `_consolidate_or_wait`, which is
+engineered to **never hang** (a hung job holds GPUs forever — the one
+unacceptable failure mode for an off-loop job):
+
+  * **CPU-only, post-init.** Assembly builds a full `ComponentModel` buffer; it
+    must run on CPU (under `torch.device("cpu")`) — building it on the job's
+    selected, shared GPU hangs. It runs AFTER `init_distributed` (so
+    `build_target`'s `ensure_cached_and_call` has its distributed state) but the
+    buffer never touches the GPU. `assemble_model_state_dict_from_partials`
+    freezes the target (`eval()` + `requires_grad_(False)`) before constructing
+    the buffer — `build_target` only `.eval()`s it, and `ComponentModel` asserts
+    a frozen target (an unfrozen target was the original "hang": rank 0 hit the
+    assertion and died while the other rank waited).
+  * **Rank 0 assembles; others file-wait, fail-fast.** Non-rank-0 ranks poll the
+    shared FS for `training_<S>.pth` (written last) rather than an NCCL barrier
+    (so the multi-second CPU read never interleaves with a GPU collective). On
+    any consolidation error rank 0 writes a `.consolidate_failed_<S>` sentinel
+    and re-raises; the waiters bail out (raising) on the sentinel OR a bounded
+    timeout. A failed child **errors and releases its GPUs**, it does not wedge.
+  * **Partials persist on failure → re-runnable.** `consolidate_step` deletes
+    `step_<S>/` only after a successful write, so a failed/preempted
+    consolidation leaves the partials intact. Recover with the CLI:
+
+        python -m param_decomp_lab.three_pool.consolidate_cli <run_id|out_dir> [--step N]
+
+    With no `--step` it consolidates every `unconsolidated_steps(out_dir)` (a step
+    with partials but no `training_<step>.pth`). The prune is concurrency-safe
+    (`unlink(missing_ok=True)`) since multiple per-step children may prune the
+    same old file at once.
+
+## Process-group timeout
 
 `build_world` takes a `pg_timeout` and threads it into every `dist.new_group`
 call. **This is load-bearing:** `new_group` does NOT inherit the timeout passed
 to `init_process_group` — with `timeout=None` it silently uses the 10-min NCCL
 library default. The 3-pool runs all of its real collectives on these subgroups
 (never the default group), so the timeout must be set explicitly or a slow
-checkpoint save / eval pass trips the 10-min watchdog.
+collective trips the watchdog.
 
-The default is 30 min (`_DEFAULT_PG_TIMEOUT` in `optimize.py`). The invariant is
-simply: **the PG timeout must exceed the worst-case rank-0 checkpoint read
-time.** Override (seconds) via `PD_3POOL_PG_TIMEOUT_S` — used by the
-save-watchdog repro (`scripts/repro_3pool_save_watchdog.sbatch`) to force the
-bug at small scale.
+The default is **10 min** (`_DEFAULT_PG_TIMEOUT` in `optimize.py`), brought down
+from 30 min once consolidation moved off the loop. The invariant is now: **the
+PG timeout must exceed the worst-case on-loop collective gap**, which is the
+in-train (fast) eval pass plus a checkpoint partial-write barrier — minutes, not
+the old ~10-min rank-0 read. Override (seconds) via `PD_3POOL_PG_TIMEOUT_S` —
+used by the watchdog-safe-at-low-timeout test to force a tight bound.
 
 ## Resume (`from_snapshot`)
 
 3-pool runs persist a `ThreePoolTrainingState` (not the single-pool
-`TrainingState`); `read_training_snapshot` returns either and the caller
-narrows. `from_snapshot` validates the saved topology against the current one,
-but the comparison runs on EVERY rank, so it compares only the
-**rank-invariant** core (`world_size` / `ci_ranks` / `ppgd_ranks` /
-block count) via `_rank_invariant_fingerprint_core` — never a rank-local view.
-That helper also tolerates the pre-fix rank-local fingerprint format baked into
-existing production checkpoints (p-a5b667e9). The per-block ranks→sites mapping
-is re-derived from the snapshot's `three_pool_config`.
+`TrainingState`), written by the **async consolidation job**, not the train loop.
+`resolve_step` / `read_training_snapshot` pick the latest consolidated
+`training_<step>.pth`. If a run dies after a save but before that step's
+consolidation finishes, resume from the previous consolidated step — at most one
+save-interval of lost progress (the scratch partials for the unconsolidated step
+are left on disk; they can be consolidated manually via `consolidate_step` if
+that interval matters).
+
+`from_snapshot` validates the saved topology against the current one, but the
+comparison runs on EVERY rank, so it compares only the **rank-invariant** core
+(`world_size` / `ci_ranks` / `ppgd_ranks` / block count) via
+`_rank_invariant_fingerprint_core` — never a rank-local view. That helper also
+tolerates the pre-fix rank-local fingerprint format baked into existing
+production checkpoints (p-a5b667e9). The per-block ranks→sites mapping is
+re-derived from the snapshot's `three_pool_config`.
 
 Repro/fault-injection env knobs (never set in production):
-`PD_3POOL_PG_TIMEOUT_S`, `PD_3POOL_SNAPSHOT_RANK0_SLEEP_S` (inject a sleep into
-rank-0's read), `PD_3POOL_DISABLE_REJOIN_BARRIER` (reproduces the pre-fix race).
-Regression tests: `param_decomp_lab/tests/test_three_pool_pg_timeout.py`.
+`PD_3POOL_PG_TIMEOUT_S`, `PD_3POOL_SNAPSHOT_RANK0_SLEEP_S` (sleeps rank 0 inside
+`snapshot()` AFTER the partial write — proves the sleep no longer stalls the
+loop now that the read is async), `PD_3POOL_DISABLE_REJOIN_BARRIER` (drops the
+post-write rejoin barrier). Regression tests:
+`param_decomp_lab/tests/test_three_pool_pg_timeout.py`.
 
 ## Cross-pool batch divisibility (bidirectional)
 

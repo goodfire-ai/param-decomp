@@ -1,27 +1,22 @@
-"""Distributed checkpoint assembly for 3-pool training.
+"""Offline checkpoint assembly for 3-pool training.
 
-Rank 0 only holds its own block's V/U (and a random-init CI fn). To produce a
-checkpoint that matches the schema ``load_component_model_from_checkpoint``
-expects (one flat ``state_dict`` with every site's V/U + the trained CI fn),
-this module gathers state onto rank 0 from:
+The train loop never assembles a checkpoint. Instead each rank writes a
+self-contained partial to a shared-FS scratch dir (see
+``ThreePoolTrainer.snapshot``): its owned model params (LW leaders → owned-sites
+V/U; CI leader → CI fn), its optimizer state, and (PPGD) its sources. A separate
+async SLURM job then reads every partial for a step and assembles the canonical
+artifacts off the training critical path.
 
-  * Every LW block leader → its owned sites' V/U.
-  * The CI pool leader → all CI fn params.
-
-Rank 0 assembles the gathered tensors into a temporary "full" ``ComponentModel``
-(with all sites in its decomposition targets) and returns that model's
-``state_dict()``. The temp model shares ``target_model`` with rank 0's existing
-component model — ``ComponentModel.__init__`` doesn't mutate ``target_model``,
-so this is safe.
-
-Non-leader ranks no-op. All ranks must enter ``gather_full_state_dict_to_rank0``
-in sync so the P2P sends/recvs match up.
+This module owns that offline assembly. It builds a full-decomposition
+``ComponentModel`` on CPU as an assembly buffer, copies in every site's V/U + the
+CI fn from the partials, and returns its ``state_dict()`` — the same flat schema
+``load_component_model_from_checkpoint`` expects. No live ranks, no NCCL: the
+assembly is pure file I/O + tensor copies.
 """
 
-# pyright: reportArgumentType=false
+from typing import Any
 
 import torch
-import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
 
@@ -30,111 +25,86 @@ from param_decomp.ci_fns import CiConfig
 from param_decomp.ci_sigmoids import SigmoidType
 from param_decomp.component_model import ComponentModel
 from param_decomp.decomposition_targets import DecompositionTarget
-from param_decomp_lab.three_pool.context import CIContext, LWContext, PoolContext
 
 
-def gather_full_state_dict_to_rank0(
-    ctx: PoolContext,
-    component_model: ComponentModel,
-    target_model: nn.Module,
-    run_batch: RunBatch,
-    ci_config: CiConfig,
-    sigmoid_type: SigmoidType,
-    c_per_site: dict[str, int],
-    device: torch.device,
-) -> dict[str, Tensor] | None:
-    """Collect V/U + CI fn onto rank 0 and return the assembled state_dict.
+def site_to_component_prefix(site: str) -> str:
+    """State-dict key prefix for a site's V/U params.
 
-    Returns the state_dict on rank 0; ``None`` everywhere else. All ranks must
-    call this function in sync (the gather uses ordered P2P sends/recvs).
+    ``ComponentModel`` registers components under an ``nn.ModuleDict`` keyed by
+    the site with dots replaced by dashes (so dots don't nest module levels), so
+    ``h.0.attn.q_proj`` → ``_components.h-0-attn-q_proj``.
     """
-    world = ctx.world
-    match ctx:
-        case LWContext() if ctx.role.rank == 0:
-            return _rank0_assemble(
-                ctx=ctx,
-                local_component_model=component_model,
-                target_model=target_model,
-                run_batch=run_batch,
-                ci_config=ci_config,
-                sigmoid_type=sigmoid_type,
-                c_per_site=c_per_site,
-                device=device,
-            )
-        case LWContext() if ctx.role.is_block_leader:
-            for s in ctx.role.owned_sites:
-                comp = component_model.components[s]
-                dist.send(comp.V.data.contiguous(), dst=0, group=world.cross_pool_p2p_group)
-                dist.send(comp.U.data.contiguous(), dst=0, group=world.cross_pool_p2p_group)
-            return None
-        case CIContext() if ctx.role.is_pool_leader:
-            assert component_model.ci_fn is not None, "CI pool must keep its CI fn"
-            for _, p in component_model.ci_fn.named_parameters():
-                dist.send(p.data.contiguous(), dst=0, group=world.cross_pool_p2p_group)
-            return None
-        case _:
-            # Non-leader LW ranks, non-leader CI ranks, all PPGD ranks: no-op.
-            return None
+    return f"_components.{site.replace('.', '-')}"
 
 
-def _rank0_assemble(
-    ctx: LWContext,
-    local_component_model: ComponentModel,
+def owned_model_state_keys(
+    model_state_dict_keys: set[str], *, owned_sites: tuple[str, ...]
+) -> set[str]:
+    """The V/U state-dict keys for ``owned_sites`` (LW block leaders' partial)."""
+    prefixes = tuple(f"{site_to_component_prefix(s)}." for s in owned_sites)
+    return {k for k in model_state_dict_keys if k.startswith(prefixes)}
+
+
+def ci_fn_state_keys(model_state_dict_keys: set[str]) -> set[str]:
+    """The CI-fn state-dict keys (the CI pool leader's partial)."""
+    return {k for k in model_state_dict_keys if k.startswith("ci_fn.")}
+
+
+def assemble_model_state_dict_from_partials(
+    *,
+    partials: list[dict[str, Any]],
     target_model: nn.Module,
     run_batch: RunBatch,
     ci_config: CiConfig,
     sigmoid_type: SigmoidType,
     c_per_site: dict[str, int],
-    device: torch.device,
+    all_sites: tuple[str, ...],
 ) -> dict[str, Tensor]:
-    """Build a full ComponentModel as an assembly buffer; populate from local
-    rank's V/U + recvs; return its state_dict."""
-    world = ctx.world
-    full_targets = [DecompositionTarget(module_path=s, C=c_per_site[s]) for s in world.all_sites]
-    # Share target_model with the existing local component_model — ComponentModel
-    # __init__ doesn't mutate target_model, so two ComponentModels can coexist
-    # over the same target.
+    """Assemble the full ComponentModel state_dict from per-rank scratch partials.
+
+    Each partial's ``model_params`` holds the CPU tensors that rank owns (a slice
+    of its own ``component_model.state_dict()``): LW block leaders contribute their
+    owned sites' ``_components.<site>.*``, the CI pool leader contributes ``ci_fn.*``.
+    The union of every partial's keys must exactly cover the full-decomposition
+    model's V/U + CI-fn keys (target-model params come from the fresh buffer).
+    """
+    # ComponentModel asserts the target has no trainable params; build_target only
+    # `.eval()`s it, so freeze here (the training / load_component_model paths
+    # freeze at their own construction sites).
+    target_model.eval()
+    target_model.requires_grad_(False)
+    full_targets = [DecompositionTarget(module_path=s, C=c_per_site[s]) for s in all_sites]
     full_cm = ComponentModel(
         target_model=target_model,
         run_batch=run_batch,
         decomposition_targets=full_targets,
         ci_config=ci_config,
         sigmoid_type=sigmoid_type,
-    ).to(device)
+    )
 
-    # Copy rank 0's own trained V/U into the assembly buffer.
+    # `ComponentModel` registers `target_model` as a submodule, so its frozen
+    # weights appear in the state_dict under the `target_model.` prefix. They come
+    # from the freshly-built buffer (which shares the real target_model), so the
+    # partials only need to cover the V/U + CI-fn keys — everything NOT under
+    # `target_model.`.
+    expected_keys = set(full_cm.state_dict().keys())
+    fillable_keys = {k for k in expected_keys if not k.startswith("target_model.")}
+
+    collected: dict[str, Tensor] = {}
+    for partial in partials:
+        for k, v in partial["model_params"].items():
+            assert k not in collected, f"duplicate model param {k!r} across partials"
+            collected[k] = v
+
+    assert set(collected.keys()) == fillable_keys, (
+        "partials do not cover the full model state_dict:\n"
+        f"  missing: {sorted(fillable_keys - set(collected))}\n"
+        f"  extra:   {sorted(set(collected) - fillable_keys)}"
+    )
+
+    full_state = full_cm.state_dict()
     with torch.no_grad():
-        for s in ctx.role.owned_sites:
-            full_cm.components[s].V.data.copy_(local_component_model.components[s].V.data)
-            full_cm.components[s].U.data.copy_(local_component_model.components[s].U.data)
+        for k, v in collected.items():
+            full_state[k].copy_(v)
 
-    # Recv V/U from every other LW block leader. Order on both sides must match
-    # the iteration order of `bg.owned_sites` for each non-rank-0 block leader.
-    for bg in world.layerwise_block_groups:
-        if bg.leader == 0:
-            continue
-        for s in bg.owned_sites:
-            V_template = full_cm.components[s].V.data
-            U_template = full_cm.components[s].U.data
-            V_buf = torch.empty_like(V_template)
-            U_buf = torch.empty_like(U_template)
-            dist.recv(V_buf, src=bg.leader, group=world.cross_pool_p2p_group)
-            dist.recv(U_buf, src=bg.leader, group=world.cross_pool_p2p_group)
-            with torch.no_grad():
-                V_template.copy_(V_buf)
-                U_template.copy_(U_buf)
-
-    # Recv CI fn params from CI pool leader. Same `named_parameters()` iteration
-    # order on both sides since the CI fn is constructed from the same config.
-    ci_leader = world.ci_ranks[0]
-    assert full_cm.ci_fn is not None, "checkpoint reconstruction needs a CI fn"
-    for _, p in full_cm.ci_fn.named_parameters():
-        buf = torch.empty_like(p.data)
-        dist.recv(buf, src=ci_leader, group=world.cross_pool_p2p_group)
-        with torch.no_grad():
-            p.data.copy_(buf)
-
-    state_dict = {k: v.cpu() for k, v in full_cm.state_dict().items()}
-    del full_cm
-    torch.cuda.empty_cache()
-    return state_dict
+    return {k: v.cpu() for k, v in full_state.items()}

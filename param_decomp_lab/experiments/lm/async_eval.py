@@ -1,8 +1,12 @@
-"""Run eval metrics against a saved LM PD checkpoint; log into the parent's wandb run.
+"""Consolidate a 3-pool save + run eval metrics; log into the parent's wandb run.
 
 This is an internal sbatch target, not a user-facing CLI. Invoked by
-:func:`param_decomp_lab.experiments.lm.run.submit_slurm_async_slow_eval` after a
-training save, to compute slow metrics off the critical path of training.
+:func:`param_decomp_lab.experiments.lm.run.submit_slurm_async_consolidate_and_eval`
+after a training save, off the critical path of training. For 3-pool runs it
+first assembles ``model_<step>.pth`` + ``training_<step>.pth`` from the train
+loop's per-rank partials (rank 0;
+:func:`param_decomp_lab.three_pool.consolidate.consolidate_step`), then runs the
+parent's slow metrics against the assembled checkpoint.
 
 The training side hands us:
   * ``--run <run_path>`` — the parent training run (SavedLMRun-compatible)
@@ -19,11 +23,13 @@ Usage:
 """
 
 import gc
+import time
 from pathlib import Path
 from typing import Any
 
 import fire
 import torch
+import torch.nn as nn
 import wandb
 from torch.utils.data import DataLoader
 
@@ -43,7 +49,7 @@ from param_decomp_lab.distributed import (
 )
 from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
 from param_decomp_lab.experiments.lm.run import (
-    SavedLMRun,
+    LMExperimentConfig,
     _resolve_train_run_id,
     build_lm_loader,
     build_target,
@@ -51,9 +57,71 @@ from param_decomp_lab.experiments.lm.run import (
 )
 from param_decomp_lab.experiments.utils import RUN_META_FILENAME, EvalConfig
 from param_decomp_lab.infra.run_files import resolve_run_files
+from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.infra.wandb import get_wandb_entity, try_wandb
 from param_decomp_lab.run_sink import _wandb_value
 from param_decomp_lab.seed import set_seed
+from param_decomp_lab.three_pool.consolidate import (
+    DEFAULT_KEEP_LAST_N_TRAINING,
+    SNAPSHOT_SCRATCH_DIRNAME,
+    consolidate_step,
+)
+
+
+def _consolidate_or_wait(
+    *,
+    cfg: "LMExperimentConfig",
+    out_dir: Path,
+    target_model: "nn.Module",
+    run_batch: Any,
+    step: int,
+    wait_timeout_s: float = 1800.0,
+) -> None:
+    """Assemble the step's checkpoint (rank 0) or wait for it (other ranks).
+
+    Rank 0 assembles on CPU and writes `training_<step>.pth` last; the other ranks
+    wait on the shared FS rather than an NCCL barrier (the multi-second CPU
+    read+assemble shouldn't interleave with a GPU collective). Assembly is pinned
+    to CPU — building the full ComponentModel buffer on the selected, shared GPU
+    hangs.
+
+    Fail-fast on BOTH sides — never wedge holding GPUs:
+      * rank 0 writes a `.consolidate_failed_<step>` sentinel and re-raises if
+        consolidation throws, so the failure is visible and the GPUs release;
+      * the other ranks poll for the success file OR the sentinel, and time out;
+        any of the three exits the wait (the last two by raising).
+    """
+    training_path = out_dir / f"training_{step}.pth"
+    fail_sentinel = out_dir / f".consolidate_failed_{step}"
+    fail_sentinel.unlink(missing_ok=True)
+    if is_main_process():
+        try:
+            with torch.device("cpu"):
+                consolidate_step(
+                    scratch_dir=out_dir / SNAPSHOT_SCRATCH_DIRNAME,
+                    out_dir=out_dir,
+                    step=step,
+                    target_model=target_model,
+                    run_batch=run_batch,
+                    ci_config=cfg.pd.ci_config,
+                    sigmoid_type=cfg.pd.sigmoid_type,
+                    keep_last_n_training=DEFAULT_KEEP_LAST_N_TRAINING,
+                )
+        except BaseException:
+            fail_sentinel.touch()
+            raise
+        gc.collect()
+        return
+    deadline = time.perf_counter() + wait_timeout_s
+    while not training_path.is_file():
+        assert not fail_sentinel.is_file(), (
+            f"rank-0 consolidation failed (sentinel {fail_sentinel.name}); aborting wait"
+        )
+        assert time.perf_counter() < deadline, (
+            f"timed out after {wait_timeout_s}s waiting for {training_path} "
+            f"(rank-0 consolidation did not finish)"
+        )
+        time.sleep(2.0)
 
 
 def _resolve_eval_checkpoint_path(run_path: str | Path, step: int | None) -> Path:
@@ -171,44 +239,72 @@ def main(
             to run. If omitted, falls back to the parent run's ``cfg.eval``.
         group / tags: optional wandb metadata for the resumed run.
     """
-    pd_run = SavedLMRun.from_path(run)
+    # Read the config from run_meta.yaml directly rather than `SavedLMRun.from_path`:
+    # for a 3-pool run no `model_<step>.pth` exists yet (this job assembles it
+    # below), and `from_path` eagerly resolves one, which would crash here.
+    train_run_id = _resolve_train_run_id(run)
+    out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / train_run_id
+    cfg = LMExperimentConfig.from_file(out_dir / RUN_META_FILENAME)
+
     if eval_config is not None:
         eval_cfg = EvalConfig.from_file(Path(eval_config))
     else:
-        assert pd_run.cfg.eval is not None, (
+        assert cfg.eval is not None, (
             f"async_eval requires either --eval-config or the parent config to "
             f"declare an `eval:` block ({run})"
         )
-        eval_cfg = pd_run.cfg.eval
-
-    checkpoint_path = _resolve_eval_checkpoint_path(run, step)
-    resolved_step = _step_from_checkpoint_name(checkpoint_path.name)
-    train_run_id = _resolve_train_run_id(run)
+        eval_cfg = cfg.eval
 
     dist_state = init_distributed()
     if is_main_process():
         logger.info(f"Distributed state: {dist_state}")
-        logger.info(f"async_eval: {run} @ step {resolved_step} (train run_id={train_run_id})")
-    set_seed(pd_run.cfg.pd.seed)
+    set_seed(cfg.pd.seed)
     device = get_device()
 
-    target_model = build_target(pd_run.cfg.target)
+    target_model = build_target(cfg.target)
+    run_batch = make_run_batch(cfg.target)
+
+    # Consolidate the 3-pool save. The train loop wrote only per-rank partials;
+    # this assembles model_<step>.pth + training_<step>.pth off the train-loop
+    # critical path. Rank 0 assembles on CPU; the other ranks WAIT on the file
+    # (not an NCCL barrier) so no GPU collective interleaves with the multi-second
+    # CPU read+assemble. Assembly is forced onto CPU — building the full
+    # ComponentModel buffer (incl. the transformer CI fn) on the selected, shared
+    # GPU hangs.
+    if cfg.three_pool is not None:
+        assert step is not None, "3-pool async consolidation requires an explicit --step"
+        _consolidate_or_wait(
+            cfg=cfg, out_dir=out_dir, target_model=target_model, run_batch=run_batch, step=step
+        )
+
+    # Consolidation may be the only job to do — when there are no slow metrics
+    # the 3-pool save still needs assembling, but there is no eval pass to run.
+    if not eval_cfg.metrics:
+        if is_main_process():
+            logger.info("async_eval: no metrics; consolidation-only, skipping eval pass")
+        return
+
+    checkpoint_path = _resolve_eval_checkpoint_path(run, step)
+    resolved_step = _step_from_checkpoint_name(checkpoint_path.name)
+    if is_main_process():
+        logger.info(f"async_eval: {run} @ step {resolved_step} (train run_id={train_run_id})")
+
     component_model = load_component_model(
-        pd_config=pd_run.cfg.pd,
+        pd_config=cfg.pd,
         checkpoint_path=checkpoint_path,
         target_model=target_model,
-        run_batch=make_run_batch(pd_run.cfg.target),
+        run_batch=run_batch,
     )
     component_model.to(device)
 
     eval_loader = build_lm_loader(
-        pd_run.cfg.target,
-        pd_run.cfg.data,
+        cfg.target,
+        cfg.data,
         split="eval",
         device=device,
         batch_size=eval_cfg.batch_size,
         dist_state=dist_state,
-        seed=pd_run.cfg.pd.seed,
+        seed=cfg.pd.seed,
     )
     eval_metrics = [EVAL_METRIC_CLASSES[m.type](m) for m in eval_cfg.metrics]
     for m in eval_metrics:
@@ -221,13 +317,13 @@ def main(
         n_steps=eval_cfg.n_steps,
         device=device,
         step=resolved_step,
-        pd_config=pd_run.cfg,
+        pd_config=cfg,
     )
 
     if is_main_process():
         _log_eval_to_wandb(
             results,
-            cfg=pd_run.cfg,
+            cfg=cfg,
             train_run_id=train_run_id,
             step=resolved_step,
             group=group,
