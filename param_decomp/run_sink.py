@@ -17,7 +17,7 @@ the eval period.
 
 from typing import Any, Protocol, runtime_checkable
 
-from param_decomp.training_state import ThreePoolTrainingState, TrainingState
+from param_decomp.training_state import TrainingState
 
 
 @runtime_checkable
@@ -52,14 +52,17 @@ class OnePoolRunSink(Protocol):
 class ThreePoolRunSink(Protocol):
     """Side-effect sink for a 3-pool training run.
 
-    Identical to `OnePoolRunSink` apart from the checkpoint parameter's state
-    type. Two separate protocols rather than a union so each trainer's
-    ``run()`` signature can only accept a sink wired to its own pool's state.
+    Unlike `OnePoolRunSink`, the 3-pool sink does NOT persist a training state
+    from the train loop. The trainer writes self-contained per-rank partials to
+    a shared-FS scratch dir (cheap, no rank-0 read), then calls
+    `checkpoint_written` so the sink can fire the async consolidation+eval job
+    that reads those partials, assembles ``model_<step>.pth`` +
+    ``training_<step>.pth`` off the critical path, and runs the slow eval.
     """
 
     def log(self, metrics: dict[str, Any], step: int) -> None: ...
     def console(self, *lines: str) -> None: ...
-    def checkpoint(self, snapshot: ThreePoolTrainingState, *, final: bool) -> None: ...
+    def checkpoint_written(self, step: int, *, final: bool) -> None: ...
     def finish(self) -> None: ...
 
 

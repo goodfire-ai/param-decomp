@@ -1,8 +1,12 @@
-"""Run eval metrics against a saved LM PD checkpoint; log into the parent's wandb run.
+"""Consolidate a 3-pool save + run eval metrics; log into the parent's wandb run.
 
 This is an internal sbatch target, not a user-facing CLI. Invoked by
-:func:`param_decomp_lab.experiments.lm.run.submit_slurm_async_slow_eval` after a
-training save, to compute slow metrics off the critical path of training.
+:func:`param_decomp_lab.experiments.lm.run.submit_slurm_async_consolidate_and_eval`
+after a training save, off the critical path of training. For 3-pool runs it
+first assembles ``model_<step>.pth`` + ``training_<step>.pth`` from the train
+loop's per-rank partials (rank 0;
+:func:`param_decomp_lab.three_pool.consolidate.consolidate_step`), then runs the
+parent's slow metrics against the assembled checkpoint.
 
 The training side hands us:
   * ``--run <run_path>`` — the parent training run (SavedLMRun-compatible)
@@ -24,6 +28,7 @@ from typing import Any
 
 import fire
 import torch
+import torch.distributed as dist
 import wandb
 from torch.utils.data import DataLoader
 
@@ -51,9 +56,15 @@ from param_decomp_lab.experiments.lm.run import (
 )
 from param_decomp_lab.experiments.utils import RUN_META_FILENAME, EvalConfig
 from param_decomp_lab.infra.run_files import resolve_run_files
+from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.infra.wandb import get_wandb_entity, try_wandb
 from param_decomp_lab.run_sink import _wandb_value
 from param_decomp_lab.seed import set_seed
+from param_decomp_lab.three_pool.consolidate import (
+    DEFAULT_KEEP_LAST_N_TRAINING,
+    SNAPSHOT_SCRATCH_DIRNAME,
+    consolidate_step,
+)
 
 
 def _resolve_eval_checkpoint_path(run_path: str | Path, step: int | None) -> Path:
@@ -181,23 +192,55 @@ def main(
         )
         eval_cfg = pd_run.cfg.eval
 
-    checkpoint_path = _resolve_eval_checkpoint_path(run, step)
-    resolved_step = _step_from_checkpoint_name(checkpoint_path.name)
     train_run_id = _resolve_train_run_id(run)
 
     dist_state = init_distributed()
     if is_main_process():
         logger.info(f"Distributed state: {dist_state}")
-        logger.info(f"async_eval: {run} @ step {resolved_step} (train run_id={train_run_id})")
     set_seed(pd_run.cfg.pd.seed)
     device = get_device()
 
     target_model = build_target(pd_run.cfg.target)
+    run_batch = make_run_batch(pd_run.cfg.target)
+
+    # 3-pool runs write only per-rank partials on the train loop; this async job
+    # consolidates them into model_<step>.pth + training_<step>.pth (off the
+    # train-loop critical path) before evaluating. Rank 0 does the assembly; all
+    # ranks barrier so the model file exists before any rank resolves it.
+    if pd_run.cfg.three_pool is not None:
+        assert step is not None, "3-pool async consolidation requires an explicit --step"
+        if is_main_process():
+            out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / train_run_id
+            consolidate_step(
+                scratch_dir=out_dir / SNAPSHOT_SCRATCH_DIRNAME,
+                out_dir=out_dir,
+                step=step,
+                target_model=target_model,
+                run_batch=run_batch,
+                ci_config=pd_run.cfg.pd.ci_config,
+                sigmoid_type=pd_run.cfg.pd.sigmoid_type,
+                keep_last_n_training=DEFAULT_KEEP_LAST_N_TRAINING,
+            )
+        if dist.is_initialized():
+            dist.barrier()
+
+    # Consolidation may be the only job to do — when there are no slow metrics
+    # the 3-pool save still needs assembling, but there is no eval pass to run.
+    if not eval_cfg.metrics:
+        if is_main_process():
+            logger.info("async_eval: no metrics; consolidation-only, skipping eval pass")
+        return
+
+    checkpoint_path = _resolve_eval_checkpoint_path(run, step)
+    resolved_step = _step_from_checkpoint_name(checkpoint_path.name)
+    if is_main_process():
+        logger.info(f"async_eval: {run} @ step {resolved_step} (train run_id={train_run_id})")
+
     component_model = load_component_model(
         pd_config=pd_run.cfg.pd,
         checkpoint_path=checkpoint_path,
         target_model=target_model,
-        run_batch=make_run_batch(pd_run.cfg.target),
+        run_batch=run_batch,
     )
     component_model.to(device)
 

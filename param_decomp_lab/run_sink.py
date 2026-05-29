@@ -1,10 +1,11 @@
 """Concrete `RunSink` classes used by the in-repo experiments and lab tooling.
 
 Two pool-specific sinks (`OnePoolSink`, `ThreePoolSink`) share a private base
-(`_LabSinkBase`) for the local-files / wandb / console / log plumbing. The
-subclasses differ only in `checkpoint`'s typed parameter — 1-pool takes
-`TrainingState`, 3-pool takes `ThreePoolTrainingState`. Each delegates to a
-shared `_persist` for the actual save.
+(`_LabSinkBase`) for the local-files / wandb / console / log plumbing. They
+differ in how a checkpoint is persisted: `OnePoolSink.checkpoint` writes the
+`TrainingState` synchronously via `_persist`; `ThreePoolSink.checkpoint_written`
+persists nothing (the trainer already wrote per-rank partials) and only fires
+the async consolidation+eval job via the `on_save` hook.
 
 Three constructors on each:
 
@@ -29,7 +30,7 @@ from tqdm import tqdm
 from param_decomp.base_config import BaseConfig
 from param_decomp.distributed import is_main_process
 from param_decomp.log import logger
-from param_decomp.training_state import ThreePoolTrainingState, TrainingState
+from param_decomp.training_state import TrainingState
 from param_decomp_lab.infra.run_files import save_file
 from param_decomp_lab.infra.wandb import init_wandb, try_wandb
 
@@ -163,7 +164,7 @@ class _LabSinkBase:
         if self._wandb_active and wandb.run is not None:
             wandb.finish()
 
-    def _persist(self, snapshot: TrainingState | ThreePoolTrainingState, *, final: bool) -> None:
+    def _persist(self, snapshot: TrainingState, *, final: bool) -> None:
         """Save the snapshot as `model_<step>.pth` + `training_<step>.pth`.
 
         `model_<step>.pth` is just the component-model state dict — the artifact
@@ -202,10 +203,20 @@ class OnePoolSink(_LabSinkBase):
 
 @dataclass(frozen=True)
 class ThreePoolSink(_LabSinkBase):
-    """Lab sink for 3-pool runs (satisfies `ThreePoolRunSink`)."""
+    """Lab sink for 3-pool runs (satisfies `ThreePoolRunSink`).
 
-    def checkpoint(self, snapshot: ThreePoolTrainingState, *, final: bool) -> None:
-        self._persist(snapshot, final=final)
+    Persists nothing itself: the trainer has already written self-contained
+    per-rank partials to the scratch dir. This only fires the rank-0 `on_save`
+    hook, which submits the async job that consolidates those partials into
+    ``model_<step>.pth`` + ``training_<step>.pth`` and runs the slow eval.
+    """
+
+    def checkpoint_written(self, step: int, *, final: bool) -> None:
+        del final  # the async consolidation path is identical for the final save
+        if self.out_dir is None:
+            return
+        if self.on_save is not None:
+            self.on_save(step)
 
 
 def _wandb_value(v: Any) -> Any:

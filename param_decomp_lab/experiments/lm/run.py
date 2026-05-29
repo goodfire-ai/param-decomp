@@ -12,10 +12,11 @@ multi-node for N > 8 — N must then be a multiple of 8). For local DDP, invoke
 directly via
 `torchrun --standalone --nproc_per_node=N -m param_decomp_lab.experiments.lm.run config.yaml`.
 
-Async slow-eval of saved checkpoints lives in
+Async consolidation + slow-eval of 3-pool saves lives in
 ``param_decomp_lab.experiments.lm.async_eval``; the helper
-:func:`submit_slurm_async_slow_eval` below filters the parent's slow metrics into
-a temp YAML and submits an sbatch job that invokes that module.
+:func:`submit_slurm_async_consolidate_and_eval` below submits an sbatch job that
+assembles the canonical checkpoint from the train loop's per-rank partials and
+then runs the parent's slow metrics against it.
 """
 
 import atexit
@@ -86,6 +87,7 @@ from param_decomp_lab.resumption import (
 from param_decomp_lab.run_sink import OnePoolSink, ThreePoolSink
 from param_decomp_lab.seed import set_seed
 from param_decomp_lab.three_pool import ThreePoolConfig, ThreePoolTrainer
+from param_decomp_lab.three_pool.consolidate import SNAPSHOT_SCRATCH_DIRNAME
 
 
 def _resolve_class(fqn: str) -> type:
@@ -510,14 +512,16 @@ def _fresh_main(
     if cfg.three_pool is not None:
         run_id = _agree_on_run_id_three_pool(run_id, dist_state)
         out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
-        scratch_dir = out_dir / ".snapshot_scratch"
+        scratch_dir = out_dir / SNAPSHOT_SCRATCH_DIRNAME
         three_sink = init_pd_run(
             cfg,
             sink_class=ThreePoolSink,
             group=group,
             tags=tags,
             run_id=run_id,
-            on_save=lambda step: submit_slurm_async_slow_eval(out_dir, step=step, parent_cfg=cfg),
+            on_save=lambda step: submit_slurm_async_consolidate_and_eval(
+                out_dir, step=step, parent_cfg=cfg
+            ),
         )
         # Multi-pool eval mirrors the train data-handling contract: full eval
         # batch on every rank, sliced internally by each pool. So we pass
@@ -611,14 +615,14 @@ def _resume_main(
     if effective_cfg.three_pool is not None:
         run_id = _agree_on_run_id_three_pool(run_id, dist_state)
         out_dir = PARAM_DECOMP_OUT_DIR / "decompositions" / run_id
-        scratch_dir = out_dir / ".snapshot_scratch"
+        scratch_dir = out_dir / SNAPSHOT_SCRATCH_DIRNAME
         three_sink = init_pd_run(
             effective_cfg,
             sink_class=ThreePoolSink,
             group=group,
             tags=tags,
             run_id=run_id,
-            on_save=lambda step: submit_slurm_async_slow_eval(
+            on_save=lambda step: submit_slurm_async_consolidate_and_eval(
                 out_dir, step=step, parent_cfg=effective_cfg
             ),
         )
@@ -719,9 +723,9 @@ def _build_eval_loop(
     """Build the `EvalLoop` from `cfg.eval`, or `None` when eval is disabled.
 
     Slow metrics (class-attr ``slow=True``) are filtered out — in-train eval is
-    fast-only. Slow metrics are picked up later by the async eval-only job (which
-    receives the slow subset via a temp ``EvalConfig`` YAML, see
-    :func:`_submit_slurm_async_slow_eval`).
+    fast-only. Slow metrics are picked up later by the async job (which receives
+    the slow subset via a temp ``EvalConfig`` YAML, see
+    :func:`submit_slurm_async_consolidate_and_eval`).
     """
     if cfg.eval is None:
         return None
@@ -834,7 +838,7 @@ def _wandb_url_for_config(config_path: str | Path, run_id: str) -> str | None:
     return f"https://wandb.ai/{entity}/{cfg.wandb.project}/runs/{run_id}"
 
 
-def submit_slurm_async_slow_eval(
+def submit_slurm_async_consolidate_and_eval(
     run_path: str | Path,
     *,
     step: int,
@@ -842,32 +846,45 @@ def submit_slurm_async_slow_eval(
     dp: int = 8,
     time: str = "2:00:00",
     partition: str | None = DEFAULT_PARTITION_NAME,
-    job_name: str = "pd-lm-eval-slow",
+    job_name: str = "pd-lm-consol-eval",
     group: str | None = None,
     tags: str | None = None,
     no_snapshot: bool = False,
 ) -> None:
-    """Filter the parent's slow eval metrics into a temp YAML, submit a SLURM job.
+    """Submit the async job that consolidates a 3-pool save and runs slow eval.
 
-    Called from training right after a save: emits an async SLURM job that runs
-    *only* the slow metrics against ``model_<step>.pth`` via
-    ``python -m param_decomp_lab.experiments.lm.async_eval``, logging into the
-    parent's wandb run at the same step. No-op when the parent has no eval block
-    or no slow metrics.
+    Called from 3-pool training right after a save. The train loop has written
+    per-rank partials to the scratch dir; this job (off the critical path)
+    assembles ``model_<step>.pth`` + ``training_<step>.pth`` from them, prunes old
+    ``training_*.pth``, then runs the parent's *slow* eval metrics against the
+    assembled ``model_<step>.pth`` (logging into the parent's wandb run at the
+    same step). The job is ALWAYS submitted for 3-pool — consolidation is
+    mandatory even when there are no slow metrics; in that case the eval pass is a
+    no-op (see ``async_eval``).
     """
     from param_decomp_lab.experiments.utils import EvalConfig
 
-    if parent_cfg.eval is None:
-        return
-    slow_metrics, _fast = _split_metrics_by_slow(parent_cfg.eval.metrics)
-    if not slow_metrics:
+    assert parent_cfg.three_pool is not None, (
+        "async consolidate+eval is only for 3-pool runs (consolidation has nothing to do otherwise)"
+    )
+
+    # Test hook (never set in production): skip the child-job submission so a
+    # smoke can drive consolidation/eval out-of-band and stay within a GPU
+    # budget. The train loop still writes its partials regardless.
+    if os.environ.get("PD_3POOL_SKIP_ASYNC_ONSAVE", "").strip() in ("1", "true"):
+        logger.info(f"PD_3POOL_SKIP_ASYNC_ONSAVE set; skipping async job for step {step}")
         return
 
+    slow_metrics = (
+        _split_metrics_by_slow(parent_cfg.eval.metrics)[0] if parent_cfg.eval is not None else []
+    )
+    eval_batch_size = parent_cfg.eval.batch_size if parent_cfg.eval is not None else dp
+    eval_n_steps = parent_cfg.eval.n_steps if parent_cfg.eval is not None else 1
     slow_eval_cfg = EvalConfig(
-        batch_size=parent_cfg.eval.batch_size,
-        n_steps=parent_cfg.eval.n_steps,
-        every=parent_cfg.eval.every,
-        slow_every=parent_cfg.eval.every,  # any value; not consumed by async_eval
+        batch_size=eval_batch_size,
+        n_steps=eval_n_steps,
+        every=1,  # any value; not consumed by async_eval
+        slow_every=1,  # any value; not consumed by async_eval
         slow_on_first_step=True,
         metrics=slow_metrics,
     )

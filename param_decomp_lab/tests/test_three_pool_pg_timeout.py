@@ -1,17 +1,27 @@
 """Regression tests for the 3-pool checkpoint-save NCCL-watchdog-timeout fix.
 
-Two independent failure surfaces are covered:
+Three failure surfaces are covered:
 
   * ``_resolve_pg_timeout`` reads the ``PD_3POOL_PG_TIMEOUT_S`` override (the
-    knob the save-watchdog repro uses to force the bug at small scale) and
-    otherwise returns the generous default.
+    knob the watchdog-safe-at-low-timeout test uses to force a tight bound) and
+    otherwise returns the default.
 
   * ``build_world`` threads its ``pg_timeout`` into *every* ``dist.new_group``
     call. This is the actual production fix: ``new_group`` does NOT inherit the
     timeout passed to ``init_process_group`` — with ``timeout=None`` it falls
     back to the 10-min NCCL default. The 3-pool runs all real collectives on
-    these subgroups, so a slow checkpoint save trips that 10-min watchdog
-    unless the timeout is set explicitly here.
+    these subgroups, so a slow collective trips that watchdog unless the timeout
+    is set explicitly here.
+
+  * The async-consolidation invariant: the union of every rank's
+    self-contained partial must exactly cover the full model's V/U + CI-fn
+    state-dict keys, so ``assemble_model_state_dict_from_partials`` can rebuild
+    the checkpoint off the train loop with no live ranks.
+
+The default PG timeout came down from 30 min to 10 min once consolidation moved
+off the train loop: the longest on-loop collective gap is now the fast-eval
+pass + a partial-write barrier (minutes), not the old ~10-min rank-0 read of
+~100 GB of partials.
 """
 
 import datetime
@@ -19,6 +29,10 @@ import datetime
 import pytest
 import torch.distributed as dist
 
+from param_decomp_lab.three_pool.checkpoint import (
+    ci_fn_state_keys,
+    owned_model_state_keys,
+)
 from param_decomp_lab.three_pool.layout import LayerwiseBlockGroup, build_world
 from param_decomp_lab.three_pool.optimize import (
     _DEFAULT_PG_TIMEOUT,
@@ -30,7 +44,7 @@ from param_decomp_lab.three_pool.optimize import (
 def test_resolve_pg_timeout_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PD_3POOL_PG_TIMEOUT_S", raising=False)
     assert _resolve_pg_timeout() == _DEFAULT_PG_TIMEOUT
-    assert datetime.timedelta(minutes=30) == _DEFAULT_PG_TIMEOUT
+    assert datetime.timedelta(minutes=10) == _DEFAULT_PG_TIMEOUT
 
 
 def test_resolve_pg_timeout_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -112,3 +126,36 @@ def test_fingerprint_core_catches_topology_mismatch() -> None:
     }
     changed_ppgd = {**base, "ppgd_ranks": [5]}
     assert _rank_invariant_fingerprint_core(base) != _rank_invariant_fingerprint_core(changed_ppgd)
+
+
+def test_leader_partials_exactly_cover_model_state() -> None:
+    """The per-leader partial slices (LW owned-site V/U + CI fn) must partition
+    the full model's fillable keys with no gaps or overlaps — the invariant the
+    async consolidation asserts before assembling the checkpoint."""
+    sites = ("h.0.attn.q_proj", "h.1.attn.q_proj", "h.2.mlp.c_fc")
+    model_keys = {
+        "_components.h-0-attn-q_proj.V",
+        "_components.h-0-attn-q_proj.U",
+        "_components.h-1-attn-q_proj.V",
+        "_components.h-1-attn-q_proj.U",
+        "_components.h-2-mlp-c_fc.V",
+        "_components.h-2-mlp-c_fc.U",
+        "ci_fn._global_ci_fn.embed.weight",
+        "ci_fn._global_ci_fn.proj.weight",
+        # target-model keys (not owned by any leader; come from the fresh buffer)
+        "target_model.transformer.wte.weight",
+        "target_model.transformer.h.0.attn.c_attn.weight",
+    }
+    target_keys = {k for k in model_keys if k.startswith("target_model.")}
+    fillable = model_keys - target_keys
+
+    # Two LW blocks: block 0 owns sites 0+1, block 1 owns site 2. CI leader owns ci_fn.
+    block0 = owned_model_state_keys(model_keys, owned_sites=(sites[0], sites[1]))
+    block1 = owned_model_state_keys(model_keys, owned_sites=(sites[2],))
+    ci = ci_fn_state_keys(model_keys)
+
+    assert block0.isdisjoint(block1)
+    assert block0.isdisjoint(ci)
+    assert block1.isdisjoint(ci)
+    assert block0 | block1 | ci == fillable
+    assert target_keys.isdisjoint(block0 | block1 | ci)
