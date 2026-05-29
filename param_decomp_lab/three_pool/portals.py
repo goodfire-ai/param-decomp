@@ -63,34 +63,55 @@ WIRE_DTYPE: torch.dtype = torch.bfloat16
 
 
 @dataclass(frozen=True)
-class PendingCiValues:
-    """A coalesced CI-values irecv, held until ``wait()``.
+class _CiRecvPacket:
+    """One in-flight CI-values irecv from a single CI rank, plus the sub-slice
+    of the downstream rank's local batch tensor it fills."""
 
-    The packed buffer carries ``sites`` worth of CI values (in order) as
-    ``b * seq_len * c_s`` ``WIRE_DTYPE`` elements each. ``wait`` blocks on the
-    ``dist.Work`` then materializes per-site ``[b, seq_len, c_s]`` views into
-    the packed buffer (no copy).
+    work: "dist.Work"
+    packed: Tensor
+    overlap: slice
+    overlap_len: int
+
+
+@dataclass(frozen=True)
+class PendingCiValues:
+    """One or more coalesced CI-values irecvs, held until ``wait()``.
+
+    Coarse-CI regime: a single packet covering this downstream rank's whole
+    local batch. Fine-CI regime: ``fanout`` packets, each from a different CI
+    rank, covering disjoint ``overlap`` sub-slices that tile the local batch.
+    ``wait`` blocks on every packet then stitches them into per-site
+    ``[b_down, seq_len, c_s]`` tensors.
     """
 
-    packed: Tensor
-    work: "dist.Work"
+    packets: tuple[_CiRecvPacket, ...]
     sites: tuple[str, ...]
     site_to_c: dict[str, int]
-    b: int
+    b_down: int
     seq_len: int
+    device: torch.device
 
     def wait(self) -> dict[str, Tensor]:
-        self.work.wait()
-        out: dict[str, Tensor] = {}
-        offset = 0
-        for s in self.sites:
-            c_s = self.site_to_c[s]
-            numel = self.b * self.seq_len * c_s
-            out[s] = self.packed[offset : offset + numel].view(self.b, self.seq_len, c_s)
-            offset += numel
-        assert offset == self.packed.numel(), (
-            f"unpack size mismatch: consumed {offset} of {self.packed.numel()}"
-        )
+        out: dict[str, Tensor] = {
+            s: torch.empty(
+                self.b_down, self.seq_len, self.site_to_c[s], device=self.device, dtype=WIRE_DTYPE
+            )
+            for s in self.sites
+        }
+        for packet in self.packets:
+            packet.work.wait()
+            offset = 0
+            for s in self.sites:
+                c_s = self.site_to_c[s]
+                numel = packet.overlap_len * self.seq_len * c_s
+                view = packet.packed[offset : offset + numel].view(
+                    packet.overlap_len, self.seq_len, c_s
+                )
+                out[s][packet.overlap].copy_(view)
+                offset += numel
+            assert offset == packet.packed.numel(), (
+                f"unpack size mismatch: consumed {offset} of {packet.packed.numel()}"
+            )
         return out
 
 
@@ -150,17 +171,21 @@ class CiValuesToLayerwise:
     world: World
 
     def send(self, role: CIRole, ci_full: dict[str, Tensor]) -> InFlightSends:
-        """For each site and each LW rank whose batch shard sits in my CI slice,
-        isend the corresponding sub-slice. ``ci_full`` is keyed by site (the CI
-        fn is global) with values ``[B_local_ci, S, C_s]``."""
+        """For each site and each LW rank my CI slice overlaps, isend the
+        overlapping sub-slice. ``ci_full`` is keyed by site (the CI fn is global)
+        with values ``[B_local_ci, S, C_s]``.
+
+        Coarse-CI: I overlap ``fanout`` whole LW slices, each a sub-slice of my
+        CI tensor. Fine-CI: I overlap exactly one LW slice, sending my whole
+        (smaller) CI tensor into the right offset of that LW rank."""
+        edge = self.world.ci_lw_edge
         works: list[dist.Work] = []
         buffers: list[Tensor] = []
-        my_lw_block_ranks = self.world.lw_block_ranks_for_ci_slice(role.slice_idx)
         with time_nccl_op("CiValuesToLayerwise.send"):
             for bg in self.world.layerwise_block_groups:
-                for block_rank_idx in my_lw_block_ranks:
-                    target = bg.ranks[block_rank_idx]
-                    sub = self.world.lw_sub_slice_within_ci(block_rank_idx)
+                for down_slice_idx in edge.down_slices_for_ci_slice(role.slice_idx):
+                    target = bg.ranks[down_slice_idx]
+                    sub = edge.overlap_within_ci(role.slice_idx, down_slice_idx)
                     packed = _pack_sites(ci_full, bg.owned_sites, sub)
                     works.append(
                         dist.isend(packed, dst=target, group=self.world.cross_pool_p2p_group)
@@ -171,23 +196,34 @@ class CiValuesToLayerwise:
     def post_recv(
         self, role: LWRole, site_to_c: dict[str, int], seq_len: int, device: torch.device
     ) -> PendingCiValues:
-        """irecv one coalesced packet of CI values for all of this LW rank's
-        owned sites, from the CI rank whose slice contains my LW batch shard."""
-        src_ci_slice = self.world.ci_slice_of_lw_block_rank(role.within_block_idx)
-        src = self.world.ci_ranks[src_ci_slice]
+        """irecv CI values for this LW rank's owned sites. Coarse-CI: one packet
+        from the single CI rank whose slice contains my LW shard. Fine-CI:
+        ``fanout`` packets from the CI ranks nested in my LW shard, each filling
+        a disjoint sub-slice of my local batch."""
+        edge = self.world.ci_lw_edge
         b_lw = self.world.batch_local_lw
-        packed_numel = sum(b_lw * seq_len * site_to_c[s] for s in role.owned_sites)
-        packed = torch.empty(packed_numel, device=device, dtype=WIRE_DTYPE)
+        packets: list[_CiRecvPacket] = []
         with time_nccl_op("CiValuesToLayerwise.recv"):
-            work = dist.irecv(packed, src=src, group=self.world.cross_pool_p2p_group)
-            assert work is not None
+            for ci_slice_idx in edge.ci_slices_for_down_slice(role.within_block_idx):
+                src = self.world.ci_ranks[ci_slice_idx]
+                overlap = edge.overlap_within_down(ci_slice_idx, role.within_block_idx)
+                overlap_len = overlap.stop - overlap.start
+                packed_numel = sum(overlap_len * seq_len * site_to_c[s] for s in role.owned_sites)
+                packed = torch.empty(packed_numel, device=device, dtype=WIRE_DTYPE)
+                work = dist.irecv(packed, src=src, group=self.world.cross_pool_p2p_group)
+                assert work is not None
+                packets.append(
+                    _CiRecvPacket(
+                        work=work, packed=packed, overlap=overlap, overlap_len=overlap_len
+                    )
+                )
         return PendingCiValues(
-            packed=packed,
-            work=work,
+            packets=tuple(packets),
             sites=role.owned_sites,
             site_to_c=site_to_c,
-            b=b_lw,
+            b_down=b_lw,
             seq_len=seq_len,
+            device=device,
         )
 
 
@@ -201,13 +237,13 @@ class CiValuesToPPGD:
     world: World
 
     def send(self, role: CIRole, ci_full: dict[str, Tensor]) -> InFlightSends:
+        edge = self.world.ci_ppgd_edge
         works: list[dist.Work] = []
         buffers: list[Tensor] = []
-        my_ppgd_slice_idxs = self.world.ppgd_slice_idxs_for_ci_slice(role.slice_idx)
         with time_nccl_op("CiValuesToPPGD.send"):
-            for ppgd_slice_idx in my_ppgd_slice_idxs:
+            for ppgd_slice_idx in edge.down_slices_for_ci_slice(role.slice_idx):
                 target = self.world.ppgd_ranks[ppgd_slice_idx]
-                sub = self.world.ppgd_sub_slice_within_ci(ppgd_slice_idx)
+                sub = edge.overlap_within_ci(role.slice_idx, ppgd_slice_idx)
                 packed = _pack_sites(ci_full, self.world.all_sites, sub)
                 works.append(dist.isend(packed, dst=target, group=self.world.cross_pool_p2p_group))
                 buffers.append(packed)
@@ -216,21 +252,32 @@ class CiValuesToPPGD:
     def post_recv(
         self, role: PPGDRole, site_to_c: dict[str, int], seq_len: int, device: torch.device
     ) -> PendingCiValues:
-        src_ci_slice = self.world.ci_slice_of_ppgd_slice(role.slice_idx)
-        src = self.world.ci_ranks[src_ci_slice]
+        edge = self.world.ci_ppgd_edge
         b_pp = self.world.batch_local_ppgd
-        packed_numel = sum(b_pp * seq_len * site_to_c[s] for s in self.world.all_sites)
-        packed = torch.empty(packed_numel, device=device, dtype=WIRE_DTYPE)
+        packets: list[_CiRecvPacket] = []
         with time_nccl_op("CiValuesToPPGD.recv"):
-            work = dist.irecv(packed, src=src, group=self.world.cross_pool_p2p_group)
-            assert work is not None
+            for ci_slice_idx in edge.ci_slices_for_down_slice(role.slice_idx):
+                src = self.world.ci_ranks[ci_slice_idx]
+                overlap = edge.overlap_within_down(ci_slice_idx, role.slice_idx)
+                overlap_len = overlap.stop - overlap.start
+                packed_numel = sum(
+                    overlap_len * seq_len * site_to_c[s] for s in self.world.all_sites
+                )
+                packed = torch.empty(packed_numel, device=device, dtype=WIRE_DTYPE)
+                work = dist.irecv(packed, src=src, group=self.world.cross_pool_p2p_group)
+                assert work is not None
+                packets.append(
+                    _CiRecvPacket(
+                        work=work, packed=packed, overlap=overlap, overlap_len=overlap_len
+                    )
+                )
         return PendingCiValues(
-            packed=packed,
-            work=work,
+            packets=tuple(packets),
             sites=self.world.all_sites,
             site_to_c=site_to_c,
-            b=b_pp,
+            b_down=b_pp,
             seq_len=seq_len,
+            device=device,
         )
 
 
@@ -244,33 +291,41 @@ class GradCiFromLayerwise:
     world: World
 
     def send(self, role: LWRole, g_ci_owned: dict[str, Tensor]) -> None:
-        """Send per-owned-site CI grads (full LW batch slice) to the CI rank
-        that owns my slice. Owned sites coalesced into one packed send."""
-        dst_ci_slice = self.world.ci_slice_of_lw_block_rank(role.within_block_idx)
-        dst = self.world.ci_ranks[dst_ci_slice]
-        packed = _pack_sites(g_ci_owned, role.owned_sites, sub=None)
+        """Send per-owned-site CI grads to the CI rank(s) my LW slice overlaps.
+
+        Coarse-CI: one CI rank contains my whole slice — send all of it. Fine-CI:
+        my slice spans ``fanout`` CI ranks — send each the overlapping sub-slice
+        of my LW grad. One coalesced send per destination."""
+        edge = self.world.ci_lw_edge
         with time_nccl_op("GradCiFromLayerwise.send"):
-            dist.send(packed, dst=dst, group=self.world.cross_pool_p2p_group)
+            for ci_slice_idx in edge.ci_slices_for_down_slice(role.within_block_idx):
+                dst = self.world.ci_ranks[ci_slice_idx]
+                sub = edge.overlap_within_down(ci_slice_idx, role.within_block_idx)
+                packed = _pack_sites(g_ci_owned, role.owned_sites, sub)
+                dist.send(packed, dst=dst, group=self.world.cross_pool_p2p_group)
 
     def recv(
         self, role: CIRole, site_to_c: dict[str, int], seq_len: int, device: torch.device
     ) -> dict[str, Tensor]:
-        """Recv per-site CI grads, one coalesced buffer per (LW block, LW rank
-        index), stitched into per-site ``[B_local_ci, S, C_s]`` fp32 dests."""
-        my_lw_block_ranks = self.world.lw_block_ranks_for_ci_slice(role.slice_idx)
-        b_lw = self.world.batch_local_lw
+        """Recv per-site CI grads from the LW rank(s) my CI slice overlaps,
+        stitched into per-site ``[B_local_ci, S, C_s]`` fp32 dests. Coarse-CI:
+        ``fanout`` LW ranks tile my slice. Fine-CI: one LW rank, my slice a
+        sub-slice of it (I fill only my overlap)."""
+        edge = self.world.ci_lw_edge
 
-        pending: list[tuple[int, Tensor, dist.Work, tuple[str, ...]]] = []
+        pending: list[tuple[slice, int, Tensor, dist.Work, tuple[str, ...]]] = []
         with time_nccl_op("GradCiFromLayerwise.recv:post_irecvs"):
             for bg in self.world.layerwise_block_groups:
                 owned = bg.owned_sites
-                packed_numel = sum(b_lw * seq_len * site_to_c[s] for s in owned)
-                for block_rank_idx in my_lw_block_ranks:
-                    src = bg.ranks[block_rank_idx]
+                for down_slice_idx in edge.down_slices_for_ci_slice(role.slice_idx):
+                    src = bg.ranks[down_slice_idx]
+                    overlap = edge.overlap_within_ci(role.slice_idx, down_slice_idx)
+                    overlap_len = overlap.stop - overlap.start
+                    packed_numel = sum(overlap_len * seq_len * site_to_c[s] for s in owned)
                     buf = torch.empty(packed_numel, device=device, dtype=WIRE_DTYPE)
                     w = dist.irecv(buf, src=src, group=self.world.cross_pool_p2p_group)
                     assert w is not None
-                    pending.append((block_rank_idx, buf, w, owned))
+                    pending.append((overlap, overlap_len, buf, w, owned))
 
         b_ci = self.world.batch_local_ci
         out: dict[str, Tensor] = {
@@ -278,15 +333,14 @@ class GradCiFromLayerwise:
             for s in self.world.all_sites
         }
         with time_nccl_op("GradCiFromLayerwise.recv:wait"):
-            for block_rank_idx, buf, w, owned in pending:
+            for overlap, overlap_len, buf, w, owned in pending:
                 w.wait()
-                sub = self.world.lw_sub_slice_within_ci(block_rank_idx)
                 offset = 0
                 for site in owned:
                     c_s = site_to_c[site]
-                    n = b_lw * seq_len * c_s
-                    site_view = buf[offset : offset + n].view(b_lw, seq_len, c_s)
-                    out[site][sub].copy_(site_view.to(torch.float32))
+                    n = overlap_len * seq_len * c_s
+                    site_view = buf[offset : offset + n].view(overlap_len, seq_len, c_s)
+                    out[site][overlap].copy_(site_view.to(torch.float32))
                     offset += n
         return out
 
@@ -301,30 +355,36 @@ class GradCiFromPPGD:
     world: World
 
     def send(self, role: PPGDRole, g_ci_full: dict[str, Tensor]) -> None:
-        """Send full-model CI grads (PPGD batch slice) to the CI rank that owns
-        my slice. All sites coalesced into a single packed buffer."""
-        dst_ci_slice = self.world.ci_slice_of_ppgd_slice(role.slice_idx)
-        dst = self.world.ci_ranks[dst_ci_slice]
-        packed = _pack_sites(g_ci_full, self.world.all_sites, sub=None)
+        """Send full-model CI grads to the CI rank(s) my PPGD slice overlaps.
+
+        Coarse-CI: one CI rank — send my whole slice. Fine-CI: ``fanout`` CI
+        ranks — send each its overlapping sub-slice."""
+        edge = self.world.ci_ppgd_edge
         with time_nccl_op("GradCiFromPPGD.send"):
-            dist.send(packed, dst=dst, group=self.world.cross_pool_p2p_group)
+            for ci_slice_idx in edge.ci_slices_for_down_slice(role.slice_idx):
+                dst = self.world.ci_ranks[ci_slice_idx]
+                sub = edge.overlap_within_down(ci_slice_idx, role.slice_idx)
+                packed = _pack_sites(g_ci_full, self.world.all_sites, sub)
+                dist.send(packed, dst=dst, group=self.world.cross_pool_p2p_group)
 
     def recv(
         self, role: CIRole, site_to_c: dict[str, int], seq_len: int, device: torch.device
     ) -> dict[str, Tensor]:
-        my_ppgd_slice_idxs = self.world.ppgd_slice_idxs_for_ci_slice(role.slice_idx)
-        b_pp = self.world.batch_local_ppgd
-        site_numels = {s: b_pp * seq_len * site_to_c[s] for s in self.world.all_sites}
-        packed_numel = sum(site_numels.values())
+        edge = self.world.ci_ppgd_edge
 
-        pending: list[tuple[int, Tensor, dist.Work]] = []
+        pending: list[tuple[slice, int, Tensor, dist.Work]] = []
         with time_nccl_op("GradCiFromPPGD.recv:post_irecvs"):
-            for ppgd_slice_idx in my_ppgd_slice_idxs:
+            for ppgd_slice_idx in edge.down_slices_for_ci_slice(role.slice_idx):
                 src = self.world.ppgd_ranks[ppgd_slice_idx]
+                overlap = edge.overlap_within_ci(role.slice_idx, ppgd_slice_idx)
+                overlap_len = overlap.stop - overlap.start
+                packed_numel = sum(
+                    overlap_len * seq_len * site_to_c[s] for s in self.world.all_sites
+                )
                 packed = torch.empty(packed_numel, device=device, dtype=WIRE_DTYPE)
                 w = dist.irecv(packed, src=src, group=self.world.cross_pool_p2p_group)
                 assert w is not None
-                pending.append((ppgd_slice_idx, packed, w))
+                pending.append((overlap, overlap_len, packed, w))
 
         b_ci = self.world.batch_local_ci
         out: dict[str, Tensor] = {
@@ -332,14 +392,13 @@ class GradCiFromPPGD:
             for s in self.world.all_sites
         }
         with time_nccl_op("GradCiFromPPGD.recv:wait"):
-            for ppgd_slice_idx, packed, w in pending:
+            for overlap, overlap_len, packed, w in pending:
                 w.wait()
-                sub = self.world.ppgd_sub_slice_within_ci(ppgd_slice_idx)
                 offset = 0
                 for site in self.world.all_sites:
-                    n = site_numels[site]
-                    buf = packed[offset : offset + n].view(b_pp, seq_len, site_to_c[site])
-                    out[site][sub].copy_(buf.to(torch.float32))
+                    n = overlap_len * seq_len * site_to_c[site]
+                    buf = packed[offset : offset + n].view(overlap_len, seq_len, site_to_c[site])
+                    out[site][overlap].copy_(buf.to(torch.float32))
                     offset += n
         return out
 
@@ -478,16 +537,17 @@ class CiOutputsEvalToPPGD:
     world: World
 
     def send(self, role: CIRole, ci: CIOutputs) -> None:
-        """Synchronous send of full CIOutputs (all three dicts) sliced to each
-        PPGD rank within my CI slice. Eval is rare; overlap has no value here.
+        """Synchronous send of full CIOutputs (all three dicts) to the PPGD
+        rank(s) my CI slice overlaps. Eval is rare; overlap has no value here.
 
         Pack layout (must match ``recv``): three contiguous blocks in order
-        (lower_leaky, upper_leaky, pre_sigmoid)."""
-        my_ppgd_slice_idxs = self.world.ppgd_slice_idxs_for_ci_slice(role.slice_idx)
+        (lower_leaky, upper_leaky, pre_sigmoid), each carrying the overlapping
+        sub-slice of my CI tensor for the destination PPGD rank."""
+        edge = self.world.ci_ppgd_edge
         with time_nccl_op("CiOutputsEvalToPPGD.send"):
-            for ppgd_slice_idx in my_ppgd_slice_idxs:
+            for ppgd_slice_idx in edge.down_slices_for_ci_slice(role.slice_idx):
                 target = self.world.ppgd_ranks[ppgd_slice_idx]
-                sub = self.world.ppgd_sub_slice_within_ci(ppgd_slice_idx)
+                sub = edge.overlap_within_ci(role.slice_idx, ppgd_slice_idx)
                 parts: list[Tensor] = []
                 for d in (ci.lower_leaky, ci.upper_leaky, ci.pre_sigmoid):
                     parts.append(_pack_sites(d, self.world.all_sites, sub))
@@ -497,23 +557,36 @@ class CiOutputsEvalToPPGD:
     def recv(
         self, role: PPGDRole, site_to_c: dict[str, int], seq_len: int, device: torch.device
     ) -> CIOutputs:
-        src_ci_slice = self.world.ci_slice_of_ppgd_slice(role.slice_idx)
-        src = self.world.ci_ranks[src_ci_slice]
+        """Recv full CIOutputs from the CI rank(s) my PPGD slice overlaps,
+        stitched into per-site ``[B_local_ppgd, S, C_s]`` tensors (three dicts)."""
+        edge = self.world.ci_ppgd_edge
         b_pp = self.world.batch_local_ppgd
-        per_block_numel = sum(b_pp * seq_len * site_to_c[s] for s in self.world.all_sites)
-        packed = torch.empty(3 * per_block_numel, device=device, dtype=WIRE_DTYPE)
+        out: list[dict[str, Tensor]] = [
+            {
+                s: torch.empty(b_pp, seq_len, site_to_c[s], device=device, dtype=WIRE_DTYPE)
+                for s in self.world.all_sites
+            }
+            for _ in range(3)
+        ]
         with time_nccl_op("CiOutputsEvalToPPGD.recv"):
-            dist.recv(packed, src=src, group=self.world.cross_pool_p2p_group)
-
-        out: list[dict[str, Tensor]] = [{}, {}, {}]
-        offset = 0
-        for block_idx in range(3):
-            for site in self.world.all_sites:
-                c_s = site_to_c[site]
-                numel = b_pp * seq_len * c_s
-                out[block_idx][site] = packed[offset : offset + numel].view(b_pp, seq_len, c_s)
-                offset += numel
-        assert offset == packed.numel(), f"unpack mismatch: {offset} of {packed.numel()}"
+            for ci_slice_idx in edge.ci_slices_for_down_slice(role.slice_idx):
+                src = self.world.ci_ranks[ci_slice_idx]
+                overlap = edge.overlap_within_down(ci_slice_idx, role.slice_idx)
+                overlap_len = overlap.stop - overlap.start
+                per_block_numel = sum(
+                    overlap_len * seq_len * site_to_c[s] for s in self.world.all_sites
+                )
+                packed = torch.empty(3 * per_block_numel, device=device, dtype=WIRE_DTYPE)
+                dist.recv(packed, src=src, group=self.world.cross_pool_p2p_group)
+                offset = 0
+                for block_idx in range(3):
+                    for site in self.world.all_sites:
+                        c_s = site_to_c[site]
+                        numel = overlap_len * seq_len * c_s
+                        view = packed[offset : offset + numel].view(overlap_len, seq_len, c_s)
+                        out[block_idx][site][overlap].copy_(view)
+                        offset += numel
+                assert offset == packed.numel(), f"unpack mismatch: {offset} of {packed.numel()}"
         return CIOutputs(lower_leaky=out[0], upper_leaky=out[1], pre_sigmoid=out[2])
 
 

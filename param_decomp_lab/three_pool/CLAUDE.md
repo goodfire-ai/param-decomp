@@ -8,7 +8,7 @@ docstring in `optimize.py` for the data-handling contract.
 | File | What it covers |
 |---|---|
 | `optimize.py` | `ThreePoolTrainer` + `optimize_three_pool`; the training loop, `snapshot`/`from_snapshot`, config validation |
-| `layout.py` | `World` topology; `build_world` constructs every process group (threading `pg_timeout` into each) |
+| `layout.py` | `World` topology; `build_world` constructs every process group (threading `pg_timeout` into each); `BatchEdge` — symmetric per-edge batch-slice geometry (CI↔LW, CI↔PPGD) answering routing for both fan directions |
 | `checkpoint.py` | `gather_full_state_dict_to_rank0` — rebuilds the full model state on rank 0 |
 | `config.py` | `ThreePoolConfig` + topology validation |
 | `role.py` | `PoolRole = CIRole \| LWRole \| PPGDRole` — this rank's pool role; per-pool fields are union variants, not optional attrs |
@@ -64,3 +64,25 @@ Repro/fault-injection env knobs (never set in production):
 `PD_3POOL_PG_TIMEOUT_S`, `PD_3POOL_SNAPSHOT_RANK0_SLEEP_S` (inject a sleep into
 rank-0's read), `PD_3POOL_DISABLE_REJOIN_BARRIER` (reproduces the pre-fix race).
 Regression tests: `param_decomp_lab/tests/test_three_pool_pg_timeout.py`.
+
+## Cross-pool batch divisibility (bidirectional)
+
+Each cross-pool edge (CI↔LW, CI↔PPGD) requires the two batch arities to be
+**cross-divisible** — one divides the other, EITHER direction (`n_ci | n_down`
+OR `n_down | n_ci`). Ragged pairs where neither divides the other are rejected.
+The three "arity divides `pd.batch_size`" constraints still hold.
+
+`BatchEdge` (layout.py) owns the geometry for one edge and answers every routing
+question symmetrically:
+
+  * **CI coarse** (`n_ci <= n_down`): one CI rank fans a sub-slice to `fanout`
+    downstream ranks; grads stitch back fanout→one. One downstream rank ↔ one CI
+    rank.
+  * **CI fine / inverted** (`n_ci > n_down`): one downstream rank gathers CI
+    from `fanout` CI ranks (`PendingCiValues` holds the `fanout` packets and
+    stitches them) and scatters grads back to those CI ranks. One CI rank ↔ one
+    downstream rank.
+
+The six portal exchange methods + the eval CI ship consume `world.ci_lw_edge` /
+`world.ci_ppgd_edge` and never branch on the regime. Unit tests:
+`param_decomp_lab/tests/test_three_pool_batch_edge.py`.

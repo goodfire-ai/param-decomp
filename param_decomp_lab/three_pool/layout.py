@@ -12,14 +12,15 @@ The per-rank view (which pool am I, what do I own) lives in ``role.py``
 
 The defining wrinkle is **3-way batch slicing**: CI/LW/PPGD each shard the
 global batch on their own axis. The constraint (enforced in
-``ThreePoolConfig.validate_topology``) is:
+``ThreePoolConfig.validate_topology``) is cross-divisibility per edge:
 
-    N_ci | N_per_block_layerwise
-    N_ci | N_ppgd
+    N_ci | N_per_block_layerwise   OR   N_per_block_layerwise | N_ci
+    N_ci | N_ppgd                  OR   N_ppgd | N_ci
 
-which reduces the otherwise many-to-many CI↔LW and CI↔PPGD routing to a
-one-to-many fan-out (CI rank → K downstream ranks) plus a many-to-one
-reduction (downstream ranks → one CI rank). See "Batch-split routing" below.
+so each CI↔LW / CI↔PPGD overlap is a whole, aligned sub-slice — a one-to-K
+fan-out (and K-to-one reduction) in EITHER direction. The geometry for one edge
+lives in ``BatchEdge``, which answers every routing question symmetrically for
+both fan directions (CI coarse vs CI fine). See "Batch-split routing" below.
 """
 
 # pyright: reportIndexIssue=false, reportArgumentType=false, reportOperatorIssue=false
@@ -210,67 +211,114 @@ class World:
     def block_leader_of_site(self, site: str) -> int:
         return self.layerwise_block_groups[self.block_idx_of_site(site)].leader
 
-    # ── Batch-split routing (the new wrinkle) ──
+    # ── Batch-split routing ──
+    #
+    # Each cross-pool edge's slice geometry is delegated to a ``BatchEdge`` (one
+    # per edge), which answers every routing question SYMMETRICALLY for both fan
+    # directions (CI coarse / CI fine). The portals call these edges so the
+    # exchange methods never branch on which arity is larger.
 
     @property
-    def k_lw_per_ci(self) -> int:
-        """How many LW batch shards (per block) fit inside one CI batch shard.
-
-        Validator guarantees N_ci | N_per_block_layerwise, so this is an integer.
-        """
-        assert self.n_per_block % self.n_ci == 0
-        return self.n_per_block // self.n_ci
+    def ci_lw_edge(self) -> "BatchEdge":
+        return BatchEdge(n_ci=self.n_ci, n_down=self.n_per_block, batch_global=self.batch_global)
 
     @property
-    def k_ppgd_per_ci(self) -> int:
-        """How many PPGD batch shards fit inside one CI batch shard.
+    def ci_ppgd_edge(self) -> "BatchEdge":
+        return BatchEdge(n_ci=self.n_ci, n_down=self.n_ppgd, batch_global=self.batch_global)
 
-        Validator guarantees N_ci | N_ppgd, so this is an integer.
+
+@dataclass(frozen=True)
+class BatchEdge:
+    """Symmetric batch-slice geometry for one cross-pool edge (CI ↔ downstream).
+
+    ``n_down`` is the downstream pool's batch arity (``n_per_block`` for LW,
+    ``n_ppgd`` for PPGD). The validator guarantees ``n_ci`` and ``n_down`` are
+    cross-divisible, so exactly one of two regimes holds:
+
+      * ``ci_is_coarse`` (``n_ci <= n_down``, ``n_ci | n_down``): each CI slice
+        contains ``fanout = n_down // n_ci`` whole downstream slices. CI fans a
+        sub-slice out to each; grads come back to be stitched. One downstream
+        rank pairs with exactly one CI rank.
+      * not ``ci_is_coarse`` (``n_ci > n_down``, ``n_down | n_ci``): each
+        downstream slice contains ``fanout = n_ci // n_down`` whole CI slices.
+        One downstream rank gathers from ``fanout`` CI ranks (concat) and
+        scatters grads back to those same ``fanout`` CI ranks. One CI rank pairs
+        with exactly one downstream rank.
+
+    All slice arithmetic is in units of the FINER pool's shard, so every overlap
+    is a whole, aligned sub-slice.
+    """
+
+    n_ci: int
+    n_down: int
+    batch_global: int
+
+    def __post_init__(self) -> None:
+        assert self.n_down % self.n_ci == 0 or self.n_ci % self.n_down == 0, (
+            f"n_ci ({self.n_ci}) and n_down ({self.n_down}) must be cross-divisible"
+        )
+        assert self.batch_global % self.n_ci == 0 and self.batch_global % self.n_down == 0
+
+    @property
+    def ci_is_coarse(self) -> bool:
+        return self.n_ci <= self.n_down
+
+    @property
+    def fanout(self) -> int:
+        """Number of finer-pool slices nested in one coarser-pool slice."""
+        return self.n_down // self.n_ci if self.ci_is_coarse else self.n_ci // self.n_down
+
+    @property
+    def b_ci(self) -> int:
+        return self.batch_global // self.n_ci
+
+    @property
+    def b_down(self) -> int:
+        return self.batch_global // self.n_down
+
+    # ── Pairing: which ranks talk to which ──
+
+    def ci_slices_for_down_slice(self, down_slice_idx: int) -> tuple[int, ...]:
+        """CI slice idxs whose batches overlap downstream slice `down_slice_idx`.
+
+        Coarse-CI regime: exactly one CI slice (the one containing it).
+        Fine-CI regime: the `fanout` CI slices nested in it.
         """
-        assert self.n_ppgd % self.n_ci == 0
-        return self.n_ppgd // self.n_ci
+        if self.ci_is_coarse:
+            return (down_slice_idx // self.fanout,)
+        return tuple(range(down_slice_idx * self.fanout, (down_slice_idx + 1) * self.fanout))
 
-    def ci_slice_of_lw_block_rank(self, block_rank_idx: int) -> int:
-        """Which CI rank's slice contains LW rank `block_rank_idx`'s batch shard."""
-        return block_rank_idx // self.k_lw_per_ci
+    def down_slices_for_ci_slice(self, ci_slice_idx: int) -> tuple[int, ...]:
+        """Downstream slice idxs whose batches overlap CI slice `ci_slice_idx`.
 
-    def ci_slice_of_ppgd_slice(self, ppgd_slice_idx: int) -> int:
-        """Which CI rank's slice contains PPGD rank `ppgd_slice_idx`'s batch shard."""
-        return ppgd_slice_idx // self.k_ppgd_per_ci
-
-    def lw_sub_slice_within_ci(self, block_rank_idx: int) -> slice:
-        """Within a CI rank's local batch tensor [B_ci, ...], the sub-slice
-        that corresponds to LW rank `block_rank_idx`.
-
-        Assumes the caller is the CI rank with
-        `ci_slice_idx == ci_slice_of_lw_block_rank(block_rank_idx)`.
+        Coarse-CI regime: the `fanout` downstream slices nested in it.
+        Fine-CI regime: exactly one downstream slice (the one containing it).
         """
-        b_lw = self.batch_local_lw
-        ci_slice_idx = self.ci_slice_of_lw_block_rank(block_rank_idx)
-        global_start = block_rank_idx * b_lw
-        ci_global_start = ci_slice_idx * self.batch_local_ci
-        local_start = global_start - ci_global_start
-        return slice(local_start, local_start + b_lw)
+        if self.ci_is_coarse:
+            return tuple(range(ci_slice_idx * self.fanout, (ci_slice_idx + 1) * self.fanout))
+        return (ci_slice_idx // self.fanout,)
 
-    def ppgd_sub_slice_within_ci(self, ppgd_slice_idx: int) -> slice:
-        """Within a CI rank's local batch tensor [B_ci, ...], the sub-slice
-        that corresponds to PPGD rank `ppgd_slice_idx`."""
-        b_pp = self.batch_local_ppgd
-        ci_slice_idx = self.ci_slice_of_ppgd_slice(ppgd_slice_idx)
-        global_start = ppgd_slice_idx * b_pp
-        ci_global_start = ci_slice_idx * self.batch_local_ci
-        local_start = global_start - ci_global_start
-        return slice(local_start, local_start + b_pp)
+    # ── Sub-slices: the overlap, expressed in each rank's local batch tensor ──
 
-    def lw_block_ranks_for_ci_slice(self, ci_slice_idx: int) -> tuple[int, ...]:
-        """LW block_rank_idxs whose batch shards sit inside CI rank `ci_slice_idx`'s slice."""
-        k = self.k_lw_per_ci
-        return tuple(range(ci_slice_idx * k, (ci_slice_idx + 1) * k))
+    def overlap_within_ci(self, ci_slice_idx: int, down_slice_idx: int) -> slice:
+        """The CI↔downstream overlap as a sub-slice of CI rank `ci_slice_idx`'s
+        local ``[B_ci, ...]`` tensor. Spans the FINER pool's shard."""
+        return self._overlap(ci_slice_idx, down_slice_idx, base_is_ci=True)
 
-    def ppgd_slice_idxs_for_ci_slice(self, ci_slice_idx: int) -> tuple[int, ...]:
-        """PPGD slice idxs whose batch shards sit inside CI rank `ci_slice_idx`'s slice."""
-        k = self.k_ppgd_per_ci
-        return tuple(range(ci_slice_idx * k, (ci_slice_idx + 1) * k))
+    def overlap_within_down(self, ci_slice_idx: int, down_slice_idx: int) -> slice:
+        """The CI↔downstream overlap as a sub-slice of downstream rank
+        `down_slice_idx`'s local ``[B_down, ...]`` tensor."""
+        return self._overlap(ci_slice_idx, down_slice_idx, base_is_ci=False)
+
+    def _overlap(self, ci_slice_idx: int, down_slice_idx: int, *, base_is_ci: bool) -> slice:
+        ci_global_start = ci_slice_idx * self.b_ci
+        down_global_start = down_slice_idx * self.b_down
+        overlap_global_start = max(ci_global_start, down_global_start)
+        overlap_len = min(self.b_ci, self.b_down)
+        base_start = ci_global_start if base_is_ci else down_global_start
+        local_start = overlap_global_start - base_start
+        assert local_start >= 0, f"non-overlapping slices: ci={ci_slice_idx} down={down_slice_idx}"
+        return slice(local_start, local_start + overlap_len)
 
 
 def build_world(
