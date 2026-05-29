@@ -1,0 +1,87 @@
+{
+  "args": {
+    "wandb_path": "goodfire/spd/runs/s-55ea3f9b",
+    "output_module": "h.3.mlp.down_proj",
+    "subcomp_id": 568,
+    "n_keep": "5,10,64,128,1500,2500,3000",
+    "n_attr_batches": 1024,
+    "n_eval_batches": 100,
+    "batch_size": 4,
+    "seed": 0,
+    "device": "cuda",
+    "out_dir": "/mnt/polished-lake/home/lucius/spd/scripts/topn_subcomp_map_out",
+    "wandb_project": "spd-low-rank-subcomp-map",
+    "wandb_entity": null,
+    "wandb_name": null,
+    "no_wandb": false
+  },
+  "layer": 3,
+  "in_module": "h.3.mlp.c_fc",
+  "out_module": "h.3.mlp.down_proj",
+  "subcomp_id": 568,
+  "C_in": 3072,
+  "d_intermediate": 3072,
+  "n_pos_attr": 2097152,
+  "n_pos_eval": 204800,
+  "mean_label": 0.26933222155086695,
+  "var_label": 0.3221502600515211,
+  "n_keep_list": [
+    5,
+    10,
+    64,
+    128,
+    1500,
+    2500,
+    3000
+  ],
+  "results": [
+    {
+      "condition": "full",
+      "n_keep": null,
+      "mse": 3.53097913603051e-06,
+      "r2": 0.9999890393410347
+    },
+    {
+      "condition": "top5",
+      "n_keep": 5,
+      "mse": 0.3542254151403904,
+      "r2": -0.09956582088041643
+    },
+    {
+      "condition": "top10",
+      "n_keep": 10,
+      "mse": 0.2917868159711361,
+      "r2": 0.09425242765760611
+    },
+    {
+      "condition": "top64",
+      "n_keep": 64,
+      "mse": 0.3025337117910385,
+      "r2": 0.06089254206203443
+    },
+    {
+      "condition": "top128",
+      "n_keep": 128,
+      "mse": 0.3289632472395897,
+      "r2": -0.021148476450023823
+    },
+    {
+      "condition": "top1500",
+      "n_keep": 1500,
+      "mse": 0.027672142386436463,
+      "r2": 0.9141017536909302
+    },
+    {
+      "condition": "top2500",
+      "n_keep": 2500,
+      "mse": 0.004961170384194702,
+      "r2": 0.9845998249903593
+    },
+    {
+      "condition": "top3000",
+      "n_keep": 3000,
+      "mse": 0.00034432041313266383,
+      "r2": 0.9989311807071719
+    }
+  ]
+}
