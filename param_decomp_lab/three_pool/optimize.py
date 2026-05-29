@@ -494,7 +494,12 @@ class ThreePoolTrainer:
         if cfg_overrides is not None:
             pd_dict = {**pd_dict, **cfg_overrides}
         pd_config = ThreePoolConstrainedPDConfig.model_validate(pd_dict)
-        runtime_config = RuntimeConfig.model_validate(snapshot.runtime_config)
+        # The saved runtime_config is a `ThreePoolRuntimeConfig` dump (base scalars +
+        # `topology`). The trainer takes the base `RuntimeConfig` scalars here and the
+        # topology via `three_pool_config` (the source of truth, identical to the dumped
+        # `topology`), so drop the duplicate `topology` key before validating as base.
+        runtime_dict = {k: v for k, v in snapshot.runtime_config.items() if k != "topology"}
+        runtime_config = RuntimeConfig.model_validate(runtime_dict)
         three_pool_config = ThreePoolConfig.model_validate(snapshot.three_pool_config)
 
         trainer = cls(
