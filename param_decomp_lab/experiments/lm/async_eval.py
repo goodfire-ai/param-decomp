@@ -75,35 +75,50 @@ def _consolidate_or_wait(
     target_model: "nn.Module",
     run_batch: Any,
     step: int,
-    poll_timeout_s: float = 1800.0,
+    wait_timeout_s: float = 1800.0,
 ) -> None:
     """Assemble the step's checkpoint (rank 0) or wait for it (other ranks).
 
     Rank 0 assembles on CPU and writes `training_<step>.pth` last; the other ranks
-    poll the shared FS for that file rather than waiting on an NCCL barrier, so the
-    multi-second CPU read+assemble never interleaves with a GPU collective.
-    Assembly is pinned to CPU via the default-device guard — building the full
-    ComponentModel buffer on the selected, shared GPU hangs.
+    wait on the shared FS rather than an NCCL barrier (the multi-second CPU
+    read+assemble shouldn't interleave with a GPU collective). Assembly is pinned
+    to CPU — building the full ComponentModel buffer on the selected, shared GPU
+    hangs.
+
+    Fail-fast on BOTH sides — never wedge holding GPUs:
+      * rank 0 writes a `.consolidate_failed_<step>` sentinel and re-raises if
+        consolidation throws, so the failure is visible and the GPUs release;
+      * the other ranks poll for the success file OR the sentinel, and time out;
+        any of the three exits the wait (the last two by raising).
     """
     training_path = out_dir / f"training_{step}.pth"
+    fail_sentinel = out_dir / f".consolidate_failed_{step}"
+    fail_sentinel.unlink(missing_ok=True)
     if is_main_process():
-        with torch.device("cpu"):
-            consolidate_step(
-                scratch_dir=out_dir / SNAPSHOT_SCRATCH_DIRNAME,
-                out_dir=out_dir,
-                step=step,
-                target_model=target_model,
-                run_batch=run_batch,
-                ci_config=cfg.pd.ci_config,
-                sigmoid_type=cfg.pd.sigmoid_type,
-                keep_last_n_training=DEFAULT_KEEP_LAST_N_TRAINING,
-            )
+        try:
+            with torch.device("cpu"):
+                consolidate_step(
+                    scratch_dir=out_dir / SNAPSHOT_SCRATCH_DIRNAME,
+                    out_dir=out_dir,
+                    step=step,
+                    target_model=target_model,
+                    run_batch=run_batch,
+                    ci_config=cfg.pd.ci_config,
+                    sigmoid_type=cfg.pd.sigmoid_type,
+                    keep_last_n_training=DEFAULT_KEEP_LAST_N_TRAINING,
+                )
+        except BaseException:
+            fail_sentinel.touch()
+            raise
         gc.collect()
         return
-    deadline = time.perf_counter() + poll_timeout_s
+    deadline = time.perf_counter() + wait_timeout_s
     while not training_path.is_file():
+        assert not fail_sentinel.is_file(), (
+            f"rank-0 consolidation failed (sentinel {fail_sentinel.name}); aborting wait"
+        )
         assert time.perf_counter() < deadline, (
-            f"timed out after {poll_timeout_s}s waiting for {training_path} "
+            f"timed out after {wait_timeout_s}s waiting for {training_path} "
             f"(rank-0 consolidation did not finish)"
         )
         time.sleep(2.0)

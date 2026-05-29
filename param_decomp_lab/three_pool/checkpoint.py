@@ -68,6 +68,11 @@ def assemble_model_state_dict_from_partials(
     The union of every partial's keys must exactly cover the full-decomposition
     model's V/U + CI-fn keys (target-model params come from the fresh buffer).
     """
+    # ComponentModel asserts the target has no trainable params; build_target only
+    # `.eval()`s it, so freeze here (the training / load_component_model paths
+    # freeze at their own construction sites).
+    target_model.eval()
+    target_model.requires_grad_(False)
     full_targets = [DecompositionTarget(module_path=s, C=c_per_site[s]) for s in all_sites]
     full_cm = ComponentModel(
         target_model=target_model,

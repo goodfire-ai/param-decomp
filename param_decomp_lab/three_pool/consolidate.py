@@ -166,3 +166,22 @@ def _prune_old_training(out_dir: Path, *, keep_last_n: int) -> None:
         if path.is_file():
             path.unlink()
             logger.info(f"consolidate: pruned old {path.name}")
+
+
+def unconsolidated_steps(out_dir: Path) -> list[int]:
+    """Steps that have scratch partials on disk but no `training_<step>.pth` yet.
+
+    These are saves the async job never finished consolidating (it crashed, was
+    preempted, or never ran). They're safe + cheap to consolidate by re-running.
+    """
+    scratch = out_dir / SNAPSHOT_SCRATCH_DIRNAME
+    if not scratch.is_dir():
+        return []
+    out: list[int] = []
+    for d in scratch.glob("step_*"):
+        if not d.is_dir():
+            continue
+        step = int(d.name.removeprefix("step_"))
+        if not (out_dir / f"training_{step}.pth").is_file():
+            out.append(step)
+    return sorted(out)
