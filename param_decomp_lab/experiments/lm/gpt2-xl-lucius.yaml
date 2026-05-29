@@ -6,31 +6,25 @@ pd:
     fn_type: global_shared_transformer
     hidden_dims: null
     simple_transformer_ci_cfg:
-      d_model: 4096
-      n_blocks: 8
+      d_model: 1024
+      n_blocks: 2
       mlp_hidden_dim:
-      - 16384
+      - 2048
       attn_config:
-        n_heads: 8
-        max_len: 512
+        n_heads: 16
+        max_len: 1024
         rope_base: 10000.0
   sampling: continuous
   sigmoid_type: leaky_hard
   decomposition_targets:
-  - module_pattern: model.layers.18.mlp.gate_proj
-    C: 20000
-  - module_pattern: model.layers.18.mlp.up_proj
-    C: 20000
-  - module_pattern: model.layers.18.mlp.down_proj
-    C: 20000 # There are 14336 neurons
-  # - module_pattern: model.layers.*.self_attn.q_proj
-  #   C: 4096
-  # - module_pattern: model.layers.*.self_attn.k_proj
-  #   C: 4096
-  # - module_pattern: model.layers.*.self_attn.v_proj
-  #   C: 4096
-  # - module_pattern: model.layers.*.self_attn.o_proj
-  #   C: 2048
+  - module_pattern: transformer.h.*.mlp.c_fc
+    C: 5124
+  - module_pattern: transformer.h.*.mlp.c_proj
+    C: 5124
+  - module_pattern: transformer.h.*.attn.c_attn
+    C: 4096
+  - module_pattern: transformer.h.*.attn.c_proj
+    C: 2048
   identity_decomposition_targets: null
   use_delta_component: true
   components_optimizer:
@@ -46,47 +40,45 @@ pd:
       warmup_pct: 0.0
       final_val_frac: 0.1
       fn_type: cosine
-  steps: 100000
-  batch_size: 64
+  steps: 50000
+  batch_size: 512
   faithfulness_warmup_steps: 400
   faithfulness_warmup_lr: 0.001
   faithfulness_warmup_weight_decay: 0.0
   loss_metrics:
   - type: ImportanceMinimalityLoss
-    coeff: 0.000001
+    coeff: 0.000005
     pnorm: 2.0
     beta: 0.5
     p_anneal_start_frac: 0.0
     p_anneal_final_p: 0.4
     p_anneal_end_frac: 1.0
     eps: 1.0e-12
-  - type: StochasticReconSubsetLoss
+  - type: StochasticReconLayerwiseLoss
     coeff: 0.5
-    routing:
-      type: uniform_k_subset
-  - type: PersistentPGDReconLoss
-    coeff: 0.5
-    optimizer:
-      type: adam
-      beta1: 0.5
-      beta2: 0.99
-      eps: 1.0e-08
-      lr_schedule:
-        start_val: 0.01
-        warmup_pct: 0.025
-        final_val_frac: 1.0
-        fn_type: constant
-    scope:
-      type: per_batch_per_position
-    use_sigmoid_parameterization: false
-    n_warmup_steps: 2
+  # - type: PersistentPGDReconLoss
+  #   coeff: 0.5
+  #   optimizer:
+  #     type: adam
+  #     beta1: 0.5
+  #     beta2: 0.99
+  #     eps: 1.0e-08
+  #     lr_schedule:
+  #       start_val: 0.01
+  #       warmup_pct: 0.025
+  #       final_val_frac: 1.0
+  #       fn_type: constant
+  #   scope:
+  #     type: per_batch_per_position
+  #   use_sigmoid_parameterization: false
+  #   n_warmup_steps: 1
   - type: FaithfulnessLoss
-    coeff: 10000000.0
+    coeff: 100000.0
 cadence:
   train_log_every: 200
 eval:
   n_steps: 1
-  batch_size: 128
+  batch_size: 512
   every: 1000
   slow_every: 10000
   slow_on_first_step: true
@@ -109,22 +101,19 @@ eval:
 target:
   spec:
     kind: hf
-    model_class: transformers.LlamaForCausalLM
-    model_name: meta-llama/Llama-3.1-8B
+    model_class: transformers.GPT2LMHeadModel
+    model_name: openai-community/gpt2-xl
   output_extract: logits
 data:
-  tokenizer_name: meta-llama/Llama-3.1-8B
-  max_seq_len: 512
+  tokenizer_name: openai-community/gpt2
+  max_seq_len: 1024
   buffer_size: 1000
-  dataset_name: HuggingFaceFW/fineweb
-  # the sample-350BT subset, globbed directly to avoid a 28k-file repo tree walk
-  data_files: sample/350BT/*.parquet
-  revision: 9bb295ddab0e05d785b879661af7260fed5140fc
-  column_name: text
+  dataset_name: apollo-research/Skylion007-openwebtext-tokenizer-gpt2
+  column_name: input_ids
   train_split: train
   eval_split: train
   shuffle_each_epoch: true
-  is_tokenized: false
+  is_tokenized: true
   streaming: true
 runtime:
   autocast_bf16: true
