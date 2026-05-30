@@ -20,8 +20,8 @@ from param_decomp.masks import (
     make_mask_infos,
 )
 from param_decomp.metrics.importance_minimality import (
-    ImportanceMinimalityLossConfig,
-    importance_minimality_loss,
+    annealed_pnorm,
+    per_component_lp_sums,
 )
 from param_decomp.metrics.pgd_utils import (
     PGDInitStrategy,
@@ -31,6 +31,57 @@ from param_decomp.torch_helpers import bf16_autocast
 from param_decomp_lab.eval_metrics.ci_l0 import calc_ci_l_zero
 
 MaskType = Literal["stochastic", "ci"]
+
+
+class AppImpMinConfig(BaseModel):
+    """Single-prompt circuit-optimization sparsity penalty.
+
+    The app keeps the original rolled `mean + beta * mean * log2(1 + sum)` form
+    (its `beta` is persisted in the graph optimization params / DB), rather than the
+    core library's split imp/freq losses. `beta` lives here, not on the core
+    `ImportanceMinimalityLossConfig`, which dropped it in the frequency-minimality
+    refactor.
+    """
+
+    coeff: float | None = None
+    pnorm: float
+    beta: float
+    eps: float = 1e-12
+    p_anneal_start_frac: Probability = 1.0
+    p_anneal_final_p: float | None = None
+    p_anneal_end_frac: Probability = 1.0
+
+
+def app_importance_minimality_loss(
+    ci_upper_leaky: dict[str, Float[Tensor, "... C"]],
+    current_frac_of_training: float,
+    cfg: AppImpMinConfig,
+) -> Float[Tensor, ""]:
+    """Rolled `Σ_c mean_c * (1 + beta * log2(1 + sum_c))` on a single prompt.
+
+    Single-process (one prompt, no DP), so the per-prompt `sum_c` inside the log is
+    already the full token count — matches the app's pre-refactor behavior.
+    """
+    annealed_p = annealed_pnorm(
+        current_frac_of_training=current_frac_of_training,
+        initial_p=cfg.pnorm,
+        p_anneal_start_frac=cfg.p_anneal_start_frac,
+        p_anneal_final_p=cfg.p_anneal_final_p,
+        p_anneal_end_frac=cfg.p_anneal_end_frac,
+    )
+    per_component_sums, n_examples = per_component_lp_sums(
+        ci_upper_leaky=ci_upper_leaky, pnorm=annealed_p, eps=cfg.eps
+    )
+    total_loss = torch.zeros((), device=next(iter(per_component_sums.values())).device)
+    for layer_sums in per_component_sums.values():
+        per_component_mean = layer_sums / n_examples
+        total_loss = (
+            total_loss
+            + (
+                per_component_mean + cfg.beta * per_component_mean * torch.log2(1 + layer_sums)
+            ).sum()
+        )
+    return total_loss
 
 
 class AdvPGDConfig(BaseModel):
@@ -231,7 +282,7 @@ class OptimCIConfig:
     log_freq: int
 
     # Loss config (CE or KL — must target a specific position)
-    imp_min_config: ImportanceMinimalityLossConfig
+    imp_min_config: AppImpMinConfig
     loss_config: PositionalLossConfig
 
     sampling: SamplingType
@@ -408,15 +459,10 @@ def optimize_ci_values(
         with bf16_autocast():
             recon_out = model(tokens, mask_infos=recon_mask_infos)
 
-        imp_min_loss = importance_minimality_loss(
+        imp_min_loss = app_importance_minimality_loss(
             ci_upper_leaky=ci_outputs.upper_leaky,
             current_frac_of_training=step / config.steps,
-            pnorm=config.imp_min_config.pnorm,
-            beta=config.imp_min_config.beta,
-            eps=config.imp_min_config.eps,
-            p_anneal_start_frac=config.imp_min_config.p_anneal_start_frac,
-            p_anneal_final_p=config.imp_min_config.p_anneal_final_p,
-            p_anneal_end_frac=config.imp_min_config.p_anneal_end_frac,
+            cfg=config.imp_min_config,
         )
 
         recon_loss = compute_recon_loss(recon_out, config.loss_config, target_out, device)
@@ -545,27 +591,17 @@ def importance_minimality_loss_per_element(
     ci_upper_leaky_batched: dict[str, Float[Tensor, "N seq C"]],
     n_batch: int,
     current_frac_of_training: float,
-    pnorm: float,
-    beta: float,
-    eps: float,
-    p_anneal_start_frac: float,
-    p_anneal_final_p: float | None,
-    p_anneal_end_frac: float,
+    cfg: AppImpMinConfig,
 ) -> Float[Tensor, " N"]:
     """Compute importance minimality loss independently for each batch element."""
     losses = []
     for i in range(n_batch):
         element_ci = {k: v[i : i + 1] for k, v in ci_upper_leaky_batched.items()}
         losses.append(
-            importance_minimality_loss(
+            app_importance_minimality_loss(
                 ci_upper_leaky=element_ci,
                 current_frac_of_training=current_frac_of_training,
-                pnorm=pnorm,
-                beta=beta,
-                eps=eps,
-                p_anneal_start_frac=p_anneal_start_frac,
-                p_anneal_final_p=p_anneal_final_p,
-                p_anneal_end_frac=p_anneal_end_frac,
+                cfg=cfg,
             )
         )
     return torch.stack(losses)
@@ -728,12 +764,7 @@ def optimize_ci_values_batched(
             ci_upper_leaky_batched=batched_ci_upper_leaky,
             n_batch=N,
             current_frac_of_training=step / config.steps,
-            pnorm=config.imp_min_config.pnorm,
-            beta=config.imp_min_config.beta,
-            eps=config.imp_min_config.eps,
-            p_anneal_start_frac=config.imp_min_config.p_anneal_start_frac,
-            p_anneal_final_p=config.imp_min_config.p_anneal_final_p,
-            p_anneal_end_frac=config.imp_min_config.p_anneal_end_frac,
+            cfg=config.imp_min_config,
         )
 
         recon_losses = compute_recon_loss_batched(

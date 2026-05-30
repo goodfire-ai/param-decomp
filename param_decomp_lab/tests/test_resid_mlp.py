@@ -40,7 +40,7 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         n_mask_samples=1,
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[8]),
         loss_metrics=[
-            ImportanceMinimalityLossConfig(coeff=3e-3, pnorm=0.9, beta=0.5, eps=1e-12),
+            ImportanceMinimalityLossConfig(coeff=3e-3, pnorm=0.9, eps=1e-12),
             StochasticReconLossConfig(coeff=1.0),
             FaithfulnessLossConfig(coeff=1.0),
         ],

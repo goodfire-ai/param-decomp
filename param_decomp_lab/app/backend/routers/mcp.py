@@ -23,14 +23,13 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from param_decomp.log import logger
-from param_decomp.metrics.importance_minimality import ImportanceMinimalityLossConfig
 from param_decomp_lab.app.backend.compute import (
     compute_ci_only,
     compute_prompt_attributions_optimized,
     parse_node_key,
 )
 from param_decomp_lab.app.backend.database import StoredGraph
-from param_decomp_lab.app.backend.optim_cis import CELossConfig, OptimCIConfig
+from param_decomp_lab.app.backend.optim_cis import AppImpMinConfig, CELossConfig, OptimCIConfig
 from param_decomp_lab.app.backend.routers.graphs import _build_out_probs
 from param_decomp_lab.app.backend.routers.pretrain_info import _get_pretrain_info
 from param_decomp_lab.app.backend.state import StateManager
@@ -603,7 +602,7 @@ def _tool_optimize_graph(params: dict[str, Any]) -> Generator[dict[str, Any]]:
         lr_exponential_halflife=None,
         lr_warmup_pct=0.01,
         log_freq=max(1, steps // 10),
-        imp_min_config=ImportanceMinimalityLossConfig(coeff=0.1, pnorm=0.5, beta=0.0),
+        imp_min_config=AppImpMinConfig(coeff=0.1, pnorm=0.5, beta=0.0),
         loss_config=loss_config,
         sampling=loaded.config.sampling,
         ce_kl_rounding_threshold=0.5,

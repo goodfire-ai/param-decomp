@@ -423,10 +423,8 @@ class EditableModel:
         Returns:
             List of (component_key, frequency) sorted by frequency descending.
         """
-        from param_decomp.metrics.importance_minimality import (
-            ImportanceMinimalityLossConfig,
-        )
         from param_decomp_lab.app.backend.optim_cis import (
+            AppImpMinConfig,
             CELossConfig,
             OptimCIConfig,
             optimize_ci_values,
@@ -453,7 +451,7 @@ class EditableModel:
                 lr_exponential_halflife=None,
                 lr_warmup_pct=0.1,
                 log_freq=optim_steps + 1,  # suppress logging
-                imp_min_config=ImportanceMinimalityLossConfig(coeff=0.1, pnorm=0.5, beta=1.0),
+                imp_min_config=AppImpMinConfig(coeff=0.1, pnorm=0.5, beta=1.0),
                 loss_config=CELossConfig(
                     coeff=20.0,
                     position=window_target_pos - 1,
@@ -510,11 +508,12 @@ class EditableModel:
         (the logits at position target_position predict this token, so internally
         we optimize for loss at position target_position).
         """
-        from param_decomp.metrics.importance_minimality import (
-            ImportanceMinimalityLossConfig,
-        )
         from param_decomp_lab.app.backend.compute import compute_prompt_attributions_optimized
-        from param_decomp_lab.app.backend.optim_cis import CELossConfig, OptimCIConfig
+        from param_decomp_lab.app.backend.optim_cis import (
+            AppImpMinConfig,
+            CELossConfig,
+            OptimCIConfig,
+        )
         from param_decomp_lab.topology.gradient_connectivity import get_sources_by_target
 
         device = str(tokens.device)
@@ -531,7 +530,7 @@ class EditableModel:
             lr_exponential_halflife=None,
             lr_warmup_pct=0.1,
             log_freq=optim_steps + 1,
-            imp_min_config=ImportanceMinimalityLossConfig(coeff=imp_min_coeff, pnorm=0.5, beta=1.0),
+            imp_min_config=AppImpMinConfig(coeff=imp_min_coeff, pnorm=0.5, beta=1.0),
             loss_config=CELossConfig(
                 coeff=ce_coeff,
                 position=target_position,

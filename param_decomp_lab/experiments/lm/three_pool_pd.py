@@ -1,17 +1,18 @@
 """3-pool-constrained `PDConfig` subclass + the typed `ThreePoolLosses` struct.
 
 The 3-pool training path implements exactly one algorithm: continuous sampling, a
-single stochastic mask, a delta component, no identity ops, and exactly the four
-loss terms (faithfulness, importance-minimality, layerwise stoch recon, persistent
-PGD recon). On the generic `PDConfig` those facts were enforced by ~60 lines of
+single stochastic mask, a delta component, no identity ops, and exactly the five
+loss terms (faithfulness, importance-minimality, frequency-minimality, layerwise
+stoch recon, persistent PGD recon). On the generic `PDConfig` those facts were
+enforced by ~60 lines of
 runtime asserts inside `ThreePoolTrainer.__init__`
 (`_validate_pd_config_for_three_pool`), firing only after a multi-node launch
 reached construction.
 
 `ThreePoolConstrainedPDConfig` lifts those into the type: the fixed scalars become
 frozen `Literal` defaults, and `loss_metrics` (a generic ordered list) is replaced
-by the `ThreePoolLosses(faith, imp, stoch, ppgd)` struct so "exactly these four,
-each with a coeff" is unrepresentable-if-wrong. A `model_validator` derives the
+by the `ThreePoolLosses(faith, imp, freq, stoch, ppgd)` struct so "exactly these
+five, each with a coeff" is unrepresentable-if-wrong. A `model_validator` derives the
 inherited `loss_metrics` list from the struct so everything that still consumes a
 `list[AnyLossMetricConfig]` (`ComponentModel` wiring, `validate_pgd_scope`,
 snapshot serialization, eval) keeps working unchanged.
@@ -29,24 +30,28 @@ from pydantic import Field, model_validator
 from param_decomp.base_config import BaseConfig
 from param_decomp.configs import AnyLossMetricConfig, PDConfig
 from param_decomp.metrics.faithfulness import FaithfulnessLossConfig
-from param_decomp.metrics.importance_minimality import ImportanceMinimalityLossConfig
+from param_decomp.metrics.importance_minimality import (
+    FrequencyMinimalityLossConfig,
+    ImportanceMinimalityLossConfig,
+)
 from param_decomp.metrics.persistent_pgd_recon import PersistentPGDReconLossConfig
 from param_decomp.metrics.stochastic_recon_layerwise import StochasticReconLayerwiseLossConfig
 
 
 class ThreePoolLosses(BaseConfig):
-    """The exactly-these-four loss set the 3-pool path implements.
+    """The exactly-these-five loss set the 3-pool path implements.
 
     Replaces `PDConfig.loss_metrics`'s generic `list[AnyLossMetricConfig]` so a
     missing / extra / wrong-typed loss is a parse error, not a runtime assert. Each
-    field carries the metric's own params (`imp.pnorm`/`beta`, `ppgd.optimizer`/
-    `scope`/`n_warmup_steps`, …) plus its `coeff`. The trainer reads
-    `pd.losses.faith` / `.imp` / `.stoch` / `.ppgd` directly — no `by_type` dict, no
-    `isinstance` narrowing.
+    field carries the metric's own params (`imp.pnorm`, `freq.reference_token_count`,
+    `ppgd.optimizer`/`scope`/`n_warmup_steps`, …) plus its `coeff`. The trainer reads
+    `pd.losses.faith` / `.imp` / `.freq` / `.stoch` / `.ppgd` directly — no `by_type`
+    dict, no `isinstance` narrowing.
     """
 
     faith: FaithfulnessLossConfig
     imp: ImportanceMinimalityLossConfig
+    freq: FrequencyMinimalityLossConfig
     stoch: StochasticReconLayerwiseLossConfig
     ppgd: PersistentPGDReconLossConfig
 
@@ -55,6 +60,7 @@ class ThreePoolLosses(BaseConfig):
         for name, cfg in (
             ("faith", self.faith),
             ("imp", self.imp),
+            ("freq", self.freq),
             ("stoch", self.stoch),
             ("ppgd", self.ppgd),
         ):
@@ -63,6 +69,16 @@ class ThreePoolLosses(BaseConfig):
             "3-pool path does not implement PersistentPGDReconLoss.start_frac > 0; "
             "PPGD always runs from step 0."
         )
+        # The CI step shares one set of per-component `(ci + eps)^p` sums between the
+        # imp and freq terms (`step_ci._sparsity_losses`), so their p-power params must
+        # match. Differing values would silently apply imp's power to the freq term.
+        shared = ("pnorm", "eps", "p_anneal_start_frac", "p_anneal_final_p", "p_anneal_end_frac")
+        for field in shared:
+            imp_val, freq_val = getattr(self.imp, field), getattr(self.freq, field)
+            assert imp_val == freq_val, (
+                f"3-pool shares the (ci+eps)^p sums between imp and freq, so "
+                f"losses.imp.{field} ({imp_val}) must equal losses.freq.{field} ({freq_val})"
+            )
         return self
 
 
@@ -111,6 +127,7 @@ class ThreePoolConstrainedPDConfig(PDConfig):
         data["loss_metrics"] = [
             losses.faith.model_dump(),
             losses.imp.model_dump(),
+            losses.freq.model_dump(),
             losses.stoch.model_dump(),
             losses.ppgd.model_dump(),
         ]

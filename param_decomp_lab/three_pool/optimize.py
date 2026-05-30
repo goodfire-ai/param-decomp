@@ -945,6 +945,7 @@ def _build_runtime(
     losses = pd_config.losses
     ppgd_cfg = losses.ppgd
     imp_min_cfg = losses.imp
+    freq_min_cfg = losses.freq
 
     block_groups = tuple(
         LayerwiseBlockGroup(ranks=tuple(bg.ranks), owned_sites=tuple(bg.owned_sites))
@@ -964,14 +965,20 @@ def _build_runtime(
         ppgd_cfg=ppgd_cfg,
         coeff_faith=float(_required(losses.faith.coeff)),
         coeff_imp=float(_required(losses.imp.coeff)),
+        coeff_freq=float(_required(losses.freq.coeff)),
         coeff_stoch=float(_required(losses.stoch.coeff)),
         coeff_ppgd=float(_required(losses.ppgd.coeff)),
         imp_min_pnorm=imp_min_cfg.pnorm,
-        imp_min_beta=imp_min_cfg.beta,
         imp_min_eps=imp_min_cfg.eps,
         imp_min_p_anneal_start_frac=imp_min_cfg.p_anneal_start_frac,
         imp_min_p_anneal_final_p=imp_min_cfg.p_anneal_final_p,
         imp_min_p_anneal_end_frac=imp_min_cfg.p_anneal_end_frac,
+        freq_min_pnorm=freq_min_cfg.pnorm,
+        freq_min_eps=freq_min_cfg.eps,
+        freq_min_reference_token_count=freq_min_cfg.reference_token_count,
+        freq_min_p_anneal_start_frac=freq_min_cfg.p_anneal_start_frac,
+        freq_min_p_anneal_final_p=freq_min_cfg.p_anneal_final_p,
+        freq_min_p_anneal_end_frac=freq_min_cfg.p_anneal_end_frac,
         lr_components=pd_config.components_optimizer.lr_schedule.start_val,
         lr_ci_fn=pd_config.ci_fn_optimizer.lr_schedule.start_val,
         grad_clip_norm_components=pd_config.components_optimizer.grad_clip_norm,
@@ -1074,6 +1081,7 @@ def _log_train_metrics(
     combined["loss/total"] = (
         runtime.coeff_faith * combined["loss/faith"]
         + runtime.coeff_imp * combined["loss/imp"]
+        + runtime.coeff_freq * combined["loss/freq"]
         + runtime.coeff_stoch * combined["loss/stoch"]
         + runtime.coeff_ppgd * combined["loss/ppgd"]
     )

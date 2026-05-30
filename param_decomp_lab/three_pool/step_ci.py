@@ -59,6 +59,7 @@ from param_decomp.component_model import CIOutputs, ComponentModel
 from param_decomp.grad_clip import cross_pool_clip_grad_norm
 from param_decomp.metrics.importance_minimality import (
     annealed_pnorm,
+    finalize_freq_min,
     finalize_imp_min,
     per_component_lp_sums,
 )
@@ -91,11 +92,12 @@ class CiSends:
 
 
 @dataclass(frozen=True)
-class ImpMinLoss:
-    """Phase ci/3 output: the (CI-pool-global) importance-minimality scalar,
-    still attached to the CI fn graph via ``ci.upper_leaky``."""
+class SparsityLosses:
+    """Phase ci/3 output: the (CI-pool-global) importance- and frequency-minimality
+    scalars, both still attached to the CI fn graph via ``ci.upper_leaky``."""
 
-    loss: Tensor
+    imp: Tensor
+    freq: Tensor
 
 
 @dataclass(frozen=True)
@@ -142,7 +144,7 @@ def step_ci(
 
     fwd = _ci_fn_forward(component_model, h_cache_T, ctx, cfg)
     sends = _send_ci_values(ctx.portals, ctx.role, fwd)
-    imp = _imp_min_phase(fwd, current_frac_of_training, cfg, ctx)
+    sparsity = _imp_min_phase(fwd, current_frac_of_training, cfg, ctx)
     h_cache_T_plus_1 = _prefetch_next_h(component_model, batch_T_plus_1_local, cfg)
     received = _recv_g_ci(ctx.portals, ctx.role, cfg, fwd.seq_len, device)
     total = _assemble_g_ci_total(received, ctx, cfg, fwd.seq_len)
@@ -154,7 +156,7 @@ def step_ci(
     # wall was dominated by pending stream work, not by the bwd. Remove after diagnosis.
     if os.environ.get("PD_SYNC_BEFORE_8A", "").strip() in ("1", "true", "yes"):
         torch.cuda.synchronize()
-    _fused_backward_through_ci_fn(imp, fwd, total, ctx, cfg)
+    _fused_backward_through_ci_fn(sparsity, fwd, total, ctx, cfg)
     _maybe_emit_ci_fn_bwd_breakdown(component_model)
 
     all_reduce_ci_fn_grads(ctx.world, ci_fn_params)
@@ -170,15 +172,21 @@ def step_ci(
     sends.to_lw.wait()
     sends.to_ppgd.wait()
 
-    # imp is already globally aggregated inside ``_imp_min_phase`` (per_component_sums
-    # + n_examples SUM-reduced across CI pool), so every CI rank holds the same
-    # scalar. Divide by ``n_ci`` so the logger's cross-pool SUM all-reduce gives back
-    # the global value exactly once.
+    # imp + freq are already globally aggregated inside ``_imp_min_phase``
+    # (per_component_sums + n_examples SUM-reduced across CI pool), so every CI rank
+    # holds the same scalars. Divide by ``n_ci`` so the logger's cross-pool SUM
+    # all-reduce gives back the global value exactly once.
     #
     # ``.item()`` is a CPU↔GPU sync — only pay it on steps we actually log to.
     if should_log:
-        imp_value = imp.loss.item()
-        metrics = {"loss/imp": imp_value, "_raw/imp_num": imp_value / ctx.world.n_ci}
+        imp_value = sparsity.imp.item()
+        freq_value = sparsity.freq.item()
+        metrics = {
+            "loss/imp": imp_value,
+            "loss/freq": freq_value,
+            "_raw/imp_num": imp_value / ctx.world.n_ci,
+            "_raw/freq_num": freq_value / ctx.world.n_ci,
+        }
     else:
         metrics = {}
     return metrics, h_cache_T_plus_1
@@ -212,16 +220,15 @@ def _imp_min_phase(
     current_frac_of_training: float,
     cfg: _ThreePoolRuntime,
     ctx: CIContext,
-) -> ImpMinLoss:
-    """Phase ci/3. Importance-minimality loss on ``ci.upper_leaky``."""
-    loss = _importance_minimality_loss(
+) -> SparsityLosses:
+    """Phase ci/3. Importance- and frequency-minimality losses on ``ci.upper_leaky``."""
+    return _sparsity_losses(
         fwd.ci.upper_leaky,
         current_frac_of_training,
         cfg,
         ci_pool_group=ctx.world.ci_pool_group,
         n_ci_pool=ctx.world.n_ci,
     )
-    return ImpMinLoss(loss=loss)
 
 
 def _prefetch_next_h(
@@ -344,7 +351,7 @@ def _maybe_emit_ci_fn_bwd_breakdown(component_model: ComponentModel) -> None:
 
 
 def _fused_backward_through_ci_fn(
-    imp: ImpMinLoss,
+    sparsity: SparsityLosses,
     fwd: CiForward,
     total: GciTotal,
     ctx: CIContext,
@@ -353,9 +360,10 @@ def _fused_backward_through_ci_fn(
     """Phase ci/8. Backward through the CI fn graph.
 
     Two gradient seeds enter the graph:
-      * ``coeff_imp * loss_imp`` — flows via ``ci.upper_leaky``. Its backward
-        traverses the autograd-aware ``dist_fn.all_reduce`` (96 NCCL
-        broadcasts back to every CI rank) before reaching the CI fn output.
+      * ``coeff_imp * loss_imp + coeff_freq * loss_freq`` — flows via
+        ``ci.upper_leaky``. Its backward traverses the autograd-aware
+        ``dist_fn.all_reduce`` (96 NCCL broadcasts back to every CI rank) before
+        reaching the CI fn output.
       * ``g_CI_total[s]`` per site — injected directly on ``ci.lower_leaky[s]``.
         96 separate gradient seeds rejoining at the shared CI fn output.
 
@@ -366,9 +374,9 @@ def _fused_backward_through_ci_fn(
     between the two backward paths — to find out which one dominates and
     where to optimize next.
     """
-    loss_imp = imp.loss
-    assert loss_imp.dim() == 0, f"loss_imp must be scalar; got {loss_imp.shape}"
-    scaled_imp = cfg.coeff_imp * loss_imp
+    assert sparsity.imp.dim() == 0, f"loss_imp must be scalar; got {sparsity.imp.shape}"
+    assert sparsity.freq.dim() == 0, f"loss_freq must be scalar; got {sparsity.freq.shape}"
+    scaled_sparsity = cfg.coeff_imp * sparsity.imp + cfg.coeff_freq * sparsity.freq
     lower_leaky_tensors = [fwd.ci.lower_leaky[s] for s in ctx.world.all_sites]
     g_ci_total_seeds = [total.per_site[s] for s in ctx.world.all_sites]
     torch.autograd.backward(
@@ -376,7 +384,7 @@ def _fused_backward_through_ci_fn(
         grad_tensors=g_ci_total_seeds,
         retain_graph=True,
     )
-    torch.autograd.backward(tensors=[scaled_imp], grad_tensors=[None])
+    torch.autograd.backward(tensors=[scaled_sparsity], grad_tensors=[None])
 
 
 def _target_fwd_and_cache(
@@ -394,24 +402,28 @@ def _target_fwd_and_cache(
     return {k: v.to(torch.float32) for k, v in out.cache.items()}
 
 
-def _importance_minimality_loss(
+def _sparsity_losses(
     ci_upper: dict[str, Tensor],
     current_frac_of_training: float,
     cfg: _ThreePoolRuntime,
     ci_pool_group: dist.ProcessGroup,
     n_ci_pool: int,
-) -> Tensor:
-    """Exact (across CI pool) importance-minimality loss.
+) -> SparsityLosses:
+    """Exact (across CI pool) importance- and frequency-minimality losses.
 
-    Each CI rank computes ``per_component_sums`` on its slice; we SUM-reduce
-    them across the CI pool with the autograd-aware all_reduce. ``n_examples``
-    is uniform across CI ranks (same batch_local_ci) so we multiply rather
-    than reduce.
+    Both terms read the same per-token power ``(ci + eps) ** p``, so we build one
+    set of per-component sums and finalize twice (cheap). The 3-pool path therefore
+    requires freq and imp to share ``pnorm`` / ``eps`` / the anneal schedule (asserted
+    at config load — see ``ThreePoolLosses``); the freq term's distinct knob is its
+    ``reference_token_count`` normalizer.
 
-    Autograd note: ``torch.distributed.nn.functional.all_reduce`` is the
-    autograd-aware variant — forward sums, backward broadcasts the upstream
-    gradient unchanged to every rank's input (correct for SUM since
-    ``∂global/∂local_i = 1`` for all i).
+    Each CI rank computes ``per_component_sums`` on its slice; we SUM-reduce them
+    across the CI pool with the autograd-aware all_reduce. ``n_examples`` is uniform
+    across CI ranks (same batch_local_ci) so we multiply rather than reduce.
+
+    Autograd note: ``torch.distributed.nn.functional.all_reduce`` is the autograd-aware
+    variant — forward sums, backward broadcasts the upstream gradient unchanged to
+    every rank's input (correct for SUM since ``∂global/∂local_i = 1`` for all i).
     """
     annealed_p = annealed_pnorm(
         current_frac_of_training=current_frac_of_training,
@@ -434,9 +446,12 @@ def _importance_minimality_loss(
         }
         n_examples = n_examples * n_ci_pool
     # per_component_sums + n_examples are already global (reduced over the CI pool
-    # above), so finalize's log term computes log2(1 + global_sum) exactly.
-    return finalize_imp_min(
+    # above), so finalize_freq_min's log term computes log2(1 + a' * f_c) on the
+    # true full-batch frequency.
+    imp = finalize_imp_min(per_component_sums=per_component_sums, n_examples=n_examples)
+    freq = finalize_freq_min(
         per_component_sums=per_component_sums,
         n_examples=n_examples,
-        beta=cfg.imp_min_beta,
+        reference_token_count=cfg.freq_min_reference_token_count,
     )
+    return SparsityLosses(imp=imp, freq=freq)

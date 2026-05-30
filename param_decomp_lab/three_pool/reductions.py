@@ -8,13 +8,15 @@ Global scalars:
   ``faith_global = SUM(faith_num) / SUM(faith_den)``    (LW pool)
   ``stoch_global = SUM(stoch_num) / SUM(stoch_den)``    (LW pool)
   ``imp_global   = SUM(imp_num)``                        (CI pool — see note)
+  ``freq_global  = SUM(freq_num)``                       (CI pool — see note)
   ``ppgd_global  = SUM(ppgd_num)  / SUM(ppgd_den)``     (PPGD pool)
 
-Note on imp: the CI pool already all-reduces ``per_component_sums`` +
-``n_examples`` SUM-wise across the CI pool inside its loss computation, so
-every CI rank's ``loss_imp`` scalar IS already the global value. The step
-function divides by ``n_ci`` before exposing as ``_raw/imp_num`` so that the
-pool-wide all-reduce SUM gives back the global value exactly once.
+Note on imp / freq: the CI pool already all-reduces ``per_component_sums`` +
+``n_examples`` SUM-wise across the CI pool inside its loss computation, so every
+CI rank's ``loss_imp`` / ``loss_freq`` scalars ARE already the global values. The
+step function divides each by ``n_ci`` before exposing as ``_raw/imp_num`` /
+``_raw/freq_num`` so that the pool-wide all-reduce SUM gives back the global value
+exactly once.
 
 LW pool's all-reduce SUM scales every raw value by ``1 / n_per_block`` *before*
 the SUM. That single division collapses two reductions into one and is
@@ -43,7 +45,7 @@ LW_RAW_KEYS: tuple[str, ...] = (
     "_raw/stoch_num",
     "_raw/stoch_den",
 )
-CI_RAW_KEYS: tuple[str, ...] = ("_raw/imp_num",)
+CI_RAW_KEYS: tuple[str, ...] = ("_raw/imp_num", "_raw/freq_num")
 PPGD_RAW_KEYS: tuple[str, ...] = ("_raw/ppgd_num", "_raw/ppgd_den")
 
 
@@ -118,6 +120,7 @@ def aggregate_losses_to_rank0(
                     "loss/faith": lw["_raw/faith_num"] / lw["_raw/faith_den"],
                     "loss/stoch": lw["_raw/stoch_num"] / lw["_raw/stoch_den"],
                     "loss/imp": ci["_raw/imp_num"],
+                    "loss/freq": ci["_raw/freq_num"],
                     "loss/ppgd": pgd["_raw/ppgd_num"] / pgd["_raw/ppgd_den"],
                 }
             return None

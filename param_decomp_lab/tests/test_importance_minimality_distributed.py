@@ -1,9 +1,10 @@
-"""Distributed test verifying ImportanceMinimalityLoss live update matches eval compute.
+"""Distributed test verifying imp/freq-minimality live update matches eval compute.
 
-The live training loss returned by `ImportanceMinimalityLoss.update(ctx)` must equal the
-eval-side scalar from `compute()` even when per-rank CI distributions differ. Both must
-use exact global sums (not local-sums-times-world-size), otherwise the convex log term
-in `finalize_imp_min` produces a Jensen upward bias on `update` relative to `compute`.
+The live training loss returned by `<Loss>.update(ctx)` must equal the eval-side scalar
+from `compute()` even when per-rank CI distributions differ. Both must use exact global
+sums (not local-sums-times-world-size), otherwise the convex log term in
+`finalize_freq_min` produces a Jensen upward bias on `update` relative to `compute`
+(the imp term is linear, so its update/compute match trivially; freq is the convex one).
 
 This file can be run in two ways:
 
@@ -25,6 +26,8 @@ import torch
 
 from param_decomp.distributed import get_distributed_state
 from param_decomp.metrics.importance_minimality import (
+    FrequencyMinimalityLoss,
+    FrequencyMinimalityLossConfig,
     ImportanceMinimalityLoss,
     ImportanceMinimalityLossConfig,
 )
@@ -44,11 +47,25 @@ class _FakeCtx:
     current_frac_of_training: float
 
 
-def _make_metric(pnorm: float, beta: float, eps: float, device: str) -> ImportanceMinimalityLoss:
-    cfg = ImportanceMinimalityLossConfig(coeff=1.0, pnorm=pnorm, beta=beta, eps=eps)
+def _make_metric(pnorm: float, eps: float, device: str) -> ImportanceMinimalityLoss:
+    cfg = ImportanceMinimalityLossConfig(coeff=1.0, pnorm=pnorm, eps=eps)
     m = ImportanceMinimalityLoss(cfg)
     # Bypass Metric.bind (which wants a real ComponentModel). We only need device set
     # and reset() called to initialise the accumulators.
+    m.model = None  # pyright: ignore[reportAttributeAccessIssue]
+    m.device = device
+    m._bound = True
+    m.reset()
+    return m
+
+
+def _make_freq_metric(
+    pnorm: float, eps: float, reference_token_count: int, device: str
+) -> FrequencyMinimalityLoss:
+    cfg = FrequencyMinimalityLossConfig(
+        coeff=1.0, pnorm=pnorm, eps=eps, reference_token_count=reference_token_count
+    )
+    m = FrequencyMinimalityLoss(cfg)
     m.model = None  # pyright: ignore[reportAttributeAccessIssue]
     m.device = device
     m._bound = True
@@ -85,8 +102,8 @@ def _run_test() -> None:
         ci = _FakeCI(upper_leaky=upper_leaky, lower_leaky={}, pre_sigmoid={})
         ctx: Any = _FakeCtx(ci=ci, current_frac_of_training=0.0)
 
-        # ---- run both branches ----
-        metric = _make_metric(pnorm=1.0, beta=0.5, eps=0.0, device=device)
+        # ---- run both branches (imp: linear; freq: convex log — the real test) ----
+        metric = _make_metric(pnorm=1.0, eps=0.0, device=device)
         live_loss = metric.update(ctx)
         eval_loss = metric.compute()
         assert isinstance(eval_loss, torch.Tensor)
@@ -100,9 +117,21 @@ def _run_test() -> None:
             f"eval compute() loss {eval_loss.item()}"
         )
 
+        # Freq carries the convex log2(1 + a'*f) term: a per-rank local-sum*world_size
+        # approximation would Jensen-overestimate. update() must match compute() exactly.
+        freq_metric = _make_freq_metric(
+            pnorm=1.0, eps=0.0, reference_token_count=256, device=device
+        )
+        freq_live = freq_metric.update(ctx)
+        freq_eval = freq_metric.compute()
+        assert isinstance(freq_eval, torch.Tensor)
+        assert torch.allclose(freq_live, freq_eval, atol=1e-6), (
+            f"rank={rank}: live freq update() {freq_live.item()} != compute() {freq_eval.item()}"
+        )
+
         # ---- second update with different per-rank CI; live must still match the
         #      _per-batch_ eval (compute over only this batch) ----
-        metric2 = _make_metric(pnorm=1.0, beta=0.5, eps=0.0, device=device)
+        metric2 = _make_freq_metric(pnorm=1.0, eps=0.0, reference_token_count=256, device=device)
         upper_leaky_2 = {k: v * (rank + 2.0) for k, v in upper_leaky.items()}
         ctx2: Any = _FakeCtx(
             ci=_FakeCI(upper_leaky=upper_leaky_2, lower_leaky={}, pre_sigmoid={}),
@@ -121,7 +150,7 @@ def _run_test() -> None:
         # gradient-averaged across ranks by the optimizer, so the effective gradient
         # seen by the optimizer matches the analytical d(global_loss)/d(local_ci_r).
         # Here we just verify a non-zero gradient flows to every rank's input.
-        metric3 = _make_metric(pnorm=2.0, beta=0.0, eps=0.0, device=device)
+        metric3 = _make_metric(pnorm=2.0, eps=0.0, device=device)
         upper_leaky_grad = {
             k: v.detach().clone().requires_grad_(True) for k, v in upper_leaky.items()
         }

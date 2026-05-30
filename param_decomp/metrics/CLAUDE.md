@@ -15,6 +15,7 @@ core library. For eval metrics (user-extensible, lab-side), see
 | `context.py` | `MetricContext` — the per-step bundle every `Metric.update(ctx)` receives |
 | `dispatch.py` | `LOSS_METRIC_CLASSES` type→class table + `instantiate_metrics(...)` |
 | `<loss_name>.py` | One file per metric: `<Name>Loss` class + `<Name>LossConfig` config side-by-side |
+| `importance_minimality.py` | Two sparsity losses sharing `(ci+eps)^p` sums: `ImportanceMinimalityLoss` (bare mean `Σ_c f_c`) + `FrequencyMinimalityLoss` (`Σ_c f_c·log2(1 + a'·f_c)`, batch-invariant via `reference_token_count`) |
 | `persistent_pgd_state.py` | PPGD adversarial-source state machine (shared by `persistent_pgd_recon.py`) |
 | `pgd_utils.py` | Shared PGD helpers used by the regular PGD recon metrics |
 | `output.py` | Shared output-extraction helpers used across recon losses |

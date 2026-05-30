@@ -20,7 +20,6 @@ from pydantic import BaseModel
 from param_decomp.component_model import ComponentModel
 from param_decomp.log import logger
 from param_decomp.masks import SamplingType
-from param_decomp.metrics.importance_minimality import ImportanceMinimalityLossConfig
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.app.backend.compute import (
     DEFAULT_EVAL_PGD_CONFIG,
@@ -41,6 +40,7 @@ from param_decomp_lab.app.backend.database import (
 from param_decomp_lab.app.backend.dependencies import DepLoadedRun, DepStateManager
 from param_decomp_lab.app.backend.optim_cis import (
     AdvPGDConfig,
+    AppImpMinConfig,
     CELossConfig,
     CISnapshot,
     KLLossConfig,
@@ -728,7 +728,7 @@ def compute_graph_optimized_stream(
         lr_exponential_halflife=None,
         lr_warmup_pct=0.01,
         log_freq=max(1, steps // 4),
-        imp_min_config=ImportanceMinimalityLossConfig(coeff=imp_min_coeff, pnorm=pnorm, beta=beta),
+        imp_min_config=AppImpMinConfig(coeff=imp_min_coeff, pnorm=pnorm, beta=beta),
         loss_config=loss_config,
         sampling=loaded.config.sampling,
         ce_kl_rounding_threshold=0.5,
@@ -894,9 +894,7 @@ def compute_graph_optimized_batch_stream(
             lr_exponential_halflife=None,
             lr_warmup_pct=0.01,
             log_freq=max(1, body.steps // 4),
-            imp_min_config=ImportanceMinimalityLossConfig(
-                coeff=coeff, pnorm=body.pnorm, beta=body.beta
-            ),
+            imp_min_config=AppImpMinConfig(coeff=coeff, pnorm=body.pnorm, beta=body.beta),
             loss_config=loss_config,
             sampling=loaded.config.sampling,
             ce_kl_rounding_threshold=0.5,

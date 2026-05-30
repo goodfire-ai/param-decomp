@@ -44,7 +44,7 @@ def test_gpt_2_decomposition_happy_path(tmp_path: Path) -> None:
             DecompositionTargetConfig(module_pattern="transformer.h.1.attn.c_attn", C=10),
         ],
         loss_metrics=[
-            ImportanceMinimalityLossConfig(coeff=1e-2, pnorm=0.9, beta=0.5, eps=1e-12),
+            ImportanceMinimalityLossConfig(coeff=1e-2, pnorm=0.9, eps=1e-12),
             StochasticReconLayerwiseLossConfig(coeff=1.0),
             StochasticReconLossConfig(coeff=1.0),
             FaithfulnessLossConfig(coeff=200),

@@ -36,6 +36,7 @@ def test_valid_config_parses() -> None:
     assert [m.type for m in cfg.pd.loss_metrics] == [
         "FaithfulnessLoss",
         "ImportanceMinimalityLoss",
+        "FrequencyMinimalityLoss",
         "StochasticReconLayerwiseLoss",
         "PersistentPGDReconLoss",
     ]

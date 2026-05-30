@@ -5,9 +5,13 @@ from typing import Any
 import torch
 
 from param_decomp.metrics.importance_minimality import (
+    FrequencyMinimalityLoss,
+    FrequencyMinimalityLossConfig,
     ImportanceMinimalityLoss,
     ImportanceMinimalityLossConfig,
+    finalize_freq_min,
     importance_minimality_loss,
+    per_component_lp_sums,
 )
 
 
@@ -26,7 +30,6 @@ class TestImportanceMinimalityLoss:
             ci_upper_leaky=ci_upper_leaky,
             current_frac_of_training=0.0,
             pnorm=1.0,
-            beta=0.0,
             eps=0.0,
             p_anneal_start_frac=1.0,
             p_anneal_final_p=None,
@@ -44,7 +47,6 @@ class TestImportanceMinimalityLoss:
             ci_upper_leaky=ci_upper_leaky,
             current_frac_of_training=0.0,
             pnorm=2.0,
-            beta=0.0,
             eps=0.0,
             p_anneal_start_frac=1.0,
             p_anneal_final_p=None,
@@ -64,7 +66,6 @@ class TestImportanceMinimalityLoss:
             ci_upper_leaky=ci_upper_leaky,
             current_frac_of_training=0.0,
             pnorm=0.5,
-            beta=0.0,
             eps=eps,
             p_anneal_start_frac=1.0,
             p_anneal_final_p=None,
@@ -80,7 +81,6 @@ class TestImportanceMinimalityLoss:
             ci_upper_leaky=ci_upper_leaky,
             current_frac_of_training=0.3,
             pnorm=2.0,
-            beta=0.0,
             eps=0.0,
             p_anneal_start_frac=0.5,
             p_anneal_final_p=1.0,
@@ -99,7 +99,6 @@ class TestImportanceMinimalityLoss:
             ci_upper_leaky=ci_upper_leaky,
             current_frac_of_training=0.25,
             pnorm=2.0,
-            beta=0.0,
             eps=0.0,
             p_anneal_start_frac=0.0,
             p_anneal_final_p=1.0,
@@ -116,7 +115,6 @@ class TestImportanceMinimalityLoss:
             ci_upper_leaky=ci_upper_leaky,
             current_frac_of_training=0.9,
             pnorm=2.0,
-            beta=0.0,
             eps=0.0,
             p_anneal_start_frac=0.0,
             p_anneal_final_p=1.0,
@@ -133,7 +131,6 @@ class TestImportanceMinimalityLoss:
             ci_upper_leaky=ci_upper_leaky,
             current_frac_of_training=0.9,
             pnorm=2.0,
-            beta=0.0,
             eps=0.0,
             p_anneal_start_frac=0.0,
             p_anneal_final_p=None,
@@ -153,7 +150,6 @@ class TestImportanceMinimalityLoss:
             ci_upper_leaky=ci_upper_leaky,
             current_frac_of_training=0.0,
             pnorm=1.0,
-            beta=0.0,
             eps=0.0,
             p_anneal_start_frac=1.0,
             p_anneal_final_p=None,
@@ -165,20 +161,17 @@ class TestImportanceMinimalityLoss:
         expected = torch.tensor(6.0)
         assert torch.allclose(result, expected)
 
-    def test_beta_zero_simple_sum(self: object) -> None:
+    def test_bare_mean_over_examples(self: object) -> None:
         ci_upper_leaky = {
             "layer1": torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32),
         }
         # With pnorm=1 and eps=0:
-        # per_component_sums = [1+3, 2+4] = [4, 6]
-        # n_examples = 2
-        # per_component_mean = [2, 3]
-        # beta=0 => layer_loss = sum(per_component_mean) = 5
+        # per_component_sums = [1+3, 2+4] = [4, 6]; n_examples = 2
+        # per_component_mean = [2, 3]; loss = sum = 5
         result = importance_minimality_loss(
             ci_upper_leaky=ci_upper_leaky,
             current_frac_of_training=0.0,
             pnorm=1.0,
-            beta=0.0,
             eps=0.0,
             p_anneal_start_frac=1.0,
             p_anneal_final_p=None,
@@ -187,84 +180,75 @@ class TestImportanceMinimalityLoss:
         expected = torch.tensor(5.0)
         assert torch.allclose(result, expected)
 
-    def test_beta_logarithmic_penalty(self: object) -> None:
-        """Verify the logarithmic penalty with beta > 0 works correctly.
 
-        Tests:
-        1. Manual calculation verification
-        2. beta > 0 produces larger loss than beta = 0
-        3. Penalty is finite for edge cases (small/large values)
-        """
-        import math
+def _freq(per_component_sums: dict[str, torch.Tensor], n: int, a_prime: int) -> torch.Tensor:
+    return finalize_freq_min(
+        per_component_sums=per_component_sums, n_examples=n, reference_token_count=a_prime
+    )
 
-        ci_upper_leaky = {
-            "layer1": torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32),
+
+class TestFrequencyMinimalityLoss:
+    def test_closed_form(self: object) -> None:
+        # sums = [4, 6], n = 2, a' = 8.  f = [2, 3]
+        # loss = sum_c f_c * log2(1 + 8 * f_c)
+        sums = {"layer1": torch.tensor([4.0, 6.0])}
+        n, a_prime = 2, 8
+        expected = 2.0 * math.log2(1 + 8 * 2.0) + 3.0 * math.log2(1 + 8 * 3.0)
+        assert torch.allclose(_freq(sums, n, a_prime), torch.tensor(expected))
+
+    def test_zero_frequency_zero_contribution(self: object) -> None:
+        # A component that never fires (f=0) contributes exactly 0.
+        sums = {"layer1": torch.tensor([0.0, 5.0])}
+        n, a_prime = 4, 16
+        contributions = (torch.tensor([0.0, 5.0]) / n) * torch.log2(
+            1 + a_prime * (torch.tensor([0.0, 5.0]) / n)
+        )
+        assert contributions[0].item() == 0.0
+        assert torch.allclose(_freq(sums, n, a_prime), contributions.sum())
+
+    def test_batch_invariance(self: object) -> None:
+        # Same per-token frequency at two different batch sizes => same L_freq.
+        # Build sums so f_c is identical: doubling n doubles the sum.
+        f = torch.tensor([0.1, 0.4, 0.7])
+        a_prime = 1024
+        small_n, large_n = 256, 4096
+        sums_small = {"layer1": f * small_n}
+        sums_large = {"layer1": f * large_n}
+        loss_small = _freq(sums_small, small_n, a_prime)
+        loss_large = _freq(sums_large, large_n, a_prime)
+        assert torch.allclose(loss_small, loss_large)
+
+    def test_a_prime_reproduces_old_rolled_log_term(self: object) -> None:
+        # Old rolled imp-min was Σ_c mean_c + beta * mean_c * log2(1 + sum_c), with the
+        # B*T implicit inside the log (sum_c = f_c * B*T). The split:
+        #   imp = Σ_c mean_c
+        #   freq = Σ_c f_c * log2(1 + a' * f_c)   with a' = B*T
+        # so beta * freq == the old log term exactly. Here B*T = n_examples.
+        torch.manual_seed(0)
+        ci = {
+            "layer1": torch.rand(8, 5),  # [B*T, C], n_examples = 8
+            "layer2": torch.rand(8, 3),
         }
-        # With pnorm=1, eps=0, beta=1.0:
-        # per_component_sums = [1+3, 2+4] = [4, 6]
-        # n_examples = 2
-        # per_component_mean = [2, 3]
-        # layer_loss = sum(per_component_mean * (1 + beta * log2(1 + layer_sums)))
-        #            = 2 * (1 + log2(5)) + 3 * (1 + log2(7))
-        expected_beta_1 = 2.0 * (1 + math.log2(5)) + 3.0 * (1 + math.log2(7))
-        # beta=0 => layer_loss = sum(per_component_mean) = 5
-        expected_beta_0 = 5.0
+        pnorm, eps, beta = 2.0, 1e-12, 0.7
+        sums, n = per_component_lp_sums(ci_upper_leaky=ci, pnorm=pnorm, eps=eps)
 
-        loss_beta_0 = importance_minimality_loss(
-            ci_upper_leaky=ci_upper_leaky,
+        # Old rolled value (mean + beta * mean * log2(1 + sum)).
+        old = torch.zeros(())
+        for layer_sums in sums.values():
+            mean = layer_sums / n
+            old = old + (mean + beta * mean * torch.log2(1 + layer_sums)).sum()
+
+        imp = importance_minimality_loss(
+            ci_upper_leaky=ci,
             current_frac_of_training=0.0,
-            pnorm=1.0,
-            beta=0.0,
-            eps=0.0,
+            pnorm=pnorm,
+            eps=eps,
             p_anneal_start_frac=1.0,
             p_anneal_final_p=None,
             p_anneal_end_frac=1.0,
         )
-        loss_beta_1 = importance_minimality_loss(
-            ci_upper_leaky=ci_upper_leaky,
-            current_frac_of_training=0.0,
-            pnorm=1.0,
-            beta=1.0,
-            eps=0.0,
-            p_anneal_start_frac=1.0,
-            p_anneal_final_p=None,
-            p_anneal_end_frac=1.0,
-        )
-
-        assert torch.allclose(loss_beta_0, torch.tensor(expected_beta_0))
-        assert torch.allclose(loss_beta_1, torch.tensor(expected_beta_1))
-        assert loss_beta_1 > loss_beta_0
-
-    def test_beta_edge_cases(self: object) -> None:
-        """Verify the penalty is finite for edge cases."""
-        # Very small values
-        ci_small = {"layer1": torch.tensor([[1e-10, 1e-10]], dtype=torch.float32)}
-        result_small = importance_minimality_loss(
-            ci_upper_leaky=ci_small,
-            current_frac_of_training=0.0,
-            pnorm=1.0,
-            beta=1.0,
-            eps=0.0,
-            p_anneal_start_frac=1.0,
-            p_anneal_final_p=None,
-            p_anneal_end_frac=1.0,
-        )
-        assert torch.isfinite(result_small)
-        assert result_small >= 0
-
-        # Very large values
-        ci_large = {"layer1": torch.tensor([[1e6, 1e6]], dtype=torch.float32)}
-        result_large = importance_minimality_loss(
-            ci_upper_leaky=ci_large,
-            current_frac_of_training=0.0,
-            pnorm=1.0,
-            beta=1.0,
-            eps=0.0,
-            p_anneal_start_frac=1.0,
-            p_anneal_final_p=None,
-            p_anneal_end_frac=1.0,
-        )
-        assert torch.isfinite(result_large)
+        freq = _freq(sums, n, a_prime=n)  # a' = B*T = n_examples
+        assert torch.allclose(imp + beta * freq, old)
 
 
 @dataclass
@@ -280,51 +264,58 @@ class _FakeCtx:
     current_frac_of_training: float
 
 
-def _make_bound_metric(
-    *, pnorm: float, beta: float, eps: float, device: str = "cpu"
-) -> ImportanceMinimalityLoss:
-    cfg = ImportanceMinimalityLossConfig(coeff=1.0, pnorm=pnorm, beta=beta, eps=eps)
+def _make_bound_imp_metric(*, pnorm: float, eps: float) -> ImportanceMinimalityLoss:
+    cfg = ImportanceMinimalityLossConfig(coeff=1.0, pnorm=pnorm, eps=eps)
     m = ImportanceMinimalityLoss(cfg)
     # Bypass Metric.bind (which wants a real ComponentModel). update/compute only
     # touch self.device and self.per_component_sums / self.n_examples (set by reset()).
     m.model = None  # pyright: ignore[reportAttributeAccessIssue]
-    m.device = device
+    m.device = "cpu"
     m._bound = True
     m.reset()
     return m
 
 
-class TestImportanceMinimalityLossUpdate:
+def _make_bound_freq_metric(
+    *, pnorm: float, eps: float, reference_token_count: int
+) -> FrequencyMinimalityLoss:
+    cfg = FrequencyMinimalityLossConfig(
+        coeff=1.0, pnorm=pnorm, eps=eps, reference_token_count=reference_token_count
+    )
+    m = FrequencyMinimalityLoss(cfg)
+    m.model = None  # pyright: ignore[reportAttributeAccessIssue]
+    m.device = "cpu"
+    m._bound = True
+    m.reset()
+    return m
+
+
+class TestMetricUpdate:
     """Verify the single-rank Metric.update() path matches the closed-form formula.
 
     The distributed-mode equivalence is covered by
     `param_decomp_lab/tests/test_importance_minimality_distributed.py`.
     """
 
-    def test_update_matches_closed_form(self: object) -> None:
+    def test_imp_update_matches_closed_form(self: object) -> None:
         ci_upper_leaky = {
             "layer1": torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32),
         }
-        # pnorm=1, eps=0, beta=1.0, n=2:
-        # per_component_sums = [4, 6]; per_component_mean = [2, 3]
-        # layer_loss = 2*(1 + log2(5)) + 3*(1 + log2(7))
-        expected = 2.0 * (1 + math.log2(5)) + 3.0 * (1 + math.log2(7))
-
-        m = _make_bound_metric(pnorm=1.0, beta=1.0, eps=0.0)
+        # pnorm=1, eps=0, n=2: per_component_sums = [4, 6]; mean = [2, 3]; loss = 5
+        m = _make_bound_imp_metric(pnorm=1.0, eps=0.0)
         ctx: Any = _FakeCtx(
             ci=_FakeCI(upper_leaky=ci_upper_leaky, lower_leaky={}, pre_sigmoid={}),
             current_frac_of_training=0.0,
         )
         live = m.update(ctx)
-        assert torch.allclose(live, torch.tensor(expected, dtype=torch.float32))
+        assert torch.allclose(live, torch.tensor(5.0))
 
-    def test_update_matches_compute_single_rank(self: object) -> None:
-        """In non-distributed runs, update() returns the same value as compute()."""
+    def test_imp_update_matches_compute_single_rank(self: object) -> None:
         ci_upper_leaky = {
             "layer1": torch.tensor([[0.5, 1.5], [2.5, 3.5]], dtype=torch.float32),
             "layer2": torch.tensor([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], dtype=torch.float32),
         }
-        m = _make_bound_metric(pnorm=1.5, beta=0.3, eps=1e-6)
+        m = _make_bound_imp_metric(pnorm=1.5, eps=1e-6)
         ctx: Any = _FakeCtx(
             ci=_FakeCI(upper_leaky=ci_upper_leaky, lower_leaky={}, pre_sigmoid={}),
             current_frac_of_training=0.0,
@@ -334,19 +325,45 @@ class TestImportanceMinimalityLossUpdate:
         assert isinstance(evaluated, torch.Tensor)
         assert torch.allclose(live, evaluated)
 
-    def test_update_returns_grad_tracking_scalar(self: object) -> None:
-        """The live scalar must keep autograd connected to its CI inputs."""
+    def test_imp_update_returns_grad_tracking_scalar(self: object) -> None:
         ci = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32, requires_grad=True)
-        m = _make_bound_metric(pnorm=2.0, beta=0.0, eps=0.0)
+        m = _make_bound_imp_metric(pnorm=2.0, eps=0.0)
         ctx: Any = _FakeCtx(
             ci=_FakeCI(upper_leaky={"layer1": ci}, lower_leaky={}, pre_sigmoid={}),
             current_frac_of_training=0.0,
         )
         live = m.update(ctx)
         live.backward()
-        # beta=0, p=2: per_component_mean = sum_b ci[b]^2 / n; layer_loss summed over c
-        # gradient wrt ci[b,c] = 2 * ci[b,c] / n
+        # p=2: mean_c = sum_b ci[b]^2 / n; gradient wrt ci[b,c] = 2 * ci[b,c] / n
         n = 2
         expected_grad = 2.0 * ci.detach() / n
         assert ci.grad is not None
         assert torch.allclose(ci.grad, expected_grad)
+
+    def test_freq_update_matches_closed_form(self: object) -> None:
+        ci_upper_leaky = {
+            "layer1": torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32),
+        }
+        # pnorm=1, eps=0, n=2, a'=8: sums = [4, 6]; f = [2, 3]
+        m = _make_bound_freq_metric(pnorm=1.0, eps=0.0, reference_token_count=8)
+        ctx: Any = _FakeCtx(
+            ci=_FakeCI(upper_leaky=ci_upper_leaky, lower_leaky={}, pre_sigmoid={}),
+            current_frac_of_training=0.0,
+        )
+        live = m.update(ctx)
+        expected = 2.0 * math.log2(1 + 8 * 2.0) + 3.0 * math.log2(1 + 8 * 3.0)
+        assert torch.allclose(live, torch.tensor(expected, dtype=torch.float32))
+
+    def test_freq_update_matches_compute_single_rank(self: object) -> None:
+        ci_upper_leaky = {
+            "layer1": torch.tensor([[0.5, 1.5], [2.5, 3.5]], dtype=torch.float32),
+        }
+        m = _make_bound_freq_metric(pnorm=1.0, eps=0.0, reference_token_count=16)
+        ctx: Any = _FakeCtx(
+            ci=_FakeCI(upper_leaky=ci_upper_leaky, lower_leaky={}, pre_sigmoid={}),
+            current_frac_of_training=0.0,
+        )
+        live = m.update(ctx)
+        evaluated = m.compute()
+        assert isinstance(evaluated, torch.Tensor)
+        assert torch.allclose(live, evaluated)

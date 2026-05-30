@@ -102,7 +102,6 @@ pd:
       coeff: 100000000.0
       type: FaithfulnessLoss
     imp:
-      beta: 0.5
       coeff: 3.2e-05
       eps: 1.0e-12
       p_anneal_end_frac: 1.0
@@ -110,6 +109,15 @@ pd:
       p_anneal_start_frac: 0.0
       pnorm: 2.0
       type: ImportanceMinimalityLoss
+    freq:
+      coeff: 1.6e-05
+      eps: 1.0e-12
+      p_anneal_end_frac: 1.0
+      p_anneal_final_p: 0.3
+      p_anneal_start_frac: 0.0
+      pnorm: 2.0
+      reference_token_count: 49152
+      type: FrequencyMinimalityLoss
     ppgd:
       coeff: 1.0
       n_samples: 1

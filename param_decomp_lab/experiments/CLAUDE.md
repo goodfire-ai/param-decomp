@@ -37,10 +37,12 @@ scalars + `topology: ThreePoolConfig`), and the usual `cadence`/`target`/`data`/
 bakes the 3-pool's invariants into the types — `sampling`/`n_mask_samples`/
 `use_delta_component`/`identity_decomposition_targets` are frozen `Literal` defaults, and
 the generic `loss_metrics` list is replaced by a typed `ThreePoolLosses(faith, imp,
-stoch, ppgd)` struct (it derives the inherited `loss_metrics` list from the struct via a
-before-validator and excludes it from serialization). `ThreePoolTrainer` reads
-`pd.losses.faith` / `.imp` / `.stoch` / `.ppgd` directly — no `by_type` dict, no
-`isinstance` asserts. Cross-field checks coupling `pd` to `runtime.topology` (batch
+freq, stoch, ppgd)` struct (it derives the inherited `loss_metrics` list from the struct
+via a before-validator and excludes it from serialization). `ThreePoolTrainer` reads
+`pd.losses.faith` / `.imp` / `.freq` / `.stoch` / `.ppgd` directly — no `by_type` dict,
+no `isinstance` asserts. `imp` (bare mean) and `freq` (`f·log2(1+a'·f)`) share one set of
+`(ci+eps)^p` sums in `step_ci`, so the struct validator requires their `pnorm` / `eps` /
+anneal fields to match (`freq` adds only `reference_token_count`). Cross-field checks coupling `pd` to `runtime.topology` (batch
 divisibility, rank-0 convention) run as a `@model_validator` on
 `ThreePoolLMExperimentConfig`, so 3-pool misconfigs fail at YAML parse, not minutes into
 a multi-node launch. (Site coverage — owned sites ∈ decomposition_targets after pattern

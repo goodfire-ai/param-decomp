@@ -52,16 +52,24 @@ class _ThreePoolRuntime:
     # Loss coefficients
     coeff_faith: float
     coeff_imp: float
+    coeff_freq: float
     coeff_stoch: float
     coeff_ppgd: float
 
     # Importance minimality knobs
     imp_min_pnorm: float
-    imp_min_beta: float
     imp_min_eps: float
     imp_min_p_anneal_start_frac: float
     imp_min_p_anneal_final_p: float | None
     imp_min_p_anneal_end_frac: float
+
+    # Frequency minimality knobs
+    freq_min_pnorm: float
+    freq_min_eps: float
+    freq_min_reference_token_count: int
+    freq_min_p_anneal_start_frac: float
+    freq_min_p_anneal_final_p: float | None
+    freq_min_p_anneal_end_frac: float
 
     # Optimizer LRs (start values; schedules consumed by optimize_three_pool
     # which mutates optimizer.param_groups[i]['lr'] each step)
