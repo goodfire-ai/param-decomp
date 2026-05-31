@@ -13,10 +13,19 @@ from param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp import (
     LlamaSimpleMLP,
     LlamaSimpleMLPConfig,
 )
+from param_decomp_lab.experiments.lm.pretrain.models.othello_gpt import (
+    OthelloGPT,
+    OthelloGPTConfig,
+)
 
 # Discriminated union for model configs - Pydantic auto-selects based on model_type
 ModelConfig = Annotated[
-    GPT2Config | GPT2SimpleConfig | LlamaConfig | LlamaSimpleConfig | LlamaSimpleMLPConfig,
+    GPT2Config
+    | GPT2SimpleConfig
+    | LlamaConfig
+    | LlamaSimpleConfig
+    | LlamaSimpleMLPConfig
+    | OthelloGPTConfig,
     Field(discriminator="model_type"),
 ]
 
@@ -27,4 +36,5 @@ MODEL_CLASSES: dict[str, type] = {
     "Llama": Llama,
     "LlamaSimple": LlamaSimple,
     "LlamaSimpleMLP": LlamaSimpleMLP,
+    "OthelloGPT": OthelloGPT,
 }
