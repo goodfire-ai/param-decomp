@@ -1,0 +1,19 @@
+{
+  "added_tokens_decoder": {
+    "0": {
+      "content": "0",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    }
+  },
+  "clean_up_tokenization_spaces": false,
+  "eos_token": "0",
+  "extra_special_tokens": {},
+  "model_max_length": 1000000000000000019884624838656,
+  "pad_token": "0",
+  "tokenizer_class": "PreTrainedTokenizerFast",
+  "unk_token": "0"
+}
