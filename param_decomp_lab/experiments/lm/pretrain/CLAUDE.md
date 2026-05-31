@@ -32,6 +32,7 @@ pd-pretrain --config_path ... --n_gpus 4
 | `Llama` | Full Llama implementation |
 | `LlamaSimple` | Simplified Llama (no QKV merging) |
 | `LlamaSimpleMLP` | Llama MLP-only (primary decomposition target) |
+| `OthelloGPT` | Canonical synthetic OthelloGPT (Li et al. 2022); weights *converted*, not trained here — see `../convert_othello_gpt.py`. Folded-LN (`LayerNormPre`), untied head. |
 
 ## Tokenizers
 
