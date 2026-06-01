@@ -428,6 +428,20 @@ class ComponentModel(nn.Module):
             pre_sigmoid=pre_sigmoid,
         )
 
+    def forward_with_output_acts(
+        self,
+        batch: Any,
+        mask_infos: dict[str, ComponentsMaskInfo] | None = None,
+    ) -> tuple[Tensor, dict[str, Tensor]]:
+        """Forward returning `(output, {site: post-weight output act})` for every target.
+
+        The uniform output-acts API shared with the vendored `LMComponentModel`; here it
+        wraps the `cache_type="output"` path so the hidden-acts eval metrics don't branch
+        on the model type.
+        """
+        out = self(batch, mask_infos=mask_infos, cache_type="output")
+        return out.output, out.cache
+
     def calc_weight_deltas(self) -> dict[str, Float[Tensor, "d_out d_in"]]:
         """Per-target `target_weight - sum_components` residuals.
 

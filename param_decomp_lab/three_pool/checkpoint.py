@@ -23,18 +23,22 @@ from torch import Tensor
 from param_decomp.batch_and_loss_fns import RunBatch
 from param_decomp.ci_fns import CiConfig
 from param_decomp.ci_sigmoids import SigmoidType
-from param_decomp.component_model import ComponentModel
 from param_decomp.decomposition_targets import DecompositionTarget
+from param_decomp_lab.experiments.lm.pretrain.models.gpt2_simple import GPT2Simple
+from param_decomp_lab.experiments.lm.vendored.component_model import LMComponentModel
 
 
 def site_to_component_prefix(site: str) -> str:
     """State-dict key prefix for a site's V/U params.
 
-    ``ComponentModel`` registers components under an ``nn.ModuleDict`` keyed by
-    the site with dots replaced by dashes (so dots don't nest module levels), so
-    ``h.0.attn.q_proj`` → ``_components.h-0-attn-q_proj``.
+    ``LMComponentModel`` holds its components in-tree: a ``ComponentLinear`` /
+    ``ComponentEmbedding`` swapped in at the site's path under the wrapped ``model``,
+    with the V/U living on a ``.components`` submodule. So ``h.0.attn.q_proj`` →
+    ``model.h.0.attn.q_proj.components`` (keys ``...components.V`` / ``.U`` / ``.bias``).
+    The frozen ``model.<site>.target_weight`` / ``model.<site>.bias`` buffers are NOT
+    under this prefix — they're rebuilt from the target, not saved in partials.
     """
-    return f"_components.{site.replace('.', '-')}"
+    return f"model.{site}.components"
 
 
 def owned_model_state_keys(
@@ -60,35 +64,32 @@ def assemble_model_state_dict_from_partials(
     c_per_site: dict[str, int],
     all_sites: tuple[str, ...],
 ) -> dict[str, Tensor]:
-    """Assemble the full ComponentModel state_dict from per-rank scratch partials.
+    """Assemble the full LMComponentModel state_dict from per-rank scratch partials.
 
     Each partial's ``model_params`` holds the CPU tensors that rank owns (a slice
     of its own ``component_model.state_dict()``): LW block leaders contribute their
-    owned sites' ``_components.<site>.*``, the CI pool leader contributes ``ci_fn.*``.
+    owned sites' ``model.<site>.components.*``, the CI pool leader contributes ``ci_fn.*``.
     The union of every partial's keys must exactly cover the full-decomposition
-    model's V/U + CI-fn keys (target-model params come from the fresh buffer).
+    model's V/U + CI-fn keys (frozen target params come from the fresh buffer).
     """
-    # ComponentModel asserts the target has no trainable params; build_target only
-    # `.eval()`s it, so freeze here (the training / load_component_model paths
-    # freeze at their own construction sites).
-    target_model.eval()
-    target_model.requires_grad_(False)
+    del run_batch  # the vendored LMComponentModel calls the model directly (no run_batch)
+    assert isinstance(target_model, GPT2Simple), (
+        f"3-pool assembly requires a GPT2Simple target; got {type(target_model).__name__}"
+    )
     full_targets = [DecompositionTarget(module_path=s, C=c_per_site[s]) for s in all_sites]
-    full_cm = ComponentModel(
+    full_cm = LMComponentModel.build(
         target_model=target_model,
-        run_batch=run_batch,
         decomposition_targets=full_targets,
         ci_config=ci_config,
         sigmoid_type=sigmoid_type,
     )
 
-    # `ComponentModel` registers `target_model` as a submodule, so its frozen
-    # weights appear in the state_dict under the `target_model.` prefix. They come
-    # from the freshly-built buffer (which shares the real target_model), so the
-    # partials only need to cover the V/U + CI-fn keys — everything NOT under
-    # `target_model.`.
+    # `LMComponentModel` holds the (frozen) target in-tree under the `model.` prefix,
+    # along with the per-site `target_weight` / `bias` buffers. Those come from the
+    # freshly-built buffer, so the partials only need to cover the trainable V/U
+    # (`model.<site>.components.*`) + CI-fn (`ci_fn.*`) keys.
     expected_keys = set(full_cm.state_dict().keys())
-    fillable_keys = {k for k in expected_keys if not k.startswith("target_model.")}
+    fillable_keys = {k for k in expected_keys if ".components." in k or k.startswith("ci_fn.")}
 
     collected: dict[str, Tensor] = {}
     for partial in partials:

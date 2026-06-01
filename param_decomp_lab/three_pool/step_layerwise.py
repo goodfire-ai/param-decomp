@@ -43,10 +43,10 @@ import torch.nn as nn
 from torch import Tensor
 
 from param_decomp._trace import phase_trace_enabled, trace
-from param_decomp.component_model import ComponentModel
 from param_decomp.grad_clip import cross_pool_clip_grad_norm
 from param_decomp.masks import make_mask_infos
 from param_decomp.torch_helpers import bf16_autocast
+from param_decomp_lab.experiments.lm.vendored.component_model import LMComponentModel
 from param_decomp_lab.three_pool.context import LWContext
 from param_decomp_lab.three_pool.loss_strategy import LayerwiseLossStrategy
 from param_decomp_lab.three_pool.portals import (
@@ -88,7 +88,7 @@ class Stoch:
 
 def step_layerwise(
     ctx: LWContext,
-    component_model: ComponentModel,
+    component_model: LMComponentModel,
     optimizer: torch.optim.Optimizer,
     all_params: list[nn.Parameter],
     batch: Any,
@@ -102,14 +102,14 @@ def step_layerwise(
 
     batch_local, seq_len = _slice_batch_for_layerwise(batch, ctx)
 
-    with strategy.context(component_model.target_model):
+    with strategy.context():
         ci_recv_pending = _post_ci_recv(ctx, cfg, seq_len, device)
         target_local = _target_fwd(component_model, batch_local, cfg)
 
     for param in all_params:
         param.grad = None
 
-    with strategy.context(component_model.target_model):
+    with strategy.context():
         faith = _faithfulness_phase(component_model, device, cfg)
 
         ci_leaves = _wait_ci_and_releaf(ci_recv_pending, ctx, seq_len, cfg)
@@ -154,7 +154,7 @@ def _post_ci_recv(
 
 
 def _target_fwd(
-    component_model: ComponentModel, batch_local: Any, cfg: _ThreePoolRuntime
+    component_model: LMComponentModel, batch_local: Any, cfg: _ThreePoolRuntime
 ) -> Tensor:
     """Phase lw/A2. Detached target forward on this rank's batch slice."""
     with torch.no_grad(), bf16_autocast(cfg.bf16_autocast):
@@ -162,7 +162,7 @@ def _target_fwd(
 
 
 def _faithfulness_phase(
-    component_model: ComponentModel, device: torch.device, cfg: _ThreePoolRuntime
+    component_model: LMComponentModel, device: torch.device, cfg: _ThreePoolRuntime
 ) -> Faith:
     """Phase lw/D1. Faithfulness loss + backward into V/U .grad."""
     loss, sum_sq, numel = _faithfulness_loss(component_model, device, cfg.numel_global)
@@ -184,7 +184,7 @@ def _wait_ci_and_releaf(
 
 
 def _layerwise_streaming_phase(
-    component_model: ComponentModel,
+    component_model: LMComponentModel,
     batch_local: Any,
     target_local: Tensor,
     ci_leaves: CiLeaves,
@@ -254,7 +254,7 @@ def _send_g_ci(portals: LWPortals, role: LWRole, ci_leaves: CiLeaves) -> None:
     portals.g_ci_to_ci_pool.send(role, g_ci_owned)
 
 
-def _recv_and_combine_g_vu(ctx: LWContext, component_model: ComponentModel) -> None:
+def _recv_and_combine_g_vu(ctx: LWContext, component_model: LMComponentModel) -> None:
     """Phases lw/D5 + lw/D6. Recv PPGD's V/U grads, add to existing .grad."""
     v_grads_pgd, u_grads_pgd = _recv_g_vu_from_ppgd(ctx, component_model)
     _combine_vu_grads_in_place(component_model, ctx.role.owned_sites, v_grads_pgd, u_grads_pgd)
@@ -262,7 +262,7 @@ def _recv_and_combine_g_vu(ctx: LWContext, component_model: ComponentModel) -> N
 
 def run_faithfulness_warmup_layerwise(
     *,
-    component_model: ComponentModel,
+    component_model: LMComponentModel,
     component_params: list[nn.Parameter],
     n_steps: int,
     lr: float,
@@ -330,7 +330,7 @@ def _assert_ci_recv_shapes(
 
 
 def _layerwise_one_site(
-    component_model: ComponentModel,
+    component_model: LMComponentModel,
     batch_local: Any,
     target_local: Tensor,
     ci_recv_leaves: dict[str, Tensor],
@@ -360,7 +360,7 @@ def _layerwise_one_site(
 
 def _recv_g_vu_from_ppgd(
     ctx: LWContext,
-    component_model: ComponentModel,
+    component_model: LMComponentModel,
 ) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
     """Phase lw/D5. Recv V/U grads from PPGD pool (leader recvs, in-block bcast)."""
     owned_sites = ctx.role.owned_sites
@@ -378,7 +378,7 @@ def _recv_g_vu_from_ppgd(
 
 
 def _combine_vu_grads_in_place(
-    component_model: ComponentModel,
+    component_model: LMComponentModel,
     owned_sites: tuple[str, ...],
     v_grads_pgd: dict[str, Tensor],
     u_grads_pgd: dict[str, Tensor],
@@ -395,7 +395,7 @@ def _combine_vu_grads_in_place(
 
 def _sync_tail(
     ctx: LWContext,
-    component_model: ComponentModel,
+    component_model: LMComponentModel,
     optimizer: torch.optim.Optimizer,
     all_params: list[nn.Parameter],
     cfg: _ThreePoolRuntime,
@@ -417,7 +417,7 @@ def _sync_tail(
     _async_send_owned_vu_to_ppgd(component_model, ctx)
 
 
-def _async_send_owned_vu_to_ppgd(component_model: ComponentModel, ctx: LWContext) -> None:
+def _async_send_owned_vu_to_ppgd(component_model: LMComponentModel, ctx: LWContext) -> None:
     """Kickoff async ship of updated V/U → PPGD. Stash the in-flight send on the model."""
     owned_sites = ctx.role.owned_sites
     v_owned = {s: component_model.components[s].V for s in owned_sites}
@@ -426,7 +426,7 @@ def _async_send_owned_vu_to_ppgd(component_model: ComponentModel, ctx: LWContext
     component_model._pending_weight_send = in_flight  # type: ignore[attr-defined]
 
 
-def _wait_pending_weight_send(component_model: ComponentModel) -> None:
+def _wait_pending_weight_send(component_model: LMComponentModel) -> None:
     """Wait + clear any pending async V/U send from a previous iter.
 
     Defense against the opt step mutating V/U while the previous async send
@@ -439,7 +439,7 @@ def _wait_pending_weight_send(component_model: ComponentModel) -> None:
 
 
 def _faithfulness_loss(
-    component_model: ComponentModel, device: torch.device, numel_global: int
+    component_model: LMComponentModel, device: torch.device, numel_global: int
 ) -> tuple[Tensor, Tensor, int]:
     """‖W_target − VU.T‖²_F / numel_global, summed across this rank's owned sites.
 

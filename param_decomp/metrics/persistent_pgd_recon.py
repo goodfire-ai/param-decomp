@@ -221,7 +221,7 @@ class _PersistentPGDReconBase[
         weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
     ) -> None:
         assert self.state is not None
-        target_acts = self.model(ctx.batch, cache_type="output").cache
+        _out, target_acts = self.model.forward_with_output_acts(ctx.batch)
         batch_dims = ctx.target_out.shape[:-1]
         mask_infos = get_ppgd_mask_infos(
             ci=ctx.ci.lower_leaky,
