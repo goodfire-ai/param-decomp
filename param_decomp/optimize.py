@@ -510,6 +510,20 @@ class Trainer:
         train_iterator = loop_dataloader(train_loader)
         eval_iterator = loop_dataloader(eval_loop.loader) if eval_loop is not None else None
 
+        # PersistentPGD keeps an adversarial source sized to the per-rank train batch and
+        # repeats it to fill each batch it scores (get_ppgd_mask_infos), including eval. So the
+        # per-rank eval batch must be a whole multiple of the per-rank train batch -- assert it
+        # here rather than crashing deep inside the first eval.
+        if eval_loop is not None and any(
+            m.type.startswith("PersistentPGD") for m in pd_config.loss_metrics
+        ):
+            train_bs, eval_bs = train_loader.batch_size, eval_loop.loader.batch_size
+            assert train_bs is not None and eval_bs is not None and eval_bs % train_bs == 0, (
+                f"PersistentPGD recon requires the per-rank eval batch ({eval_bs}) to be a "
+                f"multiple of the per-rank train batch ({train_bs}); set eval.batch_size to a "
+                f"multiple of pd.batch_size."
+            )
+
         # Loader replay: if we're starting from non-zero step, advance the iterator to
         # the matching position. Deterministic given the loader's seed.
         for _ in range(self.step):
