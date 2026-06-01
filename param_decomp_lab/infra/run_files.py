@@ -291,6 +291,7 @@ def resolve_run_files(
     path: ModelPath,
     *,
     config_filename: str,
+    fallback_config_filename: str | None = None,
     checkpoint_filename: str | None = None,
     checkpoint_prefix: str | None = None,
     extras_from_config_path: Callable[[Path], list[str]] = lambda _: [],
@@ -298,6 +299,9 @@ def resolve_run_files(
     """Locate a run's files locally, downloading from W&B if needed.
 
     Exactly one of `checkpoint_filename` or `checkpoint_prefix` must be given.
+    `fallback_config_filename`, when set, is used in place of `config_filename` for runs
+    that predate it (e.g. legacy `final_config.yaml`); the returned `config_path.name`
+    tells the caller which schema to parse.
     `extras_from_config_path` is called with the resolved config path to determine which
     additional files belong to the run (e.g. artifacts whose names live inside the config).
     """
@@ -311,6 +315,7 @@ def resolve_run_files(
         return _resolve_local_run_files(
             Path(path),
             config_filename=config_filename,
+            fallback_config_filename=fallback_config_filename,
             checkpoint_filename=checkpoint_filename,
             checkpoint_prefix=checkpoint_prefix,
             extras_from_config_path=extras_from_config_path,
@@ -325,6 +330,7 @@ def resolve_run_files(
             files = _resolve_local_run_files(
                 run_dir,
                 config_filename=config_filename,
+                fallback_config_filename=fallback_config_filename,
                 checkpoint_filename=checkpoint_filename,
                 checkpoint_prefix=checkpoint_prefix,
                 extras_from_config_path=extras_from_config_path,
@@ -342,6 +348,7 @@ def resolve_run_files(
     return _download_run_files_from_wandb(
         wandb_path,
         config_filename=config_filename,
+        fallback_config_filename=fallback_config_filename,
         checkpoint_filename=checkpoint_filename,
         checkpoint_prefix=checkpoint_prefix,
         extras_from_config_path=extras_from_config_path,
@@ -371,6 +378,7 @@ def _resolve_local_run_files(
     path: Path,
     *,
     config_filename: str,
+    fallback_config_filename: str | None,
     checkpoint_filename: str | None,
     checkpoint_prefix: str | None,
     extras_from_config_path: Callable[[Path], list[str]],
@@ -386,14 +394,33 @@ def _resolve_local_run_files(
         run_dir = path.parent
         checkpoint_path = path
     config_path = run_dir / config_filename
+    if fallback_config_filename is not None and not config_path.exists():
+        fallback_path = run_dir / fallback_config_filename
+        if fallback_path.exists():
+            config_path = fallback_path
     extras = {name: run_dir / name for name in extras_from_config_path(config_path)}
     return RunFiles(config_path=config_path, checkpoint_path=checkpoint_path, extras=extras)
+
+
+def _resolve_wandb_config_filename(
+    run: WandbRun, config_filename: str, fallback_config_filename: str | None
+) -> str:
+    if fallback_config_filename is None:
+        return config_filename
+    available = {file.name for file in run.files()}
+    if config_filename in available:
+        return config_filename
+    assert fallback_config_filename in available, (
+        f"Neither {config_filename!r} nor {fallback_config_filename!r} found in run files"
+    )
+    return fallback_config_filename
 
 
 def _download_run_files_from_wandb(
     wandb_path: str,
     *,
     config_filename: str,
+    fallback_config_filename: str | None,
     checkpoint_filename: str | None,
     checkpoint_prefix: str | None,
     extras_from_config_path: Callable[[Path], list[str]],
@@ -403,6 +430,7 @@ def _download_run_files_from_wandb(
     _entity, _project, run_id = parse_wandb_run_path(wandb_path)
     run_dir = _wandb_cache_dir(run_id)
 
+    config_filename = _resolve_wandb_config_filename(run, config_filename, fallback_config_filename)
     config_path = download_wandb_file(run, run_dir, config_filename)
     if checkpoint_filename is not None:
         checkpoint_path = download_wandb_file(run, run_dir, checkpoint_filename)
