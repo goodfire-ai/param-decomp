@@ -30,29 +30,45 @@ class InterpRepo:
         self.run_id = run_id
 
     @classmethod
-    def _find_latest_done_subrun_dir(cls, run_id: str) -> Path | None:
+    def _find_primary_subrun_dir(cls, run_id: str) -> Path | None:
+        """Pick the primary completed subrun by largest interpretation count, ties by name.
+
+        Counts win over recency so a small smoke run (e.g. limit=3) can't shadow a real
+        large interpretation pass. Among subruns with equal counts, the lexicographically
+        latest wins, matching the prior "newest" behavior.
+        """
         autointerp_dir = get_autointerp_dir(run_id)
         if not autointerp_dir.exists():
             return None
-        candidates = sorted(
-            [
-                d
-                for d in autointerp_dir.iterdir()
-                if d.is_dir() and d.name.startswith("a-") and (d / DONE_MARKER).exists()
-            ],
-            key=lambda d: d.name,
-        )
-        return candidates[-1] if candidates else None
+        candidates: list[tuple[int, str, Path]] = []
+        for d in autointerp_dir.iterdir():
+            if not (d.is_dir() and d.name.startswith("a-") and (d / DONE_MARKER).exists()):
+                continue
+            db_path = d / "interp.db"
+            if not db_path.exists():
+                continue
+            db = InterpDB(db_path, readonly=True)
+            try:
+                if not db.has_interpretations_table():
+                    continue
+                count = db.get_interpretation_count()
+            finally:
+                db.close()
+            if count == 0:
+                continue
+            candidates.append((count, d.name, d))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda c: (c[0], c[1]))
+        return candidates[-1][2]
 
     @classmethod
     def open(cls, run_id: str) -> "InterpRepo | None":
         """Open autointerp data for a run. Returns None if no completed autointerp data exists."""
-        subrun_dir = cls._find_latest_done_subrun_dir(run_id)
+        subrun_dir = cls._find_primary_subrun_dir(run_id)
         if subrun_dir is None:
             return None
         db_path = subrun_dir / "interp.db"
-        if not db_path.exists():
-            return None
         logger.info(f"Opening autointerp data for {run_id} from {subrun_dir}")
         return cls(
             db=InterpDB(db_path, readonly=True),

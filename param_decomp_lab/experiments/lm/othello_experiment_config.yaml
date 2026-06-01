@@ -9,14 +9,14 @@ data:
   dataset_name: taufeeque/othellogpt
   eval_split: validation
   is_tokenized: true
-  max_seq_len: 60
+  max_seq_len: 64
   revision: null
   shuffle_each_epoch: true
   streaming: true
-  tokenizer_name: /mnt/polished-lake/home/lucius/spd/param_decomp_lab/experiments/lm/othello_tokenizer
+  tokenizer_name: /mnt/polished-lake/home/braun/param-decomp/param_decomp_lab/experiments/lm/othello_tokenizer
   train_split: train
 eval:
-  batch_size: 1024
+  batch_size: 640
   every: 1000
   metrics:
   - n_batches_accum: 1
@@ -60,7 +60,7 @@ eval:
   slow_every: 10000
   slow_on_first_step: true
 pd:
-  batch_size: 1024
+  batch_size: 640
   ci_config:
     fn_type: global_shared_transformer
     hidden_dims: null
