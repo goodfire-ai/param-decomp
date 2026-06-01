@@ -1,0 +1,173 @@
+pd:
+  seed: 0
+  n_mask_samples: 1
+  ci_config:
+    mode: global
+    fn_type: global_shared_transformer
+    simple_transformer_ci_cfg:
+      d_model: 2048
+      n_blocks: 8
+      mlp_hidden_dim:
+      - 8192
+      attn_config:
+        n_heads: 16
+        max_len: 512
+        rope_base: 10000.0
+  sampling: continuous
+  sigmoid_type: leaky_hard
+  decomposition_targets:
+  - module_pattern: h.[0123].attn.q_proj
+    C: 512
+  - module_pattern: h.[0123].attn.k_proj
+    C: 512
+  - module_pattern: h.[0123].attn.v_proj
+    C: 1024
+  - module_pattern: h.[0123].attn.o_proj
+    C: 1024
+  - module_pattern: h.[0123].mlp.c_fc
+    C: 3072
+  - module_pattern: h.[0123].mlp.down_proj
+    C: 3584
+  identity_decomposition_targets: null
+  use_delta_component: true
+  batch_size: 64
+  steps: 400000
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    weight_decay: 0.0
+    lr_schedule:
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+    grad_clip_norm: 0.01
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    weight_decay: 0.0
+    lr_schedule:
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+    grad_clip_norm: null
+  faithfulness_warmup_steps: 400
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - type: FaithfulnessLoss
+    coeff: 10000000.0
+  - type: StochasticReconLayerwiseLoss
+    coeff: 6.0
+  - type: ImportanceMinimalityLoss
+    coeff: 0.0002
+    pnorm: 2.0
+    beta: 0.5
+    p_anneal_start_frac: 0.0
+    p_anneal_final_p: 0.4
+    p_anneal_end_frac: 1.0
+    eps: 1.0e-12
+  - type: PersistentPGDReconLoss
+    coeff: 0.5
+    optimizer:
+      type: adam
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        start_val: 0.01
+        warmup_pct: 0.025
+        final_val_frac: 1.0
+        fn_type: constant
+    scope:
+      type: per_batch_per_position
+    use_sigmoid_parameterization: false
+    n_warmup_steps: 2
+    n_samples: 1
+    start_frac: 0.0
+cadence:
+  train_log_every: 200
+  save_every: null
+eval: null
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null
+target:
+  spec:
+    kind: pretrained
+    model_class: param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
+    run_path: goodfire/spd/runs/t-9d2b8f02
+  output_extract: 0
+  activation_checkpointing: false
+data:
+  tokenizer_name: EleutherAI/gpt-neox-20b
+  max_seq_len: 512
+  dataset_name: danbraunai/pile-uncopyrighted-tok-shuffled
+  column_name: input_ids
+  train_split: train
+  eval_split: val
+  is_tokenized: true
+  streaming: true
+  buffer_size: 1000
+  shuffle_each_epoch: true
+wandb:
+  project: param-decomp
+  entity: goodfire
+three_pool:
+  use_fused_kl: true
+  defer_vu_opt: false
+  ci_ranks:
+  - 32
+  - 33
+  - 34
+  - 35
+  ppgd_ranks:
+  - 36
+  - 37
+  - 38
+  - 39
+  layerwise_block_groups:
+  - ranks: [0, 1, 2, 3]
+    owned_sites:
+    - h.0.attn.q_proj
+    - h.0.attn.v_proj
+    - h.0.mlp.c_fc
+  - ranks: [4, 5, 6, 7]
+    owned_sites:
+    - h.0.attn.k_proj
+    - h.0.attn.o_proj
+    - h.0.mlp.down_proj
+  - ranks: [8, 9, 10, 11]
+    owned_sites:
+    - h.1.attn.q_proj
+    - h.1.attn.v_proj
+    - h.1.mlp.c_fc
+  - ranks: [12, 13, 14, 15]
+    owned_sites:
+    - h.1.attn.k_proj
+    - h.1.attn.o_proj
+    - h.1.mlp.down_proj
+  - ranks: [16, 17, 18, 19]
+    owned_sites:
+    - h.2.attn.q_proj
+    - h.2.attn.v_proj
+    - h.2.mlp.c_fc
+  - ranks: [20, 21, 22, 23]
+    owned_sites:
+    - h.2.attn.k_proj
+    - h.2.attn.o_proj
+    - h.2.mlp.down_proj
+  - ranks: [24, 25, 26, 27]
+    owned_sites:
+    - h.3.attn.q_proj
+    - h.3.attn.v_proj
+    - h.3.mlp.c_fc
+  - ranks: [28, 29, 30, 31]
+    owned_sites:
+    - h.3.attn.k_proj
+    - h.3.attn.o_proj
+    - h.3.mlp.down_proj
