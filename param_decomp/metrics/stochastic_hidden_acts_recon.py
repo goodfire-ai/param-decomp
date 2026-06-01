@@ -34,13 +34,13 @@ def calc_hidden_acts_mse(
 
     Returns `({module_path: (summed_mse, n_elements)}, model_output)`.
     """
-    result = model(batch, mask_infos=mask_infos, cache_type="output")
+    output, cache = model.forward_with_output_acts(batch, mask_infos=mask_infos)
     per_module: PerModuleMSE = {}
     for layer_name, target in target_acts.items():
-        assert layer_name in result.cache, f"{layer_name} not in comp_cache"
-        mse = F.mse_loss(result.cache[layer_name], target, reduction="sum")
+        assert layer_name in cache, f"{layer_name} not in comp_cache"
+        mse = F.mse_loss(cache[layer_name], target, reduction="sum")
         per_module[layer_name] = (mse, target.numel())
-    return per_module, result.output
+    return per_module, output
 
 
 def _sum_per_module_mse(per_module: PerModuleMSE) -> tuple[Float[Tensor, ""], int]:
@@ -71,7 +71,7 @@ def _stochastic_hidden_acts_update(
     weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
 ) -> PerModuleMSE:
     assert ci, "Empty ci"
-    target_acts = model(batch, cache_type="output").cache
+    _out, target_acts = model.forward_with_output_acts(batch)
     accum: PerModuleMSE = {}
     for _ in range(n_mask_samples):
         stoch_mask_infos = calc_stochastic_component_mask_info(

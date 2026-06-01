@@ -42,7 +42,7 @@ import os
 import time
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Self, cast
 
 import torch
 import torch.distributed as dist
@@ -72,7 +72,9 @@ from param_decomp.schedule import get_scheduled_value
 from param_decomp.sdpa_strict import verify_flash_attention_available
 from param_decomp.torch_helpers import loop_dataloader
 from param_decomp.training_state import ThreePoolTrainingState
+from param_decomp_lab.experiments.lm.pretrain.models.gpt2_simple import GPT2Simple
 from param_decomp_lab.experiments.lm.three_pool_pd import ThreePoolConstrainedPDConfig
+from param_decomp_lab.experiments.lm.vendored.component_model import LMComponentModel
 from param_decomp_lab.three_pool.checkpoint import (
     ci_fn_state_keys,
     owned_model_state_keys,
@@ -147,7 +149,7 @@ class ThreePoolTrainer:
     runtime_config: RuntimeConfig
     three_pool_config: ThreePoolConfig
     reconstruction_loss: ReconstructionLoss
-    component_model: ComponentModel
+    component_model: LMComponentModel
     ctx: PoolContext
     strategy: LayerwiseLossStrategy
     optimizer: torch.optim.Optimizer | None
@@ -245,15 +247,17 @@ class ThreePoolTrainer:
         # partners initialize different V/U and the in-block grad all-reduce can't
         # bring them back into sync.
         seed_all_ranks(pd_config.seed)
-        trace("ThreePoolTrainer.__init__: ComponentModel ctor: enter")
-        self.component_model = ComponentModel(
+        trace("ThreePoolTrainer.__init__: LMComponentModel build: enter")
+        assert isinstance(target_model, GPT2Simple), (
+            f"3-pool LMComponentModel requires a GPT2Simple target; got {type(target_model).__name__}"
+        )
+        self.component_model = LMComponentModel.build(
             target_model=target_model,
-            run_batch=run_batch,
             decomposition_targets=decomposition_targets,
             ci_config=pd_config.ci_config,
             sigmoid_type=pd_config.sigmoid_type,
         )
-        trace("ThreePoolTrainer.__init__: ComponentModel ctor: done")
+        trace("ThreePoolTrainer.__init__: LMComponentModel build: done")
         # Drop pool-irrelevant params before moving to GPU. RNG draws used to
         # init them already happened (in the ctor above), so equivalence with
         # single-pool is preserved.
@@ -299,7 +303,7 @@ class ThreePoolTrainer:
 
         trace("ThreePoolTrainer.__init__: building LayerwiseLossStrategy")
         self.strategy = LayerwiseLossStrategy.from_cfg(
-            target_model,
+            self.component_model,
             use_fused_kl=three_pool_config.use_fused_kl,
             unfused_recon=reconstruction_loss,
         )
@@ -589,7 +593,12 @@ class ThreePoolTrainer:
         eval_iterator = loop_dataloader(eval_loop.loader) if eval_loop is not None else None
         if eval_loop is not None and isinstance(ctx, PPGDContext):
             for m in eval_loop.metrics:
-                m.bind(model=self.component_model, device=str(device))
+                # LMComponentModel exposes the metric-facing surface the eval metrics use;
+                # it shares no base with ComponentModel, so cast through object.
+                m.bind(
+                    model=cast(ComponentModel, cast(object, self.component_model)),
+                    device=str(device),
+                )
 
         # Peek first batch (after any skip) for PPGD source-shape sizing.
         trace("Trainer.run: first_batch peek: enter")

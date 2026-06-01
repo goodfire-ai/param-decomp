@@ -18,7 +18,7 @@ per-metric audit.
 import gc
 import time
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, cast
 
 import torch
 import torch.distributed as dist
@@ -34,6 +34,7 @@ from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.output import collect_metric_outputs
 from param_decomp.run_sink import RunSink
 from param_decomp.torch_helpers import bf16_autocast
+from param_decomp_lab.experiments.lm.vendored.component_model import LMComponentModel
 from param_decomp_lab.three_pool.context import CIContext, LWContext, PoolContext, PPGDContext
 
 
@@ -60,7 +61,7 @@ def _build_metric_context_three_pool(
     ctx: PoolContext,
     step: int,
     device: str,
-    component_model: ComponentModel,
+    component_model: LMComponentModel,
     config: PDConfig,
     reconstruction_loss: ReconstructionLoss,
     c_per_site: dict[str, int],
@@ -74,9 +75,9 @@ def _build_metric_context_three_pool(
             batch_local, _ = _slice_batch_dim0(
                 batch, ctx.role.batch_slice(ctx.world.batch_local_ci)
             )
-            target_output = component_model(batch_local, cache_type="input")
+            _out, pre_weight_acts = component_model.forward_with_pre_weight_acts(batch_local)
             ci = component_model.calc_causal_importances(
-                pre_weight_acts=target_output.cache,
+                pre_weight_acts=pre_weight_acts,
                 detach_inputs=False,
                 sampling=config.sampling,
             )
@@ -86,16 +87,20 @@ def _build_metric_context_three_pool(
             batch_local, seq_len = _slice_batch_dim0(
                 batch, ctx.role.batch_slice(ctx.world.batch_local_ppgd)
             )
-            target_output = component_model(batch_local, cache_type="input")
+            target_out, pre_weight_acts = component_model.forward_with_pre_weight_acts(batch_local)
             weight_deltas = component_model.calc_weight_deltas()
             ci = ctx.portals.ci_eval_from_ci_pool.recv(
                 ctx.role, c_per_site, seq_len=seq_len, device=torch.device(device)
             )
             return MetricContext(
-                model=component_model,
+                # LMComponentModel is the 3-pool's component model; it exposes the same
+                # duck-typed surface the metrics use (forward_with_output_acts,
+                # calc_causal_importances, components, target_weight, ...). The two are
+                # distinct classes (no shared base), so cast through object.
+                model=cast(ComponentModel, cast(object, component_model)),
                 batch=batch_local,
-                target_out=target_output.output,
-                pre_weight_acts=target_output.cache,
+                target_out=target_out,
+                pre_weight_acts=pre_weight_acts,
                 ci=ci,
                 weight_deltas=weight_deltas,
                 step=step,
@@ -119,7 +124,7 @@ def run_eval_step(
     ctx: PoolContext,
     step: int,
     device: str,
-    component_model: ComponentModel,
+    component_model: LMComponentModel,
     config: PDConfig,
     runtime_config: RuntimeConfig,
     reconstruction_loss: ReconstructionLoss,

@@ -28,7 +28,7 @@ class CIHiddenActsReconLoss(Metric[CIHiddenActsReconLossConfig]):
 
     @override
     def update(self, ctx: MetricContext) -> None:
-        target_acts = self.model(ctx.batch, cache_type="output").cache
+        _out, target_acts = self.model.forward_with_output_acts(ctx.batch)
         mask_infos = make_mask_infos(ctx.ci.lower_leaky, weight_deltas_and_masks=None)
         per_module, _ = calc_hidden_acts_mse(
             model=self.model, batch=ctx.batch, mask_infos=mask_infos, target_acts=target_acts
