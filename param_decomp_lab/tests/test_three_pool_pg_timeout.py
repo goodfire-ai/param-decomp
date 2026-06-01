@@ -134,19 +134,22 @@ def test_leader_partials_exactly_cover_model_state() -> None:
     async consolidation asserts before assembling the checkpoint."""
     sites = ("h.0.attn.q_proj", "h.1.attn.q_proj", "h.2.mlp.c_fc")
     model_keys = {
-        "_components.h-0-attn-q_proj.V",
-        "_components.h-0-attn-q_proj.U",
-        "_components.h-1-attn-q_proj.V",
-        "_components.h-1-attn-q_proj.U",
-        "_components.h-2-mlp-c_fc.V",
-        "_components.h-2-mlp-c_fc.U",
+        "model.h.0.attn.q_proj.components.V",
+        "model.h.0.attn.q_proj.components.U",
+        "model.h.1.attn.q_proj.components.V",
+        "model.h.1.attn.q_proj.components.U",
+        "model.h.2.mlp.c_fc.components.V",
+        "model.h.2.mlp.c_fc.components.U",
         "ci_fn._global_ci_fn.embed.weight",
         "ci_fn._global_ci_fn.proj.weight",
-        # target-model keys (not owned by any leader; come from the fresh buffer)
-        "target_model.transformer.wte.weight",
-        "target_model.transformer.h.0.attn.c_attn.weight",
+        # frozen target keys (not owned by any leader; come from the fresh buffer):
+        # the in-tree target_weight buffer at a decomposed site + a non-decomposed weight.
+        "model.h.0.attn.q_proj.target_weight",
+        "model.wte.weight",
     }
-    target_keys = {k for k in model_keys if k.startswith("target_model.")}
+    target_keys = {
+        k for k in model_keys if ".components." not in k and not k.startswith("ci_fn.")
+    }
     fillable = model_keys - target_keys
 
     # Two LW blocks: block 0 owns sites 0+1, block 1 owns site 2. CI leader owns ci_fn.

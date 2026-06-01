@@ -56,9 +56,9 @@ from typing import Any
 import torch
 from torch import Tensor
 
-from param_decomp.component_model import ComponentModel
 from param_decomp.metrics.persistent_pgd_state import PersistentPGDState
 from param_decomp.torch_helpers import bf16_autocast
+from param_decomp_lab.experiments.lm.vendored.component_model import LMComponentModel
 from param_decomp_lab.three_pool.context import PPGDContext
 from param_decomp_lab.three_pool.loss_strategy import LayerwiseLossStrategy
 from param_decomp_lab.three_pool.portals import PendingCiValues, sum_reduce_ppgd_grads
@@ -87,7 +87,7 @@ class RawGrads:
 
 def step_ppgd(
     ctx: PPGDContext,
-    component_model: ComponentModel,
+    component_model: LMComponentModel,
     ppgd_state: PersistentPGDState,
     batch: Any,
     cfg: _ThreePoolRuntime,
@@ -105,7 +105,7 @@ def step_ppgd(
     batch_local, seq_len = _slice_batch_for_ppgd(batch, ctx)
     v_templates, u_templates = _vu_templates(component_model, all_sites)
 
-    with strategy.context(component_model.target_model):
+    with strategy.context():
         ci_recv_pending = _post_ci_recv(ctx, cfg, seq_len, device)
         target_out = _target_fwd(component_model, batch_local, cfg)
         weight_deltas = component_model.calc_weight_deltas()
@@ -166,7 +166,7 @@ def _post_ci_recv(
 
 
 def _target_fwd(
-    component_model: ComponentModel, batch_local: Any, cfg: _ThreePoolRuntime
+    component_model: LMComponentModel, batch_local: Any, cfg: _ThreePoolRuntime
 ) -> Tensor:
     """Phase ppgd/A2. Detached target forward on this rank's batch slice."""
     with torch.no_grad(), bf16_autocast(cfg.bf16_autocast):
@@ -188,7 +188,7 @@ def _wait_ci_and_releaf(
 
 def _warmup_and_recon(
     ppgd_state: PersistentPGDState,
-    component_model: ComponentModel,
+    component_model: LMComponentModel,
     batch_local: Any,
     target_out: Tensor,
     ci_scratch: dict[str, Tensor],
@@ -262,7 +262,7 @@ def _slice_batch_for_ppgd(batch: Any, ctx: PPGDContext) -> tuple[Any, int]:
 
 
 def _vu_templates(
-    component_model: ComponentModel, all_sites: list[str]
+    component_model: LMComponentModel, all_sites: list[str]
 ) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
     """V/U tensors per site — used as recv buffers for the V/U recv from LW."""
     v_templates: dict[str, Tensor] = {s: component_model.components[s].V for s in all_sites}
@@ -307,7 +307,7 @@ def _scale_grads_in_place(grads: dict[str, Tensor], scale: float) -> None:
 
 def _autograd_grads_wrt_vu_ci_and_sources(
     recon_sum_loss: Tensor,
-    component_model: ComponentModel,
+    component_model: LMComponentModel,
     ci_scratch: dict[str, Tensor],
     all_sites: list[str],
     sources: dict[str, Tensor],
@@ -360,7 +360,7 @@ def _autograd_grads_wrt_vu_ci_and_sources(
 
 
 def _copy_vu_into_model_in_place(
-    component_model: ComponentModel,
+    component_model: LMComponentModel,
     v_new: dict[str, Tensor],
     u_new: dict[str, Tensor],
     all_sites: list[str],

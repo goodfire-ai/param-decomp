@@ -55,7 +55,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from param_decomp._trace import trace
-from param_decomp.component_model import CIOutputs, ComponentModel
+from param_decomp.component_model import CIOutputs
 from param_decomp.grad_clip import cross_pool_clip_grad_norm
 from param_decomp.metrics.importance_minimality import (
     annealed_pnorm,
@@ -63,6 +63,7 @@ from param_decomp.metrics.importance_minimality import (
     per_component_lp_sums,
 )
 from param_decomp.torch_helpers import bf16_autocast
+from param_decomp_lab.experiments.lm.vendored.component_model import LMComponentModel
 from param_decomp_lab.three_pool.context import CIContext
 from param_decomp_lab.three_pool.portals import CIPortals, InFlightSends, all_reduce_ci_fn_grads
 from param_decomp_lab.three_pool.role import CIRole
@@ -117,7 +118,7 @@ class GciTotal:
 
 def step_ci(
     ctx: CIContext,
-    component_model: ComponentModel,
+    component_model: LMComponentModel,
     optimizer: torch.optim.Optimizer,
     ci_fn_params: list[nn.Parameter],
     batch_T: Any,
@@ -185,7 +186,7 @@ def step_ci(
 
 
 def _ci_fn_forward(
-    component_model: ComponentModel,
+    component_model: LMComponentModel,
     h_cache_T: dict[str, Tensor],
     ctx: CIContext,
     cfg: _ThreePoolRuntime,
@@ -225,7 +226,7 @@ def _imp_min_phase(
 
 
 def _prefetch_next_h(
-    component_model: ComponentModel,
+    component_model: LMComponentModel,
     batch_T_plus_1_local: Any | None,
     cfg: _ThreePoolRuntime,
 ) -> dict[str, Tensor] | None:
@@ -319,7 +320,7 @@ def _assemble_g_ci_total(
     return GciTotal(per_site=per_site)
 
 
-def _maybe_emit_ci_fn_bwd_breakdown(component_model: ComponentModel) -> None:
+def _maybe_emit_ci_fn_bwd_breakdown(component_model: LMComponentModel) -> None:
     """Emit per-stage CI fn bwd times as ``trace()`` lines when the bwd profile is on.
 
     Records the ``post_bwd`` event immediately (anchoring the input projector's bwd
@@ -380,7 +381,7 @@ def _fused_backward_through_ci_fn(
 
 
 def _target_fwd_and_cache(
-    component_model: ComponentModel,
+    component_model: LMComponentModel,
     batch: Any,
     enabled: bool,
 ) -> dict[str, Tensor]:
@@ -390,8 +391,8 @@ def _target_fwd_and_cache(
     Cache is upcast to fp32 so the downstream CI fn fwd gets fp32 inputs.
     """
     with torch.no_grad(), bf16_autocast(enabled):
-        out = component_model(batch, cache_type="input")
-    return {k: v.to(torch.float32) for k, v in out.cache.items()}
+        _out, cache = component_model.forward_with_pre_weight_acts(batch)
+    return {k: v.to(torch.float32) for k, v in cache.items()}
 
 
 def _importance_minimality_loss(
