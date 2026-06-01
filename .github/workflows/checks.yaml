@@ -47,7 +47,7 @@ jobs:
         run: uv pip list
 
       - name: Cache HuggingFace downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.hf-cache
           key: hf-${{ github.run_id }}
