@@ -351,8 +351,7 @@ class ThreePoolTrainer:
             trace(
                 "ThreePoolTrainer.__init__: torch.compile(LW blocks) [eager checkpoint, per-rank cache]"
             )
-            for block in self.component_model.model._h:
-                block.compile()
+            self.component_model.model.compile()
         # Diverge stochastic RNG per rank for mask sampling.
         seed_per_rank(pd_config.seed)
 
