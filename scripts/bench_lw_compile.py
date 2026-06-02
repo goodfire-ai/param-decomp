@@ -91,8 +91,16 @@ def main() -> None:
 
     torch._dynamo.reset()
     torch._dynamo.utils.counters.clear()
-    compiled = torch.compile(cg)
-    time.perf_counter()
+    import os as _os
+
+    if _os.environ.get("COMPILE_BLOCKS", "").strip() in ("1", "true", "yes"):
+        # compile each block, leave the model's checkpoint loop eager (the distributed fix)
+        for _blk in cg._h:  # type: ignore[attr-defined]
+            _blk.compile()
+        compiled = cg
+        print("(compile-blocks: per-block compile, eager checkpoint)")
+    else:
+        compiled = torch.compile(cg)
     comp = timed(compiled, cg, opt, idx, n_warm=5, n=5)  # warmup includes compilation
     breaks = sum(v for k, v in torch._dynamo.utils.counters["graph_break"].items())
     n_uniq = len(torch._dynamo.utils.counters["graph_break"])
