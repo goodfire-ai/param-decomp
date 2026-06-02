@@ -8,13 +8,16 @@ on the transformer blocks. Reports peak GPU memory and the OOM boundary for each
 This is the single-node CI-pool scaffolding: it answers "what bl_ci fits, and how
 much does checkpointing buy" on ONE GPU, instead of multi-node 3-pool OOM probes.
 
-Run: srun --gres=gpu:1 python scripts/probe_ci_fn_bl_ceiling.py
+Run (memory sweep): srun --gres=gpu:1 python scripts/probe_ci_fn_bl_ceiling.py
+Run (per-kernel profile): srun --gres=gpu:1 python scripts/probe_ci_fn_bl_ceiling.py --profile
 """
 
 import gc
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
+import fire
 import torch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -37,6 +40,7 @@ N_SITES, IN_DIM, C, D_MODEL, N_LAYERS, N_HEADS, MAX_LEN, MLP, SEQ = (
 DEV = "cuda"
 SITES = [f"h.{i // 2}.attn.{'q' if i % 2 == 0 else 'k'}_proj" for i in range(N_SITES)]
 BLS = [4, 8, 16, 24, 32, 48, 64]
+PROFILE_BL = 8
 
 
 class Ckpt(torch.nn.Module):
@@ -90,7 +94,54 @@ def run(bl: int, ckpt: bool) -> tuple[str, float]:
         gc.collect()
 
 
-def main() -> None:
+def ci_fn_step(
+    m: GlobalSharedTransformerCiFn,
+    opt: torch.optim.Optimizer,
+    inputs: dict[str, torch.Tensor],
+    seeds: list[torch.Tensor],
+    lower: Callable[[torch.Tensor], torch.Tensor],
+) -> None:
+    """One CI-fn step: fwd → lower-leaky → split → bwd → Adam."""
+    opt.zero_grad(set_to_none=True)
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        out = m(inputs)
+    splits = list(torch.split(lower(out), m.split_sizes, dim=-1))
+    torch.autograd.backward(splits, seeds)
+    opt.step()
+
+
+def profile_step() -> None:
+    """Per-kernel torch.profiler breakdown of the CI-fn fwd+bwd at a fixed bl (single-GPU)."""
+    assert torch.cuda.is_available()
+    torch.cuda.set_device(0)
+    bl = PROFILE_BL
+    lower = SIGMOID_TYPES["lower_leaky_hard"]
+    print(
+        f"GPU {torch.cuda.get_device_name(0)} | profiling GPT2-XL Q/K CI-fn phase "
+        f"(fwd→lower-leaky→split→bwd, {N_SITES} sites, d{D_MODEL}, {N_LAYERS} blocks) at "
+        f"bl={bl}, seq={SEQ}, ckpt ON, single-GPU no-comm\n"
+    )
+    m = build(ckpt=True)
+    opt = torch.optim.Adam(m.parameters(), lr=1e-4)
+    inputs = {s: torch.randn(bl, SEQ, IN_DIM, device=DEV) for s in SITES}
+    seeds = [torch.randn(bl, SEQ, C, device=DEV) for _ in SITES]
+
+    for _ in range(3):  # warmup (alloc/autotune)
+        ci_fn_step(m, opt, inputs, seeds, lower)
+    torch.cuda.synchronize()
+
+    with torch.profiler.profile(
+        activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+    ) as prof:
+        ci_fn_step(m, opt, inputs, seeds, lower)
+        torch.cuda.synchronize()
+    print(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=25))
+
+
+def main(profile: bool = False) -> None:
+    if profile:
+        profile_step()
+        return
     assert torch.cuda.is_available()
     torch.cuda.set_device(0)
     cap = torch.cuda.get_device_properties(0).total_memory / 1e9
@@ -117,4 +168,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    fire.Fire(main)

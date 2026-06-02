@@ -12,6 +12,7 @@ from typing import Any, Literal, NamedTuple, overload, override
 import torch
 from jaxtyping import Float, Int
 from torch import Tensor, nn
+from torch.profiler import record_function
 from torch.utils.hooks import RemovableHandle
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
@@ -356,13 +357,14 @@ class ComponentModel(nn.Module):
                 `pre_weight_acts`. Used by metrics that want to optimise CI without
                 perturbing the upstream graph.
         """
-        if detach_inputs:
-            pre_weight_acts = {k: v.detach() for k, v in pre_weight_acts.items()}
+        with record_function("pd/calc_causal_importances"):
+            if detach_inputs:
+                pre_weight_acts = {k: v.detach() for k, v in pre_weight_acts.items()}
 
-        assert self.ci_fn is not None, "calc_causal_importances called after drop_ci_fn"
-        if isinstance(self.ci_fn, GlobalCiFnWrapper):
-            return self._sigmoid_and_split_global(self.ci_fn, pre_weight_acts, sampling)
-        return self._sigmoid_per_site_layerwise(self.ci_fn, pre_weight_acts, sampling)
+            assert self.ci_fn is not None, "calc_causal_importances called after drop_ci_fn"
+            if isinstance(self.ci_fn, GlobalCiFnWrapper):
+                return self._sigmoid_and_split_global(self.ci_fn, pre_weight_acts, sampling)
+            return self._sigmoid_per_site_layerwise(self.ci_fn, pre_weight_acts, sampling)
 
     def _sigmoid_and_split_global(
         self,
@@ -447,10 +449,11 @@ class ComponentModel(nn.Module):
 
         Used by the delta-component pathway and by faithfulness diagnostics.
         """
-        weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] = {}
-        for comp_name, components in self.components.items():
-            weight_deltas[comp_name] = self.target_weight(comp_name) - components.weight
-        return weight_deltas
+        with record_function("pd/calc_weight_deltas"):
+            weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] = {}
+            for comp_name, components in self.components.items():
+                weight_deltas[comp_name] = self.target_weight(comp_name) - components.weight
+            return weight_deltas
 
 
 def component_grad_norms(

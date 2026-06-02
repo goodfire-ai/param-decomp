@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from jaxtyping import Float
 from pydantic import Field, PositiveInt, model_validator
 from torch import Tensor, nn
+from torch.profiler import record_function
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.ci_nn_blocks import Linear, ParallelLinear, TransformerBlock
@@ -367,32 +368,34 @@ class GlobalSharedTransformerCiFn(nn.Module):
         feature dim in ``self.layer_order``). Caller is responsible for sigmoid +
         split — doing those once on the unsplit tensor avoids 96 separate ops.
         """
-        inputs_list = [
-            F.rms_norm(input_acts[name], (input_acts[name].shape[-1],)) for name in self.layer_order
-        ]
-        concatenated = torch.cat(inputs_list, dim=-1)
-        projected: Tensor = self._input_projector(concatenated)
+        with record_function("pd/ci_fn_forward"):
+            inputs_list = [
+                F.rms_norm(input_acts[name], (input_acts[name].shape[-1],))
+                for name in self.layer_order
+            ]
+            concatenated = torch.cat(inputs_list, dim=-1)
+            projected: Tensor = self._input_projector(concatenated)
 
-        # The transformer blocks expect a sequence dimension, so we add an extra dimension to our
-        # activations if we only have 2D acts (e.g. in TMS and resid_mlp).
-        added_seq_dim = False
-        if projected.ndim < 3:
-            projected = projected.unsqueeze(-2)
-            added_seq_dim = True
+            # The transformer blocks expect a sequence dimension, so we add an extra dimension
+            # to our activations if we only have 2D acts (e.g. in TMS and resid_mlp).
+            added_seq_dim = False
+            if projected.ndim < 3:
+                projected = projected.unsqueeze(-2)
+                added_seq_dim = True
 
-        x = projected
-        self._maybe_hook(x, "x_0")
-        for i, block in enumerate(self._blocks):
-            x = block(x)
-            self._maybe_hook(x, f"x_{i + 1}")
+            x = projected
+            self._maybe_hook(x, "x_0")
+            for i, block in enumerate(self._blocks):
+                x = block(x)
+                self._maybe_hook(x, f"x_{i + 1}")
 
-        output = self._output_head(x)
+            output = self._output_head(x)
 
-        if added_seq_dim:
-            output = output.squeeze(-2)
-        self._maybe_hook(output, "output")
+            if added_seq_dim:
+                output = output.squeeze(-2)
+            self._maybe_hook(output, "output")
 
-        return output
+            return output
 
 
 class LayerwiseTransformerCiFn(nn.Module):

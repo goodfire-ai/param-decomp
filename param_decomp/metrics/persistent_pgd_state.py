@@ -13,6 +13,7 @@ import torch
 from jaxtyping import Float, Int
 from pydantic import Field, NonNegativeFloat, PositiveInt
 from torch import Tensor
+from torch.profiler import record_function
 
 from param_decomp.base_config import BaseConfig, Probability
 from param_decomp.batch_and_loss_fns import ReconstructionLoss
@@ -341,14 +342,15 @@ class PersistentPGDState:
         (per-batch-per-position) sources and for single-process runs.
         """
         all_layers = AllLayersRouter()
-        for _ in range(self._n_warmup_steps):
-            sum_loss, n = self.compute_recon_sum_and_n(
-                model, batch, target_out, ci, weight_deltas, router=all_layers
-            )
-            grads = self.get_grads(sum_loss / n, retain_graph=False)
-            if reduce_grads is not None:
-                grads = reduce_grads(grads)
-            self.step(grads)
+        with record_function("pd/ppgd_warmup"):
+            for _ in range(self._n_warmup_steps):
+                sum_loss, n = self.compute_recon_sum_and_n(
+                    model, batch, target_out, ci, weight_deltas, router=all_layers
+                )
+                grads = self.get_grads(sum_loss / n, retain_graph=False)
+                if reduce_grads is not None:
+                    grads = reduce_grads(grads)
+                self.step(grads)
 
     def compute_recon_sum_and_n(
         self,
@@ -364,30 +366,31 @@ class PersistentPGDState:
         Returning the unreduced pair lets eval accumulators weight by example count
         across batches.
         """
-        batch_dims = next(iter(ci.values())).shape[:-1]
-        router = router or self._router
-        ppgd_sources = self.get_effective_sources()
+        with record_function("pd/ppgd_recon"):
+            batch_dims = next(iter(ci.values())).shape[:-1]
+            router = router or self._router
+            ppgd_sources = self.get_effective_sources()
 
-        device = next(iter(ci.values())).device
-        sum_loss = torch.tensor(0.0, device=device)
-        n_examples = 0
-        for _ in range(self._n_samples):
-            routing_masks = router.get_masks(
-                module_names=model.target_module_paths, mask_shape=batch_dims
-            )
-            loss, n = _compute_ppgd_recon_loss(
-                model=model,
-                ppgd_sources=ppgd_sources,
-                reconstruction_loss=self._reconstruction_loss,
-                batch=batch,
-                target_out=target_out,
-                ci=ci,
-                weight_deltas=weight_deltas,
-                routing_masks=routing_masks,
-            )
-            sum_loss = sum_loss + loss
-            n_examples += n
-        return sum_loss, n_examples
+            device = next(iter(ci.values())).device
+            sum_loss = torch.tensor(0.0, device=device)
+            n_examples = 0
+            for _ in range(self._n_samples):
+                routing_masks = router.get_masks(
+                    module_names=model.target_module_paths, mask_shape=batch_dims
+                )
+                loss, n = _compute_ppgd_recon_loss(
+                    model=model,
+                    ppgd_sources=ppgd_sources,
+                    reconstruction_loss=self._reconstruction_loss,
+                    batch=batch,
+                    target_out=target_out,
+                    ci=ci,
+                    weight_deltas=weight_deltas,
+                    routing_masks=routing_masks,
+                )
+                sum_loss = sum_loss + loss
+                n_examples += n
+            return sum_loss, n_examples
 
 
 def get_ppgd_mask_infos(

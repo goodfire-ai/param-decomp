@@ -38,6 +38,7 @@ sliced-from-global pattern.
 
 import datetime
 import itertools
+import math
 import os
 import time
 from contextlib import nullcontext
@@ -787,12 +788,16 @@ class ThreePoolTrainer:
                     dump_memory_stats(f"step {step} done")
 
                 if step % cadence.train_log_every == 0:
+                    n_tokens_global = runtime.batch_global * math.prod(
+                        _seq_dims_from_batch(batch_T)
+                    )
                     _log_train_metrics(
                         metrics=metrics,
                         ctx=ctx,
                         device=device,
                         step=step,
                         step_ms=step_ms,
+                        n_tokens_global=n_tokens_global,
                         runtime=runtime,
                         optimizer=self.optimizer,
                         sink=sink,
@@ -1068,6 +1073,7 @@ def _log_train_metrics(
     device: torch.device,
     step: int,
     step_ms: float,
+    n_tokens_global: int,
     runtime: _ThreePoolRuntime,
     optimizer: torch.optim.Optimizer | None,
     sink: ThreePoolRunSink,
@@ -1086,7 +1092,12 @@ def _log_train_metrics(
 
     if mem_combined is not None:
         combined.update(mem_combined)
-    combined["perf/step_ms"] = step_ms_t.item()
+    step_ms_val = step_ms_t.item()
+    combined["perf/step_ms"] = step_ms_val
+    # tokens/sec from the (dispatch-time) step wall — the cheap, always-on throughput
+    # signal for comparing configs/strategies. Normalizes for batch size; carries the
+    # same dispatch-time caveat as step_ms (see the step-loop comment).
+    combined["perf/tokens_per_s"] = n_tokens_global / (step_ms_val / 1000.0)
     combined["loss/total"] = (
         runtime.coeff_faith * combined["loss/faith"]
         + runtime.coeff_imp * combined["loss/imp"]

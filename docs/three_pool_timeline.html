@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Three-Pool Training — Per-Step Choreography</title>
+<style>
+  :root{--ci:#3b6db5;--lw:#3e8a4e;--pg:#b9692a;--ink:#1a1f29;--muted:#5b6573;--line:#d8dee8}
+  *{box-sizing:border-box}
+  body{margin:0;background:#fbfcfe;color:var(--ink);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  main{max-width:1000px;margin:0 auto;padding:36px 20px 60px}
+  h1{font-size:26px;margin:0 0 4px;letter-spacing:-.01em}
+  .tagline{color:var(--muted);margin:0 0 22px;font-size:15px}
+  .tl{border:1px solid var(--line);border-radius:14px;background:#fff;padding:18px 20px 14px;box-shadow:0 2px 12px rgba(20,30,50,.045)}
+  .tl-legend{display:flex;flex-wrap:wrap;gap:9px 22px;align-items:center;padding-bottom:13px;margin-bottom:6px;border-bottom:1px dashed var(--line);font-size:12.5px;color:var(--muted)}
+  .tl-legend .g{display:flex;align-items:center;gap:7px}
+  .tl-legend b{color:var(--ink)}
+  .tl-legend .sw{width:13px;height:13px;border-radius:4px;display:inline-block}
+  .tl-legend .asw{font-weight:800;font-size:17px;line-height:1}
+  .tl-legend .syms{flex-basis:100%;line-height:1.75}
+  .tl-legend .syms sub{font-size:.78em}
+  .tl svg{width:100%;height:auto;display:block;margin-top:4px}
+</style>
+</head>
+<body>
+<main>
+<h1>Three-Pool Training — Per-Step Choreography</h1>
+<p class="tagline">One training step (T) across the three rank pools: what each pool computes, and what crosses the wire between them. Values &amp; weights flow out from CI (teal); gradients flow back (crimson).</p>
+<div class="tl">
+  <div class="tl-legend">
+    <span class="g"><b>Pools:</b></span>
+    <span class="g"><span class="sw" style="background:var(--lw)"></span> LW · layerwise V/U</span>
+    <span class="g"><span class="sw" style="background:var(--ci)"></span> CI · causal-importance fn</span>
+    <span class="g"><span class="sw" style="background:var(--pg)"></span> PPGD · adversary</span>
+    <span class="g"><b>Arrows = sends between pools:</b></span>
+    <span class="g"><span class="asw" style="color:#1f9d8c">&#10230;</span> values &amp; weights</span>
+    <span class="g"><span class="asw" style="color:#d1495b">&#10230;</span> gradients</span>
+    <span class="syms"><b>Indices &amp; symbols:</b> <var>T</var> = training step (one global batch) · H<sub>T</sub> cached pre-weight activations · CI<sub>T</sub> causal-importance values · y<sub>T</sub> frozen target output (the KL reference) · ∇ gradient</span>
+  </div>
+<svg viewBox="0 0 920 524" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Per-step choreography of the three pools" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+<defs>
+<marker id="av" markerWidth="11" markerHeight="11" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 Z" fill="#1f9d8c"/></marker>
+<marker id="ag" markerWidth="11" markerHeight="11" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 Z" fill="#d1495b"/></marker>
+</defs>
+<rect x="0" y="170" width="920" height="212" rx="10" fill="#f7faff"/>
+<line x1="160" y1="46" x2="160" y2="502" stroke="#d8dee8" stroke-width="1.4" stroke-dasharray="3 4"/>
+<line x1="460" y1="46" x2="460" y2="502" stroke="#d8dee8" stroke-width="1.4" stroke-dasharray="3 4"/>
+<line x1="760" y1="46" x2="760" y2="502" stroke="#d8dee8" stroke-width="1.4" stroke-dasharray="3 4"/>
+<rect x="64" y="10" width="192" height="30" rx="8" fill="#3e8a4e"/>
+<text x="160" y="30" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">Layerwise pool</text>
+<rect x="364" y="10" width="192" height="30" rx="8" fill="#3b6db5"/>
+<text x="460" y="30" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">CI pool</text>
+<rect x="664" y="10" width="192" height="30" rx="8" fill="#b9692a"/>
+<text x="760" y="30" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">PPGD pool</text>
+<line x1="0" y1="52" x2="920" y2="52" stroke="#d8dee8" stroke-width="1"/>
+<text x="3" y="47" font-size="10.5" letter-spacing="0.7" fill="#5b6573">1 · FORWARD  (start of step T)</text>
+<rect x="64" y="69" width="192" height="26" rx="8" fill="#f1fbef" stroke="#bfe0c2" stroke-width="1.2"/>
+<text x="160" y="86" text-anchor="middle" font-size="11.5" fill="#1a1f29">target_fwd → y<tspan baseline-shift="sub" font-size="9px">T</tspan></text>
+<rect x="364" y="69" width="192" height="26" rx="8" fill="#eef6ff" stroke="#bcd6f3" stroke-width="1.2"/>
+<text x="460" y="86" text-anchor="middle" font-size="11.5" fill="#1a1f29">CI-fn fwd: H<tspan baseline-shift="sub" font-size="9px">T</tspan> → CI<tspan baseline-shift="sub" font-size="9px">T</tspan></text>
+<rect x="664" y="69" width="192" height="26" rx="8" fill="#fff4ec" stroke="#f0cdb0" stroke-width="1.2"/>
+<text x="760" y="86" text-anchor="middle" font-size="11.5" fill="#1a1f29">target_fwd → y<tspan baseline-shift="sub" font-size="9px">T</tspan></text>
+<line x1="448" y1="122" x2="163" y2="122" stroke="#1f9d8c" stroke-width="2" marker-end="url(#av)"/>
+<text x="310" y="110" text-anchor="middle" font-size="11.5" fill="#1f9d8c">CI<tspan baseline-shift="sub" font-size="9px">T</tspan></text>
+<circle cx="310" cy="122" r="9.5" fill="#1f9d8c" stroke="#fff" stroke-width="1.5"/>
+<text x="310" y="126" text-anchor="middle" font-size="12.5" font-weight="700" fill="#fff">1</text>
+<line x1="472" y1="150" x2="757" y2="150" stroke="#1f9d8c" stroke-width="2" marker-end="url(#av)"/>
+<text x="610" y="138" text-anchor="middle" font-size="11.5" fill="#1f9d8c">CI<tspan baseline-shift="sub" font-size="9px">T</tspan></text>
+<circle cx="610" cy="150" r="9.5" fill="#1f9d8c" stroke="#fff" stroke-width="1.5"/>
+<text x="610" y="154" text-anchor="middle" font-size="12.5" font-weight="700" fill="#fff">2</text>
+<line x1="0" y1="172" x2="920" y2="172" stroke="#d8dee8" stroke-width="1"/>
+<text x="3" y="167" font-size="10.5" letter-spacing="0.7" fill="#5b6573">2 · CONCURRENT COMPUTE  (all three pools at once)</text>
+<rect x="64" y="185" width="192" height="42" rx="8" fill="#f1fbef" stroke="#bfe0c2" stroke-width="1.2"/>
+<text x="160" y="201" text-anchor="middle" font-size="11.5" fill="#1a1f29">parameter-faithfulness → ∇V/U</text>
+<text x="160" y="218" text-anchor="middle" font-size="11.5" fill="#1a1f29">stoch recon → ∇V/U, ∇CI</text>
+<rect x="364" y="185" width="192" height="42" rx="8" fill="#eef6ff" stroke="#bcd6f3" stroke-width="1.2"/>
+<text x="460" y="201" text-anchor="middle" font-size="11.5" fill="#1a1f29">importance-minimality loss</text>
+<text x="460" y="218" text-anchor="middle" font-size="11.5" fill="#1a1f29">prefetch H<tspan baseline-shift="sub" font-size="9px">T+1</tspan></text>
+<rect x="664" y="185" width="192" height="42" rx="8" fill="#fff4ec" stroke="#f0cdb0" stroke-width="1.2"/>
+<text x="760" y="201" text-anchor="middle" font-size="11.5" fill="#1a1f29">warmup: N PGD steps</text>
+<text x="760" y="218" text-anchor="middle" font-size="11.5" fill="#1a1f29">recon → ∇V/U, ∇CI, ∇sources</text>
+<line x1="748" y1="258" x2="463" y2="258" stroke="#d1495b" stroke-width="2" marker-end="url(#ag)"/>
+<text x="610" y="246" text-anchor="middle" font-size="11.5" fill="#d1495b">∇CI</text>
+<circle cx="610" cy="258" r="9.5" fill="#d1495b" stroke="#fff" stroke-width="1.5"/>
+<text x="610" y="262" text-anchor="middle" font-size="12.5" font-weight="700" fill="#fff">4</text>
+<text x="610" y="280" text-anchor="middle" font-size="9.5" fill="#5b6573">sent first — CI's critical path</text>
+<line x1="172" y1="296" x2="457" y2="296" stroke="#d1495b" stroke-width="2" marker-end="url(#ag)"/>
+<text x="310" y="284" text-anchor="middle" font-size="11.5" fill="#d1495b">∇CI</text>
+<circle cx="310" cy="296" r="9.5" fill="#d1495b" stroke="#fff" stroke-width="1.5"/>
+<text x="310" y="300" text-anchor="middle" font-size="12.5" font-weight="700" fill="#fff">3</text>
+<rect x="672" y="311" width="176" height="22" rx="6" fill="#fafbfc" stroke="#d8dee8" stroke-width="1" stroke-dasharray="4 3"/>
+<text x="760" y="326" text-anchor="middle" font-size="10" font-style="italic" fill="#5b6573">SUM-reduce ∇V/U in pool</text>
+<line x1="748" y1="350" x2="163" y2="350" stroke="#d1495b" stroke-width="2" marker-end="url(#ag)"/>
+<text x="460" y="338" text-anchor="middle" font-size="11.5" fill="#d1495b">∇V/U</text>
+<circle cx="460" cy="350" r="9.5" fill="#d1495b" stroke="#fff" stroke-width="1.5"/>
+<text x="460" y="354" text-anchor="middle" font-size="12.5" font-weight="700" fill="#fff">5</text>
+<rect x="672" y="363" width="176" height="22" rx="6" fill="#fafbfc" stroke="#d8dee8" stroke-width="1" stroke-dasharray="4 3"/>
+<text x="760" y="378" text-anchor="middle" font-size="10" font-style="italic" fill="#5b6573">(N+1)<tspan baseline-shift="super" font-size="9px">th</tspan> source step</text>
+<line x1="0" y1="390" x2="920" y2="390" stroke="#d8dee8" stroke-width="1"/>
+<text x="3" y="385" font-size="10.5" letter-spacing="0.7" fill="#5b6573">3 · COMBINE, BACKWARD, OPTIMIZER STEP</text>
+<rect x="64" y="403" width="192" height="42" rx="8" fill="#f1fbef" stroke="#bfe0c2" stroke-width="1.2"/>
+<text x="160" y="419" text-anchor="middle" font-size="11.5" fill="#1a1f29">combine ∇V/U</text>
+<text x="160" y="436" text-anchor="middle" font-size="11.5" fill="#1a1f29">all-reduce → clip → AdamW</text>
+<rect x="364" y="403" width="192" height="42" rx="8" fill="#eef6ff" stroke="#bcd6f3" stroke-width="1.2"/>
+<text x="460" y="419" text-anchor="middle" font-size="11.5" fill="#1a1f29">∇CI = ③ + ④ → fused bwd</text>
+<text x="460" y="436" text-anchor="middle" font-size="11.5" fill="#1a1f29">all-reduce → clip → AdamW</text>
+<rect x="664" y="411" width="192" height="26" rx="8" fill="#fafbfc" stroke="#d8dee8" stroke-width="1.2" stroke-dasharray="4 3"/>
+<text x="760" y="428" text-anchor="middle" font-size="11.5" fill="#5b6573" font-style="italic">waits for ⑥</text>
+<line x1="172" y1="478" x2="757" y2="478" stroke="#1f9d8c" stroke-width="2" marker-end="url(#av)"/>
+<text x="460" y="466" text-anchor="middle" font-size="11.5" fill="#1f9d8c">updated V/U</text>
+<circle cx="460" cy="478" r="9.5" fill="#1f9d8c" stroke="#fff" stroke-width="1.5"/>
+<text x="460" y="482" text-anchor="middle" font-size="12.5" font-weight="700" fill="#fff">6</text>
+<text x="460" y="500" text-anchor="middle" font-size="9.5" fill="#5b6573">weights · PPGD copies into model</text>
+<line x1="0" y1="508" x2="920" y2="508" stroke="#d8dee8" stroke-width="1" stroke-dasharray="2 3"/>
+<text x="460" y="522" text-anchor="middle" font-size="10" letter-spacing="1.5" fill="#5b6573">STEP BOUNDARY → T+1</text>
+</svg>
+</div>
+</main>
+</body>
+</html>
