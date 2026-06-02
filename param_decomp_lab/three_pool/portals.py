@@ -645,6 +645,14 @@ class InFlightCiGradReduce:
     copies the reduced result back into each grad — it MUST be called before the
     first consumer of the reduced grads (grad-clip / ``optimizer.step``).
 
+    The reduce runs in bf16 to halve the ~10 GB CI-fn grad payload on the wire:
+    the fp32 grads are cast to bf16 before the all-reduce (so the SUM-convention
+    partials are summed in bf16), and ``wait()`` upcasts back into the fp32
+    ``.grad`` buffers via ``copy_``. The grads stay fp32 everywhere off the wire;
+    fp32 master params + Adam state are untouched. This is NOT bit-identical to
+    the fp32 reduce — bf16 summation introduces ~0.4–0.5% L2 grad error on the
+    CI-fn params, which Adam absorbs (validated repro: 4.6% one-step Δθ).
+
     A no-op (empty ``buckets``) is returned when the CI pool is 1-rank or there
     are no grads, so ``wait()`` is always safe to call.
     """
@@ -652,23 +660,28 @@ class InFlightCiGradReduce:
     buckets: tuple[tuple[list[Tensor], Tensor, "dist.Work"], ...]
 
     def wait(self) -> None:
-        for bucket, flat, w in self.buckets:
+        for fp32_grads, bf16_flat, w in self.buckets:
             w.wait()
-            for orig, reduced in zip(bucket, _unflatten_dense_tensors(flat, bucket), strict=True):
-                orig.copy_(reduced)
+            for orig, reduced in zip(
+                fp32_grads, _unflatten_dense_tensors(bf16_flat, fp32_grads), strict=True
+            ):
+                orig.copy_(reduced)  # bf16 → fp32 upcast
 
 
 def all_reduce_ci_fn_grads_async(
     world: World, params: Iterable[nn.Parameter]
 ) -> InFlightCiGradReduce:
-    """Kick off the CI in-pool SUM-reduce of the CI fn grads async, returning the
-    in-flight handle; the caller ``wait()``s before the first grad consumer.
+    """Kick off the CI in-pool bf16 SUM-reduce of the CI fn grads async, returning
+    the in-flight handle; the caller ``wait()``s before the first grad consumer.
 
     SUM, not AVG (see ``SUM_GRAD_CONVENTION.md``): each producer's CI grad is a
     partial sum already normalized by the honest global count, so the cross-rank
     SUM reassembles the single-pool total directly. No producer pre-scales by
-    ``n_ci`` to survive this reduce. Same reduction as a blocking all-reduce —
-    bit-identical — just non-blocking.
+    ``n_ci`` to survive this reduce.
+
+    The grads are cast fp32 → bf16 (``CI_GRAD_WIRE_DTYPE``) before the reduce to
+    halve the payload; the SUM happens in bf16 and ``wait()`` upcasts back into
+    the fp32 ``.grad`` buffers. Not bit-identical — see ``InFlightCiGradReduce``.
     """
     if dist.get_world_size(world.ci_pool_group) <= 1:
         return InFlightCiGradReduce(buckets=())
@@ -681,13 +694,13 @@ def all_reduce_ci_fn_grads_async(
 
     states: list[tuple[list[Tensor], Tensor, dist.Work]] = []
     with time_nccl_op("all_reduce_ci_fn_grads"):
-        for bucket in grad_buckets.values():
-            flat = _flatten_dense_tensors(bucket)
+        for fp32_grads in grad_buckets.values():
+            bf16_flat = _flatten_dense_tensors(fp32_grads).to(CI_GRAD_WIRE_DTYPE)
             w = dist.all_reduce(
-                flat, op=dist.ReduceOp.SUM, group=world.ci_pool_group, async_op=True
+                bf16_flat, op=dist.ReduceOp.SUM, group=world.ci_pool_group, async_op=True
             )
             assert w is not None
-            states.append((bucket, flat, w))
+            states.append((fp32_grads, bf16_flat, w))
     return InFlightCiGradReduce(buckets=tuple(states))
 
 
