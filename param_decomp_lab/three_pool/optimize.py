@@ -268,6 +268,13 @@ class ThreePoolTrainer:
             case CIContext():
                 self.component_model.drop_components()
                 trace("ThreePoolTrainer.__init__: dropped V/U components (ci pool)")
+        # Activation checkpointing is LW-only. The LW pool carries the full per-rank batch
+        # (bl_lw = batch_size; no within-block DP at GPUs_per_block=1) so it needs ckpt to fit;
+        # PPGD/CI don't (PPGD fits plain at its small bl_pp; CI's target fwd is no_grad). PPGD's
+        # autograd.grad recompute is also non-deterministic under ckpt (nested mask_infos through
+        # checkpoint) — tracked as a follow-up; LW's .backward path is checkpoint-clean.
+        if not isinstance(self.ctx, LWContext):
+            self.component_model.model._use_activation_checkpointing = False
         trace("ThreePoolTrainer.__init__: ComponentModel.to(device): enter")
         self.component_model = self.component_model.to(self._device)
         trace("ThreePoolTrainer.__init__: ComponentModel.to(device): done")
