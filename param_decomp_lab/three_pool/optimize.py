@@ -73,7 +73,6 @@ from param_decomp.sdpa_strict import verify_flash_attention_available
 from param_decomp.torch_helpers import loop_dataloader
 from param_decomp.training_state import ThreePoolTrainingState
 from param_decomp_lab.experiments.lm.pretrain.models.gpt2_simple import GPT2Simple
-from param_decomp_lab.experiments.lm.three_pool_pd import ThreePoolConstrainedPDConfig
 from param_decomp_lab.experiments.lm.vendored.component_model import LMComponentModel
 from param_decomp_lab.three_pool.checkpoint import (
     ci_fn_state_keys,
@@ -97,6 +96,7 @@ from param_decomp_lab.three_pool.layout import (
     flush_nccl_event_timings,
 )
 from param_decomp_lab.three_pool.loss_strategy import LayerwiseLossStrategy
+from param_decomp_lab.three_pool.pd_config import ThreePoolConstrainedPDConfig
 from param_decomp_lab.three_pool.reductions import (
     aggregate_losses_to_rank0,
     aggregate_max_memory_to_rank0,

@@ -18,7 +18,7 @@ experiments/
 └── lm/
     ├── run.py               # single-pool LM (pd-lm)
     ├── three_pool_run.py    # 3-pool LM (pd-lm-3pool): ThreePoolLMExperimentConfig
-    ├── three_pool_pd.py     # ThreePoolConstrainedPDConfig + ThreePoolLosses
+    │                        # (ThreePoolConstrainedPDConfig lives in three_pool/pd_config.py)
     ├── layerwise.py         # split LM YAML into per-matrix configs + SLURM-array submit
     ├── data.py
     └── pretrain/            # see lm/pretrain/CLAUDE.md
@@ -33,7 +33,9 @@ ThreePoolConstrainedPDConfig`, `runtime: ThreePoolRuntimeConfig` (core `RuntimeC
 scalars + `topology: ThreePoolConfig`), and the usual `cadence`/`target`/`data`/`eval`/
 `wandb`. `LMExperimentConfig` is purely single-pool (no `three_pool` field).
 
-`ThreePoolConstrainedPDConfig` (in `lm/three_pool_pd.py`) subclasses core `PDConfig` and
+`ThreePoolConstrainedPDConfig` (in `param_decomp_lab/three_pool/pd_config.py` — it lives
+with the 3-pool subsystem it configures, so the subsystem has no dependency back into
+`experiments/lm/`) subclasses core `PDConfig` and
 bakes the 3-pool's invariants into the types — `sampling`/`n_mask_samples`/
 `use_delta_component`/`identity_decomposition_targets` are frozen `Literal` defaults, and
 the generic `loss_metrics` list is replaced by a typed `ThreePoolLosses(faith, imp,

@@ -15,11 +15,11 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from param_decomp_lab.experiments.lm.three_pool_pd import (
+from param_decomp_lab.experiments.lm.three_pool_run import ThreePoolLMExperimentConfig
+from param_decomp_lab.three_pool.pd_config import (
     ThreePoolConstrainedPDConfig,
     ThreePoolLosses,
 )
-from param_decomp_lab.experiments.lm.three_pool_run import ThreePoolLMExperimentConfig
 
 _VALID_YAML = (
     Path(__file__).parents[1]

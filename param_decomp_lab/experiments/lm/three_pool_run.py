@@ -61,7 +61,6 @@ from param_decomp_lab.experiments.lm.run import (
     build_target,
     make_run_batch,
 )
-from param_decomp_lab.experiments.lm.three_pool_pd import ThreePoolConstrainedPDConfig
 from param_decomp_lab.experiments.utils import (
     RUN_META_FILENAME,
     EvalConfig,
@@ -89,6 +88,7 @@ from param_decomp_lab.run_sink import ThreePoolSink
 from param_decomp_lab.seed import set_seed
 from param_decomp_lab.three_pool import ThreePoolConfig, ThreePoolTrainer
 from param_decomp_lab.three_pool.consolidate import SNAPSHOT_SCRATCH_DIRNAME
+from param_decomp_lab.three_pool.pd_config import ThreePoolConstrainedPDConfig
 
 
 class ThreePoolRuntimeConfig(RuntimeConfig):
