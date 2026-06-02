@@ -1,0 +1,413 @@
+cadence:
+  keep_last_n_checkpoints: null
+  save_every: 5000
+  train_log_every: 50
+data:
+  buffer_size: 1000
+  column_name: input_ids
+  dataset_name: apollo-research/Skylion007-openwebtext-tokenizer-gpt2
+  eval_split: train
+  is_tokenized: true
+  max_seq_len: 1024
+  shuffle_each_epoch: true
+  streaming: true
+  tokenizer_name: openai-community/gpt2
+  train_split: train
+eval:
+  batch_size: 256
+  every: 1000
+  metrics:
+  - ci_alive_threshold: 0.0
+    groups:
+      k_proj:
+      - h.*.attn.k_proj
+      layer_0:
+      - h.0.*
+      layer_23:
+      - h.23.*
+      layer_47:
+      - h.47.*
+      q_proj:
+      - h.*.attn.q_proj
+      total:
+      - '*'
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - coeff: null
+    init: random
+    mask_scope: shared_across_batch
+    n_steps: 20
+    step_size: 0.1
+    type: PGDReconLoss
+  n_steps: 1
+  slow_every: 10000
+  slow_on_first_step: false
+pd:
+  batch_size: 256
+  ci_config:
+    fn_type: global_shared_transformer
+    hidden_dims: null
+    mode: global
+    simple_transformer_ci_cfg:
+      attn_config:
+        max_len: 1024
+        n_heads: 32
+        rope_base: 10000.0
+      d_model: 4096
+      mlp_hidden_dim:
+      - 16384
+      n_blocks: 8
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 0.0001
+      warmup_pct: 0.01
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 0.0005
+      warmup_pct: 0.01
+    weight_decay: 0.0
+  decomposition_targets:
+  - C: 1024
+    module_pattern: h.*.attn.q_proj
+  - C: 1024
+    module_pattern: h.*.attn.k_proj
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 400
+  faithfulness_warmup_weight_decay: 0.0
+  identity_decomposition_targets: null
+  losses:
+    faith:
+      coeff: 100000000.0
+      type: FaithfulnessLoss
+    imp:
+      beta: 0.5
+      coeff: 4.0e-05
+      eps: 1.0e-12
+      p_anneal_end_frac: 1.0
+      p_anneal_final_p: 0.3
+      p_anneal_start_frac: 0.0
+      pnorm: 2.0
+      type: ImportanceMinimalityLoss
+    ppgd:
+      coeff: 1.0
+      n_samples: 1
+      n_warmup_steps: 2
+      optimizer:
+        beta1: 0.5
+        beta2: 0.99
+        eps: 1.0e-08
+        lr_schedule:
+          final_val_frac: 1.0
+          fn_type: constant
+          start_val: 0.01
+          warmup_pct: 0.01
+        type: adam
+      scope:
+        type: per_batch_per_position
+      start_frac: 0.0
+      type: PersistentPGDReconLoss
+      use_sigmoid_parameterization: false
+    stoch:
+      coeff: 50.0
+      type: StochasticReconLayerwiseLoss
+    routing_plan:
+      type: subset
+      routing:
+        type: all
+      n_samples: 1
+  n_mask_samples: 1
+  sampling: continuous
+  seed: 0
+  sigmoid_type: leaky_hard
+  steps: 50000
+  tied_weights: null
+  use_delta_component: true
+runtime:
+  autocast_bf16: true
+  device: cuda:0
+  dp: 160
+  topology:
+    ci_ranks:
+    - 48
+    - 49
+    - 50
+    - 51
+    - 52
+    - 53
+    - 54
+    - 55
+    - 56
+    - 57
+    - 58
+    - 59
+    - 60
+    - 61
+    - 62
+    - 63
+    - 64
+    - 65
+    - 66
+    - 67
+    - 68
+    - 69
+    - 70
+    - 71
+    - 72
+    - 73
+    - 74
+    - 75
+    - 76
+    - 77
+    - 78
+    - 79
+    layerwise_block_groups:
+    - ranks:
+      - 0
+      - 1
+      owned_sites:
+      - h.0.attn.q_proj
+      - h.0.attn.k_proj
+      - h.1.attn.q_proj
+      - h.1.attn.k_proj
+    - ranks:
+      - 2
+      - 3
+      owned_sites:
+      - h.2.attn.q_proj
+      - h.2.attn.k_proj
+      - h.3.attn.q_proj
+      - h.3.attn.k_proj
+    - ranks:
+      - 4
+      - 5
+      owned_sites:
+      - h.4.attn.q_proj
+      - h.4.attn.k_proj
+      - h.5.attn.q_proj
+      - h.5.attn.k_proj
+    - ranks:
+      - 6
+      - 7
+      owned_sites:
+      - h.6.attn.q_proj
+      - h.6.attn.k_proj
+      - h.7.attn.q_proj
+      - h.7.attn.k_proj
+    - ranks:
+      - 8
+      - 9
+      owned_sites:
+      - h.8.attn.q_proj
+      - h.8.attn.k_proj
+      - h.9.attn.q_proj
+      - h.9.attn.k_proj
+    - ranks:
+      - 10
+      - 11
+      owned_sites:
+      - h.10.attn.q_proj
+      - h.10.attn.k_proj
+      - h.11.attn.q_proj
+      - h.11.attn.k_proj
+    - ranks:
+      - 12
+      - 13
+      owned_sites:
+      - h.12.attn.q_proj
+      - h.12.attn.k_proj
+      - h.13.attn.q_proj
+      - h.13.attn.k_proj
+    - ranks:
+      - 14
+      - 15
+      owned_sites:
+      - h.14.attn.q_proj
+      - h.14.attn.k_proj
+      - h.15.attn.q_proj
+      - h.15.attn.k_proj
+    - ranks:
+      - 16
+      - 17
+      owned_sites:
+      - h.16.attn.q_proj
+      - h.16.attn.k_proj
+      - h.17.attn.q_proj
+      - h.17.attn.k_proj
+    - ranks:
+      - 18
+      - 19
+      owned_sites:
+      - h.18.attn.q_proj
+      - h.18.attn.k_proj
+      - h.19.attn.q_proj
+      - h.19.attn.k_proj
+    - ranks:
+      - 20
+      - 21
+      owned_sites:
+      - h.20.attn.q_proj
+      - h.20.attn.k_proj
+      - h.21.attn.q_proj
+      - h.21.attn.k_proj
+    - ranks:
+      - 22
+      - 23
+      owned_sites:
+      - h.22.attn.q_proj
+      - h.22.attn.k_proj
+      - h.23.attn.q_proj
+      - h.23.attn.k_proj
+    - ranks:
+      - 24
+      - 25
+      owned_sites:
+      - h.24.attn.q_proj
+      - h.24.attn.k_proj
+      - h.25.attn.q_proj
+      - h.25.attn.k_proj
+    - ranks:
+      - 26
+      - 27
+      owned_sites:
+      - h.26.attn.q_proj
+      - h.26.attn.k_proj
+      - h.27.attn.q_proj
+      - h.27.attn.k_proj
+    - ranks:
+      - 28
+      - 29
+      owned_sites:
+      - h.28.attn.q_proj
+      - h.28.attn.k_proj
+      - h.29.attn.q_proj
+      - h.29.attn.k_proj
+    - ranks:
+      - 30
+      - 31
+      owned_sites:
+      - h.30.attn.q_proj
+      - h.30.attn.k_proj
+      - h.31.attn.q_proj
+      - h.31.attn.k_proj
+    - ranks:
+      - 32
+      - 33
+      owned_sites:
+      - h.32.attn.q_proj
+      - h.32.attn.k_proj
+      - h.33.attn.q_proj
+      - h.33.attn.k_proj
+    - ranks:
+      - 34
+      - 35
+      owned_sites:
+      - h.34.attn.q_proj
+      - h.34.attn.k_proj
+      - h.35.attn.q_proj
+      - h.35.attn.k_proj
+    - ranks:
+      - 36
+      - 37
+      owned_sites:
+      - h.36.attn.q_proj
+      - h.36.attn.k_proj
+      - h.37.attn.q_proj
+      - h.37.attn.k_proj
+    - ranks:
+      - 38
+      - 39
+      owned_sites:
+      - h.38.attn.q_proj
+      - h.38.attn.k_proj
+      - h.39.attn.q_proj
+      - h.39.attn.k_proj
+    - ranks:
+      - 40
+      - 41
+      owned_sites:
+      - h.40.attn.q_proj
+      - h.40.attn.k_proj
+      - h.41.attn.q_proj
+      - h.41.attn.k_proj
+    - ranks:
+      - 42
+      - 43
+      owned_sites:
+      - h.42.attn.q_proj
+      - h.42.attn.k_proj
+      - h.43.attn.q_proj
+      - h.43.attn.k_proj
+    - ranks:
+      - 44
+      - 45
+      owned_sites:
+      - h.44.attn.q_proj
+      - h.44.attn.k_proj
+      - h.45.attn.q_proj
+      - h.45.attn.k_proj
+    - ranks:
+      - 46
+      - 47
+      owned_sites:
+      - h.46.attn.q_proj
+      - h.46.attn.k_proj
+      - h.47.attn.q_proj
+      - h.47.attn.k_proj
+    ppgd_ranks:
+    - 80
+    - 81
+    - 82
+    - 83
+    - 84
+    - 85
+    - 86
+    - 87
+    - 88
+    - 89
+    - 90
+    - 91
+    - 92
+    - 93
+    - 94
+    - 95
+    - 96
+    - 97
+    - 98
+    - 99
+    - 100
+    - 101
+    - 102
+    - 103
+    - 104
+    - 105
+    - 106
+    - 107
+    - 108
+    - 109
+    - 110
+    - 111
+    use_fused_kl: true
+target:
+  activation_checkpointing: true
+  output_extract: 0
+  spec:
+    kind: hf_weights_in_vendored
+    model_class: param_decomp_lab.experiments.lm.pretrain.models.gpt2_simple.GPT2Simple
+    model_name: openai-community/gpt2-xl
+wandb:
+  project: param-decomp
+  entity: goodfire
