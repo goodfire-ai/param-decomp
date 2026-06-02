@@ -1,0 +1,298 @@
+pd:
+  seed: 0
+  ci_config:
+    mode: global
+    fn_type: global_shared_transformer
+    simple_transformer_ci_cfg:
+      d_model: 4096
+      n_blocks: 8
+      mlp_hidden_dim:
+      - 16384
+      attn_config:
+        n_heads: 32
+        max_len: 1024
+        rope_base: 10000.0
+  sigmoid_type: leaky_hard
+  decomposition_targets:
+  - module_pattern: h.*.attn.q_proj
+    C: 1024
+  - module_pattern: h.*.attn.k_proj
+    C: 1024
+  batch_size: 48
+  steps: 100000
+  components_optimizer:
+    lr_schedule:
+      start_val: 0.0405
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+    grad_clip_norm: 0.01
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 0.0081
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+  faithfulness_warmup_steps: 150
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_weight_decay: 0.0
+  losses:
+    faith:
+      coeff: 100000000.0
+    stoch:
+      coeff: 50.0
+    imp:
+      coeff: 4.0e-05
+      pnorm: 2.0
+      beta: 0.5
+      p_anneal_start_frac: 0.0
+      p_anneal_final_p: 0.3
+      p_anneal_end_frac: 1.0
+      eps: 1.0e-12
+    ppgd:
+      coeff: 1.0
+      optimizer:
+        type: adam
+        beta1: 0.5
+        beta2: 0.99
+        eps: 1.0e-08
+        lr_schedule:
+          start_val: 0.01
+          warmup_pct: 0.05
+          final_val_frac: 1.0
+          fn_type: constant
+      scope:
+        type: per_batch_per_position
+      use_sigmoid_parameterization: false
+      n_warmup_steps: 2
+      n_samples: 1
+cadence:
+  train_log_every: 5
+  save_every: 100000000
+eval:
+  n_steps: 1
+  batch_size: 48
+  every: 100000000
+  slow_every: 100000000
+  slow_on_first_step: false
+  metrics:
+  - type: CI_L0
+    groups:
+      total:
+      - '*'
+      q_proj:
+      - h.*.attn.q_proj
+      k_proj:
+      - h.*.attn.k_proj
+      layer_0:
+      - h.0.*
+      layer_23:
+      - h.23.*
+      layer_47:
+      - h.47.*
+  - type: CEandKLLosses
+    rounding_threshold: 0.0
+  - type: PGDReconLoss
+    init: random
+    step_size: 0.1
+    n_steps: 20
+    mask_scope: shared_across_batch
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null
+  topology:
+    use_fused_kl: true
+    ci_ranks:
+    - 48
+    - 49
+    - 50
+    - 51
+    - 52
+    - 53
+    - 54
+    - 55
+    ppgd_ranks:
+    - 56
+    - 57
+    - 58
+    - 59
+    - 60
+    - 61
+    - 62
+    - 63
+    layerwise_block_groups:
+    - ranks:
+      - 0
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      owned_sites:
+      - h.0.attn.q_proj
+      - h.0.attn.k_proj
+      - h.1.attn.q_proj
+      - h.1.attn.k_proj
+      - h.2.attn.q_proj
+      - h.2.attn.k_proj
+      - h.3.attn.q_proj
+      - h.3.attn.k_proj
+      - h.4.attn.q_proj
+      - h.4.attn.k_proj
+      - h.5.attn.q_proj
+      - h.5.attn.k_proj
+      - h.6.attn.q_proj
+      - h.6.attn.k_proj
+      - h.7.attn.q_proj
+      - h.7.attn.k_proj
+    - ranks:
+      - 8
+      - 9
+      - 10
+      - 11
+      - 12
+      - 13
+      - 14
+      - 15
+      owned_sites:
+      - h.8.attn.q_proj
+      - h.8.attn.k_proj
+      - h.9.attn.q_proj
+      - h.9.attn.k_proj
+      - h.10.attn.q_proj
+      - h.10.attn.k_proj
+      - h.11.attn.q_proj
+      - h.11.attn.k_proj
+      - h.12.attn.q_proj
+      - h.12.attn.k_proj
+      - h.13.attn.q_proj
+      - h.13.attn.k_proj
+      - h.14.attn.q_proj
+      - h.14.attn.k_proj
+      - h.15.attn.q_proj
+      - h.15.attn.k_proj
+    - ranks:
+      - 16
+      - 17
+      - 18
+      - 19
+      - 20
+      - 21
+      - 22
+      - 23
+      owned_sites:
+      - h.16.attn.q_proj
+      - h.16.attn.k_proj
+      - h.17.attn.q_proj
+      - h.17.attn.k_proj
+      - h.18.attn.q_proj
+      - h.18.attn.k_proj
+      - h.19.attn.q_proj
+      - h.19.attn.k_proj
+      - h.20.attn.q_proj
+      - h.20.attn.k_proj
+      - h.21.attn.q_proj
+      - h.21.attn.k_proj
+      - h.22.attn.q_proj
+      - h.22.attn.k_proj
+      - h.23.attn.q_proj
+      - h.23.attn.k_proj
+    - ranks:
+      - 24
+      - 25
+      - 26
+      - 27
+      - 28
+      - 29
+      - 30
+      - 31
+      owned_sites:
+      - h.24.attn.q_proj
+      - h.24.attn.k_proj
+      - h.25.attn.q_proj
+      - h.25.attn.k_proj
+      - h.26.attn.q_proj
+      - h.26.attn.k_proj
+      - h.27.attn.q_proj
+      - h.27.attn.k_proj
+      - h.28.attn.q_proj
+      - h.28.attn.k_proj
+      - h.29.attn.q_proj
+      - h.29.attn.k_proj
+      - h.30.attn.q_proj
+      - h.30.attn.k_proj
+      - h.31.attn.q_proj
+      - h.31.attn.k_proj
+    - ranks:
+      - 32
+      - 33
+      - 34
+      - 35
+      - 36
+      - 37
+      - 38
+      - 39
+      owned_sites:
+      - h.32.attn.q_proj
+      - h.32.attn.k_proj
+      - h.33.attn.q_proj
+      - h.33.attn.k_proj
+      - h.34.attn.q_proj
+      - h.34.attn.k_proj
+      - h.35.attn.q_proj
+      - h.35.attn.k_proj
+      - h.36.attn.q_proj
+      - h.36.attn.k_proj
+      - h.37.attn.q_proj
+      - h.37.attn.k_proj
+      - h.38.attn.q_proj
+      - h.38.attn.k_proj
+      - h.39.attn.q_proj
+      - h.39.attn.k_proj
+    - ranks:
+      - 40
+      - 41
+      - 42
+      - 43
+      - 44
+      - 45
+      - 46
+      - 47
+      owned_sites:
+      - h.40.attn.q_proj
+      - h.40.attn.k_proj
+      - h.41.attn.q_proj
+      - h.41.attn.k_proj
+      - h.42.attn.q_proj
+      - h.42.attn.k_proj
+      - h.43.attn.q_proj
+      - h.43.attn.k_proj
+      - h.44.attn.q_proj
+      - h.44.attn.k_proj
+      - h.45.attn.q_proj
+      - h.45.attn.k_proj
+      - h.46.attn.q_proj
+      - h.46.attn.k_proj
+      - h.47.attn.q_proj
+      - h.47.attn.k_proj
+target:
+  spec:
+    kind: hf_weights_in_vendored
+    model_class: param_decomp_lab.experiments.lm.pretrain.models.gpt2_simple.GPT2Simple
+    model_name: openai-community/gpt2-xl
+  output_extract: 0
+  activation_checkpointing: false
+data:
+  tokenizer_name: openai-community/gpt2
+  max_seq_len: 1024
+  dataset_name: apollo-research/Skylion007-openwebtext-tokenizer-gpt2
+  column_name: input_ids
+  train_split: train
+  eval_split: train
+  is_tokenized: true
+  streaming: true
+  buffer_size: 1000
+  shuffle_each_epoch: true
