@@ -96,6 +96,21 @@ in-train (fast) eval pass plus a checkpoint partial-write barrier — minutes, n
 the old ~10-min rank-0 read. Override (seconds) via `PD_3POOL_PG_TIMEOUT_S` —
 used by the watchdog-safe-at-low-timeout test to force a tight bound.
 
+When LW `torch.compile` is on (the default — see below), the timeout widens to
+**20 min** (`_COMPILE_PG_TIMEOUT`), because step 0 pays a one-time ~minutes
+compilation while the other pools wait at the first cross-pool collective. The
+widening is uniform across ranks (the flag is global), and steady-state collectives
+are still sub-second.
+
+## LW torch.compile (default on)
+
+The LW pool's model forward is `torch.compile`d by default — a validated **2.61×**
+on the LW step (the throughput pole), enabled by the vendored mask-arg forward
+(pure → Dynamo traces the whole fwd+bwd, 0 graph breaks). LW-only: PPGD/CI have
+slack (compiling them wouldn't move the wall) and PPGD's `autograd.grad` path is
+unvalidated under compile. Disable with `PD_DISABLE_LW_COMPILE=1` (repro/debug).
+The one-time first-step compilation is absorbed by the widened PG timeout above.
+
 ## Resume (`from_snapshot`)
 
 3-pool runs persist a `ThreePoolTrainingState` (not the single-pool
