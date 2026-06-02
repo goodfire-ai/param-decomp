@@ -15,6 +15,7 @@ from param_decomp.ci_fns import CiConfig
 from param_decomp.ci_sigmoids import SigmoidType
 from param_decomp.metrics.persistent_pgd_recon import PersistentPGDReconLossConfig
 from param_decomp_lab.three_pool.layout import LayerwiseBlockGroup
+from param_decomp_lab.three_pool.routing_plan import RoutingPlan
 
 __all__ = ["_ThreePoolRuntime"]
 
@@ -48,6 +49,14 @@ class _ThreePoolRuntime:
     # PPGD config (the full LossMetricConfig, since PersistentPGDState
     # consumes several of its fields)
     ppgd_cfg: PersistentPGDReconLossConfig
+
+    # How each LW block turns its owned sites into recon forwards.
+    routing_plan: RoutingPlan
+    # Total LW recon forwards per step across the whole pool
+    # (= Σ over block groups of routing_plan.n_forwards(owned_sites)). Generalises
+    # the old ``n_sites_total`` factor in the stoch-grad denominator: with the
+    # default per-site plan, n_est == n_sites_total (bit-exact with the old path).
+    n_est: int
 
     # Loss coefficients
     coeff_faith: float

@@ -49,8 +49,14 @@ class StaticProbabilityRoutingConfig(BaseConfig):
     p: Probability
 
 
+class AllRoutingConfig(BaseConfig):
+    """Route every position to every module (the `"all"` fast path)."""
+
+    type: Literal["all"] = "all"
+
+
 # Discriminated union over the subset-routing configs (keyed by ``type``).
-SubsetRoutingType = UniformKSubsetRoutingConfig | StaticProbabilityRoutingConfig
+SubsetRoutingType = UniformKSubsetRoutingConfig | StaticProbabilityRoutingConfig | AllRoutingConfig
 
 
 # ``"continuous"`` draws uniform [0, 1) sources; ``"binomial"`` draws Bernoulli sources.
@@ -173,6 +179,8 @@ def get_subset_router(routing: SubsetRoutingType, device: torch.device | str) ->
             return UniformKSubsetRouter(device=device)
         case StaticProbabilityRoutingConfig(p=p):
             return StaticProbabilityRouter(p=p, device=device)
+        case AllRoutingConfig():
+            return AllLayersRouter()
 
 
 def interpolate_component_mask(

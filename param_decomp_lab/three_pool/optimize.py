@@ -998,6 +998,9 @@ def _build_runtime(
         for bg in three_pool_config.layerwise_block_groups
     )
 
+    routing_plan = losses.routing_plan
+    n_est = sum(routing_plan.n_forwards(bg.owned_sites) for bg in block_groups)
+
     return _ThreePoolRuntime(
         ci_ranks=tuple(three_pool_config.ci_ranks),
         layerwise_block_groups=block_groups,
@@ -1009,6 +1012,8 @@ def _build_runtime(
         run_batch=run_batch,
         reconstruction_loss=reconstruction_loss,
         ppgd_cfg=ppgd_cfg,
+        routing_plan=routing_plan,
+        n_est=n_est,
         coeff_faith=float(_required(losses.faith.coeff)),
         coeff_imp=float(_required(losses.imp.coeff)),
         coeff_stoch=float(_required(losses.stoch.coeff)),

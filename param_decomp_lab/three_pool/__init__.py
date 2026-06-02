@@ -20,8 +20,12 @@ shape. ``ThreePoolConfig`` declares the topology.
 See ``DESIGN.md`` for the per-step dependency graph + the pipelining tricks.
 """
 
+from typing import TYPE_CHECKING, Any
+
 from param_decomp_lab.three_pool.config import LayerwiseBlockGroupSpec, ThreePoolConfig
-from param_decomp_lab.three_pool.optimize import ThreePoolTrainer, optimize_three_pool
+
+if TYPE_CHECKING:
+    from param_decomp_lab.three_pool.optimize import ThreePoolTrainer, optimize_three_pool
 
 __all__ = [
     "LayerwiseBlockGroupSpec",
@@ -29,3 +33,14 @@ __all__ = [
     "ThreePoolTrainer",
     "optimize_three_pool",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    # Lazy export of the heavy `optimize` symbols (PEP 562) so importing leaf
+    # submodules (e.g. `three_pool.routing_plan`, pulled by `three_pool_pd`) does
+    # not eagerly import `optimize` — which imports `three_pool_pd` back, a cycle.
+    if name in ("ThreePoolTrainer", "optimize_three_pool"):
+        from param_decomp_lab.three_pool import optimize
+
+        return getattr(optimize, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

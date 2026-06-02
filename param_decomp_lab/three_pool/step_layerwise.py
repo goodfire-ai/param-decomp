@@ -21,9 +21,13 @@ Phases (numbered to match ``DESIGN.md`` ``lw/N``):
   D1. Faithfulness loss + backward (V/U-only, doesn't need CI).
   D2. Wait CI recv; re-leaf as fp32 ``requires_grad=True`` so the layerwise
       backward populates ``leaf.grad`` for D4.
-  D3. Layerwise stoch recon, streaming per owned site — the
-      semantically meaningful for-loop lives at this step level (one
-      forward+backward per site bounds peak activation memory).
+  D3. Stochastic recon, streaming one forward+backward per entry of this block's
+      routing plan (``cfg.routing_plan`` — see ``routing_plan.py``). The default
+      per-site plan does one forward per owned site (the original layerwise loop);
+      a subset plan does joint/per-position-routed forwards over all owned sites.
+      The for-loop lives at this step level (one forward+backward per entry bounds
+      peak activation memory). The stoch grad is normalized by ``N_est`` (the
+      global total of recon forwards), generalizing the old ``n_sites_total``.
   D4. Send g_CI back to CI pool (per-rank, on owned sites).
   D5. Recv g_VU from PPGD pool (block leader recvs, then in-block bcast).
   D6. Combine V/U grads: faith + layerwise already in ``.grad``; add PPGD's.
@@ -44,7 +48,7 @@ from torch import Tensor
 
 from param_decomp._trace import phase_trace_enabled, trace
 from param_decomp.grad_clip import cross_pool_clip_grad_norm
-from param_decomp.masks import make_mask_infos
+from param_decomp.masks import RoutingMasks, make_mask_infos
 from param_decomp.torch_helpers import bf16_autocast
 from param_decomp_lab.experiments.lm.vendored.component_model import LMComponentModel
 from param_decomp_lab.three_pool.context import LWContext
@@ -55,6 +59,7 @@ from param_decomp_lab.three_pool.portals import (
     all_reduce_grads_in_block,
 )
 from param_decomp_lab.three_pool.role import LWRole
+from param_decomp_lab.three_pool.routing_plan import ForwardRouting
 from param_decomp_lab.three_pool.runtime import _ThreePoolRuntime
 
 
@@ -80,10 +85,10 @@ class CiLeaves:
 @dataclass(frozen=True)
 class Stoch:
     """Phase lw/D3 output: accumulated stochastic-recon display value (GPU
-    tensor) + the count of owned sites it averages over."""
+    tensor) + the count of recon forwards it averages over."""
 
     total: Tensor
-    n_owned: int
+    n_forwards: int
 
 
 def step_layerwise(
@@ -124,11 +129,11 @@ def step_layerwise(
         stoch_total_value = stoch.total.item()
         metrics = {
             "loss/faith": faith.loss.item(),
-            "loss/stoch": stoch_total_value / stoch.n_owned,
+            "loss/stoch": stoch_total_value / stoch.n_forwards,
             "_raw/faith_num": faith.sum_sq.item(),
             "_raw/faith_den": float(faith.numel),
             "_raw/stoch_num": stoch_total_value,
-            "_raw/stoch_den": float(stoch.n_owned),
+            "_raw/stoch_den": float(stoch.n_forwards),
         }
     else:
         metrics = {}
@@ -192,57 +197,92 @@ def _layerwise_streaming_phase(
     cfg: _ThreePoolRuntime,
     strategy: LayerwiseLossStrategy,
 ) -> Stoch:
-    """Phase lw/D3. Per-owned-site stochastic recon, streaming fwd+bwd.
+    """Phase lw/D3. Stochastic recon over the routing plan, streaming fwd+bwd.
 
-    The per-site backward seeds the stoch gradient onto the re-leafed CI values,
-    which ship back to the CI pool and seed the CI-fn backward (alongside
-    imp-min and PPGD). For that CI-fn gradient to carry the same stoch:imp:pgd
-    balance as single-pool at ANY topology, the stoch seed must be GLOBALLY
-    normalized — divided by the global position count — not by this LW rank's
-    local count ``n_positions = batch_local_lw * seq_len``.
-
-    Derivation (single-pool target). Single-pool layerwise stoch backprops
-    ``coeff_stoch * sum_loss / n_examples`` with ``n_examples =
-    n_sites_total * P_global`` (``P_global`` = global positions, n_mask_samples=1),
-    so each (site, position) contributes a seed of
-    ``coeff_stoch / (n_sites_total * P_global)``.
-
-    In 3-pool, each LW rank covers ``P_local = P_global / n_per_block`` distinct
-    positions, and the CI pool then AVG-reduces the assembled CI-fn grads over
-    ``n_ci``. With a per-site denom ``D``, the CI-fn stoch grad summed over all
-    positions and de-duplicated by the AVG is
-    ``(1 / n_ci) * P_global * coeff_stoch / D``. Setting that equal to the
-    single-pool total ``coeff_stoch / n_sites_total`` gives
-    ``D = P_global * n_sites_total / n_ci``.
-
-    Writing ``P_global = n_positions * n_per_block`` yields the form below. The
-    only difference from the (buggy) local normalization
-    ``n_positions * n_sites_total`` is the factor ``n_per_block / n_ci``, which
-    is exactly 1 on a square topology (``n_per_block == n_ci``) — so this is a
-    bit-exact no-op there and only changes non-square runs.
+    Generate this block's list of recon forwards from ``cfg.routing_plan`` (one
+    forward per entry — see ``routing_plan.py``) and run each as a streaming
+    masked forward+backward. The default ``PerSitePlan`` produces one forward per
+    owned site (the original layerwise loop); a ``SubsetRoutingPlan`` produces
+    ``n_samples`` joint/subset forwards over all owned sites.
     """
     owned_sites = ctx.role.owned_sites
-    n_sites_total = len(cfg.c_per_site)
+    mask_shape = next(iter(ci_leaves.per_site.values())).shape[:-1]
+    routings = cfg.routing_plan.generate(owned_sites, mask_shape, target_local.device)
+    return _run_routing_forwards(
+        component_model=component_model,
+        batch_local=batch_local,
+        target_local=target_local,
+        ci_leaves=ci_leaves.per_site,
+        routings=routings,
+        coeff_stoch=cfg.coeff_stoch,
+        n_est=cfg.n_est,
+        n_per_block=ctx.world.n_per_block,
+        n_ci=ctx.world.n_ci,
+        strategy=strategy,
+        bf16_autocast_enabled=cfg.bf16_autocast,
+    )
+
+
+def _run_routing_forwards(
+    component_model: LMComponentModel,
+    batch_local: Any,
+    target_local: Tensor,
+    ci_leaves: dict[str, Tensor],
+    routings: list[ForwardRouting],
+    coeff_stoch: float,
+    n_est: int,
+    n_per_block: int,
+    n_ci: int,
+    strategy: LayerwiseLossStrategy,
+    bf16_autocast_enabled: bool,
+) -> Stoch:
+    """Run one masked forward+backward per routing; seed CI/V/U grads.
+
+    Context-free (no ``World``/portals) so the gradient-scaling grad check can
+    drive it directly. Each forward's backward seeds the stoch gradient onto the
+    re-leafed CI values (which ship back to the CI pool and seed the CI-fn
+    backward alongside imp-min and PPGD) and onto V/U. For that CI-fn gradient to
+    carry the same stoch:imp:pgd balance as single-pool at ANY topology, the seed
+    is GLOBALLY normalized by ``stoch_grad_denom``, not by this LW rank's local
+    position count.
+
+    Derivation. Single-pool's stoch estimator averages over ``N_est`` recon
+    forwards (one per site for the layerwise estimator → ``N_est = n_sites_total``;
+    ``n_samples`` for subset recon), backprop'ing ``coeff_stoch * sum_loss /
+    n_examples`` with ``n_examples = N_est * P_global`` (``P_global`` = global
+    positions), so each ``(forward, position)`` contributes a seed of
+    ``coeff_stoch / (N_est * P_global)``.
+
+    In 3-pool, each LW rank covers ``P_local = P_global / n_per_block`` distinct
+    positions, and the CI pool AVG-reduces the assembled CI-fn grads over
+    ``n_ci``. With a denom ``D``, the CI-fn stoch grad summed over all positions
+    and de-duplicated by the AVG is ``(1 / n_ci) * P_global * coeff_stoch / D``.
+    Setting that equal to the single-pool per-forward total ``coeff_stoch / N_est``
+    gives ``D = P_global * N_est / n_ci``. Writing ``P_global = n_positions *
+    n_per_block`` yields the form below.
+
+    ``N_est`` is the global total of recon forwards across the whole LW pool
+    (``cfg.n_est``); it generalises the old ``n_sites_total`` factor and equals it
+    for the default per-site plan (so this is bit-exact with the old path there).
+    """
     device = target_local.device
-    n_per_block = ctx.world.n_per_block
-    n_ci = ctx.world.n_ci
-    with bf16_autocast(cfg.bf16_autocast):
-        # Accumulate the display value as a GPU tensor (not a Python float) so
-        # the per-site ``.item()`` doesn't force a CPU↔GPU sync that serializes
-        # each site's bwd against the next. ``loss_s.detach()`` so accumulator
-        # doesn't retain autograd graph.
+    with bf16_autocast(bf16_autocast_enabled):
+        # Accumulate the display value as a GPU tensor (not a Python float) so the
+        # per-forward ``.item()`` doesn't force a CPU↔GPU sync that serializes
+        # each forward's bwd against the next. ``loss_f.detach()`` so the
+        # accumulator doesn't retain the autograd graph.
         stoch_total_t = torch.zeros((), device=device)
-        for i, s in enumerate(owned_sites):
+        for i, (sites, routing) in enumerate(routings):
             if phase_trace_enabled():
-                trace(f"lw/D3 site {i + 1}/{len(owned_sites)}: {s} fwd+bwd")
-            loss_s, n_positions = _layerwise_one_site(
-                component_model, batch_local, target_local, ci_leaves.per_site, s, strategy
+                trace(f"lw/D3 forward {i + 1}/{len(routings)}: {sites} fwd+bwd")
+            loss_f, n_positions = _recon_one_forward(
+                component_model, batch_local, target_local, ci_leaves, sites, routing, strategy
             )
-            assert loss_s.dim() == 0, f"layerwise loss for site {s!r} must be scalar"
-            stoch_grad_denom = n_positions * n_sites_total * n_per_block / n_ci
-            (cfg.coeff_stoch * loss_s / stoch_grad_denom).backward()
-            stoch_total_t = stoch_total_t + (loss_s.detach() / n_positions)
-    return Stoch(total=stoch_total_t, n_owned=len(owned_sites))
+            assert loss_f.dim() == 0, f"recon loss for sites {sites!r} must be scalar"
+            stoch_grad_denom = n_positions * n_est * n_per_block / n_ci
+            (coeff_stoch * loss_f / stoch_grad_denom).backward()
+            stoch_total_t = stoch_total_t + (loss_f.detach() / n_positions)
+    return Stoch(total=stoch_total_t, n_forwards=len(routings))
 
 
 def _send_g_ci(portals: LWPortals, role: LWRole, ci_leaves: CiLeaves) -> None:
@@ -329,29 +369,35 @@ def _assert_ci_recv_shapes(
         )
 
 
-def _layerwise_one_site(
+def _recon_one_forward(
     component_model: LMComponentModel,
     batch_local: Any,
     target_local: Tensor,
     ci_recv_leaves: dict[str, Tensor],
-    site: str,
+    sites: tuple[str, ...],
+    routing: RoutingMasks,
     strategy: LayerwiseLossStrategy,
 ) -> tuple[Tensor, int]:
-    """Phase lw/D3 (per-site body). One stochastic masked forward + recon.
+    """Phase lw/D3 (per-forward body). One stochastic masked forward + recon.
 
-    Returns ``(sum_loss, n_positions)`` raw — caller scales by
-    ``coeff_stoch / (n_positions * n_sites_total)`` and calls ``backward()``
-    so the per-site graph is freed between iterations (bounds peak memory).
+    ``sites`` are the owned sites swapped in for this forward (the keys of
+    ``mask_infos``); ``routing`` gates which positions route to them. Returns
+    ``(sum_loss, n_positions)`` raw — the caller scales and calls ``backward()``
+    so the per-forward graph is freed between iterations (bounds peak memory).
     """
-    ci_s = ci_recv_leaves[site]
-    u = torch.rand_like(ci_s)
-    mask = ci_s + (1 - ci_s) * u
-    delta = component_model.target_weight(site) - component_model.components[site].weight
-    delta_mask = torch.rand(ci_s.shape[:-1], device=ci_s.device, dtype=ci_s.dtype)
+    component_masks: dict[str, Tensor] = {}
+    weight_deltas_and_masks: dict[str, tuple[Tensor, Tensor]] = {}
+    for site in sites:
+        ci_s = ci_recv_leaves[site]
+        u = torch.rand_like(ci_s)
+        component_masks[site] = ci_s + (1 - ci_s) * u
+        delta = component_model.target_weight(site) - component_model.components[site].weight
+        delta_mask = torch.rand(ci_s.shape[:-1], device=ci_s.device, dtype=ci_s.dtype)
+        weight_deltas_and_masks[site] = (delta, delta_mask)
     mask_infos = make_mask_infos(
-        {site: mask},
-        weight_deltas_and_masks={site: (delta, delta_mask)},
-        routing_masks="all",
+        component_masks,
+        weight_deltas_and_masks=weight_deltas_and_masks,
+        routing_masks=routing,
     )
     pred = component_model(batch_local, mask_infos=mask_infos)
     loss, n_positions = strategy.recon_loss(pred=pred, target=target_local)

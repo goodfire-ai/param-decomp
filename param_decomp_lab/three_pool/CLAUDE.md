@@ -17,6 +17,7 @@ docstring in `optimize.py` for the data-handling contract.
 | `context.py` | `PoolContext = CIContext \| LWContext \| PPGDContext` — `world` + `role` + this pool's portals; the trainer matches on it to dispatch step fns |
 | `portals.py` | Cross-pool exchanges as typed objects — one class per DAG edge (pack layout + routing + dtype + PG in one place) |
 | `step_{ci,layerwise,ppgd}.py` | per-pool step functions |
+| `routing_plan.py` | `RoutingPlan` (`PerSitePlan` \| `SubsetRoutingPlan`) — how each LW block turns its owned sites into a list of recon forwards |
 | `eval_step.py` | 3-pool eval pass (PPGD pool runs metrics; others barrier through) |
 
 ## Checkpoint save: partials on the loop, consolidation off it
@@ -143,6 +144,41 @@ Repro/fault-injection env knobs (never set in production):
 loop now that the read is async), `PD_3POOL_DISABLE_REJOIN_BARRIER` (drops the
 post-write rejoin barrier). Regression tests:
 `param_decomp_lab/tests/test_three_pool_pg_timeout.py`.
+
+## LW recon routing plan (`routing_plan.py`)
+
+The LW pool's reconstruction unit is parameterised by `losses.routing_plan`
+(`ThreePoolLosses`, default `PerSitePlan`). Each block turns its `owned_sites`
+into a **list of recon forwards** via `plan.generate(owned_sites, mask_shape,
+device)`; `step_layerwise` runs one masked forward+backward per entry.
+
+- `PerSitePlan` — one forward per owned site, that site routed everywhere. The
+  original "swap one matrix at a time" loop; bit-exact with the pre-routing path.
+- `SubsetRoutingPlan(routing, n_samples)` — `n_samples` forwards, each over *all*
+  owned sites with a freshly-drawn per-position routing. `routing=all` →
+  joint "swap everything at once" (`n_samples=1` → one forward instead of N → ~N×
+  less LW compute); `routing=uniform_k_subset` / `static_probability` →
+  per-position subset recon (à la core `StochasticReconSubsetLoss`). Reuses the
+  core `masks.py` routers via `get_subset_router`.
+
+The cross-pool DAG is unchanged — it's all keyed on `owned_sites`, and every owned
+site still gets exactly one re-leafed CI tensor whose `.grad` accumulates across the
+forward list and ships back once.
+
+**Gradient scaling.** The only scaling knob is `N_est` = the global total of LW
+recon forwards per step (`runtime.n_est = Σ over blocks of
+plan.n_forwards(owned_sites)`), computed once at `_build_runtime`. It replaces the
+old `n_sites_total` in the stoch denominator
+(`step_layerwise._run_routing_forwards`):
+
+    stoch_grad_denom = n_positions * N_est * n_per_block / n_ci
+
+For the default per-site plan `N_est == n_sites_total`, so this is bit-exact with
+the old path. The grad check `tests/test_three_pool_routing_plan.py` proves (real
+`.grad`, one backward, RNG pinned — per
+[[feedback_grad_scaling_needs_real_grad_check]]) that at `n_ci=n_per_block=1` the
+denom collapses to the textbook single-pool normalisation `sum_loss / n_examples`
+(`n_examples = n_forwards * n_positions`) for every plan.
 
 ## Cross-pool batch divisibility (bidirectional)
 

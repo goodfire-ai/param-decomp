@@ -22,7 +22,7 @@ coverage) that couple `pd` to the topology live on `ThreePoolLMExperimentConfig`
 visible at load time.
 """
 
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import Field, model_validator
 
@@ -32,6 +32,7 @@ from param_decomp.metrics.faithfulness import FaithfulnessLossConfig
 from param_decomp.metrics.importance_minimality import ImportanceMinimalityLossConfig
 from param_decomp.metrics.persistent_pgd_recon import PersistentPGDReconLossConfig
 from param_decomp.metrics.stochastic_recon_layerwise import StochasticReconLayerwiseLossConfig
+from param_decomp_lab.three_pool.routing_plan import PerSitePlan, RoutingPlan
 
 
 class ThreePoolLosses(BaseConfig):
@@ -49,6 +50,9 @@ class ThreePoolLosses(BaseConfig):
     imp: ImportanceMinimalityLossConfig
     stoch: StochasticReconLayerwiseLossConfig
     ppgd: PersistentPGDReconLossConfig
+    # How the LW pool turns each block's owned sites into a list of recon forwards.
+    # Default reproduces the original "one site at a time" layerwise loop exactly.
+    routing_plan: Annotated[RoutingPlan, Field(discriminator="type")] = PerSitePlan()
 
     @model_validator(mode="after")
     def validate_coeffs_present(self) -> Self:
