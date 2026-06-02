@@ -439,44 +439,39 @@ class GradVuFromPPGD:
     def recv(
         self, role: LWRole, v_templates: dict[str, Tensor], u_templates: dict[str, Tensor]
     ) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
-        """Block leader recvs g_VU for owned sites from PPGD leader, then
-        in-block broadcasts so all replicas see the same grad."""
+        """Block leader recvs g_VU for owned sites from PPGD leader; non-leaders
+        get nothing.
+
+        Contribute-once (see ``SUM_GRAD_CONVENTION.md``): PPGD's grad is identical
+        across block replicas, so under the block SUM-reduce it must land on
+        exactly ONE rank. We add it to the leader's ``.grad`` only and skip the
+        old in-block broadcast — the SUM then distributes it to every replica
+        exactly once. Non-leaders return empty dicts and add nothing.
+        """
+        if not role.is_block_leader:
+            return {}, {}
+
+        my_sites = role.owned_sites
+        packed_numel = sum(v_templates[s].numel() + u_templates[s].numel() for s in my_sites)
+        sample = v_templates[my_sites[0]]
+        packed = torch.empty(packed_numel, dtype=WIRE_DTYPE, device=sample.device)
+        ppgd_leader = self.world.ppgd_ranks[0]
+        with time_nccl_op("GradVuFromPPGD.recv:recv"):
+            dist.recv(packed, src=ppgd_leader, group=self.world.cross_pool_p2p_group)
         v_grads: dict[str, Tensor] = {}
         u_grads: dict[str, Tensor] = {}
-
-        if role.is_block_leader:
-            my_sites = role.owned_sites
-            packed_numel = sum(v_templates[s].numel() + u_templates[s].numel() for s in my_sites)
-            sample = v_templates[my_sites[0]]
-            packed = torch.empty(packed_numel, dtype=WIRE_DTYPE, device=sample.device)
-            ppgd_leader = self.world.ppgd_ranks[0]
-            with time_nccl_op("GradVuFromPPGD.recv:recv"):
-                dist.recv(packed, src=ppgd_leader, group=self.world.cross_pool_p2p_group)
-            offset = 0
-            for s in my_sites:
-                v_n = v_templates[s].numel()
-                u_n = u_templates[s].numel()
-                v_grads[s] = (
-                    packed[offset : offset + v_n].view_as(v_templates[s]).to(v_templates[s].dtype)
-                )
-                offset += v_n
-                u_grads[s] = (
-                    packed[offset : offset + u_n].view_as(u_templates[s]).to(u_templates[s].dtype)
-                )
-                offset += u_n
-        else:
-            for s in role.owned_sites:
-                v_grads[s] = torch.empty_like(v_templates[s])
-                u_grads[s] = torch.empty_like(u_templates[s])
-
-        block_group = self.world.block_group_groups[role.block_idx]
-        block_leader_rank = self.world.layerwise_block_groups[role.block_idx].leader
-        with time_nccl_op("GradVuFromPPGD.recv:in_block_bcast"):
-            for s in role.owned_sites:
-                v_grads[s] = v_grads[s].contiguous()
-                u_grads[s] = u_grads[s].contiguous()
-                dist.broadcast(v_grads[s], src=block_leader_rank, group=block_group)
-                dist.broadcast(u_grads[s], src=block_leader_rank, group=block_group)
+        offset = 0
+        for s in my_sites:
+            v_n = v_templates[s].numel()
+            u_n = u_templates[s].numel()
+            v_grads[s] = (
+                packed[offset : offset + v_n].view_as(v_templates[s]).to(v_templates[s].dtype)
+            )
+            offset += v_n
+            u_grads[s] = (
+                packed[offset : offset + u_n].view_as(u_templates[s]).to(u_templates[s].dtype)
+            )
+            offset += u_n
         return v_grads, u_grads
 
 
@@ -616,12 +611,18 @@ def _bucketed_all_reduce(
 
 
 def all_reduce_ci_fn_grads(world: World, params: Iterable[nn.Parameter]) -> None:
-    """CI in-pool AVG-reduce on CI fn grads (standard DDP). No-op for 1-rank pool."""
+    """CI in-pool SUM-reduce on CI fn grads. No-op for 1-rank pool.
+
+    SUM, not AVG (see ``SUM_GRAD_CONVENTION.md``): each producer's CI grad is a
+    partial sum already normalized by the honest global count, so the cross-rank
+    SUM reassembles the single-pool total directly. No producer pre-scales by
+    ``n_ci`` to survive this reduce.
+    """
     if dist.get_world_size(world.ci_pool_group) <= 1:
         return
     _bucketed_all_reduce(
         (p.grad for p in params if p.grad is not None),
-        dist.ReduceOp.AVG,
+        dist.ReduceOp.SUM,
         world.ci_pool_group,
         "all_reduce_ci_fn_grads",
     )
@@ -635,8 +636,16 @@ def sum_reduce_ppgd_grads(world: World, grads: Iterable[Tensor]) -> None:
 
 
 def all_reduce_grads_in_block(world: World, role: LWRole, params: Iterable[nn.Parameter]) -> None:
-    """LW in-block DDP AVG-reduce over V/U + faithfulness grads (async buckets,
-    wait + copy back). No-op when the block group is 1-rank or there are no grads."""
+    """LW in-block SUM-reduce over V/U grads (async buckets, wait + copy back).
+    No-op when the block group is 1-rank or there are no grads.
+
+    SUM, not AVG (see ``SUM_GRAD_CONVENTION.md``): the per-rank stoch grad is a
+    partial sum over a disjoint position slice, normalized by the honest global
+    count, so the cross-rank SUM reassembles the single-pool total. The
+    REPLICATED contributions (faith, broadcast PPGD grad) are emitted on the
+    block leader ONLY — contribute-once — so they survive the SUM exactly once
+    without any ``n_per_block`` pre-scaling.
+    """
     block_group = world.block_group_groups[role.block_idx]
     if dist.get_world_size(block_group) <= 1:
         return
@@ -652,7 +661,7 @@ def all_reduce_grads_in_block(world: World, role: LWRole, params: Iterable[nn.Pa
     with time_nccl_op("all_reduce_grads_in_block"):
         for bucket in buckets.values():
             flat = _flatten_dense_tensors(bucket)
-            w = dist.all_reduce(flat, op=dist.ReduceOp.AVG, group=block_group, async_op=True)
+            w = dist.all_reduce(flat, op=dist.ReduceOp.SUM, group=block_group, async_op=True)
             assert w is not None
             states.append((bucket, flat, w))
     for bucket, flat, w in states:

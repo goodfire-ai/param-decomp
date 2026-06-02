@@ -50,7 +50,6 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-import torch.distributed.nn.functional as dist_fn
 import torch.nn as nn
 from torch import Tensor
 
@@ -354,9 +353,10 @@ def _fused_backward_through_ci_fn(
     """Phase ci/8. Backward through the CI fn graph.
 
     Two gradient seeds enter the graph:
-      * ``coeff_imp * loss_imp`` — flows via ``ci.upper_leaky``. Its backward
-        traverses the autograd-aware ``dist_fn.all_reduce`` (96 NCCL
-        broadcasts back to every CI rank) before reaching the CI fn output.
+      * ``coeff_imp * loss_imp`` — flows via ``ci.upper_leaky``. Under the
+        SUM-grad convention the imp-min loss uses the detached-global-residual
+        trick, so its backward flows ONLY through this rank's local CI values (a
+        partial sum) — no cross-rank NCCL in the backward.
       * ``g_CI_total[s]`` per site — injected directly on ``ci.lower_leaky[s]``.
         96 separate gradient seeds rejoining at the shared CI fn output.
 
@@ -402,17 +402,28 @@ def _importance_minimality_loss(
     ci_pool_group: dist.ProcessGroup,
     n_ci_pool: int,
 ) -> Tensor:
-    """Exact (across CI pool) importance-minimality loss.
+    """Exact (across CI pool) importance-minimality loss, SUM-convention variant.
 
-    Each CI rank computes ``per_component_sums`` on its slice; we SUM-reduce
-    them across the CI pool with the autograd-aware all_reduce. ``n_examples``
-    is uniform across CI ranks (same batch_local_ci) so we multiply rather
-    than reduce.
+    Each CI rank computes ``per_component_sums`` on its disjoint batch slice; we
+    materialize the GLOBAL sums (needed inside ``finalize_imp_min``'s ``log2`` and
+    mean) via the detached-global-residual trick:
 
-    Autograd note: ``torch.distributed.nn.functional.all_reduce`` is the
-    autograd-aware variant — forward sums, backward broadcasts the upstream
-    gradient unchanged to every rank's input (correct for SUM since
-    ``∂global/∂local_i = 1`` for all i).
+      ``global = local + (all_reduce_sum(local.detach()) - local.detach())``
+
+    Forward value is the global sum; backward ``∂global/∂local = 1`` and the
+    cross-rank term is detached, so the gradient flows ONLY through THIS rank's
+    local CI values — a true partial sum. The CI-pool SUM all-reduce on the CI-fn
+    grads (``all_reduce_ci_fn_grads``) then reassembles the single-pool total.
+
+    This replaces the old autograd-aware ``dist_fn.all_reduce``, whose backward
+    SUM-reduced the REPLICATED upstream gradient across the pool, leaving each
+    rank with ``n_ci ×`` its partial — correct only because the (old) CI-pool AVG
+    divided it back out. Under the SUM convention that ``n_ci`` would no longer
+    cancel; the residual trick removes the pool-size dependence at the source (see
+    ``SUM_GRAD_CONVENTION.md``).
+
+    ``n_examples`` is uniform across CI ranks (same batch_local_ci), so multiply
+    rather than reduce.
     """
     annealed_p = annealed_pnorm(
         current_frac_of_training=current_frac_of_training,
@@ -424,20 +435,26 @@ def _importance_minimality_loss(
     per_component_sums, n_examples = per_component_lp_sums(
         ci_upper_leaky=ci_upper, pnorm=annealed_p, eps=cfg.imp_min_eps
     )
-    # per_component_lp_sums returns a per-rank Partial[SUM] over batch positions;
-    # materialize the global sums over the CI pool (autograd-aware so grad flows
-    # back to each rank's local CI values) before finalize. n_examples is uniform
-    # across CI ranks, so multiply rather than reduce.
     if n_ci_pool > 1:
         per_component_sums = {
-            k: dist_fn.all_reduce(v, op=dist.ReduceOp.SUM, group=ci_pool_group)
-            for k, v in per_component_sums.items()
+            k: _global_sum_local_grad(v, ci_pool_group) for k, v in per_component_sums.items()
         }
         n_examples = n_examples * n_ci_pool
-    # per_component_sums + n_examples are already global (reduced over the CI pool
-    # above), so finalize's log term computes log2(1 + global_sum) exactly.
     return finalize_imp_min(
         per_component_sums=per_component_sums,
         n_examples=n_examples,
         beta=cfg.imp_min_beta,
     )
+
+
+def _global_sum_local_grad(local: Tensor, group: dist.ProcessGroup) -> Tensor:
+    """Global sum in the forward, local-only gradient in the backward.
+
+    ``local + (all_reduce_sum(local.detach()) - local.detach())`` — the residual
+    is detached, so forward equals the global sum while backward flows only
+    through this rank's ``local`` (``∂/∂local = 1``). The result is a true partial
+    sum that SUM-composes across the CI pool (see ``SUM_GRAD_CONVENTION.md``).
+    """
+    global_detached = local.detach().clone()
+    dist.all_reduce(global_detached, op=dist.ReduceOp.SUM, group=group)
+    return local + (global_detached - local.detach())

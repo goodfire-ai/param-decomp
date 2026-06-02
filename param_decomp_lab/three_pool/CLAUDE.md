@@ -18,6 +18,22 @@ docstring in `optimize.py` for the data-handling contract.
 | `portals.py` | Cross-pool exchanges as typed objects — one class per DAG edge (pack layout + routing + dtype + PG in one place) |
 | `step_{ci,layerwise,ppgd}.py` | per-pool step functions |
 | `eval_step.py` | 3-pool eval pass (PPGD pool runs metrics; others barrier through) |
+| `SUM_GRAD_CONVENTION.md` | the gradient-assembly scaling convention (proposal) |
+
+## Gradient-assembly scaling: the SUM convention
+
+See `SUM_GRAD_CONVENTION.md` for the full derivation. Summary: every
+data-parallel gradient reduction is **SUM** (`all_reduce_ci_fn_grads`,
+`all_reduce_grads_in_block`, and PPGD's V/U reduce). Each producer emits a
+*partial sum* normalized only by the honest GLOBAL count — NO `n_ci` /
+`n_per_block` transport factor. `SUM(partials) = total`, so no producer needs a
+pool's size. The REPLICATED contributions are handled structurally rather than by
+a replica-count divide: faith + broadcast-PPGD V/U **contribute once** (emitted
+on the block leader only), and imp-min uses the **detached-global-residual** trick
+(`S = local + (all_reduce_sum(local.detach()) - local.detach())`) so its backward
+is a local partial. The grad-clip `n_replicas` is unchanged — it counts distinct
+params for the global norm, independent of the grad-reduce op. Validated by
+`tests/test_three_pool_grad_check_distributed.py` (non-square, all loss terms).
 
 ## Checkpoint save: partials on the loop, consolidation off it
 

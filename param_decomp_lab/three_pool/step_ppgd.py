@@ -27,8 +27,8 @@ Phases (numbered to match ``DESIGN.md`` ``ppgd/N``):
   D4. Recon loss with the refined sources (the (N+1)'th forward).
   D5. Backward: one ``torch.autograd.grad`` over the UNSCALED recon sum yields
       raw g_VU + g_CI + g_sources; each consumer's own normalization is applied
-      explicitly afterward (V/U: coeff_ppgd / n_examples_global; CI: that times
-      n_ci to survive the CI-pool AVG-reduce; sources: 1 / n_examples_local).
+      explicitly afterward (V/U and CI share coeff_ppgd / n_examples_global — both
+      are partial sums under the SUM-grad convention; sources: 1 / n_examples_local).
   D5b. Send g_CI to CI pool (every rank, on its batch slice). Peer-to-peer
        point-to-point — no PPGD-internal reduce needed, so fires immediately
        after backward to unblock CI's recv-wait sooner.
@@ -226,33 +226,25 @@ def _scale_grads(
 ) -> None:
     """Phase ppgd/D5 (post). Apply each consumer's own normalization in place.
 
-    V/U and CI reproduce the serial gradient of the canonical PPGD loss
+    Under the SUM-grad convention (see ``SUM_GRAD_CONVENTION.md``) V/U and CI now
+    share ONE scale: both are partial sums of the canonical PPGD loss
       coeff_ppgd * recon_sum_loss / n_examples_global,
     where n_examples_global = n_examples_local * n_ppgd_ranks. Each rank holds
-    only its batch-slice's contribution, so the per-rank scale carries the
-    1/n_ppgd_ranks and the in-pool SUM-reduce reassembles the full-batch grad.
-
-    V/U and CI share that per-rank scale but diverge by their downstream
-    reduction: V/U is SUM-reduced in the PPGD pool, but the CI grad is later
-    AVG-reduced over n_ci ranks on the CI pool (``all_reduce_ci_fn_grads``), which
-    divides it by n_ci. CI therefore needs an extra * n_ci to survive that AVG —
-    mirroring the LW stoch path's `/ n_ci` denom.
+    only its batch-slice's contribution; the per-rank scale carries 1/n_ppgd, and
+    BOTH downstream reductions (V/U → PPGD-pool SUM, CI → CI-pool SUM) reassemble
+    the full-batch grad. The old ``* n_ci`` on the CI grad (PR #545, to survive the
+    CI-pool AVG) is GONE — the AVG it compensated for is now a SUM.
 
     Sources are per-rank-local adversary state optimized against THIS rank's own
-    recon mean (recon_sum_loss / n_examples_local) — no coeff, no 1/n_ppgd, no
-    n_ci. Identical to the warmup source grad.
-
-    Folding any one consumer's scaling into the differentiated scalar silently
-    mis-scales the others, which is why each is applied explicitly here.
+    recon mean (recon_sum_loss / n_examples_local) — no coeff, no 1/n_ppgd.
+    Identical to the warmup source grad.
     """
     n_ppgd_ranks = ctx.world.n_ppgd
-    n_ci = ctx.world.n_ci
-    vu_grad_scale = cfg.coeff_ppgd / (n_examples_local * n_ppgd_ranks)
-    ci_grad_scale = vu_grad_scale * n_ci
+    vu_and_ci_grad_scale = cfg.coeff_ppgd / (n_examples_local * n_ppgd_ranks)
     source_grad_scale = 1.0 / n_examples_local
-    _scale_grads_in_place(raw.v, vu_grad_scale)
-    _scale_grads_in_place(raw.u, vu_grad_scale)
-    _scale_grads_in_place(raw.ci, ci_grad_scale)
+    _scale_grads_in_place(raw.v, vu_and_ci_grad_scale)
+    _scale_grads_in_place(raw.u, vu_and_ci_grad_scale)
+    _scale_grads_in_place(raw.ci, vu_and_ci_grad_scale)
     _scale_grads_in_place(raw.sources, source_grad_scale)
 
 
