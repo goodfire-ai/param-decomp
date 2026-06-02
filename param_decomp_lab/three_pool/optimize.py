@@ -334,7 +334,16 @@ class ThreePoolTrainer:
         # _resolve_pg_timeout(compiling=...)). LW's forward is only called in step_layerwise
         # (target=None + masked dict, both validated); eval barriers LW through, so no recompile.
         if isinstance(self.ctx, LWContext) and _lw_compile_enabled():
-            trace("ThreePoolTrainer.__init__: torch.compile(LW model forward)")
+            # Per-rank inductor/triton cache dirs. The default (/tmp/torchinductor_<user>) is keyed
+            # only by username and /tmp is a shared FS here, so every rank races on the same compile
+            # cache — at scale (160 concurrent compilers) that corrupts entries and surfaces as the
+            # flash-SDPA min-cut-partitioner KeyError (8-way is fine, 160-way isn't). A unique dir
+            # per global rank removes the contention; must be set before the first compile.
+            user = os.environ.get("USER", "u")
+            rank = dist.get_rank()
+            os.environ["TORCHINDUCTOR_CACHE_DIR"] = f"/tmp/torchinductor_{user}_r{rank}"
+            os.environ["TRITON_CACHE_DIR"] = f"/tmp/triton_{user}_r{rank}"
+            trace("ThreePoolTrainer.__init__: torch.compile(LW model forward) [per-rank inductor cache]")
             self.component_model.model.compile()
         # Diverge stochastic RNG per rank for mask sampling.
         seed_per_rank(pd_config.seed)
