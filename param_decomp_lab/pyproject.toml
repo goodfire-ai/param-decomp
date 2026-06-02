@@ -10,7 +10,6 @@ dependencies = [
     "param-decomp==0.0.1",
     "fire",
     "wandb>=0.20.1", # Avoid wandb.sdk.wandb_manager.ManagerConnectionRefusedError
-    "torchvision>=0.23,<0.24",
     "wandb-workspaces==0.1.12", # See https://github.com/wandb/wandb-workspaces/issues/65
     "sympy",
     "streamlit",

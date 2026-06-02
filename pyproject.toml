@@ -7,7 +7,7 @@ urls = { "Homepage" = "https://github.com/goodfire-ai/param-decomp" }
 license = { text = "MIT" }
 readme = "README.md"
 dependencies = [
-    "torch>=2.6",
+    "torch>=2.11,<2.12",
     "pydantic<2.12", # https://github.com/goodfire-ai/param-decomp/pull/232 , https://github.com/goodfire-ai/param-decomp/issues/221
     "tqdm",
     "transformers",
@@ -51,8 +51,14 @@ namespaces = false
 [tool.uv.workspace]
 members = ["param_decomp_lab"]
 
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
 [tool.uv.sources]
 param-decomp = { workspace = true }
+torch = { index = "pytorch-cu128" }
 
 [tool.ruff]
 line-length = 100
