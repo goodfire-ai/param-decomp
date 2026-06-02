@@ -96,6 +96,28 @@ in-train (fast) eval pass plus a checkpoint partial-write barrier — minutes, n
 the old ~10-min rank-0 read. Override (seconds) via `PD_3POOL_PG_TIMEOUT_S` —
 used by the watchdog-safe-at-low-timeout test to force a tight bound.
 
+When LW `torch.compile` is enabled (opt-in — see below), the timeout widens to
+**20 min** (`_COMPILE_PG_TIMEOUT`), because step 0 pays a one-time ~minutes
+compilation while the other pools wait at the first cross-pool collective. The
+widening is uniform across ranks (the flag is global), and steady-state collectives
+are still sub-second.
+
+## LW torch.compile (opt-in: `PD_ENABLE_LW_COMPILE=1`)
+
+`torch.compile`-ing the LW pool's model forward is a validated **2.61×** on the LW
+step **single-GPU** (the throughput pole; 14% → ~37% MFU), enabled by the vendored
+mask-arg forward (pure → Dynamo traces the whole fwd+bwd, 0 graph breaks, grads
+bit-equivalent). LW-only: PPGD/CI have slack and PPGD's `autograd.grad` path is
+unvalidated under compile.
+
+**Currently opt-in, not default:** the *distributed* run dies on step-0 compile with
+an AOTAutograd min-cut-partitioner `KeyError: '_scaled_dot_product_flash_attention'`
+that does **not** reproduce single-GPU (ruled out: XL scale, weight_delta,
+`Module.compile` vs `torch.compile`, `matmul_precision=high`) — so it's a multi-rank
+effect, suspected concurrent-compile contention on the shared inductor cache across
+the 8 ranks/node. Until that's fixed, enable per-run with `PD_ENABLE_LW_COMPILE=1`
+(the first-step compilation is absorbed by the widened PG timeout above).
+
 ## Resume (`from_snapshot`)
 
 3-pool runs persist a `ThreePoolTrainingState` (not the single-pool

@@ -116,13 +116,32 @@ from param_decomp_lab.three_pool.step_ppgd import step_ppgd
 # generous margin while still being far below "hang forever". Env-overridable
 # (seconds) so the watchdog-safe-at-low-timeout test can force a tight bound.
 _DEFAULT_PG_TIMEOUT = datetime.timedelta(minutes=10)
+# With torch.compile on, step 0 pays a one-time ~minutes compilation while the other pools
+# wait at the first cross-pool collective; widen the timeout so that wait can't trip the
+# watchdog. Steady-state collectives are sub-second, so the looser bound only delays
+# detection of a genuine first-step hang.
+_COMPILE_PG_TIMEOUT = datetime.timedelta(minutes=20)
 
 
-def _resolve_pg_timeout() -> datetime.timedelta:
+def _lw_compile_enabled() -> bool:
+    """torch.compile the LW pool's model forward — OPT-IN via ``PD_ENABLE_LW_COMPILE=1``.
+
+    Single-GPU this is a validated 2.61x (the LW step is the throughput pole), but the
+    distributed run currently dies with an AOTAutograd min-cut-partitioner
+    ``KeyError: '_scaled_dot_product_flash_attention'`` that does NOT reproduce single-GPU
+    (even at XL scale + weight_delta + matmul=high) — i.e. a multi-rank effect, suspected
+    concurrent-compile contention on the shared inductor cache across the 8 ranks/node. Kept
+    opt-in until that's fixed. Global (the launcher exports env to every rank), required
+    because it also widens the collective PG timeout uniformly across ranks.
+    """
+    return os.environ.get("PD_ENABLE_LW_COMPILE", "").strip() in ("1", "true", "yes")
+
+
+def _resolve_pg_timeout(*, compiling: bool = False) -> datetime.timedelta:
     override_s = os.environ.get("PD_3POOL_PG_TIMEOUT_S", "").strip()
     if override_s:
         return datetime.timedelta(seconds=float(override_s))
-    return _DEFAULT_PG_TIMEOUT
+    return _COMPILE_PG_TIMEOUT if compiling else _DEFAULT_PG_TIMEOUT
 
 
 class ThreePoolTrainer:
@@ -228,7 +247,7 @@ class ThreePoolTrainer:
             layerwise_block_groups=block_groups,
             ppgd_ranks=list(three_pool_config.ppgd_ranks),
             batch_global=self.runtime.batch_global,
-            pg_timeout=_resolve_pg_timeout(),
+            pg_timeout=_resolve_pg_timeout(compiling=_lw_compile_enabled()),
             device=self._device,
         )
         trace("ThreePoolTrainer.__init__: build_world: done")
@@ -305,6 +324,18 @@ class ThreePoolTrainer:
                     m.enable_bwd_profile()
                     trace("ThreePoolTrainer.__init__: enabled CI fn bwd-stage profile")
                     break
+        # LW pool: torch.compile the (target + masked) model forward — a validated 2.61× on
+        # the LW step single-GPU (the throughput pole). The vendored mask-arg forward traces
+        # cleanly (0 graph breaks) and attention uses F.sdpa directly. OPT-IN
+        # (PD_ENABLE_LW_COMPILE=1): the distributed run currently hits a flash-SDPA partitioner
+        # KeyError that doesn't repro single-GPU — see _lw_compile_enabled. LW-only: PPGD/CI
+        # have slack and PPGD's autograd.grad path is unvalidated under compile. When enabled,
+        # the one-time first-step compilation is absorbed by the widened PG timeout (see
+        # _resolve_pg_timeout(compiling=...)). LW's forward is only called in step_layerwise
+        # (target=None + masked dict, both validated); eval barriers LW through, so no recompile.
+        if isinstance(self.ctx, LWContext) and _lw_compile_enabled():
+            trace("ThreePoolTrainer.__init__: torch.compile(LW model forward)")
+            self.component_model.model.compile()
         # Diverge stochastic RNG per rank for mask sampling.
         seed_per_rank(pd_config.seed)
 
