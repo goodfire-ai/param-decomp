@@ -41,6 +41,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 from torch import Tensor
+from torch.profiler import record_function
 
 from param_decomp._trace import phase_trace_enabled, trace
 from param_decomp.grad_clip import cross_pool_clip_grad_norm
@@ -104,7 +105,8 @@ def step_layerwise(
 
     with strategy.context():
         ci_recv_pending = _post_ci_recv(ctx, cfg, seq_len, device)
-        target_local = _target_fwd(component_model, batch_local, cfg)
+        with record_function("pd/target_forward"):
+            target_local = _target_fwd(component_model, batch_local, cfg)
 
     for param in all_params:
         param.grad = None
@@ -113,9 +115,10 @@ def step_layerwise(
         faith = _faithfulness_phase(component_model, device, cfg)
 
         ci_leaves = _wait_ci_and_releaf(ci_recv_pending, ctx, seq_len, cfg)
-        stoch = _layerwise_streaming_phase(
-            component_model, batch_local, target_local, ci_leaves, ctx, cfg, strategy
-        )
+        with record_function("pd/layerwise_recon"):
+            stoch = _layerwise_streaming_phase(
+                component_model, batch_local, target_local, ci_leaves, ctx, cfg, strategy
+            )
 
         _send_g_ci(ctx.portals, ctx.role, ci_leaves)
         _recv_and_combine_g_vu(ctx, component_model)

@@ -10,13 +10,15 @@ PPGD memory profile), with block checkpointing off vs on.
 Random weights (memory profile == real). bf16 autocast. All q/k sites masked. This is the
 pool that actually blocked b256 (bl=16 OOM'd pre-ckpt).
 
-Run: srun --gres=gpu:1 python scripts/probe_ppgd_bl_ceiling.py
+Run (memory sweep): srun --gres=gpu:1 python scripts/probe_ppgd_bl_ceiling.py
+Run (per-kernel profile): srun --gres=gpu:1 python scripts/probe_ppgd_bl_ceiling.py --profile
 """
 
 import gc
 import sys
 from pathlib import Path
 
+import fire
 import torch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -37,6 +39,7 @@ N_LAYERS, D_MODEL, N_HEADS, VOCAB, SEQ, C = 48, 1600, 25, 50257, 1024, 1024
 DEV = "cuda"
 SITES = [f"h.{layer}.attn.{p}_proj" for layer in range(N_LAYERS) for p in ("q", "k")]
 BLS = [4, 8, 16, 24, 32, 48]
+PROFILE_BL = 8  # the b256-verified per-rank PPGD fit
 
 
 def build(ckpt: bool) -> ComponentGPT2:
@@ -88,7 +91,56 @@ def run(bl: int, ckpt: bool) -> tuple[str, float]:
         gc.collect()
 
 
-def main() -> None:
+def ppgd_step(
+    cg: ComponentGPT2,
+    opt: torch.optim.Optimizer,
+    idx: torch.Tensor,
+    sources: list[torch.Tensor],
+) -> None:
+    """One PPGD per-rank step: masked recon fwd + bwd to {V, U, sources} + Adam."""
+    opt.zero_grad(set_to_none=True)
+    mask_infos = {}
+    for s, src in zip(SITES, sources, strict=True):
+        ci = torch.rand(src.shape[0], SEQ, C, device=DEV)
+        mask_infos[s] = ComponentsMaskInfo(component_mask=ci + (1 - ci) * src, routing_mask="all")
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        logits = cg(idx, mask_infos)
+        loss = logits.float().pow(2).mean()
+    loss.backward()
+    opt.step()
+
+
+def profile_step() -> None:
+    """Per-kernel torch.profiler breakdown of the PPGD recon fwd+bwd at a fixed bl (single-GPU)."""
+    assert torch.cuda.is_available()
+    torch.cuda.set_device(0)
+    bl = PROFILE_BL
+    print(
+        f"GPU {torch.cuda.get_device_name(0)} | profiling GPT2-XL PPGD per-rank phase "
+        f"(masked recon fwd+bwd to V/U + sources, {len(SITES)} sites C={C}) at bl={bl}, "
+        f"seq={SEQ}, block-ckpt ON, single-GPU no-comm\n"
+    )
+    cg = build(ckpt=True)
+    idx = torch.randint(0, VOCAB, (bl, SEQ), device=DEV)
+    sources = [torch.rand(bl, SEQ, C, device=DEV, requires_grad=True) for _ in SITES]
+    opt = torch.optim.Adam([p for p in cg.parameters() if p.requires_grad] + sources, lr=1e-3)
+
+    for _ in range(3):  # warmup (alloc/autotune)
+        ppgd_step(cg, opt, idx, sources)
+    torch.cuda.synchronize()
+
+    with torch.profiler.profile(
+        activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+    ) as prof:
+        ppgd_step(cg, opt, idx, sources)
+        torch.cuda.synchronize()
+    print(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=25))
+
+
+def main(profile: bool = False) -> None:
+    if profile:
+        profile_step()
+        return
     assert torch.cuda.is_available()
     torch.cuda.set_device(0)
     cap = torch.cuda.get_device_properties(0).total_memory / 1e9
@@ -113,4 +165,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    fire.Fire(main)

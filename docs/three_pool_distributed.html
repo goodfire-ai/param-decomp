@@ -1,0 +1,751 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Three-Pool Distributed Training — How It Works</title>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral', securityLevel: 'loose' });
+</script>
+<style>
+  :root{
+    --ci:#3b6db5;   --ci-bg:#eef6ff;
+    --lw:#3e8a4e;   --lw-bg:#f1fbef;
+    --pg:#b9692a;   --pg-bg:#fff4ec;
+    --ink:#1a1f29;  --muted:#5b6573;
+    --line:#d8dee8; --code:#f4f6fa; --accent:#5a4fcf;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; color:var(--ink); background:#fbfcfe;
+    font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  .wrap{display:grid; grid-template-columns:260px 1fr; max-width:1320px; margin:0 auto; gap:0;}
+  nav{
+    position:sticky; top:0; align-self:start; height:100vh; overflow-y:auto;
+    padding:28px 18px 60px; border-right:1px solid var(--line); background:#fff;
+  }
+  nav h2{font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:18px 0 8px}
+  nav a{display:block; color:var(--ink); text-decoration:none; padding:4px 8px; border-radius:6px; font-size:14px}
+  nav a:hover{background:var(--code)}
+  nav .lead{font-weight:700; font-size:18px; margin-bottom:4px}
+  nav .sub{color:var(--muted); font-size:13px; margin-bottom:10px}
+  main{padding:42px 52px 120px; min-width:0}
+  h1{font-size:34px; line-height:1.2; margin:0 0 6px; letter-spacing:-.01em}
+  .tagline{color:var(--muted); font-size:18px; margin:0 0 28px}
+  h2{font-size:25px; margin:52px 0 14px; padding-top:10px; letter-spacing:-.01em}
+  h3{font-size:19px; margin:30px 0 10px}
+  p{margin:12px 0}
+  code{background:var(--code); padding:1.5px 6px; border-radius:5px; font-size:.86em;
+    font-family:"SF Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  pre{background:#0f1420; color:#e6edf6; padding:16px 18px; border-radius:10px; overflow-x:auto; font-size:13.5px; line-height:1.55}
+  pre code{background:none; padding:0; color:inherit}
+  table{border-collapse:collapse; width:100%; margin:18px 0; font-size:14.5px}
+  th,td{border:1px solid var(--line); padding:9px 12px; text-align:left; vertical-align:top}
+  th{background:var(--code); font-weight:650}
+  td code{font-size:.82em}
+  .lede{font-size:17px; background:#fff; border:1px solid var(--line); border-left:4px solid var(--accent);
+    border-radius:10px; padding:16px 20px; margin:20px 0}
+  .grid3{display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin:22px 0}
+  .pool{border-radius:12px; padding:16px 18px; border:1px solid}
+  .pool h4{margin:0 0 8px; font-size:16px; display:flex; align-items:center; gap:8px}
+  .pool .dot{width:11px; height:11px; border-radius:50%; display:inline-block}
+  .pool ul{margin:8px 0 0; padding-left:18px; font-size:13.5px}
+  .pool li{margin:4px 0}
+  .ci{background:var(--ci-bg); border-color:var(--ci)} .ci h4{color:var(--ci)} .ci .dot{background:var(--ci)}
+  .lw{background:var(--lw-bg); border-color:var(--lw)} .lw h4{color:var(--lw)} .lw .dot{background:var(--lw)}
+  .pg{background:var(--pg-bg); border-color:var(--pg)} .pg h4{color:var(--pg)} .pg .dot{background:var(--pg)}
+  .pill{display:inline-block; font-size:11.5px; font-weight:650; padding:2px 9px; border-radius:20px; color:#fff; vertical-align:middle}
+  .pill.ci{background:var(--ci)} .pill.lw{background:var(--lw)} .pill.pg{background:var(--pg)}
+  .note{background:#fffdf3; border:1px solid #ecdf9e; border-radius:9px; padding:12px 16px; margin:18px 0; font-size:14.5px}
+  .note b{color:#8a6d00}
+  .danger{background:#fff5f5; border:1px solid #f0c0c0; border-radius:9px; padding:12px 16px; margin:18px 0; font-size:14.5px}
+  .danger b{color:#b42323}
+  .mermaid{background:#fff; border:1px solid var(--line); border-radius:12px; padding:18px; margin:22px 0; text-align:center}
+  .edge-tag{font-family:"SF Mono",monospace; font-size:.82em; background:#1f2633; color:#cdd8e8; padding:2px 7px; border-radius:5px}
+  .arrow{color:var(--accent); font-weight:700}
+  .legend{display:flex; gap:20px; flex-wrap:wrap; margin:8px 0 0; font-size:13.5px; color:var(--muted)}
+  .legend span{display:inline-flex; align-items:center; gap:6px}
+  .legend .dot{width:11px;height:11px;border-radius:50%}
+  hr{border:none; border-top:1px solid var(--line); margin:40px 0}
+  .small{font-size:13.5px; color:var(--muted)}
+  .filemap td:first-child code{white-space:nowrap}
+  .device-map{border:1px solid var(--line); border-radius:12px; padding:20px; background:#fff; margin:22px 0}
+  .rackrow{display:flex; gap:10px; flex-wrap:wrap; margin:10px 0}
+  .gpu{border-radius:9px; padding:10px 12px; min-width:118px; font-size:12.5px; border:1.5px solid}
+  .gpu b{display:block; font-size:13px; margin-bottom:3px}
+  .gpu.ci{background:var(--ci-bg); border-color:var(--ci)}
+  .gpu.lw{background:var(--lw-bg); border-color:var(--lw)}
+  .gpu.pg{background:var(--pg-bg); border-color:var(--pg)}
+  .gpu .role{color:var(--muted); font-size:11px}
+  sup a{text-decoration:none; color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+  <div class="lead">Three-Pool Training</div>
+  <div class="sub">Distributed architecture walkthrough</div>
+  <h2>Contents</h2>
+  <a href="#tldr">1 · TL;DR &amp; the big idea</a>
+  <a href="#vs-ddp">2 · vs. the old single-pool DDP</a>
+  <a href="#pools">3 · The three pools</a>
+  <a href="#residency">4 · What lives on each GPU</a>
+  <a href="#example">5 · A concrete topology</a>
+  <a href="#groups">6 · The comm fabric (process groups)</a>
+  <a href="#edges">7 · The six cross-pool edges</a>
+  <a href="#timeline">8 · Per-step choreography</a>
+  <a href="#batch">9 · 3-way batch slicing</a>
+  <a href="#grads">10 · Gradient flow &amp; scaling</a>
+  <a href="#code">11 · The typed-DAG code layout</a>
+  <a href="#ckpt">12 · Checkpointing &amp; resume</a>
+  <a href="#eval">13 · Evaluation</a>
+  <a href="#hazards">14 · NCCL hazards &amp; why the design</a>
+  <a href="#files">15 · File map</a>
+</nav>
+<main>
+
+<h1>Three-Pool Distributed Training</h1>
+<p class="tagline">How the <code>param_decomp_lab/three_pool/</code> subsystem splits a decomposition across three heterogeneous GPU pools — what lives where, and what crosses the wire when.</p>
+
+<div class="legend">
+  <span><span class="dot" style="background:var(--ci)"></span> CI pool</span>
+  <span><span class="dot" style="background:var(--lw)"></span> Layerwise (V/U) pool</span>
+  <span><span class="dot" style="background:var(--pg)"></span> PPGD pool</span>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="tldr">1 · TL;DR &amp; the big idea</h2>
+
+<div class="lede">
+Instead of every rank holding the whole model and data-parallel-sharding the batch (the old DDP),
+the world is partitioned into <b>three rank-disjoint pools</b>, each specialised to one part of the
+PD (VPD) loss. They run <b>concurrently</b> and exchange tensors point-to-point each step. The motivating
+constraint: a <b>global, shared-transformer CI function</b> that spans <em>all</em> decomposition
+sites is too big to replicate next to a full set of V/U components — so the CI fn gets its own
+dedicated, replicated pool, while V/U sites are sharded across a second pool, and the (memory-hungry,
+full-model) PPGD adversary gets a third.
+</div>
+
+<div class="note">
+<b>Terminology — paper ↔ this doc.</b> This doc describes the <em>implementation</em>; the
+<a href="../papers/Adversarial_Parameter_Decomposition/post.md">VPD paper</a> names the same pieces as
+below. Pool names (CI / LW / PPGD) are infrastructure, not paper concepts.
+<table style="margin:10px 0 0">
+<thead><tr><th>This doc / code</th><th>VPD paper</th></tr></thead>
+<tbody>
+<tr><td><b>CI function</b> / CI fn (<code>ci_fn</code>)</td><td><b>causal importance function</b>, whose outputs are the <b>causal importance values</b> <code>g</code></td></tr>
+<tr><td><b>V/U components</b> (<code>ComponentModel</code>, <code>components</code>, <code>drop_components</code>)</td><td>rank-1 parameter <b>subcomponents</b> (the <code>U·Vᵀ</code> matrices). NB: "components" in the paper are post-hoc <em>clusters</em> of subcomponents — a different thing.</td></tr>
+<tr><td><b>importance-minimality</b> loss (incl. its <code>beta</code> term)</td><td><code>L_importance-minimality</code> (the <code>|g|^p</code> part, for <b>minimality</b>) <b>+</b> <code>L_frequency-minimality</code> (the <code>beta</code>-weighted <code>log2(1+Σ|g|^p)</code> part, for <b>simplicity</b>) — the code folds both into one term</td></tr>
+<tr><td>LW pool's <b>layerwise stochastic recon</b></td><td><b>stochastic reconstruction loss</b> <code>L_stochastic-recon</code> (the layer-wise variant; for <b>mechanistic faithfulness</b>)</td></tr>
+<tr><td>PPGD pool's <b>Persistent-PGD adversary</b> / recon</td><td><b>adversarial reconstruction loss</b> <code>L_adversarial-recon</code> (also for mechanistic faithfulness); the adversary optimises <b>ablation masks</b> via projected gradient ascent over adversarial <b>sources</b> <code>r</code></td></tr>
+<tr><td><b>faithfulness</b> loss (<code>coeff_faith</code>)</td><td><b>parameter-faithfulness</b> — the <b>Δ-L2</b> loss <code>L_Delta-L2</code> on the Δ-components. (Distinct from the paper's <em>mechanistic</em> faithfulness, which the two recon losses cover.)</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Each pool optimises a different set of parameters:</p>
+<ul>
+  <li><span class="pill ci">CI</span> optimises the <b>causal importance function</b> (CI fn), driven by the importance-minimality loss plus gradients fed back from the two reconstruction pools.</li>
+  <li><span class="pill lw">LW</span> optimises the <b>V/U subcomponents</b> (the decomposition weights), via the per-site layerwise <b>stochastic-reconstruction loss</b> + the <b>parameter-faithfulness (Δ-L2)</b> loss.</li>
+  <li><span class="pill pg">PPGD</span> runs the <b>Persistent-PGD adversary</b> — the <b>adversarial-reconstruction loss</b> (full-model reconstruction under adversarially-optimised ablation masks), contributing gradients to both V/U and the CI fn.</li>
+</ul>
+
+<p>The whole thing is a single SPMD program: one launch (<code>torchrun</code>), one
+<code>dist.init_process_group</code>, and then each rank looks up <em>which pool it belongs to</em>
+and runs that pool's step function. The entrypoint is
+<code>ThreePoolTrainer</code> in <code>three_pool/optimize.py</code>.</p>
+
+<!-- ============================================================ -->
+<h2 id="vs-ddp">2 · How this differs from the old single-pool DDP</h2>
+
+<table>
+<thead><tr><th></th><th>Old single-pool DDP (<code>param_decomp.optimize.Trainer</code>)</th><th>New three-pool (<code>ThreePoolTrainer</code>)</th></tr></thead>
+<tbody>
+<tr><td><b>Rank role</b></td><td>Every rank is identical — same code path.</td><td>Ranks are partitioned into 3 disjoint pools, each running a different step function.</td></tr>
+<tr><td><b>Model on each GPU</b></td><td>Full <code>ComponentModel</code> (CI fn + all V/U + target) on every rank.</td><td>Each pool keeps <em>only</em> its parameters: CI pool drops V/U; LW &amp; PPGD drop the CI fn; LW further keeps only its owned sites.</td></tr>
+<tr><td><b>Batch</b></td><td>Loader shards the global batch across ranks.</td><td>Loader <b>replicates</b> the full global batch to every rank (<code>dist_state=None</code>); each pool slices its own DP shard internally.</td></tr>
+<tr><td><b>Communication</b></td><td>One all-reduce of gradients per step (standard DDP).</td><td>Six typed cross-pool point-to-point exchanges per step + in-pool reductions, on a web of purpose-built process groups.</td></tr>
+<tr><td><b>What's parallel</b></td><td>Data parallelism only.</td><td>Data parallelism <em>within</em> a pool + functional parallelism <em>across</em> pools (CI fwd, LW recon, PPGD recon all run at the same wall-clock moment).</td></tr>
+<tr><td><b>Why</b></td><td>Model fits on one GPU.</td><td>A global shared-transformer CI fn (billions of params) can't co-reside with full V/U + PPGD on 80&nbsp;GB.</td></tr>
+</tbody>
+</table>
+
+<p class="small">The single-pool trainer still exists and is the right choice when the model fits. The three-pool path is the heavy-iron sibling for large LM decompositions with a global CI fn.</p>
+
+<!-- ============================================================ -->
+<h2 id="pools">3 · The three pools at a glance</h2>
+
+<div class="grid3">
+  <div class="pool ci">
+    <h4><span class="dot"></span> CI pool</h4>
+    <div class="small">replicated CI fn · DP across batch</div>
+    <ul>
+      <li><b>Owns:</b> the CI function + its AdamW state</li>
+      <li><b>Replicated</b> across all CI ranks; each handles one batch shard</li>
+      <li>Computes causal importance values + the importance-minimality loss</li>
+      <li>Drops the V/U components entirely</li>
+    </ul>
+  </div>
+  <div class="pool lw">
+    <h4><span class="dot"></span> Layerwise pool</h4>
+    <div class="small">V/U sharded by site · DDP within a block</div>
+    <ul>
+      <li><b>Owns:</b> V/U for its <em>block group's</em> sites + AdamW state</li>
+      <li>Sites partitioned across <b>block groups</b>; within a group V/U is DDP-replicated and the batch is sharded</li>
+      <li>Layerwise stochastic-reconstruction loss + parameter-faithfulness (Δ-L2)</li>
+      <li>Drops the CI fn</li>
+    </ul>
+  </div>
+  <div class="pool pg">
+    <h4><span class="dot"></span> PPGD pool</h4>
+    <div class="small">full V/U replica · DP across batch</div>
+    <ul>
+      <li><b>Holds:</b> a full (all-site) V/U replica + the persistent adversarial <b>sources</b></li>
+      <li>V/U here is <b>transient</b> — overwritten every step by LW's updated weights (no V/U optimizer)</li>
+      <li>Full-model PPGD warmup + adversarial reconstruction</li>
+      <li>Drops the CI fn</li>
+    </ul>
+  </div>
+</div>
+
+<p>One convention pins the layout: <b>rank 0 must be the leader of Layerwise block 0</b>
+(<code>three_pool_run.py</code> validator) — so the logging reductions can ship the CI and PPGD pools'
+losses to a single, well-known rank.</p>
+
+<!-- ============================================================ -->
+<h2 id="residency">4 · What physically lives on each GPU</h2>
+
+<p>Every rank constructs a <code>ComponentModel</code>, then <b>drops the parts its pool doesn't need</b>
+before moving to GPU (the RNG draws for the dropped params still happen, so init matches single-pool
+exactly). All three pools keep the <b>frozen target model</b> for the local forward pass.</p>
+
+<table>
+<thead><tr><th>Resident state</th><th class="pill ci" style="border:0">CI</th><th class="pill lw" style="border:0">LW</th><th class="pill pg" style="border:0">PPGD</th></tr></thead>
+<tbody>
+<tr><td>Frozen <b>target model</b> (for target_fwd)</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><td><b>CI function</b> weights + AdamW state</td><td>✅ (replicated)</td><td>— dropped</td><td>— dropped</td></tr>
+<tr><td><b>V/U components</b></td><td>— dropped</td><td>✅ owned sites only (DDP-replicated in block)</td><td>✅ <em>all</em> sites (transient replica)</td></tr>
+<tr><td><b>Components AdamW state</b></td><td>—</td><td>✅ owned sites</td><td>— (no V/U optimizer)</td></tr>
+<tr><td><b>PPGD adversarial sources</b> + their optimizer</td><td>—</td><td>—</td><td>✅ (per-rank, batch-local)</td></tr>
+<tr><td>Reads the <b>full global batch</b> each step</td><td>✅ (slices its DP shard)</td><td>✅ (slices its shard)</td><td>✅ (slices its shard)</td></tr>
+</tbody>
+</table>
+
+<p>The drop happens in the constructor:</p>
+<pre><code>match self.ctx:
+    case LWContext() | PPGDContext():
+        self.component_model.drop_ci_fn()        # LW / PPGD keep V/U, lose the CI fn
+    case CIContext():
+        self.component_model.drop_components()    # CI keeps the CI fn, loses V/U
+self.component_model = self.component_model.to(self._device)</code></pre>
+
+<p>So the union of leaders' parameters across pools <em>is</em> the full model — which is exactly what
+the checkpoint consolidation later stitches back together (§12).</p>
+
+<!-- ============================================================ -->
+<h2 id="example">5 · A concrete topology (8-GPU GPT-2)</h2>
+
+<p>Here's a real (small, for resumption testing) config — <code>gpt2_small_3pool_async_consol.yaml</code> —
+decomposing the q/k projections of a 12-layer GPT-2 across 8 GPUs:</p>
+
+<div class="device-map">
+  <div class="rackrow">
+    <div class="gpu lw"><b>rank 0</b><span class="role">LW block 0 · <b>leader</b> = global rank&nbsp;0</span></div>
+    <div class="gpu lw"><b>rank 1</b><span class="role">LW block 0</span></div>
+    <div class="gpu lw"><b>rank 2</b><span class="role">LW block 1 · leader</span></div>
+    <div class="gpu lw"><b>rank 3</b><span class="role">LW block 1</span></div>
+    <div class="gpu lw"><b>rank 4</b><span class="role">LW block 2 · leader</span></div>
+    <div class="gpu lw"><b>rank 5</b><span class="role">LW block 2</span></div>
+    <div class="gpu ci"><b>rank 6</b><span class="role">CI pool</span></div>
+    <div class="gpu pg"><b>rank 7</b><span class="role">PPGD pool</span></div>
+  </div>
+  <div class="small" style="margin-top:6px">
+    <b>LW:</b> 3 block groups × 2 ranks (N_per_block = 2, N_blocks = 3). Block 0 owns layers 0–3's q&amp;k,
+    block 1 owns 4–7, block 2 owns 8–11. &nbsp; <b>CI:</b> N_ci = 1. &nbsp; <b>PPGD:</b> N_ppgd = 1. &nbsp;
+    <b>batch_global = 2.</b>
+  </div>
+</div>
+
+<p>The topology is declared in YAML under <code>runtime.topology</code>:</p>
+<pre><code>runtime:
+  topology:
+    use_fused_kl: true
+    ci_ranks: [6]
+    ppgd_ranks: [7]
+    layerwise_block_groups:
+      - ranks: [0, 1]
+        owned_sites: [h.0.attn.q_proj, h.0.attn.k_proj, ... h.3.attn.k_proj]
+      - ranks: [2, 3]
+        owned_sites: [h.4.attn.q_proj, ... h.7.attn.k_proj]
+      - ranks: [4, 5]
+        owned_sites: [h.8.attn.q_proj, ... h.11.attn.k_proj]</code></pre>
+
+<p class="small">Production runs scale this same shape up — e.g. the GPT-2-XL configs run on the order of
+100+ GPUs with a multi-billion-parameter global shared-transformer CI fn, larger
+<code>N_per_block</code>, and bigger <code>N_ci</code>/<code>N_ppgd</code> so each pool data-parallelises
+across a wider batch.</p>
+
+<!-- ============================================================ -->
+<h2 id="groups">6 · The comm fabric: process groups</h2>
+
+<p><code>build_world</code> (<code>layout.py</code>) constructs every NCCL process group once at startup,
+on every rank, and stores them on the immutable <code>World</code>. There are <b>seven kinds</b> of group:</p>
+
+<table>
+<thead><tr><th>Process group</th><th>Members</th><th>Carries</th></tr></thead>
+<tbody>
+<tr><td><code>ci_pool_group</code></td><td>all CI ranks</td><td>AVG all-reduce of CI-fn grads; SUM-reduce of importance-minimality terms; loss logging</td></tr>
+<tr><td><code>layerwise_pool_group</code></td><td>all LW ranks</td><td>cross-block grad-clip norm; <code>step_ms</code> MAX; loss/memory logging</td></tr>
+<tr><td><code>ppgd_pool_group</code></td><td>all PPGD ranks</td><td>SUM-reduce of V/U grads; eval-metric reductions</td></tr>
+<tr><td><code>block_group_groups[i]</code></td><td>ranks in LW block <em>i</em></td><td>in-block DDP AVG of V/U+faith grads; in-block broadcast of received PPGD V/U grads</td></tr>
+<tr><td><code>cross_pool_bcast_groups[i]</code></td><td>{LW block <em>i</em> leader} ∪ <em>all</em> PPGD ranks</td><td>leader-rooted broadcast of <b>updated V/U</b> from LW → PPGD (edge ⑥)</td></tr>
+<tr><td><code>cross_pool_p2p_group</code></td><td><b>all</b> ranks</td><td>every cross-pool point-to-point send/recv (edges ①–⑤ + eval); the snapshot barriers</td></tr>
+<tr><td><code>default group</code></td><td>all ranks</td><td>only coarse barriers (<code>sync_across_processes</code> around eval)</td></tr>
+</tbody>
+</table>
+
+<div class="note">
+<b>Why a dedicated all-rank p2p group separate from the default group?</b> NCCL wedges if eval-time
+<em>barriers</em> share a communicator with un-progressed cross-pool point-to-point work. Keeping all
+the p2p traffic on <code>cross_pool_p2p_group</code> and barriers on the default group means a barrier can
+never deadlock against an in-flight <code>isend</code> that its peer hasn't matched yet.
+</div>
+
+<div class="danger">
+<b>Load-bearing timeout.</b> <code>dist.new_group</code> does <em>not</em> inherit the timeout from
+<code>init_process_group</code> — with <code>timeout=None</code> it silently uses NCCL's 10-minute
+library default. Since the 3-pool runs <em>all</em> its real collectives on these subgroups (never the
+default group), <code>build_world</code> threads an explicit <code>pg_timeout</code> (default 10&nbsp;min,
+overridable via <code>PD_3POOL_PG_TIMEOUT_S</code>) into every <code>new_group</code> call. The invariant:
+the timeout must exceed the worst-case on-loop gap between collectives — now just the fast eval pass plus a
+checkpoint partial-write barrier.
+</div>
+
+<p>One more startup subtlety: <b>cross-pool broadcast groups are pre-warmed</b>. First use of a new NCCL
+group blocks on a synchronous communicator init across all its members — even with
+<code>async_op=True</code>. In the loop, the V/U broadcasts could interleave with logging p2p and
+deadlock on that init. So <code>_prewarm_cross_pool_bcast_groups</code> fires a 1-element dummy broadcast
+on each, at setup, while every rank is still in lockstep.</p>
+
+<!-- ============================================================ -->
+<h2 id="edges">7 · The six cross-pool edges</h2>
+
+<p>Each cross-pool exchange is <b>one typed class</b> in <code>portals.py</code> — its pack layout,
+routing, wire dtype, and process group all defined once, with the sender and receiver as two methods on
+the same class (so they can't drift). A pool only constructs the portal halves at <em>its own</em>
+endpoints, so an LW step physically cannot invoke a CI-pool send.</p>
+
+<p>All cross-pool tensors travel as <b>bfloat16</b> (<code>WIRE_DTYPE</code>) — half the bytes vs fp32;
+grads accumulate into fp32 <code>.grad</code> and are upcast on receive.</p>
+
+<table>
+<thead><tr><th>#</th><th>Edge</th><th>Portal class</th><th>Payload</th><th>Transport</th></tr></thead>
+<tbody>
+<tr><td>①</td><td><span class="pill ci">CI</span> <span class="arrow">→</span> <span class="pill lw">LW</span></td><td><code>CiValuesToLayerwise</code></td><td>per-site CI values, owned sites, LW-rank batch sub-slice</td><td>async isend/irecv p2p</td></tr>
+<tr><td>②</td><td><span class="pill ci">CI</span> <span class="arrow">→</span> <span class="pill pg">PPGD</span></td><td><code>CiValuesToPPGD</code></td><td>full-model CI values, PPGD-rank batch sub-slice</td><td>async isend/irecv p2p</td></tr>
+<tr><td>③</td><td><span class="pill lw">LW</span> <span class="arrow">→</span> <span class="pill ci">CI</span></td><td><code>GradCiFromLayerwise</code></td><td>per-owned-site CI grads (stoch), per-LW-rank slice; stitched on CI side</td><td>send / irecv p2p</td></tr>
+<tr><td>④</td><td><span class="pill pg">PPGD</span> <span class="arrow">→</span> <span class="pill ci">CI</span></td><td><code>GradCiFromPPGD</code></td><td>full-model CI grads (ppgd), per-PPGD-rank slice; stitched on CI side</td><td>send / irecv p2p</td></tr>
+<tr><td>⑤</td><td><span class="pill pg">PPGD</span> <span class="arrow">→</span> <span class="pill lw">LW</span></td><td><code>GradVuFromPPGD</code></td><td>per-owned-site V/U grads (after PPGD in-pool SUM-reduce)</td><td>leader→leader p2p, then in-block bcast</td></tr>
+<tr><td>⑥</td><td><span class="pill lw">LW</span> <span class="arrow">→</span> <span class="pill pg">PPGD</span></td><td><code>UpdatedVuToPPGD</code></td><td>freshly-stepped V/U weights</td><td>leader-rooted broadcast on <code>cross_pool_bcast_groups</code></td></tr>
+<tr><td>E</td><td><span class="pill ci">CI</span> <span class="arrow">→</span> <span class="pill pg">PPGD</span></td><td><code>CiOutputsEvalToPPGD</code></td><td><em>eval only:</em> full <code>CIOutputs</code> (lower/upper-leaky + pre-sigmoid)</td><td>send/recv p2p</td></tr>
+</tbody>
+</table>
+
+<p>Notice the symmetry: CI <b>broadcasts values out</b> to both recon pools (①②) and <b>receives grads
+back</b> from both (③④); those grads are summed into the single CI-fn backward. The recon pools
+exchange weights and weight-grads between themselves (⑤⑥): LW owns the V/U optimizer, PPGD borrows the
+weights, runs the adversary, and hands gradients back.</p>
+
+<!-- ============================================================ -->
+<h2 id="timeline">8 · Per-step choreography</h2>
+
+<p>The defining feature is <b>concurrency</b>: at any wall-clock moment all three pools are doing useful
+work. CI's importance-minimality + next-batch prefetch overlaps the recon pools' heavy lifting; the
+sends fire on the NIC while the GPU keeps computing.</p>
+
+<h3>Synchronised timeline (one step T)</h3>
+<style>
+  .tl{border:1px solid var(--line);border-radius:14px;background:#fff;padding:18px 20px 14px;margin:22px 0;box-shadow:0 2px 12px rgba(20,30,50,.045)}
+  .tl-legend{display:flex;flex-wrap:wrap;gap:9px 22px;align-items:center;padding-bottom:13px;margin-bottom:6px;border-bottom:1px dashed var(--line);font-size:12.5px;color:var(--muted)}
+  .tl-legend .g{display:flex;align-items:center;gap:7px}
+  .tl-legend b{color:var(--ink)}
+  .tl-legend .sw{width:13px;height:13px;border-radius:4px;display:inline-block}
+  .tl-legend .asw{font-weight:800;font-size:17px;line-height:1}
+  .tl-legend .syms{flex-basis:100%;line-height:1.75}
+  .tl-legend .syms sub{font-size:.78em}
+  .tl svg{width:100%;height:auto;display:block;margin-top:4px}
+</style>
+
+<div class="tl">
+  <div class="tl-legend">
+    <span class="g"><b>Pools:</b></span>
+    <span class="g"><span class="sw" style="background:var(--lw)"></span> LW · layerwise V/U</span>
+    <span class="g"><span class="sw" style="background:var(--ci)"></span> CI · causal-importance fn</span>
+    <span class="g"><span class="sw" style="background:var(--pg)"></span> PPGD · adversary</span>
+    <span class="g"><b>Arrows = sends between pools:</b></span>
+    <span class="g"><span class="asw" style="color:#1f9d8c">&#10230;</span> values &amp; weights</span>
+    <span class="g"><span class="asw" style="color:#d1495b">&#10230;</span> gradients</span>
+    <span class="syms"><b>Indices &amp; symbols:</b> <var>T</var> = training step (one global batch) · H<sub>T</sub> cached pre-weight activations · CI<sub>T</sub> causal-importance values · y<sub>T</sub> frozen target output (the KL reference) · ∇ gradient</span>
+  </div>
+<svg viewBox="0 0 920 524" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Per-step choreography of the three pools" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+<defs>
+<marker id="av" markerWidth="11" markerHeight="11" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 Z" fill="#1f9d8c"/></marker>
+<marker id="ag" markerWidth="11" markerHeight="11" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 Z" fill="#d1495b"/></marker>
+</defs>
+<rect x="0" y="170" width="920" height="212" rx="10" fill="#f7faff"/>
+<line x1="160" y1="46" x2="160" y2="502" stroke="#d8dee8" stroke-width="1.4" stroke-dasharray="3 4"/>
+<line x1="460" y1="46" x2="460" y2="502" stroke="#d8dee8" stroke-width="1.4" stroke-dasharray="3 4"/>
+<line x1="760" y1="46" x2="760" y2="502" stroke="#d8dee8" stroke-width="1.4" stroke-dasharray="3 4"/>
+<rect x="64" y="10" width="192" height="30" rx="8" fill="#3e8a4e"/>
+<text x="160" y="30" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">Layerwise pool</text>
+<rect x="364" y="10" width="192" height="30" rx="8" fill="#3b6db5"/>
+<text x="460" y="30" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">CI pool</text>
+<rect x="664" y="10" width="192" height="30" rx="8" fill="#b9692a"/>
+<text x="760" y="30" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">PPGD pool</text>
+<line x1="0" y1="52" x2="920" y2="52" stroke="#d8dee8" stroke-width="1"/>
+<text x="3" y="47" font-size="10.5" letter-spacing="0.7" fill="#5b6573">1 · FORWARD  (start of step T)</text>
+<rect x="64" y="69" width="192" height="26" rx="8" fill="#f1fbef" stroke="#bfe0c2" stroke-width="1.2"/>
+<text x="160" y="86" text-anchor="middle" font-size="11.5" fill="#1a1f29">target_fwd → y<tspan baseline-shift="sub" font-size="9px">T</tspan></text>
+<rect x="364" y="69" width="192" height="26" rx="8" fill="#eef6ff" stroke="#bcd6f3" stroke-width="1.2"/>
+<text x="460" y="86" text-anchor="middle" font-size="11.5" fill="#1a1f29">CI-fn fwd: H<tspan baseline-shift="sub" font-size="9px">T</tspan> → CI<tspan baseline-shift="sub" font-size="9px">T</tspan></text>
+<rect x="664" y="69" width="192" height="26" rx="8" fill="#fff4ec" stroke="#f0cdb0" stroke-width="1.2"/>
+<text x="760" y="86" text-anchor="middle" font-size="11.5" fill="#1a1f29">target_fwd → y<tspan baseline-shift="sub" font-size="9px">T</tspan></text>
+<line x1="448" y1="122" x2="163" y2="122" stroke="#1f9d8c" stroke-width="2" marker-end="url(#av)"/>
+<text x="310" y="110" text-anchor="middle" font-size="11.5" fill="#1f9d8c">CI<tspan baseline-shift="sub" font-size="9px">T</tspan></text>
+<circle cx="310" cy="122" r="9.5" fill="#1f9d8c" stroke="#fff" stroke-width="1.5"/>
+<text x="310" y="126" text-anchor="middle" font-size="12.5" font-weight="700" fill="#fff">1</text>
+<line x1="472" y1="150" x2="757" y2="150" stroke="#1f9d8c" stroke-width="2" marker-end="url(#av)"/>
+<text x="610" y="138" text-anchor="middle" font-size="11.5" fill="#1f9d8c">CI<tspan baseline-shift="sub" font-size="9px">T</tspan></text>
+<circle cx="610" cy="150" r="9.5" fill="#1f9d8c" stroke="#fff" stroke-width="1.5"/>
+<text x="610" y="154" text-anchor="middle" font-size="12.5" font-weight="700" fill="#fff">2</text>
+<line x1="0" y1="172" x2="920" y2="172" stroke="#d8dee8" stroke-width="1"/>
+<text x="3" y="167" font-size="10.5" letter-spacing="0.7" fill="#5b6573">2 · CONCURRENT COMPUTE  (all three pools at once)</text>
+<rect x="64" y="185" width="192" height="42" rx="8" fill="#f1fbef" stroke="#bfe0c2" stroke-width="1.2"/>
+<text x="160" y="201" text-anchor="middle" font-size="11.5" fill="#1a1f29">parameter-faithfulness → ∇V/U</text>
+<text x="160" y="218" text-anchor="middle" font-size="11.5" fill="#1a1f29">stoch recon → ∇V/U, ∇CI</text>
+<rect x="364" y="185" width="192" height="42" rx="8" fill="#eef6ff" stroke="#bcd6f3" stroke-width="1.2"/>
+<text x="460" y="201" text-anchor="middle" font-size="11.5" fill="#1a1f29">importance-minimality loss</text>
+<text x="460" y="218" text-anchor="middle" font-size="11.5" fill="#1a1f29">prefetch H<tspan baseline-shift="sub" font-size="9px">T+1</tspan></text>
+<rect x="664" y="185" width="192" height="42" rx="8" fill="#fff4ec" stroke="#f0cdb0" stroke-width="1.2"/>
+<text x="760" y="201" text-anchor="middle" font-size="11.5" fill="#1a1f29">warmup: N PGD steps</text>
+<text x="760" y="218" text-anchor="middle" font-size="11.5" fill="#1a1f29">recon → ∇V/U, ∇CI, ∇sources</text>
+<line x1="748" y1="258" x2="463" y2="258" stroke="#d1495b" stroke-width="2" marker-end="url(#ag)"/>
+<text x="610" y="246" text-anchor="middle" font-size="11.5" fill="#d1495b">∇CI</text>
+<circle cx="610" cy="258" r="9.5" fill="#d1495b" stroke="#fff" stroke-width="1.5"/>
+<text x="610" y="262" text-anchor="middle" font-size="12.5" font-weight="700" fill="#fff">4</text>
+<text x="610" y="280" text-anchor="middle" font-size="9.5" fill="#5b6573">sent first — CI's critical path</text>
+<line x1="172" y1="296" x2="457" y2="296" stroke="#d1495b" stroke-width="2" marker-end="url(#ag)"/>
+<text x="310" y="284" text-anchor="middle" font-size="11.5" fill="#d1495b">∇CI</text>
+<circle cx="310" cy="296" r="9.5" fill="#d1495b" stroke="#fff" stroke-width="1.5"/>
+<text x="310" y="300" text-anchor="middle" font-size="12.5" font-weight="700" fill="#fff">3</text>
+<rect x="672" y="311" width="176" height="22" rx="6" fill="#fafbfc" stroke="#d8dee8" stroke-width="1" stroke-dasharray="4 3"/>
+<text x="760" y="326" text-anchor="middle" font-size="10" font-style="italic" fill="#5b6573">SUM-reduce ∇V/U in pool</text>
+<line x1="748" y1="350" x2="163" y2="350" stroke="#d1495b" stroke-width="2" marker-end="url(#ag)"/>
+<text x="460" y="338" text-anchor="middle" font-size="11.5" fill="#d1495b">∇V/U</text>
+<circle cx="460" cy="350" r="9.5" fill="#d1495b" stroke="#fff" stroke-width="1.5"/>
+<text x="460" y="354" text-anchor="middle" font-size="12.5" font-weight="700" fill="#fff">5</text>
+<rect x="672" y="363" width="176" height="22" rx="6" fill="#fafbfc" stroke="#d8dee8" stroke-width="1" stroke-dasharray="4 3"/>
+<text x="760" y="378" text-anchor="middle" font-size="10" font-style="italic" fill="#5b6573">(N+1)<tspan baseline-shift="super" font-size="9px">th</tspan> source step</text>
+<line x1="0" y1="390" x2="920" y2="390" stroke="#d8dee8" stroke-width="1"/>
+<text x="3" y="385" font-size="10.5" letter-spacing="0.7" fill="#5b6573">3 · COMBINE, BACKWARD, OPTIMIZER STEP</text>
+<rect x="64" y="403" width="192" height="42" rx="8" fill="#f1fbef" stroke="#bfe0c2" stroke-width="1.2"/>
+<text x="160" y="419" text-anchor="middle" font-size="11.5" fill="#1a1f29">combine ∇V/U</text>
+<text x="160" y="436" text-anchor="middle" font-size="11.5" fill="#1a1f29">all-reduce → clip → AdamW</text>
+<rect x="364" y="403" width="192" height="42" rx="8" fill="#eef6ff" stroke="#bcd6f3" stroke-width="1.2"/>
+<text x="460" y="419" text-anchor="middle" font-size="11.5" fill="#1a1f29">∇CI = ③ + ④ → fused bwd</text>
+<text x="460" y="436" text-anchor="middle" font-size="11.5" fill="#1a1f29">all-reduce → clip → AdamW</text>
+<rect x="664" y="411" width="192" height="26" rx="8" fill="#fafbfc" stroke="#d8dee8" stroke-width="1.2" stroke-dasharray="4 3"/>
+<text x="760" y="428" text-anchor="middle" font-size="11.5" fill="#5b6573" font-style="italic">waits for ⑥</text>
+<line x1="172" y1="478" x2="757" y2="478" stroke="#1f9d8c" stroke-width="2" marker-end="url(#av)"/>
+<text x="460" y="466" text-anchor="middle" font-size="11.5" fill="#1f9d8c">updated V/U</text>
+<circle cx="460" cy="478" r="9.5" fill="#1f9d8c" stroke="#fff" stroke-width="1.5"/>
+<text x="460" y="482" text-anchor="middle" font-size="12.5" font-weight="700" fill="#fff">6</text>
+<text x="460" y="500" text-anchor="middle" font-size="9.5" fill="#5b6573">weights · PPGD copies into model</text>
+<line x1="0" y1="508" x2="920" y2="508" stroke="#d8dee8" stroke-width="1" stroke-dasharray="2 3"/>
+<text x="460" y="522" text-anchor="middle" font-size="10" letter-spacing="1.5" fill="#5b6573">STEP BOUNDARY → T+1</text>
+</svg>
+</div>
+
+<h3>What each pool does, in order</h3>
+
+<div class="grid3">
+  <div class="pool ci">
+    <h4><span class="dot"></span> CI step</h4>
+    <ul>
+      <li>CI fn forward on cached <code>H_T</code> → CI values (graph retained)</li>
+      <li><b>① ②</b> async-send CI values to LW + PPGD</li>
+      <li>importance-minimality loss (SUM-reduced across CI pool, autograd-aware)</li>
+      <li><b>dead-time prefetch</b> target_fwd(T+1) → <code>H_{T+1}</code></li>
+      <li><b>③ ④</b> recv g_CI from LW &amp; PPGD; stitch onto local slice</li>
+      <li><code>g_CI_total = g_CI_LW + g_CI_PPGD</code></li>
+      <li>fused backward through CI-fn graph (imp_min via <code>upper_leaky</code>, downstream grads seeded on <code>lower_leaky</code>)</li>
+      <li>AVG all-reduce CI-fn grads → clip → AdamW</li>
+      <li>wait the ①② sends before storage reuse</li>
+    </ul>
+  </div>
+  <div class="pool lw">
+    <h4><span class="dot"></span> LW step</h4>
+    <ul>
+      <li><b>①</b> post async irecv for CI values (overlaps the fwd)</li>
+      <li>target_fwd(batch slice) → <code>L_T</code></li>
+      <li>faithfulness loss + backward (V/U-only, doesn't need CI)</li>
+      <li>wait CI recv; <b>re-leaf</b> as fp32 <code>requires_grad</code></li>
+      <li>layerwise stoch recon, <b>streaming one owned site at a time</b> (bounds peak memory) → grads onto V/U and onto the CI leaves</li>
+      <li><b>③</b> send g_CI back to CI pool</li>
+      <li><b>⑤</b> recv g_VU from PPGD; add into V/U <code>.grad</code></li>
+      <li>in-block AVG all-reduce → clip → AdamW</li>
+      <li><b>⑥</b> async-ship updated V/U to PPGD</li>
+    </ul>
+  </div>
+  <div class="pool pg">
+    <h4><span class="dot"></span> PPGD step</h4>
+    <ul>
+      <li><b>②</b> post async irecv for full-model CI values</li>
+      <li>target_fwd(batch slice); compute weight deltas</li>
+      <li>wait CI recv; re-leaf fp32</li>
+      <li><b>warmup:</b> N inner PGD iterations refining the adversarial sources in place</li>
+      <li>final recon forward + <b>one</b> <code>autograd.grad</code> → raw g_V, g_U, g_CI, g_sources</li>
+      <li>scale each by its own normalization</li>
+      <li><b>④</b> send g_CI to CI (fired first — it's on CI's critical path)</li>
+      <li>SUM-reduce g_VU within PPGD pool; <b>⑤</b> send g_VU to LW</li>
+      <li>final (N+1)ᵗʰ source step</li>
+      <li><b>⑥</b> blocking recv of updated V/U from LW → copy into model</li>
+    </ul>
+  </div>
+</div>
+
+<div class="note">
+<b>The cross-step dependencies.</b> Almost everything fits inside one step. Only three edges force a wait
+between steps: CI's next forward needs (a) this step's CI-fn AdamW and (b) the prefetched
+<code>H_{T+1}</code>; and PPGD's next warmup needs the V/U shipped at the end of this step (edge ⑥,
+resolved within the step via PPGD's blocking recv).
+</div>
+
+<!-- ============================================================ -->
+<h2 id="batch">9 · The wrinkle: 3-way batch slicing</h2>
+
+<p>Each pool data-parallelises the <em>same</em> global batch on its <em>own</em> axis, with arities
+<code>N_ci</code>, <code>N_per_block</code> (LW), <code>N_ppgd</code>. In general a CI rank's batch slice
+and an LW rank's slice don't line up, so the CI→LW and CI→PPGD exchanges are many-to-many along the
+batch dimension.</p>
+
+<p>The config validator tames this by requiring <b>cross-divisibility per edge</b>: for each cross-pool
+edge, one arity must divide the other (either direction).</p>
+<pre><code>N_ci | N_per_block   OR   N_per_block | N_ci      # CI ↔ LW
+N_ci | N_ppgd        OR   N_ppgd | N_ci           # CI ↔ PPGD</code></pre>
+
+<p>That guarantees every overlap is a <b>whole, aligned sub-slice</b>, reducing the routing to a clean
+one-to-K fan-out (and K-to-one reduction). All the geometry lives in one symmetric helper,
+<code>BatchEdge</code> (<code>layout.py</code>), which answers every routing question for both regimes:</p>
+
+<table>
+<thead><tr><th>Regime</th><th>Meaning</th><th>Fan pattern</th></tr></thead>
+<tbody>
+<tr><td><b>CI coarse</b> (<code>N_ci ≤ N_down</code>)</td><td>each CI slice contains <code>fanout = N_down/N_ci</code> whole downstream slices</td><td>one CI rank fans a sub-slice out to K downstream ranks; grads stitch back K→1</td></tr>
+<tr><td><b>CI fine</b> (<code>N_ci &gt; N_down</code>)</td><td>each downstream slice contains <code>fanout = N_ci/N_down</code> whole CI slices</td><td>one downstream rank gathers from K CI ranks (concat) and scatters grads back to those K</td></tr>
+</tbody>
+</table>
+
+<p>The receiver holds a <code>PendingCiValues</code> — one packet in the coarse regime, <code>fanout</code>
+packets (each from a different CI rank) in the fine regime — and stitches them into per-site
+<code>[b_local, seq, C_s]</code> tensors on <code>.wait()</code>. Because the six portal methods all
+consume <code>world.ci_lw_edge</code> / <code>world.ci_ppgd_edge</code>, none of them branches on which
+arity is larger.</p>
+
+<p class="small">In the 8-GPU example: <code>N_ci = N_ppgd = 1</code>, <code>N_per_block = 2</code>. So CI is
+coarse for both edges — the single CI rank fans each batch half to the two ranks of every LW block, and
+sends its whole batch to the single PPGD rank.</p>
+
+<!-- ============================================================ -->
+<h2 id="grads">10 · Gradient flow &amp; the scaling subtleties</h2>
+
+<p>Three loss families produce gradients that must land, correctly scaled, on two parameter sets. The
+tricky part is matching single-pool's effective gradient at <em>any</em> topology.</p>
+
+<h3>Into the CI function</h3>
+<p>The CI-fn backward is seeded from three places:</p>
+<ul>
+  <li><b>importance-minimality</b> — computed inside the CI graph on <code>upper_leaky</code>, SUM-reduced across the CI pool with the autograd-aware <code>dist.nn.functional.all_reduce</code> (forward sums; backward <em>SUM-reduces the gradient</em> across the CI pool, so each rank's seed is scaled by <code>n_ci</code> — which the final AVG all-reduce then cancels).</li>
+  <li><b>g_CI from LW</b> (stochastic recon) — edge ③</li>
+  <li><b>g_CI from PPGD</b> (adversary) — edge ④</li>
+</ul>
+<p>CI assembles <code>g_CI_total = g_CI_LW + g_CI_PPGD</code> on its batch slice and injects it directly on
+<code>lower_leaky</code> via <code>torch.autograd.backward(grad_tensors=...)</code>, then runs the imp_min
+seed (a diagnostic split into two backward calls — gradient accumulation is identical to one fused call).
+A final AVG all-reduce over the CI pool divides every seed by <code>n_ci</code> — which the per-rank scalings below are calibrated to cancel.</p>
+
+<h3>Into V/U</h3>
+<p>LW's V/U <code>.grad</code> accumulates faithfulness + layerwise-stoch locally, then <b>adds</b> the
+PPGD grad received over edge ⑤. An in-block AVG all-reduce syncs the DDP replicas, then AdamW steps,
+then the updated weights broadcast to PPGD (edge ⑥). PPGD itself never steps V/U — it only differentiates
+to produce g_VU and to refine its sources.</p>
+
+<div class="note">
+<b>Why the odd denominators.</b> Each pool's per-rank gradient is scaled so that, after the cross-pool
+sum/reduce, the CI fn and V/U see <em>exactly</em> the single-pool gradient — independent of how many
+ranks are in each pool. Concretely:
+<ul style="margin:8px 0 0">
+  <li><b>Stoch (LW):</b> per-site denominator is <code>n_positions · n_sites_total · n_per_block / n_ci</code>. The <code>n_per_block / n_ci</code> factor is exactly 1 on a square topology and only corrects non-square runs (it compensates for the CI pool's later AVG all-reduce over <code>n_ci</code>).</li>
+  <li><b>PPGD V/U:</b> scaled by <code>coeff_ppgd / (n_examples_local · n_ppgd)</code> — the <code>1/n_ppgd</code> is what the in-pool SUM-reduce reassembles into the full-batch grad.</li>
+  <li><b>PPGD CI:</b> that <em>times <code>n_ci</code></em> — unlike V/U, the CI grad passes through the CI pool's AVG all-reduce, so it needs the same <code>n_ci</code> compensation as the stoch denom.</li>
+  <li><b>PPGD sources:</b> scaled by <code>1 / n_examples_local</code> only — no coeff, no <code>1/n_ppgd</code>, because <code>per_batch_per_position</code> sources are per-rank-independent adversary state (each rank steps its own; they are <em>not</em> reduced).</li>
+  <li><b>Faithfulness (LW):</b> divides by <code>numel_global</code> (not the rank-local numel) so the per-element grad scale matches single-pool.</li>
+</ul>
+The single <code>autograd.grad</code> on PPGD deliberately differentiates the <em>unscaled</em> recon sum
+and applies each consumer's normalization afterward — folding any one scaling into the differentiated
+scalar would silently mis-scale the others.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="code">11 · The typed-DAG code architecture</h2>
+
+<p>The subsystem is layered so the SPMD program reads like its dependency DAG, and invalid states /
+orderings are <b>type errors</b> rather than runtime asserts.</p>
+
+<table>
+<thead><tr><th>File</th><th>Owns</th></tr></thead>
+<tbody>
+<tr><td><code>layout.py</code></td><td><code>World</code> — declarative topology, every process group, all batch-split routing math (<code>BatchEdge</code>). Identical on every rank; no per-rank fields.</td></tr>
+<tr><td><code>role.py</code></td><td><code>PoolRole = CIRole | LWRole | PPGDRole</code> — this rank's view. Each variant carries <em>only</em> the fields valid for its pool (no <code>| None</code> bag). <code>CIRole</code> has no <code>owned_sites</code>; <code>LWRole</code> has no <code>slice_idx</code> — reading the wrong one doesn't typecheck.</td></tr>
+<tr><td><code>portals.py</code></td><td>one typed class per cross-pool edge (pack layout + routing + dtype + PG in one place); the three in-pool collectives; per-pool bundles (<code>CIPortals</code>/<code>LWPortals</code>/<code>PPGDPortals</code>) exposing only that pool's edges.</td></tr>
+<tr><td><code>context.py</code></td><td><code>PoolContext = CIContext | LWContext | PPGDContext</code> — bundles <code>world</code> + <code>role</code> + that pool's portals. The trainer <code>match</code>es it to dispatch.</td></tr>
+<tr><td><code>step_{ci,layerwise,ppgd}.py</code></td><td>per-pool step bodies. Each is a sequence of typed phases where every phase consumes the prior phase's frozen output bundle — so e.g. "send CI grads before the backward populated them" is a type error.</td></tr>
+<tr><td><code>optimize.py</code></td><td><code>ThreePoolTrainer</code> — construction wiring + per-step <code>match ctx:</code> dispatch + snapshot/resume.</td></tr>
+</tbody>
+</table>
+
+<p>What this makes <b>unrepresentable</b>: wrong-pool comms (an LW step has no handle to a CI-pool recv);
+reading a field that doesn't exist for the pool; send/recv pack-layout drift (one class owns both halves);
+and out-of-order phases within a step (each phase fn takes the prior phase's bundle as an argument).</p>
+
+<h3>Construction-time dependency DAG (within a step)</h3>
+<div class="mermaid">
+flowchart TD
+    classDef ci fill:#eef6ff,stroke:#3b6db5,color:#000
+    classDef lw fill:#f1fbef,stroke:#3e8a4e,color:#000
+    classDef pg fill:#fff4ec,stroke:#b9692a,color:#000
+    A1["CiForward (CI fn fwd)"]:::ci --> A2["CiSends ①②"]:::ci
+    A1 --> A3["ImpMinLoss"]:::ci
+    A1 --> A8["fused backward"]:::ci
+    A5["GciReceived ③④"]:::ci --> A7["GciTotal"]:::ci
+    A7 --> A8
+    A3 --> A8
+    B2["PendingCiValues.wait → CiLeaves"]:::lw --> B3["Stoch recon"]:::lw
+    B3 --> B5["send g_CI ③"]:::lw
+    C1["warmup → ReconSum"]:::pg --> C2["RawGrads (one autograd.grad)"]:::pg
+    C2 --> C3["scale → send ④⑤ + source step"]:::pg
+</div>
+
+<!-- ============================================================ -->
+<h2 id="ckpt">12 · Checkpointing &amp; resume</h2>
+
+<p>The save path is split so the train loop never blocks on a multi-GB read — the original cause of an
+NCCL-watchdog death (run p-a5b667e9) where a synchronous rank-0 read held everyone at a barrier past the
+timeout.</p>
+
+<h3>On the loop: <code>snapshot()</code> writes partials</h3>
+<p>Every rank writes a <b>self-contained partial</b> to
+<code>scratch_dir/step_&lt;S&gt;/rank_&lt;r&gt;.pth</code>:</p>
+<ul>
+  <li><b>model_params</b> — only <em>leaders</em> contribute: LW block leaders write their owned sites' V/U, the CI pool leader writes the CI fn. (Every non-leader holds a replica, so it contributes nothing — the union across leaders is the full model.)</li>
+  <li><b>optimizer_by_name</b> — this rank's optimizer state, name-keyed</li>
+  <li><b>ppgd</b> — the adversarial sources (PPGD ranks only)</li>
+</ul>
+<p>Rank 0 also writes <code>meta.pth</code> (configs + layout fingerprint + <code>c_per_site</code>).
+There are exactly <b>two cheap barriers</b> — one pre-write (so rank 0's mkdir+meta land first), one
+post-write rejoin — and <b>no</b> NCCL model gather and <b>no</b> rank-0 assembly. Neither barrier can
+overrun the watchdog.</p>
+
+<h3>Off the loop: <code>consolidate_step()</code> assembles</h3>
+<p>An async, CPU-only job (running inside the slow-eval SLURM job, <em>before</em> the eval pass) reads all
+of a step's partials, assembles the full <code>ComponentModel</code> state_dict +
+<code>ThreePoolTrainingState</code>, writes <code>model_&lt;S&gt;.pth</code> + <code>training_&lt;S&gt;.pth</code>,
+prunes old training files (keeping all <code>model_*.pth</code>), and deletes the scratch dir. It is
+idempotent and engineered to <b>never hang</b> (a hung off-loop job would hold GPUs forever): rank 0
+assembles while other ranks file-wait with a bounded timeout and fail-fast on a
+<code>.consolidate_failed</code> sentinel. Partials persist on failure, so a crashed consolidation is
+re-runnable via <code>python -m param_decomp_lab.three_pool.consolidate_cli &lt;run&gt; [--step N]</code>.</p>
+
+<h3>Resume: <code>from_snapshot()</code></h3>
+<p>Each rank reads the consolidated <code>training_&lt;step&gt;.pth</code>, then extracts <em>its own slice</em>
+of the canonical state by key. Topology is validated against the saved fingerprint — but only the
+<b>rank-invariant core</b> (<code>world_size</code> / <code>ci_ranks</code> / <code>ppgd_ranks</code> /
+block count), because the comparison runs on every rank. If a run dies after a save but before
+consolidation finishes, resume from the previous consolidated step (≤ one save-interval of lost progress;
+the unconsolidated partials can be recovered manually).</p>
+
+<!-- ============================================================ -->
+<h2 id="eval">13 · Evaluation</h2>
+
+<p>Eval reuses the same value-shipping fabric but in a thinner form (<code>eval_step.py</code>). Each pool
+only does the work backed by state it actually holds:</p>
+<ul>
+  <li><span class="pill ci">CI</span> target_fwd → CI fn fwd → ship <b>full <code>CIOutputs</code></b> (all three dicts) to PPGD via edge E.</li>
+  <li><span class="pill pg">PPGD</span> target_fwd → weight deltas → recv CI → assemble a <code>MetricContext</code> → run every eval metric.</li>
+  <li><span class="pill lw">LW</span> barriers through (reads the eval batch but discards it, to keep the loader in lock-step).</li>
+</ul>
+<p>Metric all-reductions are scoped to <code>ppgd_pool_group</code> via <code>use_reduction_group</code>, so
+CI and LW never block on them. Results broadcast to rank 0 for logging. Coarse
+<code>sync_across_processes</code> barriers on the <em>default</em> group bracket the pass so non-PPGD
+ranks don't trip the tighter p2p-group timeout while PPGD grinds through slow metrics.</p>
+
+<!-- ============================================================ -->
+<h2 id="hazards">14 · NCCL hazards &amp; why the design looks the way it does</h2>
+
+<p>A lot of the structure exists to dodge specific distributed failure modes that bit production runs:</p>
+<table>
+<thead><tr><th>Hazard</th><th>Mitigation</th></tr></thead>
+<tbody>
+<tr><td>Sub-groups silently using NCCL's 10-min default timeout</td><td><code>build_world</code> threads an explicit <code>pg_timeout</code> into every <code>new_group</code></td></tr>
+<tr><td>Barrier deadlocking against un-progressed cross-pool p2p</td><td>all p2p on a dedicated <code>cross_pool_p2p_group</code>; barriers on the default group</td></tr>
+<tr><td>First-use communicator init on a bcast group deadlocking with concurrent p2p</td><td>pre-warm every <code>cross_pool_bcast_group</code> with a dummy broadcast at setup</td></tr>
+<tr><td>Synchronous 100&nbsp;GB rank-0 checkpoint read overrunning the watchdog</td><td>partials on the loop, async CPU-only consolidation off it</td></tr>
+<tr><td><code>torch.cuda.synchronize()</code> draining in-flight async NCCL on side streams</td><td>per-event syncs only (<code>flush_nccl_event_timings</code>); avoided in eval barrier</td></tr>
+<tr><td>Accidental <code>.item()</code> CPU↔GPU syncs serializing the pipeline</td><td>metrics computed as GPU tensors; <code>.item()</code> only on log steps; <code>PD_SYNC_DEBUG</code> guard available</td></tr>
+<tr><td>Off-loop consolidation hanging and holding GPUs forever</td><td>rank-0-assembles + file-wait with bounded timeout + fail-fast sentinel</td></tr>
+</tbody>
+</table>
+
+<p>And the performance shape: the headline overlaps are CI's importance-minimality + next-batch prefetch
+running <em>during</em> the recon pools' heavy backward, and the NIC sends firing while the GPU keeps
+computing. Most remaining Python-blocking points are NCCL ops convertible to
+<code>async_op=True</code> kickoff + later wait (see the "remaining lack-of-dependency" notes at the end
+of <code>DESIGN.md</code>).</p>
+
+<!-- ============================================================ -->
+<h2 id="files">15 · File map</h2>
+<table class="filemap">
+<thead><tr><th>Path</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td><code>three_pool/DESIGN.md</code></td><td>the design sketch + mermaid graphs (source for §8) + the deferred-optimization backlog</td></tr>
+<tr><td><code>three_pool/CLAUDE.md</code></td><td>the maintenance contract: checkpoint split, PG timeout, resume, batch divisibility</td></tr>
+<tr><td><code>three_pool/layout.py</code></td><td><code>World</code>, <code>build_world</code>, <code>BatchEdge</code>, NCCL event timing</td></tr>
+<tr><td><code>three_pool/role.py</code></td><td><code>CIRole | LWRole | PPGDRole</code> + <code>role_for_rank</code></td></tr>
+<tr><td><code>three_pool/portals.py</code></td><td>the 6 cross-pool edge classes + eval edge + 3 in-pool collectives + per-pool bundles</td></tr>
+<tr><td><code>three_pool/context.py</code></td><td><code>PoolContext</code> + <code>build_pool_context</code></td></tr>
+<tr><td><code>three_pool/step_ci.py</code></td><td>CI step (typed phases <code>CiForward → CiSends/ImpMinLoss → GciReceived → GciTotal</code>)</td></tr>
+<tr><td><code>three_pool/step_layerwise.py</code></td><td>LW step + faithfulness warmup; <code>Faith / CiLeaves / Stoch</code> phases</td></tr>
+<tr><td><code>three_pool/step_ppgd.py</code></td><td>PPGD step; <code>ReconSum → RawGrads</code>, the fused <code>autograd.grad</code></td></tr>
+<tr><td><code>three_pool/optimize.py</code></td><td><code>ThreePoolTrainer</code> + <code>optimize_three_pool</code>; the loop; snapshot/resume</td></tr>
+<tr><td><code>three_pool/loss_strategy.py</code></td><td>fused-KL vs unfused recon (LM-head bypass for memory)</td></tr>
+<tr><td><code>three_pool/reductions.py</code></td><td>cross-pool loss/memory logging reductions to rank 0</td></tr>
+<tr><td><code>three_pool/eval_step.py</code></td><td>3-pool eval pass (CI ships <code>CIOutputs</code>, PPGD runs metrics)</td></tr>
+<tr><td><code>three_pool/checkpoint.py</code> / <code>consolidate.py</code> / <code>consolidate_cli.py</code></td><td>partial assembly, async consolidation, manual recovery</td></tr>
+<tr><td><code>three_pool/config.py</code></td><td><code>ThreePoolConfig</code> + topology validation</td></tr>
+<tr><td><code>experiments/lm/three_pool_run.py</code></td><td>composition root (<code>pd-lm-3pool</code>); rank-0/batch-divisibility validators</td></tr>
+<tr><td><code>experiments/lm/three_pool_pd.py</code></td><td><code>ThreePoolConstrainedPDConfig</code> + typed <code>ThreePoolLosses</code></td></tr>
+</tbody>
+</table>
+
+<hr>
+<p class="small">Generated from a read-through of the <code>feature/multipool</code> branch. The mermaid
+diagrams render from a CDN; the textual tables carry the same information if you're offline. For the
+canonical, maintained detail see <code>three_pool/DESIGN.md</code> and <code>three_pool/CLAUDE.md</code>.</p>
+
+</main>
+</div>
+</body>
+</html>

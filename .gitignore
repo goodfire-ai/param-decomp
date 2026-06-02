@@ -184,3 +184,6 @@ cython_debug/
 *.schema.json
 
 .claude/worktrees
+
+# Profiling artifacts (large Kineto traces / memory pickles)
+profiling_out/
