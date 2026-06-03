@@ -426,7 +426,7 @@ def _fresh_main(
             out_dir, step=step, parent_cfg=cfg
         ),
     )
-    eval_loop = _build_eval_loop(cfg, device, dist_state=None)
+    eval_loop = _build_eval_loop(cfg, device, dist_state=None, include_slow=False)
     try:
         trainer = ThreePoolTrainer(
             target_model=target_model,
@@ -515,7 +515,7 @@ def _resume_main(
             out_dir, step=step, parent_cfg=effective_cfg
         ),
     )
-    eval_loop = _build_eval_loop(effective_cfg, device, dist_state=None)
+    eval_loop = _build_eval_loop(effective_cfg, device, dist_state=None, include_slow=False)
     try:
         trainer = ThreePoolTrainer.from_snapshot(
             snapshot,

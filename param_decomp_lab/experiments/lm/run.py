@@ -329,7 +329,7 @@ def _fresh_main(
     )
 
     sink = init_pd_run(cfg, sink_class=OnePoolSink, group=group, tags=tags, run_id=run_id)
-    eval_loop = _build_eval_loop(cfg, device, dist_state)
+    eval_loop = _build_eval_loop(cfg, device, dist_state, include_slow=True)
     try:
         trainer = Trainer(
             target_model=target_model,
@@ -396,7 +396,7 @@ def _resume_main(
     run_batch = make_run_batch(effective_cfg.target)
 
     sink = init_pd_run(effective_cfg, sink_class=OnePoolSink, group=group, tags=tags, run_id=run_id)
-    eval_loop = _build_eval_loop(effective_cfg, device, dist_state)
+    eval_loop = _build_eval_loop(effective_cfg, device, dist_state, include_slow=True)
     try:
         trainer = Trainer.from_snapshot(
             snapshot,
@@ -470,17 +470,23 @@ def _build_eval_loop(
     cfg: _EvalLoopInputs,
     device: str,
     dist_state: DistributedState | None,
+    *,
+    include_slow: bool,
 ) -> EvalLoop | None:
     """Build the `EvalLoop` from `cfg.eval`, or `None` when eval is disabled.
 
-    Slow metrics (class-attr ``slow=True``) are filtered out — in-train eval is
-    fast-only. Slow metrics are picked up later by the 3-pool async job (which
-    receives the slow subset via a temp ``EvalConfig`` YAML, see
-    ``submit_slurm_async_consolidate_and_eval`` in ``experiments.lm.three_pool_run``).
+    `include_slow` decides what the in-train eval runs. The single-pool path
+    passes `True` (slow metrics fire in-train at `slow_every`, logged under
+    `slow_eval/`). The 3-pool path passes `False`: its in-train eval is fast-only,
+    and slow metrics are picked up later by the async job (which receives the slow
+    subset via a temp `EvalConfig` YAML, see
+    `submit_slurm_async_consolidate_and_eval` in `experiments.lm.three_pool_run`).
     """
     if cfg.eval is None:
         return None
-    _slow_metrics, fast_metrics = _split_metrics_by_slow(cfg.eval.metrics)
+    slow_metrics, fast_metrics = _split_metrics_by_slow(cfg.eval.metrics)
+    metrics = cfg.eval.metrics if include_slow else fast_metrics
+    del slow_metrics
     eval_loader = build_lm_loader(
         cfg.target,
         cfg.data,
@@ -492,7 +498,7 @@ def _build_eval_loop(
     )
     return EvalLoop(
         loader=eval_loader,
-        metrics=[EVAL_METRIC_CLASSES[m.type](m) for m in fast_metrics],
+        metrics=[EVAL_METRIC_CLASSES[m.type](m) for m in metrics],
         n_steps=cfg.eval.n_steps,
         every=cfg.eval.every,
         slow_every=cfg.eval.slow_every,

@@ -99,6 +99,8 @@ from param_decomp_lab.three_pool.layout import (
 from param_decomp_lab.three_pool.loss_strategy import LayerwiseLossStrategy
 from param_decomp_lab.three_pool.pd_config import ThreePoolConstrainedPDConfig
 from param_decomp_lab.three_pool.reductions import (
+    aggregate_component_grad_by_loss_to_rank0,
+    aggregate_grad_norms_to_rank0,
     aggregate_losses_to_rank0,
     aggregate_max_memory_to_rank0,
 )
@@ -857,6 +859,7 @@ class ThreePoolTrainer:
                         device=device,
                         step=step,
                         step_ms=step_ms,
+                        ci_fn_lr=get_scheduled_value(step, n_steps, ci_fn_lr_schedule),
                         runtime=runtime,
                         optimizer=self.optimizer,
                         sink=sink,
@@ -1051,6 +1054,10 @@ def _build_runtime(
         coeff_imp=float(_required(losses.imp.coeff)),
         coeff_stoch=float(_required(losses.stoch.coeff)),
         coeff_ppgd=float(_required(losses.ppgd.coeff)),
+        log_name_faith=losses.faith.type,
+        log_name_imp=losses.imp.type,
+        log_name_stoch=losses.stoch.type,
+        log_name_ppgd=losses.ppgd.type,
         imp_min_pnorm=imp_min_cfg.pnorm,
         imp_min_beta=imp_min_cfg.beta,
         imp_min_eps=imp_min_cfg.eps,
@@ -1137,13 +1144,25 @@ def _log_train_metrics(
     device: torch.device,
     step: int,
     step_ms: float,
+    ci_fn_lr: float,
     runtime: _ThreePoolRuntime,
     optimizer: torch.optim.Optimizer | None,
     sink: ThreePoolRunSink,
 ) -> None:
-    """Aggregate per-pool metrics to rank 0 and dispatch to ``sink``."""
+    """Aggregate per-pool metrics to rank 0 and dispatch to ``sink``.
+
+    Emits the same `train/` key families as the single-pool `Trainer`
+    (`param_decomp.optimize`): the four losses keyed by their metric class name,
+    `loss/total`, `grad_norms/*` (per-param + summaries, gathered cross-pool),
+    and both LR schedules. Plus 3-pool-only `perf/step_ms` and `mem/*_peak_gb`.
+
+    `metrics` carries each pool's pre-clip per-parameter grad norms under
+    `grad_norms/...` (stashed by the step fns); they're gathered to rank 0 here.
+    """
     combined = aggregate_losses_to_rank0(metrics, ctx, device)
     mem_combined = aggregate_max_memory_to_rank0(ctx, device)
+    grad_norms = aggregate_grad_norms_to_rank0(metrics, ctx, device)
+    comp_grad_by_loss = aggregate_component_grad_by_loss_to_rank0(metrics, ctx, device)
 
     # Reduce step_ms with MAX across LW pool (slowest LW rank is the wall-clock floor).
     step_ms_t = torch.tensor([step_ms], device=device)
@@ -1162,9 +1181,32 @@ def _log_train_metrics(
         + runtime.coeff_stoch * combined["loss/stoch"]
         + runtime.coeff_ppgd * combined["loss/ppgd"]
     )
+    # Rename the four short loss keys to their metric class name so the wandb
+    # panel keys match the single-pool path (`train/loss/<ClassName>`).
+    for short, class_name in (
+        ("faith", runtime.log_name_faith),
+        ("imp", runtime.log_name_imp),
+        ("stoch", runtime.log_name_stoch),
+        ("ppgd", runtime.log_name_ppgd),
+    ):
+        combined[f"loss/{class_name}"] = combined.pop(f"loss/{short}")
     assert isinstance(ctx, LWContext), "rank 0 must be in LW pool (per validator)"
     assert optimizer is not None
+    assert grad_norms is not None
+    assert comp_grad_by_loss is not None
+    combined.update(grad_norms)
+    # Per-loss component grad norms: faith/stoch/ppgd contribution to the V/U grad,
+    # keyed by metric class name (so `train/grad_norms/by_loss/<ClassName>/components`).
+    for short, class_name in (
+        ("faith", runtime.log_name_faith),
+        ("stoch", runtime.log_name_stoch),
+        ("ppgd", runtime.log_name_ppgd),
+    ):
+        combined[f"grad_norms/by_loss/{class_name}/components"] = comp_grad_by_loss[
+            f"grad_norms/by_loss/{short}/components"
+        ]
     combined["schedules/lr/components"] = optimizer.param_groups[0]["lr"]
+    combined["schedules/lr/ci_fn"] = ci_fn_lr
     sink.console(
         f"--- Step {step} ---",
         *(f"train/{name}: {value:.6g}" for name, value in combined.items()),

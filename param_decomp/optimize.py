@@ -632,12 +632,22 @@ class Trainer:
                         )
                         for m in active:
                             m.update(ctx)
-                    metrics = collect_metric_outputs(active)
+                    # Fast metrics use the `eval/` namespace + default step axis;
+                    # slow metrics use `slow_eval/` + a `slow_eval/step` axis, so
+                    # this matches the 3-pool async slow-eval keys (see
+                    # experiments.lm.async_eval) and the two namespaces overlay.
+                    fast_metrics = collect_metric_outputs([m for m in active if not m.slow])
+                    sink.console(*(f"eval/{k}: {v}" for k, v in fast_metrics.items()))
+                    sink.log({f"eval/{k}": v for k, v in fast_metrics.items()}, step=step)
+                    slow_active = [m for m in active if m.slow]
+                    if slow_active:
+                        slow_metrics = collect_metric_outputs(slow_active)
+                        sink.console(*(f"slow_eval/{k}: {v}" for k, v in slow_metrics.items()))
+                        slow_payload = {f"slow_eval/{k}": v for k, v in slow_metrics.items()}
+                        slow_payload["slow_eval/step"] = step
+                        sink.log(slow_payload, step=step)
 
-                    sink.console(*(f"eval/{k}: {v}" for k, v in metrics.items()))
-                    sink.log({f"eval/{k}": v for k, v in metrics.items()}, step=step)
-
-                    del metrics
+                    del fast_metrics
                     torch.cuda.empty_cache()
                     gc.collect()
 

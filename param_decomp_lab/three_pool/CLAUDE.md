@@ -20,7 +20,44 @@ docstring in `optimize.py` for the data-handling contract.
 | `step_{ci,layerwise,ppgd}.py` | per-pool step functions |
 | `routing_plan.py` | `RoutingPlan` (`PerSitePlan` \| `SubsetRoutingPlan`) — how each LW block turns its owned sites into a list of recon forwards |
 | `eval_step.py` | 3-pool eval pass (PPGD pool runs metrics; others barrier through) |
+| `reductions.py` | cross-pool log reductions: losses (`aggregate_losses_to_rank0`), peak memory (`aggregate_max_memory_to_rank0`), grad norms (`aggregate_grad_norms_to_rank0` + `per_param_grad_norms`) |
 | `SUM_GRAD_CONVENTION.md` | the gradient-assembly scaling convention (proposal) |
+
+## wandb logging parity with single-pool
+
+The 3-pool `train/` + `eval/` keys are kept identical to `param_decomp.optimize.Trainer`'s
+so a 3-pool run and a single-pool run overlay on the same wandb panels:
+
+- **Losses** (`_log_train_metrics` in `optimize.py`): the four losses log as
+  `train/loss/<MetricClassName>` (e.g. `train/loss/FaithfulnessLoss`), not the internal
+  short names. The class name comes from each loss config's `type` literal, carried on
+  `_ThreePoolRuntime.log_name_{faith,imp,stoch,ppgd}`. Plus `train/loss/total`.
+- **Grad norms**: per-param `train/grad_norms/components/<site>.<param>` and
+  `train/grad_norms/ci_fns/<param>`, plus `train/grad_norms/summary/{components,ci_fns,total}`
+  — same layout as single-pool's `component_grad_norms`. Params are pool-sharded, so each
+  owning rank computes its **pre-clip** norms (`per_param_grad_norms`, after the in-pool
+  SUM-reduce so they're the true global grad, before the clip) and stashes them in
+  `metrics["grad_norms/..."]`; `aggregate_grad_norms_to_rank0` all-gathers component norms
+  within the LW pool and ships the CI leader's ci-fn norms to rank 0 (object collectives,
+  log-steps only). PPGD owns no trained params. Summaries are derived on rank 0.
+- **Per-loss grad norms** (3-pool-only diagnostic for coeff rebalancing):
+  `train/grad_norms/by_loss/{FaithfulnessLoss,StochasticReconLayerwiseLoss,PersistentPGDReconLoss}/components`
+  — each loss term's contribution to the global V/U grad. faith + ppgd are contribute-once
+  (block-leader-only), stoch is each rank's partial; one block SUM-all-reduce of
+  `[faith, ppgd, total]` recovers each term's global grad (`stoch = total - faith - ppgd`),
+  leader takes sum-sq (`_component_grad_sumsq_by_loss` in `step_layerwise.py`), and
+  `aggregate_component_grad_by_loss_to_rank0` SUMs across blocks. CI-fn split (imp vs recon)
+  not done — the fused CI backward would have to be unfused. Log-steps only.
+- **LR schedules**: both `train/schedules/lr/components` and `train/schedules/lr/ci_fn`
+  (rank 0 computes the ci-fn LR from the schedule directly — no cross-pool comm).
+- **3-pool extras** (no single-pool equivalent): `train/perf/step_ms` (MAX over LW),
+  `train/mem/{lw,ci,ppgd}_peak_gb`, `train/metrics/mean_l0` (batch-mean active CI components
+  per token across all sites, threshold 0 — the live sparsity readout; CI pool computes
+  it from `lower_leaky` and ships it via the loss-reduction path, see `reductions.py`).
+- **Eval**: in-train fast eval logs `eval/<k>`; slow eval is async (`experiments/lm/async_eval.py`)
+  under `slow_eval/<k>` on a `slow_eval/step` axis. The single-pool path now also runs its
+  slow metrics in-train under the same `slow_eval/` namespace (`_build_eval_loop(..., include_slow=True)`
+  for 1-pool, `False` for 3-pool); the `slow_eval/step` axis is defined in `init_wandb`.
 
 ## Gradient-assembly scaling: the SUM convention
 

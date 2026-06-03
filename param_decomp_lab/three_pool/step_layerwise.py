@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
 
@@ -58,6 +59,7 @@ from param_decomp_lab.three_pool.portals import (
     PendingCiValues,
     all_reduce_grads_in_block,
 )
+from param_decomp_lab.three_pool.reductions import per_param_grad_norms
 from param_decomp_lab.three_pool.role import LWRole
 from param_decomp_lab.three_pool.routing_plan import ForwardRouting
 from param_decomp_lab.three_pool.runtime import _ThreePoolRuntime
@@ -116,6 +118,11 @@ def step_layerwise(
 
     with strategy.context():
         faith = _faithfulness_phase(component_model, device, cfg, ctx)
+        # Snapshot the faith-only V/U grad (block leader; non-leaders skip faith)
+        # before stoch accumulates on top, for the per-loss grad-norm breakdown.
+        faith_vu = (
+            _snapshot_owned_vu_grads(component_model, ctx.role.owned_sites) if should_log else None
+        )
 
         ci_leaves = _wait_ci_and_releaf(ci_recv_pending, ctx, seq_len, cfg)
         stoch = _layerwise_streaming_phase(
@@ -123,7 +130,7 @@ def step_layerwise(
         )
 
         _send_g_ci(ctx.portals, ctx.role, ci_leaves)
-        _recv_and_combine_g_vu(ctx, component_model)
+        ppgd_vu = _recv_and_combine_g_vu(ctx, component_model, return_ppgd=should_log)
 
     if should_log:
         stoch_total_value = stoch.total.item()
@@ -134,11 +141,13 @@ def step_layerwise(
             "_raw/faith_den": float(faith.numel),
             "_raw/stoch_num": stoch_total_value,
             "_raw/stoch_den": float(stoch.n_forwards),
+            **_component_grad_sumsq_by_loss(component_model, ctx, faith_vu, ppgd_vu),
         }
     else:
         metrics = {}
 
-    _sync_tail(ctx, component_model, optimizer, all_params, cfg)
+    grad_norms = _sync_tail(ctx, component_model, optimizer, all_params, cfg, should_log=should_log)
+    metrics.update(grad_norms)
     return metrics
 
 
@@ -311,17 +320,98 @@ def _send_g_ci(portals: LWPortals, role: LWRole, ci_leaves: CiLeaves) -> None:
     portals.g_ci_to_ci_pool.send(role, g_ci_owned)
 
 
-def _recv_and_combine_g_vu(ctx: LWContext, component_model: LMComponentModel) -> None:
+def _recv_and_combine_g_vu(
+    ctx: LWContext, component_model: LMComponentModel, *, return_ppgd: bool
+) -> dict[str, dict[str, Tensor]] | None:
     """Phases lw/D5 + lw/D6. Recv PPGD's V/U grads (block leader only), add to
     existing .grad.
 
     Contribute-once: PPGD's grad is replicated across block ranks, so only the
     block leader recvs and adds it. The block SUM-reduce (lw/E) then spreads it
     to every replica exactly once (see ``SUM_GRAD_CONVENTION.md``).
+
+    When ``return_ppgd``, returns the leader's PPGD V/U grads as
+    ``{site: {"V": ..., "U": ...}}`` (for the per-loss grad-norm breakdown);
+    ``None`` on non-leaders or when not requested.
     """
     v_grads_pgd, u_grads_pgd = _recv_g_vu_from_ppgd(ctx, component_model)
-    if ctx.role.is_block_leader:
-        _combine_vu_grads_in_place(component_model, ctx.role.owned_sites, v_grads_pgd, u_grads_pgd)
+    if not ctx.role.is_block_leader:
+        return None
+    _combine_vu_grads_in_place(component_model, ctx.role.owned_sites, v_grads_pgd, u_grads_pgd)
+    if not return_ppgd:
+        return None
+    return {s: {"V": v_grads_pgd[s], "U": u_grads_pgd[s]} for s in ctx.role.owned_sites}
+
+
+def _snapshot_owned_vu_grads(
+    component_model: LMComponentModel, owned_sites: tuple[str, ...]
+) -> dict[str, dict[str, Tensor]]:
+    """Clone the current owned V/U grads per site (skipping params whose grad is
+    still ``None`` — e.g. faith is block-leader-only)."""
+    out: dict[str, dict[str, Tensor]] = {}
+    for s in owned_sites:
+        per_param = {
+            name: p.grad.detach().clone()
+            for name, p in component_model.components[s].named_parameters()
+            if p.grad is not None
+        }
+        if per_param:
+            out[s] = per_param
+    return out
+
+
+def _component_grad_sumsq_by_loss(
+    component_model: LMComponentModel,
+    ctx: LWContext,
+    faith_vu: dict[str, dict[str, Tensor]] | None,
+    ppgd_vu: dict[str, dict[str, Tensor]] | None,
+) -> dict[str, float]:
+    """Pre-clip GLOBAL grad sum-sq on owned V/U, split by loss term (block leader).
+
+    faith + ppgd are contribute-once (block-leader-only); stoch is each rank's
+    partial. One block SUM-all-reduce of ``[faith, ppgd, total]`` recovers each
+    term's global grad (``stoch = total - faith - ppgd``); the leader takes sum-sq.
+    Returns ``_raw/comp_gradsq/{faith,stoch,ppgd}`` on the block leader, ``{}``
+    elsewhere. All block ranks must call this (it runs a collective).
+    """
+    params = [
+        (s, name, p)
+        for s in ctx.role.owned_sites
+        for name, p in component_model.components[s].named_parameters()
+    ]
+    device = params[0][2].device
+
+    def flatten(src: dict[str, dict[str, Tensor]] | None) -> Tensor:
+        return torch.cat(
+            [
+                src[s][name].detach().reshape(-1).float()
+                if src is not None and s in src and name in src[s]
+                else torch.zeros(p.numel(), device=device)
+                for s, name, p in params
+            ]
+        )
+
+    total = torch.cat(
+        [
+            p.grad.detach().reshape(-1).float()
+            if p.grad is not None
+            else torch.zeros(p.numel(), device=device)
+            for _, _, p in params
+        ]
+    )
+    stacked = torch.stack([flatten(faith_vu), flatten(ppgd_vu), total])
+    dist.all_reduce(
+        stacked, op=dist.ReduceOp.SUM, group=ctx.world.block_group_groups[ctx.role.block_idx]
+    )
+    if not ctx.role.is_block_leader:
+        return {}
+    faith_g, ppgd_g, total_g = stacked[0], stacked[1], stacked[2]
+    stoch_g = total_g - faith_g - ppgd_g
+    return {
+        "_raw/comp_gradsq/faith": faith_g.pow(2).sum().item(),
+        "_raw/comp_gradsq/stoch": stoch_g.pow(2).sum().item(),
+        "_raw/comp_gradsq/ppgd": ppgd_g.pow(2).sum().item(),
+    }
 
 
 def run_faithfulness_warmup_layerwise(
@@ -474,13 +564,27 @@ def _sync_tail(
     optimizer: torch.optim.Optimizer,
     all_params: list[nn.Parameter],
     cfg: _ThreePoolRuntime,
-) -> None:
+    *,
+    should_log: bool,
+) -> dict[str, float]:
     """Phase lw/E (sync mode). Blocking all_reduce → clip → AdamW → async send V/U.
 
-    Safe to coexist with PPGD's sync recv at end of step T.
+    Safe to coexist with PPGD's sync recv at end of step T. Returns this block's
+    pre-clip component grad norms (``grad_norms/components/<site>.<param>``) on
+    log steps, ``{}`` otherwise — captured after the in-block SUM-reduce (so each
+    norm is the true global per-site grad) and before the clip.
     """
     _wait_pending_weight_send(component_model)
     all_reduce_grads_in_block(ctx.world, ctx.role, all_params)
+    grad_norms = (
+        per_param_grad_norms(
+            (f"components/{s}.{name}", p)
+            for s in ctx.role.owned_sites
+            for name, p in component_model.components[s].named_parameters()
+        )
+        if should_log
+        else {}
+    )
     if cfg.grad_clip_norm_components is not None:
         cross_pool_clip_grad_norm(
             all_params,
@@ -490,6 +594,7 @@ def _sync_tail(
         )
     optimizer.step()
     _async_send_owned_vu_to_ppgd(component_model, ctx)
+    return grad_norms
 
 
 def _async_send_owned_vu_to_ppgd(component_model: LMComponentModel, ctx: LWContext) -> None:

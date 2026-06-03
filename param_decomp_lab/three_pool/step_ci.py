@@ -73,6 +73,7 @@ from param_decomp_lab.three_pool.portals import (
     InFlightSends,
     all_reduce_ci_fn_grads_async,
 )
+from param_decomp_lab.three_pool.reductions import per_param_grad_norms
 from param_decomp_lab.three_pool.role import CIRole
 from param_decomp_lab.three_pool.runtime import _ThreePoolRuntime
 
@@ -149,6 +150,7 @@ def step_ci(
         h_cache_T = _target_fwd_and_cache(component_model, batch_T_local, cfg.bf16_autocast)
 
     fwd = _ci_fn_forward(component_model, h_cache_T, ctx, cfg)
+    mean_l0 = _mean_l0(fwd.ci.lower_leaky, ctx.world.n_ci) if should_log else 0.0
     sends = _send_ci_values(ctx.portals, ctx.role, fwd)
     imp = _imp_min_phase(fwd, current_frac_of_training, cfg, ctx)
     received = _recv_g_ci(ctx.portals, ctx.role, cfg, fwd.seq_len, device)
@@ -175,6 +177,17 @@ def step_ci(
     h_cache_T_plus_1 = _prefetch_next_h(component_model, batch_T_plus_1_local, cfg)
     in_flight_ci_grad_reduce.wait()
 
+    # Pre-clip ci-fn grad norms: captured after the in-pool SUM-reduce (so each
+    # norm is the true global grad) and before the clip, matching single-pool.
+    assert component_model.ci_fn is not None, "CI pool must hold its CI fn"
+    grad_norms = (
+        per_param_grad_norms(
+            (f"ci_fns/{name}", p) for name, p in component_model.ci_fn.named_parameters()
+        )
+        if should_log
+        else {}
+    )
+
     if cfg.grad_clip_norm_ci_fn is not None:
         cross_pool_clip_grad_norm(
             ci_fn_params,
@@ -195,7 +208,12 @@ def step_ci(
     # ``.item()`` is a CPU↔GPU sync — only pay it on steps we actually log to.
     if should_log:
         imp_value = imp.loss.item()
-        metrics = {"loss/imp": imp_value, "_raw/imp_num": imp_value / ctx.world.n_ci}
+        metrics = {
+            "loss/imp": imp_value,
+            "_raw/imp_num": imp_value / ctx.world.n_ci,
+            "_raw/l0": mean_l0,
+            **grad_norms,
+        }
     else:
         metrics = {}
     return metrics, h_cache_T_plus_1
@@ -222,6 +240,17 @@ def _send_ci_values(portals: CIPortals, role: CIRole, fwd: CiForward) -> CiSends
     to_lw = portals.ci_to_lw.send(role, fwd.ci.lower_leaky)
     to_ppgd = portals.ci_to_ppgd.send(role, fwd.ci.lower_leaky)
     return CiSends(to_lw=to_lw, to_ppgd=to_ppgd)
+
+
+def _mean_l0(lower_leaky: dict[str, Tensor], n_ci: int) -> float:
+    """This rank's mean L0 — total active CI components (value > 0) per token,
+    summed across all sites — pre-divided by ``n_ci`` so the CI-pool SUM
+    all-reduce yields the batch-mean L0. Matches single-pool ``CI_L0`` at
+    threshold 0. One CPU↔GPU sync; call on log steps only.
+    """
+    with torch.no_grad():
+        per_site = torch.stack([(ci > 0.0).float().sum(-1).mean() for ci in lower_leaky.values()])
+        return (per_site.sum() / n_ci).item()
 
 
 def _imp_min_phase(

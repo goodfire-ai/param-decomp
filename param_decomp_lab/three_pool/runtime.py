@@ -64,6 +64,15 @@ class _ThreePoolRuntime:
     coeff_stoch: float
     coeff_ppgd: float
 
+    # Display names for the four losses in wandb (= each loss config's `type`
+    # literal, which equals the single-pool metric class name). Keeps 3-pool's
+    # `train/loss/<name>` keys identical to single-pool's `train/loss/<ClassName>`
+    # so the two paths overlay on the same wandb panels.
+    log_name_faith: str
+    log_name_imp: str
+    log_name_stoch: str
+    log_name_ppgd: str
+
     # Importance minimality knobs
     imp_min_pnorm: float
     imp_min_beta: float

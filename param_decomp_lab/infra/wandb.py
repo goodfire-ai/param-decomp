@@ -219,6 +219,13 @@ def init_wandb(
     assert wandb.run is not None
     wandb.run.log_code(root=str(REPO_ROOT / "param_decomp"))
 
+    # Slow eval keys ride a dedicated `slow_eval/step` axis. The single-pool path
+    # logs them in-train (monotonic); the 3-pool path logs them retroactively from
+    # the async job (non-monotonic on the default axis). Defining the axis here lets
+    # both share the same panels. The async job redefines it too — idempotent.
+    wandb.define_metric("slow_eval/step")
+    wandb.define_metric("slow_eval/*", step_metric="slow_eval/step")
+
     cfg_dict = config.model_dump(mode="json")
     flattened = flatten_typed_lists(cfg_dict)
     wandb.config.update(cfg_dict)
