@@ -1,3 +1,16 @@
 {
-  "mcpServers": {}
+  "mcpServers": {
+    "lore-pd": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "lore[mcp] @ git+https://github.com/goodfire-ai/lore.git",
+        "lore-mcp"
+      ],
+      "env": {
+        "LORE_REMOTE": "https://github.com/goodfire-ai/pd-lore.git",
+        "LORE_AUTHOR": "${LORE_AUTHOR:-agent:claude@pd}"
+      }
+    }
+  }
 }
