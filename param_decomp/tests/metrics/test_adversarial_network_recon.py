@@ -1,0 +1,277 @@
+"""Sanity checks for the adversarial-network reconstruction loss."""
+
+from typing import cast
+
+import pytest
+import torch
+from torch import Tensor
+from torch.utils.data import DataLoader, TensorDataset
+
+from param_decomp.ci_fns import LayerwiseCiConfig
+from param_decomp.component_model import CIOutputs, ComponentModel
+from param_decomp.configs import Cadence, OptimizerConfig, PDConfig, RuntimeConfig
+from param_decomp.decomposition_targets import DecompositionTarget, DecompositionTargetConfig
+from param_decomp.metrics.adversarial_network_recon import (
+    AdversarialNetworkReconLoss,
+    AdversarialNetworkReconLossConfig,
+    AdversaryNetworkState,
+    AdversaryOptimizerConfig,
+)
+from param_decomp.metrics.context import MetricContext
+from param_decomp.optimize import Trainer
+from param_decomp.schedule import ScheduleConfig
+from param_decomp.tests.metrics.fixtures import TwoLayerLinearModel
+from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_passthrough
+
+C = 2
+
+
+def _make_model(fn_type: str = "shared_mlp") -> ComponentModel:
+    torch.manual_seed(0)
+    target = TwoLayerLinearModel(d_in=4, d_hidden=3, d_out=4)
+    target.requires_grad_(False)
+    return ComponentModel(
+        target_model=target,
+        run_batch=run_batch_passthrough,
+        decomposition_targets=[
+            DecompositionTarget(module_path="fc1", C=C),
+            DecompositionTarget(module_path="fc2", C=C),
+        ],
+        ci_config=LayerwiseCiConfig(fn_type=fn_type, hidden_dims=[4]),  # pyright: ignore[reportArgumentType]
+        sigmoid_type="leaky_hard",
+    )
+
+
+def _ci_outputs(ci: dict[str, Tensor]) -> CIOutputs:
+    return CIOutputs(lower_leaky=ci, upper_leaky=ci, pre_sigmoid=dict(ci))
+
+
+def _ctx(
+    model: ComponentModel,
+    batch: Tensor,
+    ci: dict[str, Tensor],
+    *,
+    is_eval: bool,
+    use_delta_component: bool,
+    step: int = 0,
+    total_steps: int = 100,
+) -> MetricContext:
+    return MetricContext(
+        model=model,
+        batch=batch,
+        target_out=model.target_model(batch),
+        pre_weight_acts={},
+        ci=_ci_outputs(ci),
+        weight_deltas=model.calc_weight_deltas() if use_delta_component else {},
+        step=step,
+        total_steps=total_steps,
+        use_delta_component=use_delta_component,
+        sampling="continuous",
+        n_mask_samples=1,
+        reconstruction_loss=recon_loss_mse,
+        is_eval=is_eval,
+    )
+
+
+def _cfg(start_frac: float = 0.0) -> AdversarialNetworkReconLossConfig:
+    return AdversarialNetworkReconLossConfig(
+        coeff=1.0,
+        optimizer=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+        start_frac=start_frac,
+    )
+
+
+@pytest.mark.parametrize("use_delta_component", [True, False])
+def test_source_shapes_match_components_plus_delta(use_delta_component: bool) -> None:
+    model = _make_model()
+    state = AdversaryNetworkState(
+        model=model,
+        device="cpu",
+        use_delta_component=use_delta_component,
+        optimizer_cfg=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+        n_samples=1,
+        reconstruction_loss=recon_loss_mse,
+    )
+    sources = state.generate_sources(batch_dims=(5,))
+    expected_c = C + (1 if use_delta_component else 0)
+    for name in ("fc1", "fc2"):
+        assert sources[name].shape == (5, expected_c)
+        assert (sources[name] > 0).all() and (sources[name] < 1).all()
+
+
+def test_mlp_ci_fn_type_is_rejected() -> None:
+    model = _make_model(fn_type="mlp")
+    with pytest.raises(AssertionError, match="per-component-scalar"):
+        AdversaryNetworkState(
+            model=model,
+            device="cpu",
+            use_delta_component=True,
+            optimizer_cfg=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+            n_samples=1,
+            reconstruction_loss=recon_loss_mse,
+        )
+
+
+def test_eval_metric_keys() -> None:
+    torch.manual_seed(1)
+    model = _make_model()
+    batch = torch.randn(3, 4)
+    ci = {"fc1": torch.full((3, C), 0.6), "fc2": torch.full((3, C), 0.7)}
+
+    metric = AdversarialNetworkReconLoss(_cfg())
+    metric.bind(model=model, device="cpu")
+    metric.update(_ctx(model, batch, ci, is_eval=True, use_delta_component=False))
+
+    result = cast(dict[str, Tensor], metric.compute())
+    cls = type(metric).__name__
+    assert set(result) == {
+        f"{cls}/hidden_acts",
+        f"{cls}/hidden_acts/fc1",
+        f"{cls}/hidden_acts/fc2",
+        f"{cls}/output_recon",
+    }
+    for v in result.values():
+        assert torch.isfinite(v) and v.item() >= 0
+
+
+def test_ascend_moves_params_up_the_loss() -> None:
+    """`ascend()` should step each adversary param in the +dL/dparam (ascent) direction.
+
+    AdamW's first step is `param -= lr * sign(param.grad)`; with the grad negated for ascent
+    that is `param += lr * sign(descent_grad)`, so the per-param delta matches the sign of the
+    descent gradient the outer backward left behind.
+    """
+    torch.manual_seed(2)
+    model = _make_model()
+    batch = torch.randn(3, 4)
+    ci = {"fc1": torch.full((3, C), 0.5), "fc2": torch.full((3, C), 0.5)}
+
+    metric = AdversarialNetworkReconLoss(_cfg())
+    metric.bind(model=model, device="cpu")
+
+    loss = metric.update(_ctx(model, batch, ci, is_eval=False, use_delta_component=True))
+    assert loss is not None and torch.isfinite(loss)
+    assert metric.state is not None
+
+    params = list(metric.state.network.parameters())
+    before = [p.detach().clone() for p in params]
+    loss.backward()
+    descent_grads: list[Tensor] = []
+    for p in params:
+        assert p.grad is not None
+        descent_grads.append(p.grad.detach().clone())
+    assert any((g != 0).any() for g in descent_grads), "expected non-zero adversary grads"
+
+    metric.after_backward()  # negates + AdamW step
+
+    for p, before_p, grad in zip(params, before, descent_grads, strict=True):
+        delta = p.detach() - before_p
+        moved = grad != 0
+        assert torch.equal(torch.sign(delta[moved]), torch.sign(grad[moved]))
+
+
+def test_state_dict_roundtrip() -> None:
+    torch.manual_seed(3)
+    model = _make_model()
+    batch = torch.randn(3, 4)
+    ci = {"fc1": torch.full((3, C), 0.5), "fc2": torch.full((3, C), 0.5)}
+
+    metric = AdversarialNetworkReconLoss(_cfg())
+    metric.bind(model=model, device="cpu")
+    loss = metric.update(_ctx(model, batch, ci, is_eval=False, use_delta_component=False))
+    assert loss is not None
+    loss.backward()
+    metric.after_backward()
+    saved = metric.state_dict()
+
+    fresh = AdversarialNetworkReconLoss(_cfg())
+    fresh.bind(model=_make_model(), device="cpu")
+    fresh.load_state_dict(saved)  # deferred until first update builds the network
+    fresh.update(_ctx(fresh.model, batch, ci, is_eval=True, use_delta_component=False))
+    assert fresh.state is not None
+    assert metric.state is not None
+
+    for a, b in zip(
+        metric.state.network.parameters(), fresh.state.network.parameters(), strict=True
+    ):
+        assert torch.equal(a, b)
+
+
+class _NoOpSink:
+    def log(self, metrics: dict[str, object], step: int) -> None:
+        del metrics, step
+
+    def console(self, *lines: str) -> None:
+        del lines
+
+    def checkpoint(self, snapshot: object) -> None:
+        del snapshot
+
+    def finish(self) -> None:
+        pass
+
+
+def test_trains_through_the_trainer_and_steps_the_adversary() -> None:
+    """End-to-end: the trainer descends components/CI fn while the adversary ascends."""
+    pd_config = PDConfig(
+        seed=0,
+        n_mask_samples=1,
+        ci_config=LayerwiseCiConfig(fn_type="shared_mlp", hidden_dims=[4]),
+        decomposition_targets=[DecompositionTargetConfig(module_pattern="fc1", C=C)],
+        components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
+        ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
+        steps=3,
+        batch_size=2,
+        use_delta_component=True,
+        loss_metrics=[
+            AdversarialNetworkReconLossConfig(
+                coeff=1.0,
+                optimizer=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-2)),
+            )
+        ],
+    )
+
+    def run_batch_unpacking(model: object, batch: object) -> Tensor:
+        if isinstance(batch, list | tuple):
+            batch = batch[0]
+        assert isinstance(batch, Tensor)
+        out = model(batch)  # pyright: ignore[reportCallIssue]
+        assert isinstance(out, Tensor)
+        return out
+
+    trainer = Trainer(
+        target_model=TwoLayerLinearModel(d_in=2, d_hidden=2, d_out=2),
+        run_batch=run_batch_unpacking,
+        reconstruction_loss=recon_loss_mse,
+        pd_config=pd_config,
+        runtime_config=RuntimeConfig(device="cpu", autocast_bf16=False),
+    )
+    loader = DataLoader(TensorDataset(torch.randn(8, 2)), batch_size=2)
+
+    metric = trainer.loss_metrics["AdversarialNetworkReconLoss"]
+    assert isinstance(metric, AdversarialNetworkReconLoss)
+
+    trainer.run(loader, _NoOpSink(), Cadence(train_log_every=1), eval_loop=None)
+
+    assert metric.state is not None
+    # The adversary network is not owned by either trainer optimizer.
+    adv_ids = {id(p) for p in metric.state.network.parameters()}
+    assert not adv_ids & {id(p) for p in trainer._ci_fn_params}
+    assert not adv_ids & {id(p) for p in trainer._component_params}
+
+    # Snapshot must carry the adversary state for resumption.
+    snapshot = trainer.snapshot()
+    assert snapshot.loss_metrics["AdversarialNetworkReconLoss"]["network"]
+
+
+def test_dormant_before_start_frac() -> None:
+    model = _make_model()
+    batch = torch.randn(3, 4)
+    ci = {"fc1": torch.full((3, C), 0.5), "fc2": torch.full((3, C), 0.5)}
+
+    metric = AdversarialNetworkReconLoss(_cfg(start_frac=0.5))
+    metric.bind(model=model, device="cpu")
+    out = metric.update(_ctx(model, batch, ci, is_eval=False, use_delta_component=False, step=10))
+    assert out is None
+    assert metric.state is None
+    metric.after_backward()  # no-op, must not raise

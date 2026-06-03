@@ -16,6 +16,7 @@ core library. For eval metrics (user-extensible, lab-side), see
 | `dispatch.py` | `LOSS_METRIC_CLASSES` type→class table + `instantiate_metrics(...)` |
 | `<loss_name>.py` | One file per metric: `<Name>Loss` class + `<Name>LossConfig` config side-by-side |
 | `persistent_pgd_state.py` | PPGD adversarial-source state machine (shared by `persistent_pgd_recon.py`) |
+| `adversarial_network_recon.py` | `AdversarialNetworkReconLoss` + its config + `AdversaryNetworkState` (a learned adversary that generates mask sources from noise instead of PGD) |
 | `pgd_utils.py` | Shared PGD helpers used by the regular PGD recon metrics |
 | `output.py` | Shared output-extraction helpers used across recon losses |
 
@@ -33,6 +34,25 @@ entry. Duplicate `type` literals in a single config are rejected.
 A metric that wants to manipulate state coupled to backward overrides `before_backward`
 and/or `after_backward` (see PPGD for the canonical example).
 
+## Adversarial-source recon metrics: PPGD vs. adversarial network
+
+Two metrics drive components/CI fn to reconstruct under *adversarially-chosen* masks
+(`mask = ci + (1 - ci) * source`); they differ in how the source is produced:
+
+- `PersistentPGDReconLoss` — sources are tensors optimised in-place by projected gradient
+  ascent, persisting across steps (state in `persistent_pgd_state.py`).
+- `AdversarialNetworkReconLoss` — sources are emitted by a learned adversary network that
+  maps IID uniform-`[0, 1]` noise through the same architecture as the CI fn (built from
+  the same `ci_config`, so it shares the CI fn's input norm). Outputs pass through a plain
+  sigmoid (always-on gradient). The network ascends the recon loss via its own AdamW (held
+  inside `AdversaryNetworkState`, scheduled like `ci_fn_optimizer`), stepped from
+  `after_backward` on the gradients the outer backward leaves on its params (negated for
+  ascent). No persistent per-datapoint state, no inner warmup. It reuses
+  `get_ppgd_mask_infos` to turn sources into masks. The adversary network lives outside the
+  DDP wrapper, so its params are broadcast at init and its grads all-reduced before each
+  step. Unsupported: the per-component-scalar `mlp` CI fn type and embedding targets (the
+  adversary needs a raw vector input dim per target).
+
 ## Config placement rule
 
 The default home for a config is `param_decomp/configs.py`. Move a config next to its
@@ -49,6 +69,8 @@ Configs currently kept next to their implementation for this reason:
   `GlobalCiConfig`) → `param_decomp.ci_fns`
 - `SamplingType`, `SubsetRoutingType` + members → `param_decomp.masks`
 - Each loss metric's `LossMetricConfig` subclass → `param_decomp/metrics/<name>.py`
+- `AdversaryOptimizerConfig` → `param_decomp/metrics/adversarial_network_recon.py` (mirrors
+  `OptimizerConfig`; kept out of `configs.py` to avoid the loss-metric-union cycle)
 
 Never use `if TYPE_CHECKING:` + forward-reference strings to paper over a cycle. If
 you're reaching for that, the config placement is wrong; move the config instead.

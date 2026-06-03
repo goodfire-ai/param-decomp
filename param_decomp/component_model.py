@@ -95,6 +95,7 @@ class ComponentModel(nn.Module):
             )
 
         self.target_model = target_model
+        self.ci_config = ci_config
         self.module_to_c = {target.module_path: target.C for target in decomposition_targets}
         self.target_module_paths = list(self.module_to_c.keys())
 
