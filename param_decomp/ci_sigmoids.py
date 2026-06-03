@@ -18,6 +18,7 @@ SigmoidType = Literal[
     "upper_leaky_hard",
     "lower_leaky_hard",
     "swish_hard",
+    "half_sin",
 ]
 
 
@@ -112,6 +113,15 @@ def swish_hard_sigmoid(
     )
 
 
+def half_sin(x: Tensor) -> Tensor:
+    """`0.5 + 0.5 * sin(x)` — periodic squashing into `[0, 1]`, differentiable everywhere.
+
+    The gradient `0.5 * cos(x)` vanishes only at isolated peaks/troughs, never across an
+    interval, so unlike the hard-clamp variants there are no flat dead regions.
+    """
+    return 0.5 + 0.5 * torch.sin(x)
+
+
 # Registry mapping each `SigmoidType` literal to its implementation. CI fns look up the
 # active sigmoid through this table so the choice is config-driven.
 SIGMOID_TYPES = {
@@ -121,4 +131,5 @@ SIGMOID_TYPES = {
     "upper_leaky_hard": upper_leaky_hard_sigmoid,
     "lower_leaky_hard": lower_leaky_hard_sigmoid,
     "swish_hard": swish_hard_sigmoid,
+    "half_sin": half_sin,
 }
