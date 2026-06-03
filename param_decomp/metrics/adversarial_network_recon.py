@@ -11,8 +11,9 @@ Unlike `PersistentPGDReconLoss`:
 
 - the adversarial sources are produced by a network from fresh noise every step — there is
   no persistent per-datapoint source state and no inner warmup loop;
-- the network's outputs pass through a plain sigmoid (not the upper/lower-leaky sigmoids of
-  the CI fn) so the adversary always receives gradient;
+- the network's outputs pass through `source_sigmoid` (default `"normal"`, a plain sigmoid,
+  so the adversary always receives gradient; set it to e.g. `"lower_leaky_hard"` to match
+  the CI fn's lower-leaky squashing at the cost of saturating gradients);
 - the adversary's inputs are IID uniform noise on `[0, 1]`, not target-model activations,
   but they flow through the same architecture (and hence the same layer/RMS norm) the CI fn
   applies to its inputs.
@@ -30,6 +31,7 @@ from torch.nn.utils import clip_grad_norm_
 from param_decomp.base_config import BaseConfig, Probability
 from param_decomp.batch_and_loss_fns import ReconstructionLoss
 from param_decomp.ci_fns import CiConfig, LayerwiseCiConfig, make_ci_fn_wrapper
+from param_decomp.ci_sigmoids import SIGMOID_TYPES, SigmoidType
 from param_decomp.component_model import ComponentModel
 from param_decomp.components import EmbeddingComponents, get_module_input_dim
 from param_decomp.distributed import all_reduce, broadcast_tensor
@@ -68,6 +70,14 @@ class AdversarialNetworkReconLossConfig(LossMetricConfig):
 
     type: Literal["AdversarialNetworkReconLoss"] = "AdversarialNetworkReconLoss"
     optimizer: AdversaryOptimizerConfig
+    source_sigmoid: SigmoidType = Field(
+        default="normal",
+        description=(
+            "Squashing applied to the adversary's outputs to produce sources in `[0, 1]`. "
+            "`normal` (plain sigmoid) always passes gradient; `lower_leaky_hard` matches the "
+            "CI fn's lower-leaky branch (hard clamp with a one-sided backward leak)."
+        ),
+    )
     architecture: Annotated[CiConfig, Field(discriminator="mode")] | None = Field(
         default=None,
         description=(
@@ -98,6 +108,7 @@ class AdversaryNetworkState:
         device: str,
         use_delta_component: bool,
         optimizer_cfg: AdversaryOptimizerConfig,
+        source_sigmoid: SigmoidType,
         n_samples: int,
         reconstruction_loss: ReconstructionLoss,
     ) -> None:
@@ -106,6 +117,7 @@ class AdversaryNetworkState:
         self._reconstruction_loss = reconstruction_loss
         self._lr_schedule = optimizer_cfg.lr_schedule
         self._grad_clip_norm = optimizer_cfg.grad_clip_norm
+        self._source_sigmoid_fn = SIGMOID_TYPES[source_sigmoid]
 
         assert not (isinstance(ci_config, LayerwiseCiConfig) and ci_config.fn_type == "mlp"), (
             "AdversarialNetworkReconLoss does not support the per-component-scalar 'mlp' CI fn "
@@ -145,7 +157,7 @@ class AdversaryNetworkState:
     def generate_sources(self, batch_dims: tuple[int, ...]) -> AdversarySources:
         """Sample IID uniform-`[0, 1]` noise per target and map it through the adversary.
 
-        Returns per-module sources in `(0, 1)` via the final sigmoid, shaped
+        Returns per-module sources in `[0, 1]` via `source_sigmoid`, shaped
         `[*batch_dims, source_c]`.
         """
         noise = {
@@ -153,7 +165,7 @@ class AdversaryNetworkState:
             for name, input_dim in self._input_dims.items()
         }
         logits = self.network(noise)
-        return {name: torch.sigmoid(value) for name, value in logits.items()}
+        return {name: self._source_sigmoid_fn(value) for name, value in logits.items()}
 
     def compute_recon_sum_and_n(
         self,
@@ -244,6 +256,7 @@ class AdversarialNetworkReconLoss(Metric[AdversarialNetworkReconLossConfig]):
             device=self.device,
             use_delta_component=ctx.use_delta_component,
             optimizer_cfg=self.cfg.optimizer,
+            source_sigmoid=self.cfg.source_sigmoid,
             n_samples=self.cfg.n_samples,
             reconstruction_loss=ctx.reconstruction_loss,
         )

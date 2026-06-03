@@ -45,8 +45,9 @@ Two metrics drive components/CI fn to reconstruct under *adversarially-chosen* m
   maps IID uniform-`[0, 1]` noise through a CI-fn-shaped architecture (so it shares the CI
   fn's input norm). The architecture defaults to the target's `ci_config` but can be sized
   independently via the loss config's `architecture` field (same shape as `pd.ci_config`).
-  Outputs pass through a plain
-  sigmoid (always-on gradient). The network ascends the recon loss via its own AdamW (held
+  Its output squashing is set by `source_sigmoid` (default `"normal"`, a plain sigmoid with
+  always-on gradient; `"lower_leaky_hard"` matches the CI fn's lower-leaky branch — a hard
+  clamp to `[0, 1]` with a one-sided backward leak). The network ascends the recon loss via its own AdamW (held
   inside `AdversaryNetworkState`, scheduled like `ci_fn_optimizer`), stepped from
   `after_backward` on the gradients the outer backward leaves on its params (negated for
   ascent). No persistent per-datapoint state, no inner warmup. It reuses

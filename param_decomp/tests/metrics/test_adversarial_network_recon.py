@@ -96,6 +96,7 @@ def test_source_shapes_match_components_plus_delta(use_delta_component: bool) ->
         device="cpu",
         use_delta_component=use_delta_component,
         optimizer_cfg=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+        source_sigmoid="normal",
         n_samples=1,
         reconstruction_loss=recon_loss_mse,
     )
@@ -104,6 +105,28 @@ def test_source_shapes_match_components_plus_delta(use_delta_component: bool) ->
     for name in ("fc1", "fc2"):
         assert sources[name].shape == (5, expected_c)
         assert (sources[name] > 0).all() and (sources[name] < 1).all()
+
+
+@pytest.mark.parametrize("source_sigmoid", ["normal", "lower_leaky_hard"])
+def test_source_sigmoid_keeps_sources_in_unit_interval(source_sigmoid: str) -> None:
+    model = _make_model()
+    state = AdversaryNetworkState(
+        model=model,
+        ci_config=model.ci_config,
+        device="cpu",
+        use_delta_component=True,
+        optimizer_cfg=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+        source_sigmoid=source_sigmoid,  # pyright: ignore[reportArgumentType]
+        n_samples=1,
+        reconstruction_loss=recon_loss_mse,
+    )
+    # Push the network's pre-activations far positive/negative so a hard-clamp squashing
+    # actually saturates, then check the sources are still valid mask sources in [0, 1].
+    for p in state.network.parameters():
+        torch.nn.init.normal_(p, std=50.0)
+    sources = state.generate_sources(batch_dims=(4,))
+    for name in ("fc1", "fc2"):
+        assert (sources[name] >= 0).all() and (sources[name] <= 1).all()
 
 
 def test_mlp_ci_fn_type_is_rejected() -> None:
@@ -115,6 +138,7 @@ def test_mlp_ci_fn_type_is_rejected() -> None:
             device="cpu",
             use_delta_component=True,
             optimizer_cfg=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+            source_sigmoid="normal",
             n_samples=1,
             reconstruction_loss=recon_loss_mse,
         )
@@ -141,6 +165,7 @@ def test_architecture_override_builds_independent_network() -> None:
         device="cpu",
         use_delta_component=True,
         optimizer_cfg=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+        source_sigmoid="normal",
         n_samples=1,
         reconstruction_loss=recon_loss_mse,
     )
@@ -160,6 +185,7 @@ def test_architecture_override_validates_against_unsupported_types() -> None:
             device="cpu",
             use_delta_component=True,
             optimizer_cfg=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+            source_sigmoid="normal",
             n_samples=1,
             reconstruction_loss=recon_loss_mse,
         )
