@@ -18,18 +18,18 @@ Unlike `PersistentPGDReconLoss`:
   applies to its inputs.
 """
 
-from typing import Any, ClassVar, Literal, override
+from typing import Annotated, Any, ClassVar, Literal, override
 
 import torch
 from jaxtyping import Float
-from pydantic import NonNegativeFloat, PositiveFloat, PositiveInt
+from pydantic import Field, NonNegativeFloat, PositiveFloat, PositiveInt
 from torch import Tensor
 from torch.distributed import ReduceOp
 from torch.nn.utils import clip_grad_norm_
 
 from param_decomp.base_config import BaseConfig, Probability
 from param_decomp.batch_and_loss_fns import ReconstructionLoss
-from param_decomp.ci_fns import LayerwiseCiConfig, make_ci_fn_wrapper
+from param_decomp.ci_fns import CiConfig, LayerwiseCiConfig, make_ci_fn_wrapper
 from param_decomp.component_model import ComponentModel
 from param_decomp.components import EmbeddingComponents, get_module_input_dim
 from param_decomp.distributed import all_reduce, broadcast_tensor
@@ -68,6 +68,15 @@ class AdversarialNetworkReconLossConfig(LossMetricConfig):
 
     type: Literal["AdversarialNetworkReconLoss"] = "AdversarialNetworkReconLoss"
     optimizer: AdversaryOptimizerConfig
+    architecture: Annotated[CiConfig, Field(discriminator="mode")] | None = Field(
+        default=None,
+        description=(
+            "Adversary-network architecture, in the same shape as `pd.ci_config` (pick its "
+            "`d_model`, `n_blocks`, `mlp_hidden_dim`, `attn_config`, etc. here to size the "
+            "adversary independently of the CI fn). When omitted, the adversary mirrors the "
+            "target's CI fn architecture."
+        ),
+    )
     start_frac: Probability = 0.0
     n_samples: PositiveInt = 1
 
@@ -75,15 +84,17 @@ class AdversarialNetworkReconLossConfig(LossMetricConfig):
 class AdversaryNetworkState:
     """The adversary network, its AdamW optimizer, and the noise -> source -> mask machinery.
 
-    The network shares the CI fn's architecture (built from the same `ci_config`) but emits
-    one extra channel per target when `use_delta_component` is set, so its per-module output
-    matches the `[..., C (+1)]` source layout consumed by `get_ppgd_mask_infos`.
+    The network has a CI-fn-shaped architecture (built by `make_ci_fn_wrapper` from
+    `ci_config` — either the target's CI fn config or a per-loss override) but emits one extra
+    channel per target when `use_delta_component` is set, so its per-module output matches the
+    `[..., C (+1)]` source layout consumed by `get_ppgd_mask_infos`.
     """
 
     def __init__(
         self,
         *,
         model: ComponentModel,
+        ci_config: CiConfig,
         device: str,
         use_delta_component: bool,
         optimizer_cfg: AdversaryOptimizerConfig,
@@ -96,7 +107,6 @@ class AdversaryNetworkState:
         self._lr_schedule = optimizer_cfg.lr_schedule
         self._grad_clip_norm = optimizer_cfg.grad_clip_norm
 
-        ci_config = model.ci_config
         assert not (isinstance(ci_config, LayerwiseCiConfig) and ci_config.fn_type == "mlp"), (
             "AdversarialNetworkReconLoss does not support the per-component-scalar 'mlp' CI fn "
             "type: the adversary consumes raw noise vectors, not component activations."
@@ -225,8 +235,12 @@ class AdversarialNetworkReconLoss(Metric[AdversarialNetworkReconLossConfig]):
     def _ensure_state(self, ctx: MetricContext) -> None:
         if self.state is not None:
             return
+        ci_config = (
+            self.cfg.architecture if self.cfg.architecture is not None else self.model.ci_config
+        )
         self.state = AdversaryNetworkState(
             model=self.model,
+            ci_config=ci_config,
             device=self.device,
             use_delta_component=ctx.use_delta_component,
             optimizer_cfg=self.cfg.optimizer,

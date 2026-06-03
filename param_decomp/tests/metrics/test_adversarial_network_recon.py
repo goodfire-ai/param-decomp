@@ -7,7 +7,13 @@ import torch
 from torch import Tensor
 from torch.utils.data import DataLoader, TensorDataset
 
-from param_decomp.ci_fns import LayerwiseCiConfig
+from param_decomp.ci_fns import (
+    AttnConfig,
+    GlobalCiConfig,
+    GlobalCiFnWrapper,
+    GlobalSharedTransformerCiConfig,
+    LayerwiseCiConfig,
+)
 from param_decomp.component_model import CIOutputs, ComponentModel
 from param_decomp.configs import Cadence, OptimizerConfig, PDConfig, RuntimeConfig
 from param_decomp.decomposition_targets import DecompositionTarget, DecompositionTargetConfig
@@ -86,6 +92,7 @@ def test_source_shapes_match_components_plus_delta(use_delta_component: bool) ->
     model = _make_model()
     state = AdversaryNetworkState(
         model=model,
+        ci_config=model.ci_config,
         device="cpu",
         use_delta_component=use_delta_component,
         optimizer_cfg=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
@@ -104,12 +111,70 @@ def test_mlp_ci_fn_type_is_rejected() -> None:
     with pytest.raises(AssertionError, match="per-component-scalar"):
         AdversaryNetworkState(
             model=model,
+            ci_config=model.ci_config,
             device="cpu",
             use_delta_component=True,
             optimizer_cfg=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
             n_samples=1,
             reconstruction_loss=recon_loss_mse,
         )
+
+
+def _transformer_override(d_model: int = 16) -> GlobalCiConfig:
+    return GlobalCiConfig(
+        fn_type="global_shared_transformer",
+        simple_transformer_ci_cfg=GlobalSharedTransformerCiConfig(
+            d_model=d_model,
+            n_blocks=2,
+            mlp_hidden_dim=[32],
+            attn_config=AttnConfig(n_heads=4, max_len=8),
+        ),
+    )
+
+
+def test_architecture_override_builds_independent_network() -> None:
+    """A transformer override gives the adversary a different architecture than the CI fn."""
+    model = _make_model(fn_type="shared_mlp")  # layerwise CI fn
+    state = AdversaryNetworkState(
+        model=model,
+        ci_config=_transformer_override(),
+        device="cpu",
+        use_delta_component=True,
+        optimizer_cfg=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+        n_samples=1,
+        reconstruction_loss=recon_loss_mse,
+    )
+    assert isinstance(state.network, GlobalCiFnWrapper)
+    sources = state.generate_sources(batch_dims=(3,))
+    for name in ("fc1", "fc2"):
+        assert sources[name].shape == (3, C + 1)
+
+
+def test_architecture_override_validates_against_unsupported_types() -> None:
+    """The mlp/embedding checks key off the effective (override) config, not the model's."""
+    model = _make_model(fn_type="shared_mlp")  # a supported model CI fn
+    with pytest.raises(AssertionError, match="per-component-scalar"):
+        AdversaryNetworkState(
+            model=model,
+            ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
+            device="cpu",
+            use_delta_component=True,
+            optimizer_cfg=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+            n_samples=1,
+            reconstruction_loss=recon_loss_mse,
+        )
+
+
+def test_architecture_override_round_trips_through_config() -> None:
+    cfg = AdversarialNetworkReconLossConfig(
+        coeff=1.0,
+        optimizer=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+        architecture=_transformer_override(d_model=32),
+    )
+    reloaded = AdversarialNetworkReconLossConfig.model_validate(cfg.model_dump())
+    assert isinstance(reloaded.architecture, GlobalCiConfig)
+    assert reloaded.architecture.simple_transformer_ci_cfg is not None
+    assert reloaded.architecture.simple_transformer_ci_cfg.d_model == 32
 
 
 def test_eval_metric_keys() -> None:
