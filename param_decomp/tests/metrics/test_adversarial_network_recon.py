@@ -235,6 +235,40 @@ def test_ascend_moves_params_up_the_loss() -> None:
         assert torch.equal(torch.sign(delta[moved]), torch.sign(grad[moved]))
 
 
+def test_ascend_increases_recon_loss_on_pinned_noise() -> None:
+    """End-to-end sign check: one adversary step raises the recon loss it's trained on.
+
+    With the noise draw pinned (same seed) and components/CI fn held fixed, recomputing the
+    loss after a single `after_backward()` must yield a *higher* value — the adversary
+    ascends. A regression here would mean the adversary is helping reconstruction.
+    """
+    torch.manual_seed(0)
+    model = _make_model()
+    batch = torch.randn(3, 4)
+    ci = {"fc1": torch.full((3, C), 0.5), "fc2": torch.full((3, C), 0.5)}
+    ctx = _ctx(model, batch, ci, is_eval=False, use_delta_component=True)
+
+    metric = AdversarialNetworkReconLoss(_cfg())
+    metric.bind(model=model, device="cpu")
+    metric.update(ctx)  # build the network so the seeded RNG below only drives the noise draw
+    assert metric.state is not None
+    metric.state.optimizer.zero_grad(set_to_none=True)
+
+    seed = 1234
+    torch.manual_seed(seed)
+    loss_before = metric.update(ctx)
+    assert loss_before is not None
+    before = loss_before.item()
+    loss_before.backward()
+    metric.after_backward()
+
+    torch.manual_seed(seed)  # identical noise draw
+    with torch.no_grad():
+        loss_after = metric.update(ctx)
+    assert loss_after is not None
+    assert loss_after.item() > before
+
+
 def test_state_dict_roundtrip() -> None:
     torch.manual_seed(3)
     model = _make_model()
