@@ -1,8 +1,9 @@
 """Adversarial-network reconstruction loss, its config, and the adversary state machine.
 
-An adversary network with the same architecture as the CI function (built from the same
-`ci_config`) maps IID uniform-noise vectors to per-component adversarial sources. Those
-sources form the masks for a reconstruction forward pass: `mask = ci + (1 - ci) * source`.
+An adversary network with a CI-fn-shaped architecture maps its input (by default fresh IID
+uniform noise; optionally the target model's hidden activations, the same tensors the CI fn
+sees — see `input_source`) to per-component adversarial sources. Those sources form the
+masks for a reconstruction forward pass: `mask = ci + (1 - ci) * source`.
 Components and the CI function *descend* the resulting recon loss as usual; the adversary
 network *ascends* it via its own optimizer, stepped from `after_backward` on the gradients
 the outer `total_loss.backward()` leaves on the adversary parameters.
@@ -14,9 +15,9 @@ Unlike `PersistentPGDReconLoss`:
 - the network's outputs pass through `source_sigmoid` (default `"normal"`, a plain sigmoid,
   so the adversary always receives gradient; set it to e.g. `"lower_leaky_hard"` to match
   the CI fn's lower-leaky squashing at the cost of saturating gradients);
-- the adversary's inputs are IID uniform noise on `[0, 1]`, not target-model activations,
-  but they flow through the same architecture (and hence the same layer/RMS norm) the CI fn
-  applies to its inputs.
+- by default the adversary's inputs are IID uniform noise on `[0, 1]` rather than
+  target-model activations, but either way they flow through the same architecture (and
+  hence the same layer/RMS norm) the CI fn applies to its inputs.
 """
 
 from typing import Annotated, Any, ClassVar, Literal, override
@@ -46,6 +47,10 @@ from param_decomp.schedule import ScheduleConfig, get_scheduled_value
 
 AdversarySources = dict[str, Float[Tensor, "*batch_dims source_c"]]
 
+AdversaryInputSource = Literal["noise", "hidden_acts"]
+"""What the adversary network consumes: fresh IID uniform noise, or the target model's
+per-module input activations (the same tensors the CI fn receives)."""
+
 
 class AdversaryOptimizerConfig(BaseConfig):
     """AdamW hyperparameters + LR schedule for the adversary network.
@@ -70,6 +75,15 @@ class AdversarialNetworkReconLossConfig(LossMetricConfig):
 
     type: Literal["AdversarialNetworkReconLoss"] = "AdversarialNetworkReconLoss"
     optimizer: AdversaryOptimizerConfig
+    input_source: AdversaryInputSource = Field(
+        default="noise",
+        description=(
+            "What the adversary network consumes. `noise`: fresh IID uniform-`[0, 1]` noise "
+            "each step. `hidden_acts`: the target model's per-module input activations (the "
+            "same tensors the CI fn receives). With `hidden_acts` the adversary is "
+            "deterministic per batch, so `n_samples` > 1 is redundant."
+        ),
+    )
     source_sigmoid: SigmoidType = Field(
         default="normal",
         description=(
@@ -109,6 +123,7 @@ class AdversaryNetworkState:
         use_delta_component: bool,
         optimizer_cfg: AdversaryOptimizerConfig,
         source_sigmoid: SigmoidType,
+        input_source: AdversaryInputSource,
         n_samples: int,
         reconstruction_loss: ReconstructionLoss,
     ) -> None:
@@ -118,6 +133,7 @@ class AdversaryNetworkState:
         self._lr_schedule = optimizer_cfg.lr_schedule
         self._grad_clip_norm = optimizer_cfg.grad_clip_norm
         self._source_sigmoid_fn = SIGMOID_TYPES[source_sigmoid]
+        self._input_source: AdversaryInputSource = input_source
 
         assert not (isinstance(ci_config, LayerwiseCiConfig) and ci_config.fn_type == "mlp"), (
             "AdversarialNetworkReconLoss does not support the per-component-scalar 'mlp' CI fn "
@@ -154,17 +170,32 @@ class AdversaryNetworkState:
             weight_decay=optimizer_cfg.weight_decay,
         )
 
-    def generate_sources(self, batch_dims: tuple[int, ...]) -> AdversarySources:
-        """Sample IID uniform-`[0, 1]` noise per target and map it through the adversary.
+    def _network_input(
+        self,
+        pre_weight_acts: dict[str, Float[Tensor, "... d_in"]],
+        batch_dims: tuple[int, ...],
+    ) -> dict[str, Float[Tensor, "... d_in"]]:
+        """Per-target input fed to the adversary, matching the CI fn's `[..., d_in]` layout."""
+        match self._input_source:
+            case "noise":
+                return {
+                    name: torch.rand(*batch_dims, input_dim, device=self._device)
+                    for name, input_dim in self._input_dims.items()
+                }
+            case "hidden_acts":
+                return {name: pre_weight_acts[name] for name in self._input_dims}
+
+    def generate_sources(
+        self,
+        pre_weight_acts: dict[str, Float[Tensor, "... d_in"]],
+        batch_dims: tuple[int, ...],
+    ) -> AdversarySources:
+        """Map the adversary's input (noise or hidden acts) to per-target sources.
 
         Returns per-module sources in `[0, 1]` via `source_sigmoid`, shaped
         `[*batch_dims, source_c]`.
         """
-        noise = {
-            name: torch.rand(*batch_dims, input_dim, device=self._device)
-            for name, input_dim in self._input_dims.items()
-        }
-        logits = self.network(noise)
+        logits = self.network(self._network_input(pre_weight_acts, batch_dims))
         return {name: self._source_sigmoid_fn(value) for name, value in logits.items()}
 
     def compute_recon_sum_and_n(
@@ -173,15 +204,16 @@ class AdversaryNetworkState:
         batch: Tensor,
         target_out: Float[Tensor, "... vocab"],
         ci: dict[str, Float[Tensor, "... C"]],
+        pre_weight_acts: dict[str, Float[Tensor, "... d_in"]],
         weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
     ) -> tuple[Float[Tensor, ""], int]:
-        """Recon forward returning `(sum_loss, n_examples)` summed over all noise draws."""
+        """Recon forward returning `(sum_loss, n_examples)` summed over all adversary draws."""
         batch_dims = next(iter(ci.values())).shape[:-1]
         device = next(iter(ci.values())).device
         sum_loss = torch.zeros((), device=device)
         n_examples = 0
         for _ in range(self._n_samples):
-            sources = self.generate_sources(batch_dims)
+            sources = self.generate_sources(pre_weight_acts, batch_dims)
             mask_infos = get_ppgd_mask_infos(
                 ci=ci,
                 weight_deltas=weight_deltas,
@@ -257,6 +289,7 @@ class AdversarialNetworkReconLoss(Metric[AdversarialNetworkReconLossConfig]):
             use_delta_component=ctx.use_delta_component,
             optimizer_cfg=self.cfg.optimizer,
             source_sigmoid=self.cfg.source_sigmoid,
+            input_source=self.cfg.input_source,
             n_samples=self.cfg.n_samples,
             reconstruction_loss=ctx.reconstruction_loss,
         )
@@ -288,6 +321,7 @@ class AdversarialNetworkReconLoss(Metric[AdversarialNetworkReconLossConfig]):
             batch=ctx.batch,
             target_out=ctx.target_out,
             ci=ctx.ci.lower_leaky,
+            pre_weight_acts=ctx.pre_weight_acts,
             weight_deltas=weight_deltas,
         )
 
@@ -313,7 +347,7 @@ class AdversarialNetworkReconLoss(Metric[AdversarialNetworkReconLossConfig]):
         mask_infos = get_ppgd_mask_infos(
             ci=ctx.ci.lower_leaky,
             weight_deltas=weight_deltas,
-            ppgd_sources=self.state.generate_sources(batch_dims),
+            ppgd_sources=self.state.generate_sources(ctx.pre_weight_acts, batch_dims),
             routing_masks="all",
             batch_dims=batch_dims,
         )

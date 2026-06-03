@@ -41,10 +41,13 @@ Two metrics drive components/CI fn to reconstruct under *adversarially-chosen* m
 
 - `PersistentPGDReconLoss` — sources are tensors optimised in-place by projected gradient
   ascent, persisting across steps (state in `persistent_pgd_state.py`).
-- `AdversarialNetworkReconLoss` — sources are emitted by a learned adversary network that
-  maps IID uniform-`[0, 1]` noise through a CI-fn-shaped architecture (so it shares the CI
-  fn's input norm). The architecture defaults to the target's `ci_config` but can be sized
-  independently via the loss config's `architecture` field (same shape as `pd.ci_config`).
+- `AdversarialNetworkReconLoss` — sources are emitted by a learned adversary network with a
+  CI-fn-shaped architecture (so it shares the CI fn's input norm). Its input is set by
+  `input_source`: `"noise"` (default, fresh IID uniform-`[0, 1]` noise each step) or
+  `"hidden_acts"` (the target model's per-module input activations — the same tensors the CI
+  fn receives; deterministic per batch, so `n_samples` > 1 is redundant). The architecture
+  defaults to the target's `ci_config` but can be sized independently via the loss config's
+  `architecture` field (same shape as `pd.ci_config`).
   Its output squashing is set by `source_sigmoid` (default `"normal"`, a plain sigmoid with
   always-on gradient; `"lower_leaky_hard"` matches the CI fn's lower-leaky branch — a hard
   clamp to `[0, 1]` with a one-sided backward leak). The network ascends the recon loss via its own AdamW (held

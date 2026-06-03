@@ -97,10 +97,11 @@ def test_source_shapes_match_components_plus_delta(use_delta_component: bool) ->
         use_delta_component=use_delta_component,
         optimizer_cfg=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
         source_sigmoid="normal",
+        input_source="noise",
         n_samples=1,
         reconstruction_loss=recon_loss_mse,
     )
-    sources = state.generate_sources(batch_dims=(5,))
+    sources = state.generate_sources(pre_weight_acts={}, batch_dims=(5,))
     expected_c = C + (1 if use_delta_component else 0)
     for name in ("fc1", "fc2"):
         assert sources[name].shape == (5, expected_c)
@@ -117,6 +118,7 @@ def test_source_sigmoid_keeps_sources_in_unit_interval(source_sigmoid: str) -> N
         use_delta_component=True,
         optimizer_cfg=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
         source_sigmoid=source_sigmoid,  # pyright: ignore[reportArgumentType]
+        input_source="noise",
         n_samples=1,
         reconstruction_loss=recon_loss_mse,
     )
@@ -124,9 +126,70 @@ def test_source_sigmoid_keeps_sources_in_unit_interval(source_sigmoid: str) -> N
     # actually saturates, then check the sources are still valid mask sources in [0, 1].
     for p in state.network.parameters():
         torch.nn.init.normal_(p, std=50.0)
-    sources = state.generate_sources(batch_dims=(4,))
+    sources = state.generate_sources(pre_weight_acts={}, batch_dims=(4,))
     for name in ("fc1", "fc2"):
         assert (sources[name] >= 0).all() and (sources[name] <= 1).all()
+
+
+def test_hidden_acts_input_source_uses_activations_deterministically() -> None:
+    """With `input_source="hidden_acts"` the adversary consumes the supplied acts (no RNG)."""
+    model = _make_model(fn_type="shared_mlp")
+    state = AdversaryNetworkState(
+        model=model,
+        ci_config=model.ci_config,
+        device="cpu",
+        use_delta_component=True,
+        optimizer_cfg=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+        source_sigmoid="normal",
+        input_source="hidden_acts",
+        n_samples=1,
+        reconstruction_loss=recon_loss_mse,
+    )
+    # fc1 input dim = 4, fc2 input dim = 3 (the target modules' d_in).
+    acts = {"fc1": torch.randn(5, 4), "fc2": torch.randn(5, 3)}
+    first = state.generate_sources(acts, batch_dims=(5,))
+    second = state.generate_sources(acts, batch_dims=(5,))
+    other_acts = {"fc1": torch.randn(5, 4), "fc2": torch.randn(5, 3)}
+    on_other = state.generate_sources(other_acts, batch_dims=(5,))
+    for name in ("fc1", "fc2"):
+        assert first[name].shape == (5, C + 1)
+        assert torch.equal(first[name], second[name])  # deterministic given fixed acts
+        assert not torch.equal(first[name], on_other[name])  # but responds to the acts
+
+
+def test_hidden_acts_input_source_runs_end_to_end() -> None:
+    torch.manual_seed(0)
+    model = _make_model(fn_type="shared_mlp")
+    batch = torch.randn(3, 4)
+    ci = {"fc1": torch.full((3, C), 0.5), "fc2": torch.full((3, C), 0.5)}
+    pre_weight_acts = {"fc1": torch.randn(3, 4), "fc2": torch.randn(3, 3)}
+    ctx = MetricContext(
+        model=model,
+        batch=batch,
+        target_out=model.target_model(batch),
+        pre_weight_acts=pre_weight_acts,
+        ci=_ci_outputs(ci),
+        weight_deltas=model.calc_weight_deltas(),
+        step=0,
+        total_steps=100,
+        use_delta_component=True,
+        sampling="continuous",
+        n_mask_samples=1,
+        reconstruction_loss=recon_loss_mse,
+        is_eval=False,
+    )
+    metric = AdversarialNetworkReconLoss(
+        AdversarialNetworkReconLossConfig(
+            coeff=1.0,
+            optimizer=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+            input_source="hidden_acts",
+        )
+    )
+    metric.bind(model=model, device="cpu")
+    loss = metric.update(ctx)
+    assert loss is not None and torch.isfinite(loss)
+    loss.backward()
+    metric.after_backward()
 
 
 def test_mlp_ci_fn_type_is_rejected() -> None:
@@ -139,6 +202,7 @@ def test_mlp_ci_fn_type_is_rejected() -> None:
             use_delta_component=True,
             optimizer_cfg=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
             source_sigmoid="normal",
+            input_source="noise",
             n_samples=1,
             reconstruction_loss=recon_loss_mse,
         )
@@ -166,11 +230,12 @@ def test_architecture_override_builds_independent_network() -> None:
         use_delta_component=True,
         optimizer_cfg=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
         source_sigmoid="normal",
+        input_source="noise",
         n_samples=1,
         reconstruction_loss=recon_loss_mse,
     )
     assert isinstance(state.network, GlobalCiFnWrapper)
-    sources = state.generate_sources(batch_dims=(3,))
+    sources = state.generate_sources(pre_weight_acts={}, batch_dims=(3,))
     for name in ("fc1", "fc2"):
         assert sources[name].shape == (3, C + 1)
 
@@ -186,6 +251,7 @@ def test_architecture_override_validates_against_unsupported_types() -> None:
             use_delta_component=True,
             optimizer_cfg=AdversaryOptimizerConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
             source_sigmoid="normal",
+            input_source="noise",
             n_samples=1,
             reconstruction_loss=recon_loss_mse,
         )
