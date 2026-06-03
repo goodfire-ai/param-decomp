@@ -107,7 +107,7 @@ def test_source_shapes_match_components_plus_delta(use_delta_component: bool) ->
         assert (sources[name] > 0).all() and (sources[name] < 1).all()
 
 
-@pytest.mark.parametrize("source_sigmoid", ["normal", "lower_leaky_hard"])
+@pytest.mark.parametrize("source_sigmoid", ["normal", "lower_leaky_hard", "half_sin"])
 def test_source_sigmoid_keeps_sources_in_unit_interval(source_sigmoid: str) -> None:
     model = _make_model()
     state = AdversaryNetworkState(
