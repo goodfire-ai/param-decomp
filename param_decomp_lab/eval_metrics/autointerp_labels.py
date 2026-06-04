@@ -62,6 +62,7 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
         super().__init__(cfg)
         self._model_metadata: ModelMetadata | None = None
         self._tokenizer_name: str | None = None
+        self.reset()
 
     def set_run_context(self, *, model_metadata: ModelMetadata, tokenizer_name: str) -> None:
         self._model_metadata = model_metadata
@@ -73,8 +74,16 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
         self._selection: dict[str, list[int]] | None = None
         self._u_norms: dict[str, Tensor] | None = None
 
-    def _build_selection(self, ci_lower_leaky: dict[str, Tensor]) -> dict[str, list[int]]:
-        """Map `k` flat indices (uniform over concatenated C) back to per-site local indices."""
+    def _selected_components(self, ci_lower_leaky: dict[str, Tensor]) -> dict[str, list[int]]:
+        """Fixed random component subset, drawn uniformly over the concatenated component
+        space. Sampled once (seeded by `cfg.seed`) on first call and cached, so the same
+        components are tracked across every eval pass / checkpoint of a run.
+
+        Returns per-site local indices.
+        """
+        if self._selection is not None:
+            return self._selection
+
         sites = sorted(ci_lower_leaky)
         c_per_site = {s: ci_lower_leaky[s].shape[-1] for s in sites}
         total = sum(c_per_site.values())
@@ -92,19 +101,19 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
         for idx in flat:
             site, lo = next((s, lo) for s, lo, hi in bounds if lo <= idx < hi)
             selection.setdefault(site, []).append(idx - lo)
-        return {s: sorted(local) for s, local in selection.items()}
+
+        self._selection = {s: sorted(local) for s, local in selection.items()}
+        return self._selection
 
     @override
     def update(self, ctx: MetricContext) -> None:
         ci = ctx.ci.lower_leaky
         assert isinstance(ctx.batch, Tensor), "AutointerpLabels expects tokenized Tensor batches"
+        selection = self._selected_components(ci)
 
-        if self._selection is None:
-            self._selection = self._build_selection(ci)
-            self._u_norms = {
-                site: self.model.components[site].U.norm(dim=1) for site in self._selection
-            }
-            layers = [(site, len(self._selection[site])) for site in sorted(self._selection)]
+        if self._harvester is None:
+            self._u_norms = {site: self.model.components[site].U.norm(dim=1) for site in selection}
+            layers = [(site, len(selection[site])) for site in sorted(selection)]
             self._harvester = Harvester(
                 layers=layers,
                 vocab_size=ctx.target_out.shape[-1],
@@ -113,15 +122,15 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
                 max_examples_per_batch_per_component=_MAX_EXAMPLES_PER_BATCH_PER_COMPONENT,
                 device=torch.device(self.device),
             )
-        assert self._harvester is not None and self._u_norms is not None
+        assert self._u_norms is not None
 
         comp_acts = get_all_component_acts(self.model, ctx.pre_weight_acts)
         output_probs = torch.softmax(ctx.target_out, dim=-1)
 
         firings: dict[str, Tensor] = {}
         activations: dict[str, dict[str, Tensor]] = {}
-        for site in sorted(self._selection):
-            idx = torch.tensor(self._selection[site], device=self.device)
+        for site in sorted(selection):
+            idx = torch.tensor(selection[site], device=self.device)
             ci_sel = ci[site][..., idx]
             firings[site] = ci_sel > self.cfg.activation_threshold
             activations[site] = {
@@ -136,17 +145,7 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
     def compute(self) -> MetricResult:
         assert self._harvester is not None and self._selection is not None
         h = self._harvester
-
-        h.firing_counts = all_reduce(h.firing_counts)
-        for act_type in list(h.activation_sums):
-            h.activation_sums[act_type] = all_reduce(h.activation_sums[act_type])
-        h.input_cooccurrence = all_reduce(h.input_cooccurrence)
-        h.input_marginals = all_reduce(h.input_marginals)
-        h.output_cooccurrence = all_reduce(h.output_cooccurrence)
-        h.output_marginals = all_reduce(h.output_marginals)
-        h.total_tokens_processed = int(
-            all_reduce(torch.tensor(h.total_tokens_processed, device=self.device)).item()
-        )
+        _all_reduce_harvester_counts(h, device=self.device)
 
         if not is_main_process():
             return {}
@@ -179,6 +178,8 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
     async def _interpret_all(
         self, components: list[ComponentData], storage: TokenStatsStorage
     ) -> list[tuple[str, str, str]]:
+        # Deferred: these pull the app backend + autointerp/transformers stack, which the
+        # widely-imported eval_metrics package shouldn't drag into every training process.
         from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
         from param_decomp_lab.autointerp.providers import create_provider
         from param_decomp_lab.autointerp.strategies.dispatch import (
@@ -228,3 +229,22 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
             return await asyncio.gather(*(one(c) for c in components))
         finally:
             await provider.close()
+
+
+def _all_reduce_harvester_counts(harvester: Harvester, *, device: str) -> None:
+    """Sum the harvester's count accumulators across ranks, in place.
+
+    Only the fields that feed token stats and `build_results` are reduced;
+    `cooccurrence_counts` is unused here and left as-is.
+    """
+    h = harvester
+    h.firing_counts = all_reduce(h.firing_counts)
+    for act_type in list(h.activation_sums):
+        h.activation_sums[act_type] = all_reduce(h.activation_sums[act_type])
+    h.input_cooccurrence = all_reduce(h.input_cooccurrence)
+    h.input_marginals = all_reduce(h.input_marginals)
+    h.output_cooccurrence = all_reduce(h.output_cooccurrence)
+    h.output_marginals = all_reduce(h.output_marginals)
+    h.total_tokens_processed = int(
+        all_reduce(torch.tensor(h.total_tokens_processed, device=device)).item()
+    )

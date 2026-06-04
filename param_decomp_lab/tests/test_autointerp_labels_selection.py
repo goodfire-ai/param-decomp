@@ -29,7 +29,7 @@ def _ci_shapes(c_per_site: dict[str, int]) -> dict[str, torch.Tensor]:
 
 def test_selection_count_and_bounds():
     c_per_site = {"layer.0.mlp": 10, "layer.1.mlp": 5, "layer.2.attn": 7}
-    selection = _make_metric(k=12, seed=3)._build_selection(_ci_shapes(c_per_site))
+    selection = _make_metric(k=12, seed=3)._selected_components(_ci_shapes(c_per_site))
     total_selected = sum(len(v) for v in selection.values())
     assert total_selected == 12
     for site, locals_ in selection.items():
@@ -39,18 +39,27 @@ def test_selection_count_and_bounds():
 
 def test_selection_is_deterministic_in_seed():
     c_per_site = {"a": 8, "b": 8, "c": 8}
-    s1 = _make_metric(k=6, seed=42)._build_selection(_ci_shapes(c_per_site))
-    s2 = _make_metric(k=6, seed=42)._build_selection(_ci_shapes(c_per_site))
-    s3 = _make_metric(k=6, seed=43)._build_selection(_ci_shapes(c_per_site))
+    s1 = _make_metric(k=6, seed=42)._selected_components(_ci_shapes(c_per_site))
+    s2 = _make_metric(k=6, seed=42)._selected_components(_ci_shapes(c_per_site))
+    s3 = _make_metric(k=6, seed=43)._selected_components(_ci_shapes(c_per_site))
     assert s1 == s2
     assert s1 != s3
+
+
+def test_selection_is_cached_after_first_call():
+    """The selector samples once and returns the cached subset on later calls,
+    even if handed different component shapes."""
+    metric = _make_metric(k=4, seed=1)
+    first = metric._selected_components(_ci_shapes({"a": 8, "b": 8}))
+    second = metric._selected_components(_ci_shapes({"a": 999, "b": 999, "c": 999}))
+    assert second is first
 
 
 def test_selection_matches_uniform_concatenated_sampling():
     """The selection must be the flat uniform sample mapped back to (site, local)."""
     c_per_site = {"a": 4, "b": 6, "c": 3}  # sites sorted: a,b,c -> offsets 0,4,10
     k, seed = 7, 11
-    selection = _make_metric(k=k, seed=seed)._build_selection(_ci_shapes(c_per_site))
+    selection = _make_metric(k=k, seed=seed)._selected_components(_ci_shapes(c_per_site))
 
     flat = sorted(random.Random(seed).sample(range(sum(c_per_site.values())), k))
     offsets = {"a": 0, "b": 4, "c": 10}
