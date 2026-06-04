@@ -22,6 +22,35 @@ from param_decomp_lab.harvest.analysis import TokenPRLift
 from param_decomp_lab.harvest.schemas import ComponentData
 from param_decomp_lab.infra.markdown import Md
 
+_PILE = (
+    "The Pile (uncopyrighted subset): diverse text from books, academic papers, code, "
+    "web pages, and other sources."
+)
+
+# Maps a (possibly implementation-detail-laden) dataset id to a clean, model-recognisable
+# description. Looked up via `dataset_description`, which fails fast on an unregistered
+# dataset rather than leaking the raw id into the prompt.
+DATASET_DESCRIPTIONS: dict[str, str] = {
+    "SimpleStories/SimpleStories": (
+        "SimpleStories: 2M+ short stories (200-350 words), grade 1-8 reading level. "
+        "Simple vocabulary, common narrative elements."
+    ),
+    "danbraunai/pile-uncopyrighted-tok-shuffled": _PILE,
+    "danbraunai/pile-uncopyrighted-tok": _PILE,
+    "apollo-research/Skylion007-openwebtext-tokenizer-gpt2": (
+        "OpenWebText: web pages linked from Reddit (GPT-2's pretraining distribution)."
+    ),
+}
+
+
+def dataset_description(dataset_name: str) -> str:
+    assert dataset_name in DATASET_DESCRIPTIONS, (
+        f"No dataset description for {dataset_name!r}; add a semantic name to "
+        f"DATASET_DESCRIPTIONS in {__name__}."
+    )
+    return DATASET_DESCRIPTIONS[dataset_name]
+
+
 WEIGHT_NAMES: dict[str, str] = {
     "attn.q": "attention query projection",
     "attn.k": "attention key projection",

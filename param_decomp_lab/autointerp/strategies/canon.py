@@ -8,6 +8,7 @@ from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.autointerp.config import CANON_RENDERING, CanonConfig
 from param_decomp_lab.autointerp.prompt_helpers import (
     build_annotated_examples,
+    dataset_description,
     human_layer_desc,
     token_stats_section,
 )
@@ -121,7 +122,8 @@ def format_prompt(
     md.h(3, "This component")
     md.p(
         f"The component you will be labeling today comes from a decomposition of a "
-        f"{model_metadata.n_blocks}-block transformer trained on {model_metadata.dataset_name}. "
+        f"{model_metadata.n_blocks}-block transformer "
+        f"trained on {dataset_description(model_metadata.dataset_name)}. "
         f"Specifically, it is part of the {layer_desc}. "
         f"It has a firing rate of {component.firing_density * 100:.2f}% "
         f"(fires {rate_str})."

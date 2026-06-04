@@ -14,6 +14,7 @@ from param_decomp_lab.autointerp.prompt_helpers import (
     build_data_presentation,
     build_input_section,
     build_output_section,
+    dataset_description,
     density_note,
     describe_example_rendering,
     human_layer_desc,
@@ -100,7 +101,7 @@ def format_prompt(
     md.bullets(
         [
             f"Model: {model_metadata.n_blocks}-block transformer, "
-            f"dataset: {model_metadata.dataset_name}",
+            f"dataset: {dataset_description(model_metadata.dataset_name)}",
             f"Component location: {layer_desc}",
             f"Component firing rate: {component.firing_density * 100:.2f}% ({rate_str})",
         ]
