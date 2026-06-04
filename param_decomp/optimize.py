@@ -10,6 +10,7 @@ that lets a caller persist and restore the full training state (resumption).
 
 import gc
 import signal
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Self, cast
@@ -521,6 +522,9 @@ class Trainer:
         all_instances = self._build_all_metric_instances(eval_loop, device)
         sigterm = _install_sigterm_flag()
 
+        last_log_time = time.perf_counter()
+        last_log_step = self.step
+
         for step in tqdm(
             range(self.step, pd_config.steps + 1), ncols=0, disable=not is_main_process()
         ):
@@ -606,6 +610,14 @@ class Trainer:
                 batch_log_data.update(grad_norm_log_data)
                 batch_log_data["schedules/lr/components"] = components_lr
                 batch_log_data["schedules/lr/ci_fn"] = ci_fn_lr
+
+                now = time.perf_counter()
+                if step > last_log_step:
+                    batch_log_data["perf/steps_per_sec"] = (step - last_log_step) / (
+                        now - last_log_time
+                    )
+                last_log_time = now
+                last_log_step = step
 
                 sink.console(
                     f"--- Step {step} ---",
