@@ -358,25 +358,15 @@ def build_world(
 
     my_rank = dist.get_rank()
 
-    def _make_group(name: str, ranks: list[int]) -> Any:
-        # Per-rank trace before/after each collective new_group. Lets us
-        # localize precisely where the world wedges if NCCL deadlocks.
-        print(f"[build_world rank={my_rank}] before {name} ranks={ranks}", flush=True)
-        g = dist.new_group(ranks=ranks, timeout=pg_timeout)
-        print(f"[build_world rank={my_rank}] after  {name} ranks={ranks}", flush=True)
-        return g
+    def _make_group(ranks: list[int]) -> Any:
+        return dist.new_group(ranks=ranks, timeout=pg_timeout)
 
-    ci_pool_group = _make_group("ci_pool_group", ci_ranks)
-    chunkwise_pool_group = _make_group("chunkwise_pool_group", chunkwise_ranks)
-    ppgd_pool_group = _make_group("ppgd_pool_group", ppgd_ranks)
-    chunk_groups = tuple(
-        _make_group(f"chunk_groups[{i}]", list(c.ranks)) for i, c in enumerate(chunks)
-    )
-    cross_pool_bcast_groups = tuple(
-        _make_group(f"cross_pool_bcast_groups[{i}]", [c.leader, *ppgd_ranks])
-        for i, c in enumerate(chunks)
-    )
-    cross_pool_p2p_group = _make_group("cross_pool_p2p_group", list(range(world_size)))
+    ci_pool_group = _make_group(ci_ranks)
+    chunkwise_pool_group = _make_group(chunkwise_ranks)
+    ppgd_pool_group = _make_group(ppgd_ranks)
+    chunk_groups = tuple(_make_group(list(c.ranks)) for c in chunks)
+    cross_pool_bcast_groups = tuple(_make_group([c.leader, *ppgd_ranks]) for c in chunks)
+    cross_pool_p2p_group = _make_group(list(range(world_size)))
 
     if device is not None:
         _prewarm_cross_pool_bcast_groups(

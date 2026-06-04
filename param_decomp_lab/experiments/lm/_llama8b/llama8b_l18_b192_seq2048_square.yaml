@@ -1,6 +1,6 @@
 cadence:
   keep_last_n_checkpoints: 2
-  save_every: 25000
+  save_every: 2000
   train_log_every: 200
 data:
   buffer_size: 1000
