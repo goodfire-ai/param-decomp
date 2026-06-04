@@ -1,0 +1,37 @@
+harvest:
+  config:
+    method_config:
+      type: ParamDecompHarvestConfig
+      wandb_path: p-9081c804
+      activation_threshold: 0.0
+    n_batches: 20000
+    batch_size: 32
+    activation_examples_per_component: 500
+    activation_context_tokens_per_side: 20
+    pmi_token_top_k: 40
+    max_examples_per_batch_per_component: 5
+  n_gpus: 8
+  time: "12:00:00"
+  merge_time: "04:00:00"
+  merge_mem: "300G"
+
+autointerp:
+  config:
+    llm:
+      type: openrouter
+      model: google/gemini-3-flash-preview
+      reasoning_effort: low
+      max_concurrent: 50
+    limit: null
+    component_keys_path: null
+    cost_limit_usd: 100.0
+    template_strategy:
+      type: canon
+      max_examples: 30
+      label_max_words: 8
+  time: "12:00:00"
+  evals: null
+
+intruder: null
+attributions: null
+graph_interp: null

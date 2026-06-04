@@ -6,6 +6,7 @@ collectives.
 """
 
 import os
+import sys
 from collections.abc import Callable
 from functools import wraps
 
@@ -88,14 +89,35 @@ def cleanup_distributed() -> None:
 
 
 def with_distributed_cleanup[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
-    """Wrap `fn` so `cleanup_distributed` runs in a ``finally`` block on return/raise."""
+    """Wrap `fn` with distributed teardown.
+
+    Success path of a distributed run: barrier so every rank waits for rank 0's
+    end-of-run sink/wandb flush to finish, then hard-exit via `os._exit`. The hard
+    exit skips CPython finalization, which otherwise races a C-extension daemon
+    thread (NCCL/aiohttp/wandb) against the GIL and aborts with a fatal
+    `PyGILState_Release` (SIGABRT). That abort marks the SLURM job FAILED and, by
+    tripping torchrun's peer teardown, can kill rank 0 mid-wandb-flush so the final
+    step never syncs — even though training itself succeeded.
+
+    Failure path (and non-distributed runs): tear the process group down and let the
+    exception/return propagate normally. No barrier — a peer may already be dead, so
+    a collective would hang until timeout.
+    """
 
     @wraps(fn)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
         try:
-            return fn(*args, **kwargs)
-        finally:
+            result = fn(*args, **kwargs)
+        except BaseException:
             cleanup_distributed()
+            raise
+        if not is_distributed():
+            cleanup_distributed()
+            return result
+        sync_across_processes()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
     return wrapper
 
