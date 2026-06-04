@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Annotated, Literal, override
 
 import torch
+import wandb
 from pydantic import Field
 from torch import Tensor
 
@@ -27,11 +28,14 @@ from param_decomp.component_model import ComponentModel
 from param_decomp.distributed import all_reduce, is_main_process
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
+from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.autointerp.config import StrategyConfig
-from param_decomp_lab.autointerp.providers import LLMConfig
+from param_decomp_lab.autointerp.providers import LLMConfig, create_provider
 from param_decomp_lab.autointerp.schemas import ModelMetadata
+from param_decomp_lab.autointerp.strategies.dispatch import INTERPRETATION_SCHEMA, format_prompt
 from param_decomp_lab.component_model_io import get_all_component_acts
 from param_decomp_lab.harvest.accumulator import Harvester
+from param_decomp_lab.harvest.analysis import get_input_token_stats, get_output_token_stats
 from param_decomp_lab.harvest.schemas import ComponentData
 from param_decomp_lab.harvest.storage import TokenStatsStorage
 from param_decomp_lab.model_metadata import build_model_metadata
@@ -190,8 +194,6 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
 
         rows = asyncio.run(self._interpret_all(components, storage))
 
-        import wandb
-
         table = wandb.Table(columns=["component", "label", "reasoning"])
         for display_key, label, reasoning in rows:
             table.add_data(display_key, label, reasoning)
@@ -200,19 +202,6 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
     async def _interpret_all(
         self, components: list[ComponentData], storage: TokenStatsStorage
     ) -> list[tuple[str, str, str]]:
-        # Deferred: these pull the app backend + autointerp/transformers stack, which the
-        # widely-imported eval_metrics package shouldn't drag into every training process.
-        from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
-        from param_decomp_lab.autointerp.providers import create_provider
-        from param_decomp_lab.autointerp.strategies.dispatch import (
-            INTERPRETATION_SCHEMA,
-            format_prompt,
-        )
-        from param_decomp_lab.harvest.analysis import (
-            get_input_token_stats,
-            get_output_token_stats,
-        )
-
         assert self._model_metadata is not None
         assert self._selection is not None
         model_metadata = self._model_metadata
