@@ -1,139 +1,160 @@
-pd:
-  seed: 0
-  n_mask_samples: 1
-  ci_config:
-    mode: global
-    fn_type: global_shared_transformer
-    hidden_dims: null
-    simple_transformer_ci_cfg:
-      d_model: 2048
-      n_blocks: 8
-      mlp_hidden_dim:
-      - 8192
-      attn_config:
-        n_heads: 16
-        max_len: 512
-        rope_base: 10000.0
-  sampling: continuous
-  sigmoid_type: leaky_hard
-  decomposition_targets:
-  - module_pattern: h.*.mlp.c_fc
-    C: 3072
-  - module_pattern: h.*.mlp.down_proj
-    C: 3584
-  - module_pattern: h.*.attn.q_proj
-    C: 512
-  - module_pattern: h.*.attn.k_proj
-    C: 512
-  - module_pattern: h.*.attn.v_proj
-    C: 1024
-  - module_pattern: h.*.attn.o_proj
-    C: 1024
-  identity_decomposition_targets: null
-  use_delta_component: true
-  components_optimizer:
-    lr_schedule:
-      start_val: 5.0e-05
-      warmup_pct: 0.0
-      final_val_frac: 0.1
-      fn_type: cosine
-    grad_clip_norm: 0.01
-  ci_fn_optimizer:
-    lr_schedule:
-      start_val: 5.0e-05
-      warmup_pct: 0.0
-      final_val_frac: 0.1
-      fn_type: cosine
-  steps: 400000
-  batch_size: 64
-  faithfulness_warmup_steps: 400
-  faithfulness_warmup_lr: 0.001
-  faithfulness_warmup_weight_decay: 0.0
-  loss_metrics:
-    - type: ImportanceMinimalityLoss
-      coeff: 0.0002
-      pnorm: 2.0
-      beta: 0.5
-      p_anneal_start_frac: 0.0
-      p_anneal_final_p: 0.4
-      p_anneal_end_frac: 1.0
-      eps: 1.0e-12
-    - type: StochasticReconSubsetLoss
-      coeff: 0.5
-      routing:
-        type: uniform_k_subset
-    - type: PersistentPGDReconLoss
-      coeff: 0.5
-      optimizer:
-        type: adam
-        beta1: 0.5
-        beta2: 0.99
-        eps: 1.0e-08
-        lr_schedule:
-          start_val: 0.01
-          warmup_pct: 0.025
-          final_val_frac: 1.0
-          fn_type: constant
-      scope:
-        type: per_batch_per_position
-      use_sigmoid_parameterization: false
-      n_warmup_steps: 2
-    - type: FaithfulnessLoss
-      coeff: 10000000.0
 cadence:
+  keep_last_n_checkpoints: null
+  save_every: null
   train_log_every: 200
+data:
+  buffer_size: 1000
+  column_name: input_ids
+  data_files: null
+  dataset_name: danbraunai/pile-uncopyrighted-tok-shuffled
+  eval_split: val
+  is_tokenized: true
+  max_seq_len: 512
+  revision: null
+  shuffle_each_epoch: true
+  streaming: true
+  tokenizer_name: EleutherAI/gpt-neox-20b
+  train_split: train
 eval:
-  n_steps: 1
   batch_size: 128
   every: 1000
+  metrics:
+  - n_batches_accum: 1
+    type: CIHistograms
+  - ci_alive_threshold: 0.0
+    type: ComponentActivationDensity
+  - ci_alive_threshold: 0.0
+    groups:
+      layer_0:
+      - h.0.*
+      layer_1:
+      - h.1.*
+      layer_2:
+      - h.2.*
+      layer_3:
+      - h.3.*
+      total:
+      - '*'
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: CIMeanPerComponent
+  - coeff: null
+    type: StochasticHiddenActsReconLoss
+  - type: CIHiddenActsReconLoss
+  - coeff: null
+    init: random
+    mask_scope: shared_across_batch
+    n_steps: 20
+    step_size: 0.1
+    type: PGDReconLoss
+  n_steps: 1
   slow_every: 10000
   slow_on_first_step: true
-  metrics:
-    - type: CIHistograms
-      n_batches_accum: 1
-    - type: ComponentActivationDensity
-    - type: CI_L0
-      groups:
-        layer_0:
-        - h.0.*
-        layer_1:
-        - h.1.*
-        layer_2:
-        - h.2.*
-        layer_3:
-        - h.3.*
-        total:
-        - '*'
-    - type: CEandKLLosses
-      rounding_threshold: 0.0
-    - type: CIMeanPerComponent
-    - type: StochasticHiddenActsReconLoss
-    - type: CIHiddenActsReconLoss
-    - type: PGDReconLoss
-      init: random
-      step_size: 0.1
-      n_steps: 20
-      mask_scope: shared_across_batch
+pd:
+  batch_size: 64
+  ci_config:
+    fn_type: global_shared_transformer
+    hidden_dims: null
+    mode: global
+    simple_transformer_ci_cfg:
+      attn_config:
+        max_len: 512
+        n_heads: 16
+        rope_base: 10000.0
+      d_model: 2048
+      mlp_hidden_dim:
+      - 8192
+      n_blocks: 8
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  decomposition_targets:
+  - C: 3072
+    module_pattern: h.*.mlp.c_fc
+  - C: 3584
+    module_pattern: h.*.mlp.down_proj
+  - C: 512
+    module_pattern: h.*.attn.q_proj
+  - C: 512
+    module_pattern: h.*.attn.k_proj
+  - C: 1024
+    module_pattern: h.*.attn.v_proj
+  - C: 1024
+    module_pattern: h.*.attn.o_proj
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 400
+  faithfulness_warmup_weight_decay: 0.0
+  identity_decomposition_targets: null
+  loss_metrics:
+  - beta: 0
+    coeff: 0.0003
+    eps: 1.0e-12
+    p_anneal_end_frac: 1.0
+    p_anneal_final_p: 0.4
+    p_anneal_start_frac: 0.0
+    pnorm: 2.0
+    type: ImportanceMinimalityLoss
+  - coeff: 6.0
+    type: StochasticReconLayerwiseLoss
+  - coeff: 1e4
+    type: MaskedWeightNormLoss
+  - coeff: 0.5
+    n_samples: 1
+    n_warmup_steps: 2
+    optimizer:
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        final_val_frac: 1.0
+        fn_type: constant
+        start_val: 0.01
+        warmup_pct: 0.025
+      type: adam
+    scope:
+      type: per_batch_per_position
+    start_frac: 0.0
+    type: PersistentPGDReconLoss
+    use_sigmoid_parameterization: false
+  - coeff: 10000000.0
+    type: FaithfulnessLoss
+  n_mask_samples: 1
+  sampling: continuous
+  seed: 0
+  sigmoid_type: leaky_hard
+  steps: 400000
+  tied_weights: null
+  use_delta_component: true
+runtime:
+  autocast_bf16: true
+  device: cuda:0
+  dp: 16
 target:
+  output_extract: 0
   spec:
     kind: pretrained
     model_class: param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
     run_path: goodfire/spd/runs/t-9d2b8f02
-  output_extract: 0
-data:
-  tokenizer_name: EleutherAI/gpt-neox-20b
-  max_seq_len: 512
-  buffer_size: 1000
-  dataset_name: danbraunai/pile-uncopyrighted-tok-shuffled
-  column_name: input_ids
-  train_split: train
-  eval_split: val
-  shuffle_each_epoch: true
-  is_tokenized: true
-  streaming: true
-runtime:
-  autocast_bf16: true
-  device: cuda
-  dp: null
 wandb:
+  entity: null
   project: param-decomp
