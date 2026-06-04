@@ -27,7 +27,7 @@ C = 8
 def _tiny() -> VendoredLlama:
     cfg = VendoredLlamaConfig(
         model_type="VendoredLlama",
-        block_size=32,
+        max_position_embeddings=128,
         vocab_size=64,
         n_layer=4,
         n_head=4,

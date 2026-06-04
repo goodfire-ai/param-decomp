@@ -19,7 +19,7 @@ class Llama3RopeScaling(BaseConfig):
 
 class VendoredLlamaConfig(BaseConfig):
     model_type: Literal["VendoredLlama"]
-    block_size: int = 1024
+    max_position_embeddings: int = 131072  # Llama-3.1's native context; only a forward sanity cap
     vocab_size: int = 128256
     n_layer: int = 32
     n_head: int = 32

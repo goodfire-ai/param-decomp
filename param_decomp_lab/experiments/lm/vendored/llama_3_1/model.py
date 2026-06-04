@@ -1,6 +1,7 @@
 """The plain Llama-3.1 architecture (RMSNorm, RoPE with the "llama3" frequency scaling,
 grouped-query attention, SwiGLU MLP, untied `lm_head`), specialised for decomposition training:
-no KV cache, full causal forward with `seq_len <= block_size`. `componentize_llama`
+no KV cache, full causal forward (RoPE cos/sin computed per-forward from `inv_freq`, HF-style —
+no precomputed table, no `block_size` cap baked into the model). `componentize_llama`
 (in `components.py`) turns a frozen `VendoredLlama` into a mask-threading `ComponentLlama`.
 
 Module paths match HF with the `model.` prefix stripped (e.g. `layers.18.mlp.gate_proj`), so
@@ -21,59 +22,107 @@ from param_decomp_lab.experiments.lm.vendored.llama_3_1.config import (
     VendoredLlamaConfig,
 )
 
-# rotary buffers are register_buffer-initialized; pyright can't model that on a non-abstract class.
 # pyright: reportUninitializedInstanceVariable=false
 
+# -----------------------------------------------------------------------------------------------
+# Numeric kernels copied VERBATIM from HuggingFace transformers v4.57.3 (do not reimplement):
+#   transformers/models/llama/modeling_llama.py — LlamaRMSNorm, rotate_half, apply_rotary_pos_emb,
+#                                                  repeat_kv, and the LlamaRotaryEmbedding.forward
+#                                                  cos/sin computation
+#   transformers/modeling_rope_utils.py         — _compute_default_rope_parameters /
+#                                                  _compute_llama3_parameters (the inv_freq + llama3
+#                                                  wavelength rescaling)
+# Only the plumbing is adapted (config-object attribute reads → explicit scalars; the rotary
+# `forward` is inlined into `_attend` without the KV-cache `position_ids` path). Every
+# COMPUTATIONAL line is upstream's — re-copy from the same files on a transformers bump.
+# -----------------------------------------------------------------------------------------------
 
-class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float):
+
+class LlamaRMSNorm(nn.Module):
+    def __init__(self, hidden_size: int, eps: float = 1e-6):
+        """LlamaRMSNorm is equivalent to T5LayerNorm"""
         super().__init__()
-        self.weight = nn.Parameter(torch.ones(dim))
-        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.variance_epsilon = eps
 
     @override
-    def forward(self, x: Float[Tensor, "... dim"]) -> Float[Tensor, "... dim"]:
-        dtype = x.dtype
-        x = x.to(torch.float32)
-        x = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
-        return self.weight * x.to(dtype)
+    def forward(self, hidden_states: Tensor) -> Tensor:
+        input_dtype = hidden_states.dtype
+        hidden_states = hidden_states.to(torch.float32)
+        variance = hidden_states.pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+        return self.weight * hidden_states.to(input_dtype)
 
 
-def _rotary_cos_sin(
-    head_dim: int, n_ctx: int, theta: float, scaling: Llama3RopeScaling | None
+def _llama3_inv_freq(head_dim: int, base: float, scaling: Llama3RopeScaling | None) -> Tensor:
+    """inv_freq for RoPE. Body verbatim from `_compute_default_rope_parameters` +
+    `_compute_llama3_parameters` (config reads replaced by the passed scalars)."""
+    dim = head_dim
+    inv_freq = 1.0 / (
+        base ** (torch.arange(0, dim, 2, dtype=torch.int64).to(dtype=torch.float) / dim)
+    )
+    if scaling is None:
+        return inv_freq
+    factor = scaling.factor  # `8` in the original implementation
+    low_freq_factor = scaling.low_freq_factor  # `1` in the original implementation
+    high_freq_factor = scaling.high_freq_factor  # `4` in the original implementation
+    old_context_len = (
+        scaling.original_max_position_embeddings
+    )  # `8192` in the original implementation
+
+    low_freq_wavelen = old_context_len / low_freq_factor
+    high_freq_wavelen = old_context_len / high_freq_factor
+
+    wavelen = 2 * math.pi / inv_freq
+    # wavelen < high_freq_wavelen: do nothing
+    # wavelen > low_freq_wavelen: divide by factor
+    inv_freq_llama = torch.where(wavelen > low_freq_wavelen, inv_freq / factor, inv_freq)
+    # otherwise: interpolate between the two, using a smooth factor
+    smooth_factor = (old_context_len / wavelen - low_freq_factor) / (
+        high_freq_factor - low_freq_factor
+    )
+    smoothed_inv_freq = (
+        1 - smooth_factor
+    ) * inv_freq_llama / factor + smooth_factor * inv_freq_llama
+    is_medium_freq = ~(wavelen < high_freq_wavelen) * ~(wavelen > low_freq_wavelen)
+    inv_freq_llama = torch.where(is_medium_freq, smoothed_inv_freq, inv_freq_llama)
+    return inv_freq_llama
+
+
+def rotate_half(x: Tensor) -> Tensor:
+    """Rotates half the hidden dims of the input."""
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+
+def apply_rotary_pos_emb(
+    q: Tensor, k: Tensor, cos: Tensor, sin: Tensor, unsqueeze_dim: int = 1
 ) -> tuple[Tensor, Tensor]:
-    """HF-equivalent RoPE tables: cos/sin of shape [n_ctx, head_dim] (the [freqs, freqs]
-    concat convention paired with rotate_half)."""
-    inv_freq = 1.0 / (theta ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim))
-    if scaling is not None:
-        old_ctx = scaling.original_max_position_embeddings
-        low_wavelen = old_ctx / scaling.low_freq_factor
-        high_wavelen = old_ctx / scaling.high_freq_factor
-        wavelen = 2 * math.pi / inv_freq
-        inv_freq_llama = torch.where(wavelen > low_wavelen, inv_freq / scaling.factor, inv_freq)
-        smooth = (old_ctx / wavelen - scaling.low_freq_factor) / (
-            scaling.high_freq_factor - scaling.low_freq_factor
-        )
-        smoothed = (1 - smooth) * inv_freq_llama / scaling.factor + smooth * inv_freq_llama
-        is_medium = ~(wavelen < high_wavelen) * ~(wavelen > low_wavelen)
-        inv_freq = torch.where(is_medium, smoothed, inv_freq_llama)
-    pos = torch.arange(n_ctx, dtype=torch.float32)
-    freqs = torch.outer(pos, inv_freq)  # [n_ctx, head_dim/2]
-    emb = torch.cat([freqs, freqs], dim=-1)  # [n_ctx, head_dim]
-    return emb.cos(), emb.sin()
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed
 
 
-def _rotate_half(x: Tensor) -> Tensor:
-    n = x.shape[-1] // 2
-    return torch.cat([-x[..., n:], x[..., :n]], dim=-1)
+def repeat_kv(hidden_states: Tensor, n_rep: int) -> Tensor:
+    """torch.repeat_interleave(x, dim=1, repeats=n_rep): (batch, num_key_value_heads, seqlen,
+    head_dim) -> (batch, num_attention_heads, seqlen, head_dim)."""
+    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states[:, :, None, :, :].expand(
+        batch, num_key_value_heads, n_rep, slen, head_dim
+    )
+    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
 class LlamaAttention(nn.Module):
     # q/k/v are separate projections (k/v narrower under GQA) — HF Llama is already unfused
     # (unlike GPT-2's fused c_attn), so each is an independent decomposition target with no
-    # split step needed.
-    rotary_cos: Tensor
-    rotary_sin: Tensor
+    # split step needed. Thin shell: no KV cache, sdpa only, RoPE inlined from the copied kernels.
+    inv_freq: Tensor
 
     def __init__(self, config: VendoredLlamaConfig):
         super().__init__()
@@ -85,24 +134,34 @@ class LlamaAttention(nn.Module):
         self.k_proj = nn.Linear(config.n_embd, self.n_kv_head * self.head_dim, bias=False)
         self.v_proj = nn.Linear(config.n_embd, self.n_kv_head * self.head_dim, bias=False)
         self.o_proj = nn.Linear(self.n_head * self.head_dim, config.n_embd, bias=False)
-        cos, sin = _rotary_cos_sin(
-            self.head_dim, config.block_size, config.rope_theta, config.rope_scaling
+        inv_freq = _llama3_inv_freq(self.head_dim, config.rope_theta, config.rope_scaling)
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+
+    def _rope_cos_sin(self, x: Tensor, seq_len: int) -> tuple[Tensor, Tensor]:
+        """cos/sin for positions [0, seq_len). Body verbatim from `LlamaRotaryEmbedding.forward`
+        with position_ids = arange(seq_len) and attention_scaling = 1.0 (llama3)."""
+        position_ids = torch.arange(seq_len, device=x.device)[None, :]
+        inv_freq_expanded = (
+            self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to(x.device)
         )
-        self.register_buffer("rotary_cos", cos, persistent=False)
-        self.register_buffer("rotary_sin", sin, persistent=False)
+        position_ids_expanded = position_ids[:, None, :].float()
+        device_type = x.device.type if x.device.type != "mps" else "cpu"
+        with torch.autocast(device_type=device_type, enabled=False):  # Force float32
+            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
+            emb = torch.cat((freqs, freqs), dim=-1)
+            cos = emb.cos()
+            sin = emb.sin()
+        return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
     def _attend(self, q: Tensor, k: Tensor, v: Tensor) -> Tensor:
         B, T, _ = q.shape
         q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         k = k.view(B, T, self.n_kv_head, self.head_dim).transpose(1, 2)
         v = v.view(B, T, self.n_kv_head, self.head_dim).transpose(1, 2)
-        cos = self.rotary_cos[:T].to(q.dtype)
-        sin = self.rotary_sin[:T].to(q.dtype)
-        q = q * cos + _rotate_half(q) * sin
-        k = k * cos + _rotate_half(k) * sin
-        if self.n_rep > 1:
-            k = k.repeat_interleave(self.n_rep, dim=1)
-            v = v.repeat_interleave(self.n_rep, dim=1)
+        cos, sin = self._rope_cos_sin(q, T)
+        q, k = apply_rotary_pos_emb(q, k, cos, sin)
+        k = repeat_kv(k, self.n_rep)
+        v = repeat_kv(v, self.n_rep)
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         return y.transpose(1, 2).contiguous().view(B, T, self.n_head * self.head_dim)
 
@@ -122,9 +181,9 @@ class LlamaMLP(nn.Module):
 class LlamaBlock(nn.Module):
     def __init__(self, config: VendoredLlamaConfig):
         super().__init__()
-        self.input_layernorm = RMSNorm(config.n_embd, config.rms_norm_eps)
+        self.input_layernorm = LlamaRMSNorm(config.n_embd, config.rms_norm_eps)
         self.self_attn = LlamaAttention(config)
-        self.post_attention_layernorm = RMSNorm(config.n_embd, config.rms_norm_eps)
+        self.post_attention_layernorm = LlamaRMSNorm(config.n_embd, config.rms_norm_eps)
         self.mlp = LlamaMLP(config)
 
     @override
@@ -146,7 +205,7 @@ class VendoredLlama(nn.Module):
         self.embed_tokens = nn.Embedding(config.vocab_size, config.n_embd)
         self._layers: list[LlamaBlock] = [LlamaBlock(config) for _ in range(config.n_layer)]
         self.layers = nn.ModuleList(self._layers)
-        self.norm = RMSNorm(config.n_embd, config.rms_norm_eps)
+        self.norm = LlamaRMSNorm(config.n_embd, config.rms_norm_eps)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self._use_activation_checkpointing: bool = False
 
@@ -156,14 +215,16 @@ class VendoredLlama(nn.Module):
     @override
     def forward(self, idx: Int[Tensor, "b t"]) -> Float[Tensor, "b t vocab"]:
         _b, t = idx.size()
-        assert t <= self.config.block_size, f"seq len {t} > block size {self.config.block_size}"
+        assert t <= self.config.max_position_embeddings, (
+            f"seq len {t} > max_position_embeddings {self.config.max_position_embeddings}"
+        )
         x = self.embed_tokens(idx)
         for block in self._layers:
             x = block(x)
         return self.lm_head(self.norm(x))
 
     @classmethod
-    def from_hf_pretrained(cls, model_name: str, block_size: int = 1024) -> "VendoredLlama":
+    def from_hf_pretrained(cls, model_name: str) -> "VendoredLlama":
         from transformers import LlamaForCausalLM
 
         log0(f"loading HF weights into vendored Llama: {model_name}")
@@ -184,7 +245,7 @@ class VendoredLlama(nn.Module):
         assert not hf_cfg.tie_word_embeddings, "vendored Llama assumes an untied lm_head"
         config = VendoredLlamaConfig(
             model_type="VendoredLlama",
-            block_size=block_size,
+            max_position_embeddings=hf_cfg.max_position_embeddings,
             vocab_size=hf_cfg.vocab_size,
             n_layer=hf_cfg.num_hidden_layers,
             n_head=hf_cfg.num_attention_heads,

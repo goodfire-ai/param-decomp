@@ -163,7 +163,9 @@ class ComponentLlama(VendoredLlama):
             residual, start = self._cached_residual
             return self.forward_from_residual(residual, start, mask_infos, collect, collect_outputs)
         _b, t = idx.size()
-        assert t <= self.config.block_size, f"seq len {t} > block size {self.config.block_size}"
+        assert t <= self.config.max_position_embeddings, (
+            f"seq len {t} > max_position_embeddings {self.config.max_position_embeddings}"
+        )
         return self.forward_from_residual(
             self.embed_tokens(idx), 0, mask_infos, collect, collect_outputs
         )
