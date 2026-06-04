@@ -10,7 +10,6 @@ Key differences from compact_skeptical:
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.autointerp.config import DualViewConfig
 from param_decomp_lab.autointerp.prompt_helpers import (
-    DATASET_DESCRIPTIONS,
     build_annotated_examples,
     build_data_presentation,
     build_input_section,
@@ -76,13 +75,6 @@ def format_prompt(
 
     context_notes = " ".join(filter(None, [position_note, dens_note]))
 
-    dataset_line = ""
-    if config.include_dataset_description:
-        dataset_desc = DATASET_DESCRIPTIONS.get(
-            model_metadata.dataset_name, model_metadata.dataset_name
-        )
-        dataset_line = f", dataset: {dataset_desc}"
-
     forbidden_sentence = (
         "FORBIDDEN vague words: " + ", ".join(config.forbidden_words) + ". "
         if config.forbidden_words
@@ -107,7 +99,8 @@ def format_prompt(
     md.h(2, "Context")
     md.bullets(
         [
-            f"Model: {model_metadata.n_blocks}-block transformer{dataset_line}",
+            f"Model: {model_metadata.n_blocks}-block transformer, "
+            f"dataset: {model_metadata.dataset_name}",
             f"Component location: {layer_desc}",
             f"Component firing rate: {component.firing_density * 100:.2f}% ({rate_str})",
         ]

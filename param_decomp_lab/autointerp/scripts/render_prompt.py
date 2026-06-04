@@ -182,7 +182,6 @@ DUMMY_MODEL_METADATA = ModelMetadata(
 
 DUMMY_CONFIG = RichExamplesConfig(
     max_examples=30,
-    include_dataset_description=True,
     label_max_words=8,
 )
 

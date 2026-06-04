@@ -60,7 +60,6 @@ class CompactSkepticalConfig(BaseConfig):
     type: Literal["compact_skeptical"] = "compact_skeptical"
     max_examples: int = 30
     include_pmi: bool = True
-    include_dataset_description: bool = True
     label_max_words: int = 8
     forbidden_words: list[str] | None = None
     example_rendering: ExampleRenderingConfig = Field(default_factory=default_example_rendering)
@@ -78,7 +77,6 @@ class DualViewConfig(BaseConfig):
     type: Literal["dual_view"] = "dual_view"
     max_examples: int = 30
     include_pmi: bool = True
-    include_dataset_description: bool = True
     label_max_words: int = 8
     forbidden_words: list[str] | None = None
     example_rendering: ExampleRenderingConfig = Field(default_factory=default_example_rendering)
@@ -93,7 +91,6 @@ class RichExamplesConfig(BaseConfig):
 
     type: Literal["rich_examples"] = "rich_examples"
     max_examples: int = 30
-    include_dataset_description: bool = True
     label_max_words: int = 8
     output_pmi_min_count: float = 2.0
     example_rendering: RichExampleRenderingConfig = Field(

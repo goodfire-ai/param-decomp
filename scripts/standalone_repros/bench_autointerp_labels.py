@@ -39,10 +39,7 @@ _PROVIDERS = {
     "gemini": GoogleAILLMConfig(),
 }
 _STRATEGIES = {
-    # include_dataset_description=False: compact_skeptical hard-subscripts
-    # DATASET_DESCRIPTIONS (unlike the other strategies' .get), KeyError-ing on
-    # datasets not registered there (e.g. openwebtext).
-    "compact_skeptical": CompactSkepticalConfig(include_dataset_description=False),
+    "compact_skeptical": CompactSkepticalConfig(),
     "dual_view": DualViewConfig(),
 }
 

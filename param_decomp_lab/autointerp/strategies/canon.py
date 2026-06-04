@@ -7,7 +7,6 @@ CI-vs-act guidance, output PMI, and XML dual-view examples (raw + annotated).
 from param_decomp_lab.app.backend.app_tokenizer import AppTokenizer
 from param_decomp_lab.autointerp.config import CANON_RENDERING, CanonConfig
 from param_decomp_lab.autointerp.prompt_helpers import (
-    DATASET_DESCRIPTIONS,
     build_annotated_examples,
     human_layer_desc,
     token_stats_section,
@@ -37,9 +36,6 @@ def format_prompt(
     )
     canonical = model_metadata.layer_descriptions.get(component.layer, component.layer)
     layer_desc = human_layer_desc(canonical, model_metadata.n_blocks)
-    dataset_desc = DATASET_DESCRIPTIONS.get(
-        model_metadata.dataset_name, model_metadata.dataset_name
-    )
     md = Md()
 
     # --- PD method explanation ---
@@ -125,7 +121,7 @@ def format_prompt(
     md.h(3, "This component")
     md.p(
         f"The component you will be labeling today comes from a decomposition of a "
-        f"{model_metadata.n_blocks}-block transformer trained on {dataset_desc}. "
+        f"{model_metadata.n_blocks}-block transformer trained on {model_metadata.dataset_name}. "
         f"Specifically, it is part of the {layer_desc}. "
         f"It has a firing rate of {component.firing_density * 100:.2f}% "
         f"(fires {rate_str})."

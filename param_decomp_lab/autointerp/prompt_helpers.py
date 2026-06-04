@@ -22,21 +22,6 @@ from param_decomp_lab.harvest.analysis import TokenPRLift
 from param_decomp_lab.harvest.schemas import ComponentData
 from param_decomp_lab.infra.markdown import Md
 
-DATASET_DESCRIPTIONS: dict[str, str] = {
-    "SimpleStories/SimpleStories": (
-        "SimpleStories: 2M+ short stories (200-350 words), grade 1-8 reading level. "
-        "Simple vocabulary, common narrative elements."
-    ),
-    "danbraunai/pile-uncopyrighted-tok-shuffled": (
-        "The Pile (uncopyrighted subset): diverse text from books, "
-        "academic papers, code, web pages, and other sources."
-    ),
-    "danbraunai/pile-uncopyrighted-tok": (
-        "The Pile (uncopyrighted subset): diverse text from books, "
-        "academic papers, code, web pages, and other sources."
-    ),
-}
-
 WEIGHT_NAMES: dict[str, str] = {
     "attn.q": "attention query projection",
     "attn.k": "attention key projection",
