@@ -127,24 +127,34 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
         self._selection = {s: sorted(local) for s, local in selection.items()}
         return self._selection
 
-    @override
-    def update(self, ctx: MetricContext) -> None:
-        ci = ctx.ci.lower_leaky
-        assert isinstance(ctx.batch, Tensor), "AutointerpLabels expects tokenized Tensor batches"
-        selection = self._selected_components(ci)
-
-        if self._harvester is None:
+    def _u_norms_for(self, selection: dict[str, list[int]]) -> dict[str, Tensor]:
+        """Per-site component norms ‖U‖ (over the full layer), built once and cached.
+        Scales raw component activations into the harvester's `component_activation`."""
+        if self._u_norms is None:
             self._u_norms = {site: self.model.components[site].U.norm(dim=1) for site in selection}
+        return self._u_norms
+
+    def _harvester_for(self, selection: dict[str, list[int]], vocab_size: int) -> Harvester:
+        """Subset-restricted in-memory harvester, built once on the first batch and cached."""
+        if self._harvester is None:
             layers = [(site, len(selection[site])) for site in sorted(selection)]
             self._harvester = Harvester(
                 layers=layers,
-                vocab_size=ctx.target_out.shape[-1],
+                vocab_size=vocab_size,
                 max_examples_per_component=self.cfg.max_examples,
                 context_tokens_per_side=self.cfg.context_tokens_per_side,
                 max_examples_per_batch_per_component=_MAX_EXAMPLES_PER_BATCH_PER_COMPONENT,
                 device=torch.device(self.device),
             )
-        assert self._u_norms is not None
+        return self._harvester
+
+    @override
+    def update(self, ctx: MetricContext) -> None:
+        ci = ctx.ci.lower_leaky
+        assert isinstance(ctx.batch, Tensor), "AutointerpLabels expects tokenized Tensor batches"
+        selection = self._selected_components(ci)
+        u_norms = self._u_norms_for(selection)
+        harvester = self._harvester_for(selection, ctx.target_out.shape[-1])
 
         comp_acts = get_all_component_acts(self.model, ctx.pre_weight_acts)
         output_probs = torch.softmax(ctx.target_out, dim=-1)
@@ -157,10 +167,10 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
             firings[site] = ci_sel > self.cfg.activation_threshold
             activations[site] = {
                 "causal_importance": ci_sel,
-                "component_activation": comp_acts[site][..., idx] * self._u_norms[site][idx],
+                "component_activation": comp_acts[site][..., idx] * u_norms[site][idx],
             }
 
-        self._harvester.process_batch(ctx.batch, firings, activations, output_probs)
+        harvester.process_batch(ctx.batch, firings, activations, output_probs)
         return None
 
     @override
