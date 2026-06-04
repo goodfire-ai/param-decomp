@@ -1,0 +1,80 @@
+pd:
+  seed: 0
+  n_mask_samples: 1
+  ci_config:
+    mode: layerwise
+    fn_type: vector_mlp
+    hidden_dims:
+    - 12
+  sigmoid_type: leaky_hard
+  decomposition_targets:
+  - module_pattern: transformer.h.1.attn.c_attn
+    C: 768
+  identity_decomposition_targets: null
+  sampling: continuous
+  use_delta_component: true
+  batch_size: 2
+  steps: 20
+  components_optimizer:
+    lr_schedule:
+      start_val: 3e-4
+      fn_type: cosine
+      warmup_pct: 0.01
+      final_val_frac: 0.1
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 3e-4
+      fn_type: cosine
+      warmup_pct: 0.01
+      final_val_frac: 0.1
+  faithfulness_warmup_steps: 5
+  faithfulness_warmup_lr: 0.01
+  faithfulness_warmup_weight_decay: 0.1
+  loss_metrics:
+    - type: ImportanceMinimalityLoss
+      coeff: 0.0003
+      pnorm: 2.0
+      beta: 0
+      p_anneal_start_frac: 0.0
+      p_anneal_final_p: 0.3
+      p_anneal_end_frac: 1.0
+    - type: StochasticReconLayerwiseLoss
+      coeff: 2.0
+cadence:
+  train_log_every: 5
+eval:
+  n_steps: 2
+  batch_size: 2
+  every: 10
+  slow_every: 10
+  slow_on_first_step: true
+  metrics:
+    - type: CIHistograms
+      n_batches_accum: 2
+    - type: ComponentActivationDensity
+    - type: CI_L0
+      groups: null
+    - type: CEandKLLosses
+      rounding_threshold: 0.0
+    - type: CIMeanPerComponent
+    - type: StochasticHiddenActsReconLoss
+target:
+  spec:
+    kind: hf
+    model_class: transformers.GPT2LMHeadModel
+    model_name: openai-community/gpt2
+  output_extract: logits
+data:
+  tokenizer_name: openai-community/gpt2
+  max_seq_len: 256
+  dataset_name: apollo-research/Skylion007-openwebtext-tokenizer-gpt2
+  is_tokenized: true
+  column_name: input_ids
+  train_split: train
+  eval_split: train
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null
+wandb:
+  project: param-decomp
