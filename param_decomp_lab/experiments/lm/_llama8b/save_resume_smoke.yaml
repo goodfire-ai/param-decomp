@@ -1,0 +1,145 @@
+cadence:
+  keep_last_n_checkpoints: null
+  save_every: 50
+  train_log_every: 10
+data:
+  buffer_size: 1000
+  column_name: text
+  dataset_name: HuggingFaceFW/fineweb
+  data_files: sample/10BT/*.parquet
+  eval_split: train
+  is_tokenized: false
+  max_seq_len: 1024
+  shuffle_each_epoch: true
+  streaming: true
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  train_split: train
+eval:
+  batch_size: 32
+  every: 1000
+  metrics:
+  - ci_alive_threshold: 0.0
+    groups:
+      gate: [layers.18.mlp.gate_proj]
+      up: [layers.18.mlp.up_proj]
+      down: [layers.18.mlp.down_proj]
+      total: ['*']
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  n_steps: 1
+  slow_every: 1000
+  slow_on_first_step: false
+pd:
+  batch_size: 32
+  ci_config:
+    fn_type: global_shared_transformer
+    hidden_dims: null
+    mode: global
+    simple_transformer_ci_cfg:
+      attn_config:
+        max_len: 1024
+        n_heads: 32
+        rope_base: 10000.0
+      d_model: 4096
+      mlp_hidden_dim:
+      - 16384
+      n_blocks: 8
+  ci_fn_optimizer:
+    betas: [0.9, 0.999]
+    grad_clip_norm: null
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 0.0001414
+      warmup_pct: 0.01
+    weight_decay: 0.0
+  components_optimizer:
+    betas: [0.9, 0.999]
+    grad_clip_norm: 0.01
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 0.000707
+      warmup_pct: 0.01
+    weight_decay: 0.0
+  decomposition_targets:
+  - C: 28672
+    module_pattern: layers.18.mlp.gate_proj
+  - C: 28672
+    module_pattern: layers.18.mlp.up_proj
+  - C: 28672
+    module_pattern: layers.18.mlp.down_proj
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 5
+  faithfulness_warmup_weight_decay: 0.0
+  identity_decomposition_targets: null
+  losses:
+    faith:
+      coeff: 1000000.0
+      type: FaithfulnessLoss
+    imp:
+      beta: 0.5
+      coeff: 4.0e-05
+      eps: 1.0e-12
+      p_anneal_end_frac: 1.0
+      p_anneal_final_p: 0.3
+      p_anneal_start_frac: 0.0
+      pnorm: 2.0
+      type: ImportanceMinimalityLoss
+    ppgd:
+      coeff: 1.0
+      n_samples: 1
+      n_warmup_steps: 2
+      optimizer:
+        beta1: 0.5
+        beta2: 0.99
+        eps: 1.0e-08
+        lr_schedule:
+          final_val_frac: 1.0
+          fn_type: constant
+          start_val: 0.01
+          warmup_pct: 0.01
+        type: adam
+      scope:
+        type: per_batch_per_position
+      start_frac: 0.0
+      type: PersistentPGDReconLoss
+      use_sigmoid_parameterization: false
+    routing_plan:
+      n_samples: 1
+      routing:
+        type: all
+      type: subset
+    stoch:
+      coeff: 50.0
+      type: StochasticReconLayerwiseLoss
+  n_mask_samples: 1
+  sampling: continuous
+  seed: 0
+  sigmoid_type: leaky_hard
+  steps: 150
+  tied_weights: null
+  use_delta_component: true
+runtime:
+  autocast_bf16: true
+  device: cuda:0
+  dp: 6
+  topology:
+    ci_ranks: [2, 3]
+    layerwise_block_groups:
+    - owned_sites:
+      - layers.18.mlp.gate_proj
+      - layers.18.mlp.up_proj
+      - layers.18.mlp.down_proj
+      ranks: [0, 1]
+    ppgd_ranks: [4, 5]
+    use_fused_kl: true
+target:
+  activation_checkpointing: true
+  output_extract: 0
+  weights_dtype: bfloat16
+  spec:
+    kind: hf_weights_in_vendored
+    model_class: param_decomp_lab.experiments.lm.vendored.llama_3_1.model.VendoredLlama
+    model_name: meta-llama/Llama-3.1-8B
