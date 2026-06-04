@@ -31,6 +31,7 @@ from param_decomp.base_config import BaseConfig
 from param_decomp.distributed import is_main_process
 from param_decomp.log import logger
 from param_decomp.training_state import TrainingState
+from param_decomp_lab.eval_metrics import wandb_config_dict
 from param_decomp_lab.infra.run_files import save_file
 from param_decomp_lab.infra.wandb import init_wandb, try_wandb
 
@@ -110,7 +111,6 @@ class _LabSinkBase:
         project: str,
         run_id: str,
         config: BaseConfig,
-        metric_short_names: dict[str, str],
         entity: str | None = None,
         name: str | None = None,
         tags: list[str] | None = None,
@@ -127,8 +127,7 @@ class _LabSinkBase:
         init_wandb(
             project,
             run_id,
-            config,
-            metric_short_names,
+            wandb_config_dict(config),
             entity=entity,
             name=name,
             tags=tags,

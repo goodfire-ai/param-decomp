@@ -9,6 +9,7 @@ from typing import Annotated, Any
 
 from pydantic import Discriminator
 
+from param_decomp.base_config import BaseConfig
 from param_decomp.metrics.base import Metric
 from param_decomp.metrics.dispatch import LOSS_METRIC_CLASSES
 from param_decomp.metrics.pgd_masked_recon import PGDReconLoss, PGDReconLossConfig
@@ -84,14 +85,56 @@ EVAL_METRIC_CLASSES: dict[str, type[Metric[Any]]] = {
 }
 
 
-def metric_short_names() -> dict[str, str]:
+def _metric_short_names() -> dict[str, str]:
     """Map metric class name (== config `type`) to `short_name`, for wandb key prettifying.
 
-    Covers both loss and eval metrics. Lives here (not in `infra/wandb`) so the infra
-    layer doesn't depend upward on the metric registries.
+    Covers both loss and eval metrics.
     """
     return {
         cls.__name__: cls.short_name
         for cls in (*LOSS_METRIC_CLASSES.values(), *EVAL_METRIC_CLASSES.values())
         if cls.short_name is not None
     }
+
+
+def wandb_config_dict(config: BaseConfig) -> dict[str, Any]:
+    """Render `config` to the dict logged to `wandb.config`.
+
+    Nested lists-of-typed-dicts (loss/eval metric lists) are flattened into queryable
+    flat keys addressed by metric `short_name`, and the raw lists dropped so wandb
+    doesn't also log them as opaque JSON blobs. Lives here (not in `infra/wandb`) so the
+    infra layer doesn't depend upward on the metric registries.
+    """
+    short_names = _metric_short_names()
+    config_dict = config.model_dump(mode="json")
+    flattened: dict[str, Any] = {}
+
+    def is_typed_list(obj: Any) -> bool:
+        return (
+            isinstance(obj, list)
+            and len(obj) > 0
+            and all(isinstance(x, dict) and "type" in x for x in obj)
+        )
+
+    def walk(obj: Any, path: str) -> None:
+        if isinstance(obj, dict):
+            for key in list(obj.keys()):
+                child = obj[key]
+                child_path = f"{path}.{key}" if path else key
+                if is_typed_list(child):
+                    for entry in child:
+                        short = short_names.get(entry["type"], entry["type"])
+                        for k, v in entry.items():
+                            if k == "type":
+                                continue
+                            flattened[f"{child_path}.{short}.{k}"] = v
+                    del obj[key]
+                else:
+                    walk(child, child_path)
+        elif isinstance(obj, list):
+            for i, item in enumerate(obj):
+                walk(item, f"{path}.{i}")
+
+    walk(config_dict, "")
+    config_dict.update(flattened)
+    return config_dict

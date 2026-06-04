@@ -14,7 +14,7 @@ from pydantic import Field, PositiveInt
 from param_decomp.base_config import BaseConfig, runtime_cast
 from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
 from param_decomp.distributed import is_main_process
-from param_decomp_lab.eval_metrics import AnyEvalMetricConfig, metric_short_names
+from param_decomp_lab.eval_metrics import AnyEvalMetricConfig
 from param_decomp_lab.infra.run_files import generate_run_id
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.infra.wandb import try_wandb
@@ -118,7 +118,6 @@ def init_pd_run[S: OnePoolSink | ThreePoolSink](
         entity=cfg.wandb.entity,
         run_id=run_id,
         config=runtime_cast(BaseConfig, cfg),
-        metric_short_names=metric_short_names(),
         group=group,
         tags=parsed_tags,
         keep_last_n_checkpoints=keep_last_n,
