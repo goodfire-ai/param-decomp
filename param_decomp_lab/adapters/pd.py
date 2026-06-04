@@ -9,7 +9,6 @@ from param_decomp_lab.adapters.base import DecompositionAdapter
 from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.experiments.lm.run import SavedLMRun, build_lm_loader
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
-from param_decomp_lab.model_metadata import build_model_metadata
 from param_decomp_lab.topology import TransformerTopology
 
 
@@ -67,9 +66,13 @@ class PDAdapter(DecompositionAdapter):
     @override
     def model_metadata(self) -> ModelMetadata:
         cfg = self.pd_run.cfg
-        return build_model_metadata(
-            self.component_model.target_model,
-            self.component_model.target_module_paths,
+        return ModelMetadata(
+            n_blocks=self._topology.n_blocks,
             dataset_name=cfg.data.dataset_name,
+            layer_descriptions={
+                path: self._topology.target_to_canon(path)
+                for path in self.component_model.target_module_paths
+            },
             seq_len=cfg.data.max_seq_len,
+            decomposition_method="pd",
         )

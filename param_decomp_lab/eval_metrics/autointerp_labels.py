@@ -37,7 +37,7 @@ from param_decomp_lab.harvest.accumulator import Harvester
 from param_decomp_lab.harvest.analysis import get_input_token_stats, get_output_token_stats
 from param_decomp_lab.harvest.schemas import ComponentData
 from param_decomp_lab.harvest.storage import TokenStatsStorage
-from param_decomp_lab.model_metadata import build_model_metadata
+from param_decomp_lab.topology import TransformerTopology
 
 _MAX_EXAMPLES_PER_BATCH_PER_COMPONENT = 8
 _INPUT_TOKEN_TOP_K = 20
@@ -79,11 +79,15 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
     @override
     def bind(self, *, model: ComponentModel, device: str) -> None:
         super().bind(model=model, device=device)
-        self._model_metadata = build_model_metadata(
-            model.target_model,
-            model.target_module_paths,
+        topology = TransformerTopology(model.target_model)
+        self._model_metadata = ModelMetadata(
+            n_blocks=topology.n_blocks,
             dataset_name=self.cfg.dataset_name,
+            layer_descriptions={
+                path: topology.target_to_canon(path) for path in model.target_module_paths
+            },
             seq_len=self.cfg.seq_len,
+            decomposition_method="pd",
         )
 
     @override
