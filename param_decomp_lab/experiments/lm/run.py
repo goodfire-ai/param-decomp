@@ -49,7 +49,8 @@ from param_decomp_lab.distributed import (
     init_distributed,
     with_distributed_cleanup,
 )
-from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
+from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES, build_eval_metrics
+from param_decomp_lab.eval_metrics.autointerp_labels import AutointerpRunContext
 from param_decomp_lab.experiments.lm.data import (
     LMDataConfig,
     collate_fn_for,
@@ -508,9 +509,15 @@ def _build_eval_loop(
         dist_state=dist_state,
         seed=cfg.pd.seed,
     )
+    autointerp_run_context = AutointerpRunContext(
+        model_class=cfg.target.spec.model_class,
+        dataset_name=cfg.data.dataset_name,
+        seq_len=cfg.data.max_seq_len,
+        tokenizer_name=cfg.data.tokenizer_name,
+    )
     return EvalLoop(
         loader=eval_loader,
-        metrics=[EVAL_METRIC_CLASSES[m.type](m) for m in metrics],
+        metrics=build_eval_metrics(metrics, autointerp_run_context=autointerp_run_context),
         n_steps=cfg.eval.n_steps,
         every=cfg.eval.every,
         slow_every=cfg.eval.slow_every,

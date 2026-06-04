@@ -40,7 +40,6 @@ from param_decomp.metrics.base import Metric
 from param_decomp.metrics.output import collect_metric_outputs
 from param_decomp.optimize import _build_metric_context
 from param_decomp.torch_helpers import bf16_autocast, loop_dataloader
-from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
 from param_decomp_lab.component_model_io import load_component_model
 from param_decomp_lab.distributed import (
@@ -48,8 +47,8 @@ from param_decomp_lab.distributed import (
     init_distributed,
     with_distributed_cleanup,
 )
-from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
-from param_decomp_lab.eval_metrics.autointerp_labels import AutointerpLabels
+from param_decomp_lab.eval_metrics import build_eval_metrics
+from param_decomp_lab.eval_metrics.autointerp_labels import AutointerpRunContext
 from param_decomp_lab.experiments.lm.run import (
     _resolve_train_run_id,
     build_lm_loader,
@@ -68,7 +67,6 @@ from param_decomp_lab.three_pool.consolidate import (
     SNAPSHOT_SCRATCH_DIRNAME,
     consolidate_step,
 )
-from param_decomp_lab.topology import TransformerTopology
 
 
 def _consolidate_or_wait(
@@ -226,33 +224,6 @@ def _log_eval_to_wandb(
     wandb.finish()
 
 
-def _inject_autointerp_run_context(
-    eval_metrics: list[Metric[Any]],
-    *,
-    cfg: "ThreePoolLMExperimentConfig",
-    target_model: nn.Module,
-    component_model: ComponentModel,
-) -> None:
-    """Supply `AutointerpLabels` with the `ModelMetadata` + tokenizer it can't get from
-    the bare `ComponentModel`. No-op when no such metric is present."""
-    if not any(isinstance(m, AutointerpLabels) for m in eval_metrics):
-        return
-    topology = TransformerTopology(target_model)
-    model_metadata = ModelMetadata(
-        n_blocks=topology.n_blocks,
-        model_class=cfg.target.spec.model_class,
-        dataset_name=cfg.data.dataset_name,
-        layer_descriptions={
-            path: topology.target_to_canon(path) for path in component_model.target_module_paths
-        },
-        seq_len=cfg.data.max_seq_len,
-        decomposition_method="pd",
-    )
-    for m in eval_metrics:
-        if isinstance(m, AutointerpLabels):
-            m.set_run_context(model_metadata=model_metadata, tokenizer_name=cfg.data.tokenizer_name)
-
-
 @with_distributed_cleanup
 def main(
     run: str | Path,
@@ -340,13 +311,17 @@ def main(
         dist_state=dist_state,
         seed=cfg.pd.seed,
     )
-    eval_metrics = [EVAL_METRIC_CLASSES[m.type](m) for m in eval_cfg.metrics]
+    autointerp_run_context = AutointerpRunContext(
+        model_class=cfg.target.spec.model_class,
+        dataset_name=cfg.data.dataset_name,
+        seq_len=cfg.data.max_seq_len,
+        tokenizer_name=cfg.data.tokenizer_name,
+    )
+    eval_metrics = build_eval_metrics(
+        eval_cfg.metrics, autointerp_run_context=autointerp_run_context
+    )
     for m in eval_metrics:
         m.bind(model=component_model, device=device)
-
-    _inject_autointerp_run_context(
-        eval_metrics, cfg=cfg, target_model=target_model, component_model=component_model
-    )
 
     results = _run_eval_pass(
         component_model=component_model,

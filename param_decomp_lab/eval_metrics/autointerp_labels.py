@@ -15,6 +15,7 @@ derivable from the bare `ComponentModel`.
 import asyncio
 import json
 import random
+from dataclasses import dataclass
 from typing import Annotated, Literal, override
 
 import torch
@@ -22,6 +23,7 @@ from pydantic import Field
 from torch import Tensor
 
 from param_decomp.base_config import BaseConfig
+from param_decomp.component_model import ComponentModel
 from param_decomp.distributed import all_reduce, is_main_process
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.context import MetricContext
@@ -32,10 +34,25 @@ from param_decomp_lab.component_model_io import get_all_component_acts
 from param_decomp_lab.harvest.accumulator import Harvester
 from param_decomp_lab.harvest.schemas import ComponentData
 from param_decomp_lab.harvest.storage import TokenStatsStorage
+from param_decomp_lab.model_metadata import build_model_metadata
 
 _MAX_EXAMPLES_PER_BATCH_PER_COMPONENT = 8
 _INPUT_TOKEN_TOP_K = 20
 _OUTPUT_TOKEN_TOP_K = 50
+
+
+@dataclass(frozen=True)
+class AutointerpRunContext:
+    """Run/data facts the metric needs that aren't derivable from a bare `ComponentModel`.
+
+    Supplied at construction (the model-dependent rest of `ModelMetadata` —
+    `n_blocks`, `layer_descriptions` — is derived from the model at `bind`).
+    """
+
+    model_class: str
+    dataset_name: str
+    seq_len: int
+    tokenizer_name: str
 
 
 class AutointerpLabelsConfig(BaseConfig):
@@ -58,15 +75,22 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
     slow = True
     short_name = "Autointerp"
 
-    def __init__(self, cfg: AutointerpLabelsConfig) -> None:
+    def __init__(self, cfg: AutointerpLabelsConfig, run_context: AutointerpRunContext) -> None:
         super().__init__(cfg)
+        self._run_context = run_context
         self._model_metadata: ModelMetadata | None = None
-        self._tokenizer_name: str | None = None
         self.reset()
 
-    def set_run_context(self, *, model_metadata: ModelMetadata, tokenizer_name: str) -> None:
-        self._model_metadata = model_metadata
-        self._tokenizer_name = tokenizer_name
+    @override
+    def bind(self, *, model: ComponentModel, device: str) -> None:
+        super().bind(model=model, device=device)
+        self._model_metadata = build_model_metadata(
+            model.target_model,
+            model.target_module_paths,
+            model_class=self._run_context.model_class,
+            dataset_name=self._run_context.dataset_name,
+            seq_len=self._run_context.seq_len,
+        )
 
     @override
     def reset(self) -> None:
@@ -150,9 +174,7 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
         if not is_main_process():
             return {}
 
-        assert self._model_metadata is not None and self._tokenizer_name is not None, (
-            "AutointerpLabels.set_run_context must be called before compute()"
-        )
+        assert self._model_metadata is not None, "compute() called before bind()"
 
         storage = TokenStatsStorage(
             component_keys=h.component_keys,
@@ -191,11 +213,11 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
             get_output_token_stats,
         )
 
-        assert self._model_metadata is not None and self._tokenizer_name is not None
+        assert self._model_metadata is not None
         assert self._selection is not None
         model_metadata = self._model_metadata
         selection = self._selection
-        app_tok = AppTokenizer.from_pretrained(self._tokenizer_name)
+        app_tok = AppTokenizer.from_pretrained(self._run_context.tokenizer_name)
         provider = create_provider(self.cfg.llm)
 
         async def one(component: ComponentData) -> tuple[str, str, str]:

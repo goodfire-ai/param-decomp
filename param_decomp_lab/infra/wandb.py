@@ -28,33 +28,13 @@ _WANDB_URL_RE = re.compile(
 )
 
 
-def _build_short_names() -> dict[str, str]:
-    """Build the metric class-name to short-name map. Lazy to avoid circular imports."""
-    from param_decomp.metrics.dispatch import LOSS_METRIC_CLASSES
-    from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
-
-    return {
-        cls.__name__: cls.short_name
-        for cls in (*LOSS_METRIC_CLASSES.values(), *EVAL_METRIC_CLASSES.values())
-        if cls.short_name
-    }
-
-
-_metric_short_names_cache: dict[str, str] | None = None
-
-
-def _metric_short_names() -> dict[str, str]:
-    global _metric_short_names_cache
-    if _metric_short_names_cache is None:
-        _metric_short_names_cache = _build_short_names()
-    return _metric_short_names_cache
-
-
-def flatten_typed_lists(config_dict: dict[str, Any]) -> dict[str, Any]:
+def flatten_typed_lists(
+    config_dict: dict[str, Any], metric_short_names: dict[str, str]
+) -> dict[str, Any]:
     """Flatten nested lists-of-typed-dicts in `config_dict` into queryable flat keys.
 
     Targets the loss/eval metric lists, addressed by metric `short_name` (or raw type
-    when none). Example:
+    when none — `metric_short_names` maps config `type` to short name). Example:
     `pd: {loss_metrics: [{type: "ImportanceMinimalityLoss", coeff: 0.1, pnorm: 1.0}]}`
     flattens to `pd.loss_metrics.ImpMin.coeff: 0.1`, `pd.loss_metrics.ImpMin.pnorm: 1.0`.
 
@@ -78,7 +58,7 @@ def flatten_typed_lists(config_dict: dict[str, Any]) -> dict[str, Any]:
                 if is_typed_list(child):
                     for entry in child:
                         metric_type = entry["type"]
-                        short = _metric_short_names().get(metric_type, metric_type)
+                        short = metric_short_names.get(metric_type, metric_type)
                         for k, v in entry.items():
                             if k == "type":
                                 continue
@@ -194,6 +174,7 @@ def init_wandb(
     project: str,
     run_id: str,
     config: BaseConfig,
+    metric_short_names: dict[str, str],
     *,
     entity: str | None = None,
     name: str | None = None,
@@ -227,7 +208,7 @@ def init_wandb(
     wandb.define_metric("slow_eval/*", step_metric="slow_eval/step")
 
     cfg_dict = config.model_dump(mode="json")
-    flattened = flatten_typed_lists(cfg_dict)
+    flattened = flatten_typed_lists(cfg_dict, metric_short_names)
     wandb.config.update(cfg_dict)
     wandb.config.update(flattened)
 

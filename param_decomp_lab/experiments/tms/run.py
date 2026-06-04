@@ -20,7 +20,7 @@ from param_decomp.optimize import EvalLoop, Trainer
 from param_decomp_lab.batch_and_loss_fns import recon_loss_mse, run_batch_first_element
 from param_decomp_lab.component_model_io import load_component_model
 from param_decomp_lab.distributed import get_device
-from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
+from param_decomp_lab.eval_metrics import build_eval_metrics
 from param_decomp_lab.experiments.tms.data import SparseFeatureDataset
 from param_decomp_lab.experiments.tms.models import TMSModel, TMSTargetRunInfo
 from param_decomp_lab.experiments.utils import (
@@ -174,7 +174,7 @@ def _build_eval_loop(cfg: TMSExperimentConfig, device: str) -> EvalLoop | None:
         loader=build_tms_loader(
             cfg.target, cfg.data, split="eval", device=device, batch_size=cfg.eval.batch_size
         ),
-        metrics=[EVAL_METRIC_CLASSES[m.type](m) for m in cfg.eval.metrics],
+        metrics=build_eval_metrics(cfg.eval.metrics, autointerp_run_context=None),
         n_steps=cfg.eval.n_steps,
         every=cfg.eval.every,
         slow_every=cfg.eval.slow_every,
