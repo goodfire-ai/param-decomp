@@ -1,7 +1,7 @@
 cadence:
   keep_last_n_checkpoints: 2
-  save_every: 25000
-  train_log_every: 200
+  save_every: null
+  train_log_every: 1
 data:
   buffer_size: 1000
   column_name: text
@@ -16,7 +16,7 @@ data:
   tokenizer_name: meta-llama/Llama-3.1-8B
   train_split: train
 eval:
-  batch_size: 224
+  batch_size: 32
   every: 1000
   metrics:
   - n_batches_accum: 1
@@ -40,9 +40,9 @@ eval:
     type: PGDReconLoss
   n_steps: 1
   slow_every: 10000
-  slow_on_first_step: true
+  slow_on_first_step: false
 pd:
-  batch_size: 224
+  batch_size: 32
   ci_config:
     fn_type: global_shared_transformer
     hidden_dims: null
@@ -86,7 +86,7 @@ pd:
   - C: 24576
     module_pattern: layers.18.mlp.down_proj
   faithfulness_warmup_lr: 0.001
-  faithfulness_warmup_steps: 400
+  faithfulness_warmup_steps: 3
   faithfulness_warmup_weight_decay: 0.0
   identity_decomposition_targets: null
   losses:
@@ -133,7 +133,7 @@ pd:
   sampling: continuous
   seed: 0
   sigmoid_type: leaky_hard
-  steps: 100000
+  steps: 15
   tied_weights: null
   use_delta_component: true
 runtime:
@@ -141,11 +141,11 @@ runtime:
   device: cuda:0
   topology:
     ci:
-      per_rank_batch: 8
+      per_rank_batch: 16
     ppgd:
       per_rank_batch: 8
     chunkwise:
-      per_rank_batch: 8
+      per_rank_batch: 16
       sites_per_chunk: null
     use_fused_kl: true
 target:
