@@ -131,4 +131,4 @@ runtime:
   device: cuda
   dp: null
 wandb:
-  project: param-decomp
+  project: param-decomp-llama
