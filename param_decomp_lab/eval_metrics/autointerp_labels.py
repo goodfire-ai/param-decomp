@@ -15,7 +15,6 @@ derivable from the bare `ComponentModel`.
 import asyncio
 import json
 import random
-from dataclasses import dataclass
 from typing import Annotated, Literal, override
 
 import torch
@@ -45,20 +44,6 @@ _INPUT_TOKEN_TOP_K = 20
 _OUTPUT_TOKEN_TOP_K = 50
 
 
-@dataclass(frozen=True)
-class AutointerpRunContext:
-    """Run/data facts the metric needs that aren't derivable from a bare `ComponentModel`.
-
-    Supplied at construction (the model-dependent rest of `ModelMetadata` —
-    `n_blocks`, `layer_descriptions` — is derived from the model at `bind`).
-    """
-
-    model_class: str
-    dataset_name: str
-    seq_len: int
-    tokenizer_name: str
-
-
 class AutointerpLabelsConfig(BaseConfig):
     type: Literal["AutointerpLabels"] = "AutointerpLabels"
     k: int
@@ -70,6 +55,13 @@ class AutointerpLabelsConfig(BaseConfig):
     context_tokens_per_side: int
     llm: LLMConfig
     template_strategy: Annotated[StrategyConfig, Field(discriminator="type")]
+    # Run/data facts the prompt needs that a bare ComponentModel doesn't carry. They
+    # mirror `data.*` / are the eval data the metric renders — kept here so the metric
+    # is self-contained (plain config dispatch). `n_blocks` / `layer_descriptions` are
+    # derived from the model at `bind`.
+    dataset_name: str
+    seq_len: int
+    tokenizer_name: str
 
 
 class AutointerpLabels(Metric[AutointerpLabelsConfig]):
@@ -79,9 +71,8 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
     slow = True
     short_name = "Autointerp"
 
-    def __init__(self, cfg: AutointerpLabelsConfig, run_context: AutointerpRunContext) -> None:
+    def __init__(self, cfg: AutointerpLabelsConfig) -> None:
         super().__init__(cfg)
-        self._run_context = run_context
         self._model_metadata: ModelMetadata | None = None
         self.reset()
 
@@ -91,9 +82,8 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
         self._model_metadata = build_model_metadata(
             model.target_model,
             model.target_module_paths,
-            model_class=self._run_context.model_class,
-            dataset_name=self._run_context.dataset_name,
-            seq_len=self._run_context.seq_len,
+            dataset_name=self.cfg.dataset_name,
+            seq_len=self.cfg.seq_len,
         )
 
     @override
@@ -206,7 +196,7 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
         assert self._selection is not None
         model_metadata = self._model_metadata
         selection = self._selection
-        app_tok = AppTokenizer.from_pretrained(self._run_context.tokenizer_name)
+        app_tok = AppTokenizer.from_pretrained(self.cfg.tokenizer_name)
         provider = create_provider(self.cfg.llm)
 
         async def one(component: ComponentData) -> tuple[str, str, str]:

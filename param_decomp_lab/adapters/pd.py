@@ -70,7 +70,6 @@ class PDAdapter(DecompositionAdapter):
         return build_model_metadata(
             self.component_model.target_model,
             self.component_model.target_module_paths,
-            model_class=cfg.target.spec.model_class,
             dataset_name=cfg.data.dataset_name,
             seq_len=cfg.data.max_seq_len,
         )

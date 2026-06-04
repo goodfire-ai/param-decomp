@@ -44,7 +44,6 @@ DECOMPOSITION_DESCRIPTIONS: dict[DecompositionMethod, str] = {
 @dataclass
 class ModelMetadata:
     n_blocks: int
-    model_class: str
     dataset_name: str
     layer_descriptions: dict[str, str]
     seq_len: int

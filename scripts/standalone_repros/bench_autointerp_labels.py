@@ -31,7 +31,6 @@ from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
 from param_decomp_lab.eval_metrics.autointerp_labels import (
     AutointerpLabels,
     AutointerpLabelsConfig,
-    AutointerpRunContext,
 )
 
 _PROVIDERS = {
@@ -81,13 +80,10 @@ def main(
             context_tokens_per_side=context_tokens_per_side,
             llm=_PROVIDERS[provider],
             template_strategy=_STRATEGIES[strategy],
-        ),
-        AutointerpRunContext(
-            model_class=cfg.target.spec.model_class,
             dataset_name=cfg.data.dataset_name,
             seq_len=seq_len,
             tokenizer_name=adapter.tokenizer_name,
-        ),
+        )
     )
     metric.bind(model=component_model, device=device)
 

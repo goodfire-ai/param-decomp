@@ -47,8 +47,7 @@ from param_decomp_lab.distributed import (
     init_distributed,
     with_distributed_cleanup,
 )
-from param_decomp_lab.eval_metrics import build_eval_metrics
-from param_decomp_lab.eval_metrics.autointerp_labels import AutointerpRunContext
+from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES
 from param_decomp_lab.experiments.lm.run import (
     _resolve_train_run_id,
     build_lm_loader,
@@ -311,15 +310,7 @@ def main(
         dist_state=dist_state,
         seed=cfg.pd.seed,
     )
-    autointerp_run_context = AutointerpRunContext(
-        model_class=cfg.target.spec.model_class,
-        dataset_name=cfg.data.dataset_name,
-        seq_len=cfg.data.max_seq_len,
-        tokenizer_name=cfg.data.tokenizer_name,
-    )
-    eval_metrics = build_eval_metrics(
-        eval_cfg.metrics, autointerp_run_context=autointerp_run_context
-    )
+    eval_metrics = [EVAL_METRIC_CLASSES[m.type](m) for m in eval_cfg.metrics]
     for m in eval_metrics:
         m.bind(model=component_model, device=device)
 

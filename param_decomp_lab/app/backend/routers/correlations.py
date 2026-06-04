@@ -202,7 +202,6 @@ async def request_component_interpretation(
 
     model_metadata = ModelMetadata(
         n_blocks=loaded.topology.n_blocks,
-        model_class=loaded.model.__class__.__name__,
         dataset_name=loaded.lm_data.dataset_name,
         layer_descriptions={
             path: loaded.topology.target_to_canon(path) for path in loaded.model.target_module_paths

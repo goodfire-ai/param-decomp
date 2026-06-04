@@ -67,7 +67,7 @@ def format_prompt(
 
     md.h(2, "Context").bullets(
         [
-            f"Model: {model_metadata.model_class} ({model_metadata.n_blocks} blocks){dataset_line}",
+            f"Model: {model_metadata.n_blocks}-block transformer{dataset_line}",
             f"Component location: {layer_desc}",
             f"Component firing rate: {component.firing_density * 100:.2f}% ({rate_str})",
         ]

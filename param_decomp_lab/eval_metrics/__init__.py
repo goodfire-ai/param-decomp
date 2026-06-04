@@ -25,7 +25,6 @@ from param_decomp_lab.eval_metrics.attn_patterns_recon_loss import (
 from param_decomp_lab.eval_metrics.autointerp_labels import (
     AutointerpLabels,
     AutointerpLabelsConfig,
-    AutointerpRunContext,
 )
 from param_decomp_lab.eval_metrics.ce_and_kl_losses import CEandKLLosses, CEandKLLossesConfig
 from param_decomp_lab.eval_metrics.ci_hidden_acts_recon_loss import (
@@ -83,30 +82,6 @@ EVAL_METRIC_CLASSES: dict[str, type[Metric[Any]]] = {
         UVPlots,
     )
 }
-
-
-def build_eval_metrics(
-    configs: list[AnyEvalMetricConfig],
-    *,
-    autointerp_run_context: AutointerpRunContext | None,
-) -> list[Metric[Any]]:
-    """Instantiate eval metrics from their configs.
-
-    Most metrics are built from config alone. `AutointerpLabels` additionally needs
-    run/data context (`AutointerpRunContext`) the generic dispatch can't supply, so it
-    is constructed explicitly; pass `autointerp_run_context` whenever such a metric may
-    appear (asserted present if one does).
-    """
-    metrics: list[Metric[Any]] = []
-    for c in configs:
-        if isinstance(c, AutointerpLabelsConfig):
-            assert autointerp_run_context is not None, (
-                "AutointerpLabels eval metric requires an AutointerpRunContext"
-            )
-            metrics.append(AutointerpLabels(c, autointerp_run_context))
-        else:
-            metrics.append(EVAL_METRIC_CLASSES[c.type](c))
-    return metrics
 
 
 def metric_short_names() -> dict[str, str]:

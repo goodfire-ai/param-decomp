@@ -68,7 +68,6 @@ def format_prompt(
 
     canonical = model_metadata.layer_descriptions.get(component.layer, component.layer)
     layer_desc = human_layer_desc(canonical, model_metadata.n_blocks)
-    model_name = model_metadata.model_class.rsplit(".", 1)[-1]
 
     dataset_line = ""
     if config.include_dataset_description:
@@ -94,7 +93,7 @@ def format_prompt(
     md.h(2, "Context")
     md.bullets(
         [
-            f"Model: {model_name} ({model_metadata.n_blocks} blocks){dataset_line}",
+            f"Model: {model_metadata.n_blocks}-block transformer{dataset_line}",
             f"Component location: {layer_desc}",
             f"Component firing rate: {component.firing_density * 100:.2f}% ({rate_str})",
         ]

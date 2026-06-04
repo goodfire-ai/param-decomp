@@ -7,11 +7,6 @@ from param_decomp_lab.autointerp.providers import OpenRouterLLMConfig
 from param_decomp_lab.eval_metrics.autointerp_labels import (
     AutointerpLabels,
     AutointerpLabelsConfig,
-    AutointerpRunContext,
-)
-
-_RUN_CONTEXT = AutointerpRunContext(
-    model_class="x", dataset_name="x", seq_len=128, tokenizer_name="gpt2"
 )
 
 
@@ -24,8 +19,11 @@ def _make_metric(k: int, seed: int) -> AutointerpLabels:
         context_tokens_per_side=10,
         llm=OpenRouterLLMConfig(),
         template_strategy=CompactSkepticalConfig(),
+        dataset_name="x",
+        seq_len=128,
+        tokenizer_name="gpt2",
     )
-    return AutointerpLabels(cfg, _RUN_CONTEXT)
+    return AutointerpLabels(cfg)
 
 
 def _ci_shapes(c_per_site: dict[str, int]) -> dict[str, torch.Tensor]:

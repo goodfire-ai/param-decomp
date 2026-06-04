@@ -174,7 +174,6 @@ DUMMY_COMPONENT = ComponentData(
 
 DUMMY_MODEL_METADATA = ModelMetadata(
     n_blocks=4,
-    model_class="pile_llama_simple_mlp",
     dataset_name="danbraunai/pile-uncopyrighted-tok-shuffled",
     layer_descriptions={"h.2.attn.v_proj": "2.attn.v"},
     seq_len=512,

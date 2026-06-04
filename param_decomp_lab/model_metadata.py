@@ -14,14 +14,12 @@ def build_model_metadata(
     target_model: nn.Module,
     target_module_paths: list[str],
     *,
-    model_class: str,
     dataset_name: str,
     seq_len: int,
 ) -> ModelMetadata:
     topology = TransformerTopology(target_model)
     return ModelMetadata(
         n_blocks=topology.n_blocks,
-        model_class=model_class,
         dataset_name=dataset_name,
         layer_descriptions={path: topology.target_to_canon(path) for path in target_module_paths},
         seq_len=seq_len,

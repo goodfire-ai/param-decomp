@@ -63,10 +63,8 @@ class CLTAdapter(DecompositionAdapter):
     @override
     def model_metadata(self) -> ModelMetadata:
         ds_cfg = self._run_info.config_dict["data"]
-        model_cls = type(self.base_model)
         return ModelMetadata(
             n_blocks=self._topology.n_blocks,
-            model_class=f"{model_cls.__module__}.{model_cls.__qualname__}",
             dataset_name=ds_cfg["dataset_name"],
             layer_descriptions={f"h.{i}.mlp": f"{i}.mlp" for i in self.clt.layers},
             seq_len=self.base_model.config.block_size,
