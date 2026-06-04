@@ -1,0 +1,252 @@
+cadence:
+  keep_last_n_checkpoints: null
+  save_every: 2000
+  train_log_every: 50
+data:
+  buffer_size: 1000
+  column_name: text
+  dataset_name: HuggingFaceFW/fineweb
+  data_files: sample/10BT/*.parquet
+  eval_split: train
+  is_tokenized: false
+  max_seq_len: 1024
+  shuffle_each_epoch: true
+  streaming: true
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  train_split: train
+eval:
+  batch_size: 512
+  every: 1000
+  metrics:
+  - ci_alive_threshold: 0.0
+    groups:
+      gate:
+      - layers.18.mlp.gate_proj
+      up:
+      - layers.18.mlp.up_proj
+      down:
+      - layers.18.mlp.down_proj
+      total:
+      - '*'
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  n_steps: 1
+  slow_every: 10000
+  slow_on_first_step: false
+pd:
+  batch_size: 512
+  ci_config:
+    fn_type: global_shared_transformer
+    hidden_dims: null
+    mode: global
+    simple_transformer_ci_cfg:
+      attn_config:
+        max_len: 1024
+        n_heads: 32
+        rope_base: 10000.0
+      d_model: 4096
+      mlp_hidden_dim:
+      - 16384
+      n_blocks: 8
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 0.0001414
+      warmup_pct: 0.01
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 0.000707
+      warmup_pct: 0.01
+    weight_decay: 0.0
+  decomposition_targets:
+  - C: 28672
+    module_pattern: layers.18.mlp.gate_proj
+  - C: 28672
+    module_pattern: layers.18.mlp.up_proj
+  - C: 28672
+    module_pattern: layers.18.mlp.down_proj
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 400
+  faithfulness_warmup_weight_decay: 0.0
+  identity_decomposition_targets: null
+  losses:
+    faith:
+      coeff: 1000000.0
+      type: FaithfulnessLoss
+    imp:
+      beta: 0.5
+      coeff: 4.0e-05
+      eps: 1.0e-12
+      p_anneal_end_frac: 1.0
+      p_anneal_final_p: 0.3
+      p_anneal_start_frac: 0.0
+      pnorm: 2.0
+      type: ImportanceMinimalityLoss
+    ppgd:
+      coeff: 1.0
+      n_samples: 1
+      n_warmup_steps: 2
+      optimizer:
+        beta1: 0.5
+        beta2: 0.99
+        eps: 1.0e-08
+        lr_schedule:
+          final_val_frac: 1.0
+          fn_type: constant
+          start_val: 0.01
+          warmup_pct: 0.01
+        type: adam
+      scope:
+        type: per_batch_per_position
+      start_frac: 0.0
+      type: PersistentPGDReconLoss
+      use_sigmoid_parameterization: false
+    routing_plan:
+      n_samples: 1
+      routing:
+        type: all
+      type: subset
+    stoch:
+      coeff: 50.0
+      type: StochasticReconLayerwiseLoss
+  n_mask_samples: 1
+  sampling: continuous
+  seed: 0
+  sigmoid_type: leaky_hard
+  steps: 50000
+  tied_weights: null
+  use_delta_component: true
+runtime:
+  autocast_bf16: true
+  device: cuda:0
+  dp: 96
+  topology:
+    ci_ranks:
+    - 32
+    - 33
+    - 34
+    - 35
+    - 36
+    - 37
+    - 38
+    - 39
+    - 40
+    - 41
+    - 42
+    - 43
+    - 44
+    - 45
+    - 46
+    - 47
+    - 48
+    - 49
+    - 50
+    - 51
+    - 52
+    - 53
+    - 54
+    - 55
+    - 56
+    - 57
+    - 58
+    - 59
+    - 60
+    - 61
+    - 62
+    - 63
+    layerwise_block_groups:
+    - owned_sites:
+      - layers.18.mlp.gate_proj
+      - layers.18.mlp.up_proj
+      - layers.18.mlp.down_proj
+      ranks:
+      - 0
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      - 7
+      - 8
+      - 9
+      - 10
+      - 11
+      - 12
+      - 13
+      - 14
+      - 15
+      - 16
+      - 17
+      - 18
+      - 19
+      - 20
+      - 21
+      - 22
+      - 23
+      - 24
+      - 25
+      - 26
+      - 27
+      - 28
+      - 29
+      - 30
+      - 31
+    ppgd_ranks:
+    - 64
+    - 65
+    - 66
+    - 67
+    - 68
+    - 69
+    - 70
+    - 71
+    - 72
+    - 73
+    - 74
+    - 75
+    - 76
+    - 77
+    - 78
+    - 79
+    - 80
+    - 81
+    - 82
+    - 83
+    - 84
+    - 85
+    - 86
+    - 87
+    - 88
+    - 89
+    - 90
+    - 91
+    - 92
+    - 93
+    - 94
+    - 95
+    use_fused_kl: true
+target:
+  activation_checkpointing: true
+  output_extract: 0
+  weights_dtype: bfloat16
+  spec:
+    kind: hf_weights_in_vendored
+    model_class: param_decomp_lab.experiments.lm.vendored.llama_3_1.model.VendoredLlama
+    model_name: meta-llama/Llama-3.1-8B
+wandb:
+  entity: goodfire
+  project: param-decomp
