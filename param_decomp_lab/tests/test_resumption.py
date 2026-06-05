@@ -29,7 +29,7 @@ from param_decomp_lab.resumption import (
     read_training_snapshot,
     resolve_step,
 )
-from param_decomp_lab.run_sink import RunSink
+from param_decomp_lab.run_sink import RunSink, _checkpoint_steps_to_prune
 
 
 class TinyLinear(nn.Module):
@@ -197,3 +197,19 @@ def test_keep_last_n_checkpoints_prunes_older_pairs(tmp_path: Path) -> None:
     assert not (run_dir / "training_2.pth").exists()
     assert (run_dir / "model_4.pth").is_file()
     assert (run_dir / "training_4.pth").is_file()
+
+
+def test_checkpoint_steps_to_prune_selects_oldest_beyond_keep_last_n(tmp_path: Path) -> None:
+    """The pure step selector returns oldest-first steps exceeding keep_last_n,
+    unions model/training prefixes, and ignores non-checkpoint .pth files.
+    """
+    for step in (10, 20, 30):
+        (tmp_path / f"model_{step}.pth").touch()
+        (tmp_path / f"training_{step}.pth").touch()
+    # A lone prefix still counts as a step; junk names are ignored.
+    (tmp_path / "model_40.pth").touch()
+    (tmp_path / "optimizer.pth").touch()
+
+    assert _checkpoint_steps_to_prune(tmp_path, keep_last_n=2) == [10, 20]
+    assert _checkpoint_steps_to_prune(tmp_path, keep_last_n=4) == []
+    assert _checkpoint_steps_to_prune(tmp_path, keep_last_n=10) == []

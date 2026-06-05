@@ -152,7 +152,8 @@ class RunSink:
 
         No-op when `out_dir is None` (silent sink / non-main rank); wandb upload
         only when wandb is active. Prunes older (model, training) pairs after the
-        write when ``keep_last_n_checkpoints`` is set.
+        write when ``keep_last_n_checkpoints`` is set — locally, and also from the
+        wandb run when wandb is active.
         """
         if self.out_dir is None:
             return
@@ -165,7 +166,11 @@ class RunSink:
             try_wandb(wandb.save, str(model_path), base_path=str(self.out_dir), policy="now")
             try_wandb(wandb.save, str(training_path), base_path=str(self.out_dir), policy="now")
         if self.keep_last_n_checkpoints is not None:
-            _prune_old_checkpoints(self.out_dir, keep_last_n=self.keep_last_n_checkpoints)
+            _prune_old_checkpoints(
+                self.out_dir,
+                keep_last_n=self.keep_last_n_checkpoints,
+                prune_wandb=self._wandb_active,
+            )
 
     def finish(self) -> None:
         """End-of-run cleanup."""
@@ -180,30 +185,55 @@ def _wandb_value(v: Any) -> Any:
     return v
 
 
-def _prune_old_checkpoints(out_dir: Path, *, keep_last_n: int) -> None:
-    """Delete (``model_<step>.pth``, ``training_<step>.pth``) pairs except for the
-    top ``keep_last_n`` by step number.
+def _checkpoint_steps_to_prune(out_dir: Path, *, keep_last_n: int) -> list[int]:
+    """Steps (oldest first) whose (model, training) files exceed `keep_last_n`.
 
-    A "pair" is the two files written together by :meth:`RunSink.checkpoint`; we
-    glob each independently and prune by step rather than assuming both must
-    exist, since a future caller might write only one of them.
+    A "pair" is the two files written together by `RunSink.checkpoint`; we glob
+    each prefix independently and prune by step rather than assuming both exist,
+    since a future caller might write only one of them.
     """
 
-    def steps(prefix: str) -> list[int]:
-        out: list[int] = []
+    def steps(prefix: str) -> set[int]:
+        out: set[int] = set()
         for p in out_dir.glob(f"{prefix}_*.pth"):
             try:
-                out.append(int(p.stem.removeprefix(f"{prefix}_")))
+                out.add(int(p.stem.removeprefix(f"{prefix}_")))
             except ValueError:
                 continue
         return out
 
-    all_steps = sorted(set(steps("model")) | set(steps("training")))
-    if len(all_steps) <= keep_last_n:
-        return
-    to_delete = all_steps[: len(all_steps) - keep_last_n]
-    for step in to_delete:
-        for prefix in ("model", "training"):
-            path = out_dir / f"{prefix}_{step}.pth"
-            if path.is_file():
-                path.unlink()
+    all_steps = sorted(steps("model") | steps("training"))
+    return all_steps[: max(0, len(all_steps) - keep_last_n)]
+
+
+def _delete_wandb_files(names: list[str]) -> None:
+    """Best-effort deletion of the named run files from the active wandb run.
+
+    Broad catch by design: pruning is cleanup, not correctness, and the public
+    API raises errors wandb's `normalize_exceptions` does not coerce to
+    `CommError` (unwrapped `run.files()` pagination, non-`CommError` `Error`
+    subclasses), so a narrow catch would crash training on a flaky delete.
+    `BaseException` (Ctrl-C, `SystemExit`) still propagates.
+    """
+    assert wandb.run is not None
+    assert names, "empty names would match all run files via run.files()"
+    try:
+        run = wandb.Api().run(f"{wandb.run.entity}/{wandb.run.project}/{wandb.run.id}")
+        for file in run.files(names=names):  # server filters to existing matches
+            file.delete()
+    except Exception as e:
+        logger.warning(f"wandb checkpoint pruning failed (non-fatal): {e}")
+
+
+def _prune_old_checkpoints(out_dir: Path, *, keep_last_n: int, prune_wandb: bool) -> None:
+    """Delete (`model_<step>.pth`, `training_<step>.pth`) pairs beyond the most
+    recent `keep_last_n` — locally, and from the active wandb run when `prune_wandb`.
+    """
+    to_prune = _checkpoint_steps_to_prune(out_dir, keep_last_n=keep_last_n)
+    names = [f"{prefix}_{step}.pth" for step in to_prune for prefix in ("model", "training")]
+    for name in names:
+        path = out_dir / name
+        if path.is_file():
+            path.unlink()
+    if prune_wandb and names:
+        _delete_wandb_files(names)
