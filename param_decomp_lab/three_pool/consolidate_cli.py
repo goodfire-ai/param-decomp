@@ -18,10 +18,12 @@ imports on the train-loop side.
 from pathlib import Path
 
 import fire
+import yaml
 
 from param_decomp.log import logger
 from param_decomp_lab.experiments.lm.run import build_target, make_run_batch
 from param_decomp_lab.experiments.lm.three_pool_run import ThreePoolLMExperimentConfig
+from param_decomp_lab.experiments.lm.two_pool_run import TwoPoolLMExperimentConfig
 from param_decomp_lab.experiments.utils import EXPERIMENT_CONFIG_FILENAME
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.three_pool.consolidate import (
@@ -39,7 +41,12 @@ def cli(
     keep_last_n_training: int = DEFAULT_KEEP_LAST_N_TRAINING,
 ) -> None:
     out_dir = Path(run) if Path(run).is_dir() else PARAM_DECOMP_OUT_DIR / "runs" / run
-    cfg = ThreePoolLMExperimentConfig.from_file(out_dir / EXPERIMENT_CONFIG_FILENAME)
+    cfg_path = out_dir / EXPERIMENT_CONFIG_FILENAME
+    # The 2-pool and 3-pool configs differ only in runtime.topology (pool_a vs ci/ppgd);
+    # consolidation reads only pool-agnostic fields. Pick the class from the topology keys.
+    topology = yaml.safe_load(cfg_path.read_text())["runtime"]["topology"]
+    cfg_cls = TwoPoolLMExperimentConfig if "pool_a" in topology else ThreePoolLMExperimentConfig
+    cfg = cfg_cls.from_file(cfg_path)
     target_model = build_target(cfg.target)
     run_batch = make_run_batch(cfg.target)
 
