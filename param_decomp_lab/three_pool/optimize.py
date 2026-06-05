@@ -760,7 +760,13 @@ class ThreePoolTrainer:
                 trace(f"Trainer.run: step {step}: start (pool={ctx.kind})")
 
                 step_start = time.perf_counter()
-                should_log = step % cadence.train_log_every == 0
+                # PD_3POOL_DISABLE_XPOOL_LOG: kill ALL cross-pool logging comm (loss / mem /
+                # grad-norm aggregation in _log_train_metrics + the should_log work in the step
+                # fns). Stopgap while the logging path's cross-pool collectives are migrated off
+                # the shared p2p group (they deadlock-interleave with the per-step portal p2p).
+                should_log = step % cadence.train_log_every == 0 and not os.environ.get(
+                    "PD_3POOL_DISABLE_XPOOL_LOG"
+                )
 
                 # batch_T should already be on this rank's device (placed by _to_device).
                 if isinstance(batch_T, Tensor):
@@ -844,10 +850,10 @@ class ThreePoolTrainer:
                 step_ms = (time.perf_counter() - step_start) * 1000.0
                 trace(f"Trainer.run: step {step}: dispatched in {step_ms:.1f}ms")
                 flush_nccl_event_timings()
-                if step % cadence.train_log_every == 0:
+                if should_log:
                     dump_memory_stats(f"step {step} done")
 
-                if step % cadence.train_log_every == 0:
+                if should_log:
                     _log_train_metrics(
                         metrics=metrics,
                         ctx=ctx,
