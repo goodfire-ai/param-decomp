@@ -55,6 +55,7 @@ from param_decomp_lab.experiments.lm.run import (
     make_run_batch,
 )
 from param_decomp_lab.experiments.lm.three_pool_run import ThreePoolLMExperimentConfig
+from param_decomp_lab.experiments.lm.two_pool_run import TwoPoolLMExperimentConfig
 from param_decomp_lab.experiments.utils import EXPERIMENT_CONFIG_FILENAME, EvalConfig
 from param_decomp_lab.infra.run_files import resolve_run_files
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
@@ -70,7 +71,7 @@ from param_decomp_lab.three_pool.consolidate import (
 
 def _consolidate_or_wait(
     *,
-    cfg: "ThreePoolLMExperimentConfig",
+    cfg: "ThreePoolLMExperimentConfig | TwoPoolLMExperimentConfig",
     out_dir: Path,
     target_model: "nn.Module",
     run_batch: Any,
@@ -229,6 +230,7 @@ def main(
     *,
     step: int | None = None,
     eval_config: str | Path | None = None,
+    variant: str = "three_pool",
     group: str | None = None,
     tags: str | None = None,
 ) -> None:
@@ -240,16 +242,26 @@ def main(
         step: Which checkpoint to evaluate. Default: latest.
         eval_config: Path to an `EvalConfig` YAML that fully specifies the metrics
             to run. If omitted, falls back to the parent run's ``cfg.eval``.
+        variant: Which multipool composition root submitted this job — ``three_pool``
+            or ``two_pool``. Selects the experiment-config class to validate the parent's
+            ``experiment_config.yaml`` against (the two differ only in ``runtime.topology``;
+            consolidation + eval touch neither pool's topology).
         group / tags: optional wandb metadata for the resumed run.
     """
-    # Read the config from experiment_config.yaml directly rather than `SavedThreePoolLMRun.from_path`:
-    # for a 3-pool run no `model_<step>.pth` exists yet (this job assembles it
-    # below), and `from_path` eagerly resolves one, which would crash here. This job is
-    # only ever submitted by the 3-pool composition root, so the config is always a
-    # `ThreePoolLMExperimentConfig`.
+    # Read the config from experiment_config.yaml directly rather than `Saved*Run.from_path`:
+    # for a multipool run no `model_<step>.pth` exists yet (this job assembles it below), and
+    # `from_path` eagerly resolves one, which would crash here. The config class is selected by
+    # `variant` (set by whichever composition root submitted this job).
     train_run_id = _resolve_train_run_id(run)
     out_dir = PARAM_DECOMP_OUT_DIR / "runs" / train_run_id
-    cfg = ThreePoolLMExperimentConfig.from_file(out_dir / EXPERIMENT_CONFIG_FILENAME)
+    cfg_path = out_dir / EXPERIMENT_CONFIG_FILENAME
+    match variant:
+        case "three_pool":
+            cfg = ThreePoolLMExperimentConfig.from_file(cfg_path)
+        case "two_pool":
+            cfg = TwoPoolLMExperimentConfig.from_file(cfg_path)
+        case _:
+            raise AssertionError(f"unknown async-eval variant {variant!r}")
 
     if eval_config is not None:
         eval_cfg = EvalConfig.from_file(Path(eval_config))

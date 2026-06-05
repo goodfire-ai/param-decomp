@@ -124,6 +124,12 @@ def consolidate_step(
             case "ppgd":
                 if "ppgd" in partial:
                     ppgd_by_rank[r] = partial["ppgd"]
+            case "pool_a":
+                # 2-pool: Pool A co-locates the CI fn and the adversary on one rank,
+                # so its partial carries the ci-fn optimizer state AND the PPGD sources.
+                ci_fn_optimizer.update(partial["optimizer_by_name"])
+                if "ppgd" in partial:
+                    ppgd_by_rank[r] = partial["ppgd"]
             case _:
                 raise AssertionError(f"unknown pool {pool!r} in rank-{r} partial")
 

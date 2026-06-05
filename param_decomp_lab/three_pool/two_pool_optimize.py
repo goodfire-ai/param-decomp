@@ -15,15 +15,19 @@ pool_a_ranks``), the chunkwise step + portals verbatim, and the merged Pool A st
 (``step_pool_a``). See ``two_pool_layout.py`` for why ``ci_ranks == ppgd_ranks`` makes
 all of that reuse correct.
 
-Checkpoint/resume is out of scope for this MVP (per ``DESIGN.md``): ``save_every``
-must be ``None``, and the loop does NOT force a final snapshot.
+Checkpoint/resume reuses the 3-pool machinery: each rank writes a self-contained partial
+on the loop (chunk leaders → V/U; the Pool A leader → CI fn + ci-fn optimizer + PPGD
+sources), the async job consolidates them into ``model_<S>.pth`` + a
+``ThreePoolTrainingState`` (whose slots line up for the 2-pool), and ``from_snapshot``
+restores the step + all owned state.
 """
 
 import itertools
 import os
 import time
 from contextlib import nullcontext
-from typing import Any, cast
+from pathlib import Path
+from typing import Any, Self, cast
 
 import torch
 import torch.distributed as dist
@@ -45,12 +49,25 @@ from param_decomp.metrics.persistent_pgd_state import (
     PerBatchPerPositionScope,
     PersistentPGDState,
 )
-from param_decomp.optimize import EvalLoop
+from param_decomp.optimize import (
+    EvalLoop,
+    load_optimizer_state_by_name,
+    optimizer_state_by_name,
+)
 from param_decomp.run_sink import ThreePoolRunSink
 from param_decomp.schedule import get_scheduled_value
 from param_decomp.sdpa_strict import verify_flash_attention_available
 from param_decomp.torch_helpers import loop_dataloader
+from param_decomp.training_state import ThreePoolTrainingState
 from param_decomp_lab.experiments.lm.vendored.component_model import LMComponentModel
+from param_decomp_lab.three_pool.checkpoint import (
+    ci_fn_state_keys,
+    owned_model_state_keys,
+)
+from param_decomp_lab.three_pool.consolidate import (
+    CONSOLIDATE_META_FILENAME,
+    step_scratch_dir,
+)
 from param_decomp_lab.three_pool.context import ChunkContext
 from param_decomp_lab.three_pool.layout import Chunk, flush_nccl_event_timings
 from param_decomp_lab.three_pool.optimize import (
@@ -58,6 +75,7 @@ from param_decomp_lab.three_pool.optimize import (
     _ci_attn_shape_or_none,
     _ci_ckpt_enabled,
     _ci_compile_enabled,
+    _rank_invariant_fingerprint_core,
     _resolve_pg_timeout,
     _seq_dims_from_batch,
 )
@@ -207,6 +225,7 @@ class TwoPoolTrainer:
         self._ci_fn_params: list[nn.Parameter] = []
         self._component_params: list[nn.Parameter] = []
         self.ppgd_state = None
+        self._pending_ppgd_resume_state: dict[str, Any] | None = None
 
         match self.ctx:
             case PoolAContext():
@@ -239,18 +258,172 @@ class TwoPoolTrainer:
                     fused=True,
                 )
 
+    # ============================ Checkpoint / resume ============================
+
+    def _named_params_for_my_optimizer(self) -> list[tuple[str, nn.Parameter]]:
+        """The ``(name, param)`` pairs in the order they were added to this rank's
+        optimizer. Pool A returns ``ci_fn.*`` pairs; chunkwise returns
+        ``components.<site>.*`` pairs for this rank's chunk sites."""
+        match self.ctx:
+            case PoolAContext():
+                assert self.component_model.ci_fn is not None
+                return [(f"ci_fn.{n}", p) for n, p in self.component_model.ci_fn.named_parameters()]
+            case ChunkContext():
+                out: list[tuple[str, nn.Parameter]] = []
+                for site in self.ctx.role.sites:
+                    for n, p in self.component_model.components[site].named_parameters():
+                        out.append((f"components.{site}.{n}", p))
+                return out
+
+    def _owned_model_params(self) -> dict[str, Tensor]:
+        """The slice of this rank's model state_dict it's responsible for saving.
+
+        Only leaders contribute: chunk leaders own their sites' V/U, the Pool A
+        leader owns the CI fn. Every other rank holds a replica, so it contributes
+        nothing — the union across leaders covers the full model.
+        """
+        sd = self.component_model.state_dict()
+        keys = set(sd.keys())
+        match self.ctx:
+            case ChunkContext() if self.ctx.role.is_chunk_leader:
+                owned = owned_model_state_keys(keys, sites=self.ctx.role.sites)
+            case PoolAContext() if self.ctx.role.is_pool_leader:
+                owned = ci_fn_state_keys(keys)
+            case _:
+                owned = set()
+        return {k: sd[k].cpu() for k in owned}
+
+    def _build_my_partial(self) -> dict[str, Any]:
+        my_named_params = self._named_params_for_my_optimizer()
+        my_optimizer_by_name: dict[str, dict[str, Any]] = (
+            optimizer_state_by_name(self.optimizer, my_named_params)
+            if self.optimizer is not None
+            else {}
+        )
+        partial: dict[str, Any] = {
+            "pool": self.ctx.kind,
+            "model_params": self._owned_model_params(),
+            "optimizer_by_name": my_optimizer_by_name,
+        }
+        if self.ppgd_state is not None:
+            partial["ppgd"] = self.ppgd_state.state_dict()
+        elif self._pending_ppgd_resume_state is not None:
+            partial["ppgd"] = self._pending_ppgd_resume_state
+        return partial
+
+    def _build_meta(self) -> dict[str, Any]:
+        return {
+            "step": self.step,
+            "world_size": self.ctx.world.world_size,
+            "all_sites": list(self.ctx.world.all_sites),
+            "c_per_site": dict(self.runtime.c_per_site),
+            "pd_config": self.pd_config.model_dump(),
+            "runtime_config": self.runtime_config.model_dump(),
+            "three_pool_config": self.two_pool_config.model_dump(),
+            "layout_fingerprint": _two_pool_layout_fingerprint(self.ctx),
+        }
+
+    def snapshot(self, scratch_dir: Path) -> None:
+        """Write this rank's self-contained checkpoint partial; then return.
+
+        Mirrors ``ThreePoolTrainer.snapshot``: each rank writes its owned model
+        params (chunk leaders → V/U; Pool A leader → CI fn), its optimizer state,
+        and (Pool A) its PPGD sources to ``scratch_dir/step_<S>/rank_<r>.pth``.
+        Rank 0 also writes ``meta.pth``. One pre-write + one post-write barrier; no
+        rank-0 read, no model assembly. The async consolidation job assembles the
+        canonical artifacts off the critical path.
+        """
+        partial = self._build_my_partial()
+
+        p2p_group = self.ctx.world.cross_pool_p2p_group
+        step_dir = step_scratch_dir(scratch_dir, self.step)
+        if self.ctx.role.rank == 0:
+            step_dir.mkdir(parents=True, exist_ok=True)
+            torch.save(self._build_meta(), step_dir / CONSOLIDATE_META_FILENAME)
+
+        trace("snapshot: enter barrier (pre-write)")
+        dist.barrier(group=p2p_group)
+        trace("snapshot: barrier (pre-write) done")
+
+        partial_path = step_dir / f"rank_{self.ctx.role.rank}.pth"
+        trace(f"snapshot: writing partial {partial_path.name}")
+        torch.save(partial, partial_path)
+        trace("snapshot: partial write done")
+
+        if os.environ.get("PD_3POOL_DISABLE_REJOIN_BARRIER", "").strip() in ("1", "true"):
+            trace("snapshot: REJOIN BARRIER DISABLED (repro mode)")
+            return
+        trace("snapshot: enter barrier (post-write rejoin)")
+        dist.barrier(group=p2p_group)
+        trace("snapshot: barrier (post-write rejoin) done")
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        snapshot: ThreePoolTrainingState,
+        *,
+        target_model: nn.Module,
+        run_batch: RunBatch,
+        reconstruction_loss: ReconstructionLoss,
+    ) -> Self:
+        """Reconstruct a 2-pool trainer from a canonical snapshot.
+
+        The 2-pool persists the SAME ``ThreePoolTrainingState`` shape (the owned-state
+        keys line up: chunkwise → ``components_optimizer``, Pool A's ci-fn →
+        ``ci_fn_optimizer``, Pool A's adversary → ``ppgd_state_by_rank``). The
+        ``three_pool_config`` slot holds the ``TwoPoolTopology`` dump.
+        """
+        pd_config = ThreePoolConstrainedPDConfig.model_validate(snapshot.pd_config)
+        runtime_dict = {k: v for k, v in snapshot.runtime_config.items() if k != "topology"}
+        runtime_config = RuntimeConfig.model_validate(runtime_dict)
+        two_pool_config = TwoPoolTopology.model_validate(snapshot.three_pool_config)
+
+        trainer = cls(
+            target_model=target_model,
+            run_batch=run_batch,
+            reconstruction_loss=reconstruction_loss,
+            pd_config=pd_config,
+            runtime_config=runtime_config,
+            two_pool_config=two_pool_config,
+        )
+        saved_fp = _rank_invariant_fingerprint_core(snapshot.layout_fingerprint)
+        current_fp = _rank_invariant_fingerprint_core(_two_pool_layout_fingerprint(trainer.ctx))
+        assert saved_fp == current_fp, (
+            f"2-pool layout topology mismatch on resume:\n"
+            f"  saved:   {saved_fp}\n"
+            f"  current: {current_fp}\n"
+        )
+        trainer._load_canonical_state(snapshot)
+        return trainer
+
+    def _load_canonical_state(self, state: ThreePoolTrainingState) -> None:
+        """Each rank extracts the slice of the canonical state it owns."""
+        self.step = state.step
+        local_model_keys = set(self.component_model.state_dict().keys())
+        local_slice = {k: v for k, v in state.component_model.items() if k in local_model_keys}
+        self.component_model.load_state_dict(local_slice, strict=False)
+
+        if self.optimizer is not None:
+            named_params = self._named_params_for_my_optimizer()
+            match self.ctx:
+                case ChunkContext():
+                    by_name = state.components_optimizer
+                case PoolAContext():
+                    by_name = state.ci_fn_optimizer
+            load_optimizer_state_by_name(self.optimizer, named_params, by_name)
+        if isinstance(self.ctx, PoolAContext):
+            self._pending_ppgd_resume_state = state.ppgd_state_by_rank.get(self.ctx.role.rank)
+
     def run(
         self,
         train_loader: DataLoader[Any],
         sink: ThreePoolRunSink,
         cadence: Cadence,
+        scratch_dir: Path,
         eval_loop: EvalLoop | None = None,
         profiler: torch.profiler.profile | None = None,
     ) -> None:
         """Advance training from ``self.step`` to ``self.pd_config.steps``."""
-        assert cadence.save_every is None, (
-            "2-pool MVP does not implement checkpointing; set cadence.save_every: null"
-        )
         pd_config = self.pd_config
         ctx = self.ctx
         world = ctx.world
@@ -293,6 +466,9 @@ class TwoPoolTrainer:
                 router=AllLayersRouter(),
                 reconstruction_loss=self.strategy.recon_loss,
             )
+            if self._pending_ppgd_resume_state is not None:
+                self.ppgd_state.load_state_dict(self._pending_ppgd_resume_state)
+                self._pending_ppgd_resume_state = None
 
         if (
             self.step == 0
@@ -414,11 +590,16 @@ class TwoPoolTrainer:
                         sink=sink,
                     )
 
+                if cadence.should_save(step):
+                    self.snapshot(scratch_dir)
+                    sink.checkpoint_written(step, final=False)
+
                 batch_T = _to_device(next(train_iterator))
                 if profiler is not None:
                     profiler.step()
 
             self.step = n_steps
+            self.snapshot(scratch_dir)
             sink.checkpoint_written(self.step, final=True)
 
 
@@ -433,6 +614,7 @@ def optimize_two_pool(
     two_pool_config: TwoPoolTopology,
     cadence: Cadence,
     sink: ThreePoolRunSink,
+    scratch_dir: Path,
     eval_loop: EvalLoop | None = None,
     profiler: torch.profiler.profile | None = None,
 ) -> None:
@@ -444,7 +626,25 @@ def optimize_two_pool(
         runtime_config=runtime_config,
         two_pool_config=two_pool_config,
     )
-    trainer.run(train_loader, sink, cadence, eval_loop=eval_loop, profiler=profiler)
+    trainer.run(
+        train_loader, sink, cadence, scratch_dir=scratch_dir, eval_loop=eval_loop, profiler=profiler
+    )
+
+
+def _two_pool_layout_fingerprint(ctx: TwoPoolContext) -> dict[str, Any]:
+    """Rank-invariant summary of the 2-pool world topology, compared at resume.
+
+    Same key structure as the 3-pool ``_layout_fingerprint`` (so the shared
+    ``_rank_invariant_fingerprint_core`` reduces both): ``ci_ranks == ppgd_ranks ==
+    pool_a_ranks`` for the 2-pool world.
+    """
+    world = ctx.world
+    return {
+        "world_size": world.world_size,
+        "ci_ranks": list(world.ci_ranks),
+        "ppgd_ranks": list(world.ppgd_ranks),
+        "chunks": [{"ranks": list(c.ranks), "sites": list(c.sites)} for c in world.chunks],
+    }
 
 
 def _required[T](value: T | None) -> T:
