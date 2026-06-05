@@ -25,11 +25,15 @@ GetAttributed = Callable[[str, int, Literal["positive", "negative"]], list[Datas
 def get_related_components(
     component_key: str,
     get_attributed: GetAttributed,
-    correlation_storage: CorrelationStorage,
+    correlation_storage: CorrelationStorage | None,
     labels_so_far: dict[str, LabelResult],
     k: int,
 ) -> list[RelatedComponent]:
-    """Top-K components connected via attribution, enriched with PMI and labels."""
+    """Top-K components connected via attribution, enriched with PMI and labels.
+
+    `correlation_storage` is None when the harvest skipped the component-cooccurrence
+    matrix; related components then carry no co-firing PMI.
+    """
     my_layer, _ = parse_component_key(component_key)
 
     pos = get_attributed(component_key, k * 2, "positive")
@@ -51,7 +55,11 @@ def get_related_components(
             RelatedComponent(
                 component_key=e.component_key,
                 attribution=e.value,
-                pmi=correlation_storage.pmi(component_key, e.component_key),
+                pmi=(
+                    None
+                    if correlation_storage is None
+                    else correlation_storage.pmi(component_key, e.component_key)
+                ),
                 label=label_result.label if label_result else None,
                 summary=label_result.summary_for_neighbors if label_result else None,
             )

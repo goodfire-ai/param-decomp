@@ -53,7 +53,8 @@ def main(
 
     logger.info("Loading component correlations...")
     correlations = harvest.get_correlations()
-    assert correlations is not None, f"Component correlations required for {decomposition_id}"
+    if correlations is None:
+        logger.info("  none found (harvest skipped component cooccurrence); proceeding without")
 
     logger.info("Loading token stats...")
     token_stats = harvest.get_token_stats()

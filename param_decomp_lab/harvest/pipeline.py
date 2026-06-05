@@ -54,6 +54,7 @@ def harvest(
         max_examples_per_component=config.activation_examples_per_component,
         context_tokens_per_side=config.activation_context_tokens_per_side,
         max_examples_per_batch_per_component=config.max_examples_per_batch_per_component,
+        collect_component_cooccurrence=config.collect_component_cooccurrence,
         device=device,
     )
 

@@ -144,6 +144,7 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
                 max_examples_per_component=self.cfg.max_examples,
                 context_tokens_per_side=self.cfg.context_tokens_per_side,
                 max_examples_per_batch_per_component=_MAX_EXAMPLES_PER_BATCH_PER_COMPONENT,
+                collect_component_cooccurrence=False,
                 device=torch.device(self.device),
             )
         return self._harvester
@@ -249,8 +250,9 @@ class AutointerpLabels(Metric[AutointerpLabelsConfig]):
 def _all_reduce_harvester_counts(harvester: Harvester, *, device: str) -> None:
     """Sum the harvester's count accumulators across ranks, in place.
 
-    Only the fields that feed token stats and `build_results` are reduced;
-    `cooccurrence_counts` is unused here and left as-is.
+    Only the fields that feed token stats and `build_results` are reduced; this metric
+    builds its harvester with `collect_component_cooccurrence=False`, so there is no
+    component-cooccurrence matrix to reduce.
     """
     h = harvester
     h.firing_counts = all_reduce(h.firing_counts)

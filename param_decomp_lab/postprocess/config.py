@@ -20,8 +20,8 @@ from param_decomp_lab.harvest.config import (
 class PostprocessConfig(BaseConfig):
     """Top-level config for the unified postprocessing pipeline.
 
-    Composes sub-configs for each pipeline stage. Set a section to null
-    to skip that stage entirely.
+    Composes sub-configs for each pipeline stage. Only `harvest` is required;
+    omit a downstream stage (or set it to null) to skip it.
 
     Dependency graph:
         harvest                 (GPU array -> merge, PD-only)
@@ -34,10 +34,10 @@ class PostprocessConfig(BaseConfig):
     """
 
     harvest: HarvestSlurmConfig
-    autointerp: AutointerpSlurmConfig | None
-    intruder: IntruderSlurmConfig | None
-    attributions: AttributionsSlurmConfig | None
-    graph_interp: GraphInterpSlurmConfig | None
+    autointerp: AutointerpSlurmConfig | None = None
+    intruder: IntruderSlurmConfig | None = None
+    attributions: AttributionsSlurmConfig | None = None
+    graph_interp: GraphInterpSlurmConfig | None = None
 
     @override
     def model_post_init(self, __context: Any) -> None:

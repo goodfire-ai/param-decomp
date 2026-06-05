@@ -21,15 +21,21 @@ WINDOW = 2 * CONTEXT_TOKENS_PER_SIDE + 1  # 3
 ACT_TYPES = ["ci", "inner"]
 
 
-def _make_harvester() -> Harvester:
+def _make_harvester(collect_component_cooccurrence: bool = True) -> Harvester:
     return Harvester(
         layers=LAYERS,
         vocab_size=VOCAB_SIZE,
         max_examples_per_component=MAX_EXAMPLES,
         context_tokens_per_side=CONTEXT_TOKENS_PER_SIDE,
         max_examples_per_batch_per_component=5,
+        collect_component_cooccurrence=collect_component_cooccurrence,
         device=DEVICE,
     )
+
+
+def _cooc(h: Harvester) -> torch.Tensor:
+    assert h.cooccurrence_counts is not None
+    return h.cooccurrence_counts
 
 
 def _make_activation_windows(
@@ -53,7 +59,7 @@ class TestInit:
     def test_tensor_shapes(self):
         h = _make_harvester()
         assert h.firing_counts.shape == (N_TOTAL,)
-        assert h.cooccurrence_counts.shape == (N_TOTAL, N_TOTAL)
+        assert _cooc(h).shape == (N_TOTAL, N_TOTAL)
         assert h.input_cooccurrence.shape == (N_TOTAL, VOCAB_SIZE)
         assert h.input_marginals.shape == (VOCAB_SIZE,)
         assert h.output_cooccurrence.shape == (N_TOTAL, VOCAB_SIZE)
@@ -66,7 +72,7 @@ class TestInit:
         h = _make_harvester()
         assert h.firing_counts.device == DEVICE
         assert h.reservoir.tokens.device == DEVICE
-        assert h.cooccurrence_counts.device == DEVICE
+        assert _cooc(h).device == DEVICE
 
     def test_layer_offsets(self):
         h = _make_harvester()
@@ -80,7 +86,7 @@ class TestInit:
     def test_tensors_initialized_to_zero(self):
         h = _make_harvester()
         assert h.firing_counts.sum() == 0
-        assert h.cooccurrence_counts.sum() == 0
+        assert _cooc(h).sum() == 0
         assert h.reservoir.n_items.sum() == 0
         assert h.reservoir.n_seen.sum() == 0
         assert h.total_tokens_processed == 0
@@ -170,7 +176,7 @@ class TestSaveLoadRoundtrip:
         h.firing_counts[0] = 10.0
         h.firing_counts[3] = 5.0
         h.activation_sums["ci"][0] = 2.5
-        h.cooccurrence_counts[0, 3] = 7.0
+        _cooc(h)[0, 3] = 7.0
         h.input_cooccurrence[0, 2] = 15
         h.input_marginals[2] = 100
         h.output_cooccurrence[0, 5] = 0.3
@@ -227,8 +233,8 @@ class TestMerge:
         h2.firing_counts[0] = 20.0
         h1.activation_sums["ci"][1] = 3.0
         h2.activation_sums["ci"][1] = 7.0
-        h1.cooccurrence_counts[0, 1] = 5.0
-        h2.cooccurrence_counts[0, 1] = 3.0
+        _cooc(h1)[0, 1] = 5.0
+        _cooc(h2)[0, 1] = 3.0
         h1.input_cooccurrence[0, 2] = 10
         h2.input_cooccurrence[0, 2] = 5
         h1.input_marginals[2] = 100
@@ -244,7 +250,7 @@ class TestMerge:
 
         assert h1.firing_counts[0] == 30.0
         assert h1.activation_sums["ci"][1] == 10.0
-        assert h1.cooccurrence_counts[0, 1] == 8.0
+        assert _cooc(h1)[0, 1] == 8.0
         assert h1.input_cooccurrence[0, 2] == 15
         assert h1.input_marginals[2] == 300
         assert h1.output_cooccurrence[0, 0] == pytest.approx(0.8)
@@ -259,6 +265,7 @@ class TestMerge:
             max_examples_per_component=MAX_EXAMPLES,
             context_tokens_per_side=CONTEXT_TOKENS_PER_SIDE,
             max_examples_per_batch_per_component=5,
+            collect_component_cooccurrence=True,
             device=DEVICE,
         )
         with pytest.raises(AssertionError):
@@ -482,10 +489,27 @@ class TestProcessBatch:
         firings["layer_0"][0, 0, 2] = True
 
         h.process_batch(batch, firings, activations, output_probs)
-        assert h.cooccurrence_counts[0, 2] == 1.0
-        assert h.cooccurrence_counts[2, 0] == 1.0
-        assert h.cooccurrence_counts[0, 0] == 1.0
-        assert h.cooccurrence_counts[2, 2] == 1.0
+        assert _cooc(h)[0, 2] == 1.0
+        assert _cooc(h)[2, 0] == 1.0
+        assert _cooc(h)[0, 0] == 1.0
+        assert _cooc(h)[2, 2] == 1.0
+
+    def test_cooccurrence_disabled(self, tmp_path: Path):
+        h = _make_harvester(collect_component_cooccurrence=False)
+        assert h.cooccurrence_counts is None
+
+        B, S = 1, 1
+        batch, firings, activations, output_probs = self._make_batch_inputs(B, S)
+        firings["layer_0"][0, 0, 0] = True
+        firings["layer_0"][0, 0, 2] = True
+        h.process_batch(batch, firings, activations, output_probs)
+        assert h.cooccurrence_counts is None
+
+        path = tmp_path / "harvester.pt"
+        h.save(path)
+        loaded = Harvester.load(path, device=DEVICE)
+        assert loaded.cooccurrence_counts is None
+        assert loaded.collect_component_cooccurrence is False
 
 
 class TestExtractPaddingFiringWindows:

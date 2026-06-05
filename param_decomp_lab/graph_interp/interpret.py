@@ -66,7 +66,7 @@ def run_graph_interp(
     config: GraphInterpConfig,
     harvest: HarvestRepo,
     attribution_storage: DatasetAttributionStorage,
-    correlation_storage: CorrelationStorage,
+    correlation_storage: CorrelationStorage | None,
     token_stats: TokenStatsStorage,
     model_metadata: ModelMetadata,
     db_path: Path,

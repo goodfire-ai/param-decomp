@@ -93,6 +93,10 @@ class HarvestConfig(BaseConfig):
     activation_context_tokens_per_side: int = 20
     pmi_token_top_k: int = 40
     max_examples_per_batch_per_component: int = 5
+    collect_component_cooccurrence: bool = True
+    """Accumulate the dense component×component co-occurrence matrix (powers the app's
+    component-correlation view). It is O(C²) in memory — at ~10⁵ components it needs tens
+    of GB resident on the harvest GPU. Set false to skip it for large-C decompositions."""
 
 
 class HarvestSlurmConfig(BaseConfig):

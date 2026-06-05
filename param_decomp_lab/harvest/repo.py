@@ -82,13 +82,14 @@ class HarvestRepo:
 
         component_keys = harvester.component_keys
 
-        correlations = CorrelationStorage(
-            component_keys=component_keys,
-            count_i=harvester.firing_counts.long().cpu(),
-            count_ij=harvester.cooccurrence_counts.long().cpu(),
-            count_total=harvester.total_tokens_processed,
-        )
-        correlations.save(output_dir / "component_correlations.pt")
+        if harvester.cooccurrence_counts is not None:
+            correlations = CorrelationStorage(
+                component_keys=component_keys,
+                count_i=harvester.firing_counts.long().cpu(),
+                count_ij=harvester.cooccurrence_counts.long().cpu(),
+                count_total=harvester.total_tokens_processed,
+            )
+            correlations.save(output_dir / "component_correlations.pt")
 
         token_stats = TokenStatsStorage(
             component_keys=component_keys,

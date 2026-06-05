@@ -87,6 +87,7 @@ class Harvester:
         max_examples_per_component: int,
         context_tokens_per_side: int,
         max_examples_per_batch_per_component: int,
+        collect_component_cooccurrence: bool,
         device: torch.device,
     ):
         self.layers = layers
@@ -94,6 +95,7 @@ class Harvester:
         self.max_examples_per_component = max_examples_per_component
         self.context_tokens_per_side = context_tokens_per_side
         self.max_examples_per_batch_per_component = max_examples_per_batch_per_component
+        self.collect_component_cooccurrence = collect_component_cooccurrence
         self.device = device
 
         self.layer_offsets: dict[str, int] = {}
@@ -111,8 +113,10 @@ class Harvester:
         self.activation_sums = defaultdict[str, Tensor](
             lambda: torch.zeros(n_components, device=device)
         )
-        self.cooccurrence_counts: Float[Tensor, "C C"] = torch.zeros(
-            n_components, n_components, device=device, dtype=torch.float32
+        self.cooccurrence_counts: Float[Tensor, "C C"] | None = (
+            torch.zeros(n_components, n_components, device=device, dtype=torch.float32)
+            if collect_component_cooccurrence
+            else None
         )
 
         # Per-(component, token) stats for PMI computation
@@ -176,7 +180,8 @@ class Harvester:
             self.activation_sums[act_type] += reduce(act, "b s lc -> lc", "sum")
 
         firings_float = firings_flat.float()
-        self.cooccurrence_counts += einsum(firings_float, firings_float, "S c1, S c2 -> c1 c2")
+        if self.cooccurrence_counts is not None:
+            self.cooccurrence_counts += einsum(firings_float, firings_float, "S c1, S c2 -> c1 c2")
         self._accumulate_token_stats(tokens_flat, probs_flat, firings_float)
         self._collect_activation_examples(batch, firings_cat, activations_cat)
 
@@ -232,7 +237,10 @@ class Harvester:
             "activation_sums": {
                 act_type: self.activation_sums[act_type].cpu() for act_type in self.activation_sums
             },
-            "cooccurrence_counts": self.cooccurrence_counts.cpu(),
+            "collect_component_cooccurrence": self.collect_component_cooccurrence,
+            "cooccurrence_counts": (
+                None if self.cooccurrence_counts is None else self.cooccurrence_counts.cpu()
+            ),
             "input_cooccurrence": self.input_cooccurrence.cpu(),
             "input_marginals": self.input_marginals.cpu(),
             "output_cooccurrence": self.output_cooccurrence.cpu(),
@@ -249,12 +257,16 @@ class Harvester:
             max_examples_per_component=d["max_examples_per_component"],
             context_tokens_per_side=d["context_tokens_per_side"],
             max_examples_per_batch_per_component=d.get("max_examples_per_batch_per_component", 5),
+            collect_component_cooccurrence=d.get("collect_component_cooccurrence", True),
             device=device,
         )
         h.total_tokens_processed = d["total_tokens_processed"]
         h.firing_counts = d["firing_counts"].to(device)
         h.activation_sums = {k: v.to(device) for k, v in d["activation_sums"].items()}
-        h.cooccurrence_counts = d["cooccurrence_counts"].to(device)
+        cooccurrence_counts = d["cooccurrence_counts"]
+        h.cooccurrence_counts = (
+            None if cooccurrence_counts is None else cooccurrence_counts.to(device)
+        )
         h.input_cooccurrence = d["input_cooccurrence"].to(device)
         h.input_marginals = d["input_marginals"].to(device)
         h.output_cooccurrence = d["output_cooccurrence"].to(device)
@@ -267,10 +279,16 @@ class Harvester:
         assert other.c_per_layer == self.c_per_layer
         assert other.vocab_size == self.vocab_size
 
+        assert (self.cooccurrence_counts is None) == (other.cooccurrence_counts is None), (
+            "Cannot merge harvesters with mismatched component-cooccurrence collection"
+        )
+
         self.firing_counts += other.firing_counts
         for act_type in self.activation_sums:
             self.activation_sums[act_type] += other.activation_sums[act_type]
-        self.cooccurrence_counts += other.cooccurrence_counts
+        if self.cooccurrence_counts is not None:
+            assert other.cooccurrence_counts is not None
+            self.cooccurrence_counts += other.cooccurrence_counts
         self.input_cooccurrence += other.input_cooccurrence
         self.input_marginals += other.input_marginals
         self.output_cooccurrence += other.output_cooccurrence
