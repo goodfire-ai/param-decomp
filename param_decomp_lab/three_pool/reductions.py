@@ -45,6 +45,7 @@ import torch.distributed as dist
 from torch import nn
 
 from param_decomp_lab.three_pool.context import ChunkContext, CIContext, PoolContext, PPGDContext
+from param_decomp_lab.three_pool.portals import _batch_p2p
 
 CHUNK_RAW_KEYS: tuple[str, ...] = (
     "_raw/faith_num",
@@ -76,8 +77,14 @@ def aggregate_max_memory_to_rank0(
                 chunk_peak = val.item()
                 ci_val = torch.empty(1, device=device)
                 pgd_val = torch.empty(1, device=device)
-                dist.recv(ci_val, src=world.ci_ranks[0], group=world.cross_pool_p2p_group)
-                dist.recv(pgd_val, src=world.ppgd_ranks[0], group=world.cross_pool_p2p_group)
+                for w in _batch_p2p(
+                    world.cross_pool_p2p_group,
+                    [
+                        (dist.irecv, ci_val, world.ci_ranks[0]),
+                        (dist.irecv, pgd_val, world.ppgd_ranks[0]),
+                    ],
+                ):
+                    w.wait()
                 return {
                     "mem/chunk_peak_gb": chunk_peak,
                     "mem/ci_peak_gb": ci_val.item(),
@@ -87,12 +94,14 @@ def aggregate_max_memory_to_rank0(
         case CIContext():
             dist.all_reduce(val, op=dist.ReduceOp.MAX, group=world.ci_pool_group)
             if ctx.role.is_pool_leader:
-                dist.send(val, dst=0, group=world.cross_pool_p2p_group)
+                for w in _batch_p2p(world.cross_pool_p2p_group, [(dist.isend, val, 0)]):
+                    w.wait()
             return None
         case PPGDContext():
             dist.all_reduce(val, op=dist.ReduceOp.MAX, group=world.ppgd_pool_group)
             if ctx.role.is_pool_leader:
-                dist.send(val, dst=0, group=world.cross_pool_p2p_group)
+                for w in _batch_p2p(world.cross_pool_p2p_group, [(dist.isend, val, 0)]):
+                    w.wait()
             return None
 
 
@@ -117,11 +126,17 @@ def aggregate_losses_to_rank0(
                 chunk = {k: vals[i].item() for i, k in enumerate(keys)}
                 ci_keys = list(CI_RAW_KEYS)
                 ci_vals = torch.empty(len(ci_keys), device=device, dtype=torch.float64)
-                dist.recv(ci_vals, src=world.ci_ranks[0], group=world.cross_pool_p2p_group)
-                ci = {k: ci_vals[i].item() for i, k in enumerate(ci_keys)}
                 pgd_keys = list(PPGD_RAW_KEYS)
                 pgd_vals = torch.empty(len(pgd_keys), device=device, dtype=torch.float64)
-                dist.recv(pgd_vals, src=world.ppgd_ranks[0], group=world.cross_pool_p2p_group)
+                for w in _batch_p2p(
+                    world.cross_pool_p2p_group,
+                    [
+                        (dist.irecv, ci_vals, world.ci_ranks[0]),
+                        (dist.irecv, pgd_vals, world.ppgd_ranks[0]),
+                    ],
+                ):
+                    w.wait()
+                ci = {k: ci_vals[i].item() for i, k in enumerate(ci_keys)}
                 pgd = {k: pgd_vals[i].item() for i, k in enumerate(pgd_keys)}
                 return {
                     "loss/faith": chunk["_raw/faith_num"] / chunk["_raw/faith_den"],
@@ -136,14 +151,16 @@ def aggregate_losses_to_rank0(
             vals = torch.tensor([loss_dict[k] for k in keys], device=device, dtype=torch.float64)
             dist.all_reduce(vals, op=dist.ReduceOp.SUM, group=world.ci_pool_group)
             if ctx.role.is_pool_leader:
-                dist.send(vals, dst=0, group=world.cross_pool_p2p_group)
+                for w in _batch_p2p(world.cross_pool_p2p_group, [(dist.isend, vals, 0)]):
+                    w.wait()
             return None
         case PPGDContext():
             keys = list(PPGD_RAW_KEYS)
             vals = torch.tensor([loss_dict[k] for k in keys], device=device, dtype=torch.float64)
             dist.all_reduce(vals, op=dist.ReduceOp.SUM, group=world.ppgd_pool_group)
             if ctx.role.is_pool_leader:
-                dist.send(vals, dst=0, group=world.cross_pool_p2p_group)
+                for w in _batch_p2p(world.cross_pool_p2p_group, [(dist.isend, vals, 0)]):
+                    w.wait()
             return None
 
 
