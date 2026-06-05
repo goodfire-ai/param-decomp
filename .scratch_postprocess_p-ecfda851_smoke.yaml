@@ -1,0 +1,10 @@
+harvest:
+  config:
+    method_config:
+      type: ParamDecompHarvestConfig
+      wandb_path: goodfire/param-decomp/runs/p-ecfda851
+    n_batches: 200
+    batch_size: 2
+    activation_examples_per_component: 32
+  n_gpus: 8
+  time: "01:00:00"
