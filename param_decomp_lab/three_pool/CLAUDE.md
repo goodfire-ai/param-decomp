@@ -68,13 +68,19 @@ chunkwise issues them — recv g_CI FIRST, then send g_VU — or the two pools d
 | `two_pool_role.py` | `PoolARole` (with `.as_ci()` / `.as_ppgd()`) `\| ChunkRole` |
 | `two_pool_context.py` | `PoolAContext \| ChunkContext`; `PoolAPortals` (the four A↔chunk edges) |
 | `step_pool_a.py` | the merged Pool A step (CI fwd + imp + adversary + fused CI backward) |
-| `two_pool_optimize.py` | `TwoPoolTrainer` + `optimize_two_pool`. Reuses `ThreePoolConstrainedPDConfig` + `_ThreePoolRuntime` (ci_ranks == ppgd_ranks). **No checkpointing in the MVP** — `cadence.save_every` must be `None`; no forced final snapshot |
+| `two_pool_optimize.py` | `TwoPoolTrainer` + `optimize_two_pool`. Reuses `ThreePoolConstrainedPDConfig` + `_ThreePoolRuntime` (ci_ranks == ppgd_ranks). **Checkpoint/resume implemented** — `snapshot`/`from_snapshot` reuse the 3-pool partial format + `ThreePoolTrainingState` (the Pool A leader's partial carries CI fn + ci-fn optimizer + PPGD sources; `consolidate.py` handles it via a `"pool_a"` case). Saves on `cadence.save_every` + a forced final snapshot |
 | `two_pool_eval_step.py` | 2-pool eval pass (Pool A builds the full `MetricContext` locally — no cross-pool CI ship; chunkwise barriers through) |
 | `two_pool_reductions.py` | 2-pool cross-pool log reductions (Pool A emits imp/ppgd/l0; chunkwise emits faith/stoch) |
 
 Run a 2-pool LM run via `pd-lm-2pool` (`experiments/lm/two_pool_run.py`,
-`TwoPoolLMExperimentConfig`) or a local smoke via
-`torchrun --standalone --nproc_per_node=N -m param_decomp_lab.experiments.lm.two_pool_run <cfg>`.
+`TwoPoolLMExperimentConfig`). The launch path mirrors the 3-pool's: `--dp N` pushes a
+per-run git snapshot ref and submits the SLURM job (single-node N≤8, multi-node N>8 a
+multiple of 8); the async consolidate+slow-eval job fires on `on_save`
+(`submit_slurm_async_consolidate_and_eval`, passing `--variant two_pool` so `async_eval`
+loads the parent config as a `TwoPoolLMExperimentConfig`). `--resume <resume.yaml>` rebuilds
+via `TwoPoolTrainer.from_snapshot`. A local training-only smoke runs via
+`torchrun --standalone --nproc_per_node=N -m param_decomp_lab.experiments.lm.two_pool_run <cfg>`
+(but save→consolidate→eval needs `--dp`, like the 3-pool — see "Launch path" below).
 
 ## wandb logging parity with single-pool
 
