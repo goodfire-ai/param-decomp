@@ -214,8 +214,17 @@ class _HFGpt2PathSchema(_PathSchema):
     unembed_path = "lm_head"
 
 
+class _HFLlamaPathSchema(_PathSchema):
+    embedding_path = "model.embed_tokens"
+    blocks = "model.layers"
+    attn = _SeparateAttnPathSchema(base="self_attn", q="q_proj", k="k_proj", v="v_proj", o="o_proj")
+    mlp = _GLUPathSchema(base="mlp", gate="gate_proj", up="up_proj", down="down_proj")
+    unembed_path = "lm_head"
+
+
 def get_path_schema(model: nn.Module) -> _PathSchema:
     from transformers.models.gpt2 import GPT2LMHeadModel
+    from transformers.models.llama import LlamaForCausalLM
 
     from param_decomp_lab.experiments.lm.pretrain.models.gpt2 import GPT2
     from param_decomp_lab.experiments.lm.pretrain.models.gpt2_simple import GPT2Simple
@@ -233,6 +242,8 @@ def get_path_schema(model: nn.Module) -> _PathSchema:
             return _GPT2PathSchema()
         case GPT2LMHeadModel():
             return _HFGpt2PathSchema()
+        case LlamaForCausalLM():
+            return _HFLlamaPathSchema()
         case _:
             raise ValueError(
                 f"Unsupported model class {type(model).__name__}. Add a _PathSchema in path_schemas.py."

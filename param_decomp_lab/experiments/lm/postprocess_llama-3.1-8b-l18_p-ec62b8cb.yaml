@@ -1,0 +1,22 @@
+harvest:
+  config:
+    method_config:
+      type: ParamDecompHarvestConfig
+      wandb_path: goodfire/param-decomp-llama/runs/p-ec62b8cb
+    n_batches: 2500
+    batch_size: 64        # smaller than gpt2-xl's 256: Llama-8B + component model is heavier
+  n_gpus: 64
+  time: "12:00:00"
+autointerp:
+  config:
+    llm:
+      type: openrouter
+      model: google/gemini-3.1-pro-preview
+      reasoning_effort: medium
+    template_strategy:
+      type: canon
+    limit: 500            # smoke pass; re-run unbounded once labels look good
+  evals: null             # labels only — no detection/fuzzing
+intruder: null
+attributions: null
+graph_interp: null
