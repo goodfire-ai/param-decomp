@@ -1,0 +1,10 @@
+harvest:
+  config:
+    method_config:
+      type: ParamDecompHarvestConfig
+      wandb_path: goodfire/param-decomp/runs/p-ecfda851
+    collect_component_cooccurrence: false
+    batch_size: 8
+  n_gpus: 8
+  time: "12:00:00"
+  merge_mem: "768G"
