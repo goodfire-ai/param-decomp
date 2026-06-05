@@ -1,6 +1,7 @@
 from functools import cached_property
 from typing import override
 
+import yaml
 from torch import Tensor
 from torch.utils.data import DataLoader
 
@@ -8,8 +9,24 @@ from param_decomp.component_model import ComponentModel
 from param_decomp_lab.adapters.base import DecompositionAdapter
 from param_decomp_lab.autointerp.schemas import ModelMetadata
 from param_decomp_lab.experiments.lm.run import SavedLMRun, build_lm_loader
+from param_decomp_lab.experiments.lm.three_pool_run import SavedThreePoolLMRun
+from param_decomp_lab.experiments.utils import EXPERIMENT_CONFIG_FILENAME
+from param_decomp_lab.infra.run_files import resolve_config_path
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
 from param_decomp_lab.topology import TransformerTopology
+
+
+def load_saved_lm_run(path: str) -> SavedLMRun | SavedThreePoolLMRun:
+    """Reload a single-pool or 3-pool LM run, dispatching on the saved config shape.
+
+    3-pool configs carry `runtime.topology`; single-pool `RuntimeConfig` has no such field.
+    Both saved-run types expose the same inference surface (`cfg.pd` / `cfg.target` /
+    `cfg.data` / `load_model`), so callers consume the union uniformly.
+    """
+    config_path = resolve_config_path(path, config_filename=EXPERIMENT_CONFIG_FILENAME)
+    raw = yaml.safe_load(config_path.read_text())
+    is_three_pool = "topology" in raw["runtime"]
+    return SavedThreePoolLMRun.from_path(path) if is_three_pool else SavedLMRun.from_path(path)
 
 
 class PDAdapter(DecompositionAdapter):
@@ -18,8 +35,8 @@ class PDAdapter(DecompositionAdapter):
         _, _, self._run_id = parse_wandb_run_path(wandb_path)
 
     @cached_property
-    def pd_run(self) -> SavedLMRun:
-        return SavedLMRun.from_path(self._wandb_path)
+    def pd_run(self) -> SavedLMRun | SavedThreePoolLMRun:
+        return load_saved_lm_run(self._wandb_path)
 
     @cached_property
     def component_model(self) -> ComponentModel:
