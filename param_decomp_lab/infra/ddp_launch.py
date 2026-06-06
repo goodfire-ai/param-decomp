@@ -90,7 +90,11 @@ def build_ddp_launch(
     srun_prefix = (
         f"srun --nodes={n_nodes} --ntasks={n_nodes} --ntasks-per-node=1 --kill-on-bad-exit=1"
     )
-    command = f"{srun_prefix} bash -c {shlex.quote(f'{setup}\n{torchrun_cmd}')}"
+    # Some nodes default to an 8MB locked-memory limit; at this rank count NCCL's
+    # cross-node IB queue-pair/MR registration exceeds it and the first collective hangs.
+    # The hard limit is unlimited, so raise the soft limit before launching torchrun.
+    memlock = "ulimit -l unlimited"
+    command = f"{srun_prefix} bash -c {shlex.quote(f'{memlock}\n{setup}\n{torchrun_cmd}')}"
     return DDPLaunch(command=command, n_nodes=n_nodes, gpus_per_node=GPUS_PER_NODE, env=DDP_ENV)
 
 
