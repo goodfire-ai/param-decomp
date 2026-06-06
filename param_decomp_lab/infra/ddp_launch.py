@@ -16,9 +16,16 @@ GPUS_PER_NODE = 8
 
 # Surface NCCL collective failures as Python exceptions instead of hanging the job —
 # matters for multi-node where a single stalled rank otherwise hangs everyone silently.
+#
+# IB is broken on this cluster: cross-node queue-pair setup stalls the first collective
+# indefinitely (hang, not error), even with locked memory unlimited. Force NCCL onto TCP
+# sockets. NCCL_IB_DISABLE=1 alone is insufficient because the RDMA net plugin is loaded
+# by env, so also disable it. Validated by scripts/nccl_ib_repro.sbatch.
 DDP_ENV = {
     "NCCL_DEBUG": "WARN",
     "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
+    "NCCL_IB_DISABLE": "1",
+    "NCCL_NET_PLUGIN": "none",
 }
 
 
