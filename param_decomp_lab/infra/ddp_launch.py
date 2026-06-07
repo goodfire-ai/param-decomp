@@ -19,6 +19,7 @@ GPUS_PER_NODE = 8
 DDP_ENV = {
     "NCCL_DEBUG": "WARN",
     "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
 }
 
 
