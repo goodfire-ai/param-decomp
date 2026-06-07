@@ -100,14 +100,11 @@ def with_distributed_cleanup[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     and torchrun's peer teardown can kill rank 0 mid-flush so the final step never
     syncs — even though training succeeded.
 
-    On a distributed run that raises, print the traceback and `os._exit(1)` without
-    any collective. The error may itself be a wedged NCCL comm (e.g. an OOM raised
-    mid-`all_gather`), and `destroy_process_group` would then deadlock — leaving the
-    rank alive holding its GPUs, so torchrun never sees a failure and SLURM runs the
-    zombie job until its time limit. The non-zero hard exit makes torchrun reap the
-    peers and SLURM fail the job fast.
-
-    When not distributed, `cleanup_distributed` and propagate normally.
+    On a distributed run that raises, print the traceback and `os._exit(1)` with no
+    collective: the failure may be a wedged NCCL comm (e.g. an OOM mid-`all_gather`),
+    so `destroy_process_group` would deadlock and leave the rank alive holding its
+    GPUs — a zombie SLURM job. The hard exit makes torchrun reap the peers and fail
+    fast. Not distributed: `cleanup_distributed` and propagate normally.
     """
 
     @wraps(fn)
