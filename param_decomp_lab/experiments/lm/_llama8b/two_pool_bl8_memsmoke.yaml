@@ -1,0 +1,166 @@
+# 2-pool equivalent of llama8b_l18_b512_seq2048_asym_16node.yaml.
+# CI is merged onto the adversary pool (Pool A) — deletes the CI<->PPGD edge (the seq2048
+# deadlock) by construction and reclaims the 3-pool's 32-rank CI pool.
+#   3-pool: ci(bl16, n=32) + ppgd(bl8, n=64) + chunk(bl16, dp=32) = 128 GPU (16 nodes)
+#   2-pool: pool_a(bl8, n=64)              + chunk(bl16, dp=32) =  96 GPU (12 nodes)
+# Launch: pd-lm-2pool <this> --dp 96 --qos opportunistic --time 2-00:00:00
+cadence:
+  keep_last_n_checkpoints: 2
+  save_every: null
+  train_log_every: 200
+data:
+  buffer_size: 1000
+  column_name: text
+  data_files: sample/350BT/*.parquet
+  dataset_name: HuggingFaceFW/fineweb
+  eval_split: train
+  is_tokenized: false
+  max_seq_len: 2048
+  revision: 9bb295ddab0e05d785b879661af7260fed5140fc
+  shuffle_each_epoch: true
+  streaming: true
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  train_split: train
+eval:
+  batch_size: 16
+  every: 100000
+  metrics:
+  - n_batches_accum: 1
+    type: CIHistograms
+  - ci_alive_threshold: 0.0
+    type: ComponentActivationDensity
+  - ci_alive_threshold: 0.0
+    groups: null
+    type: CI_L0
+  - rounding_threshold: 0.0
+    type: CEandKLLosses
+  - type: CIMeanPerComponent
+  - coeff: null
+    type: StochasticHiddenActsReconLoss
+  - type: CIHiddenActsReconLoss
+  - coeff: null
+    init: random
+    mask_scope: shared_across_batch
+    n_steps: 20
+    step_size: 0.1
+    type: PGDReconLoss
+  n_steps: 1
+  slow_every: 100000
+  slow_on_first_step: false
+pd:
+  batch_size: 16
+  ci_config:
+    fn_type: global_shared_transformer
+    hidden_dims: null
+    mode: global
+    simple_transformer_ci_cfg:
+      attn_config:
+        max_len: 2048
+        n_heads: 64
+        rope_base: 10000.0
+      d_model: 4096
+      mlp_hidden_dim:
+      - 16384
+      n_blocks: 4
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  decomposition_targets:
+  - C: 24576
+    module_pattern: layers.18.mlp.gate_proj
+  - C: 24576
+    module_pattern: layers.18.mlp.up_proj
+  - C: 24576
+    module_pattern: layers.18.mlp.down_proj
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 3
+  faithfulness_warmup_weight_decay: 0.0
+  identity_decomposition_targets: null
+  losses:
+    faith:
+      coeff: 100000.0
+      type: FaithfulnessLoss
+    imp:
+      beta: 0.2
+      coeff: 5.0e-06
+      eps: 1.0e-12
+      p_anneal_end_frac: 1.0
+      p_anneal_final_p: 0.4
+      p_anneal_start_frac: 0.0
+      pnorm: 2.0
+      type: ImportanceMinimalityLoss
+    stoch:
+      coeff: 0.5
+      type: StochasticReconLayerwiseLoss
+    ppgd:
+      coeff: 0.5
+      n_samples: 1
+      n_warmup_steps: 2
+      optimizer:
+        beta1: 0.5
+        beta2: 0.99
+        eps: 1.0e-08
+        lr_schedule:
+          final_val_frac: 1.0
+          fn_type: constant
+          start_val: 0.01
+          warmup_pct: 0.025
+        type: adam
+      scope:
+        type: per_batch_per_position
+      start_frac: 0.0
+      type: PersistentPGDReconLoss
+      use_sigmoid_parameterization: false
+    recon_plan:
+      type: subset
+      routing:
+        type: uniform_k_subset
+      n_samples: 1
+  n_mask_samples: 1
+  sampling: continuous
+  seed: 0
+  sigmoid_type: leaky_hard
+  steps: 15
+  tied_weights: null
+  use_delta_component: true
+runtime:
+  autocast_bf16: true
+  device: cuda:0
+  topology:
+    pool_a:
+      per_rank_batch: 8
+    chunkwise:
+      per_rank_batch: 16
+      sites_per_chunk: null
+      n_chunks: 1
+    use_fused_kl: true
+target:
+  activation_checkpointing: true
+  output_extract: 0
+  weights_dtype: bfloat16
+  spec:
+    kind: hf_weights_in_vendored
+    model_class: param_decomp_lab.experiments.lm.vendored.llama_3_1.model.VendoredLlama
+    model_name: meta-llama/Llama-3.1-8B
+wandb:
+  entity: goodfire
+  project: param-decomp-llama
