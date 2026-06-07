@@ -7,6 +7,7 @@ collectives.
 
 import os
 import sys
+import traceback
 from collections.abc import Callable
 from functools import wraps
 
@@ -89,18 +90,24 @@ def cleanup_distributed() -> None:
 
 
 def with_distributed_cleanup[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
-    """Run `fn`, then tear distributed down — hard-exiting on the success path.
+    """Run `fn`, then tear distributed down — hard-exiting on both distributed paths.
 
     On a distributed run that returns normally, every rank barriers (so rank 0's
-    end-of-run wandb flush lands before any peer exits) and then `os._exit`. The
+    end-of-run wandb flush lands before any peer exits) and then `os._exit(0)`. The
     hard exit is load-bearing: it skips CPython finalization, where a C-extension
     daemon thread releasing the GIL after the interpreter starts finalizing aborts
     the process with `PyGILState_Release` (SIGABRT). That abort fails the SLURM job,
     and torchrun's peer teardown can kill rank 0 mid-flush so the final step never
     syncs — even though training succeeded.
 
-    On error, or when not distributed, just `cleanup_distributed` and propagate: no
-    barrier, since a dead peer would hang the collective.
+    On a distributed run that raises, print the traceback and `os._exit(1)` without
+    any collective. The error may itself be a wedged NCCL comm (e.g. an OOM raised
+    mid-`all_gather`), and `destroy_process_group` would then deadlock — leaving the
+    rank alive holding its GPUs, so torchrun never sees a failure and SLURM runs the
+    zombie job until its time limit. The non-zero hard exit makes torchrun reap the
+    peers and SLURM fail the job fast.
+
+    When not distributed, `cleanup_distributed` and propagate normally.
     """
 
     @wraps(fn)
@@ -108,8 +115,13 @@ def with_distributed_cleanup[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
         try:
             result = fn(*args, **kwargs)
         except BaseException:
-            cleanup_distributed()
-            raise
+            if not is_distributed():
+                cleanup_distributed()
+                raise
+            traceback.print_exc()
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(1)
         if not is_distributed():
             cleanup_distributed()
             return result
