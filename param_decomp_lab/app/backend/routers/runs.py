@@ -16,7 +16,8 @@ from param_decomp_lab.app.backend.utils import log_errors
 from param_decomp_lab.autointerp.repo import InterpRepo
 from param_decomp_lab.dataset_attributions.repo import AttributionRepo
 from param_decomp_lab.distributed import get_device
-from param_decomp_lab.experiments.lm.run import SavedLMRun
+from param_decomp_lab.adapters.pd import load_saved_lm_run
+from param_decomp_lab.component_model_io import VendoredHarvestModel
 from param_decomp_lab.graph_interp.repo import GraphInterpRepo
 from param_decomp_lab.harvest.repo import HarvestRepo
 from param_decomp_lab.infra.wandb import parse_wandb_run_path
@@ -70,7 +71,7 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
 
     logger.info(f"[API] Loading {clean_wandb_path}")
     try:
-        pd_run = SavedLMRun.from_path(clean_wandb_path)
+        pd_run = load_saved_lm_run(clean_wandb_path)
     except ValidationError as e:
         raise HTTPException(
             status_code=400,
@@ -122,8 +123,19 @@ def load_run(wandb_path: str, context_length: int, manager: DepStateManager):
     logger.info(f"[API] Building topology for run {run.id}")
     topology = TransformerTopology(model.target_model)
 
-    logger.info(f"[API] Building sources_by_target mapping for run {run.id}")
-    sources_by_target = get_sources_by_target(model, topology, DEVICE, pd_config.sampling)
+    # Vendored 3-pool models (VendoredHarvestModel) only support the harvest-style forward,
+    # not the cache_type="component_acts"/mask_infos forward that gradient connectivity needs.
+    # Skip it: attribution graphs are disabled for these runs; the component + autointerp
+    # viewers (which read harvest/interp data, not the model) still work.
+    if isinstance(model, VendoredHarvestModel):
+        logger.warning(
+            f"[API] Run {run.id} is a vendored 3-pool run: skipping sources_by_target. "
+            "Attribution graphs are disabled; component + autointerp viewers work."
+        )
+        sources_by_target: dict[str, list[str]] = {}
+    else:
+        logger.info(f"[API] Building sources_by_target mapping for run {run.id}")
+        sources_by_target = get_sources_by_target(model, topology, DEVICE, pd_config.sampling)
 
     manager.run_state = RunState(
         run=run,
