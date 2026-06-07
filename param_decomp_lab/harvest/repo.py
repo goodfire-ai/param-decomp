@@ -49,18 +49,19 @@ class HarvestRepo:
             ],
             key=lambda d: d.name,
         )
-        if not subrun_candidates:
-            return None
 
-        subrun_dir = subrun_candidates[-1]
+        # Most recent subrun whose merge has produced a harvest.db. Skip in-progress
+        # subruns (dir exists, db not yet written) so concurrent harvests of other
+        # matrices don't mask a completed one.
+        for subrun_dir in reversed(subrun_candidates):
+            if (subrun_dir / "harvest.db").exists():
+                logger.info(f"Opening harvest data for {decomposition_id} from {subrun_dir}")
+                return cls(
+                    decomposition_id=decomposition_id, subrun_id=subrun_dir.name, readonly=readonly
+                )
 
-        db_path = subrun_dir / "harvest.db"
-        if not db_path.exists():
-            logger.info(f"No harvest data found for {decomposition_id}")
-            return None
-
-        logger.info(f"Opening harvest data for {decomposition_id} from {subrun_dir}")
-        return cls(decomposition_id=decomposition_id, subrun_id=subrun_dir.name, readonly=readonly)
+        logger.info(f"No harvest data found for {decomposition_id}")
+        return None
 
     @staticmethod
     def save_results(harvester: Harvester, config: HarvestConfig, output_dir: Path) -> None:
