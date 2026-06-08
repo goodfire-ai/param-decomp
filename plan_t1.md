@@ -19,22 +19,21 @@ indicative of where it lands at 400k. If so, iteration time is **~1 h** (20k) in
 What the baseline's own trajectory says about that hypothesis (read these as the screen's known
 biases — see [`track2/ledger/baselines.md`](track2/ledger/baselines.md)):
 
-**@20k is read from the live baseline `p-20f9fc15`** (step 20000). **@50k and @400k are still the
-predecessor `p-5b17949e`'s (†), pending refresh** once `p-20f9fc15` reaches them (`no_beta` @50k/@400k
-pending). ⚠ `p-20f9fc15`'s @20k PPGD (1.477) is **~2× below** the predecessor's (3.094) — the early
-trajectory does **not** match the predecessor within noise, so don't trust the predecessor's @50k as a
-proxy.
+**@20k and @50k are read from the live baseline `p-20f9fc15`**. **@400k is still the predecessor
+`p-5b17949e`'s (†), pending refresh** once `p-20f9fc15` reaches it (`no_beta` @400k pending). ⚠
+`p-20f9fc15`'s @20k PPGD (1.477) was **~2× below** the predecessor's (3.094) — the early trajectory
+did **not** match within noise — but by @50k they reconverge (0.872 vs 0.965).
 
 | metric (tier) | @20k | @50k | @400k | early-step usefulness |
 |---|---|---|---|---|
-| PGD recon — PPGD (primary) | 1.477 | 0.965† | 0.660† | **monotone↓** — same-step rank is meaningful |
-| Importance-minimality `no_beta` (primary) | 275.3 | _pending_ | _pending_ | pure L_p sparsity term, the penalty the optimizer drives down; characterize from `p-20f9fc15` |
-| Stochastic hidden-acts recon (secondary) | 0.531 | 0.447† | 0.402† | monotone↓ |
-| CI-masked hidden-acts recon (secondary) | 0.903 | 0.807† | 0.825† | ~flat |
-| L0 total (secondary, informational) | 1880 | 2465† | 201† | **non-monotone** (rises then collapses) — *do not* chase; informational only |
-| CE diff CI-masked (gate) | 0.304 | 0.280† | 0.273† | **settled early** — gate is meaningful |
-| KL CI-masked (gate) | 0.641 | 0.456† | 0.335† | still drifting↓ — compare same-step only |
-| CE unrecovered CI-masked (gate) | 0.00451 | 0.00416† | 0.00408† | **settled early** — gate is meaningful |
+| PGD recon — PPGD (primary) | 1.477 | 0.872 | 0.660† | **monotone↓** — same-step rank is meaningful |
+| Importance-minimality `no_beta` (primary) | 275.3 | 214.0 | _pending_ | **monotone↓** (275.3→214.0) — well-behaved sparsity proxy |
+| Stochastic hidden-acts recon (secondary) | 0.531 | 0.446 | 0.402† | monotone↓ |
+| CI-masked hidden-acts recon (secondary) | 0.903 | 0.803 | 0.825† | ~flat |
+| L0 total (secondary, informational) | 1880 | 2518 | 201† | **non-monotone** (rises then collapses) — *do not* chase; informational only |
+| CE diff CI-masked (gate) | 0.304 | 0.275 | 0.273† | **settled early** — gate is meaningful |
+| KL CI-masked (gate) | 0.641 | 0.452 | 0.335† | still drifting↓ — compare same-step only |
+| CE unrecovered CI-masked (gate) | 0.00451 | 0.00409 | 0.00408† | **settled early** — gate is meaningful |
 
 † predecessor `p-5b17949e` value — pending refresh from `p-20f9fc15` (not yet at this step).
 
