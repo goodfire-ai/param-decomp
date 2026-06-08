@@ -9,4 +9,5 @@ similar quality). **Stage:** `proposed` / `T0` / `T1` / `merged` / `killed` / `p
 
 | id | idea | claim | stage | headline result |
 |---|---|---|---|---|
-| _(none yet)_ | | | | |
+| [spd-ppgd-nwarmup0](experiments/spd-ppgd-nwarmup0.md) | PPGD inner warmup steps 2 → 0 | speedup | T0 | ~33% faster (156→105 ms/step); quality TBD (run `p-bad26c65`) |
+| [spd-ci-blocks2](experiments/spd-ci-blocks2.md) | CI-fn transformer depth 4 → 2 blocks | speedup | killed | only ~4.8% faster — below 10% bench gate; CI fn ~5% of step |

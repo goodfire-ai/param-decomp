@@ -1,0 +1,138 @@
+# Track-2 T0 baseline: reduced ss_llama_simple_mlp-2L decomposition on the CURRENT repo.
+# Cheaper than the canonical 400k/b64 run (steps 50k, batch 32) — not a perfect run, just a
+# qualitatively representative comparison point for judging method-speedup changes.
+pd:
+  seed: 0
+  n_mask_samples: 1
+  ci_config:
+    mode: global
+    fn_type: global_shared_transformer
+    hidden_dims: null
+    simple_transformer_ci_cfg:
+      d_model: 512
+      n_blocks: 2
+      mlp_hidden_dim:
+      - 2048
+      attn_config:
+        n_heads: 8
+        max_len: 1024
+        rope_base: 10000.0
+  sampling: continuous
+  sigmoid_type: leaky_hard
+  decomposition_targets:
+  - module_pattern: h.*.mlp.c_fc
+    C: 1152
+  - module_pattern: h.*.mlp.down_proj
+    C: 960
+  - module_pattern: h.*.attn.q_proj
+    C: 288
+  - module_pattern: h.*.attn.k_proj
+    C: 288
+  - module_pattern: h.*.attn.v_proj
+    C: 384
+  - module_pattern: h.*.attn.o_proj
+    C: 480
+  identity_decomposition_targets: null
+  use_delta_component: true
+  components_optimizer:
+    lr_schedule:
+      start_val: 3e-4
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+    grad_clip_norm: 0.01
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 3e-4
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+  steps: 50000
+  batch_size: 32
+  faithfulness_warmup_steps: 400
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+    - type: ImportanceMinimalityLoss
+      coeff: 0.001
+      pnorm: 2.0
+      beta: 0.5
+      p_anneal_start_frac: 0.0
+      p_anneal_final_p: 0.4
+      p_anneal_end_frac: 1.0
+      eps: 1.0e-12
+    - type: StochasticReconSubsetLoss
+      coeff: 0.5
+      routing:
+        type: uniform_k_subset
+    - type: PersistentPGDReconLoss
+      coeff: 0.5
+      optimizer:
+        type: adam
+        beta1: 0.5
+        beta2: 0.99
+        eps: 1.0e-08
+        lr_schedule:
+          start_val: 0.01
+          warmup_pct: 0.025
+          final_val_frac: 1.0
+          fn_type: constant
+      scope:
+        type: per_batch_per_position
+      use_sigmoid_parameterization: false
+      n_warmup_steps: 2
+    - type: FaithfulnessLoss
+      coeff: 10000000.0
+cadence:
+  train_log_every: 200
+eval:
+  n_steps: 1
+  batch_size: 128
+  every: 2000
+  slow_every: 10000
+  slow_on_first_step: true
+  metrics:
+    - type: CIHistograms
+      n_batches_accum: 1
+    - type: ComponentActivationDensity
+    - type: CI_L0
+      groups:
+        layer_0:
+        - h.0.*
+        layer_1:
+        - h.1.*
+        total:
+        - '*'
+    - type: CEandKLLosses
+      rounding_threshold: 0.0
+    - type: CIMeanPerComponent
+    - type: StochasticHiddenActsReconLoss
+    - type: CIHiddenActsReconLoss
+    - type: PGDReconLoss
+      init: random
+      step_size: 0.1
+      n_steps: 20
+      mask_scope: shared_across_batch
+target:
+  spec:
+    kind: pretrained
+    model_class: param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
+    run_path: goodfire/spd/runs/gf6rbga0
+  output_extract: 0
+data:
+  tokenizer_name: SimpleStories/test-SimpleStories-gpt2-1.25M
+  max_seq_len: 512
+  buffer_size: 1000
+  dataset_name: SimpleStories/SimpleStories
+  column_name: story
+  train_split: train
+  eval_split: test
+  shuffle_each_epoch: true
+  is_tokenized: false
+  streaming: false
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null
+wandb:
+  project: param-decomp
