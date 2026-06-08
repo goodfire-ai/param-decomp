@@ -11,8 +11,10 @@ module-specific detail; see [Module pointers](#module-pointers).
 source .venv/bin/activate
 ```
 
-In a worktree, run `uv sync` first so the worktree has its own `.venv`. Do NOT `cd` to
-the main repo — all commands (including git) run in the worktree.
+In a worktree, run `uv sync --all-packages` (or `make install-lab`) first so the worktree
+has its own `.venv` with **both** workspace packages — plain `uv sync` installs only core
+and the lab CLIs (`pd-lm`, `pd-speedup-*`, deps like `fire`) will be missing. Do NOT `cd`
+to the main repo — all commands (including git) run in the worktree.
 
 `.env` file with WandB credentials required (see `.env.example`).
 

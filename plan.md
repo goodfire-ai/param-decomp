@@ -225,10 +225,11 @@ reproducibility, and shared memory — the three things multi-agent setups lose.
 *principles*; **§11 is the concrete execution** (how to actually start and run the loop).
 
 ### 5.1 One experiment = one worktree = one branch = one spec
-- Each experiment runs in its **own git worktree** (`isolation: worktree` / `EnterWorktree`) so
+- Each experiment runs in its **own git worktree** (branched from `feature/track2-setup`, §11.0) so
   parallel agents can't clobber each other and dead ends are deleted, not untangled. Repo rule:
-  `uv sync` in the worktree, never `cd` back to main.
-- Branch `feature/spd-<short-idea>`. Edit core `param_decomp/` as freely as needed — no flag-gating
+  `uv sync --all-packages` in the worktree, never `cd` back to main.
+- Branch `feature/spd-<short-idea>` (off `feature/track2-setup`). Edit core `param_decomp/` freely —
+  no flag-gating
   required; the committed baseline artifacts (§3.1) are what make comparison reproducible, not an
   in-tree fallback path.
 - Each experiment is a short **spec file** from a template: hypothesis, claim type, config/code diff
@@ -382,10 +383,11 @@ subagents and runs each experiment in its own worktree.
 - **T0 baseline locked** — all 3 seeds (`p-db5adc3b`, `p-89a42376`, `p-993ae14a`) finished and the
   per-metric band (seed spread) written into `track2/ledger/baselines.md` (and §3.1). The ruler must
   be locked before any experiment can be quality-judged on T0.
-- **Land the Track-2 setup on `main`.** It's committed on branch `feature/track2-setup` (speedup
-  harness, smoke + baseline configs, the `run_info.py` fix, `track2/`). Per-experiment worktrees
-  branch from `main`, so **merge this branch to `main` before kickoff** (or branch experiment
-  worktrees from `feature/track2-setup`) — otherwise worktrees won't inherit the harness/fix.
+- **Track-2 lives on `feature/track2-setup` — do NOT merge to `main`** (owner's call). All Track-2
+  work runs off that branch: per-experiment worktrees **branch from `feature/track2-setup`**
+  (`git worktree add <path> -b feature/spd-<idea> feature/track2-setup`), and a *won* experiment
+  merges **back into `feature/track2-setup`**, never `main`. In each worktree run
+  `uv sync --all-packages` first (plain `uv sync` misses the lab CLIs).
 - **Permission posture: bypass** (decided — 11.4); launch with `claude --dangerously-skip-permissions`.
 
 ### 11.1 How to start it
@@ -421,7 +423,8 @@ backlog is exhausted.
    than `ScheduleWakeup` polling.
 
 ### 11.3 One experiment (worktree-isolated)
-Branch `feature/spd-<idea>`; new git worktree; `uv sync` in it; **never `cd` back to main**.
+`git worktree add <path> -b feature/spd-<idea> feature/track2-setup`; `uv sync --all-packages` in
+it; **never `cd` back to main**. A won experiment merges back into `feature/track2-setup`.
 1. Spec: `track2/ledger/experiments/<id>.md` from `TEMPLATE.md` (hypothesis, claim type,
    thresholds quoted from §3, artifact links).
 2. Make the core change in `param_decomp/` (free rein). Add an **equivalence test** for any

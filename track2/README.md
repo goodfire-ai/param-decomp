@@ -102,8 +102,10 @@ op breakdown (aten-op level). Add finer labels inside an experiment if a change 
 T1 — agents promote themselves once T0 looks good. **GPU budget: a single run may use up to
 16 GPUs (multi-node `--dp`, multiple of 8); keep ≤16 in flight across all Track-2 runs.**
 
-- **One experiment = one worktree = one branch = one spec.** Branch
-  `feature/spd-<short-idea>`. In a worktree, `uv sync` first; never `cd` back to main.
+- **One experiment = one worktree = one branch = one spec.** `git worktree add <path> -b
+  feature/spd-<idea> feature/track2-setup` — **branch off `feature/track2-setup`, not `main`**
+  (Track-2 is never merged to main; wins merge back into `feature/track2-setup`). In the worktree
+  run `uv sync --all-packages` (plain `uv sync` misses the lab CLIs); never `cd` back to main.
 - Copy [`ledger/TEMPLATE.md`](ledger/TEMPLATE.md) → `ledger/experiments/<id>.md`, fill the
   hypothesis / claim type / thresholds (quoted from this contract) / artifact links.
 - Add/maintain a row in [`ledger/README.md`](ledger/README.md) — the human's whole report
