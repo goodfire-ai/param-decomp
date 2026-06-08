@@ -9,4 +9,6 @@ similar quality). **Stage:** `proposed` / `running` / `confirmed` / `merged` / `
 
 | id | idea | claim | stage | headline result |
 |---|---|---|---|---|
-| _(none yet)_ | | | | |
+| [spd-ppgd-nwarmup0](experiments/spd-ppgd-nwarmup0-t1.md) | PPGD n_warmup_steps 2→0 | speedup | running | bench **28% faster** (650→468 ms/step b16); quality screening (`p-3105a340`) |
+| [spd-ppgd-nwarmup1](experiments/spd-ppgd-nwarmup1.md) | PPGD n_warmup_steps 2→1 | speedup | running | bench **14% faster** (650→558 ms/step b16); quality screening (`p-ebc2de5b`) |
+| [spd-ppgd-sign](experiments/spd-ppgd-sign.md) | PPGD source optimizer adam→sign | speedup | killed | only **3.5% faster** (650→627 ms/step b16) — below 5% floor |
