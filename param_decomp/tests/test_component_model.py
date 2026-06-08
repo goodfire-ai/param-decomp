@@ -833,6 +833,7 @@ def test_global_shared_transformer_ci_fn_shapes_and_values():
         n_layers=2,
         n_heads=2,
         max_len=1,
+        bidirectional=True,
         mlp_hidden_dims=[16],
     )
 
@@ -866,6 +867,7 @@ def test_global_shared_transformer_ci_fn_with_seq_dim():
         n_layers=3,
         n_heads=2,
         max_len=seq_len,
+        bidirectional=False,
         mlp_hidden_dims=[16],
     )
 

@@ -97,18 +97,27 @@ class RoPEEmbedding(nn.Module):
 
 
 class SelfAttention(nn.Module):
-    """Multi-head bidirectional self-attention with RoPE (`is_causal=False`).
+    """Multi-head self-attention with RoPE.
 
+    `bidirectional` attends over the full sequence; otherwise attention is causal.
     `d_model` must be divisible by `n_heads`.
     """
 
-    def __init__(self, d_model: int, n_heads: int, max_len: int = 2048, rope_base: float = 10000.0):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        bidirectional: bool,
+        max_len: int = 2048,
+        rope_base: float = 10000.0,
+    ):
         super().__init__()
         assert d_model % n_heads == 0, f"d_model={d_model} must be divisible by n_heads={n_heads}"
 
         self.d_model = d_model
         self.n_heads = n_heads
         self.d_head = d_model // n_heads
+        self.bidirectional = bidirectional
 
         self.q_proj = nn.Linear(d_model, d_model, bias=False)
         self.k_proj = nn.Linear(d_model, d_model, bias=False)
@@ -132,7 +141,7 @@ class SelfAttention(nn.Module):
         q, k = self.rope(q, k)
 
         attn_out = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, dropout_p=0.0, is_causal=False
+            q, k, v, dropout_p=0.0, is_causal=not self.bidirectional
         )
 
         attn_out = attn_out.transpose(-3, -2).contiguous().view(*batch_dims, seq_len, self.d_model)
@@ -151,12 +160,17 @@ class TransformerBlock(nn.Module):
         d_model: int,
         n_heads: int,
         mlp_hidden_dims: list[int],
+        bidirectional: bool,
         max_len: int = 2048,
         rope_base: float = 10000.0,
     ):
         super().__init__()
         self.attn = SelfAttention(
-            d_model=d_model, n_heads=n_heads, max_len=max_len, rope_base=rope_base
+            d_model=d_model,
+            n_heads=n_heads,
+            bidirectional=bidirectional,
+            max_len=max_len,
+            rope_base=rope_base,
         )
         self.d_model = d_model
 
