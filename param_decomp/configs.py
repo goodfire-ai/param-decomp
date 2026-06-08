@@ -21,10 +21,14 @@ from param_decomp.base_config import BaseConfig, Probability
 from param_decomp.ci_fns import CiConfig
 from param_decomp.decomposition_targets import DecompositionTargetConfig
 from param_decomp.masks import SamplingType
+from param_decomp.metrics.adversarial_distribution_recon import (
+    AdversarialDistributionReconLossConfig,
+)
 from param_decomp.metrics.ci_masked_recon import CIMaskedReconLossConfig
 from param_decomp.metrics.ci_masked_recon_layerwise import CIMaskedReconLayerwiseLossConfig
 from param_decomp.metrics.ci_masked_recon_subset import CIMaskedReconSubsetLossConfig
 from param_decomp.metrics.faithfulness import FaithfulnessLossConfig
+from param_decomp.metrics.head_init_pgd_recon import HeadInitPGDReconLossConfig
 from param_decomp.metrics.importance_minimality import ImportanceMinimalityLossConfig
 from param_decomp.metrics.persistent_pgd_recon import (
     PersistentPGDReconLossConfig,
@@ -54,10 +58,12 @@ class OptimizerConfig(BaseConfig):
 
 
 AnyLossMetricConfig = Annotated[
-    CIMaskedReconLayerwiseLossConfig
+    AdversarialDistributionReconLossConfig
+    | CIMaskedReconLayerwiseLossConfig
     | CIMaskedReconLossConfig
     | CIMaskedReconSubsetLossConfig
     | FaithfulnessLossConfig
+    | HeadInitPGDReconLossConfig
     | ImportanceMinimalityLossConfig
     | PersistentPGDReconLossConfig
     | PersistentPGDReconSubsetLossConfig
