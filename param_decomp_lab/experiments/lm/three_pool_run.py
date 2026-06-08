@@ -103,7 +103,11 @@ from param_decomp_lab.three_pool.pd_config import ThreePoolConstrainedPDConfig
 # deadlock — never happen. Scoped to the 3-pool path (single-pool runs do no cross-pool
 # p2p). Applies to both the train job and the async consolidate+eval job (eval also runs
 # cross-pool collectives).
-THREE_POOL_SLURM_ENV: dict[str, str] = {"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
+THREE_POOL_SLURM_ENV: dict[str, str] = {
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+    "PD_TRACE": "1", "PD_TRACE_RANKS": "0,16,79",
+    "TORCH_NCCL_TRACE_BUFFER_SIZE": "20000", "TORCH_NCCL_DUMP_ON_TIMEOUT": "1", "TORCH_NCCL_DESYNC_DEBUG": "1",
+}
 
 
 class ThreePoolRuntimeConfig(RuntimeConfig):
