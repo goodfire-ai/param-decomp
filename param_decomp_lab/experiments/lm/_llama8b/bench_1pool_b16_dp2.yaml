@@ -1,0 +1,115 @@
+# THROUGHPUT-BENCH variant of llama8b_l18_b512_seq2048_1pool.yaml for the 4-way comparison.
+# Controlled topology: global batch 16 @ dp=2 -> per-rank batch 8 (matches the 2-pool pool_a bl8).
+# Schedules fast (2 GPU) for a fair per-GPU tok/s + "does the full-model 1-pool fit" test.
+# Short faith-warmup (2 steps) so all losses are active by ~step 3. Everything else identical to
+# the real 1-pool config (C=24576, 4-block d4096 CI transformer, layerwise stoch, broadcast PPGD,
+# faith 1e5, weight-delta).
+# Launch:  PYTHONPATH=. .venv/bin/python -m param_decomp_lab.experiments.lm.run <this> --dp 2
+pd:
+  seed: 0
+  n_mask_samples: 1
+  ci_config:
+    mode: global
+    fn_type: global_shared_transformer
+    hidden_dims: null
+    simple_transformer_ci_cfg:
+      d_model: 4096
+      n_blocks: 4
+      mlp_hidden_dim:
+      - 16384
+      attn_config:
+        n_heads: 64
+        max_len: 2048
+        rope_base: 10000.0
+  sampling: continuous
+  sigmoid_type: leaky_hard
+  decomposition_targets:
+  - module_pattern: model.layers.18.mlp.gate_proj
+    C: 24576
+  - module_pattern: model.layers.18.mlp.up_proj
+    C: 24576
+  - module_pattern: model.layers.18.mlp.down_proj
+    C: 24576
+  identity_decomposition_targets: null
+  use_delta_component: true
+  components_optimizer:
+    lr_schedule:
+      start_val: 1.5e-04
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+    grad_clip_norm: 0.01
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 5.0e-05
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+  steps: 600
+  batch_size: 16
+  faithfulness_warmup_steps: 2
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - type: ImportanceMinimalityLoss
+    coeff: 0.000005
+    pnorm: 2.0
+    beta: 0.2
+    p_anneal_start_frac: 0.0
+    p_anneal_final_p: 0.4
+    p_anneal_end_frac: 1.0
+    eps: 1.0e-12
+  - type: StochasticReconLayerwiseLoss
+    coeff: 0.5
+  - type: PersistentPGDReconLoss
+    coeff: 0.5
+    optimizer:
+      type: adam
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        start_val: 0.01
+        warmup_pct: 0.025
+        final_val_frac: 1.0
+        fn_type: constant
+    scope:
+      type: broadcast_across_batch
+    use_sigmoid_parameterization: false
+    n_warmup_steps: 2
+  - type: FaithfulnessLoss
+    coeff: 100000.0
+cadence:
+  train_log_every: 10
+eval:
+  n_steps: 1
+  batch_size: 16
+  every: 100000
+  slow_every: 100000
+  slow_on_first_step: false
+  metrics:
+  - type: CI_L0
+    groups: null
+target:
+  spec:
+    kind: hf
+    model_class: transformers.LlamaForCausalLM
+    model_name: meta-llama/Llama-3.1-8B
+  output_extract: logits
+data:
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  max_seq_len: 2048
+  buffer_size: 1000
+  dataset_name: HuggingFaceFW/fineweb
+  data_files: sample/350BT/*.parquet
+  revision: 9bb295ddab0e05d785b879661af7260fed5140fc
+  column_name: text
+  train_split: train
+  eval_split: train
+  shuffle_each_epoch: true
+  is_tokenized: false
+  streaming: true
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null
