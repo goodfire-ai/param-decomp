@@ -301,11 +301,17 @@ class GlobalSharedTransformerCiFn(nn.Module):
             ]
         )
 
-    @override
-    def forward(
+    def trunk_features(
         self,
         input_acts: dict[str, Float[Tensor, "... d_in"]],
-    ) -> dict[str, Float[Tensor, "... C"]]:
+    ) -> tuple[Float[Tensor, "... d_model"], bool]:
+        """Shared trunk up to (but not including) `_output_head`.
+
+        Returns the post-transformer-block representation and whether a singleton sequence
+        dim was added (for 2D inputs). Callers that apply their own head must squeeze that
+        dim back out the same way `forward` does. Lets a parallel head (e.g. an adversarial
+        source head) reuse the trunk instead of building a separate network.
+        """
         inputs_list = [
             F.rms_norm(input_acts[name], (input_acts[name].shape[-1],)) for name in self.layer_order
         ]
@@ -323,15 +329,27 @@ class GlobalSharedTransformerCiFn(nn.Module):
         for block in self._blocks:
             x = block(x)
 
-        output = self._output_head(x)
+        return x, added_seq_dim
 
+    def split_outputs(
+        self,
+        output: Float[Tensor, "... total_c"],
+        added_seq_dim: bool,
+    ) -> dict[str, Float[Tensor, "... C"]]:
+        """Squeeze the added seq dim (if any) and split per-layer along the feature dim."""
         if added_seq_dim:
             output = output.squeeze(-2)
+        split = torch.split(output, self.split_sizes, dim=-1)
+        return {name: split[i] for i, name in enumerate(self.layer_order)}
 
-        split_outputs = torch.split(output, self.split_sizes, dim=-1)
-        outputs = {name: split_outputs[i] for i, name in enumerate(self.layer_order)}
-
-        return outputs
+    @override
+    def forward(
+        self,
+        input_acts: dict[str, Float[Tensor, "... d_in"]],
+    ) -> dict[str, Float[Tensor, "... C"]]:
+        x, added_seq_dim = self.trunk_features(input_acts)
+        output = self._output_head(x)
+        return self.split_outputs(output, added_seq_dim)
 
 
 class LayerwiseCiFnWrapper(nn.Module):
@@ -398,13 +416,11 @@ class GlobalCiFnWrapper(nn.Module):
         self._global_ci_fn = global_ci_fn
         self.components = components
 
-    @override
-    def forward(
+    def _to_component_acts(
         self,
         layer_acts: dict[str, Float[Tensor, "..."]],
-    ) -> dict[str, Float[Tensor, "... C"]]:
+    ) -> dict[str, Float[Tensor, "..."]]:
         transformed: dict[str, Float[Tensor, ...]] = {}
-
         for layer_name, acts in layer_acts.items():
             component = self.components[layer_name]
             if isinstance(component, EmbeddingComponents):
@@ -412,8 +428,30 @@ class GlobalCiFnWrapper(nn.Module):
                 transformed[layer_name] = component.get_component_acts(acts)
             else:
                 transformed[layer_name] = acts
+        return transformed
 
-        return self._global_ci_fn(transformed)
+    @override
+    def forward(
+        self,
+        layer_acts: dict[str, Float[Tensor, "..."]],
+    ) -> dict[str, Float[Tensor, "... C"]]:
+        return self._global_ci_fn(self._to_component_acts(layer_acts))
+
+    @property
+    def transformer(self) -> GlobalSharedTransformerCiFn:
+        """The inner CI fn, asserted to be the transformer variant (needed for its trunk)."""
+        assert isinstance(self._global_ci_fn, GlobalSharedTransformerCiFn), (
+            "expected a global_shared_transformer CI fn; got "
+            f"{type(self._global_ci_fn).__name__}"
+        )
+        return self._global_ci_fn
+
+    def trunk_features(
+        self,
+        layer_acts: dict[str, Float[Tensor, "..."]],
+    ) -> tuple[Float[Tensor, "... d_model"], bool]:
+        """Expose the inner transformer trunk (only valid for the transformer CI fn)."""
+        return self.transformer.trunk_features(self._to_component_acts(layer_acts))
 
 
 def _make_layerwise_ci_fn(
