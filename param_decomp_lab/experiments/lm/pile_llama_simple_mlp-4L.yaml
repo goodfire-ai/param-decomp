@@ -3,7 +3,7 @@ pd:
   n_mask_samples: 1
   ci_config:
     mode: global
-    fn_type: global_shared_transformer
+    fn_type: global_shared_swiglu
     hidden_dims: null
     simple_transformer_ci_cfg:
       d_model: 2048
@@ -12,6 +12,7 @@ pd:
       - 8192
       attn_config:
         n_heads: 16
+        bidirectional: true
         max_len: 512
         rope_base: 10000.0
   sampling: continuous

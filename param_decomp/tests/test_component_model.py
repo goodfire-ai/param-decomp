@@ -12,6 +12,8 @@ from param_decomp.ci_fns import (
     GlobalCiConfig,
     GlobalCiFnWrapper,
     GlobalSharedMLPCiFn,
+    GlobalSharedSwigluCiFn,
+    GlobalSharedTransformerCiConfig,
     GlobalSharedTransformerCiFn,
     LayerwiseCiConfig,
     MLPCiFn,
@@ -19,11 +21,12 @@ from param_decomp.ci_fns import (
     VectorMLPCiFn,
     VectorSharedMLPCiFn,
 )
-from param_decomp.ci_nn_blocks import ParallelLinear
+from param_decomp.ci_nn_blocks import AttentionParams, ParallelLinear
 from param_decomp.component_model import (
     ComponentModel,
 )
 from param_decomp.components import (
+    Components,
     EmbeddingComponents,
     LinearComponents,
     make_components,
@@ -823,16 +826,15 @@ def test_global_shared_mlp_ci_fn_single_layer():
 def test_global_shared_transformer_ci_fn_shapes_and_values():
     """Test GlobalSharedTransformerCiFn produces correct output shapes and valid values."""
     layer_configs = {
-        "layer1": TargetLayerConfig(input_dim=10, C=5),
-        "layer2": TargetLayerConfig(input_dim=20, C=3),
-        "layer3": TargetLayerConfig(input_dim=15, C=7),
+        "layer1": TargetLayerConfig(input_dim=10, output_dim=6, C=5),
+        "layer2": TargetLayerConfig(input_dim=20, output_dim=12, C=3),
+        "layer3": TargetLayerConfig(input_dim=15, output_dim=9, C=7),
     }
     ci_fn = GlobalSharedTransformerCiFn(
         target_model_layer_configs=layer_configs,
         d_model=8,
         n_layers=2,
-        n_heads=2,
-        max_len=1,
+        attention=AttentionParams(n_heads=2, bidirectional=True, max_len=1),
         mlp_hidden_dims=[16],
     )
 
@@ -857,15 +859,14 @@ def test_global_shared_transformer_ci_fn_with_seq_dim():
     """Test GlobalSharedTransformerCiFn with sequence dimension produces valid outputs."""
     seq_len = 5
     layer_configs = {
-        "layer1": TargetLayerConfig(input_dim=10, C=4),
-        "layer2": TargetLayerConfig(input_dim=8, C=3),
+        "layer1": TargetLayerConfig(input_dim=10, output_dim=6, C=4),
+        "layer2": TargetLayerConfig(input_dim=8, output_dim=5, C=3),
     }
     ci_fn = GlobalSharedTransformerCiFn(
         target_model_layer_configs=layer_configs,
         d_model=8,
         n_layers=3,
-        n_heads=2,
-        max_len=seq_len,
+        attention=AttentionParams(n_heads=2, bidirectional=False, max_len=seq_len),
         mlp_hidden_dims=[16],
     )
 
@@ -882,6 +883,93 @@ def test_global_shared_transformer_ci_fn_with_seq_dim():
     # Check values are valid
     for name, out in outputs.items():
         assert torch.isfinite(out).all(), f"Output {name} contains NaN or Inf"
+
+
+def test_global_shared_transformer_ci_fn_no_attention():
+    """GlobalSharedTransformerCiFn with attention=None is a pure residual-MLP stack."""
+    seq_len = 4
+    layer_configs = {
+        "layer1": TargetLayerConfig(input_dim=10, output_dim=6, C=4),
+        "layer2": TargetLayerConfig(input_dim=8, output_dim=5, C=3),
+    }
+    ci_fn = GlobalSharedTransformerCiFn(
+        target_model_layer_configs=layer_configs,
+        d_model=8,
+        n_layers=3,
+        attention=None,
+        mlp_hidden_dims=[16],
+    )
+    assert all(block.attn is None for block in ci_fn._blocks)
+
+    inputs = {
+        "layer1": torch.randn(BATCH_SIZE, seq_len, 10),
+        "layer2": torch.randn(BATCH_SIZE, seq_len, 8),
+    }
+    outputs = ci_fn(inputs)
+
+    assert outputs["layer1"].shape == (BATCH_SIZE, seq_len, 4)
+    assert outputs["layer2"].shape == (BATCH_SIZE, seq_len, 3)
+    for name, out in outputs.items():
+        assert torch.isfinite(out).all(), f"Output {name} contains NaN or Inf"
+
+
+def _swiglu_ci_fn_and_components() -> tuple[GlobalSharedSwigluCiFn, dict[str, Components]]:
+    components: dict[str, Components] = {
+        "z.layer": LinearComponents(C=5, d_in=10, d_out=6),
+        "a.layer": LinearComponents(C=3, d_in=8, d_out=4),
+    }
+    layer_configs = {
+        "z.layer": TargetLayerConfig(input_dim=10, output_dim=6, C=5),
+        "a.layer": TargetLayerConfig(input_dim=8, output_dim=4, C=3),
+    }
+    ci_fn = GlobalSharedSwigluCiFn(
+        layer_configs,
+        components,
+        d_model=8,
+        n_layers=2,
+        attention=AttentionParams(n_heads=2, bidirectional=True),
+        mlp_hidden_dims=[16],
+    )
+    return ci_fn, components
+
+
+def test_global_shared_swiglu_ci_fn_shapes_and_sorted_order():
+    seq_len = 4
+    ci_fn, _ = _swiglu_ci_fn_and_components()
+    assert ci_fn.layer_order == ["a.layer", "z.layer"]  # deterministic sorted concat/split
+
+    inputs = {
+        "z.layer": torch.randn(BATCH_SIZE, seq_len, 10),
+        "a.layer": torch.randn(BATCH_SIZE, seq_len, 8),
+    }
+    outputs = ci_fn(inputs)
+    assert outputs["z.layer"].shape == (BATCH_SIZE, seq_len, 5)
+    assert outputs["a.layer"].shape == (BATCH_SIZE, seq_len, 3)
+    for name, out in outputs.items():
+        assert torch.isfinite(out).all(), f"Output {name} contains NaN or Inf"
+
+
+def test_global_shared_swiglu_ci_fn_uv_tied_and_excluded_from_params():
+    """U/V are the live component params (gradients flow in) but not owned by the CI fn."""
+    ci_fn, components = _swiglu_ci_fn_and_components()
+
+    ci_fn_param_ids = {id(p) for p in ci_fn.parameters()}
+    for component in components.values():
+        assert id(component.V) not in ci_fn_param_ids
+        assert id(component.U) not in ci_fn_param_ids
+
+    inputs = {
+        "z.layer": torch.randn(BATCH_SIZE, 10),
+        "a.layer": torch.randn(BATCH_SIZE, 8),
+    }
+    loss = torch.stack([out.sum() for out in ci_fn(inputs).values()]).sum()
+    loss.backward()
+
+    for component in components.values():
+        assert component.V.grad is not None and component.V.grad.abs().sum() > 0
+        assert component.U.grad is not None and component.U.grad.abs().sum() > 0
+    for name, param in ci_fn.named_parameters():
+        assert param.grad is not None and param.grad.abs().sum() > 0, name
 
 
 def test_component_model_with_global_ci():
@@ -955,6 +1043,42 @@ def test_component_model_global_ci_calc_causal_importances():
 
         # Check values are finite
         assert torch.isfinite(ci_outputs.pre_sigmoid[path]).all(), f"{path} pre_sigmoid has NaN/Inf"
+
+
+def test_component_model_global_swiglu_ci_calc_causal_importances():
+    """End-to-end CI calculation with the tied-SwiGLU global CI fn."""
+    target_model = tiny_target()
+
+    target_module_paths = ["mlp", "out"]
+    C = 4
+    cm = ComponentModel(
+        target_model=target_model,
+        run_batch=run_batch_passthrough,
+        decomposition_targets=[
+            DecompositionTarget(module_path=p, C=C) for p in target_module_paths
+        ],
+        ci_config=GlobalCiConfig(
+            fn_type="global_shared_swiglu",
+            simple_transformer_ci_cfg=GlobalSharedTransformerCiConfig(
+                d_model=8, n_blocks=2, mlp_hidden_dim=[16]
+            ),
+        ),
+        sigmoid_type="leaky_hard",
+    )
+    assert isinstance(cm.ci_fn, GlobalCiFnWrapper)
+    assert isinstance(cm.ci_fn._global_ci_fn, GlobalSharedSwigluCiFn)
+
+    token_ids = torch.randint(
+        low=0, high=target_model.embed.num_embeddings, size=(BATCH_SIZE,), dtype=torch.long
+    )
+    _, cache = cm(token_ids, cache_type="input")
+    ci_outputs = cm.calc_causal_importances(cache, sampling="continuous", detach_inputs=False)
+
+    for path in target_module_paths:
+        assert ci_outputs.pre_sigmoid[path].shape == (BATCH_SIZE, C)
+        assert (ci_outputs.lower_leaky[path] <= 1.0).all()
+        assert (ci_outputs.upper_leaky[path] >= 0).all()
+        assert torch.isfinite(ci_outputs.pre_sigmoid[path]).all()
 
 
 def test_component_model_global_ci_different_inputs_different_ci():

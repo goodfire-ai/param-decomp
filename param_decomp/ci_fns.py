@@ -11,11 +11,16 @@ from pydantic import Field, PositiveInt, model_validator
 from torch import Tensor, nn
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.ci_nn_blocks import Linear, ParallelLinear, TransformerBlock
-from param_decomp.components import Components, EmbeddingComponents, get_module_input_dim
+from param_decomp.ci_nn_blocks import AttentionParams, Linear, ParallelLinear, TransformerBlock
+from param_decomp.components import (
+    Components,
+    EmbeddingComponents,
+    LinearComponents,
+    get_module_input_dim,
+)
 
 LayerwiseCiFnType = Literal["mlp", "vector_mlp", "shared_mlp"]
-GlobalCiFnType = Literal["global_shared_mlp", "global_shared_transformer"]
+GlobalCiFnType = Literal["global_shared_mlp", "global_shared_transformer", "global_shared_swiglu"]
 
 
 class LayerwiseCiConfig(BaseConfig):
@@ -51,13 +56,20 @@ class AttnConfig(BaseConfig):
         default=10000.0,
         description="Base for RoPE frequency computation.",
     )
+    bidirectional: bool = Field(
+        default=True,
+        description="If True, attend over the full sequence. If False, restrict to causal "
+        "(left-to-right) attention.",
+    )
 
 
 class GlobalSharedTransformerCiConfig(BaseConfig):
     """Config for the global transformer CI fn.
 
-    `d_model` must be divisible by `attn_config.n_heads` and the resulting per-head dim
-    must be even (RoPE). `mlp_hidden_dim` defaults to `[4 * d_model]`.
+    When `attn_config` is set, `d_model` must be divisible by `attn_config.n_heads` and
+    the resulting per-head dim must be even (RoPE). `attn_config=None` drops attention
+    entirely, leaving a stack of pre-norm residual MLP blocks. `mlp_hidden_dim` defaults
+    to `[4 * d_model]`.
     """
 
     d_model: PositiveInt
@@ -67,10 +79,16 @@ class GlobalSharedTransformerCiConfig(BaseConfig):
         description="Hidden dimension for transformer MLP blocks. "
         "If None, defaults to [4 * d_model].",
     )
-    attn_config: AttnConfig
+    attn_config: AttnConfig | None = Field(
+        default=None,
+        description="Self-attention config. If None, the blocks have no attention sublayer "
+        "(a pure residual-MLP stack).",
+    )
 
     @model_validator(mode="after")
     def validate_config(self) -> Self:
+        if self.attn_config is None:
+            return self
         assert self.d_model % self.attn_config.n_heads == 0, (
             f"d_model ({self.d_model}) must be divisible by "
             f"attn_config.n_heads ({self.attn_config.n_heads})"
@@ -90,7 +108,8 @@ class GlobalCiConfig(BaseConfig):
     mode: Literal["global"] = "global"
     fn_type: GlobalCiFnType = Field(
         ...,
-        description="Type of global CI function: global_shared_mlp or global_shared_transformer",
+        description="Type of global CI function: global_shared_mlp, global_shared_transformer, "
+        "or global_shared_swiglu",
     )
     hidden_dims: list[PositiveInt] | None = Field(
         default=None,
@@ -100,17 +119,19 @@ class GlobalCiConfig(BaseConfig):
 
     @model_validator(mode="after")
     def validate_ci_config(self) -> Self:
-        if self.fn_type == "global_shared_mlp":
-            assert self.hidden_dims is not None, (
-                "hidden_dims must be specified when fn_type='global_shared_mlp'"
-            )
-        elif self.fn_type == "global_shared_transformer":
-            assert self.simple_transformer_ci_cfg is not None, (
-                "simple_transformer_ci_cfg must be specified when fn_type='global_shared_transformer'"
-            )
-            assert self.hidden_dims is None, (
-                "hidden_dims is only used for fn_type='global_shared_mlp'"
-            )
+        match self.fn_type:
+            case "global_shared_mlp":
+                assert self.hidden_dims is not None, (
+                    "hidden_dims must be specified when fn_type='global_shared_mlp'"
+                )
+            case "global_shared_transformer" | "global_shared_swiglu":
+                # Both share the transformer trunk; swiglu only swaps the output head.
+                assert self.simple_transformer_ci_cfg is not None, (
+                    f"simple_transformer_ci_cfg must be specified when fn_type={self.fn_type!r}"
+                )
+                assert self.hidden_dims is None, (
+                    "hidden_dims is only used for fn_type='global_shared_mlp'"
+                )
         return self
 
 
@@ -243,9 +264,10 @@ class GlobalSharedMLPCiFn(nn.Module):
 
 @dataclass
 class TargetLayerConfig:
-    """Per-target metadata consumed by `GlobalSharedTransformerCiFn`."""
+    """Per-target metadata consumed by the global CI fns."""
 
     input_dim: int
+    output_dim: int
     C: int
 
 
@@ -253,11 +275,13 @@ class GlobalSharedTransformerCiFn(nn.Module):
     """Global transformer attending over sequence to produce per-component CI.
 
     Per-layer inputs are RMS-normed, concatenated along the feature dim, projected to
-    `d_model`, and run through `n_layers` `TransformerBlock`s with bidirectional
-    self-attention. A final linear projection produces logits which are split back into
-    per-layer `[..., C]` slices in sorted-name order. For 2D inputs (e.g. TMS, resid_mlp
-    — no sequence axis) a singleton sequence dim is added before the transformer and
-    squeezed out after.
+    `d_model`, and run through `n_layers` `TransformerBlock`s. With `attention` set, each
+    block mixes over the sequence with self-attention (bidirectional unless
+    `attention.bidirectional` is False); with `attention=None` the blocks are pure
+    pre-norm residual MLPs with no sequence mixing. A final linear projection produces
+    logits which are split back into per-layer `[..., C]` slices in sorted-name order.
+    For 2D inputs (e.g. TMS, resid_mlp — no sequence axis) a singleton sequence dim is
+    added before the transformer and squeezed out after.
     """
 
     def __init__(
@@ -265,10 +289,8 @@ class GlobalSharedTransformerCiFn(nn.Module):
         target_model_layer_configs: dict[str, TargetLayerConfig],
         d_model: int,
         n_layers: int,
-        n_heads: int,
-        max_len: int,
+        attention: AttentionParams | None,
         mlp_hidden_dims: list[int] | None = None,
-        rope_base: float = 10000.0,
     ):
         super().__init__()
 
@@ -277,7 +299,6 @@ class GlobalSharedTransformerCiFn(nn.Module):
         self.split_sizes = [target_model_layer_configs[name].C for name in self.layer_order]
         self.d_model = d_model
         self.n_transformer_layers = n_layers
-        self.n_heads = n_heads
 
         if mlp_hidden_dims is None:
             mlp_hidden_dims = [4 * d_model]
@@ -292,10 +313,8 @@ class GlobalSharedTransformerCiFn(nn.Module):
             [
                 TransformerBlock(
                     d_model=d_model,
-                    n_heads=n_heads,
                     mlp_hidden_dims=mlp_hidden_dims,
-                    max_len=max_len,
-                    rope_base=rope_base,
+                    attention=attention,
                 )
                 for _ in range(n_layers)
             ]
@@ -330,6 +349,118 @@ class GlobalSharedTransformerCiFn(nn.Module):
 
         split_outputs = torch.split(output, self.split_sizes, dim=-1)
         outputs = {name: split_outputs[i] for i, name in enumerate(self.layer_order)}
+
+        return outputs
+
+
+class GlobalSharedSwigluCiFn(nn.Module):
+    """`GlobalSharedTransformerCiFn` with its linear unembedding replaced by a tied SwiGLU.
+
+    The trunk is identical to `GlobalSharedTransformerCiFn`: per-target inputs are
+    RMS-normed, concatenated, projected to `d_model`, and run through `n_layers`
+    `TransformerBlock`s (self-attention when `attention` is set, otherwise a pure
+    residual-MLP stack). The only change is the output head. Where the transformer
+    applies a single linear `d_model -> sum_l C_l`, this maps the `d_model` residual
+    stream to a hidden vector of size `sum_l (d_in_l + d_out_l)`, split per layer into an
+    input-side chunk `h_in_l` (`d_in_l`) and an output-side chunk `h_out_l` (`d_out_l`).
+    The SwiGLU neuron block for layer `l` is
+
+        `(U_l @ h_out_l) * silu(V_l^T @ h_in_l)`  ->  `[..., C_l]`,
+
+    reusing the *live* component `V_l` (gate) and `U_l` (up) Parameters, so CI-fn
+    gradients flow back into them. The neurons (total `sum_l C_l`) pass through a
+    per-layer block-diagonal down projection (`C_l -> C_l`, whose bias is the learnable
+    output bias), giving pre-sigmoid CI logits split into per-layer `[..., C_l]` slices.
+    Layer order is fixed by sorted layer name so concatenation is deterministic. Only
+    linear (non-embedding) targets are supported.
+
+    `components` is stored as a plain dict (not a submodule) so the tied U/V Parameters
+    are not registered on this module — they stay owned by the components and out of the
+    CI-fn optimizer / state dict.
+    """
+
+    def __init__(
+        self,
+        target_model_layer_configs: dict[str, TargetLayerConfig],
+        components: dict[str, Components],
+        d_model: int,
+        n_layers: int,
+        attention: AttentionParams | None,
+        mlp_hidden_dims: list[int] | None = None,
+    ):
+        super().__init__()
+
+        self.layer_order = sorted(target_model_layer_configs.keys())
+        self.target_model_layer_configs = target_model_layer_configs
+        self._components = components  # plain dict: intentionally NOT registered
+
+        self.in_split_sizes = [target_model_layer_configs[n].input_dim for n in self.layer_order]
+        self.out_split_sizes = [target_model_layer_configs[n].output_dim for n in self.layer_order]
+        self.c_split_sizes = [target_model_layer_configs[n].C for n in self.layer_order]
+
+        if mlp_hidden_dims is None:
+            mlp_hidden_dims = [4 * d_model]
+
+        total_input_dim = sum(self.in_split_sizes)
+        total_hidden_dim = sum(self.in_split_sizes) + sum(self.out_split_sizes)
+
+        self._input_projector = Linear(total_input_dim, d_model, nonlinearity="relu")
+        self._blocks = nn.ModuleList(
+            [
+                TransformerBlock(
+                    d_model=d_model, mlp_hidden_dims=mlp_hidden_dims, attention=attention
+                )
+                for _ in range(n_layers)
+            ]
+        )
+        # SwiGLU unembedding (replaces the transformer's `d_model -> sum_l C_l` linear head).
+        self._hidden_projector = Linear(d_model, total_hidden_dim, nonlinearity="linear")
+        self._down_projections = nn.ModuleDict(
+            {
+                name.replace(".", "-"): Linear(C, C, nonlinearity="linear")
+                for name, C in zip(self.layer_order, self.c_split_sizes, strict=True)
+            }
+        )
+
+    @override
+    def forward(
+        self,
+        input_acts: dict[str, Float[Tensor, "... d_in"]],
+    ) -> dict[str, Float[Tensor, "... C"]]:
+        inputs_list = [
+            F.rms_norm(input_acts[name], (input_acts[name].shape[-1],)) for name in self.layer_order
+        ]
+        concatenated = torch.cat(inputs_list, dim=-1)
+        projected: Tensor = self._input_projector(concatenated)
+
+        # The transformer blocks expect a sequence dimension, so we add one for 2D acts
+        # (e.g. TMS, resid_mlp) and squeeze it back out afterwards.
+        added_seq_dim = False
+        if projected.ndim < 3:
+            projected = projected.unsqueeze(-2)
+            added_seq_dim = True
+
+        x = projected
+        for block in self._blocks:
+            x = block(x)
+
+        if added_seq_dim:
+            x = x.squeeze(-2)
+
+        hidden = self._hidden_projector(x)
+        in_chunk, out_chunk = torch.split(
+            hidden, [sum(self.in_split_sizes), sum(self.out_split_sizes)], dim=-1
+        )
+        in_parts = torch.split(in_chunk, self.in_split_sizes, dim=-1)
+        out_parts = torch.split(out_chunk, self.out_split_sizes, dim=-1)
+
+        outputs: dict[str, Float[Tensor, "... C"]] = {}
+        for i, name in enumerate(self.layer_order):
+            component = self._components[name]
+            gate = einops.einsum(in_parts[i], component.V, "... d_in, d_in C -> ... C")
+            up = einops.einsum(out_parts[i], component.U, "... d_out, C d_out -> ... C")
+            neurons = up * F.silu(gate)
+            outputs[name] = self._down_projections[name.replace(".", "-")](neurons)
 
         return outputs
 
@@ -391,7 +522,7 @@ class GlobalCiFnWrapper(nn.Module):
 
     def __init__(
         self,
-        global_ci_fn: GlobalSharedMLPCiFn | GlobalSharedTransformerCiFn,
+        global_ci_fn: GlobalSharedMLPCiFn | GlobalSharedTransformerCiFn | GlobalSharedSwigluCiFn,
         components: dict[str, Components],
     ):
         super().__init__()
@@ -436,16 +567,27 @@ def _make_layerwise_ci_fn(
             return VectorSharedMLPCiFn(C=C, input_dim=input_dim, hidden_dims=ci_fn_hidden_dims)
 
 
+def _attention_from_cfg(attn_config: AttnConfig | None) -> AttentionParams | None:
+    if attn_config is None:
+        return None
+    return AttentionParams(
+        n_heads=attn_config.n_heads,
+        bidirectional=attn_config.bidirectional,
+        max_len=attn_config.max_len,
+        rope_base=attn_config.rope_base,
+    )
+
+
 def _make_global_ci_fn(
     target_model: nn.Module,
     module_to_c: dict[str, int],
     components: dict[str, Components],
     ci_config: GlobalCiConfig,
-) -> GlobalSharedMLPCiFn | GlobalSharedTransformerCiFn:
+) -> GlobalSharedMLPCiFn | GlobalSharedTransformerCiFn | GlobalSharedSwigluCiFn:
     ci_fn_type = ci_config.fn_type
     ci_fn_hidden_dims = ci_config.hidden_dims
 
-    layer_configs: dict[str, tuple[int, int]] = {}
+    layer_configs: dict[str, TargetLayerConfig] = {}
     for path, module_c in module_to_c.items():
         target_module = target_model.get_submodule(path)
         component = components[path]
@@ -454,26 +596,44 @@ def _make_global_ci_fn(
             input_dim = component.C
         else:
             input_dim = get_module_input_dim(target_module)
-        layer_configs[path] = (input_dim, module_c)
+        # `U` is `[C, u_dim]`, so `u_dim` is the target's output dimension.
+        output_dim = component.U.shape[1]
+        layer_configs[path] = TargetLayerConfig(
+            input_dim=input_dim, output_dim=output_dim, C=module_c
+        )
 
     match ci_fn_type:
         case "global_shared_mlp":
             assert ci_fn_hidden_dims is not None
-            return GlobalSharedMLPCiFn(layer_configs=layer_configs, hidden_dims=ci_fn_hidden_dims)
+            return GlobalSharedMLPCiFn(
+                layer_configs={path: (c.input_dim, c.C) for path, c in layer_configs.items()},
+                hidden_dims=ci_fn_hidden_dims,
+            )
         case "global_shared_transformer":
             transformer_cfg = ci_config.simple_transformer_ci_cfg
             assert transformer_cfg is not None
             return GlobalSharedTransformerCiFn(
-                target_model_layer_configs={
-                    path: TargetLayerConfig(input_dim=input_dim, C=C)
-                    for path, (input_dim, C) in layer_configs.items()
-                },
+                target_model_layer_configs=layer_configs,
                 d_model=transformer_cfg.d_model,
                 n_layers=transformer_cfg.n_blocks,
-                n_heads=transformer_cfg.attn_config.n_heads,
+                attention=_attention_from_cfg(transformer_cfg.attn_config),
                 mlp_hidden_dims=transformer_cfg.mlp_hidden_dim,
-                max_len=transformer_cfg.attn_config.max_len,
-                rope_base=transformer_cfg.attn_config.rope_base,
+            )
+        case "global_shared_swiglu":
+            transformer_cfg = ci_config.simple_transformer_ci_cfg
+            assert transformer_cfg is not None
+            for path in module_to_c:
+                assert isinstance(components[path], LinearComponents), (
+                    "global_shared_swiglu only supports linear (non-embedding) targets, "
+                    f"but {path!r} has components of type {type(components[path]).__name__}"
+                )
+            return GlobalSharedSwigluCiFn(
+                target_model_layer_configs=layer_configs,
+                components=components,
+                d_model=transformer_cfg.d_model,
+                n_layers=transformer_cfg.n_blocks,
+                attention=_attention_from_cfg(transformer_cfg.attn_config),
+                mlp_hidden_dims=transformer_cfg.mlp_hidden_dim,
             )
 
 
