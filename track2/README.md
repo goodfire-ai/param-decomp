@@ -41,29 +41,33 @@ ruler, not the thing being measured. (Mitigates goalpost-moving / reward-hacking
 
 ## What every result must report
 
-1. **Primary metric (the thing we trade):** wall-clock/step + tokens/sec + peak memory +
-   a profiler op breakdown, on a **pinned GPU at fixed batch/seq, eval excluded**.
-   Produced by the benchmark command below.
-2. **Quality bundle (the objective), as a tiered vector** — all of `QUALITY_BUNDLE`
-   (`quality_bundle.py`), reported via `pd-speedup-compare` (groups by tier):
-   - **primary** (must hold or improve): **PPGD recon** (`PGDReconLoss`, the eval-time PGD
-     attack — *not* the train-time persistent loss) + **L0** (sparsity);
-   - **secondary** (weighted less): stochastic-mask recon + CI-mask recon;
-   - **guardrail** (must not blow up): CI-masked faithfulness (CE-diff / CE-unrecovered / KL).
+1. **Speed (the thing we trade):** ≥**10% faster** is the floor for "material" (wall-clock/step or
+   GPU-h). Report step time + tokens/sec + peak memory + a profiler op breakdown, on a **pinned GPU
+   at fixed batch/seq, eval excluded** — `pd-speedup-bench`.
+2. **Quality bundle (the objective), tiered** — all of `QUALITY_BUNDLE` (`quality_bundle.py`), via
+   `pd-speedup-compare`, which prints an **overall verdict**:
+   - **primary** (must hold or improve): **PPGD recon** (`PGDReconLoss`, the eval-time PGD attack —
+     *not* the train-time persistent loss) + **L0** (sparsity);
+   - **secondary** (informational): stochastic-mask recon + CI-mask recon;
+   - **gate** — CI-masked faithfulness (CE-diff / CE-unrecovered / KL). This is a **hard
+     constraint**, not a soft guardrail: regress it past the band and the result **fails regardless
+     of PPGD/L0** (else a "win" is just trading faithfulness for lower L0 — a worse decomposition).
 
-   A change reports the **whole** vector so it can't hide a regression in one by improving
-   another. Promote/kill calls are driven by the **primary** tier.
-3. **Statistics — single-seed, judged early.** Iterate at one seed to move fast.
-   **Don't wait for full training** (esp. the 4L Pile run): the baselines have their full
-   trajectory cached, so compare at a **matched intermediate step**
-   (`pd-speedup-compare --at_step N`, with `N` on a slow-eval step). Run experiments to a
-   reduced budget and compare the trajectory. Escalate to ≥3 seeds / a longer run only to
-   confirm a borderline winner. Because baselines are single-seed, **"within band" is a fixed
-   relative tolerance** (`--tol_pct`, default ±2%), not a measured spread.
-4. **Artifacts:** every number cites a `run_id`, its `metrics.jsonl` path, and (if wandb)
-   the run URL. **No artifact → it didn't happen.**
-5. **Asserts stay on.** A speedup that trips an `isfinite`/shape assert is a failure, not
-   a finding.
+   Decision rule: faithfulness gate first, then **primary** drives WIN/NEUTRAL. Report the whole
+   vector so nothing hides.
+3. **Statistics — band = measured noise floor; judge early.** The **T0 baseline is 3 seeds**; the
+   per-metric band is the seed spread (`pd-speedup-compare <seed1>,<seed2>,<seed3> <variant>`),
+   floored at `--tol_pct` (default ±2%). **Don't wait for full training**: ~**50k steps is enough
+   signal** (incl. 4L) — compare at a matched step against the baseline's cached trajectory
+   (`--at_step 50000`, on a slow-eval step). Experiments may be single-seed (judged against the
+   3-seed baseline band). **A promising result graduates to a longer run** before *merge* (early
+   ranking can cross over). T1's baseline is single-seed → ±`tol_pct` floor only; lean on the T0 band.
+4. **Eval is frozen (ruler).** The experiment runs the **same `eval:` block** as the baseline —
+   metrics, the **PGD-attack strength** (`PGDReconLoss` `n_steps`/`step_size`), eval batch, cadence.
+   Weakening the attack or changing eval batch is a reward-hack; `pd-speedup-compare` flags drift.
+5. **Artifacts:** every number cites a `run_id`, its `metrics.jsonl` path, and (if wandb) the URL.
+   **No artifact → it didn't happen.**
+6. **Asserts stay on.** A speedup that trips an `isfinite`/shape assert is a failure, not a finding.
 
 ---
 
@@ -81,9 +85,9 @@ python -m param_decomp_lab.experiments.lm.run \
 python -m param_decomp_lab.speedup.benchmark \
     param_decomp_lab/experiments/lm/ss_llama_simple_mlp-2L.yaml --out bench.md
 
-# 3. Compare — tiered quality-bundle diff vs the locked baseline. Add --at_step N to judge
-#    a partial run against the baseline at the same step (don't wait for full training).
-python -m param_decomp_lab.speedup.compare_runs <baseline_run_id> <variant_run_id> [--at_step N] --out cmp.md
+# 3. Compare — tiered diff + faithfulness-gated verdict. T0 baseline = 3 seeds (comma-sep) →
+#    band from their spread. --at_step judges a partial run vs the baseline at the same step.
+python -m param_decomp_lab.speedup.compare_runs <seed1>,<seed2>,<seed3> <variant_run_id> --at_step 50000 --out cmp.md
 ```
 
 Profiler instrumentation note: the `pd/*` `record_function` labels live on the Track-1
@@ -105,9 +109,9 @@ T1 — agents promote themselves once T0 looks good. **GPU budget: a single run 
 - Add/maintain a row in [`ledger/README.md`](ledger/README.md) — the human's whole report
   surface. Record kills as first-class rows so nobody re-runs a dead end.
 - Long runs are **background SLURM jobs** (default partition; no custom CPU/mem;
-  `--qos=opportunistic`/`scavenge` for speculative/over-quota). Poll your own jobs with a
-  sane cadence (`squeue --me`); never cancel others'. After a crash, verify `squeue --me`
-  for zombie GPU holders.
+  `--qos=opportunistic`/`scavenge` for speculative/over-quota). **Prefix every SLURM job name with
+  `ai-`** (`pd-lm … --job_name ai-pd-lm`) so AI-launched jobs are identifiable. Poll your own jobs
+  (`squeue --me`); never cancel others'. After a crash, verify `squeue --me` for zombie GPU holders.
 - `/code-review` the diff before merging.
 
 **Killing is a first-class outcome.** "Tried X, here's the run, it regressed Y" with
@@ -116,9 +120,9 @@ artifacts goes in the ledger so nobody re-runs it.
 ### Promotion criteria
 
 - **→ T0:** smoke passes, unit + equivalence tests green, no NaNs.
-- **T0 → T1:** primary tier within band (±`tol_pct`) at a matched step + a real measured
-  speedup on `ss-2L` (single seed, partial run OK).
-- **T1 → merged:** primary tier holds on `pile_llama_simple_mlp-4L` (compared at a matched
-  intermediate step — no need to run to convergence), secondary not meaningfully worse,
-  faithfulness guardrail intact, measured speedup. Escalate to ≥3 seeds / a longer run only
-  if a Δ is near the band edge. Flip the change to default.
+- **T0 → T1:** `pd-speedup-compare` overall verdict WIN or NEUTRAL vs the **3-seed T0 band** at
+  ~50k (faithfulness gate held, primary within-or-better) **and ≥10% speedup** on `ss-2L`. Single
+  experiment seed OK.
+- **T1 → merged:** same verdict vs `s-55ea3f9b` at ~50k + ≥10% speedup, **then a longer
+  confirmation run** showing the win holds later in training (guards early/late crossover). Flip the
+  change to default.

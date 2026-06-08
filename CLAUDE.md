@@ -189,6 +189,8 @@ any `--tags`) to every child run.
 - **Do not use more than 8 GPUs at one time** — this includes simultaneous sweeps / evals.
   (Exception: the Track-2 method-speedup work may use up to 16 GPUs/run and ≤16 in flight — see
   `plan.md` §5.2.)
+- **Prefix agent-launched SLURM job names with `ai-`** (e.g. `pd-lm … --job_name ai-pd-lm`) so
+  AI-submitted jobs are identifiable in `squeue`.
 - Monitor your jobs: `squeue --format="%.18i %.9P %.15j %.12u %.12T %.10M %.9l %.6D %b %R" --me`
 
 ## Files to skip when searching
