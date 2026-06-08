@@ -17,6 +17,7 @@ SigmoidType = Literal[
     "leaky_hard",
     "upper_leaky_hard",
     "lower_leaky_hard",
+    "double_leaky_hard",
     "swish_hard",
 ]
 
@@ -53,6 +54,49 @@ class LowerLeakyHardSigmoidFunction(Function):
         return grad_input, None  # None for alpha gradient since it's not a tensor
 
 
+class DoubleLeakyHardSigmoidFunction(Function):
+    """Hard sigmoid with a *directional* backward leak at **both** rails.
+
+    Forward is exactly `clamp(x, 0, 1)`, so the output is a valid `[0, 1]` value (clean mask
+    semantics). Backward extends `LowerLeakyHardSigmoidFunction` to the upper rail too:
+
+    - `x < 0` (clamped to 0): leak `alpha * grad` only when `grad < 0` — i.e. only when the
+      loss wants the output *higher*, pulling a dead-low input back up.
+    - `x > 1` (clamped to 1): leak `alpha * grad` only when `grad > 0` — i.e. only when the
+      loss wants the output *lower*, pulling a dead-high input back down.
+    - otherwise: pass the gradient through.
+
+    Each rail only leaks in the re-activating direction, so a saturated unit never gets a
+    gradient pushing it further into saturation. Suited to an adversarial source that piles
+    up against both 0 and 1 and must stay trainable there.
+    """
+
+    @override
+    @staticmethod
+    def forward(ctx: Any, x: Tensor, alpha: float = 0.01) -> Tensor:
+        ctx.save_for_backward(x)
+        ctx.alpha = alpha
+        return torch.clamp(x, min=0, max=1)
+
+    @override
+    @staticmethod
+    def backward(ctx: Any, *grad_outputs: Tensor) -> tuple[Tensor, None]:
+        grad_output = grad_outputs[0]
+        (x,) = ctx.saved_tensors
+        alpha = ctx.alpha
+        zeros = torch.zeros_like(grad_output)
+        grad_input = torch.where(
+            x < 0,
+            torch.where(grad_output < 0, alpha * grad_output, zeros),
+            torch.where(
+                x > 1,
+                torch.where(grad_output > 0, alpha * grad_output, zeros),
+                grad_output,
+            ),
+        )
+        return grad_input, None
+
+
 def normal_sigmoid(x: Tensor) -> Tensor:
     return torch.sigmoid(x)
 
@@ -85,6 +129,11 @@ def lower_leaky_hard_sigmoid(x: Tensor, alpha: float = 0.01) -> Tensor:
     See `LowerLeakyHardSigmoidFunction`. Forward matches `clamp(x, 0, 1)` exactly.
     """
     return LowerLeakyHardSigmoidFunction.apply(x, alpha)  # pyright: ignore[reportReturnType]
+
+
+def double_leaky_hard_sigmoid(x: Tensor, alpha: float = 0.01) -> Tensor:
+    """Hard sigmoid with a directional backward leak at both rails (see the Function)."""
+    return DoubleLeakyHardSigmoidFunction.apply(x, alpha)  # pyright: ignore[reportReturnType]
 
 
 def swish(x: Tensor, beta: float = 1.0) -> Tensor:
@@ -120,5 +169,6 @@ SIGMOID_TYPES = {
     "leaky_hard": leaky_hard_sigmoid,
     "upper_leaky_hard": upper_leaky_hard_sigmoid,
     "lower_leaky_hard": lower_leaky_hard_sigmoid,
+    "double_leaky_hard": double_leaky_hard_sigmoid,
     "swish_hard": swish_hard_sigmoid,
 }
