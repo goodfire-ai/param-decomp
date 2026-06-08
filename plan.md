@@ -48,8 +48,8 @@ A Track-2 result is a change to the core method (`param_decomp/`) that is one of
 - **Faithful speedup** — same/better quality at materially lower wall-clock or GPU cost
   (e.g. "PPGD warmup in bf16 → ~X% faster step, recon/CE/L0 within noise").
 - **Faithful simplification** — fewer moving parts / less compute for similar quality
-  (e.g. "hidden-state MSE replaces logit-KL in warmup with no measurable quality loss", or
-  "an approximate component forward matches the exact one within tolerance").
+  (e.g. "hidden-state MSE replaces logit-KL for the output reconstruction with no measurable quality
+  loss", or "an approximate component forward matches the exact one within tolerance").
 
 **"Done" = it holds on `pile_llama_simple_mlp-4L` under the measurement contract (§3).** No higher
 tier is required.
@@ -101,12 +101,12 @@ to keep iteration fast — the user's explicit priority over deeper-tier assuran
 > Costs above are **measured** (2026-06-08): T0 via `pd-speedup-bench`; T1 from the wall-clock of
 > Jose's baseline run (which is **not re-run** by us — we read its stored W&B metrics, §3.1).
 >
-> **Experiments run a reduced budget, not the full curve.** ~**50k steps is enough signal** at both
-> sizes (incl. Jose-size 4L); judge there (compare against the baseline's *cached trajectory at the
-> same step*, §3.3). Only a *promising* result graduates to a longer run for confirmation. So the
-> per-experiment T0/T1 *experiment* config is the **50k baseline config**
-> (`ss_llama_simple_mlp-2L-baseline.yaml` for T0), not the 400k canonical — experiments must use the
-> same config as the baseline they're compared against.
+> **Experiments run a reduced budget, not the full curve.** ~**50k steps is a cheap screen** (compare
+> against the baseline's *cached trajectory at the same step*, §3.3): at 50k the faithfulness gate is
+> meaningful but the primary metrics (PGD-recon, L0) are *not* converged, so a primary WIN is
+> confirmed with a **longer run** before promote/merge. The per-experiment T0/T1 *experiment* config
+> is the **50k baseline config** (`ss_llama_simple_mlp-2L-baseline.yaml` for T0), not the 400k
+> canonical — experiments must use the same config as the baseline they're compared against.
 
 ### How the two tiers divide labor
 
@@ -176,11 +176,18 @@ reward-hack). `pd-speedup-compare` checks eval-config parity and flags a mismatc
   reports the whole vector and an **overall verdict** (faithfulness-gated, then primary-driven).
 
 ### 3.3 Statistics, not vibes
-- **Judge early — don't wait for full training.** ~**50k steps is enough signal** at both sizes
-  (incl. Jose-size 4L). Run experiments to ~50k and compare against the baseline's *cached
-  trajectory at the same step* (`pd-speedup-compare --at_step N`, `N` on a slow-eval step). Per-step
-  *speed* needs only a short run. **A promising result then graduates to a longer run** to confirm
-  the win holds later in training — required before *merge* (§7), since early ranking can cross over.
+- **Judge early, but know what 50k can and can't tell you.** Run experiments to ~50k and compare
+  against the baseline's *cached trajectory at the same step* (`pd-speedup-compare --at_step N`, `N`
+  on a slow-eval step). **Measured on `s-55ea3f9b` (50k vs 400k):** faithfulness is ~settled by 50k
+  (CE/KL within ~5%), so the **faithfulness gate is meaningful at 50k**; but the **primary metrics
+  are far from converged** (PGD-recon ~53%, L0 ~12× off their 400k values). So:
+  - 50k is a **cheap screen** — kill ideas that blow the faithfulness gate or are clearly worse on
+    primary. (For T0 the 3-seed band absorbs the large 50k L0 variance, so within-band T0 calls are
+    fine.)
+  - A **primary WIN is not trusted on 50k alone** — promoting T0→T1 on a 50k screen is fine (it just
+    means "worth trying bigger"), but **before merging** (the final claim) graduate to a **longer
+    confirmation run** toward convergence. Early ranking can cross over, especially L0.
+  - Per-step *speed* needs only a short run regardless.
 - **The band is the measured noise floor.** The **T0 baseline is 3 seeds**; the per-metric band is
   the observed seed spread (floored at `--tol_pct`, default ±2%). `pd-speedup-compare` takes the
   three seed run-ids comma-separated and derives the band — this is how "within band" is defined,
@@ -287,9 +294,10 @@ worth the complexity. Promotion criteria:
 - **T0 → T1:** at ~50k steps, `pd-speedup-compare` overall verdict is WIN or NEUTRAL vs the **3-seed
   T0 band** (faithfulness gate held, primary within-or-better) **and** ≥10% measured speedup on
   `ss-2L`. Single experiment seed is fine (judged against the 3-seed baseline band).
-- **T1 → merged:** same verdict vs `s-55ea3f9b` at ~50k, ≥10% speedup — **then a longer
-  confirmation run** (further into training) showing the win holds. This guards against early/late
-  crossover. This is a finished result; flip the change to default.
+- **T1 → merged:** same verdict vs `s-55ea3f9b` at ~50k (a screen), ≥10% speedup — **then a longer
+  confirmation run** (toward convergence) showing the **primary** metrics (PGD-recon, L0) still hold.
+  Required because primary isn't converged at 50k (L0 ~12× off) — early ranking can cross over.
+  This is a finished result; flip the change to default.
 
 Killing is first-class: a clean "tried X, here's the run, it regressed Y" with artifacts is a good
 outcome and goes in the ledger so nobody re-runs it.
@@ -328,10 +336,16 @@ way (§§1–8). Categorized so agents can work non-overlapping areas in paralle
 **PPGD inner loop**
 - **Precision** — lower precision for the PPGD inner loop; per-phase autocast (today
   `RuntimeConfig.autocast_bf16` is all-or-nothing); fp32 only where faithfulness residuals need it.
-- **Cheaper warmup objective** — hidden-state MSE instead of logit-KL during faithfulness warmup;
-  shorter / scheduled warmup.
 - **Inner-loop budget** — fewer `n_warmup_steps` / `n_samples`; smaller batch for the inner PPGD
-  loop than the outer step; cheaper source optimizer/scope.
+  loop than the outer step; cheaper source optimizer/scope. *(First experiment `spd-ppgd-nwarmup0`
+  tests `n_warmup_steps` 2→0; ~33% faster, quality TBD.)*
+- **Output reconstruction objective** — the recon losses compare target vs masked-model **logits via
+  KL** (`output_loss_type: kl`, `recon_loss_kl`). Try hidden-state MSE instead — cheaper, no
+  vocab-size logit matmul.
+
+**Faithfulness warmup** (`faithfulness_warmup.py`) — note it's a **weight-space** pre-train (AdamW on
+`calc_weight_deltas()` to reconstruct the frozen target *weights*), run **outside autocast**. So the
+levers are: shorter / scheduled warmup, or run it under bf16 autocast (one-time cost, low value).
 - **Approximate component forward** — the masked forwards through components are a big cost;
   subsample components, gate by CI threshold, or low-rank/low-precision the component matmul,
   validated by an equivalence test vs the exact forward.
@@ -415,12 +429,17 @@ backlog is exhausted.
 2. **Dedup.** Grep the ledger for the candidate idea — if tried/killed, skip it.
 3. **Budget.** Sum GPUs across our in-flight jobs; only start a new one if it keeps us **≤16**
    (a single run may itself use up to 16 — multi-node `--dp`, multiple of 8; §5.2).
-4. **Start next experiment** (11.3) if budget + backlog allow. Several experiments' runs may be
-   in the SLURM queue at once (that's the parallelism — not multiple agent processes).
-5. **Wait efficiently.** After launching a run, start a **background Bash `until`-loop** that
-   blocks until the job leaves the queue (`until ! squeue -j <id> -h -t R,PD | grep -q .; do
-   sleep 120; done`). When it exits the harness re-invokes the orchestrator — cheaper and faster
-   than `ScheduleWakeup` polling.
+4. **Top up to the budget — don't serialize.** While GPUs free **and** the backlog has an untried
+   idea, launch experiments (11.3) **back-to-back without waiting**, each as its own SLURM job, until
+   the budget is full. This is the concurrency: several experiment jobs in the queue at once (not
+   several agent processes). For each launch, immediately arm a **non-blocking** watcher (step 5) and
+   move on to the next launch — do **not** block on any single run.
+5. **Arm a per-job watcher (non-blocking).** Right after launching, start a **background Bash
+   `until`-loop** (`run_in_background: true`) per job:
+   `until ! squeue -j <id> -h -t R,PD | grep -q .; do sleep 120; done`. It runs detached; when that
+   job exits, the harness re-invokes the orchestrator for *that* completion (step 1) while the others
+   keep running. Multiple such watchers run concurrently — cheaper than `ScheduleWakeup` polling. End
+   the turn after topping up; the next wake is a completion, not a poll.
 
 ### 11.3 One experiment (worktree-isolated)
 `git worktree add <path> -b feature/spd-<idea> feature/track2-setup`; `uv sync --all-packages` in
@@ -492,8 +511,10 @@ Grounding so agents don't re-derive it. Verify before relying on any line number
   `faithfulness_warmup_*`, `steps`, `batch_size`), `RuntimeConfig.autocast_bf16` (global today),
   `Cadence`. Many ablations are YAML-only, but core code edits are fully allowed in this track.
 - **Component forward:** `param_decomp/component_model.py` (`forward`,
-  `calc_causal_importances`, `calc_weight_deltas`) + `components.py` — all C components computed in
-  one batched einsum (`V^T x` then `@ U`), not per-component; the target for "approximate forward".
+  `calc_causal_importances`, `calc_weight_deltas`) + `components.py`. `forward` **loops over the
+  decomposed modules** (`for module_name in hook_module_names`); within each module the C components
+  are a single batched einsum (`V^T x` then `@ U`), not a Python loop over components. The
+  per-module einsum is the target for the "approximate forward".
 - **Precision:** `RuntimeConfig.autocast_bf16` (global); warmup (`faithfulness_warmup.py`) currently
   runs outside autocast.
 - **Fast validation without a run:** `param_decomp/tests/` (`test_optimize.py`,

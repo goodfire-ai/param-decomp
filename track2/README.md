@@ -55,13 +55,15 @@ ruler, not the thing being measured. (Mitigates goalpost-moving / reward-hacking
 
    Decision rule: faithfulness gate first, then **primary** drives WIN/NEUTRAL. Report the whole
    vector so nothing hides.
-3. **Statistics — band = measured noise floor; judge early.** The **T0 baseline is 3 seeds**; the
-   per-metric band is the seed spread (`pd-speedup-compare <seed1>,<seed2>,<seed3> <variant>`),
-   floored at `--tol_pct` (default ±2%). **Don't wait for full training**: ~**50k steps is enough
-   signal** (incl. 4L) — compare at a matched step against the baseline's cached trajectory
-   (`--at_step 50000`, on a slow-eval step). Experiments may be single-seed (judged against the
-   3-seed baseline band). **A promising result graduates to a longer run** before *merge* (early
-   ranking can cross over). T1's baseline is single-seed → ±`tol_pct` floor only; lean on the T0 band.
+3. **Statistics — band = measured noise floor; 50k is a screen.** The **T0 baseline is 3 seeds**;
+   the per-metric band is the seed spread (`pd-speedup-compare <s1>,<s2>,<s3> <variant>`), floored at
+   `--tol_pct` (default ±2%). Judge at ~50k vs the baseline's cached trajectory (`--at_step 50000`,
+   slow-eval step) — but know what 50k shows: measured on `s-55ea3f9b` (50k vs 400k), **faithfulness
+   is settled by 50k (gate is meaningful), the primary metrics are not** (PGD-recon ~53%, L0 ~12×
+   off). So 50k is a cheap **screen**; a **primary WIN must be confirmed with a longer run** before
+   merge (early ranking, esp. L0, can cross over). Experiments may be single-seed (judged vs the
+   3-seed T0 band, which absorbs the large 50k L0 variance). T1's baseline is single-seed → ±`tol_pct`
+   floor only.
 4. **Eval is frozen (ruler).** The experiment runs the **same `eval:` block** as the baseline —
    metrics, the **PGD-attack strength** (`PGDReconLoss` `n_steps`/`step_size`), eval batch, cadence.
    Weakening the attack or changing eval batch is a reward-hack; `pd-speedup-compare` flags drift.

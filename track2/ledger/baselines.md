@@ -4,9 +4,15 @@ The canonical configs run on each tier, used as the fixed comparison point for e
 experiment. Agents compare against **these exact artifacts**, never a re-derived baseline.
 Re-run a baseline only when a human deliberately rebases it (keep the old one).
 
-**Single-seed policy (2026-06-08):** baselines are one seed each. There is no measured seed
-spread, so "within band" is a **fixed relative tolerance** (`pd-speedup-compare --tol_pct`,
-default ±2%), not a σ. Escalate to multi-seed only before a final claim.
+**Band policy (2026-06-08):**
+- **T0 = 3 seeds** → the per-metric band is their **observed spread** (floored at `--tol_pct`,
+  default ±2%). Pass the 3 seed ids comma-separated to `pd-speedup-compare`.
+- **T1 = 1 seed** (`s-55ea3f9b`, can't re-run) → no spread, so the band is just **±`tol_pct`**;
+  treat T1 deltas near that floor as noise and lean on the T0 band.
+- **50k is a screen, not a converged judgment.** On `s-55ea3f9b`, faithfulness is ~settled by 50k
+  (CE/KL within ~5%) but the *primary* metrics are not (PGD-recon ~53% and L0 ~12× off their 400k
+  values). So at 50k the **faithfulness gate is meaningful**, but a **primary WIN needs a longer
+  confirmation run** (§3.3/§7). The 3-seed T0 band already absorbs the large 50k L0 variance.
 
 ---
 
@@ -21,6 +27,7 @@ Jose's existing run (we do **not** re-run it; the harness reads its stored W&B m
 | steps | 400000 |
 | wall-clock | ~92,711 s (~25.8 h) |
 | local artifact | `runs/s-55ea3f9b/metrics.jsonl` (full trajectory, distilled from W&B history) |
+| eval-ruler | `runs/s-55ea3f9b/experiment_config.yaml` — the `pile-4L` config (verified to match the run's W&B eval block, incl. PGD attack `n_steps 20`/`step_size 0.1`) so `pd-speedup-compare` can check T1 eval-config parity |
 
 Compare against it with: `pd-speedup-compare s-55ea3f9b <variant_run_id> [--at_step N]`.
 
