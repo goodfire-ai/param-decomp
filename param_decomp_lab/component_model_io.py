@@ -197,9 +197,22 @@ class VendoredHarvestModel(nn.Module):
 
     @override
     def forward(
-        self, idx: Int[Tensor, "batch pos"], cache_type: Literal["input"] = "input"
+        self,
+        idx: Int[Tensor, "batch pos"],
+        mask_infos: object | None = None,
+        cache_type: str = "input",
     ) -> OutputWithCache:
-        assert cache_type == "input", f"VendoredHarvestModel only caches inputs; got {cache_type}"
+        # Harvest-only surface: pre-weight-act capture with no masking. Attribution-graph /
+        # intervention compute (cache_type="component_acts"/"output"/"none", or mask_infos)
+        # is intentionally not implemented for vendored 3-pool runs — the app supports only
+        # the component + autointerp viewers for these.
+        if mask_infos is not None or cache_type != "input":
+            raise NotImplementedError(
+                "VendoredHarvestModel implements only harvest-style forward "
+                f"(cache_type='input', no mask_infos); got cache_type={cache_type!r}, "
+                f"mask_infos={'set' if mask_infos is not None else 'None'}. "
+                "Attribution/graph/intervention compute is unsupported for vendored 3-pool runs."
+            )
         logits, cache = self._lm.forward_with_pre_weight_acts(idx)
         return OutputWithCache(output=logits, cache=cache)
 
