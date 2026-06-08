@@ -15,8 +15,8 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from param_decomp.ci_fns import LayerwiseCiConfig
 from param_decomp.configs import (
+    AdamWConfig,
     Cadence,
-    OptimizerConfig,
     PDConfig,
     RuntimeConfig,
 )
@@ -64,8 +64,8 @@ def _pd_config(steps: int) -> PDConfig:
         n_mask_samples=1,
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         decomposition_targets=[DecompositionTargetConfig(module_pattern="fc", C=2)],
-        components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
-        ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
+        components_optimizer=AdamWConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
+        ci_fn_optimizer=AdamWConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
         steps=steps,
         batch_size=2,
         loss_metrics=[FaithfulnessLossConfig(coeff=1.0)],

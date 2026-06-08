@@ -63,6 +63,7 @@ def make_one_layer_component_model(
         decomposition_targets=[DecompositionTarget(module_path="fc", C=C)],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     return comp_model
@@ -99,6 +100,7 @@ def make_two_layer_component_model(
         ],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     return comp_model
