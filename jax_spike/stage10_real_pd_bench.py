@@ -218,10 +218,10 @@ class CIBlock(eqx.Module):
         v = (h @ self.wv.T).reshape(b, t, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
         cos, sin = rope_cos_sin(inv_freq, t, x.dtype)
         q, k = apply_rope(q, k, cos, sin)
-        # bidirectional attention (no causal mask)
-        scores = jnp.einsum("bhqd,bhkd->bhqk", q, k) / jnp.sqrt(self.head_dim).astype(x.dtype)
-        attn = jax.nn.softmax(scores.astype(jnp.float32), axis=-1).astype(x.dtype)
-        y = jnp.einsum("bhqk,bhkd->bhqd", attn, v).transpose(0, 2, 1, 3).reshape(b, t, d)
+        # bidirectional flash attention (no causal mask) — avoids materializing (b,h,t,t) scores
+        qt, kt, vt = (a.transpose(0, 2, 1, 3) for a in (q, k, v))
+        y = jax.nn.dot_product_attention(qt, kt, vt, is_causal=False)
+        y = y.reshape(b, t, d)
         x = x + y @ self.wo.T
         h = rms_norm(x, self.ln2, self.eps)
         return x + (jax.nn.gelu(h @ self.w1) @ self.w2)
