@@ -51,6 +51,11 @@ class AttnConfig(BaseConfig):
         default=10000.0,
         description="Base for RoPE frequency computation.",
     )
+    bidirectional: bool = Field(
+        default=True,
+        description="If True, attend over the full sequence. If False, restrict to causal "
+        "(left-to-right) attention.",
+    )
 
 
 class GlobalSharedTransformerCiConfig(BaseConfig):
@@ -253,11 +258,12 @@ class GlobalSharedTransformerCiFn(nn.Module):
     """Global transformer attending over sequence to produce per-component CI.
 
     Per-layer inputs are RMS-normed, concatenated along the feature dim, projected to
-    `d_model`, and run through `n_layers` `TransformerBlock`s with bidirectional
-    self-attention. A final linear projection produces logits which are split back into
-    per-layer `[..., C]` slices in sorted-name order. For 2D inputs (e.g. TMS, resid_mlp
-    — no sequence axis) a singleton sequence dim is added before the transformer and
-    squeezed out after.
+    `d_model`, and run through `n_layers` `TransformerBlock`s. Attention is bidirectional
+    unless `bidirectional=False`, which restricts it to causal (left-to-right) attention.
+    A final linear projection produces logits which are split back into per-layer
+    `[..., C]` slices in sorted-name order. For 2D inputs (e.g. TMS, resid_mlp — no
+    sequence axis) a singleton sequence dim is added before the transformer and squeezed
+    out after.
     """
 
     def __init__(
@@ -267,6 +273,7 @@ class GlobalSharedTransformerCiFn(nn.Module):
         n_layers: int,
         n_heads: int,
         max_len: int,
+        bidirectional: bool,
         mlp_hidden_dims: list[int] | None = None,
         rope_base: float = 10000.0,
     ):
@@ -294,6 +301,7 @@ class GlobalSharedTransformerCiFn(nn.Module):
                     d_model=d_model,
                     n_heads=n_heads,
                     mlp_hidden_dims=mlp_hidden_dims,
+                    bidirectional=bidirectional,
                     max_len=max_len,
                     rope_base=rope_base,
                 )
@@ -473,6 +481,7 @@ def _make_global_ci_fn(
                 n_heads=transformer_cfg.attn_config.n_heads,
                 mlp_hidden_dims=transformer_cfg.mlp_hidden_dim,
                 max_len=transformer_cfg.attn_config.max_len,
+                bidirectional=transformer_cfg.attn_config.bidirectional,
                 rope_base=transformer_cfg.attn_config.rope_base,
             )
 

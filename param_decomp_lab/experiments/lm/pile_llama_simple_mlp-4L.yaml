@@ -12,6 +12,7 @@ pd:
       - 8192
       attn_config:
         n_heads: 16
+        bidirectional: false
         max_len: 512
         rope_base: 10000.0
   sampling: continuous
