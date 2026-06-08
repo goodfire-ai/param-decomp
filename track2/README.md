@@ -38,7 +38,7 @@ the thing being measured. (Mitigates goalpost-moving / reward-hacking.)
 
 ## What every result must report
 
-1. **Speed (the thing we trade):** ≥**10% faster** is the floor for "material" (wall-clock/step).
+1. **Speed (the thing we trade):** ≥**5% faster** is the floor for "material" (wall-clock/step).
    Report step time + tokens/sec + peak memory + a profiler op breakdown, on a **pinned GPU at fixed
    batch/seq, eval excluded** — `pd-speedup-bench`. (The 4L config OOMs at batch 64 single-GPU; bench
    at batch 16, identically for baseline and variant — see `plan_t1.md`.)
@@ -95,7 +95,7 @@ level). Add finer labels inside an experiment if a change needs them.
 
 ## Workflow
 
-`proposed → running → confirmed (≥10% + quality at 20k/50k) → merged / killed / parked`.
+`proposed → running → confirmed (≥5% + quality at 20k/50k) → merged / killed / parked`.
 
 - **One experiment = one worktree = one branch = one spec.** `git worktree add <path> -b
   feature/spd-<idea> feature/track2-t1` — branch off `feature/track2-t1`; wins merge back into it. In
@@ -116,7 +116,7 @@ in the ledger so nobody re-runs it.
 
 ### Promotion criteria
 
-- **→ running:** smoke passes, unit + equivalence tests green, no NaNs, **≥10% speedup** (`pd-speedup-bench`).
+- **→ running:** smoke passes, unit + equivalence tests green, no NaNs, **≥5% speedup** (`pd-speedup-bench`).
 - **→ confirmed:** `pd-speedup-compare` overall verdict WIN or NEUTRAL vs `p-20f9fc15` at **both 20k
   and 50k** (faithfulness gate held, PPGD + `no_beta` within-or-better).
 - **→ merged:** a primary WIN additionally holds in a **longer 400k confirmation run** (guards

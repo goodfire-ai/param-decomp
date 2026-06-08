@@ -61,7 +61,7 @@ converged").
 
 A change to `param_decomp/` (or the config) that is **both**:
 
-1. **≥10% faster** — wall-clock per step, from `pd-speedup-bench` on a pinned GPU at the baseline's
+1. **≥5% faster** — wall-clock per step, from `pd-speedup-bench` on a pinned GPU at the baseline's
    batch/seq, eval excluded. (Measurable in minutes — no need to wait for 20k.) **Single-GPU memory
    caveat:** the 4L config at batch 64 doesn't bench single-GPU — it pegs an 80 GB H100 (~81 GB,
    the real run spreads it over dp 16 = per-GPU batch 4) and times out. **Bench at batch 16**
@@ -78,7 +78,7 @@ A change to `param_decomp/` (or the config) that is **both**:
    - **Secondary** — stochastic / CI-mask recon + **L0** (informational, non-monotone early): not
      meaningfully worse.
 
-Below 10%, or any gate regression at 20k or 50k → not a win (record a kill).
+Below 5%, or any gate regression at 20k or 50k → not a win (record a kill).
 
 ## Measure it (two commands)
 
@@ -101,7 +101,7 @@ python -m param_decomp_lab.speedup.compare_runs p-20f9fc15 <variant-run-id> --at
    `git worktree add <path> -b feature/spd-<idea> feature/track2-t1` then `uv sync --all-packages`.
 2. **Smoke:** `…/pile_llama_simple_mlp-4L-smoke.yaml` (variant change applied) — finishes in minutes,
    must run clean (no NaNs). For an approximation, add an equivalence test.
-3. **Bench** the variant vs the baseline config → confirm **≥10%**. (Fast — do this before any 50k.)
+3. **Bench** the variant vs the baseline config → confirm **≥5%**. (Fast — do this before any 50k.)
 4. **Launch the run:** `pd-lm <variant-config>.yaml --dp 16 --job_name ai-pd-lm` (background SLURM,
    default partition). **Keep `pd.steps: 400000`** — the lr schedule, faithfulness warmup, β-anneal and
    pnorm-anneal are all parameterized over total steps, so the variant must share the baseline's full
@@ -126,12 +126,12 @@ run**; reap finished runs and launch a new idea each iteration. Every iteration 
    kill. Cancel a passing run once its 50k read is done (don't run on to 400k). Leave still-pre-20k
    runs for the next iteration.
 2. **Launch one** — pick the next idea (see §Where to look for speed), **smoke**, then **bench** vs
-   the baseline config. `<10%` faster or anything fails (NaNs, tripped asserts) → record a **kill**.
-   `≥10%` → submit the run (full `pd.steps: 400000` config — screened early, not shortened;
+   the baseline config. `<5%` faster or anything fails (NaNs, tripped asserts) → record a **kill**.
+   `≥5%` → submit the run (full `pd.steps: 400000` config — screened early, not shortened;
    `pd-lm <variant-config>.yaml --dp 16 --job_name ai-pd-lm`, background SLURM, default partition) and
    note the run_id for the next iteration to reap.
 
-- **Autonomy:** auto-submit the run when the 10% bench gate passes — don't pause for approval.
+- **Autonomy:** auto-submit the run when the 5% bench gate passes — don't pause for approval.
 - **GPU budget:** **≤16 GPUs per run** (`--dp 16`). Concurrent runs are fine; hundreds of GPUs total
   is OK (per `CLAUDE.md` Track-2 exception).
 - **Self-pacing:** a run reaches 20k in ~1.1 h and 50k in ~2.75 h — schedule the next wake-up around

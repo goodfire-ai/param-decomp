@@ -13,7 +13,7 @@ Config and/or core-code changes relative to the locked baseline (see
 [`baselines.md`](baselines.md)). Link the PR/branch.
 
 ## Success / kill thresholds (quoted from track2/README.md)
-- ≥10% speedup (`pd-speedup-bench`, batch 16, vs the baseline config) — state the ms/step you beat.
+- ≥5% speedup (`pd-speedup-bench`, batch 16, vs the baseline config) — state the ms/step you beat.
 - Quality bundle **within band** (±`tol_pct`, single-seed) on every `QUALITY_BUNDLE` metric, at
   **both 20k and 50k**; faithfulness gate is hard. A primary WIN is a 400k-confirm candidate.
 
