@@ -274,13 +274,13 @@ class TestImportanceMinimalityLoss:
 
         out = metric.compute()
         assert isinstance(out, dict)
-        assert set(out) == {"ImportanceMinimalityLoss", "ImportanceMinimalityLoss/no_beta"}
+        assert set(out) == {"ImportanceMinimalityLoss", "ImportanceMinimalityLoss_no_beta"}
 
         # per_component_mean = [2, 3]; no_beta = sum = 5; beta=1 adds log2 term => larger.
         expected_no_beta = 5.0
         expected_with_beta = 2.0 * (1 + math.log2(5)) + 3.0 * (1 + math.log2(7))
         assert torch.allclose(
-            out["ImportanceMinimalityLoss/no_beta"], torch.tensor(expected_no_beta)
+            out["ImportanceMinimalityLoss_no_beta"], torch.tensor(expected_no_beta)
         )
         assert torch.allclose(out["ImportanceMinimalityLoss"], torch.tensor(expected_with_beta))
-        assert out["ImportanceMinimalityLoss"] > out["ImportanceMinimalityLoss/no_beta"]
+        assert out["ImportanceMinimalityLoss"] > out["ImportanceMinimalityLoss_no_beta"]

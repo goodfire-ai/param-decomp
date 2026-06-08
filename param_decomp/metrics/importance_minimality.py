@@ -174,7 +174,7 @@ class ImportanceMinimalityLoss(Metric[ImportanceMinimalityLossConfig]):
                 beta=self.cfg.beta,
                 world_size=1,
             ),
-            f"{name}/no_beta": _finalize(
+            f"{name}_no_beta": _finalize(
                 per_component_sums=reduced_sums,
                 n_examples=n_examples,
                 beta=0.0,
