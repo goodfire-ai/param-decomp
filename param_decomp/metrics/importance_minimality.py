@@ -67,20 +67,33 @@ def _per_component_sums(
     return out, n_examples
 
 
+def _lp_and_entropy_terms(
+    per_component_sums: dict[str, Float[Tensor, " C"]],
+    n_examples: int,
+    world_size: int,
+) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
+    """The two additive parts of the loss, summed over components: `(lp, entropy)`.
+
+    Full loss is `lp + beta * entropy`; `lp` alone is the beta-independent sparsity proxy.
+    """
+    device = next(iter(per_component_sums.values())).device
+    lp = torch.zeros((), device=device)
+    entropy = torch.zeros((), device=device)
+    for layer_sums in per_component_sums.values():
+        per_component_mean = layer_sums / n_examples
+        lp = lp + per_component_mean.sum()
+        entropy = entropy + (per_component_mean * torch.log2(1 + layer_sums * world_size)).sum()
+    return lp, entropy
+
+
 def _finalize(
     per_component_sums: dict[str, Float[Tensor, " C"]],
     n_examples: int,
     beta: float,
     world_size: int,
 ) -> Float[Tensor, ""]:
-    total_loss = torch.zeros((), device=next(iter(per_component_sums.values())).device)
-    for layer_sums in per_component_sums.values():
-        per_component_mean = layer_sums / n_examples
-        layer_loss = (
-            per_component_mean + beta * per_component_mean * torch.log2(1 + layer_sums * world_size)
-        ).sum()
-        total_loss = total_loss + layer_loss
-    return total_loss
+    lp, entropy = _lp_and_entropy_terms(per_component_sums, n_examples, world_size)
+    return lp + beta * entropy
 
 
 def importance_minimality_loss(
@@ -164,9 +177,9 @@ class ImportanceMinimalityLoss(Metric[ImportanceMinimalityLossConfig]):
             k: all_reduce(v, op=ReduceOp.SUM) for k, v in self.per_component_sums.items()
         }
         n_examples = int(all_reduce(self.n_examples, op=ReduceOp.SUM))
-        return _finalize(
-            per_component_sums=reduced_sums,
-            n_examples=n_examples,
-            beta=self.cfg.beta,
-            world_size=1,
-        )
+        lp, entropy = _lp_and_entropy_terms(reduced_sums, n_examples, world_size=1)
+        name = type(self).__name__
+        return {
+            name: lp + self.cfg.beta * entropy,
+            f"{name}_no_beta": lp,
+        }

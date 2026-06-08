@@ -1,6 +1,12 @@
+import math
+
 import torch
 
-from param_decomp.metrics.importance_minimality import importance_minimality_loss
+from param_decomp.metrics.importance_minimality import (
+    ImportanceMinimalityLoss,
+    ImportanceMinimalityLossConfig,
+    importance_minimality_loss,
+)
 
 
 class TestImportanceMinimalityLoss:
@@ -187,8 +193,6 @@ class TestImportanceMinimalityLoss:
         2. beta > 0 produces larger loss than beta = 0
         3. Penalty is finite for edge cases (small/large values)
         """
-        import math
-
         ci_upper_leaky = {
             "layer1": torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32),
         }
@@ -257,3 +261,26 @@ class TestImportanceMinimalityLoss:
             p_anneal_end_frac=1.0,
         )
         assert torch.isfinite(result_large)
+
+    def test_compute_logs_beta_and_no_beta(self: object) -> None:
+        """`compute()` emits both the headline (beta-weighted) loss and a `no_beta` term
+        that is the pure L_p value — a sparsity proxy independent of the tuned `beta`."""
+        cfg = ImportanceMinimalityLossConfig(coeff=1.0, pnorm=1.0, beta=1.0, eps=0.0)
+        metric = ImportanceMinimalityLoss(cfg)
+        # Bypass `bind` (no ComponentModel needed) — set the accumulator state directly.
+        metric.device = "cpu"
+        metric.per_component_sums = {"layer1": torch.tensor([4.0, 6.0])}
+        metric.n_examples = torch.tensor(2, dtype=torch.long)
+
+        out = metric.compute()
+        assert isinstance(out, dict)
+        assert set(out) == {"ImportanceMinimalityLoss", "ImportanceMinimalityLoss_no_beta"}
+
+        # per_component_mean = [2, 3]; no_beta = sum = 5; beta=1 adds log2 term => larger.
+        expected_no_beta = 5.0
+        expected_with_beta = 2.0 * (1 + math.log2(5)) + 3.0 * (1 + math.log2(7))
+        assert torch.allclose(
+            out["ImportanceMinimalityLoss_no_beta"], torch.tensor(expected_no_beta)
+        )
+        assert torch.allclose(out["ImportanceMinimalityLoss"], torch.tensor(expected_with_beta))
+        assert out["ImportanceMinimalityLoss"] > out["ImportanceMinimalityLoss_no_beta"]
