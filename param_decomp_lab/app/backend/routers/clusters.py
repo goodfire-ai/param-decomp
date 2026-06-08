@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from pydantic import ValidationError
+from pydantic import AliasChoices, Field, ValidationError
 
 from param_decomp.base_config import BaseConfig
 from param_decomp_lab.app.backend.state import StateManager
@@ -25,11 +25,15 @@ class ClusterMapping(BaseConfig):
 
 
 class ClusterMappingFile(BaseConfig):
-    """Schema for the on-disk cluster mapping JSON file."""
+    """Schema for the on-disk cluster mapping JSON file.
+
+    Files written before the spd → param-decomp package rename used `spd_run` as the
+    key for the PD run reference. We accept both names via `validation_alias`.
+    """
 
     clustering_run_id: str
     notes: str
-    pd_run: str
+    pd_run: str = Field(validation_alias=AliasChoices("pd_run", "spd_run"))
     iteration: int
     clusters: dict[str, int | None]
 

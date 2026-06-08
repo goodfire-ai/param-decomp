@@ -11,7 +11,8 @@ pd:
       mlp_hidden_dim:
       - 8192
       attn_config:
-        n_heads: 16
+        n_heads: 1
+        bidirectional: false
         max_len: 512
         rope_base: 10000.0
   sampling: continuous
