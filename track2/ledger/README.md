@@ -9,4 +9,4 @@ similar quality). **Stage:** `proposed` / `T0` / `T1` / `merged` / `killed` / `p
 
 | id | idea | claim | stage | headline result |
 |---|---|---|---|---|
-| _(none yet)_ | | | | |
+| spd-ppgd-nwarmup0 | PPGD `n_warmup_steps` 2→0 | speedup | T0 (running) | _TBD_ |
