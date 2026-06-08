@@ -103,10 +103,21 @@ def create_git_snapshot(snapshot_id: str) -> tuple[str, str]:
                 ["git", "diff", "--cached", "--quiet"], cwd=worktree_path, capture_output=True
             )
 
-            # Commit changes if any exist
+            # Commit changes if any exist. `-c gc.auto=0` suppresses the detached background
+            # gc that `git commit` would otherwise spawn: on NFS that gc holds an fd into the
+            # worktree admin dir, racing the `worktree remove` below and failing it with a
+            # silly-renamed `.nfs*` busy file.
             if diff_result.returncode != 0:  # Non-zero means there are changes
                 subprocess.run(
-                    ["git", "commit", "-m", f"snapshot {snapshot_id}", "--no-verify"],
+                    [
+                        "git",
+                        "-c",
+                        "gc.auto=0",
+                        "commit",
+                        "-m",
+                        f"snapshot {snapshot_id}",
+                        "--no-verify",
+                    ],
                     cwd=worktree_path,
                     check=True,
                     capture_output=True,

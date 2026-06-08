@@ -1,4 +1,5 @@
 pd:
+  use_subcomponent_bias: true
   seed: 0
   n_mask_samples: 1
   ci_config:
@@ -8,10 +9,12 @@ pd:
     simple_transformer_ci_cfg:
       d_model: 2048
       n_blocks: 8
+      # down_proj_identity_init: true
       mlp_hidden_dim:
       - 8192
       attn_config:
         n_heads: 16
+        bidirectional: true
         max_len: 512
         rope_base: 10000.0
   sampling: continuous

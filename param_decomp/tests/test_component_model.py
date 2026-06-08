@@ -2,6 +2,7 @@ import tempfile
 from pathlib import Path
 from typing import override
 
+import einops
 import pytest
 import torch
 from jaxtyping import Float, Int
@@ -12,6 +13,8 @@ from param_decomp.ci_fns import (
     GlobalCiConfig,
     GlobalCiFnWrapper,
     GlobalSharedMLPCiFn,
+    GlobalSharedSwigluCiFn,
+    GlobalSharedTransformerCiConfig,
     GlobalSharedTransformerCiFn,
     LayerwiseCiConfig,
     MLPCiFn,
@@ -19,11 +22,12 @@ from param_decomp.ci_fns import (
     VectorMLPCiFn,
     VectorSharedMLPCiFn,
 )
-from param_decomp.ci_nn_blocks import ParallelLinear
+from param_decomp.ci_nn_blocks import AttentionParams, Linear, ParallelLinear
 from param_decomp.component_model import (
     ComponentModel,
 )
 from param_decomp.components import (
+    Components,
     EmbeddingComponents,
     LinearComponents,
     make_components,
@@ -85,6 +89,7 @@ def test_correct_parameters_require_grad():
         ],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[4]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     for module_path, components in component_model.components.items():
@@ -152,6 +157,7 @@ def test_from_checkpoint():
             decomposition_targets=decomposition_targets,
             ci_config=config.ci_config,
             sigmoid_type=config.sigmoid_type,
+            use_subcomponent_bias=config.use_subcomponent_bias,
         )
 
         checkpoint_path = comp_model_dir / "model.pth"
@@ -212,7 +218,61 @@ def test_patch_modules_unsupported_component_type_raises() -> None:
         make_components(
             target_model=model,
             module_to_c={wrong_module_path: 2},
+            use_subcomponent_bias=False,
         )
+
+
+def test_subcomponent_bias_absent_when_disabled():
+    comp = LinearComponents(C=3, d_in=4, d_out=5, use_subcomponent_bias=False)
+    assert comp.component_bias is None
+    assert "component_bias" not in dict(comp.named_parameters())
+
+
+def test_subcomponent_bias_initialised_to_zero():
+    comp = LinearComponents(C=3, d_in=4, d_out=5, use_subcomponent_bias=True)
+    assert comp.component_bias is not None
+    assert comp.component_bias.shape == (3,)
+    assert comp.component_bias.requires_grad
+    torch.testing.assert_close(comp.component_bias, torch.zeros(3))
+
+
+def test_subcomponent_bias_cancels_under_full_mask():
+    """With m == 1 everywhere, the bias terms cancel: masked == unmasked == weight forward."""
+    torch.manual_seed(0)
+    comp = LinearComponents(C=3, d_in=4, d_out=5, use_subcomponent_bias=True)
+    bias = comp.component_bias
+    assert bias is not None
+    with torch.no_grad():
+        bias.normal_()
+
+    x = torch.randn(2, 7, 4)
+    full_mask = torch.ones(2, 7, 3)
+
+    masked_out = comp(x, mask=full_mask)
+    weight_out = einops.einsum(x, comp.weight, "... d_in, d_out d_in -> ... d_out")
+    torch.testing.assert_close(masked_out, weight_out)
+
+
+def test_subcomponent_bias_interpolates_toward_mean_activation():
+    """Masked acts equal mask * (acts - b) + b; mask == 0 leaves only the projected bias."""
+    torch.manual_seed(0)
+    comp = LinearComponents(C=3, d_in=4, d_out=5, use_subcomponent_bias=True)
+    bias = comp.component_bias
+    assert bias is not None
+    with torch.no_grad():
+        bias.normal_()
+
+    x = torch.randn(2, 7, 4)
+    mask = torch.rand(2, 7, 3)
+
+    acts = comp.get_component_acts(x)
+    expected_masked_acts = mask * (acts - bias) + bias
+    expected = einops.einsum(expected_masked_acts, comp.U, "... C, C d_out -> ... d_out")
+    torch.testing.assert_close(comp(x, mask=mask), expected)
+
+    zero_mask = torch.zeros(2, 7, 3)
+    projected_bias = einops.einsum(bias, comp.U, "C, C d_out -> d_out")
+    torch.testing.assert_close(comp(x, mask=zero_mask), projected_bias.expand(2, 7, 5).contiguous())
 
 
 def test_parallel_linear_shapes_and_forward():
@@ -268,6 +328,7 @@ def test_full_weight_delta_matches_target_behaviour():
         ],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[4]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     token_ids = torch.randint(
@@ -301,6 +362,7 @@ def test_input_cache_captures_pre_weight_input():
         ],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     # WHEN we forward the component model with input caching
@@ -337,6 +399,7 @@ def test_weight_deltas():
         ],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     # THEN the weight deltas match the target weight
@@ -371,6 +434,7 @@ def test_replacement_effects_fwd_pass():
         decomposition_targets=[DecompositionTarget(module_path="linear", C=C)],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     # WHEN we set the target model weights to be UV
@@ -426,6 +490,7 @@ def test_replacing_identity():
         decomposition_targets=[DecompositionTarget(module_path="linear.pre_identity", C=C)],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     # and a random input
@@ -475,6 +540,7 @@ def test_routing():
         decomposition_targets=[DecompositionTarget(module_path="linear", C=C)],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     # and a random input
@@ -550,6 +616,7 @@ def test_checkpoint_ci_config_mismatch_global_to_layerwise():
             decomposition_targets=decomposition_targets,
             ci_config=config_global.ci_config,
             sigmoid_type=config_global.sigmoid_type,
+            use_subcomponent_bias=config_global.use_subcomponent_bias,
         )
 
         # Save global CI checkpoint
@@ -625,6 +692,7 @@ def test_checkpoint_ci_config_mismatch_layerwise_to_global():
             decomposition_targets=decomposition_targets,
             ci_config=config_layerwise.ci_config,
             sigmoid_type=config_layerwise.sigmoid_type,
+            use_subcomponent_bias=config_layerwise.use_subcomponent_bias,
         )
 
         # Save layerwise CI checkpoint
@@ -823,16 +891,15 @@ def test_global_shared_mlp_ci_fn_single_layer():
 def test_global_shared_transformer_ci_fn_shapes_and_values():
     """Test GlobalSharedTransformerCiFn produces correct output shapes and valid values."""
     layer_configs = {
-        "layer1": TargetLayerConfig(input_dim=10, C=5),
-        "layer2": TargetLayerConfig(input_dim=20, C=3),
-        "layer3": TargetLayerConfig(input_dim=15, C=7),
+        "layer1": TargetLayerConfig(input_dim=10, output_dim=6, C=5),
+        "layer2": TargetLayerConfig(input_dim=20, output_dim=12, C=3),
+        "layer3": TargetLayerConfig(input_dim=15, output_dim=9, C=7),
     }
     ci_fn = GlobalSharedTransformerCiFn(
         target_model_layer_configs=layer_configs,
         d_model=8,
         n_layers=2,
-        n_heads=2,
-        max_len=1,
+        attention=AttentionParams(n_heads=2, bidirectional=True, max_len=1),
         mlp_hidden_dims=[16],
     )
 
@@ -857,15 +924,14 @@ def test_global_shared_transformer_ci_fn_with_seq_dim():
     """Test GlobalSharedTransformerCiFn with sequence dimension produces valid outputs."""
     seq_len = 5
     layer_configs = {
-        "layer1": TargetLayerConfig(input_dim=10, C=4),
-        "layer2": TargetLayerConfig(input_dim=8, C=3),
+        "layer1": TargetLayerConfig(input_dim=10, output_dim=6, C=4),
+        "layer2": TargetLayerConfig(input_dim=8, output_dim=5, C=3),
     }
     ci_fn = GlobalSharedTransformerCiFn(
         target_model_layer_configs=layer_configs,
         d_model=8,
         n_layers=3,
-        n_heads=2,
-        max_len=seq_len,
+        attention=AttentionParams(n_heads=2, bidirectional=False, max_len=seq_len),
         mlp_hidden_dims=[16],
     )
 
@@ -884,6 +950,112 @@ def test_global_shared_transformer_ci_fn_with_seq_dim():
         assert torch.isfinite(out).all(), f"Output {name} contains NaN or Inf"
 
 
+def test_global_shared_transformer_ci_fn_no_attention():
+    """GlobalSharedTransformerCiFn with attention=None is a pure residual-MLP stack."""
+    seq_len = 4
+    layer_configs = {
+        "layer1": TargetLayerConfig(input_dim=10, output_dim=6, C=4),
+        "layer2": TargetLayerConfig(input_dim=8, output_dim=5, C=3),
+    }
+    ci_fn = GlobalSharedTransformerCiFn(
+        target_model_layer_configs=layer_configs,
+        d_model=8,
+        n_layers=3,
+        attention=None,
+        mlp_hidden_dims=[16],
+    )
+    assert all(block.attn is None for block in ci_fn._blocks)
+
+    inputs = {
+        "layer1": torch.randn(BATCH_SIZE, seq_len, 10),
+        "layer2": torch.randn(BATCH_SIZE, seq_len, 8),
+    }
+    outputs = ci_fn(inputs)
+
+    assert outputs["layer1"].shape == (BATCH_SIZE, seq_len, 4)
+    assert outputs["layer2"].shape == (BATCH_SIZE, seq_len, 3)
+    for name, out in outputs.items():
+        assert torch.isfinite(out).all(), f"Output {name} contains NaN or Inf"
+
+
+def _swiglu_ci_fn_and_components(
+    down_proj_identity_init: bool = False,
+) -> tuple[GlobalSharedSwigluCiFn, dict[str, Components]]:
+    components: dict[str, Components] = {
+        "z.layer": LinearComponents(C=5, d_in=10, d_out=6, use_subcomponent_bias=False),
+        "a.layer": LinearComponents(C=3, d_in=8, d_out=4, use_subcomponent_bias=False),
+    }
+    layer_configs = {
+        "z.layer": TargetLayerConfig(input_dim=10, output_dim=6, C=5),
+        "a.layer": TargetLayerConfig(input_dim=8, output_dim=4, C=3),
+    }
+    ci_fn = GlobalSharedSwigluCiFn(
+        layer_configs,
+        components,
+        d_model=8,
+        n_layers=2,
+        attention=AttentionParams(n_heads=2, bidirectional=True),
+        down_proj_identity_init=down_proj_identity_init,
+        mlp_hidden_dims=[16],
+    )
+    return ci_fn, components
+
+
+def test_global_shared_swiglu_ci_fn_shapes_and_sorted_order():
+    seq_len = 4
+    ci_fn, _ = _swiglu_ci_fn_and_components()
+    assert ci_fn.layer_order == ["a.layer", "z.layer"]  # deterministic sorted concat/split
+
+    inputs = {
+        "z.layer": torch.randn(BATCH_SIZE, seq_len, 10),
+        "a.layer": torch.randn(BATCH_SIZE, seq_len, 8),
+    }
+    outputs = ci_fn(inputs)
+    assert outputs["z.layer"].shape == (BATCH_SIZE, seq_len, 5)
+    assert outputs["a.layer"].shape == (BATCH_SIZE, seq_len, 3)
+    for name, out in outputs.items():
+        assert torch.isfinite(out).all(), f"Output {name} contains NaN or Inf"
+
+
+def test_global_shared_swiglu_ci_fn_down_proj_identity_init():
+    """down_proj_identity_init starts each per-layer down projection as identity + zero bias."""
+    ci_fn, _ = _swiglu_ci_fn_and_components(down_proj_identity_init=True)
+    for name, C in zip(ci_fn.layer_order, ci_fn.c_split_sizes, strict=True):
+        down_proj = ci_fn._down_projections[name.replace(".", "-")]
+        assert isinstance(down_proj, Linear)
+        torch.testing.assert_close(down_proj.W, torch.eye(C))
+        torch.testing.assert_close(down_proj.b, torch.zeros(C))
+
+    # Default keeps the standard (non-identity) init.
+    default_ci_fn, _ = _swiglu_ci_fn_and_components()
+    default_down = default_ci_fn._down_projections["z-layer"]
+    assert isinstance(default_down, Linear)
+    assert not torch.allclose(default_down.W, torch.eye(default_down.input_dim))
+
+
+def test_global_shared_swiglu_ci_fn_uv_tied_and_excluded_from_params():
+    """U/V are the live component params (gradients flow in) but not owned by the CI fn."""
+    ci_fn, components = _swiglu_ci_fn_and_components()
+
+    ci_fn_param_ids = {id(p) for p in ci_fn.parameters()}
+    for component in components.values():
+        assert id(component.V) not in ci_fn_param_ids
+        assert id(component.U) not in ci_fn_param_ids
+
+    inputs = {
+        "z.layer": torch.randn(BATCH_SIZE, 10),
+        "a.layer": torch.randn(BATCH_SIZE, 8),
+    }
+    loss = torch.stack([out.sum() for out in ci_fn(inputs).values()]).sum()
+    loss.backward()
+
+    for component in components.values():
+        assert component.V.grad is not None and component.V.grad.abs().sum() > 0
+        assert component.U.grad is not None and component.U.grad.abs().sum() > 0
+    for name, param in ci_fn.named_parameters():
+        assert param.grad is not None and param.grad.abs().sum() > 0, name
+
+
 def test_component_model_with_global_ci():
     """Test ComponentModel instantiation and forward with global CI config."""
     target_model = tiny_target()
@@ -898,6 +1070,7 @@ def test_component_model_with_global_ci():
         ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     assert isinstance(cm.ci_fn, GlobalCiFnWrapper)
@@ -925,6 +1098,7 @@ def test_component_model_global_ci_calc_causal_importances():
         ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     token_ids = torch.randint(
@@ -957,6 +1131,43 @@ def test_component_model_global_ci_calc_causal_importances():
         assert torch.isfinite(ci_outputs.pre_sigmoid[path]).all(), f"{path} pre_sigmoid has NaN/Inf"
 
 
+def test_component_model_global_swiglu_ci_calc_causal_importances():
+    """End-to-end CI calculation with the tied-SwiGLU global CI fn."""
+    target_model = tiny_target()
+
+    target_module_paths = ["mlp", "out"]
+    C = 4
+    cm = ComponentModel(
+        target_model=target_model,
+        run_batch=run_batch_passthrough,
+        decomposition_targets=[
+            DecompositionTarget(module_path=p, C=C) for p in target_module_paths
+        ],
+        ci_config=GlobalCiConfig(
+            fn_type="global_shared_swiglu",
+            simple_transformer_ci_cfg=GlobalSharedTransformerCiConfig(
+                d_model=8, n_blocks=2, mlp_hidden_dim=[16]
+            ),
+        ),
+        sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
+    )
+    assert isinstance(cm.ci_fn, GlobalCiFnWrapper)
+    assert isinstance(cm.ci_fn._global_ci_fn, GlobalSharedSwigluCiFn)
+
+    token_ids = torch.randint(
+        low=0, high=target_model.embed.num_embeddings, size=(BATCH_SIZE,), dtype=torch.long
+    )
+    _, cache = cm(token_ids, cache_type="input")
+    ci_outputs = cm.calc_causal_importances(cache, sampling="continuous", detach_inputs=False)
+
+    for path in target_module_paths:
+        assert ci_outputs.pre_sigmoid[path].shape == (BATCH_SIZE, C)
+        assert (ci_outputs.lower_leaky[path] <= 1.0).all()
+        assert (ci_outputs.upper_leaky[path] >= 0).all()
+        assert torch.isfinite(ci_outputs.pre_sigmoid[path]).all()
+
+
 def test_component_model_global_ci_different_inputs_different_ci():
     """Test that different inputs produce different CI values (CI is input-dependent)."""
     target_model = tiny_target()
@@ -971,6 +1182,7 @@ def test_component_model_global_ci_different_inputs_different_ci():
         ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     # Two different token inputs
@@ -1004,6 +1216,7 @@ def test_component_model_global_ci_binomial_sampling():
         ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     token_ids = torch.randint(0, target_model.embed.num_embeddings, size=(BATCH_SIZE,))
@@ -1031,6 +1244,7 @@ def test_component_model_global_ci_with_embeddings():
         ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     assert isinstance(cm.ci_fn, GlobalCiFnWrapper)
@@ -1073,6 +1287,7 @@ def test_component_model_global_ci_gradient_flow():
         ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     token_ids = torch.randint(
@@ -1112,6 +1327,7 @@ def test_component_model_global_ci_detach_inputs_blocks_gradients():
         ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     token_ids = torch.randint(
@@ -1151,6 +1367,7 @@ def test_component_model_global_ci_masking_zeros():
         ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     token_ids = torch.randint(
@@ -1199,6 +1416,7 @@ def test_component_model_global_ci_partial_masking():
         ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     token_ids = torch.randint(
@@ -1233,6 +1451,7 @@ def test_component_model_global_ci_weight_deltas_all_ones_matches_target():
         ],
         ci_config=GlobalCiConfig(fn_type="global_shared_mlp", hidden_dims=[16]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     token_ids = torch.randint(
@@ -1289,6 +1508,7 @@ def test_global_ci_save_and_load():
             decomposition_targets=decomposition_targets,
             ci_config=config.ci_config,
             sigmoid_type=config.sigmoid_type,
+            use_subcomponent_bias=config.use_subcomponent_bias,
         )
 
         assert isinstance(cm.ci_fn, GlobalCiFnWrapper)

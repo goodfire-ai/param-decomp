@@ -161,6 +161,14 @@ class PDConfig(BaseConfig):
         "model and component weights.",
     )
 
+    use_subcomponent_bias: bool = Field(
+        default=False,
+        description="If True, give each subcomponent a learnable per-component scalar bias "
+        "(its 'mean activation', initialised to 0). The mask then interpolates between the "
+        "subcomponent activation and this bias instead of between the activation and 0. The "
+        "delta component is unaffected (its bias stays fixed at 0).",
+    )
+
     tied_weights: list[tuple[str, str]] | None = Field(
         default=None,
         description="Pairs (src, tgt) of component module names whose weights should be tied. "

@@ -317,6 +317,7 @@ class Trainer:
             decomposition_targets=decomposition_targets,
             ci_config=pd_config.ci_config,
             sigmoid_type=pd_config.sigmoid_type,
+            use_subcomponent_bias=pd_config.use_subcomponent_bias,
         )
         model.to(device)
 
