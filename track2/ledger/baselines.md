@@ -43,6 +43,38 @@ Final quality-bundle values (the bar), by tier:
 | guardrail | KL (CI-masked) | 0.34315 |
 | guardrail | CE unrecovered (CI-masked) | 0.0042753 |
 
+## T1 (active) — `pile_llama_simple_mlp-4L` post-refactor — ✅ LOCKED
+
+The post-large-refactor replica of Jose's run — **the active T1 baseline** (`plan_t1.md` uses this;
+`s-55ea3f9b` above is the older pre-refactor reference). Final 400k metrics match `s-55ea3f9b`. We do
+**not** re-run it; the harness reads its stored W&B metrics. Judged **early** (20k & 50k) — see
+`plan_t1.md` §"Why early-step screening".
+
+| field | value |
+|---|---|
+| run short code | `p-5b17949e` |
+| W&B | https://wandb.ai/goodfire/param-decomp/runs/p-5b17949e |
+| steps | 400000 (batch 64, dp 16) |
+| wall-clock | ~79,308 s (~22.0 h on 16 GPUs) → ~0.198 s/step (≈1.1 h to 20k, ≈2.75 h to 50k) |
+| local artifact | `runs/p-5b17949e/metrics.jsonl` (distilled from W&B history; eval points every 10k) |
+| eval-ruler | `runs/p-5b17949e/experiment_config.yaml` = the `pile_llama_simple_mlp-4L` config (eval block verified identical to the run's W&B eval, incl. PGD attack `n_steps 20`/`step_size 0.1`) |
+
+**Single baseline → band = ±`tol_pct`** (default ±2%); no seed spread, so treat near-floor deltas as
+noise. Compare with: `pd-speedup-compare p-5b17949e <variant> --at_step 20000` and `--at_step 50000`.
+
+Quality-bundle **bar at the early checkpoints** (20k/50k are both `slow_every`=10k multiples, so all
+bundle metrics are present); 400k shown for reference / convergence context:
+
+| tier | metric | @20k | @50k | @400k | early-step note |
+|---|---|---|---|---|---|
+| primary | PGD recon (PPGD) | 3.0936 | 0.96510 | 0.65964 | monotone↓ — ranks variants |
+| primary | L0 total (sparsity) | 1818.99 | 2465.32 | 200.78 | **non-monotone** — within-band gate only |
+| secondary | Stochastic hidden-acts recon | 0.53357 | 0.44733 | 0.40159 | monotone↓ |
+| secondary | CI-masked hidden-acts recon | 0.90560 | 0.80671 | 0.82510 | ~flat |
+| gate | CE diff (CI-masked) | 0.28642 | 0.27975 | 0.27273 | settled early |
+| gate | KL (CI-masked) | 0.62617 | 0.45567 | 0.33454 | drifting↓ — same-step only |
+| gate | CE unrecovered (CI-masked) | 0.0042498 | 0.0041561 | 0.0040755 | settled early |
+
 ## T0 — `ss_llama_simple_mlp-2L` — ◐ RUNNING (3 seeds, reduced)
 
 Three seeds of `ss_llama_simple_mlp-2L-baseline.yaml` (50k/b32, current repo) — cheaper than the
