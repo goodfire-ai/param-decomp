@@ -9,6 +9,6 @@ similar quality). **Stage:** `proposed` / `running` / `confirmed` / `merged` / `
 
 | id | idea | claim | stage | headline result |
 |---|---|---|---|---|
-| [spd-ppgd-nwarmup0](experiments/spd-ppgd-nwarmup0-t1.md) | PPGD n_warmup_steps 2→0 | speedup | running | bench **28% faster** (650→468 ms/step b16); quality screening (`p-3105a340`) |
-| [spd-ppgd-nwarmup1](experiments/spd-ppgd-nwarmup1.md) | PPGD n_warmup_steps 2→1 | speedup | running | bench **14% faster** (650→558 ms/step b16); quality screening (`p-ebc2de5b`) |
+| [spd-ppgd-nwarmup0](experiments/spd-ppgd-nwarmup0-t1.md) | PPGD n_warmup_steps 2→0 | speedup | killed | 28% faster but **@20k FAIL** — gate regressed + PPGD +3358% (`p-3105a340`) |
+| [spd-ppgd-nwarmup1](experiments/spd-ppgd-nwarmup1.md) | PPGD n_warmup_steps 2→1 | speedup | killed | 14% faster, gate held but **@20k PPGD +228%** → FAIL (`p-ebc2de5b`) |
 | [spd-ppgd-sign](experiments/spd-ppgd-sign.md) | PPGD source optimizer adam→sign | speedup | killed | only **3.5% faster** (650→627 ms/step b16) — below 5% floor |
