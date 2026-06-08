@@ -16,6 +16,7 @@ core library. For eval metrics (user-extensible, lab-side), see
 | `dispatch.py` | `LOSS_METRIC_CLASSES` type→class table + `instantiate_metrics(...)` |
 | `<loss_name>.py` | One file per metric: `<Name>Loss` class + `<Name>LossConfig` config side-by-side |
 | `persistent_pgd_state.py` | PPGD adversarial-source state machine (shared by `persistent_pgd_recon.py`) |
+| `adversarial_distribution_recon.py` | `AdversarialDistributionReconLoss` + config + `AdversaryHeadState` (a learned distribution head on the CI trunk that samples mask sources) |
 | `pgd_utils.py` | Shared PGD helpers used by the regular PGD recon metrics |
 | `output.py` | Shared output-extraction helpers used across recon losses |
 
@@ -33,6 +34,26 @@ entry. Duplicate `type` literals in a single config are rejected.
 A metric that wants to manipulate state coupled to backward overrides `before_backward`
 and/or `after_backward` (see PPGD for the canonical example).
 
+## Adversarial-source recon metrics: PPGD vs. distribution head
+
+Two metrics drive components/CI fn to reconstruct under *adversarially-chosen* masks
+(`mask = ci + (1 - ci) * source`); they differ in how the source is produced:
+
+- `PersistentPGDReconLoss` — sources are tensors optimised in-place by projected gradient
+  ascent, persisting across steps (state in `persistent_pgd_state.py`).
+- `AdversarialDistributionReconLoss` — a single `Linear` head branches off the CI fn's
+  transformer trunk (consuming `GlobalSharedTransformerCiFn.trunk_features`, **detached**, so
+  the ascent gradient never reaches the shared trunk — only the head trains against this
+  loss). The head emits the params of a per-component distribution and the source is a
+  reparameterized sample: `gaussian_sigmoid` (`source = sigmoid(mu + sigma*eps)`) or `beta`
+  (`source = Beta(alpha, beta).rsample()`). The head lives *outside* the CI fn module, so its
+  params are not in the trainer's `ci_fn_optimizer` group; it ascends the recon loss via its
+  own AdamW (held in `AdversaryHeadState`, scheduled like `ci_fn_optimizer`), stepped from
+  `after_backward` on the negated grads the outer backward leaves on its params. It reuses
+  `get_ppgd_mask_infos` for source→mask. `compute()` logs streaming stats of the distribution
+  params + sampled sources (`adv_params/*`) to surface pathologies. Requires a
+  `global_shared_transformer` CI fn; embedding targets are unsupported.
+
 ## Config placement rule
 
 The default home for a config is `param_decomp/configs.py`. Move a config next to its
@@ -49,6 +70,8 @@ Configs currently kept next to their implementation for this reason:
   `GlobalCiConfig`) → `param_decomp.ci_fns`
 - `SamplingType`, `SubsetRoutingType` + members → `param_decomp.masks`
 - Each loss metric's `LossMetricConfig` subclass → `param_decomp/metrics/<name>.py`
+- `AdversaryHeadOptimizerConfig` → `param_decomp/metrics/adversarial_distribution_recon.py`
+  (mirrors `OptimizerConfig`; kept out of `configs.py` to avoid the loss-metric-union cycle)
 
 Never use `if TYPE_CHECKING:` + forward-reference strings to paper over a cycle. If
 you're reaching for that, the config placement is wrong; move the config instead.
