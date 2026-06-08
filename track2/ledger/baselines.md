@@ -33,18 +33,22 @@ whose final 400k metrics `p-5b17949e` matched — PGD recon 0.660 vs 0.652, L0 2
 
 Compare with: `pd-speedup-compare p-20f9fc15 <variant> --at_step 20000` and `--at_step 50000`.
 
-Quality-bundle **bar at the early checkpoints** (20k/50k are both `slow_every`=10k multiples, so all
-bundle metrics are present); 400k shown for reference / convergence context. `no_beta` is **pending**
-until `p-20f9fc15` passes each mark; the rest are the predecessor `p-5b17949e`'s values, to be
-refreshed from `p-20f9fc15`:
+Quality-bundle **bar at the early checkpoints**. **@20k is now read from `p-20f9fc15`** (the live
+baseline, step 20000). **@50k and @400k are still the predecessor `p-5b17949e`'s values (†), pending
+refresh** once `p-20f9fc15` reaches them (`no_beta` @50k/@400k pending too). ⚠ `p-20f9fc15`'s @20k
+PPGD (1.4774) is **~2× below** the predecessor's (3.0936) — the early trajectory does **not** match
+the predecessor within noise, so don't treat the predecessor's @50k as a proxy; refresh from
+`p-20f9fc15`.
 
 | tier | metric | @20k | @50k | @400k | early-step note |
 |---|---|---|---|---|---|
-| primary | PGD recon (PPGD) | 3.0936 | 0.96510 | 0.65964 | monotone↓ — ranks variants |
-| primary | Importance-minimality (no_beta) | _pending_ | _pending_ | _pending_ | pure L_p sparsity term; characterize from `p-20f9fc15` |
-| secondary | Stochastic hidden-acts recon | 0.53357 | 0.44733 | 0.40159 | monotone↓ |
-| secondary | CI-masked hidden-acts recon | 0.90560 | 0.80671 | 0.82510 | ~flat |
-| secondary | L0 total (informational) | 1818.99 | 2465.32 | 200.78 | **non-monotone** — informational only |
-| gate | CE diff (CI-masked) | 0.28642 | 0.27975 | 0.27273 | settled early |
-| gate | KL (CI-masked) | 0.62617 | 0.45567 | 0.33454 | drifting↓ — same-step only |
-| gate | CE unrecovered (CI-masked) | 0.0042498 | 0.0041561 | 0.0040755 | settled early |
+| primary | PGD recon (PPGD) | 1.4774 | 0.96510† | 0.65964† | monotone↓ — ranks variants |
+| primary | Importance-minimality (no_beta) | 275.33 | _pending_ | _pending_ | pure L_p sparsity term; characterize from `p-20f9fc15` |
+| secondary | Stochastic hidden-acts recon | 0.53068 | 0.44733† | 0.40159† | monotone↓ |
+| secondary | CI-masked hidden-acts recon | 0.90267 | 0.80671† | 0.82510† | ~flat |
+| secondary | L0 total (informational) | 1879.5 | 2465.32† | 200.78† | **non-monotone** — informational only |
+| gate | CE diff (CI-masked) | 0.30395 | 0.27975† | 0.27273† | settled early |
+| gate | KL (CI-masked) | 0.64088 | 0.45567† | 0.33454† | drifting↓ — same-step only |
+| gate | CE unrecovered (CI-masked) | 0.0045113 | 0.0041561† | 0.0040755† | settled early |
+
+† predecessor `p-5b17949e` value — pending refresh from `p-20f9fc15` (not yet at this step).
