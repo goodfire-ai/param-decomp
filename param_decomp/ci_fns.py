@@ -11,7 +11,7 @@ from pydantic import Field, PositiveInt, model_validator
 from torch import Tensor, nn
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.ci_nn_blocks import Linear, ParallelLinear, TransformerBlock
+from param_decomp.ci_nn_blocks import AttentionParams, Linear, ParallelLinear, TransformerBlock
 from param_decomp.components import Components, EmbeddingComponents, get_module_input_dim
 
 LayerwiseCiFnType = Literal["mlp", "vector_mlp", "shared_mlp"]
@@ -51,13 +51,20 @@ class AttnConfig(BaseConfig):
         default=10000.0,
         description="Base for RoPE frequency computation.",
     )
+    bidirectional: bool = Field(
+        default=True,
+        description="If True, attend over the full sequence. If False, restrict to causal "
+        "(left-to-right) attention.",
+    )
 
 
 class GlobalSharedTransformerCiConfig(BaseConfig):
     """Config for the global transformer CI fn.
 
-    `d_model` must be divisible by `attn_config.n_heads` and the resulting per-head dim
-    must be even (RoPE). `mlp_hidden_dim` defaults to `[4 * d_model]`.
+    When `attn_config` is set, `d_model` must be divisible by `attn_config.n_heads` and
+    the resulting per-head dim must be even (RoPE). `attn_config=None` drops attention
+    entirely, leaving a stack of pre-norm residual MLP blocks. `mlp_hidden_dim` defaults
+    to `[4 * d_model]`.
     """
 
     d_model: PositiveInt
@@ -67,10 +74,16 @@ class GlobalSharedTransformerCiConfig(BaseConfig):
         description="Hidden dimension for transformer MLP blocks. "
         "If None, defaults to [4 * d_model].",
     )
-    attn_config: AttnConfig
+    attn_config: AttnConfig | None = Field(
+        default=None,
+        description="Self-attention config. If None, the blocks have no attention sublayer "
+        "(a pure residual-MLP stack).",
+    )
 
     @model_validator(mode="after")
     def validate_config(self) -> Self:
+        if self.attn_config is None:
+            return self
         assert self.d_model % self.attn_config.n_heads == 0, (
             f"d_model ({self.d_model}) must be divisible by "
             f"attn_config.n_heads ({self.attn_config.n_heads})"
@@ -253,11 +266,13 @@ class GlobalSharedTransformerCiFn(nn.Module):
     """Global transformer attending over sequence to produce per-component CI.
 
     Per-layer inputs are RMS-normed, concatenated along the feature dim, projected to
-    `d_model`, and run through `n_layers` `TransformerBlock`s with bidirectional
-    self-attention. A final linear projection produces logits which are split back into
-    per-layer `[..., C]` slices in sorted-name order. For 2D inputs (e.g. TMS, resid_mlp
-    — no sequence axis) a singleton sequence dim is added before the transformer and
-    squeezed out after.
+    `d_model`, and run through `n_layers` `TransformerBlock`s. With `attention` set, each
+    block mixes over the sequence with self-attention (bidirectional unless
+    `attention.bidirectional` is False); with `attention=None` the blocks are pure
+    pre-norm residual MLPs with no sequence mixing. A final linear projection produces
+    logits which are split back into per-layer `[..., C]` slices in sorted-name order.
+    For 2D inputs (e.g. TMS, resid_mlp — no sequence axis) a singleton sequence dim is
+    added before the transformer and squeezed out after.
     """
 
     def __init__(
@@ -265,10 +280,8 @@ class GlobalSharedTransformerCiFn(nn.Module):
         target_model_layer_configs: dict[str, TargetLayerConfig],
         d_model: int,
         n_layers: int,
-        n_heads: int,
-        max_len: int,
+        attention: AttentionParams | None,
         mlp_hidden_dims: list[int] | None = None,
-        rope_base: float = 10000.0,
     ):
         super().__init__()
 
@@ -277,7 +290,6 @@ class GlobalSharedTransformerCiFn(nn.Module):
         self.split_sizes = [target_model_layer_configs[name].C for name in self.layer_order]
         self.d_model = d_model
         self.n_transformer_layers = n_layers
-        self.n_heads = n_heads
 
         if mlp_hidden_dims is None:
             mlp_hidden_dims = [4 * d_model]
@@ -292,10 +304,8 @@ class GlobalSharedTransformerCiFn(nn.Module):
             [
                 TransformerBlock(
                     d_model=d_model,
-                    n_heads=n_heads,
                     mlp_hidden_dims=mlp_hidden_dims,
-                    max_len=max_len,
-                    rope_base=rope_base,
+                    attention=attention,
                 )
                 for _ in range(n_layers)
             ]
@@ -463,6 +473,17 @@ def _make_global_ci_fn(
         case "global_shared_transformer":
             transformer_cfg = ci_config.simple_transformer_ci_cfg
             assert transformer_cfg is not None
+            attn_config = transformer_cfg.attn_config
+            attention = (
+                AttentionParams(
+                    n_heads=attn_config.n_heads,
+                    bidirectional=attn_config.bidirectional,
+                    max_len=attn_config.max_len,
+                    rope_base=attn_config.rope_base,
+                )
+                if attn_config is not None
+                else None
+            )
             return GlobalSharedTransformerCiFn(
                 target_model_layer_configs={
                     path: TargetLayerConfig(input_dim=input_dim, C=C)
@@ -470,10 +491,8 @@ def _make_global_ci_fn(
                 },
                 d_model=transformer_cfg.d_model,
                 n_layers=transformer_cfg.n_blocks,
-                n_heads=transformer_cfg.attn_config.n_heads,
+                attention=attention,
                 mlp_hidden_dims=transformer_cfg.mlp_hidden_dim,
-                max_len=transformer_cfg.attn_config.max_len,
-                rope_base=transformer_cfg.attn_config.rope_base,
             )
 
 

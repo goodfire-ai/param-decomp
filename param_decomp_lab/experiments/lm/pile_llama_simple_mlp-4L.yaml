@@ -10,10 +10,11 @@ pd:
       n_blocks: 8
       mlp_hidden_dim:
       - 8192
-      attn_config:
-        n_heads: 16
-        max_len: 512
-        rope_base: 10000.0
+      # attn_config:
+      #   n_heads: 0
+      #   bidirectional: false
+      #   max_len: 512
+      #   rope_base: 10000.0
   sampling: continuous
   sigmoid_type: leaky_hard
   decomposition_targets:

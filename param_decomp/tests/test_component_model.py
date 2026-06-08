@@ -19,7 +19,7 @@ from param_decomp.ci_fns import (
     VectorMLPCiFn,
     VectorSharedMLPCiFn,
 )
-from param_decomp.ci_nn_blocks import ParallelLinear
+from param_decomp.ci_nn_blocks import AttentionParams, ParallelLinear
 from param_decomp.component_model import (
     ComponentModel,
 )
@@ -831,8 +831,7 @@ def test_global_shared_transformer_ci_fn_shapes_and_values():
         target_model_layer_configs=layer_configs,
         d_model=8,
         n_layers=2,
-        n_heads=2,
-        max_len=1,
+        attention=AttentionParams(n_heads=2, bidirectional=True, max_len=1),
         mlp_hidden_dims=[16],
     )
 
@@ -864,8 +863,7 @@ def test_global_shared_transformer_ci_fn_with_seq_dim():
         target_model_layer_configs=layer_configs,
         d_model=8,
         n_layers=3,
-        n_heads=2,
-        max_len=seq_len,
+        attention=AttentionParams(n_heads=2, bidirectional=False, max_len=seq_len),
         mlp_hidden_dims=[16],
     )
 
@@ -880,6 +878,34 @@ def test_global_shared_transformer_ci_fn_with_seq_dim():
     assert outputs["layer2"].shape == (BATCH_SIZE, seq_len, 3)
 
     # Check values are valid
+    for name, out in outputs.items():
+        assert torch.isfinite(out).all(), f"Output {name} contains NaN or Inf"
+
+
+def test_global_shared_transformer_ci_fn_no_attention():
+    """GlobalSharedTransformerCiFn with attention=None is a pure residual-MLP stack."""
+    seq_len = 4
+    layer_configs = {
+        "layer1": TargetLayerConfig(input_dim=10, C=4),
+        "layer2": TargetLayerConfig(input_dim=8, C=3),
+    }
+    ci_fn = GlobalSharedTransformerCiFn(
+        target_model_layer_configs=layer_configs,
+        d_model=8,
+        n_layers=3,
+        attention=None,
+        mlp_hidden_dims=[16],
+    )
+    assert all(block.attn is None for block in ci_fn._blocks)
+
+    inputs = {
+        "layer1": torch.randn(BATCH_SIZE, seq_len, 10),
+        "layer2": torch.randn(BATCH_SIZE, seq_len, 8),
+    }
+    outputs = ci_fn(inputs)
+
+    assert outputs["layer1"].shape == (BATCH_SIZE, seq_len, 4)
+    assert outputs["layer2"].shape == (BATCH_SIZE, seq_len, 3)
     for name, out in outputs.items():
         assert torch.isfinite(out).all(), f"Output {name} contains NaN or Inf"
 
