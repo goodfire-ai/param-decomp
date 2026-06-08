@@ -56,7 +56,11 @@ at the same step = good sign), and **L0 is non-monotonic so it only gates within
 A change to `param_decomp/` (or the config) that is **both**:
 
 1. **≥10% faster** — wall-clock per step, from `pd-speedup-bench` on a pinned GPU at the baseline's
-   batch/seq, eval excluded. (Measurable in minutes — no need to wait for 20k.)
+   batch/seq, eval excluded. (Measurable in minutes — no need to wait for 20k.) **Single-GPU memory
+   caveat:** the 4L config at batch 64 doesn't bench single-GPU — it pegs an 80 GB H100 (~81 GB,
+   the real run spreads it over dp 16 = per-GPU batch 4) and times out. **Bench at batch 16**
+   (measured: 766 ms/step, 57.4 GB) via a batch-16 copy of the config — **identical for baseline
+   and variant** so the per-step ratio is fair; the 50k quality run still uses real batch 64 / dp 16.
 2. **Quality same-or-better** vs the baseline **at both 20k and 50k** — `pd-speedup-compare` prints
    the verdict per tier:
    - **Gate — faithfulness** (CE-diff / KL / CE-unrecovered): must stay **within band** at the same
@@ -158,7 +162,9 @@ re-measure on the bigger 4L config, which has a much larger CI transformer: d_mo
 - Baseline `p-5b17949e` cached and verified: `pd-speedup-compare p-5b17949e <variant> --at_step
   {20000,50000}` resolves and self-checks within-band. Bar values are in
   [`baselines.md`](track2/ledger/baselines.md) §T1-postrefactor.
-- Baseline bench (1×H100, b64/s512, eval excluded): **<BASELINE_MS> ms/step** _(filled from
-  `pd-speedup-bench` on `pile_llama_simple_mlp-4L.yaml`)_.
+- Baseline bench (1×H100, **b16**/s512, eval excluded): **766 ms/step**, peak mem 57.4 GB
+  (`pd-speedup-bench` on a batch-16 copy of `pile_llama_simple_mlp-4L.yaml`). Batch 64 does **not**
+  bench single-GPU — it pegs the 80 GB H100 (~81 GB) and times out; use batch 16 for the bench
+  ratio (same for baseline + variant), batch 64 / dp 16 for the 50k quality run.
 - No T1 experiments launched yet. First idea: confirm T0's `spd-ppgd-nwarmup0` on the 4L run once it
   clears T0.
