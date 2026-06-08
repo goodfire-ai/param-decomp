@@ -164,9 +164,20 @@ class ImportanceMinimalityLoss(Metric[ImportanceMinimalityLossConfig]):
             k: all_reduce(v, op=ReduceOp.SUM) for k, v in self.per_component_sums.items()
         }
         n_examples = int(all_reduce(self.n_examples, op=ReduceOp.SUM))
-        return _finalize(
-            per_component_sums=reduced_sums,
-            n_examples=n_examples,
-            beta=self.cfg.beta,
-            world_size=1,
-        )
+        name = type(self).__name__
+        # `no_beta` is the pure L_p term (beta=0): a sparsity proxy that stays comparable
+        # across experiments that tune `beta`, unlike the headline loss and unlike L0.
+        return {
+            name: _finalize(
+                per_component_sums=reduced_sums,
+                n_examples=n_examples,
+                beta=self.cfg.beta,
+                world_size=1,
+            ),
+            f"{name}/no_beta": _finalize(
+                per_component_sums=reduced_sums,
+                n_examples=n_examples,
+                beta=0.0,
+                world_size=1,
+            ),
+        }
