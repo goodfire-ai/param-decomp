@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>p-55ea3f9b · migration → R2</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
+    --txt:#c9d1d9; --muted:#8b949e; --accent:#58a6ff; --green:#3fb950;
+    --amber:#d29922; --purple:#bc8cff; --pink:#f778ba; --r2:#f6821f;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:radial-gradient(1200px 700px at 50% -10%, #16203033, transparent),var(--bg);
+    color:var(--txt); font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    display:flex; flex-direction:column; align-items:center; min-height:100%;
+    padding:28px 16px 40px;
+  }
+  h1{font-size:20px;margin:0 0 2px;letter-spacing:.3px}
+  h1 .id{color:var(--accent)}
+  .sub{color:var(--muted);font-size:12.5px;margin-bottom:22px}
+  .sub b{color:var(--green)}
+
+  .stage{
+    position:relative; width:min(1080px,100%);
+    display:grid; grid-template-columns:1fr 1.15fr 1fr; gap:0; align-items:stretch;
+  }
+  .zone{padding:14px 12px}
+  .zone-title{font-size:11px;text-transform:uppercase;letter-spacing:1.3px;color:var(--muted);margin-bottom:10px;display:flex;gap:8px;align-items:center}
+  .dot{width:8px;height:8px;border-radius:50%}
+
+  .card{
+    background:var(--panel); border:1px solid var(--border); border-radius:8px;
+    padding:9px 11px; margin-bottom:8px; position:relative; transition:.4s;
+  }
+  .card .name{color:var(--txt)}
+  .card .meta{color:var(--muted);font-size:11.5px;margin-top:1px}
+  .card.used{border-color:#3a4a63}
+  .card.faded{opacity:.32; filter:grayscale(.6)}
+  .card .tag{position:absolute;top:9px;right:10px;font-size:10px;color:var(--muted)}
+  .pin{color:var(--amber)}
+  .pa{color:var(--purple)}
+
+  /* middle consolidated run box */
+  .runbox{
+    background:linear-gradient(180deg,#18202c,#141a24);
+    border:1px solid #2b3950; border-radius:10px; padding:12px; height:100%;
+    box-shadow:0 0 0 1px #0000, 0 8px 30px #00000040; position:relative; overflow:hidden;
+  }
+  .runbox.lit{border-color:var(--accent);box-shadow:0 0 24px #58a6ff33}
+  .runpath{color:var(--accent);font-weight:600;margin-bottom:9px;font-size:13.5px}
+  .runpath::before{content:"📁 "}
+  .frow{
+    display:flex;justify-content:space-between;align-items:center;
+    padding:6px 9px;border:1px dashed #2b3950;border-radius:6px;margin-bottom:6px;
+    opacity:0; transform:translateY(6px); transition:.45s;
+  }
+  .frow.in{opacity:1;transform:none}
+  .frow .fk{color:var(--txt)}
+  .frow .fv{color:var(--muted);font-size:11px}
+  .frow.cfg{border-style:solid;border-color:#4a3a63;background:#1d1830}
+  .frow.cfg .fk{color:var(--purple)}
+
+  .cloud{
+    background:var(--panel); border:1px solid var(--border); border-radius:10px;
+    padding:14px; text-align:center; height:100%; display:flex; flex-direction:column;
+    justify-content:center; gap:10px; transition:.4s;
+  }
+  .cloud.lit{border-color:var(--r2);box-shadow:0 0 24px #f6821f33}
+  .cloud .glyph{font-size:40px}
+  .cloud .dest{color:var(--r2);font-weight:600}
+  .bar{height:10px;background:#0c1117;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+  .bar > i{display:block;height:100%;width:0%;background:linear-gradient(90deg,#f6821f,#ffb35c);transition:width .12s linear}
+  .nums{display:flex;justify-content:space-around;font-size:12px}
+  .nums b{color:var(--txt);font-size:16px;display:block}
+  .nums span{color:var(--muted);font-size:10.5px}
+  .ck{color:var(--green);font-weight:600;opacity:0;transition:.5s}
+  .ck.show{opacity:1}
+
+  /* arrows / connectors */
+  .arrow{position:absolute;top:50%;font-size:11px;color:var(--muted);transform:translateY(-50%);text-align:center;width:33%}
+  .arrowL{left:33.5%}
+  .arrowR{left:66.5%}
+  .arrow .lbl{display:block;margin-bottom:3px;font-size:10px;letter-spacing:.5px}
+
+  /* flying packets */
+  .packet{position:absolute;width:10px;height:10px;border-radius:2px;top:50%;
+    box-shadow:0 0 8px currentColor; opacity:0; pointer-events:none;}
+  .legend{margin-top:20px;display:flex;gap:18px;flex-wrap:wrap;justify-content:center;font-size:11.5px;color:var(--muted)}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:middle}
+  .footer{margin-top:14px;color:var(--muted);font-size:11px;text-align:center}
+  .footer code{color:var(--accent)}
+  .phase{margin-top:8px;height:18px;color:var(--amber);font-size:12px;letter-spacing:.4px}
+</style>
+</head>
+<body>
+  <h1>migrate &amp; ship <span class="id">p-55ea3f9b</span></h1>
+  <div class="sub">old scattered layout → consolidated <b>runs/p-55ea3f9b/</b> (new schema) → Cloudflare R2 · <b>harvest + autointerp only</b></div>
+
+  <div class="stage" id="stage">
+    <!-- SOURCE -->
+    <div class="zone" id="src">
+      <div class="zone-title"><span class="dot" style="background:var(--amber)"></span>old layout · s-55ea3f9b</div>
+      <div class="card used" id="c-harvest"><div class="name">harvest/<span class="pin">s-55ea3f9b</span></div><div class="meta">208 G · 4 subruns (h-*)</div><span class="tag">copied →</span></div>
+      <div class="card used" id="c-autointerp"><div class="name">autointerp/<span class="pin">s-55ea3f9b</span></div><div class="meta">3.2 G · 102 subruns (a-*)</div><span class="tag">copied →</span></div>
+      <div class="card used" id="c-model"><div class="name">runs/<span class="pin">s-55ea3f9b</span></div><div class="meta">model_400000.pth + final_config.yaml</div><span class="tag">copied →</span></div>
+      <div class="card faded"><div class="name">dataset_attributions/ · graph_interp/</div><div class="meta">spd/ · canonical_pgd/ — left behind</div></div>
+    </div>
+
+    <!-- CONSOLIDATED RUN -->
+    <div class="zone">
+      <div class="zone-title"><span class="dot" style="background:var(--accent)"></span>new run · latest main</div>
+      <div class="runbox" id="runbox">
+        <div class="runpath">runs/p-55ea3f9b/</div>
+        <div class="frow cfg" id="f-cfg"><span class="fk">experiment_config.yaml</span><span class="fv">schema migrated ✓</span></div>
+        <div class="frow" id="f-model"><span class="fk">model_400000.pth</span><span class="fv">2.9 G</span></div>
+        <div class="frow" id="f-harvest"><span class="fk">harvest/h-*/</span><span class="fv">db + .pt · 208 G</span></div>
+        <div class="frow" id="f-autointerp"><span class="fk">autointerp/a-*/</span><span class="fv">interp.db · 102</span></div>
+      </div>
+    </div>
+
+    <!-- R2 -->
+    <div class="zone">
+      <div class="zone-title"><span class="dot" style="background:var(--r2)"></span>cloudflare r2 · job 44087</div>
+      <div class="cloud" id="cloud">
+        <div class="glyph">☁️</div>
+        <div class="dest">braun/p-55ea3f9b/</div>
+        <div class="bar"><i id="barfill"></i></div>
+        <div class="nums">
+          <div><b id="n-gb">0</b><span>GiB / 213</span></div>
+          <div><b id="n-obj">0</b><span>objects / 354</span></div>
+        </div>
+        <div class="ck" id="ck">✓ upload complete · 3m38s</div>
+      </div>
+    </div>
+
+    <!-- connectors -->
+    <div class="arrow arrowL"><span class="lbl" id="lblL">cp -a (~214 G)</span>───────▶</div>
+    <div class="arrow arrowR"><span class="lbl" id="lblR">r2 push --batch</span>───────▶</div>
+  </div>
+
+  <div class="phase" id="phase"></div>
+
+  <div class="legend">
+    <span><i style="background:var(--amber)"></i>harvest</span>
+    <span><i style="background:var(--pink)"></i>autointerp</span>
+    <span><i style="background:var(--green)"></i>model / config</span>
+    <span><i style="background:var(--r2)"></i>→ R2</span>
+  </div>
+  <div class="footer">
+    verified: 354 objects byte-for-byte · pull elsewhere with <code>r2 pull braun/p-55ea3f9b</code> · auto-expires 30d
+  </div>
+
+<script>
+const stage = document.getElementById('stage');
+const colors = {harvest:'#d29922', autointerp:'#f778ba', model:'#3fb950', r2:'#f6821f'};
+
+// geometry helper: get center of an element relative to the stage
+function center(el){
+  const s = stage.getBoundingClientRect(), r = el.getBoundingClientRect();
+  return {x: r.left - s.left + r.width/2, y: r.top - s.top + r.height/2};
+}
+
+// spawn a packet that travels from `fromEl` to `toEl`
+function fly(fromEl, toEl, color, dur, delay){
+  const a = center(fromEl), b = center(toEl);
+  const p = document.createElement('div');
+  p.className = 'packet'; p.style.color = color; p.style.background = color;
+  p.style.left = a.x+'px'; p.style.top = a.y+'px'; p.style.marginTop='-5px';
+  stage.appendChild(p);
+  const dx = b.x-a.x, dy = b.y-a.y;
+  p.animate([
+    {transform:'translate(0,0) scale(.6)', opacity:0, offset:0},
+    {opacity:1, offset:.12},
+    {opacity:1, offset:.85},
+    {transform:`translate(${dx}px,${dy}px) scale(1)`, opacity:0, offset:1}
+  ], {duration:dur, delay:delay, easing:'cubic-bezier(.4,.1,.3,1)', fill:'forwards'});
+  setTimeout(()=>p.remove(), dur+delay+60);
+}
+
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+const ease = t => t<.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2;
+
+async function count(el, to, ms, fmt=(v)=>Math.round(v)){
+  const start = performance.now();
+  return new Promise(res=>{
+    function step(now){
+      const t = Math.min(1,(now-start)/ms);
+      el.textContent = fmt(ease(t)*to);
+      if(t<1) requestAnimationFrame(step); else res();
+    }
+    requestAnimationFrame(step);
+  });
+}
+
+function reset(){
+  ['f-cfg','f-model','f-harvest','f-autointerp'].forEach(i=>$(i).classList.remove('in'));
+  $('runbox').classList.remove('lit'); $('cloud').classList.remove('lit');
+  $('ck').classList.remove('show');
+  $('barfill').style.width='0%'; $('n-gb').textContent='0'; $('n-obj').textContent='0';
+}
+
+async function run(){
+  reset();
+  $('phase').textContent = '› reading old layout — harvest, autointerp, checkpoint';
+  await sleep(900);
+
+  // PHASE 1 — copy source → consolidated run
+  $('phase').textContent = '› cp -a  →  runs/p-55ea3f9b/   (originals untouched)';
+  $('runbox').classList.add('lit');
+  const legs = [
+    ['c-model','f-model',colors.model, 'f-cfg'],
+    ['c-harvest','f-harvest',colors.harvest],
+    ['c-autointerp','f-autointerp',colors.autointerp],
+  ];
+  // model + config land first
+  for(let k=0;k<6;k++) fly($('c-model'), $('f-model'), colors.model, 850, k*120);
+  await sleep(500); $('f-model').classList.add('in');
+  await sleep(250); $('f-cfg').classList.add('in');
+  $('phase').textContent = '› final_config.yaml  →  experiment_config.yaml  (flat → nested ExperimentConfig)';
+  $('f-cfg').animate([{boxShadow:'0 0 0 #bc8cff00'},{boxShadow:'0 0 14px #bc8cffaa'},{boxShadow:'0 0 0 #bc8cff00'}],{duration:1200,iterations:2});
+  await sleep(700);
+
+  // harvest (heavy) + autointerp packets
+  $('phase').textContent = '› streaming 4 harvest subruns (208 G) + 102 autointerp subruns (3.2 G)';
+  for(let k=0;k<14;k++) fly($('c-harvest'), $('f-harvest'), colors.harvest, 900, k*90);
+  for(let k=0;k<10;k++) fly($('c-autointerp'), $('f-autointerp'), colors.autointerp, 900, 200+k*90);
+  await sleep(700); $('f-harvest').classList.add('in');
+  await sleep(300); $('f-autointerp').classList.add('in');
+  await sleep(900);
+
+  // PHASE 2 — upload run → R2
+  $('phase').textContent = '› r2 push --batch  (slurm job 44087)  →  braun/p-55ea3f9b/';
+  $('cloud').classList.add('lit');
+  let upWave = setInterval(()=>{
+    const srcs=['f-model','f-harvest','f-autointerp','f-cfg'];
+    const s = srcs[Math.floor(Math.random()*srcs.length)];
+    fly($(s), $('cloud'), colors.r2, 760, 0);
+  }, 110);
+  $('barfill').style.transition='width 3.4s linear'; $('barfill').style.width='100%';
+  await Promise.all([
+    count($('n-gb'), 213, 3400),
+    count($('n-obj'), 354, 3400),
+  ]);
+  clearInterval(upWave);
+  $('barfill').style.transition='width .12s linear';
+  await sleep(250);
+
+  // PHASE 3 — done
+  $('ck').classList.add('show');
+  $('phase').textContent = '✓ 354 objects verified byte-for-byte · COMPLETED';
+  await sleep(2600);
+  $('phase').textContent = '↻ replay';
+  await sleep(900);
+  run();
+}
+window.addEventListener('load', ()=>setTimeout(run, 400));
+window.addEventListener('resize', ()=>{}); // packets recompute geometry each spawn
+</script>
+</body>
+</html>
