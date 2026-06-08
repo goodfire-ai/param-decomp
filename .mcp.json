@@ -1,3 +1,11 @@
 {
-  "mcpServers": {}
+  "mcpServers": {
+    "lore-pd": {
+      "type": "http",
+      "url": "http://pd-lore-mcp.REPLACE_WITH_TAILNET.ts.net:8765/mcp",
+      "headers": {
+        "X-Lore-Author": "agent:claude-opus-4.8@pd-track2"
+      }
+    }
+  }
 }
