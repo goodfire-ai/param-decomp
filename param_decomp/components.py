@@ -63,15 +63,44 @@ class Components(ABC, nn.Module):
 
     `weight ≈ sum_c V[:, c] ⊗ U[c, :]`. `V` maps input activations to per-component
     scalars; `U` maps them back to the output space.
+
+    When `use_subcomponent_bias` is set, each component also carries a learnable scalar
+    `component_bias[c]` (its "mean activation"), initialised to zero. The mask then
+    interpolates between the component activation and this bias instead of between the
+    activation and zero — see `_interpolate_masked_acts`.
     """
 
-    def __init__(self, C: int, v_dim: int, u_dim: int):
+    component_bias: Float[Tensor, " C"] | None
+
+    def __init__(self, C: int, v_dim: int, u_dim: int, use_subcomponent_bias: bool):
         super().__init__()
         self.C = C
         self.V = nn.Parameter(torch.empty(v_dim, C))
         self.U = nn.Parameter(torch.empty(C, u_dim))
         init_param_(self.V, fan_val=v_dim, nonlinearity="linear")
         init_param_(self.U, fan_val=C, nonlinearity="linear")
+        if use_subcomponent_bias:
+            self.component_bias = nn.Parameter(torch.zeros(C))
+        else:
+            self.register_parameter("component_bias", None)
+
+    def _interpolate_masked_acts(
+        self,
+        component_acts: Float[Tensor, "... C"],
+        mask: Float[Tensor, "... C"] | None,
+    ) -> Float[Tensor, "... C"]:
+        """Apply `mask`, interpolating toward `component_bias` rather than zero when present.
+
+        With no bias this is `mask * component_acts`; with a per-component bias `b` it is
+        `mask * (component_acts - b) + b`, so the mask interpolates between the activation
+        and its learned mean instead of between the activation and zero. `mask is None`
+        leaves the activations untouched (the full, unmasked forward).
+        """
+        if mask is None:
+            return component_acts
+        if self.component_bias is None:
+            return component_acts * mask
+        return mask * (component_acts - self.component_bias) + self.component_bias
 
     @property
     @abstractmethod
@@ -108,9 +137,11 @@ class LinearComponents(Components):
         C: int,
         d_in: int,
         d_out: int,
+        use_subcomponent_bias: bool,
         bias: Tensor | None = None,
     ):
-        super().__init__(C, v_dim=d_in, u_dim=d_out)  # NOTE: linear weights are (d_out, d_in)
+        # NOTE: linear weights are (d_out, d_in)
+        super().__init__(C, v_dim=d_in, u_dim=d_out, use_subcomponent_bias=use_subcomponent_bias)
         self.d_in = d_in
         self.d_out = d_out
 
@@ -134,7 +165,11 @@ class LinearComponents(Components):
         weight_delta_and_mask: WeightDeltaAndMask | None = None,
         component_acts_cache: dict[str, Float[Tensor, "... C"]] | None = None,
     ) -> Float[Tensor, "... d_out"]:
-        """Apply `mask * (V^T x)` then project back by `U`, plus optional `weight_delta @ x`.
+        """Apply the (bias-interpolated) `mask` to `V^T x`, project back by `U`, plus
+        optional `weight_delta @ x`.
+
+        Masking is `_interpolate_masked_acts(V^T x, mask)`: plain `mask * (V^T x)` without a
+        subcomponent bias, or interpolation toward `component_bias` with one.
 
         When `component_acts_cache` is given, the pre- and post-detach component activations
         are stored under the keys `"pre_detach"` and `"post_detach"` for downstream gradient
@@ -146,8 +181,7 @@ class LinearComponents(Components):
             component_acts = component_acts.detach().requires_grad_(True)
             component_acts_cache["post_detach"] = component_acts
 
-        if mask is not None:
-            component_acts = component_acts * mask
+        component_acts = self._interpolate_masked_acts(component_acts, mask)
 
         out = einops.einsum(component_acts, self.U, "... C, C d_out -> ... d_out")
 
@@ -177,8 +211,11 @@ class EmbeddingComponents(Components):
         C: int,
         vocab_size: int,
         embedding_dim: int,
+        use_subcomponent_bias: bool,
     ):
-        super().__init__(C, v_dim=vocab_size, u_dim=embedding_dim)
+        super().__init__(
+            C, v_dim=vocab_size, u_dim=embedding_dim, use_subcomponent_bias=use_subcomponent_bias
+        )
         self.vocab_size: int = vocab_size
         self.embedding_dim: int = embedding_dim
 
@@ -215,8 +252,7 @@ class EmbeddingComponents(Components):
             component_acts = component_acts.detach().requires_grad_(True)
             component_acts_cache["post_detach"] = component_acts
 
-        if mask is not None:
-            component_acts = component_acts * mask
+        component_acts = self._interpolate_masked_acts(component_acts, mask)
 
         out = einops.einsum(component_acts, self.U, "... C, C embedding_dim -> ... embedding_dim")
 
@@ -255,6 +291,7 @@ def get_module_input_dim(target_module: nn.Module) -> int:
 def make_components(
     target_model: nn.Module,
     module_to_c: dict[str, int],
+    use_subcomponent_bias: bool,
 ) -> dict[str, Components]:
     """Build one `Components` instance per target module path.
 
@@ -269,6 +306,9 @@ def make_components(
         target_model: Frozen model containing the submodules to decompose.
         module_to_c: Map from submodule path (as returned by `model.get_submodule`) to
             the number of components `C` to allocate for that module.
+        use_subcomponent_bias: When true, every component carries a learnable per-component
+            scalar bias (initialised to zero) that the mask interpolates toward; see
+            `Components._interpolate_masked_acts`. The weight-delta component is unaffected.
 
     Returns:
         Dict keyed by the same submodule paths, mapping to a `Components` instance whose
@@ -284,6 +324,7 @@ def make_components(
                     C=C,
                     d_in=d_in,
                     d_out=d_out,
+                    use_subcomponent_bias=use_subcomponent_bias,
                     bias=target_module.bias.data if target_module.bias is not None else None,  # pyright: ignore[reportUnnecessaryComparison]
                 )
             case RadfordConv1D():
@@ -292,6 +333,7 @@ def make_components(
                     C=C,
                     d_in=d_in,
                     d_out=d_out,
+                    use_subcomponent_bias=use_subcomponent_bias,
                     bias=target_module.bias.data if target_module.bias is not None else None,  # pyright: ignore[reportUnnecessaryComparison]
                 )
             case Identity():
@@ -299,6 +341,7 @@ def make_components(
                     C=C,
                     d_in=target_module.d,
                     d_out=target_module.d,
+                    use_subcomponent_bias=use_subcomponent_bias,
                     bias=None,
                 )
             case nn.Embedding():
@@ -306,6 +349,7 @@ def make_components(
                     C=C,
                     vocab_size=target_module.num_embeddings,
                     embedding_dim=target_module.embedding_dim,
+                    use_subcomponent_bias=use_subcomponent_bias,
                 )
             case _:
                 raise ValueError(f"Module {target_module} not supported")

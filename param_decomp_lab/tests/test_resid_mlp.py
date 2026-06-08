@@ -3,7 +3,7 @@ from pathlib import Path
 from torch.utils.data import DataLoader
 
 from param_decomp.ci_fns import LayerwiseCiConfig
-from param_decomp.configs import Cadence, OptimizerConfig, PDConfig, RuntimeConfig
+from param_decomp.configs import AdamWConfig, Cadence, PDConfig, RuntimeConfig
 from param_decomp.decomposition_targets import (
     DecompositionTargetConfig,
     insert_identity_operations_,
@@ -51,12 +51,12 @@ def test_resid_mlp_decomposition_happy_path(tmp_path: Path) -> None:
         identity_decomposition_targets=[
             DecompositionTargetConfig(module_pattern="layers.*.mlp_in", C=10),
         ],
-        components_optimizer=OptimizerConfig(
+        components_optimizer=AdamWConfig(
             lr_schedule=ScheduleConfig(
                 start_val=1e-3, fn_type="cosine", warmup_pct=0.01, final_val_frac=0.0
             ),
         ),
-        ci_fn_optimizer=OptimizerConfig(
+        ci_fn_optimizer=AdamWConfig(
             lr_schedule=ScheduleConfig(
                 start_val=1e-3, fn_type="cosine", warmup_pct=0.01, final_val_frac=0.0
             ),

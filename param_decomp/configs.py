@@ -5,7 +5,7 @@ governs when the loop emits train logs and checkpoints.
 """
 
 from functools import cached_property
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     Discriminator,
@@ -14,6 +14,7 @@ from pydantic import (
     NonNegativeInt,
     PositiveFloat,
     PositiveInt,
+    Tag,
     model_validator,
 )
 
@@ -41,7 +42,8 @@ from param_decomp.metrics.unmasked_recon import UnmaskedReconLossConfig
 from param_decomp.schedule import ScheduleConfig
 
 
-class OptimizerConfig(BaseConfig):
+class AdamWConfig(BaseConfig):
+    type: Literal["adamw"] = "adamw"
     lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule")
     weight_decay: NonNegativeFloat = Field(default=0.0, description="AdamW weight decay")
     betas: tuple[Probability, Probability] = Field(
@@ -51,6 +53,39 @@ class OptimizerConfig(BaseConfig):
         default=None,
         description="If set, clip the grad norm of this group's parameters to this value",
     )
+
+
+class MuonConfig(BaseConfig):
+    """Muon (Newton-Schulz orthogonalized momentum) for the matrix-shaped parameters.
+
+    Only applicable to the components optimizer (whose `U`/`V` are matrices); any non-matrix
+    parameters (e.g. the per-component bias) fall back to an internal Adam update. See
+    `param_decomp.muon.Muon`.
+    """
+
+    type: Literal["muon"] = "muon"
+    lr_schedule: ScheduleConfig = Field(..., description="Learning rate schedule")
+    weight_decay: NonNegativeFloat = Field(
+        default=0.0, description="Decoupled (AdamW-style) weight decay"
+    )
+    momentum: Probability = Field(default=0.95, description="Muon momentum coefficient")
+    grad_clip_norm: PositiveFloat | None = Field(
+        default=None,
+        description="If set, clip the grad norm of this group's parameters to this value",
+    )
+
+
+def _optimizer_discriminator(v: Any) -> str:
+    """Default the optimizer to AdamW when no `type` is given (pre-Muon configs omit it)."""
+    if isinstance(v, dict):
+        return v.get("type", "adamw")
+    return getattr(v, "type", "adamw")
+
+
+AnyOptimizerConfig = Annotated[
+    Annotated[AdamWConfig, Tag("adamw")] | Annotated[MuonConfig, Tag("muon")],
+    Discriminator(_optimizer_discriminator),
+]
 
 
 AnyLossMetricConfig = Annotated[
@@ -161,6 +196,14 @@ class PDConfig(BaseConfig):
         "model and component weights.",
     )
 
+    use_subcomponent_bias: bool = Field(
+        default=False,
+        description="If True, give each subcomponent a learnable per-component scalar bias "
+        "(its 'mean activation', initialised to 0). The mask then interpolates between the "
+        "subcomponent activation and this bias instead of between the activation and 0. The "
+        "delta component is unaffected (its bias stays fixed at 0).",
+    )
+
     tied_weights: list[tuple[str, str]] | None = Field(
         default=None,
         description="Pairs (src, tgt) of component module names whose weights should be tied. "
@@ -177,11 +220,13 @@ class PDConfig(BaseConfig):
     )
 
     # --- Training ---
-    components_optimizer: OptimizerConfig = Field(
-        ..., description="Optimizer config for the component (LinearComponent etc.) parameters"
+    components_optimizer: AnyOptimizerConfig = Field(
+        ...,
+        description="Optimizer for the component (LinearComponent etc.) parameters. "
+        "AdamW (`type: adamw`, default) or Muon (`type: muon`).",
     )
-    ci_fn_optimizer: OptimizerConfig = Field(
-        ..., description="Optimizer config for the CI function parameters"
+    ci_fn_optimizer: AnyOptimizerConfig = Field(
+        ..., description="Optimizer config for the CI function parameters (typically AdamW)"
     )
     steps: PositiveInt = Field(..., description="Total number of optimisation steps")
     batch_size: PositiveInt = Field(

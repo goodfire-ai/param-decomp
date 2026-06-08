@@ -6,7 +6,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from param_decomp.ci_fns import LayerwiseCiConfig
-from param_decomp.configs import Cadence, OptimizerConfig, PDConfig, RuntimeConfig
+from param_decomp.configs import AdamWConfig, Cadence, PDConfig, RuntimeConfig
 from param_decomp.decomposition_targets import (
     DecompositionTargetConfig,
     insert_identity_operations_,
@@ -59,12 +59,12 @@ def test_tms_decomposition_happy_path(tmp_path: Path) -> None:
             StochasticReconLossConfig(coeff=1.0),
             FaithfulnessLossConfig(coeff=1.0),
         ],
-        components_optimizer=OptimizerConfig(
+        components_optimizer=AdamWConfig(
             lr_schedule=ScheduleConfig(
                 start_val=1e-3, fn_type="cosine", warmup_pct=0.0, final_val_frac=0.0
             ),
         ),
-        ci_fn_optimizer=OptimizerConfig(
+        ci_fn_optimizer=AdamWConfig(
             lr_schedule=ScheduleConfig(
                 start_val=1e-3, fn_type="cosine", warmup_pct=0.0, final_val_frac=0.0
             ),

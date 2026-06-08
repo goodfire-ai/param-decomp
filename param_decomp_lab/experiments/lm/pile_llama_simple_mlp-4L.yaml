@@ -8,10 +8,12 @@ pd:
     simple_transformer_ci_cfg:
       d_model: 2048
       n_blocks: 8
+      # down_proj_identity_init: true
       mlp_hidden_dim:
       - 8192
       attn_config:
         n_heads: 16
+        bidirectional: true
         max_len: 512
         rope_base: 10000.0
   sampling: continuous
@@ -32,12 +34,13 @@ pd:
   identity_decomposition_targets: null
   use_delta_component: true
   components_optimizer:
+    type: muon
     lr_schedule:
-      start_val: 5.0e-05
+      start_val: 1.0e-02
       warmup_pct: 0.0
       final_val_frac: 0.1
       fn_type: cosine
-    grad_clip_norm: 0.01
+    grad_clip_norm: 0.1
   ci_fn_optimizer:
     lr_schedule:
       start_val: 5.0e-05

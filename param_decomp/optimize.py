@@ -29,7 +29,13 @@ from param_decomp.batch_and_loss_fns import (
     move_batch_to_device,
 )
 from param_decomp.component_model import ComponentModel, OutputWithCache, component_grad_norms
-from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
+from param_decomp.configs import (
+    AdamWConfig,
+    Cadence,
+    MuonConfig,
+    PDConfig,
+    RuntimeConfig,
+)
 from param_decomp.decomposition_targets import (
     insert_identity_operations_,
     resolve_decomposition_targets,
@@ -49,6 +55,7 @@ from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.dispatch import instantiate_metrics
 from param_decomp.metrics.output import collect_metric_outputs
 from param_decomp.metrics.persistent_pgd_recon import validate_pgd_scope
+from param_decomp.muon import Muon
 from param_decomp.run_sink import RunSink
 from param_decomp.schedule import get_scheduled_value
 from param_decomp.torch_helpers import bf16_autocast, loop_dataloader
@@ -204,6 +211,31 @@ def tie_component_weights(
         tgt.V.data = src.U.data.T
 
 
+def build_optimizer(
+    params: list[nn.Parameter], config: AdamWConfig | MuonConfig
+) -> optim.Optimizer:
+    """Construct the optimizer selected by `config.type`, seeded with the schedule's peak lr.
+
+    The per-step lr is rewritten from the schedule in the training loop, so the lr passed
+    here only matters before the first step.
+    """
+    match config:
+        case AdamWConfig():
+            return optim.AdamW(
+                params,
+                lr=config.lr_schedule.start_val,
+                betas=config.betas,
+                weight_decay=config.weight_decay,
+            )
+        case MuonConfig():
+            return Muon(
+                params,
+                lr=config.lr_schedule.start_val,
+                momentum=config.momentum,
+                weight_decay=config.weight_decay,
+            )
+
+
 def optimizer_state_by_name(
     optimizer: torch.optim.Optimizer,
     named_params: list[tuple[str, nn.Parameter]],
@@ -255,8 +287,9 @@ def load_optimizer_state_by_name(
 class Trainer:
     """Stateful PD trainer.
 
-    Construction wires up the `ComponentModel`, both AdamW optimizers, and the
-    loss-metric instances declared in ``pd_config.loss_metrics``. :meth:`run`
+    Construction wires up the `ComponentModel`, the two optimizers (each AdamW or
+    Muon per its config), and the loss-metric instances declared in
+    ``pd_config.loss_metrics``. :meth:`run`
     advances the training loop from ``self.step`` to ``pd_config.steps``.
     :meth:`snapshot` and :meth:`from_snapshot` round-trip a
     :class:`~param_decomp.trainer_snapshot.TrainerSnapshot` that a caller can
@@ -317,6 +350,7 @@ class Trainer:
             decomposition_targets=decomposition_targets,
             ci_config=pd_config.ci_config,
             sigmoid_type=pd_config.sigmoid_type,
+            use_subcomponent_bias=pd_config.use_subcomponent_bias,
         )
         model.to(device)
 
@@ -350,18 +384,10 @@ class Trainer:
         self._ci_fn_params = list(component_model.ci_fn.parameters())
         assert len(self._component_params) > 0, "No parameters found in components to optimize"
 
-        self.components_optimizer = optim.AdamW(
-            self._component_params,
-            lr=pd_config.components_optimizer.lr_schedule.start_val,
-            betas=pd_config.components_optimizer.betas,
-            weight_decay=pd_config.components_optimizer.weight_decay,
+        self.components_optimizer = build_optimizer(
+            self._component_params, pd_config.components_optimizer
         )
-        self.ci_fn_optimizer = optim.AdamW(
-            self._ci_fn_params,
-            lr=pd_config.ci_fn_optimizer.lr_schedule.start_val,
-            betas=pd_config.ci_fn_optimizer.betas,
-            weight_decay=pd_config.ci_fn_optimizer.weight_decay,
-        )
+        self.ci_fn_optimizer = build_optimizer(self._ci_fn_params, pd_config.ci_fn_optimizer)
 
         self.loss_metrics, _ = instantiate_metrics(pd_config, component_model, device)
 
