@@ -14,7 +14,7 @@ under the rules below. No 3-pool / multipool / 8b work — that is Track 1.
 
 | Config | Smoke | Baseline |
 |---|---|---|
-| `param_decomp_lab/experiments/lm/pile_llama_simple_mlp-4L.yaml` | `…-4L-smoke.yaml` | `p-5b17949e` (see [`ledger/baselines.md`](ledger/baselines.md)) |
+| `param_decomp_lab/experiments/lm/pile_llama_simple_mlp-4L.yaml` | `…-4L-smoke.yaml` | `p-20f9fc15` (see [`ledger/baselines.md`](ledger/baselines.md)) |
 
 Variants reproduce the baseline config except the one change under test. Iterate fast by reading
 **20k** (~1.1 h) then confirming at **50k** (~2.75 h); a real WIN is confirmed by a longer (400k) run.
@@ -28,7 +28,7 @@ of:
 
 - the **eval harness** / eval-metric classes (`param_decomp_lab/eval_metrics/`),
 - the **quality bundle** (`param_decomp_lab/speedup/quality_bundle.py`),
-- the **baseline pointer** (`ledger/baselines.md` / the cached `p-5b17949e` artifacts),
+- the **baseline pointer** (`ledger/baselines.md` / the cached `p-20f9fc15` artifacts),
 - this contract.
 
 Changing any of these is a separate, explicitly-flagged change a human reviews — it's the ruler, not
@@ -45,18 +45,20 @@ the thing being measured. (Mitigates goalpost-moving / reward-hacking.)
 2. **Quality bundle (the objective), tiered** — all of `QUALITY_BUNDLE` (`quality_bundle.py`), via
    `pd-speedup-compare`, which prints an **overall verdict**:
    - **primary**: **PPGD recon** (`PGDReconLoss`, the eval-time PGD attack — *not* the train-time
-     persistent loss) within-or-better; **L0** within band only (non-monotonic early);
-   - **secondary** (informational): stochastic-mask recon + CI-mask recon;
+     persistent loss) + **`no_beta`** (`ImportanceMinimalityLoss/no_beta`, the beta-independent
+     sparsity term), each within-or-better;
+   - **secondary** (informational): stochastic-mask recon + CI-mask recon + **L0** (non-monotonic
+     early);
    - **gate** — CI-masked faithfulness (CE-diff / CE-unrecovered / KL). A **hard constraint**:
-     regress it past the band and the result **fails regardless of PPGD/L0** (else a "win" is just
-     trading faithfulness for lower L0 — a worse decomposition).
+     regress it past the band and the result **fails regardless of PPGD/`no_beta`** (else a "win" is
+     just trading faithfulness for lower sparsity — a worse decomposition).
 
    Decision rule: faithfulness gate first, then **primary** drives WIN/NEUTRAL. Report the whole
    vector so nothing hides.
 3. **Statistics — single-seed band; early-screen.** The baseline is one seed → band = ±`tol_pct`
    (default ±2%); treat near-floor deltas as noise. Judge **at the same step**: `--at_step 20000`
    then `--at_step 50000` (both slow-eval steps). Faithfulness is settled by 50k (gate is
-   meaningful); the primary metrics are not (PGD-recon still high, L0 non-monotonic). So 20k/50k is a
+   meaningful); the primary metrics are not (PGD-recon still high). So 20k/50k is a
    **screen**; a **primary WIN must be confirmed with a longer 400k run** before merge.
 4. **Eval is frozen (ruler).** The experiment runs the **same `eval:` block** as the baseline —
    metrics, the **PGD-attack strength** (`PGDReconLoss` `n_steps`/`step_size`), eval batch, cadence.
@@ -81,8 +83,8 @@ python -m param_decomp_lab.experiments.lm.run \
 python -m param_decomp_lab.speedup.benchmark <variant-config>.yaml --out bench.md
 
 # 3. Compare — tiered diff + faithfulness-gated verdict, at both early checkpoints.
-python -m param_decomp_lab.speedup.compare_runs p-5b17949e <variant_run_id> --at_step 20000 --out cmp20k.md
-python -m param_decomp_lab.speedup.compare_runs p-5b17949e <variant_run_id> --at_step 50000 --out cmp50k.md
+python -m param_decomp_lab.speedup.compare_runs p-20f9fc15 <variant_run_id> --at_step 20000 --out cmp20k.md
+python -m param_decomp_lab.speedup.compare_runs p-20f9fc15 <variant_run_id> --at_step 50000 --out cmp50k.md
 ```
 
 Profiler instrumentation note: the `pd/*` `record_function` labels live on the Track-1 profiling
@@ -115,7 +117,7 @@ in the ledger so nobody re-runs it.
 ### Promotion criteria
 
 - **→ running:** smoke passes, unit + equivalence tests green, no NaNs, **≥10% speedup** (`pd-speedup-bench`).
-- **→ confirmed:** `pd-speedup-compare` overall verdict WIN or NEUTRAL vs `p-5b17949e` at **both 20k
-  and 50k** (faithfulness gate held, PPGD within-or-better, L0 within band).
+- **→ confirmed:** `pd-speedup-compare` overall verdict WIN or NEUTRAL vs `p-20f9fc15` at **both 20k
+  and 50k** (faithfulness gate held, PPGD + `no_beta` within-or-better).
 - **→ merged:** a primary WIN additionally holds in a **longer 400k confirmation run** (guards
   early/late crossover). Flip the change to default.

@@ -7,10 +7,17 @@ or removing a bundle metric is a deliberate, separately-flagged change.
 
 What we're actually looking for (tiers), see also plan_t1.md:
   - `primary`   — the objective. A speedup must hold these vs baseline: PPGD recon loss
-                  and L0 (sparsity). These dominate promote/kill calls.
-  - `secondary` — weighted less: stochastic-mask recon and CI-mask recon.
+                  and the beta-independent importance-minimality term (sparsity). These
+                  dominate promote/kill calls.
+  - `secondary` — weighted less: stochastic-mask recon, CI-mask recon, and L0.
   - `guardrail` — faithfulness (CE/KL under the CI mask) must not blow up; sanity, not
                   the thing we optimize.
+
+Sparsity note: the *primary* sparsity metric is `ImportanceMinimalityLoss/no_beta` — the
+pure L_p importance-minimality term with `beta=0`, the actual penalty the optimizer drives
+down. It stays comparable across experiments that tune `beta` (unlike the headline,
+beta-weighted `ImportanceMinimalityLoss`) and is smooth (unlike L0, which is non-monotone
+early — see plan_t1.md). L0 is kept as a secondary, informational read only.
 
 PPGD note: the *primary* recon metric is the eval-time `PGDReconLoss` (a fresh PGD attack
 on the masked reconstruction), NOT the train-time `PersistentPGDReconLoss`. The eval metric
@@ -42,7 +49,12 @@ class BundleMetric:
 QUALITY_BUNDLE: list[BundleMetric] = [
     # --- primary: the objective ---
     BundleMetric("eval/loss/PGDReconLoss", "PGD recon (PPGD)", True, "primary"),
-    BundleMetric("eval/l0/0.0_total", "L0 total (sparsity)", True, "primary"),
+    BundleMetric(
+        "eval/loss/ImportanceMinimalityLoss/no_beta",
+        "Importance-minimality (no_beta)",
+        True,
+        "primary",
+    ),
     # --- secondary: weighted less ---
     BundleMetric(
         "eval/loss/StochasticHiddenActsReconLoss", "Stochastic hidden-acts recon", True, "secondary"
@@ -50,6 +62,7 @@ QUALITY_BUNDLE: list[BundleMetric] = [
     BundleMetric(
         "eval/loss/CIHiddenActsReconLoss", "CI-masked hidden-acts recon", True, "secondary"
     ),
+    BundleMetric("eval/l0/0.0_total", "L0 total (informational)", True, "secondary"),
     # --- guardrail: faithfulness must not blow up ---
     BundleMetric("eval/ce_kl/ce_difference_ci_masked", "CE diff (CI-masked)", True, "guardrail"),
     BundleMetric("eval/ce_kl/kl_ci_masked", "KL (CI-masked)", True, "guardrail"),
