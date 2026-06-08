@@ -66,7 +66,7 @@ A change to `param_decomp/` (or the config) that is **both**:
    caveat:** the 4L config at batch 64 doesn't bench single-GPU — it pegs an 80 GB H100 (~81 GB,
    the real run spreads it over dp 16 = per-GPU batch 4) and times out. **Bench at batch 16**
    (measured: 766 ms/step, 57.4 GB) via a batch-16 copy of the config — **identical for baseline
-   and variant** so the per-step ratio is fair; the 50k quality run still uses real batch 64 / dp 16.
+   and variant** so the per-step ratio is fair; the quality run still uses real batch 64 / dp 16.
 2. **Quality same-or-better** vs the baseline **at both 20k and 50k** — `pd-speedup-compare` prints
    the verdict per tier:
    - **Gate — faithfulness** (CE-diff / KL / CE-unrecovered): must stay **within band** at the same
@@ -102,11 +102,15 @@ python -m param_decomp_lab.speedup.compare_runs p-20f9fc15 <variant-run-id> --at
 2. **Smoke:** `…/pile_llama_simple_mlp-4L-smoke.yaml` (variant change applied) — finishes in minutes,
    must run clean (no NaNs). For an approximation, add an equivalence test.
 3. **Bench** the variant vs the baseline config → confirm **≥10%**. (Fast — do this before any 50k.)
-4. **Run to 50k:** `pd-lm <variant-config>.yaml --dp 16 --job_name ai-pd-lm` with `pd.steps: 50000`
-   (background SLURM, default partition). One run yields **both** the 20k and 50k eval points
-   (eval/slow every 1k/10k). ~1.1 h to 20k, ~2.75 h to 50k on 16 GPUs.
+4. **Launch the run:** `pd-lm <variant-config>.yaml --dp 16 --job_name ai-pd-lm` (background SLURM,
+   default partition). **Keep `pd.steps: 400000`** — the lr schedule, faithfulness warmup, β-anneal and
+   pnorm-anneal are all parameterized over total steps, so the variant must share the baseline's full
+   schedule or the same-step compare is invalid. We screen early by *reading* the run at 20k/50k and
+   then cancelling it — **never** by shortening the config. One run yields both the 20k and 50k eval
+   points (eval/slow every 1k/10k). ~1.1 h to 20k, ~2.75 h to 50k on 16 GPUs.
 5. **Compare** at **20k first** (the fast read, ~1.1 h) then **50k** (confirm). Read the verdict —
-   **faithfulness gate first**, then PPGD + `no_beta`; L0 informational.
+   **faithfulness gate first**, then PPGD + `no_beta`; L0 informational. After the 50k read, **cancel
+   the SLURM job** (a 400k confirm is a separate, deliberate decision — don't let it run on).
 6. **Record** one row in `track2/ledger/README.md` + a card in `track2/ledger/experiments/<id>.md`:
    speedup, both-step verdicts, run_id + W&B URL. Mark a PPGD-improving result as a **400k-confirm
    candidate**, not a closed win.
@@ -119,13 +123,15 @@ run**; reap finished runs and launch a new idea each iteration. Every iteration 
 1. **Reap** — for each pending run from a prior iteration: if it's **past 20k**, run the §"Measure it"
    compare at 20k (and at 50k once past 50k), read the verdict (**gate first**), record it. A run
    that's failed the gate at 20k can be **cancelled early** (don't wait for 50k) and recorded as a
-   kill. Leave still-pre-20k runs for the next iteration.
+   kill. Cancel a passing run once its 50k read is done (don't run on to 400k). Leave still-pre-20k
+   runs for the next iteration.
 2. **Launch one** — pick the next idea (see §Where to look for speed), **smoke**, then **bench** vs
    the baseline config. `<10%` faster or anything fails (NaNs, tripped asserts) → record a **kill**.
-   `≥10%` → submit the 50k run (`pd-lm <variant-config>.yaml --dp 16 --job_name ai-pd-lm`, background
-   SLURM, default partition) and note the run_id for the next iteration to reap.
+   `≥10%` → submit the run (full `pd.steps: 400000` config — screened early, not shortened;
+   `pd-lm <variant-config>.yaml --dp 16 --job_name ai-pd-lm`, background SLURM, default partition) and
+   note the run_id for the next iteration to reap.
 
-- **Autonomy:** auto-submit the 50k run when the 10% bench gate passes — don't pause for approval.
+- **Autonomy:** auto-submit the run when the 10% bench gate passes — don't pause for approval.
 - **GPU budget:** **≤16 GPUs per run** (`--dp 16`). Concurrent runs are fine; hundreds of GPUs total
   is OK (per `CLAUDE.md` Track-2 exception).
 - **Self-pacing:** a run reaches 20k in ~1.1 h and 50k in ~2.75 h — schedule the next wake-up around
@@ -175,6 +181,6 @@ large CI transformer (d_model 2048 / 8 blocks), so re-profile rather than assume
 - Baseline bench (1×H100, **b16**/s512, eval excluded): **766 ms/step**, peak mem 57.4 GB
   (`pd-speedup-bench` on a batch-16 copy of `pile_llama_simple_mlp-4L.yaml`). Batch 64 does **not**
   bench single-GPU — it pegs the 80 GB H100 (~81 GB) and times out; use batch 16 for the bench
-  ratio (same for baseline + variant), batch 64 / dp 16 for the 50k quality run.
+  ratio (same for baseline + variant), batch 64 / dp 16 for the quality run.
 - No experiments launched yet. First idea: drop the PPGD inner warmup steps (`n_warmup_steps` 2→0) —
   the prime PPGD lever from the smaller-model probe.
