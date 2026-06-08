@@ -35,6 +35,9 @@ pd-resid-mlp = "param_decomp_lab.experiments.resid_mlp.run:cli"
 pd-lm = "param_decomp_lab.experiments.lm.run:cli"
 pd-lm-layerwise = "param_decomp_lab.experiments.lm.layerwise:cli"
 pd-pretrain = "param_decomp_lab.experiments.lm.pretrain.cli:cli"
+# Track-2 (method speedups) harness: step benchmark + quality-bundle diff.
+pd-speedup-bench = "param_decomp_lab.speedup.benchmark:cli"
+pd-speedup-compare = "param_decomp_lab.speedup.compare_runs:cli"
 # Post-processing pipeline CLIs (SLURM-driven; lab subtrees).
 pd-clustering = "param_decomp_lab.clustering.scripts.run_pipeline:cli"
 pd-cluster-harvest = "param_decomp_lab.clustering.scripts.run_harvest:cli"
@@ -88,6 +91,7 @@ packages = [
     "param_decomp_lab.investigate.scripts",
     "param_decomp_lab.postprocess",
     "param_decomp_lab.scripts",
+    "param_decomp_lab.speedup",
     "param_decomp_lab.topology",
     "param_decomp_lab.toy_models",
 ]

@@ -11,8 +11,10 @@ module-specific detail; see [Module pointers](#module-pointers).
 source .venv/bin/activate
 ```
 
-In a worktree, run `uv sync` first so the worktree has its own `.venv`. Do NOT `cd` to
-the main repo — all commands (including git) run in the worktree.
+In a worktree, run `uv sync --all-packages` (or `make install-lab`) first so the worktree
+has its own `.venv` with **both** workspace packages — plain `uv sync` installs only core
+and the lab CLIs (`pd-lm`, `pd-speedup-*`, deps like `fire`) will be missing. Do NOT `cd`
+to the main repo — all commands (including git) run in the worktree.
 
 `.env` file with WandB credentials required (see `.env.example`).
 
@@ -117,6 +119,7 @@ from param_decomp.batch_and_loss_fns import RunBatch, ReconstructionLoss
 | `param_decomp_lab/investigate/` | `param_decomp_lab/investigate/CLAUDE.md` | Agent investigation of a research question |
 | `param_decomp_lab/app/` | `param_decomp_lab/app/CLAUDE.md` | Web visualization (FastAPI + Svelte) |
 | `param_decomp_lab/experiments/lm/pretrain/` | `param_decomp_lab/experiments/lm/pretrain/CLAUDE.md` | LM target-model pretraining |
+| `param_decomp_lab/speedup/` | `param_decomp_lab/speedup/CLAUDE.md` | Track-2 (method-speedup) harness: step benchmark + quality-bundle diff (contract/ledger in `track2/`) |
 
 ## Saved-run layout
 
@@ -186,6 +189,9 @@ any `--tags`) to every child run.
 ## Cluster usage
 
 - **Do not use more than 8 GPUs at one time** — this includes simultaneous sweeps / evals.
+  (Exception: the Track-2 method-speedup work may use up to 16 GPUs/run — see `plan_t1.md`.)
+- **Prefix agent-launched SLURM job names with `ai-`** (e.g. `pd-lm … --job_name ai-pd-lm`) so
+  AI-submitted jobs are identifiable in `squeue`.
 - Monitor your jobs: `squeue --format="%.18i %.9P %.15j %.12u %.12T %.10M %.9l %.6D %b %R" --me`
 
 ## Files to skip when searching
