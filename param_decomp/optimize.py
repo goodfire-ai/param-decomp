@@ -202,8 +202,12 @@ def _fully_shard_component_model(component_model: ComponentModel, mesh: "DeviceM
         resident term for an 8B target;
       - each CI-fn transformer block (`ci_fn._blocks[i]`) when the global-transformer CI
         fn is in use;
-      - each per-site component module (`components[path]`, the trainable V/U);
-      - the root `ComponentModel`.
+      - the root `ComponentModel`, which sweeps up every remaining param — including the
+        trainable V/U components — into one sharded group.
+
+    The component modules (`LinearComponents`) are not wrapped individually: FSDP2 swaps a
+    module's `__class__` to inject its methods, which fails on the ABC-derived `Components`
+    object layout. They shard fine as part of the root group.
 
     `reshard_after_forward=False` everywhere: the single-pool recon issues one masked
     forward per decomposition site (plus the CI-fn forward and the unmasked target
@@ -230,9 +234,6 @@ def _fully_shard_component_model(component_model: ComponentModel, mesh: "DeviceM
     if isinstance(ci_blocks, nn.ModuleList):
         for block in ci_blocks:
             fully_shard(block, mesh=mesh, reshard_after_forward=False)
-
-    for path in component_model.target_module_paths:
-        fully_shard(component_model.components[path], mesh=mesh, reshard_after_forward=False)
 
     fully_shard(component_model, mesh=mesh, reshard_after_forward=False)
 
