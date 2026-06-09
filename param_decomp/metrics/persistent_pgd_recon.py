@@ -29,6 +29,7 @@ from param_decomp.metrics.persistent_pgd_state import (
     PersistentPGDSourceScope,
     PersistentPGDState,
     PGDOptimizerConfig,
+    PPGDSources,
     RepeatAcrossBatchScope,
     get_ppgd_mask_infos,
 )
@@ -126,7 +127,7 @@ class _PersistentPGDReconBase[
     def __init__(self, cfg: TConfig) -> None:
         super().__init__(cfg)
         self.state: PersistentPGDState | None = None
-        self._source_step_active = False
+        self._pending_source_grads: PPGDSources | None = None
         # Stash from `load_state_dict` if called before the first `update()` —
         # `PersistentPGDState` needs batch_dims, which we only learn from a live ctx.
         self._pending_resume_state: dict[str, Any] | None = None
@@ -240,20 +241,17 @@ class _PersistentPGDReconBase[
 
     @override
     def before_backward(self, live_loss: Tensor | None) -> None:
-        # The sources are leaves in the `total_loss` graph, so the upcoming
-        # `total_loss.backward()` populates `source.grad` directly — no separate
-        # `retain_graph=True` source backward is needed (saves ~one full backward/step).
-        self._source_step_active = live_loss is not None and self.state is not None
+        if live_loss is None or self.state is None:
+            return
+        self._pending_source_grads = self.state.get_grads(live_loss, retain_graph=True)
 
     @override
     def after_backward(self) -> None:
-        if not self._source_step_active:
+        if self._pending_source_grads is None:
             return
         assert self.state is not None
-        coeff = self.cfg.coeff
-        assert coeff is not None
-        self.state.step_from_param_grad(loss_coeff=coeff)
-        self._source_step_active = False
+        self.state.step(self._pending_source_grads)
+        self._pending_source_grads = None
 
     @override
     def state_dict(self) -> dict[str, Any]:
