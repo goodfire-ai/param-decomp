@@ -103,19 +103,18 @@ def _migrate_legacy_data_config(config_dict: dict[str, Any]) -> dict[str, Any]:
         return config_dict
     train = config_dict.pop("train_dataset_config")
     val = config_dict.pop("val_dataset_config")
-    for k in (
-        "name",
-        "hf_tokenizer_path",
-        "n_ctx",
-        "is_tokenized",
-        "streaming",
-        "column_name",
-        "shuffle_each_epoch",
-    ):
+    for k in ("name", "hf_tokenizer_path", "n_ctx", "is_tokenized", "streaming", "column_name"):
         assert train[k] == val[k], (
             f"legacy train/val configs differ on `{k}` ({train[k]!r} vs {val[k]!r}); "
             "hand-edit the stored YAML to merge"
         )
+    # Unlike the keys above, `shuffle_each_epoch` post-dates the oldest runs and may be absent
+    # from both splits; default True (irrelevant to decomposition, which brings its own data).
+    assert train.get("shuffle_each_epoch", True) == val.get("shuffle_each_epoch", True), (
+        f"legacy train/val configs differ on `shuffle_each_epoch` "
+        f"({train.get('shuffle_each_epoch')!r} vs {val.get('shuffle_each_epoch')!r}); "
+        "hand-edit the stored YAML to merge"
+    )
     config_dict["data"] = {
         "dataset_name": train["name"],
         "tokenizer_name": train["hf_tokenizer_path"],
@@ -123,7 +122,7 @@ def _migrate_legacy_data_config(config_dict: dict[str, Any]) -> dict[str, Any]:
         "is_tokenized": train["is_tokenized"],
         "streaming": train["streaming"],
         "column_name": train["column_name"],
-        "shuffle_each_epoch": train["shuffle_each_epoch"],
+        "shuffle_each_epoch": train.get("shuffle_each_epoch", True),
         "train_split": train["split"],
         "eval_split": val["split"],
     }
