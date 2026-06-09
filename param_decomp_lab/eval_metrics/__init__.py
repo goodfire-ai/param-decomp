@@ -38,6 +38,10 @@ from param_decomp_lab.eval_metrics.component_activation_density import (
 )
 from param_decomp_lab.eval_metrics.identity_ci_error import IdentityCIError, IdentityCIErrorConfig
 from param_decomp_lab.eval_metrics.permuted_ci_plots import PermutedCIPlots, PermutedCIPlotsConfig
+from param_decomp_lab.eval_metrics.pgd_source_histogram import (
+    PGDSourceHistogram,
+    PGDSourceHistogramConfig,
+)
 from param_decomp_lab.eval_metrics.uv_plots import UVPlots, UVPlotsConfig
 
 AnyEvalMetricConfig = Annotated[
@@ -51,6 +55,7 @@ AnyEvalMetricConfig = Annotated[
     | IdentityCIErrorConfig
     | PermutedCIPlotsConfig
     | PGDReconLossConfig
+    | PGDSourceHistogramConfig
     | StochasticAttnPatternsReconLossConfig
     | StochasticHiddenActsReconLossConfig
     | UVPlotsConfig,
@@ -70,6 +75,7 @@ EVAL_METRIC_CLASSES: dict[str, type[Metric[Any]]] = {
         IdentityCIError,
         PermutedCIPlots,
         PGDReconLoss,
+        PGDSourceHistogram,
         StochasticAttnPatternsReconLoss,
         StochasticHiddenActsReconLoss,
         UVPlots,

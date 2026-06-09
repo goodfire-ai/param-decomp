@@ -159,6 +159,34 @@ def pgd_masked_recon_loss_update(
     Inits fresh adversarial sources, runs `pgd_config.n_steps` of inner sign-PGD against
     the recon objective, returns `(sum_loss, n_examples)` evaluated at the final sources.
     """
+    _, sum_loss, n_examples = pgd_attack(
+        model=model,
+        batch=batch,
+        ci=ci,
+        weight_deltas=weight_deltas,
+        target_out=target_out,
+        router=router,
+        pgd_config=pgd_config,
+        reconstruction_loss=reconstruction_loss,
+    )
+    return sum_loss, n_examples
+
+
+def pgd_attack(
+    model: ComponentModel,
+    batch: Any,
+    ci: dict[str, Float[Tensor, "... C"]],
+    weight_deltas: dict[str, Float[Tensor, "d_out d_in"]] | None,
+    target_out: Tensor,
+    router: Router,
+    pgd_config: PGDConfig,
+    reconstruction_loss: ReconstructionLoss,
+) -> tuple[dict[str, Float[Tensor, "*batch_dims mask_c"]], Float[Tensor, ""], int]:
+    """Run the sign-PGD attack and return `(final_sources_detached, sum_loss, n_examples)`.
+
+    Same attack as `pgd_masked_recon_loss_update`, but also returns the adversarially-optimised
+    sources (so callers can inspect/histogram the worst-case mask the attack converges to).
+    """
     batch_dims = next(iter(ci.values())).shape[:-1]
     routing_masks = router.get_masks(module_names=model.target_module_paths, mask_shape=batch_dims)
     adv_sources = _init_adv_sources(model, batch_dims, target_out.device, weight_deltas, pgd_config)
@@ -175,4 +203,5 @@ def pgd_masked_recon_loss_update(
         batch_dims=batch_dims,
         reconstruction_loss=reconstruction_loss,
     )
-    return _run_pgd_loop(adv_sources, pgd_config, fwd_pass)
+    sum_loss, n_examples = _run_pgd_loop(adv_sources, pgd_config, fwd_pass)
+    return {k: v.detach() for k, v in adv_sources.items()}, sum_loss, n_examples
