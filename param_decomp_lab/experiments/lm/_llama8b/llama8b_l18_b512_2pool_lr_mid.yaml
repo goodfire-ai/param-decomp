@@ -147,6 +147,7 @@ pd:
   use_delta_component: true
 runtime:
   autocast_bf16: true
+  compile_ppgd: false  # disabled: hung at 8B scale on resume (47587/47588); unvalidated at scale
   device: cuda:0
   topology:
     pool_a:
