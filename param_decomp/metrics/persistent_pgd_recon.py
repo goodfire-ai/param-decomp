@@ -59,6 +59,14 @@ class _PersistentPGDBaseConfig(LossMetricConfig):
     )
     start_frac: Probability = 0.0
     n_samples: PositiveInt = 1
+    warmup_precision_bits: Literal[8, 4, 2] | None = Field(
+        default=None,
+        description=(
+            "If set, run the inner warmup forward/backward with straight-through fake-"
+            "quantization of the component matmul operands to this many bits (Track-2 low-"
+            "precision-warmup probe). None = full (autocast) precision."
+        ),
+    )
 
 
 class PersistentPGDReconLossConfig(_PersistentPGDBaseConfig):
@@ -148,6 +156,7 @@ class _PersistentPGDReconBase[
             n_samples=self.cfg.n_samples,
             router=_router_for_cfg(self.cfg, self.device),
             reconstruction_loss=ctx.reconstruction_loss,
+            warmup_precision_bits=self.cfg.warmup_precision_bits,
         )
         if self._pending_resume_state is not None:
             self.state.load_state_dict(self._pending_resume_state)
