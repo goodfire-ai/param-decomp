@@ -126,6 +126,12 @@ eval:
     step_size: 0.1
     n_steps: 20
     mask_scope: shared_across_batch
+  - type: PGDSourceHistogram
+    init: random
+    step_size: 0.1
+    n_steps: 20
+    mask_scope: shared_across_batch
+    bins: 100
 target:
   spec:
     kind: pretrained
