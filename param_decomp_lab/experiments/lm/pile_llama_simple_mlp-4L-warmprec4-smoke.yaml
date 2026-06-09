@@ -81,7 +81,7 @@ pd:
         type: per_batch_per_position
       use_sigmoid_parameterization: false
       n_warmup_steps: 2
-      warmup_precision_bits: 8
+      warmup_precision_bits: 4
     - type: FaithfulnessLoss
       coeff: 10000000.0
 cadence:
