@@ -267,6 +267,24 @@ class PersistentPGDState:
             for k, g in zip(self.sources.keys(), grads, strict=True)
         }
 
+    def step_from_param_grad(self, loss_coeff: float) -> None:
+        """Step sources from `.grad` populated by the main `total_loss.backward()`.
+
+        `total_loss` adds this recon loss scaled by `loss_coeff`, and no other term depends
+        on the sources, so `source.grad == loss_coeff * d(recon_loss)/d(source)`. Undo the
+        coeff to recover the grad the separate `get_grads(recon_loss)` pass produced, apply
+        the same all-reduce, step, then clear `.grad` so the next backward starts fresh.
+        """
+        assert loss_coeff != 0.0, "PPGD loss coeff must be non-zero to recover source grads"
+        grads: PPGDSources = {}
+        for name, source in self.sources.items():
+            assert source.grad is not None, f"source {name!r} has no grad after backward"
+            g = source.grad / loss_coeff
+            grads[name] = g if self._skip_all_reduce else all_reduce(g, op=ReduceOp.AVG)
+        self.step(grads)
+        for source in self.sources.values():
+            source.grad = None
+
     def step(self, grads: PPGDSources) -> None:
         """One PGD update step using `grads`.
 

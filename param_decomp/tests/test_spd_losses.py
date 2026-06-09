@@ -802,6 +802,42 @@ class TestPersistentPGDReconLoss:
             assert torch.all(state.sources[k] >= 0.0)
             assert torch.all(state.sources[k] <= 1.0)
 
+    def test_source_grad_from_main_backward_matches_separate_pass(self: object) -> None:
+        """Fused-backward equivalence: `source.grad / coeff` from the main backward of
+        `coeff * recon_loss` equals the separate `get_grads(recon_loss)` pass it replaces."""
+        fc_weight = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+        model = _make_seq_component_model(weight=fc_weight)
+        batch = torch.tensor([[[1.0, 2.0], [0.5, 1.5]]], dtype=torch.float32)
+        target_out = torch.tensor([[[0.3, 0.7], [0.9, 0.1]]], dtype=torch.float32)
+        ci = {"fc": torch.tensor([[[0.5], [0.5]]], dtype=torch.float32)}
+
+        cfg = PersistentPGDReconLossConfig(
+            optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+            scope=SingleSourceScope(),
+        )
+        state = _ppgd_state_from_cfg(
+            cfg,
+            module_to_c=model.module_to_c,
+            batch_dims=batch.shape[:2],
+            device="cpu",
+            use_delta_component=False,
+            reconstruction_loss=recon_loss_mse,
+        )
+
+        sum_loss, n = state.compute_recon_sum_and_n(
+            model=model, batch=batch, target_out=target_out, ci=ci, weight_deltas=None
+        )
+        loss = sum_loss / n
+
+        separate = state.get_grads(loss, retain_graph=True)
+        assert any(g.abs().sum() > 0 for g in separate.values()), "grads all zero — vacuous test"
+
+        coeff = 0.5
+        (coeff * loss).backward()
+        for name, source in state.sources.items():
+            assert source.grad is not None
+            assert torch.allclose(source.grad / coeff, separate[name], atol=1e-6)
+
     def test_masks_persist_across_calls(self: object) -> None:
         """Test that masks persist and accumulate updates across calls."""
         fc_weight = torch.tensor([[2.0, 0.0], [0.0, 2.0]], dtype=torch.float32)
