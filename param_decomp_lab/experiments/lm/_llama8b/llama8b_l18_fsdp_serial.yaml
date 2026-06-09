@@ -110,7 +110,7 @@ eval:
     rounding_threshold: 0.0
 target:
   activation_checkpointing: false
-  output_extract: 0
+  output_extract: null
   weights_dtype: bfloat16
   spec:
     kind: hf_weights_in_vendored
