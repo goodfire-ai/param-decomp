@@ -55,6 +55,12 @@ adversarial sources — TBs at large batch), so we keep only the latest: a stand
 resume uses the newest checkpoint, and an older checkpoint with its shards pruned
 still resumes (the adversary re-warms via ``n_warmup``)."""
 
+KEEP_LAST_N_SCRATCH = 2
+"""How many snapshots' scratch to retain on the train loop. ``consolidate_step``
+clears each step's scratch as it lands, so this only bites when that async job stalls
+or never runs — the backstop that stops partials growing without bound. Two, not one,
+leaves the previous save's still-in-flight consolidation its partials."""
+
 
 def step_scratch_dir(scratch_dir: Path, step: int) -> Path:
     return scratch_dir / f"step_{step}"
@@ -109,7 +115,7 @@ def consolidate_step(
         # that wrote the checkpoint but died before removing it (e.g. crashed in
         # prune), so this step stops looking unconsolidated.
         logger.info(f"consolidate: {training_path.name} already exists; skipping")
-        shutil.rmtree(step_dir, ignore_errors=True)
+        _prune_scratch_through(scratch_dir, step)
         return
 
     if not step_dir.is_dir():
@@ -188,8 +194,8 @@ def consolidate_step(
     _prune_old_training(out_dir, keep_last_n=keep_last_n_training)
     _prune_old_ppgd(out_dir, keep_last_n=DEFAULT_KEEP_LAST_N_PPGD)
 
-    shutil.rmtree(step_dir, ignore_errors=True)
-    logger.info(f"consolidate: removed scratch {step_dir}")
+    _prune_scratch_through(scratch_dir, step)
+    logger.info(f"consolidate: removed scratch through step {step}")
 
 
 def _prune_old_training(out_dir: Path, *, keep_last_n: int) -> None:
@@ -243,6 +249,38 @@ def _prune_old_ppgd(out_dir: Path, *, keep_last_n: int) -> None:
         # ignore_errors: a concurrent consolidation for another step may have pruned it already.
         shutil.rmtree(out_dir / ppgd_shard_dirname(step), ignore_errors=True)
         logger.info(f"consolidate: pruned old {ppgd_shard_dirname(step)}/")
+
+
+def _prune_scratch_through(scratch_dir: Path, step: int) -> None:
+    """Remove scratch for every snapshot at or before ``step`` (now consolidated).
+
+    Called by ``consolidate_step`` once ``training_<step>.pth`` exists. Resume loads
+    the newest checkpoint, never raw partials, so a step ``<=`` a consolidated one is
+    dead — and since the final save is the highest step, its consolidation sweeps a
+    finished run's scratch to nothing (even if earlier consolidations were skipped).
+    """
+    for d in scratch_dir.glob("step_*"):
+        if d.is_dir() and int(d.name.removeprefix("step_")) <= step:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def prune_old_scratch(scratch_dir: Path, *, keep_last_n: int = KEEP_LAST_N_SCRATCH) -> None:
+    """Delete all but the newest ``keep_last_n`` ``step_<S>/`` scratch dirs.
+
+    The train-loop backstop to ``_prune_scratch_through``: when the async
+    consolidation that normally clears scratch never runs, this still bounds it. Safe
+    on the loop for the same reason — resume loads only the consolidated
+    ``training_<S>.pth``, never raw partials, so dropping an older un-consolidated step
+    costs at most a manual-recovery convenience, never a resume target.
+    """
+    assert keep_last_n >= 1, "keep_last_n=0 would delete the just-written step"
+    steps = sorted(
+        (d for d in scratch_dir.glob("step_*") if d.is_dir()),
+        key=lambda d: int(d.name.removeprefix("step_")),
+    )
+    for d in steps[:-keep_last_n]:
+        shutil.rmtree(d, ignore_errors=True)
+        logger.info(f"scratch GC: dropped stale {d.name}/")
 
 
 def unconsolidated_steps(out_dir: Path) -> list[int]:

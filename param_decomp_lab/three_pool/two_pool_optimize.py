@@ -73,6 +73,7 @@ from param_decomp_lab.three_pool.consolidate import (
     CONSOLIDATE_META_FILENAME,
     load_ppgd_shard,
     ppgd_shard_dirname,
+    prune_old_scratch,
     step_scratch_dir,
 )
 from param_decomp_lab.three_pool.context import ChunkContext
@@ -391,6 +392,11 @@ class TwoPoolTrainer:
         trace("snapshot: enter barrier (post-write rejoin)")
         dist.barrier(group=p2p_group)
         trace("snapshot: barrier (post-write rejoin) done")
+
+        # Backstop the async consolidation that normally clears scratch: if its job
+        # stalls or never runs, this keeps partials from growing without bound.
+        if self.ctx.role.rank == 0:
+            prune_old_scratch(scratch_dir)
 
     @classmethod
     def from_snapshot(

@@ -19,7 +19,7 @@ layer's output independently — is a separate, stable concept the chunkwise poo
 | `config.py` | `ThreePoolTopology` (`ci` / `ppgd` / `chunkwise` `PoolSpec`s of per-rank batch + `sites_per_chunk`) + `resolve(ordered_sites, batch_size) -> ResolvedLayout`. Authors per-rank batch, NOT rank ids; the resolver derives ranks/chunks/world_size in canonical order. Parse-time validation = cross-divisibility of the three per-rank batches |
 | `layout.py` | `World` topology + the runtime `Chunk` (`.ranks` / `.sites`); `build_world` constructs every process group (threading `pg_timeout` into each); `BatchEdge` — symmetric per-edge batch-slice geometry (CI↔chunk, CI↔PPGD) answering routing for both fan directions |
 | `checkpoint.py` | offline state_dict assembly from on-disk partials (`assemble_model_state_dict_from_partials`) + the leader key-partition helpers (`owned_model_state_keys` / `ci_fn_state_keys`) |
-| `consolidate.py` | `consolidate_step` — async, off-train-loop, **streaming** assembly of `model_<step>.pth` + `training_<step>.pth` from a step's small (parameter-shaped) scratch partials; prunes old `training_*.pth` + `ppgd_*/`; deletes the scratch dir. The data-shaped PPGD sources are NOT here — each adversary rank writes its own `ppgd_<step>/rank_<r>.pth` at snapshot time, in parallel (see "Checkpoint save" below). `load_ppgd_shard` reads a rank's shard on resume; `unconsolidated_steps` lists recoverable steps |
+| `consolidate.py` | `consolidate_step` — async, off-train-loop, **streaming** assembly of `model_<step>.pth` + `training_<step>.pth` from a step's small (parameter-shaped) scratch partials; prunes old `training_*.pth` + `ppgd_*/`; drops scratch at/below the step (`_prune_scratch_through`). The data-shaped PPGD sources are NOT here — each adversary rank writes its own `ppgd_<step>/rank_<r>.pth` at snapshot time, in parallel (see "Checkpoint save" below). `load_ppgd_shard` reads a rank's shard on resume; `unconsolidated_steps` lists recoverable steps. `prune_old_scratch` (called on-loop from `snapshot()`) bounds scratch when consolidation stalls/never runs |
 | `consolidate_cli.py` | `python -m …consolidate_cli <run> [--step N]` — manual CPU-only recovery for a failed/preempted async consolidation (separate module to avoid an import cycle with `experiments.lm.run`) |
 | `role.py` | `PoolRole = CIRole \| ChunkRole \| PPGDRole` — this rank's pool role; per-pool fields are union variants, not optional attrs |
 | `context.py` | `PoolContext = CIContext \| ChunkContext \| PPGDContext` — `world` + `role` + this pool's portals; the trainer matches on it to dispatch step fns |
@@ -186,7 +186,9 @@ the assembled CPU model, never the full partial set) → assembles the full
 `ComponentModel` state_dict + `ThreePoolTrainingState` → writes `model_<S>.pth` +
 `training_<S>.pth` → prunes old `training_*.pth` to the last
 `DEFAULT_KEEP_LAST_N_TRAINING` (=3; **all `model_*.pth` are kept**) → prunes old
-`ppgd_*/` → deletes `step_<S>/`. It runs inside the async slow-eval job
+`ppgd_*/` → drops scratch at/below `S` (`_prune_scratch_through`: `step_<S>/` plus any
+older step, consolidated or not — resume uses the newest checkpoint, so they're dead). It
+runs inside the async slow-eval job
 (`experiments/lm/async_eval.py`), as a CPU-only phase BEFORE the eval pass, so the
 assembled `model_<S>.pth` exists before the eval loads it. It reads **only** the
 small partials — the PPGD shards were already written at snapshot time, so
@@ -209,6 +211,23 @@ optimizer state stays topology-agnostic). `ppgd_<S>/` dirs are pruned (in
 resume uses the newest checkpoint. Idempotent: a no-op if `training_<S>.pth`
 already exists (and it cleans any leftover scratch in that case); the scratch dir
 is deleted only on success.
+
+**Scratch cleanup (two mechanisms).** `consolidate_step` is the only thing that
+removes scratch, so when its async job stalls, is preempted, or is never submitted,
+partials pile up — runs that never consolidated a single step were observed holding
+**multiple TB** of dead `step_<S>/` partials. Two complementary cleanups bound it,
+both safe because resume reads only the consolidated `training_<S>.pth`, never raw
+partials:
+
+  * **`_prune_scratch_through(scratch_dir, S)`** (in `consolidate_step`, off the loop):
+    drops every `step_<=S>`, not just `S`. Because the final save is the highest step,
+    its consolidation sweeps the whole run — a *completed* run ends with **zero**
+    scratch, even if some intermediate consolidations were skipped.
+  * **`prune_old_scratch(scratch_dir, keep_last_n=2)`** (in `snapshot()`, rank 0, off
+    the collective): keeps only the newest `KEEP_LAST_N_SCRATCH` snapshots. The backstop
+    for when consolidation *never* runs — without it a stuck run grows without bound;
+    with it the residue is at most `keep_last_n` step dirs. (Two, not one, so the
+    previous save's still-in-flight consolidation keeps its partials.)
 
 This is the fix for how run 34446 (p-a5b667e9) died: the old synchronous rank-0
 read held the other ranks at a barrier past the NCCL watchdog. There is no
@@ -393,7 +412,8 @@ that whole packet stays bf16 rather than splitting the buffer by dtype (off the 
 consolidation finishes, resume from the previous consolidated step — at most one
 save-interval of lost progress (the scratch partials for the unconsolidated step
 are left on disk; they can be consolidated manually via `consolidate_step` if
-that interval matters).
+that interval matters — but only the newest `KEEP_LAST_N_SCRATCH` snapshots survive
+the on-loop `prune_old_scratch`, so don't count on partials from many saves back).
 
 `from_snapshot` validates the saved topology against the current one, but the
 comparison runs on EVERY rank, so it compares only the **rank-invariant** core
