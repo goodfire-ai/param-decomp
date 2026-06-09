@@ -7,11 +7,13 @@ from typing import Any
 
 from param_decomp.component_model import ComponentModel
 from param_decomp.configs import PDConfig
+from param_decomp.metrics.adversarial_distribution_recon import AdversarialDistributionReconLoss
 from param_decomp.metrics.base import Metric
 from param_decomp.metrics.ci_masked_recon import CIMaskedReconLoss
 from param_decomp.metrics.ci_masked_recon_layerwise import CIMaskedReconLayerwiseLoss
 from param_decomp.metrics.ci_masked_recon_subset import CIMaskedReconSubsetLoss
 from param_decomp.metrics.faithfulness import FaithfulnessLoss
+from param_decomp.metrics.head_init_pgd_recon import HeadInitPGDReconLoss
 from param_decomp.metrics.importance_minimality import ImportanceMinimalityLoss
 from param_decomp.metrics.persistent_pgd_recon import (
     PersistentPGDReconLoss,
@@ -29,10 +31,12 @@ from param_decomp.metrics.unmasked_recon import UnmaskedReconLoss
 LOSS_METRIC_CLASSES: dict[str, type[Metric[Any]]] = {
     cls.__name__: cls
     for cls in (
+        AdversarialDistributionReconLoss,
         CIMaskedReconLayerwiseLoss,
         CIMaskedReconLoss,
         CIMaskedReconSubsetLoss,
         FaithfulnessLoss,
+        HeadInitPGDReconLoss,
         ImportanceMinimalityLoss,
         PersistentPGDReconLoss,
         PersistentPGDReconSubsetLoss,
