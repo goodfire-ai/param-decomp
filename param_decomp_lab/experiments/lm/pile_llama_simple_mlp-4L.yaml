@@ -33,14 +33,14 @@ pd:
   use_delta_component: true
   components_optimizer:
     lr_schedule:
-      start_val: 5.0e-05
+      start_val: 5.0e-04
       warmup_pct: 0.0
       final_val_frac: 0.1
       fn_type: cosine
     grad_clip_norm: 0.01
   ci_fn_optimizer:
     lr_schedule:
-      start_val: 5.0e-05
+      start_val: 1.0e-04
       warmup_pct: 0.0
       final_val_frac: 0.1
       fn_type: cosine
@@ -70,12 +70,12 @@ pd:
         beta2: 0.99
         eps: 1.0e-08
         lr_schedule:
-          start_val: 0.01
-          warmup_pct: 0.025
+          start_val: 0.02
+          warmup_pct: 0
           final_val_frac: 1.0
           fn_type: constant
       scope:
-        type: per_batch_per_position
+        type: broadcast_across_batch
       use_sigmoid_parameterization: false
       n_warmup_steps: 2
     - type: FaithfulnessLoss
