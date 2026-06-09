@@ -21,6 +21,11 @@ from torch import Tensor, nn
 
 from param_decomp.components import EmbeddingComponents, LinearComponents
 from param_decomp.masks import ComponentsMaskInfo
+from param_decomp_lab.experiments.lm.vendored.fp8_frozen import (
+    _quantize_tensorwise,
+    fp8_frozen_enabled,
+    fp8_frozen_target_forward,
+)
 
 
 class _ComponentModule(ABC, nn.Module):
@@ -69,15 +74,31 @@ class ComponentLinear(_ComponentModule):
 
     target_weight: Float[Tensor, "d_out d_in"]
     bias: Float[Tensor, "... d_out"] | None
+    # Registered (and read) only when `_fp8_frozen` — the pre-quantized frozen-target weight.
+    target_weight_fp8: Float[Tensor, "d_out d_in"]
+    target_weight_scale: Float[Tensor, "1 1"]
 
     def __init__(self, components: LinearComponents, target_weight: Float[Tensor, "d_out d_in"]):
         super().__init__(components)
         assert target_weight.shape == (components.d_out, components.d_in)
         self.register_buffer("target_weight", target_weight)
         self.register_buffer("bias", components.bias)
+        self._fp8_frozen = False
+        if fp8_frozen_enabled():
+            wq, scale = _quantize_tensorwise(target_weight)
+            self.register_buffer("target_weight_fp8", wq.contiguous())
+            self.register_buffer("target_weight_scale", scale)
+            self._fp8_frozen = True
 
     @override
     def target_forward(self, x: Float[Tensor, "... d_in"]) -> Float[Tensor, "... d_out"]:
+        if self._fp8_frozen:
+            return fp8_frozen_target_forward(
+                x,
+                self.target_weight_fp8,
+                self.target_weight_scale,
+                self.bias,
+            )
         return F.linear(x, self.target_weight, self.bias)
 
 

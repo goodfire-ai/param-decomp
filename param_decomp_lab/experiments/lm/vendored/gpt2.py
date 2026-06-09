@@ -48,6 +48,10 @@ from param_decomp_lab.experiments.lm.vendored.component_modules import (
     ComponentLinear,
     _ComponentModule,
 )
+from param_decomp_lab.experiments.lm.vendored.fp8_frozen import (
+    convert_frozen_linears_to_fp8,
+    fp8_frozen_enabled,
+)
 
 # self.bias is the registered causal-mask buffer; indexing it trips reportIndexIssue (as in
 # the parent gpt2_simple.py).
@@ -357,4 +361,14 @@ def componentize_gpt2(model: GPT2Simple, components: dict[str, Components]) -> C
         block.mlp.__class__ = ComponentMLP
         block.__class__ = ComponentBlock
     model.__class__ = ComponentGPT2
+
+    if fp8_frozen_enabled():
+        start = model.decomposition_start_layer
+        n = sum(convert_frozen_linears_to_fp8(block) for block in model._h[start:])
+        print(
+            f"[fp8] swapped {n} frozen nn.Linear leaves to Fp8FrozenLinear "
+            f"in suffix blocks [{start}:]",
+            flush=True,
+        )
+
     return model  # pyright: ignore[reportReturnType]
