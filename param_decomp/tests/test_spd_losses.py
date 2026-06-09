@@ -58,6 +58,7 @@ def _ppgd_state_from_cfg(
         n_samples=cfg.n_samples,
         router=AllLayersRouter(),
         reconstruction_loss=reconstruction_loss,
+        warmup_fp8=cfg.warmup_fp8,
     )
 
 

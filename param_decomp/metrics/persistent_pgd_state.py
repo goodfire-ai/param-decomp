@@ -18,6 +18,7 @@ from param_decomp.base_config import BaseConfig, Probability
 from param_decomp.batch_and_loss_fns import ReconstructionLoss
 from param_decomp.component_model import ComponentModel
 from param_decomp.distributed import all_reduce, broadcast_tensor
+from param_decomp.fp8 import fp8_warmup
 from param_decomp.masks import (
     AllLayersRouter,
     ComponentsMaskInfo,
@@ -219,6 +220,7 @@ class PersistentPGDState:
         n_samples: int,
         router: Router,
         reconstruction_loss: ReconstructionLoss,
+        warmup_fp8: bool,
     ) -> None:
         self.optimizer = make_ppgd_optimizer(optimizer_cfg)
         self._skip_all_reduce = isinstance(scope, PerBatchPerPositionScope)
@@ -227,6 +229,7 @@ class PersistentPGDState:
         self._n_warmup_steps = n_warmup_steps
         self._n_samples = n_samples
         self._reconstruction_loss = reconstruction_loss
+        self._warmup_fp8 = warmup_fp8
         self._lr_schedule = optimizer_cfg.lr_schedule
 
         self.sources: PPGDSources = {}
@@ -318,15 +321,17 @@ class PersistentPGDState:
     ) -> None:
         """Run extra PGD steps to refine adversarial sources before the final loss computation.
 
-        No-op when `n_warmup_steps=0`.
+        No-op when `n_warmup_steps=0`. Under `warmup_fp8`, the inner forward's component
+        matmuls run in real fp8-e4m3 (`_scaled_mm`, fp8 forward / bf16 backward).
         """
         all_layers = AllLayersRouter()
-        for _ in range(self._n_warmup_steps):
-            sum_loss, n = self.compute_recon_sum_and_n(
-                model, batch, target_out, ci, weight_deltas, router=all_layers
-            )
-            grads = self.get_grads(sum_loss / n, retain_graph=False)
-            self.step(grads)
+        with fp8_warmup(self._warmup_fp8):
+            for _ in range(self._n_warmup_steps):
+                sum_loss, n = self.compute_recon_sum_and_n(
+                    model, batch, target_out, ci, weight_deltas, router=all_layers
+                )
+                grads = self.get_grads(sum_loss / n, retain_graph=False)
+                self.step(grads)
 
     def compute_recon_sum_and_n(
         self,

@@ -59,6 +59,13 @@ class _PersistentPGDBaseConfig(LossMetricConfig):
     )
     start_frac: Probability = 0.0
     n_samples: PositiveInt = 1
+    warmup_fp8: bool = Field(
+        default=False,
+        description=(
+            "Run the inner warmup forward with real fp8-e4m3 component matmuls (Hopper+ "
+            "`_scaled_mm`, fp8 forward / bf16 backward). False = bf16 autocast as usual."
+        ),
+    )
 
 
 class PersistentPGDReconLossConfig(_PersistentPGDBaseConfig):
@@ -148,6 +155,7 @@ class _PersistentPGDReconBase[
             n_samples=self.cfg.n_samples,
             router=_router_for_cfg(self.cfg, self.device),
             reconstruction_loss=ctx.reconstruction_loss,
+            warmup_fp8=self.cfg.warmup_fp8,
         )
         if self._pending_resume_state is not None:
             self.state.load_state_dict(self._pending_resume_state)
