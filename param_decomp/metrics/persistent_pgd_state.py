@@ -293,6 +293,16 @@ class PersistentPGDState:
         grads = torch.autograd.grad(loss, list(self.sources.values()), retain_graph=retain_graph)
         return dict(zip(self.sources.keys(), grads, strict=True))
 
+    def collect_source_grads(self, loss_coeff: float) -> PPGDSources:
+        """Raw ``∂loss/∂source`` read from ``.grad`` (the main backward filled it, scaled by the
+        loss's ``loss_coeff``); clears ``.grad``. Reduce/step as for ``get_grads`` output."""
+        grads: PPGDSources = {}
+        for name, source in self.sources.items():
+            assert source.grad is not None, f"source {name!r}: no grad after backward"
+            grads[name] = source.grad / loss_coeff
+            source.grad = None
+        return grads
+
     def reduce_source_grads(self, grads: PPGDSources) -> PPGDSources:
         """AVG-reduce per-rank source grads over the replica-sync group, else a no-op.
 

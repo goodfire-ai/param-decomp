@@ -824,6 +824,40 @@ class TestPersistentPGDReconLoss:
         assert scope_needs_replica_sync(BroadcastAcrossBatchScope()) is True
         assert scope_needs_replica_sync(RepeatAcrossBatchScope(n_sources=2)) is True
 
+    def test_collect_source_grads_matches_get_grads(self: object) -> None:
+        # Fused backward: source.grad/coeff from the main backward == the separate get_grads pass.
+        fc_weight = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+        model = _make_seq_component_model(weight=fc_weight)
+        batch = torch.tensor([[[1.0, 2.0], [0.5, 1.5]]], dtype=torch.float32)
+        target_out = torch.tensor([[[0.3, 0.7], [0.9, 0.1]]], dtype=torch.float32)
+        ci = {"fc": torch.tensor([[[0.5], [0.5]]], dtype=torch.float32)}
+
+        cfg = PersistentPGDReconLossConfig(
+            optimizer=SignPGDConfig(lr_schedule=ScheduleConfig(start_val=0.1)),
+            scope=SingleSourceScope(),
+        )
+        state = _ppgd_state_from_cfg(
+            cfg,
+            module_to_c=model.module_to_c,
+            batch_dims=batch.shape[:2],
+            device="cpu",
+            use_delta_component=False,
+            reconstruction_loss=recon_loss_mse,
+        )
+
+        sum_loss, n = state.compute_recon_sum_and_n(
+            model=model, batch=batch, target_out=target_out, ci=ci, weight_deltas=None
+        )
+        loss = sum_loss / n
+        separate = state.get_grads(loss, retain_graph=True)
+        assert any(g.abs().sum() > 0 for g in separate.values()), "grads all zero — vacuous test"
+
+        coeff = 0.5
+        (coeff * loss).backward()
+        fused = state.collect_source_grads(coeff)
+        for name in state.sources:
+            assert torch.allclose(fused[name], separate[name], atol=1e-6)
+
     def test_masks_persist_across_calls(self: object) -> None:
         """Test that masks persist and accumulate updates across calls."""
         fc_weight = torch.tensor([[2.0, 0.0], [0.0, 2.0]], dtype=torch.float32)
