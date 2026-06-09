@@ -92,6 +92,11 @@ class RuntimeConfig(BaseConfig):
         default=None,
         description="DDP world size, or None for single device.",
     )
+    parallelism: Literal["ddp", "fsdp"] = Field(
+        default="ddp",
+        description="Data-parallel wrapper for the multi-device path: replicated DDP, or "
+        "param/grad/optimizer-state-sharded FSDP2 (`fully_shard`). Ignored when `dp` is None.",
+    )
 
     @model_validator(mode="after")
     def validate_device_dp(self) -> Self:

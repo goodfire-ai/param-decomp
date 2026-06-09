@@ -12,7 +12,10 @@ import gc
 import signal
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Self, cast
+from typing import TYPE_CHECKING, Any, Self, cast
+
+if TYPE_CHECKING:
+    from torch.distributed.device_mesh import DeviceMesh
 
 import torch
 import torch.nn as nn
@@ -191,6 +194,49 @@ def _assert_ctx_invariants(ctx: MetricContext, device: str, step: int) -> None:
         )
 
 
+def _fully_shard_component_model(component_model: ComponentModel, mesh: "DeviceMesh") -> None:
+    """Shard a `ComponentModel` in place with FSDP2 (`fully_shard`).
+
+    Sharding plan, leaves first so the root wrap only owns the residual params:
+      - each frozen target transformer block (`target_model.layers[i]`) — the dominant
+        resident term for an 8B target;
+      - each CI-fn transformer block (`ci_fn._blocks[i]`) when the global-transformer CI
+        fn is in use;
+      - each per-site component module (`components[path]`, the trainable V/U);
+      - the root `ComponentModel`.
+
+    `reshard_after_forward=False` everywhere: the single-pool recon issues one masked
+    forward per decomposition site (plus the CI-fn forward and the unmasked target
+    forward) within a single step, all backed by one `backward()`. Resharding after each
+    of those forwards would re-all-gather the same blocks 20+ times per step; keeping the
+    full params resident between the per-site forwards and the backward trades a little
+    memory for far less collective traffic. The frozen target carries no grads, so FSDP
+    issues no reduce-scatter for it.
+    """
+    from torch.distributed.fsdp import fully_shard
+
+    target_model = component_model.target_model
+    target_layers = getattr(target_model, "layers", None)
+    assert isinstance(target_layers, nn.ModuleList), (
+        f"FSDP wrap expects the target to expose `layers: ModuleList`; "
+        f"got {type(target_model).__name__}"
+    )
+    for block in target_layers:
+        fully_shard(block, mesh=mesh, reshard_after_forward=False)
+
+    ci_fn = component_model.ci_fn
+    assert ci_fn is not None
+    ci_blocks = getattr(ci_fn, "_blocks", None)
+    if isinstance(ci_blocks, nn.ModuleList):
+        for block in ci_blocks:
+            fully_shard(block, mesh=mesh, reshard_after_forward=False)
+
+    for path in component_model.target_module_paths:
+        fully_shard(component_model.components[path], mesh=mesh, reshard_after_forward=False)
+
+    fully_shard(component_model, mesh=mesh, reshard_after_forward=False)
+
+
 def tie_component_weights(
     component_model: ComponentModel, tied_weights: list[tuple[str, str]]
 ) -> None:
@@ -323,10 +369,18 @@ class Trainer:
         # Diverge global RNG per rank so stochastic masks/sources differ across DP workers.
         seed_per_rank(pd_config.seed)
 
-        if dist_state is not None:
+        if dist_state is not None and runtime_config.parallelism == "fsdp":
+            from torch.distributed.device_mesh import init_device_mesh
+
+            assert dist_state.backend == "nccl", "FSDP requires the nccl backend"
+            mesh = init_device_mesh("cuda", (dist_state.world_size,))
+            _fully_shard_component_model(model, mesh)
+            self._wrapped_model: nn.Module = model
+            component_model = model
+        elif dist_state is not None:
             if dist_state.backend == "nccl":
                 device_id = dist_state.local_rank
-                self._wrapped_model: nn.Module = torch.nn.parallel.DistributedDataParallel(
+                self._wrapped_model = torch.nn.parallel.DistributedDataParallel(
                     model, device_ids=[device_id], output_device=device_id
                 )
             else:
