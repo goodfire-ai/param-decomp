@@ -12,6 +12,7 @@ import gc
 import signal
 from collections import defaultdict
 from dataclasses import dataclass
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, Self, cast
 
 if TYPE_CHECKING:
@@ -38,6 +39,7 @@ from param_decomp.decomposition_targets import (
     resolve_decomposition_targets,
 )
 from param_decomp.distributed import (
+    all_reduce,
     avg_metrics_across_ranks,
     get_distributed_state,
     is_main_process,
@@ -194,28 +196,40 @@ def _assert_ctx_invariants(ctx: MetricContext, device: str, step: int) -> None:
         )
 
 
-def _fully_shard_component_model(component_model: ComponentModel, mesh: "DeviceMesh") -> None:
-    """Shard a `ComponentModel` in place with FSDP2 (`fully_shard`).
+def _decomposed_target_layer_indices(component_model: ComponentModel) -> set[int]:
+    """Indices `i` of `target_model.layers[i]` that hold a decomposition target.
 
-    Sharding plan, leaves first so the root wrap only owns the residual params:
-      - each frozen target transformer block (`target_model.layers[i]`) — the dominant
-        resident term for an 8B target;
-      - each CI-fn transformer block (`ci_fn._blocks[i]`) when the global-transformer CI
-        fn is in use;
-      - the root `ComponentModel`, which sweeps up every remaining param — including the
-        trainable V/U components — into one sharded group.
+    A decomposition target path like ``layers.18.mlp.gate_proj`` is owned by block 18;
+    that block's frozen weights are read directly by `calc_weight_deltas`, so it must
+    stay a plain tensor (not an FSDP `DTensor` shard).
+    """
+    indices: set[int] = set()
+    for path in component_model.target_module_paths:
+        parts = path.split(".")
+        assert parts[0] == "layers" and parts[1].isdigit(), (
+            f"FSDP target-layer indexing expects `layers.<i>....` paths; got {path!r}"
+        )
+        indices.add(int(parts[1]))
+    return indices
 
-    The component modules (`LinearComponents`) are not wrapped individually: FSDP2 swaps a
-    module's `__class__` to inject its methods, which fails on the ABC-derived `Components`
-    object layout. They shard fine as part of the root group.
 
-    `reshard_after_forward=False` everywhere: the single-pool recon issues one masked
-    forward per decomposition site (plus the CI-fn forward and the unmasked target
-    forward) within a single step, all backed by one `backward()`. Resharding after each
-    of those forwards would re-all-gather the same blocks 20+ times per step; keeping the
-    full params resident between the per-site forwards and the backward trades a little
-    memory for far less collective traffic. The frozen target carries no grads, so FSDP
-    issues no reduce-scatter for it.
+def _fully_shard_frozen_target(component_model: ComponentModel, mesh: "DeviceMesh") -> None:
+    """Shard the frozen target's non-decomposed transformer blocks with FSDP2.
+
+    Only the frozen 8B target is sharded — the dominant resident term — and only the
+    blocks that hold no decomposition target. Sharding a trainable module (components,
+    CI fn) would turn its params into `DTensor`s, which leak through every loss that reads
+    a param directly (`FaithfulnessLoss` on `target_weight - components.weight`,
+    `ImportanceMinimalityLoss` on the CI built from `V^T x`); the recon forwards stay plain
+    because FSDP all-gathers params to full tensors during the forward. The decomposed
+    block stays plain for the same direct-read reason. Trainable grads are replicated and
+    all-reduced explicitly in the train loop (no DDP/root-FSDP wrap to do it).
+
+    `reshard_after_forward=False`: the serial recon issues one masked forward per site plus
+    the CI-fn and unmasked target forwards within a single step, all backed by one
+    `backward()`. Resharding between them would re-all-gather the same blocks repeatedly;
+    keeping params resident trades a little memory for far less collective traffic. The
+    frozen blocks carry no grads, so FSDP issues no reduce-scatter for them.
     """
     from torch.distributed.fsdp import fully_shard
 
@@ -225,17 +239,11 @@ def _fully_shard_component_model(component_model: ComponentModel, mesh: "DeviceM
         f"FSDP wrap expects the target to expose `layers: ModuleList`; "
         f"got {type(target_model).__name__}"
     )
-    for block in target_layers:
+    decomposed = _decomposed_target_layer_indices(component_model)
+    for i, block in enumerate(target_layers):
+        if i in decomposed:
+            continue
         fully_shard(block, mesh=mesh, reshard_after_forward=False)
-
-    ci_fn = component_model.ci_fn
-    assert ci_fn is not None
-    ci_blocks = getattr(ci_fn, "_blocks", None)
-    if isinstance(ci_blocks, nn.ModuleList):
-        for block in ci_blocks:
-            fully_shard(block, mesh=mesh, reshard_after_forward=False)
-
-    fully_shard(component_model, mesh=mesh, reshard_after_forward=False)
 
 
 def tie_component_weights(
@@ -370,12 +378,15 @@ class Trainer:
         # Diverge global RNG per rank so stochastic masks/sources differ across DP workers.
         seed_per_rank(pd_config.seed)
 
-        if dist_state is not None and runtime_config.parallelism == "fsdp":
+        self._fsdp = dist_state is not None and runtime_config.parallelism == "fsdp"
+        if self._fsdp:
             from torch.distributed.device_mesh import init_device_mesh
 
-            assert dist_state.backend == "nccl", "FSDP requires the nccl backend"
+            assert dist_state is not None and dist_state.backend == "nccl", (
+                "FSDP requires the nccl backend"
+            )
             mesh = init_device_mesh("cuda", (dist_state.world_size,))
-            _fully_shard_component_model(model, mesh)
+            _fully_shard_frozen_target(model, mesh)
             self._wrapped_model: nn.Module = model
             component_model = model
         elif dist_state is not None:
@@ -439,6 +450,21 @@ class Trainer:
         """The ``(name, param)`` pairs for ``ci_fn_optimizer``."""
         assert self.component_model.ci_fn is not None
         return [(f"ci_fn.{n}", p) for n, p in self.component_model.ci_fn.named_parameters()]
+
+    def _all_reduce_trainable_grads(self) -> None:
+        """Average component + CI-fn grads across ranks (the DDP all-reduce, by hand).
+
+        Under frozen-target-only FSDP the trainable params stay replicated, so each rank's
+        grads cover only its data shard; without this they would diverge. The frozen target
+        is sharded by FSDP and carries no grads, so it is untouched.
+        """
+        dist_state = get_distributed_state()
+        assert dist_state is not None
+        world_size = dist_state.world_size
+        for p in (*self._component_params, *self._ci_fn_params):
+            assert p.grad is not None, "FSDP grad all-reduce ran before a grad was populated"
+            all_reduce(p.grad)
+            p.grad /= world_size
 
     def _build_all_metric_instances(
         self,
@@ -576,9 +602,16 @@ class Trainer:
         all_instances = self._build_all_metric_instances(eval_loop, device)
         sigterm = _install_sigterm_flag()
 
+        step_start_perf: float | None = None
         for step in tqdm(
             range(self.step, pd_config.steps + 1), ncols=0, disable=not is_main_process()
         ):
+            if device.startswith("cuda"):
+                torch.cuda.synchronize(device)
+            now_perf = perf_counter()
+            prev_step_ms = (now_perf - step_start_perf) * 1000.0 if step_start_perf else None
+            step_start_perf = now_perf
+
             self.step = step
             self.components_optimizer.zero_grad()
             self.ci_fn_optimizer.zero_grad()
@@ -661,6 +694,12 @@ class Trainer:
                 batch_log_data.update(grad_norm_log_data)
                 batch_log_data["schedules/lr/components"] = components_lr
                 batch_log_data["schedules/lr/ci_fn"] = ci_fn_lr
+                if prev_step_ms is not None:
+                    batch_log_data["perf/step_ms"] = prev_step_ms
+                if device.startswith("cuda"):
+                    batch_log_data["perf/peak_mem_gb"] = torch.cuda.max_memory_allocated(device) / (
+                        1024**3
+                    )
 
                 sink.console(
                     f"--- Step {step} ---",
@@ -726,6 +765,8 @@ class Trainer:
             # Skip gradient step at the very last step (last step is just for plotting/logging).
             if step != pd_config.steps:
                 sync_across_processes()
+                if self._fsdp:
+                    self._all_reduce_trainable_grads()
                 if pd_config.components_optimizer.grad_clip_norm is not None:
                     clip_grad_norm_(
                         self._component_params, pd_config.components_optimizer.grad_clip_norm
