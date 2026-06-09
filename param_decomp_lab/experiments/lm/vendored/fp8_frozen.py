@@ -19,6 +19,7 @@ from typing import override
 import torch
 from jaxtyping import Float
 from torch import Tensor, nn
+from torch.autograd.function import FunctionCtx
 
 # Buffers are registered via register_buffer in __init__ (pyright doesn't model that as an
 # init), matching the annotation pattern used across the vendored component modules.
@@ -39,21 +40,18 @@ def _quantize_tensorwise(t: Float[Tensor, "rows cols"]) -> tuple[Tensor, Tensor]
     return (t.float() / scale).to(_FP8), scale
 
 
-def _fp8_linear(
-    x: Float[Tensor, "... d_in"],
+def _fp8_matmul_forward(
+    x2d: Float[Tensor, "tokens d_in"],
     weight_fp8: Float[Tensor, "d_out d_in"],
     weight_scale: Float[Tensor, "1 1"],
     bias: Float[Tensor, "... d_out"] | None,
-) -> Float[Tensor, "... d_out"]:
-    """`x @ weight.T` in fp8 e4m3, dynamic per-tensor activation scale. `weight_fp8` is the
-    pre-quantized weight stored contiguous in `[d_out, d_in]`; `.t()` gives the col-major
-    `[d_in, d_out]` operand `_scaled_mm` requires for `mat2`."""
-    lead = x.shape[:-1]
-    x2d = x.reshape(-1, x.shape[-1])
+) -> Float[Tensor, "tokens d_out"]:
+    """fp8 e4m3 `_scaled_mm`: dynamic per-tensor activation scale, frozen pre-quantized weight.
+    `weight_fp8` is `[d_out, d_in]` contiguous; `.t()` is the col-major `mat2` `_scaled_mm` wants."""
     amax = x2d.abs().amax().clamp(min=1e-12).float()
     x_scale = (amax / _E4M3_MAX).reshape(1, 1)
     xq = (x2d.float() / x_scale).to(_FP8)
-    out = torch._scaled_mm(
+    return torch._scaled_mm(
         xq,
         weight_fp8.t(),
         scale_a=x_scale,
@@ -61,6 +59,50 @@ def _fp8_linear(
         bias=bias,
         out_dtype=torch.bfloat16,
     )
+
+
+class _Fp8FrozenMatmul(torch.autograd.Function):
+    """fp8 forward over a FROZEN weight, with a bf16 input-gradient backward.
+
+    `_scaled_mm` has no autograd backward, but the masked recon backprops through the
+    activation `x` (the weight is frozen, so no weight grad is needed). Forward runs the fp8
+    matmul; backward dequantizes the frozen e4m3 weight to bf16 and computes
+    `grad_x = grad_out @ W` — exact for a frozen weight, and the only grad the graph needs.
+    """
+
+    @staticmethod
+    def forward(  # pyright: ignore[reportImplicitOverride]
+        ctx: FunctionCtx,
+        x2d: Tensor,
+        weight_fp8: Tensor,
+        weight_scale: Tensor,
+        bias: Tensor | None,
+    ) -> Tensor:
+        ctx.save_for_backward(weight_fp8, weight_scale)
+        return _fp8_matmul_forward(x2d, weight_fp8, weight_scale, bias)
+
+    @staticmethod
+    def backward(  # pyright: ignore[reportImplicitOverride, reportIncompatibleMethodOverride]
+        ctx: FunctionCtx,
+        grad_out: Tensor,
+    ) -> tuple[Tensor | None, None, None, None]:
+        weight_fp8, weight_scale = ctx.saved_tensors  # pyright: ignore[reportAttributeAccessIssue]
+        # Dequant frozen e4m3 weight to bf16: grad_x = grad_out @ W, W is [d_out, d_in].
+        weight = (weight_fp8.to(grad_out.dtype)) * weight_scale.to(grad_out.dtype)
+        grad_x = grad_out @ weight
+        return grad_x, None, None, None
+
+
+def _fp8_linear(
+    x: Float[Tensor, "... d_in"],
+    weight_fp8: Float[Tensor, "d_out d_in"],
+    weight_scale: Float[Tensor, "1 1"],
+    bias: Float[Tensor, "... d_out"] | None,
+) -> Float[Tensor, "... d_out"]:
+    """Differentiable fp8 frozen linear: `x @ weight.T` in e4m3, input-gradient backward only."""
+    lead = x.shape[:-1]
+    x2d = x.reshape(-1, x.shape[-1])
+    out = _Fp8FrozenMatmul.apply(x2d, weight_fp8, weight_scale, bias)
     return out.reshape(*lead, out.shape[-1])
 
 
