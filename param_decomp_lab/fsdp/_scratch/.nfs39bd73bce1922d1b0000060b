@@ -1,0 +1,79 @@
+W0609 19:53:59.317000 2517562 torch/distributed/run.py:851] 
+W0609 19:53:59.317000 2517562 torch/distributed/run.py:851] *****************************************
+W0609 19:53:59.317000 2517562 torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0609 19:53:59.317000 2517562 torch/distributed/run.py:851] *****************************************
+=== torch 2.11.0+cu128, world=2 ===
+NCCL version 2.28.9+cuda12.9
+[A recon CANONICAL]   V.grad (Shard(dim=0),) local=(4, 16) | U.grad (Shard(dim=0),) local=(8, 8)
+[B-full_tensor ]      V.grad (Shard(dim=1),) local=(8, 8) | U.grad (Replicate(),) local=(16, 8)
+[B-replicate_VU]      V.grad (Shard(dim=0),) local=(4, 16) | U.grad (Shard(dim=0),) local=(8, 8)
+[COMBINED-full_tensor ] step OK; V.grad (Shard(dim=0),) local=(4, 16) | U.grad (Shard(dim=0),) local=(8, 8)
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/mnt/home/oli/param-decomp/param_decomp_lab/fsdp/_scratch/repro_weight_delta.py", line 125, in <module>
+[rank0]:     main()
+[rank0]:     ~~~~^^
+[rank0]:   File "/mnt/home/oli/param-decomp/param_decomp_lab/fsdp/_scratch/repro_weight_delta.py", line 111, in main
+[rank0]:     (h.comp(x).pow(2).mean() + fn(h).pow(2).mean()).backward()
+[rank0]:                                ~~^^^
+[rank0]:   File "/mnt/home/oli/param-decomp/param_decomp_lab/fsdp/_scratch/repro_weight_delta.py", line 67, in delta_replicate_VU
+[rank0]:     V = h.comp.V.redistribute(placements=[Replicate()])
+[rank0]:         ^^^^^^^^^^^^^^^^^^^^^
+[rank0]: AttributeError: 'Parameter' object has no attribute 'redistribute'. Did you mean: 'is_distributed'?
+[rank1]: Traceback (most recent call last):
+[rank1]:   File "/mnt/home/oli/param-decomp/param_decomp_lab/fsdp/_scratch/repro_weight_delta.py", line 125, in <module>
+[rank1]:     main()
+[rank1]:     ~~~~^^
+[rank1]:   File "/mnt/home/oli/param-decomp/param_decomp_lab/fsdp/_scratch/repro_weight_delta.py", line 111, in main
+[rank1]:     (h.comp(x).pow(2).mean() + fn(h).pow(2).mean()).backward()
+[rank1]:                                ~~^^^
+[rank1]:   File "/mnt/home/oli/param-decomp/param_decomp_lab/fsdp/_scratch/repro_weight_delta.py", line 67, in delta_replicate_VU
+[rank1]:     V = h.comp.V.redistribute(placements=[Replicate()])
+[rank1]:         ^^^^^^^^^^^^^^^^^^^^^
+[rank1]: AttributeError: 'Parameter' object has no attribute 'redistribute'. Did you mean: 'is_distributed'?
+E0609 19:54:17.432000 2517562 torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 1) local_rank: 0 (pid: 2518506) of binary: /mnt/home/oli/param-decomp/.venv/bin/python3
+Traceback (most recent call last):
+  File "/mnt/home/oli/param-decomp/.venv/bin/torchrun", line 10, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/mnt/home/oli/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+  File "/mnt/home/oli/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+    ~~~^^^^^^
+  File "/mnt/home/oli/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+    ~~~~~~~~~~~~~~~
+        config=config,
+        ~~~~~~~~~~~~~~
+        entrypoint=cmd,
+        ~~~~~~~~~~~~~~~
+    )(*cmd_args)
+    ~^^^^^^^^^^^
+  File "/mnt/home/oli/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/mnt/home/oli/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+    ...<2 lines>...
+    )
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+repro_weight_delta.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-06-09_19:54:17
+  host      : slurm-b200-138-201.slurm-compute.tenant-slurm.svc.cluster.local
+  rank      : 1 (local_rank: 1)
+  exitcode  : 1 (pid: 2518507)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-06-09_19:54:17
+  host      : slurm-b200-138-201.slurm-compute.tenant-slurm.svc.cluster.local
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 2518506)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

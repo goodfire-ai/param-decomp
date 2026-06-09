@@ -1,0 +1,87 @@
+W0609 19:51:55.069000 3016327 torch/distributed/run.py:851] 
+W0609 19:51:55.069000 3016327 torch/distributed/run.py:851] *****************************************
+W0609 19:51:55.069000 3016327 torch/distributed/run.py:851] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0609 19:51:55.069000 3016327 torch/distributed/run.py:851] *****************************************
+=== torch 2.11.0+cu128, world=2 ===
+NCCL version 2.28.9+cuda12.9
+[A recon] V/U grad placements (canonical):
+  V.grad DTensor placements=(Shard(dim=0),) local=(4, 16) mesh=(2,)
+  U.grad DTensor placements=(Shard(dim=0),) local=(8, 8) mesh=(2,)
+[B-full_tensor] V/U grad placements:
+  V.grad DTensor placements=(Shard(dim=1),) local=(8, 8) mesh=(2,)
+  U.grad DTensor placements=(Replicate(),) local=(16, 8) mesh=(2,)
+[B-redistribute] V/U grad placements:
+  V.grad DTensor placements=(Shard(dim=1),) local=(8, 8) mesh=(2,)
+  U.grad DTensor placements=(Replicate(),) local=(16, 8) mesh=(2,)
+[COMBINED-full_tensor] step OK; V.grad after:
+  V.grad DTensor placements=(Shard(dim=0),) local=(4, 16) mesh=(2,)
+[rank1]: Traceback (most recent call last):
+[rank1]:   File "/mnt/home/oli/param-decomp/param_decomp_lab/fsdp/_scratch/repro_weight_delta.py", line 134, in <module>
+[rank1]:     main()
+[rank1]:     ~~~~^^
+[rank1]:   File "/mnt/home/oli/param-decomp/param_decomp_lab/fsdp/_scratch/repro_weight_delta.py", line 118, in main
+[rank1]:     faith = fn(h).pow(2).mean()
+[rank1]:             ~~^^^
+[rank1]:   File "/mnt/home/oli/param-decomp/param_decomp_lab/fsdp/_scratch/repro_weight_delta.py", line 69, in calc_delta_redistribute
+[rank1]:     assert isinstance(w, DTensor)
+[rank1]:            ~~~~~~~~~~^^^^^^^^^^^^
+[rank1]: AssertionError
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/mnt/home/oli/param-decomp/param_decomp_lab/fsdp/_scratch/repro_weight_delta.py", line 134, in <module>
+[rank0]:     main()
+[rank0]:     ~~~~^^
+[rank0]:   File "/mnt/home/oli/param-decomp/param_decomp_lab/fsdp/_scratch/repro_weight_delta.py", line 118, in main
+[rank0]:     faith = fn(h).pow(2).mean()
+[rank0]:             ~~^^^
+[rank0]:   File "/mnt/home/oli/param-decomp/param_decomp_lab/fsdp/_scratch/repro_weight_delta.py", line 69, in calc_delta_redistribute
+[rank0]:     assert isinstance(w, DTensor)
+[rank0]:            ~~~~~~~~~~^^^^^^^^^^^^
+[rank0]: AssertionError
+W0609 19:52:03.501000 3016327 torch/distributed/elastic/multiprocessing/api.py:1012] Sending process 3016382 closing signal SIGTERM
+E0609 19:52:03.615000 3016327 torch/distributed/elastic/multiprocessing/api.py:986] failed (exitcode: 1) local_rank: 1 (pid: 3016383) of binary: /mnt/home/oli/param-decomp/.venv/bin/python3
+Traceback (most recent call last):
+  File "/mnt/home/oli/param-decomp/.venv/bin/torchrun", line 10, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/mnt/home/oli/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 362, in wrapper
+    return f(*args, **kwargs)
+  File "/mnt/home/oli/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/run.py", line 990, in main
+    run(args)
+    ~~~^^^^^^
+  File "/mnt/home/oli/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/run.py", line 981, in run
+    elastic_launch(
+    ~~~~~~~~~~~~~~~
+        config=config,
+        ~~~~~~~~~~~~~~
+        entrypoint=cmd,
+        ~~~~~~~~~~~~~~~
+    )(*cmd_args)
+    ~^^^^^^^^^^^
+  File "/mnt/home/oli/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/launcher/api.py", line 170, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/mnt/home/oli/param-decomp/.venv/lib/python3.13/site-packages/torch/distributed/launcher/api.py", line 317, in launch_agent
+    raise ChildFailedError(
+    ...<2 lines>...
+    )
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+repro_weight_delta.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-06-09_19:52:03
+  host      : slurm-b200-138-143.slurm-compute.tenant-slurm.svc.cluster.local
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 3016382)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-06-09_19:52:03
+  host      : slurm-b200-138-143.slurm-compute.tenant-slurm.svc.cluster.local
+  rank      : 1 (local_rank: 1)
+  exitcode  : 1 (pid: 3016383)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
