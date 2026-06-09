@@ -15,6 +15,7 @@ from torch.nn.init import calculate_gain
 from transformers.pytorch_utils import Conv1D as RadfordConv1D
 
 from param_decomp.decomposition_targets import Identity
+from param_decomp.fake_quant import maybe_fake_quant
 from param_decomp.masks import WeightDeltaAndMask
 
 # This is equivalent to `torch.nn.init._NonlinearityType`, but for some reason this is not always
@@ -124,7 +125,11 @@ class LinearComponents(Components):
 
     @override
     def get_component_acts(self, x: Float[Tensor, "... d_in"]) -> Float[Tensor, "... C"]:
-        return einops.einsum(x.to(self.V.dtype), self.V, "... d_in, d_in C -> ... C")
+        return einops.einsum(
+            maybe_fake_quant(x.to(self.V.dtype)),
+            maybe_fake_quant(self.V),
+            "... d_in, d_in C -> ... C",
+        )
 
     @override
     def forward(
@@ -149,11 +154,19 @@ class LinearComponents(Components):
         if mask is not None:
             component_acts = component_acts * mask
 
-        out = einops.einsum(component_acts, self.U, "... C, C d_out -> ... d_out")
+        out = einops.einsum(
+            maybe_fake_quant(component_acts),
+            maybe_fake_quant(self.U),
+            "... C, C d_out -> ... d_out",
+        )
 
         if weight_delta_and_mask is not None:
             weight_delta, weight_delta_mask = weight_delta_and_mask
-            unmasked_delta_out = einops.einsum(x, weight_delta, "... d_in, d_out d_in -> ... d_out")
+            unmasked_delta_out = einops.einsum(
+                maybe_fake_quant(x),
+                maybe_fake_quant(weight_delta),
+                "... d_in, d_out d_in -> ... d_out",
+            )
             assert unmasked_delta_out.shape[:-1] == weight_delta_mask.shape
             out += einops.einsum(
                 weight_delta_mask, unmasked_delta_out, "..., ... d_out -> ... d_out"
