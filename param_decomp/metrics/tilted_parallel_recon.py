@@ -108,11 +108,17 @@ class TiltedParallelReconLoss(Metric[TiltedParallelReconLossConfig]):
             batch_dims=wide_dims,
         )
         batch_wide = ctx.batch.repeat(k, *([1] * (ctx.batch.ndim - 1)))
-        out = self.model(batch_wide, mask_infos=mask_infos)
+        out = self.model(batch_wide, mask_infos=mask_infos).view(k, b, t, vocab)
 
-        log_q = F.log_softmax(out.view(k, b, t, vocab), dim=-1)
-        p = F.softmax(ctx.target_out, dim=-1).unsqueeze(0)  # [1, b, t, vocab]
-        kl = (p * (p.clamp_min(1e-12).log() - log_q)).sum(-1)  # [k, b, t]
+        # Per-position KL, looped over candidates so the full-vocab fp32 intermediate is
+        # only [b, t, vocab] at a time, not [k, b, t, vocab] (the latter OOMs for k>8 at
+        # LM vocab sizes). KL = sum_v p (log p - log q); p (the target) is candidate-free.
+        p = F.softmax(ctx.target_out, dim=-1)  # [b, t, vocab]
+        p_log_p = (p * p.clamp_min(1e-12).log()).sum(-1)  # [b, t]
+        kl = torch.stack(
+            [p_log_p - (p * F.log_softmax(out[i], dim=-1)).sum(-1) for i in range(k)],
+            dim=0,
+        )  # [k, b, t]
 
         tau = self.cfg.temperature
         tilted_per_position = tau * torch.logsumexp(kl / tau, dim=0)  # [b, t]
