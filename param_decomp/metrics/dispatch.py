@@ -24,6 +24,7 @@ from param_decomp.metrics.stochastic_hidden_acts_recon import StochasticHiddenAc
 from param_decomp.metrics.stochastic_recon import StochasticReconLoss
 from param_decomp.metrics.stochastic_recon_layerwise import StochasticReconLayerwiseLoss
 from param_decomp.metrics.stochastic_recon_subset import StochasticReconSubsetLoss
+from param_decomp.metrics.tilted_parallel_recon import TiltedParallelReconLoss
 from param_decomp.metrics.unmasked_recon import UnmaskedReconLoss
 
 LOSS_METRIC_CLASSES: dict[str, type[Metric[Any]]] = {
@@ -43,6 +44,7 @@ LOSS_METRIC_CLASSES: dict[str, type[Metric[Any]]] = {
         StochasticReconLayerwiseLoss,
         StochasticReconLoss,
         StochasticReconSubsetLoss,
+        TiltedParallelReconLoss,
         UnmaskedReconLoss,
     )
 }

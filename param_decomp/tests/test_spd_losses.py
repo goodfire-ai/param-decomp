@@ -7,7 +7,7 @@ from torch import Tensor
 
 from param_decomp.batch_and_loss_fns import ReconstructionLoss
 from param_decomp.ci_fns import LayerwiseCiConfig
-from param_decomp.component_model import ComponentModel
+from param_decomp.component_model import CIOutputs, ComponentModel
 from param_decomp.decomposition_targets import DecompositionTarget
 from param_decomp.masks import AllLayersRouter, UniformKSubsetRoutingConfig
 from param_decomp.metrics.ci_masked_recon import ci_masked_recon_loss
@@ -15,6 +15,7 @@ from param_decomp.metrics.ci_masked_recon_layerwise import (
     ci_masked_recon_layerwise_loss,
 )
 from param_decomp.metrics.ci_masked_recon_subset import ci_masked_recon_subset_loss
+from param_decomp.metrics.context import MetricContext
 from param_decomp.metrics.faithfulness import faithfulness_loss
 from param_decomp.metrics.importance_minimality import importance_minimality_loss
 from param_decomp.metrics.persistent_pgd_recon import PersistentPGDReconLossConfig
@@ -29,6 +30,10 @@ from param_decomp.metrics.stochastic_recon_layerwise import (
     stochastic_recon_layerwise_loss,
 )
 from param_decomp.metrics.stochastic_recon_subset import stochastic_recon_subset_loss
+from param_decomp.metrics.tilted_parallel_recon import (
+    TiltedParallelReconLoss,
+    TiltedParallelReconLossConfig,
+)
 from param_decomp.schedule import ScheduleConfig
 from param_decomp_lab.batch_and_loss_fns import (
     recon_loss_kl,
@@ -1091,3 +1096,85 @@ class TestPersistentPGDReconLoss:
         state.step(grad)
         for source in state.sources.values():
             assert torch.all(source >= 0.0) and torch.all(source <= 1.0)
+
+
+def _ci_outputs_for(ci: dict[str, Tensor]) -> CIOutputs:
+    return CIOutputs(
+        lower_leaky=ci,
+        upper_leaky=ci,
+        pre_sigmoid={k: torch.ones_like(v) * 10.0 for k, v in ci.items()},
+    )
+
+
+def _seq_metric_ctx(
+    model: ComponentModel,
+    *,
+    is_eval: bool,
+) -> MetricContext:
+    # (batch=2, seq=3, d_in=2) -> seq model out (2, 3, d_out=2) used as logits.
+    batch = torch.randn(2, 3, 2)
+    target_out = model.target_model(batch)
+    ci = {"fc": torch.rand(2, 3, 1)}
+    return MetricContext(
+        model=model,
+        batch=batch,
+        target_out=target_out,
+        pre_weight_acts={},
+        ci=_ci_outputs_for(ci),
+        weight_deltas={},
+        step=0,
+        total_steps=100,
+        use_delta_component=False,
+        sampling="continuous",
+        n_mask_samples=1,
+        reconstruction_loss=recon_loss_kl,
+        is_eval=is_eval,
+    )
+
+
+class TestTiltedParallelReconLoss:
+    def test_runs_grads_and_eval_keys(self: object) -> None:
+        torch.manual_seed(0)
+        fc_weight = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+        model = _make_seq_component_model(weight=fc_weight)
+
+        metric = TiltedParallelReconLoss(
+            TiltedParallelReconLossConfig(coeff=0.5, n_candidates=6, temperature=0.1)
+        )
+        metric.bind(model=model, device="cpu")
+
+        # Train step: positive scalar loss that backprops into component params.
+        loss = metric.update(_seq_metric_ctx(model, is_eval=False))
+        assert loss is not None and loss.item() >= 0.0
+        loss.backward()
+        assert any(
+            cm.V.grad is not None and torch.any(cm.V.grad != 0) for cm in model.components.values()
+        )
+
+        # Eval pass: compute() exposes the output_recon key.
+        metric.reset()
+        metric.update(_seq_metric_ctx(model, is_eval=True))
+        result = metric.compute()
+        assert isinstance(result, dict)
+        assert set(result.keys()) == {"TiltedParallelReconLoss/output_recon"}
+
+    def test_temperature_is_monotonic(self: object) -> None:
+        """`tau * logsumexp(L/tau)` is non-decreasing in tau for fixed candidates."""
+        fc_weight = torch.tensor([[1.5, 0.0], [0.0, 0.5]], dtype=torch.float32)
+        model = _make_seq_component_model(weight=fc_weight)
+
+        def summed_loss(temperature: float) -> float:
+            metric = TiltedParallelReconLoss(
+                TiltedParallelReconLossConfig(
+                    coeff=0.5, n_candidates=8, temperature=temperature, bernoulli_p=0.5
+                )
+            )
+            metric.bind(model=model, device="cpu")
+            ctx = _seq_metric_ctx(model, is_eval=False)
+            torch.manual_seed(123)  # identical candidate draws across temperatures
+            sum_loss, _ = metric._tilted_recon_sum_and_n(ctx, None)
+            return sum_loss.item()
+
+        cold = summed_loss(0.02)  # ~ per-position worst case
+        hot = summed_loss(5.0)
+        assert cold <= hot + 1e-6

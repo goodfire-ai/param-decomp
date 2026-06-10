@@ -37,6 +37,7 @@ from param_decomp.metrics.stochastic_hidden_acts_recon import StochasticHiddenAc
 from param_decomp.metrics.stochastic_recon import StochasticReconLossConfig
 from param_decomp.metrics.stochastic_recon_layerwise import StochasticReconLayerwiseLossConfig
 from param_decomp.metrics.stochastic_recon_subset import StochasticReconSubsetLossConfig
+from param_decomp.metrics.tilted_parallel_recon import TiltedParallelReconLossConfig
 from param_decomp.metrics.unmasked_recon import UnmaskedReconLossConfig
 from param_decomp.schedule import ScheduleConfig
 
@@ -68,6 +69,7 @@ AnyLossMetricConfig = Annotated[
     | StochasticReconLayerwiseLossConfig
     | StochasticReconLossConfig
     | StochasticReconSubsetLossConfig
+    | TiltedParallelReconLossConfig
     | UnmaskedReconLossConfig,
     Discriminator("type"),
 ]

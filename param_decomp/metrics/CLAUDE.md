@@ -15,7 +15,8 @@ core library. For eval metrics (user-extensible, lab-side), see
 | `context.py` | `MetricContext` — the per-step bundle every `Metric.update(ctx)` receives |
 | `dispatch.py` | `LOSS_METRIC_CLASSES` type→class table + `instantiate_metrics(...)` |
 | `<loss_name>.py` | One file per metric: `<Name>Loss` class + `<Name>LossConfig` config side-by-side |
-| `persistent_pgd_state.py` | PPGD adversarial-source state machine (shared by `persistent_pgd_recon.py`) |
+| `persistent_pgd_state.py` | PPGD adversarial-source state machine (shared by `persistent_pgd_recon.py`); also exports `get_ppgd_mask_infos` (mask building) reused by `tilted_parallel_recon.py` |
+| `tilted_parallel_recon.py` | `TiltedParallelReconLoss` — stateless adversary: k vertex-biased joint mask candidates per position, soft worst-case `tau·logsumexp` tilt. No state/optimizer/warmup/hooks. Swap-in alternative to `PersistentPGDReconLoss` |
 | `pgd_utils.py` | Shared PGD helpers used by the regular PGD recon metrics |
 | `output.py` | Shared output-extraction helpers used across recon losses |
 
