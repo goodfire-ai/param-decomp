@@ -16,9 +16,16 @@ GPUS_PER_NODE = 8
 
 # Surface NCCL collective failures as Python exceptions instead of hanging the job —
 # matters for multi-node where a single stalled rank otherwise hangs everyone silently.
+#
+# HF_HUB_* harden streaming-dataset downloads: the xet-bridge CDN path returns
+# intermittent 408s on individual parquet shards that crash a single rank and tear
+# down the whole DDP job. Disabling xet falls back to standard HTTPS LFS, and the
+# longer timeout tolerates slow shards.
 DDP_ENV = {
     "NCCL_DEBUG": "WARN",
     "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
+    "HF_HUB_DISABLE_XET": "1",
+    "HF_HUB_DOWNLOAD_TIMEOUT": "60",
 }
 
 
