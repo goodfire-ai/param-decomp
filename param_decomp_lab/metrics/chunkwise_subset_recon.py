@@ -42,7 +42,7 @@ from param_decomp_lab.three_pool.recon_plan import SubsetReconPlan
 from param_decomp_lab.three_pool.step_chunkwise import (
     WeightDeltasFn,
     make_weight_deltas_fn,
-    recon_one_forward,
+    recon_masked_forward,
 )
 
 
