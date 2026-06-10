@@ -54,6 +54,7 @@ def _ppgd_state_from_cfg(
         optimizer_cfg=cfg.optimizer,
         scope=cfg.scope,
         use_sigmoid_parameterization=cfg.use_sigmoid_parameterization,
+        vertex_warm_start=cfg.vertex_warm_start,
         n_warmup_steps=cfg.n_warmup_steps,
         n_samples=cfg.n_samples,
         router=AllLayersRouter(),
@@ -1001,3 +1002,92 @@ class TestPersistentPGDReconLoss:
         state.step(grad)
 
         assert loss >= 0.0
+
+    def test_vertex_warm_start_snaps_sources_to_grad_sign(self: object) -> None:
+        """`vertex_warm_start` overwrites sources with the maximizing box vertex (grad>0)."""
+        fc_weight = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+        model = _make_seq_component_model(weight=fc_weight)
+
+        cfg = PersistentPGDReconLossConfig(
+            optimizer=AdamPGDConfig(lr_schedule=ScheduleConfig(start_val=0.05)),
+            scope=SingleSourceScope(),
+            vertex_warm_start=True,
+            n_warmup_steps=0,
+        )
+        state = _ppgd_state_from_cfg(
+            cfg,
+            module_to_c=model.module_to_c,
+            batch_dims=(1, 2),
+            device="cpu",
+            use_delta_component=False,
+            reconstruction_loss=recon_loss_mse,
+        )
+
+        grad = {k: torch.randn_like(v) for k, v in state.sources.items()}
+        state.step(grad)
+
+        for k, source in state.sources.items():
+            expected = (grad[k] > 0).to(source.dtype)
+            assert torch.equal(source, expected)
+            assert torch.all((source == 0.0) | (source == 1.0))
+
+    def test_optimistic_offset_shifts_and_stays_in_bounds(self: object) -> None:
+        """`optimistic_gamma>0` adds the predicted Adam step when reading effective sources."""
+        fc_weight = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+        model = _make_seq_component_model(weight=fc_weight)
+
+        cfg = PersistentPGDReconLossConfig(
+            optimizer=AdamPGDConfig(
+                lr_schedule=ScheduleConfig(start_val=0.05), optimistic_gamma=3.0
+            ),
+            scope=SingleSourceScope(),
+        )
+        state = _ppgd_state_from_cfg(
+            cfg,
+            module_to_c=model.module_to_c,
+            batch_dims=(1, 2),
+            device="cpu",
+            use_delta_component=False,
+            reconstruction_loss=recon_loss_mse,
+        )
+
+        # No optimizer step yet -> step_count 0 -> no offset, identity passthrough.
+        assert state.optimizer.lookahead_offset() == {}
+        assert state.get_effective_sources() is state.sources
+
+        # After a step, the offset is non-empty and effective != raw, still in [0, 1].
+        grad = {k: torch.randn_like(v) for k, v in state.sources.items()}
+        state.step(grad)
+        offset = state.optimizer.lookahead_offset()
+        assert offset
+        effective = state.get_effective_sources()
+        for k, eff in effective.items():
+            assert torch.all(eff >= 0.0) and torch.all(eff <= 1.0)
+            expected = (state.sources[k] + offset[k]).clamp(0.0, 1.0)
+            assert torch.allclose(eff, expected)
+
+    def test_defaults_preserve_effective_source_identity(self: object) -> None:
+        """gamma=0 + vertex_warm_start=False: effective sources are the raw leaf, clamped."""
+        fc_weight = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+        model = _make_seq_component_model(weight=fc_weight)
+
+        cfg = PersistentPGDReconLossConfig(
+            optimizer=AdamPGDConfig(lr_schedule=ScheduleConfig(start_val=0.05)),
+            scope=SingleSourceScope(),
+        )
+        state = _ppgd_state_from_cfg(
+            cfg,
+            module_to_c=model.module_to_c,
+            batch_dims=(1, 2),
+            device="cpu",
+            use_delta_component=False,
+            reconstruction_loss=recon_loss_mse,
+        )
+
+        assert state.optimizer.lookahead_offset() == {}
+        # Identity passthrough preserves the differentiable leaf for autograd.grad.
+        assert state.get_effective_sources() is state.sources
+        grad = {k: torch.randn_like(v) for k, v in state.sources.items()}
+        state.step(grad)
+        for source in state.sources.values():
+            assert torch.all(source >= 0.0) and torch.all(source <= 1.0)

@@ -44,6 +44,13 @@ class AdamPGDConfig(BaseConfig):
     beta2: Probability = Field(default=0.999, description="Adam beta2 for masks")
     eps: NonNegativeFloat = Field(default=1e-8, description="Adam epsilon for masks")
     lr_schedule: ScheduleConfig
+    optimistic_gamma: NonNegativeFloat = Field(
+        default=0.0,
+        description=(
+            "Optimistic extrapolation: effective sources are read as `clamp(r + gamma * step)`"
+            " where `step` is the predicted next Adam update. 0 disables (default)."
+        ),
+    )
 
 
 PGDOptimizerConfig = SignPGDConfig | AdamPGDConfig
@@ -105,6 +112,13 @@ class PPGDOptimizer(ABC):
     @abstractmethod
     def set_lr(self, lr: float) -> None: ...
 
+    def lookahead_offset(self) -> PPGDSources:
+        """Optimistic offset added to raw sources when reading effective sources.
+
+        Empty by default — optimizers without an extrapolation rule contribute no offset.
+        """
+        return {}
+
     def state_dict(self) -> dict[str, Any]:
         """Return trajectory-dependent optimizer state.
 
@@ -142,6 +156,7 @@ class AdamPGDOptimizer(PPGDOptimizer):
         self._beta1 = cfg.beta1
         self._beta2 = cfg.beta2
         self._eps = cfg.eps
+        self._optimistic_gamma = cfg.optimistic_gamma
         self._step_count = 0
         self._m: PPGDSources = {}
         self._v: PPGDSources = {}
@@ -171,6 +186,21 @@ class AdamPGDOptimizer(PPGDOptimizer):
     @override
     def set_lr(self, lr: float) -> None:
         self._lr = lr
+
+    @override
+    def lookahead_offset(self) -> PPGDSources:
+        """`gamma` times the predicted next Adam step `lr * m_hat / (sqrt(v_hat) + eps)`."""
+        if self._optimistic_gamma == 0.0 or self._step_count == 0:
+            return {}
+        bias_correction1 = 1 - self._beta1**self._step_count
+        bias_correction2 = 1 - self._beta2**self._step_count
+        offset: PPGDSources = {}
+        for module_name in self._m:
+            m_hat = self._m[module_name] / bias_correction1
+            v_hat = self._v[module_name] / bias_correction2
+            step = self._lr * m_hat / (v_hat.sqrt() + self._eps)
+            offset[module_name] = self._optimistic_gamma * step
+        return offset
 
     @override
     def state_dict(self) -> dict[str, Any]:
@@ -215,14 +245,20 @@ class PersistentPGDState:
         optimizer_cfg: PGDOptimizerConfig,
         scope: PersistentPGDSourceScope,
         use_sigmoid_parameterization: bool,
+        vertex_warm_start: bool,
         n_warmup_steps: int,
         n_samples: int,
         router: Router,
         reconstruction_loss: ReconstructionLoss,
     ) -> None:
+        assert not (vertex_warm_start and use_sigmoid_parameterization), (
+            "vertex_warm_start snaps sources to box vertices in [0, 1]; it is incompatible "
+            "with use_sigmoid_parameterization (unbounded sources)."
+        )
         self.optimizer = make_ppgd_optimizer(optimizer_cfg)
         self._skip_all_reduce = isinstance(scope, PerBatchPerPositionScope)
         self._use_sigmoid_parameterization = use_sigmoid_parameterization
+        self._vertex_warm_start = vertex_warm_start
         self._router = router
         self._n_warmup_steps = n_warmup_steps
         self._n_samples = n_samples
@@ -270,25 +306,41 @@ class PersistentPGDState:
     def step(self, grads: PPGDSources) -> None:
         """One PGD update step using `grads`.
 
-        Sources are clamped to `[0, 1]` after, unless sigmoid parameterization is on
-        (then left unbounded and sigmoid is applied when reading effective sources).
+        With `vertex_warm_start`, sources are snapped to the box vertex the (maximizing)
+        grads point to — `1` where `grad > 0`, else `0` — the one-shot optimum of a loss
+        linearized over `[0, 1]`. Otherwise sources are clamped to `[0, 1]`, unless sigmoid
+        parameterization is on (then left unbounded and sigmoid is applied when reading
+        effective sources).
         """
         with torch.no_grad():
             self.optimizer.step(self.sources, grads)
 
-            if not self._use_sigmoid_parameterization:
+            if self._vertex_warm_start:
+                for module_name, source in self.sources.items():
+                    source.copy_((grads[module_name] > 0).to(source.dtype))
+            elif not self._use_sigmoid_parameterization:
                 for source in self.sources.values():
                     source.clamp_(0.0, 1.0)
 
     def get_effective_sources(self) -> PPGDSources:
         """Sources in `[0, 1]` range.
 
-        Under sigmoid parameterization, applies sigmoid to unconstrained values;
-        otherwise returns the raw clamped sources.
+        With an optimistic offset (`AdamPGDConfig.optimistic_gamma > 0`), reads
+        `r + gamma * predicted_step` before projecting; the offset is detached so grads
+        still flow to `r`. Under sigmoid parameterization, applies sigmoid to unconstrained
+        values; otherwise clamps to `[0, 1]`.
         """
+        offset = self.optimizer.lookahead_offset()
+        if not offset:
+            # Preserve exact prior behaviour (and the leaf identity of `self.sources`).
+            if self._use_sigmoid_parameterization:
+                return {k: torch.sigmoid(v) for k, v in self.sources.items()}
+            return self.sources
+
+        raw = {k: v + offset[k] for k, v in self.sources.items()}
         if self._use_sigmoid_parameterization:
-            return {k: torch.sigmoid(v) for k, v in self.sources.items()}
-        return self.sources
+            return {k: torch.sigmoid(v) for k, v in raw.items()}
+        return {k: v.clamp(0.0, 1.0) for k, v in raw.items()}
 
     def update_lr(self, step: int, total_steps: int) -> None:
         lr = get_scheduled_value(step, total_steps, self._lr_schedule)

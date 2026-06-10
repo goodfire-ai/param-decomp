@@ -50,6 +50,14 @@ class _PersistentPGDBaseConfig(LossMetricConfig):
     optimizer: Annotated[PGDOptimizerConfig, Field(discriminator="type")]
     scope: PersistentPGDSourceScope
     use_sigmoid_parameterization: bool = False
+    vertex_warm_start: bool = Field(
+        default=False,
+        description=(
+            "Snap sources to the box vertex the maximizing grads point to after each step,"
+            " instead of incremental drift. Designed to replace warmup steps (set"
+            " n_warmup_steps=0). Incompatible with use_sigmoid_parameterization."
+        ),
+    )
     n_warmup_steps: NonNegativeInt = Field(
         default=0,
         description=(
@@ -144,6 +152,7 @@ class _PersistentPGDReconBase[
             optimizer_cfg=self.cfg.optimizer,
             scope=self.cfg.scope,
             use_sigmoid_parameterization=self.cfg.use_sigmoid_parameterization,
+            vertex_warm_start=self.cfg.vertex_warm_start,
             n_warmup_steps=self.cfg.n_warmup_steps,
             n_samples=self.cfg.n_samples,
             router=_router_for_cfg(self.cfg, self.device),
