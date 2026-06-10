@@ -1,4 +1,4 @@
-# PPGD idea 1.2 round-2: stronger tilted sampling k=32, tau=0.04, uniform_frac=0.25.
+# PPGD idea 1.2 round-2: stronger tilted sampling k=16, tau=0.04, uniform_frac=0.25 (k=32 OOMs at dp16).
 cadence:
   keep_last_n_checkpoints: 2
   save_every: 20000
@@ -121,7 +121,7 @@ pd:
     type: StochasticReconSubsetLoss
   - bernoulli_p: 0.5
     coeff: 0.5
-    n_candidates: 32
+    n_candidates: 16
     start_frac: 0.0
     temperature: 0.04
     type: TiltedParallelReconLoss
