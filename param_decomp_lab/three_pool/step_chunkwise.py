@@ -48,6 +48,7 @@ import torch.distributed as dist
 import torch.nn as nn
 from torch import Tensor
 
+from param_decomp._trace import trace
 from param_decomp.component_model import ComponentModelProtocol
 from param_decomp.grad_clip import cross_pool_clip_grad_norm
 from param_decomp.masks import RoutingMasks, make_mask_infos
@@ -470,7 +471,8 @@ def run_faithfulness_warmup_chunkwise(
     overwritten each step. So warmup only makes sense on the chunkwise pool.
     """
     warmup_opt = torch.optim.AdamW(component_params, lr=lr, weight_decay=weight_decay)
-    for _ in range(n_steps):
+    for i in range(n_steps):
+        trace(f"faith warmup chunk: step {i} enter")
         warmup_opt.zero_grad()
         device = component_params[0].device
         loss, _, _ = _faithfulness_loss(component_model, device, numel_global)
@@ -478,6 +480,7 @@ def run_faithfulness_warmup_chunkwise(
         warmup_opt.step()
     del warmup_opt
     torch.cuda.empty_cache()
+    trace("faith warmup chunk: done")
 
 
 def _slice_batch_for_chunkwise(batch: Any, ctx: ChunkContext) -> tuple[Any, int]:

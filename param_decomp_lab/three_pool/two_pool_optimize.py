@@ -501,9 +501,11 @@ class TwoPoolTrainer:
             for m in eval_loop.metrics:
                 m.bind(model=self.component_model, device=str(device))
 
+        trace("run: fetching first batch")
         first_batch = next(train_iterator)
         train_iterator = itertools.chain([first_batch], train_iterator)
         _assert_full_global_batch(first_batch, runtime.batch_global)
+        trace("run: first batch fetched")
 
         if isinstance(ctx, PoolAContext) and self.ppgd_state is None:
             ppgd_cfg = runtime.ppgd_cfg
@@ -536,12 +538,14 @@ class TwoPoolTrainer:
             if self._pending_ppgd_resume_state is not None:
                 self.ppgd_state.load_state_dict(self._pending_ppgd_resume_state)
                 self._pending_ppgd_resume_state = None
+            trace("run: ppgd_state built (pool A)")
 
         if (
             self.step == 0
             and isinstance(ctx, ChunkContext)
             and pd_config.faithfulness_warmup_steps > 0
         ):
+            trace("run: faith warmup enter (chunk)")
             run_faithfulness_warmup_chunkwise(
                 component_model=self.component_model,
                 component_params=self._component_params,
@@ -550,7 +554,9 @@ class TwoPoolTrainer:
                 weight_decay=pd_config.faithfulness_warmup_weight_decay,
                 numel_global=self.runtime.numel_global,
             )
+            trace("run: faith warmup done (chunk)")
 
+        trace("run: entering step loop setup")
         components_lr_schedule = pd_config.components_optimizer.lr_schedule
         ci_fn_lr_schedule = pd_config.ci_fn_optimizer.lr_schedule
 
