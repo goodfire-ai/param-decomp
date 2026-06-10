@@ -97,46 +97,30 @@ def _plot_causal_importances_figure(
     return img
 
 
-def _parse_layer_grid(n_modules: int, max_rows: int = 6) -> tuple[int, int]:
-    """`(n_rows, n_cols)` for a column-major grid of per-layer subplots."""
-    n_cols = (n_modules + max_rows - 1) // max_rows
-    n_rows = min(n_modules, max_rows)
-    return n_rows, n_cols
-
-
-def _setup_layer_grid_labels(
-    axs: np.ndarray, i: int, n_modules: int, n_rows: int, xlabel: str, ylabel: str, title: str
-) -> plt.Axes:
-    """Pick subplot `i` in a column-major grid, hide nothing, set labels; returns the axis."""
-    row = i % n_rows
-    col = i // n_rows
-    ax = axs[row, col]
-    if row == n_rows - 1 or i == n_modules - 1:
-        ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.set_title(title, fontsize=10)
-    return ax
-
-
 def plot_weight_magnitude(
     weight_magnitudes: dict[str, Float[Tensor, " C"]],
 ) -> Image.Image:
     """Per-layer scatter of `‖V_c‖·‖U_c‖` per component, sorted descending (log y)."""
     n_modules = len(weight_magnitudes)
-    n_rows, n_cols = _parse_layer_grid(n_modules)
+    max_rows = 6
+    n_cols = (n_modules + max_rows - 1) // max_rows  # Ceiling division
+    n_rows = min(n_modules, max_rows)
     fig, axs = plt.subplots(
         n_rows, n_cols, figsize=(8 * n_cols, 3 * n_rows), dpi=200, squeeze=False
     )
     axs = np.array(axs)
+    # Hide unused subplots (column-major fill).
     for i in range(n_modules, n_rows * n_cols):
         axs[i % n_rows, i // n_rows].set_visible(False)
     for i, (module_name, magnitudes) in enumerate(weight_magnitudes.items()):
         sorted_mags = torch.sort(magnitudes, descending=True)[0].detach().cpu().numpy()
-        ax = _setup_layer_grid_labels(
-            axs, i, n_modules, n_rows, "Component", "‖V_c‖·‖U_c‖", module_name
-        )
+        ax = axs[i % n_rows, i // n_rows]
         ax.set_yscale("log")
         ax.scatter(range(len(sorted_mags)), sorted_mags, marker="x", s=10)
+        if i % n_rows == n_rows - 1 or i == n_modules - 1:
+            ax.set_xlabel("Component")
+        ax.set_ylabel("‖V_c‖·‖U_c‖")
+        ax.set_title(module_name, fontsize=10)
     fig.tight_layout()
     img = _render_figure(fig)
     plt.close(fig)

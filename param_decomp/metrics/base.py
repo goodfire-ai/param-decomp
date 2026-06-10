@@ -8,12 +8,14 @@ autograd graph across training steps.
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from torch import Tensor
 
 from param_decomp.base_config import BaseConfig
 from param_decomp.component_model import ComponentModel
+
+EvalDistribution = Literal["target", "nontarget"]
 
 
 class LossMetricConfig(BaseConfig):
@@ -41,6 +43,10 @@ class Metric[TConfig: BaseConfig](ABC):
     log_namespace: ClassVar[str]
     slow: ClassVar[bool] = False
     short_name: ClassVar[str | None] = None
+    # Which eval distribution feeds this metric. "nontarget" metrics are routed to the
+    # mirror nontarget eval loop (under `delta_override(1.0)`) on targeted runs; the
+    # default "target" goes to the normal eval pass.
+    eval_distribution: ClassVar[EvalDistribution] = "target"
     cfg: TConfig
     model: ComponentModel
     device: str

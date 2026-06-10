@@ -68,6 +68,18 @@ class SparseFeatureDataset(
                 f"active_indices must be in [0, {n_features}), got {active_indices}"
             )
         self.active_indices: list[int] | None = active_indices
+        # Precompute the device tensors reused every batch so generate_batch() does not
+        # rebuild a list->tensor and host->device copy on every training step.
+        self._candidate_indices: Tensor = (
+            torch.tensor(active_indices, device=device)
+            if active_indices is not None
+            else torch.arange(n_features, device=device)
+        )
+        self._active_keep_mask: Tensor | None = None
+        if active_indices is not None:
+            keep = torch.zeros(n_features, dtype=torch.bool, device=device)
+            keep[self._candidate_indices] = True
+            self._active_keep_mask = keep
 
     @override
     def __iter__(self) -> Iterator[tuple[Tensor, Tensor]]:
@@ -114,11 +126,7 @@ class SparseFeatureDataset(
         When `active_indices` is set, the active features are drawn from those indices
         only.
         """
-        candidates = (
-            torch.tensor(self.active_indices, device=self.device)
-            if self.active_indices is not None
-            else torch.arange(self.n_features, device=self.device)
-        )
+        candidates = self._candidate_indices
         if n > len(candidates):
             raise ValueError(
                 f"Cannot activate {n} features when only {len(candidates)} candidates exist"
@@ -152,10 +160,8 @@ class SparseFeatureDataset(
             + min_val
         )
         mask = torch.rand_like(batch) < self.feature_probability
-        if self.active_indices is not None:
-            keep = torch.zeros(self.n_features, dtype=torch.bool, device=self.device)
-            keep[torch.tensor(self.active_indices, device=self.device)] = True
-            mask = mask & keep
+        if self._active_keep_mask is not None:
+            mask = mask & self._active_keep_mask
         return batch * mask
 
     def _generate_multi_feature_batch_no_zero_samples(

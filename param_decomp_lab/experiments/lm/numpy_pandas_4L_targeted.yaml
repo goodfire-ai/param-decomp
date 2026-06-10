@@ -1,0 +1,136 @@
+# pile_llama_simple_mlp 4L — targeted decomposition on "import numpy/pandas as"
+# Ported from the old SPD config (config_numpy_reference.yaml); steps halved for a quick check.
+label: np_pd_ref
+pd:
+  seed: 0
+  n_mask_samples: 1
+  ci_config:
+    mode: global
+    fn_type: global_shared_mlp
+    hidden_dims: [512]
+  sampling: continuous
+  sigmoid_type: leaky_hard
+  decomposition_targets:
+    - module_pattern: h.*.mlp.c_fc
+      C: 96
+    - module_pattern: h.*.mlp.down_proj
+      C: 96
+    - module_pattern: h.*.attn.q_proj
+      C: 64
+    - module_pattern: h.*.attn.k_proj
+      C: 64
+    - module_pattern: h.*.attn.v_proj
+      C: 64
+    - module_pattern: h.*.attn.o_proj
+      C: 96
+  identity_decomposition_targets: null
+  use_delta_component: true
+  components_optimizer:
+    lr_schedule:
+      start_val: 1.0e-4
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+    weight_decay: 0.1
+    grad_clip_norm: 0.01
+  ci_fn_optimizer:
+    lr_schedule:
+      start_val: 1.0e-4
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+      fn_type: cosine
+  steps: 30000
+  batch_size: 256
+  faithfulness_warmup_steps: 0
+  loss_metrics:
+    - type: ImportanceMinimalityLoss
+      coeff: 1.0e-3
+      pnorm: 2.0
+      beta: 0.2
+      p_anneal_start_frac: 0.0
+      p_anneal_final_p: 1.0
+      p_anneal_end_frac: 1.0
+      eps: 1.0e-12
+      coeff_warmup_frac: 0.2
+      coeff_peak_multiplier: 4.0
+      coeff_anneal_start_frac: 0.2
+      coeff_anneal_end_frac: 1.0
+    - type: StochasticReconSubsetLoss
+      coeff: 1.0
+      routing:
+        type: uniform_k_subset
+    - type: PersistentPGDReconLoss
+      coeff: 0.5
+      optimizer:
+        type: adam
+        beta1: 0.5
+        beta2: 0.99
+        eps: 1.0e-8
+        lr_schedule:
+          start_val: 0.01
+          warmup_pct: 0.025
+          final_val_frac: 0.1
+          fn_type: cosine
+      scope:
+        type: per_batch_per_position
+      use_sigmoid_parameterization: false
+      n_warmup_steps: 2
+      start_frac: 0.8
+cadence:
+  train_log_every: 100
+eval:
+  n_steps: 1
+  batch_size: 256
+  every: 1000
+  slow_every: 4000
+  slow_on_first_step: true
+  metrics:
+    - type: CI_L0
+      groups:
+        total:
+          - '*'
+    - type: PGDReconLoss
+      init: random
+      step_size: 0.1
+      n_steps: 20
+      mask_scope: shared_across_batch
+    - type: TargetReconLoss
+      rounding_threshold: 0.01
+    - type: NontargetReconLoss
+      rounding_threshold: 0.01
+    - type: TargetedCIHeatmap
+      prompts_file: param_decomp_lab/experiments/lm/prompts/numpy_and_pandas.txt
+      tokenizer_name: EleutherAI/gpt-neox-20b
+      max_seq_len: 3
+    - type: WeightMagnitude
+    - type: CIMeanPerComponent
+    - type: CIHiddenActsReconLoss
+target:
+  spec:
+    kind: pretrained
+    model_class: param_decomp_lab.experiments.lm.pretrain.models.llama_simple_mlp.LlamaSimpleMLP
+    run_path: goodfire/spd/runs/t-9d2b8f02
+  output_extract: 0
+data:
+  tokenizer_name: EleutherAI/gpt-neox-20b
+  prompts_file: param_decomp_lab/experiments/lm/prompts/numpy_and_pandas.txt
+  max_seq_len: 3
+nontarget:
+  data:
+    tokenizer_name: EleutherAI/gpt-neox-20b
+    dataset_name: danbraunai/pile-uncopyrighted-tok-shuffled
+    column_name: input_ids
+    max_seq_len: 64
+    is_tokenized: true
+    streaming: true
+    train_split: train
+    eval_split: val
+  batch_size: 256
+  eval_batch_size: 256
+  impmin_coeff_ratio: 2
+runtime:
+  autocast_bf16: true
+  device: cuda
+  dp: null
+wandb:
+  project: param-decomp

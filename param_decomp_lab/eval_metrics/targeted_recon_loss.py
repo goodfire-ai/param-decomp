@@ -21,16 +21,17 @@ from param_decomp.metrics.context import MetricContext
 from param_decomp.targeted import delta_override
 
 
-class TargetReconLossConfig(BaseConfig):
+class _ReconLossConfigBase(BaseConfig):
+    rounding_threshold: float
+    ci_alive_threshold: float = 0.1
+
+
+class TargetReconLossConfig(_ReconLossConfigBase):
     type: Literal["TargetReconLoss"] = "TargetReconLoss"
-    rounding_threshold: float
-    ci_alive_threshold: float = 0.1
 
 
-class NontargetReconLossConfig(BaseConfig):
+class NontargetReconLossConfig(_ReconLossConfigBase):
     type: Literal["NontargetReconLoss"] = "NontargetReconLoss"
-    rounding_threshold: float
-    ci_alive_threshold: float = 0.1
 
 
 _STRATEGIES = ("stochastic", "ci_masked", "rounded", "delta_only")
@@ -143,4 +144,5 @@ class NontargetReconLoss(_TargetedReconLossBase[NontargetReconLossConfig]):
 
     log_namespace = "nontarget_recon"
     short_name = "NtgtRecon"
+    eval_distribution = "nontarget"
     delta_value: ClassVar[float] = 1.0

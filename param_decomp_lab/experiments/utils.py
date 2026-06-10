@@ -13,7 +13,8 @@ from param_decomp.base_config import BaseConfig
 from param_decomp.configs import Cadence, PDConfig, RuntimeConfig
 from param_decomp.distributed import is_main_process
 from param_decomp.metrics.faithfulness import FaithfulnessLossConfig
-from param_decomp_lab.eval_metrics import AnyEvalMetricConfig
+from param_decomp_lab.eval_metrics import EVAL_METRIC_CLASSES, AnyEvalMetricConfig
+from param_decomp_lab.eval_metrics.targeted_ci_heatmap import TargetedCIHeatmapConfig
 from param_decomp_lab.infra.run_files import generate_run_id, write_run_metadata_start
 from param_decomp_lab.infra.settings import PARAM_DECOMP_OUT_DIR
 from param_decomp_lab.infra.wandb import try_wandb
@@ -41,6 +42,25 @@ class EvalConfig(BaseConfig):
     metrics: list[AnyEvalMetricConfig] = Field(default_factory=list)
 
 
+def _assert_heatmap_probe_matches_data(cfg: TargetedCIHeatmapConfig, data: BaseConfig) -> None:
+    """The heatmap's target probes ARE the target distribution, so its probe spec must
+    match `data` (the single source of truth) rather than being re-specified and drifting."""
+    if cfg.active_indices is not None:
+        data_indices = getattr(data, "active_indices", None)
+        assert data_indices == cfg.active_indices, (
+            f"TargetedCIHeatmap.active_indices {cfg.active_indices} must match "
+            f"data.active_indices {data_indices}: the heatmap probes are the target distribution"
+        )
+    if cfg.prompts_file is not None:
+        for field in ("prompts_file", "tokenizer_name", "max_seq_len"):
+            data_val = getattr(data, field, None)
+            cfg_val = getattr(cfg, field)
+            assert data_val == cfg_val, (
+                f"TargetedCIHeatmap.{field}={cfg_val!r} must match data.{field}={data_val!r}: "
+                "the heatmap probes are the target distribution"
+            )
+
+
 class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
     """Full YAML schema for an in-repo experiment.
 
@@ -65,7 +85,20 @@ class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
 
     @model_validator(mode="after")
     def validate_targeted(self) -> Self:
+        eval_metrics = self.eval.metrics if self.eval is not None else []
+        nontarget_only = [
+            c.type
+            for c in eval_metrics
+            if EVAL_METRIC_CLASSES[c.type].eval_distribution == "nontarget"
+        ]
         if self.nontarget is None:
+            # These metrics are routed to the nontarget eval loop, which only exists when
+            # a `nontarget:` block is configured. Without one they would silently run on
+            # the target distribution and log misleading numbers — reject the combination.
+            assert not nontarget_only, (
+                f"eval metrics {nontarget_only} consume the nontarget distribution but no "
+                "`nontarget:` block is configured; add one or remove these metrics"
+            )
             return self
         assert self.pd.use_delta_component, (
             "targeted decomposition forces the delta component on; set pd.use_delta_component=true"
@@ -78,6 +111,9 @@ class ExperimentConfig[T: BaseConfig, D: BaseConfig](BaseConfig):
             "faithfulness warmup zeroes the delta right before targeted training; set "
             "pd.faithfulness_warmup_steps=0"
         )
+        for c in eval_metrics:
+            if isinstance(c, TargetedCIHeatmapConfig):
+                _assert_heatmap_probe_matches_data(c, self.data)
         return self
 
 

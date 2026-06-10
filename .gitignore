@@ -180,3 +180,4 @@ cython_debug/
 *.schema.json
 
 .claude/worktrees
+.claude/settings.local.json

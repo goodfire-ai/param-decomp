@@ -16,11 +16,6 @@ from param_decomp.metrics.persistent_pgd_recon import (
 )
 from param_decomp.metrics.stochastic_hidden_acts_recon import StochasticHiddenActsReconLossConfig
 from param_decomp.metrics.unmasked_recon import UnmaskedReconLossConfig
-from param_decomp_lab.eval_metrics.nontarget_ci_mean_per_component import (
-    NontargetCIMeanPerComponent,
-)
-from param_decomp_lab.eval_metrics.targeted_ci_heatmap import TargetedCIHeatmap
-from param_decomp_lab.eval_metrics.targeted_recon_loss import NontargetReconLoss
 
 
 class NontargetConfig[D: BaseConfig](BaseConfig):
@@ -82,10 +77,13 @@ def split_eval_metrics(
 ) -> tuple[list[Metric[Any]], list[Metric[Any]]]:
     """Partition instantiated eval metrics into `(target_metrics, nontarget_metrics)`.
 
-    The nontarget-data metrics go right (fed by the mirror nontarget eval loop under
-    `delta_override(1.0)`); everything else goes left (normal target eval pass).
+    Routing reads each metric's `eval_distribution` marker: `"nontarget"` metrics go
+    right (fed by the mirror nontarget eval loop under `delta_override(1.0)`); everything
+    else goes left (normal target eval pass). New nontarget metrics just set the marker —
+    no edit here is needed.
     """
-    nontarget_classes = (NontargetReconLoss, NontargetCIMeanPerComponent, TargetedCIHeatmap)
-    target_metrics = [m for m in metrics if not isinstance(m, nontarget_classes)]
-    nontarget_metrics: list[Metric[Any]] = [m for m in metrics if isinstance(m, nontarget_classes)]
+    target_metrics = [m for m in metrics if m.eval_distribution != "nontarget"]
+    nontarget_metrics: list[Metric[Any]] = [
+        m for m in metrics if m.eval_distribution == "nontarget"
+    ]
     return target_metrics, nontarget_metrics

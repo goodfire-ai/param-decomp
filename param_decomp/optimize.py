@@ -681,6 +681,7 @@ class Trainer:
                     with delta_override(1.0):
                         nt_losses = {n: m.update(nt_ctx) for n, m in nontarget_metrics.items()}
                 nt_total = torch.zeros((), device=device)
+                nt_active_losses: dict[str, Tensor] = {}
                 for metric_name, loss_val in nt_losses.items():
                     if loss_val is None:
                         continue
@@ -690,14 +691,22 @@ class Trainer:
                     cfg = cast(LossMetricConfig, nontarget_metrics[metric_name].cfg)
                     assert cfg.coeff is not None
                     nt_total = nt_total + cfg.coeff * loss_val
-                    batch_log_data[
-                        f"nontarget/loss/{type(nontarget_metrics[metric_name]).__name__}"
-                    ] = loss_val.item()
+                    nt_active_losses[metric_name] = loss_val
+                assert nt_active_losses, (
+                    f"No active nontarget loss metrics returned a loss at step {step}. "
+                    f"Configured nontarget loss metrics: {list(nontarget_metrics)}"
+                )
                 assert torch.isfinite(nt_total).all(), (
                     f"nontarget total loss is non-finite at step {step}: {nt_total}"
                 )
                 nt_total.backward()
-                batch_log_data["nontarget/loss/total"] = nt_total.item()
+                # Only sync loss scalars to the host on steps we actually log.
+                if cadence.should_log_train(step):
+                    for metric_name, loss_val in nt_active_losses.items():
+                        batch_log_data[
+                            f"nontarget/loss/{type(nontarget_metrics[metric_name]).__name__}"
+                        ] = loss_val.item()
+                    batch_log_data["nontarget/loss/total"] = nt_total.item()
 
             # --- Train Logging --- #
             if cadence.should_log_train(step):

@@ -50,6 +50,7 @@ class TargetedCIHeatmap(Metric[TargetedCIHeatmapConfig]):
     log_namespace = "figures"
     slow = True
     short_name = "TgtCIHeatmap"
+    eval_distribution = "nontarget"
 
     input_magnitude: ClassVar[float] = 0.75
 
@@ -95,6 +96,10 @@ class TargetedCIHeatmap(Metric[TargetedCIHeatmapConfig]):
         else:
             assert self.cfg.active_indices is not None and self.batch_shape is not None
             n_features = self.batch_shape[-1]
+            assert all(0 <= i < n_features for i in self.cfg.active_indices), (
+                f"TargetedCIHeatmap.active_indices must be in [0, {n_features}), "
+                f"got {self.cfg.active_indices}"
+            )
             probes = torch.zeros(len(self.cfg.active_indices), n_features, device=self.device)
             for row, feature_idx in enumerate(self.cfg.active_indices):
                 probes[row, feature_idx] = self.input_magnitude
