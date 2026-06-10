@@ -79,6 +79,7 @@ def load_component_model(
         decomposition_targets=resolved_targets,
         ci_config=pd_config.ci_config,
         sigmoid_type=pd_config.sigmoid_type,
+        use_subcomponent_bias=pd_config.use_subcomponent_bias,
     )
 
     comp_model_weights = torch.load(checkpoint_path, map_location="cpu", weights_only=True)

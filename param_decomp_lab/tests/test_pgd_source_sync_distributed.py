@@ -60,6 +60,7 @@ def _make_component_model(fc_weight: Tensor) -> ComponentModel:
         decomposition_targets=[DecompositionTarget(module_path="fc", C=1)],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
 

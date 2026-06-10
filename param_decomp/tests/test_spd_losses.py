@@ -101,6 +101,7 @@ def _make_component_model(weight: Float[Tensor, "d_out d_in"]) -> ComponentModel
         decomposition_targets=[DecompositionTarget(module_path="fc", C=1)],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     return comp_model
@@ -120,6 +121,7 @@ def _make_seq_component_model(weight: Float[Tensor, "d_out d_in"]) -> ComponentM
         decomposition_targets=[DecompositionTarget(module_path="fc", C=1)],
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         sigmoid_type="leaky_hard",
+        use_subcomponent_bias=False,
     )
 
     return comp_model

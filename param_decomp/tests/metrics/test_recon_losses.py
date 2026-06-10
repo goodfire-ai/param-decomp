@@ -330,9 +330,11 @@ def test_ppgd_recon_eval_manual_calculation() -> None:
     ci = {"fc1": torch.tensor([[0.8]]), "fc2": torch.tensor([[0.7]])}
     adv_sources: PPGDSources = {"fc1": torch.tensor([[0.3]]), "fc2": torch.tensor([[0.5]])}
 
-    # mask = ci + (1 - ci) * source
-    mask_fc1 = ci["fc1"] + (1 - ci["fc1"]) * adv_sources["fc1"]  # 0.8 + 0.2*0.3 = 0.86
-    mask_fc2 = ci["fc2"] + (1 - ci["fc2"]) * adv_sources["fc2"]  # 0.7 + 0.3*0.5 = 0.85
+    # mask = x**3 / (x**3 + (1 - x)**3), x = ci + (1 - ci) * source
+    x_fc1 = ci["fc1"] + (1 - ci["fc1"]) * adv_sources["fc1"]  # 0.8 + 0.2*0.3 = 0.86
+    x_fc2 = ci["fc2"] + (1 - ci["fc2"]) * adv_sources["fc2"]  # 0.7 + 0.3*0.5 = 0.85
+    mask_fc1 = x_fc1**3 / (x_fc1**3 + (1 - x_fc1) ** 3)
+    mask_fc2 = x_fc2**3 / (x_fc2**3 + (1 - x_fc2) ** 3)
 
     # Target activations
     assert isinstance(model.target_model, TwoLayerLinearModel)

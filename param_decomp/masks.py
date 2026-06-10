@@ -179,12 +179,17 @@ def interpolate_component_mask(
     ci: dict[str, Float[Tensor, "*batch_dims C"]],
     sources: dict[str, Float[Tensor, "*batch_dims C"]],
 ) -> dict[str, Float[Tensor, "*batch_dims C"]]:
-    """Set mask values to ci + (1 - ci) * source."""
+    """Map (ci, source) to a mask via `x**3 / (x**3 + (1 - x)**3)` with `x = ci + (1 - ci) * source`.
+
+    The cubic sharpens the linear interpolant `x` toward 0/1 while fixing the endpoints
+    `x in {0, 1}`. The denominator is bounded below by 0.25 on `[0, 1]`, so it never vanishes.
+    """
     component_masks: dict[str, Float[Tensor, "*batch_dims C"]] = {}
     for module_name in ci:
         source = sources[module_name]
         assert ci[module_name].shape[-1] == source.shape[-1]
-        component_masks[module_name] = ci[module_name] + (1 - ci[module_name]) * source
+        x = ci[module_name] + (1 - ci[module_name]) * source
+        component_masks[module_name] = x**3 / (x**3 + (1 - x) ** 3)
     return component_masks
 
 
@@ -231,14 +236,14 @@ def calc_stochastic_component_mask_info(
     device = ci_sample.device
     dtype = ci_sample.dtype
 
-    component_masks: dict[str, Float[Tensor, "... C"]] = {}
+    stochastic_sources: dict[str, Float[Tensor, "... C"]] = {}
     for layer, ci in causal_importances.items():
         match component_mask_sampling:
             case "binomial":
-                stochastic_source = torch.randint(0, 2, ci.shape, device=device).float()
+                stochastic_sources[layer] = torch.randint(0, 2, ci.shape, device=device).float()
             case "continuous":
-                stochastic_source = torch.rand_like(ci)
-        component_masks[layer] = ci + (1 - ci) * stochastic_source
+                stochastic_sources[layer] = torch.rand_like(ci)
+    component_masks = interpolate_component_mask(causal_importances, stochastic_sources)
 
     weight_deltas_and_masks: dict[str, WeightDeltaAndMask] | None = None
     if weight_deltas is not None:

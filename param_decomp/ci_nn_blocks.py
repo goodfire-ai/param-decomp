@@ -1,5 +1,6 @@
 """Generic transformer building blocks used by the CI functions."""
 
+from dataclasses import dataclass
 from typing import override
 
 import einops
@@ -9,6 +10,16 @@ from jaxtyping import Float
 from torch import Tensor, nn
 
 from param_decomp.components import _NonlinearityType, init_param_
+
+
+@dataclass(frozen=True)
+class AttentionParams:
+    """Attention sublayer config for a `TransformerBlock`; absent means no attention."""
+
+    n_heads: int
+    bidirectional: bool
+    max_len: int = 2048
+    rope_base: float = 10000.0
 
 
 class ParallelLinear(nn.Module):
@@ -97,18 +108,27 @@ class RoPEEmbedding(nn.Module):
 
 
 class SelfAttention(nn.Module):
-    """Multi-head bidirectional self-attention with RoPE (`is_causal=False`).
+    """Multi-head self-attention with RoPE.
 
+    `bidirectional` attends over the full sequence; otherwise attention is causal.
     `d_model` must be divisible by `n_heads`.
     """
 
-    def __init__(self, d_model: int, n_heads: int, max_len: int = 2048, rope_base: float = 10000.0):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        bidirectional: bool,
+        max_len: int = 2048,
+        rope_base: float = 10000.0,
+    ):
         super().__init__()
         assert d_model % n_heads == 0, f"d_model={d_model} must be divisible by n_heads={n_heads}"
 
         self.d_model = d_model
         self.n_heads = n_heads
         self.d_head = d_model // n_heads
+        self.bidirectional = bidirectional
 
         self.q_proj = nn.Linear(d_model, d_model, bias=False)
         self.k_proj = nn.Linear(d_model, d_model, bias=False)
@@ -132,7 +152,7 @@ class SelfAttention(nn.Module):
         q, k = self.rope(q, k)
 
         attn_out = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, dropout_p=0.0, is_causal=False
+            q, k, v, dropout_p=0.0, is_causal=not self.bidirectional
         )
 
         attn_out = attn_out.transpose(-3, -2).contiguous().view(*batch_dims, seq_len, self.d_model)
@@ -140,23 +160,30 @@ class SelfAttention(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    """Pre-norm transformer block: RMSNorm-attn-residual then RMSNorm-MLP-residual.
+    """Pre-norm block: RMSNorm-attn-residual then RMSNorm-MLP-residual.
 
-    The MLP is `Linear` layers with GELU between hidden layers and a linear projection
-    back to `d_model`.
+    With `attention=None` the attention sublayer is dropped, leaving a pre-norm residual
+    MLP block (RMSNorm-MLP-residual only). The MLP is `Linear` layers with GELU between
+    hidden layers and a linear projection back to `d_model`.
     """
 
     def __init__(
         self,
         d_model: int,
-        n_heads: int,
         mlp_hidden_dims: list[int],
-        max_len: int = 2048,
-        rope_base: float = 10000.0,
+        attention: AttentionParams | None,
     ):
         super().__init__()
-        self.attn = SelfAttention(
-            d_model=d_model, n_heads=n_heads, max_len=max_len, rope_base=rope_base
+        self.attn = (
+            SelfAttention(
+                d_model=d_model,
+                n_heads=attention.n_heads,
+                bidirectional=attention.bidirectional,
+                max_len=attention.max_len,
+                rope_base=attention.rope_base,
+            )
+            if attention is not None
+            else None
         )
         self.d_model = d_model
 
@@ -171,6 +198,7 @@ class TransformerBlock(nn.Module):
 
     @override
     def forward(self, x: Float[Tensor, "... seq d_model"]) -> Float[Tensor, "... seq d_model"]:
-        x = x + self.attn(F.rms_norm(x, (self.d_model,)))
+        if self.attn is not None:
+            x = x + self.attn(F.rms_norm(x, (self.d_model,)))
         x = x + self.mlp(F.rms_norm(x, (self.d_model,)))
         return x

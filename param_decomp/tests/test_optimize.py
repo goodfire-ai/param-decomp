@@ -10,16 +10,18 @@ from torch.utils.data import DataLoader, TensorDataset
 from param_decomp.base_config import BaseConfig
 from param_decomp.ci_fns import LayerwiseCiConfig
 from param_decomp.configs import (
+    AdamWConfig,
     AnyLossMetricConfig,
     Cadence,
-    OptimizerConfig,
+    MuonConfig,
     PDConfig,
     RuntimeConfig,
 )
 from param_decomp.decomposition_targets import DecompositionTargetConfig
 from param_decomp.metrics.base import Metric, MetricResult
 from param_decomp.metrics.faithfulness import FaithfulnessLossConfig
-from param_decomp.optimize import EvalLoop, Trainer
+from param_decomp.muon import Muon
+from param_decomp.optimize import EvalLoop, Trainer, build_optimizer
 from param_decomp.schedule import ScheduleConfig
 
 
@@ -94,17 +96,22 @@ def make_eval_loop(
 
 
 def make_pd_config(
-    *, steps: int = 1, loss_metrics: list[AnyLossMetricConfig] | None = None
+    *,
+    steps: int = 1,
+    loss_metrics: list[AnyLossMetricConfig] | None = None,
+    components_optimizer: AdamWConfig | MuonConfig | None = None,
 ) -> PDConfig:
     if loss_metrics is None:
         loss_metrics = [FaithfulnessLossConfig(coeff=1.0)]
+    if components_optimizer is None:
+        components_optimizer = AdamWConfig(lr_schedule=ScheduleConfig(start_val=1e-3))
     return PDConfig(
         seed=123,
         n_mask_samples=1,
         ci_config=LayerwiseCiConfig(fn_type="mlp", hidden_dims=[2]),
         decomposition_targets=[DecompositionTargetConfig(module_pattern="fc", C=2)],
-        components_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
-        ci_fn_optimizer=OptimizerConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
+        components_optimizer=components_optimizer,
+        ci_fn_optimizer=AdamWConfig(lr_schedule=ScheduleConfig(start_val=1e-3)),
         steps=steps,
         batch_size=2,
         loss_metrics=loss_metrics,
@@ -125,6 +132,52 @@ def test_pd_config_requires_at_least_one_loss() -> None:
 def test_pd_config_requires_positive_steps() -> None:
     with pytest.raises(ValidationError):
         make_pd_config(steps=0)
+
+
+def test_optimizer_config_defaults_to_adamw_without_type() -> None:
+    cfg = PDConfig.model_validate(
+        make_pd_config().model_dump()
+        | {"components_optimizer": {"lr_schedule": {"start_val": 1.0}}}
+    )
+    assert isinstance(cfg.components_optimizer, AdamWConfig)
+
+
+def test_optimizer_config_selects_muon_by_type() -> None:
+    cfg = make_pd_config(
+        components_optimizer=MuonConfig(lr_schedule=ScheduleConfig(start_val=1e-2))
+    )
+    assert isinstance(cfg.components_optimizer, MuonConfig)
+    # Round-trips through serialization (what gets written to experiment_config.yaml).
+    assert isinstance(PDConfig.model_validate(cfg.model_dump()).components_optimizer, MuonConfig)
+
+
+def test_build_optimizer_dispatches_on_type() -> None:
+    param = [torch.nn.Parameter(torch.randn(3, 2))]
+    adamw = build_optimizer(param, AdamWConfig(lr_schedule=ScheduleConfig(start_val=1e-3)))
+    muon = build_optimizer(param, MuonConfig(lr_schedule=ScheduleConfig(start_val=1e-3)))
+    assert isinstance(adamw, torch.optim.AdamW)
+    assert isinstance(muon, Muon)
+
+
+def test_trainer_uses_muon_for_components_only() -> None:
+    pd_config = make_pd_config(
+        steps=2, components_optimizer=MuonConfig(lr_schedule=ScheduleConfig(start_val=1e-2))
+    )
+    trainer = Trainer(
+        target_model=TinyLinear(),
+        run_batch=run_batch_passthrough,
+        reconstruction_loss=recon_loss_mse,
+        pd_config=pd_config,
+        runtime_config=RuntimeConfig(device="cpu", autocast_bf16=False),
+    )
+    assert isinstance(trainer.components_optimizer, Muon)
+    assert isinstance(trainer.ci_fn_optimizer, torch.optim.AdamW)
+
+    before = trainer.component_model.components["fc"].U.clone()
+    trainer.run(make_loader(), CaptureSink(), make_cadence(train_log_every=1), eval_loop=None)
+    after = trainer.component_model.components["fc"].U
+    assert not torch.allclose(before, after), "Muon should update the component weights"
+    assert torch.isfinite(after).all()
 
 
 def test_optimize_logs_missing_grad_norms_as_nan() -> None:
