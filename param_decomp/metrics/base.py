@@ -63,8 +63,7 @@ class Metric[TConfig: BaseConfig](ABC):
         A loss-capable config may override it via `LossMetricConfig.name` so two
         instances of the same metric class (one loss, one eval) stay distinct.
         """
-        cfg = self.cfg
-        name = cfg.name if isinstance(cfg, LossMetricConfig) else None
+        name = self.cfg.name if isinstance(cfg, LossMetricConfig) else None
         return name if name is not None else type(self).__name__
 
     def bind(self, *, model: ComponentModel, device: str) -> None:
