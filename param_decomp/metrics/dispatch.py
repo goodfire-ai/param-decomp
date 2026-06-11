@@ -57,24 +57,25 @@ def instantiate_metrics(
     """Instantiate loss metrics from config and bind caller-supplied eval metrics.
 
     Loss metrics are auto-evaluated alongside dedicated eval metrics, so eval metrics
-    whose class name collides with a loss metric are rejected. Returns
-    `(loss_instances, eval_instances)`: `loss_instances` is keyed by `type` literal;
-    `eval_instances` is the full eval-pass set (loss + eval-only) keyed by class name.
+    whose `instance_key` collides with a loss metric are rejected — give one of them a
+    distinct `name` to run the same class in both. Returns `(loss_instances,
+    eval_instances)`, both keyed by `Metric.instance_key` (class name unless overridden).
     """
     loss_instances: dict[str, Metric[Any]] = {}
     for cfg in pd_config.loss_metrics:
-        assert cfg.type not in loss_instances, f"duplicate loss metric {cfg.type!r}"
         m = LOSS_METRIC_CLASSES[cfg.type](cfg)
+        assert m.instance_key not in loss_instances, f"duplicate loss metric {m.instance_key!r}"
         m.bind(model=component_model, device=device)
-        loss_instances[cfg.type] = m
+        loss_instances[m.instance_key] = m
 
     eval_only_instances: dict[str, Metric[Any]] = {}
     if eval_metrics is not None:
         for m in eval_metrics:
             m.bind(model=component_model, device=device)
-            metric_name = type(m).__name__
-            assert metric_name not in eval_only_instances, f"duplicate eval metric {metric_name!r}"
-            eval_only_instances[metric_name] = m
+            assert m.instance_key not in eval_only_instances, (
+                f"duplicate eval metric {m.instance_key!r}"
+            )
+            eval_only_instances[m.instance_key] = m
         overlap = sorted(set(loss_instances) & set(eval_only_instances))
         assert not overlap, (
             f"eval metrics overlap with pd_config.loss_metrics: {overlap}. Loss metrics "

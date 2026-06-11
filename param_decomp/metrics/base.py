@@ -21,9 +21,15 @@ class LossMetricConfig(BaseConfig):
 
     `coeff` is required when this metric is listed under `loss_metrics` (asserted by
     `PDConfig`'s field validator); ignored for eval-only instances.
+
+    `name` overrides the class name as this instance's identity (`Metric.instance_key`),
+    letting the same metric class appear under both `loss_metrics` and `eval.metrics`
+    with different settings — e.g. a 1-step PGD training loss alongside a 20-step PGD
+    eval probe. Leave `None` (the default) and the class name is used.
     """
 
     coeff: float | None = None
+    name: str | None = None
 
 
 MetricResult = Tensor | Mapping[str, Any]
@@ -49,6 +55,17 @@ class Metric[TConfig: BaseConfig](ABC):
         """Construct from a validated config. Runtime resources are attached later by `bind`."""
         self.cfg = cfg
         self._bound = False
+
+    @property
+    def instance_key(self) -> str:
+        """Identity for dict keys and log-key suffixes; defaults to the class name.
+
+        A loss-capable config may override it via `LossMetricConfig.name` so two
+        instances of the same metric class (one loss, one eval) stay distinct.
+        """
+        cfg = self.cfg
+        name = cfg.name if isinstance(cfg, LossMetricConfig) else None
+        return name if name is not None else type(self).__name__
 
     def bind(self, *, model: ComponentModel, device: str) -> None:
         """Attach the live `ComponentModel` and device, then call `reset()`.

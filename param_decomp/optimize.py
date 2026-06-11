@@ -390,22 +390,21 @@ class Trainer:
         eval_loop: "EvalLoop | None",
         device: str,
     ) -> dict[str, "Metric[Any]"]:
-        """Merge loss + eval-only metric instances keyed by class name.
+        """Merge loss + eval-only metric instances keyed by `Metric.instance_key`.
 
-        Binds each eval-only metric, rejects duplicate names within eval_loop, and
-        rejects overlap between eval-only and loss metrics (loss metrics are
-        auto-evaluated; duplicating them as eval metrics is a config error since
-        ``evaluate()`` keys by class name).
+        Binds each eval-only metric, rejects duplicate instance keys within eval_loop,
+        and rejects overlap between eval-only and loss metrics (loss metrics are
+        auto-evaluated). To run the same metric class as both a loss and an eval probe,
+        give one a distinct `name` so their instance keys don't collide.
         """
         eval_only_instances: dict[str, Metric[Any]] = {}
         if eval_loop is not None:
             for m in eval_loop.metrics:
                 m.bind(model=self.component_model, device=device)
-                metric_name = type(m).__name__
-                assert metric_name not in eval_only_instances, (
-                    f"duplicate eval metric {metric_name!r}"
+                assert m.instance_key not in eval_only_instances, (
+                    f"duplicate eval metric {m.instance_key!r}"
                 )
-                eval_only_instances[metric_name] = m
+                eval_only_instances[m.instance_key] = m
             overlap = sorted(set(self.loss_metrics) & set(eval_only_instances))
             assert not overlap, (
                 f"eval_loop.metrics overlap with pd_config.loss_metrics: {overlap}. Loss "
@@ -575,9 +574,7 @@ class Trainer:
                 cfg = cast(LossMetricConfig, self.loss_metrics[metric_name].cfg)
                 assert cfg.coeff is not None
                 total_loss = total_loss + cfg.coeff * loss_val
-                batch_log_data[f"loss/{type(self.loss_metrics[metric_name]).__name__}"] = (
-                    loss_val.item()
-                )
+                batch_log_data[f"loss/{metric_name}"] = loss_val.item()
             assert active_loss_names, (
                 f"No active loss metrics returned a loss at step {step}. "
                 f"Configured loss metrics: {list(self.loss_metrics)}"

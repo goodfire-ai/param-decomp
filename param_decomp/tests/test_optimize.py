@@ -18,7 +18,7 @@ from param_decomp.configs import (
 )
 from param_decomp.decomposition_targets import DecompositionTargetConfig
 from param_decomp.metrics.base import Metric, MetricResult
-from param_decomp.metrics.faithfulness import FaithfulnessLossConfig
+from param_decomp.metrics.faithfulness import FaithfulnessLoss, FaithfulnessLossConfig
 from param_decomp.optimize import EvalLoop, Trainer
 from param_decomp.schedule import ScheduleConfig
 
@@ -190,6 +190,55 @@ def test_optimize_rejects_duplicate_eval_metric_names() -> None:
             eval_loop=make_eval_loop(
                 loader,
                 metrics=[DummyEvalMetric(DummyEvalConfig()), DummyEvalMetric(DummyEvalConfig())],
+            ),
+        )
+
+
+def test_same_metric_class_as_loss_and_eval_with_distinct_name() -> None:
+    """A `name` override lets one metric class run as both a loss and an eval probe."""
+    sink = CaptureSink()
+    loader = make_loader()
+    trainer = Trainer(
+        target_model=TinyLinear(),
+        run_batch=run_batch_passthrough,
+        reconstruction_loss=recon_loss_mse,
+        pd_config=make_pd_config(loss_metrics=[FaithfulnessLossConfig(coeff=1.0)]),
+        runtime_config=RuntimeConfig(device="cpu", autocast_bf16=False),
+    )
+    trainer.run(
+        loader,
+        sink,
+        make_cadence(train_log_every=1),
+        eval_loop=make_eval_loop(
+            loader,
+            metrics=[FaithfulnessLoss(FaithfulnessLossConfig(coeff=1.0, name="Faithfulness_eval"))],
+            every=1,
+        ),
+    )
+
+    eval_logs = [m for _, m in sink.logged if any(k.startswith("eval/") for k in m)]
+    assert eval_logs, "expected at least one eval log"
+    keys = eval_logs[-1]
+    assert "eval/loss/FaithfulnessLoss" in keys  # auto-evaluated training loss
+    assert "eval/loss/Faithfulness_eval" in keys  # distinct eval-only instance
+
+
+def test_same_metric_class_in_loss_and_eval_without_name_collides() -> None:
+    loader = make_loader()
+    with pytest.raises(AssertionError, match="overlap"):
+        trainer = Trainer(
+            target_model=TinyLinear(),
+            run_batch=run_batch_passthrough,
+            reconstruction_loss=recon_loss_mse,
+            pd_config=make_pd_config(loss_metrics=[FaithfulnessLossConfig(coeff=1.0)]),
+            runtime_config=RuntimeConfig(device="cpu", autocast_bf16=False),
+        )
+        trainer.run(
+            loader,
+            CaptureSink(),
+            make_cadence(),
+            eval_loop=make_eval_loop(
+                loader, metrics=[FaithfulnessLoss(FaithfulnessLossConfig(coeff=1.0))], every=1
             ),
         )
 

@@ -48,7 +48,7 @@ def collect_metric_outputs(active: list[Metric[Any]]) -> MetricOutType:
     for m in active:
         cleaned = _clean_metric_output(
             log_namespace=m.log_namespace,
-            metric_name=type(m).__name__,
+            metric_name=m.instance_key,
             computed_raw=m.compute(),
         )
         assert not set(outputs) & set(cleaned)
