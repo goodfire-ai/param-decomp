@@ -10,6 +10,7 @@ import yaml
 
 from jax_single_pool.llama8b import mlp_family_site_cs
 from jax_single_pool.lm import SiteC
+from jax_single_pool.recon import build_recon_terms
 from jax_single_pool.torch_config import (
     convert_torch_lm_config,
     load_run_dir_config,
@@ -41,9 +42,18 @@ def test_b128_wrapper_converts(tmp_path: Path):
     assert converted.run_name == "jax-l18-b128-cmp32-from-torch"
     assert converted.data.global_batch == 128
     assert converted.target.sites == mlp_family_site_cs(18, 18, 24576)
-    assert converted.faith_coeff == 1e5 and converted.imp_min.pnorm == 2.0
-    assert isinstance(converted.adversary, PersistentPGDReconLossConfig)
-    assert converted.adversary.n_warmup_steps == 2 and converted.vu_optimizer.grad_clip_norm == 0.01
+    spec = build_recon_terms(
+        converted.loss_metrics, tuple(sc.name for sc in converted.target.sites),
+        converted.n_mask_samples, converted.sampling,
+    )  # fmt: skip
+    assert spec.faith_coeff == 1e5 and spec.imp_min.pnorm == 2.0
+    (ppgd,) = spec.persistent.values()
+    assert isinstance(ppgd, PersistentPGDReconLossConfig)
+    assert ppgd.n_warmup_steps == 2 and converted.vu_optimizer.grad_clip_norm == 0.01
+    assert [t.name for t in spec.recon_terms] == [
+        "StochasticReconSubsetLoss",
+        "PersistentPGDReconLoss",
+    ]
 
 
 def _reference_torch_cfg():

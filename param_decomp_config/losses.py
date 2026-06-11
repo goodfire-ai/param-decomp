@@ -256,6 +256,14 @@ class _PersistentPGDBaseConfig(LossMetricConfig):
     )
     start_frac: Probability = 0.0
     n_samples: PositiveInt = 1
+    use_fused_kl: bool = Field(
+        default=False,
+        description=(
+            "Run every PPGD recon forward (warmup ascents + live loss) under the vendored "
+            "LM-head bypass with the fused linear+KL recon, never materializing vocab-scale "
+            "tensors. Requires the lab metric class (vendored LM); core trainers reject it."
+        ),
+    )
 
 
 class PersistentPGDReconLossConfig(_PersistentPGDBaseConfig):
