@@ -87,9 +87,15 @@ class _PersistentPGDReconBase[
 
     log_namespace: ClassVar[str] = "loss"
     slow: ClassVar[bool] = True
+    supports_fused_kl: ClassVar[bool] = False
 
     def __init__(self, cfg: TConfig) -> None:
         super().__init__(cfg)
+        assert not cfg.use_fused_kl or self.supports_fused_kl, (
+            f"{type(self).__name__} cannot run use_fused_kl=true: the fused-KL LM-head bypass "
+            f"needs the vendored-LM metric class (lab dispatch). Use a lab trainer or set "
+            f"use_fused_kl: false."
+        )
         self.state: PersistentPGDState | None = None
         self._pending_source_grads: PPGDSources | None = None
         # Stash from `load_state_dict` if called before the first `update()` —

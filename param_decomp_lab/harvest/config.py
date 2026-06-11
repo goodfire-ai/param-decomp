@@ -20,6 +20,13 @@ class ParamDecompHarvestConfig(BaseConfig):
     type: Literal["ParamDecompHarvestConfig"] = "ParamDecompHarvestConfig"
     wandb_path: str
     activation_threshold: float = 0.0
+    target_module_paths: list[str] | None = None
+    """Restrict harvesting to these decomposed module paths. None harvests all of them.
+
+    The accumulator allocates dense `[n_components, n_components]` and
+    `[n_components, vocab]` buffers, so harvesting every component of a large model at
+    once can exceed GPU memory; harvest a subset (e.g. one matrix) per pass instead.
+    """
 
     @property
     def id(self) -> str:

@@ -17,7 +17,7 @@ import signal
 from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import torch
 import torch.nn as nn
@@ -134,6 +134,7 @@ def _build_metric_context(
     config: PDConfig,
     reconstruction_loss: ReconstructionLoss,
     weight_deltas: dict[str, Tensor],
+    target_out_kind: Literal["logits", "hidden"] = "logits",
 ) -> MetricContext:
     # The wrapped_model(...) call here is what registers DDP gradient hooks for this step.
     # Required even if no metric uses the DDP wrapper directly.
@@ -158,6 +159,7 @@ def _build_metric_context(
         n_mask_samples=config.n_mask_samples,
         reconstruction_loss=reconstruction_loss,
         is_eval=is_eval,
+        target_out_kind=target_out_kind,
     )
 
 
@@ -206,6 +208,7 @@ def run_loss_step(
     config: PDConfig,
     reconstruction_loss: ReconstructionLoss,
     autocast_bf16: bool,
+    target_out_kind: Literal["logits", "hidden"] = "logits",
 ) -> tuple[Tensor, defaultdict[str, float]]:
     """One forward + weighted-loss + backward for the train step.
 
@@ -233,6 +236,7 @@ def run_loss_step(
             config=config,
             reconstruction_loss=reconstruction_loss,
             weight_deltas=weight_deltas,
+            target_out_kind=target_out_kind,
         )
         _assert_ctx_invariants(ctx, device, step)
         losses = {name: m.update(ctx) for name, m in loss_metrics.items()}
