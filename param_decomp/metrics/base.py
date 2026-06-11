@@ -41,6 +41,20 @@ class Metric[TConfig: BaseConfig](ABC):
         self._bound = False
 
     @property
+    def requires_clean_logits(self) -> bool:
+        """Whether this metric needs model forwards (the step's clean forward and any
+        forward it runs itself) to produce LOGITS.
+
+        Metrics that never touch model outputs, or that run their forwards under the
+        vendored LM-head bypass (fused KL), return False. When every loss metric does,
+        the trainer may run the whole loss step under `bypass_lm_head`:
+        `ctx.target_out` is then the pre-LM-head hidden state
+        (`ctx.target_out_kind == "hidden"`) and no vocab-scale tensor is ever
+        materialized on a train step.
+        """
+        return True
+
+    @property
     def instance_key(self) -> str:
         """Identity for dict keys and log-key suffixes; defaults to the class name.
 
