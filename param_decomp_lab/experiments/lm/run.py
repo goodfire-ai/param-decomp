@@ -81,6 +81,7 @@ class HFTarget(BaseConfig):
     kind: Literal["hf"] = "hf"
     model_class: str
     model_name: str
+    dtype: str = "auto"
 
 
 class PretrainedTarget(BaseConfig):
@@ -123,7 +124,9 @@ def build_target(target_cfg: LMTargetConfig) -> nn.Module:
     cls = _resolve_class(spec.model_class)
     match spec:
         case HFTarget():
-            target_model = ensure_cached_and_call(cls.from_pretrained, spec.model_name)
+            target_model = ensure_cached_and_call(
+                cls.from_pretrained, spec.model_name, dtype=spec.dtype
+            )
         case PretrainedTarget():
             from param_decomp_lab.experiments.lm.pretrain.run_info import PretrainRunInfo
 
