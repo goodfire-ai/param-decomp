@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The PPGD adversary under multipool — review &amp; redesign (2026-06-09)</title>
+<style>
+  :root {
+    --ink: #1c2330;
+    --muted: #5b6678;
+    --accent: #2b5fad;
+    --accent2: #8a4f1d;
+    --bg: #fbfaf7;
+    --card: #ffffff;
+    --line: #dfe3ea;
+    --good: #1e7a3c;
+    --bad: #a33333;
+    --warn: #9a7a18;
+  }
+  html { font-size: 17px; }
+  body {
+    font-family: "Charter", "Georgia", serif;
+    color: var(--ink);
+    background: var(--bg);
+    margin: 0;
+    line-height: 1.55;
+  }
+  .wrap { max-width: 60rem; margin: 0 auto; padding: 2.5rem 1.5rem 6rem; }
+  h1 { font-size: 1.9rem; line-height: 1.2; margin-bottom: .3rem; }
+  h2 { font-size: 1.35rem; margin-top: 2.8rem; border-bottom: 2px solid var(--line); padding-bottom: .3rem; }
+  h3 { font-size: 1.08rem; margin-top: 1.8rem; color: var(--accent); }
+  .subtitle { color: var(--muted); margin-top: 0; }
+  code, pre {
+    font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    font-size: .85em;
+    background: #f0efe9;
+    border-radius: 4px;
+    padding: .08em .35em;
+  }
+  pre { padding: .8rem 1rem; overflow-x: auto; line-height: 1.45; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { border: 1px solid var(--line); padding: .45rem .6rem; text-align: left; vertical-align: top; }
+  th { background: #eef1f6; font-family: "Helvetica Neue", Arial, sans-serif; font-size: .82rem; letter-spacing: .02em; }
+  tr:nth-child(even) td { background: #f7f8fa; }
+  .tldr {
+    background: #eef4fd;
+    border-left: 4px solid var(--accent);
+    padding: 1rem 1.2rem;
+    border-radius: 0 8px 8px 0;
+    margin: 1.5rem 0;
+  }
+  .tldr p:first-child { margin-top: 0; }
+  .tldr p:last-child { margin-bottom: 0; }
+  .glossary {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 1rem 1.4rem;
+    margin: 1.2rem 0;
+    font-size: .93rem;
+  }
+  .glossary dt { font-weight: 700; margin-top: .7rem; font-family: "Helvetica Neue", Arial, sans-serif; font-size: .85rem; }
+  .glossary dd { margin: .15rem 0 0 0; color: var(--ink); }
+  .scheme {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-left: 5px solid var(--accent2);
+    border-radius: 0 8px 8px 0;
+    padding: 1rem 1.4rem;
+    margin: 1.4rem 0;
+  }
+  .scheme h3 { margin-top: 0; color: var(--accent2); }
+  .tag { display: inline-block; font-family: "Helvetica Neue", Arial, sans-serif; font-size: .7rem; font-weight: 700;
+         letter-spacing: .05em; padding: .12em .55em; border-radius: 99px; vertical-align: middle; margin-left: .4em; }
+  .tag.keep { background: #e2f3e7; color: var(--good); }
+  .tag.dead { background: #f8e4e4; color: var(--bad); }
+  .tag.boost { background: #e5edfb; color: var(--accent); }
+  .tag.done { background: #efe8da; color: #6b5a23; }
+  .tag.weak { background: #f6efd8; color: var(--warn); }
+  .principle {
+    background: #fdf6ea;
+    border: 1px solid #ecd9ad;
+    border-radius: 8px;
+    padding: .9rem 1.2rem;
+    margin: 1.4rem 0;
+  }
+  .footnote { color: var(--muted); font-size: .85rem; }
+  .toc { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .9rem 1.4rem; font-size: .92rem; }
+  .toc ol { margin: .4rem 0 .2rem 1.1rem; padding: 0; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .caveat { color: var(--bad); font-weight: 600; }
+  dfn { font-style: normal; font-weight: 600; border-bottom: 1px dotted var(--muted); cursor: help; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>The PPGD adversary under multipool</h1>
+<p class="subtitle">Review of the <code>feature/multipool</code> draft, proposals for a better scheme, and which of the earlier speed-up ideas survive a distributed setup. &nbsp;·&nbsp; Dan / PD team &nbsp;·&nbsp; 2026-06-09</p>
+
+<div class="tldr">
+<p><strong>TL;DR.</strong> The multipool draft is good engineering, but it has one structural property that no amount of overlap engineering will fix: <strong>the three pools run in lockstep, so step time = max(pool time) + sync overhead, and the adversary pool is the only pool whose cost does not shard</strong>. The chunkwise pool scales out by adding chunks; the CI pool scales by data parallelism; the PPGD pool must run full-model forwards on a full V/U replica with full-model CI shipped in — its per-rank cost is fixed by model size, and its inner loop is irreducibly serial. At full-model scale the CI→PPGD edge also becomes the largest wire payload in the system.</p>
+<p>An empirical fact constrains the design space: <strong>layerwise PPGD was tried and underperforms full-model PPGD</strong> (unlike the stochastic loss, where layerwise ≥ subset). Since the chunkwise pool's stochastic loss is already layerwise, PPGD is the <em>only</em> term in the multipool objective that exercises joint all-sites masking — and the negative result says that joint coverage is exactly where its value lives. So the joint forward and joint loss are load-bearing and must be preserved; what can be changed is <em>when</em> the adversary's gradient lands, and <em>how its search is performed</em>.</p>
+<p>My main recommendations, in order: <strong>(1)</strong> break the lockstep — let the adversary contribute <em>one-step-stale</em> gradients so it leaves the critical path entirely while its loss stays exactly the joint full-model objective (cheap, ~portal-level change, gating experiment is ~20 lines in the single-pool trainer); <strong>(2)</strong> shard or cheapen the adversary's <em>search</em> without decomposing its <em>loss</em> — update-sharded block-coordinate refinement, layerwise proposals selected under the joint loss, the single-pass greedy cascade (revived by the negative result); <strong>(3)</strong> longer-term, an <em>amortized adversary head on the CI pool trained against the joint loss</em>, for which the multipool architecture is accidentally pre-adapted. Most of my earlier ideas survive; the ones that get <em>stronger</em> under a distributed scheme are exactly the ones that convert serial inner-loop depth into parallel width.</p>
+</div>
+
+<div class="toc">
+<strong>Contents</strong>
+<ol>
+  <li><a href="#glossary">Glossary</a></li>
+  <li><a href="#reading">The multipool draft as I read it</a></li>
+  <li><a href="#critique">Structural critique</a></li>
+  <li><a href="#schemes">Better schemes</a></li>
+  <li><a href="#survivors">Which earlier ideas survive under multipool</a></li>
+  <li><a href="#experiments">Gating experiments, ordered by cost</a></li>
+  <li><a href="#refs">References</a></li>
+</ol>
+</div>
+
+<h2 id="glossary">1 · Glossary</h2>
+<div class="glossary">
+<dl>
+<dt>Sources / masks / warmup (project terms)</dt>
+<dd><strong>Sources</strong> <code>r ∈ [0,1]</code> are the raw per-component values PPGD optimizes adversarially; the forward consumes <strong>masks</strong> <code>m = g + (1−g)·r</code> where <code>g</code> is the causal importance (CI) value. <strong>Warmup</strong> = the <code>n_warmup_steps</code> inner gradient-ascent updates on the sources before the final loss; the final fused backward supplies one more source update (<code>n_warmup+1</code> total per step).</dd>
+
+<dt>Site / chunk / pool / portal (multipool terms)</dt>
+<dd>A <strong>site</strong> is one decomposed weight matrix. A <strong>chunk</strong> is a group of sites owned by a set of chunkwise ranks. A <strong>pool</strong> is one of the three rank groups (CI fn / chunkwise V-U / PPGD adversary). A <strong>portal</strong> is the branch's typed object for one cross-pool communication edge.</dd>
+
+<dt>Adjoint</dt>
+<dd>The gradient of the loss with respect to an <em>intermediate activation</em> — here, <code>∂L/∂(output of a decomposed module)</code>. Backprop computes adjoints layer by layer on its way to parameter gradients. If you cache a module's adjoint and its input, the gradient of the loss w.r.t. that module's <em>masks</em> is a cheap local product — no new backward needed (because the module output is linear in its masks: <code>out = Σ_c m_c (a·V_c) U_c</code>). The cached adjoint is only approximate once weights or other layers' masks move ("stale adjoint").</dd>
+
+<dt>Box constraint / vertex</dt>
+<dd>The sources live in a <strong>box</strong>: each coordinate independently in <code>[0,1]</code>. A <strong>vertex</strong> is a corner (every coordinate 0 or 1). The maximum of a <em>linear</em> function over a box sits at a vertex and can be written down directly from gradient signs — no iterative search.</dd>
+
+<dt>Amortized optimization</dt>
+<dd>Replacing a per-instance inner optimization with a learned function that <em>predicts</em> the solution in one forward pass. The search cost is paid once, during training of the predictor, and "amortized" over all future instances. A <strong>semi-amortized</strong> scheme predicts a warm start, then takes one or two refinement steps.</dd>
+
+<dt>Tilted / CVaR weighting</dt>
+<dd>Given k sampled losses, instead of the mean, weight samples by <code>softmax(loss/τ)</code> — a soft maximum. As τ→0 you recover the worst sample; at moderate τ you optimize the average of the worst tail (<strong>CVaR</strong>, "conditional value at risk"). Turns "find the worst case by sequential search" into "sample candidates in parallel and up-weight the bad ones".</dd>
+
+<dt>Optimistic / extragradient step</dt>
+<dd>In min-max optimization, updating one player against a <em>prediction</em> of the other player's next position (e.g. extrapolating along its momentum) rather than its current position. Provably stabilizes and accelerates adversarial dynamics; the practical payoff here is that an extrapolated source can substitute for an explicit warmup step.</dd>
+
+<dt>Staleness / lockstep</dt>
+<dd>A gradient is <strong>stale</strong> if it was computed against parameters from an earlier step. Pools run in <strong>lockstep</strong> when every pool must finish step T before any pool starts T+1; an <strong>asynchronous</strong> design lets a pool's contribution arrive a step late (bounded staleness) so the slow pool stops pacing everyone.</dd>
+
+<dt>Residual-start / prefix cache</dt>
+<dd>Branch trick (<code>use_cached_residual</code>): when all masked sites live in one block, cache the clean residual stream entering that block once per batch, and run only the block + suffix for every masked forward. A "prefix cache" is the same idea stated generally: layers before the first masked site compute exactly the target model, so their activations can be reused from the target forward.</dd>
+</dl>
+</div>
+
+<h2 id="reading">2 · The multipool draft as I read it</h2>
+
+<p>From <code>three_pool/DESIGN.md</code>, <code>CLAUDE.md</code>, and the step files: three heterogeneous pools in a synchronized per-step DAG.</p>
+
+<table>
+<tr><th>Pool</th><th>Owns</th><th>Scales by</th><th>Per-step work</th></tr>
+<tr><td><strong>CI</strong></td><td>CI fn + its optimizer (replicated)</td><td>DP across batch</td><td>CI forward on target acts, importance-minimality, fused CI backward seeded by grads received from both other pools; prefetches next batch's target acts in dead time</td></tr>
+<tr><td><strong>Chunkwise</strong></td><td>V/U shards + optimizer</td><td><strong>sites</strong> (chunks) × DP within chunk</td><td>Faithfulness + layerwise stochastic recon, one forward per owned site (<code>PerSitePlan</code>); applies combined V/U grads, ships updated V/U</td></tr>
+<tr><td><strong>PPGD</strong></td><td>full V/U <em>replica</em> + persistent sources</td><td>DP across batch only</td><td>Full-model warmup (serial inner loop) + final recon + one fused <code>autograd.grad</code> over V, U, CI-leaves and sources; ships g_VU and g_CI; blocks on updated V/U at end of step</td></tr>
+</table>
+
+<p>The 2-pool variant merges CI + PPGD into Pool A (deleting the CI↔PPGD edge, which had caused deadlocks) and adds a <code>broadcast_across_batch</code> source scope — one shared source per position across the global batch, a ~1000× source-memory reduction.</p>
+
+<p>Worth stating explicitly because it changes my earlier rankings — <strong>the branch already implements several items from my previous lists</strong>: the fused multi-target backward (one <code>autograd.grad</code> over V/U + CI + sources in <code>step_ppgd.py</code> — the old "two backwards on the final forward" is gone); residual-start prefix caching for single-block runs; a fused linear-KL kernel; <code>compile_ppgd</code> plumbing; and broadcast-scope sources as a memory answer. The remaining serial core — <code>n_warmup</code> sequential full-model forward+backwards plus the final recon — is what's left, and it is the part none of the engineering so far has touched.</p>
+
+<h2 id="critique">3 · Structural critique</h2>
+
+<p class="footnote">Per your instruction I'm not trusting the profiling numbers on the branch. Everything below is an argument from structure; §6 says what to re-measure with the branch's own toolchain before acting.</p>
+
+<h3>3.1 · The adversary is the only pool that doesn't shard</h3>
+<p>Chunkwise cost per rank falls as you add chunks (fewer owned sites each). CI cost per rank falls as you add CI ranks (smaller batch slice each). PPGD cost per rank is <em>constant in pool size</em> for the serial dimension: every PPGD rank runs <code>n_warmup+1</code> full-model forwards and ~<code>n_warmup+1</code> backwards regardless of how many PPGD ranks exist — extra ranks only shrink its batch slice, and the warmup steps cannot be spread across ranks because step k+1 depends on step k. <strong>A distributed scheme buys parallel width; the PPGD inner loop is serial depth.</strong> By construction, as you scale the other pools out, PPGD becomes the pole — so "PPGD is still the bottleneck" is plausible <em>a priori</em> whatever the current traces say (the 2026-06-03 calibration had LW 1244&nbsp;ms ≳ PPGD 1140&nbsp;ms at big512, i.e. they were already nearly tied at that topology — and chunkwise has the easy knob of more chunks while PPGD has none).</p>
+
+<h3>3.2 · Lockstep synchrony puts the adversary on the critical path twice</h3>
+<p>The per-step cycle is: PPGD computes g_VU → ships to chunkwise → chunkwise combines, steps AdamW → ships updated V/U → PPGD blocks on the recv before its next step. So chunkwise can't finish step T without PPGD's slowest phase (warmup + recon + backward + reduce), and PPGD can't start T+1 without chunkwise's tail. The design doc's own calibration attributed ~47% of the step to "overhead" — the price of keeping three heterogeneous pools in sync. The async-recv refinements in the DESIGN.md backlog shave milliseconds off this; they don't change the shape.</p>
+
+<h3>3.3 · The full-model CI edge does not scale to many blocks</h3>
+<p>The PPGD pool needs CI values for <em>all sites</em> on its batch slice: a <code>B_ppgd × T × ΣC</code> tensor each step, plus the same-shaped g_CI going back. For a single block this is manageable. For a full model (ΣC in the hundreds of thousands per token), this edge becomes tens of GB per step in each direction — it is already the edge that deadlocked seq-2048 fan-out runs, which is why the 2-pool merged it away. Any scheme that keeps a separate full-model adversary pool keeps this payload (2-pool dodges the wire but still pays the memory co-located).</p>
+
+<h3>3.4 · Per-position persistent sources poison checkpointing and resume</h3>
+<p>The branch already collided with this: sources are the only <em>data-shaped</em> (not parameter-shaped) state, ~2.3&nbsp;TB at batch 1280, can't be consolidated, get sharded per rank into <code>ppgd_&lt;S&gt;/rank_&lt;r&gt;.pth</code>, and <strong>tie a PPGD resume to the exact pool layout</strong>. And under streaming data the persistence is largely fictitious anyway — at step T+1, source slot (b,t) refers to a different token of a different document, so what the warmup is really doing is repairing a stale init every step. The state you actually want to persist is whatever <em>generalizes across steps</em>: a shared per-position source (the broadcast scope — real persistence but a much blunter adversary), a low-rank/structured source, or an adversary <em>function</em> (amortization). The current per-position default gets the worst of both: maximal memory, minimal genuine persistence.</p>
+
+<div class="principle">
+<strong>The lens for everything that follows:</strong> a distributed setup can buy <em>width</em> (more ranks, more parallel forwards, more sites at once) but never <em>depth</em> (sequential inner steps). So under multipool, ideas that convert the adversary's serial depth into parallel width — sampling, amortization, closed-form vertex steps, staleness — gain value; ideas that merely make each serial step cheaper (truncated KL, fp8, compile) remain useful but bounded; and ideas that add depth are dead on arrival.
+</div>
+
+<h2 id="schemes">4 · Better schemes</h2>
+
+<h3 id="negative">4.0 · The constraint: what the layerwise-PPGD negative result tells us</h3>
+<p>Layerwise PPGD — restricting the adversarial loss to one site per forward — was tested and <strong>underperforms</strong> full-model PPGD, even though the same restriction <em>helps</em> the stochastic loss. The natural reading: the stochastic loss's job (training CI and components for local ablatability) decomposes across sites because random-mask errors are roughly independent per layer; the adversary's job is precisely the part that doesn't decompose — finding <em>compounding</em> failure modes, where small per-site divergences that random sampling never flags amplify or conspire when all sites are masked simultaneously. A layerwise adversary is structurally blind to compounding. And in the multipool objective the layerwise stochastic loss means PPGD is the <em>only</em> joint-masking term — it carries all of the "the decomposition works when everything is masked at once" signal.</p>
+<p>Design consequence: <strong>the joint forward and joint loss are fixed points; the degrees of freedom are the gradient's timing (staleness), the search procedure (how sources are found), and the source parameterization (how they're stored)</strong>. Schemes are evaluated against that constraint below. There may still be relaxations between layerwise and full-model that work — they're collected in Scheme 2′ — but the prior on aggressive loss decompositions is now low.</p>
+
+<p>Four proposals, ordered by (implementation cost × risk). They compose: 1 is a stepping stone to 3; 2′ supplies the cheap search kernels that 1 and 3 schedule.</p>
+
+<div class="scheme">
+<h3>Scheme 1 — Break the lockstep: a one-step-stale adversary</h3>
+<p><strong>Change:</strong> PPGD stops participating in step T's gradient. It computes g_VU and g_CI against the V/U it already holds (from step T−1's ship) and sends them off; chunkwise and CI apply <em>whatever adversary gradients have arrived</em> — i.e. the adversary's contribution to step T is computed against step T−1's parameters. The blocking <code>updated_vu_from_chunk … wait()</code> at the end of <code>step_ppgd</code> and the g_VU wait in <code>step_chunkwise</code> both become genuinely asynchronous: each pool runs at its own natural rate, and step time collapses to max(chunkwise, CI) plus much less synchronization.</p>
+<p><strong>Why it's sound:</strong> the adversarial recon term is an auxiliary loss at coefficient ~0.5, not the primary objective; one step of staleness on an auxiliary gradient is the mildest form of the bounded-staleness regime that asynchronous SGD and pipeline-parallel training (PipeDream's weight stashing) have used for years. Better: the PPGD term's own premise is that the adversary <em>persists</em> across steps because parameters drift slowly — the same assumption that justifies persistent sources justifies a one-step-stale gradient. The optimistic-update trick (extrapolate sources along their Adam momentum) directly compensates the staleness if needed.</p>
+<p><strong>What it buys beyond speed:</strong> once PPGD is off the critical path, its now-slack wall-clock can be spent on <em>quality</em> — more warmup steps, more samples, bigger effective adversary — at zero step-time cost. The bottleneck question dissolves rather than being optimized.</p>
+<p><strong>Cost / risk:</strong> low. The portals already exist; this is a re-plumbing of when sends are consumed, plus removing two waits. The convergence question is testable in the single-pool trainer first (§6, E1). Main risk: a subtle interaction where the stale adversary chronically lags a fast-moving phase of training (early steps); mitigate by starting PPGD synchronous and going async after <code>start_frac</code> — the config field already exists.</p>
+</div>
+
+<div class="scheme">
+<h3>Scheme 2′ — Keep the joint loss; shard and cheapen the <em>search</em></h3>
+<p><strong>Status:</strong> the raw version of this scheme — a layerwise adversarial loss folded into the chunkwise pool — <span class="caveat">is dead: it was tested and underperforms</span> (§4.0). What survives is a family of relaxations that all share one invariant: <em>the loss that trains components remains the full-model joint adversarial recon; only the procedure that finds the sources is decomposed, approximated, or parallelized.</em> Ordered from most to least conservative:</p>
+<ul>
+  <li><strong>(a) Update-sharded block-coordinate refinement.</strong> The warmup forward masks <em>all</em> sites (joint, unchanged), but each PPGD rank refines only its assigned subset of layers' sources per step, with the rest held at their persisted values; assignments rotate. This is block-coordinate ascent on the unchanged joint problem: the inner search parallelizes across ranks (n ranks ⇒ n coordinate blocks refined per step instead of 1), while every gradient the components see is computed under joint masking. Unlike layerwise PPGD, compounding is fully visible to the loss — the only approximation is that each rank's refinement holds other layers' sources fixed within a step, which is also what sequential PGD effectively does between its few steps.</li>
+  <li><strong>(b) Layerwise proposals, joint selection.</strong> Use cheap per-site machinery (closed-form vertex from cached mask-gradients, per-site PGD against a cached <dfn title="gradient of the loss w.r.t. an intermediate activation">adjoint</dfn>) only to generate <em>candidate</em> source configurations; assemble candidates into joint masks and score them under the full-model loss with tilted weighting. The per-site step is a proposal distribution, not an objective — the negative result doesn't apply to it, because nothing layerwise ever reaches the components' gradient.</li>
+  <li><strong>(c) Single-pass greedy cascade (F3, revived).</strong> One joint forward in which each masked module, in depth order, sets its sources to the locally-worst vertex using its live input (which already reflects the upstream attacks) and a one-step-stale adjoint. This <em>constructs</em> a coordinated cross-layer attack in forward order — compounding is exactly what it captures, and it captures it in a single forward with zero source state. The layerwise-PPGD failure is evidence <em>for</em> this idea, not against it: it says coordination matters, and the cascade is the cheapest coordinated search available.</li>
+  <li><strong>(d) Suffix-cumulative curriculum.</strong> Mask sites l..L jointly with the prefix clean (so prefix activations cache from the target forward), sampling or annealing l. Compounding within every suffix is exercised; l=0 recovers the full joint loss. This <em>does</em> change the loss (it's a relaxation, not a reparameterization), so it carries the same scientific risk class as layerwise PPGD — test it only if (a)–(c) leave compute on the table, and anchor it with periodic l=0 passes.</li>
+</ul>
+<p><strong>Cost / risk:</strong> (a) is plumbing on the existing pool (the warmup's <code>get_grads</code> already takes a source list — restrict it per rank and rotate); (b) and (c) are new but small search kernels; (d) is an experiment. Risk is graded exactly by how far each item is from the joint loss: (a)–(c) leave it untouched, (d) relaxes it.</p>
+</div>
+
+<div class="scheme">
+<h3>Scheme 3 — Amortized adversary head on the CI pool</h3>
+<p><strong>Change:</strong> replace persistent sources + warmup with a small trained head <code>A_φ</code> that <em>predicts</em> adversarial sources from the same per-component inner activations the CI fn already consumes (or from the shared CI trunk, for <code>global_shared_transformer</code>). It lives on the CI pool, runs in the same forward as the CI fn, and its predicted sources ride the existing CI-values portals as extra channels. Trained as the maximizing player: the recon pools already extract <code>∂loss/∂sources</code> in their fused backward — flip the sign, ship it back along the existing g_CI portal (same shape, same routing), and the CI pool steps <code>A_φ</code> with its own optimizer.</p>
+<p><strong>Why the architecture is accidentally pre-adapted:</strong> every hard part of an amortized adversary in a distributed setting — where does it live, how do its outputs reach the consumers, how do its gradients come back, how is it checkpointed — is answered by machinery the branch already built for the CI fn, because <em>the CI fn is already an amortized predictor of per-component per-position values trained from recon-pool gradients</em>. The adversary head is its mirror twin with the objective negated. Concretely solved for free: parameter-shaped checkpointing (the TB source shards and the layout-coupled resume of §3.4 vanish); no warmup on anyone's critical path (<code>n_warmup=0</code>; optionally one vertex refinement at the consumer); real persistence (the adversary's knowledge accumulates in φ, which generalizes across tokens, batches, and steps — fixing the warm-garbage problem of streaming per-position sources).</p>
+<p><strong>The negative result sharpens two design choices here.</strong> First, A_φ must be trained against the <em>joint</em> loss — which the plumbing above already gives for free, since the source-gradients shipped back come from the recon pool's joint fused backward; nothing layerwise enters. Second, it raises the expressivity bar: a purely per-component local head (each component's source from its own inner activation alone) may be unable to represent the cross-layer <em>coordination</em> that evidently matters, so the shared-trunk variant (a head on the <code>global_shared_transformer</code> CI trunk, which sees all sites' activations) is the right starting point, not the optional upgrade.</p>
+<p><strong>Cost / risk:</strong> highest of the three — this changes training dynamics (a GAN-like min-max between A_φ and the components), and min-max training can be finicky; the optimism/extragradient toolkit and a "predict-then-one-vertex-refine" semi-amortized fallback are the stabilizers. I'd sequence it <em>after</em> Scheme 1 (async makes the adversary's training loop free to run continuously against stale weights — the classic stabilizer for the slow-learner player) and gate it on the E3 diagnostic showing converged sources are predictable from CI/activations.</p>
+</div>
+
+<div class="scheme">
+<h3>Scheme 4 — Minimal change: dead-time warmup (if you keep the current shape)</h3>
+<p><strong>Change:</strong> keep the synchronous design, but move warmup out of the critical path into the PPGD pool's dead time. The CI pool already prefetches the <em>next</em> batch's target activations in its dead time (phase A4); extend that to compute and ship CI<sub>T+1</sub> during step T's tail. The PPGD pool then runs step T+1's warmup while it's otherwise blocked waiting for updated V/U (phase E) — against one-step-stale V/U, which the final (fresh-V/U) recon + fused backward corrects. The only adversary work remaining on the critical path is the single final forward + the fused backward it already shares.</p>
+<p><strong>Cost / risk:</strong> low-medium; it's the same staleness bet as Scheme 1 but confined to warmup (the gradient that trains components stays fresh), so it's strictly more conservative. Buys less: the final full-model forward+backward and the CI edge remain, so §3.1/§3.3 still bind eventually. Reasonable as the first shipped increment if E1's staleness result looks at all worrying.</p>
+</div>
+
+<table>
+<tr><th></th><th>Critical-path adversary cost</th><th>Kills §3.1 (no-shard)</th><th>Kills §3.3 (CI edge)</th><th>Kills §3.4 (source state)</th><th>Risk</th></tr>
+<tr><td><strong>Today</strong></td><td>(n_warmup+1) fwd + fused bwd, serial</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td><strong>S4 dead-time warmup</strong></td><td>1 fwd + shared bwd</td><td>partially</td><td>no</td><td>no</td><td>low</td></tr>
+<tr><td><strong>S1 stale adversary</strong></td><td><strong>zero</strong></td><td>sidesteps (off-path)</td><td>no (payload remains, off-path)</td><td>no</td><td>low-med</td></tr>
+<tr><td><strong>S2′ sharded/cheap search, joint loss</strong></td><td>1 joint fwd + shared bwd (search parallelized or closed-form)</td><td>partially (search shards; the joint fwd doesn't)</td><td>no</td><td>(c) needs none; (a,b) keep it</td><td>low for (a)–(c); med for (d)</td></tr>
+<tr><td><strong>S3 amortized head</strong></td><td>~zero (rides CI forward)</td><td><strong>yes</strong></td><td>adds channels to existing edge</td><td><strong>yes</strong></td><td>high (dynamics)</td></tr>
+</table>
+
+<h2 id="survivors">5 · Which earlier ideas survive under a distributed scheme</h2>
+
+<p>Statuses: <span class="tag done">DONE ON BRANCH</span> already implemented; <span class="tag boost">BOOSTED</span> worth more under multipool; <span class="tag keep">KEEPS</span> unchanged; <span class="tag weak">WEAKENED</span>; <span class="tag dead">DEAD</span>.</p>
+
+<table>
+<tr><th>Idea</th><th>Status</th><th>Under multipool</th></tr>
+<tr><td>Fuse the two backwards on the final forward (your #2)</td><td><span class="tag done">DONE ON BRANCH</span></td><td><code>step_ppgd</code> does one <code>autograd.grad</code> over V, U, CI-leaves and sources. Resolved.</td></tr>
+<tr><td>Prefix / residual-start caching</td><td><span class="tag done">DONE ON BRANCH</span> (single-block)</td><td><code>use_cached_residual</code>. At full-model scale it survives only where a clean prefix exists: S2′(b)'s per-site proposal generation and S2′(d)'s suffix-cumulative masking — not the joint loss itself.</td></tr>
+<tr><td>Fused KL / CCE-style kernel (your #4)</td><td><span class="tag done">DONE ON BRANCH</span></td><td><code>fused_linear_kl.py</code> exists; verify it's wired into the PPGD pool's recon strategy, not just chunkwise.</td></tr>
+<tr><td>Broadcast / shared-batch sources</td><td><span class="tag done">DONE ON BRANCH</span> (2-pool)</td><td>The memory fix at one extreme of the expressivity dial. The structured/low-rank middle ground below is the refinement.</td></tr>
+<tr><td>Tilted/CVaR vertex sampling (replace PGD with parallel random search)</td><td><span class="tag boost">BOOSTED</span></td><td>The depth→width conversion par excellence: candidate masks evaluate as independent forwards, which is the one thing a pool of ranks is good at and a serial loop forbids. Stateless ⇒ the §3.4 checkpoint problem vanishes. Compatible with the negative result: samples are <em>joint</em> vertices, scored under the joint loss — coordination is explored, not assumed away. Natural workload for the PPGD pool under Scheme 1, with S2′(b)'s layerwise proposals as the importance distribution.</td></tr>
+<tr><td>Closed-form vertex warm start from existing mask-gradients (F1/F2)</td><td><span class="tag boost">BOOSTED</span></td><td>The fused backward <em>already extracts source grads</em>; a vertex init from last step's grads is a few lines in <code>PersistentPGDState.step</code>'s neighborhood and is the principled argument for <code>n_warmup=0/1</code>. Under Scheme 2's per-site masking it's near-exact, not heuristic.</td></tr>
+<tr><td>Optimistic / extragradient source updates</td><td><span class="tag boost">BOOSTED</span></td><td>Free (reuses Adam momentum already in <code>AdamPGDOptimizer._m</code>), and it's also the staleness compensator for Schemes 1/4 — double duty.</td></tr>
+<tr><td>Amortized / semi-amortized adversary</td><td><span class="tag boost">BOOSTED</span></td><td>Promoted to Scheme 3: the portal architecture and the CI fn's existence answer the distributed-systems questions that were the idea's main unknowns.</td></tr>
+<tr><td>Structured / low-rank sources</td><td><span class="tag keep">KEEPS</span></td><td>The middle of the dial between per-position (TB-scale) and broadcast (blunt): e.g. rank-k per-position latents decoded per site. Cheap to try inside the existing scope union.</td></tr>
+<tr><td>Per-position compute triage (sharpened from your #8)</td><td><span class="tag keep">KEEPS</span></td><td>Chunkwise computes per-position KL anyway; shipping top-k position indices to the adversary is a tiny payload on an existing edge. Run the adversary on the worst fraction of positions.</td></tr>
+<tr><td>Hidden-state / surrogate objective for warmup (your #3)</td><td><span class="tag keep">KEEPS</span></td><td>Orthogonal to topology. Pairs with dead-time warmup (S4): stale-V/U warmup against a cheap objective, exact final loss.</td></tr>
+<tr><td>Depth-weighted adversary budget (F6)</td><td><span class="tag keep">KEEPS</span></td><td>Becomes the rotation/assignment policy for S2′(a)'s coordinate blocks: refine high-leverage (early) layers' sources more often.</td></tr>
+<tr><td>Staged decomposition (F5)</td><td><span class="tag weak">WEAKENED</span></td><td>The negative result lowers its prior: per-stage decomposition is layerwise-flavored (no joint-masking signal until the joint fine-tune), and we now know that signal matters. The joint fine-tune stage would have to carry more of the work than hoped.</td></tr>
+<tr><td>Single-pass greedy cascade attack (F3)</td><td><span class="tag boost">BOOSTED</span></td><td><strong>Revived by the layerwise-PPGD negative result:</strong> cross-layer compounding is exactly what the cascade constructs (each layer attacks the already-attacked stream), in one joint forward, with zero source state. Now S2′(c) and the most interesting novel kernel on the list.</td></tr>
+<tr><td>Layer-sharded block-coordinate adversary (F2-distributed)</td><td><span class="tag keep">KEEPS</span></td><td>Now S2′(a), and importantly <em>not</em> what failed: the loss stays joint; only the per-step <em>refinement</em> is partitioned across ranks. The valid descendant of the layerwise idea.</td></tr>
+<tr><td>Suffix distillation (small proxy for warmup)</td><td><span class="tag dead">DEAD</span></td><td>No frozen suffix at full-model scale; only revivable inside staged training. The branch's own ruling that CUDA graphs/compile won't help GPU-bound backwards also caps this family.</td></tr>
+<tr><td>torch.compile / CUDA-graph the inner loop (your #1)</td><td><span class="tag dead">DEAD</span></td><td>The branch's perf handoff ruled it out empirically for the GPU-bound phases ("don't waste a day on this"); <code>compile_ppgd</code> exists where it helps.</td></tr>
+<tr><td>TP on the component axis (your #9)</td><td><span class="tag dead">DEAD</span></td><td>Sharding a tensor you shouldn't be materializing. The chunk axis already shards components across sites; within a site, structured/amortized sources beat TP.</td></tr>
+<tr><td>fp8 inner loop (your #5)</td><td><span class="tag weak">WEAKENED</span></td><td>bf16 autocast already landed (it was the branch's single biggest win); fp8 is an increment on a phase that Schemes 1/2 remove from the critical path anyway.</td></tr>
+<tr><td>Run PPGD every K steps (your #6)</td><td><span class="tag weak">WEAKENED</span></td><td>The negative result argues the joint signal is doing real work every step; thinning it is now the riskier direction. Scheme 1 achieves the same compute relief without reducing how often the joint loss is exercised.</td></tr>
+</table>
+
+<h2 id="experiments">6 · Gating experiments, ordered by cost</h2>
+
+<p>Since the profiling on the branch isn't trusted, the measurement comes first — but note that Scheme 1 is <em>not</em> gated on which pool is the pole: it helps whichever pool paces the step (it removes sync, and frees the adversary's slack for quality either way). One experiment from the original plan is already answered: layerwise PPGD fails, so the E-series below targets the relaxation ladder instead.</p>
+
+<table>
+<tr><th>#</th><th>Experiment</th><th>Cost</th><th>Gates</th></tr>
+<tr><td><strong>E0</strong></td><td>Re-profile with the branch's own toolchain, GPU-event weights (<code>PD_PHASE_TRACE=1</code>, the critical-path analyzer with <code>gpu=</code> weights — the handoff itself flags the CPU-wall weighting as misattributing ~590&nbsp;ms), <code>PD_NCCL_EVENT_TIMING=1</code> for the cross-stream waits. Answer one question: at the topology you actually want to run, what fraction of the step is (a) PPGD compute, (b) chunkwise compute, (c) sync/comm?</td><td>hours</td><td>everything quantitative below</td></tr>
+<tr><td><strong>E1</strong></td><td><strong>Staleness tolerance</strong> (gates Schemes 1 and 4): in the <em>single-pool</em> trainer, buffer the PPGD term's V/U + CI gradients one step and apply them delayed. ~20 lines, no distributed machinery. Compare loss curves and final decomposition quality vs synchronous on a TinyStories/GPT-2-small config.</td><td>~1 day</td><td>S1, S4</td></tr>
+<tr><td><strong>E2</strong></td><td><strong>Relaxation ladder</strong> (gates S2′; layerwise already ruled out): with full-model PPGD as the baseline, test in order of conservatism — (a) update-sharded refinement: joint loss unchanged, each "rank" (emulatable single-pool by rotating which layers' sources the warmup refines per step) refines one coordinate block; (b) layerwise vertex <em>proposals</em> scored under the joint loss with tilted weighting; (c) the greedy cascade as the warmup replacement. Each compares against both full PPGD and the failed layerwise variant — the interesting question is how much of the layerwise→joint quality gap each recovers and at what cost.</td><td>~days (existing config machinery)</td><td>S2′ (a)–(c)</td></tr>
+<tr><td><strong>E3</strong></td><td><strong>Source post-mortem</strong> on an existing checkpoint's <code>ppgd_&lt;S&gt;/</code> shards: (a) how vertex-like are converged sources (mass near 0/1)? (b) how predictable are they from (g, h) — fit a tiny probe? (c) what loss does the deterministic all-floor corner <code>mask = g</code> achieve vs the optimized sources? Answers calibrate the vertex warm start, the amortized head's feasibility, and whether the adversary is finding anything a closed form wouldn't.</td><td>hours, offline</td><td>S3, vertex/F1, tilted sampling</td></tr>
+<tr><td><strong>E4</strong></td><td><strong>n_warmup=0 + vertex init + optimistic extrapolation</strong> vs <code>n_warmup=2</code>, single-pool. The fused backward already yields the source grads; the vertex init and momentum extrapolation are small patches to <code>PersistentPGDState</code>.</td><td>~1 day</td><td>cheapest shipped win if it holds</td></tr>
+<tr><td><strong>E5</strong></td><td><strong>Tilted sampling vs PGD</strong>: replace the warmup with k parallel vertex-biased samples and softmax-tilted weighting in the final loss; sweep k and τ. Compare adversarial-recon eval (the existing PPGD eval metric, which is independent of how training found its masks) and decomposition quality.</td><td>~days</td><td>S1's workload / S2's adversary kernel</td></tr>
+</table>
+
+<p>Sequencing if everything passes: <strong>E4's patches ship immediately</strong> (they help every scheme and leave the joint loss untouched); <strong>Scheme 1</strong> lands next as the structural fix — it is the one move that is fully compatible with the negative result by construction, since the adversary's loss stays exactly the joint objective and only its gradient's arrival time changes (and its slack buys back warmup off-path); the <strong>S2′ search kernels</strong> follow per E2, parallelizing or replacing the warmup inside the unchanged joint loss; <strong>Scheme 3</strong> is the research bet that replaces what's left of the inner loop, gated on E3 — with the shared-trunk head, since the negative result implies the adversary must be able to coordinate across layers.</p>
+
+<h2 id="refs">7 · References</h2>
+<ul class="footnote">
+  <li>Branch artifacts: <code>three_pool/DESIGN.md</code>, <code>three_pool/CLAUDE.md</code>, <code>three_pool/step_ppgd.py</code>, <code>three_pool/recon_plan.py</code>, <code>docs/handoff_2026-05-26_3pool_perf.md</code>, <code>docs/3pool_topology_calibration_2026-06-03.md</code> (numbers treated as untrusted per instruction; structure only).</li>
+  <li>Staleness / async: Narayanan et al., <a href="https://arxiv.org/abs/1806.03377">PipeDream</a> (weight stashing, 1-stale gradients); bounded-staleness async SGD literature (Hogwild, SSP).</li>
+  <li>Fast adversarial training: Zhang et al., <a href="https://arxiv.org/abs/1905.00877">YOPO</a>; Shafahi et al., <a href="https://arxiv.org/abs/1904.12843">Free AT</a>; Wong et al., <a href="https://arxiv.org/abs/2001.03994">Fast is better than free</a>; Andriushchenko &amp; Flammarion, <a href="https://arxiv.org/abs/2007.02617">GradAlign</a> (catastrophic-overfitting caveats for few-step adversaries).</li>
+  <li>Amortized adversaries: Dong et al., <a href="https://arxiv.org/abs/2002.05999">Adversarial Distributional Training</a> (the amortized ADT-EXP-AM variant); Xiao et al., <a href="https://arxiv.org/abs/1801.02610">AdvGAN</a>; Amos, <a href="https://arxiv.org/abs/2202.00665">Tutorial on amortized optimization</a>; Kim et al., <a href="https://arxiv.org/abs/1802.02550">semi-amortized VAEs</a> (the amortization gap + refine pattern).</li>
+  <li>Sampling in place of inner maximization: Andriushchenko et al., <a href="https://arxiv.org/abs/1912.00049">Square Attack</a> (random search rivals gradient attacks); tilted ERM / CVaR-style distributionally robust objectives (Li et al., <a href="https://arxiv.org/abs/2007.01162">TERM</a>).</li>
+  <li>Min-max dynamics: extragradient / optimistic methods survey, <a href="https://arxiv.org/abs/2210.09382">tight analysis for nonconvex minimax</a>; Popov's single-call extragradient.</li>
+  <li>Multiplicative-mask adversaries: Park et al., <a href="https://arxiv.org/abs/1707.03631">Adversarial Dropout</a>.</li>
+</ul>
+
+<p class="footnote">Generated 2026-06-09; revised same day (v2) to incorporate the empirical result that <strong>layerwise PPGD underperforms full-model PPGD</strong> — the original Scheme 2 (layerwise adversarial loss) is replaced by S2′ (joint loss, sharded/cheapened search), F3 (greedy cascade) is promoted, and the every-K-steps idea is demoted. Companion to two earlier conversation rounds: the literature review (families A–F) and the full-model idea set (F1–F6); this doc supersedes both where they conflict.</p>
+
+</div>
+</body>
+</html>
