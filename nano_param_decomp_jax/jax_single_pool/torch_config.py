@@ -166,47 +166,13 @@ def _assert_plain_adamw(optimizer: OptimizerConfig, who: str) -> None:
     assert optimizer.weight_decay == 0.0, f"{who}: weight_decay must be 0"
 
 
-def _losses(
-    cfg: LMExperimentConfig, n_sites: int
-) -> tuple[float, float, ImportanceMinimalityLossConfig, AdversaryConfig, int, int]:
-    """Returns (faith_coeff, stoch_coeff, imp_min, adversary, sites_per_chunk,
-    n_recon_samples). The four production losses (faith, imp-min, stochastic recon, ONE
-    adversary — persistent PPGD or fresh PGD) must each appear exactly once; anything
-    else refuses. `imp_min`/`adversary` pass through as the SHARED configs —
-    `make_train_step` asserts the subset it implements."""
-    faith = stoch = imp = adversary = None
-    sites_per_chunk = n_recon_samples = None
-    for metric in cfg.pd.loss_metrics:
-        assert metric.coeff is not None
-        match metric:
-            case FaithfulnessLossConfig():
-                assert faith is None
-                faith = metric.coeff
-            case ImportanceMinimalityLossConfig():
-                assert imp is None
-                imp = metric
-            case StochasticReconSubsetLossConfig():
-                assert stoch is None and sites_per_chunk is None
-                assert isinstance(metric.routing, UniformKSubsetRoutingConfig), metric.routing
-                stoch = metric.coeff
-                sites_per_chunk = n_sites
-                n_recon_samples = cfg.pd.n_mask_samples
-            case ChunkwiseSubsetReconLossConfig():
-                assert stoch is None and sites_per_chunk is None
-                assert isinstance(metric.routing, UniformKSubsetRoutingConfig), metric.routing
-                stoch = metric.coeff
-                sites_per_chunk = metric.sites_per_chunk
-                n_recon_samples = metric.n_samples
-            case PersistentPGDReconLossConfig() | PGDReconLossConfig():
-                assert adversary is None, "exactly one adversary loss"
-                adversary = metric
-            case _:
-                raise AssertionError(f"unsupported loss metric {metric.type!r}")
-    assert faith is not None and imp is not None and stoch is not None and adversary is not None, (
-        f"need all four production losses, got {[m.type for m in cfg.pd.loss_metrics]}"
-    )
-    assert sites_per_chunk is not None and n_recon_samples is not None
-    return faith, stoch, imp, adversary, sites_per_chunk, n_recon_samples
+def _losses(cfg: LMExperimentConfig, site_names: tuple[str, ...]) -> tuple[AnyLossMetricConfig, ...]:
+    """Pass the shared loss configs through VERBATIM (yaml order — RNG-load-bearing),
+    after running them through `build_recon_terms` so unsupported metrics refuse at
+    convert time rather than on the GPUs."""
+    loss_metrics = tuple(cfg.pd.loss_metrics)
+    build_recon_terms(loss_metrics, site_names, cfg.pd.n_mask_samples, cfg.pd.sampling)
+    return loss_metrics
 
 
 def _data(cfg: LMExperimentConfig) -> DataConfig:

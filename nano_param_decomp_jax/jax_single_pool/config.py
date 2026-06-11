@@ -1,20 +1,20 @@
 """The trainer's internal experiment config — built ONLY by `torch_config.py`.
 
 The yaml surface is the shared torch schema (`LMExperimentConfig` via the wrapper
-route); this module holds the converted form the trainer consumes. Loss/adversary
-configs are the SHARED pydantic types passed through verbatim; the dataclasses here
-carry only the jax-runtime knobs that have no torch-schema home (chunking, remat,
-checkpoint cadence, the CI-fn architecture extraction).
+route); this module holds the converted form the trainer consumes. The loss list is
+the SHARED pydantic configs passed through verbatim (`build_recon_terms` maps them
+onto recon terms); the dataclasses here carry only the jax-runtime knobs that have
+no torch-schema home (remat, checkpoint cadence, the CI-fn architecture extraction).
 """
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from jax_single_pool.ci_fn import CIArch
 from jax_single_pool.lm import SiteC
-from jax_single_pool.train import AdversaryConfig
 from param_decomp_config.experiment import WandbConfig
-from param_decomp_config.losses import ImportanceMinimalityLossConfig
+from param_decomp_config.pd import AnyLossMetricConfig
 
 
 @dataclass(frozen=True)
@@ -45,13 +45,6 @@ class DataConfig:
     dir: Path
     seq_len: int
     global_batch: int
-
-
-@dataclass(frozen=True)
-class ReconConfig:
-    sites_per_chunk: int
-    n_samples: int
-    remat_forwards: bool
 
 
 @dataclass(frozen=True)
@@ -124,13 +117,12 @@ class ExperimentConfig:
     steps: int
     target: AnyTargetConfig
     data: DataConfig
-    faith_coeff: float
-    stoch_coeff: float
-    imp_min: ImportanceMinimalityLossConfig
-    adversary: AdversaryConfig
-    """Recon adversary: persistent source-Adam (PPGD) or fresh per-batch sign-PGD —
-    the shared torch loss config, subset-asserted in `make_train_step`."""
-    recon: ReconConfig
+    loss_metrics: tuple[AnyLossMetricConfig, ...]
+    """The shared `pd.loss_metrics` configs, verbatim and in yaml order (order is
+    RNG-load-bearing — see `build_recon_terms`)."""
+    n_mask_samples: int
+    sampling: Literal["continuous", "binomial"]
+    remat_recon_forwards: bool
     vu_optimizer: VUOptimizerConfig
     ci_optimizer: CIOptimizerConfig
     ci_fn: CIArch

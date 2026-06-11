@@ -128,6 +128,11 @@ class ImportanceMinimalityLoss(Metric[ImportanceMinimalityLossConfig]):
     log_namespace = "loss"
     short_name = "ImpMin"
 
+    @property
+    @override
+    def needs_target_out(self) -> bool:
+        return False
+
     @override
     def reset(self) -> None:
         self.per_component_sums: dict[str, Float[Tensor, " C"]] = {}
