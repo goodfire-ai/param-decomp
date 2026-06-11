@@ -11,7 +11,7 @@ from typing import Annotated, Any, ClassVar, Literal, override
 
 import torch
 from jaxtyping import Float
-from pydantic import Field, NonNegativeInt, PositiveInt
+from pydantic import Field, NonNegativeInt, PositiveInt, model_validator
 from torch import Tensor
 
 from param_decomp.base_config import Probability
@@ -59,6 +59,24 @@ class _PersistentPGDBaseConfig(LossMetricConfig):
     )
     start_frac: Probability = 0.0
     n_samples: PositiveInt = 1
+    warmup_step_lrs: list[float] | None = Field(
+        default=None,
+        description=(
+            "Optional per-warmup-step LR overrides; length must equal `n_warmup_steps`. Warmup"
+            " step i uses `warmup_step_lrs[i]` instead of the scheduled LR (e.g. [0.01, 0.003]"
+            " for a coarse-then-fine 2-step warmup). The free coupled source step keeps the"
+            " scheduled LR. None = every warmup step uses the scheduled LR (default)."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_warmup_step_lrs(self) -> "_PersistentPGDBaseConfig":
+        if self.warmup_step_lrs is not None:
+            assert len(self.warmup_step_lrs) == self.n_warmup_steps, (
+                f"warmup_step_lrs has length {len(self.warmup_step_lrs)} but n_warmup_steps="
+                f"{self.n_warmup_steps}; they must match."
+            )
+        return self
 
 
 class PersistentPGDReconLossConfig(_PersistentPGDBaseConfig):
@@ -148,6 +166,7 @@ class _PersistentPGDReconBase[
             n_samples=self.cfg.n_samples,
             router=_router_for_cfg(self.cfg, self.device),
             reconstruction_loss=ctx.reconstruction_loss,
+            warmup_step_lrs=self.cfg.warmup_step_lrs,
         )
         if self._pending_resume_state is not None:
             self.state.load_state_dict(self._pending_resume_state)
