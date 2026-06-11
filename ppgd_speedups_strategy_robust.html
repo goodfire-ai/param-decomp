@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strategy-robust PPGD speedups (2026-06-10)</title>
+<style>
+  :root {
+    --ink: #1c2330;
+    --muted: #5b6678;
+    --accent: #2b5fad;
+    --accent2: #8a4f1d;
+    --bg: #fbfaf7;
+    --card: #ffffff;
+    --line: #dfe3ea;
+    --good: #1e7a3c;
+    --bad: #a33333;
+    --warn: #9a7a18;
+  }
+  html { font-size: 17px; }
+  body {
+    font-family: "Charter", "Georgia", serif;
+    color: var(--ink);
+    background: var(--bg);
+    margin: 0;
+    line-height: 1.55;
+  }
+  .wrap { max-width: 60rem; margin: 0 auto; padding: 2.5rem 1.5rem 6rem; }
+  h1 { font-size: 1.9rem; line-height: 1.2; margin-bottom: .3rem; }
+  h2 { font-size: 1.35rem; margin-top: 2.8rem; border-bottom: 2px solid var(--line); padding-bottom: .3rem; }
+  h3 { font-size: 1.08rem; margin-top: 1.8rem; color: var(--accent); }
+  .subtitle { color: var(--muted); margin-top: 0; }
+  code, pre {
+    font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    font-size: .85em;
+    background: #f0efe9;
+    border-radius: 4px;
+    padding: .08em .35em;
+  }
+  pre { padding: .8rem 1rem; overflow-x: auto; line-height: 1.45; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { border: 1px solid var(--line); padding: .45rem .6rem; text-align: left; vertical-align: top; }
+  th { background: #eef1f6; font-family: "Helvetica Neue", Arial, sans-serif; font-size: .82rem; letter-spacing: .02em; }
+  tr:nth-child(even) td { background: #f7f8fa; }
+  .tldr {
+    background: #eef4fd;
+    border-left: 4px solid var(--accent);
+    padding: 1rem 1.2rem;
+    border-radius: 0 8px 8px 0;
+    margin: 1.5rem 0;
+  }
+  .tldr p:first-child { margin-top: 0; }
+  .tldr p:last-child { margin-bottom: 0; }
+  .glossary {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 1rem 1.4rem;
+    margin: 1.2rem 0;
+    font-size: .93rem;
+  }
+  .glossary dt { font-weight: 700; margin-top: .7rem; font-family: "Helvetica Neue", Arial, sans-serif; font-size: .85rem; }
+  .glossary dd { margin: .15rem 0 0 0; }
+  .idea {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-left: 5px solid var(--accent2);
+    border-radius: 0 8px 8px 0;
+    padding: .9rem 1.3rem;
+    margin: 1.2rem 0;
+  }
+  .idea h3 { margin-top: 0; color: var(--accent2); }
+  .idea .meta { font-family: "Helvetica Neue", Arial, sans-serif; font-size: .78rem; color: var(--muted); letter-spacing: .02em; margin-bottom: .5rem; }
+  .principle {
+    background: #fdf6ea;
+    border: 1px solid #ecd9ad;
+    border-radius: 8px;
+    padding: .9rem 1.2rem;
+    margin: 1.4rem 0;
+  }
+  .footnote { color: var(--muted); font-size: .85rem; }
+  .toc { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .9rem 1.4rem; font-size: .92rem; }
+  .toc ol { margin: .4rem 0 .2rem 1.1rem; padding: 0; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .caveat { color: var(--bad); font-weight: 600; }
+  .tag { display: inline-block; font-family: "Helvetica Neue", Arial, sans-serif; font-size: .7rem; font-weight: 700;
+         letter-spacing: .05em; padding: .12em .55em; border-radius: 99px; vertical-align: middle; }
+  .tag.t1 { background: #e2f3e7; color: var(--good); }
+  .tag.t2 { background: #e5edfb; color: var(--accent); }
+  .tag.t3 { background: #f6efd8; color: var(--warn); }
+  dfn { font-style: normal; font-weight: 600; border-bottom: 1px dotted var(--muted); cursor: help; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Strategy-robust PPGD speedups</h1>
+<p class="subtitle">Speedups that survive a distributed strategy in flux. Assumes: the 3-pool design is dropped, something simpler replaces it, the macro-strategy is likely parallel layerwise/chunkwise <em>runs</em>, and the topology will keep changing under us. &nbsp;·&nbsp; 2026-06-10 &nbsp;·&nbsp; supersedes <code>ppgd_adversary_review.html</code> where they conflict.</p>
+
+<div class="tldr">
+<p><strong>TL;DR.</strong> The way to make a speedup survive topology churn is to implement it at the layer every topology passes through: the PPGD kernel in <code>param_decomp/metrics/persistent_pgd_{state,recon}.py</code>. Every strategy — single-pool DDP, any pool split, a SLURM array of layerwise runs — ultimately calls the same three things: <code>warmup()</code>, <code>compute_recon_sum_and_n()</code>, and a source step. Changes inside that surface are inherited by whatever trainer wraps it; changes in trainer/topology code die with the trainer.</p>
+<p>Three tiers. <strong>Tier 1 (strategy-proof, do these):</strong> vertex warm start + optimistic source extrapolation to justify <code>n_warmup=0/1</code>; tilted parallel sampling as a width-not-depth replacement for serial warmup; a cheap warmup objective with the exact joint loss kept for the final step; stateless or parameter-shaped sources (the source <em>tensor</em> is itself the least topology-robust object in the codebase); and porting the strategy-agnostic wins already written on <code>feature/multipool</code> back into core before they rot. <strong>Tier 2 (keyed to parallel layerwise/chunkwise runs — your stated likely macro-strategy):</strong> the frozen-suffix toolkit comes back to life — residual-start caching, near-exact cached-adjoint warmup, and suffix surrogates amortized across the whole run array. <strong>Tier 3 (topology-coupled, defer):</strong> staleness/async, pipelining, cross-pool sharding — but run the cheap staleness-tolerance experiment <em>now</em>, because its result derisks every future async strategy at once.</p>
+</div>
+
+<div class="toc">
+<strong>Contents</strong>
+<ol>
+  <li><a href="#glossary">Glossary</a></li>
+  <li><a href="#invariant">The invariant kernel and the stable surface</a></li>
+  <li><a href="#constraints">Constraints that persist across strategies</a></li>
+  <li><a href="#tier1">Tier 1 — strategy-proof speedups</a></li>
+  <li><a href="#tier2">Tier 2 — keyed to parallel layerwise/chunkwise runs</a></li>
+  <li><a href="#tier3">Tier 3 — topology-coupled (defer, with one exception)</a></li>
+  <li><a href="#salvage">Salvage list from <code>feature/multipool</code></a></li>
+  <li><a href="#experiments">Experiment plan</a></li>
+  <li><a href="#refs">References</a></li>
+</ol>
+</div>
+
+<h2 id="glossary">1 · Glossary</h2>
+<div class="glossary">
+<dl>
+<dt>Sources / masks / warmup</dt>
+<dd><strong>Sources</strong> <code>r ∈ [0,1]</code> are the per-component values PPGD optimizes adversarially; the forward consumes <strong>masks</strong> <code>m = g + (1−g)·r</code> where <code>g</code> is the causal-importance (CI) value — so <code>r=0</code> means "ablate as far as CI permits" and <code>r=1</code> means "don't ablate". <strong>Warmup</strong> = the <code>n_warmup_steps</code> sequential gradient-ascent updates on the sources before the final loss; the final backward supplies one more, for <code>n_warmup+1</code> source updates per training step.</dd>
+
+<dt>Adjoint</dt>
+<dd>The gradient of the loss with respect to an <em>intermediate activation</em> — e.g. <code>∂L/∂(output of a decomposed module)</code>. Backprop computes these on its way to parameter gradients. Because a decomposed module's output is <em>linear in its masks</em> (<code>out = Σ_c m_c (a·V_c) U_c</code>, with <code>h_c = a·V_c</code> the inner activation you already compute for CI), the source gradient is <code>∂L/∂r_c = (1−g_c)·h_c·⟨U_c, adjoint⟩</code> — a cheap local product given a cached adjoint and input, no backward pass needed. The cache is exact until weights or other masks move ("stale adjoint").</dd>
+
+<dt>Box / vertex</dt>
+<dd>Sources live in a <strong>box</strong> (each coordinate independently in <code>[0,1]</code>). A <strong>vertex</strong> is a corner (all coordinates 0 or 1). A linear function's maximum over a box is at a vertex, readable directly off gradient signs — no iteration.</dd>
+
+<dt>Tilted / CVaR weighting</dt>
+<dd>Given k sampled losses, weight them by <code>softmax(loss/τ)</code> instead of averaging — a soft maximum. τ→0 recovers the single worst sample; moderate τ optimizes the worst tail (<strong>CVaR</strong>). Converts "find the worst case by sequential search" into "draw candidates in parallel, up-weight the bad ones".</dd>
+
+<dt>Optimistic / extragradient step</dt>
+<dd>In adversarial (min-max) optimization, updating one player against a <em>prediction</em> of the other's next position — practically, extrapolating the sources along their optimizer momentum. A free substitute for an explicit catch-up (warmup) step.</dd>
+
+<dt>Amortized adversary</dt>
+<dd>A small trained network that <em>predicts</em> adversarial sources from activations in one forward pass, instead of finding them by per-step search. The search cost is paid during the predictor's training and amortized over all tokens and steps.</dd>
+
+<dt>Staleness</dt>
+<dd>A gradient computed against parameters from one step earlier. "Bounded staleness" designs accept one-step-old auxiliary gradients to break synchronization barriers.</dd>
+
+<dt>Layerwise / chunkwise runs (macro-strategy)</dt>
+<dd>Independent decomposition <em>runs</em>, each decomposing one site (layerwise) or a group of sites (chunkwise), submitted in parallel (<code>pd-lm-layerwise</code>-style arrays). Distinct from the failed layerwise <em>loss</em>: within each run, the adversarial loss is still joint over that run's sites; the rest of the model is the frozen target.</dd>
+</dl>
+</div>
+
+<h2 id="invariant">2 · The invariant kernel and the stable surface</h2>
+
+<p>Whatever the distributed strategy ends up being, each training step's adversary does the same five things on some set of ranks:</p>
+
+<pre>1. n_warmup × [ joint masked forward → backward to sources → Adam-PGD step ]   ← serial depth
+2. one joint masked forward with the refined sources                            ← the loss that trains components
+3. one backward producing component grads (+ CI grads, + source grads)
+4. one more source step
+5. persistent source state carried to the next step                             ← data-shaped memory</pre>
+
+<p>Every quantity a topology can vary — which ranks run this, what batch slice they see, where CI values come from, where the grads go — enters through the <em>arguments</em> of <code>PersistentPGDState.warmup() / compute_recon_sum_and_n() / step()</code>. The kernel itself is topology-blind. That gives a concrete robustness test for any proposed speedup:</p>
+
+<div class="principle">
+<strong>Robustness test:</strong> can the change be expressed entirely inside <code>param_decomp/metrics/persistent_pgd_{state,recon}.py</code> (plus configs), without referencing the trainer, pools, portals, or rank layout? If yes, it survives every strategy — including the single-pool trainer you'd fall back to tomorrow. If it needs to know where ranks are or when other losses run, it's topology-coupled and will be rewritten with the next strategy.
+<br><br>
+<strong>Second principle, carried over:</strong> distribution buys <em>width</em> (parallel forwards, more ranks) and never <em>depth</em> (sequential inner steps). Item 1 above is pure depth. Speedups that convert depth → width compound with whatever parallelism the strategy of the week provides; speedups that merely cheapen each serial step are real but bounded; anything adding depth is dead on arrival.
+</div>
+
+<h2 id="constraints">3 · Constraints that persist across strategies</h2>
+
+<ol>
+<li><strong>The joint loss is load-bearing.</strong> The layerwise-PPGD experiment failed: restricting the adversarial <em>loss</em> to one site at a time underperforms joint masking, evidently because the adversary's distinctive job is cross-site <em>compounding</em>. So within whatever site-set a run decomposes, the loss that reaches the components must keep masking all of that run's sites jointly. The search for sources, the warmup objective, and the source storage are all fair game; the final loss is not. (Under one-site-per-run layerwise runs this constraint is trivially satisfied; it binds for chunk runs and any future joint run.)</li>
+<li><strong>Data-shaped state is the enemy of strategy churn.</strong> Per-batch-per-position sources are sized by <code>batch × seq × ΣC</code> — the only training state that scales with data rather than parameters. Every topology change re-poses the questions of where it lives, how it's checkpointed, and whether a resume is layout-compatible (on the branch this surfaced as TB-scale per-rank shards and resumes tied to pool layout). Any move toward parameter-shaped (amortized head), low-rank, broadcast, or stateless (sampled) sources is itself a robustness win, independent of speed.</li>
+<li><strong>The quality yardstick is procedure-independent.</strong> The PPGD eval metric (adversarial recon under optimized masks) doesn't care how training found its sources. Every idea below can be judged against the same baseline numbers, which is what makes the experiment plan in §8 coherent across strategy changes.</li>
+</ol>
+
+<h2 id="tier1">4 · Tier 1 — strategy-proof speedups <span class="tag t1">IMPLEMENT IN CORE</span></h2>
+
+<p>All expressible inside the kernel surface; ordered by (confidence × payoff)/effort.</p>
+
+<div class="idea">
+<h3>1.1 · Vertex warm start + optimistic extrapolation → <code>n_warmup = 0/1</code></h3>
+<p class="meta">EFFORT: days · RISK: low (quality-checked by E4) · WHERE: <code>PersistentPGDState.step / warmup</code></p>
+<p>Two free upgrades to the source update, justified by the box geometry: <strong>(a)</strong> the final fused backward already yields source gradients; initialize the next step's effective sources at the <em>vertex</em> those gradients point to (coordinate-wise 0/1) rather than relying on incremental Adam drift — for a loss locally linear in the masks, that vertex is the one-shot solution the warmup steps are crawling toward. <strong>(b)</strong> apply an <em>optimistic</em> offset: read the effective source as <code>clamp(r + γ·m̂)</code> using the Adam momentum <code>m̂</code> already stored in <code>AdamPGDOptimizer._m</code> — a prediction of the adversary's next move that substitutes for an explicit catch-up step. Together these attack the only reason warmup exists (sources lagging the components' last move) without any extra forward. The payoff is removing 2 of the 3 serial forward+backwards per step — the single largest portable win available. Catastrophic-overfitting caveats from the fast-adversarial-training literature apply when an adversary gets this cheap; the existing stochastic-recon term at equal coefficient is precisely the known mitigation, and E4 is the check.</p>
+</div>
+
+<div class="idea">
+<h3>1.2 · Tilted parallel sampling as the warmup replacement (depth → width)</h3>
+<p class="meta">EFFORT: ~week · RISK: medium (E5) · WHERE: a sibling of <code>compute_recon_sum_and_n</code>; config in the loss-metric union</p>
+<p>Replace the serial inner loop with k <em>parallel</em> candidate mask draws — vertex-biased (Bernoulli spikes at <code>mask = g</code>), optionally centered on the persisted or predicted sources — scored under the <strong>joint</strong> loss, combined with <code>softmax(loss/τ)</code> tilting. Two properties make this the most strategy-robust idea on the list: it is <em>stateless</em> (constraint 2 dissolves — nothing to checkpoint, nothing layout-coupled, resume is trivial), and its cost is pure width — k samples batch along the existing sample axis (<code>n_samples</code> plumbing already exists) and parallelize over whatever ranks any strategy provides, which serial PGD steps never can. It also respects constraint 1 by construction: candidates are joint masks over all sites; coordination is explored by sampling rather than assumed away. Random-search attacks rivaling gradient attacks (Square Attack) plus the persistent-source result that 3 crude updates suffice both suggest k in the single digits may already match PGD-3 — at strictly better parallelism.</p>
+</div>
+
+<div class="idea">
+<h3>1.3 · Cheap warmup objective, exact final loss</h3>
+<p class="meta">EFFORT: days · RISK: low (final loss untouched) · WHERE: <code>PersistentPGDState.warmup</code> takes its own <code>ReconstructionLoss</code></p>
+<p>Whatever survives of the inner loop doesn't need the full KL over a 128k vocab to find a good ascent direction: run warmup against final-hidden-state MSE, a truncated KL (target's top-k tokens + tail bucket), or a random low-dimensional projection of the logit difference — and keep the exact fused KL only for the final forward that produces component gradients. This decouples warmup cost from vocab size for every model and every topology. Constraint 1 is respected: the surrogate touches only the search, never the loss the components see.</p>
+</div>
+
+<div class="idea">
+<h3>1.4 · Source parameterization: shrink or delete the data-shaped state</h3>
+<p class="meta">EFFORT: days–weeks per variant · RISK: per-variant (E3 calibrates) · WHERE: the <code>PersistentPGDSourceScope</code> union — already the designed extension point</p>
+<p>The scope union is exactly where strategy-robust source compression belongs: <code>broadcast_across_batch</code> exists (one shared source per position; ~1000× memory, blunter adversary); add a <strong>low-rank scope</strong> (<code>r = σ(P[b,t,:] · Q[:,c])</code>, per-position latents decoded per component) and/or a <strong>parametric scope</strong> (<code>r = ψ(g, h)</code>, a tiny shared map from CI value and inner activation). Each step down this ladder cuts memory and optimizer-state bandwidth, makes checkpoints parameter-shaped (constraint 2), and — because fewer degrees of freedom converge faster — reduces how much warmup is needed at all. The E3 post-mortem (how predictable are converged sources from <code>(g, h)</code>?) tells you how far down the ladder quality survives.</p>
+</div>
+
+<div class="idea">
+<h3>1.5 · Per-position triage for the search</h3>
+<p class="meta">EFFORT: days · RISK: low · WHERE: inside the warmup objective (masking the per-position loss)</p>
+<p>The adversary finds ~nothing at positions where even random masks cause no divergence. Restrict <em>warmup's</em> objective (not the final loss) to the worst fraction of positions by per-position KL — computable from the stochastic-recon term in any trainer, or from the warmup's own first forward. With a gather-based head this makes warmup's unembed cost proportional to the surviving positions. Sharpens the old "smaller inner-loop batches" idea from random sub-batch to worst sub-batch.</p>
+</div>
+
+<div class="idea">
+<h3>1.6 · Amortized adversary head (the endgame)</h3>
+<p class="meta">EFFORT: weeks · RISK: high (min-max dynamics) · WHERE: alongside the CI fn; sources become a prediction, not state</p>
+<p>The strategy-proof argument sharpened: an amortized adversary <code>A_φ</code> is <em>structurally identical to the CI function</em> — a small network mapping activations to per-component per-position values in [0,1], trained from gradients that arrive with the recon backward (sign-flipped). Every topology that can host a CI fn can host A_φ next to it, with zero additional comm pattern; checkpointing is parameter-shaped; "persistence" finally means something under streaming data (knowledge accumulates in φ, not in a buffer indexed by stale token positions). The layerwise-PPGD failure sets the expressivity bar: A_φ must be able to coordinate across sites, so for joint/chunk runs prefer a shared-trunk head over purely per-component-local heads. Sequence last, semi-amortized (predict, then one vertex refinement using 1.1's machinery), gated on E3.</p>
+</div>
+
+<h2 id="tier2">5 · Tier 2 — keyed to parallel layerwise/chunkwise runs <span class="tag t2">YOUR LIKELY MACRO-STRATEGY</span></h2>
+
+<p>These assume only one thing about the future: each run decomposes a site or chunk while the rest of the model stays the frozen target. That assumption is what the full-model joint-training regime broke — and your stated direction restores it. Everything here is robust to <em>how each run is itself distributed</em> (DDP width, batch size, node count), because the structure it exploits is per-run, not per-topology.</p>
+
+<div class="idea">
+<h3>2.1 · Residual-start / prefix caching (keep; already written)</h3>
+<p class="meta">EFFORT: port from branch · RISK: none · WHERE: model wrapper, per-run</p>
+<p>With all masked sites in one block, cache the clean residual entering that block once per batch; the target forward, every warmup forward, and the final recon forward run only the suffix. Already implemented on the branch (<code>use_cached_residual</code>); it's a property of the run shape, not the topology, so it ports anywhere. For mid-to-late-layer runs this alone removes ~l/L of every forward.</p>
+</div>
+
+<div class="idea">
+<h3>2.2 · Cached-adjoint local warmup (near-exact again)</h3>
+<p class="meta">EFFORT: ~week · RISK: low-medium · WHERE: warmup path, given one cached suffix backward per step</p>
+<p>The biggest casualty of full-model decomposition, revived: when a run's masks touch one block, everything downstream is mask-free, so the suffix <dfn title="gradient of the loss w.r.t. an intermediate activation">adjoint</dfn> at the block output — obtained once per step, e.g. reused from the previous step's final backward — converts each warmup step into <em>recompute the block + one einsum</em>, with no suffix forward or backward at all. Combined with 1.1's closed-form vertex this collapses warmup to approximately the cost of one MLP block. Within-chunk coupling (gate/up → down) is the only approximation; the final exact joint forward catches it. This is the deepest per-run speedup available and is entirely invisible to the distribution layer.</p>
+</div>
+
+<div class="idea">
+<h3>2.3 · Suffix surrogates, amortized across the run array</h3>
+<p class="meta">EFFORT: weeks (one-time per target model) · RISK: medium (transfer quality; exact final loss as the catch) · WHERE: warmup objective, per-run</p>
+<p>Each run's suffix is frozen and <em>shared across every run in the array, every seed, every sweep on that target model</em>. That makes a one-time investment rational: distill the suffix (layers l..L + head) into a small proxy — or simply quantize it — and run warmup attacks against the proxy, exact loss on the final forward. The distillation cost amortizes over the entire experimental program on that model, which is exactly the regime "parallel layerwise runs across an 8B model, repeatedly" creates. (Dead at full-model joint training; alive here.)</p>
+</div>
+
+<div class="idea">
+<h3>2.4 · Budget allocation across the array</h3>
+<p class="meta">EFFORT: config-level · RISK: low · WHERE: per-run YAML generation in <code>pd-lm-layerwise</code></p>
+<p>Runs are independent, so adversary hyperparameters can differ per run: early-layer runs (long suffixes, more compounding leverage, more expensive forwards) get more warmup/sample budget and benefit most from 2.2/2.3; late-layer runs may need <code>n_warmup=0</code> and nothing else. The per-module hidden-acts MSE breakdown the PPGD metric already logs at eval is the signal to calibrate this from existing runs — turning the old "depth-weighted budget" idea into a YAML-generation policy rather than a runtime mechanism.</p>
+</div>
+
+<p class="footnote">Open macro-question, flagged not relitigated: whether independently-decomposed sites <em>compose</em> into a good joint decomposition is the same question the layerwise-loss failure raises one level up. If a joint fine-tune stage ever follows the array, Tier 1 is what carries over to it; Tier 2 stays with the per-run stage.</p>
+
+<h2 id="tier3">6 · Tier 3 — topology-coupled: defer, with one exception <span class="tag t3">WAIT FOR THE DUST</span></h2>
+
+<p>Everything that made the previous doc's headline — the one-step-stale adversary, dead-time/pipelined warmup, update-sharded block-coordinate refinement across pools, async adversary workers — needs to know where ranks are and when other losses run. Under a strategy in flux, building these now means rebuilding them; they are <em>responses to</em> a topology, so they should be designed after one stabilizes. Two things are worth keeping warm:</p>
+
+<ul>
+<li><strong>The staleness experiment (E1) — run it now anyway.</strong> Buffer the PPGD term's component/CI gradients by one step in the <em>single-pool</em> trainer (~20 lines, no distributed machinery) and measure quality. The implementation is throwaway; the <em>result</em> is not — "PPGD tolerates one-step-stale gradients: yes/no" is a fact about the optimization problem that derisks every future async/heterogeneous strategy in one shot, and it caps how much any future topology needs to care about the adversary at all.</li>
+<li><strong>Design the Tier-1 work to be async-ready for free.</strong> Stateless sampling (1.2) and the amortized head (1.6) happen to be the two adversaries that drop into an async or heterogeneous design with no extra machinery (nothing layout-coupled to migrate). No extra work needed — just a reason to prefer them at the margin.</li>
+</ul>
+
+<h2 id="salvage">7 · Salvage list from <code>feature/multipool</code></h2>
+
+<p>Strategy-agnostic improvements already written on the branch that should be extracted into core/single-pool before the branch is abandoned — each passes the §2 robustness test and is pure profit under any future design:</p>
+
+<table>
+<tr><th>What</th><th>Where on branch</th><th>Why it ports</th></tr>
+<tr><td><strong>Fused multi-target backward</strong> — one <code>autograd.grad</code> over components + CI leaves + sources, replacing the source-grad pass (<code>retain_graph=True</code>) + separate <code>total_loss.backward()</code></td><td><code>step_ppgd._autograd_grads_wrt_vu_ci_and_sources</code></td><td>Saves one full backward over the PPGD subgraph per step in the single-pool path too (<code>persistent_pgd_recon.before_backward</code> currently walks the graph twice). Per-consumer rescaling logic is already worked out on the branch.</td></tr>
+<tr><td><strong>Fused linear-KL kernel</strong></td><td><code>param_decomp/fused_linear_kl.py</code></td><td>Vocab-head cost reduction for every recon forward, any trainer.</td></tr>
+<tr><td><strong>Residual-start caching</strong></td><td><code>use_cached_residual</code> (vendored model)</td><td>Tier 2.1; per-run structure, not topology.</td></tr>
+<tr><td><strong>bf16 autocast on the CI-fn forward</strong></td><td>branch commit (was the single biggest perf win found)</td><td>Verify the single-pool path doesn't have the same fp32-by-accident hole (<code>_target_fwd_and_cache</code> upcasting was the cause).</td></tr>
+<tr><td><strong><code>.item()</code> sync deferral to log steps</strong></td><td><code>step_ppgd</code> / trainer changes</td><td>Hidden CPU↔GPU syncs penalize any CUDA pipeline, distributed or not.</td></tr>
+<tr><td><strong>Profiling toolchain</strong> — per-phase cpu/gpu/wait split, sync-debug env var, standalone reproducers</td><td><code>_trace.py</code>, <code>scripts/standalone_repros/</code></td><td>The branch's history shows the cost of not having it (a day lost to a misattributed 600&nbsp;ms wait). Strategy churn makes cheap re-profiling <em>more</em> valuable, since every new strategy needs a fresh bottleneck picture — and the existing reports are explicitly not to be trusted.</td></tr>
+<tr><td><strong>Broadcast-scope source sync</strong> (<code>replica_sync_group</code> on <code>PersistentPGDState</code>)</td><td>branch <code>persistent_pgd_state.py</code></td><td>The scope union extension point Tier 1.4 builds on; the grad-check test alongside it is the template for validating new scopes.</td></tr>
+</table>
+
+<h2 id="experiments">8 · Experiment plan</h2>
+
+<p>All runnable in the single-pool trainer; all judged by the same procedure-independent yardsticks (adversarial-recon eval + decomposition quality metrics), so results remain valid when the distribution strategy changes underneath them.</p>
+
+<table>
+<tr><th>#</th><th>Experiment</th><th>Cost</th><th>Informs</th></tr>
+<tr><td><strong>E3</strong></td><td><strong>Source post-mortem</strong> (offline, on existing checkpoints' source shards): vertex-ness of converged sources; predictability from <code>(g, h)</code>; loss of the deterministic all-floor corner <code>mask = g</code> vs optimized sources. Do this first — it calibrates 1.1, 1.2, 1.4, and 1.6 in one afternoon with zero training compute.</td><td>hours</td><td>1.1, 1.2, 1.4, 1.6</td></tr>
+<tr><td><strong>E4</strong></td><td><strong><code>n_warmup=0</code> + vertex init + optimism</strong> vs <code>n_warmup=2</code> baseline.</td><td>~1 day</td><td>1.1 — the cheapest shipped win if it holds</td></tr>
+<tr><td><strong>E5</strong></td><td><strong>Tilted sampling vs PGD</strong>: k parallel vertex-biased samples + tilting as the warmup replacement; sweep k, τ.</td><td>~days</td><td>1.2, and whether the adversary can be stateless</td></tr>
+<tr><td><strong>E6</strong></td><td><strong>Cheap-warmup-objective ablation</strong>: hidden-state MSE / truncated-KL warmup + exact final KL, vs full-KL warmup.</td><td>~days</td><td>1.3, 2.3 (transfer tolerance)</td></tr>
+<tr><td><strong>E1</strong></td><td><strong>Staleness tolerance</strong>: PPGD component/CI grads applied one step late, single-pool. Throwaway implementation, durable result.</td><td>~1 day</td><td>every future async/heterogeneous strategy</td></tr>
+<tr><td><strong>E7</strong></td><td><strong>Cached-adjoint warmup</strong> on a layerwise-run config: warmup via block-recompute + einsum against the previous step's adjoint, exact final forward; compare quality and wall-clock.</td><td>~week</td><td>2.2</td></tr>
+</table>
+
+<p>Sequencing: E3 immediately (free); E4 next (its patches are small, core-level, and help everything); E5/E6 in parallel as capacity allows; E1 whenever a day is spare — its value doesn't decay; E7 once a representative layerwise-run config for the array exists. The salvage ports (§7) don't need experiments — they're correctness-preserving and already validated on the branch.</p>
+
+<h2 id="refs">9 · References</h2>
+<ul class="footnote">
+  <li>Prior docs in this thread: <code>ppgd_adversary_review.html</code> (multipool-era analysis; its Scheme 1/S2′/S3 content is the Tier-3 material here, deferred). The layerwise-PPGD negative result and the "joint loss is load-bearing" reading carry over unchanged (§3.1).</li>
+  <li>Fast adversarial training & few-step caveats: Zhang et al., <a href="https://arxiv.org/abs/1905.00877">YOPO</a>; Wong et al., <a href="https://arxiv.org/abs/2001.03994">Fast is better than free</a>; Andriushchenko &amp; Flammarion, <a href="https://arxiv.org/abs/2007.02617">GradAlign</a>.</li>
+  <li>Search by sampling: Andriushchenko et al., <a href="https://arxiv.org/abs/1912.00049">Square Attack</a>; Li et al., <a href="https://arxiv.org/abs/2007.01162">Tilted ERM</a> (CVaR-style soft-max objectives).</li>
+  <li>Amortization: Dong et al., <a href="https://arxiv.org/abs/2002.05999">Adversarial Distributional Training</a> (amortized variant); Amos, <a href="https://arxiv.org/abs/2202.00665">amortized optimization tutorial</a>; Kim et al., <a href="https://arxiv.org/abs/1802.02550">semi-amortized VAEs</a>.</li>
+  <li>Min-max dynamics / optimism: <a href="https://arxiv.org/abs/2210.09382">extragradient &amp; optimistic methods, nonconvex minimax analysis</a>; Popov's single-call extragradient.</li>
+  <li>Staleness: Narayanan et al., <a href="https://arxiv.org/abs/1806.03377">PipeDream</a>; bounded-staleness async SGD (Hogwild, SSP).</li>
+</ul>
+
+<p class="footnote">Generated 2026-06-10. Context: 3-pool strategy dropped; distributed design in flux; macro-strategy likely parallel layerwise/chunkwise runs. Organizing principle: implement speedups at the <code>persistent_pgd_*</code> kernel surface so they survive topology churn.</p>
+
+</div>
+</body>
+</html>
