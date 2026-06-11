@@ -55,10 +55,10 @@ def test_structure_stoch_is_per_chunk() -> None:
     """SPEC S10: one forward per (chunk, sample), normalized by `n_chunks · n_samples`
     — matching the torch chunkwise pool, not one fused forward over all sites."""
     src = inspect.getsource(train_mod.make_train_step)
-    assert "for entry_idx, recon_forward in enumerate(recon_plan)" in src, (
-        "stoch must loop the plan's entries"
+    assert "for entry_idx, entry in enumerate(term.plan)" in src, (
+        "each recon term must loop its plan's entries"
     )
-    assert "/ n_forwards" in src, "stoch must average over ALL forwards (every draw)"
+    assert "/ n_forwards" in src, "each term must average over ALL forwards (every draw)"
 
 
 def test_structure_recon_is_kl_not_mse() -> None:

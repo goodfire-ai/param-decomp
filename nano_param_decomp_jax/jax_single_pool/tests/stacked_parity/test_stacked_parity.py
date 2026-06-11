@@ -36,25 +36,35 @@ from jax_single_pool.llama8b import (
     mlp_family_site_cs,
 )
 from jax_single_pool.lm import DecomposedLM
-from jax_single_pool.recon import subset_chunk_plan
+from jax_single_pool.recon import build_recon_terms
 from jax_single_pool.tests.test_llama8b import _tiny_cfg
 from jax_single_pool.train import TrainState, make_train_step
 from param_decomp_config.losses import (
     AdamPGDConfig,
+    ChunkwiseSubsetReconLossConfig,
+    FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
     SCScope,
 )
+from param_decomp_config.routing import UniformKSubsetRoutingConfig
 from param_decomp_config.schedule import ScheduleConfig
 
 FIXTURES = Path(__file__).resolve().parent / "stacked_fixtures.npz"
 RTOL = 1e-5
 ATOL = 1e-6
 CI_ARCH = CIArch(d_model=16, n_blocks=2, n_heads=2, mlp_hidden=32)
-STABLE_METRIC_KEYS = (
+STABLE_FIXTURE_METRIC_KEYS = (
     "total", "faith", "imp", "stoch", "ppgd", "p_imp", "src_lr",
     "grad_norms/summary/components", "grad_norms/summary/ci_fns", "grad_norms/summary/total",
 )  # fmt: skip
+METRIC_KEY_BY_FIXTURE_KEY = {
+    "stoch": "loss/ChunkwiseSubsetReconLoss",
+    "ppgd": "loss/PersistentPGDReconLoss",
+}
+"""The fixtures predate the recon-loss-terms unification; their metric keys are the
+old fixed names. The stored arrays themselves are untouched — only the lookup into
+the live metrics dict is remapped."""
 
 
 def _load() -> tuple[dict[str, np.ndarray], DecomposedLM, Target, DecompVU, jnp.ndarray]:
@@ -159,46 +169,57 @@ def test_train_trajectory_matches():
         components=vu, ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources=sources, sources_adam_state=init_sources_adam_state(sources),
+        sources={"PersistentPGDReconLoss": sources},
+        sources_opt_state={"PersistentPGDReconLoss": init_sources_adam_state(sources)},
         step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
+    loss_spec = build_recon_terms(
+        (
+            FaithfulnessLossConfig(coeff=1e5),
+            ImportanceMinimalityLossConfig(
+                coeff=5e-6,
+                pnorm=2.0,
+                beta=0.2,
+                p_anneal_start_frac=0.0,
+                p_anneal_final_p=0.4,
+                p_anneal_end_frac=1.0,
+            ),
+            ChunkwiseSubsetReconLossConfig(
+                routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=1
+            ),
+            PersistentPGDReconLossConfig(
+                coeff=0.5,
+                scope=SCScope(),
+                optimizer=AdamPGDConfig(
+                    beta1=0.5,
+                    beta2=0.99,
+                    lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
+                ),
+                n_warmup_steps=n_warmup,
+            ),
+        ),
+        lm.site_names,
+        n_mask_samples=1,
+        sampling="continuous",
+    )
     step_fn = make_train_step(
         lm=lm,
-        faith_coeff=1e5,
-        stoch_coeff=0.5,
-        imp_min=ImportanceMinimalityLossConfig(
-            coeff=5e-6,
-            pnorm=2.0,
-            beta=0.2,
-            p_anneal_start_frac=0.0,
-            p_anneal_final_p=0.4,
-            p_anneal_end_frac=1.0,
-        ),
-        adversary=PersistentPGDReconLossConfig(
-            coeff=0.5,
-            scope=SCScope(),
-            optimizer=AdamPGDConfig(
-                beta1=0.5,
-                beta2=0.99,
-                lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
-            ),
-            n_warmup_steps=n_warmup,
-        ),
+        loss_spec=loss_spec,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=100,
-        recon_plan=subset_chunk_plan(lm.site_names, 3, 1),
         remat_recon_forwards=False,
         mesh=None,
     )
     run_key = random.PRNGKey(7)
     for step_idx in range(n_train_steps):
         state, metrics = step_fn(state, tgt, resid, random.fold_in(run_key, step_idx))
-        for key in STABLE_METRIC_KEYS:
-            got = float(metrics[key])
-            want = float(f[f"out::step{step_idx}::{key}"])
+        for fixture_key in STABLE_FIXTURE_METRIC_KEYS:
+            metric_key = METRIC_KEY_BY_FIXTURE_KEY.get(fixture_key, fixture_key)
+            got = float(metrics[metric_key])
+            want = float(f[f"out::step{step_idx}::{fixture_key}"])
             assert abs(got - want) <= ATOL + RTOL * abs(want), (
-                f"step{step_idx} {key}: per-site {got!r} vs stacked {want!r}"
+                f"step{step_idx} {fixture_key}: per-site {got!r} vs stacked {want!r}"
             )
 
     assert isinstance(state.components, DecompVU)
@@ -206,5 +227,6 @@ def test_train_trajectory_matches():
         V, U = state.components.site(name)
         _assert_close(V, f[f"out::final_V::{name}"], f"final V {name}")
         _assert_close(U, f[f"out::final_U::{name}"], f"final U {name}")
+    final_sources = state.sources["PersistentPGDReconLoss"]
     for name in lm.site_names:
-        _assert_close(state.sources[name], f[f"out::final_src::{name}"], f"final src {name}")
+        _assert_close(final_sources[name], f[f"out::final_src::{name}"], f"final src {name}")

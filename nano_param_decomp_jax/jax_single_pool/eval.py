@@ -24,7 +24,8 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from jax_single_pool.lm import DecomposedLM
-from jax_single_pool.train import COMPUTE_DT, cast_floating, kl_per_position
+from jax_single_pool.losses import kl_per_position
+from jax_single_pool.train import COMPUTE_DT, cast_floating
 
 
 def next_token_cross_entropy(

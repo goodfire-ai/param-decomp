@@ -33,14 +33,17 @@ from jax_single_pool.llama_simple_mlp import (
     site_specs,
 )
 from jax_single_pool.lm import SiteC
-from jax_single_pool.recon import subset_chunk_plan
+from jax_single_pool.recon import build_recon_terms
 from jax_single_pool.train import TrainState, make_faith_warmup_step, make_train_step
 from param_decomp_config.losses import (
     AdamPGDConfig,
+    ChunkwiseSubsetReconLossConfig,
+    FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
     SCScope,
 )
+from param_decomp_config.routing import UniformKSubsetRoutingConfig
 from param_decomp_config.schedule import ScheduleConfig
 
 
@@ -308,34 +311,45 @@ def test_step_trains_and_has_vpd_signature():
         components=vu, ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources=src, sources_adam_state=init_sources_adam_state(src), step=jnp.zeros((), jnp.int32),
+        sources={"PersistentPGDReconLoss": src},
+        sources_opt_state={"PersistentPGDReconLoss": init_sources_adam_state(src)},
+        step=jnp.zeros((), jnp.int32),
     )  # fmt: skip
+    loss_spec = build_recon_terms(
+        (
+            FaithfulnessLossConfig(coeff=1e5),
+            ImportanceMinimalityLossConfig(
+                coeff=5e-6,
+                pnorm=2.0,
+                beta=0.2,
+                p_anneal_start_frac=0.0,
+                p_anneal_final_p=0.4,
+                p_anneal_end_frac=1.0,
+            ),
+            ChunkwiseSubsetReconLossConfig(
+                routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=2, n_samples=1
+            ),
+            PersistentPGDReconLossConfig(
+                coeff=0.5,
+                scope=SCScope(),
+                optimizer=AdamPGDConfig(
+                    beta1=0.5,
+                    beta2=0.99,
+                    lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
+                ),
+                n_warmup_steps=n_warmup,
+            ),
+        ),
+        lm.site_names,
+        n_mask_samples=1,
+        sampling="continuous",
+    )
     step = make_train_step(
         lm=lm,
-        faith_coeff=1e5,
-        stoch_coeff=0.5,
-        imp_min=ImportanceMinimalityLossConfig(
-            coeff=5e-6,
-            pnorm=2.0,
-            beta=0.2,
-            p_anneal_start_frac=0.0,
-            p_anneal_final_p=0.4,
-            p_anneal_end_frac=1.0,
-        ),
-        adversary=PersistentPGDReconLossConfig(
-            coeff=0.5,
-            scope=SCScope(),
-            optimizer=AdamPGDConfig(
-                beta1=0.5,
-                beta2=0.99,
-                lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
-            ),
-            n_warmup_steps=n_warmup,
-        ),
+        loss_spec=loss_spec,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=100,
-        recon_plan=subset_chunk_plan(lm.site_names, 2, 1),
         remat_recon_forwards=True,
         mesh=None,
     )
@@ -350,9 +364,10 @@ def test_step_trains_and_has_vpd_signature():
     assert all(jnp.isfinite(jnp.array(list(m.values()))).all() for m in losses)
     assert int(state.step) == n_steps
     # SPEC S13: n_warmup + 1 source-Adam updates per training step, moments persist.
-    assert float(state.sources_adam_state.step_count) == n_steps * (n_warmup + 1)
+    ppgd_opt_state = state.sources_opt_state["PersistentPGDReconLoss"]
+    assert float(ppgd_opt_state.step_count) == n_steps * (n_warmup + 1)
     # SPEC S15: sources stay projected to [0,1].
-    for v in state.sources.values():
+    for v in state.sources["PersistentPGDReconLoss"].values():
         assert float(v.min()) >= 0.0 and float(v.max()) <= 1.0
     # SPEC S9: p annealed below its 2.0 start by step 4 of 100.
     assert losses[-1]["p_imp"] < 2.0
@@ -456,6 +471,14 @@ def test_torch_config_pretrained_target_converts_with_wildcards():
         assert by_name[f"h.{layer}.attn.q_proj"] == 512
         assert by_name[f"h.{layer}.attn.v_proj"] == 1024
     assert target.sites[0] == SiteC("h.0.attn.q_proj", 512)
-    # StochasticReconSubsetLoss = one all-sites chunk
-    assert cfg.recon.sites_per_chunk == 24
+    # StochasticReconSubsetLoss = one all-sites entry
+    loss_spec = build_recon_terms(
+        cfg.loss_metrics,
+        tuple(sc.name for sc in target.sites),
+        cfg.n_mask_samples,
+        cfg.sampling,
+    )
+    (stoch_term,) = [t for t in loss_spec.recon_terms if t.name == "StochasticReconSubsetLoss"]
+    (stoch_entry,) = stoch_term.plan
+    assert len(stoch_entry.live_sites) == 24
     assert cfg.data.seq_len == 512

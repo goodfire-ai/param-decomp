@@ -61,15 +61,18 @@ from jax_single_pool.llama8b_sharding import (
     replicate_target,
     shard_batch,
 )
-from jax_single_pool.recon import subset_chunk_plan
+from jax_single_pool.recon import build_recon_terms
 from jax_single_pool.sharding import init_distributed
 from jax_single_pool.train import TrainState, make_faith_warmup_step, make_train_step
 from param_decomp_config.losses import (
     AdamPGDConfig,
+    ChunkwiseSubsetReconLossConfig,
+    FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
     SCScope,
 )
+from param_decomp_config.routing import UniformKSubsetRoutingConfig
 from param_decomp_config.schedule import ScheduleConfig
 
 
@@ -209,36 +212,45 @@ def main():
         ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources=src,
-        sources_adam_state=init_sources_adam_state(src),
+        sources={"PersistentPGDReconLoss": src},
+        sources_opt_state={"PersistentPGDReconLoss": init_sources_adam_state(src)},
         step=jnp.zeros((), jnp.int32),
+    )
+    loss_spec = build_recon_terms(
+        (
+            FaithfulnessLossConfig(coeff=1e5),
+            ImportanceMinimalityLossConfig(
+                coeff=5e-6,
+                pnorm=2.0,
+                beta=0.2,
+                p_anneal_start_frac=0.0,
+                p_anneal_final_p=0.4,
+                p_anneal_end_frac=1.0,
+            ),
+            ChunkwiseSubsetReconLossConfig(
+                routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=1
+            ),
+            PersistentPGDReconLossConfig(
+                coeff=0.5,
+                scope=SCScope(),
+                optimizer=AdamPGDConfig(
+                    beta1=0.5,
+                    beta2=0.99,
+                    lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
+                ),
+                n_warmup_steps=args.n_warmup,
+            ),
+        ),
+        lm.site_names,
+        n_mask_samples=1,
+        sampling="continuous",
     )
     step = make_train_step(
         lm=lm,
-        faith_coeff=1e5,
-        stoch_coeff=0.5,
-        imp_min=ImportanceMinimalityLossConfig(
-            coeff=5e-6,
-            pnorm=2.0,
-            beta=0.2,
-            p_anneal_start_frac=0.0,
-            p_anneal_final_p=0.4,
-            p_anneal_end_frac=1.0,
-        ),
-        adversary=PersistentPGDReconLossConfig(
-            coeff=0.5,
-            scope=SCScope(),
-            optimizer=AdamPGDConfig(
-                beta1=0.5,
-                beta2=0.99,
-                lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
-            ),
-            n_warmup_steps=args.n_warmup,
-        ),
+        loss_spec=loss_spec,
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=args.total_steps,
-        recon_plan=subset_chunk_plan(lm.site_names, sites_per_chunk=3, n_samples=1),
         remat_recon_forwards=True,
         mesh=mesh if args.shard else None,
     )
@@ -280,7 +292,8 @@ def main():
         )
         print(
             f"[p0]   losses: faith {float(m['faith']):.4e} imp {float(m['imp']):.4f} "
-            f"stoch {float(m['stoch']):.4e} ppgd {float(m['ppgd']):.4e} "
+            f"stoch {float(m['loss/ChunkwiseSubsetReconLoss']):.4e} "
+            f"ppgd {float(m['loss/PersistentPGDReconLoss']):.4e} "
             f"(p={float(m['p_imp']):.2f} src_lr={float(m['src_lr']):.2e})"
         )
         print(f"[p0] LLAMA8B ({ndev} GPU, {n_layers}L): OK")

@@ -225,11 +225,11 @@ init: biases zero; weights fan-in scaled (torch init_param_)
 | S7 | Imp-min groups per site: the `log2(1+sum)` consumes one site's per-component sum. Merging sites/layers into one group is incorrect (convexity). |
 | S8 | The per-component sums are over the **global batch**, accumulated before the `log2`. (Per-shard results combined after the log are incorrect — Jensen; see D2.) |
 | S9 | `pnorm(step)` anneals linearly `2.0 → 0.4` over the configured frac window; `eps` sits inside the power. |
-| S10 | `stochastic_recon_loss` = mean over ALL the plan's forwards (every draw of every entry) of `kl_per_position`. The RECON_PLAN's structure (live-sets, sampler identities, family sizes) is fixed across steps; live-sets may differ across entries. |
+| S10′ | The recon objective is a static tuple of coefficiented loss TERMS (one per configured recon loss metric, in config order). Each term is a static plan of `(live_sites, SAMPLE_ROUTING, MASK_SOURCE)` entries; the term's loss = mean over ALL its forwards (every draw of every entry) of `kl_per_position`; the total adds `coeff · term` per term. Plan structures (live-sets, sampler identities, family sizes, strategy kinds) are fixed across steps. The §4 pseudocode shows the production two-term instantiation (`stochastic_recon_loss` + `adversarial_recon_loss`). |
 | S11 | `uniform_k_routing`, per position: `k ~ U{1..|live_sites|}` then a uniform `k`-subset of the live sites routes True; non-live sites are not live at all. Routing draws are fresh per step, sampled inside the step. |
-| S12 | `adversarial_recon_loss` masks ALL sites simultaneously, routes everywhere, and detaches the sources; gradient flows to components and (through `ci_lower`) to the CI fn. |
-| S13 | Source updates per training step = `n_warmup + 1`, all through the same persistent SRC_STEP optimizer state; the source LR schedule advances once per training step. |
-| S14 | The final ascent's gradient comes from the SAME graph as the main backward: pre-update components, live `ci_lower`. It is applied after backward; it must not use post-update params. |
+| S12′ | An adversarial term's loss forward consumes its sources as LEAVES (no ascent-graph history); gradient flows to components and (through `ci_lower`) to the CI fn — and, for persistent sources, to the leaves themselves (S14′). The PRODUCTION adversarial term masks ALL sites and routes everywhere; subset-routed adversarial terms route per their plan. |
+| S13′ | Per persistent term: source updates per training step = `n_warmup + 1`, all through THAT term's persistent SRC_STEP optimizer state; its source LR schedule advances once per training step. |
+| S14′ | Each persistent term's final ascent gradient comes from the SAME graph as the main backward (pre-update components, live `ci_lower`), unscaled by THAT term's coeff. It is applied after backward; it must not use post-update params. |
 | S15 | Every source update ends with `PROJ` (★ clamp to `[0,1]`). Init: ★ `sources ~ U[0,1]` i.i.d. |
 | S16 | Shared-scope sources are identical on every data-parallel replica at every step (identical init, identical updates from the global-batch gradient). `per_batch_per_position` sources shard with the batch instead. (Implementation mapping in §8/§9.) |
 | S17 | `faithfulness_loss` is the global mean of squared delta entries over all sites' parameters (Σ‖Δ‖² / Σ numel), recomputed from live V/U each step. |
@@ -237,17 +237,20 @@ init: biases zero; weights fan-in scaled (torch init_param_)
 | S19 | Components gradients are global-norm-clipped at `0.01`, before the optimizer step. CI fn is unclipped (production). |
 | S20 | Both main optimizers are AdamW, `wd=0`, betas `(0.9, 0.999)`, eps `1e-8`; LR cosine to `0.1×` start, no warmup, stepped per training step. |
 | S21 | Faithfulness warmup (400 × AdamW lr `1e-3` on `faithfulness_loss` alone) precedes step 0; its optimizer is discarded. |
-| S22 | Checkpoints round-trip ALL trajectory state of §3 — including adversary sources + SRC_STEP moments + step/schedule counters — such that a resumed run continues the same trajectory (modulo RNG streams and kernel nondeterminism, cf. D4). |
+| S22 | Checkpoints round-trip ALL trajectory state of §3 — including every persistent term's sources + SRC_STEP moments + step/schedule counters — such that a resumed run continues the same trajectory (modulo RNG streams and kernel nondeterminism, cf. D4). |
+| S23 | A persistent source bundle feeds exactly ONE loss term. (The fused-backward S14′ unscaling divides that term's coeff out of the source gradient; a bundle shared across terms would make the division wrong.) |
+| S24 | A persistent term's WARMUP ascents forward all sites, routed everywhere — regardless of the term's loss plan (torch parity: `persistent_pgd_state.warmup` hardcodes route-all). A fresh-PGD entry draws its routing ONCE per step, shared by all its ascents and its main loss forward (torch parity: `pgd_masked_recon_loss_update`). |
 
 ## 6. Variation points
 
 | point | valid instantiations | production |
 |---|---|---|
-| `RECON_PLAN` | any static list of `(live_sites, SAMPLE_ROUTING)` entries: `subset_chunk_plan` (sequential chunks × `uniform_k_routing(chunk, n_draws)`) · `per_site_plan` (one forward per site, route=ALL; the historical "layerwise") · custom subset families (pairs, covers, …) | ★ subset_chunk_plan(3, 1) |
+| `RECON_TERMS` | any static tuple of coefficiented terms, each a static plan of `(live_sites, SAMPLE_ROUTING, MASK_SOURCE)` entries: `subset_chunk_plan` · `per_site_plan` (the torch "layerwise" shape) · `all_sites_plan` · custom subset families (pairs, covers, …); built from the shared torch loss configs by `build_recon_terms` | ★ stochastic subset term + persistent-PGD term |
+| `MASK_SOURCE` | `stochastic` (fresh U[0,1]/Bernoulli per draw) · `constant(v)` (`v=0` CI-masked, `v=1` unmasked; no delta path) · `fresh_pgd(init, n_steps, step_size, scope)` · `persistent(state_key)` | ★ stochastic + persistent |
 | `SAMPLE_ROUTING` | `(key, [B,T]) → tuple of routing draws`, statically sized; draws may be jointly sampled (independent repeats, antithetic/complementary subsets, per-step covers) | ★ uniform_k_routing(·, 1) |
 | `SRC_STEP` | `adam(β₁,β₂,ε)` with bias correction; `sign` (`sources += lr·sign(grad)`) | ★ adam(.5, .99, 1e-8) |
 | `PROJ` / `EFFECTIVE` | **clamp**: PROJ = clamp[0,1], EFFECTIVE = identity, init U[0,1] · **sigmoid**: PROJ = identity (unbounded raw), EFFECTIVE = sigmoid, init N(0,1) | ★ clamp |
-| `SCOPE` | `single (1,1)` · `broadcast (1,T)` · `repeat(n) (n,T), n|B` · `per_batch_per_position (B,T)` | ★ broadcast |
+| `SCOPE` | persistent: `c (1,1)` · `sc (1,T)` · `nsc (n,T), n|B` · `bsc (B,T)` (jax: `sc` only today) — fresh-PGD: `c` · `bc` · `bsc` | ★ sc |
 | stoch sampling | `continuous U[0,1]` · `binomial {0,1}` | ★ continuous |
 | delta component | on (`C+1` channels) · off (no delta path, no delta mask) | ★ on |
 | CI squashing | `leaky_hard` pair (§4.2); other registry sigmoids exist in torch but are out of spec scope | ★ leaky_hard |

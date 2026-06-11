@@ -1,6 +1,6 @@
 # Loss parity: every torch loss Metric in the JAX trainer — design
 
-Status: design only (no code). Scope: the 15 `LOSS_METRIC_CLASSES` entries +
+Status: IMPLEMENTED (stages 1-3; 2026-06-11) — `recon.py` holds the strategies/terms/`build_recon_terms`, `train.py` the multi-term step, SPEC amended (S10′/S12′/S13′/S14′, S23/S24). Deferred per §6 stage 4: `nsc` scope, sigmoid parameterization, `start_frac>0`, the hidden-acts seam. Scope: the 15 `LOSS_METRIC_CLASSES` entries +
 `ChunkwiseSubsetReconLoss` (lab) as the torch surface; `recon.py` / `adversary.py` /
 `train.py` / `SPEC.md` as the JAX surface. Every torch `update()` /
 `before_backward` / `after_backward` path was read, not just class names.

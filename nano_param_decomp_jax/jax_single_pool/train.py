@@ -1,13 +1,17 @@
 """The generic single-pool VPD training step over a `DecomposedLM` (SPEC §4).
 
-One `jax.jit` step: clean target → CI envelope → the adversary's supplemental ascents
-(`adversary.py`) → the four losses (`losses.py`, recon plans in `recon.py`) → one fused
-backward over (components, ci_fn, sources) → optimizer updates → for the PERSISTENT
-adversary, the final (n_warmup+1)-th source ascent from the same graph (SPEC S13/S14).
-All trainable state is fp32 masters (SPEC N1); forwards run in bf16 via explicit casts.
+One `jax.jit` step: clean target → CI envelope → per-persistent-term supplemental
+ascents + per-fresh-entry sign-PGD ascents (`adversary.py`) → faith + imp-min +
+the recon loss TERMS (`recon.py`; each term = plan × mask-source strategy, SPEC
+S10') → one fused backward over (components, ci_fn, all persistent sources) →
+optimizer updates → each persistent term's final ascent from the same graph,
+unscaled by ITS coeff (SPEC S13'/S14'/S23). All trainable state is fp32 masters
+(SPEC N1); forwards run in bf16 via explicit casts.
 
 Schedules (imp-min p anneal, source-LR warmup) are computed inside the step from
 `state.step`, so the jit signature is stable across the whole run (SPEC S9, S13).
+Per-term RNG: term i draws from `fold_in(step_key, 1 + i)` in config-list order
+(SPEC R1) — this reproduces the pre-unification production key derivation exactly.
 """
 
 from collections.abc import Callable
@@ -24,7 +28,6 @@ from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from jax_single_pool.adversary import (
-    AdversaryConfig,
     SourcesAdamState,
     init_fresh_pgd_sources,
     source_masks,
@@ -39,14 +42,16 @@ from jax_single_pool.losses import (
     kl_per_position,
     warmup_then_constant_lr,
 )
-from jax_single_pool.recon import ReconPlan
-from param_decomp_config.losses import (
-    AdamPGDConfig,
-    ImportanceMinimalityLossConfig,
-    PersistentPGDReconLossConfig,
-    PGDReconLossConfig,
-    SCScope,
+from jax_single_pool.recon import (
+    ConstantSources,
+    FreshPGDSources,
+    LossSpec,
+    PersistentSources,
+    ReconForward,
+    Routes,
+    StochasticSources,
 )
+from param_decomp_config.losses import AdamPGDConfig
 
 COMPUTE_DT = jnp.bfloat16
 
@@ -62,8 +67,10 @@ class TrainState:
     ci_fn: CIFn  # fp32 masters
     components_opt_state: optax.OptState
     ci_fn_opt_state: optax.OptState
-    sources: dict[str, Float[Array, "1 T Cp1"]]  # per-site raw sources, always in [0,1]
-    sources_adam_state: SourcesAdamState
+    sources: dict[str, dict[str, Array]]
+    """Persistent adversarial sources, `state_key -> site -> (1, T, C+1)` in [0,1].
+    One state_key per persistent loss term (SPEC S23); empty when no persistent term."""
+    sources_opt_state: dict[str, SourcesAdamState]
     step: Array
 
 
@@ -95,51 +102,37 @@ def _grad_norm_metrics(components_grad: Any, ci_fn_grad: Any) -> dict[str, Array
 def make_train_step(
     lm: DecomposedLM,
     *,
-    faith_coeff: float,
-    stoch_coeff: float,
-    imp_min: ImportanceMinimalityLossConfig,
-    adversary: AdversaryConfig,
+    loss_spec: LossSpec,
     components_optimizer: optax.GradientTransformation,
     ci_fn_optimizer: optax.GradientTransformation,
     total_steps: int,
-    recon_plan: ReconPlan,
     remat_recon_forwards: bool,
     mesh: Mesh | None,
 ):
     """Build the jit'd `step(state, frozen, residual, key) -> (state, metrics)`.
 
-    `imp_min` / `adversary` are the SHARED torch loss configs; the asserts below pin
-    the subset this trainer implements. `mesh` (when given) pins every batch-leading
-    activation to `P('dp', ...)` so the masked re-forwards stay on per-device
-    sub-batches (activation memory 1/n_dev)."""
+    `loss_spec` (from `build_recon_terms`) carries the SHARED torch loss configs
+    mapped onto recon terms; the supported subset is asserted there. `mesh` (when
+    given) pins every batch-leading activation to `P('dp', ...)` so the masked
+    re-forwards stay on per-device sub-batches (activation memory 1/n_dev)."""
     site_names = lm.site_names
-    assert recon_plan, "empty recon plan"
-    for recon_forward in recon_plan:
-        assert recon_forward.live_sites and set(recon_forward.live_sites) <= set(site_names), (
-            recon_forward
-        )
-
+    recon_terms = loss_spec.recon_terms
+    imp_min = loss_spec.imp_min
+    faith_coeff = loss_spec.faith_coeff
     assert imp_min.coeff is not None and imp_min.p_anneal_final_p is not None
     imp_coeff = imp_min.coeff
-    adversary_coeff = adversary.coeff
-    assert adversary_coeff is not None
-    match adversary:
-        case PersistentPGDReconLossConfig():
-            assert isinstance(adversary.scope, SCScope), adversary.scope
-            assert not adversary.use_sigmoid_parameterization and adversary.start_frac == 0.0, (
-                adversary
-            )
-            assert adversary.n_samples == 1, adversary
-            source_adam = adversary.optimizer
-            assert isinstance(source_adam, AdamPGDConfig), source_adam
-            source_lr_schedule = source_adam.lr_schedule
-            assert (
-                source_lr_schedule.fn_type == "constant"
-                and source_lr_schedule.final_val_frac == 1.0
-            ), source_lr_schedule
-        case PGDReconLossConfig():
-            source_adam = None
-            source_lr_schedule = None
+    term_coeff_by_state_key = {
+        entry.sources.state_key: term.coeff
+        for term in recon_terms
+        for entry in term.plan
+        if isinstance(entry.sources, PersistentSources)
+    }
+    assert set(term_coeff_by_state_key) == set(loss_spec.persistent)
+    persistent_adams: dict[str, AdamPGDConfig] = {}
+    for state_key, ppgd_cfg in loss_spec.persistent.items():
+        optimizer = ppgd_cfg.optimizer
+        assert isinstance(optimizer, AdamPGDConfig)
+        persistent_adams[state_key] = optimizer
 
     def batch_sharded(x: Array) -> Array:
         if mesh is None:
@@ -150,9 +143,9 @@ def make_train_step(
     def batch_sharded_ci(ci_values: CIValues) -> CIValues:
         """Reshard the CI-fn output to batch-sharded ONCE, here. The CI head's `out_w`
         is ΣC-sharded, so its output is born C-sharded; without a single producer-side
-        pin, GSPMD inserts a separate C→batch reshard for every consumer (each chunk
-        forward, the adversary, imp-min — forward and backward), and those all-to-all
-        buffers dominate the temp arena at scale."""
+        pin, GSPMD inserts a separate C→batch reshard for every consumer (each plan
+        forward, the adversaries, imp-min — forward and backward), and those
+        all-to-all buffers dominate the temp arena at scale."""
         return CIValues(
             lower={site: batch_sharded(v) for site, v in ci_values.lower.items()},
             upper={site: batch_sharded(v) for site, v in ci_values.upper.items()},
@@ -182,196 +175,280 @@ def make_train_step(
         else masked_forward
     )
 
-    def adversarial_recon_loss(
-        frozen: Any,
-        components_bf16: Any,
+    def stochastic_entry_masks(
+        strategy: StochasticSources,
         ci_lower: dict[str, Array],
-        sources: dict[str, Array],
-        residual: Array,
-        clean_logits: Array,
-        masked_forward_fn: Any,
-    ) -> Array:
-        """The source-masked recon KL (SPEC S12) — shared by BOTH adversaries; what
-        differs between PPGD and fresh PGD is who owns `sources` and how they ascend."""
-        masks, delta_masks = source_masks(ci_lower, sources, site_names)
-        masked = masked_forward_fn(
-            frozen, components_bf16, residual, masks, delta_masks, None, site_names
-        )
-        return kl_per_position(masked, clean_logits)
+        live_sites: tuple[str, ...],
+        batch_seq: tuple[int, int],
+        draw_key: PRNGKeyArray,
+    ) -> tuple[dict[str, Array], dict[str, Array]]:
+        mask_source_key, delta_mask_key = random.split(draw_key)
+        masks = {}
+        delta_masks = {}
+        for site_idx, site in enumerate(live_sites):
+            ci_site = ci_lower[site]
+            source_key = random.fold_in(mask_source_key, site_idx)
+            match strategy.sampling:
+                case "continuous":
+                    stochastic_source = random.uniform(source_key, ci_site.shape, COMPUTE_DT)
+                case "binomial":
+                    stochastic_source = random.bernoulli(source_key, 0.5, ci_site.shape).astype(
+                        COMPUTE_DT
+                    )
+            masks[site] = ci_site + (1.0 - ci_site) * stochastic_source
+            delta_masks[site] = random.uniform(
+                random.fold_in(delta_mask_key, site_idx), batch_seq, COMPUTE_DT
+            )
+        return masks, delta_masks
 
-    def stochastic_recon_loss(
+    def constant_entry_masks(
+        strategy: ConstantSources,
+        ci_lower: dict[str, Array],
+        live_sites: tuple[str, ...],
+        batch_seq: tuple[int, int],
+    ) -> tuple[dict[str, Array], dict[str, Array]]:
+        masks = {}
+        delta_masks = {}
+        for site in live_sites:
+            ci_site = ci_lower[site]
+            masks[site] = ci_site + (1.0 - ci_site) * strategy.value
+            delta_masks[site] = jnp.zeros(batch_seq, ci_site.dtype)
+        return masks, delta_masks
+
+    def entry_loss_for_sources(
+        entry: ReconForward,
+        sources: dict[str, Array],
+        routes_per_draw: tuple[Routes, ...],
         frozen: Any,
         components_bf16: Any,
         ci_lower: dict[str, Array],
         residual: Array,
         clean_logits: Array,
-        key: PRNGKeyArray,
+        forward_fn: Any,
     ) -> Array:
-        batch, seq = residual.shape[0], residual.shape[1]
+        """Mean KL over the entry's draws with FIXED source values — the adversarial
+        ascent objective (shared by fresh and persistent ascents, SPEC S12')."""
+        masks, delta_masks = source_masks(ci_lower, sources, entry.live_sites)
         total = jnp.zeros((), jnp.float32)
-        n_forwards = 0
-        for entry_idx, recon_forward in enumerate(recon_plan):
-            entry_key, routing_key = random.split(random.fold_in(key, entry_idx))
-            for draw_idx, routes in enumerate(
-                recon_forward.sample_routing(routing_key, (batch, seq))
-            ):
-                mask_source_key, delta_mask_key = random.split(random.fold_in(entry_key, draw_idx))
-                masks = {}
-                delta_masks = {}
-                for site_idx, site in enumerate(recon_forward.live_sites):
-                    ci_site = ci_lower[site]
-                    stochastic_source = random.uniform(
-                        random.fold_in(mask_source_key, site_idx), ci_site.shape, COMPUTE_DT
-                    )
-                    masks[site] = ci_site + (1.0 - ci_site) * stochastic_source
-                    delta_masks[site] = random.uniform(
-                        random.fold_in(delta_mask_key, site_idx), (batch, seq), COMPUTE_DT
-                    )
-                masked = checkpointed_masked_forward(
-                    frozen,
-                    components_bf16,
-                    residual,
-                    masks,
-                    delta_masks,
-                    routes,
-                    recon_forward.live_sites,
-                )
-                total = total + kl_per_position(masked, clean_logits)
-                n_forwards += 1
-        assert n_forwards > 0, "recon plan produced no forwards"
-        return total / n_forwards
+        for routes in routes_per_draw:
+            masked = forward_fn(
+                frozen, components_bf16, residual, masks, delta_masks, routes, entry.live_sites
+            )
+            total = total + kl_per_position(masked, clean_logits)
+        return total / len(routes_per_draw)
 
     @jax.jit
-    def step(state: TrainState, frozen: Any, residual: Float[Array, "b t d"], key: PRNGKeyArray):
+    def step(
+        state: TrainState, frozen: Any, residual: Float[Array, "b t d"], key: PRNGKeyArray
+    ) -> tuple[TrainState, dict[str, Array]]:
         step_f32 = state.step.astype(jnp.float32)
         pnorm = annealed_pnorm(step_f32, total_steps, imp_min)
+        batch, seq = residual.shape[0], residual.shape[1]
 
         residual = batch_sharded(residual)
         clean_logits = jax.lax.stop_gradient(batch_sharded(lm.clean_logits(frozen, residual)))
         site_inputs = lm.site_inputs(frozen, residual)
 
-        # ── supplemental adversary ascents: params + CI detached (SPEC §4.5) ──
+        # ── adversary ascents: params + CI detached (SPEC §4.5) ──
         components_detached = jax.lax.stop_gradient(cast_floating(state.components, COMPUTE_DT))
         ci_fn_detached = jax.lax.stop_gradient(cast_floating(state.ci_fn, COMPUTE_DT))
         ci_lower_detached = batch_sharded_ci(ci_fn_detached(site_inputs)).lower
 
-        def adversary_loss(sources: dict[str, Array]) -> Array:
-            return adversarial_recon_loss(
-                frozen,
-                components_detached,
-                ci_lower_detached,
-                sources,
-                residual,
-                clean_logits,
-                masked_forward,
+        # Persistent terms: n_warmup supplemental Adam ascents each, against the
+        # route-ALL all-sites forward (SPEC S24 — torch warmup parity, NOT the term's
+        # loss plan), sequential per term as in torch.
+        source_lrs: dict[str, Array] = {}
+        warmed_sources: dict[str, dict[str, Array]] = {}
+        warmup_opt_states: dict[str, SourcesAdamState] = {}
+        for state_key, ppgd_cfg in loss_spec.persistent.items():
+            adam = persistent_adams[state_key]
+            source_lr = warmup_then_constant_lr(
+                step_f32,
+                total_steps,
+                adam.lr_schedule.start_val,
+                adam.lr_schedule.warmup_pct,
             )
+            source_lrs[state_key] = source_lr
 
-        match adversary:
-            case PersistentPGDReconLossConfig():
-                assert source_lr_schedule is not None and source_adam is not None
-                adam = source_adam
-                sources_lr = warmup_then_constant_lr(
-                    step_f32,
-                    total_steps,
-                    source_lr_schedule.start_val,
-                    source_lr_schedule.warmup_pct,
+            def warmup_loss(sources: dict[str, Array]) -> Array:
+                masks, delta_masks = source_masks(ci_lower_detached, sources, site_names)
+                masked = masked_forward(
+                    frozen, components_detached, residual, masks, delta_masks, None, site_names
+                )
+                return kl_per_position(masked, clean_logits)
+
+            def warmup_body(
+                carry: tuple[dict[str, Array], SourcesAdamState],
+                _: None,
+                source_lr: Array = source_lr,
+                adam: AdamPGDConfig = adam,
+                warmup_loss: Callable[[dict[str, Array]], Array] = warmup_loss,
+            ) -> tuple[tuple[dict[str, Array], SourcesAdamState], None]:
+                sources, adam_state = carry
+                sources_grad = jax.grad(warmup_loss)(sources)
+                sources, adam_state = sources_adam_ascend_project(
+                    sources, sources_grad, adam_state, source_lr, adam
+                )
+                return (sources, adam_state), None
+
+            (warmed, warmed_opt), _ = jax.lax.scan(
+                warmup_body,
+                (state.sources[state_key], state.sources_opt_state[state_key]),
+                None,
+                length=ppgd_cfg.n_warmup_steps,
+            )
+            warmed_sources[state_key] = jax.lax.stop_gradient(warmed)
+            warmup_opt_states[state_key] = warmed_opt
+
+        # Fresh-PGD entries: ONE routing draw per entry per step, shared by all
+        # ascents and the main loss forward (SPEC S24); sign-ascend `n_steps`, then
+        # the sources are constants in the main backward (torch parity).
+        fresh_sources: dict[tuple[int, int], dict[str, Array]] = {}
+        fixed_routes: dict[tuple[int, int], tuple[Routes, ...]] = {}
+        for term_idx, term in enumerate(recon_terms):
+            term_key = random.fold_in(key, 1 + term_idx)
+            for entry_idx, entry in enumerate(term.plan):
+                if not isinstance(entry.sources, FreshPGDSources):
+                    continue
+                fresh_cfg = entry.sources
+                routing_key, init_key = random.split(random.fold_in(term_key, entry_idx))
+                routes_per_draw = entry.sample_routing(routing_key, (batch, seq))
+                fixed_routes[(term_idx, entry_idx)] = routes_per_draw
+                live_specs = tuple(s for s in lm.sites if s.name in entry.live_sites)
+                init = init_fresh_pgd_sources(
+                    live_specs, fresh_cfg.init, fresh_cfg.scope, batch, seq, init_key
                 )
 
-                def warmup_body(
-                    carry: tuple[dict[str, Array], SourcesAdamState], _: None
-                ) -> tuple[tuple[dict[str, Array], SourcesAdamState], None]:
-                    sources, adam_state = carry
-                    sources_grad = jax.grad(adversary_loss)(sources)
-                    sources, adam_state = sources_adam_ascend_project(
-                        sources, sources_grad, adam_state, sources_lr, adam
+                def ascent_loss(
+                    sources: dict[str, Array],
+                    entry: ReconForward = entry,
+                    routes: tuple[Routes, ...] = routes_per_draw,
+                ) -> Array:
+                    return entry_loss_for_sources(
+                        entry,
+                        sources,
+                        routes,
+                        frozen,
+                        components_detached,
+                        ci_lower_detached,
+                        residual,
+                        clean_logits,
+                        masked_forward,
                     )
-                    return (sources, adam_state), None
-
-                (refined_sources, sources_adam_state), _ = jax.lax.scan(
-                    warmup_body,
-                    (state.sources, state.sources_adam_state),
-                    None,
-                    length=adversary.n_warmup_steps,
-                )
-            case PGDReconLossConfig() as fresh_pgd_config:
-                sources_lr = None
-                sources_adam_state = state.sources_adam_state
-                batch, seq = residual.shape[0], residual.shape[1]
-                fresh_sources = init_fresh_pgd_sources(
-                    lm.sites, adversary, batch, seq, random.fold_in(key, 2)
-                )
 
                 def sign_ascend_body(
-                    sources: dict[str, Array], _: None
+                    sources: dict[str, Array],
+                    _: None,
+                    ascent_loss: Callable[[dict[str, Array]], Array] = ascent_loss,
+                    step_size: float = fresh_cfg.step_size,
                 ) -> tuple[dict[str, Array], None]:
-                    sources_grad = jax.grad(adversary_loss)(sources)
+                    sources_grad = jax.grad(ascent_loss)(sources)
                     return {
                         site: jnp.clip(
-                            sources[site]
-                            + fresh_pgd_config.step_size * jnp.sign(sources_grad[site]),
+                            sources[site] + step_size * jnp.sign(sources_grad[site]),
                             0.0,
                             1.0,
                         )
                         for site in sources
                     }, None
 
-                refined_sources, _ = jax.lax.scan(
-                    sign_ascend_body, fresh_sources, None, length=adversary.n_steps
-                )
-        refined_sources = jax.lax.stop_gradient(refined_sources)
+                ascended, _ = jax.lax.scan(sign_ascend_body, init, None, length=fresh_cfg.n_steps)
+                fresh_sources[(term_idx, entry_idx)] = jax.lax.stop_gradient(ascended)
 
-        # ── main losses: live components/ci; the PERSISTENT adversary's sources
-        # participate in the graph so their gradient comes from the SAME backward
-        # (SPEC S14); they are NOT detached here, but components/ci grads through them
-        # are what torch gets too (sources are leaves). ──
-        def loss_fn(trainable: tuple[Any, CIFn, dict[str, Array]]):
-            components, ci_fn, sources = trainable
+        # ── main losses: live components/ci; the PERSISTENT sources participate in
+        # the graph so their gradient comes from the SAME backward (SPEC S14'); they
+        # are NOT detached here, but components/ci grads through them are what torch
+        # gets too (sources are leaves). ──
+        def loss_fn(
+            trainable: tuple[Any, CIFn, dict[str, dict[str, Array]]],
+        ) -> tuple[Array, tuple[Array, Array, Array, tuple[Array, ...]]]:
+            components, ci_fn, persistent_sources = trainable
             components_bf16 = cast_floating(components, COMPUTE_DT)
             ci_fn_bf16 = cast_floating(ci_fn, COMPUTE_DT)
             ci = batch_sharded_ci(ci_fn_bf16(site_inputs))
             faith_loss = faithfulness_loss(lm.weight_deltas(frozen, components))
             imp_lp, imp_entropy = importance_minimality_terms(ci.upper, pnorm, imp_min.eps)
             imp_loss = imp_lp + imp_min.beta * imp_entropy
-            stoch_loss = stochastic_recon_loss(
-                frozen, components_bf16, ci.lower, residual, clean_logits, random.fold_in(key, 1)
-            )
-            adv_loss = adversarial_recon_loss(
-                frozen,
-                components_bf16,
-                ci.lower,
-                sources,
-                residual,
-                clean_logits,
-                checkpointed_masked_forward,
-            )
-            total_loss = (
-                faith_coeff * faith_loss
-                + imp_coeff * imp_loss
-                + stoch_coeff * stoch_loss
-                + adversary_coeff * adv_loss
-            )
-            return total_loss, (faith_loss, imp_loss, imp_lp, stoch_loss, adv_loss)
 
-        (total_loss, (faith_loss, imp_loss, imp_lp, stoch_loss, adv_loss)), grads = (
+            term_losses: list[Array] = []
+            for term_idx, term in enumerate(recon_terms):
+                term_key = random.fold_in(key, 1 + term_idx)
+                total = jnp.zeros((), jnp.float32)
+                n_forwards = 0
+                for entry_idx, entry in enumerate(term.plan):
+                    entry_key, routing_key = random.split(random.fold_in(term_key, entry_idx))
+                    match entry.sources:
+                        case FreshPGDSources():
+                            routes_per_draw = fixed_routes[(term_idx, entry_idx)]
+                        case _:
+                            routes_per_draw = entry.sample_routing(routing_key, (batch, seq))
+                    for draw_idx, routes in enumerate(routes_per_draw):
+                        draw_key = random.fold_in(entry_key, draw_idx)
+                        match entry.sources:
+                            case StochasticSources() as strategy:
+                                masks, delta_masks = stochastic_entry_masks(
+                                    strategy, ci.lower, entry.live_sites, (batch, seq), draw_key
+                                )
+                            case ConstantSources() as strategy:
+                                masks, delta_masks = constant_entry_masks(
+                                    strategy, ci.lower, entry.live_sites, (batch, seq)
+                                )
+                            case FreshPGDSources():
+                                masks, delta_masks = source_masks(
+                                    ci.lower,
+                                    fresh_sources[(term_idx, entry_idx)],
+                                    entry.live_sites,
+                                )
+                            case PersistentSources(state_key=state_key):
+                                masks, delta_masks = source_masks(
+                                    ci.lower, persistent_sources[state_key], entry.live_sites
+                                )
+                        masked = checkpointed_masked_forward(
+                            frozen,
+                            components_bf16,
+                            residual,
+                            masks,
+                            delta_masks,
+                            routes,
+                            entry.live_sites,
+                        )
+                        total = total + kl_per_position(masked, clean_logits)
+                        n_forwards += 1
+                assert n_forwards > 0, f"term {term.name!r} produced no forwards"
+                term_losses.append(total / n_forwards)
+
+            total_loss = faith_coeff * faith_loss + imp_coeff * imp_loss
+            for term, term_loss in zip(recon_terms, term_losses, strict=True):
+                total_loss = total_loss + term.coeff * term_loss
+            return total_loss, (faith_loss, imp_loss, imp_lp, tuple(term_losses))
+
+        (total_loss, (faith_loss, imp_loss, imp_lp, term_losses)), grads = (
             eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-                (state.components, state.ci_fn, refined_sources)
+                (state.components, state.ci_fn, warmed_sources)
             )
         )
-        components_grad, ci_fn_grad, sources_grad_scaled = grads
+        components_grad, ci_fn_grad, persistent_grads_scaled = grads
         grad_norm_metrics = _grad_norm_metrics(components_grad, ci_fn_grad)
 
-        match adversary:
-            case PersistentPGDReconLossConfig():
-                assert sources_lr is not None and source_adam is not None
-                # The backward saw coeff·L_adv; the adversary ascends on L_adv itself.
-                sources_grad = {s: g / adversary_coeff for s, g in sources_grad_scaled.items()}
-                # ── the (n_warmup+1)-th source ascent, from the fused graph (SPEC S13/S14) ──
-                new_sources, sources_adam_state = sources_adam_ascend_project(
-                    refined_sources, sources_grad, sources_adam_state, sources_lr, source_adam
-                )
-            case PGDReconLossConfig():
-                # fresh sources die with the step; the cotangent wrt them is unused
-                new_sources = state.sources
+        # ── each persistent term's final ascent, from the fused graph (SPEC S13'/S14');
+        # the backward saw coeff·L_term, the adversary ascends on L_term itself, and the
+        # division is exact because each source bundle feeds exactly one term (S23). ──
+        new_sources: dict[str, dict[str, Array]] = {}
+        new_sources_opt_state: dict[str, SourcesAdamState] = {}
+        for state_key in loss_spec.persistent:
+            coeff = term_coeff_by_state_key[state_key]
+            sources_grad = {
+                site: g / coeff for site, g in persistent_grads_scaled[state_key].items()
+            }
+            ascended, ascended_opt = sources_adam_ascend_project(
+                warmed_sources[state_key],
+                sources_grad,
+                warmup_opt_states[state_key],
+                source_lrs[state_key],
+                persistent_adams[state_key],
+            )
+            new_sources[state_key] = ascended
+            new_sources_opt_state[state_key] = ascended_opt
 
         components_updates, new_components_opt_state = components_optimizer.update(
             components_grad,
@@ -390,24 +467,22 @@ def make_train_step(
             components_opt_state=new_components_opt_state,
             ci_fn_opt_state=new_ci_fn_opt_state,
             sources=new_sources,
-            sources_adam_state=sources_adam_state,
+            sources_opt_state=new_sources_opt_state,
             step=state.step + 1,
-        )
-        adversary_metric_key = (
-            "ppgd" if isinstance(adversary, PersistentPGDReconLossConfig) else "pgd"
         )
         metrics = {
             "total": total_loss,
             "faith": faith_loss,
             "imp": imp_loss,
             "imp_no_beta": imp_lp,
-            "stoch": stoch_loss,
-            adversary_metric_key: adv_loss,
             "p_imp": pnorm,
+            **{f"loss/{t.name}": v for t, v in zip(recon_terms, term_losses, strict=True)},
             **grad_norm_metrics,
         }
-        if sources_lr is not None:
-            metrics["src_lr"] = sources_lr
+        if len(source_lrs) == 1:
+            metrics["src_lr"] = next(iter(source_lrs.values()))
+        else:
+            metrics |= {f"schedules/lr/src/{k}": v for k, v in source_lrs.items()}
         return new_state, metrics
 
     return step

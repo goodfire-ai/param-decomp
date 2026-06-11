@@ -33,16 +33,19 @@ from jax_single_pool.llama8b import (
     llama_site_specs,
     mlp_family_site_cs,
 )
-from jax_single_pool.recon import subset_chunk_plan
+from jax_single_pool.recon import build_recon_terms
 from jax_single_pool.sharding import dp_mesh, shard_batch
 from jax_single_pool.tests.test_llama8b import _tiny_cfg, _tiny_target
 from jax_single_pool.train import TrainState, make_train_step
 from param_decomp_config.losses import (
     AdamPGDConfig,
+    ChunkwiseSubsetReconLossConfig,
+    FaithfulnessLossConfig,
     ImportanceMinimalityLossConfig,
     PersistentPGDReconLossConfig,
     SCScope,
 )
+from param_decomp_config.routing import UniformKSubsetRoutingConfig
 from param_decomp_config.schedule import ScheduleConfig
 
 
@@ -69,27 +72,37 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
         components=vu, ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
-        sources=src, sources_adam_state=init_sources_adam_state(src), step=jnp.zeros((), jnp.int32),
+        sources={"PersistentPGDReconLoss": src},
+        sources_opt_state={"PersistentPGDReconLoss": init_sources_adam_state(src)},
+        step=jnp.zeros((), jnp.int32),
+    )  # fmt: skip
+    loss_spec = build_recon_terms(
+        (
+            FaithfulnessLossConfig(coeff=1e5),
+            ImportanceMinimalityLossConfig(
+                coeff=5e-6, pnorm=2.0, beta=0.2,
+                p_anneal_start_frac=0.0, p_anneal_final_p=0.4, p_anneal_end_frac=1.0,
+            ),
+            ChunkwiseSubsetReconLossConfig(routing=UniformKSubsetRoutingConfig(), coeff=0.5, sites_per_chunk=3, n_samples=1),
+            PersistentPGDReconLossConfig(
+                coeff=0.5,
+                scope=SCScope(),
+                optimizer=AdamPGDConfig(
+                    beta1=0.5, beta2=0.99,
+                    lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
+                ),
+                n_warmup_steps=2,
+            ),
+        ),
+        lm.site_names,
+        n_mask_samples=1,
+        sampling="continuous",
     )  # fmt: skip
     step = make_train_step(
         lm=lm,
-        faith_coeff=1e5,
-        stoch_coeff=0.5,
-        imp_min=ImportanceMinimalityLossConfig(
-            coeff=5e-6, pnorm=2.0, beta=0.2,
-            p_anneal_start_frac=0.0, p_anneal_final_p=0.4, p_anneal_end_frac=1.0,
-        ),
-        adversary=PersistentPGDReconLossConfig(
-            coeff=0.5,
-            scope=SCScope(),
-            optimizer=AdamPGDConfig(
-                beta1=0.5, beta2=0.99,
-                lr_schedule=ScheduleConfig(start_val=0.01, warmup_pct=0.025),
-            ),
-            n_warmup_steps=2,
-        ),
+        loss_spec=loss_spec,
         components_optimizer=opt_vu, ci_fn_optimizer=opt_ci,
-        total_steps=100, recon_plan=subset_chunk_plan(lm.site_names, 3, 1),
+        total_steps=100,
         remat_recon_forwards=True, mesh=mesh,
     )  # fmt: skip
 

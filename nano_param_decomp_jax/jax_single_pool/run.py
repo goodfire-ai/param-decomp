@@ -54,7 +54,7 @@ from jax_single_pool.llama8b import (
 )
 from jax_single_pool.llama8b_sharding import replicate_target
 from jax_single_pool.lm import DecomposedLM
-from jax_single_pool.recon import subset_chunk_plan
+from jax_single_pool.recon import build_recon_terms
 from jax_single_pool.run_state import build_optimizers, init_train_state
 from jax_single_pool.sharding import dp_mesh, init_distributed
 from jax_single_pool.torch_config import load_torch_wrapper
@@ -99,19 +99,15 @@ def _global_token_batch(local: np.ndarray, mesh: Mesh, global_batch: int) -> jax
     return jax.make_array_from_process_local_data(sharding, local, (global_batch, local.shape[1]))
 
 
-# wandb keys match the torch trainer's (`train_step.py` emits `loss/<ClassName>`,
+# wandb keys match the torch trainer's (`train_step.py` emits `loss/<instance_key>`,
 # `optimize.py` prefixes `train/`) so a torch-vs-jax run pair overlays on one panel.
-# The stoch alias is exact for a single-chunk config (L18: chunkwise-subset over one
-# chunk == StochasticReconSubsetLoss); multi-chunk configs diverge from that torch
-# class but keep the name for comparability of the same-coeff term.
+# Recon-term keys arrive from the step already shaped (`loss/<instance_key>`) and are
+# train/-prefixed by the sink; this table maps only the step's fixed scalar keys.
 _METRIC_KEYS = {
     "total": "train/loss/total",
     "faith": "train/loss/FaithfulnessLoss",
     "imp": "train/loss/ImportanceMinimalityLoss",
     "imp_no_beta": "train/loss/ImportanceMinimalityLoss_no_beta",
-    "stoch": "train/loss/StochasticReconSubsetLoss",
-    "ppgd": "train/loss/PersistentPGDReconLoss",
-    "pgd": "train/loss/PGDReconLoss",
     "p_imp": "train/schedules/p_imp",
     "src_lr": "train/schedules/lr/src",
     "step_time_s": "train/perf/step_time_s",
@@ -152,9 +148,11 @@ class MetricsSink:
         if self._jsonl is None:
             return
         record = {
-            _METRIC_KEYS.get(k, f"train/{k}" if k.startswith("grad_norms/") else k): v
+            _METRIC_KEYS.get(
+                k, f"train/{k}" if k.startswith(("grad_norms/", "loss/", "schedules/")) else k
+            ): v
             for k, v in record.items()
-        }  # keys already starting "train/" pass through verbatim
+        }  # keys already starting "train/" or "eval/" pass through verbatim
         self._jsonl.write(json.dumps({"step": step, **record}) + "\n")
         self._jsonl.flush()
         print(
@@ -227,15 +225,13 @@ def train(
 
     step_fn = make_train_step(
         lm=lm,
-        faith_coeff=cfg.faith_coeff,
-        stoch_coeff=cfg.stoch_coeff,
-        imp_min=cfg.imp_min,
-        adversary=cfg.adversary,
+        loss_spec=build_recon_terms(
+            cfg.loss_metrics, lm.site_names, cfg.n_mask_samples, cfg.sampling
+        ),
         components_optimizer=opt_vu,
         ci_fn_optimizer=opt_ci,
         total_steps=cfg.steps,
-        recon_plan=subset_chunk_plan(lm.site_names, cfg.recon.sites_per_chunk, cfg.recon.n_samples),
-        remat_recon_forwards=cfg.recon.remat_forwards,
+        remat_recon_forwards=cfg.remat_recon_forwards,
         mesh=mesh,
     )
 
@@ -282,7 +278,7 @@ def train(
         jax_runtime={
             "n_devices": ndev,
             "n_processes": n_proc,
-            "remat_recon_forwards": cfg.recon.remat_forwards,
+            "remat_recon_forwards": cfg.remat_recon_forwards,
             "run_id": cfg.run_id,
             "run_dir": str(cfg.run_dir),
         },

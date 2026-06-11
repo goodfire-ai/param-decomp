@@ -10,6 +10,7 @@ import yaml
 
 from jax_single_pool.llama8b import mlp_family_site_cs
 from jax_single_pool.lm import SiteC
+from jax_single_pool.recon import build_recon_terms
 from jax_single_pool.torch_config import (
     convert_torch_lm_config,
     load_run_dir_config,
@@ -41,9 +42,18 @@ def test_b128_wrapper_converts(tmp_path: Path):
     assert converted.run_name == "jax-l18-b128-cmp32-from-torch"
     assert converted.data.global_batch == 128
     assert converted.target.sites == mlp_family_site_cs(18, 18, 24576)
-    assert converted.faith_coeff == 1e5 and converted.imp_min.pnorm == 2.0
-    assert isinstance(converted.adversary, PersistentPGDReconLossConfig)
-    assert converted.adversary.n_warmup_steps == 2 and converted.vu_optimizer.grad_clip_norm == 0.01
+    spec = build_recon_terms(
+        converted.loss_metrics, tuple(sc.name for sc in converted.target.sites),
+        converted.n_mask_samples, converted.sampling,
+    )  # fmt: skip
+    assert spec.faith_coeff == 1e5 and spec.imp_min.pnorm == 2.0
+    (ppgd,) = spec.persistent.values()
+    assert isinstance(ppgd, PersistentPGDReconLossConfig)
+    assert ppgd.n_warmup_steps == 2 and converted.vu_optimizer.grad_clip_norm == 0.01
+    assert [t.name for t in spec.recon_terms] == [
+        "StochasticReconSubsetLoss",
+        "PersistentPGDReconLoss",
+    ]
 
 
 def _reference_torch_cfg():
@@ -89,23 +99,35 @@ def test_eval_block_maps_and_defers_offline_metrics(capsys: pytest.CaptureFixtur
 def test_unsupported_settings_refuse():
     torch_cfg, raw = _reference_torch_cfg()
 
-    binomial = dict(raw, pd=dict(raw["pd"], sampling="binomial"))
-    with pytest.raises(AssertionError):
-        convert_torch_lm_config(
-            type(torch_cfg)(**binomial), run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"),
-            remat_recon_forwards=True,
-        )  # fmt: skip
-
-    extra_loss = dict(
+    hidden_acts_training_loss = dict(
         raw,
         pd=dict(
             raw["pd"],
-            loss_metrics=raw["pd"]["loss_metrics"] + [{"type": "UnmaskedReconLoss", "coeff": 1.0}],
+            loss_metrics=raw["pd"]["loss_metrics"]
+            + [{"type": "StochasticHiddenActsReconLoss", "coeff": 1.0}],
         ),
     )
-    with pytest.raises(AssertionError, match="unsupported loss metric"):
+    with pytest.raises(AssertionError, match="unsupported training loss"):
         convert_torch_lm_config(
-            type(torch_cfg)(**extra_loss), run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"),
+            type(torch_cfg)(**hidden_acts_training_loss), run_name="t", run_id=RUN_ID,
+            out_dir=Path("/tmp"), remat_recon_forwards=True,
+        )  # fmt: skip
+
+    sigmoid_ppgd = dict(
+        raw,
+        pd=dict(
+            raw["pd"],
+            loss_metrics=[
+                dict(m, use_sigmoid_parameterization=True)
+                if m["type"] == "PersistentPGDReconLoss"
+                else m
+                for m in raw["pd"]["loss_metrics"]
+            ],
+        ),
+    )
+    with pytest.raises(AssertionError):
+        convert_torch_lm_config(
+            type(torch_cfg)(**sigmoid_ppgd), run_name="t", run_id=RUN_ID, out_dir=Path("/tmp"),
             remat_recon_forwards=True,
         )  # fmt: skip
 

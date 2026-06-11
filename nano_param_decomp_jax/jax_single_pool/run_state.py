@@ -21,8 +21,8 @@ from jax_single_pool.llama8b_sharding import (
     init_sources_sharded,
 )
 from jax_single_pool.lm import DecomposedLM
+from jax_single_pool.recon import build_recon_terms
 from jax_single_pool.train import TrainState
-from param_decomp_config.losses import PGDReconLossConfig
 
 
 def build_optimizers(cfg: ExperimentConfig):
@@ -49,20 +49,23 @@ def init_train_state(
 ) -> TrainState:
     components = init_decomp_vu_sharded(lm.sites, init_key, mesh)
     ci_fn = init_ci_fn_sharded(cfg.ci_fn, lm.sites, random.fold_in(init_key, 1), mesh)
-    match cfg.adversary:
-        case PGDReconLossConfig():
-            # fresh per-batch sources carry no cross-step state (sampled inside the step)
-            sources = {}
-        case _:
-            sources = init_sources_sharded(
-                lm.site_names, tuple(s.C for s in lm.sites), cfg.data.seq_len, src_key, mesh
-            )
+    loss_spec = build_recon_terms(cfg.loss_metrics, lm.site_names, cfg.n_mask_samples, cfg.sampling)
+    sources = {
+        state_key: init_sources_sharded(
+            lm.site_names,
+            tuple(s.C for s in lm.sites),
+            cfg.data.seq_len,
+            random.fold_in(src_key, term_idx),
+            mesh,
+        )
+        for term_idx, state_key in enumerate(loss_spec.persistent)
+    }
     return TrainState(
         components=components,
         ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(components, eqx.is_array)),
         ci_fn_opt_state=opt_ci.init(eqx.filter(ci_fn, eqx.is_array)),
         sources=sources,
-        sources_adam_state=init_sources_adam_state(sources),
+        sources_opt_state={k: init_sources_adam_state(v) for k, v in sources.items()},
         step=jnp.zeros((), jnp.int32),
     )
