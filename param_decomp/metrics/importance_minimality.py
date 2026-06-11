@@ -6,6 +6,7 @@ import torch.distributed.nn.functional as dist_fn
 from jaxtyping import Float
 from torch import Tensor
 from torch.distributed import ReduceOp
+from torch.utils.checkpoint import checkpoint
 
 from param_decomp.distributed import all_reduce, get_distributed_state
 from param_decomp.metrics.base import Metric, MetricResult
@@ -37,6 +38,11 @@ def annealed_pnorm(
     return initial_p + (p_anneal_final_p - initial_p) * progress
 
 
+def _lp_sum_one_layer(layer_ci: Tensor, pnorm: float, eps: float) -> Tensor:
+    result = (layer_ci + eps) ** pnorm
+    return result.sum(dim=tuple(range(result.dim() - 1)))
+
+
 def per_component_lp_sums(
     ci_upper_leaky: dict[str, Float[Tensor, "... C"]],
     pnorm: float,
@@ -46,8 +52,16 @@ def per_component_lp_sums(
     assert ci_upper_leaky, "Empty ci_upper_leaky"
     out: dict[str, Float[Tensor, " C"]] = {}
     for layer_name, layer_ci in ci_upper_leaky.items():
-        result = (layer_ci + eps) ** pnorm
-        out[layer_name] = result.sum(dim=tuple(range(result.dim() - 1)))
+        if layer_ci.requires_grad and torch.is_grad_enabled():
+            # The pow otherwise retains a full `[..., C]` saved base per site until the
+            # step backward (~1.6 GB per site at LM scale); the recompute is trivial
+            # elementwise work and draws no RNG, so checkpoint it. `layer_ci` itself is
+            # already retained by the CI graph — the checkpoint adds nothing.
+            summed = checkpoint(_lp_sum_one_layer, layer_ci, pnorm, eps, use_reentrant=False)
+            assert isinstance(summed, Tensor)
+            out[layer_name] = summed
+        else:
+            out[layer_name] = _lp_sum_one_layer(layer_ci, pnorm, eps)
     n_examples = next(iter(ci_upper_leaky.values())).shape[:-1].numel()
     return out, n_examples
 
@@ -127,6 +141,11 @@ class ImportanceMinimalityLoss(Metric[ImportanceMinimalityLossConfig]):
 
     log_namespace = "loss"
     short_name = "ImpMin"
+
+    @property
+    @override
+    def requires_clean_logits(self) -> bool:
+        return False
 
     @override
     def reset(self) -> None:
