@@ -1,0 +1,135 @@
+# Fused+no-clean-logits bl2 probe @ dp=16 — second point for the per-rank-batch
+# memory slope (with bl4) to extrapolate bl8's true demand (OOM peaks are censored
+# at GPU capacity, so failing runs can't tell us how far over bl8 is).
+# Launch: pd-lm-fsdp param_decomp_lab/experiments/lm/_fsdp/c49k_memsmoke_bl2_fused.yaml --dp 16 --partition None --qos opportunistic --time 1:00:00
+cadence:
+  keep_last_n_checkpoints: 1
+  save_every: 100000
+  train_log_every: 5
+  dense_log_phase:
+    every: 2
+    until_step: 80
+data:
+  buffer_size: 1000
+  column_name: input_ids
+  data_files: /mnt/data/artifacts/mechanisms/param-decomp/datasets/fineweb_llama_tok_2048/*.parquet
+  dataset_name: parquet
+  eval_split: train
+  is_tokenized: true
+  max_seq_len: 2048
+  revision: null
+  shuffle_each_epoch: true
+  streaming: true
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  train_split: train
+eval: null
+pd:
+  batch_size: 32
+  ci_config:
+    fn_type: global_shared_transformer
+    hidden_dims: null
+    mode: global
+    simple_transformer_ci_cfg:
+      attn_config:
+        max_len: 2048
+        n_heads: 64
+        rope_base: 10000.0
+      d_model: 4096
+      mlp_hidden_dim:
+      - 16384
+      n_blocks: 4
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 7.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    lr_schedule:
+      final_val_frac: 0.1
+      fn_type: cosine
+      start_val: 7.0e-05
+      warmup_pct: 0.0
+    weight_decay: 0.0
+  decomposition_targets:
+  - C: 49152
+    module_pattern: layers.18.mlp.gate_proj
+  - C: 49152
+    module_pattern: layers.18.mlp.up_proj
+  - C: 49152
+    module_pattern: layers.18.mlp.down_proj
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_steps: 5
+  faithfulness_warmup_weight_decay: 0.0
+  identity_decomposition_targets: null
+  loss_metrics:
+  - beta: 0.2
+    coeff: 5.0e-06
+    eps: 1.0e-12
+    p_anneal_end_frac: 1.0
+    p_anneal_final_p: 0.4
+    p_anneal_start_frac: 0.0
+    pnorm: 2.0
+    type: ImportanceMinimalityLoss
+  - coeff: 0.5
+    n_samples: 1
+    routing:
+      type: uniform_k_subset
+    sites_per_chunk: 3
+    type: ChunkwiseSubsetReconLoss
+    use_fused_kl: true
+  - coeff: 0.5
+    n_samples: 1
+    n_warmup_steps: 2
+    optimizer:
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        final_val_frac: 1.0
+        fn_type: constant
+        start_val: 0.01
+        warmup_pct: 0.025
+      type: adam
+    scope:
+      type: sc
+    start_frac: 0.0
+    type: PersistentPGDReconLoss
+    use_fused_kl: true
+    use_sigmoid_parameterization: false
+  - coeff: 100000.0
+    type: FaithfulnessLoss
+  n_mask_samples: 1
+  sampling: continuous
+  seed: 0
+  sigmoid_type: leaky_hard
+  steps: 80
+  tied_weights: null
+  use_delta_component: true
+runtime:
+  autocast_bf16: true
+  checkpoint_blocks: false
+  compile_ci_fn: true
+  compile_model: true
+  device: cuda:0
+  shard_frozen_target: true
+target:
+  activation_checkpointing: false
+  output_extract: 0
+  spec:
+    kind: hf_weights_in_vendored
+    model_class: param_decomp_lab.experiments.lm.vendored.llama_3_1.model.VendoredLlama
+    model_name: meta-llama/Llama-3.1-8B
+  weights_dtype: bfloat16
+wandb:
+  entity: goodfire
+  project: param-decomp-llama

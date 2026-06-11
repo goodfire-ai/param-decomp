@@ -30,8 +30,9 @@ def load_saved_lm_run(path: str) -> SavedLMRun | SavedThreePoolLMRun:
 
 
 class PDAdapter(DecompositionAdapter):
-    def __init__(self, wandb_path: str):
+    def __init__(self, wandb_path: str, target_module_paths: list[str] | None = None):
         self._wandb_path = wandb_path
+        self._target_module_paths = target_module_paths
         _, _, self._run_id = parse_wandb_run_path(wandb_path)
 
     @cached_property
@@ -60,7 +61,11 @@ class PDAdapter(DecompositionAdapter):
     @override
     def layer_activation_sizes(self) -> list[tuple[str, int]]:
         cm = self.component_model
-        return list(cm.module_to_c.items())
+        if self._target_module_paths is None:
+            return list(cm.module_to_c.items())
+        missing = set(self._target_module_paths) - set(cm.module_to_c)
+        assert not missing, f"target_module_paths not in decomposition: {sorted(missing)}"
+        return [(path, cm.module_to_c[path]) for path in self._target_module_paths]
 
     @override
     def dataloader(self, batch_size: int) -> DataLoader[Tensor]:

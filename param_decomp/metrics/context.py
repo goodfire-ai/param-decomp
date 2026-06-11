@@ -4,7 +4,7 @@ Built once per training step (after the DDP forward + CI calc) and once per eval
 """
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from jaxtyping import Float
 from torch import Tensor
@@ -35,6 +35,11 @@ class MetricContext:
     n_mask_samples: int
     reconstruction_loss: ReconstructionLoss
     is_eval: bool
+    target_out_kind: Literal["logits", "hidden"] = "logits"
+    """What the clean forward produced: full logits, or — when the trainer ran the step
+    under the vendored LM-head bypass because no loss metric `requires_clean_logits` —
+    the pre-LM-head hidden state. Bypass-running metrics may reuse a `"hidden"`
+    `target_out` as their recon target instead of recomputing their own clean forward."""
 
     @property
     def current_frac_of_training(self) -> float:
