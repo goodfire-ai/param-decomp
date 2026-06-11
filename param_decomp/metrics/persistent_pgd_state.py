@@ -46,7 +46,24 @@ class AdamPGDConfig(BaseConfig):
     lr_schedule: ScheduleConfig
 
 
-PGDOptimizerConfig = SignPGDConfig | AdamPGDConfig
+class MuonPGDConfig(BaseConfig):
+    """Muon-style PGD optimizer config for the persistent adversarial sources.
+
+    Momentum (memory horizon ~1/(1-momentum) steps) + Newton-Schulz orthogonalization of the
+    per-module update matrix (sources matricized as [prod(batch_dims), source_c]). The
+    orthogonalized update is RMS-scaled by `sqrt(max(rows, cols))` so its per-element step
+    magnitude matches Adam at the same `lr` — the only intended difference from the Adam
+    control is the update *geometry* (singular values pushed toward 1), not its scale.
+    """
+
+    type: Literal["muon"] = "muon"
+    momentum: Probability = Field(default=0.95, description="Muon heavy-ball momentum for masks")
+    nesterov: bool = Field(default=True, description="Use Nesterov-style momentum")
+    ns_steps: PositiveInt = Field(default=5, description="Newton-Schulz iteration count")
+    lr_schedule: ScheduleConfig
+
+
+PGDOptimizerConfig = SignPGDConfig | AdamPGDConfig | MuonPGDConfig
 
 
 class SingleSourceScope(BaseConfig):
@@ -190,12 +207,87 @@ class AdamPGDOptimizer(PPGDOptimizer):
                 self._v[k].copy_(t.to(self._v[k].device))
 
 
+def _zeropower_via_newtonschulz5(g: Tensor, steps: int) -> Tensor:
+    """Newton-Schulz quintic iteration for the orthogonal (zeroth-power) factor of a 2D `g`.
+
+    Runs in bf16 for speed; returns same shape/dtype as `g`. Quintic coefficients from Jordan
+    et al.'s Muon (chosen to maximize the slope at zero so singular values are driven toward 1).
+    """
+    assert g.ndim == 2, f"Newton-Schulz expects a 2D matrix, got shape {tuple(g.shape)}"
+    a, b, c = 3.4445, -4.7750, 2.0315
+    x = g.bfloat16()
+    transpose = g.size(0) > g.size(1)
+    if transpose:
+        x = x.T
+    x = x / (x.norm() + 1e-7)
+    for _ in range(steps):
+        capital_a = x @ x.T
+        capital_b = b * capital_a + c * (capital_a @ capital_a)
+        x = a * x + capital_b @ x
+    if transpose:
+        x = x.T
+    return x.to(g.dtype)
+
+
+class MuonPGDOptimizer(PPGDOptimizer):
+    """Muon for the persistent adversarial sources: momentum + Newton-Schulz orthogonalization.
+
+    Each module's source tensor `[*batch_dims, source_c]` is matricized to
+    `[prod(batch_dims), source_c]`; its (Nesterov) momentum is orthogonalized so the update's
+    singular values are ~1, then RMS-scaled by `sqrt(max(rows, cols))` so the per-element step
+    matches Adam at the same `lr`. NB: orthogonalization couples the per-(batch,position) rows
+    within a module — it spreads adversarial pressure evenly across rows/cols rather than
+    letting one direction dominate. Momentum memory horizon ~1/(1-momentum) steps.
+    """
+
+    def __init__(self, cfg: MuonPGDConfig) -> None:
+        self._lr = cfg.lr_schedule.start_val
+        self._momentum = cfg.momentum
+        self._nesterov = cfg.nesterov
+        self._ns_steps = cfg.ns_steps
+        self._m: PPGDSources = {}
+
+    @override
+    def init_state(self, sources: PPGDSources) -> None:
+        for module_name, source in sources.items():
+            self._m[module_name] = torch.zeros_like(source)
+
+    @override
+    def step(self, sources: PPGDSources, grads: PPGDSources) -> None:
+        for module_name, source in sources.items():
+            grad = grads[module_name]
+            m = self._m[module_name]
+            m.mul_(self._momentum).add_(grad)
+            update = grad.add(m, alpha=self._momentum) if self._nesterov else m
+            orig_shape = update.shape
+            mat = update.reshape(-1, orig_shape[-1])
+            ortho = _zeropower_via_newtonschulz5(mat, self._ns_steps)
+            scale = max(mat.shape) ** 0.5
+            source.add_((ortho * scale).reshape(orig_shape), alpha=self._lr)
+
+    @override
+    def set_lr(self, lr: float) -> None:
+        self._lr = lr
+
+    @override
+    def state_dict(self) -> dict[str, Any]:
+        return {"m": dict(self._m)}
+
+    @override
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        with torch.no_grad():
+            for k, t in state["m"].items():
+                self._m[k].copy_(t.to(self._m[k].device))
+
+
 def make_ppgd_optimizer(cfg: PGDOptimizerConfig) -> PPGDOptimizer:
     match cfg:
         case SignPGDConfig():
             return SignPGDOptimizer(cfg)
         case AdamPGDConfig():
             return AdamPGDOptimizer(cfg)
+        case MuonPGDConfig():
+            return MuonPGDOptimizer(cfg)
 
 
 class PersistentPGDState:
@@ -219,6 +311,7 @@ class PersistentPGDState:
         n_samples: int,
         router: Router,
         reconstruction_loss: ReconstructionLoss,
+        warmup_step_lrs: list[float] | None = None,
     ) -> None:
         self.optimizer = make_ppgd_optimizer(optimizer_cfg)
         self._skip_all_reduce = isinstance(scope, PerBatchPerPositionScope)
@@ -228,6 +321,11 @@ class PersistentPGDState:
         self._n_samples = n_samples
         self._reconstruction_loss = reconstruction_loss
         self._lr_schedule = optimizer_cfg.lr_schedule
+        # Per-warmup-step LR overrides (length == n_warmup_steps when set): warmup step i uses
+        # `warmup_step_lrs[i]` instead of the scheduled LR; the free coupled step keeps the
+        # scheduled LR. Lets a taper (coarse first step, fine second) refine the buffer.
+        self._warmup_step_lrs = warmup_step_lrs
+        self._scheduled_lr = self._lr_schedule.start_val
 
         self.sources: PPGDSources = {}
 
@@ -292,6 +390,7 @@ class PersistentPGDState:
 
     def update_lr(self, step: int, total_steps: int) -> None:
         lr = get_scheduled_value(step, total_steps, self._lr_schedule)
+        self._scheduled_lr = lr
         self.optimizer.set_lr(lr)
 
     def state_dict(self) -> dict[str, Any]:
@@ -321,12 +420,17 @@ class PersistentPGDState:
         No-op when `n_warmup_steps=0`.
         """
         all_layers = AllLayersRouter()
-        for _ in range(self._n_warmup_steps):
+        for i in range(self._n_warmup_steps):
+            if self._warmup_step_lrs is not None:
+                self.optimizer.set_lr(self._warmup_step_lrs[i])
             sum_loss, n = self.compute_recon_sum_and_n(
                 model, batch, target_out, ci, weight_deltas, router=all_layers
             )
             grads = self.get_grads(sum_loss / n, retain_graph=False)
             self.step(grads)
+        # Restore the scheduled LR so the free coupled source step (after_backward) is unaffected.
+        if self._warmup_step_lrs is not None:
+            self.optimizer.set_lr(self._scheduled_lr)
 
     def compute_recon_sum_and_n(
         self,
