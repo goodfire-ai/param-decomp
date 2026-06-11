@@ -32,12 +32,12 @@ from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, PRNGKeyArray
 
+from jax_single_pool.adversary import init_persistent_sources
 from jax_single_pool.ci_fn import CIArch, CIFn, init_ci_fn
 from jax_single_pool.llama8b import DecompVU, Target, init_decomp_vu
 from jax_single_pool.lm import SiteSpec
 from jax_single_pool.sharding import dp_mesh
 from jax_single_pool.sharding import shard_batch as _generic_shard_batch
-from jax_single_pool.train import init_sources
 
 __all__ = [
     "dp_mesh",
@@ -128,7 +128,7 @@ def init_sources_sharded(
     weight-delta channel C+1 is odd (8193) and not divisible by the mesh size, and would
     also fight the batch-sharded elementwise combine."""
     repl = NamedSharding(mesh, P())
-    init = partial(init_sources, site_names, site_component_counts, seq_len)
+    init = partial(init_persistent_sources, site_names, site_component_counts, seq_len)
     return jax.jit(init, out_shardings=repl)(key)
 
 

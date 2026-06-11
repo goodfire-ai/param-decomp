@@ -16,6 +16,7 @@ from jax import random
 from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 
+from jax_single_pool.adversary import init_sources_adam_state
 from jax_single_pool.ci_fn import CIArch
 
 # the smoke's _random_target lives in the runner
@@ -35,13 +36,9 @@ from jax_single_pool.llama8b_sharding import (
     init_sources_sharded,
     replicate_target,
 )
+from jax_single_pool.recon import subset_chunk_plan
 from jax_single_pool.sharding import init_distributed
-from jax_single_pool.train import (
-    TrainState,
-    init_sources_adam_state,
-    make_train_step,
-    subset_chunk_plan,
-)
+from jax_single_pool.train import TrainState, make_train_step
 from param_decomp_config.losses import (
     AdamPGDConfig,
     ImportanceMinimalityLossConfig,

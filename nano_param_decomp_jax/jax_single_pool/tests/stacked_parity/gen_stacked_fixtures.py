@@ -33,6 +33,10 @@ jax.config.update("jax_enable_x64", False)
 
 from vendored_jax.llama import LlamaConfig  # noqa: E402
 
+from jax_single_pool.adversary import (  # noqa: E402
+    init_persistent_sources,
+    init_sources_adam_state,
+)
 from jax_single_pool.ci_fn import CIArch, init_ci_fn  # noqa: E402
 from jax_single_pool.llama8b import (  # noqa: E402
     KINDS,
@@ -41,14 +45,9 @@ from jax_single_pool.llama8b import (  # noqa: E402
     llama_decomposed_lm,
     site_name,
 )
+from jax_single_pool.recon import subset_chunk_plan  # noqa: E402
 from jax_single_pool.tests.test_llama8b import _tiny_cfg, _tiny_target  # noqa: E402
-from jax_single_pool.train import (  # noqa: E402
-    TrainState,
-    init_sources,
-    init_sources_adam_state,
-    make_train_step,
-    subset_chunk_plan,
-)
+from jax_single_pool.train import TrainState, make_train_step  # noqa: E402
 from param_decomp_config.losses import (  # noqa: E402
     AdamPGDConfig,
     ImportanceMinimalityLossConfig,
@@ -103,7 +102,9 @@ def main() -> None:
     lm = llama_decomposed_lm(cfg, layer_range, C)
     vu = init_decomp_vu(cfg, C, layer_range.n_layers, random.PRNGKey(1))
     ci_fn = init_ci_fn(CI_ARCH, lm.sites, random.PRNGKey(2))
-    sources = init_sources(lm.site_names, tuple(s.C for s in lm.sites), T, random.PRNGKey(3))
+    sources = init_persistent_sources(
+        lm.site_names, tuple(s.C for s in lm.sites), T, random.PRNGKey(3)
+    )
     resid = random.normal(random.PRNGKey(4), (B, T, cfg.n_embd)) * 0.5
 
     arrays = _save_target_arrays(cfg, tgt, layer_range)

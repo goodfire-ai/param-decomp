@@ -9,6 +9,7 @@ import jax
 import jax.numpy as jnp
 import optax
 
+from jax_single_pool.adversary import init_persistent_sources, init_sources_adam_state
 from jax_single_pool.checkpoint import make_checkpoint_manager, restore_latest, save_state
 from jax_single_pool.ci_fn import CIArch, init_ci_fn
 from jax_single_pool.llama8b import (
@@ -17,14 +18,9 @@ from jax_single_pool.llama8b import (
     llama_site_specs,
     mlp_family_site_cs,
 )
+from jax_single_pool.recon import subset_chunk_plan
 from jax_single_pool.tests.test_llama8b import _tiny_cfg, _tiny_target
-from jax_single_pool.train import (
-    TrainState,
-    init_sources,
-    init_sources_adam_state,
-    make_train_step,
-    subset_chunk_plan,
-)
+from jax_single_pool.train import TrainState, make_train_step
 from param_decomp_config.losses import (
     AdamPGDConfig,
     ImportanceMinimalityLossConfig,
@@ -44,7 +40,7 @@ def _build(seed: int):
     ci_fn = init_ci_fn(CIArch(16, 2, 2, 32), lm.sites, jax.random.PRNGKey(seed + 1))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
-    src = init_sources(
+    src = init_persistent_sources(
         lm.site_names, tuple(s.C for s in lm.sites), seq, jax.random.PRNGKey(seed + 2)
     )
     state = TrainState(

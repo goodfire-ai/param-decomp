@@ -17,7 +17,10 @@ replaces the hand-written-NCCL multi-pool design with zero manual collectives.
 | file | what |
 |---|---|
 | `lm.py` | `DecomposedLM` — the interface a vendored LM target implements (ordered sites, flat site-keyed dicts, frozen pytree as runtime arg) + generic chunking |
-| `train.py` | the generic trainer: four losses, persistent source-Adam adversary, schedules (p-anneal, source-LR warmup), fp32 masters + bf16 compute, `make_train_step` / `make_faith_warmup_step` |
+| `train.py` | the step factory: one fused jit step over the four losses + adversary, fp32 masters + bf16 compute, `make_train_step` / `make_faith_warmup_step` |
+| `losses.py` | the pure loss terms (KL/(B·T), faithfulness, imp-min lp+entropy split) + schedules (p-anneal, source-LR warmup) |
+| `adversary.py` | both adversaries' source machinery: persistent (PPGD: state + Adam ascents) vs fresh sign-PGD (per-step), `source_masks` |
+| `recon.py` | stochastic-recon plans: `ReconForward`/`ReconPlan`, uniform-k routing samplers, `subset_chunk_plan` |
 | `ci_fn.py` | shared-transformer CI fn over ordered site specs; the two leaky-hard squashings (SPEC §4.6, S5/S6) |
 | `checkpoint.py` | orbax sharded save/resume of `TrainState` (adversary sources + moments included, no full-gather on the loop, SPEC S22) |
 | `eval.py` | in-loop eval pass: the six CE/KL masking variants + per-site CI-L0 in one jitted step, logged under the torch `EvalLoop` keys (`eval/ce_kl/*`, `eval/l0/*`) — enabled by the optional `eval:` config block |

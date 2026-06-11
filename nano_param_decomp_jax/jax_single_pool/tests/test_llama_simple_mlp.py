@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import optax
 import pytest
 
+from jax_single_pool.adversary import init_persistent_sources, init_sources_adam_state
 from jax_single_pool.ci_fn import CIArch, init_ci_fn
 from jax_single_pool.llama8b import DecompVU, FrozenAttn, init_decomp_vu
 from jax_single_pool.llama_simple_mlp import (
@@ -32,14 +33,8 @@ from jax_single_pool.llama_simple_mlp import (
     site_specs,
 )
 from jax_single_pool.lm import SiteC
-from jax_single_pool.train import (
-    TrainState,
-    init_sources,
-    init_sources_adam_state,
-    make_faith_warmup_step,
-    make_train_step,
-    subset_chunk_plan,
-)
+from jax_single_pool.recon import subset_chunk_plan
+from jax_single_pool.train import TrainState, make_faith_warmup_step, make_train_step
 from param_decomp_config.losses import (
     AdamPGDConfig,
     ImportanceMinimalityLossConfig,
@@ -306,7 +301,9 @@ def test_step_trains_and_has_vpd_signature():
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
 
-    src = init_sources(lm.site_names, tuple(s.C for s in lm.sites), seq, jax.random.PRNGKey(3))
+    src = init_persistent_sources(
+        lm.site_names, tuple(s.C for s in lm.sites), seq, jax.random.PRNGKey(3)
+    )
     state = TrainState(
         components=vu, ci_fn=ci_fn,
         components_opt_state=opt_vu.init(eqx.filter(vu, eqx.is_array)),

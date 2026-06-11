@@ -54,15 +54,11 @@ from jax_single_pool.llama8b import (
 )
 from jax_single_pool.llama8b_sharding import replicate_target
 from jax_single_pool.lm import DecomposedLM
+from jax_single_pool.recon import subset_chunk_plan
 from jax_single_pool.run_state import build_optimizers, init_train_state
 from jax_single_pool.sharding import dp_mesh, init_distributed
 from jax_single_pool.torch_config import load_torch_wrapper
-from jax_single_pool.train import (
-    TrainState,
-    make_faith_warmup_step,
-    make_train_step,
-    subset_chunk_plan,
-)
+from jax_single_pool.train import TrainState, make_faith_warmup_step, make_train_step
 
 _sigterm_received = False
 
@@ -112,6 +108,7 @@ _METRIC_KEYS = {
     "total": "train/loss/total",
     "faith": "train/loss/FaithfulnessLoss",
     "imp": "train/loss/ImportanceMinimalityLoss",
+    "imp_no_beta": "train/loss/ImportanceMinimalityLoss_no_beta",
     "stoch": "train/loss/StochasticReconSubsetLoss",
     "ppgd": "train/loss/PersistentPGDReconLoss",
     "pgd": "train/loss/PGDReconLoss",

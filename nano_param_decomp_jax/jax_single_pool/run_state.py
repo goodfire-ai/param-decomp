@@ -13,6 +13,7 @@ from jax import random
 from jax.sharding import Mesh
 from jaxtyping import PRNGKeyArray
 
+from jax_single_pool.adversary import init_sources_adam_state
 from jax_single_pool.config import ExperimentConfig
 from jax_single_pool.llama8b_sharding import (
     init_ci_fn_sharded,
@@ -20,7 +21,7 @@ from jax_single_pool.llama8b_sharding import (
     init_sources_sharded,
 )
 from jax_single_pool.lm import DecomposedLM
-from jax_single_pool.train import TrainState, init_sources_adam_state
+from jax_single_pool.train import TrainState
 from param_decomp_config.losses import PGDReconLossConfig
 
 

@@ -49,6 +49,7 @@ def test_jitted_sharded_inits_match_eager_values():
     from jax.sharding import NamedSharding
     from jax.sharding import PartitionSpec as P
 
+    from jax_single_pool.adversary import init_persistent_sources
     from jax_single_pool.ci_fn import CIArch, init_ci_fn
     from jax_single_pool.llama8b import canonical_site_cs, init_decomp_vu, llama_site_specs
     from jax_single_pool.llama8b_sharding import (
@@ -58,7 +59,6 @@ def test_jitted_sharded_inits_match_eager_values():
     )
     from jax_single_pool.lm import SiteC, SiteSpec
     from jax_single_pool.tests.test_llama8b import _tiny_cfg
-    from jax_single_pool.train import init_sources
 
     mesh = dp_mesh()
     n = mesh.devices.size
@@ -101,7 +101,7 @@ def test_jitted_sharded_inits_match_eager_values():
     site_names = tuple(s.name for s in sites)
     site_Cs = tuple(s.C for s in sites)
     src_sharded = init_sources_sharded(site_names, site_Cs, 16, jax.random.PRNGKey(3), mesh)
-    src_eager = init_sources(site_names, site_Cs, 16, jax.random.PRNGKey(3))
+    src_eager = init_persistent_sources(site_names, site_Cs, 16, jax.random.PRNGKey(3))
     for name in site_names:
         src_sharding = src_sharded[name].sharding
         assert isinstance(src_sharding, NamedSharding)

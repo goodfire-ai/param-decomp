@@ -147,7 +147,7 @@ def stochastic_recon_loss(components, ci_lower, residual, clean_logits):
             n_forwards += 1
     return total / n_forwards                                                               (S10)
 
-def ppgd_recon_loss(components, ci_lower, sources, residual, clean_logits):     # all sites (S12)
+def adversarial_recon_loss(components, ci_lower, sources, residual, clean_logits):     # all sites (S12)
     masks, delta_masks = make_masks(ci_lower_s, expand(SCOPE, sources[s]))    ∀ s ∈ sites
     return kl_per_position(masked_forward(residual, ALL_SITES, masks, delta_masks, ALL),
                            clean_logits)
@@ -172,14 +172,14 @@ def train_step(state, batch, step):
     # -- supplemental adversary ascents (components & CI detached) --
     set SRC_STEP lr = sched_src(step)                # stepped once per TRAINING step       (S13)
     repeat n_warmup:
-        sources_grad = ∂/∂sources ppgd_recon_loss(sg[components], sg[ci_lower],
+        sources_grad = ∂/∂sources adversarial_recon_loss(sg[components], sg[ci_lower],
                                                   EFFECTIVE(sources), residual, cln)
         sources, sources_opt = sources_update(sources, sources_grad, sources_opt)
 
     # -- main losses: live components & ci_fn; the ppgd term's sources detached --
     L = 1e5·faithfulness_loss(components) + 5e-6·importance_minimality_loss(ci_upper, pnorm(step))
         + 0.5·stochastic_recon_loss(components, ci_lower, residual, cln)
-        + 0.5·ppgd_recon_loss(components, ci_lower, sg[EFFECTIVE(sources)], residual, cln)
+        + 0.5·adversarial_recon_loss(components, ci_lower, sg[EFFECTIVE(sources)], residual, cln)
 
     sources_grad     = ∂/∂sources of that same ppgd term   # PRE-update components, live
                                                            # ci_lower — the SAME graph as
@@ -227,7 +227,7 @@ init: biases zero; weights fan-in scaled (torch init_param_)
 | S9 | `pnorm(step)` anneals linearly `2.0 → 0.4` over the configured frac window; `eps` sits inside the power. |
 | S10 | `stochastic_recon_loss` = mean over ALL the plan's forwards (every draw of every entry) of `kl_per_position`. The RECON_PLAN's structure (live-sets, sampler identities, family sizes) is fixed across steps; live-sets may differ across entries. |
 | S11 | `uniform_k_routing`, per position: `k ~ U{1..|live_sites|}` then a uniform `k`-subset of the live sites routes True; non-live sites are not live at all. Routing draws are fresh per step, sampled inside the step. |
-| S12 | `ppgd_recon_loss` masks ALL sites simultaneously, routes everywhere, and detaches the sources; gradient flows to components and (through `ci_lower`) to the CI fn. |
+| S12 | `adversarial_recon_loss` masks ALL sites simultaneously, routes everywhere, and detaches the sources; gradient flows to components and (through `ci_lower`) to the CI fn. |
 | S13 | Source updates per training step = `n_warmup + 1`, all through the same persistent SRC_STEP optimizer state; the source LR schedule advances once per training step. |
 | S14 | The final ascent's gradient comes from the SAME graph as the main backward: pre-update components, live `ci_lower`. It is applied after backward; it must not use post-update params. |
 | S15 | Every source update ends with `PROJ` (★ clamp to `[0,1]`). Init: ★ `sources ~ U[0,1]` i.i.d. |
@@ -291,8 +291,8 @@ is global-batch math. This section is the whole answer to "now shard it":
 | §4.6 CI arch | `param_decomp/ci_fns.py::GlobalSharedTransformerCiFn` (`:289`), `param_decomp/ci_nn_blocks.py` |
 
 The JAX implementation (`jax_single_pool/train.py`) uses these pseudocode names
-verbatim: `clean_logits`, `site_inputs`, `make_ppgd_masks`, `stochastic_recon_loss`,
-`ppgd_recon_loss`, `sources_adam_ascend_project`, `ReconPlan`/`ReconForward`,
+verbatim: `clean_logits`, `site_inputs`, `source_masks`, `stochastic_recon_loss`,
+`adversarial_recon_loss`, `sources_adam_ascend_project`, `ReconPlan`/`ReconForward`,
 `uniform_k_routing`, `subset_chunk_plan`, `per_site_plan`.
 
 Rationale worth keeping: the two squashings give each consumer gradient only in its

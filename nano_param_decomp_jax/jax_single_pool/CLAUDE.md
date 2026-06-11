@@ -17,8 +17,10 @@ never silently diverge. Cite IDs (`S14`, `N1`, …) in commit messages and revie
 `site_inputs`, `masked_logits`, `weight_deltas`), flat site-name-keyed dicts at the
 boundary, frozen pytree always a runtime arg (never a jit closure constant — an 8B
 target becomes a multi-GB HLO constant). `train.py` is the generic step factory
-(losses, adversary, schedules, fp32 masters / bf16 compute); `ci_fn.py` the shared
-CI transformer; `llama8b.py` + `llama8b_sharding.py` the first target. There is ONE
+(fp32 masters / bf16 compute), consuming `losses.py` (pure loss terms + schedules),
+`adversary.py` (persistent PPGD vs fresh sign-PGD source machinery — semantically
+distinct adversaries sharing only `source_masks`), and `recon.py` (stochastic-recon
+plans/routing); `ci_fn.py` the shared CI transformer; `llama8b.py` + `llama8b_sharding.py` the first target. There is ONE
 recon semantics: masks thread through the suffix forward, loss is KL on final logits
 (SPEC §2.3–2.5). Site-local recon is a conceptual no-no, not a "simplification".
 `llama_simple_mlp.py` is the second target (the pile-pretrained `LlamaSimpleMLP`,

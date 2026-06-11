@@ -23,6 +23,7 @@ import numpy as np
 import optax
 from jax import random
 
+from jax_single_pool.adversary import init_persistent_sources, init_sources_adam_state
 from jax_single_pool.ci_fn import CIArch, init_ci_fn
 from jax_single_pool.llama8b import (
     DecompVU,
@@ -35,14 +36,9 @@ from jax_single_pool.llama8b import (
     mlp_family_site_cs,
 )
 from jax_single_pool.lm import DecomposedLM
+from jax_single_pool.recon import subset_chunk_plan
 from jax_single_pool.tests.test_llama8b import _tiny_cfg
-from jax_single_pool.train import (
-    TrainState,
-    init_sources,
-    init_sources_adam_state,
-    make_train_step,
-    subset_chunk_plan,
-)
+from jax_single_pool.train import TrainState, make_train_step
 from param_decomp_config.losses import (
     AdamPGDConfig,
     ImportanceMinimalityLossConfig,
@@ -151,7 +147,9 @@ def test_train_trajectory_matches():
     ci_fn = init_ci_fn(CI_ARCH, lm.sites, random.PRNGKey(2))
     for leaf_idx, leaf in enumerate(jax.tree.leaves(eqx.filter(ci_fn, eqx.is_array))):
         np.testing.assert_array_equal(np.asarray(leaf), f[f"ci_leaf::{leaf_idx}"])
-    sources = init_sources(lm.site_names, tuple(s.C for s in lm.sites), T, random.PRNGKey(3))
+    sources = init_persistent_sources(
+        lm.site_names, tuple(s.C for s in lm.sites), T, random.PRNGKey(3)
+    )
     for name, source in sources.items():
         np.testing.assert_array_equal(np.asarray(source), f[f"src::{name}"])
 

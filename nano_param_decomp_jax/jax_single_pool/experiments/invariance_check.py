@@ -25,6 +25,7 @@ import jax.numpy as jnp
 import optax
 from jax import random
 
+from jax_single_pool.adversary import init_persistent_sources, init_sources_adam_state
 from jax_single_pool.ci_fn import CIArch, init_ci_fn
 from jax_single_pool.llama8b import (
     init_decomp_vu,
@@ -32,15 +33,10 @@ from jax_single_pool.llama8b import (
     llama_site_specs,
     mlp_family_site_cs,
 )
+from jax_single_pool.recon import subset_chunk_plan
 from jax_single_pool.sharding import dp_mesh, shard_batch
 from jax_single_pool.tests.test_llama8b import _tiny_cfg, _tiny_target
-from jax_single_pool.train import (
-    TrainState,
-    init_sources,
-    init_sources_adam_state,
-    make_train_step,
-    subset_chunk_plan,
-)
+from jax_single_pool.train import TrainState, make_train_step
 from param_decomp_config.losses import (
     AdamPGDConfig,
     ImportanceMinimalityLossConfig,
@@ -60,7 +56,9 @@ def _run(steps: int, sharded: bool) -> list[dict[str, float]]:
     ci_fn = init_ci_fn(CIArch(16, 2, 2, 32), lm.sites, random.PRNGKey(2))
     opt_vu = optax.chain(optax.clip_by_global_norm(0.01), optax.adamw(1e-3, weight_decay=0.0))
     opt_ci = optax.adamw(1e-3, weight_decay=0.0)
-    src = init_sources(lm.site_names, tuple(s.C for s in lm.sites), seq, random.PRNGKey(3))
+    src = init_persistent_sources(
+        lm.site_names, tuple(s.C for s in lm.sites), seq, random.PRNGKey(3)
+    )
     resid = random.normal(random.PRNGKey(4), (gbatch, seq, cfg.n_embd)) * 0.5
 
     mesh = dp_mesh() if sharded else None

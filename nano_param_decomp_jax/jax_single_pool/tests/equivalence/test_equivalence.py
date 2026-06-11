@@ -7,7 +7,7 @@ Two kinds of check:
     `torch_reference.json` (produced by `torch_reference.py` in the torch env) to fp32
     tolerance. This is the watertight numeric verification: identical fixtures into both
     frameworks, the torch values from the REAL reference functions
-    (`faithfulness_loss` / `importance_minimality_loss` / `recon_loss_kl` /
+    (`faithfulness_loss` / `importance_minimality_terms` / `recon_loss_kl` /
     `get_ppgd_mask_infos` / `LinearComponents.forward`), compared at ~1e-4.
 
   * **Structural.** `test_structure_*` pin SPEC invariants that aren't a single number:
@@ -29,6 +29,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import jax_single_pool.adversary as adversary_mod
+import jax_single_pool.losses as losses_mod
 import jax_single_pool.train as train_mod
 from jax_single_pool.tests.equivalence.jax_equivalence import compute_jax_terms
 
@@ -61,7 +63,7 @@ def test_structure_stoch_is_per_chunk() -> None:
 
 def test_structure_recon_is_kl_not_mse() -> None:
     """SPEC §2.3: recon is KL on logits, not MSE."""
-    src = inspect.getsource(train_mod.kl_per_position)
+    src = inspect.getsource(losses_mod.kl_per_position)
     assert "log_softmax" in src and "log_p - log_q" in src, "recon must be KL"
     assert "** 2" not in src and "**2" not in src, "recon must not be MSE"
 
@@ -69,7 +71,7 @@ def test_structure_recon_is_kl_not_mse() -> None:
 def test_structure_ppgd_has_delta_channel() -> None:
     """SPEC S1: PPGD masks interpolate `ci + (1-ci)*src[:, :C]`; the trailing channel
     is the raw weight-delta mask (no ci interpolation)."""
-    src = inspect.getsource(train_mod.make_ppgd_masks)
+    src = inspect.getsource(adversary_mod.source_masks)
     assert "[..., :-1]" in src and "[..., -1]" in src, "ppgd source needs the delta channel"
     assert "ci_lower[site] + (1.0 - ci_lower[site]) * source[..., :-1]" in src, (
         "ppgd must interpolate mask=ci+(1-ci)*source"

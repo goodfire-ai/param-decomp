@@ -8,11 +8,11 @@ masks / sources / routing from the fixtures (no RNG). Compares to
 
 Term wiring (all `jax_single_pool.train` + the `DecomposedLM` boundary):
   * faith — `faithfulness_loss(lm.weight_deltas(frozen, vu))`
-  * imp   — `importance_minimality_loss(ci_upper, p, beta, eps)` (per-site dicts)
+  * imp   — `importance_minimality_terms(ci_upper, p, beta, eps)` (per-site dicts)
   * stoch — per chunk: `mask = ci+(1-ci)*u`, fixed delta mask, fixed route over the
             chunk's 3 sites; `lm.masked_logits(..., live=chunk)`; `kl_per_position`
             vs `lm.clean_logits` (the frozen path, SPEC S3). Mean over chunks.
-  * ppgd  — `make_ppgd_masks` + `lm.masked_logits(..., live=all)`.
+  * ppgd  — `source_masks` + `lm.masked_logits(..., live=all)`.
 
 Bit-identical is impossible across RNG/FP backends; we assert each term within
 `RTOL`/`ATOL` of the torch value.
@@ -29,6 +29,7 @@ jax.config.update("jax_enable_x64", False)
 
 from vendored_jax.llama import LlamaConfig  # noqa: E402
 
+from jax_single_pool.adversary import source_masks  # noqa: E402
 from jax_single_pool.llama8b import (  # noqa: E402
     MLP_KINDS,
     DecompVU,
@@ -40,11 +41,10 @@ from jax_single_pool.llama8b import (  # noqa: E402
     mlp_family_site_cs,
     site_name,
 )
-from jax_single_pool.train import (  # noqa: E402
+from jax_single_pool.losses import (  # noqa: E402
     faithfulness_loss,
-    importance_minimality_loss,
+    importance_minimality_terms,
     kl_per_position,
-    make_ppgd_masks,
 )
 
 HERE = Path(__file__).resolve().parent
@@ -154,14 +154,10 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
     faith = float(faithfulness_loss(lm.weight_deltas(tgt, vu)))
 
     # ---- imp ----
-    imp = float(
-        importance_minimality_loss(
-            ci_upper,
-            jnp.asarray(float(f["_scalar_IMP_P"])),
-            float(f["_scalar_IMP_BETA"]),
-            float(f["_scalar_IMP_EPS"]),
-        )  # fmt: skip
+    imp_lp, imp_entropy = importance_minimality_terms(
+        ci_upper, jnp.asarray(float(f["_scalar_IMP_P"])), float(f["_scalar_IMP_EPS"])
     )
+    imp = float(imp_lp + float(f["_scalar_IMP_BETA"]) * imp_entropy)
 
     # ---- stoch (per-chunk, FIXED masks) ----
     stoch_u = per_site("stoch_u")
@@ -178,7 +174,7 @@ def compute_jax_terms(f: dict[str, np.ndarray]) -> dict[str, float]:
 
     # ---- ppgd (FIXED sources) ----
     source = per_site("ppgd_source")  # {site: (1, T, C+1)}
-    masks, delta_masks = make_ppgd_masks(ci_lower, source, lm.site_names)
+    masks, delta_masks = source_masks(ci_lower, source, lm.site_names)
     pred = lm.masked_logits(tgt, vu, resid, masks, delta_masks, None, lm.site_names)
     ppgd = float(kl_per_position(pred, clean))
 

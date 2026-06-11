@@ -38,6 +38,7 @@ from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec as P
 from vendored_jax.llama import LlamaConfig, llama3_inv_freq
 
+from jax_single_pool.adversary import init_persistent_sources, init_sources_adam_state
 from jax_single_pool.ci_fn import CIArch, init_ci_fn
 from jax_single_pool.llama8b import (
     DT,
@@ -60,15 +61,9 @@ from jax_single_pool.llama8b_sharding import (
     replicate_target,
     shard_batch,
 )
+from jax_single_pool.recon import subset_chunk_plan
 from jax_single_pool.sharding import init_distributed
-from jax_single_pool.train import (
-    TrainState,
-    init_sources,
-    init_sources_adam_state,
-    make_faith_warmup_step,
-    make_train_step,
-    subset_chunk_plan,
-)
+from jax_single_pool.train import TrainState, make_faith_warmup_step, make_train_step
 from param_decomp_config.losses import (
     AdamPGDConfig,
     ImportanceMinimalityLossConfig,
@@ -186,7 +181,9 @@ def main():
         ci_fn = jax.tree.map(put, init_ci_fn(arch, lm.sites, random.PRNGKey(2)))
         src = {
             k: jax.device_put(v, repl)
-            for k, v in init_sources(lm.site_names, site_Cs, args.seq, random.PRNGKey(3)).items()
+            for k, v in init_persistent_sources(
+                lm.site_names, site_Cs, args.seq, random.PRNGKey(3)
+            ).items()
         }
     resid = shard_batch(resid_global, mesh)
 
