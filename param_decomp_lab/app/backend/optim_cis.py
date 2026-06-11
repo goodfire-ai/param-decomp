@@ -172,6 +172,7 @@ class OptimizableCIParams:
             lower_leaky={k: model.lower_leaky_fn(v) for k, v in pre_sigmoid.items()},
             upper_leaky={k: model.upper_leaky_fn(v) for k, v in pre_sigmoid.items()},
             pre_sigmoid=pre_sigmoid,
+            bottleneck_codes=None,
         )
 
     def get_parameters(self) -> list[Tensor]:

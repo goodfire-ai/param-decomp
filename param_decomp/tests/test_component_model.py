@@ -680,7 +680,7 @@ def test_global_shared_mlp_ci_fn_shapes_and_values(hidden_dims: list[int]):
         "layer2": torch.randn(BATCH_SIZE, 20),
         "layer3": torch.randn(BATCH_SIZE, 15),
     }
-    outputs = ci_fn(inputs)
+    outputs = ci_fn(inputs).pre_sigmoid
 
     # Check shapes
     assert outputs["layer1"].shape == (BATCH_SIZE, 5)
@@ -724,8 +724,8 @@ def test_global_shared_mlp_ci_fn_different_inputs_produce_different_outputs():
         "layer2": torch.randn(BATCH_SIZE, 8),
     }
 
-    outputs1 = ci_fn(inputs1)
-    outputs2 = ci_fn(inputs2)
+    outputs1 = ci_fn(inputs1).pre_sigmoid
+    outputs2 = ci_fn(inputs2).pre_sigmoid
 
     # Outputs should differ for different inputs
     assert not torch.allclose(outputs1["layer1"], outputs2["layer1"])
@@ -744,7 +744,7 @@ def test_global_shared_mlp_ci_fn_gradient_flow():
         "layer1": torch.randn(BATCH_SIZE, 10, requires_grad=True),
         "layer2": torch.randn(BATCH_SIZE, 8, requires_grad=True),
     }
-    outputs = ci_fn(inputs)
+    outputs = ci_fn(inputs).pre_sigmoid
 
     loss = torch.stack([out.sum() for out in outputs.values()]).sum()
     loss.backward()
@@ -777,7 +777,7 @@ def test_global_shared_mlp_ci_fn_with_seq_dim():
         "layer1": torch.randn(BATCH_SIZE, seq_len, 10),
         "layer2": torch.randn(BATCH_SIZE, seq_len, 8),
     }
-    outputs = ci_fn(inputs)
+    outputs = ci_fn(inputs).pre_sigmoid
 
     # Check shapes
     assert outputs["layer1"].shape == (BATCH_SIZE, seq_len, 4)
@@ -800,7 +800,7 @@ def test_global_shared_mlp_ci_fn_single_component():
         "layer1": torch.randn(BATCH_SIZE, 10),
         "layer2": torch.randn(BATCH_SIZE, 8),
     }
-    outputs = ci_fn(inputs)
+    outputs = ci_fn(inputs).pre_sigmoid
 
     assert outputs["layer1"].shape == (BATCH_SIZE, 1)
     assert outputs["layer2"].shape == (BATCH_SIZE, 1)
@@ -814,7 +814,7 @@ def test_global_shared_mlp_ci_fn_single_layer():
     ci_fn = GlobalSharedMLPCiFn(layer_configs=layer_configs, hidden_dims=[8])
 
     inputs = {"only_layer": torch.randn(BATCH_SIZE, 10)}
-    outputs = ci_fn(inputs)
+    outputs = ci_fn(inputs).pre_sigmoid
 
     assert outputs["only_layer"].shape == (BATCH_SIZE, 5)
     assert torch.isfinite(outputs["only_layer"]).all()
@@ -841,7 +841,7 @@ def test_global_shared_transformer_ci_fn_shapes_and_values():
         "layer2": torch.randn(BATCH_SIZE, 20),
         "layer3": torch.randn(BATCH_SIZE, 15),
     }
-    outputs = ci_fn(inputs)
+    outputs = ci_fn(inputs).pre_sigmoid
 
     # Check shapes
     assert outputs["layer1"].shape == (BATCH_SIZE, 5)
@@ -873,7 +873,7 @@ def test_global_shared_transformer_ci_fn_with_seq_dim():
         "layer1": torch.randn(BATCH_SIZE, seq_len, 10),
         "layer2": torch.randn(BATCH_SIZE, seq_len, 8),
     }
-    outputs = ci_fn(inputs)
+    outputs = ci_fn(inputs).pre_sigmoid
 
     # Check shapes
     assert outputs["layer1"].shape == (BATCH_SIZE, seq_len, 4)
@@ -1324,7 +1324,7 @@ def test_global_ci_save_and_load():
             name: torch.randn(BATCH_SIZE, global_ci_fn.layer_configs[name][0])
             for name in global_ci_fn.layer_order
         }
-        outputs_orig = global_ci_fn(test_acts)
-        outputs_loaded = global_ci_fn_loaded(test_acts)
+        outputs_orig = global_ci_fn(test_acts).pre_sigmoid
+        outputs_loaded = global_ci_fn_loaded(test_acts).pre_sigmoid
         for name in global_ci_fn.layer_order:
             torch.testing.assert_close(outputs_orig[name], outputs_loaded[name])

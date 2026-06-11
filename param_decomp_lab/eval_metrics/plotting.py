@@ -201,12 +201,14 @@ def get_single_feature_causal_importances(
     # Create a batch of inputs with single active features
     has_pos_dim = len(batch_shape) == 3
     n_features = batch_shape[-1]
-    batch = torch.eye(n_features, device=device) * input_magnitude
+    inputs = torch.eye(n_features, device=device) * input_magnitude
     if has_pos_dim:
         # NOTE: For now, we only use the first pos dim
-        batch = batch.unsqueeze(1)
+        inputs = inputs.unsqueeze(1)
 
-    pre_weight_acts = model(batch, cache_type="input").cache
+    # Toy experiment run_batch fns unwrap an (inputs, labels) batch; labels are unused
+    # by the forward pass.
+    pre_weight_acts = model((inputs, inputs), cache_type="input").cache
 
     return model.calc_causal_importances(
         pre_weight_acts=pre_weight_acts,

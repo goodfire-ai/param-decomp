@@ -21,6 +21,12 @@ from param_decomp_lab.eval_metrics.attn_patterns_recon_loss import (
     StochasticAttnPatternsReconLoss,
     StochasticAttnPatternsReconLossConfig,
 )
+from param_decomp_lab.eval_metrics.bottleneck_code_stats import (
+    BottleneckCodeHistograms,
+    BottleneckCodeHistogramsConfig,
+    BottleneckCodeStats,
+    BottleneckCodeStatsConfig,
+)
 from param_decomp_lab.eval_metrics.ce_and_kl_losses import CEandKLLosses, CEandKLLossesConfig
 from param_decomp_lab.eval_metrics.ci_hidden_acts_recon_loss import (
     CIHiddenActsReconLoss,
@@ -41,7 +47,9 @@ from param_decomp_lab.eval_metrics.permuted_ci_plots import PermutedCIPlots, Per
 from param_decomp_lab.eval_metrics.uv_plots import UVPlots, UVPlotsConfig
 
 AnyEvalMetricConfig = Annotated[
-    CEandKLLossesConfig
+    BottleneckCodeHistogramsConfig
+    | BottleneckCodeStatsConfig
+    | CEandKLLossesConfig
     | CIHiddenActsReconLossConfig
     | CIHistogramsConfig
     | CI_L0Config
@@ -60,6 +68,8 @@ AnyEvalMetricConfig = Annotated[
 EVAL_METRIC_CLASSES: dict[str, type[Metric[Any]]] = {
     cls.__name__: cls
     for cls in (
+        BottleneckCodeHistograms,
+        BottleneckCodeStats,
         CEandKLLosses,
         CIHiddenActsReconLoss,
         CIHistograms,

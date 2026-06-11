@@ -21,6 +21,7 @@ from param_decomp.base_config import BaseConfig, Probability
 from param_decomp.ci_fns import CiConfig
 from param_decomp.decomposition_targets import DecompositionTargetConfig
 from param_decomp.masks import SamplingType
+from param_decomp.metrics.bottleneck_sparsity import BottleneckSparsityLossConfig
 from param_decomp.metrics.ci_masked_recon import CIMaskedReconLossConfig
 from param_decomp.metrics.ci_masked_recon_layerwise import CIMaskedReconLayerwiseLossConfig
 from param_decomp.metrics.ci_masked_recon_subset import CIMaskedReconSubsetLossConfig
@@ -54,7 +55,8 @@ class OptimizerConfig(BaseConfig):
 
 
 AnyLossMetricConfig = Annotated[
-    CIMaskedReconLayerwiseLossConfig
+    BottleneckSparsityLossConfig
+    | CIMaskedReconLayerwiseLossConfig
     | CIMaskedReconLossConfig
     | CIMaskedReconSubsetLossConfig
     | FaithfulnessLossConfig

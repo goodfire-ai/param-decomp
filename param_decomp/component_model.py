@@ -42,11 +42,14 @@ class CIOutputs:
     `lower_leaky` is multiplied into component contributions (bounded above by 1);
     `upper_leaky` is used by importance-minimality losses (bounded below by 0);
     `pre_sigmoid` is the raw CI-fn output.
+    `bottleneck_codes` is the sparse code from the CI fn's bottleneck (None when the CI
+    fn has no bottleneck); consumed by `BottleneckSparsityLoss`.
     """
 
     lower_leaky: dict[str, Float[Tensor, "... C"]]
     upper_leaky: dict[str, Float[Tensor, "... C"]]
     pre_sigmoid: dict[str, Tensor]
+    bottleneck_codes: Float[Tensor, "... D"] | None
 
 
 class ComponentModel(nn.Module):
@@ -324,13 +327,16 @@ class ComponentModel(nn.Module):
         if detach_inputs:
             pre_weight_acts = {k: v.detach() for k, v in pre_weight_acts.items()}
 
-        ci_fn_outputs = self.ci_fn(pre_weight_acts)
-        return self._apply_sigmoid_to_ci_outputs(ci_fn_outputs, sampling)
+        ci_fn_output = self.ci_fn(pre_weight_acts)
+        return self._apply_sigmoid_to_ci_outputs(
+            ci_fn_output.pre_sigmoid, sampling, bottleneck_codes=ci_fn_output.bottleneck_codes
+        )
 
     def _apply_sigmoid_to_ci_outputs(
         self,
         ci_fn_outputs: dict[str, Float[Tensor, "... C"]],
         sampling: SamplingType,
+        bottleneck_codes: Float[Tensor, "... D"] | None,
     ) -> CIOutputs:
         """Squash raw CI-fn outputs through the lower- and upper-leaky sigmoids."""
         causal_importances_lower_leaky = {}
@@ -359,6 +365,7 @@ class ComponentModel(nn.Module):
             lower_leaky=causal_importances_lower_leaky,
             upper_leaky=causal_importances_upper_leaky,
             pre_sigmoid=pre_sigmoid,
+            bottleneck_codes=bottleneck_codes,
         )
 
     def calc_weight_deltas(self) -> dict[str, Float[Tensor, "d_out d_in"]]:

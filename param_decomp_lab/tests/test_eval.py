@@ -58,6 +58,7 @@ class TestCIHistograms:
                 "layer2": upper_leaky_hard_sigmoid(pre_sigmoid["layer2"]),
             },
             pre_sigmoid=pre_sigmoid,
+            bottleneck_codes=None,
         )
 
     def test_n_batches_accum_enforcement(self, mock_model: Mock, sample_ci: CIOutputs):

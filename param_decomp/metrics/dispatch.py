@@ -8,6 +8,7 @@ from typing import Any
 from param_decomp.component_model import ComponentModel
 from param_decomp.configs import PDConfig
 from param_decomp.metrics.base import Metric
+from param_decomp.metrics.bottleneck_sparsity import BottleneckSparsityLoss
 from param_decomp.metrics.ci_masked_recon import CIMaskedReconLoss
 from param_decomp.metrics.ci_masked_recon_layerwise import CIMaskedReconLayerwiseLoss
 from param_decomp.metrics.ci_masked_recon_subset import CIMaskedReconSubsetLoss
@@ -29,6 +30,7 @@ from param_decomp.metrics.unmasked_recon import UnmaskedReconLoss
 LOSS_METRIC_CLASSES: dict[str, type[Metric[Any]]] = {
     cls.__name__: cls
     for cls in (
+        BottleneckSparsityLoss,
         CIMaskedReconLayerwiseLoss,
         CIMaskedReconLoss,
         CIMaskedReconSubsetLoss,

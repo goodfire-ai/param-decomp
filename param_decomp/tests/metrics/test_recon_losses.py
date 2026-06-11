@@ -261,6 +261,7 @@ def _make_ci_outputs(ci: dict[str, Tensor]) -> CIOutputs:
         lower_leaky=ci,
         upper_leaky=ci,
         pre_sigmoid={k: torch.ones_like(v) * 10 for k, v in ci.items()},
+        bottleneck_codes=None,
     )
 
 

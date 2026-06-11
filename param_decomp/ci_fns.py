@@ -1,17 +1,22 @@
 """Causal-importance function configs, CI-fn modules, and wrappers."""
 
 from dataclasses import dataclass
-from typing import Literal, Self, override
+from typing import Literal, NamedTuple, Self, override
 
 import einops
 import torch
 import torch.nn.functional as F
 from jaxtyping import Float
-from pydantic import Field, PositiveInt, model_validator
+from pydantic import Field, PositiveFloat, PositiveInt, model_validator
 from torch import Tensor, nn
 
 from param_decomp.base_config import BaseConfig
-from param_decomp.ci_nn_blocks import Linear, ParallelLinear, TransformerBlock
+from param_decomp.ci_nn_blocks import (
+    Linear,
+    ParallelLinear,
+    SparseBottleneck,
+    TransformerBlock,
+)
 from param_decomp.components import Components, EmbeddingComponents, get_module_input_dim
 
 LayerwiseCiFnType = Literal["mlp", "vector_mlp", "shared_mlp"]
@@ -53,6 +58,27 @@ class AttnConfig(BaseConfig):
     )
 
 
+class CiBottleneckConfig(BaseConfig):
+    """Sparse bottleneck between the CI transformer blocks and the output head.
+
+    The post-block residual stream is RMS-normed, projected down to `bottleneck_dim`,
+    and gated by a double-sided JumpReLU with per-dim learnable thresholds. The sparse
+    signed code is then decoded to per-component CI logits by an MLP with
+    `decoder_hidden_dims` hidden layers (empty list = linear decoder). Pair with
+    `BottleneckSparsityLoss` to actually sparsify the code.
+    """
+
+    bottleneck_dim: PositiveInt
+    decoder_hidden_dims: list[PositiveInt]
+    theta_init: PositiveFloat = Field(
+        default=0.05, description="Initial value of the per-dim gate threshold theta."
+    )
+    bandwidth: PositiveFloat = Field(
+        default=0.05,
+        description="Full width of the rectangular kernel for the theta pseudo-derivative.",
+    )
+
+
 class GlobalSharedTransformerCiConfig(BaseConfig):
     """Config for the global transformer CI fn.
 
@@ -68,6 +94,11 @@ class GlobalSharedTransformerCiConfig(BaseConfig):
         "If None, defaults to [4 * d_model].",
     )
     attn_config: AttnConfig
+    bottleneck: CiBottleneckConfig | None = Field(
+        default=None,
+        description="Optional sparse bottleneck between the transformer blocks and the "
+        "output head. None disables it.",
+    )
 
     @model_validator(mode="after")
     def validate_config(self) -> Self:
@@ -117,6 +148,17 @@ class GlobalCiConfig(BaseConfig):
 # Discriminated union (by `mode`) of every CI-fn config the trainer accepts. Pydantic
 # picks the right branch from the YAML `pd.ci_config.mode` literal.
 CiConfig = LayerwiseCiConfig | GlobalCiConfig
+
+
+class CiFnOutput(NamedTuple):
+    """Output of a CI-fn wrapper: per-layer CI logits plus optional bottleneck codes.
+
+    `bottleneck_codes` is the sparse signed code `[..., D]` from the global transformer's
+    bottleneck; None when no bottleneck is configured.
+    """
+
+    pre_sigmoid: dict[str, Float[Tensor, "... C"]]
+    bottleneck_codes: Float[Tensor, "... D"] | None
 
 
 class MLPCiFn(nn.Module):
@@ -233,12 +275,13 @@ class GlobalSharedMLPCiFn(nn.Module):
     def forward(
         self,
         input_acts: dict[str, Float[Tensor, "... d_in"]],
-    ) -> dict[str, Float[Tensor, "... C"]]:
+    ) -> CiFnOutput:
         inputs_list = [input_acts[name] for name in self.layer_order]
         concatenated = torch.cat(inputs_list, dim=-1)
         output = self.layers(concatenated)
         split_outputs = torch.split(output, self.split_sizes, dim=-1)
-        return {name: split_outputs[i] for i, name in enumerate(self.layer_order)}
+        outputs = {name: split_outputs[i] for i, name in enumerate(self.layer_order)}
+        return CiFnOutput(pre_sigmoid=outputs, bottleneck_codes=None)
 
 
 @dataclass
@@ -269,6 +312,7 @@ class GlobalSharedTransformerCiFn(nn.Module):
         max_len: int,
         mlp_hidden_dims: list[int] | None = None,
         rope_base: float = 10000.0,
+        bottleneck_config: CiBottleneckConfig | None = None,
     ):
         super().__init__()
 
@@ -286,7 +330,25 @@ class GlobalSharedTransformerCiFn(nn.Module):
         total_c = sum(config.C for config in target_model_layer_configs.values())
 
         self._input_projector = Linear(total_input_dim, d_model, nonlinearity="relu")
-        self._output_head = Linear(d_model, total_c, nonlinearity="linear")
+
+        self._bottleneck: SparseBottleneck | None = None
+        if bottleneck_config is None:
+            self._output_head: nn.Module = Linear(d_model, total_c, nonlinearity="linear")
+        else:
+            self._bottleneck = SparseBottleneck(
+                input_dim=d_model,
+                bottleneck_dim=bottleneck_config.bottleneck_dim,
+                theta_init=bottleneck_config.theta_init,
+                bandwidth=bottleneck_config.bandwidth,
+            )
+            decoder = nn.Sequential()
+            in_dim = bottleneck_config.bottleneck_dim
+            for hidden_dim in bottleneck_config.decoder_hidden_dims:
+                decoder.append(Linear(in_dim, hidden_dim, nonlinearity="relu"))
+                decoder.append(nn.GELU())
+                in_dim = hidden_dim
+            decoder.append(Linear(in_dim, total_c, nonlinearity="linear"))
+            self._output_head = decoder
 
         self._blocks = nn.ModuleList(
             [
@@ -305,7 +367,7 @@ class GlobalSharedTransformerCiFn(nn.Module):
     def forward(
         self,
         input_acts: dict[str, Float[Tensor, "... d_in"]],
-    ) -> dict[str, Float[Tensor, "... C"]]:
+    ) -> CiFnOutput:
         inputs_list = [
             F.rms_norm(input_acts[name], (input_acts[name].shape[-1],)) for name in self.layer_order
         ]
@@ -323,15 +385,21 @@ class GlobalSharedTransformerCiFn(nn.Module):
         for block in self._blocks:
             x = block(x)
 
+        codes: Tensor | None = None
+        if self._bottleneck is not None:
+            codes = self._bottleneck(x)
+            x = codes
+
         output = self._output_head(x)
 
         if added_seq_dim:
             output = output.squeeze(-2)
+            codes = codes.squeeze(-2) if codes is not None else None
 
         split_outputs = torch.split(output, self.split_sizes, dim=-1)
         outputs = {name: split_outputs[i] for i, name in enumerate(self.layer_order)}
 
-        return outputs
+        return CiFnOutput(pre_sigmoid=outputs, bottleneck_codes=codes)
 
 
 class LayerwiseCiFnWrapper(nn.Module):
@@ -363,7 +431,7 @@ class LayerwiseCiFnWrapper(nn.Module):
     def forward(
         self,
         layer_acts: dict[str, Float[Tensor, "..."]],
-    ) -> dict[str, Float[Tensor, "... C"]]:
+    ) -> CiFnOutput:
         outputs: dict[str, Float[Tensor, "... C"]] = {}
 
         for layer_name in self.layer_names:
@@ -378,7 +446,7 @@ class LayerwiseCiFnWrapper(nn.Module):
 
             outputs[layer_name] = ci_fn(ci_fn_input)
 
-        return outputs
+        return CiFnOutput(pre_sigmoid=outputs, bottleneck_codes=None)
 
 
 class GlobalCiFnWrapper(nn.Module):
@@ -402,7 +470,7 @@ class GlobalCiFnWrapper(nn.Module):
     def forward(
         self,
         layer_acts: dict[str, Float[Tensor, "..."]],
-    ) -> dict[str, Float[Tensor, "... C"]]:
+    ) -> CiFnOutput:
         transformed: dict[str, Float[Tensor, ...]] = {}
 
         for layer_name, acts in layer_acts.items():
@@ -474,7 +542,19 @@ def _make_global_ci_fn(
                 mlp_hidden_dims=transformer_cfg.mlp_hidden_dim,
                 max_len=transformer_cfg.attn_config.max_len,
                 rope_base=transformer_cfg.attn_config.rope_base,
+                bottleneck_config=transformer_cfg.bottleneck,
             )
+
+
+def get_bottleneck(
+    ci_fn: "LayerwiseCiFnWrapper | GlobalCiFnWrapper",
+) -> SparseBottleneck | None:
+    """The CI fn's sparse bottleneck, or None when not configured."""
+    if isinstance(ci_fn, GlobalCiFnWrapper) and isinstance(
+        ci_fn._global_ci_fn, GlobalSharedTransformerCiFn
+    ):
+        return ci_fn._global_ci_fn._bottleneck
+    return None
 
 
 def make_ci_fn_wrapper(

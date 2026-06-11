@@ -1,12 +1,14 @@
 """Generic transformer building blocks used by the CI functions."""
 
-from typing import override
+import math
+from typing import Any, override
 
 import einops
 import torch
 import torch.nn.functional as F
 from jaxtyping import Float
 from torch import Tensor, nn
+from torch.autograd import Function
 
 from param_decomp.components import _NonlinearityType, init_param_
 
@@ -48,6 +50,84 @@ class Linear(nn.Module):
     @override
     def forward(self, x: Float[Tensor, "... d_in"]) -> Float[Tensor, "... d_out"]:
         return einops.einsum(x, self.W, "... d_in, d_in d_out -> ... d_out") + self.b
+
+
+class _DoubleSidedJumpReLUFunction(Function):
+    """Forward: `u * 1[|u| > theta]`. STE on `u`; rectangular-kernel pseudo-derivative on `theta`."""
+
+    @override
+    @staticmethod
+    def forward(ctx: Any, u: Tensor, theta: Tensor, bandwidth: float) -> Tensor:
+        gate = (u.abs() > theta).to(u.dtype)
+        ctx.save_for_backward(u, theta, gate)
+        ctx.bandwidth = bandwidth
+        return u * gate
+
+    @override
+    @staticmethod
+    def backward(ctx: Any, *grad_outputs: Tensor) -> tuple[Tensor, Tensor, None]:
+        grad_output = grad_outputs[0]
+        u, theta, gate = ctx.saved_tensors
+        bandwidth = ctx.bandwidth
+
+        grad_u = grad_output * gate
+
+        # dz/dtheta = -u * delta(|u| - theta), with delta approximated by a rectangular
+        # kernel of width `bandwidth` (Rajamanoharan et al. 2024, double-sided).
+        boundary = ((u.abs() - theta).abs() < bandwidth / 2).to(u.dtype)
+        dz_dtheta = -(u / bandwidth) * boundary
+        # theta is per-dim [D]; reduce over all leading (batch/seq) dims
+        grad_theta = (grad_output * dz_dtheta).sum(dim=tuple(range(grad_output.ndim - 1)))
+
+        return grad_u, grad_theta, None
+
+
+class DoubleSidedJumpReLU(nn.Module):
+    """Sign-preserving JumpReLU: `z = u * 1[|u| > theta]` with per-dim learnable threshold.
+
+    `theta = exp(log_theta)` keeps thresholds positive by construction. Backward uses a
+    straight-through estimator on `u` (gradient passes where the gate is open) and a
+    rectangular-kernel pseudo-derivative on `theta`, so `theta` only receives gradient
+    from elements with `|u|` within `bandwidth / 2` of the threshold. The gate is applied
+    to the magnitude but preserves sign, so codes can be negative.
+    """
+
+    def __init__(self, dim: int, theta_init: float, bandwidth: float):
+        super().__init__()
+        assert theta_init > 0, f"theta_init must be positive, got {theta_init}"
+        assert bandwidth > 0, f"bandwidth must be positive, got {bandwidth}"
+        self.log_theta = nn.Parameter(torch.full((dim,), math.log(theta_init)))
+        self.bandwidth = bandwidth
+
+    @property
+    def theta(self) -> Float[Tensor, " D"]:
+        return self.log_theta.exp()
+
+    @override
+    def forward(self, u: Float[Tensor, "... D"]) -> Float[Tensor, "... D"]:
+        return _DoubleSidedJumpReLUFunction.apply(u, self.theta, self.bandwidth)  # pyright: ignore[reportReturnType]
+
+
+class SparseBottleneck(nn.Module):
+    """RMS-norm → linear down-projection → `DoubleSidedJumpReLU` gate.
+
+    Maps `[..., input_dim]` to a sparse signed code `[..., bottleneck_dim]`. The RMS norm
+    pins the gate-input scale so `theta_init` / `bandwidth` are meaningful regardless of
+    the upstream activation scale.
+    """
+
+    def __init__(self, input_dim: int, bottleneck_dim: int, theta_init: float, bandwidth: float):
+        super().__init__()
+        self.input_dim = input_dim
+        self.bottleneck_dim = bottleneck_dim
+        self._proj = Linear(input_dim, bottleneck_dim, nonlinearity="linear")
+        self.gate = DoubleSidedJumpReLU(
+            dim=bottleneck_dim, theta_init=theta_init, bandwidth=bandwidth
+        )
+
+    @override
+    def forward(self, x: Float[Tensor, "... d_in"]) -> Float[Tensor, "... D"]:
+        return self.gate(self._proj(F.rms_norm(x, (x.shape[-1],))))
 
 
 class RoPEEmbedding(nn.Module):
