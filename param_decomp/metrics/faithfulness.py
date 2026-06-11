@@ -35,6 +35,11 @@ class FaithfulnessLoss(Metric[FaithfulnessLossConfig]):
     log_namespace = "loss"
     short_name = "Faith"
 
+    @property
+    @override
+    def needs_target_out(self) -> bool:
+        return False
+
     @override
     def reset(self) -> None:
         self.sum_loss = torch.zeros((), device=self.device)

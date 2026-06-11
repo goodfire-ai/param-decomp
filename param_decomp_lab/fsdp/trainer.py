@@ -38,6 +38,7 @@ and the recon loss is invariant across every LM trainer (single-pool, 2-pool,
 import os
 import time
 from collections import defaultdict
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Self, cast
 
@@ -437,6 +438,15 @@ class FsdpLMTrainer:
             next(train_iterator)
 
         component_model = self.adapter
+        # When no loss metric reads `ctx.target_out` as logits (all recon metrics fused /
+        # self-targeted), run the whole loss step under the LM-head bypass: the clean
+        # cache-forward then yields the pre-LM-head hidden state and no vocab-scale tensor
+        # is ever materialized on a train step (bf16 [b, s, 128k] is ~4 GB at per-rank
+        # batch 8). Eval passes are not wrapped — eval metrics get real logits.
+        if any(m.needs_target_out for m in self.loss_metrics.values()):
+            target_forward_ctx = nullcontext
+        else:
+            target_forward_ctx = self.lm.bypass_lm_head
 
         if self.step == 0 and pd_config.faithfulness_warmup_steps > 0:
             run_faithfulness_warmup(component_model, self._component_params, pd_config)
@@ -468,7 +478,7 @@ class FsdpLMTrainer:
             # on the raw batch outside `run_loss_step` (which does its own device move), so the
             # token ids must already be on-device or the embedding lookup mixes cpu/cuda.
             batch = move_batch_to_device(next(train_iterator), device)
-            with self.adapter.use_cached_residual(batch):
+            with self.adapter.use_cached_residual(batch), target_forward_ctx():
                 _, batch_log_data = run_loss_step(
                     batch=batch,
                     step=step,

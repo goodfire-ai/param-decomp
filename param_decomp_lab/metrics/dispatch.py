@@ -14,9 +14,14 @@ from param_decomp.metrics.base import Metric
 from param_decomp.metrics.dispatch import LOSS_METRIC_CLASSES
 from param_decomp_config.pd import PDConfig
 from param_decomp_lab.metrics.chunkwise_subset_recon import ChunkwiseSubsetReconLoss
+from param_decomp_lab.metrics.fused_persistent_pgd_recon import (
+    PersistentPGDReconLoss,
+    PersistentPGDReconSubsetLoss,
+)
 
 LAB_LOSS_METRIC_CLASSES: dict[str, type[Metric[Any]]] = {
-    cls.__name__: cls for cls in (ChunkwiseSubsetReconLoss,)
+    cls.__name__: cls
+    for cls in (ChunkwiseSubsetReconLoss, PersistentPGDReconLoss, PersistentPGDReconSubsetLoss)
 }
 
 ALL_LOSS_METRIC_CLASSES: dict[str, type[Metric[Any]]] = {

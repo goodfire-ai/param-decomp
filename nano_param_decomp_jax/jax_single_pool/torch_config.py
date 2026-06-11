@@ -43,13 +43,12 @@ from jax_single_pool.config import (
     ExperimentConfig,
     FaithWarmupConfig,
     LlamaSimpleMLPTargetConfig,
-    ReconConfig,
     TargetConfig,
     VUOptimizerConfig,
 )
 from jax_single_pool.llama8b import SITE_NAME_PATTERN, canonical_site_cs
 from jax_single_pool.lm import SiteC
-from jax_single_pool.train import AdversaryConfig
+from jax_single_pool.recon import build_recon_terms
 from param_decomp_config.eval_metrics import CEandKLLossesConfig, CI_L0Config
 from param_decomp_config.lm import (
     HFTarget,
@@ -57,16 +56,8 @@ from param_decomp_config.lm import (
     LMExperimentConfig,
     PretrainedTarget,
 )
-from param_decomp_config.losses import (
-    ChunkwiseSubsetReconLossConfig,
-    FaithfulnessLossConfig,
-    ImportanceMinimalityLossConfig,
-    PersistentPGDReconLossConfig,
-    PGDReconLossConfig,
-    StochasticReconSubsetLossConfig,
-    UniformKSubsetRoutingConfig,
-)
-from param_decomp_config.pd import OptimizerConfig
+from param_decomp_config.losses import PGDReconLossConfig
+from param_decomp_config.pd import AnyLossMetricConfig, OptimizerConfig
 from param_decomp_config.schedule import ScheduleConfig
 
 OFFLINE_EVAL_METRIC_TYPES = frozenset(
@@ -166,47 +157,13 @@ def _assert_plain_adamw(optimizer: OptimizerConfig, who: str) -> None:
     assert optimizer.weight_decay == 0.0, f"{who}: weight_decay must be 0"
 
 
-def _losses(
-    cfg: LMExperimentConfig, n_sites: int
-) -> tuple[float, float, ImportanceMinimalityLossConfig, AdversaryConfig, int, int]:
-    """Returns (faith_coeff, stoch_coeff, imp_min, adversary, sites_per_chunk,
-    n_recon_samples). The four production losses (faith, imp-min, stochastic recon, ONE
-    adversary — persistent PPGD or fresh PGD) must each appear exactly once; anything
-    else refuses. `imp_min`/`adversary` pass through as the SHARED configs —
-    `make_train_step` asserts the subset it implements."""
-    faith = stoch = imp = adversary = None
-    sites_per_chunk = n_recon_samples = None
-    for metric in cfg.pd.loss_metrics:
-        assert metric.coeff is not None
-        match metric:
-            case FaithfulnessLossConfig():
-                assert faith is None
-                faith = metric.coeff
-            case ImportanceMinimalityLossConfig():
-                assert imp is None
-                imp = metric
-            case StochasticReconSubsetLossConfig():
-                assert stoch is None and sites_per_chunk is None
-                assert isinstance(metric.routing, UniformKSubsetRoutingConfig), metric.routing
-                stoch = metric.coeff
-                sites_per_chunk = n_sites
-                n_recon_samples = cfg.pd.n_mask_samples
-            case ChunkwiseSubsetReconLossConfig():
-                assert stoch is None and sites_per_chunk is None
-                assert isinstance(metric.routing, UniformKSubsetRoutingConfig), metric.routing
-                stoch = metric.coeff
-                sites_per_chunk = metric.sites_per_chunk
-                n_recon_samples = metric.n_samples
-            case PersistentPGDReconLossConfig() | PGDReconLossConfig():
-                assert adversary is None, "exactly one adversary loss"
-                adversary = metric
-            case _:
-                raise AssertionError(f"unsupported loss metric {metric.type!r}")
-    assert faith is not None and imp is not None and stoch is not None and adversary is not None, (
-        f"need all four production losses, got {[m.type for m in cfg.pd.loss_metrics]}"
-    )
-    assert sites_per_chunk is not None and n_recon_samples is not None
-    return faith, stoch, imp, adversary, sites_per_chunk, n_recon_samples
+def _losses(cfg: LMExperimentConfig, site_names: tuple[str, ...]) -> tuple[AnyLossMetricConfig, ...]:
+    """Pass the shared loss configs through VERBATIM (yaml order — RNG-load-bearing),
+    after running them through `build_recon_terms` so unsupported metrics refuse at
+    convert time rather than on the GPUs."""
+    loss_metrics = tuple(cfg.pd.loss_metrics)
+    build_recon_terms(loss_metrics, site_names, cfg.pd.n_mask_samples, cfg.pd.sampling)
+    return loss_metrics
 
 
 def _data(cfg: LMExperimentConfig) -> DataConfig:
@@ -296,9 +253,7 @@ def convert_torch_lm_config(
     assert vu_opt.grad_clip_norm is not None, "components grad clip is part of the method"
     assert ci_opt.grad_clip_norm is None, "CI-fn grad clip unsupported"
 
-    faith_coeff, stoch_coeff, imp_min, adversary, sites_per_chunk, n_recon_samples = _losses(
-        torch_cfg, n_sites
-    )
+    loss_metrics = _losses(torch_cfg, tuple(sc.name for sc in target.sites))
     data = _data(torch_cfg)
 
     cadence = torch_cfg.cadence
@@ -312,15 +267,10 @@ def convert_torch_lm_config(
         steps=torch_cfg.pd.steps,
         target=target,
         data=data,
-        faith_coeff=faith_coeff,
-        stoch_coeff=stoch_coeff,
-        imp_min=imp_min,
-        adversary=adversary,
-        recon=ReconConfig(
-            sites_per_chunk=sites_per_chunk,
-            n_samples=n_recon_samples,
-            remat_forwards=remat_recon_forwards,
-        ),
+        loss_metrics=loss_metrics,
+        n_mask_samples=torch_cfg.pd.n_mask_samples,
+        sampling=torch_cfg.pd.sampling,
+        remat_recon_forwards=remat_recon_forwards,
         vu_optimizer=VUOptimizerConfig(
             lr=vu_opt.lr_schedule.start_val, grad_clip_norm=vu_opt.grad_clip_norm
         ),

@@ -41,6 +41,17 @@ class Metric[TConfig: BaseConfig](ABC):
         self._bound = False
 
     @property
+    def needs_target_out(self) -> bool:
+        """Whether `update` reads `ctx.target_out` as the clean-forward LOGITS.
+
+        Metrics that compute their own recon target (or run under the vendored LM-head
+        bypass) return False; when every loss metric does, the trainer may run the clean
+        forward under the bypass and `ctx.target_out` is the pre-LM-head hidden state —
+        no vocab-scale tensor is ever materialized on the train step.
+        """
+        return True
+
+    @property
     def instance_key(self) -> str:
         """Identity for dict keys and log-key suffixes; defaults to the class name.
 

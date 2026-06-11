@@ -179,6 +179,13 @@ class ChunkwiseSubsetReconLoss(Metric[ChunkwiseSubsetReconLossConfig]):
     log_namespace = "loss"
     short_name = "ChunkSubsetRecon"
 
+    @property
+    @override
+    def needs_target_out(self) -> bool:
+        """Never reads `ctx.target_out` — the recon target is its own clean forward
+        under the strategy context (`target_local`)."""
+        return False
+
     @override
     def bind(self, *, model: ComponentModelProtocol, device: str) -> None:
         super().bind(model=model, device=device)

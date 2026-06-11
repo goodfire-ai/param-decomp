@@ -14,6 +14,7 @@ else (SPEC §3):
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -21,16 +22,7 @@ from jax import random
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from jax_single_pool.lm import SiteSpec
-from param_decomp_config.losses import (
-    AdamPGDConfig,
-    PersistentPGDReconLossConfig,
-    PGDReconLossConfig,
-)
-
-AdversaryConfig = PersistentPGDReconLossConfig | PGDReconLossConfig
-"""The recon adversary, in the SHARED torch schema. `make_train_step` asserts the
-subset this trainer implements (PPGD: Adam source optimizer, constant-after-warmup
-lr, `sc` scope)."""
+from param_decomp_config.losses import AdamPGDConfig
 
 
 @jax.tree_util.register_dataclass
@@ -59,15 +51,16 @@ def init_persistent_sources(
 
 def init_fresh_pgd_sources(
     sites: tuple[SiteSpec, ...],
-    cfg: PGDReconLossConfig,
+    init: Literal["random", "ones", "zeroes"],
+    scope: Literal["c", "bc", "bsc"],
     batch: int,
     seq: int,
     key: PRNGKeyArray,
 ) -> dict[str, Array]:
     """Per-site fresh adversarial sources (torch `_init_adv_sources`): trailing channel
-    is the weight-delta source; shape per `cfg.mask_scope` (shape-spelled: `bsc` ->
-    `(B, T, C+1)`, `bc` -> `(B, 1, C+1)`, `c` -> `(1, 1, C+1)`); values per `cfg.init`."""
-    match cfg.mask_scope:
+    is the weight-delta source; shape per `scope` (shape-spelled: `bsc` ->
+    `(B, T, C+1)`, `bc` -> `(B, 1, C+1)`, `c` -> `(1, 1, C+1)`)."""
+    match scope:
         case "bsc":
             leading = (batch, seq)
         case "bc":
@@ -78,7 +71,7 @@ def init_fresh_pgd_sources(
     sources = {}
     for site, site_key in zip(sites, keys, strict=True):
         shape = (*leading, site.C + 1)
-        match cfg.init:
+        match init:
             case "random":
                 sources[site.name] = random.uniform(site_key, shape, jnp.float32)
             case "ones":
