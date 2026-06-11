@@ -1,0 +1,9 @@
+config:
+  llm:
+    type: openrouter
+    model: google/gemini-3.1-pro-preview
+    reasoning_effort: medium
+  template_strategy:
+    type: canon
+  # limit omitted -> null: label all alive components (resumes past the 500 smoke labels)
+evals: null               # labels only — no detection/fuzzing

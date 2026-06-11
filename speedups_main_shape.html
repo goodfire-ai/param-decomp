@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speedups for the main-branch shape (2026-06-10)</title>
+<style>
+  :root {
+    --ink: #1c2330;
+    --muted: #5b6678;
+    --accent: #2b5fad;
+    --accent2: #8a4f1d;
+    --bg: #fbfaf7;
+    --card: #ffffff;
+    --line: #dfe3ea;
+    --good: #1e7a3c;
+    --bad: #a33333;
+    --warn: #9a7a18;
+  }
+  html { font-size: 17px; }
+  body {
+    font-family: "Charter", "Georgia", serif;
+    color: var(--ink);
+    background: var(--bg);
+    margin: 0;
+    line-height: 1.55;
+  }
+  .wrap { max-width: 60rem; margin: 0 auto; padding: 2.5rem 1.5rem 6rem; }
+  h1 { font-size: 1.9rem; line-height: 1.2; margin-bottom: .3rem; }
+  h2 { font-size: 1.35rem; margin-top: 2.8rem; border-bottom: 2px solid var(--line); padding-bottom: .3rem; }
+  h3 { font-size: 1.08rem; margin-top: 1.8rem; color: var(--accent); }
+  .subtitle { color: var(--muted); margin-top: 0; }
+  code, pre {
+    font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    font-size: .85em;
+    background: #f0efe9;
+    border-radius: 4px;
+    padding: .08em .35em;
+  }
+  pre { padding: .8rem 1rem; overflow-x: auto; line-height: 1.45; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { border: 1px solid var(--line); padding: .45rem .6rem; text-align: left; vertical-align: top; }
+  th { background: #eef1f6; font-family: "Helvetica Neue", Arial, sans-serif; font-size: .82rem; letter-spacing: .02em; }
+  tr:nth-child(even) td { background: #f7f8fa; }
+  .tldr {
+    background: #eef4fd;
+    border-left: 4px solid var(--accent);
+    padding: 1rem 1.2rem;
+    border-radius: 0 8px 8px 0;
+    margin: 1.5rem 0;
+  }
+  .tldr p:first-child { margin-top: 0; }
+  .tldr p:last-child { margin-bottom: 0; }
+  .idea {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-left: 5px solid var(--accent2);
+    border-radius: 0 8px 8px 0;
+    padding: .9rem 1.3rem;
+    margin: 1.2rem 0;
+  }
+  .idea h3 { margin-top: 0; color: var(--accent2); }
+  .idea .meta { font-family: "Helvetica Neue", Arial, sans-serif; font-size: .78rem; color: var(--muted); letter-spacing: .02em; margin-bottom: .5rem; }
+  .principle {
+    background: #fdf6ea;
+    border: 1px solid #ecd9ad;
+    border-radius: 8px;
+    padding: .9rem 1.2rem;
+    margin: 1.4rem 0;
+  }
+  .footnote { color: var(--muted); font-size: .85rem; }
+  .toc { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .9rem 1.4rem; font-size: .92rem; }
+  .toc ol { margin: .4rem 0 .2rem 1.1rem; padding: 0; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .tag { display: inline-block; font-family: "Helvetica Neue", Arial, sans-serif; font-size: .7rem; font-weight: 700;
+         letter-spacing: .05em; padding: .12em .55em; border-radius: 99px; vertical-align: middle; }
+  .tag.eng { background: #e2f3e7; color: var(--good); }
+  .tag.alg { background: #e5edfb; color: var(--accent); }
+  .tag.cond { background: #f6efd8; color: var(--warn); }
+  .num { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Speedups for the main-branch shape</h1>
+<p class="subtitle">Assumes the parallel-layerwise-runs macro-strategy is likely <em>off</em> the table and the loss shape stays roughly what main runs today: stochastic subset recon + importance minimality + faithfulness, with PPGD's role open (kept, shrunk, or replaced by more/better stochastic samples). Re-derived from a fresh read of main, not from the prior docs. &nbsp;·&nbsp; 2026-06-10 &nbsp;·&nbsp; supersedes <code>ppgd_speedups_strategy_robust.html</code> where they conflict.</p>
+
+<div class="tldr">
+<p><strong>TL;DR.</strong> A fresh cost model of a main-branch training step (llama-l18 config) says the step is ~450 bf16-TFLOP-equivalents per rank, split roughly: PPGD ~55%, stochastic-subset recon ~18%, frozen-<em>prefix</em> recompute hidden inside every masked forward ~16%, faithfulness/weight-delta matmuls in fp32 ~9%, CI fn ~3%. Four findings change the picture from the previous docs:</p>
+<p><strong>(1) Backwards are already suffix-only</strong> — autograd stops at the decomposed layer because nothing upstream requires grad — but every masked <em>forward</em> still pays the full prefix. For the single-layer configs in flight, prefix caching (already written on the branch) applies to main <em>today</em> and removes ~16% of the step with zero quality risk. <strong>(2) PPGD's <code>before_backward</code> duplicates an entire backward</strong> that <code>total_loss.backward()</code> already performs — the source tensors are leaves; their grads are deposited for free. ~10% of the step for a ~10-line change. <strong>(3) The fp32 weight-delta materialization + faithfulness backward is a sleeping giant</strong>: ~9% on the one-layer config and it scales with <em>total component params</em>, so on any full-model config it becomes the dominant term. A factored delta-application plus a sketched (Hutchinson) faithfulness loss removes every weight-shaped matmul from the step. <strong>(4) The hot path forces ~18 GPU→CPU syncs per step</strong> (loss <code>.item()</code>s and tensor asserts) at a per-rank batch of 4×512 — classic launch-starvation territory; cadence-gate or <code>_assert_async</code> them.</p>
+<p>Algorithmically, the biggest single lever is unchanged if PPGD stays — kill warmup (n_warmup 2→0 via vertex warm-start + optimism, ~35% of the step) — and if PPGD goes, the natural replacement is already in the house style: <em>tilted (CVaR) weighting over the stochastic subset samples you already pay for</em>, which buys adversarial pressure with zero extra forwards at n=1 (per-position tilting) and modest cost at n&gt;1. After the per-step wins stack (~2.5–3×), the remaining multiplier on everything is <em>step count</em> (100k–200k): a Muon-class optimizer for the matrix-shaped U/V is the highest-upside unexplored axis.</p>
+</div>
+
+<div class="toc">
+<strong>Contents</strong>
+<ol>
+  <li><a href="#shape">The shape being optimized</a></li>
+  <li><a href="#costmodel">Cost model of one training step</a></li>
+  <li><a href="#eng">Engineering improvements</a></li>
+  <li><a href="#alg">Algorithmic improvements</a></li>
+  <li><a href="#carryover">What carries over from the previous docs, what's dead, what flipped</a></li>
+  <li><a href="#experiments">Experiment / measurement plan</a></li>
+</ol>
+</div>
+
+<h2 id="shape">1 · The shape being optimized</h2>
+
+<p>Reference: the live llama-l18 config (<code>param_decomp_lab/experiments/lm/llama-3.1-8b-l18.yaml</code>) — Llama-3.1-8B, three matrices of layer 18 decomposed at C=24576 each, batch 128 / dp 32 (per-rank 4×512 tokens), losses = ImportanceMinimality + StochasticReconSubset (uniform-k, 1 sample) + PersistentPGDRecon (n_warmup=2, per-batch-per-position) + Faithfulness (coeff 1e5), <code>use_delta_component: true</code>, bf16 autocast. One step of <code>Trainer.run</code> (<code>param_decomp/optimize.py:524-670</code>) does:</p>
+
+<pre>1. calc_weight_deltas()             — U@V materialized per module, fp32, outside autocast
+2. target forward (cache inputs)    — full 8B forward, no graph (frozen)
+3. CI fn forward                    — 1.2B-param shared transformer + heads
+4. metric updates:
+     StochasticReconSubset          — 1 masked forward
+     PPGD warmup ×2                 — masked forward + backward-to-sources, each
+     PPGD final                     — 1 masked forward
+     Faithfulness                   — ‖Δ‖² on the materialized deltas
+5. before_backward (PPGD)           — autograd.grad to sources, retain_graph=True
+6. total_loss.backward()            — components + CI fn (+ sources again, unused)
+7. optimizer steps, source step</pre>
+
+<p>Two structural facts that the rest of this doc leans on:</p>
+
+<div class="principle">
+<strong>Backwards are suffix-only; forwards are not.</strong> Every grad-requiring leaf (component masks, CI values, sources, weight deltas) lives at the decomposed sites or later. Autograd therefore never traverses the frozen prefix below layer 18 — each backward costs ≈ 2× the <em>suffix</em>, not 2× the model. But every masked <em>forward</em> recomputes the prefix from scratch, and it's identical to the target forward's prefix every time. On the l18 config that is 18/32 of an 8B forward, four times per step, pure waste.
+<br><br>
+<strong>Weight-shaped work scales with total components, not with the batch.</strong> <code>calc_weight_deltas</code> + the faithfulness backward cost O(C·d_in·d_out) per module per step, replicated identically on all 32 ranks, in fp32 by design (<code>optimize.py:548</code>). On a one-layer config it's ~9% of the step; decompose all 32 layers and it becomes the single biggest term. Any plan that ends at full-model decomposition has to fix this line item.
+</div>
+
+<h2 id="costmodel">2 · Cost model of one training step</h2>
+
+<p>Per rank, per step, llama-l18 config, in bf16-TFLOP-equivalents (fp32 matmuls counted ~2×). Static estimates from shapes — to be checked against a profile (E7) before anything expensive is built on them.</p>
+
+<table>
+<tr><th>Phase</th><th class="num">~TF</th><th>Notes</th></tr>
+<tr><td>Target forward (cache inputs)</td><td class="num">33</td><td>2·8B·2048 tokens; no graph</td></tr>
+<tr><td>CI fn forward</td><td class="num">5</td><td>4-block d4096 trunk + 4096→73728 head</td></tr>
+<tr><td>Weight-delta materialization (fp32)</td><td class="num">~17</td><td>3 × U@V at C·d_in·d_out; replicated on every rank</td></tr>
+<tr><td>Stochastic subset recon: 1 masked fwd + share of backward</td><td class="num">~81</td><td>fwd 39 (prefix 18.5 + suffix 14.5 + component overhead 6.3), bwd ≈ 2×suffix-side ≈ 42</td></tr>
+<tr><td>PPGD warmup ×2 (fwd + bwd-to-sources each)</td><td class="num">~162</td><td>the only <em>serial</em> depth in the step</td></tr>
+<tr><td>PPGD final fwd + duplicated source-grad bwd + share of total bwd</td><td class="num">~123</td><td>39 + 42 + 42; the middle 42 is pure duplication (E2)</td></tr>
+<tr><td>Faithfulness backward (fp32, weight-shaped)</td><td class="num">~23</td><td>dU, dV from dense Δ</td></tr>
+<tr><td>CI fn backward, ImpMin, misc</td><td class="num">~12</td><td></td></tr>
+<tr><td><strong>Total</strong></td><td class="num"><strong>~455</strong></td><td>PPGD ≈ 245 (54%) · prefix recompute ≈ 74 (16%) · faith/delta ≈ 40 (9%)</td></tr>
+</table>
+
+<p>Component overhead per masked forward is real but secondary here: C(d_in+d_out)/(d_in·d_out) ≈ 7.7× the original site cost, but one MLP layer is small against an 8B suffix. It becomes primary in full-model configs — same scaling warning as faithfulness.</p>
+
+<p>Beyond FLOPs, two non-compute taxes: (a) each recon loss materializes a 2048×128k logits tensor and runs <code>log_softmax</code> over it (<code>param_decomp_lab/batch_and_loss_fns.py:61-70</code>) — memory-bandwidth-heavy and a peak-memory spike, 4–5× per step; (b) ~18 forced GPU→CPU syncs per step (see E1). DDP all-reduces ~10GB of fp32 grads (1.36B component + 1.2B CI-fn params) per step — overlapped and probably not binding now, but it becomes binding once compute drops 2–3×.</p>
+
+<h2 id="eng">3 · Engineering improvements <span class="tag eng">NO ALGORITHM CHANGE</span></h2>
+
+<p>Ordered by payoff/effort. E1–E4 are quality-neutral by construction.</p>
+
+<div class="idea">
+<h3>E1 · Prefix caching for masked forwards (apply the branch's residual cache to main, today)</h3>
+<p class="meta">SAVES: ~16% of step (more once PPGD shrinks) · EFFORT: port from branch · RISK: none (bit-exact)</p>
+<p>All decomposed sites sit in one layer, so the residual stream entering that layer is identical across the target forward and all 4 masked forwards. Cache it once per batch from the target forward; start every masked forward there. <code>use_cached_residual</code> on <code>feature/multipool</code> already implements this — the previous doc filed it under "keyed to layerwise runs", but it applies to the current main-branch single-layer configs unchanged. The only thing to add is a guard: assert all decomposed sites share a layer (or take the earliest), so multi-layer configs fall back to full forwards rather than silently breaking. Note backwards gain nothing (already suffix-only) — this is a forward-side win, which is exactly why it stacks with E2 rather than overlapping it.</p>
+</div>
+
+<div class="idea">
+<h3>E2 · Delete the duplicated PPGD source-grad backward</h3>
+<p class="meta">SAVES: ~10% of step · EFFORT: ~10 lines · RISK: none (exact rescale)</p>
+<p>PPGD sources are leaf tensors with <code>requires_grad=True</code> (<code>persistent_pgd_state.py:256</code>). <code>total_loss.backward()</code> already deposits <code>coeff · ∂L/∂source</code> into <code>source.grad</code>. Yet <code>before_backward</code> runs a whole separate <code>autograd.grad(..., retain_graph=True)</code> over the same subgraph (<code>persistent_pgd_recon.py:243-246</code>) — a full extra suffix backward per step, plus the memory cost of retaining the graph. Fix: drop <code>before_backward</code>'s grad pass; in <code>after_backward</code>, read <code>source.grad</code>, divide by the coeff, zero it, do the scope's all-reduce there (per-batch-per-position skips it anyway), then step. Identical update, one backward fewer.</p>
+</div>
+
+<div class="idea">
+<h3>E3 · Kill the weight-shaped matmuls: factored delta + sketched faithfulness</h3>
+<p class="meta">SAVES: ~9% now, dominant share on full-model configs · EFFORT: days · RISK: low (delta part exact) / E-X5 (sketch part)</p>
+<p>Three sub-moves, escalating: <strong>(a)</strong> The fp32-outside-autocast materialization exists for FaithfulnessLoss precision; the delta-<em>component</em> path doesn't need fp32 — split precisions (bf16/TF32 materialization for the masked-forward path) for a free ~2× on this term. <strong>(b)</strong> Apply the delta in factored form inside masked forwards: <code>Δx = Wx − U(Vx)</code> — token-shaped instead of weight-shaped, and its backward to U,V is rank-(tokens) instead of two dense C·d_in·d_out matmuls. At 2048 tokens/rank and C=24.6k this is cheaper even before counting the backward. <strong>(c)</strong> Replace the exact faithfulness loss with a Hutchinson sketch: <code>‖Δ‖²_F = E‖Δv‖²</code> with k probe vectors, each probe costing one <code>Wv</code> + one <code>U(Vv)</code> — k=16 probes is ~500× cheaper than materialization, unbiased, with autograd giving unbiased grads. Faithfulness has a 1e5 coefficient and a quadratic landscape, so gradient noise here is plausibly harmless — but that's an experiment (X5), and (a)+(b) are worth it alone. Keep the exact ‖Δ‖² for eval/logging at eval cadence. Together (b)+(c) make per-step cost independent of weight shapes — the thing that currently rules out cheap full-model runs.</p>
+</div>
+
+<div class="idea">
+<h3>E4 · De-sync the hot path</h3>
+<p class="meta">SAVES: unknown until profiled — historically large at this per-rank batch · EFFORT: ~day · RISK: none</p>
+<p>Per step: <code>.item()</code> on every metric loss + total (<code>optimize.py:578-588</code>), <code>torch.isfinite(...).all()</code> asserts on the 2048×128k logits and every CI tensor (<code>optimize.py:171-191</code>), per-metric isfinite asserts (<code>optimize.py:572</code>), and two range-asserts per module inside <code>calc_causal_importances</code> itself (<code>component_model.py:349,353</code>). Each forces a device sync; ~18/step at per-rank batch 4×512 means the GPU repeatedly drains while Python waits. Keep the fail-fast culture without the stalls: <code>torch._assert_async</code> for the tensor asserts (dies on the GPU, no sync), and accumulate loss scalars as tensors, <code>.item()</code> only on <code>should_log_train</code> steps. The branch's profiling history (a day lost to one misattributed 600ms wait) says measure before/after, not trust.</p>
+</div>
+
+<div class="idea">
+<h3>E5 · Fused/chunked linear-KL on the vocab head</h3>
+<p class="meta">SAVES: memory spike + bandwidth per recon fwd; enables larger per-rank batch · EFFORT: port from branch · RISK: none</p>
+<p><code>param_decomp/fused_linear_kl.py</code> on the branch (or Liger-style chunking) computes the KL without materializing full logits. FLOP-wise the unembed is only ~5% of a masked forward, so the win is memory and bandwidth — but the freed peak memory is what lets per-rank batch grow above 4, which attacks the launch-overhead problem (E6) from the other side. Port it; it passes every robustness test.</p>
+</div>
+
+<div class="idea">
+<h3>E6 · Batch the sample axis; compile/graph the masked forward</h3>
+<p class="meta">SAVES: launch overhead + utilization at batch 4 · EFFORT: days · RISK: low</p>
+<p>The step runs 5+ separate full-model forwards at per-rank batch 4 through a Python-hook-based forward (<code>component_model.py:231-300</code>) — small kernels, per-module Python in the middle, prime launch-bound territory. Two moves: fold <code>n_mask_samples</code> / PPGD <code>n_samples</code> draws into the batch dim (one forward at batch 4k instead of k at batch 4 — the mask plumbing already supports arbitrary leading dims), and <code>torch.compile</code> (or CUDA-graph) the component-site region. Matters more, not less, if the future shape leans on more stochastic samples (A1).</p>
+</div>
+
+<div class="idea">
+<h3>E7 · Port the profiling toolchain first; re-profile before building</h3>
+<p class="meta">EFFORT: port from branch · RISK: none</p>
+<p>The per-phase cpu/gpu/wait tracer + sync-debug env var + standalone reproducers from the branch (<code>_trace.py</code>, <code>scripts/standalone_repros/</code>). Every number in §2 is a static estimate; the split between FLOP-bound, bandwidth-bound, and launch-bound at per-rank batch 4 is exactly the thing static estimates get wrong. This gates which of E1–E6 to do first, and it's reusable across every future shape change.</p>
+</div>
+
+<div class="idea">
+<h3>E8 · Distributed hygiene (becomes binding after the compute wins land)</h3>
+<p class="meta">SAVES: comm halving + ~16GB/rank memory · EFFORT: days · RISK: low</p>
+<p>~10GB fp32 grads all-reduced per step: register DDP's bf16 compression hook (2×); consider PowerSGD specifically for component grads later (speculative — U/V grads may compress well, but validate against decomposition quality). <code>ZeroRedundancyOptimizer</code> shards the ~21GB of replicated AdamW state — that's memory, which is batch size, which is E6's problem solved a second way. Also minor: the eval loop's unconditional <code>empty_cache()+gc.collect()</code> every eval pass (<code>optimize.py:647-648</code>), and the O(steps) loader replay on resume.</p>
+</div>
+
+<h2 id="alg">4 · Algorithmic improvements <span class="tag alg">CHANGES WHAT'S COMPUTED</span></h2>
+
+<div class="idea">
+<h3>A1 · Adversarial pressure from the samples you already pay for (tilted stochastic subsets)</h3>
+<p class="meta">RELEVANT IF: PPGD shrinks or goes · COST: ~zero at n=1, linear-and-parallel at n&gt;1 · RISK: X4</p>
+<p>If the future shape is "some kind of stochastic subset recon losses", the cheapest adversary is a reweighting of those losses, not a separate search. Two rungs: <strong>(i) per-position tilting, free</strong> — within the existing single sample, weight the per-position KL by <code>softmax(KL_pos/τ)</code> instead of the mean. The worst positions are where masks actually break the model; the mean buries them. Zero extra forwards, one config knob, and it reuses the per-position losses the recon already computes before reduction. <strong>(ii) per-sample CVaR</strong> — n parallel subset draws (batched along E6's sample axis), loss = tilted mean over samples. This is a stochastic-search adversary: no state, no warmup, no serial depth, trivially DDP-compatible, and it composes with the subset-routing distribution rather than fighting it. The open question is whether soft-max-weighted random search matches persistent gradient search at equal compute — that's X4, and it's the experiment most aligned with where the team's discussions already are.</p>
+</div>
+
+<div class="idea">
+<h3>A2 · If PPGD stays: n_warmup 2→0 via vertex warm-start + optimistic step</h3>
+<p class="meta">RELEVANT IF: PPGD stays · SAVES: ~35% of the current step · RISK: X3 (catastrophic-overfitting checks)</p>
+<p>Carried over from the previous doc, still the largest single lever in the PPGD-stays world, and E2 makes it cheaper to implement: the final backward's source grads are now free, so initialize the next step's effective sources at the vertex the grads point to (the loss is locally linear in the masks — the vertex is where 2 PGD steps were crawling), plus an optimistic offset along the Adam momentum already sitting in <code>AdamPGDOptimizer._m</code>. The stochastic-recon term at equal coefficient is the standard guard against the degenerate-adversary failure mode, and it's already in the loss.</p>
+</div>
+
+<div class="idea">
+<h3>A3 · Choose the subset family for cacheability (full-model configs)</h3>
+<p class="meta">RELEVANT IF: multi-layer / full-model decomposition · SAVES: ~half of every masked forward · RISK: changes the subset distribution — quality check needed</p>
+<p>E1's prefix cache works because all masked sites share a layer. For full-model configs, uniform-k routing scatter-masks everywhere and no prefix is clean. But the subset <em>family</em> is a modelling choice: route by <strong>layer cut-point</strong> (sample ℓ, mask only sites ≥ ℓ, possibly subset within the suffix) and every masked forward reuses the target forward's prefix up to ℓ — average saving ~half the forward, and the residuals at candidate cut points are already in memory from the cached target forward. Whether suffix-shaped subsets train as good a decomposition as uniform-k is a real question (the prefix sites get masked less often unless ℓ's distribution compensates — e.g. weight toward early ℓ), but it's a cheap ablation (X7) and it's the only way masked-forward cost stops scaling with model depth in a full-model regime.</p>
+</div>
+
+<div class="idea">
+<h3>A4 · Variance reduction so fewer samples do the work of more</h3>
+<p class="meta">COST: free · RISK: low · APPLIES: any stochastic shape</p>
+<p>n_mask_samples is 1 because samples are expensive; make each one count more. Antithetic pairs (draw <code>r</code> and <code>1−r</code> with shared routing — negatively correlated losses, lower-variance gradient at 2 samples than 2 independent draws), and common random numbers across adjacent steps for the routing masks (smoother loss surface step-to-step, kinder to Adam). Both are a few lines in <code>calc_stochastic_component_mask_info</code>. Worth bundling into X4's sweep rather than testing alone.</p>
+</div>
+
+<div class="idea">
+<h3>A5 · Step-count levers: Muon for U/V, and the untouched scaling axes</h3>
+<p class="meta">UPSIDE: multiplies everything (100k–200k steps) · RISK: three-player dynamics · COST: cheap to pilot small</p>
+<p>Every per-step win above caps out around 2.5–3×; the step count is a bigger number. The component parameters are exactly the shape Muon-class optimizers are built for (large 2D matrices, currently AdamW + aggressive clip at 0.01), and nobody has swept the optimizer/lr/batch axes for this objective since the loss shape stabilized. Risks are real — the components/CI-fn/adversary system is a game, not a loss, and faster component movement stresses whatever adversary tracking exists (interacts with A2/X3) — so pilot on TMS/resid-mlp/gpt2-scale first (X6). Also in this bucket: SVD-based component init (start near-faithful, possibly replacing the 400-step faithfulness warmup and improving conditioning) — cheap to try, modest expected value.</p>
+</div>
+
+<div class="idea">
+<h3>A6 · CI-fn diet</h3>
+<p class="meta">SAVES: ~3-7% compute now, ~4.4GB/step comm, 300M head params · RISK: CI quality · COST: config-level</p>
+<p>The global-shared-transformer CI fn is ~1.2B params for a 3-site decomposition, ~25% of it the d_model→ΣC output head. A low-rank head (d_model→r→ΣC, r≈512) cuts head params ~8× with the obvious quality check; trunk depth (4 blocks) is another knob. Secondary as compute, but it's a quarter of the DDP gradient traffic and it scales with ΣC — same full-model scaling warning as everything else. (The amortized-adversary idea from the previous doc — sources predicted by a CI-fn-shaped head — remains the long-game version of this if PPGD stays; unchanged, still gated on evidence that converged sources are predictable.)</p>
+</div>
+
+<h2 id="carryover">5 · What carries over, what's dead, what flipped</h2>
+
+<table>
+<tr><th>Previous-doc item</th><th>Status</th><th>Why</th></tr>
+<tr><td>Vertex warm-start + optimism (1.1)</td><td><span class="tag alg">CARRIES</span></td><td>PPGD-internal; now cheaper via E2. Only matters if PPGD stays.</td></tr>
+<tr><td>Tilted parallel sampling (1.2)</td><td><span class="tag alg">CARRIES, RECAST</span></td><td>No longer a "warmup replacement" — it rides on the stochastic subset losses that are staying anyway (A1).</td></tr>
+<tr><td>Cheap warmup objective / truncated KL (1.3)</td><td><span class="tag cond">DEMOTED</span></td><td>Unembed is ~5% of a masked forward in FLOPs; the real cost was logits materialization, which fused KL (E5) removes without an approximation.</td></tr>
+<tr><td>Source reparameterization ladder (1.4)</td><td><span class="tag cond">DEMOTED</span></td><td>Was largely motivated by topology churn / TB-scale shards. Single-pool per-batch-per-position state is ~1.8GB/rank — annoying, not binding. Revisit only if PPGD stays long-term.</td></tr>
+<tr><td>Per-position triage (1.5)</td><td><span class="tag alg">CARRIES</span></td><td>Reborn as the free rung of A1 (per-position tilting).</td></tr>
+<tr><td>Amortized adversary head (1.6)</td><td><span class="tag cond">PARKED</span></td><td>Only if PPGD survives long-term; A1 is the cheaper test of "does the adversary even need to be a search".</td></tr>
+<tr><td>Residual/prefix caching (2.1)</td><td><span class="tag eng">PROMOTED</span></td><td>Was filed under layerwise runs; actually applies to main's single-layer configs today (E1). Biggest quality-risk-free win available.</td></tr>
+<tr><td>Cached-adjoint warmup (2.2)</td><td><span class="tag cond">CONDITIONAL</span></td><td>Alive only while all sites share one layer <em>and</em> PPGD keeps warmup. If A2 lands (n_warmup=0), it has nothing left to accelerate.</td></tr>
+<tr><td>Suffix surrogates across run array (2.3), per-run budget allocation (2.4)</td><td><span class="tag cond">DEAD</span></td><td>Their economics required the parallel-run array.</td></tr>
+<tr><td>Staleness experiment (E1-old)</td><td><span class="tag cond">PARKED</span></td><td>Still a durable fact if cheap to run, but with no async strategy on the table it no longer derisks anything imminent.</td></tr>
+<tr><td>Fused multi-target backward, fused KL, bf16 CI audit, .item() deferral, profiling toolchain (salvage §7)</td><td><span class="tag eng">CARRY</span></td><td>All strategy-agnostic; E2 subsumes the fused-backward item with a simpler mechanism (read leaf grads), E4/E5/E7 are the rest.</td></tr>
+<tr><td><em>New here</em>: suffix-only backwards observation, fp32 faithfulness scaling problem (E3), sync census (E4), sample-axis batching (E6), cut-point routing (A3), variance reduction (A4), Muon/step-count (A5), CI-fn diet (A6)</td><td><span class="tag eng">NEW</span></td><td>Fell out of costing the actual main-branch step rather than the PPGD kernel in isolation.</td></tr>
+</table>
+
+<h2 id="experiments">6 · Experiment / measurement plan</h2>
+
+<table>
+<tr><th>#</th><th>What</th><th>Cost</th><th>Gates / informs</th></tr>
+<tr><td><strong>X0</strong></td><td><strong>Profile a real step</strong> (port toolchain, E7): cpu/gpu/wait per phase, sync census, launch-bound check at per-rank batch 4. Do first; §2's numbers are estimates.</td><td>~day</td><td>ordering of E1–E6</td></tr>
+<tr><td><strong>X1</strong></td><td><strong>Quality-neutral stack</strong>: E1 prefix cache (assert bit-exactness) + E2 single backward + E4 de-sync + E5 fused KL. Land as engineering PRs with before/after step timings; no quality experiments needed.</td><td>~week total</td><td>expected ~1.8–2.2× alone</td></tr>
+<tr><td><strong>X3</strong></td><td><strong>n_warmup 0 + vertex/optimism vs n_warmup 2</strong> (A2), on the l18 config, judged on the PPGD eval metric + decomposition quality.</td><td>~1 day GPU</td><td>PPGD-stays world; +~1.5× on top of X1</td></tr>
+<tr><td><strong>X4</strong></td><td><strong>Tilted stochastic vs PPGD</strong> (A1): per-position tilting at n=1; CVaR over n∈{2,4,8} batched samples (E6); antithetic pairs (A4). vs PPGD baseline at matched compute.</td><td>~days GPU</td><td>whether the adversary can be stateless — the strategic question</td></tr>
+<tr><td><strong>X5</strong></td><td><strong>Sketched faithfulness</strong> (E3c): k-probe Hutchinson vs exact, sweep k; watch faithfulness trajectory + final ‖Δ‖. Plus factored-delta (E3b) as an exact-equivalence engineering check.</td><td>~1 day GPU</td><td>unblocks cheap full-model configs</td></tr>
+<tr><td><strong>X6</strong></td><td><strong>Muon-for-components pilot</strong> (A5) on resid-mlp + a small LM config; sweep lr/clip; check CI-fn/adversary co-training stability.</td><td>~days GPU, small</td><td>the step-count multiplier</td></tr>
+<tr><td><strong>X7</strong></td><td><strong>Cut-point routing family</strong> (A3) — only once a multi-layer/full-model config is actually queued; compare against uniform-k on decomposition quality at matched compute.</td><td>~days GPU</td><td>full-model regime viability</td></tr>
+</table>
+
+<p>Sequencing: X0 immediately; X1 lands regardless of every open question (its wins are loss-shape-independent within the stated assumption); X3 and X4 are the fork in the road for PPGD and can run in parallel after X1; X5 before anyone schedules a full-model run; X6 whenever small-scale capacity is idle.</p>
+
+<p class="footnote">Generated 2026-06-10 from a fresh read of main (<code>optimize.py</code>, <code>component_model.py</code>, <code>components.py</code>, <code>masks.py</code>, <code>metrics/stochastic_recon_subset.py</code>, <code>metrics/persistent_pgd_{state,recon}.py</code>, <code>metrics/faithfulness.py</code>, lab <code>batch_and_loss_fns.py</code>) costed against the llama-l18 config. Prior docs: <code>ppgd_adversary_review.html</code>, <code>ppgd_speedups_strategy_robust.html</code> — §5 is the explicit reconciliation.</p>
+
+</div>
+</body>
+</html>
