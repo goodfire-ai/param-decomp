@@ -33,6 +33,32 @@ entry. Duplicate `type` literals in a single config are rejected.
 A metric that wants to manipulate state coupled to backward overrides `before_backward`
 and/or `after_backward` (see PPGD for the canonical example).
 
+## Metric identity (`instance_key`) and same-class loss + eval
+
+Metric instances are keyed everywhere — instance dicts, state-dict, and log-key
+suffixes — by `Metric.instance_key`, which defaults to the class name. A loss-capable
+config can override it by setting `name` (on `LossMetricConfig`). This is what lets the
+*same* metric class appear under both `pd.loss_metrics` and `eval.metrics`: without a
+distinct `name` their instance keys collide and `instantiate_metrics` rejects the
+overlap. Example — a 1-step PGD training loss plus a 20-step PGD eval probe:
+
+```yaml
+pd:
+  loss_metrics:
+    - type: PGDReconLoss        # instance_key "PGDReconLoss", auto-evaluated too
+      coeff: 0.5
+      n_steps: 1
+eval:
+  metrics:
+    - type: PGDReconLoss        # distinct instance_key -> no collision
+      name: PGDReconLoss_20step
+      n_steps: 20
+```
+
+`name` disambiguates scalar-output metrics (the log key is `{log_namespace}/{instance_key}`).
+A dict-returning metric flattens under its own internal keys, so two dict-returning
+instances of one class would still collide — namespace their keys if you need that.
+
 ## Config placement rule
 
 The default home for a config is `param_decomp/configs.py`. Move a config next to its

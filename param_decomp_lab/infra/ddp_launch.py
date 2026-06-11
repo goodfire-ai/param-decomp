@@ -16,9 +16,14 @@ GPUS_PER_NODE = 8
 
 # Surface NCCL collective failures as Python exceptions instead of hanging the job —
 # matters for multi-node where a single stalled rank otherwise hangs everyone silently.
+# HF_HUB_*_TIMEOUT raise HF's 10s default: every rank resolves the dataset over the Hub
+# at startup, and that simultaneous burst can blow the 10s wire transiently (retries in
+# infra/hf_http.py then catch what slips past).
 DDP_ENV = {
     "NCCL_DEBUG": "WARN",
     "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
+    "HF_HUB_ETAG_TIMEOUT": "30",
+    "HF_HUB_DOWNLOAD_TIMEOUT": "30",
 }
 
 
