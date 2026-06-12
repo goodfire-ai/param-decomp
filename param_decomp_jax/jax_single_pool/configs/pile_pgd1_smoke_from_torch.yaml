@@ -1,0 +1,5 @@
+# Save+resume smoke for pile_pgd1_from_torch.yaml — see the referenced yaml's header.
+torch_config: torch/pile_llama_simple_mlp_4l_pgd1_smoke.yaml
+run_name: jax-pile4l-pgd1-smoke
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs
+remat_recon_forwards: false

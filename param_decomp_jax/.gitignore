@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
+.basedpyright/
+.mypy_cache/
+.DS_Store
+.vscode/
+.idea/
+wandb/

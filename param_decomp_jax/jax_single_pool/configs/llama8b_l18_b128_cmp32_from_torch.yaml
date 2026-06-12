@@ -1,0 +1,8 @@
+# The shared-config route: this wrapper carries only what the torch schema can't
+# express (run identity + the jax-runtime remat knob); everything else comes from the
+# referenced torch LMExperimentConfig yaml via param-decomp-config. Semantically the
+# same run as llama8b_l18_b128_cmp32.yaml — the converter test asserts that.
+torch_config: torch/llama8b_l18_b128_cmp32_1pool.yaml
+run_name: jax-l18-b128-cmp32-from-torch
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/jax_runs
+remat_recon_forwards: true
