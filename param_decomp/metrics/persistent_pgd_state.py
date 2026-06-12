@@ -234,10 +234,10 @@ class PersistentPGDState:
 
         self.optimizer.init_state(self.sources)
 
-    def get_grads(self, loss: Float[Tensor, ""], retain_graph: bool = True) -> PPGDSources:
-        """Raw per-module ``∂loss/∂source``. No cross-rank reduction — apply
-        ``reduce_source_grads`` for replicated scopes (see ``scope_needs_replica_sync``)."""
-        grads = torch.autograd.grad(loss, list(self.sources.values()), retain_graph=retain_graph)
+    def get_grads(self, loss: Float[Tensor, ""]) -> PPGDSources:
+        """Raw per-module ``∂loss/∂source``, freeing the graph. No cross-rank reduction —
+        apply ``reduce_source_grads`` for replicated scopes (see ``scope_needs_replica_sync``)."""
+        grads = torch.autograd.grad(loss, list(self.sources.values()))
         return dict(zip(self.sources.keys(), grads, strict=True))
 
     def reduce_source_grads(self, grads: PPGDSources) -> PPGDSources:
@@ -307,16 +307,16 @@ class PersistentPGDState:
 
         "Warmup" is the historical name; semantically these are **supplemental**
         PGD source-update iterations that happen before the final fwd+bwd of
-        the training step. The final iter (in
-        ``param_decomp_lab/three_pool/step_ppgd.py``)
+        the training step. The final iter (the metric's ``after_backward`` on the
+        flat path, ``param_decomp_lab/three_pool/step_ppgd.py`` on the pool path)
         additionally backprops to V/U + CI and uses its own source gradient to
         apply one more PGD step. So total source updates per training step =
         ``n_warmup_steps + 1``.
 
         Each supplemental iter: fwd through the masked target → source-only
-        backward → ``reduce_source_grads`` (AVG over the replica-sync group for a
-        shared source; a no-op otherwise) → PGD step. ``retain_graph=False`` since
-        the autograd graph is rebuilt next iter from the updated sources.
+        backward (graph freed; it is rebuilt next iter from the updated sources) →
+        ``reduce_source_grads`` (AVG over the replica-sync group for a shared
+        source; a no-op otherwise) → PGD step.
         """
         # WARNING: warmup ascends against the route-ALL forward regardless of the
         # configured router. A no-op for the base (route-everywhere) variant — i.e.
@@ -330,7 +330,7 @@ class PersistentPGDState:
             sum_loss, n = self.compute_recon_sum_and_n(
                 model, batch, target_out, ci, weight_deltas, router=all_layers
             )
-            grads = self.reduce_source_grads(self.get_grads(sum_loss / n, retain_graph=False))
+            grads = self.reduce_source_grads(self.get_grads(sum_loss / n))
             self.step(grads)
 
     def compute_recon_sum_and_n(

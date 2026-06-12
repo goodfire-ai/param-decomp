@@ -3,8 +3,7 @@
 These are the parts of the optimization step that do not depend on how the model is
 wrapped (DDP vs FSDP) or how checkpoints are written: building the per-batch
 :class:`MetricContext`, accumulating the weighted loss and running backward (plus the
-metrics' ``before_backward`` / ``after_backward`` hooks), the eval pass, and LR
-scheduling. :class:`~param_decomp.optimize.Trainer` and the lab-side FSDP LM trainer both
+metrics' ``after_backward`` hooks), the eval pass, and LR scheduling. :class:`~param_decomp.optimize.Trainer` and the lab-side FSDP LM trainer both
 compose these so the loop body has a single source of truth.
 
 ``EvalLoop`` and the SIGTERM flag live here too (they're loop scaffolding, not
@@ -211,8 +210,8 @@ def run_loss_step(
 
     Computes weight deltas (outside autocast so faithfulness residuals stay fp32), builds
     the metric context, runs every loss metric's ``update`` under autocast, sums
-    ``coeff * loss`` into ``total_loss``, then runs ``before_backward`` /
-    ``total_loss.backward()`` / ``after_backward``. Does NOT zero grads, clip, step, or
+    ``coeff * loss`` into ``total_loss``, then runs ``total_loss.backward()`` /
+    ``after_backward``. Does NOT zero grads, clip, step, or
     log — the caller owns those (and any model-wrap-specific concerns like residual-start
     around this call). Returns ``(total_loss, batch_log_data)`` where ``batch_log_data``
     carries the ``loss/<MetricClass>`` + ``loss/total`` scalars.
@@ -258,9 +257,6 @@ def run_loss_step(
         f"total_loss is non-finite at step {step}: {total_loss}"
     )
     batch_log_data["loss/total"] = total_loss.item()
-
-    for metric_name, m in loss_metrics.items():
-        m.before_backward(losses[metric_name])
 
     total_loss.backward()
 

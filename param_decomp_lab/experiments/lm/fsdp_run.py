@@ -45,21 +45,16 @@ import sys
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Self
+from typing import Any
 
 import fire
 import torch
-from pydantic import model_validator
 
 from param_decomp.distributed import is_main_process
 from param_decomp.log import logger
 from param_decomp_config.base import BaseConfig
 from param_decomp_config.experiment import EvalConfig, ResumeProvenance, WandbConfig
 from param_decomp_config.lm import LMDataConfig, LMTargetConfig
-from param_decomp_config.losses import (
-    PersistentPGDReconLossConfig,
-    PersistentPGDReconSubsetLossConfig,
-)
 from param_decomp_config.pd import Cadence, PDConfig
 from param_decomp_lab.component_model_io import (
     VendoredHarvestModel,
@@ -143,27 +138,6 @@ class FsdpLMExperimentConfig(BaseConfig):
     """Set on resumed runs (parent run dir + step); `None` for fresh runs. Lives on the
     config so it flows into `experiment_config.yaml` and `wandb.config` via `init_pd_run`,
     making a resumed run's lineage visible in the wandb UI."""
-
-    @model_validator(mode="after")
-    def validate_ppgd_vs_checkpoint_blocks(self) -> Self:
-        """PPGD's `before_backward` uses `torch.autograd.grad(retain_graph=True)`, whose
-        double-backward is nondeterministic under per-block activation-checkpoint recompute.
-        If a PPGD loss metric is configured, per-block checkpointing must be off.
-
-        The trainer asserts this too, but checking at YAML parse fails on the login node
-        rather than minutes into a multi-node launch.
-        """
-        has_ppgd = any(
-            isinstance(m, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig)
-            for m in self.pd.loss_metrics
-        )
-        if has_ppgd:
-            assert not self.runtime.checkpoint_blocks, (
-                "runtime.checkpoint_blocks must be False when a persistent-PGD loss metric is "
-                "configured: activation-checkpoint recompute is nondeterministic under PPGD's "
-                "retain_graph double-backward."
-            )
-        return self
 
 
 @dataclass(frozen=True)

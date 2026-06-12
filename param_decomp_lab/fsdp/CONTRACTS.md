@@ -25,8 +25,8 @@ EvalLoop, _install_sigterm_flag, empty_cuda_cache_and_collect)`
 - `run_loss_step(*, batch, step, device, wrapped_model, component_model, loss_metrics,
   config: PDConfig, reconstruction_loss, autocast_bf16) -> (total_loss, batch_log_data)` —
   computes weight_deltas (outside autocast), builds the `MetricContext`, runs every loss
-  metric's `update` under autocast, sums `coeff*loss`, runs `before_backward` /
-  `backward` / `after_backward`. Does NOT zero_grad / clip / step / log. The FSDP trainer
+  metric's `update` under autocast, sums `coeff*loss`, runs `backward` /
+  `after_backward`. Does NOT zero_grad / clip / step / log. The FSDP trainer
   wraps THIS CALL in `with component_model.use_cached_residual(batch):` for residual-start.
 - `run_eval_pass(*, eval_iterator, n_steps, slow_step, all_instances, step, device,
   wrapped_model, component_model, config, reconstruction_loss, autocast_bf16) ->
@@ -128,10 +128,10 @@ CI fn + optimizers + step + each loss-metric `state_dict()` — NOT the frozen t
 - `from_dcp(...)` classmethod (or a `load_dcp` call in `__init__`-then-load pattern) for
   resume-in-place. Cross-run resume loads the consolidated `training_<step>.pth` (mirror core
   `Trainer.from_snapshot`).
-- **Design to surface:** `loss_metrics` here include PPGD, whose `before_backward` uses
-  `torch.autograd.grad(retain_graph=True)`. Activation checkpointing recompute is
-  nondeterministic under that → if a PPGD metric is configured, assert/force
-  `checkpoint_blocks=False` (or document the conflict). Report your call.
+- **Design note:** PPGD's sources are graph leaves, so the single `total_loss.backward()`
+  computes their grads; the metric's `after_backward` unscales by the loss coefficient and
+  steps them. No retained graph → activation checkpointing and AOTAutograd's donated-buffer
+  optimization are both compatible with PPGD.
 
 ### `experiments/lm/fsdp_run.py` + console script — Agent F
 Mirror `experiments/lm/three_pool_run.py`: `main` / `_submit_slurm` /

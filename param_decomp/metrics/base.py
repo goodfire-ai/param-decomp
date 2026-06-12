@@ -101,20 +101,12 @@ class Metric[TConfig: BaseConfig](ABC):
         """Return the scalar, artifact, or keyed outputs accumulated since the last `reset()`."""
         ...
 
-    def before_backward(self, live_loss: Tensor | None) -> None:
-        """Hook called for each loss metric right before `total_loss.backward()`.
-
-        Override when a metric needs to extract gradients before the outer backward
-        consumes them — e.g. `PersistentPGDReconLoss` uses this to grab source gradients
-        with `retain_graph=True`.
-        """
-        del live_loss
-
     def after_backward(self) -> None:  # noqa: B027 — intentional no-op default
         """Hook called for each loss metric right after `total_loss.backward()`.
 
         Override when a metric needs to step internal state coupled to the outer
-        backward — e.g. `PersistentPGDReconLoss` steps its adversarial sources here.
+        backward — e.g. `PersistentPGDReconLoss` steps its adversarial sources here
+        from the gradients that backward left on them.
         """
 
     def state_dict(self) -> dict[str, Any]:

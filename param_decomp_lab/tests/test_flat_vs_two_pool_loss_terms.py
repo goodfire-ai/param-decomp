@@ -16,20 +16,26 @@ the 2-pool's ``_run_routing_forwards``). Here we cover the other three terms:
     the residual-trick global-sum is a no-op. Asserts value + CI grad, incl. the
     p-anneal schedule mid-anneal.
   * **PPGD** — flat ``PersistentPGDReconLoss`` (core metric;
-    ``update``/``before_backward``/``after_backward``) == the 2-pool adversary
+    ``update``/``after_backward``) == the 2-pool adversary
     (``_warmup_and_recon`` + ``_autograd_grads_wrt_vu_ci_and_sources`` + ``_scale_grads``
     + ``state.step``). Both drive the SAME ``PersistentPGDState`` (same warmup, same
     ``mask = ci + (1−ci)·source`` interpolation, same minimax source step). PPGD recon
     is RNG-free given the initial sources, so copying the sources makes the two paths
     deterministic. At ``n_a = n_ppgd = 1`` the 2-pool's per-rank scale
     ``coeff/(n_examples·n_a)`` (V/U + CI) and ``1/n_examples`` (sources) coincide with
-    the flat metric's ``∂(coeff·sum/n)`` (V/U + CI via the outer backward) and
-    ``∂(sum/n)`` (sources via ``before_backward``). Asserts source / V/U / CI grads AND
-    the stepped sources.
+    the flat metric's ``∂(coeff·sum/n)``: the sources are graph leaves, so the one outer
+    backward leaves ``coeff·∂(sum/n)/∂source`` in ``source.grad`` and ``after_backward``
+    divides the coefficient back out. Asserts source / V/U / CI grads AND the stepped
+    sources — this is the real grad check for the rerouted source gradient, against an
+    independent raw-``autograd.grad`` reference. Parametrised over a power-of-two coeff
+    (where backward-then-divide is bit-identical to the unscaled gradient, since scaling
+    cotangents by 2^k is exact) and a non-power-of-two coeff (fp rounding, within
+    ``assert_close`` tolerance).
 """
 
 from typing import Any, cast, override
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -70,7 +76,6 @@ _D = 4
 _BATCH = 2
 _SEQ = 5
 
-_COEFF_PPGD = 2.0
 _PPGD_WARMUP = 2
 _PPGD_INIT_SEED = 55
 
@@ -277,7 +282,7 @@ def _run_imp(start_frac: float, final_p: float | None, step: int, total_steps: i
     # The n_ci=1 single-process call never touches the CI-pool group, so the
     # group argument is unreached; the resolved layout always has a real group. ---
     leaves_2p = {s: ci_vals[s].clone().requires_grad_(True) for s in _SITES}
-    runtime = _build_runtime(model, _ppgd_cfg(), cfg)
+    runtime = _build_runtime(model, _ppgd_cfg(coeff=2.0), cfg)
     current_frac = step / total_steps
     twopool_loss = _importance_minimality_loss(
         leaves_2p,
@@ -335,9 +340,9 @@ def _imp_ctx(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def _ppgd_cfg() -> PersistentPGDReconLossConfig:
+def _ppgd_cfg(coeff: float) -> PersistentPGDReconLossConfig:
     return PersistentPGDReconLossConfig(
-        coeff=_COEFF_PPGD,
+        coeff=coeff,
         optimizer=AdamPGDConfig(
             beta1=0.5,
             beta2=0.99,
@@ -369,15 +374,20 @@ def _make_ppgd_state(cfg: PersistentPGDReconLossConfig) -> PersistentPGDState:
     )
 
 
-def test_ppgd_flat_matches_two_pool() -> None:
+@pytest.mark.parametrize("coeff", [2.0, 0.7])
+def test_ppgd_flat_matches_two_pool(coeff: float) -> None:
     """Flat PersistentPGDReconLoss (metric hooks) == 2-pool adversary (pool-step path).
 
     Both drive the SAME PersistentPGDState. PPGD recon is RNG-free given the sources,
     so copying the (identically-seeded) initial sources makes both deterministic. At
     n_a=n_ppgd=1 the two normalisations coincide; asserts source / V/U / CI grads and
-    the stepped sources match.
+    the stepped sources match. The flat source grad arrives via the outer backward
+    (coeff-scaled, unscaled in `after_backward`); the 2-pool reference computes it with
+    raw `autograd.grad` — so this is the real grad check for the rerouting, at a
+    power-of-two coeff (backward-then-divide exactly recovers the unscaled gradient)
+    and a non-power-of-two coeff (fp rounding).
     """
-    cfg = _ppgd_cfg()
+    cfg = _ppgd_cfg(coeff)
     torch.manual_seed(7)
     model = _make_model()
     lm = cast(LMComponentModel, cast(object, model))
@@ -398,9 +408,8 @@ def test_ppgd_flat_matches_two_pool() -> None:
     with strategy.context():
         live_loss = metric.update(ctx)
         assert live_loss is not None
-        metric.before_backward(live_loss)  # source grads via get_grads(sum/n)
-        (_COEFF_PPGD * live_loss).backward()  # V/U + CI via the outer backward
-    metric.after_backward()  # PGD source step
+        (coeff * live_loss).backward()  # V/U + CI + source grads via the one backward
+    metric.after_backward()  # source grad / coeff + PGD source step
     vu_flat = _vu_grads(model)
     leaf_flat = {s: _leaf_grad(leaves_flat[s]) for s in _SITES}
     sources_flat = {s: state_flat.sources[s].detach().clone() for s in _SITES}
@@ -418,7 +427,7 @@ def test_ppgd_flat_matches_two_pool() -> None:
             recon.sum_loss, lm, ci_scratch, list(_SITES), state_2p.sources
         )
     # n_a = n_ppgd = 1: V/U + CI scale = coeff/(n_examples·1); sources = 1/n_examples.
-    vu_and_ci_scale = _COEFF_PPGD / recon.n_examples
+    vu_and_ci_scale = coeff / recon.n_examples
     source_scale = 1.0 / recon.n_examples
     for d in (raw.v, raw.u, raw.ci):
         for g in d.values():

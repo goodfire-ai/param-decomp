@@ -11,7 +11,7 @@ core library. For eval metrics (user-extensible, lab-side), see
 
 | File | Purpose |
 |---|---|
-| `base.py` | `Metric` ABC (lifecycle: `__init__(cfg)` → `bind` → `update` → `compute`) + `before_backward` / `after_backward` hooks |
+| `base.py` | `Metric` ABC (lifecycle: `__init__(cfg)` → `bind` → `update` → `compute`) + `after_backward` hook |
 | `context.py` | `MetricContext` — the per-step bundle every `Metric.update(ctx)` receives; `ctx.model` is a `ComponentModelProtocol` (core `ComponentModel`, FSDP adapter, or vendored `LMComponentModel`) |
 | `dispatch.py` | `LOSS_METRIC_CLASSES` type→class table + `instantiate_metrics(...)` |
 | `<loss_name>.py` | One file per metric: the `<Name>Loss` class; its `<Name>LossConfig` lives in `param_decomp_config/losses.py` |
@@ -32,8 +32,10 @@ The pydantic discriminated union validates `pd.loss_metrics` YAML entries withou
 custom validator. `instantiate_loss_metrics()` builds and `bind()`s one instance per
 entry. Duplicate `type` literals in a single config are rejected.
 
-A metric that wants to manipulate state coupled to backward overrides `before_backward`
-and/or `after_backward` (see PPGD for the canonical example).
+A metric that wants to manipulate state coupled to backward overrides `after_backward`
+(see PPGD for the canonical example: its sources are graph leaves, so the outer
+`total_loss.backward()` computes their grads, and `after_backward` unscales by the loss
+coefficient and steps them).
 
 ## Metric identity (`instance_key`) and same-class loss + eval
 

@@ -1,9 +1,10 @@
 """PPGD `Metric` subclasses and their configs.
 
 The metric returns the live training loss and, at eval time, additionally tracks
-hidden-activation MSE breakdowns. `before_backward(loss)` and `after_backward()`
-orchestrate the source-grad / source-step around `total_loss.backward()`. Persistent
-state + optimizer state machine live in `persistent_pgd_state`.
+hidden-activation MSE breakdowns. The sources are graph leaves, so the outer
+`total_loss.backward()` computes their gradient alongside V/U + CI; `after_backward()`
+unscales it by the loss coefficient and applies the source step. Persistent state +
+optimizer state machine live in `persistent_pgd_state`.
 """
 
 from collections.abc import Iterable
@@ -81,8 +82,7 @@ class _PersistentPGDReconBase[
     Lazily constructs the `PersistentPGDState` on the first `update` so it can snapshot
     the live batch shape. Returns the live recon loss on training steps and, on eval
     batches, additionally accumulates output and per-module hidden-activation MSE for
-    `compute()`. The outer optimizer loop drives source updates via `before_backward`
-    and `after_backward`.
+    `compute()`. The outer optimizer loop drives source updates via `after_backward`.
     """
 
     log_namespace: ClassVar[str] = "loss"
@@ -91,7 +91,6 @@ class _PersistentPGDReconBase[
     def __init__(self, cfg: TConfig) -> None:
         super().__init__(cfg)
         self.state: PersistentPGDState | None = None
-        self._pending_source_grads: PPGDSources | None = None
         # Stash from `load_state_dict` if called before the first `update()` —
         # `PersistentPGDState` needs batch_dims, which we only learn from a live ctx.
         self._pending_resume_state: dict[str, Any] | None = None
@@ -211,19 +210,30 @@ class _PersistentPGDReconBase[
         return out
 
     @override
-    def before_backward(self, live_loss: Tensor | None) -> None:
-        if live_loss is None or self.state is None:
-            return
-        grads = self.state.get_grads(live_loss, retain_graph=True)
-        self._pending_source_grads = self.state.reduce_source_grads(grads)
-
-    @override
     def after_backward(self) -> None:
-        if self._pending_source_grads is None:
+        """Step the sources from the gradient the outer `total_loss.backward()` left
+        in `source.grad`.
+
+        The sources are graph leaves with `requires_grad=True`, so the single outer
+        backward already computes `coeff * ∂live_loss/∂source` — no separate
+        `autograd.grad` pass (and hence no retained graph). Dividing the coefficient
+        back out recovers the per-term source gradient; exact when `coeff` is a power
+        of two, within fp rounding otherwise.
+        """
+        if self.state is None:
             return
-        assert self.state is not None
-        self.state.step(self._pending_source_grads)
-        self._pending_source_grads = None
+        maybe_grads = {k: s.grad for k, s in self.state.sources.items()}
+        if all(g is None for g in maybe_grads.values()):
+            return  # loss inactive this step (the state was built by an eval pass)
+        coeff = self.cfg.coeff
+        assert coeff, f"{type(self).__name__} needs a nonzero coeff to unscale, got {coeff!r}"
+        grads: PPGDSources = {}
+        for module_name, grad in maybe_grads.items():
+            assert grad is not None, f"missing source grad for module {module_name!r}"
+            grads[module_name] = grad.div_(coeff)
+        self.state.step(self.state.reduce_source_grads(grads))
+        for source in self.state.sources.values():
+            source.grad = None
 
     @override
     def state_dict(self) -> dict[str, Any]:

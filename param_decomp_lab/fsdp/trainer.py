@@ -82,10 +82,6 @@ from param_decomp.train_step import (
     run_loss_step,
     scheduled_lrs,
 )
-from param_decomp_config.losses import (
-    PersistentPGDReconLossConfig,
-    PersistentPGDReconSubsetLossConfig,
-)
 from param_decomp_config.pd import Cadence, PDConfig
 from param_decomp_lab.batch_and_loss_fns import recon_loss_kl
 from param_decomp_lab.experiments.lm.vendored.component_model import (
@@ -178,13 +174,6 @@ def _set_per_rank_compile_cache_env() -> None:
     os.environ["TRITON_CACHE_DIR"] = f"/tmp/triton_{user}_r{rank}"
 
 
-def _has_ppgd_loss(pd_config: PDConfig) -> bool:
-    return any(
-        isinstance(cfg, PersistentPGDReconLossConfig | PersistentPGDReconSubsetLossConfig)
-        for cfg in pd_config.loss_metrics
-    )
-
-
 class FsdpLMTrainer:
     """Single-pool FSDP2 LM PD trainer.
 
@@ -224,18 +213,6 @@ class FsdpLMTrainer:
         validate_pgd_scope(
             pd_config.loss_metrics, batch_size=pd_config.batch_size, world_size=world_size
         )
-
-        # PPGD's `before_backward` runs `torch.autograd.grad(retain_graph=True)`; under
-        # activation checkpointing the block recompute is nondeterministic, so the second
-        # backward sees a different graph than the first. Fail loudly rather than silently
-        # corrupt the adversary grads — the user must turn `checkpoint_blocks` off in the
-        # YAML if they want PPGD (and accept the extra activation memory).
-        if _has_ppgd_loss(pd_config) and runtime_config.checkpoint_blocks:
-            raise AssertionError(
-                "checkpoint_blocks=True is incompatible with a persistent-PGD loss metric: "
-                "PPGD's autograd.grad(retain_graph=True) double-backward is nondeterministic "
-                "under activation-checkpoint recompute. Set runtime.checkpoint_blocks=false."
-            )
 
         # --- 1. identity ops + freeze + resolve targets (mirror core Trainer) ---
         if pd_config.identity_decomposition_targets is not None:
@@ -302,14 +279,6 @@ class FsdpLMTrainer:
             torch._dynamo.config.recompile_limit = max(
                 torch._dynamo.config.recompile_limit, 8 * n_blocks
             )
-            # PPGD's before_backward runs torch.autograd.grad(retain_graph=True) through the
-            # compiled region; AOTAutograd's donated-buffer optimization asserts
-            # retain_graph=False on every backward, so it must be disabled when PPGD and compile
-            # coexist. (No effect without compile; harmless without PPGD.)
-            if _has_ppgd_loss(pd_config):
-                import torch._functorch.config as functorch_config
-
-                functorch_config.donated_buffer = False
         if runtime_config.compile_model:
             self.lm.model.compile()
         if runtime_config.compile_ci_fn:
