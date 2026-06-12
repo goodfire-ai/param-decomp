@@ -1,0 +1,6 @@
+# 600-step smoke of pile_pgd1_ss0p1_from_torch.yaml — validates the fresh-PGD (bsc)
+# training-loss path in the JAX trainer end-to-end before the production launch.
+torch_config: torch/pile_llama_simple_mlp_4l_pgd1_ss0p1_smoke.yaml
+run_name: ai-jax-pile4l-pgd1-ss0p1-smoke
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs
+remat_recon_forwards: false
