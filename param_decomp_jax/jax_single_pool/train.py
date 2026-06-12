@@ -51,7 +51,7 @@ from jax_single_pool.recon import (
     Routes,
     StochasticSources,
 )
-from param_decomp_config.losses import AdamPGDConfig
+from param_decomp_config.losses import AdamPGDConfig, BSCScope
 
 COMPUTE_DT = jnp.bfloat16
 
@@ -68,8 +68,10 @@ class TrainState:
     components_opt_state: optax.OptState
     ci_fn_opt_state: optax.OptState
     sources: dict[str, dict[str, Array]]
-    """Persistent adversarial sources, `state_key -> site -> (1, T, C+1)` in [0,1].
-    One state_key per persistent loss term (SPEC S23); empty when no persistent term."""
+    """Persistent adversarial sources, `state_key -> site -> (batch_scope, T, C+1)` in
+    [0,1] — leading axis 1 for `sc` (shared, replicated) or the global batch for `bsc`
+    (per-element, batch-sharded; SPEC S16). One state_key per persistent loss term
+    (SPEC S23); empty when no persistent term."""
     sources_opt_state: dict[str, SourcesAdamState]
     step: Array
 
@@ -129,16 +131,29 @@ def make_train_step(
     }
     assert set(term_coeff_by_state_key) == set(loss_spec.persistent)
     persistent_adams: dict[str, AdamPGDConfig] = {}
+    # Per persistent term, the source's `dp` placement: `bsc` shards the per-element
+    # source with the batch (`P('dp', ...)`), `sc`/etc. replicate the shared source
+    # (`P()`). Anchoring it each step keeps the persisted layout stable across steps.
+    persistent_source_pspec: dict[str, P] = {}
     for state_key, ppgd_cfg in loss_spec.persistent.items():
         optimizer = ppgd_cfg.optimizer
         assert isinstance(optimizer, AdamPGDConfig)
         persistent_adams[state_key] = optimizer
+        persistent_source_pspec[state_key] = (
+            P("dp", None, None) if isinstance(ppgd_cfg.scope, BSCScope) else P()
+        )
 
     def batch_sharded(x: Array) -> Array:
         if mesh is None:
             return x
         spec = ["dp"] + [None] * (x.ndim - 1)
         return jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P(*spec)))
+
+    def anchor_sources(state_key: str, sites_sources: dict[str, Array]) -> dict[str, Array]:
+        if mesh is None:
+            return sites_sources
+        sharding = NamedSharding(mesh, persistent_source_pspec[state_key])
+        return {s: jax.lax.with_sharding_constraint(v, sharding) for s, v in sites_sources.items()}
 
     def batch_sharded_ci(ci_values: CIValues) -> CIValues:
         """Reshard the CI-fn output to batch-sharded ONCE, here. The CI head's `out_w`
@@ -293,7 +308,10 @@ def make_train_step(
 
             (warmed, warmed_opt), _ = jax.lax.scan(
                 warmup_body,
-                (state.sources[state_key], state.sources_opt_state[state_key]),
+                (
+                    anchor_sources(state_key, state.sources[state_key]),
+                    state.sources_opt_state[state_key],
+                ),
                 None,
                 length=ppgd_cfg.n_warmup_steps,
             )
@@ -447,7 +465,7 @@ def make_train_step(
                 source_lrs[state_key],
                 persistent_adams[state_key],
             )
-            new_sources[state_key] = ascended
+            new_sources[state_key] = anchor_sources(state_key, ascended)
             new_sources_opt_state[state_key] = ascended_opt
 
         components_updates, new_components_opt_state = components_optimizer.update(

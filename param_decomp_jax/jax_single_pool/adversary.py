@@ -37,14 +37,17 @@ def init_persistent_sources(
     site_names: tuple[str, ...],
     site_component_counts: tuple[int, ...],
     seq_len: int,
+    batch_dim: int,
     key: PRNGKeyArray,
 ) -> dict[str, Array]:
-    """PPGD `sc` scope (SPEC §1.6): `(1, T, C+1)` per site — shared across batch
-    elements, free per position — init U[0,1] (SPEC S15; clamp parameterization).
-    Trailing channel = the weight-delta source."""
+    """PPGD persistent sources `(batch_dim, T, C+1)` per site, init U[0,1] (SPEC S15;
+    clamp parameterization). Trailing channel = the weight-delta source. `batch_dim` is
+    the scope's leading axis: 1 for `sc` (one source shared across the batch, broadcast),
+    the global batch for `bsc` (an independent source per batch element — SPEC §6 SCOPE,
+    S16)."""
     keys = random.split(key, len(site_names))
     return {
-        name: random.uniform(k, (1, seq_len, c + 1), jnp.float32)
+        name: random.uniform(k, (batch_dim, seq_len, c + 1), jnp.float32)
         for name, c, k in zip(site_names, site_component_counts, keys, strict=True)
     }
 

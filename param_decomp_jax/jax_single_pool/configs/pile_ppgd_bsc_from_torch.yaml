@@ -1,0 +1,8 @@
+# JAX leg of the torch-vs-jax throughput comparison, PersistentPGD scope bsc
+# (per-batch-element sources, batch-sharded — SPEC S16). Mirrors the torch
+# pile_llama_simple_mlp-4L.yaml algorithm; JAX-mandated adaptations: streaming HF ->
+# staged parquet shards, cadence.save_every set. Launch: pd-jax-lm, 2 nodes.
+torch_config: torch/pile_llama_simple_mlp_4l_ppgd_bsc.yaml
+run_name: ai-rt-jax-bsc
+out_dir: /mnt/data/artifacts/mechanisms/param-decomp/runs
+remat_recon_forwards: false
