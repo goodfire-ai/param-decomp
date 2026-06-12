@@ -54,6 +54,36 @@ class LlamaRMSNorm(nn.Module):
         return self.weight * hidden_states.to(input_dtype)
 
 
+def _vendored_config_from_hf(hf_cfg: Any) -> VendoredLlamaConfig:
+    """Translate a transformers `LlamaConfig` (dynamic attrs, hence `Any`) to the vendored config."""
+    assert hf_cfg.model_type == "llama", f"expected a llama config, got {hf_cfg.model_type}"
+    rs = hf_cfg.rope_scaling
+    scaling = (
+        Llama3RopeScaling(
+            factor=rs["factor"],
+            low_freq_factor=rs["low_freq_factor"],
+            high_freq_factor=rs["high_freq_factor"],
+            original_max_position_embeddings=rs["original_max_position_embeddings"],
+        )
+        if rs is not None
+        else None
+    )
+    assert not hf_cfg.tie_word_embeddings, "vendored Llama assumes an untied lm_head"
+    return VendoredLlamaConfig(
+        model_type="VendoredLlama",
+        max_position_embeddings=hf_cfg.max_position_embeddings,
+        vocab_size=hf_cfg.vocab_size,
+        n_layer=hf_cfg.num_hidden_layers,
+        n_head=hf_cfg.num_attention_heads,
+        n_key_value_heads=hf_cfg.num_key_value_heads,
+        n_embd=hf_cfg.hidden_size,
+        n_intermediate=hf_cfg.intermediate_size,
+        rope_theta=hf_cfg.rope_theta,
+        rope_scaling=scaling,
+        rms_norm_eps=hf_cfg.rms_norm_eps,
+    )
+
+
 def _llama3_inv_freq(head_dim: int, base: float, scaling: Llama3RopeScaling | None) -> Tensor:
     """inv_freq for RoPE. Body verbatim from `_compute_default_rope_parameters` +
     `_compute_llama3_parameters` (config reads replaced by the passed scalars)."""
@@ -235,34 +265,7 @@ class VendoredLlama(nn.Module):
         hf = LlamaForCausalLM.from_pretrained(
             model_name, torch_dtype=torch.float32, local_files_only=True
         )
-        hf_cfg: Any = hf.config  # transformers config attrs are dynamic; type as Any
-        assert hf_cfg.model_type == "llama", f"expected a llama config, got {hf_cfg.model_type}"
-        rs = hf_cfg.rope_scaling
-        scaling = (
-            Llama3RopeScaling(
-                factor=rs["factor"],
-                low_freq_factor=rs["low_freq_factor"],
-                high_freq_factor=rs["high_freq_factor"],
-                original_max_position_embeddings=rs["original_max_position_embeddings"],
-            )
-            if rs is not None
-            else None
-        )
-        assert not hf_cfg.tie_word_embeddings, "vendored Llama assumes an untied lm_head"
-        config = VendoredLlamaConfig(
-            model_type="VendoredLlama",
-            max_position_embeddings=hf_cfg.max_position_embeddings,
-            vocab_size=hf_cfg.vocab_size,
-            n_layer=hf_cfg.num_hidden_layers,
-            n_head=hf_cfg.num_attention_heads,
-            n_key_value_heads=hf_cfg.num_key_value_heads,
-            n_embd=hf_cfg.hidden_size,
-            n_intermediate=hf_cfg.intermediate_size,
-            rope_theta=hf_cfg.rope_theta,
-            rope_scaling=scaling,
-            rms_norm_eps=hf_cfg.rms_norm_eps,
-        )
-        model = cls(config)
+        model = cls(_vendored_config_from_hf(hf.config))
         stripped = {k.removeprefix("model."): v for k, v in hf.state_dict().items()}
         missing, unexpected = model.load_state_dict(stripped, strict=False)
         # persistent=False rotary buffers are absent from both sides; nothing real may be missing.
@@ -270,3 +273,16 @@ class VendoredLlama(nn.Module):
         assert not unexpected, f"unexpected keys loading HF Llama: {unexpected}"
         del hf
         return model
+
+    @classmethod
+    def from_hf_config_random(cls, model_name: str) -> "VendoredLlama":
+        """Random-init at the HF model's config shapes — reads only the cached config json.
+
+        Benchmarking scaffolding (`target.spec kind: random_weights_in_vendored`):
+        FLOP-identical to `from_hf_pretrained` without the N-rank weight load.
+        """
+        from transformers import LlamaConfig
+
+        log0(f"random-init vendored Llama at the config shapes of: {model_name}")
+        hf_cfg = LlamaConfig.from_pretrained(model_name, local_files_only=True)
+        return cls(_vendored_config_from_hf(hf_cfg))

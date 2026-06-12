@@ -1,7 +1,7 @@
 """Language-model HuggingFace dataset loading."""
 
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, Iterator
+from typing import Any, override
 
 import numpy as np
 import torch
@@ -9,6 +9,7 @@ from datasets import Dataset, IterableDataset, load_dataset
 from numpy.typing import NDArray
 from torch import Tensor
 from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import IterableDataset as TorchIterableDataset
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
 from param_decomp.distributed import DistributedState
@@ -127,6 +128,23 @@ def _prepare_lm_dataset(
     )
 
 
+class _SyntheticTokenDataset(TorchIterableDataset[dict[str, Tensor]]):
+    """Endless seeded uniform-random token sequences, item-compatible with the tokenized path."""
+
+    def __init__(self, *, vocab_size: int, seq_len: int, column_name: str, seed: int) -> None:
+        self._vocab_size = vocab_size
+        self._seq_len = seq_len
+        self._column_name = column_name
+        self._seed = seed
+
+    @override
+    def __iter__(self) -> Iterator[dict[str, Tensor]]:
+        generator = torch.Generator().manual_seed(self._seed)
+        while True:
+            ids = torch.randint(self._vocab_size, (self._seq_len,), generator=generator)
+            yield {self._column_name: ids}
+
+
 def create_lm_data_loader(
     cfg: LMDataConfig,
     *,
@@ -138,6 +156,18 @@ def create_lm_data_loader(
 ) -> tuple[DataLoader[Any], PreTrainedTokenizer]:
     """Create an LM token dataloader from a HuggingFace dataset split."""
     configure_hf_http_retries()
+    if cfg.synthetic_tokens:
+        assert cfg.is_tokenized, "synthetic_tokens yields token ids; set is_tokenized=true"
+        tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer_name, local_files_only=True)
+        rank = dist_state.rank if dist_state is not None else 0
+        synthetic = _SyntheticTokenDataset(
+            vocab_size=len(tokenizer),
+            seq_len=cfg.max_seq_len,
+            column_name=cfg.column_name,
+            seed=seed + rank,
+        )
+        loader = DataLoader[Any](synthetic, batch_size=batch_size, collate_fn=collate_fn)
+        return loader, tokenizer
     dataset = load_dataset(
         cfg.dataset_name,
         data_files=cfg.data_files,
