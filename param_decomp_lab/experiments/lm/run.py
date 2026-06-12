@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import fire
+import torch
 import torch.nn as nn
 from pydantic import Discriminator
 from torch.utils.data import DataLoader
@@ -111,6 +112,7 @@ class LMTargetConfig(BaseConfig):
 
     spec: LMTargetSpec
     output_extract: int | str | None = "logits"
+    weights_dtype: Literal["float32", "bfloat16"] = "float32"
 
 
 class LMExperimentConfig(ExperimentConfig[LMTargetConfig, LMDataConfig]):
@@ -132,6 +134,10 @@ def build_target(target_cfg: LMTargetConfig) -> nn.Module:
             if "model_type" not in run_info.model_config_dict:
                 run_info.model_config_dict["model_type"] = spec.model_class.rsplit(".", 1)[-1]
             target_model = cls.from_run_info(run_info)
+    if target_cfg.weights_dtype == "bfloat16":
+        # Frozen target only — make_components creates V/U as fp32 nn.Parameters regardless,
+        # so componentizing after this keeps the trained components in fp32.
+        target_model = target_model.to(torch.bfloat16)
     target_model.eval()
     return target_model
 
