@@ -79,15 +79,21 @@ class HeadInitPGDReconLossConfig(LossMetricConfig):
     pgd_steps_min: PositiveInt = 1
     pgd_steps_max: PositiveInt = 8
     random_restart: bool = True
-    defender_target: Literal["winner_take_all", "head_and_random"] = Field(
+    defender_target: Literal["winner_take_all", "head_and_random", "random_only"] = Field(
         default="winner_take_all",
         description=(
             "Which PGD endpoint(s) the defender trains against. `winner_take_all`: only the "
             "higher-loss of {head-init, random-init} — but a good head always wins, so the "
             "random restart is discarded and the defender overfits to the head's narrow attack "
             "mode (brittle/oscillatory on the broad eval PGD). `head_and_random`: pool both "
-            "endpoints so the defender also hardens against fresh random-init (eval-like) "
-            "attacks. Requires `random_restart`."
+            "endpoints (mean) so the defender also hardens against fresh random-init (eval-like) "
+            "attacks; in practice random_restart_win_frac ≈ 0, so this mean-pools a strong attack "
+            "(head_ep) with a weak attack (random_ep) — empirically produces wider oscillation. "
+            "`random_only`: defender trains exclusively on the random-init PGD endpoint, which "
+            "matches the eval threat model directly. The head is still trained by distillation "
+            "(toward the winner) for diagnostics, but does not enter the defender's loss; this "
+            "isolates whether matching the eval attack mode is enough for stability. Requires "
+            "`random_restart` (random_ep must be computed)."
         ),
     )
     head_hidden_dims: list[PositiveInt] = Field(default_factory=lambda: [2048, 2048])
@@ -96,8 +102,10 @@ class HeadInitPGDReconLossConfig(LossMetricConfig):
     @model_validator(mode="after")
     def _validate(self) -> "HeadInitPGDReconLossConfig":
         assert self.pgd_steps_min <= self.pgd_steps_max, "pgd_steps_min must be <= pgd_steps_max"
-        if self.defender_target == "head_and_random":
-            assert self.random_restart, "defender_target='head_and_random' requires random_restart"
+        if self.defender_target in ("head_and_random", "random_only"):
+            assert self.random_restart, (
+                f"defender_target={self.defender_target!r} requires random_restart"
+            )
         return self
 
 
@@ -361,11 +369,12 @@ class HeadInitPGDReconLoss(Metric[HeadInitPGDReconLossConfig]):
         distill = self.state.distill_loss(head_sources, distill_target)
         self._pending_distill = distill if not ctx.is_eval else None
 
-        # Defender recon. `head_and_random` pools both endpoints so the defender hardens against
-        # fresh random-init (eval-like) attacks, not just the head's narrow mode; otherwise it
-        # trains on the winner only.
+        # Defender recon endpoint selection — controls which attack(s) the defender trains
+        # against (see `defender_target` config doc for the full rationale).
         if self.cfg.defender_target == "head_and_random" and random_ep is not None:
             endpoints = [head_ep, random_ep]
+        elif self.cfg.defender_target == "random_only" and random_ep is not None:
+            endpoints = [random_ep]
         else:
             endpoints = [distill_target]
         sum_loss = torch.zeros((), device=self.device)
