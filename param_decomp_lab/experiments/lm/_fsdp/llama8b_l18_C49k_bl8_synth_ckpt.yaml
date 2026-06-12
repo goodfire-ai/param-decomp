@@ -1,0 +1,134 @@
+# C49k bl8 probe with per-block activation checkpointing (legal since the PPGD
+# source-grad reroute removed the retain_graph double-backward), FS-FREE variant: synthetic tokens + random-init
+# target (FLOP/shape-identical to the bl4_ab config; losses are meaningless). Isolates
+# the training step from NFS/page-cache state — see 2026-06-12 NFS-degradation episode.
+# Launch: pd-lm-fsdp param_decomp_lab/experiments/lm/_fsdp/llama8b_l18_C49k_bl4_ab.yaml \
+#   --dp 16 --qos opportunistic --time 1:30:00 --tags <arm-tag>
+cadence:
+  keep_last_n_checkpoints: 1
+  save_every: 100000
+  train_log_every: 5
+  dense_log_phase: { every: 2, until_step: 80 }
+data:
+  buffer_size: 1000
+  column_name: input_ids
+  synthetic_tokens: true
+  dataset_name: parquet
+  eval_split: train
+  is_tokenized: true
+  max_seq_len: 2048
+  revision: null
+  shuffle_each_epoch: true
+  streaming: true
+  tokenizer_name: meta-llama/Llama-3.1-8B
+  train_split: train
+eval: null
+pd:
+  batch_size: 128
+  seed: 0
+  n_mask_samples: 1
+  sampling: continuous
+  sigmoid_type: leaky_hard
+  use_delta_component: true
+  tied_weights: null
+  identity_decomposition_targets: null
+  steps: 80
+  ci_config:
+    fn_type: global_shared_transformer
+    hidden_dims: null
+    mode: global
+    simple_transformer_ci_cfg:
+      d_model: 4096
+      n_blocks: 4
+      mlp_hidden_dim:
+      - 16384
+      attn_config:
+        max_len: 2048
+        n_heads: 64
+        rope_base: 10000.0
+  ci_fn_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: null
+    weight_decay: 0.0
+    lr_schedule:
+      fn_type: cosine
+      start_val: 7.0e-05
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+  components_optimizer:
+    betas:
+    - 0.9
+    - 0.999
+    grad_clip_norm: 0.01
+    weight_decay: 0.0
+    lr_schedule:
+      fn_type: cosine
+      start_val: 7.0e-05
+      warmup_pct: 0.0
+      final_val_frac: 0.1
+  decomposition_targets:
+  - C: 49152
+    module_pattern: layers.18.mlp.gate_proj
+  - C: 49152
+    module_pattern: layers.18.mlp.up_proj
+  - C: 49152
+    module_pattern: layers.18.mlp.down_proj
+  faithfulness_warmup_steps: 5
+  faithfulness_warmup_lr: 0.001
+  faithfulness_warmup_weight_decay: 0.0
+  loss_metrics:
+  - type: ImportanceMinimalityLoss
+    coeff: 5.0e-06
+    beta: 0.2
+    eps: 1.0e-12
+    pnorm: 2.0
+    p_anneal_start_frac: 0.0
+    p_anneal_final_p: 0.4
+    p_anneal_end_frac: 1.0
+  - type: ChunkwiseSubsetReconLoss
+    coeff: 0.5
+    n_samples: 1
+    sites_per_chunk: 3
+    use_fused_kl: true
+    routing:
+      type: uniform_k_subset
+  - type: PersistentPGDReconLoss
+    coeff: 0.5
+    n_samples: 1
+    n_warmup_steps: 2
+    start_frac: 0.0
+    use_sigmoid_parameterization: false
+    scope:
+      type: sc
+    optimizer:
+      type: adam
+      beta1: 0.5
+      beta2: 0.99
+      eps: 1.0e-08
+      lr_schedule:
+        fn_type: constant
+        start_val: 0.01
+        warmup_pct: 0.025
+        final_val_frac: 1.0
+  - type: FaithfulnessLoss
+    coeff: 100000.0
+runtime:
+  autocast_bf16: true
+  device: cuda:0
+  compile_model: true
+  compile_ci_fn: true
+  checkpoint_blocks: true
+  shard_frozen_target: true
+target:
+  activation_checkpointing: false
+  output_extract: 0
+  weights_dtype: bfloat16
+  spec:
+    kind: random_weights_in_vendored
+    model_class: param_decomp_lab.experiments.lm.vendored.llama_3_1.model.VendoredLlama
+    model_name: meta-llama/Llama-3.1-8B
+wandb:
+  entity: goodfire
+  project: param-decomp-llama
